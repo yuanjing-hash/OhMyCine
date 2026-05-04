@@ -20,8 +20,8 @@
 
 ```
 OhMyCine
-├── Player    — 跨平台播放器 (Tauri v2 + Vue 3 + MPV)
-├── Server    — 后端服务 (Go + Docker)
+├── Player    — 跨平台播放器 (Tauri v2 + Vue 3 + libmpv)
+├── Server    — 媒体流水线后端 (Go + Gin + GORM + SQLite)
 ├── Hub       — 插件市场 (VitePress)
 └── omc       — 命令行工具 (Go + Cobra)
 ```

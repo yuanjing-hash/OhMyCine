@@ -55,7 +55,7 @@ license: "GPL-3.0"
 min_server_version: "0.1.0"
 
 # 插件类型
-type: "driver"  # driver / scraper / transfer / notification / ui
+type: "driver"  # driver / scraper / metadata / download / transfer / notification / player / ai / ui
 
 # 依赖
 dependencies:
@@ -91,7 +91,7 @@ resources:
 ### 3.3 插件接口
 
 ```go
-// 插件必须实现的接口
+// OhMyCinePlugin 所有插件必须实现的基础接口
 type OhMyCinePlugin interface {
     // 基础信息
     Name() string
@@ -103,11 +103,14 @@ type OhMyCinePlugin interface {
     Start() error
     Stop() error
 
-    // 可选：Web UI路由
-    RegisterRoutes(router *gin.RouterGroup)
-
-    // 可选：事件处理
+    // 事件处理
     HandleEvent(event string, data interface{}) error
+}
+
+// WebPlugin 带 Web UI 的插件接口
+type WebPlugin interface {
+    OhMyCinePlugin
+    RegisterRoutes(router *gin.RouterGroup)
 }
 ```
 

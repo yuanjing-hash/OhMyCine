@@ -23,7 +23,7 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 | 任务调度 | robfig/cron | 定时任务（追更、STRM同步） |
 | 配置管理 | Viper | YAML配置 |
 | 日志 | zerolog | 结构化日志 |
-| CLI框架 | Cobra | 命令行参数 |
+| CLI框架 | Cobra | 命令行参数 (仅CLI组件) |
 | 容器化 | Docker + docker-compose | 部署 |
 
 ## 3. 项目结构
@@ -31,9 +31,7 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 ```
 ohmycine-server/
 ├── cmd/
-│   ├── server/              # 主服务入口
-│   │   └── main.go
-│   └── omc/                 # CLI工具入口
+│   └── server/              # 主服务入口
 │       └── main.go
 │
 ├── internal/
@@ -330,9 +328,9 @@ type StorageDestination struct {
     RemotePath   string `json:"remote_path"`   // 网盘路径 (网盘类型) 或 本地路径 (本地类型)
 
     // STRM 配置 (仅网盘类型可开启)
-    strm_enabled     bool   `json:"strm_enabled"`      // 是否开启STRM生成
-    strm_output_path string `json:"strm_output_path"`  // STRM文件输出目录
-    strm_base_url    string `json:"strm_base_url"`     // STRM中的代理URL前缀
+    StrmEnabled    bool   `json:"strm_enabled"`      // 是否开启STRM生成
+    StrmOutputPath string `json:"strm_output_path"`  // STRM文件输出目录
+    StrmBaseURL    string `json:"strm_base_url"`     // STRM中的代理URL前缀
 }
 ```
 
@@ -443,7 +441,10 @@ func (g *Generator) CleanInvalid(ctx context.Context) (int, error) {
             return nil
         }
 
-        content, _ := os.ReadFile(path)
+        content, err := os.ReadFile(path)
+        if err != nil {
+            return nil
+        }
         remotePath := g.parseSTRMPath(string(content))
 
         // 检查远端文件是否存在
@@ -467,7 +468,7 @@ func (g *Generator) generateOne(file *cloud.File) error {
     os.MkdirAll(localDir, 0755)
 
     // 生成STRM文件 (内容为302代理URL)
-    strmURL := fmt.Sprintf("%s/proxy/%s%s", g.baseURL, g.driver.Name(), file.Path)
+    strmURL := fmt.Sprintf("%s/proxy/%s/%s", g.baseURL, g.driver.Name(), strings.TrimPrefix(file.Path, "/"))
     strmPath := filepath.Join(localDir, info.FileName+".strm")
     os.WriteFile(strmPath, []byte(strmURL), 0644)
 
@@ -856,7 +857,7 @@ type FollowService struct {
 // Follow 创建追更任务
 func (f *FollowService) Follow(ctx context.Context, userID int64, req *FollowRequest) error {
     // 1. 查询TMDB获取剧集信息
-    tmdbInfo, err := f.tmdb.GetDetail(req.TMDBID)
+    tmdbInfo, err := f.tmdb.GetDetail(ctx, req.TMDBID)
     if err != nil {
         return err
     }
@@ -973,6 +974,7 @@ func (t *TransferService) OnDownloadComplete(ctx context.Context, task *Download
     targetPath := buildTargetPath(dest, rule, parsed, tmdbInfo)
 
     // 4. 执行转移 (根据策略)
+    var err error
     switch rule.TransferMode {
     case "move":
         err = moveFile(task.SavePath, targetPath)
@@ -983,9 +985,12 @@ func (t *TransferService) OnDownloadComplete(ctx context.Context, task *Download
     case "symlink":
         err = os.Symlink(task.SavePath, targetPath)
     }
+    if err != nil {
+        return fmt.Errorf("transfer failed: %w", err)
+    }
 
     // 5. 如果目标是网盘且开启了STRM → 生成STRM
-    if dest.Type == "cloud" && dest.STRMEnabled {
+    if dest.Type == "cloud" && dest.StrmEnabled {
         t.strm.GenerateOne(ctx, dest, targetPath)
     }
 
@@ -993,9 +998,13 @@ func (t *TransferService) OnDownloadComplete(ctx context.Context, task *Download
     t.notifier.RefreshMediaServers(ctx, dest)
 
     // 7. 通知Player客户端
+    title := parsed.Title
+    if tmdbInfo != nil {
+        title = tmdbInfo.Title
+    }
     t.notifier.NotifyPlayer(ctx, &PlayerNotification{
         Type:      "media_added",
-        Title:     tmdbInfo.Title,
+        Title:     title,
         MediaType: rule.MediaType,
     })
 
@@ -1006,8 +1015,12 @@ func (t *TransferService) OnDownloadComplete(ctx context.Context, task *Download
 // 电影: /movies/Inception (2010)/Inception (2010).mkv
 // 剧集: /tv/三体 (2023)/Season 01/三体 S01E08.mkv
 func buildTargetPath(dest *StorageDestination, rule *CategoryRule, parsed *ParsedFilename, tmdb *TmdbResult) string {
-    title := tmdb.Title
-    year := tmdb.Year
+    title := parsed.Title
+    year := parsed.Year
+    if tmdb != nil {
+        title = tmdb.Title
+        year = tmdb.Year
+    }
 
     dirName := rule.DirTemplate
     dirName = strings.ReplaceAll(dirName, "{title}", title)
@@ -1022,7 +1035,7 @@ func buildTargetPath(dest *StorageDestination, rule *CategoryRule, parsed *Parse
     fileName = strings.ReplaceAll(fileName, "{resolution}", parsed.Resolution)
     fileName += filepath.Ext(parsed.FileName) // 保留原始扩展名
 
-    return filepath.Join(dest.Path, dirName, fileName)
+    return filepath.Join(dest.RemotePath, dirName, fileName)
 }
 ```
 
@@ -1261,7 +1274,7 @@ func (s *DownloadService) ListTasks(user *User) []*DownloadTask {
 ```yaml
 # ====== 认证 ======
 POST   /api/v1/auth/login                    # 登录 (返回JWT)
-POST   /api/v1/auth/logout                   # 登录
+POST   /api/v1/auth/logout                   # 登出
 GET    /api/v1/auth/me                       # 当前用户信息
 
 # ====== 连接管理 ======
@@ -1693,8 +1706,6 @@ admin:
 
 ```yaml
 # docker/docker-compose.yaml
-
-version: "3.8"
 
 services:
   ohmycine-server:

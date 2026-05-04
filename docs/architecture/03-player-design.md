@@ -285,12 +285,14 @@ export interface DataSource {
 // src/services/datasource/emby.ts
 
 export class EmbyDataSource implements DataSource {
+  readonly id: string = ''
   readonly type: DataSourceType = 'emby'
   private config!: DataSourceConfig
   private client!: EmbyClient
 
   async init(config: DataSourceConfig): Promise<void> {
     this.config = config
+    ;(this as { id: string }).id = config.name
     this.client = new EmbyClient(config.url, config.apiKey!)
   }
 
@@ -334,7 +336,7 @@ export class EmbyDataSource implements DataSource {
       cast: item.People?.filter(p => p.Type === 'Actor').map(p => p.Name),
       imdbId: item.ProviderIds?.Imdb,
       tmdbId: item.ProviderIds?.Tmdb ? Number(item.ProviderIds.Tmdb) : undefined,
-      resolution: item.MediaStreams?.find(s => s.Type === 'Video')?.Width > 1920 ? '4K' : '1080p',
+      resolution: (item.MediaStreams?.find(s => s.Type === 'Video')?.Width ?? 0) >= 3840 ? '4K' : '1080p',
       codec: item.MediaStreams?.find(s => s.Type === 'Video')?.Codec,
       audioCodec: item.MediaStreams?.find(s => s.Type === 'Audio')?.Codec,
     }
@@ -382,7 +384,8 @@ export class AlistDataSource implements DataSource {
       body: JSON.stringify({ path: path || '/', password: this.config.password || '' }),
     })
     const data = await res.json()
-    return data.data.content?.map((item: any) => ({
+    if (data.code !== 200 || !data.data?.content) return []
+    return data.data.content.map((item: any) => ({
       id: item.name,
       name: item.name,
       type: item.is_dir ? 'folder' : this.getMediaType(item.name),
@@ -452,7 +455,8 @@ export class DataSourceManager {
   // 从Server导入配置
   async importConfigs(configs: DataSourceConfig[]): Promise<void> {
     for (const config of configs) {
-      if (!this.sources.has(config.name)) {
+      const exists = Array.from(this.sources.values()).some(s => s.name === config.name)
+      if (!exists) {
         await this.addSource(config)
       }
     }
@@ -503,7 +507,7 @@ Player 配置存储在 Tauri 的 `app_data_dir` 下：
   "ai": {
     "provider": "openai",
     "apiKey": "",
-    "model": "gpt-4"
+    "model": "gpt-4o"
   },
   "ui": {
     "theme": "dark",
@@ -1043,6 +1047,8 @@ export class MediaIndexer {
   }
 
   private buildText(r: MediaRecord): string {
+    const directors = r.directors ? JSON.parse(r.directors) : []
+    const cast = r.cast ? JSON.parse(r.cast) : []
     const parts = [
       `片名: ${r.title}`,
       r.year ? `年份: ${r.year}` : '',
@@ -1051,8 +1057,8 @@ export class MediaIndexer {
       r.rating ? `评分: ${r.rating}/10` : '',
       r.resolution ? `分辨率: ${r.resolution}` : '',
       r.codec ? `编码: ${r.codec}` : '',
-      r.directors?.length ? `导演: ${r.directors.join(', ')}` : '',
-      r.cast?.length ? `主演: ${r.cast.join(', ')}` : '',
+      directors.length ? `导演: ${directors.join(', ')}` : '',
+      cast.length ? `主演: ${cast.join(', ')}` : '',
     ].filter(Boolean)
 
     return parts.join('\n')
@@ -1294,7 +1300,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
 ## 7. 设计系统 — Cinema OS
 
-### 4.1 设计Token (CSS Variables)
+### 7.1 设计Token (CSS Variables)
 
 ```css
 /* src/styles/variables.css */
@@ -1391,7 +1397,7 @@ export const useSettingsStore = defineStore('settings', () => {
 }
 ```
 
-### 4.2 液态玻璃组件样式
+### 7.2 液态玻璃组件样式
 
 ```css
 /* src/styles/glass.css */
@@ -1467,7 +1473,7 @@ export const useSettingsStore = defineStore('settings', () => {
 }
 ```
 
-### 4.3 核心UI页面设计
+### 7.3 核心UI页面设计
 
 #### 首页 (HomeView)
 
@@ -1573,9 +1579,9 @@ export const useSettingsStore = defineStore('settings', () => {
 └────────────────────────────────────────────────────────────────┘
 ```
 
-## 5. 核心模块设计
+## 8. 核心模块设计
 
-### 5.1 MPV集成 (Tauri Commands)
+### 8.1 MPV集成 (Tauri Commands)
 
 ```rust
 // src-tauri/src/commands/player.rs
@@ -1613,7 +1619,7 @@ pub async fn mpv_set_property(prop: String, value: String, state: State<'_, MpvS
 }
 ```
 
-### 5.2 Vue MPV Composable
+### 8.2 Vue MPV Composable
 
 ```typescript
 // src/composables/useMpv.ts
@@ -1692,7 +1698,7 @@ export function useMpv() {
 }
 ```
 
-### 5.3 Server连接 Composable
+### 8.3 Server连接 Composable
 
 ```typescript
 // src/composables/useServer.ts
@@ -1711,7 +1717,7 @@ export function useServer() {
     serverUrl.value = url
     apiKey.value = key || ''
     try {
-      const res = await api.value('/api/v1/settings')
+      const res = await api.value('/api/v1/health')
       isConnected.value = true
       return res
     } catch {
@@ -1721,11 +1727,11 @@ export function useServer() {
   }
 
   async function getLibrary(type?: 'movie' | 'series') {
-    return api.value('/api/v1/library', { params: { type } })
+    return api.value('/api/v1/media', { params: { type } })
   }
 
   async function searchMedia(keyword: string) {
-    return api.value('/api/v1/search', { method: 'POST', body: { keyword } })
+    return api.value('/api/v1/discovery/search', { method: 'POST', body: { keyword } })
   }
 
   async function getMediaDetail(id: string) {
@@ -1733,7 +1739,7 @@ export function useServer() {
   }
 
   async function getCloudDrives() {
-    return api.value('/api/v1/cloud')
+    return api.value('/api/v1/connections')
   }
 
   async function getDownloads() {
@@ -1748,9 +1754,9 @@ export function useServer() {
 }
 ```
 
-## 6. MPV 集成策略 (libmpv 嵌入方案)
+## 9. MPV 集成策略 (libmpv 嵌入方案)
 
-### 6.1 架构选择：libmpv 嵌入 vs Sidecar
+### 9.1 架构选择：libmpv 嵌入 vs Sidecar
 
 **放弃 Sidecar，采用 libmpv 嵌入方案**。原因：
 
@@ -1767,7 +1773,7 @@ Sidecar (独立进程)                    libmpv (嵌入库)
                                       └──────────────────────────┘
 ```
 
-### 6.2 libmpv 嵌入方案详解
+### 9.2 libmpv 嵌入方案详解
 
 libmpv 是 MPV 的 C API 库版本，可以直接编译链接到 Rust 项目中：
 
@@ -1808,7 +1814,7 @@ Rust 侧                              Vue 侧
 └──────────────────────┘              └──────────────────────┘
 ```
 
-### 6.3 Rust 侧：libmpv 绑定
+### 9.3 Rust 侧：libmpv 绑定
 
 ```rust
 // src-tauri/src/mpv/mod.rs
@@ -1893,7 +1899,7 @@ impl MpvPlayer {
 }
 ```
 
-### 6.4 平台渲染后端
+### 9.4 平台渲染后端
 
 | 平台 | 渲染后端 | 窗口嵌入方式 |
 |------|----------|-------------|
@@ -1902,7 +1908,7 @@ impl MpvPlayer {
 | Linux | Vulkan / OpenGL | `X11 Window` / `Wayland Surface` |
 | Android | OpenGL ES 2.0 | `SurfaceView` / `TextureView` |
 
-### 6.5 Tauri Plugin 封装
+### 9.5 Tauri Plugin 封装
 
 将 libmpv 封装为 Tauri Plugin，Vue 侧通过标准 Tauri API 调用：
 
@@ -1936,7 +1942,7 @@ impl Plugin for MpvPlugin {
 }
 ```
 
-### 6.6 Cargo 依赖
+### 9.6 Cargo 依赖
 
 ```toml
 # src-tauri/Cargo.toml
@@ -1949,7 +1955,7 @@ libmpv-sys = "3.1"      # libmpv C FFI 绑定
 # 编译时链接libmpv
 ```
 
-### 6.7 构建时libmpv处理
+### 9.7 构建时libmpv处理
 
 ```
 src-tauri/
@@ -1967,7 +1973,7 @@ src-tauri/
 
 构建脚本自动下载对应平台的libmpv二进制库，链接到最终产物中。
 
-### 6.8 Android 策略
+### 9.8 Android 策略
 
 Android 使用相同方案的移动端版本：
 1. **libmpv Android** — 交叉编译libmpv为 `.so` 库 (arm64-v8a / armeabi-v7a)
@@ -1975,14 +1981,14 @@ Android 使用相同方案的移动端版本：
 3. 渲染到 `SurfaceView`，Vue UI 覆盖在上方
 4. 参考项目：[mpv-android](https://github.com/mpv-android/mpv-android)
 
-### 6.9 GPL 合规说明
+### 9.9 GPL 合规说明
 
 libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由于 OhMyCine 本身采用 GPL-3.0 协议，这没有冲突。但需要注意：
 - 最终发布包必须包含 libmpv 的源码或提供获取途径
 - 需在 LICENSE 文件中注明 libmpv 的 GPL-2.0 协议
 - 修改过的 libmpv 源码必须公开
 
-## 7. 快捷键系统
+## 10. 快捷键系统
 
 ```typescript
 // src/composables/useKeyboard.ts
@@ -2017,7 +2023,7 @@ export const shortcuts = {
 }
 ```
 
-## 8. 平台适配
+## 11. 平台适配
 
 | 功能 | Windows | macOS | Linux | Android |
 |------|---------|-------|-------|---------|
