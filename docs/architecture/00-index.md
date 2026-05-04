@@ -33,12 +33,12 @@ Frontend:  Tauri v2 + Vue 3 + TypeScript + UnoCSS
 Backend:   Go + Gin + GORM + SQLite
 Playback:  libmpv (嵌入式, 全平台)
 Deploy:    Docker + 二进制文件
-License:   MIT
+License:   GPL-3.0
 ```
 
 ### 设计原则
 
 1. **用户数据主权** — 数据在用户自己的服务器上
 2. **模块化可插拔** — 每个组件可独立使用
-3. **开源优先** — MIT License，社区驱动
+3. **开源优先** — GPL-3.0 License，社区驱动
 4. **性能至上** — 302直连、MPV引擎、零丢帧

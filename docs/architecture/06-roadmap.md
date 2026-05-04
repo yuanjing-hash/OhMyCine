@@ -25,7 +25,7 @@ Phase 4: 生态系统           ████████████████
 
 ### 0.1 仓库与项目结构
 
-- [ ] 创建 GitHub Organization `ohmycine`
+- [x] 创建仓库 `OhMyCine` 并关联本地 (已完成: `yuanjing-hash/OhMyCine`)
 - [ ] 初始化 monorepo 结构 (所有组件在同一仓库)
   ```
   ohmycine/
@@ -38,7 +38,7 @@ Phase 4: 生态系统           ████████████████
   ```
 - [ ] 配置 `.gitignore` (Go/Node/Rust/OS 文件)
 - [ ] 配置 `.editorconfig` (统一编码风格)
-- [ ] 编写 `LICENSE` (MIT)
+- [x] 编写 `LICENSE` (GPL-3.0)
 - [ ] 编写 `README.md` (项目介绍、快速开始、架构概览)
 - [ ] 编写 `CONTRIBUTING.md` (贡献指南、PR流程、Commit规范)
 

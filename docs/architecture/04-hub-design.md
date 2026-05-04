@@ -51,7 +51,7 @@ version: "1.2.0"
 display_name: "115网盘增强"
 description: "115网盘高级功能：批量STRM生成、秒传、目录同步"
 author: "community"
-license: "MIT"
+license: "GPL-3.0"
 min_server_version: "0.1.0"
 
 # 插件类型
