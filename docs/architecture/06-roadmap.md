@@ -1,0 +1,823 @@
+# OhMyCine — 开发路线图
+
+## 核心设计原则
+
+- **Player 独立优先**：Player 必须在没有 Server 的情况下完整可用
+- **全功能开源**：所有功能完全免费开源
+- **Server 是增强层**：Server 提供媒体流水线等高级功能，但不阻塞 Player 基本使用
+- **流水线驱动**：Server 核心是 发现→下载→转移→入库→通知 的闭环
+
+## 阶段总览
+
+```
+Phase 0: 基础设施           ████░░░░░░░░░░░░░░░░  Week 1-2
+Phase 1: Player 独立版 MVP  ████████░░░░░░░░░░░░  Week 3-8
+Phase 2: Server MVP         ████████████░░░░░░░░  Week 9-14
+Phase 3: 核心功能增强       ████████████████░░░░  Week 15-22
+Phase 4: 生态系统           ████████████████████  Week 23+
+```
+
+---
+
+## Phase 0: 基础设施 (Week 1-2)
+
+> 搭建开发环境、CI/CD、项目骨架
+
+### 0.1 仓库与项目结构
+
+- [ ] 创建 GitHub Organization `ohmycine`
+- [ ] 初始化 monorepo 结构 (所有组件在同一仓库)
+  ```
+  ohmycine/
+  ├── player/          — Tauri + Vue 播放器
+  ├── server/          — Go 后端
+  ├── hub/             — VitePress 插件市场
+  ├── cli/             — Go CLI 工具 (与 server 共享 pkg/)
+  ├── docs/            — 架构文档
+  └── .github/         — CI/CD
+  ```
+- [ ] 配置 `.gitignore` (Go/Node/Rust/OS 文件)
+- [ ] 配置 `.editorconfig` (统一编码风格)
+- [ ] 编写 `LICENSE` (MIT)
+- [ ] 编写 `README.md` (项目介绍、快速开始、架构概览)
+- [ ] 编写 `CONTRIBUTING.md` (贡献指南、PR流程、Commit规范)
+
+### 0.2 CI/CD Pipeline
+
+- [ ] Go 后端 CI: `golangci-lint` + `go test` + 多平台构建 (linux/amd64, linux/arm64, windows, darwin)
+- [ ] Vue 前端 CI: `eslint` + `vue-tsc --noEmit` + `vite build`
+- [ ] Tauri 构建 CI: Windows + macOS + Linux 三平台自动构建
+- [ ] Docker 构建 CI: `docker build` + `docker push` (GitHub Container Registry)
+- [ ] Release CI: tag 触发自动发布 (GitHub Releases + Docker Hub)
+- [ ] Pre-commit hooks: `lint-staged` (前端) + `golangci-lint` (后端)
+
+### 0.3 开发环境
+
+- [ ] Docker Compose 本地开发配置 (Server + SQLite + qBittorrent)
+- [ ] Makefile / Taskfile (常用命令: build, test, lint, dev)
+- [ ] VS Code 推荐配置 (`.vscode/extensions.json`, `.vscode/settings.json`)
+- [ ] 本地开发文档 (`docs/development.md`)
+
+### 0.4 品牌与文档
+
+- [ ] 设计 Logo (SVG + PNG 多尺寸)
+- [ ] 设计品牌色 (主色 #4A9EFF, 强调色 #A855F7)
+- [ ] 初始化 VitePress 文档站点框架
+- [ ] 编写架构文档索引页
+
+---
+
+## Phase 1: Player 独立版 MVP (Week 3-8)
+
+> Player 独立可用版本 — 无需 Server，原生连接 Emby/Jellyfin/Alist/CloudDrive2
+
+### Sprint 1.1: Tauri 项目 + libmpv (Week 3-4)
+
+**目标**: Player 能启动，libmpv 能播放视频，基础窗口管理可用
+
+#### Tauri 项目初始化
+
+- [ ] `npm create tauri-app` 初始化项目
+- [ ] 配置 Vue 3 + TypeScript + Vite
+- [ ] 配置 UnoCSS (原子化CSS)
+- [ ] 配置 Pinia (状态管理)
+- [ ] 配置 Vue Router (SPA路由)
+- [ ] 配置 Vue I18n (国际化框架)
+- [ ] 配置 `tsconfig.json` (严格模式)
+- [ ] 配置 ESLint + Prettier (代码规范)
+- [ ] 配置 `tauri.conf.json` (窗口配置、权限、打包)
+
+#### libmpv 嵌入集成
+
+- [ ] 下载 libmpv 二进制库 (Windows/macOS/Linux)
+- [ ] 创建 `src-tauri/src/mpv/` 模块
+- [ ] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
+- [ ] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
+- [ ] 实现 `MpvRenderContext` (渲染上下文绑定到窗口)
+- [ ] 创建 Tauri Plugin: `mpv_plugin.rs`
+- [ ] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
+- [ ] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
+- [ ] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
+- [ ] 配置 Cargo 依赖: `libmpv = "2.0"`, `libmpv-sys = "3.1"`
+- [ ] 编写构建脚本: 自动下载对应平台的 libmpv 库
+
+#### Vue 侧播放器 Composable
+
+- [ ] 实现 `useMpv()` composable
+- [ ] 响应式状态: `isPlaying`, `currentTime`, `duration`, `volume`
+- [ ] 响应式状态: `subtitleTracks`, `audioTracks`, `currentSubtitle`, `currentAudio`
+- [ ] 方法: `load()`, `togglePause()`, `seek()`, `setVolume()`
+- [ ] 方法: `setSubtitle()`, `setAudio()`
+- [ ] 事件监听自动清理 (`onUnmounted`)
+
+#### 基础窗口管理
+
+- [ ] 无边框窗口配置 (`decorations: false`)
+- [ ] 自定义标题栏组件 (`TitleBar.vue`)
+- [ ] 窗口拖拽区域 (`data-tauri-drag-region`)
+- [ ] 窗口控制按钮 (最小化/最大化/关闭)
+- [ ] 全屏切换 (`appWindow.setFullscreen`)
+
+#### 基础播放控制 UI
+
+- [ ] `VideoPlayer.vue` — 视频播放区域 (libmpv 渲染)
+- [ ] `PlayerControls.vue` — 播放控制条
+- [ ] `ProgressBar.vue` — 进度条 (可拖拽)
+- [ ] `VolumeControl.vue` — 音量控制
+- [ ] 播放/暂停按钮
+- [ ] 快进/快退按钮 (10s/60s)
+- [ ] 音量显示与控制
+
+**产出**:
+- [x] 桌面应用能启动，无边框窗口
+- [x] 能拖拽文件到窗口播放
+- [x] libmpv 渲染在窗口内部，沉浸式体验
+- [x] 基础播放控制 (播放/暂停/进度/音量)
+
+### Sprint 1.2: DataSource 抽象层 (Week 5-6)
+
+**目标**: DataSource 接口定义 + Emby/Jellyfin 原生连接 + 配置管理
+
+#### DataSource 接口设计
+
+- [ ] 定义 `MediaItem` 接口 (id, name, type, posterUrl, year, rating, path...)
+- [ ] 定义 `MediaDetail` 接口 (extends MediaItem + genres, directors, cast...)
+- [ ] 定义 `SubtitleTrack`, `AudioTrack` 接口
+- [ ] 定义 `DataSourceType` 类型枚举
+- [ ] 定义 `DataSourceConfig` 接口
+- [ ] 定义 `DataSource` 接口 (init, test, destroy, list, search, getDetail, getStreamURL)
+
+#### DataSourceManager 实现
+
+- [ ] 实现 `DataSourceManager` 类
+- [ ] `addSource()` — 创建并初始化数据源
+- [ ] `removeSource()` — 销毁并移除数据源
+- [ ] `getAllSources()` / `getSource(id)`
+- [ ] `searchAll()` — 跨数据源并发搜索
+- [ ] `exportAllConfigs()` / `importConfigs()` — 配置导入导出
+- [ ] `createDataSource(type)` — 工厂方法
+
+#### EmbyDataSource 实现
+
+- [ ] 实现 `EmbyClient` 类 (封装 Emby REST API)
+- [ ] `getSystemInfo()` — 测试连接
+- [ ] `getMediaFolders()` — 获取媒体库列表
+- [ ] `getItems(parentId)` — 获取库内项目
+- [ ] `search(keyword)` — 搜索
+- [ ] `getItem(id)` — 获取详情 (含 People/Genres/MediaStreams)
+- [ ] `getImageUrl(itemId, type)` — 构建图片URL
+- [ ] 实现 `EmbyDataSource` (implements DataSource)
+- [ ] `mapEmbyItem()` — Emby 数据映射到 MediaItem
+
+#### JellyfinDataSource 实现
+
+- [ ] 实现 `JellyfinDataSource` (与 Emby API 类似，差异处理)
+- [ ] API 路径差异适配 (`/emby/` → `/`)
+- [ ] 认证头差异适配
+
+#### 配置持久化
+
+- [ ] 使用 Tauri `app_data_dir` 存储配置
+- [ ] 实现 `config.json` 读写 (datasources, server, ai, ui)
+- [ ] 配置变更自动保存
+
+#### 设置页面 UI
+
+- [ ] `SettingsView.vue` — 设置页面
+- [ ] 数据源列表管理 (添加/编辑/删除)
+- [ ] 添加数据源表单 (类型选择/URL/API Key)
+- [ ] 连接测试按钮 (显示成功/失败)
+- [ ] 数据源状态显示 (在线/离线)
+
+**产出**:
+- [x] 能添加 Emby/Jellyfin 服务器
+- [x] 能浏览媒体库、搜索影片
+- [x] 能直接播放 Emby/Jellyfin 上的视频
+- [x] 配置自动持久化
+
+### Sprint 1.3: Alist + CloudDrive2 + 本地文件 (Week 7-8)
+
+**目标**: 完整的独立播放器，支持多种数据源
+
+#### AlistDataSource 实现
+
+- [ ] 实现 Alist HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`)
+- [ ] 实现 WebDAV 客户端 (备选方案)
+- [ ] `list(path)` — 目录浏览
+- [ ] `search(keyword)` — 搜索
+- [ ] `getStreamURL(path)` — 构建播放URL (`/d{path}`)
+- [ ] 实现 `AlistDataSource` (implements DataSource)
+- [ ] 连接测试
+
+#### CloudDrive2DataSource 实现
+
+- [ ] 实现 WebDAV 客户端 (CloudDrive2 暴露 WebDAV)
+- [ ] `list(path)` — 目录浏览
+- [ ] `getStreamURL(path)` — 构建播放URL
+- [ ] 实现 `CloudDrive2DataSource` (implements DataSource)
+- [ ] 连接测试
+
+#### LocalFileDataSource 实现
+
+- [ ] 本地文件系统浏览 (Tauri `fs` API)
+- [ ] 文件类型过滤 (视频文件)
+- [ ] 拖拽播放支持
+- [ ] 文件关联 (双击打开)
+- [ ] 实现 `LocalFileDataSource` (implements DataSource)
+
+#### 云盘占位符
+
+- [ ] 115网盘 — UI 中显示"即将推出"标签
+- [ ] 123盘 — UI 中显示"即将推出"标签
+- [ ] 夸克网盘 — UI 中显示"即将推出"标签
+- [ ] 接口定义预留 (`throw new Error('即将推出')`)
+
+#### DataSourceManager 完善
+
+- [ ] 跨数据源搜索结果合并与去重
+- [ ] 统一媒体浏览 (合并所有 DataSource 的内容)
+- [ ] 配置导入/导出 (JSON 文件)
+
+#### 播放器增强
+
+- [ ] `SubtitleMenu.vue` — 字幕菜单
+- [ ] `AudioMenu.vue` — 音轨菜单
+- [ ] `PlaylistPanel.vue` — 播放列表
+- [ ] 播放历史记录 (本地存储)
+- [ ] 继续观看功能
+
+**产出**:
+- [x] 能连接 Alist 浏览和播放云盘文件
+- [x] 能连接 CloudDrive2 浏览和播放
+- [x] 能播放本地文件和拖拽播放
+- [x] 115/123/夸克在 UI 中有占位
+
+---
+
+## Phase 2: Server MVP (Week 9-14)
+
+> 后端最小可用版本 — 三层架构 + 媒体流水线 + 302代理 + 配置同步
+
+### Sprint 2.1: 基础框架 + 三层架构 (Week 9-10)
+
+**目标**: Server 能启动，三层架构 (连接/存储目标/分类规则) 可用，用户管理可用
+
+#### Go 项目初始化
+
+- [ ] `go mod init ohmycine-server`
+- [ ] 目录结构创建 (`cmd/`, `internal/`, `pkg/`, `api/`, `configs/`, `docker/`)
+- [ ] 配置 `go.mod` 依赖
+- [ ] 编写 `cmd/server/main.go` 入口
+- [ ] 配置管理 (`internal/config/`) — Viper + YAML
+- [ ] 日志系统 (`internal/middleware/logger.go`) — zerolog 结构化日志
+
+#### Web 框架搭建
+
+- [ ] Gin 路由初始化
+- [ ] 中间件: CORS, Logger, Recovery
+- [ ] JWT 认证中间件 (`internal/middleware/auth.go`)
+- [ ] 统一错误响应格式
+- [ ] 统一分页格式
+- [ ] API 版本路由 (`/api/v1/`)
+
+#### 数据库层
+
+- [ ] GORM 初始化 + SQLite 连接
+- [ ] 自动迁移 (`AutoMigrate`)
+- [ ] 数据模型定义 (`internal/models/`)
+  - [ ] `Connection` 模型
+  - [ ] `StorageDestination` 模型
+  - [ ] `CategoryRule` 模型
+  - [ ] `User` 模型
+  - [ ] `Setting` 模型
+
+#### 连接管理
+
+- [ ] `Connection` CRUD API (`internal/handlers/connection.go`)
+- [ ] `POST /api/v1/connections` — 添加连接
+- [ ] `GET /api/v1/connections` — 连接列表
+- [ ] `PUT /api/v1/connections/{id}` — 更新连接
+- [ ] `DELETE /api/v1/connections/{id}` — 删除连接
+- [ ] `POST /api/v1/connections/{id}/test` — 测试连接
+- [ ] 连接信息加密存储 (AES-GCM)
+
+#### 存储目标
+
+- [ ] `StorageDestination` CRUD API (`internal/handlers/destination.go`)
+- [ ] `POST /api/v1/destinations` — 添加存储目标
+- [ ] `GET /api/v1/destinations` — 存储目标列表
+- [ ] `PUT /api/v1/destinations/{id}` — 更新
+- [ ] `DELETE /api/v1/destinations/{id}` — 删除
+- [ ] 本地/网盘类型区分
+- [ ] STRM 配置字段 (strm_enabled, strm_output_path, strm_base_url)
+
+#### 分类规则
+
+- [ ] `CategoryRule` CRUD API (`internal/handlers/category.go`)
+- [ ] `POST /api/v1/categories` — 添加分类规则
+- [ ] `GET /api/v1/categories` — 分类规则列表
+- [ ] `PUT /api/v1/categories/{id}` — 更新
+- [ ] `DELETE /api/v1/categories/{id}` — 删除
+- [ ] 目录模板和命名模板字段
+- [ ] 转移策略字段 (move/hardlink/copy/symlink)
+- [ ] 排序字段 (匹配优先级)
+
+#### 用户管理
+
+- [ ] `User` 模型 + bcrypt 密码哈希
+- [ ] `POST /api/v1/auth/login` — 登录 (返回 JWT)
+- [ ] `POST /api/v1/auth/logout` — 登出
+- [ ] `GET /api/v1/auth/me` — 当前用户信息
+- [ ] `GET /api/v1/users` — 用户列表 (管理员)
+- [ ] `POST /api/v1/users` — 添加用户 (管理员)
+- [ ] `PUT /api/v1/users/{id}` — 更新用户
+- [ ] `DELETE /api/v1/users/{id}` — 删除用户 (管理员)
+- [ ] 权限检查中间件 (admin/user)
+- [ ] 首次启动自动创建管理员账号
+
+#### Docker
+
+- [ ] 编写 `Dockerfile` (多阶段构建)
+- [ ] 编写 `docker-compose.yaml` (Server + SQLite)
+- [ ] 健康检查端点 (`GET /api/v1/health`)
+
+**产出**:
+- [x] Server 能 Docker 运行
+- [x] 三层架构 CRUD API 可用
+- [x] 用户登录/权限控制可用
+- [x] 连接信息加密存储
+
+### Sprint 2.2: 网盘驱动 + 下载器 + 302代理 (Week 11-12)
+
+**目标**: 网盘驱动可用，下载器能连接，302代理能播放，媒体服务器能通知刷新
+
+#### 网盘驱动抽象层
+
+- [ ] 定义 `Driver` 接口 (`pkg/cloud/driver.go`)
+- [ ] 定义 `File`, `DownloadURL`, `Quota` 结构体
+- [ ] 实现驱动注册机制 (`pkg/cloud/registry.go`)
+- [ ] 实现 `AlistDriver` (`pkg/cloud/alist/`)
+  - [ ] HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`, `/api/fs/search`)
+  - [ ] `List()`, `Get()`, `Upload()`, `GetDownloadURL()`, `Search()`
+  - [ ] 连接测试 (`IsAlive`)
+- [ ] 实现 `115Driver` (`pkg/cloud/pan115/`)
+  - [ ] Cookie 认证
+  - [ ] 文件列表/搜索/下载链接
+- [ ] 实现 `AliyunDriver` (`pkg/cloud/aliyun/`)
+  - [ ] Token 认证
+  - [ ] 文件列表/搜索/下载链接
+
+#### 下载器管理
+
+- [ ] 定义 `DownloadClient` 接口 (`pkg/downloader/client.go`)
+- [ ] 定义 `Task`, `AddRequest` 结构体
+- [ ] 实现 `QBittorrentClient` (`pkg/downloader/qbittorrent/`)
+  - [ ] 认证 (cookie-based)
+  - [ ] `AddTorrent()` — 添加种子
+  - [ ] `ListTasks()` / `GetTask()` — 查询任务
+  - [ ] `PauseTask()` / `ResumeTask()` / `DeleteTask()` — 控制任务
+  - [ ] 任务状态同步
+- [ ] 实现 `TransmissionClient` (`pkg/downloader/transmission/`)
+  - [ ] RPC 认证
+  - [ ] 同上接口实现
+- [ ] 下载器 CRUD API (`internal/handlers/download.go`)
+  - [ ] `POST /api/v1/downloaders` — 添加下载器
+  - [ ] `GET /api/v1/downloaders` — 下载器列表
+  - [ ] `POST /api/v1/downloaders/{id}/test` — 测试连接
+
+#### 302代理引擎
+
+- [ ] 实现 `Engine` (`pkg/proxy/engine.go`)
+- [ ] 路由: `GET /proxy/{driver}/{path...}`
+- [ ] URL 缓存 (TTL 机制)
+- [ ] 302 重定向逻辑
+- [ ] CORS 支持
+- [ ] 错误处理 (驱动不存在/文件不存在)
+
+#### 媒体服务器客户端
+
+- [ ] 定义 `MediaServerClient` 接口 (`pkg/mediaserver/client.go`)
+- [ ] 实现 `EmbyClient` (`pkg/mediaserver/emby.go`)
+  - [ ] `TestConnection()` — 测试连接
+  - [ ] `RefreshLibrary(libraryID)` — 刷新媒体库
+  - [ ] `GetLibraries()` — 获取媒体库列表
+  - [ ] `Search(keyword)` — 搜索
+- [ ] 实现 `JellyfinClient` (`pkg/mediaserver/jellyfin.go`)
+
+#### 配置同步 API
+
+- [ ] `POST /api/v1/sync/push` — Player 推送数据源配置
+- [ ] `GET /api/v1/sync/pull` — Player 拉取 Server 配置
+- [ ] `GET /api/v1/sync/status` — 同步状态
+- [ ] 自动导入 Player 的数据源配置到连接管理
+
+**产出**:
+- [x] 网盘文件浏览/上传可用
+- [x] qBit/Transmission 能连接和控制
+- [x] 302 代理能重定向到云盘 CDN
+- [x] Emby/Jellyfin 能通过 API 刷新媒体库
+
+### Sprint 2.3: 媒体流水线 + STRM + 元数据 (Week 13-14)
+
+**目标**: 完整的 下载→转移→入库 流水线跑通
+
+#### 元数据刮削
+
+- [ ] TMDB API 客户端 (`pkg/metadata/tmdb.go`)
+  - [ ] `Search(title, year)` — 搜索电影/剧集
+  - [ ] `GetDetail(tmdbId)` — 获取详情 (含 credits/images)
+  - [ ] `GetByIMDBID(imdbId)` — 通过 IMDB ID 查询
+  - [ ] 图片 URL 构建 (poster, backdrop)
+- [ ] 文件名解析器 (`pkg/metadata/parser.go`)
+  - [ ] 标题提取
+  - [ ] 年份提取
+  - [ ] 分辨率/编码/来源提取
+  - [ ] 季/集号提取 (剧集)
+  - [ ] 制作组提取
+- [ ] NFO 生成器 (XML 格式)
+- [ ] 海报/背景图下载
+
+#### 文件转移引擎
+
+- [ ] `TransferService` (`internal/services/transfer.go`)
+- [ ] 下载完成回调监听
+- [ ] 自动分类匹配逻辑
+  - [ ] 优先: 站点分类
+  - [ ] 次选: 文件名解析 (有 season → tv)
+  - [ ] 兜底: TMDB 查询确认
+- [ ] 目标路径构建 (根据分类规则模板)
+  - [ ] 变量替换: `{title}`, `{year}`, `{season:02d}`, `{episode:02d}`, `{resolution}`
+  - [ ] 扩展名保留
+- [ ] 转移策略执行
+  - [ ] `move` — 移动文件 (默认)
+  - [ ] `hardlink` — 硬链接 (保种)
+  - [ ] `copy` — 复制
+  - [ ] `symlink` — 软链接
+- [ ] 转移任务记录 (transfer_tasks 表)
+- [ ] 转移失败重试机制
+
+#### 通知服务
+
+- [ ] `NotifyService` (`internal/services/notify.go`)
+- [ ] Emby/Jellyfin 刷新通知 (REST API 调用)
+- [ ] Player 客户端通知 (WebSocket 推送)
+- [ ] 通知事件类型: `media.added`, `transfer.completed`
+
+#### STRM 管理器
+
+- [ ] `STRMGenerator` (`pkg/strm/generator.go`)
+- [ ] `GenerateOne()` — 生成单个 STRM 文件
+  - [ ] 内容: 302 代理 URL (`http://server:3000/proxy/{driver}/{path}`)
+  - [ ] 目录结构: `{dest}/{title} ({year})/{filename}.strm`
+- [ ] `IncrementalSync()` — 增量同步 (只处理新增/修改)
+- [ ] `FullSync()` — 全量扫描
+- [ ] `CleanInvalid()` — 清理无效 STRM (指向不存在的文件)
+- [ ] STRM 定时任务配置 (`strm_schedules` 表)
+  - [ ] 增量同步 cron
+  - [ ] 全量扫描 cron
+  - [ ] 无效清理 cron
+- [ ] STRM 管理 API
+  - [ ] `GET /api/v1/strm/status` — 同步状态
+  - [ ] `POST /api/v1/strm/sync/incremental` — 立即增量
+  - [ ] `POST /api/v1/strm/sync/full` — 立即全量
+  - [ ] `POST /api/v1/strm/clean` — 清理无效
+
+#### Docker Compose
+
+- [ ] `docker-compose.yaml` 编写
+  - [ ] ohmycine-server 服务
+  - [ ] emby 服务 (可选)
+  - [ ] qbittorrent 服务 (可选)
+  - [ ] 共享卷配置 (STRM 库目录)
+
+#### Player 端 Server 连接 UI
+
+- [ ] 添加 Server 连接表单 (URL + API Key)
+- [ ] 连接状态显示
+- [ ] 同步状态显示
+- [ ] Server 侧功能展示入口
+
+**产出**:
+- [x] 下载完成 → 自动转移 → 自动生成 STRM → 通知 Emby 刷新 → Emby 能播放
+- [x] STRM 定时增量/全量/清理可用
+- [x] Player 连接 Server 后配置自动同步
+
+---
+
+## Phase 3: 核心功能增强 (Week 15-22)
+
+> 补全核心功能 — 发现页、追更、AI助手、网盘增强、Cinema OS UI
+
+### Sprint 3.1: 发现页 + PT站点实现 (Week 15-17)
+
+**目标**: 发现页可用，主流 PT 站点接入，聚合搜索 + 一键下载
+
+#### PT 站点框架
+
+- [ ] 定义 `Site` 接口 (`pkg/scraper/site.go`)
+- [ ] 定义 `SiteConfig`, `SearchRequest`, `Torrent` 结构体
+- [ ] 站点注册机制
+- [ ] 站点管理 API
+  - [ ] `POST /api/v1/sites` — 添加站点
+  - [ ] `GET /api/v1/sites` — 站点列表
+  - [ ] `PUT /api/v1/sites/{id}` — 更新
+  - [ ] `DELETE /api/v1/sites/{id}` — 删除
+  - [ ] `POST /api/v1/sites/{id}/test` — 测试连接
+
+#### PT 站点实现
+
+- [ ] M-Team (馒头) 站点适配器
+  - [ ] Cookie 认证
+  - [ ] 搜索 API 解析
+  - [ ] 种子详情解析
+  - [ ] 分类映射
+- [ ] HDSky 站点适配器
+  - [ ] Cookie 认证
+  - [ ] 搜索 API 解析
+- [ ] OurBits (我堡) 站点适配器
+  - [ ] Cookie 认证
+  - [ ] 搜索 API 解析
+
+#### 发现页聚合搜索
+
+- [ ] `DiscoveryService` (`internal/services/discovery.go`)
+- [ ] 并发搜索所有已配置站点 (`goroutine` + `channel`)
+- [ ] 结果聚合 + 去重
+- [ ] TMDB 自动匹配 (IMDB ID 优先, 标题+年份兜底)
+- [ ] 结果排序 (相关度/做种数/大小)
+- [ ] 筛选/过滤 (分类/分辨率/大小范围/做种数)
+- [ ] 搜索 API
+  - [ ] `POST /api/v1/discovery/search` — 聚合搜索
+  - [ ] `GET /api/v1/discovery/trending` — 热门资源
+  - [ ] `GET /api/v1/discovery/latest` — 最新资源
+
+#### 一键下载
+
+- [ ] 自动分类匹配 (站点分类 + 文件名解析 + TMDB)
+- [ ] 确定下载目录 (根据分类规则 → 存储目标)
+- [ ] 提交到下载器
+- [ ] 记录下载任务 (关联用户 ID)
+- [ ] WebSocket 进度推送
+- [ ] 下载 API
+  - [ ] `POST /api/v1/discovery/download` — 一键下载
+  - [ ] `GET /api/v1/downloads` — 下载任务列表 (用户隔离)
+  - [ ] `POST /api/v1/downloads/{id}/pause` — 暂停
+  - [ ] `POST /api/v1/downloads/{id}/resume` — 恢复
+  - [ ] `DELETE /api/v1/downloads/{id}` — 删除
+
+#### Player 端发现页 UI
+
+- [ ] `DiscoveryView.vue` — 发现页
+- [ ] 搜索栏 + 筛选器 (分类/分辨率/大小)
+- [ ] 搜索结果列表 (来源/标题/大小/做种/制作组)
+- [ ] TMDB 元数据展示 (海报/评分/简介)
+- [ ] 一键下载按钮
+- [ ] 下载进度显示
+
+**产出**:
+- [x] 能跨站点聚合搜索
+- [x] 搜索结果自动匹配 TMDB 元数据
+- [x] 一键下载 → 自动分类 → 自动转移 → 自动入库
+
+### Sprint 3.2: 追更 + 网盘增强 (Week 18-19)
+
+**目标**: 追更可用，更多网盘支持，302代理增强
+
+#### 追更引擎
+
+- [ ] `FollowService` (`internal/services/follow.go`)
+- [ ] 追更任务模型 (`follow_tasks` 表)
+- [ ] 创建追更任务
+  - [ ] TMDB ID + 剧名 + 季号
+  - [ ] 站点过滤 (只在指定站点搜索)
+  - [ ] 质量偏好 (分辨率/编码/制作组)
+  - [ ] Cron 表达式 (默认每天 3:00)
+- [ ] 定时执行逻辑
+  - [ ] 在指定站点搜索剧名/IMDB ID
+  - [ ] 过滤缺少的集数 (对比 TMDB 总集数 vs 本地已有)
+  - [ ] 匹配质量偏好
+  - [ ] 选择最佳种子
+  - [ ] 提交下载
+- [ ] 追更状态管理 (active/paused/completed)
+- [ ] 追更 API
+  - [ ] `POST /api/v1/follows` — 创建追更
+  - [ ] `GET /api/v1/follows` — 追更列表 (用户隔离)
+  - [ ] `PUT /api/v1/follows/{id}` — 更新
+  - [ ] `DELETE /api/v1/follows/{id}` — 删除
+  - [ ] `POST /api/v1/follows/{id}/pause` — 暂停
+  - [ ] `POST /api/v1/follows/{id}/resume` — 恢复
+  - [ ] `POST /api/v1/follows/{id}/execute` — 立即执行
+
+#### 网盘驱动增强
+
+- [ ] 实现 `QuarkDriver` (`pkg/cloud/quark/`)
+- [ ] 实现 `BaiduDriver` (`pkg/cloud/baidu/`)
+- [ ] 实现 `TianyiDriver` (`pkg/cloud/tianyi/`)
+- [ ] 实现 `UCDriver` (`pkg/cloud/uc/`)
+- [ ] 实现 `WebDAVDriver` (`pkg/cloud/webdav/`)
+
+#### 302代理增强
+
+- [ ] 多网盘统一代理路由
+- [ ] URL 健康检查 (定期验证缓存的 URL 是否有效)
+- [ ] 自动故障转移 (一个驱动失败 → 尝试备用驱动)
+
+#### Player 端 UI
+
+- [ ] `FollowView.vue` — 追更管理页面
+  - [ ] 追更列表 (剧名/当前进度/站点/下次检查)
+  - [ ] 操作按钮 (暂停/恢复/编辑/删除/立即执行)
+  - [ ] 追更详情 (已追集数/缺少集数/下载历史)
+- [ ] 网盘文件浏览器
+  - [ ] 目录树导航
+  - [ ] 文件列表 (名称/大小/修改时间)
+  - [ ] 文件操作 (上传/删除/移动)
+
+**产出**:
+- [x] 能追更剧集，自动下载缺少的集数
+- [x] 7+ 个网盘驱动可用
+- [x] 302 播放稳定可靠
+
+### Sprint 3.3: AI助手 + Cinema OS UI (Week 20-22)
+
+**目标**: AI 推荐可用，沉浸式 UI 完善，文件管理可用
+
+#### AI 助手 (Player 侧)
+
+- [ ] AI Provider 抽象层
+  - [ ] OpenAI 兼容接口 (默认)
+  - [ ] Claude 支持
+  - [ ] 自定义 Base URL (本地 LLM)
+- [ ] 用户 API Key 配置
+- [ ] RAG 架构实现
+  - [ ] `MediaIndexer` — 媒体库索引 (为每部影片生成文本描述)
+  - [ ] `LocalVectorStore` — 本地向量存储 (余弦相似度搜索)
+  - [ ] Embedding 生成 (text-embedding-3-small)
+  - [ ] 向量索引持久化
+- [ ] `AIRecommendService`
+  - [ ] `recommend(query)` — 自然语言推荐
+  - [ ] 检索增强: 从本地库中检索相关影片
+  - [ ] Prompt 构建: 系统提示 + 检索结果 + 用户问题
+  - [ ] LLM 调用: 生成推荐结果
+- [ ] AI 设置页面
+  - [ ] Provider 选择
+  - [ ] API Key 输入
+  - [ ] Model 选择
+  - [ ] Base URL 配置
+  - [ ] Embedding 模型配置
+
+#### Cinema OS UI 完善
+
+- [ ] CSS Variables 设计 Token (`variables.css`)
+  - [ ] 色彩系统 (主色/强调色/中性色/语义色)
+  - [ ] 液态玻璃变量 (bg/border/blur/shadow)
+  - [ ] 圆角/间距/字体/动画变量
+- [ ] 液态玻璃组件库 (`glass.css`)
+  - [ ] `.glass` 基础液态玻璃
+  - [ ] `.glass-card` 悬停光晕效果
+  - [ ] `.sidebar-glass` 侧边栏玻璃
+  - [ ] `.player-controls-glass` 播放控制条玻璃
+- [ ] 布局系统
+  - [ ] `AppLayout.vue` — 主布局 (侧边栏+内容区)
+  - [ ] `Sidebar.vue` — 侧边导航
+  - [ ] `TopBar.vue` — 顶部栏
+  - [ ] `StatusBar.vue` — 状态栏
+- [ ] 动画系统
+  - [ ] 页面切换动画 (Motion Vue)
+  - [ ] 悬停光晕动画 (CSS + JS)
+  - [ ] 列表项进入动画
+- [ ] 首页 (`HomeView.vue`)
+  - [ ] Hero Banner (大图轮播)
+  - [ ] 最近添加
+  - [ ] 继续观看
+  - [ ] 高分佳片
+  - [ ] 自定义布局 (拖拽排列区块)
+- [ ] 媒体展示组件
+  - [ ] `MediaCard.vue` — 媒体卡片 (海报+信息)
+  - [ ] `MediaGrid.vue` — 网格布局
+  - [ ] `MediaRow.vue` — 横向滚动行
+  - [ ] `MediaDetail.vue` — 媒体详情面板
+  - [ ] `PosterWall.vue` — 海报墙
+
+#### 文件管理页面
+
+- [ ] `FileView.vue` — 文件管理页面
+- [ ] 数据源选择器
+- [ ] 目录树导航
+- [ ] 文件列表 (名称/大小/修改时间/类型)
+- [ ] 文件操作 (上传/删除/移动/重命名)
+- [ ] 文件详情面板 (大小/路径/关联媒体)
+
+#### 快捷键系统
+
+- [ ] `useKeyboard()` composable
+- [ ] 播放控制快捷键 (Space, ←, →, ↑, ↓, M)
+- [ ] 字幕/音轨快捷键 (S, A)
+- [ ] 窗口快捷键 (F, Escape, P)
+- [ ] 导航快捷键 (Ctrl+F, Ctrl+,)
+- [ ] 快捷键冲突检测
+
+#### 整体优化
+
+- [ ] 性能优化 (虚拟滚动/懒加载/缓存)
+- [ ] 错误处理完善 (统一错误边界)
+- [ ] 日志系统增强 (结构化日志/日志轮转)
+- [ ] 国际化完善 (中英文完整翻译)
+
+**产出**:
+- [x] AI 能基于本地库推荐电影
+- [x] 液态玻璃 UI 流畅
+- [x] 文件管理跨数据源可用
+- [x] 快捷键系统完整
+
+---
+
+## Phase 4: 生态系统 (Week 23+, 持续迭代)
+
+> CLI、插件市场、社区建设
+
+### Sprint 4.1: CLI 工具 (Week 23-24)
+
+- [ ] omc CLI 框架 (Cobra)
+- [ ] `omc server start/stop/status` — 服务器管理
+- [ ] `omc config get/set/list` — 配置管理
+- [ ] `omc library list/scan` — 媒体库管理
+- [ ] `omc cloud list/test` — 网盘管理
+- [ ] `omc search <keyword>` — 资源搜索
+- [ ] `omc download add/list/cancel` — 下载管理
+- [ ] `omc strm sync/clean/status` — STRM 管理
+- [ ] `omc doctor` — 系统诊断
+- [ ] Shell 补全 (Bash/Zsh/Fish/PowerShell)
+- [ ] Man page 生成
+
+### Sprint 4.2: 插件系统 (Week 25-28)
+
+- [ ] 插件引擎 (Go plugin / WASM)
+- [ ] 插件接口定义
+- [ ] 插件生命周期管理 (Init/Start/Stop)
+- [ ] 事件总线 (插件间通信)
+- [ ] 插件配置管理
+- [ ] Hub 网站 (VitePress)
+  - [ ] 插件列表页
+  - [ ] 插件详情页
+  - [ ] 开发者文档
+  - [ ] 安装指南
+- [ ] 预置插件
+  - [ ] Telegram 通知插件
+  - [ ] Server 酱通知插件
+  - [ ] 115 网盘增强插件
+
+### Sprint 4.3: Android + 持续优化 (Week 29+)
+
+- [ ] Tauri Android 构建配置
+- [ ] libmpv Android 集成 (交叉编译 .so)
+- [ ] 移动端 UI 适配
+  - [ ] 触摸手势 (滑动/捏合/双击)
+  - [ ] 底部导航栏
+  - [ ] 横屏播放
+  - [ ] 安全区域适配
+- [ ] 性能优化 (启动时间/内存/渲染)
+- [ ] 国际化完善 (日文/韩文)
+- [ ] 社区建设
+  - [ ] Discord / QQ 群
+  - [ ] 贡献者指南完善
+  - [ ] Issue 模板 (Bug/Feature/Question)
+  - [ ] PR 模板
+- [ ] 文档完善
+  - [ ] 用户文档
+  - [ ] 开发者文档
+  - [ ] API 文档 (OpenAPI)
+
+---
+
+## 里程碑时间线
+
+```
+2026 Q2 (May-Jun)
+  └─ Phase 0 + Phase 1 完成
+     Player 独立版可用，Emby/Jellyfin/Alist/CloudDrive2 原生连接
+
+2026 Q3 (Jul-Sep)
+  └─ Phase 2 完成
+     Server 三层架构 + 媒体流水线 + 302代理 + 配置同步
+
+2026 Q4 (Oct-Dec)
+  └─ Phase 3 完成
+     发现页 + 追更 + AI助手 + 网盘增强 + Cinema OS UI
+
+2027 Q1 (Jan-Mar)
+  └─ Phase 4 初步完成
+     CLI + 插件系统 + Android + 社区生态
+```
+
+## 技术风险与应对
+
+| 风险 | 影响 | 应对 |
+|------|------|------|
+| libmpv 库体积 | 安装包增加 ~30MB | 按平台动态链接，构建时自动下载 |
+| 网盘 API 不稳定 | 网盘功能不可用 | 多驱动容错、自动降级到 Alist 代理 |
+| PT 站点反爬 | 站点功能失效 | 社区维护 Cookie、适配器热更新 |
+| Tauri Android 成熟度 | 移动端体验差 | 备选方案：Flutter/原生 Android |
+| 插件安全 | 恶意插件 | 签名验证 + 沙箱执行 + 社区审核 |
+| 法律风险(PT站点) | 合规问题 | 不内置站点列表，用户自行配置 |
+| 追更误判 | 下载错误资源 | IMDB ID 精确匹配 + 人工确认选项 |
