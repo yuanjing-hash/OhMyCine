@@ -2,10 +2,11 @@
 
 ## 核心设计原则
 
-- **Player 独立优先**：Player 必须在没有 Server 的情况下完整可用
-- **全功能开源**：所有功能完全免费开源
+- **Player 独立优先**：Player 必须在没有 Server 的情况下完整可用，除 Server 联动入口外优先完整开发
+- **全功能开源**：所有功能完全免费开源，路线图只调整实施顺序，不削减最终功能范围
 - **Server 是增强层**：Server 提供媒体流水线等高级功能，但不阻塞 Player 基本使用
 - **流水线驱动**：Server 核心是 发现→下载→转移→入库→通知 的闭环
+- **刚需驱动 Server MVP**：Server 初期优先支持 115网盘、OpenList、CloudDrive2、本地文件、STRM 与 302代理，其他网盘和生态能力后续扩展
 
 ## 阶段总览
 
@@ -44,19 +45,41 @@ Phase 4: 生态系统           ████████████████
 
 ### 0.2 CI/CD Pipeline
 
-- [ ] Go 后端 CI: `golangci-lint` + `go test` + 多平台构建 (linux/amd64, linux/arm64, windows, darwin)
-- [ ] Vue 前端 CI: `eslint` + `vue-tsc --noEmit` + `vite build`
-- [ ] Tauri 构建 CI: Windows + macOS + Linux 三平台自动构建
-- [ ] Docker 构建 CI: `docker build` + `docker push` (GitHub Container Registry)
-- [ ] Release CI: tag 触发自动发布 (GitHub Releases + Docker Hub)
-- [ ] Pre-commit hooks: `lint-staged` (前端) + `golangci-lint` (后端)
+> 早期 CI/CD 目标是“自动检查、自动编译、产物可下载”，正式发布和 Docker 镜像推送后置。
+
+#### 开发期 CI（Phase 0 必做）
+
+- [ ] Go 后端 CI: `go test ./...` + `go build` + `golangci-lint`
+- [ ] CLI CI: `go test ./...` + `go build`
+- [ ] Vue/Player 前端 CI: `eslint` + `vue-tsc --noEmit` + `vite build`
+- [ ] Tauri 桌面构建 CI: Windows / macOS / Linux 构建测试包
+- [ ] Hub 文档站 CI: VitePress build
+- [ ] 上传 GitHub Actions Artifacts，方便下载本地测试
+
+#### 手动测试构建（MVP 阶段）
+
+- [ ] `workflow_dispatch` 手动触发构建
+- [ ] 支持选择构建组件: Player / Server / CLI / Hub
+- [ ] 支持选择构建平台: Windows / macOS / Linux
+- [ ] 构建产物保留 7-30 天供测试下载
+
+#### 发布期 CI（后置）
+
+- [ ] Docker 构建 CI: `docker build`
+- [ ] Docker 镜像推送: GHCR / Docker Hub
+- [ ] Release CI: tag 触发 GitHub Releases
+- [ ] 自动生成 changelog
+- [ ] 自动上传正式安装包和二进制文件
 
 ### 0.3 开发环境
 
-- [ ] Docker Compose 本地开发配置 (Server + SQLite + qBittorrent)
+> 本地开发优先使用手动编译和本地运行；Docker 主要用于后续部署、CI 集成测试和 NAS/服务器环境。
+
+- [ ] 本地开发启动脚本: Player / Server / CLI / Hub 手动编译运行
 - [ ] Makefile / Taskfile (常用命令: build, test, lint, dev)
 - [ ] VS Code 推荐配置 (`.vscode/extensions.json`, `.vscode/settings.json`)
-- [ ] 本地开发文档 (`DEVELOPMENT.md`)
+- [ ] 无 Docker 本地开发文档 (npm/tauri、go run/go test、cargo check)
+- [ ] Docker Compose 部署配置 (可选，用于 NAS/服务器/CI 集成测试)
 
 ### 0.4 品牌与文档
 
@@ -256,7 +279,7 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 2: Server MVP (Week 9-14)
 
-> 后端最小可用版本 — 三层架构 + 媒体流水线 + 302代理 + 配置同步
+> 后端最小可用版本 — 优先打通刚需存储与播放闭环：115网盘 / OpenList / CloudDrive2 / 本地文件 + 三层架构 + STRM + 302代理 + 配置同步；PT聚合、追更、AI、插件、多用户权限等功能保留在后续阶段逐步完整实现
 
 ### Sprint 2.1: 基础框架 + 三层架构 (Week 9-10)
 
@@ -335,14 +358,16 @@ Phase 4: 生态系统           ████████████████
 - [ ] 权限检查中间件 (admin/user)
 - [ ] 首次启动自动创建管理员账号
 
-#### Docker
+#### 本地运行与部署准备
 
-- [ ] 编写 `Dockerfile` (多阶段构建)
-- [ ] 编写 `docker-compose.yaml` (Server + SQLite)
+- [ ] Server 能本地二进制运行 (`go run ./cmd/server` / `go build`)
+- [ ] 基础配置文件可用 (`configs/config.example.yaml`)
 - [ ] 健康检查端点 (`GET /api/v1/health`)
+- [ ] 编写 `Dockerfile` (后续部署准备，可不作为本地开发前置)
+- [ ] 编写 `docker-compose.yaml` (后续 NAS/服务器部署准备，可选)
 
 **产出**:
-- [ ] Server 能 Docker 运行
+- [ ] Server 能本地运行并通过健康检查
 - [ ] 三层架构 CRUD API 可用
 - [ ] 用户登录/权限控制可用
 - [ ] 连接信息加密存储
@@ -482,9 +507,9 @@ Phase 4: 生态系统           ████████████████
   - [ ] `POST /api/v1/strm/sync/full` — 立即全量
   - [ ] `POST /api/v1/strm/clean` — 清理无效
 
-#### Docker Compose
+#### 部署配置（后置，不阻塞本地开发）
 
-- [ ] `docker-compose.yaml` 编写
+- [ ] `docker-compose.yaml` 编写 (用于 NAS/服务器部署与后续集成测试)
   - [ ] ohmycine-server 服务
   - [ ] emby 服务 (可选)
   - [ ] qbittorrent 服务 (可选)
@@ -506,7 +531,7 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 3: 核心功能增强 (Week 15-22)
 
-> 补全核心功能 — 发现页、追更、AI助手、网盘增强、Cinema OS UI
+> 补全核心功能 — 在 Server 刚需闭环稳定后，继续实现发现页、PT聚合搜索、追更、AI助手、网盘增强、Cinema OS UI 等完整产品能力
 
 ### Sprint 3.1: 发现页 + PT站点实现 (Week 15-17)
 

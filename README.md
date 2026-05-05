@@ -158,6 +158,7 @@ OhMyCine/
 - [Hub 插件市场设计](docs/architecture/04-hub-design.md)
 - [CLI 命令行设计](docs/architecture/05-cli-design.md)
 - [开发路线图](docs/architecture/06-roadmap.md)
+- [安全设计](docs/architecture/07-security-design.md)
 
 ## 开发规范
 
