@@ -738,9 +738,25 @@ Phase 4: 生态系统           ████████████████
 - [ ] `useKeyboard()` composable
 - [ ] 播放控制快捷键 (Space, ←, →, ↑, ↓, M)
 - [ ] 字幕/音轨快捷键 (S, A)
+- [ ] 弹幕快捷键 (D, Shift+D, Shift+↑, Shift+↓)
 - [ ] 窗口快捷键 (F, Escape, P)
 - [ ] 导航快捷键 (Ctrl+F, Ctrl+,)
 - [ ] 快捷键冲突检测
+
+#### 弹幕系统
+
+- [ ] 弹幕数据格式定义 (`DanmakuItem` 接口)
+- [ ] B 站 XML 弹幕解析器
+- [ ] JSON 弹幕解析器
+- [ ] 弹弹Play API 弹幕源
+- [ ] 本地弹幕文件自动匹配 (同目录同名 .xml/.json)
+- [ ] Canvas 弹幕渲染引擎
+  - [ ] 轨道分配管理器
+  - [ ] 滚动弹幕动画
+  - [ ] 顶部/底部固定弹幕
+  - [ ] 弹幕碰撞检测
+- [ ] 弹幕设置面板 (透明度/字号/速度/屏蔽)
+- [ ] Tauri Commands (danmaku_load_xml, danmaku_load_json, danmaku_fetch)
 
 #### 整体优化
 

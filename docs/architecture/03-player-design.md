@@ -2008,6 +2008,12 @@ export const shortcuts = {
   'S':            { action: 'player.nextSubtitle', label: '切换字幕' },
   'A':            { action: 'player.nextAudio', label: '切换音轨' },
 
+  // 弹幕
+  'D':            { action: 'player.toggleDanmaku', label: '弹幕开/关' },
+  'Shift+D':      { action: 'player.danmakuSettings', label: '弹幕设置' },
+  'Shift+ArrowUp':   { action: 'player.danmakuOpacityUp', label: '弹幕透明度+' },
+  'Shift+ArrowDown': { action: 'player.danmakuOpacityDown', label: '弹幕透明度-' },
+
   // 窗口
   'F':            { action: 'player.toggleFullscreen', label: '全屏' },
   'Escape':       { action: 'player.exitFullscreen', label: '退出全屏' },
@@ -2023,7 +2029,330 @@ export const shortcuts = {
 }
 ```
 
-## 11. 平台适配
+## 11. 弹幕系统 (Danmaku)
+
+弹幕是视频播放器的核心社交功能之一。OhMyCine 的弹幕系统支持从外部弹幕源加载弹幕数据，以滚动字幕的形式叠加在视频上方。
+
+### 11.1 弹幕数据格式
+
+采用兼容 [DanmakuFactory](https://github.com/hihkm/DanmakuFactory) 的通用格式，同时支持 XML 和 JSON 两种来源：
+
+**B 站 XML 格式**（最广泛的弹幕格式）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<i>
+  <d p="时间,模式,字号,颜色,发送时间,弹幕池,用户Hash,弹幕ID">弹幕内容</d>
+</i>
+```
+
+`p` 属性字段说明：
+
+| 位置 | 含义 | 示例 |
+|------|------|------|
+| 0 | 出现时间 (秒) | `12.345` |
+| 1 | 弹幕模式 | `1`=滚动, `4`=底部, `5`=顶部, `7`=高级 |
+| 2 | 字号 | `25` |
+| 3 | 颜色 (十进制) | `16777215`=白色 |
+| 4 | 发送时间 (Unix时间戳) | `1609459200` |
+| 5 | 弹幕池 | `0`=普通, `1`=字幕 |
+| 6 | 用户Hash | `abc123def` |
+| 7 | 弹幕ID | `1234567890` |
+
+**JSON 格式**（用于自定义弹幕和 API 返回）：
+
+```typescript
+interface DanmakuItem {
+  time: number        // 出现时间 (秒)
+  mode: number        // 弹幕模式: 1=滚动, 4=底部, 5=顶部
+  size: number        // 字号 (默认 25)
+  color: number       // 颜色 (十进制, 默认白色 16777215)
+  text: string        // 弹幕内容
+  sender?: string     // 发送者 (可选)
+  timestamp?: number  // 发送时间戳 (可选)
+}
+```
+
+### 11.2 弹幕来源与加载策略
+
+弹幕来源通过 DataSource 思路统一管理：
+
+```typescript
+interface DanmakuSource {
+  id: string
+  type: 'local-xml' | 'local-json' | 'api'
+  name: string
+
+  // 加载弹幕 (按时间范围分段或全量)
+  load(mediaId: string, options?: DanmakuLoadOptions): Promise<DanmakuItem[]>
+
+  // 测试连通性 (API 类型)
+  test?(): Promise<boolean>
+}
+
+interface DanmakuLoadOptions {
+  startTime?: number   // 从第几秒开始加载
+  endTime?: number     // 到第几秒结束
+}
+```
+
+**支持的来源类型**：
+
+| 来源 | 说明 | 典型用法 |
+|------|------|----------|
+| `local-xml` | 本地 XML 弹幕文件 | 从 B 站下载的弹幕 XML |
+| `local-json` | 本地 JSON 弹幕文件 | 第三方工具导出的弹幕 |
+| `api` | 远程弹幕 API | 弹弹Play / 自建弹幕服务器 |
+
+**弹幕文件自动匹配**：
+
+Player 在浏览本地文件或 Emby/Jellyfin 媒体时，自动在同目录下查找匹配的弹幕文件：
+
+```
+/media/movies/
+  Inception (2010).mkv
+  Inception (2010).xml        ← 自动加载
+  Inception (2010).danmaku.json  ← 自动加载
+```
+
+匹配规则：去掉视频扩展名，在同目录下查找 `.xml` / `.json` / `.danmaku.json` 后缀的同名文件。
+
+### 11.3 弹弹Play API 兼容
+
+[弹弹Play](https://www.dandanplay.com/) 是国内主流的弹幕共享平台，提供丰富的弹幕 API。OhMyCine 兼容其 API 格式，支持用户自建弹幕服务器。
+
+**弹弹Play API 模式**：
+
+```typescript
+// src/services/danmaku/dandanplay.ts
+
+export class DandanplaySource implements DanmakuSource {
+  readonly type = 'api' as const
+  private baseURL: string
+  private episodeId?: number
+
+  async load(mediaId: string): Promise<DanmakuItem[]> {
+    // 弹弹Play 匹配 API
+    // POST /api/v2/match
+    // 请求体: { fileName, fileHash, fileSize, videoDuration }
+    // 返回: 匹配到的弹幕列表
+
+    const res = await fetch(`${this.baseURL}/api/v2/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName: this.extractFileName(mediaId),
+        fileHash: '',
+        fileSize: 0,
+        videoDuration: 0,
+      }),
+    })
+
+    const data = await res.json()
+    return this.parseDanDanPlay(data.matches)
+  }
+}
+```
+
+**弹弹Play 弹幕格式转换**：
+
+```typescript
+private parseDanDanPlay(matches: any[]): DanmakuItem[] {
+  return matches.flatMap(match =>
+    match.danmakus.map((d: any) => ({
+      time: d.time,
+      mode: d.mode === 4 ? 4 : d.mode === 5 ? 5 : 1,
+      size: d.fontSize || 25,
+      color: d.color || 16777215,
+      text: d.text,
+      sender: d.userId,
+    }))
+  )
+}
+```
+
+### 11.4 弹幕渲染引擎
+
+弹幕渲染在 Vue 前端使用 Canvas 实现，与 libmpv 视频画面分层叠加：
+
+```
+┌─────────────────────────────────────┐
+│ 播放器窗口                           │
+│ ┌─────────────────────────────────┐ │
+│ │ libmpv 视频渲染层 (底层)         │ │
+│ ├─────────────────────────────────┤ │
+│ │ Canvas 弹幕层 (透明叠加)         │ │
+│ │ ┌───┐    ┌────────┐            │ │
+│ │ │弹1│───→│  弹幕2  │───→ 弹幕3  │ │
+│ │ └───┘    └────────┘            │ │
+│ │                    ┌────┐      │ │
+│ │                    │弹4 │───→  │ │
+│ │                    └────┘      │ │
+│ ├─────────────────────────────────┤ │
+│ │ Vue UI 控制层 (字幕/进度/OSD)   │ │
+│ └─────────────────────────────────┘ │
+└─────────────────────────────────────┘
+```
+
+**渲染层架构**：
+
+```typescript
+// src/services/danmaku/renderer.ts
+
+export class DanmakuRenderer {
+  private canvas: HTMLCanvasElement
+  private ctx: CanvasRenderingContext2D
+  private trackManager: TrackManager
+  private animationId: number | null = null
+
+  constructor(container: HTMLElement) {
+    this.canvas = document.createElement('canvas')
+    this.canvas.style.cssText = `
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    `
+    container.appendChild(this.canvas)
+    this.ctx = this.canvas.getContext('2d')!
+    this.trackManager = new TrackManager()
+  }
+
+  // 发射一条弹幕到渲染轨道
+  emit(item: DanmakuItem) {
+    const track = this.trackManager.allocate(item)
+    if (!track) return // 轨道已满，丢弃
+
+    const el: RunningDanmaku = {
+      ...item,
+      track: track.index,
+      x: this.canvas.width,
+      y: track.y,
+      width: this.measureText(item.text, item.size),
+      speed: this.calcSpeed(item),
+      opacity: 1,
+    }
+
+    this.trackManager.addRunning(el)
+  }
+
+  // 动画循环
+  start() {
+    const loop = () => {
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+      this.trackManager.update(this.ctx)
+      this.animationId = requestAnimationFrame(loop)
+    }
+    loop()
+  }
+
+  stop() {
+    if (this.animationId) {
+      cancelAnimationFrame(this.animationId)
+      this.animationId = null
+    }
+  }
+
+  resize(width: number, height: number) {
+    this.canvas.width = width
+    this.canvas.height = height
+  }
+}
+```
+
+**轨道管理**：
+
+弹幕按轨道分配，避免重叠：
+
+```typescript
+class TrackManager {
+  private tracks: Track[]
+
+  allocate(item: DanmakuItem): Track | null {
+    // 找到有足够空间的轨道
+    // 滚动弹幕: 从右往左滚，需要检查轨道内是否还有未滚完的弹幕
+    // 顶部/底部弹幕: 直接找空轨道
+    for (const track of this.tracks) {
+      if (track.canFit(item)) return track
+    }
+    return null // 所有轨道已满
+  }
+}
+```
+
+### 11.5 弹幕设置
+
+弹幕设置集成在 Player 设置页面中：
+
+```typescript
+interface DanmakuSettings {
+  enabled: boolean              // 是否开启弹幕
+  opacity: number               // 弹幕透明度 (0-1, 默认 0.8)
+  fontSize: number              // 字号缩放 (0.5-2.0, 默认 1.0)
+  speed: number                 // 滚动速度 (0.5-2.0, 默认 1.0)
+  maxLines: number              // 最大轨道数 (默认根据屏幕高度自动计算)
+  showTop: boolean              // 显示顶部固定弹幕
+  showBottom: boolean           // 显示底部固定弹幕
+  showScroll: boolean           // 显示滚动弹幕
+  blockKeywords: string[]       // 屏蔽关键词
+  blockUsers: string[]          // 屏蔽用户
+  sources: DanmakuSource[]      // 弹幕来源列表
+}
+```
+
+### 11.6 弹幕快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| `D` | 开启/关闭弹幕 |
+| `Shift+D` | 弹幕设置面板 |
+| `Shift+↑` | 增大弹幕透明度 |
+| `Shift+↓` | 减小弹幕透明度 |
+
+### 11.7 Tauri 弹幕 Commands
+
+```rust
+// src-tauri/src/commands/danmaku.rs
+
+#[command]
+pub async fn danmaku_load_xml(path: String) -> Result<Vec<DanmakuItem>, String> {
+    let content = tokio::fs::read_to_string(&path).await
+        .map_err(|e| format!("Failed to read danmaku file: {}", e))?;
+    parse_bilibili_xml(&content)
+}
+
+#[command]
+pub async fn danmaku_load_json(path: String) -> Result<Vec<DanmakuItem>, String> {
+    let content = tokio::fs::read_to_string(&path).await
+        .map_err(|e| format!("Failed to read danmaku file: {}", e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse danmaku JSON: {}", e))
+}
+
+#[command]
+pub async fn danmapi_fetch(url: String, params: serde_json::Value) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let resp = client.post(&url)
+        .json(&params)
+        .timeout(std::time::Duration::from_secs(10))
+        .send().await
+        .map_err(|e| format!("Danmaku API request failed: {}", e))?;
+    resp.text().await
+        .map_err(|e| format!("Failed to read danmaku response: {}", e))
+}
+```
+
+### 11.8 与 04-hub-design.md 插件类型的关系
+
+弹幕来源扩展可通过 Hub 插件系统实现。`04-hub-design.md` 中已定义 `player` 类型插件：
+
+```
+player — 播放器扩展 — 弹幕、歌词、特效
+```
+
+第三方弹幕源可以作为 `player` 类型插件分发，通过 `DanmakuSource` 接口集成。
+
+## 12. 平台适配
 
 | 功能 | Windows | macOS | Linux | Android |
 |------|---------|-------|-------|---------|
