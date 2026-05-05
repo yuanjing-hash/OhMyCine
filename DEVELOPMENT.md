@@ -76,14 +76,21 @@ main                    # 生产分支，始终可发布
 | `api` | API 接口变更 |
 | `db` | 数据库变更 |
 
+**语言规范**：
+
+- `type` 和 `scope` 保留英文，以兼容 Conventional Commits 和自动化工具
+- 冒号后的简短描述使用中文
+- Commit body 使用中文说明变更原因和影响
+- Footer 中的标准字段可保留英文，如 `Closes #123`、`Co-Authored-By: ...`
+
 **示例**：
 
 ```
-feat(server): add follow/subscribe engine for TV series
+feat(server): 添加剧集追更引擎
 
-- Implement FollowService with cron-based scheduling
-- Add missing episode detection via TMDB API
-- Support quality filters (resolution/codec/group)
+- 实现基于 cron 的 FollowService 调度
+- 通过 TMDB 对比缺失集数
+- 支持分辨率、编码和制作组偏好过滤
 
 Closes #123
 ```

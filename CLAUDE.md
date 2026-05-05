@@ -311,3 +311,13 @@ Project docs specify Conventional Commits:
 Common scopes: `player`, `server`, `hub`, `cli`, `docs`, `api`, `db`.
 
 Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`.
+
+Commit message language rule: keep the Conventional Commits `type` and optional `scope` in English, but write the short description and body in Chinese. Standard footer/trailer fields such as `Closes #123` and `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>` may remain in English.
+
+Example:
+
+```text
+docs: 更新 Claude 项目指导文档
+
+补充 WSL 本地开发环境、项目级 skills 和提交信息语言规范，确保后续 Claude Code 会话保持一致。
+```
