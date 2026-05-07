@@ -72,7 +72,8 @@ For Emby/Jellyfin/OpenList/Alist/CloudDrive2 source work, also review:
 - Missing poster/backdrop fallbacks.
 - Generic DataSource playback flow: UI obtains stream URLs through `DataSource.getStreamURL()`, not provider-specific route code.
 - Token/API-key redaction in errors, logs, player labels, and exported config.
-- Persistence boundary: new credentials are not written to localStorage or regular config.
+- Persistence boundary: new credentials are not written to localStorage or regular config; desktop credentials survive restart through the SQLite credential boundary, and browser-only fallback is visibly limited.
+- Credential schema hardening: `DataSourceConfig` must not expose top-level `apiKey`, `username`, or `password`, and persistence/export must drop sensitive `extra` keys.
 
 Do not treat Docker as a local development prerequisite.
 

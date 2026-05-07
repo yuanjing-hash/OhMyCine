@@ -94,6 +94,7 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 - `listLibraries()` returns `MediaLibrary[]` for source-level library cards and should be fetched after successful add/login so the source is known usable before it appears as connected.
 - `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.
 - `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized.
+- Emby hierarchy browsing must preserve views/libraries at the root, direct children for libraries/folders, series → seasons, and season → episodes; only search/home/recent aggregation should use recursive queries by default.
 - `exportConfig()` returns non-sensitive fields and credential references only.
 
 #### 4. Validation & Error Matrix

@@ -81,10 +81,6 @@ export interface DataSourceConfig {
   order: number
   url: string
   enabled?: boolean
-  /** @deprecated Use extra.credentialRef and secure/session storage for new sources. */
-  apiKey?: string
-  username?: string
-  password?: string
   extra?: Record<string, unknown>
 }
 

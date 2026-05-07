@@ -15,16 +15,25 @@ const sourceConfig = computed(() =>
   store.configs.find(c => c.id === sourceId.value),
 )
 const isSourceDisabled = computed(() => sourceConfig.value?.enabled === false)
+interface BreadcrumbNode {
+  readonly id: string
+  readonly name: string
+  readonly type: MediaItem['type'] | MediaLibrary['type']
+  readonly isSearch?: boolean
+}
+
 const source = ref<DataSource | null>(null)
 const libraries = ref<MediaLibrary[]>([])
 const items = ref<MediaItem[]>([])
 const selectedLibrary = ref<MediaLibrary | null>(null)
+const navigationStack = ref<BreadcrumbNode[]>([])
 const searchKeyword = ref('')
 const isLoading = ref(false)
 const errorMessage = ref<string | null>(null)
 
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
-const pageTitle = computed(() => selectedLibrary.value?.name ?? (sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? 'Data Source'))
+const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
+const pageTitle = computed(() => currentNode.value?.name ?? selectedLibrary.value?.name ?? (sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? 'Data Source'))
 
 onMounted(async () => {
   store.loadConfigs()
@@ -34,6 +43,7 @@ onMounted(async () => {
 
 watch(sourceId, async () => {
   selectedLibrary.value = null
+  navigationStack.value = []
   items.value = []
   await ensureSource()
   await loadLibraries()
@@ -75,6 +85,7 @@ async function loadLibrary(library: MediaLibrary) {
     return
 
   selectedLibrary.value = library
+  navigationStack.value = [{ id: library.id, name: library.name, type: library.type }]
   searchKeyword.value = ''
   isLoading.value = true
   errorMessage.value = null
@@ -111,6 +122,7 @@ async function runSearch() {
       name: `搜索：${keyword}`,
       type: 'mixed',
     }
+    navigationStack.value = [{ id: 'search', name: `搜索：${keyword}`, type: 'mixed', isSearch: true }]
   }
   catch (error) {
     items.value = []
@@ -123,19 +135,36 @@ async function runSearch() {
 
 function backToLibraries() {
   selectedLibrary.value = null
+  navigationStack.value = []
   items.value = []
   searchKeyword.value = ''
+}
+
+async function navigateToCrumb(index: number) {
+  const crumb = navigationStack.value[index]
+  if (!crumb || crumb.isSearch)
+    return
+
+  searchKeyword.value = ''
+  navigationStack.value = navigationStack.value.slice(0, index + 1)
+  await loadNestedItems(crumb.id)
 }
 
 async function handleSelect(item: MediaItem | MediaLibrary) {
   if ('path' in item) {
     if (item.type === 'folder' || item.type === 'series') {
-      selectedLibrary.value = {
-        id: item.id,
-        sourceId: item.sourceId,
-        name: item.name,
-        type: item.type === 'series' ? 'series' : 'folders',
+      if (!selectedLibrary.value) {
+        selectedLibrary.value = {
+          id: item.id,
+          sourceId: item.sourceId,
+          name: item.name,
+          type: item.type === 'series' ? 'series' : 'folders',
+        }
       }
+      navigationStack.value = [
+        ...navigationStack.value,
+        { id: item.id, name: item.name, type: item.type },
+      ]
       await loadNestedItems(item.id)
     }
     return
@@ -233,16 +262,25 @@ async function handlePlay(item: MediaItem) {
           </form>
         </div>
 
-        <div v-if="selectedLibrary" class="flex items-center gap-3">
+        <div v-if="selectedLibrary" class="flex flex-wrap items-center gap-3">
           <button
             class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14"
             @click="backToLibraries"
           >
             返回媒体库
           </button>
-          <p class="text-sm text-white/36">
-            {{ selectedLibrary.name }}
-          </p>
+          <nav class="flex flex-wrap items-center gap-2 text-sm text-white/36" aria-label="Emby 浏览路径">
+            <template v-for="(crumb, index) in navigationStack" :key="`${crumb.id}-${index}`">
+              <span v-if="index > 0" class="text-white/20">/</span>
+              <button
+                class="rounded-full px-2 py-1 transition-colors hover:bg-white/8 hover:text-white/70"
+                :class="index === navigationStack.length - 1 ? 'text-white/70' : ''"
+                @click="navigateToCrumb(index)"
+              >
+                {{ crumb.name }}
+              </button>
+            </template>
+          </nav>
         </div>
 
         <div

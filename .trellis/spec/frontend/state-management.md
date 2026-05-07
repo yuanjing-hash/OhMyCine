@@ -52,22 +52,27 @@ Use Vue Router for route identity: current view, selected source ID, selected me
 
 ### Credential Reference Contract
 
-Until OS secure storage is wired for every desktop target, a bounded MVP may use session-only credential storage for provider tokens, but it must still avoid plaintext persistent config.
+Until OS secure storage is wired for every desktop target, a bounded MVP may use a Tauri command-backed persistent credential boundary for provider tokens, but it must still avoid plaintext DataSource config/localStorage and must not claim OS keychain/libsecret/DPAPI encryption.
 
 #### 1. Scope / Trigger
 - Trigger: adding or changing DataSource credentials for Emby/Jellyfin/OpenList/Alist/CloudDrive2/Server/AI providers.
 - Applies to Settings forms, Pinia persistence, DataSource `init`, source export/import, sync, logs, and playback URL routing.
 
 #### 2. Signatures
-- Persisted config: `DataSourceConfig` stores non-sensitive fields plus `extra.credentialRef` or equivalent.
-- Credential helper: stores/retrieves/removes secret values by `credentialRef`.
+- Persisted config: `DataSourceConfig` stores non-sensitive fields plus `extra.credentialRef` or equivalent; it must not define raw `apiKey`, `username`, or `password` fields.
+- Credential helper: stores/retrieves/removes structured secret values by `credentialRef`, such as Emby `accessToken`, `username`, and `password`.
+- Tauri credential commands: `credential_set`, `credential_get`, and `credential_delete` persist/retrieve/delete secret values by credential reference.
 - Add-source flow: generated source id, credential ref, and stored config id must match before the source is persisted.
 
 #### 3. Contracts
 - New API keys/tokens/passwords must not be written to `localStorage`, regular config JSON, or Pinia persistence snapshots.
-- Session-only credential storage is acceptable only as a temporary MVP limitation and must be called out in UI/docs if it means credentials are lost after restart.
-- If config save fails after writing a session credential, remove the orphan credential.
-- If a stored source is missing its session credential after restart, show a reconnect/re-enter-token state instead of treating the source as deleted or connected.
+- Desktop Player credentials should survive app restart through the Tauri credential boundary when available.
+- The current SQLite credential boundary stores encrypted secret payloads in app data (`credentials.sqlite`) keyed by hashed credential references; the local master key is also app-data scoped, so document it as encrypted-at-rest with local-key limitations, not OS keychain/DPAPI/libsecret storage.
+- Browser/Vite-only fallback may keep credentials in memory only and must show/carry a limitation state when persistence is unavailable.
+- If config save or post-login validation fails after writing a credential, remove the newly written credential or restore the full previous structured credential for existing sources.
+- If a stored source is missing its credential after restart, show a reconnect/re-enter-token state instead of treating the source as deleted or connected.
+- Removing a source must delete the persistent SQLite credential row and any in-memory fallback for that `credentialRef`.
+- Persistence sanitization must reconstruct safe config fields and drop sensitive `extra` keys before writing config to localStorage.
 - Export/sync includes source structure by default, not the secret value.
 
 #### 4. Validation & Error Matrix
@@ -77,8 +82,13 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 | User adds source with a manually pasted token | Reject for normal Emby UX unless explicitly implementing an advanced/import flow |
 | Store generates a different id than the credential ref expects | Treat as a bug; source id and credential ref must be derived from the same id |
 | Config save fails after credential write | Remove newly written credential |
-| App restarts and session credential is gone | Show auth-required/reconnect state |
+| Post-login library validation fails after overwriting existing credential | Restore previous credential or remove new credential for a new source |
+| App restarts in Tauri desktop | Credential should load from persistent credential boundary |
+| App runs in browser/Vite without Tauri commands | Use memory fallback only and show a persistence limitation warning |
 | Source is disabled | Do not initialize it or allow browsing/playback until re-enabled |
+| Source is removed | Delete persistent SQLite credential row and memory fallback |
+| Legacy plaintext credential file fallback exists | Remove it; credential reads/writes/deletes must use SQLite boundary only |
+| Config includes sensitive top-level or `extra` keys | Drop them before persistence/export |
 | Export config is requested | Redact or omit credential values |
 
 #### 5. Good/Base/Bad Cases

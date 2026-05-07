@@ -4,6 +4,7 @@
 mod commands;
 mod mpv;
 
+use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::player::{
     mpv_get_property, mpv_load, mpv_pause, mpv_resume, mpv_seek, mpv_set_property,
 };
@@ -18,6 +19,9 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(mpv_state)
         .invoke_handler(tauri::generate_handler![
+            credential_set,
+            credential_get,
+            credential_delete,
             mpv_load,
             mpv_pause,
             mpv_resume,

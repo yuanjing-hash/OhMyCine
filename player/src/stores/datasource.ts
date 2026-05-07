@@ -1,7 +1,7 @@
 import type { DataSource, DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { removeSessionCredential } from '@/services/datasource/credentialStore'
+import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
 
 const STORAGE_KEY = 'ohmycine-datasources'
@@ -34,7 +34,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function saveConfigs() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(configs.value.map(redactPersistedConfig)))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(configs.value.map(sanitizePersistedConfig)))
   }
 
   async function replaceConfig(config: DataSourceConfig) {
@@ -86,7 +86,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     const config = configs.value.find(c => c.id === id)
     const credentialRef = typeof config?.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
     if (credentialRef)
-      removeSessionCredential(credentialRef)
+      await removeCredential(credentialRef)
     dataSourceManager.removeSource(id)
     configs.value = configs.value.filter(c => c.id !== id)
     configs.value.forEach((c, i) => c.order = i)
@@ -173,15 +173,29 @@ function sanitizeConfigs(value: unknown): DataSourceConfig[] {
         && typeof record.order === 'number'
         && typeof record.url === 'string'
     })
-    .map(redactPersistedConfig)
+    .map(sanitizePersistedConfig)
 }
 
-function redactPersistedConfig(config: DataSourceConfig): DataSourceConfig {
-  const { apiKey: _apiKey, username: _username, password: _password, ...safe } = config
-  void _apiKey
-  void _username
-  void _password
-  return safe
+function sanitizePersistedConfig(config: DataSourceConfig): DataSourceConfig {
+  const safeExtra = Object.fromEntries(
+    Object.entries(config.extra ?? {}).filter(([key]) => !isSensitiveConfigKey(key)),
+  )
+
+  return {
+    id: config.id,
+    type: config.type,
+    name: config.name,
+    displayName: config.displayName,
+    iconUrl: config.iconUrl,
+    order: config.order,
+    url: config.url,
+    enabled: config.enabled,
+    extra: safeExtra,
+  }
+}
+
+function isSensitiveConfigKey(key: string): boolean {
+  return ['apiKey', 'token', 'accessToken', 'password', 'username'].includes(key)
 }
 
 function generatePlaceholderHeroItems(): MediaItem[] {

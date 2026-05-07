@@ -57,8 +57,11 @@ When mapping Emby or Emby-compatible responses into Player types:
 - Internal outputs: map only to `MediaLibrary`, `MediaItem`, `HomeSection`, `MediaDetail`, `SubtitleTrack`, and `AudioTrack`.
 
 #### 3. Contracts
-- Library endpoint maps Emby views/collection folders to `MediaLibrary[]`.
-- Item endpoints map `Movie`, `Series`, `Episode`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped.
+- Source root maps Emby views/collection folders to `MediaLibrary[]`; do not flatten all media at the root.
+- Primary library/folder browsing uses direct children (`Recursive=false`) by default so Emby categories and folders remain navigable.
+- Series/anime navigation maps series to seasons, and seasons to episodes/direct children.
+- Search, home, recently added, and continue-watching sections may use recursive queries where the UI explicitly asks for cross-library aggregation.
+- Item endpoints map `Movie`, `Series`, `Episode`, `Season`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped.
 - Poster/backdrop/logo URLs may be tokenized and must be treated as sensitive strings.
 - Runtime ticks, ratings, dates, media streams, people, and provider IDs are optional and must not require non-null assertions.
 - Stream URL generation must return a string for the playback layer, but UI labels/errors must display a redacted representation.
@@ -70,6 +73,9 @@ When mapping Emby or Emby-compatible responses into Player types:
 | Item lacks `Id` or `Name` | Skip the item or use a clear fallback; do not crash rendering |
 | Item lacks image tags | Render missing-poster fallback in media components |
 | `RunTimeTicks`/ratings/year are missing or malformed | Omit the derived field rather than forcing `0` as real data |
+| User opens a library such as 动漫 | Show direct category/folder/series children first; do not recursive-flatten by default |
+| User opens a series | Load seasons before episodes when Emby exposes seasons |
+| Breadcrumb represents search results | Mark it non-navigable or route it through search logic; do not call `list('search')` accidentally |
 | Stream URL contains `api_key`, token, or signed params | Pass to playback only; redact in display/errors/logs |
 
 #### 5. Good/Base/Bad Cases

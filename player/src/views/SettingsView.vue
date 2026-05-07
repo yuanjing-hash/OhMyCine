@@ -2,6 +2,7 @@
 import type { DataSourceConfig, DataSourceType, MediaLibrary } from '@/services/datasource/types'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { hasPersistentCredentialStorageWarning } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -30,6 +31,7 @@ const mode = ref<'manage' | 'add' | 'edit'>('manage')
 const isSaving = ref(false)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
+const persistentCredentialWarning = computed(() => hasPersistentCredentialStorageWarning())
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
@@ -131,12 +133,17 @@ async function saveEditedSource(id: string) {
   if (!existing)
     throw new Error('数据源不存在。')
 
-  if (form.password.trim()) {
+  const username = form.username.trim()
+  const shouldRelogin = Boolean(username || form.password)
+  if (shouldRelogin && (!username || !form.password))
+    throw new Error('重新登录时必须同时填写 Emby 账号和密码。')
+
+  if (shouldRelogin) {
     const result = await loginEmbyAndCreateConfig({
       id,
       url: form.url,
       displayName: form.displayName,
-      username: form.username,
+      username,
       password: form.password,
       order: existing.order,
     })
@@ -180,9 +187,16 @@ async function saveEditedSource(id: string) {
           设置
         </h1>
         <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-          Player 可直接连接 Emby 浏览和播放媒体，不依赖 OhMyCine Server。当前 MVP 通过 Emby 账号密码登录，密码只用于本次认证；访问令牌仅保存到会话凭证边界，不写入 localStorage。
+          Player 可直接连接 Emby 浏览和播放媒体，不依赖 OhMyCine Server。当前 MVP 通过 Emby 账号密码登录，账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。
         </p>
       </header>
+
+      <div
+        v-if="persistentCredentialWarning"
+        class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
+      >
+        当前运行环境不可用 Tauri SQLite 凭证命令，Emby 账号、密码和 token 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
+      </div>
 
       <section v-if="mode === 'manage'" class="glass-panel rounded-[1.75rem] p-6">
         <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -272,7 +286,7 @@ async function saveEditedSource(id: string) {
               {{ isEditing ? '编辑数据源' : '添加数据源' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              先选择数据源类型，再填写对应登录信息。当前仅开放 Emby；点击添加时会先登录测试，成功后自动保存 token 与用户信息并拉取媒体库。
+              先选择数据源类型，再填写对应登录信息。当前仅开放 Emby；点击添加时会先登录测试，成功后在 SQLite 凭证边界保存账号、密码、token 与用户信息并拉取媒体库。
             </p>
           </div>
           <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
@@ -330,7 +344,7 @@ async function saveEditedSource(id: string) {
               <input
                 v-model="form.password"
                 class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                :placeholder="isEditing ? '留空则不重新登录' : '只用于本次 Emby 登录测试'"
+                :placeholder="isEditing ? '留空则不重新登录' : '将保存到 SQLite 凭证边界'"
                 type="password"
                 autocomplete="current-password"
               >

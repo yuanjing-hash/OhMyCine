@@ -1,4 +1,4 @@
-const SENSITIVE_QUERY_KEYS = ['api_key', 'apikey', 'access_token', 'token', 'x-emby-token', 'password', 'pw']
+const SENSITIVE_QUERY_KEYS = ['api_key', 'apikey', 'access_token', 'accessToken', 'token', 'x-emby-token', 'password', 'passwd', 'pwd', 'pw']
 
 export function redactSensitiveText(value: unknown): string {
   const input = value instanceof Error ? value.message : String(value ?? 'Unknown error')
@@ -6,7 +6,7 @@ export function redactSensitiveText(value: unknown): string {
 
   for (const key of SENSITIVE_QUERY_KEYS) {
     redacted = redacted.replace(new RegExp(`([?&]${key}=)[^\\s&]+`, 'gi'), '$1[redacted]')
-    redacted = redacted.replace(new RegExp(`(${key}[=:]\\s*)[^\\s,;&]+`, 'gi'), '$1[redacted]')
+    redacted = redacted.replace(new RegExp(`(${key}[=:/]\\s*)[^\\s,;&]+`, 'gi'), '$1[redacted]')
     redacted = redacted.replace(new RegExp(`(["']${key}["']\\s*:\\s*["'])[^"']+(["'])`, 'gi'), '$1[redacted]$2')
   }
 

@@ -9,7 +9,7 @@ import type {
   SubtitleTrack,
 } from './types'
 import { ofetch } from 'ofetch'
-import { createCredentialRef, readSessionCredential, saveSessionCredential } from './credentialStore'
+import { createCredentialRef, readCredential, readEmbyCredential, readRawCredentialBackup, removeCredential, saveEmbyCredential, saveRawCredentialBackup } from './credentialStore'
 import { redactSensitiveText } from './errors'
 
 const ITEM_FIELDS = [
@@ -141,7 +141,7 @@ export class EmbyDataSource implements DataSource {
     const extra = readEmbyExtra(config)
     this.userId = extra.userId ?? ''
     this.deviceId = extra.deviceId ?? createDeviceId(config.id)
-    this.token = resolveToken(config, extra)
+    this.token = await resolveToken(config, extra)
     this.connected = Boolean(this.baseUrl && this.token && this.userId)
   }
 
@@ -203,17 +203,24 @@ export class EmbyDataSource implements DataSource {
       }))
     }
 
+    const item = await this.getItemIfAvailable(path)
+    if (item?.Type === 'Series')
+      return this.listSeasons(path)
+
+    if (item?.Type === 'Season')
+      return this.listEpisodes(path)
+
     const response = await this.request('/Users/{UserId}/Items', {
       ParentId: path,
-      Recursive: 'true',
-      IncludeItemTypes: 'Movie,Series,Episode,Folder',
+      Recursive: 'false',
+      IncludeItemTypes: 'Movie,Series,Season,Episode,Folder,CollectionFolder,BoxSet',
       Fields: ITEM_FIELDS,
       SortBy: 'SortName',
       SortOrder: 'Ascending',
-      Limit: '100',
+      Limit: '200',
     })
 
-    return parseItemsResponse(response).map(item => this.mapItem(item, path))
+    return parseItemsResponse(response).map(child => this.mapItem(child, path))
   }
 
   async listLibraries(): Promise<MediaLibrary[]> {
@@ -304,10 +311,7 @@ export class EmbyDataSource implements DataSource {
   }
 
   async getDetail(id: string): Promise<MediaDetail> {
-    const response = await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}`, {
-      Fields: ITEM_FIELDS,
-    })
-    const item = parseItemRecord(response)
+    const item = await this.getItem(id)
     const base = this.mapItem(item)
     const streams = item.MediaStreams ?? []
     const video = streams.find(stream => stream.Type === 'Video')
@@ -340,6 +344,43 @@ export class EmbyDataSource implements DataSource {
   exportConfig(): DataSourceConfig {
     this.ensureConfigured()
     return sanitizeExportConfig(this.config)
+  }
+
+  private async getItem(id: string): Promise<EmbyItemRecord> {
+    const response = await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}`, {
+      Fields: ITEM_FIELDS,
+    })
+    return parseItemRecord(response)
+  }
+
+  private async getItemIfAvailable(id: string): Promise<EmbyItemRecord | null> {
+    try {
+      return await this.getItem(id)
+    }
+    catch {
+      return null
+    }
+  }
+
+  private async listSeasons(seriesId: string): Promise<MediaItem[]> {
+    const response = await this.request(`/Shows/${encodeURIComponent(seriesId)}/Seasons`, {
+      UserId: this.userId,
+      Fields: ITEM_FIELDS,
+    })
+    return parseItemsResponse(response).map(item => this.mapItem(item, seriesId))
+  }
+
+  private async listEpisodes(parentId: string): Promise<MediaItem[]> {
+    const response = await this.request('/Users/{UserId}/Items', {
+      ParentId: parentId,
+      Recursive: 'false',
+      IncludeItemTypes: 'Episode,Folder',
+      Fields: ITEM_FIELDS,
+      SortBy: 'SortName',
+      SortOrder: 'Ascending',
+      Limit: '200',
+    })
+    return parseItemsResponse(response).map(item => this.mapItem(item, parentId))
   }
 
   private async request(path: string, query: Record<string, string> = {}): Promise<unknown> {
@@ -436,8 +477,18 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
 
   const source = new EmbyDataSource()
   await source.init(config)
+  const previousCredential = await readRawCredentialBackup(credentialRef)
   const auth = await source.authenticate(input.username, input.password)
-  saveSessionCredential(credentialRef, auth.accessToken)
+  try {
+    await saveEmbyCredential(credentialRef, {
+      accessToken: auth.accessToken,
+      username: input.username.trim(),
+      password: input.password,
+    })
+  }
+  catch (error) {
+    throw new Error(redactSensitiveText(error))
+  }
 
   const safeConfig: DataSourceConfig = {
     ...config,
@@ -451,9 +502,21 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
     },
   }
 
-  await source.init(safeConfig)
-  const libraries = await source.listLibraries()
-  source.destroy()
+  let libraries: MediaLibrary[] = []
+  try {
+    await source.init(safeConfig)
+    libraries = await source.listLibraries()
+  }
+  catch (error) {
+    if (previousCredential)
+      await saveRawCredentialBackup(credentialRef, previousCredential)
+    else
+      await removeCredential(credentialRef)
+    throw new Error(redactSensitiveText(error))
+  }
+  finally {
+    source.destroy()
+  }
 
   return {
     config: {
@@ -485,14 +548,18 @@ function readEmbyExtra(config: DataSourceConfig): EmbyConfigExtra {
   }
 }
 
-function resolveToken(config: DataSourceConfig, extra: EmbyConfigExtra): string {
+async function resolveToken(config: DataSourceConfig, extra: EmbyConfigExtra): Promise<string> {
   if (extra.credentialRef) {
-    const token = readSessionCredential(extra.credentialRef)
+    const credential = await readEmbyCredential(extra.credentialRef)
+    if (credential?.accessToken)
+      return credential.accessToken
+    const token = await readCredential(extra.credentialRef)
     if (token)
       return token
   }
 
-  return typeof config.apiKey === 'string' ? config.apiKey : ''
+  void config
+  return ''
 }
 
 function createDeviceId(sourceId: string): string {
@@ -567,8 +634,10 @@ function mapMediaType(type: string | undefined): MediaItem['type'] {
       return 'series'
     case 'Episode':
       return 'episode'
+    case 'Season':
     case 'Folder':
     case 'CollectionFolder':
+    case 'BoxSet':
       return 'folder'
     default:
       return 'file'
@@ -634,9 +703,16 @@ function sanitizeExportConfig(config: DataSourceConfig | null): DataSourceConfig
   if (!config)
     throw new Error('Emby source is not configured.')
 
-  const { apiKey: _apiKey, username: _username, password: _password, ...safe } = config
-  void _apiKey
-  void _username
-  void _password
-  return safe
+  const safeExtra = Object.fromEntries(
+    Object.entries(config.extra ?? {}).filter(([key]) => !isSensitiveConfigKey(key)),
+  )
+
+  return {
+    ...config,
+    extra: safeExtra,
+  }
+}
+
+function isSensitiveConfigKey(key: string): boolean {
+  return ['apiKey', 'token', 'accessToken', 'password', 'username'].includes(key)
 }

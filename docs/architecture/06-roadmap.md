@@ -216,6 +216,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 使用 Tauri `app_data_dir` 存储配置
 - [~] 实现 `config.json` 读写 (datasources, server, ai, ui)
 - [~] 配置变更自动保存
+- [~] Emby 账号、密码与访问令牌持久化到 Tauri app data 下的 SQLite 凭证库，并通过 `credentialRef` 引用；字段使用本地生成 master key + AES-GCM 加密，master key 仍保存在本机 app data 文件中，暂未接入 OS Keychain/libsecret/DPAPI
 
 #### 设置页面 UI
 
@@ -223,7 +224,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 数据源列表管理 (添加/编辑/删除)
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
 - [~] 数据源显示配置 (名称/图标/是否在侧栏显示；当前支持显示名称，图标/侧栏开关待后续)
-- [~] 添加数据源表单 (管理入口→类型选择→Emby URL/账号/密码登录；密码不持久化，登录后 token 仅会话保存，未写入 localStorage)
+- [~] 添加数据源表单 (管理入口→类型选择→Emby URL/账号/密码登录；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
 - [x] 连接测试按钮 (显示成功/失败)
 - [~] 数据源状态显示 (在线/离线；当前在测试/浏览错误态中呈现，持久状态徽标待后续)
 
@@ -232,9 +233,9 @@ Phase 4: 生态系统           ████████████████
 - [~] 能添加 Emby/Jellyfin 服务器（Emby 已实现；Jellyfin 待后续）
 - [x] 能按绑定顺序在动态侧栏展示数据源
 - [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
-- [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现）
+- [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现，并改为按媒体库/文件夹/剧集/季/集层级非递归浏览；搜索/首页区块仍可使用递归查询）
 - [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；窗口内视频渲染仍未完成）
-- [~] 配置自动持久化（非敏感配置持久化；Emby 密码不保存，登录 token 仅会话保存，等待 OS secure storage 接入）
+- [~] 配置自动持久化（非敏感配置持久化；Emby 账号、密码、token 进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 
