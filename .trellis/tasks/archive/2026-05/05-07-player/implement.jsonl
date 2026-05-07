@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend pre-development checklist: Player independent-first, Vue/Pinia/composable conventions, roadmap update requirement."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Button/layout styling and Cinema OS visual consistency for floating controls and back navigation."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Composable/Tauri command/event patterns for wiring file selection and playback behavior."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Player/Tauri module boundaries and libmpv/Tauri integration constraints."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required validation commands and Player runtime verification expectations."}

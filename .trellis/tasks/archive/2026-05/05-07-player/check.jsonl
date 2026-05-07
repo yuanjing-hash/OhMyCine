@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Verify Player independent-first scope and roadmap update requirement."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check UI consistency, button styling, accessibility, and non-home back navigation behavior."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Check composable/Tauri integration patterns and cancellation/error handling."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Check Tauri/libmpv boundaries and no media-library/cloud scope creep."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify required typecheck/lint/build/cargo check and runtime verification reporting."}
