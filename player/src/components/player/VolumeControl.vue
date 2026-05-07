@@ -7,6 +7,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   setVolume: [volume: number]
+  interactionChange: [active: boolean]
 }>()
 
 const isMuted = ref(false)
@@ -28,16 +29,30 @@ function toggleMute() {
 
 function handleVolumeChange(e: Event) {
   const target = e.target as HTMLInputElement
-  const vol = Number(target.value)
+  const vol = Math.max(0, Math.min(100, Number(target.value)))
   isMuted.value = false
+  prevVolume.value = vol || prevVolume.value
   emit('setVolume', vol)
+}
+
+function finishSliderInteraction() {
+  emit('interactionChange', false)
 }
 </script>
 
 <template>
-  <div class="flex items-center gap-1">
+  <div
+    class="volume-control flex items-center gap-2"
+    @mouseenter="emit('interactionChange', true)"
+    @mouseleave="emit('interactionChange', false)"
+    @focusin="emit('interactionChange', true)"
+    @focusout="emit('interactionChange', false)"
+  >
     <button
-      class="w-6 h-6 flex items-center justify-center rounded hover:bg-surface-hover text-text-secondary"
+      class="volume-button"
+      type="button"
+      :title="displayVolume === 0 ? '取消静音' : '静音'"
+      :aria-label="displayVolume === 0 ? '取消静音' : '静音'"
       @click="toggleMute"
     >
       <div
@@ -46,7 +61,7 @@ function handleVolumeChange(e: Event) {
           : displayVolume < 50
             ? 'i-carbon-volume-down'
             : 'i-carbon-volume-up'"
-        class="text-sm"
+        class="text-base"
       />
     </button>
     <input
@@ -54,8 +69,57 @@ function handleVolumeChange(e: Event) {
       min="0"
       max="100"
       :value="displayVolume"
-      class="w-20 h-1 accent-primary cursor-pointer"
+      class="volume-slider h-1 w-24 cursor-pointer"
+      aria-label="音量"
+      @pointerdown="emit('interactionChange', true)"
+      @pointerup="finishSliderInteraction"
+      @pointercancel="finishSliderInteraction"
+      @blur="finishSliderInteraction"
       @input="handleVolumeChange"
     >
   </div>
 </template>
+
+<style scoped>
+.volume-button {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  color: rgba(255, 255, 255, 0.7);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+
+.volume-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.96);
+  transform: translateY(-1px);
+}
+
+.volume-slider {
+  appearance: none;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--color-primary), rgba(168, 85, 247, 0.72));
+  outline: none;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  appearance: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.16), 0 6px 14px rgba(0, 0, 0, 0.35);
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.16), 0 6px 14px rgba(0, 0, 0, 0.35);
+}
+</style>

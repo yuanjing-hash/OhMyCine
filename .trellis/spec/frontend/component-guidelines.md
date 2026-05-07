@@ -96,6 +96,15 @@ Required principles:
 - Keyboard shortcuts must not conflict with text input focus.
 - Subtitle/audio/danmaku menus should be accessible from both mouse and keyboard.
 
+### Immersive Player Chrome Contract
+
+- Show playback chrome when the mouse moves, controls receive focus, or the player is paused / has no loaded media.
+- Hide playback chrome after about 2.5-3 seconds of pointer inactivity while media is playing and no control interaction is active.
+- Keep chrome visible while the window is unfocused, while a control is hovered/focused, and while progress or volume controls are being dragged.
+- Aggregate interaction state from parent and child controls; a child ending drag/hover must not hide chrome while the parent container is still hovered or focused.
+- Use Cinema OS / liquid-glass tokens for the control bar, buttons, progress, and volume surfaces; do not fall back to native browser-style media controls.
+- If embedded video rendering is not complete, show a truthful in-app placeholder instead of letting an external mpv window become the user-visible player.
+
 ---
 
 ## Accessibility

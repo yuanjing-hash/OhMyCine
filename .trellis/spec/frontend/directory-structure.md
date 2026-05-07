@@ -116,6 +116,8 @@ When wrapping libmpv in `player/src-tauri/src/mpv/`, keep the FFI surface small 
 - Strings returned by libmpv, such as `mpv_get_property_string()`, are freed with `mpv_free()` exactly once.
 - The owner releases the handle with `mpv_terminate_destroy()` in `Drop`.
 - Only implement unsafe auto-trait promises that are required by the actual state container; prefer `Send` with mutex serialization and do not add manual `Sync` unless there is a proven concurrent access contract.
+- Do not enable visible video output (`vo=gpu` or equivalent) unless a native window/surface/render context is actually bound. Without `wid`/native surface/`MpvRenderContext`, libmpv may create an uncontrolled external mpv window.
+- Until embedded video rendering is implemented, initialize libmpv in a non-windowing mode such as `force-window=no`, `vo=null`, and `video=no`, and make UI/docs state that backend loading/control works while in-window video is pending.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
@@ -124,17 +126,20 @@ When wrapping libmpv in `player/src-tauri/src/mpv/`, keep the FFI surface small 
 | `mpv_initialize()` returns non-zero | Destroy/avoid leaking the handle and return a safe error string |
 | Rust string contains interior NUL | Return an argument error; do not call libmpv |
 | libmpv command/property call returns non-zero | Convert to a safe error string for Tauri |
+| `vo=gpu` is set without `wid`/native surface/render context | Treat as a bug: either bind a real embedded render target or suppress video output so no external mpv window appears |
+| UI loads media but embedded render target is not implemented | Show an honest in-app placeholder; do not claim video is rendered in-window |
 | WSL/WSLg EGL/Mesa warnings during `tauri dev` | Record runtime verification as partial, not complete |
 
 #### 5. Good/Base/Bad Cases
-- Good: direct libmpv FFI wrapper owns the handle, frees returned strings, and is accessed through a mutex-backed Tauri state.
-- Base: frontend typecheck/lint/build and Rust cargo check pass, while desktop runtime still needs environment-specific verification.
-- Bad: high-level wrapper or global state hides the native handle lifecycle and panics on a system libmpv/client API mismatch.
+- Good: direct libmpv FFI wrapper owns the handle, frees returned strings, binds an explicit render target before enabling visible video, and is accessed through a mutex-backed Tauri state.
+- Base: backend media loading/control works with visible video suppressed while embedded rendering is still pending and documented.
+- Bad: high-level wrapper or global state hides the native handle lifecycle, or `vo=gpu` opens an external mpv window that OhMyCine cannot close/control.
 
 #### 6. Tests Required
 - Rust check/build must compile the Tauri crate after any libmpv wrapper change.
 - Frontend typecheck/lint/build must still pass because Tauri command contracts are frontend-facing.
 - `tauri dev` must be attempted for runtime/libmpv changes; assert whether the app launches fully or is only partially verified due to graphics environment limits.
+- Manually verify that local file playback does not create an external mpv video window unless an explicit sidecar prototype was requested.
 
 #### 7. Wrong vs Correct
 
@@ -148,6 +153,21 @@ Correct:
 ```rust
 unsafe impl Send for MpvPlayer {}
 // Access is serialized by Arc<Mutex<MpvPlayer>>; do not promise Sync without a separate contract.
+```
+
+Wrong:
+```rust
+set_option("vo", "gpu")?;
+set_option("osc", "no")?;
+// No `wid`, native surface, or render context is bound.
+```
+
+Correct:
+```rust
+set_option("force-window", "no")?;
+set_option("vo", "null")?;
+set_option("video", "no")?;
+// Enable visible video only after a real embedded render target exists.
 ```
 
 ### Windows GNU libmpv Build Contract

@@ -8,8 +8,8 @@ use std::{
 use libmpv_sys::{
     mpv_command, mpv_create, mpv_error_string, mpv_format_MPV_FORMAT_DOUBLE,
     mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_free, mpv_get_property,
-    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_set_property, mpv_set_property_string,
-    mpv_terminate_destroy,
+    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_set_option_string, mpv_set_property,
+    mpv_set_property_string, mpv_terminate_destroy,
 };
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
@@ -38,11 +38,16 @@ impl MpvPlayer {
         }
 
         let player = Self { ctx };
-        player.set_property("vo", "gpu")?;
-        player.set_property("gpu-context", "auto")?;
-        player.set_property("hwdec", "auto")?;
-        player.set_property("keep-open", "yes")?;
-        player.set_property("osc", "no")?;
+        // The current Tauri integration does not yet provide an mpv render context or native
+        // window/surface handle for embedding video in the WebView. Using the normal gpu VO here
+        // makes libmpv create a separate, unmanaged mpv window. Until MpvRenderContext is wired,
+        // keep playback backend/audio validation available but suppress visible external video.
+        player.set_option("force-window", "no")?;
+        player.set_option("vo", "null")?;
+        player.set_option("video", "no")?;
+        player.set_option("hwdec", "auto")?;
+        player.set_option("keep-open", "yes")?;
+        player.set_option("osc", "no")?;
         player.check_error(unsafe { mpv_initialize(player.ctx) })?;
 
         Ok(player)
@@ -62,6 +67,12 @@ impl MpvPlayer {
 
     pub fn seek(&self, position: f64) -> Result<(), String> {
         self.command(&["seek", &position.to_string(), "absolute"])
+    }
+
+    fn set_option(&self, option: &str, value: &str) -> Result<(), String> {
+        let option = CString::new(option).map_err(|err| err.to_string())?;
+        let value = CString::new(value).map_err(|err| err.to_string())?;
+        self.check_error(unsafe { mpv_set_option_string(self.ctx, option.as_ptr(), value.as_ptr()) })
     }
 
     pub fn set_property(&self, prop: &str, value: &str) -> Result<(), String> {
