@@ -1,0 +1,57 @@
+name: Server CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - ".github/workflows/server.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "server/**"
+      - ".github/workflows/server.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Server scaffold
+        id: scaffold
+        run: |
+          if [ -f go.mod ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Server Go module is not initialized yet; skipping Go checks."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.scaffold.outputs.ready == 'true'
+        with:
+          go-version: "1.22"
+
+      - name: Download dependencies
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go mod download
+
+      - name: Build
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go build ./...
+
+      - name: Test
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go test ./...
+
+      - name: Lint
+        if: steps.scaffold.outputs.ready == 'true'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: server

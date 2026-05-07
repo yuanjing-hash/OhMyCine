@@ -87,6 +87,8 @@ player/src-tauri/lib/libmpv.dll.a
 *.dylib
 omc
 ohmycine-server
+server/bin/
+cli/bin/
 
 # Test binary
 *.test

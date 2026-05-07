@@ -1,0 +1,31 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "[go]": {
+    "editor.defaultFormatter": "golang.go"
+  },
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "[vue]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "typescript.tsdk": "player/node_modules/typescript/lib",
+  "eslint.workingDirectories": [
+    "player",
+    "hub"
+  ],
+  "rust-analyzer.linkedProjects": [
+    "player/src-tauri/Cargo.toml"
+  ],
+  "gopaths": [
+    "server",
+    "cli"
+  ]
+}

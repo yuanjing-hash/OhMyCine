@@ -1,0 +1,102 @@
+name: Player CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "player/**"
+      - ".github/workflows/player.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "player/**"
+      - ".github/workflows/player.yml"
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: player
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: player/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+  build:
+    needs: lint-and-typecheck
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: player
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: player/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libmpv-dev
+
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install mpv
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: player/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: player
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-${{ matrix.platform }}
+          path: |
+            player/src-tauri/target/release/bundle/**/*.deb
+            player/src-tauri/target/release/bundle/**/*.AppImage
+            player/src-tauri/target/release/bundle/**/*.msi
+            player/src-tauri/target/release/bundle/**/*.exe
+            player/src-tauri/target/release/bundle/**/*.dmg
+            player/src-tauri/target/release/bundle/**/*.app
+          retention-days: 30

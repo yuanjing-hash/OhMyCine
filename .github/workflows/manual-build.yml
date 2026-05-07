@@ -1,0 +1,214 @@
+name: Manual Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "构建组件"
+        required: true
+        type: choice
+        options:
+          - player
+          - server
+          - cli
+          - hub
+          - all
+      platform:
+        description: "构建平台 (仅 Player 生效)"
+        required: false
+        type: choice
+        options:
+          - all
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+        default: all
+
+jobs:
+  build-server:
+    if: inputs.component == 'server' || inputs.component == 'all'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Server scaffold
+        id: scaffold
+        run: |
+          if [ -f go.mod ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Server Go module is not initialized yet; skipping Go build."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.scaffold.outputs.ready == 'true'
+        with:
+          go-version: "1.22"
+
+      - name: Download dependencies
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go mod download
+
+      - name: Build
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go build -o ohmycine-server ./cmd/server
+
+      - name: Test
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go test ./...
+
+      - name: Upload artifact
+        if: steps.scaffold.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohmycine-server-linux
+          path: server/ohmycine-server
+          retention-days: 30
+
+  build-cli:
+    if: inputs.component == 'cli' || inputs.component == 'all'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check CLI scaffold
+        id: scaffold
+        run: |
+          if [ -f go.mod ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "CLI Go module is not initialized yet; skipping Go build."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.scaffold.outputs.ready == 'true'
+        with:
+          go-version: "1.22"
+
+      - name: Download dependencies
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go mod download
+
+      - name: Build
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go build -o omc ./cmd/omc
+
+      - name: Test
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go test ./...
+
+      - name: Upload artifact
+        if: steps.scaffold.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omc-linux
+          path: cli/omc
+          retention-days: 30
+
+  build-hub:
+    if: inputs.component == 'hub' || inputs.component == 'all'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hub
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hub-site
+          path: hub/.vitepress/dist
+          retention-days: 30
+
+  build-player:
+    if: inputs.component == 'player' || inputs.component == 'all'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - ${{ inputs.platform == 'all' && 'ubuntu-latest' || inputs.platform }}
+          - ${{ inputs.platform == 'all' && 'windows-latest' || 'skip' }}
+          - ${{ inputs.platform == 'all' && 'macos-latest' || 'skip' }}
+        exclude:
+          - platform: skip
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: player
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: player/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libmpv-dev
+
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install mpv
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: player/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: player
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-${{ matrix.platform }}
+          path: |
+            player/src-tauri/target/release/bundle/**/*.deb
+            player/src-tauri/target/release/bundle/**/*.AppImage
+            player/src-tauri/target/release/bundle/**/*.msi
+            player/src-tauri/target/release/bundle/**/*.exe
+            player/src-tauri/target/release/bundle/**/*.dmg
+            player/src-tauri/target/release/bundle/**/*.app
+          retention-days: 30
