@@ -24,12 +24,19 @@ function goToSettings() {
   router.push('/settings')
 }
 
-function handlePlay(item: MediaItem) {
+async function handlePlay(item: MediaItem) {
+  const source = store.getSource(item.sourceId)
+  const path = source && item.sourceId !== 'placeholder'
+    ? await source.getStreamURL(item.id)
+    : item.path
+
   router.push({
     name: 'player',
     query: {
       title: item.name,
-      path: item.path,
+      path,
+      sourceId: item.sourceId,
+      itemId: item.id,
     },
   })
 }

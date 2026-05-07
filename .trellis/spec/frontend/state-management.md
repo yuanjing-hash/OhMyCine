@@ -50,6 +50,60 @@ Use Vue Router for route identity: current view, selected source ID, selected me
 - Ordinary config files must not contain API keys, cookies, passwords, AI keys, or server tokens in plaintext.
 - Config import/export must redact sensitive values by default.
 
+### Credential Reference Contract
+
+Until OS secure storage is wired for every desktop target, a bounded MVP may use session-only credential storage for provider tokens, but it must still avoid plaintext persistent config.
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing DataSource credentials for Emby/Jellyfin/OpenList/Alist/CloudDrive2/Server/AI providers.
+- Applies to Settings forms, Pinia persistence, DataSource `init`, source export/import, sync, logs, and playback URL routing.
+
+#### 2. Signatures
+- Persisted config: `DataSourceConfig` stores non-sensitive fields plus `extra.credentialRef` or equivalent.
+- Credential helper: stores/retrieves/removes secret values by `credentialRef`.
+- Add-source flow: generated source id, credential ref, and stored config id must match before the source is persisted.
+
+#### 3. Contracts
+- New API keys/tokens/passwords must not be written to `localStorage`, regular config JSON, or Pinia persistence snapshots.
+- Session-only credential storage is acceptable only as a temporary MVP limitation and must be called out in UI/docs if it means credentials are lost after restart.
+- If config save fails after writing a session credential, remove the orphan credential.
+- If a stored source is missing its session credential after restart, show a reconnect/re-enter-token state instead of treating the source as deleted or connected.
+- Export/sync includes source structure by default, not the secret value.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| User adds Emby source with token | Persist config with credential reference; keep token out of persistent config |
+| Store generates a different id than the credential ref expects | Treat as a bug; source id and credential ref must be derived from the same id |
+| Config save fails after credential write | Remove newly written credential |
+| App restarts and session credential is gone | Show auth-required/reconnect state |
+| Export config is requested | Redact or omit credential values |
+
+#### 5. Good/Base/Bad Cases
+- Good: OS secure storage stores the token and config stores only `credentialRef`.
+- Base: session storage keeps the token for the current app session and config stores only `credentialRef`.
+- Bad: `apiKey` is saved in localStorage because it is convenient for reloads.
+
+#### 6. Tests Required
+- Inspect persisted config after adding a source and verify no raw token/password is present.
+- Verify add failure cleans up the temporary credential.
+- Verify restart/missing credential state is user-safe.
+- Verify source sidebar and local playback remain usable when one source lacks credentials.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+addConfig({ type: 'emby', url, apiKey: token })
+```
+
+Correct:
+```ts
+const credentialRef = `datasource:${sourceId}:emby-token`
+credentialStore.set(credentialRef, token)
+addConfig({ id: sourceId, type: 'emby', url, extra: { credentialRef } })
+```
+
 ---
 
 ## Server Connection State

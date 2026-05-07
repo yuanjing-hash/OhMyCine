@@ -1,0 +1,7 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Verify Player remains independent-first and roadmap/status wording is accurate."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify Settings/SourceLibrary/media components follow Vue, accessibility, media fallback, and liquid-glass UI contracts."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify Emby external responses are typed/validated without broad any and sensitive fields do not leak into config/UI."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Verify DataSource store/manager responsibilities, persistence, and derived state boundaries."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify required typecheck/lint/build/Tauri build expectations and forbidden patterns."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Verify new services/components are placed in the expected Player directories and do not violate libmpv safety contracts."}
+{"file":".trellis/tasks/05-07-player-embedded-video-rendering/research/emby-datasource.md","reason":"Verify Emby endpoint mapping, stream URL handling, auth, redaction, and implementation risks are addressed."}

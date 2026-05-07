@@ -1,6 +1,8 @@
-import type { DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { removeSessionCredential } from '@/services/datasource/credentialStore'
+import { dataSourceManager } from '@/services/datasource/manager'
 
 const STORAGE_KEY = 'ohmycine-datasources'
 
@@ -9,6 +11,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const activeSourceId = ref<string | null>(null)
   const homeSections = ref<HomeSection[]>([])
   const isLoading = ref(false)
+  const lastError = ref<string | null>(null)
 
   const orderedConfigs = computed(() =>
     [...configs.value].sort((a, b) => a.order - b.order),
@@ -22,7 +25,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw)
-        configs.value = JSON.parse(raw)
+        configs.value = sanitizeConfigs(JSON.parse(raw) as unknown)
+      void syncManager()
     }
     catch {
       configs.value = []
@@ -30,26 +34,43 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function saveConfigs() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(configs.value))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(configs.value.map(redactPersistedConfig)))
   }
 
-  function addConfig(config: Omit<DataSourceConfig, 'id' | 'order'>) {
-    const id = `${config.type}-${Date.now()}`
-    const order = configs.value.length
+  async function syncManager() {
+    try {
+      await dataSourceManager.syncConfigs(configs.value)
+      lastError.value = null
+    }
+    catch (error) {
+      lastError.value = error instanceof Error ? error.message : '数据源初始化失败'
+    }
+  }
+
+  async function addConfig(config: Omit<DataSourceConfig, 'id' | 'order'> & Partial<Pick<DataSourceConfig, 'id' | 'order'>>) {
+    const id = config.id ?? `${config.type}-${Date.now()}`
+    const order = config.order ?? configs.value.length
     configs.value.push({ ...config, id, order })
     saveConfigs()
+    await syncManager()
     return id
   }
 
-  function updateConfig(id: string, patch: Partial<DataSourceConfig>) {
+  async function updateConfig(id: string, patch: Partial<DataSourceConfig>) {
     const idx = configs.value.findIndex(c => c.id === id)
     if (idx === -1)
       return
     configs.value[idx] = { ...configs.value[idx], ...patch }
     saveConfigs()
+    await syncManager()
   }
 
-  function removeConfig(id: string) {
+  async function removeConfig(id: string) {
+    const config = configs.value.find(c => c.id === id)
+    const credentialRef = typeof config?.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
+    if (credentialRef)
+      removeSessionCredential(credentialRef)
+    dataSourceManager.removeSource(id)
     configs.value = configs.value.filter(c => c.id !== id)
     configs.value.forEach((c, i) => c.order = i)
     saveConfigs()
@@ -71,41 +92,33 @@ export const useDataSourceStore = defineStore('datasource', () => {
   async function loadHomeSections() {
     isLoading.value = true
     try {
-      // MVP: generate placeholder sections from configs
-      const sections: HomeSection[] = []
+      await syncManager()
+      const sections = await dataSourceManager.getAggregatedHome(orderedConfigs.value)
 
-      // Hero section - placeholder items for now
-      sections.push({
-        id: 'hero',
-        title: 'Featured',
-        type: 'hero',
-        items: generatePlaceholderHeroItems(),
-      })
-
-      // Continue watching - empty until playback history exists
-      sections.push({
-        id: 'continue-watching',
-        title: 'Continue Watching',
-        type: 'continueWatching',
-        items: [],
-      })
-
-      // Recently added per source
-      for (const config of orderedConfigs.value) {
-        sections.push({
-          id: `recent-${config.id}`,
-          sourceId: config.id,
-          title: `Latest from ${config.displayName ?? config.name}`,
-          type: 'recentlyAdded',
-          items: [],
-        })
-      }
-
-      homeSections.value = sections
+      homeSections.value = sections.length > 0
+        ? sections
+        : [
+            {
+              id: 'hero',
+              title: 'Featured',
+              type: 'hero',
+              items: generatePlaceholderHeroItems(),
+            },
+            {
+              id: 'continue-watching',
+              title: 'Continue Watching',
+              type: 'continueWatching',
+              items: [],
+            },
+          ]
     }
     finally {
       isLoading.value = false
     }
+  }
+
+  function getSource(id: string): DataSource | null {
+    return dataSourceManager.getSource(id)
   }
 
   return {
@@ -115,14 +128,43 @@ export const useDataSourceStore = defineStore('datasource', () => {
     activeSource,
     homeSections,
     isLoading,
+    lastError,
     loadConfigs,
     addConfig,
     updateConfig,
     removeConfig,
     reorderConfigs,
     loadHomeSections,
+    getSource,
+    syncManager,
   }
 })
+
+function sanitizeConfigs(value: unknown): DataSourceConfig[] {
+  if (!Array.isArray(value))
+    return []
+
+  return value
+    .filter((config): config is DataSourceConfig => {
+      if (typeof config !== 'object' || config == null)
+        return false
+      const record = config as Record<string, unknown>
+      return typeof record.id === 'string'
+        && typeof record.type === 'string'
+        && typeof record.name === 'string'
+        && typeof record.order === 'number'
+        && typeof record.url === 'string'
+    })
+    .map(redactPersistedConfig)
+}
+
+function redactPersistedConfig(config: DataSourceConfig): DataSourceConfig {
+  const { apiKey: _apiKey, username: _username, password: _password, ...safe } = config
+  void _apiKey
+  void _username
+  void _password
+  return safe
+}
 
 function generatePlaceholderHeroItems(): MediaItem[] {
   const items: MediaItem[] = [

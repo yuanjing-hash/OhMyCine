@@ -181,29 +181,29 @@ Phase 4: 生态系统           ████████████████
 
 #### DataSourceManager 实现
 
-- [ ] 实现 `DataSourceManager` 类
-- [~] `addSource()` — 创建并初始化数据源
-- [~] `removeSource()` — 销毁并移除数据源
-- [~] `getAllSources()` / `getSource(id)`
-- [~] `getOrderedSources()` — 按绑定配置顺序返回侧栏数据源
-- [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据
+- [~] 实现 `DataSourceManager` 类（已支持 Emby 实例化、按配置同步、聚合首页基础区块；跨源搜索/导入导出完善待后续）
+- [x] `addSource()` — 创建并初始化数据源
+- [x] `removeSource()` — 销毁并移除数据源
+- [x] `getAllSources()` / `getSource(id)`
+- [x] `getOrderedSources()` — 按绑定配置顺序返回侧栏数据源
+- [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据（已接 Emby，更多源待扩展）
 - [ ] `searchAll()` — 跨数据源并发搜索
-- [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出
-- [ ] `createDataSource(type)` — 工厂方法
+- [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出（已能导出已实例化安全配置，完整文件导入导出待后续）
+- [x] `createDataSource(type)` — 工厂方法（当前实现 Emby，其他类型保留扩展）
 
 #### EmbyDataSource 实现
 
-- [ ] 实现 `EmbyClient` 类 (封装 Emby REST API)
-- [ ] `getSystemInfo()` — 测试连接
-- [ ] `getMediaFolders()` — 获取媒体库列表
-- [ ] `getHomeSections()` — 获取 Emby 首页区块/继续观看/最新项目
-- [ ] `getFeaturedItems()` — 获取可用于 Hero 轮播的 Logo/backdrop/overview 元数据
-- [ ] `getItems(parentId)` — 获取库内项目
-- [ ] `search(keyword)` — 搜索
-- [ ] `getItem(id)` — 获取详情 (含 People/Genres/MediaStreams)
-- [ ] `getImageUrl(itemId, type)` — 构建图片URL
-- [ ] 实现 `EmbyDataSource` (implements DataSource)
-- [ ] `mapEmbyItem()` — Emby 数据映射到 MediaItem
+- [~] 实现 `EmbyClient` 类 (封装 Emby REST API；当前合并在 `EmbyDataSource` 内部 request/client 边界，后续可拆分)
+- [x] `getSystemInfo()` — 测试连接
+- [x] `getMediaFolders()` — 获取媒体库列表
+- [x] `getHomeSections()` — 获取 Emby 首页区块/继续观看/最新项目
+- [x] `getFeaturedItems()` — 获取可用于 Hero 轮播的 Logo/backdrop/overview 元数据
+- [x] `getItems(parentId)` — 获取库内项目
+- [x] `search(keyword)` — 搜索
+- [x] `getItem(id)` — 获取详情 (含 People/Genres/MediaStreams)
+- [x] `getImageUrl(itemId, type)` — 构建图片URL
+- [x] 实现 `EmbyDataSource` (implements DataSource)
+- [x] `mapEmbyItem()` — Emby 数据映射到 MediaItem
 
 #### JellyfinDataSource 实现
 
@@ -219,22 +219,22 @@ Phase 4: 生态系统           ████████████████
 
 #### 设置页面 UI
 
-- [~] `SettingsView.vue` — 设置页面
-- [~] 数据源列表管理 (添加/编辑/删除)
+- [~] `SettingsView.vue` — 设置页面（已提供 Emby 数据源 MVP 表单）
+- [x] 数据源列表管理 (添加/编辑/删除)
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
-- [ ] 数据源显示配置 (名称/图标/是否在侧栏显示)
-- [ ] 添加数据源表单 (类型选择/URL/API Key)
-- [ ] 连接测试按钮 (显示成功/失败)
-- [ ] 数据源状态显示 (在线/离线)
+- [~] 数据源显示配置 (名称/图标/是否在侧栏显示；当前支持显示名称，图标/侧栏开关待后续)
+- [~] 添加数据源表单 (类型选择/URL/API Key；当前固定 Emby，令牌仅会话保存，未写入 localStorage)
+- [x] 连接测试按钮 (显示成功/失败)
+- [~] 数据源状态显示 (在线/离线；当前在测试/浏览错误态中呈现，持久状态徽标待后续)
 
 **产出**:
 
-- [ ] 能添加 Emby/Jellyfin 服务器
-- [ ] 能按绑定顺序在动态侧栏展示数据源
-- [ ] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片
-- [ ] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片
-- [ ] 能直接播放 Emby/Jellyfin 上的视频
-- [ ] 配置自动持久化
+- [~] 能添加 Emby/Jellyfin 服务器（Emby 已实现；Jellyfin 待后续）
+- [x] 能按绑定顺序在动态侧栏展示数据源
+- [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
+- [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现）
+- [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；窗口内视频渲染仍未完成）
+- [~] 配置自动持久化（非敏感配置持久化；Emby token/API key 仅会话保存，等待 OS secure storage 接入）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 

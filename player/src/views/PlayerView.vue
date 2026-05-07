@@ -4,12 +4,14 @@ import { useRoute } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
+import { redactSensitiveText } from '@/services/datasource/errors'
 
 const AUTO_HIDE_DELAY = 2800
 
 const route = useRoute()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
+const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
 const controlsInteracting = ref(false)
 const isWindowFocused = ref(true)
@@ -141,7 +143,7 @@ onBeforeUnmount(() => {
             {{ mediaTitle }}
           </h1>
           <p v-if="mediaPath" class="mt-2 truncate text-xs text-white/35">
-            {{ mediaPath }}
+            {{ displayMediaPath }}
           </p>
         </div>
       </div>

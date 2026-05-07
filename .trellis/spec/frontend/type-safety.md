@@ -43,6 +43,59 @@ Keep all media sources behind a common interface with these concepts:
 - Validate DataSource type before constructing a source.
 - Do not trust file metadata or filenames to be complete.
 
+### Emby DataSource Mapping Contract
+
+When mapping Emby or Emby-compatible responses into Player types:
+
+#### 1. Scope / Trigger
+- Trigger: implementing or changing `emby` DataSource list/search/detail/home/stream behavior.
+- Applies to Emby REST responses, image URL construction, stream URL construction, and DataSource item mapping.
+
+#### 2. Signatures
+- Config inputs: `DataSourceConfig` with `type: 'emby'`, `url`, display fields, and `extra.credentialRef` / `extra.userId` or equivalent non-sensitive fields.
+- External fetch outputs: treat Emby JSON as `unknown` until minimally validated.
+- Internal outputs: map only to `MediaLibrary`, `MediaItem`, `HomeSection`, `MediaDetail`, `SubtitleTrack`, and `AudioTrack`.
+
+#### 3. Contracts
+- Library endpoint maps Emby views/collection folders to `MediaLibrary[]`.
+- Item endpoints map `Movie`, `Series`, `Episode`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped.
+- Poster/backdrop/logo URLs may be tokenized and must be treated as sensitive strings.
+- Runtime ticks, ratings, dates, media streams, people, and provider IDs are optional and must not require non-null assertions.
+- Stream URL generation must return a string for the playback layer, but UI labels/errors must display a redacted representation.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Emby response is not an object/array where expected | Return safe empty state or user-safe invalid-response error |
+| Item lacks `Id` or `Name` | Skip the item or use a clear fallback; do not crash rendering |
+| Item lacks image tags | Render missing-poster fallback in media components |
+| `RunTimeTicks`/ratings/year are missing or malformed | Omit the derived field rather than forcing `0` as real data |
+| Stream URL contains `api_key`, token, or signed params | Pass to playback only; redact in display/errors/logs |
+
+#### 5. Good/Base/Bad Cases
+- Good: mapper reads optional fields defensively and returns a complete `MediaItem` with fallbacks.
+- Base: direct-play stream URLs are supported while advanced PlaybackInfo/transcoding remains future work.
+- Bad: `const item = response.Items[0] as any` followed by unconditional `item.ImageTags.Primary` access.
+
+#### 6. Tests Required
+- Typecheck must catch missing mapped fields.
+- Lint must pass without broad `any` in provider mappers.
+- Manual/code review must verify missing poster, empty library, auth failure, and token redaction paths.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+const posterUrl = `${baseUrl}/Items/${item.Id}/Images/Primary?api_key=${token}`
+console.error('Failed to load', posterUrl)
+```
+
+Correct:
+```ts
+const posterUrl = buildImageUrl(item.Id, 'Primary')
+console.error('Failed to load', redactSensitiveUrl(posterUrl))
+```
+
 ---
 
 ## Tauri Command Types

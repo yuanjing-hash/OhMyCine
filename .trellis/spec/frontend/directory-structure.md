@@ -67,11 +67,67 @@ Important views:
 
 ### Services
 
-- `services/datasource`: DataSource types, manager, Emby/Jellyfin/OpenList/Alist/CloudDrive2/local/server implementations.
+- `services/datasource`: DataSource types, manager, credential helpers, safe error/redaction helpers, and Emby/Jellyfin/OpenList/Alist/CloudDrive2/local/server implementations.
 - `services/scraper`: filename parser, TMDB, metadata DB/cache.
 - `services/ai`: Player-side RAG recommendations using user-provided keys.
 - `services/sync`: Player ↔ Server structural/full sync flows.
 - `services/danmaku`: parsers, sources, renderer.
+
+### DataSource Implementations
+
+When implementing concrete sources such as Emby, keep provider-specific protocol logic under `services/datasource/` and expose it through a manager/factory rather than directly from views.
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing a concrete media source (`emby`, `jellyfin`, `alist`, `clouddrive2`, `local`, `server`, or future cloud sources).
+- Applies to source clients, DataSource classes, manager/factory wiring, settings forms, source library views, home aggregation, and playback URL routing.
+
+#### 2. Signatures
+- DataSource class: `class EmbyDataSource implements DataSource` or equivalent provider-specific implementation.
+- Factory: `createDataSource(config: DataSourceConfig): DataSource` validates `config.type` before constructing.
+- Manager: `DataSourceManager` owns instantiated sources and exposes source lookup/refresh methods by id.
+- View boundary: `SettingsView`, `SourceLibraryView`, and `HomeView` call store/manager/DataSource methods, not provider HTTP endpoints.
+
+#### 3. Contracts
+- `init(config)` normalizes non-sensitive config, loads credentials through a credential reference when available, and does not log tokens.
+- `test()` returns connection/auth success without exposing raw provider errors or credentials.
+- `listLibraries()` returns `MediaLibrary[]` for source-level library cards.
+- `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.
+- `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized.
+- `exportConfig()` returns non-sensitive fields and credential references only.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Unsupported `DataSourceConfig.type` | Reject construction with a user-safe unsupported-source error |
+| Missing server URL or required source identifier | Fail `init`/`test` with a user-safe validation error |
+| Missing credential for a source that requires auth | Show an auth-required state; do not create a fake connected source |
+| Provider API returns unexpected shape | Treat as invalid external data and show a safe error/empty state |
+| Provider returns tokenized image/stream URLs | Redact tokens in UI/log/error output; pass real URL only to the component/service that needs it |
+| Source is offline/auth fails | Keep local files and other sources usable; show source-specific error state |
+
+#### 5. Good/Base/Bad Cases
+- Good: `SourceLibraryView` asks the manager/store for the active source, then calls `listLibraries()`/`list()` and renders generic `MediaCard` data.
+- Base: a first concrete source supports libraries/items/stream URLs while advanced playback negotiation remains future work.
+- Bad: a route view imports an Emby HTTP client and builds `/Users/{id}/Items` URLs directly.
+
+#### 6. Tests Required
+- `npm run typecheck`, `npm run lint`, and `npm run build` pass after frontend source changes.
+- For desktop package confidence, `npm run tauri:build:windows` must still produce the Windows executable/installer when Player packaging is in scope.
+- Review Settings add/edit/test/remove, source sidebar appearance, library loading, media item loading, play routing, loading/empty/error states, and token redaction.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+// SourceLibraryView.vue
+const items = await $fetch(`${config.url}/Users/${userId}/Items`, { query: { api_key: token } })
+```
+
+Correct:
+```ts
+const source = dataSourceStore.getSource(sourceId)
+const items = await source.list(libraryId)
+```
 
 ---
 

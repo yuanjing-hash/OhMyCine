@@ -1,0 +1,516 @@
+import type {
+  AudioTrack,
+  DataSource,
+  DataSourceConfig,
+  HomeSection,
+  MediaDetail,
+  MediaItem,
+  MediaLibrary,
+  SubtitleTrack,
+} from './types'
+import { ofetch } from 'ofetch'
+import { readSessionCredential } from './credentialStore'
+import { redactSensitiveText } from './errors'
+
+const ITEM_FIELDS = [
+  'Overview',
+  'Genres',
+  'People',
+  'ProviderIds',
+  'MediaSources',
+  'MediaStreams',
+  'Path',
+  'DateCreated',
+  'SortName',
+  'RunTimeTicks',
+  'ImageTags',
+  'BackdropImageTags',
+].join(',')
+
+interface EmbyConfigExtra {
+  readonly userId?: string
+  readonly credentialRef?: string
+  readonly deviceId?: string
+}
+
+interface EmbyItemsResponse {
+  readonly Items?: unknown[]
+  readonly TotalRecordCount?: number
+}
+
+interface EmbyLibraryResponse {
+  readonly Items?: unknown[]
+}
+
+interface EmbyItemRecord {
+  readonly Id: string
+  readonly Name: string
+  readonly Type?: string
+  readonly CollectionType?: string
+  readonly ProductionYear?: number
+  readonly CommunityRating?: number
+  readonly CriticRating?: number
+  readonly Overview?: string
+  readonly Taglines?: string[]
+  readonly RunTimeTicks?: number
+  readonly Size?: number
+  readonly DateCreated?: string
+  readonly DateLastMediaAdded?: string
+  readonly Path?: string
+  readonly ImageTags?: Record<string, string>
+  readonly BackdropImageTags?: string[]
+  readonly Genres?: string[]
+  readonly People?: EmbyPersonRecord[]
+  readonly ProviderIds?: Record<string, string>
+  readonly MediaStreams?: EmbyMediaStreamRecord[]
+  readonly MediaSources?: EmbyMediaSourceRecord[]
+  readonly UserData?: {
+    readonly PlayedPercentage?: number
+    readonly PlaybackPositionTicks?: number
+  }
+}
+
+interface EmbyPersonRecord {
+  readonly Name?: string
+  readonly Type?: string
+}
+
+interface EmbyMediaStreamRecord {
+  readonly Index?: number
+  readonly Type?: string
+  readonly Language?: string
+  readonly DisplayLanguage?: string
+  readonly Title?: string
+  readonly Codec?: string
+  readonly Channels?: number
+  readonly IsDefault?: boolean
+  readonly Width?: number
+  readonly Height?: number
+}
+
+interface EmbyMediaSourceRecord {
+  readonly Id?: string
+  readonly Size?: number
+}
+
+export class EmbyDataSource implements DataSource {
+  private config: DataSourceConfig | null = null
+  private baseUrl = ''
+  private token = ''
+  private userId = ''
+  private deviceId = ''
+  private connected = false
+
+  readonly type = 'emby' as const
+
+  get id(): string {
+    return this.config?.id ?? ''
+  }
+
+  get name(): string {
+    return this.config?.displayName ?? this.config?.name ?? 'Emby'
+  }
+
+  get isConnected(): boolean {
+    return this.connected
+  }
+
+  async init(config: DataSourceConfig): Promise<void> {
+    this.config = sanitizeExportConfig(config)
+    this.baseUrl = normalizeBaseUrl(config.url)
+    const extra = readEmbyExtra(config)
+    this.userId = extra.userId ?? ''
+    this.deviceId = extra.deviceId ?? createDeviceId(config.id)
+    this.token = resolveToken(config, extra)
+    this.connected = Boolean(this.baseUrl && this.token && this.userId)
+  }
+
+  async test(): Promise<boolean> {
+    this.ensureConfigured()
+    await this.request('/System/Info')
+    this.connected = true
+    return true
+  }
+
+  destroy(): void {
+    this.connected = false
+  }
+
+  async list(path?: string): Promise<MediaItem[]> {
+    this.ensureConfigured()
+
+    if (!path) {
+      const libraries = await this.listLibraries()
+      return libraries.map(library => ({
+        id: library.id,
+        sourceId: library.sourceId,
+        libraryId: library.id,
+        name: library.name,
+        type: 'folder',
+        posterUrl: library.posterUrl,
+        backdropUrl: library.backdropUrl,
+        path: library.id,
+      }))
+    }
+
+    const response = await this.request('/Users/{UserId}/Items', {
+      ParentId: path,
+      Recursive: 'true',
+      IncludeItemTypes: 'Movie,Series,Episode,Folder',
+      Fields: ITEM_FIELDS,
+      SortBy: 'SortName',
+      SortOrder: 'Ascending',
+      Limit: '100',
+    })
+
+    return parseItemsResponse(response).map(item => this.mapItem(item, path))
+  }
+
+  async listLibraries(): Promise<MediaLibrary[]> {
+    this.ensureConfigured()
+    const response = await this.request('/Users/{UserId}/Views')
+    return parseLibraryResponse(response).map(item => this.mapLibrary(item))
+  }
+
+  async getHomeSections(): Promise<HomeSection[]> {
+    const [continueWatching, recentlyAdded, featured] = await Promise.all([
+      this.getContinueWatching(),
+      this.getRecentlyAdded(),
+      this.getFeaturedItems(),
+    ])
+
+    return [
+      {
+        id: `hero-${this.id}`,
+        sourceId: this.id,
+        title: `${this.name} 精选`,
+        type: 'hero',
+        items: featured,
+      },
+      {
+        id: `continue-${this.id}`,
+        sourceId: this.id,
+        title: `${this.name} 继续观看`,
+        type: 'continueWatching',
+        items: continueWatching,
+      },
+      {
+        id: `recent-${this.id}`,
+        sourceId: this.id,
+        title: `${this.name} 最新入库`,
+        type: 'recentlyAdded',
+        items: recentlyAdded,
+      },
+    ]
+  }
+
+  async getFeaturedItems(): Promise<MediaItem[]> {
+    const response = await this.request('/Users/{UserId}/Items', {
+      Recursive: 'true',
+      IncludeItemTypes: 'Movie,Series,Episode',
+      Fields: ITEM_FIELDS,
+      SortBy: 'DateCreated',
+      SortOrder: 'Descending',
+      Limit: '8',
+    })
+    return parseItemsResponse(response).map(item => this.mapItem(item))
+  }
+
+  async getContinueWatching(): Promise<MediaItem[]> {
+    const response = await this.request('/Users/{UserId}/Items/Resume', {
+      MediaTypes: 'Video',
+      Fields: ITEM_FIELDS,
+      Limit: '12',
+    })
+    return parseItemsResponse(response).map(item => this.mapItem(item))
+  }
+
+  async getRecentlyAdded(): Promise<MediaItem[]> {
+    const response = await this.request('/Users/{UserId}/Items', {
+      Recursive: 'true',
+      IncludeItemTypes: 'Movie,Series,Episode',
+      Fields: ITEM_FIELDS,
+      SortBy: 'DateCreated',
+      SortOrder: 'Descending',
+      Limit: '12',
+    })
+    return parseItemsResponse(response).map(item => this.mapItem(item))
+  }
+
+  async search(keyword: string): Promise<MediaItem[]> {
+    const trimmed = keyword.trim()
+    if (!trimmed)
+      return []
+
+    const response = await this.request('/Users/{UserId}/Items', {
+      SearchTerm: trimmed,
+      Recursive: 'true',
+      IncludeItemTypes: 'Movie,Series,Episode',
+      Fields: ITEM_FIELDS,
+      Limit: '50',
+    })
+
+    return parseItemsResponse(response).map(item => this.mapItem(item))
+  }
+
+  async getDetail(id: string): Promise<MediaDetail> {
+    const response = await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}`, {
+      Fields: ITEM_FIELDS,
+    })
+    const item = parseItemRecord(response)
+    const base = this.mapItem(item)
+    const streams = item.MediaStreams ?? []
+    const video = streams.find(stream => stream.Type === 'Video')
+    const audio = streams.find(stream => stream.Type === 'Audio')
+
+    return {
+      ...base,
+      genres: item.Genres ?? [],
+      directors: namesByPersonType(item.People, 'Director'),
+      cast: namesByPersonType(item.People, 'Actor'),
+      imdbId: item.ProviderIds?.Imdb,
+      tmdbId: parseTmdbId(item.ProviderIds?.Tmdb),
+      resolution: video?.Width && video.Height ? `${video.Width}x${video.Height}` : undefined,
+      codec: video?.Codec,
+      audioCodec: audio?.Codec,
+      subtitles: streams.filter(stream => stream.Type === 'Subtitle').map(mapSubtitleTrack),
+      audioTracks: streams.filter(stream => stream.Type === 'Audio').map(mapAudioTrack),
+    }
+  }
+
+  async getStreamURL(id: string): Promise<string> {
+    this.ensureConfigured()
+    const params = new URLSearchParams({
+      Static: 'true',
+      api_key: this.token,
+    })
+    return `${this.baseUrl}/Videos/${encodeURIComponent(id)}/stream?${params.toString()}`
+  }
+
+  exportConfig(): DataSourceConfig {
+    this.ensureConfigured()
+    return sanitizeExportConfig(this.config)
+  }
+
+  private async request(path: string, query: Record<string, string> = {}): Promise<unknown> {
+    this.ensureConfigured()
+    const resolvedPath = path.replace('{UserId}', encodeURIComponent(this.userId))
+    const url = `${this.baseUrl}${resolvedPath}`
+
+    try {
+      return await ofetch<unknown>(url, {
+        query,
+        headers: {
+          'X-Emby-Token': this.token,
+          'X-Emby-Authorization': this.authorizationHeader(),
+        },
+      })
+    }
+    catch (error) {
+      throw new Error(redactSensitiveText(error))
+    }
+  }
+
+  private authorizationHeader(): string {
+    return `MediaBrowser Client="OhMyCine Player", Device="Desktop", DeviceId="${this.deviceId}", Version="0.1.0", Token="${this.token}"`
+  }
+
+  private mapLibrary(item: EmbyItemRecord): MediaLibrary {
+    return {
+      id: item.Id,
+      sourceId: this.id,
+      name: item.Name,
+      type: mapLibraryType(item.CollectionType),
+      posterUrl: this.imageUrl(item.Id, 'Primary', item.ImageTags?.Primary),
+      backdropUrl: this.imageUrl(item.Id, 'Backdrop/0', item.BackdropImageTags?.[0]),
+    }
+  }
+
+  private mapItem(item: EmbyItemRecord, libraryId?: string): MediaItem {
+    const sourceId = this.id
+    const mediaSourceSize = item.MediaSources?.find(source => typeof source.Size === 'number')?.Size
+
+    return {
+      id: item.Id,
+      sourceId,
+      libraryId,
+      name: item.Name,
+      type: mapMediaType(item.Type),
+      posterUrl: this.imageUrl(item.Id, 'Primary', item.ImageTags?.Primary),
+      backdropUrl: this.imageUrl(item.Id, 'Backdrop/0', item.BackdropImageTags?.[0]),
+      titleLogoUrl: this.imageUrl(item.Id, 'Logo', item.ImageTags?.Logo),
+      year: item.ProductionYear,
+      rating: item.CommunityRating ?? normalizeCriticRating(item.CriticRating),
+      overview: item.Overview,
+      tagline: item.Taglines?.[0],
+      duration: ticksToSeconds(item.RunTimeTicks),
+      size: item.Size ?? mediaSourceSize,
+      modified: item.DateCreated ?? item.DateLastMediaAdded,
+      path: item.Id,
+    }
+  }
+
+  private imageUrl(itemId: string, type: string, tag?: string): string | undefined {
+    if (!this.token)
+      return undefined
+
+    const params = new URLSearchParams({ api_key: this.token })
+    if (tag)
+      params.set('tag', tag)
+
+    return `${this.baseUrl}/Items/${encodeURIComponent(itemId)}/Images/${type}?${params.toString()}`
+  }
+
+  private ensureConfigured(): void {
+    if (!this.config || !this.baseUrl)
+      throw new Error('Emby source is not configured.')
+    if (!this.token)
+      throw new Error('Emby access token is missing. Enter it in Settings before browsing.')
+    if (!this.userId)
+      throw new Error('Emby user ID is missing. Enter it in Settings before browsing.')
+  }
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+function readEmbyExtra(config: DataSourceConfig): EmbyConfigExtra {
+  const extra = config.extra ?? {}
+  return {
+    userId: typeof extra.userId === 'string' ? extra.userId : undefined,
+    credentialRef: typeof extra.credentialRef === 'string' ? extra.credentialRef : undefined,
+    deviceId: typeof extra.deviceId === 'string' ? extra.deviceId : undefined,
+  }
+}
+
+function resolveToken(config: DataSourceConfig, extra: EmbyConfigExtra): string {
+  if (extra.credentialRef) {
+    const token = readSessionCredential(extra.credentialRef)
+    if (token)
+      return token
+  }
+
+  return typeof config.apiKey === 'string' ? config.apiKey : ''
+}
+
+function createDeviceId(sourceId: string): string {
+  return `ohmycine-${sourceId}`
+}
+
+function parseItemsResponse(value: unknown): EmbyItemRecord[] {
+  if (!isObject(value))
+    return []
+  const response = value as EmbyItemsResponse
+  if (!Array.isArray(response.Items))
+    return []
+  return response.Items.filter(isEmbyItemRecord)
+}
+
+function parseLibraryResponse(value: unknown): EmbyItemRecord[] {
+  if (!isObject(value))
+    return []
+  const response = value as EmbyLibraryResponse
+  if (!Array.isArray(response.Items))
+    return []
+  return response.Items.filter(isEmbyItemRecord)
+}
+
+function parseItemRecord(value: unknown): EmbyItemRecord {
+  if (!isEmbyItemRecord(value))
+    throw new Error('Emby returned an invalid item response.')
+  return value
+}
+
+function isEmbyItemRecord(value: unknown): value is EmbyItemRecord {
+  if (!isObject(value))
+    return false
+  const record = value as Record<string, unknown>
+  return typeof record.Id === 'string' && typeof record.Name === 'string'
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value != null
+}
+
+function mapMediaType(type: string | undefined): MediaItem['type'] {
+  switch (type) {
+    case 'Movie':
+      return 'movie'
+    case 'Series':
+      return 'series'
+    case 'Episode':
+      return 'episode'
+    case 'Folder':
+    case 'CollectionFolder':
+      return 'folder'
+    default:
+      return 'file'
+  }
+}
+
+function mapLibraryType(type: string | undefined): MediaLibrary['type'] {
+  switch (type) {
+    case 'movies':
+      return 'movies'
+    case 'tvshows':
+      return 'series'
+    case 'music':
+      return 'music'
+    case 'boxsets':
+      return 'mixed'
+    default:
+      return 'folders'
+  }
+}
+
+function ticksToSeconds(ticks: number | undefined): number | undefined {
+  return typeof ticks === 'number' ? Math.round(ticks / 10_000_000) : undefined
+}
+
+function normalizeCriticRating(rating: number | undefined): number | undefined {
+  return typeof rating === 'number' ? Math.round(rating / 10) / 10 : undefined
+}
+
+function parseTmdbId(value: string | undefined): number | undefined {
+  if (!value)
+    return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function namesByPersonType(people: readonly EmbyPersonRecord[] | undefined, type: string): string[] {
+  return (people ?? [])
+    .filter(person => person.Type === type && typeof person.Name === 'string')
+    .map(person => person.Name as string)
+}
+
+function mapSubtitleTrack(stream: EmbyMediaStreamRecord): SubtitleTrack {
+  return {
+    index: stream.Index ?? 0,
+    language: stream.DisplayLanguage ?? stream.Language ?? 'Unknown',
+    title: stream.Title,
+    isDefault: stream.IsDefault ?? false,
+  }
+}
+
+function mapAudioTrack(stream: EmbyMediaStreamRecord): AudioTrack {
+  return {
+    index: stream.Index ?? 0,
+    language: stream.DisplayLanguage ?? stream.Language ?? 'Unknown',
+    codec: stream.Codec ?? 'unknown',
+    channels: stream.Channels ?? 0,
+    isDefault: stream.IsDefault ?? false,
+  }
+}
+
+function sanitizeExportConfig(config: DataSourceConfig | null): DataSourceConfig {
+  if (!config)
+    throw new Error('Emby source is not configured.')
+
+  const { apiKey: _apiKey, username: _username, password: _password, ...safe } = config
+  void _apiKey
+  void _username
+  void _password
+  return safe
+}

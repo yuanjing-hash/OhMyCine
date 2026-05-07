@@ -1,0 +1,7 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend overview: Player independent-first, DataSource abstraction, and roadmap/status expectations."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Player service/component/store organization and Tauri/libmpv boundaries."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Vue component structure, media component fallbacks, liquid-glass/Cinema OS styling, and navigation contracts."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Core DataSource type-safety rules, external response validation, and credential leakage restrictions."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Pinia/store boundaries for shared datasource config, UI state, and persistence."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required frontend/Tauri validation and forbidden patterns for Player work."}
+{"file":".trellis/tasks/05-07-player-embedded-video-rendering/research/emby-datasource.md","reason":"Emby API mapping, auth/config fields, endpoints, DataSource mapping, and security risks."}

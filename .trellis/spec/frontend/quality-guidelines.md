@@ -61,6 +61,17 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | WSL/WSLg graphics limitation | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as partial verification and require Windows-native or full Linux desktop recheck |
 | Windows GNU package change | `npm run setup:libmpv -- windows` plus `npm run tauri:build:windows` | Cross-build passes only when the Windows `.exe` and installer are generated; runtime/signing/playback still need Windows-host verification |
 | Native file picker / dialog plugin change | Above plus `cargo check` and a `tauri dev` attempt when possible | Static checks prove integration; report partial verification if WSL graphics prevents native dialog/playback interaction |
+| DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows` when Player packaging is in scope | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
+
+For Emby/Jellyfin/OpenList/Alist/CloudDrive2 source work, also review:
+
+- Settings add/edit/test/remove states.
+- Source sidebar rendering from ordered configs.
+- SourceLibrary loading, empty, error, auth-required, library, and item states.
+- Missing poster/backdrop fallbacks.
+- Generic DataSource playback flow: UI obtains stream URLs through `DataSource.getStreamURL()`, not provider-specific route code.
+- Token/API-key redaction in errors, logs, player labels, and exported config.
+- Persistence boundary: new credentials are not written to localStorage or regular config.
 
 Do not treat Docker as a local development prerequisite.
 
