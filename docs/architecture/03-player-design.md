@@ -3,7 +3,7 @@
 ## 1. 概述
 
 OhMyCine Player 是一款**独立可用**的跨平台沉浸式家庭影院播放器，核心特点：
-- **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/Alist/CloudDrive2
+- **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2
 - **Cinema OS 风格 UI** — 液态玻璃设计语言，深色主题，电影感排版
 - **libmpv 引擎** — 全格式支持，硬件解码，HDR/Dolby Vision，沉浸式嵌入渲染
 - **全平台** — Windows, macOS, Linux (桌面), Android (移动)
@@ -71,9 +71,9 @@ ohmycine-player/
 │   │   │   └── index.ts          # 导出
 │   │   │
 │   │   ├── layout/               # 布局组件
-│   │   │   ├── AppLayout.vue     # 主布局（侧边栏+内容区）
-│   │   │   ├── Sidebar.vue       # 侧边导航
-│   │   │   ├── TopBar.vue        # 顶部栏
+│   │   │   ├── AppLayout.vue     # 主布局（动态数据源侧栏+内容区+窗口控制）
+│   │   │   ├── DataSourceSidebar.vue # 动态数据源侧栏
+│   │   │   ├── WindowChrome.vue  # 无边框窗口拖拽与控制按钮
 │   │   │   └── StatusBar.vue     # 状态栏
 │   │   │
 │   │   ├── player/               # 播放器相关组件
@@ -87,11 +87,12 @@ ohmycine-player/
 │   │   │
 │   │   ├── media/                # 媒体展示组件
 │   │   │   ├── MediaCard.vue     # 媒体卡片（海报+信息）
-│   │   │   ├── MediaGrid.vue     # 瀑布流/网格布局
+│   │   │   ├── MediaGrid.vue     # 网格布局
 │   │   │   ├── MediaRow.vue      # 横向滚动行
 │   │   │   ├── MediaDetail.vue   # 媒体详情面板
 │   │   │   ├── PosterWall.vue    # 海报墙
-│   │   │   └── HeroBanner.vue    # 首页大图轮播
+│   │   │   ├── HeroCarousel.vue  # 首页/数据源页大图轮播
+│   │   │   └── ContinueWatchingPanel.vue # 继续观看面板
 │   │   │
 │   │   └── common/               # 其他通用组件
 │   │       ├── SearchBar.vue     # 搜索栏
@@ -99,7 +100,8 @@ ohmycine-player/
 │   │       └── ServerStatus.vue  # 服务器连接状态
 │   │
 │   ├── views/                    # 页面
-│   │   ├── HomeView.vue          # 首页（可自定义布局）
+│   │   ├── HomeView.vue          # 聚合首页（全部数据源推荐/最新/继续观看）
+│   │   ├── SourceLibraryView.vue # 单数据源媒体库首页（Emby风格库浏览）
 │   │   ├── MoviesView.vue        # 电影库
 │   │   ├── SeriesView.vue        # 剧集库
 │   │   ├── PlayerView.vue        # 播放器页面
@@ -157,7 +159,7 @@ ohmycine-player/
 
 ### 4.1 架构设计
 
-Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、Alist等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
+Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist 等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -194,13 +196,17 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 
 export interface MediaItem {
   id: string
+  sourceId: string
+  libraryId?: string
   name: string
+  titleLogoUrl?: string
   type: 'movie' | 'series' | 'episode' | 'folder' | 'file'
   posterUrl?: string
   backdropUrl?: string
   year?: number
   rating?: number
   overview?: string
+  tagline?: string
   duration?: number        // 秒
   size?: number            // 字节
   modified?: string        // 最后修改时间 (ISO 8601)
@@ -212,6 +218,24 @@ export interface FileEntry {
   name: string
   path: string
   modified: string
+}
+
+export interface MediaLibrary {
+  id: string
+  sourceId: string
+  name: string
+  type: 'movies' | 'series' | 'anime' | 'music' | 'mixed' | 'folders'
+  posterUrl?: string
+  backdropUrl?: string
+  itemCount?: number
+}
+
+export interface HomeSection {
+  id: string
+  sourceId?: string
+  title: string
+  type: 'hero' | 'continueWatching' | 'recentlyAdded' | 'recommended' | 'libraryRow'
+  items: MediaItem[]
 }
 
 export interface MediaDetail extends MediaItem {
@@ -245,8 +269,12 @@ export interface AudioTrack {
 export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'server' | '115' | '123' | 'quark'
 
 export interface DataSourceConfig {
+  id: string
   type: DataSourceType
   name: string
+  displayName?: string
+  iconUrl?: string
+  order: number
   url: string
   apiKey?: string
   username?: string
@@ -268,6 +296,11 @@ export interface DataSource {
 
   // 媒体浏览
   list(path?: string): Promise<MediaItem[]>
+  listLibraries?(): Promise<MediaLibrary[]>
+  getHomeSections?(): Promise<HomeSection[]>
+  getFeaturedItems?(): Promise<MediaItem[]>
+  getContinueWatching?(): Promise<MediaItem[]>
+  getRecentlyAdded?(): Promise<MediaItem[]>
   search(keyword: string): Promise<MediaItem[]>
   getDetail(id: string): Promise<MediaDetail>
 
@@ -353,7 +386,7 @@ export class EmbyDataSource implements DataSource {
 }
 ```
 
-### 4.4 Alist (OpenList) DataSource 实现
+### 4.4 OpenList/Alist DataSource 实现
 
 ```typescript
 // src/services/datasource/alist.ts
@@ -495,7 +528,7 @@ Player 配置存储在 Tauri 的 `app_data_dir` 下：
     },
     {
       "type": "alist",
-      "name": "NAS Alist",
+      "name": "NAS OpenList/Alist",
       "url": "http://nas:5244",
       "password": ""
     }
@@ -554,12 +587,12 @@ export class ConfigSync {
 
 ### 5.1 设计背景
 
-Emby/Jellyfin 自带刮削功能，但 Alist/CloudDrive2 这类网盘数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
+Emby/Jellyfin 自带刮削功能，但 OpenList/Alist/CloudDrive2 这类网盘数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
 
 ### 5.2 刮削流程
 
 ```
-网盘文件列表 (Alist API / CloudDrive2 WebDAV)
+网盘文件列表 (OpenList/Alist API / CloudDrive2 WebDAV)
         │
         ▼
 文件名解析 (parse-torrent-name)
@@ -1454,7 +1487,7 @@ export const useSettingsStore = defineStore('settings', () => {
   box-shadow: var(--glass-shadow-elevated);
 }
 
-/* 侧边栏玻璃 */
+/* 动态数据源侧栏玻璃 */
 .sidebar-glass {
   background: rgba(10, 10, 15, 0.7);
   backdrop-filter: blur(40px) saturate(1.8);
@@ -1477,41 +1510,55 @@ export const useSettingsStore = defineStore('settings', () => {
 
 #### 首页 (HomeView)
 
+首页是 **全部已绑定数据源的聚合入口**，不是固定电影/剧集分类页。它从用户已配置的数据源中按顺序和可用元数据拉取内容，形成类似 Emby/Jellyfin 首页但更沉浸的 Cinema OS 体验。
+
 ```
-┌────────────────────────────────────────────────────────────────┐
-│ [≡]  OhMyCine                   🔍 Search    ⚙️  🔔          │ <- TopBar
-├────────┬───────────────────────────────────────────────────────┤
-│        │                                                       │
-│  🏠   │  ┌─────────────────────────────────────────────────┐  │
-│ 首页  │  │                                                 │  │
-│        │  │          Hero Banner (大图轮播)                 │  │
-│  🎬   │  │          海报 + 标题 + 简介 + 播放按钮          │  │
-│ 电影  │  │                                                 │  │
-│        │  └─────────────────────────────────────────────────┘  │
-│  📺   │                                                       │
-│ 剧集  │  Recently Added (最近添加)                              │
-│        │  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ──▶     │
-│  ☁️   │  │海报│ │海报│ │海报│ │海报│ │海报│ │海报│          │
-│ 网盘  │  └────┘ └────┘ └────┘ └────┘ └────┘ └────┘           │
-│        │                                                       │
-│  ⬇️   │  Continue Watching (继续观看)                          │
-│ 下载  │  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐                  │
-│        │  │ █░░│ │ █░░│ │ █░░│ │ █░░│ │ █░░│  ← 进度条       │
-│  🤖   │  └────┘ └────┘ └────┘ └────┘ └────┘                  │
-│ AI    │                                                       │
-│        │  Top Rated (高分佳片)                                  │
-│  ⚙️   │  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ──▶     │
-│ 设置  │  │海报│ │海报│ │海报│ │海报│ │海报│ │海报│          │
-│        │  └────┘ └────┘ └────┘ └────┘ └────┘ └────┘           │
-├────────┴───────────────────────────────────────────────────────┤
-│ Status: Connected to Server ●  Library: 1,234 items            │ <- StatusBar
-└────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  动态数据源侧栏                                                     │
+│  ┌──┐   ┌──────────────────────────────────────────────────────┐   │
+│  │🏠│   │ Hero Carousel                                         │   │
+│  │E │   │ 背景: backdrop / 海报图                               │   │
+│  │12│   │ 左侧: 标题 Logo / 标题 / 简介 / 年份 / 类型 / 评分     │   │
+│  │☁ │   │ 操作: 播放 / 收藏 / 详情                              │   │
+│  │⚙ │   │ 右侧: 轮播切换按钮 + 底部页码指示                    │   │
+│  └──┘   └──────────────────────────────────────────────────────┘   │
+│                                                                    │
+│        ┌──────────────────────┐ ┌──────────────────────────────┐   │
+│        │ 继续观看              │ │ 最新影片                      │   │
+│        │ 最近播放记录/进度条    │ │ 海报 + 片名横向列表            │   │
+│        └──────────────────────┘ └──────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-**首页支持自定义布局**：
-- 用户可拖拽排列区块（最近添加、继续观看、高分佳片、按类型等）
-- 可添加自定义区块（按标签、按评分、按年份等）
-- 布局保存在本地Settings中
+**Hero Carousel 数据来源**：
+- 优先使用媒体源已有元数据：标题 Logo（类似 Emby logo image）、backdrop、poster、overview、year、genres、rating、duration。
+- Emby/Jellyfin 直接使用服务端已刮削数据。
+- OpenList/Alist、CloudDrive2、本地文件若缺元数据，使用 Player 本地刮削结果补齐。
+- 轮播支持左右切换，并按固定间隔自动切换；用户手动切换后短暂暂停自动轮播。
+- Hero 选择逻辑优先使用：继续观看中的高优先级项目、最近添加、评分较高项目；避免展示缺少 backdrop/overview 的裸文件。
+
+**动态数据源侧栏**：
+- 侧栏固定在首页和媒体库页面左侧，采用液态玻璃竖向导航。
+- 顶部固定为“首页/聚合首页”。
+- 其后按 `DataSourceConfig.order` 展示用户已绑定的数据源，例如 Emby、123 云盘、OpenList/Alist、CloudDrive2、本地文件。
+- 数据源图标和名称来自绑定配置；未配置图标时按类型使用默认图标。
+- 点击某个数据源进入 `SourceLibraryView`，只浏览该数据源下的媒体库。
+- 设置入口固定在底部；Server 连接作为可选数据源或增强入口，不阻塞首页。
+
+**首页内容区**：
+- 左下角为“继续观看”，显示播放历史、进度条和下一集/继续播放入口；没有记录时使用低存在感空状态。
+- 右下角为“最新影片/最近添加”，显示来自全部数据源的最新项目，使用海报 + 名称。
+- 首页可以后续扩展推荐、收藏、高分佳片等区块，但 MVP 优先实现 Hero、继续观看、最新影片三块，避免首页复杂度过高。
+
+#### 单数据源媒体库页 (SourceLibraryView)
+
+点击动态数据源侧栏的某个来源后进入该数据源自己的媒体库首页。布局参考 Emby/Jellyfin：
+
+- 顶部保留与首页一致风格的 Hero Carousel，但数据只来自当前数据源。
+- Hero 下方显示该数据源的媒体库分组，如电影、剧集、动画、文件夹等。
+- 每个媒体库使用海报墙/横向行展示，支持进入库详情、筛选、搜索和播放。
+- 云盘类数据源可以同时展示“媒体库视图”和“文件夹视图”，但默认优先展示已刮削/已识别的媒体内容。
+- 不同数据源的页面结构统一，具体能力由 DataSource 接口返回值决定。
 
 #### 播放器页面 (PlayerView)
 

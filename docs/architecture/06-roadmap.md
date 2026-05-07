@@ -1,19 +1,24 @@
 # OhMyCine — 开发路线图
 
+> **标记说明**: `[x]` 已完成并验证 · `[~]` 已写完待验证 · `[ ]` 未开始
+>
+> **Trellis 接管说明**: 既有 Player 开发成果按当前状态接入 Trellis 管理，后续任务只在现有基础上继续推进，不要求迁移时重做。任何 Trellis task 完成功能、补齐实现或改变设计状态时，都必须同步更新本路线图的 `[x]`/`[~]`/`[ ]` 标记或状态说明，避免任务状态与路线图脱节。
+
 ## 核心设计原则
 
 - **Player 独立优先**：Player 必须在没有 Server 的情况下完整可用，除 Server 联动入口外优先完整开发
+- **聚合首页优先**：Player 首页聚合全部已绑定数据源，优先实现 Hero 轮播、继续观看、最新影片与动态数据源侧栏
 - **全功能开源**：所有功能完全免费开源，路线图只调整实施顺序，不削减最终功能范围
 - **Server 是增强层**：Server 提供媒体流水线等高级功能，但不阻塞 Player 基本使用
 - **流水线驱动**：Server 核心是 发现→下载→转移→入库→通知 的闭环
-- **刚需驱动 Server MVP**：Server 初期优先支持 115网盘、OpenList、CloudDrive2、本地文件、STRM 与 302代理，其他网盘和生态能力后续扩展
+- **刚需驱动 Server MVP**：Server 初期优先支持 115网盘、OpenList/Alist、CloudDrive2、本地文件、STRM 与 302代理，其他网盘和生态能力后续扩展
 
 ## 阶段总览
 
 ```
 Phase 0: 基础设施           ████░░░░░░░░░░░░░░░░  Week 1-2
 Phase 1: Player 独立版 MVP  ████████░░░░░░░░░░░░  Week 3-8
-Phase 2: Server MVP         ████████████░░░░░░░░  Week 9-14
+Phase 2: Server MVP        ████████████░░░░░░░░  Week 9-14
 Phase 3: 核心功能增强       ████████████████░░░░  Week 15-22
 Phase 4: 生态系统           ████████████████████  Week 23+
 ```
@@ -27,7 +32,7 @@ Phase 4: 生态系统           ████████████████
 ### 0.1 仓库与项目结构
 
 - [x] 创建仓库 `OhMyCine` 并关联本地 (已完成: `yuanjing-hash/OhMyCine`)
-- [ ] 初始化 monorepo 结构 (所有组件在同一仓库)
+- [x] 初始化 monorepo 结构 (所有组件在同一仓库)
   ```
   ohmycine/
   ├── player/          — Tauri + Vue 播放器
@@ -37,8 +42,8 @@ Phase 4: 生态系统           ████████████████
   ├── docs/            — 架构文档
   └── .github/         — CI/CD
   ```
-- [ ] 配置 `.gitignore` (Go/Node/Rust/OS 文件)
-- [ ] 配置 `.editorconfig` (统一编码风格)
+- [x] 配置 `.gitignore` (Go/Node/Rust/OS 文件)
+- [x] 配置 `.editorconfig` (统一编码风格)
 - [x] 编写 `LICENSE` (GPL-3.0)
 - [x] 编写 `README.md` (项目介绍、快速开始、架构概览)
 - [x] 编写 `CONTRIBUTING.md` (贡献指南、PR流程、Commit规范)
@@ -49,19 +54,19 @@ Phase 4: 生态系统           ████████████████
 
 #### 开发期 CI（Phase 0 必做）
 
-- [ ] Go 后端 CI: `go test ./...` + `go build` + `golangci-lint`
-- [ ] CLI CI: `go test ./...` + `go build`
-- [ ] Vue/Player 前端 CI: `eslint` + `vue-tsc --noEmit` + `vite build`
-- [ ] Tauri 桌面构建 CI: Windows / macOS / Linux 构建测试包
-- [ ] Hub 文档站 CI: VitePress build
-- [ ] 上传 GitHub Actions Artifacts，方便下载本地测试
+- [~] Go 后端 CI: `go test ./...` + `go build` + `golangci-lint`
+- [~] CLI CI: `go test ./...` + `go build`
+- [~] Vue/Player 前端 CI: `eslint` + `vue-tsc --noEmit` + `vite build`
+- [~] Tauri 桌面构建 CI: Windows / macOS / Linux 构建测试包
+- [~] Hub 文档站 CI: VitePress build
+- [~] 上传 GitHub Actions Artifacts，方便下载本地测试
 
 #### 手动测试构建（MVP 阶段）
 
-- [ ] `workflow_dispatch` 手动触发构建
-- [ ] 支持选择构建组件: Player / Server / CLI / Hub
-- [ ] 支持选择构建平台: Windows / macOS / Linux
-- [ ] 构建产物保留 7-30 天供测试下载
+- [~] `workflow_dispatch` 手动触发构建
+- [~] 支持选择构建组件: Player / Server / CLI / Hub
+- [~] 支持选择构建平台: Windows / macOS / Linux
+- [~] 构建产物保留 7-30 天供测试下载
 
 #### 发布期 CI（后置）
 
@@ -75,24 +80,24 @@ Phase 4: 生态系统           ████████████████
 
 > 本地开发优先使用手动编译和本地运行；Docker 主要用于后续部署、CI 集成测试和 NAS/服务器环境。
 
-- [ ] 本地开发启动脚本: Player / Server / CLI / Hub 手动编译运行
-- [ ] Makefile / Taskfile (常用命令: build, test, lint, dev)
-- [ ] VS Code 推荐配置 (`.vscode/extensions.json`, `.vscode/settings.json`)
-- [ ] 无 Docker 本地开发文档 (npm/tauri、go run/go test、cargo check)
+- [x] 本地开发启动脚本: Player / Server / CLI / Hub 手动编译运行
+- [x] Makefile / Taskfile (常用命令: build, test, lint, dev)
+- [x] VS Code 推荐配置 (`.vscode/extensions.json`, `.vscode/settings.json`)
+- [x] 无 Docker 本地开发文档 (npm/tauri、go run/go test、cargo check)
 - [ ] Docker Compose 部署配置 (可选，用于 NAS/服务器/CI 集成测试)
 
 ### 0.4 品牌与文档
 
 - [ ] 设计 Logo (SVG + PNG 多尺寸)
-- [ ] 设计品牌色 (主色 #4A9EFF, 强调色 #A855F7)
-- [ ] 初始化 VitePress 文档站点框架
-- [ ] 编写架构文档索引页
+- [x] 设计品牌色 (主色 #4A9EFF, 强调色 #A855F7)
+- [x] 初始化 VitePress 文档站点框架
+- [x] 编写架构文档索引页
 
 ---
 
 ## Phase 1: Player 独立版 MVP (Week 3-8)
 
-> Player 独立可用版本 — 无需 Server，原生连接 Emby/Jellyfin/Alist/CloudDrive2
+> Player 独立可用版本 — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2
 
 ### Sprint 1.1: Tauri 项目 + libmpv (Week 3-4)
 
@@ -100,62 +105,63 @@ Phase 4: 生态系统           ████████████████
 
 #### Tauri 项目初始化
 
-- [ ] `npm create tauri-app` 初始化项目
-- [ ] 配置 Vue 3 + TypeScript + Vite
-- [ ] 配置 UnoCSS (原子化CSS)
-- [ ] 配置 Pinia (状态管理)
-- [ ] 配置 Vue Router (SPA路由)
-- [ ] 配置 Vue I18n (国际化框架)
-- [ ] 配置 `tsconfig.json` (严格模式)
-- [ ] 配置 ESLint + Prettier (代码规范)
-- [ ] 配置 `tauri.conf.json` (窗口配置、权限、打包)
+- [x] `npm create tauri-app` 初始化项目
+- [x] 配置 Vue 3 + TypeScript + Vite
+- [x] 配置 UnoCSS (原子化CSS)
+- [x] 配置 Pinia (状态管理)
+- [x] 配置 Vue Router (SPA路由)
+- [x] 配置 Vue I18n (国际化框架)
+- [x] 配置 `tsconfig.json` (严格模式)
+- [x] 配置 ESLint + Prettier (代码规范)
+- [x] 配置 `tauri.conf.json` (窗口配置、权限、打包)
 
 #### libmpv 嵌入集成
 
-- [ ] 下载 libmpv 二进制库 (Windows/macOS/Linux)
-- [ ] 创建 `src-tauri/src/mpv/` 模块
-- [ ] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
-- [ ] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
+- [x] 下载 libmpv 二进制库 (Windows/macOS/Linux)
+- [x] 创建 `src-tauri/src/mpv/` 模块
+- [x] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
+- [x] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
 - [ ] 实现 `MpvRenderContext` (渲染上下文绑定到窗口)
 - [ ] 创建 Tauri Plugin: `mpv_plugin.rs`
-- [ ] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
-- [ ] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
+- [x] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
+- [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
 - [ ] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
-- [ ] 配置 Cargo 依赖: `libmpv = "2.0"`, `libmpv-sys = "3.1"`
-- [ ] 编写构建脚本: 自动下载对应平台的 libmpv 库
+- [x] 配置 Cargo 依赖: `libmpv = "2.0"`, `libmpv-sys = "3.1"`
+- [~] 编写构建脚本: 自动下载对应平台的 libmpv 库
 
 #### Vue 侧播放器 Composable
 
-- [ ] 实现 `useMpv()` composable
-- [ ] 响应式状态: `isPlaying`, `currentTime`, `duration`, `volume`
+- [x] 实现 `useMpv()` composable
+- [x] 响应式状态: `isPlaying`, `currentTime`, `duration`, `volume`
 - [ ] 响应式状态: `subtitleTracks`, `audioTracks`, `currentSubtitle`, `currentAudio`
-- [ ] 方法: `load()`, `togglePause()`, `seek()`, `setVolume()`
+- [x] 方法: `load()`, `togglePause()`, `seek()`, `setVolume()`
 - [ ] 方法: `setSubtitle()`, `setAudio()`
-- [ ] 事件监听自动清理 (`onUnmounted`)
+- [x] 事件监听自动清理 (`onUnmounted`)
 
 #### 基础窗口管理
 
-- [ ] 无边框窗口配置 (`decorations: false`)
-- [ ] 自定义标题栏组件 (`TitleBar.vue`)
-- [ ] 窗口拖拽区域 (`data-tauri-drag-region`)
-- [ ] 窗口控制按钮 (最小化/最大化/关闭)
-- [ ] 全屏切换 (`appWindow.setFullscreen`)
+- [x] 无边框窗口配置 (`decorations: false`)
+- [x] 自定义标题栏组件 (`TitleBar.vue`)
+- [x] 窗口拖拽区域 (`data-tauri-drag-region`)
+- [x] 窗口控制按钮 (最小化/最大化/关闭)
+- [x] 全屏切换 (`appWindow.setFullscreen`)
 
 #### 基础播放控制 UI
 
-- [ ] `VideoPlayer.vue` — 视频播放区域 (libmpv 渲染)
-- [ ] `PlayerControls.vue` — 播放控制条
-- [ ] `ProgressBar.vue` — 进度条 (可拖拽)
-- [ ] `VolumeControl.vue` — 音量控制
-- [ ] 播放/暂停按钮
+- [x] `VideoPlayer.vue` — 视频播放区域 (libmpv 渲染)
+- [x] `PlayerControls.vue` — 播放控制条
+- [x] `ProgressBar.vue` — 进度条 (可拖拽)
+- [x] `VolumeControl.vue` — 音量控制
+- [x] 播放/暂停按钮
 - [ ] 快进/快退按钮 (10s/60s)
-- [ ] 音量显示与控制
+- [x] 音量显示与控制
 
 **产出**:
-- [ ] 桌面应用能启动，无边框窗口
-- [ ] 能拖拽文件到窗口播放
-- [ ] libmpv 渲染在窗口内部，沉浸式体验
-- [ ] 基础播放控制 (播放/暂停/进度/音量)
+
+- [x] 桌面应用能启动，无边框窗口
+- [x] 能拖拽文件到窗口播放
+- [x] libmpv 渲染在窗口内部，沉浸式体验
+- [x] 基础播放控制 (播放/暂停/进度/音量)
 
 ### Sprint 1.2: DataSource 抽象层 (Week 5-6)
 
@@ -163,21 +169,25 @@ Phase 4: 生态系统           ████████████████
 
 #### DataSource 接口设计
 
-- [ ] 定义 `MediaItem` 接口 (id, name, type, posterUrl, year, rating, path...)
-- [ ] 定义 `MediaDetail` 接口 (extends MediaItem + genres, directors, cast...)
-- [ ] 定义 `SubtitleTrack`, `AudioTrack` 接口
-- [ ] 定义 `DataSourceType` 类型枚举
-- [ ] 定义 `DataSourceConfig` 接口
-- [ ] 定义 `DataSource` 接口 (init, test, destroy, list, search, getDetail, getStreamURL)
+- [~] 定义 `MediaItem` 接口 (id, sourceId, libraryId, name, titleLogoUrl, posterUrl, backdropUrl, overview, year, rating, path...)
+- [~] 定义 `MediaDetail` 接口 (extends MediaItem + genres, directors, cast...)
+- [~] 定义 `MediaLibrary` 接口 (sourceId, name, type, posterUrl, backdropUrl, itemCount)
+- [~] 定义 `HomeSection` 接口 (hero, continueWatching, recentlyAdded, recommended, libraryRow)
+- [~] 定义 `SubtitleTrack`, `AudioTrack` 接口
+- [~] 定义 `DataSourceType` 类型枚举
+- [~] 定义 `DataSourceConfig` 接口 (id, type, name, displayName, iconUrl, order, credentials...)
+- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL)
 
 #### DataSourceManager 实现
 
 - [ ] 实现 `DataSourceManager` 类
-- [ ] `addSource()` — 创建并初始化数据源
-- [ ] `removeSource()` — 销毁并移除数据源
-- [ ] `getAllSources()` / `getSource(id)`
+- [~] `addSource()` — 创建并初始化数据源
+- [~] `removeSource()` — 销毁并移除数据源
+- [~] `getAllSources()` / `getSource(id)`
+- [~] `getOrderedSources()` — 按绑定配置顺序返回侧栏数据源
+- [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据
 - [ ] `searchAll()` — 跨数据源并发搜索
-- [ ] `exportAllConfigs()` / `importConfigs()` — 配置导入导出
+- [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出
 - [ ] `createDataSource(type)` — 工厂方法
 
 #### EmbyDataSource 实现
@@ -185,6 +195,8 @@ Phase 4: 生态系统           ████████████████
 - [ ] 实现 `EmbyClient` 类 (封装 Emby REST API)
 - [ ] `getSystemInfo()` — 测试连接
 - [ ] `getMediaFolders()` — 获取媒体库列表
+- [ ] `getHomeSections()` — 获取 Emby 首页区块/继续观看/最新项目
+- [ ] `getFeaturedItems()` — 获取可用于 Hero 轮播的 Logo/backdrop/overview 元数据
 - [ ] `getItems(parentId)` — 获取库内项目
 - [ ] `search(keyword)` — 搜索
 - [ ] `getItem(id)` — 获取详情 (含 People/Genres/MediaStreams)
@@ -200,36 +212,41 @@ Phase 4: 生态系统           ████████████████
 
 #### 配置持久化
 
-- [ ] 使用 Tauri `app_data_dir` 存储配置
-- [ ] 实现 `config.json` 读写 (datasources, server, ai, ui)
-- [ ] 配置变更自动保存
+- [~] 使用 Tauri `app_data_dir` 存储配置
+- [~] 实现 `config.json` 读写 (datasources, server, ai, ui)
+- [~] 配置变更自动保存
 
 #### 设置页面 UI
 
-- [ ] `SettingsView.vue` — 设置页面
-- [ ] 数据源列表管理 (添加/编辑/删除)
+- [~] `SettingsView.vue` — 设置页面
+- [~] 数据源列表管理 (添加/编辑/删除)
+- [ ] 数据源排序设置 (决定动态侧栏展示顺序)
+- [ ] 数据源显示配置 (名称/图标/是否在侧栏显示)
 - [ ] 添加数据源表单 (类型选择/URL/API Key)
 - [ ] 连接测试按钮 (显示成功/失败)
 - [ ] 数据源状态显示 (在线/离线)
 
 **产出**:
+
 - [ ] 能添加 Emby/Jellyfin 服务器
-- [ ] 能浏览媒体库、搜索影片
+- [ ] 能按绑定顺序在动态侧栏展示数据源
+- [ ] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片
+- [ ] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片
 - [ ] 能直接播放 Emby/Jellyfin 上的视频
 - [ ] 配置自动持久化
 
-### Sprint 1.3: Alist + CloudDrive2 + 本地文件 (Week 7-8)
+### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 
 **目标**: 完整的独立播放器，支持多种数据源
 
-#### AlistDataSource 实现
+#### OpenList/Alist DataSource 实现
 
-- [ ] 实现 Alist HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`)
+- [ ] 实现 OpenList/Alist HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`)
 - [ ] 实现 WebDAV 客户端 (备选方案)
 - [ ] `list(path)` — 目录浏览
 - [ ] `search(keyword)` — 搜索
 - [ ] `getStreamURL(path)` — 构建播放URL (`/d{path}`)
-- [ ] 实现 `AlistDataSource` (implements DataSource)
+- [ ] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource)
 - [ ] 连接测试
 
 #### CloudDrive2DataSource 实现
@@ -259,6 +276,7 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] 跨数据源搜索结果合并与去重
 - [ ] 统一媒体浏览 (合并所有 DataSource 的内容)
+- [ ] 云盘/本地文件刮削结果接入聚合首页 Hero / 最新影片
 - [ ] 配置导入/导出 (JSON 文件)
 
 #### 播放器增强
@@ -270,7 +288,8 @@ Phase 4: 生态系统           ████████████████
 - [ ] 继续观看功能
 
 **产出**:
-- [ ] 能连接 Alist 浏览和播放云盘文件
+
+- [ ] 能连接 OpenList/Alist 浏览和播放云盘文件
 - [ ] 能连接 CloudDrive2 浏览和播放
 - [ ] 能播放本地文件和拖拽播放
 - [ ] 115/123/夸克在 UI 中有占位
@@ -279,7 +298,7 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 2: Server MVP (Week 9-14)
 
-> 后端最小可用版本 — 优先打通刚需存储与播放闭环：115网盘 / OpenList / CloudDrive2 / 本地文件 + 三层架构 + STRM + 302代理 + 配置同步；PT聚合、追更、AI、插件、多用户权限等功能保留在后续阶段逐步完整实现
+> 后端最小可用版本 — 优先打通刚需存储与播放闭环：115网盘 / OpenList/Alist / CloudDrive2 / 本地文件 + 三层架构 + STRM + 302代理 + 配置同步；PT聚合、追更、AI、插件、多用户权限等功能保留在后续阶段逐步完整实现
 
 ### Sprint 2.1: 基础框架 + 三层架构 (Week 9-10)
 
@@ -367,6 +386,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 编写 `docker-compose.yaml` (后续 NAS/服务器部署准备，可选)
 
 **产出**:
+
 - [ ] Server 能本地运行并通过健康检查
 - [ ] 三层架构 CRUD API 可用
 - [ ] 用户登录/权限控制可用
@@ -381,7 +401,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 定义 `Driver` 接口 (`pkg/cloud/driver.go`)
 - [ ] 定义 `File`, `DownloadURL`, `Quota` 结构体
 - [ ] 实现驱动注册机制 (`pkg/cloud/registry.go`)
-- [ ] 实现 `AlistDriver` (`pkg/cloud/alist/`)
+- [ ] 实现 `AlistDriver` (`pkg/cloud/alist/`，兼容 OpenList/Alist API)
   - [ ] HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`, `/api/fs/search`)
   - [ ] `List()`, `Get()`, `Upload()`, `GetDownloadURL()`, `Search()`
   - [ ] 连接测试 (`IsAlive`)
@@ -437,6 +457,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 自动导入 Player 的数据源配置到连接管理
 
 **产出**:
+
 - [ ] 网盘文件浏览/上传可用
 - [ ] qBit/Transmission 能连接和控制
 - [ ] 302 代理能重定向到云盘 CDN
@@ -523,6 +544,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] Server 侧功能展示入口
 
 **产出**:
+
 - [ ] 下载完成 → 自动转移 → 自动生成 STRM → 通知 Emby 刷新 → Emby 能播放
 - [ ] STRM 定时增量/全量/清理可用
 - [ ] Player 连接 Server 后配置自动同步
@@ -600,6 +622,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 下载进度显示
 
 **产出**:
+
 - [ ] 能跨站点聚合搜索
 - [ ] 搜索结果自动匹配 TMDB 元数据
 - [ ] 一键下载 → 自动分类 → 自动转移 → 自动入库
@@ -659,6 +682,7 @@ Phase 4: 生态系统           ████████████████
   - [ ] 文件操作 (上传/删除/移动)
 
 **产出**:
+
 - [ ] 能追更剧集，自动下载缺少的集数
 - [ ] 7+ 个网盘驱动可用
 - [ ] 302 播放稳定可靠
@@ -693,36 +717,40 @@ Phase 4: 生态系统           ████████████████
 
 #### Cinema OS UI 完善
 
-- [ ] CSS Variables 设计 Token (`variables.css`)
-  - [ ] 色彩系统 (主色/强调色/中性色/语义色)
-  - [ ] 液态玻璃变量 (bg/border/blur/shadow)
-  - [ ] 圆角/间距/字体/动画变量
-- [ ] 液态玻璃组件库 (`glass.css`)
-  - [ ] `.glass` 基础液态玻璃
-  - [ ] `.glass-card` 悬停光晕效果
-  - [ ] `.sidebar-glass` 侧边栏玻璃
-  - [ ] `.player-controls-glass` 播放控制条玻璃
-- [ ] 布局系统
-  - [ ] `AppLayout.vue` — 主布局 (侧边栏+内容区)
-  - [ ] `Sidebar.vue` — 侧边导航
-  - [ ] `TopBar.vue` — 顶部栏
+- [~] CSS Variables 设计 Token (`variables.css`)
+  - [~] 色彩系统 (主色/强调色/中性色/语义色)
+  - [~] 液态玻璃变量 (bg/border/blur/shadow)
+  - [~] 圆角/间距/字体/动画变量
+- [~] 液态玻璃组件库 (`glass.css`)
+  - [~] `.glass` 基础液态玻璃
+  - [~] `.glass-card` 悬停光晕效果
+  - [~] `.datasource-sidebar-glass` 动态数据源侧栏玻璃
+  - [~] `.player-controls-glass` 播放控制条玻璃
+- [~] 布局系统
+  - [~] `AppLayout.vue` — 主布局 (动态数据源侧栏+内容区+窗口控制)
+  - [~] `DataSourceSidebar.vue` — 按绑定顺序渲染首页、数据源和设置入口
+  - [~] `WindowChrome.vue` — 无边框窗口拖拽与控制按钮
   - [ ] `StatusBar.vue` — 状态栏
-- [ ] 动画系统
+- [~] 动画系统
   - [ ] 页面切换动画 (Motion Vue)
-  - [ ] 悬停光晕动画 (CSS + JS)
-  - [ ] 列表项进入动画
-- [ ] 首页 (`HomeView.vue`)
-  - [ ] Hero Banner (大图轮播)
-  - [ ] 最近添加
-  - [ ] 继续观看
-  - [ ] 高分佳片
-  - [ ] 自定义布局 (拖拽排列区块)
-- [ ] 媒体展示组件
+  - [~] 悬停光晕动画 (CSS + JS)
+  - [~] 列表项进入动画
+- [~] 首页 (`HomeView.vue`)
+  - [~] Hero Carousel (跨数据源聚合轮播，自动/手动切换)
+  - [~] 继续观看面板 (播放进度/下一集入口)
+  - [~] 最新影片面板 (海报+名称)
+- [~] 单数据源媒体库页 (`SourceLibraryView.vue`)
+  - [ ] 数据源级 Hero Carousel (当前来源元数据)
+  - [~] 媒体库分组 (电影/剧集/文件夹)
+  - [ ] 库内海报墙与详情浏览
+- [~] 媒体展示组件
   - [ ] `MediaCard.vue` — 媒体卡片 (海报+信息)
   - [ ] `MediaGrid.vue` — 网格布局
   - [ ] `MediaRow.vue` — 横向滚动行
   - [ ] `MediaDetail.vue` — 媒体详情面板
   - [ ] `PosterWall.vue` — 海报墙
+  - [~] `HeroCarousel.vue` — 首页/数据源页大图轮播
+  - [ ] `ContinueWatchingPanel.vue` — 继续观看面板
 
 #### 文件管理页面
 
@@ -766,6 +794,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 国际化完善 (中英文完整翻译)
 
 **产出**:
+
 - [ ] AI 能基于本地库推荐电影
 - [ ] 液态玻璃 UI 流畅
 - [ ] 文件管理跨数据源可用
@@ -836,7 +865,7 @@ Phase 4: 生态系统           ████████████████
 ```
 2026 Q2 (May-Jun)
   └─ Phase 0 + Phase 1 完成
-     Player 独立版可用，Emby/Jellyfin/Alist/CloudDrive2 原生连接
+     Player 独立版可用，聚合首页 + 动态数据源侧栏，Emby/Jellyfin/OpenList/Alist/CloudDrive2 原生连接
 
 2026 Q3 (Jul-Sep)
   └─ Phase 2 完成
@@ -853,12 +882,12 @@ Phase 4: 生态系统           ████████████████
 
 ## 技术风险与应对
 
-| 风险 | 影响 | 应对 |
-|------|------|------|
-| libmpv 库体积 | 安装包增加 ~30MB | 按平台动态链接，构建时自动下载 |
-| 网盘 API 不稳定 | 网盘功能不可用 | 多驱动容错、自动降级到 Alist 代理 |
-| PT 站点反爬 | 站点功能失效 | 社区维护 Cookie、适配器热更新 |
-| Tauri Android 成熟度 | 移动端体验差 | 备选方案：Flutter/原生 Android |
-| 插件安全 | 恶意插件 | 签名验证 + 沙箱执行 + 社区审核 |
-| 法律风险(PT站点) | 合规问题 | 不内置站点列表，用户自行配置 |
-| 追更误判 | 下载错误资源 | IMDB ID 精确匹配 + 人工确认选项 |
+| 风险                 | 影响             | 应对                              |
+| -------------------- | ---------------- | --------------------------------- |
+| libmpv 库体积        | 安装包增加 ~30MB | 按平台动态链接，构建时自动下载    |
+| 网盘 API 不稳定      | 网盘功能不可用   | 多驱动容错、自动降级到 OpenList/Alist 代理 |
+| PT 站点反爬          | 站点功能失效     | 社区维护 Cookie、适配器热更新     |
+| Tauri Android 成熟度 | 移动端体验差     | 备选方案：Flutter/原生 Android    |
+| 插件安全             | 恶意插件         | 签名验证 + 沙箱执行 + 社区审核    |
+| 法律风险(PT站点)     | 合规问题         | 不内置站点列表，用户自行配置      |
+| 追更误判             | 下载错误资源     | IMDB ID 精确匹配 + 人工确认选项   |

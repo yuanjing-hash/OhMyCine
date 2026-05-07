@@ -1,0 +1,12 @@
+{"file": "CLAUDE.md", "reason": "Verify project-level constraints remain consistent"}
+{"file": "docs/architecture/00-index.md", "reason": "Check index consistency"}
+{"file": "docs/architecture/01-overview.md", "reason": "Check database and product wording consistency"}
+{"file": "docs/architecture/02-server-design.md", "reason": "Check Server spec extraction and OpenList wording"}
+{"file": "docs/architecture/03-player-design.md", "reason": "Check Player spec extraction and existing work status"}
+{"file": "docs/architecture/04-hub-design.md", "reason": "Check plugin runtime wording against security design"}
+{"file": "docs/architecture/06-roadmap.md", "reason": "Check roadmap update rule and status markers"}
+{"file": "docs/architecture/07-security-design.md", "reason": "Check security requirements are captured"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Verify backend specs are populated and referenced"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Verify frontend specs are populated and referenced"}
+{"file": ".trellis/spec/backend/security-guidelines.md", "reason": "Verify security rules cover credentials/proxy/sync/plugin/AI boundaries"}
+{"file": ".trellis/spec/backend/api-guidelines.md", "reason": "Verify API and sync rules are captured"}

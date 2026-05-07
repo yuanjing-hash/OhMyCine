@@ -1,0 +1,13 @@
+{"file": "CLAUDE.md", "reason": "Project-level constraints and product direction"}
+{"file": "docs/architecture/00-index.md", "reason": "Architecture docs index and consistency target"}
+{"file": "docs/architecture/01-overview.md", "reason": "Product architecture and technology choices"}
+{"file": "docs/architecture/02-server-design.md", "reason": "Server architecture and backend conventions"}
+{"file": "docs/architecture/03-player-design.md", "reason": "Player architecture and frontend conventions"}
+{"file": "docs/architecture/04-hub-design.md", "reason": "Hub and plugin design constraints"}
+{"file": "docs/architecture/05-cli-design.md", "reason": "CLI design and Go conventions"}
+{"file": "docs/architecture/06-roadmap.md", "reason": "Roadmap status and update rules"}
+{"file": "docs/architecture/07-security-design.md", "reason": "Security requirements to migrate into spec"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend Trellis spec index created by this migration"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend Trellis spec index created by this migration"}
+{"file": ".trellis/spec/backend/security-guidelines.md", "reason": "Security requirements extracted for future backend work"}
+{"file": ".trellis/spec/backend/api-guidelines.md", "reason": "API and sync rules extracted for future backend work"}

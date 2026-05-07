@@ -19,7 +19,7 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 | 语言 | Go 1.22+ | 并发模型好，交叉编译简单 |
 | Web框架 | Gin | 高性能HTTP |
 | ORM | GORM | 数据库操作 |
-| 数据库 | SQLite (默认) / PostgreSQL (可选) | 轻量默认，可扩展 |
+| 数据库 | SQLite (默认)；PostgreSQL (未来可选部署) | 轻量默认，可扩展 |
 | 任务调度 | robfig/cron | 定时任务（追更、STRM同步） |
 | 配置管理 | Viper | YAML配置 |
 | 日志 | zerolog | 结构化日志 |
@@ -133,14 +133,14 @@ ohmycine-server/
 ├─────────────────────────────────────────────────────────────┤
 │  ② 存储目标 (Storage Destinations)                           │
 │  定义: 文件最终存放的位置                                     │
-│  电影库 → Alist:/media/movies  (网盘, 开启STRM)              │
+│  电影库 → OpenList/Alist:/media/movies (网盘, 开启STRM)      │
 │  剧集库 → /nas/disk1/tv        (本地)                        │
 │  纪录片 → 115:/docs            (网盘, 开启STRM)              │
 │  含: 网盘目标可开启STRM → 配置STRM本地路径/策略              │
 ├─────────────────────────────────────────────────────────────┤
 │  ① 连接管理 (Connections)                                    │
 │  定义: 纯粹的"我能连上这个服务"                               │
-│  Emby: URL+APIKey  |  Alist: URL+认证  |  115: Cookie  | ... │
+│ Emby: URL+APIKey | OpenList/Alist: URL+认证 | 115: Cookie | ...│
 │  含: 连接测试、状态监控、配额查询                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -238,7 +238,7 @@ api_key: "xxxxxxxxxxxxxxx"
 auto_refresh: true
 ```
 
-### 5.2 网盘/Alist/CloudDrive2 连接
+### 5.2 网盘/OpenList/Alist/CloudDrive2 连接
 
 ```go
 // pkg/cloud/driver.go
@@ -277,10 +277,10 @@ type DownloadURL struct {
 }
 ```
 
-**Alist 连接配置**：
+**OpenList/Alist 连接配置**：
 
 ```yaml
-name: "NAS Alist"
+name: "NAS OpenList/Alist"
 type: alist
 url: "http://nas:5244"
 username: "admin"
@@ -307,7 +307,7 @@ api_proxy: ""
 │ 名称     │ 类型     │ 状态     │ 配额     │ 操作         │
 ├──────────┼──────────┼──────────┼──────────┼──────────────┤
 │ 家庭Emby │ Emby     │ ● 在线   │ —        │ 测试 │ 编辑  │
-│ NAS Alist│ Alist    │ ● 在线   │ 1.2T/2T  │ 测试 │ 编辑  │
+│ NAS OpenList/Alist│ OpenList/Alist │ ● 在线 │ 1.2T/2T │ 测试 │ 编辑 │
 │ 115网盘  │ 115      │ ● 在线   │ 8T/15T   │ 测试 │ 编辑  │
 │ CloudDrv │ CD2      │ ○ 离线   │ —        │ 测试 │ 编辑  │
 └──────────┴──────────┴──────────┴──────────┴──────────────┘
@@ -342,7 +342,7 @@ type StorageDestination struct {
 ├──────────┬────────┬──────────┬─────────────────┬─────────────────────┤
 │ 名称     │ 类型   │ 关联连接 │ 路径            │ STRM配置            │
 ├──────────┼────────┼──────────┼─────────────────┼─────────────────────┤
-│ 电影库   │ 网盘   │ Alist    │ /media/movies   │ ● 开启              │
+│ 电影库   │ 网盘   │ OpenList/Alist │ /media/movies   │ ● 开启              │
 │          │        │          │                 │ 输出: /strm/movies  │
 │          │        │          │                 │ 代理: http://s:3000 │
 ├──────────┼────────┼──────────┼─────────────────┼─────────────────────┤
@@ -351,7 +351,7 @@ type StorageDestination struct {
 ├──────────┼────────┼──────────┼─────────────────┼─────────────────────┤
 │ 纪录片   │ 本地   │ —        │ /nas/disk1/docs │ — (本地无需STRM)    │
 ├──────────┼────────┼──────────┼─────────────────┼─────────────────────┤
-│ 综艺     │ 网盘   │ Alist    │ /media/variety  │ ○ 关闭              │
+│ 综艺     │ 网盘   │ OpenList/Alist │ /media/variety  │ ○ 关闭              │
 └──────────┴────────┴──────────┴─────────────────┴─────────────────────┘
 ```
 
@@ -1218,7 +1218,7 @@ func (s *DownloadService) ListTasks(user *User) []*DownloadTask {
 │ 文件管理                                                         │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  数据源: [Alist ▼]                                               │
+│  数据源: [OpenList/Alist ▼]                                      │
 │                                                                  │
 │  /media/movies/                                                  │
 │  ├── Inception (2010)/                                           │
@@ -1244,7 +1244,7 @@ func (s *DownloadService) ListTasks(user *User) []*DownloadTask {
 │                                                                  │
 │  基础设置                                                        │
 │  ├─ 服务器: 端口/主机/HTTPS                                      │
-│  ├─ 数据库: SQLite/PostgreSQL                                    │
+│  ├─ 数据库: SQLite (默认；PostgreSQL 为未来可选部署)              │
 │  └─ 日志: 级别/路径/轮转                                         │
 │                                                                  │
 │  元数据                                                          │
