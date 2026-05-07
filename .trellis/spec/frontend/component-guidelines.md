@@ -56,6 +56,7 @@ Required principles:
 
 - Use existing tokens for colors, spacing, radius, blur, shadow, and durations.
 - Use liquid-glass classes for elevated chrome and cards.
+- Do not rely on Iconify/UnoCSS icon preset classes unless the required icon collection is installed and configured; use explicit inline SVG for critical controls when availability is uncertain.
 - Preserve artwork visibility: controls may be hover-revealed/auto-hidden in immersive contexts.
 - Avoid hard-coded color values when a token exists.
 - Keep desktop-first behavior explicit; mobile adaptations must be separately designed.

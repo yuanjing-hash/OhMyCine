@@ -55,14 +55,19 @@ function finishSliderInteraction() {
       :aria-label="displayVolume === 0 ? '取消静音' : '静音'"
       @click="toggleMute"
     >
-      <div
-        :class="displayVolume === 0
-          ? 'i-carbon-volume-mute'
-          : displayVolume < 50
-            ? 'i-carbon-volume-down'
-            : 'i-carbon-volume-up'"
-        class="text-base"
-      />
+      <svg v-if="displayVolume === 0" class="volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 9.5A1.5 1.5 0 0 1 5.5 8H8l4.28-3.57A1.05 1.05 0 0 1 14 5.24v13.52a1.05 1.05 0 0 1-1.72.81L8 16H5.5A1.5 1.5 0 0 1 4 14.5v-5Z" />
+        <path d="M18.41 12l2.3-2.29a1 1 0 0 0-1.42-1.42L17 10.59l-2.29-2.3a1 1 0 1 0-1.42 1.42l2.3 2.29-2.3 2.29a1 1 0 0 0 1.42 1.42L17 13.41l2.29 2.3a1 1 0 0 0 1.42-1.42L18.41 12Z" />
+      </svg>
+      <svg v-else-if="displayVolume < 50" class="volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 9.5A1.5 1.5 0 0 1 5.5 8H8l4.28-3.57A1.05 1.05 0 0 1 14 5.24v13.52a1.05 1.05 0 0 1-1.72.81L8 16H5.5A1.5 1.5 0 0 1 4 14.5v-5Z" />
+        <path d="M17.12 8.88a1 1 0 0 1 1.41 0 4.42 4.42 0 0 1 0 6.24 1 1 0 0 1-1.41-1.41 2.42 2.42 0 0 0 0-3.42 1 1 0 0 1 0-1.41Z" />
+      </svg>
+      <svg v-else class="volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 9.5A1.5 1.5 0 0 1 5.5 8H8l4.28-3.57A1.05 1.05 0 0 1 14 5.24v13.52a1.05 1.05 0 0 1-1.72.81L8 16H5.5A1.5 1.5 0 0 1 4 14.5v-5Z" />
+        <path d="M17.12 8.88a1 1 0 0 1 1.41 0 4.42 4.42 0 0 1 0 6.24 1 1 0 0 1-1.41-1.41 2.42 2.42 0 0 0 0-3.42 1 1 0 0 1 0-1.41Z" />
+        <path d="M19.95 6.05a1 1 0 0 1 1.41 0 8.42 8.42 0 0 1 0 11.9 1 1 0 0 1-1.41-1.41 6.42 6.42 0 0 0 0-9.08 1 1 0 0 1 0-1.41Z" />
+      </svg>
     </button>
     <input
       type="range"
@@ -96,6 +101,14 @@ function finishSliderInteraction() {
   background: rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.96);
   transform: translateY(-1px);
+}
+
+.volume-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  pointer-events: none;
 }
 
 .volume-slider {
