@@ -1,9 +1,71 @@
 <script setup lang="ts">
+import { open } from '@tauri-apps/plugin-dialog'
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 
+const VIDEO_EXTENSIONS = [
+  'mp4',
+  'mkv',
+  'avi',
+  'mov',
+  'webm',
+  'm4v',
+  'flv',
+  'wmv',
+  'ts',
+  'm2ts',
+  'rmvb',
+  'mpg',
+  'mpeg',
+  '3gp',
+  'ogv',
+  'divx',
+  'vob',
+  'iso',
+]
+
+const router = useRouter()
 const { theme, toggle: toggleTheme } = useTheme()
 const isHovered = ref(false)
+const isOpeningFile = ref(false)
+
+function getFileName(path: string) {
+  return path.split(/[\\/]/).pop() || '本地视频'
+}
+
+async function openLocalVideo() {
+  if (isOpeningFile.value)
+    return
+
+  isOpeningFile.value = true
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [
+        {
+          name: 'Video files',
+          extensions: VIDEO_EXTENSIONS,
+        },
+      ],
+    })
+
+    if (typeof selected !== 'string')
+      return
+
+    await router.push({
+      path: '/player',
+      query: {
+        path: selected,
+        title: getFileName(selected),
+      },
+    })
+  }
+  finally {
+    isOpeningFile.value = false
+  }
+}
 </script>
 
 <template>
@@ -21,8 +83,11 @@ const isHovered = ref(false)
       >
         <!-- Player -->
         <button
-          class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
-          title="Player"
+          class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 disabled:cursor-wait disabled:opacity-60"
+          :disabled="isOpeningFile"
+          title="打开本地视频"
+          aria-label="打开本地视频"
+          @click="openLocalVideo"
         >
           <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
             <path d="M5 3l12 7-12 7V3z" fill="currentColor" />

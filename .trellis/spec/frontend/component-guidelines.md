@@ -68,6 +68,15 @@ Required principles:
 - `DataSourceSidebar` renders home, ordered configured data sources, optional Server entry, and settings.
 - Server entries must not block local/Emby/Jellyfin/OpenList/Alist/CloudDrive2 browsing when disconnected.
 - `WindowChrome` handles frameless window drag/control surfaces.
+- Non-home routes must expose a visible back control in the global layout or route chrome. Prefer `router.back()` when `window.history.state?.back` exists; otherwise navigate to `/`.
+
+### Back Navigation Control Contract
+
+- Hide the back control on `/`.
+- Show it on `/player`, `/source/:sourceId`, `/settings`, and future non-home views unless the view provides an equivalent route-level back affordance.
+- Style it with existing Cinema OS / liquid-glass tokens and hover/active transitions; do not introduce a separate button language.
+- Include `aria-label` and `title` so icon-only back controls remain accessible.
+- Avoid relying on `window.history.length` alone in Tauri/WebView contexts; Vue Router's `history.state.back` is the signal for an in-app previous route.
 
 ---
 

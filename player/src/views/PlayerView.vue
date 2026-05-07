@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
 
 const route = useRoute()
-const mediaTitle = ref((route.query.title as string) || '未命名影片')
-const mediaPath = ref((route.query.path as string) || '')
+const mediaTitle = ref('未命名影片')
+const mediaPath = ref('')
 
 const {
   isPlaying,
@@ -23,10 +23,18 @@ const {
 
 const hasMedia = computed(() => mediaPath.value.length > 0)
 
-onMounted(async () => {
-  if (mediaPath.value)
-    await load(mediaPath.value)
-})
+watch(
+  () => route.query.path,
+  async (path) => {
+    const nextPath = typeof path === 'string' ? path : ''
+    mediaPath.value = nextPath
+    mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
+
+    if (nextPath)
+      await load(nextPath)
+  },
+  { immediate: true },
+)
 
 async function handleFileDrop(path: string) {
   mediaPath.value = path
