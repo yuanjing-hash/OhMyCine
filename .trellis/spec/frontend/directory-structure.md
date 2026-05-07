@@ -89,8 +89,9 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 
 #### 3. Contracts
 - `init(config)` normalizes non-sensitive config, loads credentials through a credential reference when available, and does not log tokens.
+- Emby add/edit flows authenticate with account/password through `/Users/AuthenticateByName` or equivalent, then store the returned access token behind `credentialRef`; normal Emby setup must not ask the user to manually paste an access token.
 - `test()` returns connection/auth success without exposing raw provider errors or credentials.
-- `listLibraries()` returns `MediaLibrary[]` for source-level library cards.
+- `listLibraries()` returns `MediaLibrary[]` for source-level library cards and should be fetched after successful add/login so the source is known usable before it appears as connected.
 - `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.
 - `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized.
 - `exportConfig()` returns non-sensitive fields and credential references only.
@@ -101,8 +102,11 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 | Unsupported `DataSourceConfig.type` | Reject construction with a user-safe unsupported-source error |
 | Missing server URL or required source identifier | Fail `init`/`test` with a user-safe validation error |
 | Missing credential for a source that requires auth | Show an auth-required state; do not create a fake connected source |
+| Emby account/password auth fails | Do not persist the source; show a redacted, user-safe login failure |
+| Emby auth succeeds but library fetch fails | Do not mark setup as complete unless the UI explicitly supports a connected-but-empty/error state |
 | Provider API returns unexpected shape | Treat as invalid external data and show a safe error/empty state |
 | Provider returns tokenized image/stream URLs | Redact tokens in UI/log/error output; pass real URL only to the component/service that needs it |
+| Source is disabled | Manager must skip initialization and route views must show disabled state instead of browsing |
 | Source is offline/auth fails | Keep local files and other sources usable; show source-specific error state |
 
 #### 5. Good/Base/Bad Cases

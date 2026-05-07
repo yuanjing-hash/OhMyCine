@@ -6,7 +6,9 @@ export class DataSourceManager {
   private readonly sources = new Map<string, DataSource>()
 
   async syncConfigs(configs: readonly DataSourceConfig[]): Promise<void> {
-    const nextIds = new Set(configs.map(config => config.id))
+    const enabledConfigs = configs.filter(config => config.enabled !== false)
+    const nextIds = new Set(enabledConfigs.map(config => config.id))
+    const errors: string[] = []
 
     for (const [id, source] of this.sources) {
       if (!nextIds.has(id)) {
@@ -15,8 +17,18 @@ export class DataSourceManager {
       }
     }
 
-    for (const config of configs)
-      await this.addSource(config)
+    for (const config of enabledConfigs) {
+      try {
+        await this.addSource(config)
+      }
+      catch (error) {
+        this.removeSource(config.id)
+        errors.push(`${config.displayName ?? config.name}: ${toSafeErrorMessage(error)}`)
+      }
+    }
+
+    if (errors.length > 0)
+      throw new Error(errors.join('；'))
   }
 
   async addSource(config: DataSourceConfig): Promise<DataSource> {

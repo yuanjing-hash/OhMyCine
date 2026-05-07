@@ -67,6 +67,8 @@ Required principles:
 
 - `AppLayout` owns the global shell: data-source sidebar, content area, window chrome.
 - `DataSourceSidebar` renders home, ordered configured data sources, optional Server entry, and settings.
+- The sidebar bottom add/plus affordance must navigate to data-source management, not a provider-specific setup shortcut.
+- Disabled data sources may remain visible for management context, but must look disabled and must not be browsable until re-enabled.
 - Server entries must not block local/Emby/Jellyfin/OpenList/Alist/CloudDrive2 browsing when disconnected.
 - `WindowChrome` handles frameless window drag/control surfaces.
 - Non-home routes must expose a visible back control in the global layout or route chrome. Prefer `router.back()` when `window.history.state?.back` exists; otherwise navigate to `/`.
@@ -78,6 +80,16 @@ Required principles:
 - Style it with existing Cinema OS / liquid-glass tokens and hover/active transitions; do not introduce a separate button language.
 - Include `aria-label` and `title` so icon-only back controls remain accessible.
 - Avoid relying on `window.history.length` alone in Tauri/WebView contexts; Vue Router's `history.state.back` is the signal for an in-app previous route.
+
+### Data Source Management UI Contract
+
+- Settings must expose a clear `管理数据源` entry or section for configured source management.
+- The management view lists existing sources with delete, enable/disable, edit, and browse/open actions.
+- Empty source state must include a clear add button.
+- Add flow starts with a source type selector; unsupported/planned source types should be disabled or clearly unavailable.
+- Provider-specific fields are shown dynamically after type selection. For Emby, normal setup uses server URL, account/username, and password fields; it must not ask for an access token as the primary UX.
+- Add/Save must authenticate/test first, then persist non-sensitive config and credential references only after success.
+- Forms must include Cancel and Add/Save actions and show loading/error states without leaking passwords, tokens, or tokenized URLs.
 
 ---
 

@@ -58,7 +58,8 @@ function getSourceIcon(type: string) {
         :key="config.id"
         class="gp-btn flex h-11 w-11 items-center justify-center rounded-xl text-sm font-bold transition-all duration-200"
         :class="route.params.sourceId === config.id ? 'is-active' : ''"
-        :title="config.displayName ?? config.name"
+        :title="config.enabled === false ? `${config.displayName ?? config.name}（已停用）` : (config.displayName ?? config.name)"
+        :disabled="config.enabled === false"
         @click="router.push(`/source/${config.id}`)"
       >
         <img v-if="config.iconUrl" :src="config.iconUrl" class="h-6 w-6 rounded" :alt="config.name">
@@ -66,11 +67,10 @@ function getSourceIcon(type: string) {
       </button>
 
       <button
-        v-if="store.configs.length === 0"
         class="gp-btn flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200"
         style="color: var(--gp-text-dim)"
-        title="Add a data source in Settings"
-        @click="router.push('/settings')"
+        title="管理数据源"
+        @click="router.push({ name: 'settings', query: { section: 'datasources' } })"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
           <path d="M12 5v14M5 12h14" />
@@ -91,6 +91,10 @@ function getSourceIcon(type: string) {
 .gp-btn.is-active {
   color: var(--gp-text-full);
   background: var(--gp-active);
+}
+.gp-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.36;
 }
 .gp-divider {
   background: var(--gp-divider);

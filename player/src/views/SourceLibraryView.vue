@@ -14,6 +14,7 @@ const sourceId = computed(() => route.params.sourceId as string)
 const sourceConfig = computed(() =>
   store.configs.find(c => c.id === sourceId.value),
 )
+const isSourceDisabled = computed(() => sourceConfig.value?.enabled === false)
 const source = ref<DataSource | null>(null)
 const libraries = ref<MediaLibrary[]>([])
 const items = ref<MediaItem[]>([])
@@ -39,6 +40,12 @@ watch(sourceId, async () => {
 })
 
 async function ensureSource() {
+  if (isSourceDisabled.value) {
+    source.value = null
+    errorMessage.value = '该数据源已停用。请到设置的数据源管理中启用后再浏览。'
+    return
+  }
+
   await store.syncManager()
   source.value = store.getSource(sourceId.value)
 }
@@ -261,7 +268,7 @@ async function handlePlay(item: MediaItem) {
             :items="displayItems"
             :loading="isLoading"
             :empty-title="selectedLibrary ? '此媒体库暂无可显示项目' : '未找到 Emby 媒体库'"
-            :empty-description="selectedLibrary ? '请检查 Emby 用户权限、媒体库内容或搜索条件。' : '请确认设置中的 URL、用户 ID 和访问令牌有效。'"
+            :empty-description="selectedLibrary ? '请检查 Emby 用户权限、媒体库内容或搜索条件。' : '请确认设置中的 URL、登录会话和数据源启用状态有效。'"
             @select="handleSelect"
             @play="handlePlay"
           />

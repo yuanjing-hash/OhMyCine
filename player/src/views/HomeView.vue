@@ -21,7 +21,7 @@ onMounted(() => {
 })
 
 function goToSettings() {
-  router.push('/settings')
+  void router.push({ name: 'settings', query: { section: 'datasources' } })
 }
 
 async function handlePlay(item: MediaItem) {
@@ -30,7 +30,7 @@ async function handlePlay(item: MediaItem) {
     ? await source.getStreamURL(item.id)
     : item.path
 
-  router.push({
+  await router.push({
     name: 'player',
     query: {
       title: item.name,

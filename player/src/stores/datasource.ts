@@ -37,6 +37,23 @@ export const useDataSourceStore = defineStore('datasource', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(configs.value.map(redactPersistedConfig)))
   }
 
+  async function replaceConfig(config: DataSourceConfig) {
+    const idx = configs.value.findIndex(c => c.id === config.id)
+    if (idx >= 0) {
+      const existing = configs.value[idx]
+      configs.value[idx] = {
+        ...existing,
+        ...config,
+        order: config.order ?? existing.order,
+      }
+    }
+    else {
+      configs.value.push({ ...config, order: config.order ?? configs.value.length })
+    }
+    saveConfigs()
+    await syncManager()
+  }
+
   async function syncManager() {
     try {
       await dataSourceManager.syncConfigs(configs.value)
@@ -131,6 +148,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     lastError,
     loadConfigs,
     addConfig,
+    replaceConfig,
     updateConfig,
     removeConfig,
     reorderConfigs,

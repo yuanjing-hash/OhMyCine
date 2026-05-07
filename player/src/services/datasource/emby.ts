@@ -9,7 +9,7 @@ import type {
   SubtitleTrack,
 } from './types'
 import { ofetch } from 'ofetch'
-import { readSessionCredential } from './credentialStore'
+import { createCredentialRef, readSessionCredential, saveSessionCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 
 const ITEM_FIELDS = [
@@ -40,6 +40,12 @@ interface EmbyItemsResponse {
 
 interface EmbyLibraryResponse {
   readonly Items?: unknown[]
+}
+
+interface EmbyAuthResult {
+  readonly accessToken: string
+  readonly userId: string
+  readonly serverName?: string
 }
 
 interface EmbyItemRecord {
@@ -93,6 +99,20 @@ interface EmbyMediaSourceRecord {
   readonly Size?: number
 }
 
+export interface EmbyLoginConfigInput {
+  readonly id: string
+  readonly url: string
+  readonly displayName?: string
+  readonly username: string
+  readonly password: string
+  readonly order?: number
+}
+
+export interface EmbyLoginConfigResult {
+  readonly config: DataSourceConfig
+  readonly libraries: MediaLibrary[]
+}
+
 export class EmbyDataSource implements DataSource {
   private config: DataSourceConfig | null = null
   private baseUrl = ''
@@ -130,6 +150,36 @@ export class EmbyDataSource implements DataSource {
     await this.request('/System/Info')
     this.connected = true
     return true
+  }
+
+  async authenticate(username: string, password: string): Promise<EmbyAuthResult> {
+    if (!this.config || !this.baseUrl)
+      throw new Error('Emby source is not configured.')
+
+    const trimmedUsername = username.trim()
+    if (!trimmedUsername || !password)
+      throw new Error('请输入 Emby 账号和密码。')
+
+    try {
+      const response = await ofetch<unknown>(`${this.baseUrl}/Users/AuthenticateByName`, {
+        method: 'POST',
+        body: {
+          Username: trimmedUsername,
+          Pw: password,
+        },
+        headers: {
+          'X-Emby-Authorization': authorizationHeader(this.deviceId),
+        },
+      })
+      const auth = parseAuthResponse(response)
+      this.token = auth.accessToken
+      this.userId = auth.userId
+      this.connected = true
+      return auth
+    }
+    catch (error) {
+      throw new Error(redactSensitiveText(error))
+    }
   }
 
   destroy(): void {
@@ -302,17 +352,13 @@ export class EmbyDataSource implements DataSource {
         query,
         headers: {
           'X-Emby-Token': this.token,
-          'X-Emby-Authorization': this.authorizationHeader(),
+          'X-Emby-Authorization': authorizationHeader(this.deviceId, this.token),
         },
       })
     }
     catch (error) {
       throw new Error(redactSensitiveText(error))
     }
-  }
-
-  private authorizationHeader(): string {
-    return `MediaBrowser Client="OhMyCine Player", Device="Desktop", DeviceId="${this.deviceId}", Version="0.1.0", Token="${this.token}"`
   }
 
   private mapLibrary(item: EmbyItemRecord): MediaLibrary {
@@ -365,9 +411,64 @@ export class EmbyDataSource implements DataSource {
     if (!this.config || !this.baseUrl)
       throw new Error('Emby source is not configured.')
     if (!this.token)
-      throw new Error('Emby access token is missing. Enter it in Settings before browsing.')
+      throw new Error('Emby 登录凭证缺失。请在设置的数据源管理中重新编辑并登录。')
     if (!this.userId)
-      throw new Error('Emby user ID is missing. Enter it in Settings before browsing.')
+      throw new Error('Emby 用户信息缺失。请在设置的数据源管理中重新编辑并登录。')
+  }
+}
+
+export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Promise<EmbyLoginConfigResult> {
+  const credentialRef = createCredentialRef(input.id)
+  const displayName = input.displayName?.trim() || 'Emby'
+  const config: DataSourceConfig = {
+    id: input.id,
+    type: 'emby',
+    name: displayName,
+    displayName,
+    order: input.order ?? 0,
+    url: input.url.trim(),
+    enabled: true,
+    extra: {
+      credentialRef,
+      deviceId: createDeviceId(input.id),
+    },
+  }
+
+  const source = new EmbyDataSource()
+  await source.init(config)
+  const auth = await source.authenticate(input.username, input.password)
+  saveSessionCredential(credentialRef, auth.accessToken)
+
+  const safeConfig: DataSourceConfig = {
+    ...config,
+    name: displayName === 'Emby' && auth.serverName ? auth.serverName : displayName,
+    displayName: displayName === 'Emby' && auth.serverName ? auth.serverName : displayName,
+    extra: {
+      ...config.extra,
+      userId: auth.userId,
+      serverName: auth.serverName,
+      libraries: [],
+    },
+  }
+
+  await source.init(safeConfig)
+  const libraries = await source.listLibraries()
+  source.destroy()
+
+  return {
+    config: {
+      ...safeConfig,
+      extra: {
+        ...safeConfig.extra,
+        libraries: libraries.map(library => ({
+          id: library.id,
+          name: library.name,
+          type: library.type,
+          itemCount: library.itemCount,
+        })),
+      },
+    },
+    libraries,
   }
 }
 
@@ -398,6 +499,11 @@ function createDeviceId(sourceId: string): string {
   return `ohmycine-${sourceId}`
 }
 
+function authorizationHeader(deviceId: string, token?: string): string {
+  const tokenSegment = token ? `, Token="${token}"` : ''
+  return `MediaBrowser Client="OhMyCine Player", Device="Desktop", DeviceId="${deviceId}", Version="0.1.0"${tokenSegment}`
+}
+
 function parseItemsResponse(value: unknown): EmbyItemRecord[] {
   if (!isObject(value))
     return []
@@ -420,6 +526,26 @@ function parseItemRecord(value: unknown): EmbyItemRecord {
   if (!isEmbyItemRecord(value))
     throw new Error('Emby returned an invalid item response.')
   return value
+}
+
+function parseAuthResponse(value: unknown): EmbyAuthResult {
+  if (!isObject(value))
+    throw new Error('Emby returned an invalid authentication response.')
+
+  const record = value as Record<string, unknown>
+  const user = isObject(record.User) ? record.User : null
+  const accessToken = record.AccessToken
+  const userId = user?.Id
+  const serverName = record.ServerName
+
+  if (typeof accessToken !== 'string' || accessToken.length === 0 || typeof userId !== 'string' || userId.length === 0)
+    throw new Error('Emby 登录响应缺少访问令牌或用户信息。')
+
+  return {
+    accessToken,
+    userId,
+    serverName: typeof serverName === 'string' ? serverName : undefined,
+  }
 }
 
 function isEmbyItemRecord(value: unknown): value is EmbyItemRecord {

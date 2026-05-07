@@ -80,6 +80,7 @@ export interface DataSourceConfig {
   iconUrl?: string
   order: number
   url: string
+  enabled?: boolean
   /** @deprecated Use extra.credentialRef and secure/session storage for new sources. */
   apiKey?: string
   username?: string

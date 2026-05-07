@@ -73,10 +73,12 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
 |-----------|-------------------|
-| User adds Emby source with token | Persist config with credential reference; keep token out of persistent config |
+| User adds Emby source with account/password | Authenticate first, persist only non-sensitive config and credential reference, then discard password |
+| User adds source with a manually pasted token | Reject for normal Emby UX unless explicitly implementing an advanced/import flow |
 | Store generates a different id than the credential ref expects | Treat as a bug; source id and credential ref must be derived from the same id |
 | Config save fails after credential write | Remove newly written credential |
 | App restarts and session credential is gone | Show auth-required/reconnect state |
+| Source is disabled | Do not initialize it or allow browsing/playback until re-enabled |
 | Export config is requested | Redact or omit credential values |
 
 #### 5. Good/Base/Bad Cases
@@ -99,9 +101,17 @@ addConfig({ type: 'emby', url, apiKey: token })
 
 Correct:
 ```ts
+const auth = await EmbyDataSource.authenticate({ url, username, password })
 const credentialRef = `datasource:${sourceId}:emby-token`
-credentialStore.set(credentialRef, token)
-addConfig({ id: sourceId, type: 'emby', url, extra: { credentialRef } })
+credentialStore.set(credentialRef, auth.accessToken)
+addConfig({
+  id: sourceId,
+  type: 'emby',
+  url,
+  displayName: auth.serverName,
+  enabled: true,
+  extra: { credentialRef, userId: auth.userId },
+})
 ```
 
 ---

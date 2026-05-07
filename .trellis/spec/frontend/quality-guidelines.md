@@ -65,9 +65,10 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 
 For Emby/Jellyfin/OpenList/Alist/CloudDrive2 source work, also review:
 
-- Settings add/edit/test/remove states.
-- Source sidebar rendering from ordered configs.
-- SourceLibrary loading, empty, error, auth-required, library, and item states.
+- Settings data-source management flow: list, empty add state, type selection, provider-specific fields, cancel/add/save, edit, delete, enable/disable, and browse actions.
+- Emby setup uses account/password authentication and automatic token capture, not manual access-token entry as the primary UX.
+- Source sidebar rendering from ordered configs, including bottom plus navigation to data-source management and disabled-source affordance.
+- SourceLibrary loading, empty, disabled, error, auth-required, library, and item states.
 - Missing poster/backdrop fallbacks.
 - Generic DataSource playback flow: UI obtains stream URLs through `DataSource.getStreamURL()`, not provider-specific route code.
 - Token/API-key redaction in errors, logs, player labels, and exported config.
