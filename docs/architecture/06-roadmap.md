@@ -117,7 +117,7 @@ Phase 4: 生态系统           ████████████████
 
 #### libmpv 嵌入集成
 
-- [x] 下载 libmpv 二进制库 (Windows/macOS/Linux)
+- [~] 下载 libmpv 二进制库 (Windows/macOS/Linux；Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`；WSL Windows GNU cross-build 已通过，Windows 原生运行、签名、安装包安装和实际播放仍需复验)
 - [x] 创建 `src-tauri/src/mpv/` 模块
 - [x] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
 - [x] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
@@ -126,8 +126,8 @@ Phase 4: 生态系统           ████████████████
 - [x] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
 - [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
 - [x] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
-- [x] 配置 Cargo 依赖: `libmpv = "2.0"`, `libmpv-sys = "3.1"`
-- [~] 编写构建脚本: 自动下载对应平台的 libmpv 库
+- [x] 配置 Cargo 依赖: 直接使用 `libmpv-sys = "3.1"` 绑定 libmpv C API
+- [~] 编写构建脚本: 自动下载对应平台的 libmpv 库，并为 Windows GNU 链接准备 import library
 
 #### Vue 侧播放器 Composable
 

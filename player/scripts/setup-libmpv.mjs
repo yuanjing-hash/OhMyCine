@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import SevenZip from '7z-wasm'
 
 const rootDir = new URL('..', import.meta.url).pathname
-const targetDir = join(rootDir, 'src-tauri', 'lib')
+const targetDir = resolve(rootDir, 'src-tauri', 'lib')
 const tempDir = join(targetDir, 'temp')
 const wrapperBaseUrl = 'https://github.com/nini22P/libmpv-wrapper/releases/latest/download'
 const mpvBaseUrl = 'https://github.com/zhongfly/mpv-winbuild/releases/latest/download'
@@ -97,7 +97,11 @@ function moveExtractedFile(searchDir, fileName, outputName = fileName) {
   if (!found)
     throw new Error(`${fileName} not found after extraction`)
 
-  const destPath = join(targetDir, outputName)
+  const destPath = resolve(targetDir, outputName)
+  const relativeDest = relative(targetDir, destPath)
+  if (relativeDest === '' || relativeDest.startsWith('..') || relativeDest.includes(':'))
+    throw new Error(`Refusing to install ${outputName} outside ${targetDir}`)
+
   rmSync(destPath, { force: true })
   renameSync(found, destPath)
   console.log(`installed ${outputName}`)
@@ -134,7 +138,11 @@ async function installWindowsMpv(target) {
   console.log(`downloading ${fileName}`)
   await downloadFile(`${mpvBaseUrl}/${fileName}`, archivePath)
   await extractArchive(archivePath, extractDir)
+
+  // Runtime DLL is required by the packaged Windows app, while the GNU import
+  // library is required by x86_64-pc-windows-gnu during the link step (-lmpv).
   moveExtractedFile(extractDir, 'libmpv-2.dll')
+  moveExtractedFile(extractDir, 'libmpv.dll.a')
 }
 
 async function setup(targetNames) {

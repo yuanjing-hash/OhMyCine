@@ -73,6 +73,7 @@ target/
 
 # Tauri
 src-tauri/target/
+player/src-tauri/lib/libmpv.dll.a
 
 # ====================
 # Go (server, cli)

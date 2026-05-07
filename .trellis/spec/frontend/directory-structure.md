@@ -150,6 +150,61 @@ unsafe impl Send for MpvPlayer {}
 // Access is serialized by Arc<Mutex<MpvPlayer>>; do not promise Sync without a separate contract.
 ```
 
+### Windows GNU libmpv Build Contract
+
+When cross-building Player for `x86_64-pc-windows-gnu` from WSL/Linux, treat libmpv as both a link-time and runtime dependency:
+
+#### 1. Scope / Trigger
+- Trigger: `npm run tauri:build:windows`, `tauri build --target x86_64-pc-windows-gnu`, or any change to libmpv setup/bundling.
+- Applies to `player/scripts/setup-libmpv.mjs`, `player/src-tauri/build.rs`, `player/src-tauri/tauri.conf.json`, and `.gitignore`.
+
+#### 2. Signatures
+- Setup script command: `npm run setup:libmpv -- windows` installs Windows libmpv artifacts under `player/src-tauri/lib/`.
+- Build target: `TARGET=x86_64-pc-windows-gnu` adds `player/src-tauri/lib` as a native link-search path.
+- Bundle resource mapping: runtime DLLs are copied to the Windows app install root.
+
+#### 3. Contracts
+- Install `libmpv-2.dll` for Windows runtime loading.
+- Install `libmpv.dll.a` for GNU link-time resolution of `-lmpv`.
+- Do not bundle `libmpv.dll.a`; it is an import library, not a runtime file.
+- Do not commit generated `libmpv.dll.a`, downloaded DLLs, installers, or `target/` outputs.
+- Keep native Linux builds using system libmpv/pkg-config; only add the explicit link-search path for `x86_64-pc-windows-gnu`.
+- WSL cross-build success proves executable/installer generation only; Windows installation, signing, launch, and playback require a Windows host.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Linker says `cannot find -lmpv` | Ensure `libmpv.dll.a` exists in `player/src-tauri/lib/` and the Windows GNU target has that directory in `rustc-link-search` |
+| `libmpv-2.dll` missing from bundle | Add it as a Tauri resource at the Windows app root |
+| `libmpv.dll.a` appears in git status as tracked/addable | Ignore or remove it; regenerate via setup script instead of committing it |
+| Native Linux `cargo check` starts using vendored Windows lib path | Scope link-search by `TARGET`, not unconditionally |
+| WSL build produces NSIS installer | Mark cross-build as passed but keep Windows-native runtime/signing/playback unverified |
+
+#### 5. Good/Base/Bad Cases
+- Good: setup downloads `libmpv-2.dll` and `libmpv.dll.a`, build.rs exposes the lib directory only for Windows GNU, and Tauri bundles only runtime DLLs.
+- Base: WSL cross-build creates `.exe` and NSIS installer while signing/runtime playback remain unverified.
+- Bad: relying on Linux `libmpv.so` for a Windows GNU build, or committing generated import libraries/installer artifacts.
+
+#### 6. Tests Required
+- `npm run setup:libmpv -- windows` installs both `libmpv-2.dll` and `libmpv.dll.a`.
+- `npm run tauri:build:windows` resolves `-lmpv` and produces the Windows executable/installer.
+- `cargo check` without a Windows target still passes on Linux.
+- Inspect git status to confirm generated DLL/import-library/target outputs are not staged.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```rust
+println!("cargo:rustc-link-search=native=lib");
+```
+
+Correct:
+```rust
+if std::env::var("TARGET").as_deref() == Ok("x86_64-pc-windows-gnu") {
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+}
+```
+
 ---
 
 ## Common Mistakes

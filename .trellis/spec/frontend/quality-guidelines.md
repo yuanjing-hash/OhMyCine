@@ -59,6 +59,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | Rust/Tauri backend change | Above plus `cargo check` for `player/src-tauri` | All pass |
 | Runtime/render/libmpv change | Above plus `npm run tauri dev` when the local graphics/runtime environment can launch it | Report full verification only after the desktop window/runtime is exercised |
 | WSL/WSLg graphics limitation | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as partial verification and require Windows-native or full Linux desktop recheck |
+| Windows GNU package change | `npm run setup:libmpv -- windows` plus `npm run tauri:build:windows` | Cross-build passes only when the Windows `.exe` and installer are generated; runtime/signing/playback still need Windows-host verification |
 
 Do not treat Docker as a local development prerequisite.
 

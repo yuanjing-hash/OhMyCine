@@ -1808,15 +1808,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libmpv"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61a58e2d19b34775e81e0fdca194b3b8ee8de973b092e7582b416343979e22e7"
-dependencies = [
- "libmpv-sys",
-]
-
-[[package]]
 name = "libmpv-sys"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2193,7 +2184,6 @@ name = "ohmycine-player"
 version = "0.1.0"
 dependencies = [
  "env_logger",
- "libmpv",
  "libmpv-sys",
  "log",
  "serde",
