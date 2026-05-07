@@ -1,2 +1,130 @@
-RESEARCH.md
+# ====================
+# OhMyCine .gitignore
+# ====================
+
+# Claude Code local settings
 .claude/settings.local.json
+RESEARCH.md
+
+# ====================
+# OS Files
+# ====================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# ====================
+# IDE / Editor
+# ====================
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ====================
+# Node / JavaScript (player, hub)
+# ====================
+
+node_modules/
+dist/
+.nuxt/
+.output/
+*.local
+.env
+.env.*
+!.env.example
+
+# Vite
+*.local
+
+# TypeScript
+*.tsbuildinfo
+
+# ====================
+# Rust / Tauri (player/src-tauri)
+# ====================
+
+target/
+**/*.rs.bk
+
+# Tauri
+src-tauri/target/
+
+# ====================
+# Go (server, cli)
+# ====================
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+omc
+ohmycine-server
+
+# Test binary
+*.test
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendor (uncomment if not vendoring)
+# vendor/
+
+# ====================
+# Build Outputs
+# ====================
+
+# Tauri build
+src-tauri/target/
+player/src-tauri/target/
+
+# VitePress build
+hub/.vitepress/dist/
+hub/.vitepress/cache/
+
+# ====================
+# Runtime / Data
+# ====================
+
+*.db
+*.sqlite
+*.log
+logs/
+
+# ====================
+# Secrets / Credentials
+# ====================
+
+*.pem
+*.key
+*.crt
+*.p12
+secrets.yaml
+secrets.yml

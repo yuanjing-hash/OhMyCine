@@ -125,7 +125,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 创建 Tauri Plugin: `mpv_plugin.rs`
 - [x] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
 - [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
-- [ ] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
+- [x] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
 - [x] 配置 Cargo 依赖: `libmpv = "2.0"`, `libmpv-sys = "3.1"`
 - [~] 编写构建脚本: 自动下载对应平台的 libmpv 库
 
@@ -158,7 +158,7 @@ Phase 4: 生态系统           ████████████████
 
 **产出**:
 
-- [x] 桌面应用能启动，无边框窗口
+- [~] 桌面应用能启动，无边框窗口 (WSL 下 `tauri dev` 已可编译并启动进程；图形渲染受 EGL/WSLg 环境限制仍需 Windows 原生或完整桌面环境复验)
 - [x] 能拖拽文件到窗口播放
 - [x] libmpv 渲染在窗口内部，沉浸式体验
 - [x] 基础播放控制 (播放/暂停/进度/音量)

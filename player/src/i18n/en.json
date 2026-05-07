@@ -1,0 +1,30 @@
+{
+  "app": {
+    "name": "OhMyCine"
+  },
+  "nav": {
+    "home": "Home",
+    "player": "Player",
+    "settings": "Settings"
+  },
+  "player": {
+    "play": "Play",
+    "pause": "Pause",
+    "stop": "Stop",
+    "previous": "Previous",
+    "next": "Next",
+    "volume": "Volume",
+    "subtitle": "Subtitle",
+    "audio": "Audio",
+    "fullscreen": "Fullscreen",
+    "speed": "Speed"
+  },
+  "settings": {
+    "title": "Settings",
+    "datasource": "Data Source",
+    "addDatasource": "Add Data Source",
+    "server": "Server",
+    "ai": "AI Assistant",
+    "about": "About"
+  }
+}

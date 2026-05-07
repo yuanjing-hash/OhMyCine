@@ -1,0 +1,60 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color var(--duration-slow) var(--ease-in-out), color var(--duration-slow) var(--ease-in-out);
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+  background: var(--color-bg);
+  transition: background-color var(--duration-slow) var(--ease-in-out);
+}
+
+.cinema-scrollbar {
+  scrollbar-color: rgba(255, 255, 255, 0.34) rgba(255, 255, 255, 0.04);
+  scrollbar-width: thin;
+}
+
+.cinema-scrollbar::-webkit-scrollbar {
+  width: 12px;
+}
+
+.cinema-scrollbar::-webkit-scrollbar-track {
+  border-left: 1px solid var(--glass-border);
+  background: var(--color-bg-secondary);
+}
+
+.cinema-scrollbar::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(var(--glass-bg-hover), var(--glass-bg)) padding-box,
+    linear-gradient(180deg, rgba(74, 158, 255, 0.32), rgba(168, 85, 247, 0.28)) border-box;
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+
+.cinema-scrollbar::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(var(--glass-bg-active), var(--glass-bg-hover)) padding-box,
+    linear-gradient(180deg, rgba(74, 158, 255, 0.48), rgba(168, 85, 247, 0.42)) border-box;
+}
+
+.cinema-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+[data-theme="light"] .cinema-scrollbar {
+  scrollbar-color: rgba(0, 0, 0, 0.2) rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .cinema-scrollbar::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.08)) padding-box,
+    linear-gradient(180deg, rgba(74, 158, 255, 0.2), rgba(168, 85, 247, 0.15)) border-box;
+}

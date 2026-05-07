@@ -1,0 +1,30 @@
+{
+  "app": {
+    "name": "OhMyCine"
+  },
+  "nav": {
+    "home": "首页",
+    "player": "播放器",
+    "settings": "设置"
+  },
+  "player": {
+    "play": "播放",
+    "pause": "暂停",
+    "stop": "停止",
+    "previous": "上一个",
+    "next": "下一个",
+    "volume": "音量",
+    "subtitle": "字幕",
+    "audio": "音轨",
+    "fullscreen": "全屏",
+    "speed": "播放速度"
+  },
+  "settings": {
+    "title": "设置",
+    "datasource": "数据源",
+    "addDatasource": "添加数据源",
+    "server": "服务器",
+    "ai": "AI 助手",
+    "about": "关于"
+  }
+}

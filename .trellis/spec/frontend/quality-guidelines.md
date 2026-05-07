@@ -51,6 +51,15 @@ npm run build
 
 For Tauri/Rust changes, also run the relevant Cargo command when configured, such as `cargo check` from `player/src-tauri`.
 
+When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavior, the verification contract is:
+
+| Case | Required check | Completion rule |
+|------|----------------|-----------------|
+| Web/UI-only Player change | `npm run typecheck`, `npm run lint`, `npm run build` | All pass |
+| Rust/Tauri backend change | Above plus `cargo check` for `player/src-tauri` | All pass |
+| Runtime/render/libmpv change | Above plus `npm run tauri dev` when the local graphics/runtime environment can launch it | Report full verification only after the desktop window/runtime is exercised |
+| WSL/WSLg graphics limitation | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as partial verification and require Windows-native or full Linux desktop recheck |
+
 Do not treat Docker as a local development prerequisite.
 
 ---

@@ -1,0 +1,40 @@
+{
+  "name": "@ohmycine/player",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "setup:libmpv": "node scripts/setup-libmpv.mjs",
+    "tauri:build:linux": "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig tauri build --bundles appimage",
+    "tauri:build:windows": "PATH=/home/linuxbrew/.linuxbrew/opt/rustup/bin:/home/linuxbrew/.linuxbrew/bin:$PATH tauri build --target x86_64-pc-windows-gnu --bundles nsis",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint src --ext .ts,.vue",
+    "lint:fix": "eslint src --ext .ts,.vue --fix"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "ofetch": "^1.4.0",
+    "pinia": "^2.2.0",
+    "tauri-plugin-libmpv-api": "^0.3.2",
+    "vue": "^3.5.0",
+    "vue-i18n": "^10.0.0",
+    "vue-router": "^4.4.0"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^4.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "@unocss/reset": "^0.65.0",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0",
+    "unocss": "^0.65.0",
+    "vite": "^6.0.0",
+    "vue-tsc": "^2.2.0"
+  }
+}

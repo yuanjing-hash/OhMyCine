@@ -1,0 +1,108 @@
+/* OhMyCine Cinema OS Design Tokens */
+
+:root {
+  /* === Brand Colors === */
+  --color-primary: #4A9EFF;
+  --color-primary-hover: #6BB3FF;
+  --color-primary-active: #3A8EEF;
+  --color-accent: #A855F7;
+  --color-accent-hover: #C084FC;
+  --color-accent-active: #9333EA;
+
+  /* === Neutral Colors === */
+  --color-bg: #0A0A0F;
+  --color-bg-secondary: #12121A;
+  --color-bg-tertiary: #1A1A25;
+  --color-surface: #1E1E2A;
+  --color-surface-hover: #252535;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
+
+  /* === Text Colors === */
+  --color-text: #F0F0F5;
+  --color-text-secondary: #A0A0B0;
+  --color-text-tertiary: #6B6B7B;
+  --color-text-inverse: #0A0A0F;
+
+  /* === Semantic Colors === */
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-error: #EF4444;
+  --color-info: #3B82F6;
+
+  /* === Glass (Liquid Glass) === */
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-bg-hover: rgba(255, 255, 255, 0.08);
+  --glass-bg-active: rgba(255, 255, 255, 0.12);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.15);
+  --glass-blur: 20px;
+  --glass-blur-heavy: 40px;
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  --glass-shadow-elevated: 0 16px 48px rgba(0, 0, 0, 0.4);
+
+  /* Interactive */
+  --color-interactive-hover: rgba(255, 255, 255, 0.08);
+  --color-divider: rgba(255, 255, 255, 0.1);
+
+  /* === Border Radius === */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
+  --radius-full: 9999px;
+
+  /* === Spacing === */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* === Typography === */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 2rem;
+
+  /* === Animation === */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* Light theme overrides */
+[data-theme="light"] {
+  --color-bg: #EDEDF2;
+  --color-bg-secondary: #F5F5F8;
+  --color-bg-tertiary: #E3E4EA;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F0F0F5;
+  --color-border: rgba(0, 0, 0, 0.08);
+  --color-border-hover: rgba(0, 0, 0, 0.15);
+
+  --color-text: #1A1A2E;
+  --color-text-secondary: #5A5A6E;
+  --color-text-tertiary: #8A8A9E;
+  --color-text-inverse: #F0F0F5;
+
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-bg-hover: rgba(255, 255, 255, 0.75);
+  --glass-bg-active: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-border-hover: rgba(0, 0, 0, 0.12);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --glass-shadow-elevated: 0 16px 48px rgba(0, 0, 0, 0.12);
+
+  --color-interactive-hover: rgba(0, 0, 0, 0.06);
+  --color-divider: rgba(0, 0, 0, 0.1);
+}
