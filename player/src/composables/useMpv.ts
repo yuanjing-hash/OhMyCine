@@ -11,6 +11,14 @@ interface Track {
   isDefault: boolean
 }
 
+export type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
+
+export interface MpvRenderState {
+  status: MpvRenderStatus
+  backend: 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+  message: string | null
+}
+
 export function useMpv() {
   const isPlaying = ref(false)
   const currentTime = ref(0)
@@ -21,6 +29,9 @@ export function useMpv() {
   const audioTracks = ref<Track[]>([])
   const currentSubtitle = ref(0)
   const currentAudio = ref(0)
+  const renderStatus = ref<MpvRenderStatus>('idle')
+  const renderError = ref<string | null>(null)
+  const renderBackend = ref<MpvRenderState['backend']>('unsupported')
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -36,6 +47,22 @@ export function useMpv() {
       isPlaying.value = true
     }),
   ]
+
+  async function initializeRender() {
+    renderStatus.value = 'initializing'
+    renderError.value = null
+
+    try {
+      const state = await invoke<MpvRenderState>('mpv_render_status')
+      renderStatus.value = state.status
+      renderBackend.value = state.backend
+      renderError.value = state.message
+    }
+    catch (error: unknown) {
+      renderStatus.value = 'error'
+      renderError.value = error instanceof Error ? error.message : String(error)
+    }
+  }
 
   async function load(path: string) {
     await invoke('mpv_load', { path })
@@ -95,6 +122,10 @@ export function useMpv() {
     audioTracks,
     currentSubtitle,
     currentAudio,
+    renderStatus,
+    renderError,
+    renderBackend,
+    initializeRender,
     load,
     togglePause,
     seek,

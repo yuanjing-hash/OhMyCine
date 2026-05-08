@@ -22,6 +22,9 @@ const {
   currentTime,
   duration,
   volume,
+  renderStatus,
+  renderError,
+  initializeRender,
   load,
   togglePause,
   seek,
@@ -106,6 +109,7 @@ async function handleFileDrop(path: string) {
 onMounted(() => {
   window.addEventListener('blur', handleWindowBlur)
   window.addEventListener('focus', handleWindowFocus)
+  void initializeRender()
   scheduleChromeHide()
 })
 
@@ -127,6 +131,8 @@ onBeforeUnmount(() => {
     <VideoPlayer
       :is-playing="isPlaying"
       :has-media="hasMedia"
+      :render-status="renderStatus"
+      :render-error="renderError"
       @file-drop="handleFileDrop"
     />
 

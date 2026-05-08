@@ -6,7 +6,8 @@ mod mpv;
 
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::player::{
-    mpv_get_property, mpv_load, mpv_pause, mpv_resume, mpv_seek, mpv_set_property,
+    mpv_get_property, mpv_load, mpv_pause, mpv_render_status, mpv_resume, mpv_seek,
+    mpv_set_property,
 };
 
 fn main() {
@@ -28,6 +29,7 @@ fn main() {
             mpv_seek,
             mpv_get_property,
             mpv_set_property,
+            mpv_render_status,
         ])
         .setup(|app| {
             mpv::events::start_event_forwarder(app.handle().clone());

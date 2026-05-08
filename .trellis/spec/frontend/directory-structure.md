@@ -232,6 +232,80 @@ set_option("video", "no")?;
 // Enable visible video only after a real embedded render target exists.
 ```
 
+### True libmpv Render API Backend Contract
+
+When implementing embedded video rendering through libmpv's render API, keep the architecture cross-platform even if the first concrete backend is Windows.
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing `mpv_render_context`, native render surfaces, GL/WGL/EGL/Metal/Android/iOS surfaces, render-thread callbacks, or render-status commands.
+- Applies to `player/src-tauri/src/mpv/render.rs`, platform-specific render modules, `MpvPlayer` handle access, Tauri render commands, and frontend render status UI.
+
+#### 2. Signatures
+- Render status command: `mpv_render_status() -> Result<MpvRenderState, String>`.
+- Render state fields: `status: 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'`, `backend`, and optional user-safe `message`.
+- Rust render boundary: `MpvRenderContext` owns `*mut mpv_render_context` and frees it with `mpv_render_context_free()`.
+- OpenGL backend input: valid initialized `*mut mpv_handle`, current app-owned GL context, `mpv_opengl_init_params`, and per-frame `mpv_opengl_fbo` physical dimensions.
+
+#### 3. Contracts
+- `MpvPlayer` remains the single owner of `mpv_handle`; render modules may access the raw handle only through mpv-internal APIs.
+- Do not use mpv `wid` or `tauri-plugin-libmpv` as the primary implementation when the task calls for True render API.
+- Do not remove `force-window=no`, `vo=null`, or `video=no` fallback until an app-owned render context/surface is successfully initialized.
+- Keep unsafe render API calls inside `mpv/render.rs` or narrow mpv-internal platform modules.
+- `mpv_render_context_set_update_callback()` must only wake/signaling the render loop; it must not render directly, block on UI locks, or emit high-frequency Tauri events.
+- `mpv_render_context_render()` runs only on the render thread with the same GL context current and physical-pixel FBO dimensions.
+- Non-first backend platforms remain planned: return explicit unsupported/fallback states rather than deleting Linux/macOS/Android/iOS scope.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| `mpv_render_context_create()` fails | Keep video suppressed, return/render `status: 'error'`, and show an in-app fallback |
+| Platform backend is not implemented | Return/render `status: 'unsupported'` with a clear message; do not crash |
+| Render surface is missing or zero-sized | Skip frame rendering and keep state truthful; do not enable external mpv output |
+| mpv update callback fires | Wake the render loop only; no direct GL, Tauri UI, or blocking work inside callback |
+| Resize/fullscreen/DPI changes | Update native surface bounds and FBO width/height in physical pixels |
+| WSL/WSLg cannot visually verify GL/WebView2 | Mark runtime verification partial; require Windows-host visual verification |
+
+#### 5. Good/Base/Bad Cases
+- Good: cross-platform `RenderBackend` boundary exists, Windows OpenGL backend owns the first native surface, unsupported platforms return explicit states, and Vue displays render status truthfully.
+- Base: compile-proof scaffold confirms libmpv render bindings and exposes `mpv_render_status()` while visible video remains suppressed until a real surface exists.
+- Bad: setting `vo=gpu` or passing `wid` as a shortcut while claiming True render API, or treating Windows-first implementation as removal of Linux/macOS/mobile product scope.
+
+#### 6. Tests Required
+- `cargo check` must compile render API imports and platform cfg paths.
+- Frontend `npm run typecheck`, `npm run lint`, and `npm run build` must pass after command/status changes.
+- Windows package build must pass when platform libraries or native render code change.
+- Runtime visual checks must cover local file playback, Emby URL playback, no external mpv window, resize/maximize/fullscreen, and close-during-playback.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```rust
+set_option("vo", "gpu")?;
+// No app-owned GL surface or mpv_render_context exists yet.
+```
+
+Correct:
+```rust
+set_option("force-window", "no")?;
+set_option("vo", "null")?;
+set_option("video", "no")?;
+// Switch visible video on only after MpvRenderContext is active.
+```
+
+Wrong:
+```rust
+unsafe extern "C" fn update(_: *mut c_void) {
+    mpv_render_context_render(ctx, params);
+}
+```
+
+Correct:
+```rust
+unsafe extern "C" fn update(ctx: *mut c_void) {
+    signal_render_thread(ctx);
+}
+```
+
 ### Windows GNU libmpv Build Contract
 
 When cross-building Player for `x86_64-pc-windows-gnu` from WSL/Linux, treat libmpv as both a link-time and runtime dependency:

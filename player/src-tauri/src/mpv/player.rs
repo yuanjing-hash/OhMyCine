@@ -12,6 +12,8 @@ use libmpv_sys::{
     mpv_set_property_string, mpv_terminate_destroy,
 };
 
+use super::render::{current_render_state, MpvRenderState};
+
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
 
 pub struct MpvPlayer {
@@ -55,6 +57,15 @@ impl MpvPlayer {
 
     pub fn load_file(&self, path: &str) -> Result<(), String> {
         self.command(&["loadfile", path, "replace"])
+    }
+
+    pub fn render_state(&self) -> MpvRenderState {
+        current_render_state()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn raw_handle_for_render(&self) -> *mut mpv_handle {
+        self.ctx
     }
 
     pub fn pause(&self) -> Result<(), String> {

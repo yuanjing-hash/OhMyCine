@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::mpv::player::MpvState;
+use crate::mpv::{player::MpvState, render::MpvRenderState};
 
 #[tauri::command]
 pub async fn mpv_load(path: String, state: State<'_, MpvState>) -> Result<(), String> {
@@ -40,4 +40,10 @@ pub async fn mpv_set_property(
 ) -> Result<(), String> {
     let player = state.lock().map_err(|err| err.to_string())?;
     player.set_property(&prop, &value)
+}
+
+#[tauri::command]
+pub async fn mpv_render_status(state: State<'_, MpvState>) -> Result<MpvRenderState, String> {
+    let player = state.lock().map_err(|err| err.to_string())?;
+    Ok(player.render_state())
 }

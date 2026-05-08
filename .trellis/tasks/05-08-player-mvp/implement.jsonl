@@ -1,0 +1,8 @@
+{"file":".trellis/tasks/05-08-player-mvp/prd.md","reason":"Task requirements, acceptance criteria, True render API decision, milestones, and out-of-scope boundaries."}
+{"file":".trellis/tasks/05-08-player-mvp/research/true-render-api-feasibility.md","reason":"True libmpv render API requirements, OpenGL FBO architecture, Windows-first surface plan, risks, and MVP milestones."}
+{"file":".trellis/tasks/05-08-player-mvp/research/true-render-api-code-impact.md","reason":"Repo-specific mpv lifecycle, exact backend/frontend impact points, render module boundaries, regression-sensitive flows, and validation notes."}
+{"file":".trellis/tasks/05-08-player-mvp/research/libmpv-embedding-approaches.md","reason":"Comparison of render API, wid/plugin, overlay, and software approaches; explains rejected alternatives and tradeoffs."}
+{"file":".trellis/tasks/05-08-player-mvp/research/tauri-v2-webview-video.md","reason":"Tauri WebView composition constraints for native render surface plus transparent Vue overlay."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Authoritative Player/Tauri module boundaries, libmpv FFI contract, and Windows GNU packaging contract."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Player component contracts, immersive chrome behavior, drag/drop surface, and truthful render placeholder requirements."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Tauri invoke type safety and DataSource/Emby playback URL contracts that must remain stable."}

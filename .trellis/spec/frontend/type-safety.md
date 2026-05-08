@@ -119,6 +119,67 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 - Convert command errors to typed user-safe errors in composables/services.
 - For Rust command changes, update frontend types and usages together.
 
+### Player Render Status Command Contract
+
+When exposing libmpv render lifecycle to Vue, use a small typed status command rather than leaking platform handles or raw render pointers.
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing Player render-status commands, render backend status fields, or frontend `useMpv` render-state handling.
+- Applies to Rust `mpv_render_status` and TypeScript `useMpv`/`VideoPlayer` consumers.
+
+#### 2. Signatures
+- Rust command: `mpv_render_status(state: State<'_, MpvState>) -> Result<MpvRenderState, String>`.
+- TypeScript shape:
+```ts
+type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
+type MpvRenderBackend = 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+interface MpvRenderState {
+  status: MpvRenderStatus
+  backend: MpvRenderBackend
+  message?: string | null
+}
+```
+
+#### 3. Contracts
+- Frontend command calls must use explicit generics: `invoke<MpvRenderState>('mpv_render_status')`.
+- UI must treat `ready` as the only state that can imply visible render readiness.
+- `idle` means scaffold/backend exists but visible video is not active yet.
+- `unsupported` means the current platform backend is planned/future, not removed from product scope.
+- `error` messages must be user-safe and must not include tokenized media URLs, local absolute paths unless user-selected, raw pointers, or GL/window handles.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| command returns malformed data | Typecheck should fail if shape changes without updating frontend types |
+| command rejects | `useMpv` sets `renderStatus = 'error'` and `renderError` to a safe display string |
+| status is `unsupported` | `VideoPlayer` shows an explicit fallback and keeps drag/drop/control shell stable |
+| status is `idle` | UI says render backend is being prepared/scaffolded; do not claim video is embedded |
+| status is `ready` | Controls may overlay the render surface; playback controls still use existing mpv commands |
+
+#### 5. Good/Base/Bad Cases
+- Good: `useMpv` exposes `renderStatus`, `renderBackend`, and `renderError` while keeping existing `load`, pause, seek, and volume APIs stable.
+- Base: render status is queried on Player mount and displays a truthful placeholder until native surface rendering lands.
+- Bad: frontend infers platform support from `navigator.platform`, or displays "video ready" when backend only reports scaffold/idle.
+
+#### 6. Tests Required
+- `npm run typecheck` catches command response/interface drift.
+- `npm run lint` passes without broad `any` or unused render state.
+- Manual UI review verifies `idle`, `unsupported`, and `error` copy remains truthful.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+const state = await invoke('mpv_render_status') as any
+if (state.backend) showVideoReady()
+```
+
+Correct:
+```ts
+const state = await invoke<MpvRenderState>('mpv_render_status')
+renderStatus.value = state.status
+```
+
 ---
 
 ## Common Patterns

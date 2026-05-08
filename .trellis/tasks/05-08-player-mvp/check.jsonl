@@ -1,0 +1,7 @@
+{"file":".trellis/tasks/05-08-player-mvp/prd.md","reason":"Acceptance criteria for True render API visible in-window playback, no external mpv window, failure fallback, and Windows package build."}
+{"file":".trellis/tasks/05-08-player-mvp/research/true-render-api-feasibility.md","reason":"Validation risks for OpenGL render thread, WebView2 transparency/z-order, resize/fullscreen/DPI, and cleanup ordering."}
+{"file":".trellis/tasks/05-08-player-mvp/research/true-render-api-code-impact.md","reason":"Checklist of exact repo flows and files that must not regress during validation."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required commands and runtime/render verification rules, including WSL partial-verification and Windows runtime caveats."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"libmpv FFI safety, no external window invariant, platform module boundaries, and Windows GNU link/bundle validation."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Player chrome auto-hide, drag/drop surface, and render placeholder behavior to verify after implementation."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Typecheck and stream URL/redaction behavior for DataSource playback flow."}
