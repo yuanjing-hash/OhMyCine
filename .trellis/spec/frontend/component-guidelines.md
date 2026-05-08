@@ -70,7 +70,7 @@ Required principles:
 - The sidebar bottom add/plus affordance must navigate to data-source management, not a provider-specific setup shortcut.
 - Disabled data sources may remain visible for management context, but must look disabled and must not be browsable until re-enabled.
 - Server entries must not block local/Emby/Jellyfin/OpenList/Alist/CloudDrive2 browsing when disconnected.
-- `WindowChrome` handles frameless window drag/control surfaces.
+- `WindowChrome` handles frameless window drag/control surfaces and must remain above route/loading content; loading skeletons, hero gradients, and decorative overlays should not intercept pointer events unless they contain real controls.
 - Non-home routes must expose a visible back control in the global layout or route chrome. Prefer `router.back()` when `window.history.state?.back` exists; otherwise navigate to `/`.
 
 ### Back Navigation Control Contract

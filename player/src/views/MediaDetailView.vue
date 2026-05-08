@@ -224,7 +224,7 @@ function itemRuntime(item: MediaItem): string {
 
 <template>
   <div class="detail-view min-h-screen bg-[var(--color-bg)] text-white">
-    <div v-if="isLoading && !detail" class="flex min-h-screen items-center justify-center text-white/45">
+    <div v-if="isLoading && !detail" class="pointer-events-none flex min-h-screen items-center justify-center text-white/45" aria-live="polite">
       正在加载媒体详情…
     </div>
 
@@ -242,8 +242,8 @@ function itemRuntime(item: MediaItem): string {
 
     <template v-else-if="detail">
       <section class="relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
-        <div class="absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
-        <div class="absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
+        <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
+        <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
         <div class="relative flex min-h-[68vh] items-end gap-8 px-6 pb-12 pl-24 pt-24 lg:px-12 lg:pl-28">
           <div class="hidden w-56 flex-shrink-0 overflow-hidden rounded-[1.8rem] border border-white/12 bg-white/6 shadow-2xl md:block">
             <img v-if="detail.posterUrl" :src="detail.posterUrl" :alt="detail.name" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async">
@@ -317,7 +317,7 @@ function itemRuntime(item: MediaItem): string {
             </button>
           </div>
 
-          <div v-if="isSeriesContentLoading" class="mt-6 grid gap-4 lg:grid-cols-2">
+          <div v-if="isSeriesContentLoading" class="pointer-events-none mt-6 grid gap-4 lg:grid-cols-2" aria-hidden="true">
             <div v-for="i in 6" :key="i" class="h-36 animate-pulse rounded-[1.4rem] bg-white/6" />
           </div>
 

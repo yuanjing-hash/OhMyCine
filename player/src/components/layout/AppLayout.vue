@@ -8,7 +8,7 @@ import WindowChrome from './WindowChrome.vue'
 <template>
   <div class="app-window relative text-text font-sans">
     <!-- Content fills the full area -->
-    <main class="cinema-scrollbar absolute inset-0 overflow-auto">
+    <main class="cinema-scrollbar absolute inset-0 z-0 overflow-auto">
       <slot />
     </main>
 

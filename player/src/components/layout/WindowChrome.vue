@@ -59,8 +59,8 @@ function endDrag() {
 </script>
 
 <template>
-  <div class="pointer-events-none fixed inset-x-0 top-0 z-50 h-16">
-    <!-- full-width invisible drag region so the top area still drags -->
+  <div class="window-chrome pointer-events-none fixed inset-x-0 top-0 h-16">
+    <!-- full-width invisible drag region so the top area still drags above route/loading content -->
     <div
       data-tauri-drag-region
       class="pointer-events-auto absolute inset-x-0 top-0 z-0 h-16"
@@ -130,6 +130,10 @@ function endDrag() {
 </template>
 
 <style scoped>
+.window-chrome {
+  z-index: 1000;
+}
+
 .gp-btn {
   color: var(--gp-text);
 }

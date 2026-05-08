@@ -21,7 +21,7 @@ function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
 
 <template>
   <div>
-    <div v-if="loading" class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+    <div v-if="loading" class="pointer-events-none grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6" aria-hidden="true">
       <div v-for="i in 12" :key="i" class="aspect-[2/3] animate-pulse rounded-[1.4rem] bg-white/6" />
     </div>
 

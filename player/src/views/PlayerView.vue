@@ -152,7 +152,7 @@ onBeforeUnmount(() => {
     <Transition name="player-chrome-bottom">
       <div
         v-show="shouldShowChrome"
-        class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/88 via-black/44 to-transparent px-6 pb-6 pt-28"
+        class="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/88 via-black/44 to-transparent px-6 pb-6 pt-28"
       >
         <PlayerControls
           :is-playing="isPlaying"

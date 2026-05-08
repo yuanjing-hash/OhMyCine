@@ -18,7 +18,7 @@ function goBack() {
 <template>
   <button
     v-if="shouldShowBackButton"
-    class="glass-panel gp-back-btn fixed left-6 top-3 z-60 flex h-11 items-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-all duration-200"
+    class="glass-panel gp-back-btn fixed left-6 top-3 flex h-11 items-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-all duration-200"
     type="button"
     title="返回"
     aria-label="返回上一页"
@@ -45,6 +45,7 @@ function goBack() {
 
 <style scoped>
 .gp-back-btn {
+  z-index: 1010;
   color: var(--gp-text);
 }
 .gp-back-btn:hover {
