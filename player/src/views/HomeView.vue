@@ -25,6 +25,12 @@ function goToSettings() {
 }
 
 async function handlePlay(item: MediaItem) {
+  if (isContainerItem(item)) {
+    handleDetail(item)
+    return
+  }
+
+  await store.syncManager()
   const source = store.getSource(item.sourceId)
   const path = source && item.sourceId !== 'placeholder'
     ? await source.getStreamURL(item.id)
@@ -45,6 +51,10 @@ function handleDetail(item: MediaItem) {
   if (item.sourceId === 'placeholder')
     return
   void router.push({ name: 'media-detail', params: { sourceId: item.sourceId, itemId: item.id } })
+}
+
+function isContainerItem(item: MediaItem): boolean {
+  return item.type === 'folder' || item.type === 'series' || item.type === 'season'
 }
 </script>
 

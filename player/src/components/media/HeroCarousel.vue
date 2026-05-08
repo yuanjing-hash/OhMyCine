@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { MediaItem } from '@/services/datasource/types'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const props = defineProps<{
   items: MediaItem[]
@@ -17,6 +17,7 @@ const isPaused = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 
 const currentItem = () => props.items[currentIndex.value] ?? null
+const currentActionLabel = computed(() => isPlayable(currentItem()) ? '播放' : '查看详情')
 
 function next() {
   if (props.items.length === 0)
@@ -51,6 +52,21 @@ function onUserNav() {
     isPaused.value = false
     resetTimer()
   }, 15000)
+}
+
+function isPlayable(item: MediaItem | null): boolean {
+  return item != null && item.type !== 'folder' && item.type !== 'series' && item.type !== 'season'
+}
+
+function handlePrimaryAction() {
+  const item = currentItem()
+  if (!item)
+    return
+
+  if (isPlayable(item))
+    emit('play', item)
+  else
+    emit('detail', item)
 }
 
 watch(() => props.items.length, () => {
@@ -118,12 +134,16 @@ onUnmounted(() => {
         <div class="mt-6 flex items-center gap-3">
           <button
             class="flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-black shadow-lg transition-transform hover:scale-105"
-            @click="currentItem() && emit('play', currentItem()!)"
+            @click="handlePrimaryAction"
           >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <svg v-if="isPlayable(currentItem())" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M4 2l10 6-10 6V2z" />
             </svg>
-            播放
+            <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M5.5 3.5h5v9h-5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.4" />
+              <path d="M7 6h2.2M7 8h2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+            {{ currentActionLabel }}
           </button>
           <button
             class="glass flex items-center gap-2 rounded-full px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"

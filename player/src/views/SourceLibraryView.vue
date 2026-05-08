@@ -218,6 +218,11 @@ async function loadNestedItems(parentId: string) {
 }
 
 async function handlePlay(item: MediaItem) {
+  if (isContainerItem(item)) {
+    await openDetail(item)
+    return
+  }
+
   if (!source.value)
     return
 
@@ -241,6 +246,10 @@ async function handlePlay(item: MediaItem) {
   finally {
     isLoading.value = false
   }
+}
+
+function isContainerItem(item: MediaItem): boolean {
+  return item.type === 'folder' || item.type === 'series' || item.type === 'season'
 }
 </script>
 
