@@ -44,8 +44,14 @@ export class DataSourceManager {
 
   removeSource(id: string): void {
     const source = this.sources.get(id)
+    source?.clearCache?.()
     source?.destroy()
     this.sources.delete(id)
+  }
+
+  clearSourceCache(id: string): void {
+    const source = this.sources.get(id)
+    source?.clearCache?.()
   }
 
   getSource(id: string): DataSource | null {

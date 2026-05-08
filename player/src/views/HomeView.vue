@@ -41,7 +41,10 @@ async function handlePlay(item: MediaItem) {
   })
 }
 
-function handleDetail(_item: MediaItem) {
+function handleDetail(item: MediaItem) {
+  if (item.sourceId === 'placeholder')
+    return
+  void router.push({ name: 'media-detail', params: { sourceId: item.sourceId, itemId: item.id } })
 }
 </script>
 
@@ -105,7 +108,7 @@ function handleDetail(_item: MediaItem) {
               @click="handleDetail(item)"
             >
               <div class="relative h-28 media-placeholder">
-                <img v-if="item.backdropUrl" :src="item.backdropUrl" :alt="item.name" class="h-full w-full object-cover">
+                <img v-if="item.backdropUrl" :src="item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
                 <div class="progress-track absolute bottom-0 left-0 right-0 h-1">
                   <div class="progress-value h-full w-1/3 rounded-full" />
                 </div>
@@ -154,7 +157,7 @@ function handleDetail(_item: MediaItem) {
               @click="handleDetail(item)"
             >
               <div class="relative aspect-[2/3] media-placeholder">
-                <img v-if="item.posterUrl" :src="item.posterUrl" :alt="item.name" class="h-full w-full object-cover">
+                <img v-if="item.posterUrl" :src="item.posterUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
                 <div v-else class="poster-placeholder flex h-full items-center justify-center">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
                     <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5" />

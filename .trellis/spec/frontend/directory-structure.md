@@ -93,7 +93,8 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 - `test()` returns connection/auth success without exposing raw provider errors or credentials.
 - `listLibraries()` returns `MediaLibrary[]` for source-level library cards and should be fetched after successful add/login so the source is known usable before it appears as connected.
 - `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.
-- `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized.
+- `getDetail(id)` may include provider-derived media source options, audio/subtitle tracks, stills, collections, similar items, and media info, but must not expose local filesystem paths, STRM paths, credentials, or tokenized playback URLs as display fields.
+- `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized; for STRM/remote-provider items, inspect provider playback metadata before falling back to static stream URLs, and return a user-safe error if no real playable URL is exposed.
 - Emby hierarchy browsing must preserve views/libraries at the root, direct children for libraries/folders, series → seasons, and season → episodes; only search/home/recent aggregation should use recursive queries by default.
 - `exportConfig()` returns non-sensitive fields and credential references only.
 

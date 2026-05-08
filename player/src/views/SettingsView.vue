@@ -29,6 +29,7 @@ const form = reactive<DataSourceFormState>({
 })
 const mode = ref<'manage' | 'add' | 'edit'>('manage')
 const isSaving = ref(false)
+const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
 const persistentCredentialWarning = computed(() => hasPersistentCredentialStorageWarning())
@@ -90,6 +91,24 @@ async function removeSource(id: string) {
   await store.removeConfig(id)
   if (form.id === id)
     goManage()
+}
+
+async function clearSourceCache(source: DataSourceConfig) {
+  clearingCacheSourceId.value = source.id
+  feedback.value = null
+  try {
+    await store.clearSourceCache(source.id)
+    feedback.value = { type: 'success', message: `已清除「${source.displayName ?? source.name}」的媒体库、列表与详情缓存，凭证和配置未受影响。` }
+  }
+  catch (error) {
+    feedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, '清除缓存失败，请稍后重试。'),
+    }
+  }
+  finally {
+    clearingCacheSourceId.value = null
+  }
 }
 
 async function saveSource() {
@@ -254,6 +273,14 @@ async function saveEditedSource(id: string) {
                   @click="source.enabled === false ? undefined : router.push(`/source/${source.id}`)"
                 >
                   浏览
+                </button>
+                <button
+                  class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/72 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
+                  :disabled="clearingCacheSourceId === source.id"
+                  title="仅清除该数据源已加载的媒体库、列表与详情缓存，不删除凭证或配置"
+                  @click="clearSourceCache(source)"
+                >
+                  {{ clearingCacheSourceId === source.id ? '清除中…' : '清除缓存' }}
                 </button>
                 <button class="rounded-xl bg-red-500/14 px-3 py-2 text-xs text-red-100 transition-colors hover:bg-red-500/24" @click="removeSource(source.id)">
                   删除

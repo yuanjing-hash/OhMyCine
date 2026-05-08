@@ -93,6 +93,12 @@ export const useDataSourceStore = defineStore('datasource', () => {
     saveConfigs()
   }
 
+  async function clearSourceCache(id: string) {
+    await syncManager()
+    dataSourceManager.clearSourceCache(id)
+    homeSections.value = homeSections.value.filter(section => section.sourceId !== id)
+  }
+
   function reorderConfigs(ids: string[]) {
     const map = new Map(configs.value.map(c => [c.id, c]))
     configs.value = ids
@@ -151,6 +157,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     replaceConfig,
     updateConfig,
     removeConfig,
+    clearSourceCache,
     reorderConfigs,
     loadHomeSections,
     getSource,

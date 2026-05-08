@@ -54,7 +54,7 @@ When mapping Emby or Emby-compatible responses into Player types:
 #### 2. Signatures
 - Config inputs: `DataSourceConfig` with `type: 'emby'`, `url`, display fields, and `extra.credentialRef` / `extra.userId` or equivalent non-sensitive fields.
 - External fetch outputs: treat Emby JSON as `unknown` until minimally validated.
-- Internal outputs: map only to `MediaLibrary`, `MediaItem`, `HomeSection`, `MediaDetail`, `SubtitleTrack`, and `AudioTrack`.
+- Internal outputs: map only to `MediaLibrary`, `MediaItem`, `HomeSection`, `MediaDetail`, `MediaSourceOption`, `SubtitleTrack`, and `AudioTrack`.
 
 #### 3. Contracts
 - Source root maps Emby views/collection folders to `MediaLibrary[]`; do not flatten all media at the root.
@@ -62,9 +62,13 @@ When mapping Emby or Emby-compatible responses into Player types:
 - Series/anime navigation maps series to seasons, and seasons to episodes/direct children.
 - Search, home, recently added, and continue-watching sections may use recursive queries where the UI explicitly asks for cross-library aggregation.
 - Item endpoints map `Movie`, `Series`, `Episode`, `Season`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped.
-- Poster/backdrop/logo URLs may be tokenized and must be treated as sensitive strings.
-- Runtime ticks, ratings, dates, media streams, people, and provider IDs are optional and must not require non-null assertions.
+- Poster/backdrop/logo URLs may be tokenized and must be treated as sensitive strings; list/detail queries should request image metadata (`EnableImages`, `EnableImageTypes`, `ImageTypeLimit`, and parent image fields where supported), include image `tag` params, and request bounded image widths/quality instead of loading original-size artwork for grid cards.
+- Runtime ticks, ratings, dates, media streams, people, provider IDs, media source options, stills, collections, and similar items are optional and must not require non-null assertions.
+- Detail-page media source options may expose neutral labels, container/codec/bitrate/resolution, and track metadata, but must not expose provider filesystem paths, STRM paths, credentials, or tokenized playback URLs.
+- Source-home hero sections should choose backdrop-capable movie/series items across libraries where possible, not episode-only rows or a single narrow library subset.
+- Latest media rows intended for source landing pages should use movie/series-level items or explicitly label episode-level rows; avoid episode spam in generic latest-video sections.
 - Stream URL generation must return a string for the playback layer, but UI labels/errors must display a redacted representation.
+- STRM/remote-provider playback must inspect provider playback metadata such as direct-play/direct-stream/transcoding URLs or safe remote media paths; internal LAN/control-plane/plugin redirect URLs must not be treated as final playable URLs. If the provider does not expose a real playable URL, return a user-safe playback error instead of presenting an internal redirect or unplayable static `/Videos/{id}/stream` URL as success.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
@@ -77,16 +81,20 @@ When mapping Emby or Emby-compatible responses into Player types:
 | User opens a series | Load seasons before episodes when Emby exposes seasons |
 | Breadcrumb represents search results | Mark it non-navigable or route it through search logic; do not call `list('search')` accidentally |
 | Stream URL contains `api_key`, token, or signed params | Pass to playback only; redact in display/errors/logs |
+| Emby media source points to `.strm` or another remote-provider indirection | Resolve through playback metadata to the real playable URL when exposed; otherwise show a safe unsupported/unresolved playback error |
+| Emby/plugin returns an internal LAN/control-plane redirect URL such as `/api/v1/plugin/.../redirect_url` | Do not pass it to mpv as final media; reject with a redacted user-safe unresolved-playback error unless the provider exposes the real playable URL |
+| Latest source-home query returns every episode for a TV library | Use movie/series-level rows for generic latest sections, or label/render an explicit episode row separately |
+| Detail metadata contains provider paths or raw media-source names that may include paths | Do not surface them as primary UI labels; use neutral version labels and safe codec/resolution/runtime fields |
 
 #### 5. Good/Base/Bad Cases
-- Good: mapper reads optional fields defensively and returns a complete `MediaItem` with fallbacks.
-- Base: direct-play stream URLs are supported while advanced PlaybackInfo/transcoding remains future work.
-- Bad: `const item = response.Items[0] as any` followed by unconditional `item.ImageTags.Primary` access.
+- Good: mapper reads optional fields defensively, returns a complete `MediaItem` with fallbacks, and resolves STRM/remote playback through provider playback metadata before loading mpv.
+- Base: direct-play stream URLs and visible detail metadata are supported while advanced user-selected transcoding remains future work.
+- Bad: `const item = response.Items[0] as any` followed by unconditional `item.ImageTags.Primary` access, or showing `MediaSource.Path` in the detail page.
 
 #### 6. Tests Required
 - Typecheck must catch missing mapped fields.
 - Lint must pass without broad `any` in provider mappers.
-- Manual/code review must verify missing poster, empty library, auth failure, and token redaction paths.
+- Manual/code review must verify missing poster, empty library, auth failure, token redaction paths, detail-page safe metadata labels, and STRM/remote playback unresolved-error behavior.
 
 #### 7. Wrong vs Correct
 

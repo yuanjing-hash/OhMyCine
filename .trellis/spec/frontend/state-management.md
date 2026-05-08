@@ -74,6 +74,8 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 - Removing a source must delete the persistent SQLite credential row and any in-memory fallback for that `credentialRef`.
 - Persistence sanitization must reconstruct safe config fields and drop sensitive `extra` keys before writing config to localStorage.
 - Export/sync includes source structure by default, not the secret value.
+- DataSource metadata caches may keep mapped or raw provider metadata in memory for faster repeat navigation, but must not persist or cache credentials, passwords, access tokens, raw stream URLs, or tokenized playback URLs.
+- Source-scoped cache invalidation must clear only that source's media/list/detail/home metadata and must not remove config or credentials.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
@@ -86,7 +88,8 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 | App restarts in Tauri desktop | Credential should load from persistent credential boundary |
 | App runs in browser/Vite without Tauri commands | Use memory fallback only and show a persistence limitation warning |
 | Source is disabled | Do not initialize it or allow browsing/playback until re-enabled |
-| Source is removed | Delete persistent SQLite credential row and memory fallback |
+| User clicks clear cache for a source | Clear only source-scoped metadata cache; keep config and credentials intact |
+| Source is removed | Delete persistent SQLite credential row, memory fallback, and source-scoped metadata cache |
 | Legacy plaintext credential file fallback exists | Remove it; credential reads/writes/deletes must use SQLite boundary only |
 | Config includes sensitive top-level or `extra` keys | Drop them before persistence/export |
 | Export config is requested | Redact or omit credential values |

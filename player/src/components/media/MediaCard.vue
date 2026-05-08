@@ -17,15 +17,15 @@ const isMediaItem = computed(() => hasMediaPath(props.item))
 const title = computed(() => props.item.name)
 const subtitle = computed(() => {
   const item = props.item
-  if (!hasMediaPath(item)) {
-    const count = item.itemCount == null ? '' : `${item.itemCount} items · `
-    return `${count}${item.type}`
-  }
+  if (!hasMediaPath(item))
+    return item.itemCount == null ? '媒体库' : `${item.itemCount} 项内容`
 
-  const meta = [item.year, item.type].filter(Boolean)
+  const meta = [item.year, item.duration ? `${Math.round(item.duration / 60)} 分钟` : undefined].filter(Boolean)
   return meta.join(' · ')
 })
-const posterUrl = computed(() => props.item.posterUrl)
+const posterUrl = computed(() => props.kind === 'library' ? (props.item.backdropUrl ?? props.item.posterUrl) : props.item.posterUrl)
+const cardClass = computed(() => props.kind === 'library' ? 'library-card' : 'poster-card')
+const imageClass = computed(() => props.kind === 'library' ? 'aspect-[16/9]' : 'aspect-[2/3]')
 const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series')
 
 function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
@@ -46,14 +46,16 @@ function handlePlay() {
 <template>
   <article
     class="media-card group overflow-hidden rounded-[1.4rem] border transition-all duration-300"
-    :class="disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:-translate-y-1 hover:border-white/24'"
+    :class="[cardClass, disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:-translate-y-1 hover:border-white/24']"
     @click="handleSelect"
   >
-    <div class="relative aspect-[2/3] overflow-hidden bg-white/5">
+    <div class="relative overflow-hidden bg-white/5" :class="imageClass">
       <img
         v-if="posterUrl"
         :src="posterUrl"
         :alt="title"
+        loading="lazy"
+        decoding="async"
         class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
       >
       <div v-else class="flex h-full w-full flex-col items-center justify-center gap-3 p-5 text-center">
@@ -97,5 +99,10 @@ function handlePlay() {
   border-color: var(--color-border);
   background: color-mix(in srgb, var(--color-surface) 40%, transparent);
   box-shadow: var(--shadow-sm);
+}
+
+.library-card {
+  border-radius: 1.8rem;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 62%, transparent), color-mix(in srgb, var(--color-surface-hover) 34%, transparent));
 }
 </style>

@@ -53,6 +53,20 @@ export interface MediaDetail extends MediaItem {
   audioCodec?: string
   subtitles?: SubtitleTrack[]
   audioTracks?: AudioTrack[]
+  mediaSources?: MediaSourceOption[]
+  stills?: string[]
+  similarItems?: MediaItem[]
+  collections?: MediaItem[]
+}
+
+export interface MediaSourceOption {
+  id: string
+  name: string
+  container?: string
+  size?: number
+  bitrate?: number
+  isRemote?: boolean
+  isStrm?: boolean
 }
 
 export interface SubtitleTrack {
@@ -104,6 +118,8 @@ export interface DataSource {
   getDetail: (id: string) => Promise<MediaDetail>
 
   getStreamURL: (id: string) => Promise<string>
+
+  clearCache?: () => void
 
   exportConfig: () => DataSourceConfig
 }

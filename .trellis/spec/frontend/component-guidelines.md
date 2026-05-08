@@ -95,8 +95,10 @@ Required principles:
 
 ## Media Components
 
-- `HeroCarousel` should prefer items with backdrop/title logo/overview.
-- `MediaCard` and poster components must handle missing posters gracefully.
+- `HeroCarousel` should prefer items with backdrop/title logo/overview and can be used at data-source roots to provide an artwork-first source landing page; hero backdrops must fill the full hero surface with cover behavior rather than leaving non-artwork gutters.
+- `MediaCard` and poster components must handle missing posters gracefully, request/lazy-load appropriately sized images, and avoid showing raw provider type identifiers such as lowercase `folder` as user-facing subtitles.
+- Data-source root pages should favor a hero/backdrop section followed by media libraries, continue-watching/latest/recommended rows where the DataSource exposes them.
+- Media detail pages should keep OhMyCine styling while surfacing safe provider metadata: poster/backdrop, title, rating/year/runtime/genres, overview, play, neutral version labels, audio/subtitle tracks, stills, collections, similar content, and media info. Do not add provider-specific external-player or trailer actions unless explicitly requested.
 - Cloud/local data sources may lack metadata; components should use scraped metadata when available and clean file/folder fallback otherwise.
 - Continue-watching components use local playback history first; Server state is enhancement only.
 

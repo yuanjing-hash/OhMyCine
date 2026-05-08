@@ -2,6 +2,7 @@
 import type { DataSource, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -25,6 +26,9 @@ interface BreadcrumbNode {
 const source = ref<DataSource | null>(null)
 const libraries = ref<MediaLibrary[]>([])
 const items = ref<MediaItem[]>([])
+const heroItems = ref<MediaItem[]>([])
+const latestItems = ref<MediaItem[]>([])
+const continueItems = ref<MediaItem[]>([])
 const selectedLibrary = ref<MediaLibrary | null>(null)
 const navigationStack = ref<BreadcrumbNode[]>([])
 const searchKeyword = ref('')
@@ -34,11 +38,12 @@ const errorMessage = ref<string | null>(null)
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
 const pageTitle = computed(() => currentNode.value?.name ?? selectedLibrary.value?.name ?? (sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? 'Data Source'))
+const sourceTypeLabel = computed(() => sourceConfig.value?.type === 'emby' ? 'Emby' : (sourceConfig.value?.type ?? 'Data'))
 
 onMounted(async () => {
   store.loadConfigs()
   await ensureSource()
-  await loadLibraries()
+  await loadSourceRoot()
 })
 
 watch(sourceId, async () => {
@@ -46,7 +51,7 @@ watch(sourceId, async () => {
   navigationStack.value = []
   items.value = []
   await ensureSource()
-  await loadLibraries()
+  await loadSourceRoot()
 })
 
 async function ensureSource() {
@@ -60,19 +65,27 @@ async function ensureSource() {
   source.value = store.getSource(sourceId.value)
 }
 
-async function loadLibraries() {
+async function loadSourceRoot() {
   if (!source.value)
     return
 
   isLoading.value = true
   errorMessage.value = null
   try {
-    libraries.value = source.value.listLibraries
-      ? await source.value.listLibraries()
-      : []
+    const [nextLibraries, homeSections] = await Promise.all([
+      source.value.listLibraries ? source.value.listLibraries() : Promise.resolve([]),
+      source.value.getHomeSections ? source.value.getHomeSections() : Promise.resolve([]),
+    ])
+    libraries.value = nextLibraries
+    heroItems.value = homeSections.find(section => section.type === 'hero')?.items ?? []
+    latestItems.value = homeSections.find(section => section.type === 'recentlyAdded')?.items ?? []
+    continueItems.value = homeSections.find(section => section.type === 'continueWatching')?.items ?? []
   }
   catch (error) {
     libraries.value = []
+    heroItems.value = []
+    latestItems.value = []
+    continueItems.value = []
     errorMessage.value = toSafeErrorMessage(error, '媒体库加载失败。')
   }
   finally {
@@ -152,13 +165,13 @@ async function navigateToCrumb(index: number) {
 
 async function handleSelect(item: MediaItem | MediaLibrary) {
   if ('path' in item) {
-    if (item.type === 'folder' || item.type === 'series') {
+    if (item.type === 'folder' && item.duration == null && !item.overview) {
       if (!selectedLibrary.value) {
         selectedLibrary.value = {
           id: item.id,
           sourceId: item.sourceId,
           name: item.name,
-          type: item.type === 'series' ? 'series' : 'folders',
+          type: 'folders',
         }
       }
       navigationStack.value = [
@@ -166,11 +179,24 @@ async function handleSelect(item: MediaItem | MediaLibrary) {
         { id: item.id, name: item.name, type: item.type },
       ]
       await loadNestedItems(item.id)
+      return
     }
+
+    await openDetail(item)
     return
   }
 
   await loadLibrary(item)
+}
+
+async function openDetail(item: MediaItem) {
+  await router.push({
+    name: 'media-detail',
+    params: {
+      sourceId: sourceId.value,
+      itemId: item.id,
+    },
+  })
 }
 
 async function loadNestedItems(parentId: string) {
@@ -234,6 +260,10 @@ async function handlePlay(item: MediaItem) {
       </div>
 
       <template v-else>
+        <section v-if="!selectedLibrary && heroItems.length" class="-mx-6 -mt-16 overflow-hidden rounded-b-[2.4rem] md:-ml-20">
+          <HeroCarousel :items="heroItems" @play="handlePlay" @detail="openDetail" />
+        </section>
+
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div class="flex items-center gap-4">
             <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/18 text-lg font-bold text-primary">
@@ -242,7 +272,7 @@ async function handlePlay(item: MediaItem) {
             </div>
             <div>
               <p class="text-xs uppercase tracking-[0.24em] text-white/34">
-                {{ sourceConfig.type }} source
+                {{ sourceTypeLabel }} source
               </p>
               <h1 class="mt-1 text-2xl font-bold text-white">
                 {{ pageTitle }}
@@ -289,6 +319,34 @@ async function handlePlay(item: MediaItem) {
         >
           {{ errorMessage }}
         </div>
+
+        <section v-if="!selectedLibrary && continueItems.length">
+          <div class="mb-4 flex items-end justify-between">
+            <div>
+              <h2 class="text-xl font-bold text-white">
+                继续观看
+              </h2>
+              <p class="mt-1 text-sm text-white/36">
+                从 Emby 恢复列表继续播放。
+              </p>
+            </div>
+          </div>
+          <MediaGrid :items="continueItems" @select="handleSelect" @play="handlePlay" />
+        </section>
+
+        <section v-if="!selectedLibrary && latestItems.length">
+          <div class="mb-4 flex items-end justify-between">
+            <div>
+              <h2 class="text-xl font-bold text-white">
+                最新影片与剧集
+              </h2>
+              <p class="mt-1 text-sm text-white/36">
+                最近加入 Emby 的电影与剧集，避免用单集刷屏。
+              </p>
+            </div>
+          </div>
+          <MediaGrid :items="latestItems" @select="handleSelect" @play="handlePlay" />
+        </section>
 
         <section>
           <div class="mb-4 flex items-end justify-between">

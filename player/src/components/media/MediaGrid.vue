@@ -13,6 +13,10 @@ const emit = defineEmits<{
   select: [item: MediaItem | MediaLibrary]
   play: [item: MediaItem]
 }>()
+
+function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
+  return 'path' in item
+}
 </script>
 
 <template>
@@ -21,11 +25,12 @@ const emit = defineEmits<{
       <div v-for="i in 12" :key="i" class="aspect-[2/3] animate-pulse rounded-[1.4rem] bg-white/6" />
     </div>
 
-    <div v-else-if="items.length" class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+    <div v-else-if="items.length" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5" :class="items.some(hasMediaPath) ? 'media-grid-posters' : 'media-grid-libraries'">
       <MediaCard
         v-for="item in items"
         :key="item.id"
         :item="item"
+        :kind="hasMediaPath(item) ? 'poster' : 'library'"
         @select="emit('select', $event)"
         @play="emit('play', $event)"
       />
@@ -41,3 +46,13 @@ const emit = defineEmits<{
     </div>
   </div>
 </template>
+
+<style scoped>
+.media-grid-posters {
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+}
+
+.media-grid-libraries {
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+}
+</style>

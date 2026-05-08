@@ -66,19 +66,28 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative h-[560px] overflow-hidden">
+  <div class="relative min-h-[560px] overflow-hidden bg-black">
     <!-- Background -->
     <div
       v-if="currentItem()"
       :key="currentItem()!.id"
-      class="absolute inset-0 transition-all duration-700 ease-out"
-      :style="{ background: currentItem()!.backdropUrl || 'linear-gradient(135deg, #0c1a2e, #1a3a5c, #0a0a1a)' }"
-    />
-    <div class="absolute inset-0 bg-gradient-to-r from-black/90 via-black/40 to-transparent" />
-    <div class="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/30" />
+      class="absolute inset-0 h-full w-full transition-all duration-700 ease-out"
+    >
+      <img
+        v-if="currentItem()!.backdropUrl"
+        :src="currentItem()!.backdropUrl"
+        :alt="currentItem()!.name"
+        class="h-full w-full object-cover object-center"
+        loading="eager"
+        decoding="async"
+      >
+      <div v-else class="h-full w-full bg-[linear-gradient(135deg,#0c1a2e,#1a3a5c,#0a0a1a)]" />
+    </div>
+    <div class="absolute inset-0 bg-gradient-to-r from-black/88 via-black/42 to-black/18" />
+    <div class="absolute inset-0 bg-gradient-to-t from-black/72 via-black/12 to-black/32" />
 
     <!-- Content -->
-    <div v-if="currentItem()" class="relative flex h-full items-end p-10">
+    <div v-if="currentItem()" class="relative flex min-h-[560px] items-end p-10">
       <div class="max-w-2xl">
         <!-- Tagline -->
         <p v-if="currentItem()!.tagline" class="mb-3 text-sm font-medium uppercase tracking-widest text-primary-light/80">
