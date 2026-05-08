@@ -61,7 +61,7 @@ When mapping Emby or Emby-compatible responses into Player types:
 - Primary library/folder browsing uses direct children (`Recursive=false`) by default so Emby categories and folders remain navigable.
 - Series/anime navigation maps series to seasons, and seasons to episodes/direct children.
 - Search, home, recently added, and continue-watching sections may use recursive queries where the UI explicitly asks for cross-library aggregation.
-- Item endpoints map `Movie`, `Series`, `Episode`, `Season`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped.
+- Item endpoints map `Movie`, `Series`, `Episode`, `Season`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped. Season and episode mapping should preserve season/episode numbers where exposed (`ParentIndexNumber` for episode season, `IndexNumber` for episode number).
 - Poster/backdrop/logo URLs may be tokenized and must be treated as sensitive strings; list/detail queries should request image metadata (`EnableImages`, `EnableImageTypes`, `ImageTypeLimit`, and parent image fields where supported), include image `tag` params, and request bounded image widths/quality instead of loading original-size artwork for grid cards.
 - Runtime ticks, ratings, dates, media streams, people, provider IDs, media source options, stills, collections, and similar items are optional and must not require non-null assertions.
 - Detail-page media source options may expose neutral labels, container/codec/bitrate/resolution, and track metadata, but must not expose provider filesystem paths, STRM paths, credentials, or tokenized playback URLs.
@@ -78,7 +78,8 @@ When mapping Emby or Emby-compatible responses into Player types:
 | Item lacks image tags | Render missing-poster fallback in media components |
 | `RunTimeTicks`/ratings/year are missing or malformed | Omit the derived field rather than forcing `0` as real data |
 | User opens a library such as 动漫 | Show direct category/folder/series children first; do not recursive-flatten by default |
-| User opens a series | Load seasons before episodes when Emby exposes seasons |
+| User opens a series detail page | Render season selection and episode list through DataSource `list(seriesId)` / `list(seasonId)`; do not show movie-only audio/subtitle/version panels at series level |
+| User opens a season in source browsing | Treat it as a navigable container and load episodes before opening generic detail |
 | Breadcrumb represents search results | Mark it non-navigable or route it through search logic; do not call `list('search')` accidentally |
 | Stream URL contains `api_key`, token, or signed params | Pass to playback only; redact in display/errors/logs |
 | Emby media source points to `.strm` or another remote-provider indirection | Resolve through playback metadata to the real playable URL when exposed; otherwise show a safe unsupported/unresolved playback error |

@@ -102,6 +102,9 @@ interface EmbyItemRecord {
   readonly ParentLogoItemId?: string
   readonly ParentLogoImageTag?: string
   readonly PrimaryImageAspectRatio?: number
+  readonly IndexNumber?: number
+  readonly ParentIndexNumber?: number
+  readonly ChildCount?: number
   readonly ImageTags?: Record<string, string>
   readonly BackdropImageTags?: string[]
   readonly Genres?: string[]
@@ -505,7 +508,7 @@ export class EmbyDataSource implements DataSource {
       IncludeItemTypes: 'Episode,Folder',
       Fields: ITEM_FIELDS,
       ...IMAGE_QUERY,
-      SortBy: 'SortName',
+      SortBy: 'ParentIndexNumber,IndexNumber,SortName',
       SortOrder: 'Ascending',
       Limit: '200',
     })
@@ -676,6 +679,8 @@ export class EmbyDataSource implements DataSource {
       size: item.Size ?? mediaSourceSize,
       modified: item.DateCreated ?? item.DateLastMediaAdded,
       path: item.Id,
+      seasonNumber: item.Type === 'Season' ? item.IndexNumber : item.Type === 'Episode' ? item.ParentIndexNumber : undefined,
+      episodeNumber: item.Type === 'Episode' ? item.IndexNumber : undefined,
     }
   }
 
@@ -968,6 +973,7 @@ function mapMediaType(type: string | undefined): MediaItem['type'] {
     case 'Episode':
       return 'episode'
     case 'Season':
+      return 'season'
     case 'Folder':
     case 'CollectionFolder':
     case 'BoxSet':

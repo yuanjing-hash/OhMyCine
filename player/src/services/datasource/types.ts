@@ -4,7 +4,7 @@ export interface MediaItem {
   libraryId?: string
   name: string
   titleLogoUrl?: string
-  type: 'movie' | 'series' | 'episode' | 'folder' | 'file'
+  type: 'movie' | 'series' | 'season' | 'episode' | 'folder' | 'file'
   posterUrl?: string
   backdropUrl?: string
   year?: number
@@ -15,6 +15,8 @@ export interface MediaItem {
   size?: number
   modified?: string
   path: string
+  seasonNumber?: number
+  episodeNumber?: number
   children?: MediaItem[]
 }
 

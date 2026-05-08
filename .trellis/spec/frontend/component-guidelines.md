@@ -99,6 +99,7 @@ Required principles:
 - `MediaCard` and poster components must handle missing posters gracefully, request/lazy-load appropriately sized images, and avoid showing raw provider type identifiers such as lowercase `folder` as user-facing subtitles.
 - Data-source root pages should favor a hero/backdrop section followed by media libraries, continue-watching/latest/recommended rows where the DataSource exposes them.
 - Media detail pages should keep OhMyCine styling while surfacing safe provider metadata: poster/backdrop, title, rating/year/runtime/genres, overview, play, neutral version labels, audio/subtitle tracks, stills, collections, similar content, and media info. Do not add provider-specific external-player or trailer actions unless explicitly requested.
+- Detail layouts must differ by media type: movie/episode pages may show version/audio/subtitle controls when data exists, while series pages should show seasons and episode selection instead of movie-only playback selectors. Hide empty audio/subtitle/version panels when provider metadata is absent.
 - Cloud/local data sources may lack metadata; components should use scraped metadata when available and clean file/folder fallback otherwise.
 - Continue-watching components use local playback history first; Server state is enhancement only.
 

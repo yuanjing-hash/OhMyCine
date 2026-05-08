@@ -20,13 +20,27 @@ const subtitle = computed(() => {
   if (!hasMediaPath(item))
     return item.itemCount == null ? '媒体库' : `${item.itemCount} 项内容`
 
+  if (item.type === 'season')
+    return item.seasonNumber == null ? '季' : `第 ${item.seasonNumber} 季`
+  if (item.type === 'episode') {
+    const episode = item.episodeNumber == null ? undefined : `第 ${item.episodeNumber} 集`
+    const meta = [episode, item.duration ? `${Math.round(item.duration / 60)} 分钟` : undefined].filter(Boolean)
+    return meta.join(' · ')
+  }
+
   const meta = [item.year, item.duration ? `${Math.round(item.duration / 60)} 分钟` : undefined].filter(Boolean)
   return meta.join(' · ')
 })
-const posterUrl = computed(() => props.kind === 'library' ? (props.item.backdropUrl ?? props.item.posterUrl) : props.item.posterUrl)
+const posterUrl = computed(() => {
+  if (props.kind === 'library')
+    return props.item.backdropUrl ?? props.item.posterUrl
+  if (hasMediaPath(props.item) && props.item.type === 'episode')
+    return props.item.backdropUrl ?? props.item.posterUrl
+  return props.item.posterUrl
+})
 const cardClass = computed(() => props.kind === 'library' ? 'library-card' : 'poster-card')
-const imageClass = computed(() => props.kind === 'library' ? 'aspect-[16/9]' : 'aspect-[2/3]')
-const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series')
+const imageClass = computed(() => props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'aspect-[16/9]' : 'aspect-[2/3]')
+const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series' && props.item.type !== 'season')
 
 function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
   return 'path' in item

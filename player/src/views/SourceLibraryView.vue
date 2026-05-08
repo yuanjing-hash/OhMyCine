@@ -165,7 +165,7 @@ async function navigateToCrumb(index: number) {
 
 async function handleSelect(item: MediaItem | MediaLibrary) {
   if ('path' in item) {
-    if (item.type === 'folder' && item.duration == null && !item.overview) {
+    if ((item.type === 'folder' && item.duration == null && !item.overview) || item.type === 'season') {
       if (!selectedLibrary.value) {
         selectedLibrary.value = {
           id: item.id,
