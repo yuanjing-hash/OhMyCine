@@ -41,3 +41,40 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: 收尾 Player Emby MVP 与 roadmap 规划
+
+**Date**: 2026-05-08
+**Task**: 收尾 Player Emby MVP 与 roadmap 规划
+**Branch**: `main`
+
+### Summary
+
+跑完 Player typecheck/lint/build、cargo check、Windows GNU 包构建，对照 Emby MVP Acceptance Criteria 全数通过；归档 05-07-player-embedded-video-rendering 与 05-07-player-roadmap 两个任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `90b47fe` | (see git log) |
+| `cef481e` | (see git log) |
+| `858b9b0` | (see git log) |
+| `7e7b59d` | (see git log) |
+| `96711ce` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
