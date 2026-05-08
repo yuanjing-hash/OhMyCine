@@ -68,7 +68,7 @@ When mapping Emby or Emby-compatible responses into Player types:
 - Source-home hero sections should choose backdrop-capable movie/series items across libraries where possible, not episode-only rows or a single narrow library subset.
 - Latest media rows intended for source landing pages should use movie/series-level items or explicitly label episode-level rows; avoid episode spam in generic latest-video sections.
 - Stream URL generation must return a string for the playback layer, but UI labels/errors must display a redacted representation.
-- STRM/remote-provider playback must inspect provider playback metadata such as direct-play/direct-stream/transcoding URLs or safe remote media paths; internal LAN/control-plane/plugin redirect URLs must not be treated as final playable URLs. If the provider does not expose a real playable URL, return a user-safe playback error instead of presenting an internal redirect or unplayable static `/Videos/{id}/stream` URL as success.
+- STRM/remote-provider playback must inspect provider playback metadata such as direct-play/direct-stream/transcoding URLs, Emby playback endpoints, plugin redirect endpoints, or safe remote media paths. Emby-exposed playback/redirect endpoints may be passed to mpv so it can follow HTTP 302, but they must not be displayed, logged, cached, or treated as user-facing final media URLs. Reject local filesystem paths, `.strm` paths, embedded-credential URLs, and non-HTTP(S) remote URLs.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
@@ -82,8 +82,8 @@ When mapping Emby or Emby-compatible responses into Player types:
 | User opens a season in source browsing | Treat it as a navigable container and load episodes before opening generic detail |
 | Breadcrumb represents search results | Mark it non-navigable or route it through search logic; do not call `list('search')` accidentally |
 | Stream URL contains `api_key`, token, or signed params | Pass to playback only; redact in display/errors/logs |
-| Emby media source points to `.strm` or another remote-provider indirection | Resolve through playback metadata to the real playable URL when exposed; otherwise show a safe unsupported/unresolved playback error |
-| Emby/plugin returns an internal LAN/control-plane redirect URL such as `/api/v1/plugin/.../redirect_url` | Do not pass it to mpv as final media; reject with a redacted user-safe unresolved-playback error unless the provider exposes the real playable URL |
+| Emby media source points to `.strm` or another remote-provider indirection | Resolve through playback metadata to a playable URL or Emby/plug-in playback endpoint; otherwise show a safe unsupported/unresolved playback error |
+| Emby/plugin returns a playback redirect endpoint such as `/api/v1/plugin/.../redirect_url` | Pass it to mpv only as a provider-exposed playback endpoint that may 302 to real media; never display/cache/log it as the final media URL |
 | Latest source-home query returns every episode for a TV library | Use movie/series-level rows for generic latest sections, or label/render an explicit episode row separately |
 | Detail metadata contains provider paths or raw media-source names that may include paths | Do not surface them as primary UI labels; use neutral version labels and safe codec/resolution/runtime fields |
 

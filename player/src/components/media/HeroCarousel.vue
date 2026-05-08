@@ -123,13 +123,13 @@ onUnmounted(() => {
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M4 2l10 6-10 6V2z" />
             </svg>
-            Play
+            播放
           </button>
           <button
             class="glass flex items-center gap-2 rounded-full px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
             @click="currentItem() && emit('detail', currentItem()!)"
           >
-            More Info
+            详情
           </button>
         </div>
       </div>

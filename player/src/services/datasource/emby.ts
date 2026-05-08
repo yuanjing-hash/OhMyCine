@@ -362,11 +362,11 @@ export class EmbyDataSource implements DataSource {
     if (resolvedUrl)
       return resolvedUrl
 
-    const staticStreamSource = mediaSources.find(source => canUseStaticEmbyStreamFallback(source))
+    const staticStreamSource = mediaSources.find(source => typeof source.Id === 'string') ?? mediaSources[0]
     if (staticStreamSource)
       return this.buildStaticStreamUrl(id, staticStreamSource.Id)
 
-    throw new Error('该 Emby 条目指向 STRM/远程媒体或内部插件重定向，但 Emby 未暴露可由 Player 直接播放的流地址。请在 Emby/插件侧启用可访问的直链、DirectStream/Transcoding，或使用对应云盘直连数据源。')
+    throw new Error('Emby 未暴露可由 Player 直接播放的流地址。请检查该条目的播放权限或 Emby/插件直链配置。')
   }
 
   exportConfig(): DataSourceConfig {
@@ -558,16 +558,17 @@ export class EmbyDataSource implements DataSource {
       return undefined
 
     const trimmed = value.trim()
+    const tokenRequired = addApiKey ?? true
     if (trimmed.startsWith('/'))
-      return this.withOptionalApiKey(`${this.baseUrl}${trimmed}`, addApiKey)
+      return this.withOptionalApiKey(`${this.baseUrl}${trimmed}`, tokenRequired)
 
     if (!/^https?:\/\//i.test(trimmed))
       return undefined
 
-    if (!isSameOrigin(trimmed, this.baseUrl) || isInternalPluginRedirectUrl(trimmed))
-      return undefined
+    if (isSameOrigin(trimmed, this.baseUrl))
+      return this.withOptionalApiKey(trimmed, tokenRequired)
 
-    return this.withOptionalApiKey(trimmed, addApiKey)
+    return sanitizeRemotePlaybackUrl(trimmed)
   }
 
   private withOptionalApiKey(value: string, addApiKey?: boolean): string {
@@ -1052,20 +1053,6 @@ function mapMediaSources(sources: readonly EmbyMediaSourceRecord[] | undefined):
     }))
 }
 
-function isRemoteOrStrmSource(source: EmbyMediaSourceRecord): boolean {
-  return Boolean(source.IsRemote)
-    || source.Protocol === 'Http'
-    || isHttpUrl(source.Path)
-    || isStrmPath(source.Path)
-    || isStrmPath(source.Name)
-}
-
-function canUseStaticEmbyStreamFallback(source: EmbyMediaSourceRecord): boolean {
-  return !isRemoteOrStrmSource(source)
-    && !hasRequiredHeaders(source)
-    && !isInternalPluginRedirectUrl(source.Path)
-}
-
 function extractPlayableRemoteUrl(value: string | undefined, embyBaseUrl?: string): string | undefined {
   if (typeof value !== 'string')
     return undefined
@@ -1075,10 +1062,16 @@ function extractPlayableRemoteUrl(value: string | undefined, embyBaseUrl?: strin
   if (embyBaseUrl && isSameOrigin(trimmed, embyBaseUrl))
     return undefined
 
+  return sanitizeRemotePlaybackUrl(trimmed)
+}
+
+function sanitizeRemotePlaybackUrl(value: string): string | undefined {
   try {
-    const url = new URL(trimmed)
-    url.username = ''
-    url.password = ''
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:')
+      return undefined
+    if (url.username || url.password)
+      return undefined
     return url.toString()
   }
   catch {
