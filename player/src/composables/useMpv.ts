@@ -13,10 +13,42 @@ interface Track {
 
 export type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
 
+export type MpvZOrderStrategy = 'transparentOverlay' | 'ownedTopLevel' | 'bottomTransparentHole' | 'topDisabledFallback'
+
+export interface MpvRenderDiagnostics {
+  ownerHwndAttached: boolean
+  mpvHwndCreated: boolean
+  mpvHwndShown: boolean
+  overlayWindowTransparent: boolean
+  webviewBackgroundTransparentApplied: boolean
+  zOrderUnderlayApplied: boolean
+  geometryFollowing: boolean
+  taskbarIgnored: boolean
+  fullscreenState: string
+  lastSyncResult: string
+  mpvWidAccepted: boolean
+  mpvInitialized: boolean
+  lastBounds: string | null
+  scale: number
+  syncs: number
+  logFile: string | null
+}
+
 export interface MpvRenderState {
   status: MpvRenderStatus
-  backend: 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+  backend: 'windowsTransparentOverlay' | 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
   message: string | null
+  diagnostics?: MpvRenderDiagnostics | null
+}
+
+export interface RenderSurfaceBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+  scaleFactor: number
+  topOcclusion?: number
+  bottomOcclusion?: number
 }
 
 export function useMpv() {
@@ -32,6 +64,8 @@ export function useMpv() {
   const renderStatus = ref<MpvRenderStatus>('idle')
   const renderError = ref<string | null>(null)
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
+  const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
+  let renderDiagnosticsTimer: number | undefined
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -48,19 +82,73 @@ export function useMpv() {
     }),
   ]
 
+  function applyRenderState(state: MpvRenderState) {
+    renderStatus.value = state.status
+    renderBackend.value = state.backend
+    renderError.value = state.message
+    renderDiagnostics.value = state.diagnostics ?? null
+  }
+
+  async function refreshRenderStatus() {
+    try {
+      const state = await invoke<MpvRenderState>('mpv_render_status')
+      applyRenderState(state)
+    }
+    catch (error: unknown) {
+      renderStatus.value = 'error'
+      renderError.value = error instanceof Error ? error.message : String(error)
+      renderDiagnostics.value = null
+    }
+  }
+
+  function startRenderDiagnosticsPolling() {
+    if (renderDiagnosticsTimer)
+      return
+
+    renderDiagnosticsTimer = window.setInterval(() => {
+      if (renderStatus.value === 'ready')
+        void refreshRenderStatus()
+    }, 1000)
+  }
+
   async function initializeRender() {
     renderStatus.value = 'initializing'
     renderError.value = null
 
     try {
-      const state = await invoke<MpvRenderState>('mpv_render_status')
-      renderStatus.value = state.status
-      renderBackend.value = state.backend
-      renderError.value = state.message
+      const state = await invoke<MpvRenderState>('mpv_init_render_surface')
+      applyRenderState(state)
+      if (state.status === 'ready')
+        startRenderDiagnosticsPolling()
     }
     catch (error: unknown) {
       renderStatus.value = 'error'
       renderError.value = error instanceof Error ? error.message : String(error)
+      renderDiagnostics.value = null
+    }
+  }
+
+  async function updateRenderSurfaceBounds(bounds: RenderSurfaceBounds) {
+    try {
+      const state = await invoke<MpvRenderState>('mpv_update_render_surface_bounds', { bounds })
+      applyRenderState(state)
+    }
+    catch (error: unknown) {
+      renderStatus.value = 'error'
+      renderError.value = error instanceof Error ? error.message : String(error)
+      renderDiagnostics.value = null
+    }
+  }
+
+  async function setRenderStrategy(strategy: MpvZOrderStrategy) {
+    try {
+      const state = await invoke<MpvRenderState>('mpv_set_render_strategy', { strategy })
+      applyRenderState(state)
+    }
+    catch (error: unknown) {
+      renderStatus.value = 'error'
+      renderError.value = error instanceof Error ? error.message : String(error)
+      renderDiagnostics.value = null
     }
   }
 
@@ -107,6 +195,9 @@ export function useMpv() {
   }
 
   onUnmounted(() => {
+    if (renderDiagnosticsTimer)
+      window.clearInterval(renderDiagnosticsTimer)
+
     for (const promise of unlistenPromises) {
       promise.then(unlisten => unlisten())
     }
@@ -125,7 +216,10 @@ export function useMpv() {
     renderStatus,
     renderError,
     renderBackend,
+    renderDiagnostics,
     initializeRender,
+    updateRenderSurfaceBounds,
+    setRenderStrategy,
     load,
     togglePause,
     seek,

@@ -3,6 +3,10 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
+defineProps<{
+  hideNav?: boolean
+}>()
+
 const appWindow = getCurrentWindow()
 const { t } = useI18n()
 const route = useRoute()
@@ -72,7 +76,7 @@ function endDrag() {
     />
 
     <!-- Center navigation glass panel -->
-    <nav class="glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
+    <nav v-if="!hideNav" class="glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200"
         :class="route.path === '/' || route.path.startsWith('/source') ? 'is-active' : ''"

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { open } from '@tauri-apps/plugin-dialog'
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 
 const VIDEO_EXTENSIONS = [
@@ -26,9 +26,11 @@ const VIDEO_EXTENSIONS = [
 ]
 
 const router = useRouter()
+const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
 const isHovered = ref(false)
 const isOpeningFile = ref(false)
+const isPlayerRoute = computed(() => route.name === 'player')
 
 function getFileName(path: string) {
   return path.split(/[\\/]/).pop() || '本地视频'
@@ -81,6 +83,34 @@ async function openLocalVideo() {
         v-show="isHovered"
         class="glass-panel relative flex items-center gap-1 rounded-2xl p-1.5"
       >
+        <!-- Navigation buttons — only on player page (top bar/sidebar hidden there) -->
+        <template v-if="isPlayerRoute">
+          <button
+            class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
+            title="返回主页"
+            aria-label="返回主页"
+            @click="router.push('/')"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+              <path d="M3 10l7-7 7 7M5 8v8h3v-4h4v4h3V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <button
+            class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
+            title="设置"
+            aria-label="设置"
+            @click="router.push('/settings')"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+              <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5" />
+              <path d="M10 1v3M10 16v3M1 10h3M16 10h3M3.5 3.5l2 2M14.5 14.5l2 2M3.5 16.5l2-2M14.5 5.5l2-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          </button>
+
+          <div class="gp-divider h-5 w-px" />
+        </template>
+
         <!-- Player -->
         <button
           class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 disabled:cursor-wait disabled:opacity-60"

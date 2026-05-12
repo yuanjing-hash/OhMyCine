@@ -7,7 +7,8 @@ fn main() {
     // import library extracted by scripts/setup-libmpv.mjs. Keep this scoped to
     // Windows so native Linux checks continue to use system libmpv/pkg-config.
     if target == "x86_64-pc-windows-gnu" {
-        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+        let manifest_dir =
+            PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
         let lib_dir = manifest_dir.join("lib");
 
         println!("cargo:rustc-link-search=native={}", lib_dir.display());

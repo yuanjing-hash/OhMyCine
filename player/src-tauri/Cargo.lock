@@ -2317,6 +2317,7 @@ dependencies = [
  "libmpv-sys",
  "log",
  "rand",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2326,6 +2327,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-shell",
  "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

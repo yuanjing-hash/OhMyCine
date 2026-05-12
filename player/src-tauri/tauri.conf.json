@@ -19,6 +19,7 @@
         "minHeight": 540,
         "decorations": false,
         "transparent": true,
+        "backgroundColor": [0, 0, 0, 0],
         "center": true
       }
     ],
