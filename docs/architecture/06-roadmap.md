@@ -117,12 +117,12 @@ Phase 4: 生态系统           ████████████████
 
 #### libmpv 嵌入集成
 
-- [~] 下载 libmpv 二进制库 (Windows/macOS/Linux；Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`；WSL Windows GNU cross-build 已通过，Windows 原生运行、签名、安装包安装和实际播放仍需复验)
+- [~] 下载 libmpv 二进制库 (Windows/macOS/Linux；Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`；WSL Windows GNU cross-build 已通过，Windows 宿主透明叠层 + mpv 视频底层窗口播放已验证；macOS/Linux 打包与运行时仍待后续复验)
 - [x] 创建 `src-tauri/src/mpv/` 模块
 - [x] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
 - [x] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
-- [ ] 实现 `MpvRenderContext` (渲染上下文绑定到窗口)
-- [ ] 创建 Tauri Plugin: `mpv_plugin.rs`
+- [x] 实现 Windows 内嵌视频渲染后端（透明 Tauri/WebView 叠层 + mpv `wid` 视频底层 HWND；True render API / `MpvRenderContext` 深度整合保留为后续阶段）
+- [ ] 创建 Tauri Plugin: `mpv_plugin.rs`（当前 MVP 继续使用直接 Tauri Commands，不引入第三方 libmpv 插件）
 - [x] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
 - [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
 - [x] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
@@ -148,7 +148,7 @@ Phase 4: 生态系统           ████████████████
 
 #### 基础播放控制 UI
 
-- [~] `VideoPlayer.vue` — 视频播放区域（当前为 Vue 播放占位层；libmpv 已能加载文件但 MpvRenderContext/原生 surface 内嵌渲染未完成，已临时抑制外部 mpv 视频窗口）
+- [x] `VideoPlayer.vue` — 视频播放区域（Windows 已实现透明 Tauri/WebView 叠层 + mpv 视频底层 HWND；ready + loaded media 时 DOM 根链保持透明，idle/error/unsupported/no-media 显示有意占位）
 - [x] `PlayerControls.vue` — 播放控制条
 - [x] `ProgressBar.vue` — 进度条 (可拖拽)
 - [x] `VolumeControl.vue` — 音量控制
@@ -160,9 +160,9 @@ Phase 4: 生态系统           ████████████████
 **产出**:
 
 - [~] 桌面应用能启动，无边框窗口 (WSL 下 `tauri dev` 已可编译并启动进程；图形渲染受 EGL/WSLg 环境限制仍需 Windows 原生或完整桌面环境复验)
-- [~] 能拖拽文件到播放页视频区域或通过右下角悬浮播放按钮选择本地视频并交给 libmpv 后端加载；当前仅验证到后端播放/音频控制通路，内嵌视频画面未完成，已临时使用 `vo=null`/`video=no` 抑制独立外部 mpv 窗口
-- [ ] libmpv 渲染在窗口内部，沉浸式体验（当前本地文件加载/控制通路已通，但真正内嵌视频渲染未完成；为避免不可控体验已关闭独立 mpv 视频窗口）
-- [~] 基础播放控制 (播放/暂停/进度/音量；控制层已改为 Cinema OS/liquid-glass 并支持静止自动隐藏，仍需随内嵌视频渲染做原生运行复验)
+- [x] 能拖拽文件到播放页视频区域或通过右下角悬浮播放按钮选择本地视频并交给 libmpv 后端加载；Windows 宿主已验证可透过透明 Tauri/WebView 叠层看到 mpv 视频底层窗口画面
+- [x] libmpv 渲染在窗口内部，沉浸式体验（Windows MVP 已通过 `wid` + `vo=gpu-next` + 透明 Tauri/WebView 叠层完成；Linux/macOS/mobile 后端仍为后续计划且当前显示 unsupported）
+- [x] 基础播放控制 (播放/暂停/进度/音量；控制层已改为 Cinema OS/liquid-glass 并支持静止自动隐藏，Windows 宿主已验证叠层控件可见且可点击)
 
 ### Sprint 1.2: DataSource 抽象层 (Week 5-6)
 
@@ -234,7 +234,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 能按绑定顺序在动态侧栏展示数据源
 - [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
 - [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现，并改为按媒体库/文件夹/剧集/季/集层级非递归浏览；搜索/首页区块仍可使用递归查询）
-- [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；窗口内视频渲染仍未完成）
+- [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；Windows 宿主已验证可在透明叠层 + mpv 视频底层窗口中显示，Jellyfin 数据源仍待实现）
 - [~] 配置自动持久化（非敏感配置持久化；Emby 账号、密码、token 进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
@@ -263,7 +263,7 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] 本地文件系统浏览 (Tauri `fs` API)
 - [ ] 文件类型过滤 (视频文件)
-- [~] 播放页视频区域拖拽播放和右下角悬浮播放按钮打开本地视频文件选择器已实现；当前可进入播放页并交给 libmpv 加载，但视频内嵌渲染未完成，尚不等同于 LocalFileDataSource 浏览能力
+- [~] 播放页视频区域拖拽播放和右下角悬浮播放按钮打开本地视频文件选择器已实现；当前可进入播放页并交给 libmpv 加载，Windows 内嵌视频渲染已验证，尚不等同于 LocalFileDataSource 浏览能力
 - [ ] 文件关联 (双击打开)
 - [ ] 实现 `LocalFileDataSource` (implements DataSource)
 
@@ -293,7 +293,7 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] 能连接 OpenList/Alist 浏览和播放云盘文件
 - [ ] 能连接 CloudDrive2 浏览和播放
-- [~] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；当前可加载到 libmpv 后端但窗口内视频渲染未完成，本地文件 DataSource 浏览、文件关联与完整本地媒体库能力未完成
+- [~] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；Windows 已验证窗口内视频渲染，本地文件 DataSource 浏览、文件关联与完整本地媒体库能力未完成
 - [ ] 115/123/夸克在 UI 中有占位
 
 ---

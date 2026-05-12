@@ -51,6 +51,8 @@ npm run build
 
 For Tauri/Rust changes, also run the relevant Cargo command when configured, such as `cargo check` from `player/src-tauri`.
 
+When cross-compiling Windows GNU targets from WSL, prefer the rustup toolchain explicitly if PATH contains another Rust distribution. Homebrew/system `cargo` can see project config but not rustup-installed target stdlibs, causing false `can't find crate for core/std` failures. Use `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path player/src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` for the target check, and pass the same `RUSTC` override to Windows package builds.
+
 When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavior, the verification contract is:
 
 | Case | Required check | Completion rule |
@@ -59,7 +61,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | Rust/Tauri backend change | Above plus `cargo check` for `player/src-tauri` | All pass |
 | Runtime/render/libmpv change | Above plus `npm run tauri dev` when the local graphics/runtime environment can launch it | Report full verification only after the desktop window/runtime is exercised |
 | WSL/WSLg graphics limitation | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as partial verification and require Windows-native or full Linux desktop recheck |
-| Windows GNU package change | `npm run setup:libmpv -- windows` plus `npm run tauri:build:windows` | Cross-build passes only when the Windows `.exe` and installer are generated; runtime/signing/playback still need Windows-host verification |
+| Windows GNU package change | `npm run setup:libmpv -- windows` plus `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player` when PATH may prefer Homebrew/system Rust | Cross-build passes only when the Windows `.exe` and installer are generated; runtime/signing/playback still need Windows-host verification |
 | Native file picker / dialog plugin change | Above plus `cargo check` and a `tauri dev` attempt when possible | Static checks prove integration; report partial verification if WSL graphics prevents native dialog/playback interaction |
 | DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows` when Player packaging is in scope | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
 

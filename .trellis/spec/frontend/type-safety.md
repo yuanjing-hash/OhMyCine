@@ -119,52 +119,107 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 - Convert command errors to typed user-safe errors in composables/services.
 - For Rust command changes, update frontend types and usages together.
 
-### Player Render Status Command Contract
+### Player Render Surface Command Contract
 
-When exposing libmpv render lifecycle to Vue, use a small typed status command rather than leaking platform handles or raw render pointers.
+When exposing libmpv render lifecycle to Vue, use small typed status/surface commands rather than leaking platform handles, native HWNDs, GL contexts, or raw render pointers.
 
 #### 1. Scope / Trigger
-- Trigger: adding or changing Player render-status commands, render backend status fields, or frontend `useMpv` render-state handling.
-- Applies to Rust `mpv_render_status` and TypeScript `useMpv`/`VideoPlayer` consumers.
+- Trigger: adding or changing Player render-status commands, render-surface commands, render backend status fields, or frontend `useMpv` render-state handling.
+- Applies to Rust `mpv_render_status`, `mpv_init_render_surface`, `mpv_update_render_surface_bounds`, and TypeScript `useMpv`/`VideoPlayer` consumers.
+- This is a cross-layer contract: Vue reports logical surface bounds; Rust owns native video surface/windowing, z-order, and libmpv `wid` initialization lifetimes.
 
 #### 2. Signatures
 - Rust command: `mpv_render_status(state: State<'_, MpvState>) -> Result<MpvRenderState, String>`.
+- Rust command: `mpv_init_render_surface(window: tauri::Window, state: State<'_, MpvState>) -> Result<MpvRenderState, String>`.
+- Rust command: `mpv_update_render_surface_bounds(bounds: RenderSurfaceBounds, state: State<'_, MpvState>) -> Result<MpvRenderState, String>`.
+- Rust payload:
+```rust
+#[serde(rename_all = "camelCase")]
+struct RenderSurfaceBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale_factor: f64,
+}
+```
 - TypeScript shape:
 ```ts
 type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
-type MpvRenderBackend = 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+type MpvRenderBackend = 'windowsTransparentOverlay' | 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+type MpvZOrderStrategy = 'transparentOverlay' | 'ownedTopLevel' | 'bottomTransparentHole' | 'topDisabledFallback'
+interface MpvRenderDiagnostics {
+  ownerHwndAttached: boolean
+  mpvHwndCreated: boolean
+  mpvHwndShown: boolean
+  overlayWindowTransparent: boolean
+  webviewBackgroundTransparentApplied: boolean
+  zOrderUnderlayApplied: boolean
+  geometryFollowing: boolean
+  taskbarIgnored: boolean
+  fullscreenState: string
+  lastSyncResult: string
+  mpvWidAccepted: boolean
+  mpvInitialized: boolean
+}
 interface MpvRenderState {
   status: MpvRenderStatus
   backend: MpvRenderBackend
+  strategy: MpvZOrderStrategy
   message?: string | null
+  diagnostics: MpvRenderDiagnostics
+}
+interface RenderSurfaceBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+  scaleFactor: number
 }
 ```
 
 #### 3. Contracts
-- Frontend command calls must use explicit generics: `invoke<MpvRenderState>('mpv_render_status')`.
+- Frontend command calls must use explicit generics: `invoke<MpvRenderState>('mpv_render_status')`, `invoke<MpvRenderState>('mpv_init_render_surface')`, and `invoke<MpvRenderState>('mpv_update_render_surface_bounds', { bounds })`.
+- Vue reports only viewport-relative logical bounds and device pixel ratio. Rust sanitizes and converts them to platform physical pixels; Vue must never receive or construct native handles.
+- Windows embedded playback uses `windowsTransparentOverlay`: a transparent Tauri/WebView overlay above an owned mpv top-level HWND underlay initialized through `wid` + `vo=gpu-next` + `hwdec=auto-safe`.
+- The Tauri window and WebView native background must both be transparent (`transparent: true`, transparent `backgroundColor`, and runtime `set_background_color` where supported); CSS-only transparency is not sufficient on WebView2.
 - UI must treat `ready` as the only state that can imply visible render readiness.
+- `ready` means the native video underlay and mpv `wid` initialization succeeded. It still does not prove Windows host runtime video presentation until a real desktop playback check is performed.
 - `idle` means scaffold/backend exists but visible video is not active yet.
 - `unsupported` means the current platform backend is planned/future, not removed from product scope.
-- `error` messages must be user-safe and must not include tokenized media URLs, local absolute paths unless user-selected, raw pointers, or GL/window handles.
+- `error` messages must be user-safe and must not include tokenized media URLs, local absolute paths unless user-selected, raw pointers, HWND/HDC/HGLRC values, or GL/window handles.
+- On Windows, Rust must keep libmpv handle ownership inside `MpvPlayer`; render/windowing modules may receive the raw handle only through internal mpv-module APIs and must destroy/hide the owned video HWND after libmpv teardown.
+- Safety invariant: non-Windows or failed render initialization must keep visible video suppressed (`vo=null` / `video=no` or equivalent) so mpv cannot create an unmanaged external player window.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
 |-----------|-------------------|
 | command returns malformed data | Typecheck should fail if shape changes without updating frontend types |
 | command rejects | `useMpv` sets `renderStatus = 'error'` and `renderError` to a safe display string |
+| bounds contain `NaN`, infinity, negative size, or tiny scale | Rust sanitizes to finite coordinates, non-negative size, and a minimum safe scale |
+| bounds update arrives before native surface init | Return the current render state without crashing or creating an external mpv window |
+| native surface creation fails | Return `error` on Windows or `unsupported`/safe fallback on future platforms; do not leak native handles |
+| WebView/native background transparency fails | Report diagnostics such as `webviewBackgroundTransparentApplied=false`; do not mark Windows runtime verification complete until the host shows video through the overlay |
+| mpv underlay exists but player is black | Treat the full-screen overlay as opaque; remove player-route/root/video-surface black backgrounds and verify native WebView transparency |
 | status is `unsupported` | `VideoPlayer` shows an explicit fallback and keeps drag/drop/control shell stable |
 | status is `idle` | UI says render backend is being prepared/scaffolded; do not claim video is embedded |
-| status is `ready` | Controls may overlay the render surface; playback controls still use existing mpv commands |
+| status is `ready` with no loaded media | Keep idle/no-media UI truthful; do not show a fake video placeholder |
+| status is `ready` with loaded media | Keep the video area transparent/full-bleed except hover-revealed controls; playback controls still use existing mpv commands |
 
 #### 5. Good/Base/Bad Cases
-- Good: `useMpv` exposes `renderStatus`, `renderBackend`, and `renderError` while keeping existing `load`, pause, seek, and volume APIs stable.
-- Base: render status is queried on Player mount and displays a truthful placeholder until native surface rendering lands.
-- Bad: frontend infers platform support from `navigator.platform`, or displays "video ready" when backend only reports scaffold/idle.
+- Good: `useMpv` exposes `renderStatus`, `renderBackend`, `renderStrategy`, `renderDiagnostics`, `renderError`, `initializeRender`, and `updateRenderSurfaceBounds` while keeping existing `load`, pause, seek, and volume APIs stable.
+- Good: `VideoPlayer` measures its native-surface host with `ResizeObserver`/`getBoundingClientRect()` and emits typed bounds; Rust owns all native resources.
+- Good: active Windows playback keeps route/root/video-surface backgrounds transparent so the mpv underlay is visible, while fallback states use intentional dark placeholders.
+- Base: render status is queried on Player mount, native surface is initialized once, and unsupported/error states display truthful placeholders.
+- Bad: frontend infers platform support from `navigator.platform`, displays "video ready" when backend only reports scaffold/idle, keeps a centered placeholder over an active native video surface, or relies on CSS transparency without native WebView transparency.
 
 #### 6. Tests Required
 - `npm run typecheck` catches command response/interface drift.
 - `npm run lint` passes without broad `any` or unused render state.
-- Manual UI review verifies `idle`, `unsupported`, and `error` copy remains truthful.
+- `cargo check --manifest-path player/src-tauri/Cargo.toml` passes for host Rust changes.
+- Windows render changes must also pass `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path player/src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` when the target is installed.
+- Windows package changes must pass `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player`.
+- Manual Windows-host runtime review verifies local playback, Emby playback, no external mpv window, WebView/Vue overlay hit-testing, resize/maximize/fullscreen alignment, and close-during-playback cleanup.
 
 #### 7. Wrong vs Correct
 
@@ -178,6 +233,25 @@ Correct:
 ```ts
 const state = await invoke<MpvRenderState>('mpv_render_status')
 renderStatus.value = state.status
+```
+
+Wrong:
+```ts
+await invoke('mpv_update_render_surface_bounds', { hwnd: nativeHandleFromBrowser })
+```
+
+Correct:
+```ts
+const rect = host.getBoundingClientRect()
+await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
+  bounds: {
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height,
+    scaleFactor: window.devicePixelRatio || 1,
+  },
+})
 ```
 
 ---

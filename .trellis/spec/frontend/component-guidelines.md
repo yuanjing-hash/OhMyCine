@@ -120,6 +120,7 @@ Required principles:
 - Aggregate interaction state from parent and child controls; a child ending drag/hover must not hide chrome while the parent container is still hovered or focused.
 - Use Cinema OS / liquid-glass tokens for the control bar, buttons, progress, and volume surfaces; do not fall back to native browser-style media controls.
 - If embedded video rendering is not complete, show a truthful in-app placeholder instead of letting an external mpv window become the user-visible player.
+- When embedded native video rendering is `ready`, do not keep centered placeholder/status panels over the video surface; only hover-revealed liquid-glass chrome should overlay active video.
 
 ---
 
