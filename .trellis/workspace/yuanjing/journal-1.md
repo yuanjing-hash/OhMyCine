@@ -78,3 +78,37 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: 完成 Player Windows 嵌入式渲染
+
+**Date**: 2026-05-12
+**Task**: 完成 Player Windows 嵌入式渲染
+**Branch**: `main`
+
+### Summary
+
+完成 Windows 透明 Tauri/WebView overlay + mpv owned top-level HWND underlay 的嵌入式视频渲染，更新规格与路线状态，并归档 Player 渲染相关任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `13199b5` | (see git log) |
+| `cdea94d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
