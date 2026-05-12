@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Verify: player chrome contract (hover-revealed, no persistent obstruction), back control rules, layout component responsibilities"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Verify: typecheck/lint/build pass, forbidden patterns not introduced, Cinema OS tokens used"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Verify: no broad any introduced, Tauri command types explicit, props/events typed"}

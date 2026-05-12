@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Layout component contract: AppLayout owns global shell, WindowChrome handles frameless drag, BackButton visibility rules, Immersive Player Chrome Contract — controls overlay video, hover-revealed chrome, no persistent obstruction"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Forbidden patterns (persistent controls obstructing artwork), testing/verification commands, code review checklist"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TypeScript strict mode, Tauri command types, RenderSurfaceBounds contract for video fullscreen"}
