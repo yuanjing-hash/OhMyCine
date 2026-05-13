@@ -222,10 +222,23 @@ function syncTransparentRootClass(active: boolean) {
   }
 }
 
+function syncPlayerChromeClass(visible: boolean) {
+  const className = 'player-chrome-hidden'
+  if (visible) {
+    document.documentElement.classList.remove(className)
+    document.body.classList.remove(className)
+  }
+  else {
+    document.documentElement.classList.add(className)
+    document.body.classList.add(className)
+  }
+}
+
 onMounted(() => {
   document.documentElement.classList.add('player-render-surface-active')
   document.body.classList.add('player-render-surface-active')
   syncTransparentRootClass(isTransparentRootActive.value)
+  syncPlayerChromeClass(shouldShowChrome.value)
   window.addEventListener('blur', handleWindowBlur)
   window.addEventListener('focus', handleWindowFocus)
   window.addEventListener('resize', handleWindowResize)
@@ -240,6 +253,8 @@ onBeforeUnmount(() => {
   document.body.classList.remove('player-render-surface-active')
   document.documentElement.classList.remove('player-render-surface-transparent')
   document.body.classList.remove('player-render-surface-transparent')
+  document.documentElement.classList.remove('player-chrome-hidden')
+  document.body.classList.remove('player-chrome-hidden')
   clearHideTimer()
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
@@ -251,6 +266,14 @@ watch(
   isTransparentRootActive,
   (active) => {
     syncTransparentRootClass(active)
+  },
+  { immediate: true },
+)
+
+watch(
+  shouldShowChrome,
+  (visible) => {
+    syncPlayerChromeClass(visible)
   },
   { immediate: true },
 )

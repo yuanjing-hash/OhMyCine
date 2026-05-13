@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
 
@@ -18,12 +20,25 @@ const emit = defineEmits<{
   interactionChange: [active: boolean]
 }>()
 
+const appWindow = getCurrentWindow()
+const settingsButton = ref<HTMLButtonElement | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
 const childInteracting = ref(false)
+const settingsPanelOpen = ref(false)
+const settingsPanelInteracting = ref(false)
+const isFullscreen = ref(false)
+const fullscreenBusy = ref(false)
+const fullscreenError = ref<string | null>(null)
+
+const fullscreenTitle = computed(() => {
+  if (fullscreenError.value)
+    return `全屏切换暂不可用：${fullscreenError.value}`
+  return isFullscreen.value ? '退出全屏' : '进入全屏'
+})
 
 function emitInteractionState() {
-  emit('interactionChange', pointerInside.value || focusInside.value || childInteracting.value)
+  emit('interactionChange', pointerInside.value || focusInside.value || childInteracting.value || settingsPanelOpen.value || settingsPanelInteracting.value || fullscreenBusy.value)
 }
 
 function setPointerInside(next: boolean) {
@@ -41,6 +56,24 @@ function setChildInteracting(next: boolean) {
   emitInteractionState()
 }
 
+function setSettingsPanelInteracting(next: boolean) {
+  settingsPanelInteracting.value = next
+  emitInteractionState()
+}
+
+function toggleSettingsPanel() {
+  settingsPanelOpen.value = !settingsPanelOpen.value
+  emitInteractionState()
+}
+
+async function closeSettingsPanel() {
+  settingsPanelOpen.value = false
+  settingsPanelInteracting.value = false
+  emitInteractionState()
+  await nextTick()
+  settingsButton.value?.focus()
+}
+
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -50,11 +83,65 @@ function formatTime(seconds: number): string {
   }
   return `${m}:${s.toString().padStart(2, '0')}`
 }
+
+async function syncFullscreenState() {
+  try {
+    isFullscreen.value = await appWindow.isFullscreen()
+    fullscreenError.value = null
+  }
+  catch {
+    isFullscreen.value = document.fullscreenElement !== null
+  }
+}
+
+async function toggleBrowserFullscreen(nextFullscreen: boolean) {
+  if (nextFullscreen) {
+    if (!document.fullscreenElement)
+      await document.documentElement.requestFullscreen()
+    return
+  }
+
+  if (document.fullscreenElement)
+    await document.exitFullscreen()
+}
+
+async function toggleFullscreen() {
+  if (fullscreenBusy.value)
+    return
+
+  fullscreenBusy.value = true
+  emitInteractionState()
+  try {
+    const nextFullscreen = !(await appWindow.isFullscreen())
+    await appWindow.setFullscreen(nextFullscreen)
+    isFullscreen.value = nextFullscreen
+    fullscreenError.value = null
+  }
+  catch {
+    try {
+      const nextFullscreen = document.fullscreenElement === null
+      await toggleBrowserFullscreen(nextFullscreen)
+      isFullscreen.value = nextFullscreen
+      fullscreenError.value = null
+    }
+    catch {
+      fullscreenError.value = '当前运行环境不支持窗口全屏切换'
+    }
+  }
+  finally {
+    fullscreenBusy.value = false
+    emitInteractionState()
+  }
+}
+
+onMounted(() => {
+  void syncFullscreenState()
+})
 </script>
 
 <template>
   <div
-    class="player-controls-glass pointer-events-auto mx-auto flex max-w-6xl items-center gap-3 rounded-[28px] px-5 py-3"
+    class="player-controls-glass pointer-events-auto relative mx-auto flex w-full max-w-7xl min-w-0 items-center gap-3 overflow-visible rounded-[28px] px-5 py-3"
     @mouseenter="setPointerInside(true)"
     @mouseleave="setPointerInside(false)"
     @focusin="setFocusInside(true)"
@@ -132,7 +219,7 @@ function formatTime(seconds: number): string {
     </span>
 
     <ProgressBar
-      class="min-w-36 flex-1"
+      class="min-w-0 flex-1"
       :current="currentTime"
       :total="duration"
       @seek="(pos) => emit('seek', pos)"
@@ -143,10 +230,103 @@ function formatTime(seconds: number): string {
       {{ formatTime(duration) }}
     </span>
 
-    <VolumeControl
-      :volume="volume"
-      @set-volume="(vol) => emit('setVolume', vol)"
-      @interaction-change="setChildInteracting"
+    <div class="right-controls flex shrink-0 items-center gap-2">
+      <VolumeControl
+        class="shrink-0"
+        :volume="volume"
+        @set-volume="(vol) => emit('setVolume', vol)"
+        @interaction-change="setChildInteracting"
+      />
+
+      <button
+        class="control-button action-chip secondary"
+        type="button"
+        title="倍速（后续接入）"
+        aria-label="倍速，后续接入"
+        aria-disabled="true"
+      >
+        <span class="control-text">1.0x</span>
+      </button>
+
+      <button
+        class="control-button action-chip secondary"
+        type="button"
+        title="字幕（后续接入）"
+        aria-label="字幕，后续接入"
+        aria-disabled="true"
+      >
+        <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4.75 5.5h14.5A2.75 2.75 0 0 1 22 8.25v7.5a2.75 2.75 0 0 1-2.75 2.75H4.75A2.75 2.75 0 0 1 2 15.75v-7.5A2.75 2.75 0 0 1 4.75 5.5Zm0 2A.75.75 0 0 0 4 8.25v7.5c0 .41.34.75.75.75h14.5c.41 0 .75-.34.75-.75v-7.5a.75.75 0 0 0-.75-.75H4.75Zm1.5 7.25a1 1 0 0 1 1-1h3.2a1 1 0 1 1 0 2h-3.2a1 1 0 0 1-1-1Zm7.3 0a1 1 0 0 1 1-1h2.2a1 1 0 1 1 0 2h-2.2a1 1 0 0 1-1-1Zm-7.3-3.5a1 1 0 0 1 1-1h1.7a1 1 0 1 1 0 2h-1.7a1 1 0 0 1-1-1Zm5.3 0a1 1 0 0 1 1-1h4.2a1 1 0 1 1 0 2h-4.2a1 1 0 0 1-1-1Z" />
+        </svg>
+        <span class="control-text">字幕</span>
+      </button>
+
+      <button
+        class="control-button action-chip secondary"
+        type="button"
+        title="音轨（后续接入）"
+        aria-label="音轨，后续接入"
+        aria-disabled="true"
+      >
+        <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12.5 4.2a1 1 0 0 1 .5.86v13.88a1 1 0 0 1-1.64.77L7.1 16.2H4.5A2.5 2.5 0 0 1 2 13.7v-3.4a2.5 2.5 0 0 1 2.5-2.5h2.6l4.26-3.5a1 1 0 0 1 1.14-.1Zm4.74 3.1a1 1 0 0 1 1.41 0A6.63 6.63 0 0 1 20.6 12c0 1.84-.75 3.5-1.95 4.7a1 1 0 1 1-1.41-1.42A4.63 4.63 0 0 0 18.6 12c0-1.28-.52-2.44-1.36-3.28a1 1 0 0 1 0-1.42Zm-2.46 2.45a1 1 0 0 1 1.41 0c.58.58.94 1.38.94 2.25s-.36 1.67-.94 2.25a1 1 0 0 1-1.41-1.41c.22-.22.35-.52.35-.84s-.13-.62-.35-.84a1 1 0 0 1 0-1.41Z" />
+        </svg>
+        <span class="control-text">音轨</span>
+      </button>
+
+      <button
+        class="control-button action-chip secondary"
+        type="button"
+        title="播放队列（后续接入）"
+        aria-label="播放队列，后续接入"
+        aria-disabled="true"
+      >
+        <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h6.5a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm12.5-4.98c0-.87.96-1.4 1.7-.94l2.88 1.8a1.1 1.1 0 0 1 0 1.86l-2.88 1.8a1.1 1.1 0 0 1-1.7-.94v-3.58Z" />
+        </svg>
+        <span class="control-text">队列</span>
+      </button>
+
+      <button
+        ref="settingsButton"
+        class="control-button settings-entry-button secondary"
+        :class="{ 'is-active': settingsPanelOpen }"
+        type="button"
+        title="画面设置"
+        aria-label="画面设置"
+        aria-controls="player-settings-panel"
+        :aria-expanded="settingsPanelOpen"
+        @click="toggleSettingsPanel"
+      >
+        <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7.25A3.25 3.25 0 0 1 7.25 4h9.5A3.25 3.25 0 0 1 20 7.25v9.5A3.25 3.25 0 0 1 16.75 20h-9.5A3.25 3.25 0 0 1 4 16.75v-9.5Zm3.25-1.2c-.66 0-1.2.54-1.2 1.2v9.5c0 .66.54 1.2 1.2 1.2h9.5c.66 0 1.2-.54 1.2-1.2v-9.5c0-.66-.54-1.2-1.2-1.2h-9.5Zm1.5 3.2a1 1 0 0 1 1-1h4.5a1 1 0 1 1 0 2h-4.5a1 1 0 0 1-1-1Zm0 3.75a1 1 0 0 1 1-1h2.5a1 1 0 1 1 0 2h-2.5a1 1 0 0 1-1-1Zm6 0a1.25 1.25 0 1 1 2.5 0 1.25 1.25 0 0 1-2.5 0Z" />
+        </svg>
+        <span class="settings-entry-label">画面</span>
+      </button>
+
+      <button
+        class="control-button fullscreen-button secondary"
+        :class="{ 'is-active': isFullscreen }"
+        type="button"
+        :title="fullscreenTitle"
+        :aria-label="fullscreenTitle"
+        :aria-pressed="isFullscreen"
+        :disabled="fullscreenBusy"
+        @click="toggleFullscreen"
+      >
+        <svg v-if="isFullscreen" class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 4a1 1 0 0 1 1 1v3.25A1.75 1.75 0 0 1 8.25 10H5a1 1 0 0 1 0-2h3V5a1 1 0 0 1 1-1Zm6 0a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2h-3.25A1.75 1.75 0 0 1 14 8.25V5a1 1 0 0 1 1-1ZM4 15a1 1 0 0 1 1-1h3.25A1.75 1.75 0 0 1 10 15.75V19a1 1 0 1 1-2 0v-3H5a1 1 0 0 1-1-1Zm10 0.75A1.75 1.75 0 0 1 15.75 14H19a1 1 0 1 1 0 2h-3v3a1 1 0 1 1-2 0v-3.25Z" />
+        </svg>
+        <svg v-else class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 4h4a1 1 0 0 1 0 2H6v3a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1Zm10 1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6h-3a1 1 0 0 1-1-1ZM4 15a1 1 0 1 1 2 0v3h3a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1v-4Zm16-1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 1 1 0-2h3v-3a1 1 0 0 1 1-1Z" />
+        </svg>
+      </button>
+    </div>
+
+    <PlayerSettingsPanel
+      :open="settingsPanelOpen"
+      @close="closeSettingsPanel"
+      @interaction-change="setSettingsPanelInteracting"
     />
   </div>
 </template>
@@ -184,6 +364,32 @@ function formatTime(seconds: number): string {
   transition: transform var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 
+.action-chip {
+  width: auto;
+  min-width: 48px;
+  gap: 0.35rem;
+  padding: 0 0.72rem;
+}
+
+.settings-entry-button {
+  width: auto;
+  min-width: 72px;
+  gap: 0.4rem;
+  padding: 0 0.85rem;
+}
+
+.fullscreen-button {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.settings-entry-label,
+.control-text {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .control-icon {
   width: 20px;
   height: 20px;
@@ -205,6 +411,18 @@ function formatTime(seconds: number): string {
 
 .control-button:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
+}
+
+.control-button.is-active:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 26px rgba(74, 158, 255, 0.18);
+}
+
+.control-button[aria-disabled="true"] {
+  cursor: default;
+  color: rgba(255, 255, 255, 0.52);
 }
 
 .control-button:disabled {
@@ -232,5 +450,27 @@ function formatTime(seconds: number): string {
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+
+@media (max-width: 1080px) {
+  .action-chip .control-text,
+  .settings-entry-label {
+    display: none;
+  }
+
+  .action-chip,
+  .settings-entry-button {
+    min-width: 40px;
+    padding: 0;
+  }
+}
+
+@media (max-width: 820px) {
+  .transport-controls .control-button.disabled,
+  .time-label,
+  .action-chip[aria-label^="音轨"],
+  .action-chip[aria-label^="播放队列"] {
+    display: none;
+  }
 }
 </style>

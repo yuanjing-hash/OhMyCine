@@ -92,22 +92,6 @@ const renderDescription = computed(() => {
   }
 })
 
-const diagnosticsBadgeLabel = computed(() => {
-  switch (props.renderStatus) {
-    case 'ready':
-      return '渲染已就绪 · 查看诊断'
-    case 'initializing':
-      return '渲染初始化中 · 查看诊断'
-    case 'error':
-      return '渲染错误 · 查看诊断'
-    case 'unsupported':
-      return '平台未支持 · 查看诊断'
-    case 'idle':
-    default:
-      return '渲染待机 · 查看诊断'
-  }
-})
-
 const strategyLabel = computed(() => {
   if (props.renderStrategy === 'transparentOverlay')
     return '透明 Tauri/WebView 叠层 + mpv 视频底层窗口'
@@ -238,17 +222,6 @@ onBeforeUnmount(() => {
       v-if="renderStatus !== 'ready'"
       class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(74,158,255,0.14),transparent_34%),linear-gradient(135deg,#050509,#090911_52%,#030305)]"
     />
-    <!-- Always-available diagnostics affordance. The button lives in the transparent WebView
-         overlay above the mpv video underlay, so it should remain visible and clickable. -->
-    <button
-      type="button"
-      class="pointer-events-auto absolute left-5 top-5 z-30 rounded-full border border-white/10 bg-black/50 px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-white/72 shadow-lg backdrop-blur-xl transition hover:bg-black/70 hover:text-white"
-      :aria-expanded="diagnosticsOpen"
-      aria-controls="render-diagnostics-panel"
-      @click="toggleDiagnosticsClick"
-    >
-      {{ diagnosticsBadgeLabel }}
-    </button>
     <div
       v-if="diagnosticsOpen"
       id="render-diagnostics-panel"

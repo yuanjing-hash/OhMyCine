@@ -30,6 +30,13 @@ async function close() {
   await appWindow.close()
 }
 
+function goBack() {
+  if (window.history.state?.back)
+    router.back()
+  else
+    router.push('/')
+}
+
 function beginDrag(event: MouseEvent) {
   if (event.button !== 0)
     return
@@ -74,6 +81,21 @@ function endDrag() {
       @mousemove="dragIfMoved"
       @mouseup="endDrag"
     />
+
+    <!-- Player route keeps a compact back affordance above the drag region without restoring the full nav. -->
+    <button
+      v-if="hideNav && route.path !== '/'"
+      class="glass-panel player-window-back pointer-events-auto absolute left-6 top-3 z-20 flex h-10 items-center gap-2 rounded-2xl px-3 text-sm font-semibold transition-all duration-200"
+      type="button"
+      title="返回"
+      aria-label="返回上一页"
+      @click="goBack"
+    >
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M12.5 4.5L7 10l5.5 5.5M8 10h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      返回
+    </button>
 
     <!-- Center navigation glass panel -->
     <nav v-if="!hideNav" class="glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
@@ -136,6 +158,26 @@ function endDrag() {
 <style scoped>
 .window-chrome {
   z-index: 1000;
+}
+
+.player-window-back {
+  color: var(--gp-text);
+}
+.player-window-back:hover,
+.player-window-back:focus-visible {
+  color: var(--gp-text-full);
+  background: var(--gp-hover);
+  transform: translateX(-2px);
+}
+.player-window-back:active {
+  color: var(--gp-text-full);
+  background: var(--gp-active);
+  transform: translateX(-1px) scale(0.98);
+}
+:global(body.player-chrome-hidden) .player-window-back {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .gp-btn {
