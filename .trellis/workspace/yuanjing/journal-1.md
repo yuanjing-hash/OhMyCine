@@ -112,3 +112,37 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: 完成 Player 播放设置面板
+
+**Date**: 2026-05-13
+**Task**: 完成 Player 播放设置面板
+**Branch**: `main`
+
+### Summary
+
+完成播放页底部控制条与画面设置面板：底栏承载倍速、字幕、音轨、队列和全屏入口，设置面板收敛为画面比例/填充，保留返回入口并移除常驻诊断 chip。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9e4b4bd` | (see git log) |
+| `f08f4d0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
