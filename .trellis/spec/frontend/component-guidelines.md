@@ -111,6 +111,10 @@ Required principles:
 - Persistent UI should not obstruct artwork/video unless necessary.
 - Keyboard shortcuts must not conflict with text input focus.
 - Subtitle/audio/danmaku menus should be accessible from both mouse and keyboard.
+- Keep common playback actions on the bottom playback bar: speed, subtitles, audio tracks, queue/playlist, and fullscreen. Do not bury these primary actions inside a generic settings panel.
+- Reserve the playback settings panel for picture/display options such as aspect ratio, fit/fill mode, and future image-processing controls. Do not put recent-play/history, window always-on-top, fullscreen, speed, subtitle, audio, or queue actions in that panel.
+- The player fullscreen affordance belongs at the far right of the playback bar and should toggle the whole Player window/fullscreen experience, not only a nested DOM panel.
+- Render diagnostics must not appear as a persistent chip in normal playback UI; keep diagnostics behind explicit debug shortcuts or debug-only panels.
 
 ### Immersive Player Chrome Contract
 
