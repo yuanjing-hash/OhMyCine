@@ -1,0 +1,32 @@
+{
+  "id": "player-playback-controls",
+  "name": "player-playback-controls",
+  "title": "Player 播放控制增强",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-05-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "05-12-player-settings-panel",
+    "05-12-player-mpv-advanced-controls",
+    "05-12-player-playback-queue",
+    "05-12-player-history-continue-watching",
+    "05-12-player-playback-context-menu"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
