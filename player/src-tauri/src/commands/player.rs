@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::mpv::{
-    player::MpvState,
+    player::{MpvState, MpvTrackState},
     render::MpvRenderState,
     surface::{RenderSurfaceBounds, ZOrderStrategy},
 };
@@ -10,6 +10,17 @@ use crate::mpv::{
 pub async fn mpv_load(path: String, state: State<'_, MpvState>) -> Result<(), String> {
     let mut player = state.lock().map_err(|err| err.to_string())?;
     player.load_file(&path)
+}
+
+#[tauri::command]
+pub async fn mpv_add_subtitle(
+    url: String,
+    title: Option<String>,
+    language: Option<String>,
+    state: State<'_, MpvState>,
+) -> Result<(), String> {
+    let mut player = state.lock().map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
+    player.add_subtitle(&url, title.as_deref(), language.as_deref())
 }
 
 #[tauri::command]
@@ -42,8 +53,14 @@ pub async fn mpv_set_property(
     value: String,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
-    let player = state.lock().map_err(|err| err.to_string())?;
+    let player = state.lock().map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
     player.set_property(&prop, &value)
+}
+
+#[tauri::command]
+pub async fn mpv_track_state(state: State<'_, MpvState>) -> Result<MpvTrackState, String> {
+    let mut player = state.lock().map_err(|_| "播放器轨道信息暂不可用，请稍后重试".to_string())?;
+    player.track_state()
 }
 
 #[tauri::command]

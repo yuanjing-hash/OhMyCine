@@ -1,15 +1,57 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 
-interface Track {
-  index: number
-  language: string
-  title?: string
-  codec?: string
-  channels?: number
+export interface Track {
+  id: number
+  kind: 'sub' | 'audio'
+  language?: string | null
+  title?: string | null
+  codec?: string | null
+  channels?: number | null
   isDefault: boolean
+  selected: boolean
 }
+
+export type SubtitleSelectionId = `embedded:${number}` | `external:${string}`
+export type SubtitleTrackSource = 'embedded' | 'external' | 'detail'
+
+export interface SubtitleTrackOption {
+  id: SubtitleSelectionId
+  kind: 'sub'
+  source: SubtitleTrackSource
+  language?: string | null
+  title?: string | null
+  codec?: string | null
+  channels?: number | null
+  isDefault: boolean
+  selected: boolean
+  selectable: boolean
+  mpvId?: number
+  url?: string
+  unavailableReason?: string
+}
+
+export interface KnownSubtitleTrackInput {
+  id: string | number
+  source?: SubtitleTrackSource
+  language?: string | null
+  title?: string | null
+  codec?: string | null
+  isDefault?: boolean
+  url?: string
+  selectable?: boolean
+  unavailableReason?: string
+}
+
+interface MpvTrackState {
+  tracks: Track[]
+  currentSubtitle?: number | null
+  currentAudio?: number | null
+}
+
+export type VideoAspectMode = 'default' | '16:9' | '4:3' | 'cinema'
+export type VideoFitMode = 'fit' | 'crop' | 'cinemaCrop'
 
 export type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
 
@@ -51,21 +93,136 @@ export interface RenderSurfaceBounds {
   bottomOcclusion?: number
 }
 
+const PLAYBACK_SPEED_STORAGE_KEY = 'ohmycine.player.playbackSpeed'
+const DEFAULT_PLAYBACK_SPEED = 1
+
+const ASPECT_PROPERTY_VALUE: Record<VideoAspectMode, string> = {
+  'default': '-1',
+  '16:9': '16:9',
+  '4:3': '4:3',
+  'cinema': '2.35:1',
+}
+
+const FIT_PROPERTY_VALUE: Record<VideoFitMode, string> = {
+  fit: '0',
+  crop: '1',
+  cinemaCrop: '0.5',
+}
+
+function readStoredPlaybackSpeed(): number {
+  try {
+    const stored = window.localStorage.getItem(PLAYBACK_SPEED_STORAGE_KEY)
+    const speed = stored ? Number.parseFloat(stored) : DEFAULT_PLAYBACK_SPEED
+    if (Number.isFinite(speed) && speed >= 0.25 && speed <= 4)
+      return speed
+  }
+  catch {
+    // Browser storage can be unavailable in restricted WebViews; fall back to session state.
+  }
+
+  return DEFAULT_PLAYBACK_SPEED
+}
+
+function rememberPlaybackSpeed(speed: number) {
+  try {
+    window.localStorage.setItem(PLAYBACK_SPEED_STORAGE_KEY, speed.toString())
+  }
+  catch {
+    // Persisting speed is a convenience only; keep playback control usable if storage fails.
+  }
+}
+
+function safeErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'string' && error.trim())
+    return error
+  if (error instanceof Error && error.message.trim())
+    return error.message
+  return fallback
+}
+
+function embeddedSubtitleId(id: number): SubtitleSelectionId {
+  return `embedded:${id}`
+}
+
+function knownSubtitleId(id: string | number): SubtitleSelectionId {
+  return `external:${String(id)}`
+}
+
+function parseEmbeddedSubtitleId(id: SubtitleSelectionId): number | null {
+  if (!id.startsWith('embedded:'))
+    return null
+  const value = Number.parseInt(id.slice('embedded:'.length), 10)
+  return Number.isFinite(value) ? value : null
+}
+
+function toEmbeddedSubtitleTrack(track: Track): SubtitleTrackOption {
+  return {
+    ...track,
+    id: embeddedSubtitleId(track.id),
+    kind: 'sub',
+    source: 'embedded',
+    mpvId: track.id,
+    selectable: true,
+  }
+}
+
+function toKnownSubtitleTrack(track: KnownSubtitleTrackInput): SubtitleTrackOption {
+  const hasUrl = typeof track.url === 'string' && track.url.length > 0
+  const selectable = track.selectable ?? hasUrl
+  const source = track.source ?? (hasUrl ? 'external' : 'detail')
+
+  return {
+    id: knownSubtitleId(track.id),
+    kind: 'sub',
+    source,
+    language: track.language,
+    title: track.title,
+    codec: track.codec,
+    channels: null,
+    isDefault: track.isDefault ?? false,
+    selected: false,
+    selectable,
+    url: track.url,
+    unavailableReason: selectable ? undefined : track.unavailableReason ?? '该字幕由媒体详情提供，但当前数据源未提供可直接加载的字幕地址。',
+  }
+}
+
+function mergeSubtitleTracks(embeddedTracks: readonly SubtitleTrackOption[], knownTracks: readonly SubtitleTrackOption[]): SubtitleTrackOption[] {
+  const seenKnown = new Set<string>()
+  const uniqueKnown = knownTracks.filter((track) => {
+    const key = [track.source, track.title ?? '', track.language ?? '', track.codec ?? '', track.url ?? '', track.id].join('|')
+    if (seenKnown.has(key))
+      return false
+    seenKnown.add(key)
+    return true
+  })
+
+  return [...embeddedTracks, ...uniqueKnown]
+}
+
 export function useMpv() {
   const isPlaying = ref(false)
   const currentTime = ref(0)
   const duration = ref(0)
   const volume = ref(100)
   const isMuted = ref(false)
-  const subtitleTracks = ref<Track[]>([])
+  const playbackSpeed = ref(readStoredPlaybackSpeed())
+  const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
+  const knownSubtitleTracks = ref<SubtitleTrackOption[]>([])
+  const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, knownSubtitleTracks.value))
   const audioTracks = ref<Track[]>([])
-  const currentSubtitle = ref(0)
-  const currentAudio = ref(0)
+  const currentSubtitle = ref<SubtitleSelectionId | null>(null)
+  const selectedKnownSubtitle = ref<SubtitleSelectionId | null>(null)
+  const currentAudio = ref<number | null>(null)
+  const videoAspectMode = ref<VideoAspectMode>('default')
+  const videoFitMode = ref<VideoFitMode>('fit')
   const renderStatus = ref<MpvRenderStatus>('idle')
   const renderError = ref<string | null>(null)
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
+  const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
+  const trackRefreshTimers = new Set<number>()
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -89,6 +246,20 @@ export function useMpv() {
     renderDiagnostics.value = state.diagnostics ?? null
   }
 
+  function applyTrackState(state: MpvTrackState) {
+    const tracks = state.tracks.filter(track => track.kind === 'sub' || track.kind === 'audio')
+    const embeddedTracks = tracks
+      .filter(track => track.kind === 'sub')
+      .map(toEmbeddedSubtitleTrack)
+    embeddedSubtitleTracks.value = embeddedTracks
+    audioTracks.value = tracks.filter(track => track.kind === 'audio')
+
+    const selectedEmbedded = embeddedTracks.find(track => track.mpvId === state.currentSubtitle)
+    currentSubtitle.value = selectedKnownSubtitle.value ?? selectedEmbedded?.id ?? null
+    currentAudio.value = state.currentAudio ?? null
+    trackError.value = null
+  }
+
   async function refreshRenderStatus() {
     try {
       const state = await invoke<MpvRenderState>('mpv_render_status')
@@ -96,7 +267,7 @@ export function useMpv() {
     }
     catch (error: unknown) {
       renderStatus.value = 'error'
-      renderError.value = error instanceof Error ? error.message : String(error)
+      renderError.value = safeErrorMessage(error, '内嵌渲染状态暂不可用')
       renderDiagnostics.value = null
     }
   }
@@ -123,7 +294,7 @@ export function useMpv() {
     }
     catch (error: unknown) {
       renderStatus.value = 'error'
-      renderError.value = error instanceof Error ? error.message : String(error)
+      renderError.value = safeErrorMessage(error, '内嵌渲染初始化失败')
       renderDiagnostics.value = null
     }
   }
@@ -135,7 +306,7 @@ export function useMpv() {
     }
     catch (error: unknown) {
       renderStatus.value = 'error'
-      renderError.value = error instanceof Error ? error.message : String(error)
+      renderError.value = safeErrorMessage(error, '视频窗口位置同步失败')
       renderDiagnostics.value = null
     }
   }
@@ -147,23 +318,59 @@ export function useMpv() {
     }
     catch (error: unknown) {
       renderStatus.value = 'error'
-      renderError.value = error instanceof Error ? error.message : String(error)
+      renderError.value = safeErrorMessage(error, '视频渲染策略切换失败')
       renderDiagnostics.value = null
     }
   }
 
+  async function refreshTrackState() {
+    try {
+      const state = await invoke<MpvTrackState>('mpv_track_state')
+      applyTrackState(state)
+    }
+    catch (error: unknown) {
+      trackError.value = safeErrorMessage(error, '轨道信息暂不可用')
+      embeddedSubtitleTracks.value = []
+      audioTracks.value = []
+      currentSubtitle.value = selectedKnownSubtitle.value
+      currentAudio.value = null
+    }
+  }
+
+  function scheduleTrackRefresh(delay: number) {
+    const timer = window.setTimeout(() => {
+      trackRefreshTimers.delete(timer)
+      void refreshTrackState()
+    }, delay)
+    trackRefreshTimers.add(timer)
+  }
+
+  function setKnownSubtitleTracks(tracks: readonly KnownSubtitleTrackInput[]) {
+    knownSubtitleTracks.value = tracks.map(toKnownSubtitleTrack)
+    if (selectedKnownSubtitle.value && !knownSubtitleTracks.value.some(track => track.id === selectedKnownSubtitle.value)) {
+      selectedKnownSubtitle.value = null
+      currentSubtitle.value = null
+    }
+  }
+
   async function load(path: string) {
-    await invoke('mpv_load', { path })
+    selectedKnownSubtitle.value = null
+    await invoke<void>('mpv_load', { path })
+    currentTime.value = 0
     isPlaying.value = true
+    await setPlaybackSpeed(playbackSpeed.value)
+    await refreshTrackState()
+    scheduleTrackRefresh(400)
+    scheduleTrackRefresh(1200)
   }
 
   async function togglePause() {
-    await invoke(isPlaying.value ? 'mpv_pause' : 'mpv_resume')
+    await invoke<void>(isPlaying.value ? 'mpv_pause' : 'mpv_resume')
     isPlaying.value = !isPlaying.value
   }
 
   async function seek(position: number) {
-    await invoke('mpv_seek', { position })
+    await invoke<void>('mpv_seek', { position })
     currentTime.value = position
   }
 
@@ -174,29 +381,86 @@ export function useMpv() {
 
   async function setVolume(vol: number) {
     const next = Math.max(0, Math.min(100, vol))
-    await invoke('mpv_set_property', { prop: 'volume', value: next.toString() })
+    await invoke<void>('mpv_set_property', { prop: 'volume', value: next.toString() })
     volume.value = next
     isMuted.value = next === 0
   }
 
-  async function setSubtitle(index: number) {
-    await invoke('mpv_set_property', { prop: 'sid', value: index.toString() })
-    currentSubtitle.value = index
+  async function setPlaybackSpeed(rate: number) {
+    const next = Math.max(0.25, Math.min(4, rate))
+    await invoke<void>('mpv_set_property', { prop: 'speed', value: next.toString() })
+    playbackSpeed.value = next
+    rememberPlaybackSpeed(next)
   }
 
-  async function setAudio(index: number) {
-    await invoke('mpv_set_property', { prop: 'aid', value: index.toString() })
-    currentAudio.value = index
+  async function setSubtitle(trackId: SubtitleSelectionId | null) {
+    if (trackId === null) {
+      selectedKnownSubtitle.value = null
+      await invoke<void>('mpv_set_property', { prop: 'sid', value: 'no' })
+      currentSubtitle.value = null
+      await refreshTrackState()
+      return
+    }
+
+    const embeddedId = parseEmbeddedSubtitleId(trackId)
+    if (embeddedId !== null) {
+      selectedKnownSubtitle.value = null
+      await invoke<void>('mpv_set_property', { prop: 'sid', value: embeddedId.toString() })
+      currentSubtitle.value = trackId
+      await refreshTrackState()
+      return
+    }
+
+    const track = knownSubtitleTracks.value.find(item => item.id === trackId)
+    if (!track || !track.selectable || !track.url) {
+      trackError.value = track?.unavailableReason ?? '该字幕暂不可加载。'
+      return
+    }
+
+    try {
+      await invoke<void>('mpv_add_subtitle', {
+        url: track.url,
+        title: track.title ?? track.language ?? '外部字幕',
+        language: track.language ?? null,
+      })
+      selectedKnownSubtitle.value = trackId
+      currentSubtitle.value = trackId
+      trackError.value = null
+      await refreshTrackState()
+    }
+    catch (error: unknown) {
+      trackError.value = safeErrorMessage(error, '外部字幕加载失败')
+    }
+  }
+
+  async function setAudio(trackId: number) {
+    await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
+    currentAudio.value = trackId
+    await refreshTrackState()
+  }
+
+  async function setVideoAspect(mode: VideoAspectMode) {
+    await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE[mode] })
+    videoAspectMode.value = mode
+  }
+
+  async function setVideoFit(mode: VideoFitMode) {
+    await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE[mode] })
+    videoFitMode.value = mode
   }
 
   async function stop() {
-    await invoke('mpv_pause')
+    await invoke<void>('mpv_pause')
     isPlaying.value = false
   }
 
   onUnmounted(() => {
     if (renderDiagnosticsTimer)
       window.clearInterval(renderDiagnosticsTimer)
+
+    for (const timer of trackRefreshTimers)
+      window.clearTimeout(timer)
+    trackRefreshTimers.clear()
 
     for (const promise of unlistenPromises) {
       promise.then(unlisten => unlisten())
@@ -209,24 +473,33 @@ export function useMpv() {
     duration,
     volume,
     isMuted,
+    playbackSpeed,
     subtitleTracks,
     audioTracks,
     currentSubtitle,
     currentAudio,
+    videoAspectMode,
+    videoFitMode,
     renderStatus,
     renderError,
     renderBackend,
     renderDiagnostics,
+    trackError,
     initializeRender,
     updateRenderSurfaceBounds,
     setRenderStrategy,
+    refreshTrackState,
+    setKnownSubtitleTracks,
     load,
     togglePause,
     seek,
     seekRelative,
     setVolume,
+    setPlaybackSpeed,
     setSubtitle,
     setAudio,
+    setVideoAspect,
+    setVideoFit,
     stop,
   }
 }

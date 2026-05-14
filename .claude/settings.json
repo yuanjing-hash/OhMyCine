@@ -69,5 +69,36 @@
       }
     ]
   },
-  "enabledPlugins": {}
+  "enabledPlugins": {},
+  "permissions": {
+    "allow": [
+      "Bash(cargo *)",
+      "Bash(rustup *)",
+      "Bash(rustc *)",
+      "Bash(source ~/.cargo/env *)",
+      "Bash(brew *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(pwd *)",
+      "Bash(which *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(command *)",
+      "Bash(python3 *)",
+      "Bash(sh *)",
+      "Bash(curl *)",
+      "Bash(git *)",
+      "Read",
+      "Edit",
+      "Write",
+      "WebSearch",
+      "WebFetch",
+      "Agent"
+    ]
+  }
 }

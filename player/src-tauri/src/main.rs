@@ -8,8 +8,9 @@ use tauri::{utils::config::Color, Manager};
 
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::player::{
-    mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause, mpv_render_status, mpv_resume,
-    mpv_seek, mpv_set_property, mpv_set_render_strategy, mpv_update_render_surface_bounds,
+    mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
+    mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy,
+    mpv_track_state, mpv_update_render_surface_bounds,
 };
 use mpv::surface::OwnerWindowEvent;
 
@@ -27,11 +28,13 @@ fn main() {
             credential_get,
             credential_delete,
             mpv_load,
+            mpv_add_subtitle,
             mpv_pause,
             mpv_resume,
             mpv_seek,
             mpv_get_property,
             mpv_set_property,
+            mpv_track_state,
             mpv_init_render_surface,
             mpv_update_render_surface_bounds,
             mpv_render_status,

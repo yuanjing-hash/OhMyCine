@@ -1,15 +1,22 @@
 <script setup lang="ts">
-import type { MpvZOrderStrategy, RenderSurfaceBounds } from '@/composables/useMpv'
+import type { KnownSubtitleTrackInput, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { SubtitleTrack as DataSourceSubtitleTrack } from '@/services/datasource/types'
+import { LogicalSize } from '@tauri-apps/api/dpi'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
-import { redactSensitiveText } from '@/services/datasource/errors'
+import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
+import { getPlaybackMediaContext } from '@/services/playbackContext'
+import { useDataSourceStore } from '@/stores/datasource'
 
 const AUTO_HIDE_DELAY = 2800
 
 const route = useRoute()
+const store = useDataSourceStore()
+const appWindow = getCurrentWindow()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
@@ -22,6 +29,8 @@ const bottomChromeRef = ref<HTMLElement | null>(null)
 const topOcclusion = ref(0)
 const bottomOcclusion = ref(0)
 const diagnosticsOpen = ref(false)
+const pictureSettingsError = ref<string | null>(null)
+const isPlayerFullscreen = ref(false)
 // Single active strategy for this slice: transparent Tauri/WebView overlay above a full-bleed mpv
 // video underlay. Legacy top/bottom occlusion strategies are neutralized in Rust.
 const renderStrategy = ref<MpvZOrderStrategy>('transparentOverlay')
@@ -35,17 +44,32 @@ const {
   currentTime,
   duration,
   volume,
+  playbackSpeed,
+  subtitleTracks,
+  audioTracks,
+  currentSubtitle,
+  currentAudio,
+  videoAspectMode,
+  videoFitMode,
   renderStatus,
   renderError,
   renderDiagnostics,
+  trackError,
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
+  refreshTrackState,
+  setKnownSubtitleTracks,
   load,
   togglePause,
   seek,
   seekRelative,
   setVolume,
+  setPlaybackSpeed,
+  setSubtitle,
+  setAudio,
+  setVideoAspect,
+  setVideoFit,
 } = useMpv()
 
 const hasMedia = computed(() => mediaPath.value.length > 0)
@@ -128,17 +152,137 @@ function handleWindowFocus() {
   revealChrome()
 }
 
+function queryStringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function aspectRatioValue(mode: VideoAspectMode): number | null {
+  switch (mode) {
+    case '16:9':
+      return 16 / 9
+    case '4:3':
+      return 4 / 3
+    case 'cinema':
+      return 2.35
+    default:
+      return null
+  }
+}
+
+async function syncKnownSubtitleTracks() {
+  const contextId = queryStringValue(route.query.contextId)
+  const playbackContext = contextId ? getPlaybackMediaContext(contextId) : null
+  const sourceId = queryStringValue(route.query.sourceId) || playbackContext?.sourceId || ''
+  const itemId = queryStringValue(route.query.itemId) || playbackContext?.itemId || ''
+  const contextSubtitles = playbackContext && playbackContext.sourceId === sourceId && playbackContext.itemId === itemId
+    ? playbackContext.subtitles
+    : []
+
+  if (!sourceId || !itemId) {
+    setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
+    return
+  }
+
+  try {
+    store.loadConfigs()
+    await store.syncManager()
+    const source = store.getSource(sourceId)
+    if (!source) {
+      setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
+      return
+    }
+
+    const detail = await source.getDetail(itemId)
+    setKnownSubtitleTracks(mergeDataSourceSubtitleTracks(contextSubtitles, detail.subtitles ?? []).map(mapKnownSubtitleTrack))
+  }
+  catch {
+    setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
+  }
+}
+
+function mergeDataSourceSubtitleTracks(...groups: readonly DataSourceSubtitleTrack[][]): DataSourceSubtitleTrack[] {
+  const seen = new Set<string>()
+  const merged: DataSourceSubtitleTrack[] = []
+
+  for (const track of groups.flat()) {
+    const key = [track.source ?? '', track.index, track.language, track.title ?? '', track.codec ?? '', track.url ?? ''].join('|')
+    if (seen.has(key))
+      continue
+
+    seen.add(key)
+    merged.push(track)
+  }
+
+  return merged
+}
+
+function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTrackInput {
+  const source = track.source === 'external' ? 'external' : 'detail'
+  const hasUrl = Boolean(track.url)
+  return {
+    id: track.index,
+    source,
+    language: track.language && track.language !== 'Unknown' ? track.language : null,
+    title: track.title,
+    codec: track.codec,
+    isDefault: track.isDefault,
+    url: track.url,
+    selectable: hasUrl,
+    unavailableReason: source === 'external'
+      ? '该外部字幕缺少可加载地址，暂时只能在详情页确认存在。'
+      : '该字幕来自媒体详情，但当前播放流未暴露可直接加载的字幕地址。',
+  }
+}
+
+async function resizeWindowForAspect(mode: VideoAspectMode) {
+  const ratio = aspectRatioValue(mode)
+  if (!ratio)
+    return
+
+  try {
+    const fullscreen = isPlayerFullscreen.value || document.fullscreenElement !== null || await appWindow.isFullscreen()
+    if (fullscreen)
+      return
+
+    const size = await appWindow.innerSize()
+    if (size.width <= 0 || size.height <= 0)
+      return
+
+    const scaleFactor = await appWindow.scaleFactor()
+    const currentWidth = size.width / scaleFactor
+    const currentHeight = size.height / scaleFactor
+    const area = currentWidth * currentHeight
+    const nextWidth = Math.round(Math.sqrt(area * ratio))
+    const nextHeight = Math.round(nextWidth / ratio)
+    const width = Math.max(720, nextWidth)
+    const height = Math.max(420, nextHeight)
+
+    if (await appWindow.isMaximized())
+      await appWindow.unmaximize()
+    await appWindow.setSize(new LogicalSize(width, height))
+    pictureSettingsError.value = null
+  }
+  catch (error) {
+    pictureSettingsError.value = toSafeErrorMessage(error, '窗口尺寸调整失败，已保留当前画面比例设置。')
+  }
+}
+
 watch(
-  () => route.query.path,
-  async (path) => {
+  () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId],
+  async ([path]) => {
     const nextPath = typeof path === 'string' ? path : ''
     mediaPath.value = nextPath
     mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
+    pictureSettingsError.value = null
     revealChrome()
 
     if (nextPath) {
+      await syncKnownSubtitleTracks()
       await ensureRenderInitialized()
       await load(nextPath)
+    }
+    else {
+      setKnownSubtitleTracks([])
     }
   },
   { immediate: true },
@@ -155,6 +299,8 @@ watch([shouldShowChrome, hasMedia], () => {
 async function handleFileDrop(path: string) {
   mediaPath.value = path
   mediaTitle.value = path.split(/[\\/]/).pop() || '本地视频'
+  pictureSettingsError.value = null
+  setKnownSubtitleTracks([])
   revealChrome()
   await ensureRenderInitialized()
   await load(path)
@@ -198,6 +344,38 @@ async function handleSetStrategy(strategy: MpvZOrderStrategy) {
     pendingRenderBounds = lastRenderBounds.value
     void flushRenderBounds()
   }
+}
+
+function requestRenderBoundsSync() {
+  if (!lastRenderBounds.value)
+    return
+
+  pendingRenderBounds = lastRenderBounds.value
+  void flushRenderBounds()
+}
+
+function scheduleRenderBoundsSync() {
+  requestRenderBoundsSync()
+  window.requestAnimationFrame(requestRenderBoundsSync)
+  window.setTimeout(requestRenderBoundsSync, 160)
+  window.setTimeout(requestRenderBoundsSync, 420)
+}
+
+async function handleFullscreenChanged(fullscreen: boolean) {
+  isPlayerFullscreen.value = fullscreen
+  await nextTick()
+  scheduleRenderBoundsSync()
+}
+
+async function handleSetVideoAspect(mode: VideoAspectMode) {
+  await setVideoAspect(mode)
+  await resizeWindowForAspect(mode)
+  scheduleRenderBoundsSync()
+}
+
+async function handleSetVideoFit(mode: VideoFitMode) {
+  await setVideoFit(mode)
+  scheduleRenderBoundsSync()
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -356,10 +534,26 @@ watch(
         :current-time="currentTime"
         :duration="duration"
         :volume="volume"
+        :playback-speed="playbackSpeed"
+        :subtitle-tracks="subtitleTracks"
+        :audio-tracks="audioTracks"
+        :current-subtitle="currentSubtitle"
+        :current-audio="currentAudio"
+        :video-aspect-mode="videoAspectMode"
+        :video-fit-mode="videoFitMode"
+        :track-error="trackError"
+        :picture-settings-error="pictureSettingsError"
         @toggle-pause="togglePause"
         @seek="seek"
         @seek-relative="seekRelative"
         @set-volume="setVolume"
+        @set-playback-speed="setPlaybackSpeed"
+        @set-subtitle="setSubtitle"
+        @set-audio="setAudio"
+        @set-video-aspect="handleSetVideoAspect"
+        @set-video-fit="handleSetVideoFit"
+        @refresh-tracks="refreshTrackState"
+        @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
       />
     </div>

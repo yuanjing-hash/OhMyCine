@@ -7,9 +7,11 @@ use std::{
 
 use libmpv_sys::{
     mpv_command, mpv_create, mpv_error_string, mpv_format_MPV_FORMAT_DOUBLE,
-    mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_free, mpv_get_property,
-    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_set_option_string, mpv_set_property,
-    mpv_set_property_string, mpv_terminate_destroy,
+    mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
+    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
+    mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
+    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_node, mpv_node_list,
+    mpv_set_option_string, mpv_set_property, mpv_set_property_string, mpv_terminate_destroy,
 };
 
 use super::{
@@ -18,6 +20,27 @@ use super::{
 };
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvTrack {
+    pub id: i64,
+    pub kind: String,
+    pub language: Option<String>,
+    pub title: Option<String>,
+    pub codec: Option<String>,
+    pub channels: Option<i64>,
+    pub is_default: bool,
+    pub selected: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvTrackState {
+    pub tracks: Vec<MpvTrack>,
+    pub current_subtitle: Option<i64>,
+    pub current_audio: Option<i64>,
+}
 
 pub struct MpvPlayer {
     ctx: *mut mpv_handle,
@@ -90,6 +113,19 @@ impl MpvPlayer {
     pub fn load_file(&mut self, path: &str) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.command(&["loadfile", path, "replace"])
+    }
+
+    pub fn add_subtitle(
+        &mut self,
+        url: &str,
+        title: Option<&str>,
+        language: Option<&str>,
+    ) -> Result<(), String> {
+        self.ensure_initialized_fallback()?;
+        let title = title.unwrap_or("外部字幕");
+        let language = language.unwrap_or("");
+        self.command(&["sub-add", url, "select", title, language])
+            .map_err(|_| "外部字幕暂时无法加载".to_string())
     }
 
     pub fn render_state(&self) -> MpvRenderState {
@@ -330,6 +366,43 @@ impl MpvPlayer {
         self.command(&["seek", &position.to_string(), "absolute"])
     }
 
+    pub fn track_state(&mut self) -> Result<MpvTrackState, String> {
+        self.ensure_initialized_fallback()?;
+        let tracks = self.track_list()?;
+        let current_subtitle = tracks
+            .iter()
+            .find(|track| track.kind == "sub" && track.selected)
+            .map(|track| track.id);
+        let current_audio = tracks
+            .iter()
+            .find(|track| track.kind == "audio" && track.selected)
+            .map(|track| track.id);
+
+        Ok(MpvTrackState {
+            tracks,
+            current_subtitle,
+            current_audio,
+        })
+    }
+
+    fn track_list(&self) -> Result<Vec<MpvTrack>, String> {
+        let prop = CString::new("track-list").map_err(|_| "Invalid mpv property".to_string())?;
+        let mut node = std::mem::MaybeUninit::<mpv_node>::zeroed();
+        self.check_error(unsafe {
+            mpv_get_property(
+                self.ctx,
+                prop.as_ptr(),
+                mpv_format_MPV_FORMAT_NODE,
+                node.as_mut_ptr().cast::<c_void>(),
+            )
+        })?;
+
+        let mut node = unsafe { node.assume_init() };
+        let tracks = unsafe { parse_track_list_node(&node) };
+        unsafe { mpv_free_node_contents(&mut node) };
+        Ok(tracks)
+    }
+
     fn set_option(&self, option: &str, value: &str) -> Result<(), String> {
         let option = CString::new(option).map_err(|err| err.to_string())?;
         let value = CString::new(value).map_err(|err| err.to_string())?;
@@ -357,8 +430,8 @@ impl MpvPlayer {
                     )
                 })
             }
-            "volume" | "time-pos" | "duration" | "speed" => {
-                let mut value = value.parse::<f64>().map_err(|err| err.to_string())?;
+            "volume" | "time-pos" | "duration" | "speed" | "panscan" | "video-zoom" => {
+                let mut value = value.parse::<f64>().map_err(|_| "Invalid numeric mpv value".to_string())?;
                 self.check_error(unsafe {
                     mpv_set_property(
                         self.ctx,
@@ -368,8 +441,14 @@ impl MpvPlayer {
                     )
                 })
             }
+            "sid" | "aid" if value == "no" => {
+                let value = CString::new(value).map_err(|_| "Invalid mpv property value".to_string())?;
+                self.check_error(unsafe {
+                    mpv_set_property_string(self.ctx, prop.as_ptr(), value.as_ptr())
+                })
+            }
             "sid" | "aid" => {
-                let mut value = value.parse::<i64>().map_err(|err| err.to_string())?;
+                let mut value = value.parse::<i64>().map_err(|_| "Invalid track id".to_string())?;
                 self.check_error(unsafe {
                     mpv_set_property(
                         self.ctx,
@@ -529,6 +608,130 @@ impl MpvPlayer {
             .into_owned();
         Err(message)
     }
+}
+
+unsafe fn parse_track_list_node(node: &mpv_node) -> Vec<MpvTrack> {
+    if node.format != mpv_format_MPV_FORMAT_NODE_ARRAY {
+        return Vec::new();
+    }
+
+    let Some(list) = node_list(node) else {
+        return Vec::new();
+    };
+
+    let count = list.num.max(0) as usize;
+    if count == 0 || list.values.is_null() {
+        return Vec::new();
+    }
+
+    std::slice::from_raw_parts(list.values, count)
+        .iter()
+        .filter_map(|track| parse_track_node(track))
+        .collect()
+}
+
+unsafe fn parse_track_node(node: &mpv_node) -> Option<MpvTrack> {
+    let id = map_i64(node, "id")?;
+    let kind = map_string(node, "type")?;
+    if kind != "sub" && kind != "audio" {
+        return None;
+    }
+
+    Some(MpvTrack {
+        id,
+        kind,
+        language: map_string(node, "lang"),
+        title: map_string(node, "title"),
+        codec: map_string(node, "codec"),
+        channels: map_i64(node, "demux-channel-count"),
+        is_default: map_bool(node, "default"),
+        selected: map_bool(node, "selected"),
+    })
+}
+
+unsafe fn node_list(node: &mpv_node) -> Option<&mpv_node_list> {
+    if node.format != mpv_format_MPV_FORMAT_NODE_ARRAY
+        && node.format != mpv_format_MPV_FORMAT_NODE_MAP
+    {
+        return None;
+    }
+
+    let list = node.u.list;
+    if list.is_null() {
+        return None;
+    }
+
+    Some(&*list)
+}
+
+unsafe fn map_value<'a>(node: &'a mpv_node, key: &str) -> Option<&'a mpv_node> {
+    if node.format != mpv_format_MPV_FORMAT_NODE_MAP {
+        return None;
+    }
+
+    let list = node_list(node)?;
+    let count = list.num.max(0) as usize;
+    if count == 0 || list.values.is_null() || list.keys.is_null() {
+        return None;
+    }
+
+    let values = std::slice::from_raw_parts(list.values, count);
+    let keys = std::slice::from_raw_parts(list.keys, count);
+    for (index, raw_key) in keys.iter().enumerate() {
+        if raw_key.is_null() {
+            continue;
+        }
+        let current_key = CStr::from_ptr(*raw_key).to_string_lossy();
+        if current_key == key {
+            return values.get(index);
+        }
+    }
+
+    None
+}
+
+unsafe fn map_string(node: &mpv_node, key: &str) -> Option<String> {
+    let value = map_value(node, key)?;
+    if value.format != mpv_format_MPV_FORMAT_STRING {
+        return None;
+    }
+
+    let raw = value.u.string;
+    if raw.is_null() {
+        return None;
+    }
+
+    let text = CStr::from_ptr(raw).to_string_lossy().trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+unsafe fn map_i64(node: &mpv_node, key: &str) -> Option<i64> {
+    let value = map_value(node, key)?;
+    if value.format == mpv_format_MPV_FORMAT_INT64 {
+        Some(value.u.int64)
+    } else if value.format == mpv_format_MPV_FORMAT_DOUBLE {
+        Some(value.u.double_ as i64)
+    } else {
+        None
+    }
+}
+
+unsafe fn map_bool(node: &mpv_node, key: &str) -> bool {
+    map_value(node, key)
+        .map(|value| {
+            if value.format == mpv_format_MPV_FORMAT_FLAG {
+                value.u.flag != 0
+            } else if value.format == mpv_format_MPV_FORMAT_INT64 {
+                value.u.int64 != 0
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]

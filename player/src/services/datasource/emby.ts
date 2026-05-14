@@ -128,10 +128,14 @@ interface EmbyMediaStreamRecord {
   readonly Type?: string
   readonly Language?: string
   readonly DisplayLanguage?: string
+  readonly DisplayTitle?: string
   readonly Title?: string
   readonly Codec?: string
   readonly Channels?: number
   readonly IsDefault?: boolean
+  readonly IsExternal?: boolean
+  readonly DeliveryUrl?: string
+  readonly Format?: string
   readonly Width?: number
   readonly Height?: number
 }
@@ -455,6 +459,7 @@ export class EmbyDataSource implements DataSource {
     const streams = item.MediaStreams ?? []
     const video = streams.find(stream => stream.Type === 'Video')
     const audio = streams.find(stream => stream.Type === 'Audio')
+    const mediaSourceId = item.MediaSources?.find(source => typeof source.Id === 'string')?.Id
 
     return {
       ...base,
@@ -466,7 +471,7 @@ export class EmbyDataSource implements DataSource {
       resolution: video?.Width && video.Height ? `${video.Width}x${video.Height}` : undefined,
       codec: video?.Codec,
       audioCodec: audio?.Codec,
-      subtitles: streams.filter(stream => stream.Type === 'Subtitle').map(mapSubtitleTrack),
+      subtitles: streams.filter(stream => stream.Type === 'Subtitle').map(stream => this.mapSubtitleTrack(item.Id, stream, mediaSourceId)),
       audioTracks: streams.filter(stream => stream.Type === 'Audio').map(mapAudioTrack),
       mediaSources: mapMediaSources(item.MediaSources),
       stills: this.stillUrls(item),
@@ -593,6 +598,38 @@ export class EmbyDataSource implements DataSource {
     if (mediaSourceId)
       params.set('MediaSourceId', mediaSourceId)
     return `${this.baseUrl}/Videos/${encodeURIComponent(id)}/stream?${params.toString()}`
+  }
+
+  private mapSubtitleTrack(itemId: string, stream: EmbyMediaStreamRecord, mediaSourceId?: string): SubtitleTrack {
+    return {
+      index: stream.Index ?? 0,
+      language: stream.DisplayLanguage ?? stream.Language ?? 'Unknown',
+      title: stream.Title ?? stream.DisplayTitle,
+      codec: stream.Codec ?? stream.Format,
+      isDefault: stream.IsDefault ?? false,
+      source: stream.IsExternal ? 'external' : 'embedded',
+      url: this.subtitleStreamUrl(itemId, stream, mediaSourceId),
+    }
+  }
+
+  private subtitleStreamUrl(itemId: string, stream: EmbyMediaStreamRecord, mediaSourceId?: string): string | undefined {
+    if (stream.DeliveryUrl) {
+      if (stream.DeliveryUrl.startsWith('/'))
+        return this.withOptionalApiKey(`${this.baseUrl}${stream.DeliveryUrl}`, true)
+      if (isSameOrigin(stream.DeliveryUrl, this.baseUrl))
+        return this.withOptionalApiKey(stream.DeliveryUrl, true)
+      return sanitizeRemotePlaybackUrl(stream.DeliveryUrl)
+    }
+
+    if (typeof stream.Index !== 'number')
+      return undefined
+
+    const extension = safeSubtitleExtension(stream.Codec ?? stream.Format)
+    const mediaSourceSegment = mediaSourceId ? `${encodeURIComponent(mediaSourceId)}/` : ''
+    const params = new URLSearchParams({
+      api_key: this.token,
+    })
+    return `${this.baseUrl}/Videos/${encodeURIComponent(itemId)}/${mediaSourceSegment}Subtitles/${stream.Index}/Stream.${extension}?${params.toString()}`
   }
 
   private async getSimilarItemRecords(id: string): Promise<EmbyItemRecord[]> {
@@ -1020,12 +1057,18 @@ function namesByPersonType(people: readonly EmbyPersonRecord[] | undefined, type
     .map(person => person.Name as string)
 }
 
-function mapSubtitleTrack(stream: EmbyMediaStreamRecord): SubtitleTrack {
-  return {
-    index: stream.Index ?? 0,
-    language: stream.DisplayLanguage ?? stream.Language ?? 'Unknown',
-    title: stream.Title,
-    isDefault: stream.IsDefault ?? false,
+function safeSubtitleExtension(value: string | undefined): string {
+  const normalized = value?.toLowerCase().replace(/[^a-z0-9]/g, '')
+  switch (normalized) {
+    case 'ass':
+    case 'ssa':
+    case 'vtt':
+    case 'srt':
+      return normalized
+    case 'webvtt':
+      return 'vtt'
+    default:
+      return 'srt'
   }
 }
 

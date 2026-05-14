@@ -53,11 +53,13 @@ struct CredentialStorage {
 impl CredentialStorage {
     fn open(app: &AppHandle) -> Result<Self, String> {
         let dir = credential_dir(app)?;
-        fs::create_dir_all(&dir).map_err(|_| "Failed to prepare credential storage.".to_string())?;
+        fs::create_dir_all(&dir)
+            .map_err(|_| "Failed to prepare credential storage.".to_string())?;
 
         let key = load_or_create_master_key(&dir)?;
         let db_path = dir.join(DATABASE_FILE);
-        let conn = Connection::open(db_path).map_err(|_| "Failed to open credential database.".to_string())?;
+        let conn = Connection::open(db_path)
+            .map_err(|_| "Failed to open credential database.".to_string())?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS credentials (
                 ref_hash TEXT PRIMARY KEY NOT NULL,
@@ -88,7 +90,11 @@ impl CredentialStorage {
                     nonce = excluded.nonce,
                     ciphertext = excluded.ciphertext,
                     updated_at = unixepoch()",
-                params![hash_ref(ref_name), BASE64.encode(nonce_bytes), BASE64.encode(ciphertext)],
+                params![
+                    hash_ref(ref_name),
+                    BASE64.encode(nonce_bytes),
+                    BASE64.encode(ciphertext)
+                ],
             )
             .map_err(|_| "Failed to save credential.".to_string())?;
 
@@ -150,7 +156,8 @@ fn credential_dir(app: &AppHandle) -> Result<PathBuf, String> {
 fn load_or_create_master_key(dir: &PathBuf) -> Result<[u8; KEY_LEN], String> {
     let path = dir.join(MASTER_KEY_FILE);
     if path.exists() {
-        let encoded = fs::read_to_string(path).map_err(|_| "Failed to read credential key.".to_string())?;
+        let encoded =
+            fs::read_to_string(path).map_err(|_| "Failed to read credential key.".to_string())?;
         let decoded = BASE64
             .decode(encoded.trim())
             .map_err(|_| "Stored credential key is invalid.".to_string())?;

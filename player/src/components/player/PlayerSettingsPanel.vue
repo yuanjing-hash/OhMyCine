@@ -1,47 +1,48 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import type { VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import { computed, nextTick, ref, watch } from 'vue'
 
-interface PictureOption {
+interface PictureOption<T extends string> {
+  readonly value: T
   readonly label: string
   readonly description: string
-  readonly active?: boolean
-}
-
-interface PictureSettingsSection {
-  readonly id: string
-  readonly title: string
-  readonly eyebrow: string
-  readonly description: string
-  readonly options: readonly PictureOption[]
+  readonly disabled?: boolean
 }
 
 const props = defineProps<{
   open: boolean
+  aspectMode: VideoAspectMode
+  fitMode: VideoFitMode
+  errorMessage: string | null
 }>()
 
 const emit = defineEmits<{
   close: []
   interactionChange: [active: boolean]
+  setAspectMode: [mode: VideoAspectMode]
+  setFitMode: [mode: VideoFitMode]
 }>()
 
 const panelRef = ref<HTMLElement | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
 
-const pictureSections: readonly PictureSettingsSection[] = [
-  {
-    id: 'aspect-ratio',
-    title: '画面比例',
-    eyebrow: 'Aspect',
-    description: '控制视频在透明渲染面中的适配方式，实际 mpv 画面比例命令将在后续子任务接入。',
-    options: [
-      { label: '适应窗口', active: true, description: '保持完整画面并适配当前窗口' },
-      { label: '原始比例', description: '按视频原始比例显示' },
-      { label: '填充裁切', description: '填满窗口并裁切边缘' },
-      { label: '拉伸填满', description: '忽略原始比例填满画面' },
-    ],
-  },
+const aspectOptions: readonly PictureOption<VideoAspectMode>[] = [
+  { value: 'default', label: '原始比例', description: '使用媒体自身比例，由 mpv 自动适配窗口' },
+  { value: '16:9', label: '16:9', description: '按 16:9 覆盖视频比例' },
+  { value: '4:3', label: '4:3', description: '按 4:3 覆盖视频比例' },
+  { value: 'cinema', label: '2.35:1', description: '按影院宽银幕比例覆盖视频比例' },
 ]
+
+const fitOptions: readonly PictureOption<VideoFitMode | 'stretch'>[] = [
+  { value: 'fit', label: '适应窗口', description: '完整显示画面，不主动裁切边缘' },
+  { value: 'cinemaCrop', label: '轻微裁切', description: '使用 mpv panscan 进行轻微填充' },
+  { value: 'crop', label: '填充裁切', description: '使用 mpv panscan 填满窗口并裁切边缘' },
+  { value: 'stretch', label: '拉伸填满', description: '忽略比例拉伸可能破坏透明 underlay 命中与画面一致性，暂不启用', disabled: true },
+]
+
+const activeFitLabel = computed(() => fitOptions.find(option => option.value === props.fitMode)?.label ?? '适应窗口')
+const activeAspectLabel = computed(() => aspectOptions.find(option => option.value === props.aspectMode)?.label ?? '原始比例')
 
 function emitInteractionState() {
   emit('interactionChange', props.open || pointerInside.value || focusInside.value)
@@ -78,6 +79,16 @@ function handleKeydown(event: KeyboardEvent) {
   closePanel()
 }
 
+function selectAspect(mode: VideoAspectMode) {
+  emit('setAspectMode', mode)
+}
+
+function selectFit(value: VideoFitMode | 'stretch') {
+  if (value === 'stretch')
+    return
+  emit('setFitMode', value)
+}
+
 watch(
   () => props.open,
   async (open) => {
@@ -102,9 +113,9 @@ watch(
       v-if="open"
       id="player-settings-panel"
       ref="panelRef"
-      class="player-settings-panel pointer-events-auto absolute bottom-[calc(100%+1rem)] right-0 z-40 w-[min(22rem,calc(100vw-3rem))] rounded-[28px] p-4 text-white outline-none"
+      class="player-settings-panel pointer-events-auto absolute bottom-[calc(100%+1rem)] right-0 z-40 w-[min(25rem,calc(100vw-3rem))] rounded-[28px] p-4 text-white outline-none"
       role="dialog"
-      aria-label="画面设置"
+      aria-label="播放器设置"
       aria-modal="false"
       tabindex="-1"
       @mouseenter="setPointerInside(true)"
@@ -117,20 +128,20 @@ watch(
       <div class="flex items-start justify-between gap-4">
         <div>
           <p class="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/42">
-            Picture Settings
+            Player Settings
           </p>
           <h2 class="mt-2 text-lg font-semibold text-white">
-            画面设置
+            设置
           </h2>
           <p class="mt-1 text-sm leading-5 text-white/52">
-            调整画面比例与显示模式；实际画面命令将在后续子任务接入。
+            当前仅包含画面设置：{{ activeAspectLabel }} · {{ activeFitLabel }}，通过 mpv 属性即时应用。
           </p>
         </div>
         <button
           type="button"
           class="panel-icon-button"
-          title="关闭画面设置"
-          aria-label="关闭画面设置"
+          title="关闭设置"
+          aria-label="关闭设置"
           @click="closePanel"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -139,38 +150,75 @@ watch(
         </button>
       </div>
 
+      <p v-if="errorMessage" class="mt-4 rounded-2xl border border-amber-300/18 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100/86">
+        {{ errorMessage }}
+      </p>
+
       <div class="mt-4 space-y-3">
-        <article
-          v-for="section in pictureSections"
-          :key="section.id"
-          class="settings-section rounded-3xl p-3"
-        >
+        <article class="settings-section rounded-3xl p-3">
           <div class="flex items-start justify-between gap-3">
             <div>
               <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/35">
-                {{ section.eyebrow }}
+                Aspect
               </p>
               <h3 class="mt-1 text-sm font-semibold text-white/88">
-                {{ section.title }}
+                画面比例
               </h3>
             </div>
-            <span class="rounded-full border border-white/8 bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-white/34">
-              待接入
+            <span class="status-pill">
+              mpv video-aspect
             </span>
           </div>
           <p class="mt-2 text-xs leading-5 text-white/48">
-            {{ section.description }}
+            覆盖视频比例；选择“原始比例”会恢复 mpv 自动比例。
           </p>
           <div class="mt-3 grid grid-cols-2 gap-2">
             <button
-              v-for="option in section.options"
-              :key="`${section.id}-${option.label}`"
+              v-for="option in aspectOptions"
+              :key="option.value"
               type="button"
               class="setting-option"
-              :class="{ 'is-active': option.active }"
-              :title="`${option.label}：${option.description}（后续接入）`"
-              :aria-label="`${option.label}，${option.description}，后续接入`"
-              aria-disabled="true"
+              :class="{ 'is-active': props.aspectMode === option.value }"
+              :title="`${option.label}：${option.description}`"
+              :aria-label="`${option.label}，${option.description}`"
+              :aria-pressed="props.aspectMode === option.value"
+              @click="selectAspect(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </article>
+
+        <article class="settings-section rounded-3xl p-3">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/35">
+                Fit
+              </p>
+              <h3 class="mt-1 text-sm font-semibold text-white/88">
+                填充模式
+              </h3>
+            </div>
+            <span class="status-pill">
+              mpv panscan
+            </span>
+          </div>
+          <p class="mt-2 text-xs leading-5 text-white/48">
+            使用 mpv panscan 控制窗口适配与裁切强度；拉伸填满暂不启用。
+          </p>
+          <div class="mt-3 grid grid-cols-2 gap-2">
+            <button
+              v-for="option in fitOptions"
+              :key="option.value"
+              type="button"
+              class="setting-option"
+              :class="{ 'is-active': props.fitMode === option.value, 'is-disabled': option.disabled }"
+              :title="`${option.label}：${option.description}`"
+              :aria-label="`${option.label}，${option.description}`"
+              :aria-pressed="props.fitMode === option.value"
+              :aria-disabled="option.disabled ? 'true' : undefined"
+              :disabled="option.disabled"
+              @click="selectFit(option.value)"
             >
               {{ option.label }}
             </button>
@@ -229,6 +277,18 @@ watch(
   background: rgba(255, 255, 255, 0.045);
 }
 
+.status-pill {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.25rem 0.5rem;
+  color: rgba(255, 255, 255, 0.36);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .setting-option {
   min-height: 34px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -242,14 +302,25 @@ watch(
   transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 
+.setting-option:hover:not(:disabled),
+.setting-option:focus-visible:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .setting-option.is-active {
   border-color: rgba(255, 255, 255, 0.24);
   color: rgba(255, 255, 255, 0.92);
   background: rgba(255, 255, 255, 0.14);
 }
 
-.setting-option[aria-disabled="true"] {
-  cursor: default;
+.setting-option:disabled,
+.setting-option.is-disabled {
+  cursor: not-allowed;
+  color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.035);
+  opacity: 0.72;
 }
 
 .player-settings-panel-enter-active,

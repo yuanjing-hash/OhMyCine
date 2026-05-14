@@ -75,7 +75,10 @@ export interface SubtitleTrack {
   index: number
   language: string
   title?: string
+  codec?: string
   isDefault: boolean
+  source?: 'embedded' | 'external'
+  url?: string
 }
 
 export interface AudioTrack {

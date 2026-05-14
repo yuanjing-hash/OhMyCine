@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -157,6 +158,15 @@ async function playItem(item?: MediaItem) {
   try {
     const source = await resolveSource()
     const path = await source.getStreamURL(target.id)
+    const isCurrentDetail = target.id === detail.value?.id
+    const playbackContextId = savePlaybackMediaContext({
+      sourceId: sourceId.value,
+      itemId: target.id,
+      title: target.name,
+      mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
+      subtitles: isCurrentDetail ? detail.value?.subtitles : undefined,
+      audioTracks: isCurrentDetail ? detail.value?.audioTracks : undefined,
+    })
     await router.push({
       name: 'player',
       query: {
@@ -164,6 +174,7 @@ async function playItem(item?: MediaItem) {
         path,
         sourceId: sourceId.value,
         itemId: target.id,
+        contextId: playbackContextId,
         mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
         audioIndex: item ? undefined : (selectedAudioIndex.value ?? undefined),
         subtitleIndex: item ? undefined : (selectedSubtitleIndex.value ?? undefined),

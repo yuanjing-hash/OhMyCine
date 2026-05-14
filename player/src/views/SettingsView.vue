@@ -206,7 +206,7 @@ async function saveEditedSource(id: string) {
           设置
         </h1>
         <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-          Player 可直接连接 Emby 浏览和播放媒体，不依赖 OhMyCine Server。当前 MVP 通过 Emby 账号密码登录，账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。
+          Player 可直接连接 Emby 浏览和播放媒体，不依赖 OhMyCine Server。当前通过 Emby 账号密码登录，账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。
         </p>
       </header>
 

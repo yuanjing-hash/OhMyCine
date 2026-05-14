@@ -6,7 +6,7 @@ static WEBVIEW_BACKGROUND_TRANSPARENT_APPLIED: AtomicBool = AtomicBool::new(fals
 
 /// Declares which concrete render backend the Player is using on the current platform.
 ///
-/// The current Windows MVP uses a transparent Tauri/WebView overlay above a separate mpv video
+/// The current Windows backend uses a transparent Tauri/WebView overlay above a separate mpv video
 /// underlay window. mpv still receives a real HWND through `wid` and renders with
 /// `vo=gpu-next` + `hwdec=auto-safe`, while Vue controls remain in the transparent overlay.
 /// Future True-render-API or WebView2 Composition Hosting backends would appear here as new
