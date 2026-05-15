@@ -57,19 +57,35 @@ const rootBackgroundClass = computed(() => {
   return 'player-surface-root--transparent'
 })
 
+const renderStatusLabel = computed(() => {
+  switch (props.renderStatus) {
+    case 'initializing':
+      return '准备中'
+    case 'ready':
+      return '已就绪'
+    case 'unsupported':
+      return '暂不可用'
+    case 'error':
+      return '需要重试'
+    case 'idle':
+    default:
+      return '待播放'
+  }
+})
+
 const renderTitle = computed(() => {
   switch (props.renderStatus) {
     case 'initializing':
-      return '正在初始化内嵌渲染'
+      return '正在准备视频画面'
     case 'ready':
-      return '透明叠层视频后端已就绪'
+      return '视频画面已就绪'
     case 'unsupported':
-      return '当前平台暂未启用内嵌渲染'
+      return '当前平台暂未启用内嵌画面'
     case 'error':
-      return '内嵌渲染初始化失败'
+      return '视频画面初始化失败'
     case 'idle':
     default:
-      return '内嵌渲染基础已接入'
+      return '播放器已准备'
   }
 })
 
@@ -79,16 +95,16 @@ const renderDescription = computed(() => {
 
   switch (props.renderStatus) {
     case 'initializing':
-      return '正在创建 mpv 视频底层窗口，并准备透明 Tauri/WebView 叠层。'
+      return '正在准备内嵌视频画面和播放控制层。'
     case 'ready':
-      return 'Windows 后端已创建 mpv 视频底层窗口，Tauri/WebView 透明叠层位于其上方，Vue 控制条应保持可见并可点击；实际视频画面与窗口同步表现需要在 Windows 宿主运行验证。'
+      return '视频画面已就绪，控制条会保持在画面上方；实际显示效果仍需在 Windows 宿主中验证。'
     case 'unsupported':
-      return 'OhMyCine 保留跨平台渲染后端架构；此平台的实际 native surface/render loop 会在后续里程碑接入，当前仍安全禁止外部 mpv 窗口。'
+      return '当前平台的内嵌视频画面将在后续版本启用；播放器会避免打开额外外部窗口。'
     case 'error':
-      return '播放器已保留 no-external-window 安全保护，请稍后重试或查看运行日志。'
+      return '视频画面初始化失败，请稍后重试或查看运行日志。'
     case 'idle':
     default:
-      return 'Windows 透明叠层渲染通路已经接入；打开媒体后会初始化 mpv 视频底层窗口。'
+      return '打开媒体后会初始化内嵌视频画面。'
   }
 })
 
@@ -282,12 +298,12 @@ onBeforeUnmount(() => {
           拖拽文件到此处播放
         </p>
         <p class="mt-3 text-sm leading-6 text-white/50">
-          支持 libmpv 可播放的本地视频文件。加载后可使用底部控制条播放、暂停、拖动进度和调节音量。
+          支持常见本地视频文件。加载后可使用底部控制条播放、暂停、拖动进度和调节音量。
         </p>
       </div>
       <div v-else-if="renderStatus !== 'ready'" class="glass-panel pointer-events-auto max-w-xl rounded-3xl p-8 text-center">
         <p class="text-xs uppercase tracking-[0.24em] text-white/35">
-          {{ renderStatus }}
+          {{ renderStatusLabel }}
         </p>
         <p class="mt-3 text-base font-semibold text-white">
           {{ renderTitle }}

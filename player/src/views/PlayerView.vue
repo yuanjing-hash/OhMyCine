@@ -4,7 +4,7 @@ import type { SubtitleTrack as DataSourceSubtitleTrack } from '@/services/dataso
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
@@ -38,6 +38,7 @@ let hideTimer: number | undefined
 let renderInitPromise: Promise<void> | null = null
 let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
+let playbackCleanupStarted = false
 
 const {
   isPlaying,
@@ -70,9 +71,11 @@ const {
   setAudio,
   setVideoAspect,
   setVideoFit,
+  stop,
 } = useMpv()
 
 const hasMedia = computed(() => mediaPath.value.length > 0)
+const playbackQueueItemCount = computed(() => hasMedia.value ? 1 : 0)
 const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value)
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
 
@@ -279,7 +282,11 @@ watch(
     if (nextPath) {
       await syncKnownSubtitleTracks()
       await ensureRenderInitialized()
+      if (playbackCleanupStarted)
+        return
       await load(nextPath)
+      if (playbackCleanupStarted)
+        await stopPlaybackSilently()
     }
     else {
       setKnownSubtitleTracks([])
@@ -303,7 +310,11 @@ async function handleFileDrop(path: string) {
   setKnownSubtitleTracks([])
   revealChrome()
   await ensureRenderInitialized()
+  if (playbackCleanupStarted)
+    return
   await load(path)
+  if (playbackCleanupStarted)
+    await stopPlaybackSilently()
 }
 
 async function flushRenderBounds() {
@@ -378,6 +389,23 @@ async function handleSetVideoFit(mode: VideoFitMode) {
   scheduleRenderBoundsSync()
 }
 
+async function stopPlaybackSilently() {
+  try {
+    await stop()
+  }
+  catch {
+    // Route cleanup must never expose native/player details or block navigation.
+  }
+}
+
+async function stopPlaybackForRouteExit() {
+  playbackCleanupStarted = true
+  if (!hasMedia.value && !isPlaying.value)
+    return
+
+  await stopPlaybackSilently()
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   // Ctrl+Shift+D (or Cmd+Shift+D) surfaces the diagnostics panel from the WebView overlay.
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'D' || event.key === 'd')) {
@@ -412,6 +440,10 @@ function syncPlayerChromeClass(visible: boolean) {
   }
 }
 
+onBeforeRouteLeave(async () => {
+  await stopPlaybackForRouteExit()
+})
+
 onMounted(() => {
   document.documentElement.classList.add('player-render-surface-active')
   document.body.classList.add('player-render-surface-active')
@@ -427,6 +459,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  void stopPlaybackForRouteExit()
   document.documentElement.classList.remove('player-render-surface-active')
   document.body.classList.remove('player-render-surface-active')
   document.documentElement.classList.remove('player-render-surface-transparent')
@@ -537,6 +570,7 @@ watch(
         :playback-speed="playbackSpeed"
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
+        :queue-item-count="playbackQueueItemCount"
         :current-subtitle="currentSubtitle"
         :current-audio="currentAudio"
         :video-aspect-mode="videoAspectMode"

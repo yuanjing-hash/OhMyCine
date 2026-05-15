@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
@@ -16,6 +16,7 @@ const props = defineProps<{
   playbackSpeed: number
   subtitleTracks: readonly SubtitleTrackOption[]
   audioTracks: readonly Track[]
+  queueItemCount: number
   currentSubtitle: SubtitleSelectionId | null
   currentAudio: number | null
   videoAspectMode: VideoAspectMode
@@ -70,6 +71,8 @@ const audioLabel = computed(() => {
   const track = props.audioTracks.find(item => item.id === props.currentAudio)
   return track ? compactTrackLabel(track, '音轨') : '音轨'
 })
+const showAudioControl = computed(() => props.audioTracks.length > 1)
+const showQueueControl = computed(() => props.queueItemCount > 1)
 
 function isInteracting() {
   return pointerInside.value
@@ -246,6 +249,11 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
+watch(showAudioControl, (visible) => {
+  if (!visible && activeMenu.value === 'audio')
+    closeMenus()
+})
+
 onMounted(() => {
   void syncFullscreenState()
 })
@@ -338,7 +346,7 @@ onMounted(() => {
         </Transition>
       </div>
 
-      <div class="control-menu-anchor">
+      <div v-if="showAudioControl" class="control-menu-anchor">
         <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'audio' }" type="button" title="音轨" aria-label="音轨" aria-haspopup="menu" :aria-expanded="activeMenu === 'audio'" @click="toggleMenu('audio')">
           <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 4.2a1 1 0 0 1 .5.86v13.88a1 1 0 0 1-1.64.77L7.1 16.2H4.5A2.5 2.5 0 0 1 2 13.7v-3.4a2.5 2.5 0 0 1 2.5-2.5h2.6l4.26-3.5a1 1 0 0 1 1.14-.1Zm4.74 3.1a1 1 0 0 1 1.41 0A6.63 6.63 0 0 1 20.6 12c0 1.84-.75 3.5-1.95 4.7a1 1 0 1 1-1.41-1.42A4.63 4.63 0 0 0 18.6 12c0-1.28-.52-2.44-1.36-3.28a1 1 0 0 1 0-1.42Zm-2.46 2.45a1 1 0 0 1 1.41 0c.58.58.94 1.38.94 2.25s-.36 1.67-.94 2.25a1 1 0 0 1-1.41-1.41c.22-.22.35-.52.35-.84s-.13-.62-.35-.84a1 1 0 0 1 0-1.41Z" /></svg>
           <span class="control-text">{{ audioLabel }}</span>
@@ -355,13 +363,13 @@ onMounted(() => {
               </button>
             </template>
             <p v-else-if="!trackError" class="menu-empty">
-              mpv 暂未检测到音轨
+              暂未检测到音轨
             </p>
           </div>
         </Transition>
       </div>
 
-      <button class="control-button action-chip secondary" type="button" title="播放队列（后续接入）" aria-label="播放队列，后续接入" aria-disabled="true">
+      <button v-if="showQueueControl" class="control-button action-chip secondary" type="button" title="播放队列（后续接入）" aria-label="播放队列，后续接入" aria-disabled="true">
         <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h6.5a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm12.5-4.98c0-.87.96-1.4 1.7-.94l2.88 1.8a1.1 1.1 0 0 1 0 1.86l-2.88 1.8a1.1 1.1 0 0 1-1.7-.94v-3.58Z" /></svg>
         <span class="control-text">队列</span>
       </button>

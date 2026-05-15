@@ -12,6 +12,9 @@ use commands::player::{
     mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy,
     mpv_track_state, mpv_update_render_surface_bounds,
 };
+use commands::preference::{
+    player_get_playback_speed_preference, player_set_playback_speed_preference,
+};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -27,6 +30,8 @@ fn main() {
             credential_set,
             credential_get,
             credential_delete,
+            player_get_playback_speed_preference,
+            player_set_playback_speed_preference,
             mpv_load,
             mpv_add_subtitle,
             mpv_pause,

@@ -28,17 +28,17 @@ const pointerInside = ref(false)
 const focusInside = ref(false)
 
 const aspectOptions: readonly PictureOption<VideoAspectMode>[] = [
-  { value: 'default', label: '原始比例', description: '使用媒体自身比例，由 mpv 自动适配窗口' },
-  { value: '16:9', label: '16:9', description: '按 16:9 覆盖视频比例' },
-  { value: '4:3', label: '4:3', description: '按 4:3 覆盖视频比例' },
-  { value: 'cinema', label: '2.35:1', description: '按影院宽银幕比例覆盖视频比例' },
+  { value: 'default', label: '原始比例', description: '使用影片自身比例，自动适配窗口' },
+  { value: '16:9', label: '16:9', description: '按 16:9 显示画面比例' },
+  { value: '4:3', label: '4:3', description: '按 4:3 显示画面比例' },
+  { value: 'cinema', label: '2.35:1', description: '按影院宽银幕比例显示画面' },
 ]
 
 const fitOptions: readonly PictureOption<VideoFitMode | 'stretch'>[] = [
   { value: 'fit', label: '适应窗口', description: '完整显示画面，不主动裁切边缘' },
-  { value: 'cinemaCrop', label: '轻微裁切', description: '使用 mpv panscan 进行轻微填充' },
-  { value: 'crop', label: '填充裁切', description: '使用 mpv panscan 填满窗口并裁切边缘' },
-  { value: 'stretch', label: '拉伸填满', description: '忽略比例拉伸可能破坏透明 underlay 命中与画面一致性，暂不启用', disabled: true },
+  { value: 'cinemaCrop', label: '轻微裁切', description: '轻微放大画面，减少上下或左右黑边' },
+  { value: 'crop', label: '填充裁切', description: '尽量填满窗口，必要时裁切边缘' },
+  { value: 'stretch', label: '拉伸填满', description: '忽略比例拉伸可能导致画面和交互区域不一致，暂不启用', disabled: true },
 ]
 
 const activeFitLabel = computed(() => fitOptions.find(option => option.value === props.fitMode)?.label ?? '适应窗口')
@@ -134,7 +134,7 @@ watch(
             设置
           </h2>
           <p class="mt-1 text-sm leading-5 text-white/52">
-            当前仅包含画面设置：{{ activeAspectLabel }} · {{ activeFitLabel }}，通过 mpv 属性即时应用。
+            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整视频比例和窗口适配方式。
           </p>
         </div>
         <button
@@ -158,19 +158,19 @@ watch(
         <article class="settings-section rounded-3xl p-3">
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/35">
-                Aspect
+              <p class="text-[10px] font-semibold tracking-[0.18em] text-white/35">
+                画面比例
               </p>
               <h3 class="mt-1 text-sm font-semibold text-white/88">
                 画面比例
               </h3>
             </div>
             <span class="status-pill">
-              mpv video-aspect
+              当前 {{ activeAspectLabel }}
             </span>
           </div>
           <p class="mt-2 text-xs leading-5 text-white/48">
-            覆盖视频比例；选择“原始比例”会恢复 mpv 自动比例。
+            调整视频显示比例；选择“原始比例”会使用影片自身比例。
           </p>
           <div class="mt-3 grid grid-cols-2 gap-2">
             <button
@@ -192,19 +192,19 @@ watch(
         <article class="settings-section rounded-3xl p-3">
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/35">
-                Fit
+              <p class="text-[10px] font-semibold tracking-[0.18em] text-white/35">
+                画面适配
               </p>
               <h3 class="mt-1 text-sm font-semibold text-white/88">
-                填充模式
+                画面适配
               </h3>
             </div>
             <span class="status-pill">
-              mpv panscan
+              当前 {{ activeFitLabel }}
             </span>
           </div>
           <p class="mt-2 text-xs leading-5 text-white/48">
-            使用 mpv panscan 控制窗口适配与裁切强度；拉伸填满暂不启用。
+            控制画面适应窗口或填满窗口的方式；拉伸填满暂不启用。
           </p>
           <div class="mt-3 grid grid-cols-2 gap-2">
             <button

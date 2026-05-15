@@ -93,8 +93,17 @@ export interface RenderSurfaceBounds {
   bottomOcclusion?: number
 }
 
-const PLAYBACK_SPEED_STORAGE_KEY = 'ohmycine.player.playbackSpeed'
 const DEFAULT_PLAYBACK_SPEED = 1
+const MIN_PLAYBACK_SPEED = 0.25
+const MAX_PLAYBACK_SPEED = 4
+
+interface PlaybackSpeedPreference {
+  playbackSpeed: number
+}
+
+interface SetPlaybackSpeedPreferencePayload extends Record<string, unknown> {
+  speed: number
+}
 
 const ASPECT_PROPERTY_VALUE: Record<VideoAspectMode, string> = {
   'default': '-1',
@@ -109,26 +118,30 @@ const FIT_PROPERTY_VALUE: Record<VideoFitMode, string> = {
   cinemaCrop: '0.5',
 }
 
-function readStoredPlaybackSpeed(): number {
-  try {
-    const stored = window.localStorage.getItem(PLAYBACK_SPEED_STORAGE_KEY)
-    const speed = stored ? Number.parseFloat(stored) : DEFAULT_PLAYBACK_SPEED
-    if (Number.isFinite(speed) && speed >= 0.25 && speed <= 4)
-      return speed
-  }
-  catch {
-    // Browser storage can be unavailable in restricted WebViews; fall back to session state.
-  }
-
-  return DEFAULT_PLAYBACK_SPEED
+function normalizePlaybackSpeed(speed: number): number {
+  if (!Number.isFinite(speed))
+    return DEFAULT_PLAYBACK_SPEED
+  return Math.max(MIN_PLAYBACK_SPEED, Math.min(MAX_PLAYBACK_SPEED, speed))
 }
 
-function rememberPlaybackSpeed(speed: number) {
+async function readSavedPlaybackSpeed(): Promise<number> {
   try {
-    window.localStorage.setItem(PLAYBACK_SPEED_STORAGE_KEY, speed.toString())
+    const preference = await invoke<PlaybackSpeedPreference>('player_get_playback_speed_preference')
+    return normalizePlaybackSpeed(preference.playbackSpeed)
   }
   catch {
-    // Persisting speed is a convenience only; keep playback control usable if storage fails.
+    // Preference persistence is a convenience only; keep playback usable with session defaults.
+    return DEFAULT_PLAYBACK_SPEED
+  }
+}
+
+async function savePlaybackSpeedPreference(speed: number): Promise<void> {
+  try {
+    const payload: SetPlaybackSpeedPreferencePayload = { speed }
+    await invoke<void>('player_set_playback_speed_preference', payload)
+  }
+  catch {
+    // Avoid noisy UI for non-sensitive preference persistence failures.
   }
 }
 
@@ -206,7 +219,7 @@ export function useMpv() {
   const duration = ref(0)
   const volume = ref(100)
   const isMuted = ref(false)
-  const playbackSpeed = ref(readStoredPlaybackSpeed())
+  const playbackSpeed = ref(DEFAULT_PLAYBACK_SPEED)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
   const knownSubtitleTracks = ref<SubtitleTrackOption[]>([])
   const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, knownSubtitleTracks.value))
@@ -223,6 +236,30 @@ export function useMpv() {
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
   const trackRefreshTimers = new Set<number>()
+  let playbackSpeedPreferenceLoaded = false
+  let playbackSpeedPreferenceLoading: Promise<void> | null = null
+  let playbackSpeedChangedLocally = false
+
+  function ensurePlaybackSpeedPreferenceLoaded(): Promise<void> {
+    if (playbackSpeedPreferenceLoaded)
+      return Promise.resolve()
+    if (playbackSpeedPreferenceLoading)
+      return playbackSpeedPreferenceLoading
+
+    playbackSpeedPreferenceLoading = readSavedPlaybackSpeed()
+      .then((savedSpeed) => {
+        if (!playbackSpeedChangedLocally)
+          playbackSpeed.value = savedSpeed
+        playbackSpeedPreferenceLoaded = true
+      })
+      .finally(() => {
+        playbackSpeedPreferenceLoading = null
+      })
+
+    return playbackSpeedPreferenceLoading
+  }
+
+  void ensurePlaybackSpeedPreferenceLoaded()
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -355,10 +392,11 @@ export function useMpv() {
 
   async function load(path: string) {
     selectedKnownSubtitle.value = null
+    await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path })
     currentTime.value = 0
     isPlaying.value = true
-    await setPlaybackSpeed(playbackSpeed.value)
+    await applyPlaybackSpeed(playbackSpeed.value)
     await refreshTrackState()
     scheduleTrackRefresh(400)
     scheduleTrackRefresh(1200)
@@ -386,11 +424,16 @@ export function useMpv() {
     isMuted.value = next === 0
   }
 
-  async function setPlaybackSpeed(rate: number) {
-    const next = Math.max(0.25, Math.min(4, rate))
+  async function applyPlaybackSpeed(rate: number) {
+    const next = normalizePlaybackSpeed(rate)
     await invoke<void>('mpv_set_property', { prop: 'speed', value: next.toString() })
     playbackSpeed.value = next
-    rememberPlaybackSpeed(next)
+  }
+
+  async function setPlaybackSpeed(rate: number) {
+    playbackSpeedChangedLocally = true
+    await applyPlaybackSpeed(rate)
+    void savePlaybackSpeedPreference(playbackSpeed.value)
   }
 
   async function setSubtitle(trackId: SubtitleSelectionId | null) {
