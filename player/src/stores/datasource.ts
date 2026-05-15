@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
+import { listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 
 const STORAGE_KEY = 'ohmycine-datasources'
 
@@ -116,10 +117,22 @@ export const useDataSourceStore = defineStore('datasource', () => {
     isLoading.value = true
     try {
       await syncManager()
-      const sections = await dataSourceManager.getAggregatedHome(orderedConfigs.value)
+      const [sections, localContinueEntries] = await Promise.all([
+        dataSourceManager.getAggregatedHome(orderedConfigs.value),
+        listLocalContinueWatching(20),
+      ])
+      const localContinueSection: HomeSection = {
+        id: 'local-continue-watching',
+        title: '本机继续观看',
+        type: 'continueWatching',
+        items: localContinueEntries.map(toContinueWatchingMediaItem),
+      }
+      const mergedSections = localContinueSection.items.length > 0
+        ? [localContinueSection, ...sections.filter(section => section.id !== localContinueSection.id)]
+        : sections
 
-      homeSections.value = sections.length > 0
-        ? sections
+      homeSections.value = mergedSections.length > 0
+        ? mergedSections
         : [
             {
               id: 'hero',
@@ -127,12 +140,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
               type: 'hero',
               items: generatePlaceholderHeroItems(),
             },
-            {
-              id: 'continue-watching',
-              title: 'Continue Watching',
-              type: 'continueWatching',
-              items: [],
-            },
+            localContinueSection,
           ]
     }
     finally {

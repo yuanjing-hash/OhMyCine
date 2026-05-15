@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify Player queue controls remain on bottom playback bar and respect immersive chrome"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify queue model preserves DataSource/MediaItem type safety and sensitive URL boundaries"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify Player typecheck/lint/build validation requirements"}

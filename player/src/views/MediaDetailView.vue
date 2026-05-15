@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, SubtitleTrack } from '@/services/datasource/types'
+import type { PlaybackQueueInput } from '@/services/playbackContext'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
-import { savePlaybackMediaContext } from '@/services/playbackContext'
+import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -148,6 +149,40 @@ async function loadSeasonEpisodes(source: DataSource, seasonId: string) {
   episodes.value = items.filter(item => item.type === 'episode' || item.type === 'file' || item.type === 'movie')
 }
 
+function queryStringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function recoverRoutePlaybackQueue(currentItemId: string): PlaybackQueueInput | undefined {
+  const contextId = queryStringValue(route.query.contextId)
+  const playbackContext = contextId ? getPlaybackMediaContext(contextId) : null
+  const queue = playbackContext?.sourceId === sourceId.value ? playbackContext.queue : undefined
+  if (!queue)
+    return undefined
+
+  const currentIndex = queue.items.findIndex(item => item.id === currentItemId)
+  if (currentIndex < 0)
+    return undefined
+
+  return {
+    items: queue.items.map(item => ({ ...item })),
+    currentIndex,
+  }
+}
+
+function saveQueueContextForDetail(item: MediaItem): string | undefined {
+  const queue = createPlaybackQueue(episodes.value, item.id)
+  if (!queue)
+    return undefined
+
+  return savePlaybackMediaContext({
+    sourceId: sourceId.value,
+    itemId: item.id,
+    title: item.name,
+    queue,
+  })
+}
+
 async function playItem(item?: MediaItem) {
   const target = item ?? detail.value
   if (!target || ['series', 'season', 'folder'].includes(target.type))
@@ -159,6 +194,7 @@ async function playItem(item?: MediaItem) {
     const source = await resolveSource()
     const path = await source.getStreamURL(target.id)
     const isCurrentDetail = target.id === detail.value?.id
+    const queue = (item ? createPlaybackQueue(episodes.value, item.id) : undefined) ?? recoverRoutePlaybackQueue(target.id)
     const playbackContextId = savePlaybackMediaContext({
       sourceId: sourceId.value,
       itemId: target.id,
@@ -166,6 +202,7 @@ async function playItem(item?: MediaItem) {
       mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
       subtitles: isCurrentDetail ? detail.value?.subtitles : undefined,
       audioTracks: isCurrentDetail ? detail.value?.audioTracks : undefined,
+      queue,
     })
     await router.push({
       name: 'player',
@@ -174,6 +211,10 @@ async function playItem(item?: MediaItem) {
         path,
         sourceId: sourceId.value,
         itemId: target.id,
+        libraryId: target.libraryId,
+        mediaType: target.type,
+        posterUrl: target.posterUrl,
+        backdropUrl: target.backdropUrl,
         contextId: playbackContextId,
         mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
         audioIndex: item ? undefined : (selectedAudioIndex.value ?? undefined),
@@ -192,7 +233,13 @@ async function playItem(item?: MediaItem) {
 function openRelated(item: MediaItem | MediaLibrary) {
   if (!('path' in item))
     return
-  void router.push({ name: 'media-detail', params: { sourceId: sourceId.value, itemId: item.id } })
+
+  const contextId = saveQueueContextForDetail(item)
+  void router.push({
+    name: 'media-detail',
+    params: { sourceId: sourceId.value, itemId: item.id },
+    query: contextId ? { contextId } : undefined,
+  })
 }
 
 function describeMediaSource(source: MediaSourceOption): string {

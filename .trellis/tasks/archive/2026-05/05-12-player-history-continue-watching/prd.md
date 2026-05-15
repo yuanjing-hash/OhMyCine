@@ -15,13 +15,13 @@
 
 ## Acceptance Criteria
 
-- [ ] Tauri SQLite schema 和 command 存在。
-- [ ] 播放进度会按节流策略保存。
-- [ ] 重新打开同一媒体可恢复或提示恢复进度。
-- [ ] 已接近结尾的媒体可标记 completed，避免继续观看噪声。
-- [ ] 本地 continue-watching 数据可被前端读取。
-- [ ] `npm run typecheck` / `npm run lint` / `npm run build` 通过。
-- [ ] `cargo check` 通过。
+- [x] Tauri SQLite schema 和 command 存在。
+- [x] 播放进度会按节流策略保存。
+- [x] 重新打开同一媒体可恢复或提示恢复进度。
+- [x] 已接近结尾的媒体可标记 completed，避免继续观看噪声。
+- [x] 本地 continue-watching 数据可被前端读取。
+- [x] `npm run typecheck` / `npm run lint` / `npm run build` 通过。
+- [x] `cargo check` 通过。
 
 ## Out of Scope
 

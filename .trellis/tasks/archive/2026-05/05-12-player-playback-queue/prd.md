@@ -14,11 +14,11 @@
 
 ## Acceptance Criteria
 
-- [ ] 队列类型和状态管理存在且类型安全。
-- [ ] 上一集/下一集按钮按队列状态启用/禁用。
-- [ ] 切换前后项能更新媒体标题、路径和播放状态。
-- [ ] 没有队列时本地/Emby 单片播放不受影响。
-- [ ] `npm run typecheck` / `npm run lint` / `npm run build` 通过。
+- [x] 队列类型和状态管理存在且类型安全。
+- [x] 上一集/下一集按钮按队列状态启用/禁用。
+- [x] 切换前后项能更新媒体标题、路径和播放状态。
+- [x] 没有队列时本地/Emby 单片播放不受影响。
+- [x] `npm run typecheck` / `npm run lint` / `npm run build` 通过。
 
 ## Out of Scope
 

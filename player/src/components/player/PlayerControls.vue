@@ -17,6 +17,8 @@ const props = defineProps<{
   subtitleTracks: readonly SubtitleTrackOption[]
   audioTracks: readonly Track[]
   queueItemCount: number
+  canPlayPrevious: boolean
+  canPlayNext: boolean
   currentSubtitle: SubtitleSelectionId | null
   currentAudio: number | null
   videoAspectMode: VideoAspectMode
@@ -26,7 +28,9 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  playPrevious: []
   togglePause: []
+  playNext: []
   seek: [position: number]
   seekRelative: [offset: number]
   setVolume: [volume: number]
@@ -269,7 +273,7 @@ onMounted(() => {
     @keydown="handleKeydown"
   >
     <div class="transport-controls flex shrink-0 items-center gap-2">
-      <button class="control-button secondary disabled" type="button" title="上一集（播放列表待接入）" aria-label="上一集（播放列表待接入）" disabled>
+      <button class="control-button secondary" :class="{ disabled: !canPlayPrevious }" type="button" :title="canPlayPrevious ? '上一集' : '没有上一集'" :aria-label="canPlayPrevious ? '上一集' : '没有上一集'" :disabled="!canPlayPrevious" @click="emit('playPrevious')">
         <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5a1 1 0 0 1 1 1v4.2l8.86-5.01A1.1 1.1 0 0 1 17.5 6.14v11.72a1.1 1.1 0 0 1-1.64.95L7 13.8V18a1 1 0 1 1-2 0V6a1 1 0 0 1 1-1Z" /></svg>
       </button>
 
@@ -292,7 +296,7 @@ onMounted(() => {
         </svg>
       </button>
 
-      <button class="control-button secondary disabled" type="button" title="下一集（播放列表待接入）" aria-label="下一集（播放列表待接入）" disabled>
+      <button class="control-button secondary" :class="{ disabled: !canPlayNext }" type="button" :title="canPlayNext ? '下一集' : '没有下一集'" :aria-label="canPlayNext ? '下一集' : '没有下一集'" :disabled="!canPlayNext" @click="emit('playNext')">
         <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5a1 1 0 0 0-1 1v4.2L8.14 5.19A1.1 1.1 0 0 0 6.5 6.14v11.72a1.1 1.1 0 0 0 1.64.95L17 13.8V18a1 1 0 1 0 2 0V6a1 1 0 0 0-1-1Z" /></svg>
       </button>
     </div>

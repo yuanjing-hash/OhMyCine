@@ -1,4 +1,28 @@
-const SENSITIVE_QUERY_KEYS = ['api_key', 'apikey', 'access_token', 'accessToken', 'token', 'x-emby-token', 'password', 'passwd', 'pwd', 'pw']
+const SENSITIVE_QUERY_KEYS = [
+  'api_key',
+  'apikey',
+  'access_key',
+  'accessKeyId',
+  'access_token',
+  'accessToken',
+  'AWSAccessKeyId',
+  'Expires',
+  'expires',
+  'OSSAccessKeyId',
+  'password',
+  'passwd',
+  'pwd',
+  'pw',
+  'security-token',
+  'sig',
+  'sign',
+  'signature',
+  'token',
+  'X-Amz-Credential',
+  'X-Amz-Security-Token',
+  'X-Amz-Signature',
+  'x-emby-token',
+]
 
 export function redactSensitiveText(value: unknown): string {
   const input = value instanceof Error ? value.message : String(value ?? 'Unknown error')

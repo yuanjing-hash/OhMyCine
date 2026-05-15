@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify typed Tauri playback-history commands and safe frontend command calls"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify continue-watching behavior fits local-history-first Player UI guidance"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify Player typecheck/lint/build, cargo checks, Windows package build, and redaction requirements"}

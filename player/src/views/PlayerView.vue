@@ -1,24 +1,41 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { SubtitleTrack as DataSourceSubtitleTrack } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem } from '@/services/datasource/types'
+import type { PlaybackQueueState } from '@/services/playbackContext'
+import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRoute } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
+import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const AUTO_HIDE_DELAY = 2800
+const HISTORY_SAVE_INTERVAL = 10000
+const HISTORY_MIN_SAVE_POSITION = 1
+const LOCAL_FILE_SOURCE_ID = 'local-file'
 
 const route = useRoute()
+const router = useRouter()
 const store = useDataSourceStore()
 const appWindow = getCurrentWindow()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
+const activeSourceId = ref('')
+const activeItemId = ref('')
+const activeLibraryId = ref('')
+const activeMediaType = ref<MediaItem['type'] | undefined>()
+const activePosterUrl = ref('')
+const activeBackdropUrl = ref('')
+const playbackQueue = ref<PlaybackQueueState | null>(null)
+const playbackContextId = ref('')
+const queueSwitchError = ref<string | null>(null)
+const isQueueSwitching = ref(false)
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
 const controlsInteracting = ref(false)
@@ -30,6 +47,7 @@ const topOcclusion = ref(0)
 const bottomOcclusion = ref(0)
 const diagnosticsOpen = ref(false)
 const pictureSettingsError = ref<string | null>(null)
+const resumeMessage = ref<string | null>(null)
 const isPlayerFullscreen = ref(false)
 // Single active strategy for this slice: transparent Tauri/WebView overlay above a full-bleed mpv
 // video underlay. Legacy top/bottom occlusion strategies are neutralized in Rust.
@@ -39,6 +57,8 @@ let renderInitPromise: Promise<void> | null = null
 let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
 let playbackCleanupStarted = false
+let historySaveTimer: number | undefined
+let lastSavedPosition = -1
 
 const {
   isPlaying,
@@ -75,7 +95,13 @@ const {
 } = useMpv()
 
 const hasMedia = computed(() => mediaPath.value.length > 0)
-const playbackQueueItemCount = computed(() => hasMedia.value ? 1 : 0)
+const currentQueueItem = computed(() => {
+  const queue = playbackQueue.value
+  return queue ? queue.items[queue.currentIndex] : null
+})
+const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
+const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
+const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
 const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value)
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
 
@@ -157,6 +183,167 @@ function handleWindowFocus() {
 
 function queryStringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function syncPlaybackQueueFromRoute() {
+  const contextId = queryStringValue(route.query.contextId)
+  const routeSourceId = queryStringValue(route.query.sourceId)
+  const itemId = queryStringValue(route.query.itemId)
+  const playbackContext = contextId ? getPlaybackMediaContext(contextId) : null
+
+  playbackContextId.value = contextId
+  if (!playbackContext?.queue || playbackContext.queue.items.length === 0 || (routeSourceId && playbackContext.sourceId !== routeSourceId)) {
+    playbackQueue.value = null
+    return
+  }
+
+  const routeIndex = itemId
+    ? playbackContext.queue.items.findIndex(item => item.id === itemId)
+    : -1
+  if (itemId && routeIndex < 0) {
+    playbackQueue.value = null
+    return
+  }
+
+  const currentIndex = routeIndex >= 0 ? routeIndex : playbackContext.queue.currentIndex
+  playbackQueue.value = {
+    items: playbackContext.queue.items.map(item => ({ ...item })),
+    currentIndex: Math.min(Math.max(currentIndex, 0), playbackContext.queue.items.length - 1),
+  }
+}
+
+function currentPlaybackContext() {
+  return playbackContextId.value ? getPlaybackMediaContext(playbackContextId.value) : null
+}
+
+function syncActiveMediaMetadataFromRoute() {
+  activeSourceId.value = queryStringValue(route.query.sourceId)
+  activeItemId.value = queryStringValue(route.query.itemId)
+  activeLibraryId.value = queryStringValue(route.query.libraryId)
+  activeMediaType.value = queryMediaType()
+  activePosterUrl.value = queryStringValue(route.query.posterUrl)
+  activeBackdropUrl.value = queryStringValue(route.query.backdropUrl)
+}
+
+function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity'> | null {
+  if (!mediaPath.value)
+    return null
+
+  const context = currentPlaybackContext()
+  const sourceId = activeSourceId.value || context?.sourceId || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID
+  const itemId = activeItemId.value || context?.itemId || currentQueueItem.value?.id || ''
+  const mediaIdentity = itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
+
+  if (!sourceId || !mediaIdentity)
+    return null
+
+  return { sourceId, mediaIdentity }
+}
+
+function currentHistoryPayload(): PlaybackProgressUpsert | null {
+  const identity = currentHistoryIdentity()
+  if (!identity)
+    return null
+
+  const context = currentPlaybackContext()
+  const queueItem = currentQueueItem.value
+  const itemId = activeItemId.value || context?.itemId || queueItem?.id || undefined
+  const libraryId = activeLibraryId.value || queueItem?.libraryId
+  const mediaType = activeMediaType.value ?? queueItem?.type
+  const position = Math.max(0, currentTime.value)
+  const mediaDuration = duration.value > 0 ? duration.value : undefined
+
+  return {
+    ...identity,
+    libraryId,
+    itemId,
+    title: mediaTitle.value || context?.title || queueItem?.title || queueItem?.name || '未命名影片',
+    streamIdentity: createSafeStreamIdentity(identity.sourceId, itemId, mediaPath.value),
+    mediaType,
+    posterUrl: activePosterUrl.value || queueItem?.posterUrl,
+    backdropUrl: activeBackdropUrl.value || queueItem?.backdropUrl,
+    position,
+    duration: mediaDuration,
+    completed: isCompletedPosition(position, mediaDuration),
+  }
+}
+
+function queryMediaType(): MediaItem['type'] | undefined {
+  const value = queryStringValue(route.query.mediaType)
+  return isMediaType(value) ? value : undefined
+}
+
+function isMediaType(value: string): value is MediaItem['type'] {
+  return ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(value)
+}
+
+async function saveCurrentProgress(force = false) {
+  const payload = currentHistoryPayload()
+  if (!payload)
+    return
+
+  if (!force && (!isPlaying.value || payload.position < HISTORY_MIN_SAVE_POSITION || Math.abs(payload.position - lastSavedPosition) < HISTORY_MIN_SAVE_POSITION))
+    return
+
+  const saved = await savePlaybackProgress(payload)
+  if (saved)
+    lastSavedPosition = saved.position
+}
+
+async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
+  const identity = currentHistoryIdentity()
+  if (!identity)
+    return null
+
+  return getPlaybackProgress(identity)
+}
+
+async function resumeSavedProgressIfAvailable() {
+  const saved = await readSavedProgress()
+  if (!shouldResumePlayback(saved)) {
+    resumeMessage.value = null
+    return
+  }
+
+  await seek(saved.position)
+  resumeMessage.value = `已从 ${formatPlaybackTime(saved.position)} 继续播放`
+  window.setTimeout(() => {
+    resumeMessage.value = null
+  }, 3600)
+}
+
+function resetHistorySaveState() {
+  lastSavedPosition = -1
+  resumeMessage.value = null
+}
+
+function startHistorySaveTimer() {
+  if (historySaveTimer)
+    return
+
+  historySaveTimer = window.setInterval(() => {
+    void saveCurrentProgress(false)
+  }, HISTORY_SAVE_INTERVAL)
+}
+
+function clearHistorySaveTimer() {
+  if (!historySaveTimer)
+    return
+
+  window.clearInterval(historySaveTimer)
+  historySaveTimer = undefined
+}
+
+function formatPlaybackTime(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const rest = seconds % 60
+
+  if (hours > 0)
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${rest.toString().padStart(2, '0')}`
+
+  return `${minutes}:${rest.toString().padStart(2, '0')}`
 }
 
 function aspectRatioValue(mode: VideoAspectMode): number | null {
@@ -273,10 +460,15 @@ async function resizeWindowForAspect(mode: VideoAspectMode) {
 watch(
   () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId],
   async ([path]) => {
+    await saveCurrentProgress(true)
     const nextPath = typeof path === 'string' ? path : ''
+    resetHistorySaveState()
     mediaPath.value = nextPath
     mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
     pictureSettingsError.value = null
+    queueSwitchError.value = null
+    syncPlaybackQueueFromRoute()
+    syncActiveMediaMetadataFromRoute()
     revealChrome()
 
     if (nextPath) {
@@ -285,6 +477,8 @@ watch(
       if (playbackCleanupStarted)
         return
       await load(nextPath)
+      startHistorySaveTimer()
+      await resumeSavedProgressIfAvailable()
       if (playbackCleanupStarted)
         await stopPlaybackSilently()
     }
@@ -295,8 +489,12 @@ watch(
   { immediate: true },
 )
 
-watch(isPlaying, () => {
+watch(isPlaying, (playing) => {
   revealChrome()
+  if (playing)
+    startHistorySaveTimer()
+  else
+    void saveCurrentProgress(true)
 })
 
 watch([shouldShowChrome, hasMedia], () => {
@@ -304,17 +502,101 @@ watch([shouldShowChrome, hasMedia], () => {
 })
 
 async function handleFileDrop(path: string) {
+  await saveCurrentProgress(true)
+  resetHistorySaveState()
   mediaPath.value = path
   mediaTitle.value = path.split(/[\\/]/).pop() || '本地视频'
+  playbackQueue.value = null
+  playbackContextId.value = ''
+  activeSourceId.value = LOCAL_FILE_SOURCE_ID
+  activeItemId.value = ''
+  activeLibraryId.value = ''
+  activeMediaType.value = 'file'
+  activePosterUrl.value = ''
+  activeBackdropUrl.value = ''
   pictureSettingsError.value = null
+  queueSwitchError.value = null
   setKnownSubtitleTracks([])
   revealChrome()
   await ensureRenderInitialized()
   if (playbackCleanupStarted)
     return
   await load(path)
+  startHistorySaveTimer()
+  await resumeSavedProgressIfAvailable()
   if (playbackCleanupStarted)
     await stopPlaybackSilently()
+}
+
+async function playQueueItemAt(index: number) {
+  const queue = playbackQueue.value
+  if (!queue || index < 0 || index >= queue.items.length || isQueueSwitching.value)
+    return
+
+  const target = queue.items[index]
+  isQueueSwitching.value = true
+  queueSwitchError.value = null
+  revealChrome()
+  try {
+    store.loadConfigs()
+    await store.syncManager()
+    const source = store.getSource(target.sourceId)
+    if (!source)
+      throw new Error('数据源不可用，请检查设置或重新登录。')
+
+    const streamUrl = await source.getStreamURL(target.id)
+    if (playbackCleanupStarted)
+      return
+
+    playbackQueue.value = {
+      items: queue.items.map(item => ({ ...item })),
+      currentIndex: index,
+    }
+    await router.replace({
+      name: 'player',
+      query: {
+        ...route.query,
+        title: target.title,
+        path: streamUrl,
+        sourceId: target.sourceId,
+        itemId: target.id,
+        libraryId: target.libraryId,
+        mediaType: target.type,
+        contextId: playbackContextId.value || undefined,
+        mediaSourceId: undefined,
+        audioIndex: undefined,
+        subtitleIndex: undefined,
+      },
+    })
+  }
+  catch (error) {
+    queueSwitchError.value = toSafeErrorMessage(error, '无法切换到队列媒体。')
+  }
+  finally {
+    isQueueSwitching.value = false
+    revealChrome()
+  }
+}
+
+function handlePlayPrevious() {
+  const queue = playbackQueue.value
+  if (!queue)
+    return
+  void playQueueItemAt(queue.currentIndex - 1)
+}
+
+function handlePlayNext() {
+  const queue = playbackQueue.value
+  if (!queue)
+    return
+  void playQueueItemAt(queue.currentIndex + 1)
+}
+
+async function handleTogglePause() {
+  const willPause = isPlaying.value
+  await togglePause()
+  if (willPause)
+    await saveCurrentProgress(true)
 }
 
 async function flushRenderBounds() {
@@ -400,10 +682,16 @@ async function stopPlaybackSilently() {
 
 async function stopPlaybackForRouteExit() {
   playbackCleanupStarted = true
+  await saveCurrentProgress(true)
+  clearHistorySaveTimer()
   if (!hasMedia.value && !isPlaying.value)
     return
 
   await stopPlaybackSilently()
+}
+
+function handleBeforeUnload() {
+  void saveCurrentProgress(true)
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -452,6 +740,7 @@ onMounted(() => {
   window.addEventListener('blur', handleWindowBlur)
   window.addEventListener('focus', handleWindowFocus)
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('keydown', handleGlobalKeydown)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
@@ -470,6 +759,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -548,6 +838,12 @@ watch(
           <p v-if="mediaPath" class="mt-2 truncate text-xs text-white/35">
             {{ displayMediaPath }}
           </p>
+          <p v-if="queueSwitchError" class="mt-2 text-xs text-red-100/80">
+            {{ queueSwitchError }}
+          </p>
+          <p v-if="resumeMessage" class="mt-2 text-xs text-white/60">
+            {{ resumeMessage }}
+          </p>
         </div>
       </div>
     </Transition>
@@ -571,13 +867,17 @@ watch(
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
         :queue-item-count="playbackQueueItemCount"
+        :can-play-previous="canPlayPrevious"
+        :can-play-next="canPlayNext"
         :current-subtitle="currentSubtitle"
         :current-audio="currentAudio"
         :video-aspect-mode="videoAspectMode"
         :video-fit-mode="videoFitMode"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
-        @toggle-pause="togglePause"
+        @play-previous="handlePlayPrevious"
+        @toggle-pause="handleTogglePause"
+        @play-next="handlePlayNext"
         @seek="seek"
         @seek-relative="seekRelative"
         @set-volume="setVolume"

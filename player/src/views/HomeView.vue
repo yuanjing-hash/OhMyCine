@@ -5,6 +5,8 @@ import { useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { useDataSourceStore } from '@/stores/datasource'
 
+const LOCAL_FILE_SOURCE_ID = 'local-file'
+
 const router = useRouter()
 const store = useDataSourceStore()
 
@@ -14,6 +16,27 @@ const continueWatchingSection = computed(() => store.homeSections.find(s => s.ty
 const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded'))
 const heroItems = computed(() => heroSection.value?.items ?? [])
 const recentlyAddedItems = computed(() => recentlyAddedSection.value?.items.slice(0, 6) ?? [])
+
+function progressPercent(item: MediaItem): string {
+  if (typeof item.progress === 'number' && Number.isFinite(item.progress))
+    return `${Math.max(0, Math.min(100, item.progress * 100)).toFixed(1)}%`
+
+  if (typeof item.resumePosition === 'number' && typeof item.duration === 'number' && item.duration > 0)
+    return `${Math.max(0, Math.min(100, (item.resumePosition / item.duration) * 100)).toFixed(1)}%`
+
+  return '0%'
+}
+
+function continueSourceLabel(item: MediaItem): string {
+  const config = store.configs.find(source => source.id === item.sourceId)
+  const sourceName = item.sourceId === LOCAL_FILE_SOURCE_ID
+    ? '本机文件'
+    : (config?.displayName ?? config?.name ?? item.sourceId)
+
+  return item.progressSource === 'local'
+    ? `本机记录 · ${sourceName}`
+    : sourceName
+}
 
 onMounted(() => {
   store.loadConfigs()
@@ -32,6 +55,11 @@ async function handlePlay(item: MediaItem) {
 
   await store.syncManager()
   const source = store.getSource(item.sourceId)
+  if (!source && item.sourceId !== 'placeholder' && item.sourceId !== LOCAL_FILE_SOURCE_ID) {
+    handleDetail(item)
+    return
+  }
+
   const path = source && item.sourceId !== 'placeholder'
     ? await source.getStreamURL(item.id)
     : item.path
@@ -43,6 +71,10 @@ async function handlePlay(item: MediaItem) {
       path,
       sourceId: item.sourceId,
       itemId: item.id,
+      libraryId: item.libraryId,
+      mediaType: item.type,
+      posterUrl: item.posterUrl,
+      backdropUrl: item.backdropUrl,
     },
   })
 }
@@ -102,7 +134,7 @@ function isContainerItem(item: MediaItem): boolean {
                 Resume
               </p>
               <h2 class="mt-1 text-xl font-bold" style="color: var(--gp-text-full)">
-                继续观看
+                {{ continueWatchingSection?.title ?? '继续观看' }}
               </h2>
             </div>
             <button class="text-xs transition-colors" style="color: var(--gp-text)">
@@ -113,19 +145,24 @@ function isContainerItem(item: MediaItem): boolean {
           <div v-if="continueWatchingSection?.items.length" class="flex gap-3 overflow-x-auto cinema-scrollbar">
             <article
               v-for="item in continueWatchingSection.items"
-              :key="item.id"
+              :key="`${item.sourceId}:${item.id}`"
               class="group w-48 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.03]"
-              @click="handleDetail(item)"
+              @click="handlePlay(item)"
             >
               <div class="relative h-28 media-placeholder">
                 <img v-if="item.backdropUrl" :src="item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
                 <div class="progress-track absolute bottom-0 left-0 right-0 h-1">
-                  <div class="progress-value h-full w-1/3 rounded-full" />
+                  <div class="progress-value h-full rounded-full" :style="{ width: progressPercent(item) }" />
                 </div>
               </div>
-              <h3 class="truncate px-2 py-3 text-sm font-medium" style="color: var(--gp-text-full)">
-                {{ item.name }}
-              </h3>
+              <div class="px-2 py-3">
+                <h3 class="truncate text-sm font-medium" style="color: var(--gp-text-full)">
+                  {{ item.name }}
+                </h3>
+                <p class="mt-1 truncate text-[0.68rem]" style="color: var(--gp-text-dim)">
+                  {{ continueSourceLabel(item) }}
+                </p>
+              </div>
             </article>
           </div>
 

@@ -723,6 +723,28 @@ export class EmbyDataSource implements DataSource {
   }
 
   private posterUrl(item: EmbyItemRecord): string | undefined {
+    if (item.Type === 'Episode')
+      return this.episodePosterUrl(item)
+
+    return this.imageUrl(item.Id, 'Primary', item.ImageTags?.Primary, {
+      width: POSTER_IMAGE_WIDTH,
+      height: POSTER_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.Id, 'Thumb', item.ImageTags?.Thumb, {
+      width: POSTER_IMAGE_WIDTH,
+      height: POSTER_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.ParentThumbItemId, 'Thumb', item.ParentThumbImageTag, {
+      width: POSTER_IMAGE_WIDTH,
+      height: POSTER_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.ParentBackdropItemId, 'Backdrop/0', item.ParentBackdropImageTags?.[0], {
+      width: POSTER_IMAGE_WIDTH,
+      height: POSTER_IMAGE_HEIGHT,
+    })
+  }
+
+  private episodePosterUrl(item: EmbyItemRecord): string | undefined {
     return this.imageUrl(item.Id, 'Primary', item.ImageTags?.Primary, {
       width: POSTER_IMAGE_WIDTH,
       height: POSTER_IMAGE_HEIGHT,
@@ -742,6 +764,9 @@ export class EmbyDataSource implements DataSource {
   }
 
   private backdropUrl(item: EmbyItemRecord, index = 0): string | undefined {
+    if (item.Type === 'Episode')
+      return this.episodeBackdropUrl(item, index)
+
     return this.imageUrl(item.Id, `Backdrop/${index}`, item.BackdropImageTags?.[index], {
       width: BACKDROP_IMAGE_WIDTH,
       height: BACKDROP_IMAGE_HEIGHT,
@@ -755,6 +780,29 @@ export class EmbyDataSource implements DataSource {
       height: BACKDROP_IMAGE_HEIGHT,
     })
     ?? this.imageUrl(item.ParentThumbItemId, 'Thumb', item.ParentThumbImageTag, {
+      width: BACKDROP_IMAGE_WIDTH,
+      height: BACKDROP_IMAGE_HEIGHT,
+    })
+  }
+
+  private episodeBackdropUrl(item: EmbyItemRecord, index = 0): string | undefined {
+    return this.imageUrl(item.Id, 'Thumb', item.ImageTags?.Thumb, {
+      width: BACKDROP_IMAGE_WIDTH,
+      height: BACKDROP_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.Id, `Backdrop/${index}`, item.BackdropImageTags?.[index], {
+      width: BACKDROP_IMAGE_WIDTH,
+      height: BACKDROP_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.Id, 'Primary', item.ImageTags?.Primary, {
+      width: BACKDROP_IMAGE_WIDTH,
+      height: BACKDROP_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.ParentThumbItemId, 'Thumb', item.ParentThumbImageTag, {
+      width: BACKDROP_IMAGE_WIDTH,
+      height: BACKDROP_IMAGE_HEIGHT,
+    })
+    ?? this.imageUrl(item.ParentBackdropItemId, 'Backdrop/0', item.ParentBackdropImageTags?.[0], {
       width: BACKDROP_IMAGE_WIDTH,
       height: BACKDROP_IMAGE_HEIGHT,
     })

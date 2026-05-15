@@ -15,6 +15,9 @@ export interface MediaItem {
   size?: number
   modified?: string
   path: string
+  resumePosition?: number
+  progress?: number
+  progressSource?: 'local'
   seasonNumber?: number
   episodeNumber?: number
   children?: MediaItem[]

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -190,12 +191,23 @@ async function handleSelect(item: MediaItem | MediaLibrary) {
 }
 
 async function openDetail(item: MediaItem) {
+  const queue = createPlaybackQueue(items.value, item.id)
+  const contextId = queue
+    ? savePlaybackMediaContext({
+        sourceId: sourceId.value,
+        itemId: item.id,
+        title: item.name,
+        queue,
+      })
+    : undefined
+
   await router.push({
     name: 'media-detail',
     params: {
       sourceId: sourceId.value,
       itemId: item.id,
     },
+    query: contextId ? { contextId } : undefined,
   })
 }
 
@@ -230,6 +242,13 @@ async function handlePlay(item: MediaItem) {
   errorMessage.value = null
   try {
     const streamUrl = await source.value.getStreamURL(item.id)
+    const queue = createPlaybackQueue(items.value, item.id)
+    const playbackContextId = savePlaybackMediaContext({
+      sourceId: sourceId.value,
+      itemId: item.id,
+      title: item.name,
+      queue,
+    })
     await router.push({
       name: 'player',
       query: {
@@ -237,6 +256,11 @@ async function handlePlay(item: MediaItem) {
         path: streamUrl,
         sourceId: sourceId.value,
         itemId: item.id,
+        libraryId: item.libraryId,
+        mediaType: item.type,
+        posterUrl: item.posterUrl,
+        backdropUrl: item.backdropUrl,
+        contextId: playbackContextId,
       },
     })
   }

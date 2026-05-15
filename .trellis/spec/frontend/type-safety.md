@@ -63,6 +63,7 @@ When mapping Emby or Emby-compatible responses into Player types:
 - Search, home, recently added, and continue-watching sections may use recursive queries where the UI explicitly asks for cross-library aggregation.
 - Item endpoints map `Movie`, `Series`, `Episode`, `Season`, `Folder`, and collection folders to shared item types; unknown types become a safe folder/unknown fallback or are skipped. Season and episode mapping should preserve season/episode numbers where exposed (`ParentIndexNumber` for episode season, `IndexNumber` for episode number).
 - Poster/backdrop/logo URLs may be tokenized and must be treated as sensitive strings; list/detail queries should request image metadata (`EnableImages`, `EnableImageTypes`, `ImageTypeLimit`, and parent image fields where supported), include image `tag` params, and request bounded image widths/quality instead of loading original-size artwork for grid cards.
+- Episode thumbnail mapping must prefer episode-owned 16:9 artwork before inherited series/season artwork: `ImageTags.Thumb` → own `BackdropImageTags[index]` → own `ImageTags.Primary` → parent thumb → parent backdrop. Non-episode poster/backdrop priority should remain stable unless a task explicitly changes it.
 - Runtime ticks, ratings, dates, media streams, people, provider IDs, media source options, stills, collections, and similar items are optional and must not require non-null assertions.
 - Detail-page media source options may expose neutral labels, container/codec/bitrate/resolution, and track metadata, but must not expose provider filesystem paths, STRM paths, credentials, or tokenized playback URLs.
 - Source-home hero sections should choose backdrop-capable movie/series items across libraries where possible, not episode-only rows or a single narrow library subset.
@@ -125,6 +126,125 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 - Keep preference storage separate from credential storage unless the value is sensitive and belongs in the encrypted credential boundary.
 - Frontend command calls must define explicit payload/return types near the composable/service that owns the behavior, for example `invoke<PlaybackSpeedPreference>('player_get_playback_speed_preference')` and a typed `{ speed: number }` payload for `player_set_playback_speed_preference`.
 - Preference persistence failures should not expose internal database paths or native details; for convenience-only preferences, composables may fall back to in-memory session defaults without noisy user-facing errors.
+
+### Player Playback History Command Contract
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing Player playback history, continue-watching rows, resume-position behavior, or Tauri commands that persist playback progress.
+- Applies to Tauri app-data SQLite schema, Rust history commands, typed frontend `invoke` wrappers, Player route/query metadata used for identity, and local continue-watching home sections.
+
+#### 2. Signatures
+- Rust command: `player_upsert_playback_progress(app: AppHandle, progress: PlaybackProgressUpsert) -> Result<PlaybackHistoryEntry, String>`.
+- Rust command: `player_get_playback_progress(app: AppHandle, identity: PlaybackProgressIdentity) -> Result<Option<PlaybackHistoryEntry>, String>`.
+- Rust command: `player_list_continue_watching(app: AppHandle, limit: Option<u32>) -> Result<Vec<PlaybackHistoryEntry>, String>`.
+- SQLite database: Tauri app-data `history/playback_history.sqlite`.
+- SQLite table: `playback_history(identity_key, source_id, library_id, item_id, media_identity, title, stream_identity, media_type, poster_url, backdrop_url, position, duration, completed, progress_source, created_at, updated_at)`.
+- TypeScript payload:
+```ts
+interface PlaybackProgressIdentity {
+  sourceId: string
+  mediaIdentity: string
+}
+interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
+  libraryId?: string
+  itemId?: string
+  title: string
+  streamIdentity?: string
+  mediaType?: MediaItem['type']
+  posterUrl?: string
+  backdropUrl?: string
+  position: number
+  duration?: number
+  completed?: boolean
+}
+interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
+  libraryId?: string | null
+  itemId?: string | null
+  title: string
+  streamIdentity?: string | null
+  mediaType?: MediaItem['type'] | null
+  posterUrl?: string | null
+  backdropUrl?: string | null
+  position: number
+  duration?: number | null
+  progress?: number | null
+  updatedAt: number
+  completed: boolean
+  progressSource: 'local'
+}
+```
+
+#### 3. Contracts
+- Player playback history must use Tauri app-data SQLite, not browser `localStorage`, because it is saved Player state.
+- Remote-provider progress identity should prefer stable `sourceId + itemId` / `sourceId + mediaIdentity` values instead of tokenized playback URLs. Local file/drop playback may use the local path as identity.
+- `streamIdentity` is display/debug metadata only and must be redacted or replaced with a stable identity for remote sources; never persist raw tokenized stream URLs when a stable source/item identity exists.
+- Frontend command calls must go through a typed service/composable with explicit `invoke<T>()` generics and silent/user-safe failure behavior; Player playback must continue if progress persistence fails.
+- Progress saves should be throttled while playing and force-saved on pause, media switch, queue switch, route leave, unmount, and close/beforeunload where practical.
+- Resume should ignore trivial positions and completed/near-end media. Completed rows should be excluded from local continue-watching noise.
+- Local continue-watching sections must identify their source, for example `progressSource: 'local'` and user-facing copy such as `本机继续观看`, so they are not confused with Emby/Jellyfin provider-native continue-watching.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| app-data directory cannot be resolved/created | Return a generic user-safe persistence error; do not expose filesystem internals |
+| SQLite open/init/upsert/query fails | Return a generic user-safe error; frontend treats history as unavailable and keeps playback working |
+| `sourceId`/`itemId`/`mediaIdentity` is empty or contains control characters | Reject or skip the save/read without crashing playback |
+| local path identity is longer than normal provider IDs | Allow a bounded longer identity than `sourceId`/`itemId`; do not truncate into collisions silently |
+| position/duration is NaN, infinite, or negative | Reject/skip that save |
+| position is below resume threshold | Do not resume and do not surface as meaningful continue-watching progress |
+| position is near the end by remaining seconds or ratio | Mark completed and exclude from continue-watching |
+| stream/artwork URL contains tokens or signed URL params | Redact or drop before storing/displaying; never show raw tokenized values in UI/logs |
+| continue-watching source is unavailable | Do not pass stable identity strings such as `source:<id>:<item>` as playable URLs |
+
+#### 5. Good/Base/Bad Cases
+- Good: Player saves `sourceId='emby-main'`, `mediaIdentity='<episodeId>'`, `streamIdentity='source:emby-main:<episodeId>'`, position/duration, and local source marker; reopening that episode seeks to the saved position if it is not completed.
+- Base: Local file playback saves the file path as identity, resumes after restart, and hides previous/next controls when no queue exists.
+- Bad: Persisting `https://server/Videos/.../stream?api_key=...&X-Amz-Signature=...` as the history identity or displaying it on the home continue-watching card.
+
+#### 6. Tests Required
+- `npm run typecheck` verifies frontend command payload/response shapes and `MediaItem` progress fields.
+- `npm run lint` verifies no unused progress state or broad `any` wrappers are introduced.
+- `npm run build` verifies Home/Player route integration compiles.
+- `cargo check --manifest-path player/src-tauri/Cargo.toml` verifies Rust command registration/schema code compiles.
+- Windows package builds should run with `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player` when Player packaging is in scope.
+- Manual Windows runtime checks should cover pause save, close save, queue switch save, automatic resume, completed exclusion, and token redaction with a real remote source.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+await invoke('player_upsert_playback_progress', {
+  progress: { sourceId, mediaIdentity: streamUrl, title, position },
+})
+```
+
+Correct:
+```ts
+await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', {
+  progress: {
+    sourceId,
+    itemId,
+    mediaIdentity: itemId ?? localPath,
+    streamIdentity: itemId ? `source:${sourceId}:${itemId}` : redactSensitiveText(localPath),
+    title,
+    position,
+    duration,
+  },
+})
+```
+
+Wrong:
+```ts
+const path = continueWatchingItem.path
+router.push({ name: 'player', query: { path } })
+```
+
+Correct:
+```ts
+const source = store.getSource(item.sourceId)
+const path = source ? await source.getStreamURL(item.id) : item.path
+router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: item.id } })
+```
 
 ### Player Render Surface Command Contract
 

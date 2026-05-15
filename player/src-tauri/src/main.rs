@@ -7,6 +7,9 @@ mod mpv;
 use tauri::{utils::config::Color, Manager};
 
 use commands::credential::{credential_delete, credential_get, credential_set};
+use commands::history::{
+    player_get_playback_progress, player_list_continue_watching, player_upsert_playback_progress,
+};
 use commands::player::{
     mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
     mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy,
@@ -32,6 +35,9 @@ fn main() {
             credential_delete,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
+            player_upsert_playback_progress,
+            player_get_playback_progress,
+            player_list_continue_watching,
             mpv_load,
             mpv_add_subtitle,
             mpv_pause,
