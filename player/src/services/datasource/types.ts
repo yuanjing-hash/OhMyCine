@@ -106,6 +106,20 @@ export interface DataSourceConfig {
   extra?: Record<string, unknown>
 }
 
+export type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
+
+export interface ProviderPlaybackProgressInput {
+  itemId: string
+  mediaSourceId?: string
+  playSessionId?: string
+  mediaType?: MediaItem['type']
+  position: number
+  duration?: number
+  isPaused: boolean
+  completed: boolean
+  event: ProviderPlaybackProgressEvent
+}
+
 export interface DataSource {
   readonly id: string
   readonly name: string
@@ -126,6 +140,7 @@ export interface DataSource {
   getDetail: (id: string) => Promise<MediaDetail>
 
   getStreamURL: (id: string) => Promise<string>
+  syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
 
   clearCache?: () => void
 

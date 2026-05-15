@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, ProviderPlaybackProgressEvent } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -251,7 +251,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
   const libraryId = activeLibraryId.value || queueItem?.libraryId
   const mediaType = activeMediaType.value ?? queueItem?.type
   const position = Math.max(0, currentTime.value)
-  const mediaDuration = duration.value > 0 ? duration.value : undefined
+  const mediaDuration = duration.value > 0 ? duration.value : queueItem?.duration
 
   return {
     ...identity,
@@ -268,6 +268,41 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
   }
 }
 
+function currentMediaSourceId(): string | undefined {
+  const routeMediaSourceId = queryStringValue(route.query.mediaSourceId)
+  return routeMediaSourceId || currentPlaybackContext()?.mediaSourceId || undefined
+}
+
+async function syncProviderProgress(payload: PlaybackProgressUpsert, event: ProviderPlaybackProgressEvent): Promise<void> {
+  const itemId = payload.itemId ?? payload.mediaIdentity
+  if (!itemId || !payload.sourceId || !Number.isFinite(payload.position))
+    return
+
+  const source = store.getSource(payload.sourceId)
+  if (!source?.syncPlaybackProgress)
+    return
+
+  try {
+    await source.syncPlaybackProgress({
+      itemId,
+      mediaSourceId: currentMediaSourceId(),
+      mediaType: payload.mediaType,
+      position: payload.position,
+      duration: payload.duration,
+      isPaused: event === 'paused' || event === 'stopped' || event === 'completed' || !isPlaying.value,
+      completed: payload.completed ?? false,
+      event,
+    })
+  }
+  catch {
+    // Provider progress sync must never block playback or local SQLite history.
+  }
+}
+
+function providerEventForPayload(payload: PlaybackProgressUpsert, fallback: ProviderPlaybackProgressEvent): ProviderPlaybackProgressEvent {
+  return payload.completed ? 'completed' : fallback
+}
+
 function queryMediaType(): MediaItem['type'] | undefined {
   const value = queryStringValue(route.query.mediaType)
   return isMediaType(value) ? value : undefined
@@ -277,7 +312,7 @@ function isMediaType(value: string): value is MediaItem['type'] {
   return ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(value)
 }
 
-async function saveCurrentProgress(force = false) {
+async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress') {
   const payload = currentHistoryPayload()
   if (!payload)
     return
@@ -288,6 +323,14 @@ async function saveCurrentProgress(force = false) {
   const saved = await savePlaybackProgress(payload)
   if (saved)
     lastSavedPosition = saved.position
+
+  void syncProviderProgress(payload, providerEventForPayload(payload, event))
+}
+
+function syncProviderPlaybackStarted() {
+  const payload = currentHistoryPayload()
+  if (payload)
+    void syncProviderProgress(payload, 'started')
 }
 
 async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
@@ -460,7 +503,7 @@ async function resizeWindowForAspect(mode: VideoAspectMode) {
 watch(
   () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId],
   async ([path]) => {
-    await saveCurrentProgress(true)
+    await saveCurrentProgress(true, 'stopped')
     const nextPath = typeof path === 'string' ? path : ''
     resetHistorySaveState()
     mediaPath.value = nextPath
@@ -479,6 +522,7 @@ watch(
       await load(nextPath)
       startHistorySaveTimer()
       await resumeSavedProgressIfAvailable()
+      syncProviderPlaybackStarted()
       if (playbackCleanupStarted)
         await stopPlaybackSilently()
     }
@@ -491,10 +535,13 @@ watch(
 
 watch(isPlaying, (playing) => {
   revealChrome()
-  if (playing)
+  if (playing) {
     startHistorySaveTimer()
-  else
-    void saveCurrentProgress(true)
+    void saveCurrentProgress(true, 'resumed')
+  }
+  else {
+    void saveCurrentProgress(true, 'paused')
+  }
 })
 
 watch([shouldShowChrome, hasMedia], () => {
@@ -502,7 +549,7 @@ watch([shouldShowChrome, hasMedia], () => {
 })
 
 async function handleFileDrop(path: string) {
-  await saveCurrentProgress(true)
+  await saveCurrentProgress(true, 'stopped')
   resetHistorySaveState()
   mediaPath.value = path
   mediaTitle.value = path.split(/[\\/]/).pop() || '本地视频'
@@ -531,6 +578,8 @@ async function handleFileDrop(path: string) {
 async function playQueueItemAt(index: number) {
   const queue = playbackQueue.value
   if (!queue || index < 0 || index >= queue.items.length || isQueueSwitching.value)
+    return
+  if (index === queue.currentIndex)
     return
 
   const target = queue.items[index]
@@ -562,6 +611,8 @@ async function playQueueItemAt(index: number) {
         itemId: target.id,
         libraryId: target.libraryId,
         mediaType: target.type,
+        posterUrl: target.posterUrl,
+        backdropUrl: target.backdropUrl,
         contextId: playbackContextId.value || undefined,
         mediaSourceId: undefined,
         audioIndex: undefined,
@@ -596,7 +647,7 @@ async function handleTogglePause() {
   const willPause = isPlaying.value
   await togglePause()
   if (willPause)
-    await saveCurrentProgress(true)
+    await saveCurrentProgress(true, 'paused')
 }
 
 async function flushRenderBounds() {
@@ -682,7 +733,7 @@ async function stopPlaybackSilently() {
 
 async function stopPlaybackForRouteExit() {
   playbackCleanupStarted = true
-  await saveCurrentProgress(true)
+  await saveCurrentProgress(true, 'stopped')
   clearHistorySaveTimer()
   if (!hasMedia.value && !isPlaying.value)
     return
@@ -691,7 +742,7 @@ async function stopPlaybackForRouteExit() {
 }
 
 function handleBeforeUnload() {
-  void saveCurrentProgress(true)
+  void saveCurrentProgress(true, 'stopped')
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -867,6 +918,9 @@ watch(
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
         :queue-item-count="playbackQueueItemCount"
+        :queue-items="playbackQueue?.items ?? []"
+        :current-queue-index="playbackQueue?.currentIndex ?? 0"
+        :is-queue-switching="isQueueSwitching"
         :can-play-previous="canPlayPrevious"
         :can-play-next="canPlayNext"
         :current-subtitle="currentSubtitle"
@@ -878,6 +932,7 @@ watch(
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
         @play-next="handlePlayNext"
+        @select-queue-item="playQueueItemAt"
         @seek="seek"
         @seek-relative="seekRelative"
         @set-volume="setVolume"

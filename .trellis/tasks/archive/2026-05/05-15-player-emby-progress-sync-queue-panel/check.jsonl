@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify DataSource/provider progress sync typing and tokenized URL safety"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify queue panel remains bottom-bar playback UI and respects immersive chrome"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify Player typecheck/lint/build, cargo checks, Windows package build, and redaction requirements"}
+{"file":".trellis/tasks/05-15-player-emby-progress-sync-queue-panel/research/emby-progress-api.md","reason":"Verify Emby progress sync uses correct endpoints and required metadata"}

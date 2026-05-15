@@ -10,6 +10,8 @@ export interface PlaybackQueueItem {
   type: MediaItem['type']
   posterUrl?: string
   backdropUrl?: string
+  overview?: string
+  duration?: number
   seasonNumber?: number
   episodeNumber?: number
 }
@@ -55,6 +57,8 @@ export interface PlaybackQueueItemInput {
   type: MediaItem['type']
   posterUrl?: string
   backdropUrl?: string
+  overview?: string
+  duration?: number
   seasonNumber?: number
   episodeNumber?: number
 }
@@ -93,6 +97,8 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     type: item.type,
     posterUrl: item.posterUrl,
     backdropUrl: item.backdropUrl,
+    overview: item.overview,
+    duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
   }
@@ -127,6 +133,8 @@ function normalizeQueue(queue: PlaybackQueueInput | undefined): PlaybackQueueSta
     type: item.type,
     posterUrl: item.posterUrl,
     backdropUrl: item.backdropUrl,
+    overview: item.overview,
+    duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
   }))

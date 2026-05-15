@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"DataSource contracts, Emby mapping/security boundaries, and Player playback history/provider sync contracts"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Player bottom-bar queue/playlist control placement and immersive chrome behavior"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player validation, DataSource redaction, and packaging requirements"}
+{"file":".trellis/tasks/05-15-player-emby-progress-sync-queue-panel/research/emby-progress-api.md","reason":"Emby playback progress endpoints, required fields, and mapping constraints"}

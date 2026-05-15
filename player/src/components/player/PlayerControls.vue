@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
 
-type ControlMenu = 'speed' | 'subtitle' | 'audio'
+type ControlMenu = 'speed' | 'subtitle' | 'audio' | 'queue'
 
 const props = defineProps<{
   isPlaying: boolean
@@ -17,6 +18,9 @@ const props = defineProps<{
   subtitleTracks: readonly SubtitleTrackOption[]
   audioTracks: readonly Track[]
   queueItemCount: number
+  queueItems: readonly PlaybackQueueItem[]
+  currentQueueIndex: number
+  isQueueSwitching: boolean
   canPlayPrevious: boolean
   canPlayNext: boolean
   currentSubtitle: SubtitleSelectionId | null
@@ -31,6 +35,7 @@ const emit = defineEmits<{
   playPrevious: []
   togglePause: []
   playNext: []
+  selectQueueItem: [index: number]
   seek: [position: number]
   seekRelative: [offset: number]
   setVolume: [volume: number]
@@ -77,6 +82,7 @@ const audioLabel = computed(() => {
 })
 const showAudioControl = computed(() => props.audioTracks.length > 1)
 const showQueueControl = computed(() => props.queueItemCount > 1)
+const queueLabel = computed(() => `${Math.max(0, props.currentQueueIndex + 1)}/${props.queueItemCount}`)
 
 function isInteracting() {
   return pointerInside.value
@@ -153,6 +159,39 @@ function chooseSubtitle(trackId: SubtitleSelectionId | null) {
 function chooseAudio(trackId: number) {
   emit('setAudio', trackId)
   closeMenus()
+}
+
+function chooseQueueItem(index: number) {
+  emit('selectQueueItem', index)
+  closeMenus()
+}
+
+function queueItemSubtitle(item: PlaybackQueueItem): string {
+  const episodeParts = [
+    typeof item.seasonNumber === 'number' ? `S${item.seasonNumber.toString().padStart(2, '0')}` : undefined,
+    typeof item.episodeNumber === 'number' ? `E${item.episodeNumber.toString().padStart(2, '0')}` : undefined,
+  ].filter(Boolean)
+  const meta = [episodeParts.join(''), formatDuration(item.duration)].filter(Boolean)
+  return meta.join(' · ') || mediaTypeLabel(item.type)
+}
+
+function mediaTypeLabel(type: PlaybackQueueItem['type']): string {
+  switch (type) {
+    case 'episode':
+      return '剧集'
+    case 'movie':
+      return '电影'
+    case 'file':
+      return '文件'
+    default:
+      return '队列项目'
+  }
+}
+
+function formatDuration(seconds: number | undefined): string | undefined {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0)
+    return undefined
+  return formatTime(seconds)
 }
 
 function formatTime(seconds: number): string {
@@ -255,6 +294,11 @@ function handleKeydown(event: KeyboardEvent) {
 
 watch(showAudioControl, (visible) => {
   if (!visible && activeMenu.value === 'audio')
+    closeMenus()
+})
+
+watch(showQueueControl, (visible) => {
+  if (!visible && activeMenu.value === 'queue')
     closeMenus()
 })
 
@@ -373,10 +417,33 @@ onMounted(() => {
         </Transition>
       </div>
 
-      <button v-if="showQueueControl" class="control-button action-chip secondary" type="button" title="播放队列（后续接入）" aria-label="播放队列，后续接入" aria-disabled="true">
-        <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h6.5a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm12.5-4.98c0-.87.96-1.4 1.7-.94l2.88 1.8a1.1 1.1 0 0 1 0 1.86l-2.88 1.8a1.1 1.1 0 0 1-1.7-.94v-3.58Z" /></svg>
-        <span class="control-text">队列</span>
-      </button>
+      <div v-if="showQueueControl" class="control-menu-anchor">
+        <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'queue' }" type="button" title="播放队列" aria-label="播放队列" aria-haspopup="menu" :aria-expanded="activeMenu === 'queue'" @click="toggleMenu('queue')">
+          <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm0 5.5a1 1 0 0 1 1-1h6.5a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm12.5-4.98c0-.87.96-1.4 1.7-.94l2.88 1.8a1.1 1.1 0 0 1 0 1.86l-2.88 1.8a1.1 1.1 0 0 1-1.7-.94v-3.58Z" /></svg>
+          <span class="control-text">队列 {{ queueLabel }}</span>
+        </button>
+        <Transition name="control-menu">
+          <div v-if="activeMenu === 'queue'" class="control-popover queue-popover" role="menu" aria-label="播放队列">
+            <div class="queue-popover-header">
+              <span>播放队列</span>
+              <small>{{ queueItemCount }} 项</small>
+            </div>
+            <div class="queue-list" role="list">
+              <button v-for="(item, index) in queueItems" :key="`${item.sourceId}:${item.id}:${index}`" type="button" class="queue-option" :class="{ 'is-current': index === currentQueueIndex }" role="menuitem" :aria-current="index === currentQueueIndex ? 'true' : undefined" :disabled="isQueueSwitching && index !== currentQueueIndex" @click="chooseQueueItem(index)">
+                <span class="queue-thumb" aria-hidden="true">
+                  <img v-if="item.posterUrl || item.backdropUrl" :src="item.posterUrl || item.backdropUrl" alt="" loading="lazy">
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 4h13A2.5 2.5 0 0 1 21 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-11A2.5 2.5 0 0 1 5.5 4Zm1 3A1.5 1.5 0 1 0 8 8.5 1.5 1.5 0 0 0 6.5 7Zm-1 10.5h13a.5.5 0 0 0 .5-.5v-2.6l-3.15-3.15a1 1 0 0 0-1.42 0l-2.1 2.1-.78-.78a1 1 0 0 0-1.42 0L5 16.7v.3a.5.5 0 0 0 .5.5Z" /></svg>
+                </span>
+                <span class="queue-copy">
+                  <span class="queue-title">{{ item.title || item.name }}</span>
+                  <small>{{ item.overview || queueItemSubtitle(item) }}</small>
+                </span>
+                <span v-if="index === currentQueueIndex" class="queue-current-badge">正在播放</span>
+              </button>
+            </div>
+          </div>
+        </Transition>
+      </div>
 
       <button ref="settingsButton" class="control-button settings-entry-button secondary" :class="{ 'is-active': settingsPanelOpen }" type="button" title="设置" aria-label="设置" aria-controls="player-settings-panel" :aria-expanded="settingsPanelOpen" @click="toggleSettingsPanel">
         <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.34 7.34 0 0 0-1.69-.98L14.5 2.42A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.5.42L9.12 5.07c-.61.23-1.18.56-1.69.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.07.65-.07.98s.02.66.07.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.13.22.39.31.62.22l2.47-1a7.34 7.34 0 0 0 1.69.98l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.61-.23 1.18-.56 1.69-.98l2.47 1c.23.09.49 0 .62-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" /></svg>
@@ -536,6 +603,129 @@ onMounted(() => {
 
 .track-popover {
   min-width: 15rem;
+}
+
+.queue-popover {
+  width: min(25rem, calc(100vw - 3rem));
+  max-width: min(25rem, calc(100vw - 3rem));
+  padding: 0.65rem;
+}
+
+.queue-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.2rem 0.35rem 0.55rem;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.queue-popover-header small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.queue-list {
+  display: flex;
+  max-height: min(22rem, 50vh);
+  flex-direction: column;
+  gap: 0.42rem;
+  overflow-y: auto;
+  padding-right: 0.1rem;
+}
+
+.queue-option {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 3.6rem minmax(0, 1fr) auto;
+  gap: 0.72rem;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  padding: 0.5rem;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.045);
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+
+.queue-option:hover:not(:disabled),
+.queue-option:focus-visible,
+.queue-option.is-current {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.queue-option:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.queue-option:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.queue-thumb {
+  display: flex;
+  aspect-ratio: 16 / 10;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 14px;
+  color: rgba(255, 255, 255, 0.36);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.queue-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.queue-thumb svg {
+  width: 1.4rem;
+  height: 1.4rem;
+  fill: currentColor;
+}
+
+.queue-copy {
+  min-width: 0;
+}
+
+.queue-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.queue-copy small {
+  display: -webkit-box;
+  margin-top: 0.2rem;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.66rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.queue-current-badge {
+  border-radius: var(--radius-full);
+  padding: 0.24rem 0.44rem;
+  color: rgba(9, 12, 18, 0.92);
+  background: rgba(255, 255, 255, 0.86);
+  font-size: 0.62rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .speed-popover {

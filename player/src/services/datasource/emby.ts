@@ -7,6 +7,7 @@ import type {
   MediaItem,
   MediaLibrary,
   MediaSourceOption,
+  ProviderPlaybackProgressInput,
   SubtitleTrack,
 } from './types'
 import { ofetch } from 'ofetch'
@@ -57,6 +58,9 @@ const BACKDROP_IMAGE_WIDTH = '1600'
 const BACKDROP_IMAGE_HEIGHT = '900'
 const LOGO_IMAGE_WIDTH = '520'
 const LOGO_IMAGE_HEIGHT = '260'
+const EMBY_TICKS_PER_SECOND = 10_000_000
+
+type EmbyRequestPayload = Record<string, string | number | boolean | null | undefined>
 
 interface EmbyConfigExtra {
   readonly userId?: string
@@ -160,6 +164,17 @@ interface EmbyMediaSourceRecord {
 
 interface EmbyPlaybackInfoResponse {
   readonly MediaSources?: unknown[]
+  readonly PlaySessionId?: string
+}
+
+interface EmbyPlaybackInfo {
+  readonly mediaSources: EmbyMediaSourceRecord[]
+  readonly playSessionId?: string
+}
+
+interface EmbyPlaybackSessionMetadata {
+  readonly mediaSourceId?: string
+  readonly playSessionId?: string
 }
 
 interface EmbyDetailCachePayload {
@@ -190,6 +205,7 @@ export class EmbyDataSource implements DataSource {
   private deviceId = ''
   private connected = false
   private readonly cache = new SourceMetadataCache()
+  private readonly playbackSessions = new Map<string, EmbyPlaybackSessionMetadata>()
 
   readonly type = 'emby' as const
 
@@ -360,17 +376,57 @@ export class EmbyDataSource implements DataSource {
     if (mediaSources.length === 0)
       throw new Error('Emby 未返回可播放的媒体源。')
 
-    const resolvedUrl = mediaSources
-      .map(source => this.resolveMediaSourceUrl(source))
-      .find((url): url is string => Boolean(url))
-    if (resolvedUrl)
-      return resolvedUrl
+    const playableSource = mediaSources.find(source => Boolean(this.resolveMediaSourceUrl(source)))
+    if (playableSource) {
+      this.rememberPlaybackSession(id, playableSource.Id)
+      const resolvedUrl = this.resolveMediaSourceUrl(playableSource)
+      if (resolvedUrl)
+        return resolvedUrl
+    }
 
     const staticStreamSource = mediaSources.find(source => typeof source.Id === 'string') ?? mediaSources[0]
-    if (staticStreamSource)
+    if (staticStreamSource) {
+      this.rememberPlaybackSession(id, staticStreamSource.Id)
       return this.buildStaticStreamUrl(id, staticStreamSource.Id)
+    }
 
     throw new Error('Emby 未暴露可由 Player 直接播放的流地址。请检查该条目的播放权限或 Emby/插件直链配置。')
+  }
+
+  async syncPlaybackProgress(progress: ProviderPlaybackProgressInput): Promise<void> {
+    this.ensureConfigured()
+    const itemId = progress.itemId.trim()
+    if (!itemId || !Number.isFinite(progress.position) || progress.position < 0)
+      return
+
+    const session = await this.ensurePlaybackSession(itemId, progress.mediaSourceId, progress.playSessionId)
+    const body = compactPlaybackBody({
+      ItemId: itemId,
+      MediaSourceId: session.mediaSourceId,
+      PlaySessionId: session.playSessionId,
+      PositionTicks: secondsToTicks(progress.position),
+      RunTimeTicks: secondsToTicks(progress.duration),
+      CanSeek: true,
+      IsPaused: progress.isPaused,
+      PlayMethod: 'DirectPlay',
+      EventName: progressEventName(progress.event),
+    })
+
+    if (progress.event === 'started') {
+      await this.request('/Sessions/Playing', body, 'POST')
+      return
+    }
+
+    if (progress.event === 'stopped' || progress.event === 'completed') {
+      await this.request('/Sessions/Playing/Stopped', body, 'POST')
+      if (progress.completed)
+        await this.markPlayed(itemId)
+      return
+    }
+
+    await this.request('/Sessions/Playing/Progress', body, 'POST')
+    if (progress.completed)
+      await this.markPlayed(itemId)
   }
 
   exportConfig(): DataSourceConfig {
@@ -522,24 +578,71 @@ export class EmbyDataSource implements DataSource {
 
   private async getPlayableMediaSources(id: string, item: EmbyItemRecord): Promise<EmbyMediaSourceRecord[]> {
     try {
-      const response = await this.request(`/Items/${encodeURIComponent(id)}/PlaybackInfo`, {
-        UserId: this.userId,
-        EnableDirectPlay: 'true',
-        EnableDirectStream: 'true',
-        EnableTranscoding: 'true',
-        AllowVideoStreamCopy: 'true',
-        AllowAudioStreamCopy: 'true',
-        IsPlayback: 'true',
-      }, 'POST')
-      const playbackSources = parsePlaybackMediaSources(response)
-      if (playbackSources.length > 0)
-        return playbackSources
+      const playbackInfo = await this.fetchPlaybackInfo(id)
+      const mediaSourceId = playbackInfo.mediaSources.find(source => typeof source.Id === 'string')?.Id
+      this.rememberPlaybackSession(id, mediaSourceId, playbackInfo.playSessionId)
+      if (playbackInfo.mediaSources.length > 0)
+        return playbackInfo.mediaSources
     }
     catch {
       // Fall back to detail MediaSources. Errors are intentionally hidden so tokenized URLs are not surfaced.
     }
 
     return (item.MediaSources ?? []).filter(isEmbyMediaSourceRecord)
+  }
+
+  private async fetchPlaybackInfo(id: string): Promise<EmbyPlaybackInfo> {
+    const response = await this.request(`/Items/${encodeURIComponent(id)}/PlaybackInfo`, {
+      UserId: this.userId,
+      EnableDirectPlay: 'true',
+      EnableDirectStream: 'true',
+      EnableTranscoding: 'true',
+      AllowVideoStreamCopy: 'true',
+      AllowAudioStreamCopy: 'true',
+      IsPlayback: 'true',
+    }, 'POST')
+    return parsePlaybackInfo(response)
+  }
+
+  private async ensurePlaybackSession(itemId: string, mediaSourceId?: string, playSessionId?: string): Promise<EmbyPlaybackSessionMetadata> {
+    if (mediaSourceId || playSessionId)
+      this.rememberPlaybackSession(itemId, mediaSourceId, playSessionId)
+
+    const cached = this.playbackSessions.get(itemId)
+    if (cached?.mediaSourceId && cached.playSessionId)
+      return cached
+
+    try {
+      const playbackInfo = await this.fetchPlaybackInfo(itemId)
+      const resolvedMediaSourceId = mediaSourceId ?? playbackInfo.mediaSources.find(source => typeof source.Id === 'string')?.Id
+      this.rememberPlaybackSession(itemId, resolvedMediaSourceId, playSessionId ?? playbackInfo.playSessionId)
+    }
+    catch {
+      // Progress sync is best-effort. Keep cached/route metadata if Emby does not return playback info now.
+    }
+
+    return this.playbackSessions.get(itemId) ?? { mediaSourceId, playSessionId }
+  }
+
+  private rememberPlaybackSession(itemId: string, mediaSourceId?: string, playSessionId?: string): void {
+    const key = itemId.trim()
+    if (!key)
+      return
+
+    const current = this.playbackSessions.get(key)
+    this.playbackSessions.set(key, {
+      mediaSourceId: mediaSourceId ?? current?.mediaSourceId,
+      playSessionId: playSessionId ?? current?.playSessionId,
+    })
+  }
+
+  private async markPlayed(itemId: string): Promise<void> {
+    try {
+      await this.request(`/Users/{UserId}/PlayedItems/${encodeURIComponent(itemId)}`, {}, 'POST')
+    }
+    catch {
+      // The stopped/progress report is still useful; explicit watched marking is best-effort.
+    }
   }
 
   private resolveMediaSourceUrl(source: EmbyMediaSourceRecord): string | undefined {
@@ -664,7 +767,7 @@ export class EmbyDataSource implements DataSource {
     }
   }
 
-  private async request(path: string, query: Record<string, string> = {}, method: 'GET' | 'POST' = 'GET'): Promise<unknown> {
+  private async request(path: string, query: EmbyRequestPayload = {}, method: 'GET' | 'POST' = 'GET'): Promise<unknown> {
     this.ensureConfigured()
     const resolvedPath = path.replace('{UserId}', encodeURIComponent(this.userId))
     const url = `${this.baseUrl}${resolvedPath}`
@@ -1003,13 +1106,15 @@ function parseItemRecord(value: unknown): EmbyItemRecord {
   return value
 }
 
-function parsePlaybackMediaSources(value: unknown): EmbyMediaSourceRecord[] {
+function parsePlaybackInfo(value: unknown): EmbyPlaybackInfo {
   if (!isObject(value))
-    return []
+    return { mediaSources: [] }
+
   const response = value as EmbyPlaybackInfoResponse
-  if (!Array.isArray(response.MediaSources))
-    return []
-  return response.MediaSources.filter(isEmbyMediaSourceRecord)
+  return {
+    mediaSources: Array.isArray(response.MediaSources) ? response.MediaSources.filter(isEmbyMediaSourceRecord) : [],
+    playSessionId: typeof response.PlaySessionId === 'string' && response.PlaySessionId.trim() ? response.PlaySessionId : undefined,
+  }
 }
 
 function parseAuthResponse(value: unknown): EmbyAuthResult {
@@ -1085,7 +1190,36 @@ function mapLibraryType(type: string | undefined): MediaLibrary['type'] {
 }
 
 function ticksToSeconds(ticks: number | undefined): number | undefined {
-  return typeof ticks === 'number' ? Math.round(ticks / 10_000_000) : undefined
+  return typeof ticks === 'number' ? Math.round(ticks / EMBY_TICKS_PER_SECOND) : undefined
+}
+
+function secondsToTicks(seconds: number | undefined): number | undefined {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0)
+    return undefined
+  return Math.round(seconds * EMBY_TICKS_PER_SECOND)
+}
+
+function compactPlaybackBody(body: EmbyRequestPayload): EmbyRequestPayload {
+  return Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== undefined && value !== null && value !== ''),
+  ) as EmbyRequestPayload
+}
+
+function progressEventName(event: ProviderPlaybackProgressInput['event']): string {
+  switch (event) {
+    case 'paused':
+      return 'Pause'
+    case 'resumed':
+      return 'Unpause'
+    case 'started':
+      return 'StateChange'
+    case 'stopped':
+    case 'completed':
+      return 'StateChange'
+    case 'progress':
+    default:
+      return 'TimeUpdate'
+  }
 }
 
 function normalizeCriticRating(rating: number | undefined): number | undefined {

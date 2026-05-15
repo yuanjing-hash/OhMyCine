@@ -127,6 +127,119 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 - Frontend command calls must define explicit payload/return types near the composable/service that owns the behavior, for example `invoke<PlaybackSpeedPreference>('player_get_playback_speed_preference')` and a typed `{ speed: number }` payload for `player_set_playback_speed_preference`.
 - Preference persistence failures should not expose internal database paths or native details; for convenience-only preferences, composables may fall back to in-memory session defaults without noisy user-facing errors.
 
+### Provider Playback Progress Sync Contract
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing DataSource provider-native playback progress sync, watched/completed sync, Player playback-history save hooks, or provider progress metadata such as `mediaSourceId` / `playSessionId`.
+- Applies to the shared `DataSource` interface, Player route/context progress payloads, Emby/Jellyfin provider implementations, local SQLite playback-history coordination, and token redaction boundaries.
+
+#### 2. Signatures
+- Shared event type:
+```ts
+type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
+```
+- Shared input:
+```ts
+interface ProviderPlaybackProgressInput {
+  itemId: string
+  mediaSourceId?: string
+  playSessionId?: string
+  mediaType?: MediaItem['type']
+  position: number
+  duration?: number
+  isPaused: boolean
+  completed: boolean
+  event: ProviderPlaybackProgressEvent
+}
+```
+- DataSource optional method:
+```ts
+interface DataSource {
+  syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
+}
+```
+- Emby-compatible endpoints:
+  - `POST /Sessions/Playing` with `ItemId`, `MediaSourceId?`, `PlaySessionId?`, `PositionTicks`, `CanSeek`, `IsPaused`, `PlayMethod`.
+  - `POST /Sessions/Playing/Progress` with the same identity/session fields plus `EventName` such as `TimeUpdate`, `Pause`, or `Unpause`.
+  - `POST /Sessions/Playing/Stopped` with `ItemId`, `MediaSourceId?`, `PlaySessionId?`, `PositionTicks`.
+  - Optional completed marker: `POST /Users/{UserId}/PlayedItems/{Id}` after a completed event.
+
+#### 3. Contracts
+- Provider sync is optional. Player code must call `source.syncPlaybackProgress?.(...)` or equivalent optional checks; non-provider/local sources must not implement no-op shims solely to satisfy typing.
+- Local Tauri SQLite playback history remains the primary persistence path. Provider sync is best-effort and must never block playback startup, route leave, queue switching, pause/resume, close cleanup, or local history save completion.
+- Player payload positions and durations are seconds. Provider implementations convert to provider-native units internally; Emby uses ticks (`seconds * 10_000_000`).
+- Remote-provider progress identity must use stable provider item/session fields (`itemId`, optional `mediaSourceId`, optional `playSessionId`) rather than tokenized playback URLs.
+- Provider implementations must reuse their existing authenticated request helper and redaction path. Tokenized stream URLs, image URLs, credentials, filesystem paths, and provider redirect targets must not be used as progress identity, displayed in errors, logged, or persisted.
+- Emby sync should preserve or re-obtain `MediaSourceId` and `PlaySessionId` from `/Items/{id}/PlaybackInfo` when practical, but missing session metadata must degrade to a safe best-effort report instead of crashing playback.
+- Completed provider sync may send a normal stopped/progress event plus provider-specific watched marking when supported. Failure to mark watched must not undo local completion.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| DataSource lacks `syncPlaybackProgress` | Skip provider sync silently; keep local history and playback working |
+| position/duration is NaN, infinite, or negative | Skip provider sync; do not send malformed provider payloads |
+| provider request fails/offline/401 | Swallow or convert to user-safe non-blocking state; do not interrupt playback |
+| Emby `MediaSourceId` or `PlaySessionId` is missing | Reuse cached playback metadata or refetch playback info when practical; otherwise send best-effort payload |
+| event is `paused` / `resumed` | Map to provider progress endpoint with an appropriate pause/unpause event where supported |
+| event is `stopped` during route leave or queue switch | Fire provider sync without awaiting it in blocking cleanup paths |
+| event is `completed` | Mark local history completed and optionally send provider watched/completed marker best-effort |
+| tokenized URL appears in stream/artwork/provider error | Redact/drop before display, logging, storage, or provider progress identity construction |
+
+#### 5. Good/Base/Bad Cases
+- Good: Player saves local SQLite progress, then fire-and-forgets `source.syncPlaybackProgress({ itemId, mediaSourceId, playSessionId, position, duration, isPaused, completed, event })`; Emby converts seconds to ticks and reports through `/Sessions/Playing/Progress` using the authenticated request helper.
+- Base: A local file or unsupported DataSource has no `syncPlaybackProgress`; local resume still works and no provider call is attempted.
+- Bad: Player awaits an Emby network progress request before route leave or queue switch, causing the UI to hang when Emby is slow or offline.
+- Bad: Using `streamUrl` or a signed redirect URL as `itemId` / `mediaIdentity` / provider progress identity.
+
+#### 6. Tests Required
+- `npm run typecheck` must catch drift in `ProviderPlaybackProgressInput` and optional `DataSource.syncPlaybackProgress` calls.
+- `npm run lint` must pass without broad provider-progress `any` payloads or unused queue/progress state.
+- `npm run build` must pass after Player route/control integration.
+- DataSource/provider work should run `npm run tauri:build:windows --prefix player` when Player packaging is in scope; Rust checks are required only if Rust/Tauri files changed.
+- Manual Windows-host checks should verify Emby pause/resume/stop/completed progress appears on the Emby server, while playback and queue switching remain responsive if Emby sync fails.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+await source.syncPlaybackProgress?.({
+  itemId: streamUrl,
+  position: currentTime.value,
+  isPaused: false,
+  completed: false,
+  event: 'progress',
+})
+```
+
+Correct:
+```ts
+void source.syncPlaybackProgress?.({
+  itemId,
+  mediaSourceId,
+  playSessionId,
+  position: currentTime.value,
+  duration: duration.value,
+  isPaused: !isPlaying.value,
+  completed,
+  event: completed ? 'completed' : 'progress',
+})
+```
+
+Wrong:
+```ts
+try {
+  await embyProgressSync()
+} finally {
+  await router.replace(nextEpisodeRoute)
+}
+```
+
+Correct:
+```ts
+void embyProgressSync().catch(() => undefined)
+await router.replace(nextEpisodeRoute)
+```
+
 ### Player Playback History Command Contract
 
 #### 1. Scope / Trigger

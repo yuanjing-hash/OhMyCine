@@ -23,7 +23,8 @@
     "05-12-player-mpv-advanced-controls",
     "05-12-player-playback-queue",
     "05-12-player-history-continue-watching",
-    "05-12-player-playback-context-menu"
+    "05-12-player-playback-context-menu",
+    "05-15-player-emby-progress-sync-queue-panel"
   ],
   "parent": null,
   "relatedFiles": [],
