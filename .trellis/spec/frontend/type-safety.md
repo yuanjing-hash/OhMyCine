@@ -119,6 +119,13 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 - Convert command errors to typed user-safe errors in composables/services.
 - For Rust command changes, update frontend types and usages together.
 
+### Player Preference Command Contract
+
+- Non-sensitive Player preferences that must survive app restart should use Tauri app-data SQLite commands instead of browser `localStorage` when practical.
+- Keep preference storage separate from credential storage unless the value is sensitive and belongs in the encrypted credential boundary.
+- Frontend command calls must define explicit payload/return types near the composable/service that owns the behavior, for example `invoke<PlaybackSpeedPreference>('player_get_playback_speed_preference')` and a typed `{ speed: number }` payload for `player_set_playback_speed_preference`.
+- Preference persistence failures should not expose internal database paths or native details; for convenience-only preferences, composables may fall back to in-memory session defaults without noisy user-facing errors.
+
 ### Player Render Surface Command Contract
 
 When exposing libmpv render lifecycle to Vue, use small typed status/surface commands rather than leaking platform handles, native HWNDs, GL contexts, or raw render pointers.
