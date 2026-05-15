@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
-- **Last Active**: 2026-05-13
+- **Total Sessions**: 5
+- **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~148 | Active |
+| `journal-1.md` | ~182 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-05-15 | 完成 Player 播放高级控制 | `e242134`, `fd58a7c` | `main` |
 | 4 | 2026-05-13 | 完成 Player 播放设置面板 | `9e4b4bd`, `f08f4d0` | `main` |
 | 3 | 2026-05-12 | 完成 Player Windows 嵌入式渲染 | `13199b5`, `cdea94d` | `main` |
 | 2 | 2026-05-08 | 收尾 Player Emby MVP 与 roadmap 规划 | `90b47fe`, `cef481e`, `858b9b0`, `7e7b59d`, `96711ce` | `main` |

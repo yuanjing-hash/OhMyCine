@@ -146,3 +146,37 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: 完成 Player 播放高级控制
+
+**Date**: 2026-05-15
+**Task**: 完成 Player 播放高级控制
+**Branch**: `main`
+
+### Summary
+
+完成倍速、字幕/音轨、全屏、画面比例与播放器偏好持久化：字幕合并详情页与内嵌轨道，倍速写入 Tauri SQLite，离开播放页停止播放，并清理用户可见底层技术文案。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e242134` | (see git log) |
+| `fd58a7c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
