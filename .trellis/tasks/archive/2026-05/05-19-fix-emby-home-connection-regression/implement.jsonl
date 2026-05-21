@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Emby provider sync diagnostics must not break the DataSource connection contract or token-safe request behavior."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Keep playstate reporting compatible without changing stable generic Emby browsing request headers."}

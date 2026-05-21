@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check Emby sync diagnostics and reporting remain type-safe, best-effort, and token-safe."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Check implementation follows researched endpoint families and event sequencing."}

@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Implement home hero series primary actions consistently with media/detail and episode rail contracts."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Use playback history/resume state safely when choosing a series episode from home."}
+{"file":".trellis/tasks/05-19-home-series-primary-play-action/prd.md","reason":"Implement approved home series play/resume behavior and preserve detail action."}

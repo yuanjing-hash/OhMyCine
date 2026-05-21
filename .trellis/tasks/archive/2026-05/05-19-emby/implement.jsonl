@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Implement provider playback progress sync contract with Emby playstate endpoints and safe best-effort behavior."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Apply researched Emby/Jellyfin playback reporting endpoint patterns and required fields."}

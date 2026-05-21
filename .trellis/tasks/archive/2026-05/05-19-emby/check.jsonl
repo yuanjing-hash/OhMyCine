@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check Emby provider progress sync remains type-safe, best-effort, and token-safe."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Check implementation follows researched PlaybackInfo/Sessions/Playing/Progress/Stopped conventions."}

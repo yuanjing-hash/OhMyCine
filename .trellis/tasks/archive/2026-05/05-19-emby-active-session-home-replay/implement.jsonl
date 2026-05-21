@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Provider playback progress sync is a cross-layer DataSource contract; keep local SQLite primary and provider sync best-effort/token-safe."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Use researched Emby/Jellyfin PlaybackInfo and Sessions/Playing/Progress/Stopped conventions."}

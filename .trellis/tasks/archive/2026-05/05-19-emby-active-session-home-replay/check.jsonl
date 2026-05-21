@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check Emby active-session sync and local-history provider sync remain type-safe, best-effort, and token-safe."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Check implementation follows Emby/Jellyfin playback reporting conventions and event ordering."}

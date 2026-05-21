@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check home continue-watching UI follows aggregate semantics and card image fallback guidance."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check merged continue-watching fields remain type-safe and resume-safe."}
+{"file":".trellis/tasks/05-19-home-aggregated-continue-watching/prd.md","reason":"Check all acceptance criteria for title, aggregation, dedupe, artwork, fallback, and validation."}

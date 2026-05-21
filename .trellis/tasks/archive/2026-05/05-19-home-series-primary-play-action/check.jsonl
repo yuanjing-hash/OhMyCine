@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check home hero series play action stays aligned with frontend media component guidance."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check resume and queue construction remain type-safe and provider-neutral."}
+{"file":".trellis/tasks/05-19-home-series-primary-play-action/prd.md","reason":"Check all acceptance criteria for home series play, continue, details, and validation."}
