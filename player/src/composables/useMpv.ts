@@ -83,6 +83,11 @@ export interface MpvRenderState {
   diagnostics?: MpvRenderDiagnostics | null
 }
 
+export interface VideoDynamicRangeState {
+  label: string
+  details: string
+}
+
 export interface RenderSurfaceBounds {
   x: number
   y: number
@@ -116,6 +121,11 @@ const FIT_PROPERTY_VALUE: Record<VideoFitMode, string> = {
   fit: '0',
   crop: '1',
   cinemaCrop: '0.5',
+}
+
+const DEFAULT_DYNAMIC_RANGE: VideoDynamicRangeState = {
+  label: 'SDR',
+  details: '标准动态范围',
 }
 
 function normalizePlaybackSpeed(speed: number): number {
@@ -233,6 +243,7 @@ export function useMpv() {
   const renderError = ref<string | null>(null)
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
+  const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
   const trackRefreshTimers = new Set<number>()
@@ -378,8 +389,70 @@ export function useMpv() {
     const timer = window.setTimeout(() => {
       trackRefreshTimers.delete(timer)
       void refreshTrackState()
+      void refreshVideoDynamicRange()
     }, delay)
     trackRefreshTimers.add(timer)
+  }
+
+  async function readMpvProperty(prop: string): Promise<string> {
+    try {
+      return await invoke<string>('mpv_get_property', { prop })
+    }
+    catch {
+      return ''
+    }
+  }
+
+  function cleanVideoMetadataValue(value: string): string {
+    return value.trim().replace(/^unknown$/i, '')
+  }
+
+  async function refreshVideoDynamicRange() {
+    const [gamma, primaries, sigPeak, maxClL, doviProfile, doviProfileAlt] = await Promise.all([
+      readMpvProperty('video-params/gamma'),
+      readMpvProperty('video-params/primaries'),
+      readMpvProperty('video-params/sig-peak'),
+      readMpvProperty('video-params/max-cll'),
+      readMpvProperty('video-params/dolby-vision-profile'),
+      readMpvProperty('current-tracks/video/demux-dovi-profile'),
+    ])
+    const normalizedGamma = cleanVideoMetadataValue(gamma).toLowerCase()
+    const normalizedPrimaries = cleanVideoMetadataValue(primaries)
+    const normalizedSigPeak = cleanVideoMetadataValue(sigPeak)
+    const normalizedMaxClL = cleanVideoMetadataValue(maxClL)
+    const normalizedDoviProfile = cleanVideoMetadataValue(doviProfile || doviProfileAlt)
+    const detailParts = [
+      normalizedGamma ? `gamma ${normalizedGamma}` : null,
+      normalizedPrimaries ? `primaries ${normalizedPrimaries}` : null,
+      normalizedSigPeak ? `peak ${normalizedSigPeak}` : null,
+      normalizedMaxClL ? `max-cll ${normalizedMaxClL}` : null,
+      normalizedDoviProfile ? `profile ${normalizedDoviProfile}` : null,
+    ].filter((part): part is string => Boolean(part))
+
+    if (normalizedDoviProfile) {
+      videoDynamicRange.value = { label: 'Dolby Vision', details: detailParts.join(' · ') || '杜比视界' }
+      return
+    }
+
+    if (normalizedGamma === 'pq') {
+      videoDynamicRange.value = { label: 'HDR10 / PQ', details: detailParts.join(' · ') || 'HDR PQ' }
+      return
+    }
+
+    if (normalizedGamma === 'hlg') {
+      videoDynamicRange.value = { label: 'HLG HDR', details: detailParts.join(' · ') || 'HLG HDR' }
+      return
+    }
+
+    if (normalizedPrimaries.toLowerCase() === 'bt.2020' || normalizedSigPeak || normalizedMaxClL) {
+      videoDynamicRange.value = { label: 'HDR', details: detailParts.join(' · ') || '高动态范围' }
+      return
+    }
+
+    videoDynamicRange.value = {
+      label: 'SDR',
+      details: detailParts.join(' · ') || '标准动态范围',
+    }
   }
 
   function setKnownSubtitleTracks(tracks: readonly KnownSubtitleTrackInput[]) {
@@ -395,6 +468,7 @@ export function useMpv() {
     currentTime.value = 0
     duration.value = 0
     isPlaying.value = false
+    videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path })
     await invoke<void>('mpv_resume')
@@ -402,6 +476,7 @@ export function useMpv() {
     isPlaying.value = true
     await applyPlaybackSpeed(playbackSpeed.value)
     await refreshTrackState()
+    await refreshVideoDynamicRange()
     scheduleTrackRefresh(400)
     scheduleTrackRefresh(1200)
   }
@@ -531,6 +606,7 @@ export function useMpv() {
     renderError,
     renderBackend,
     renderDiagnostics,
+    videoDynamicRange,
     trackError,
     initializeRender,
     updateRenderSurfaceBounds,
