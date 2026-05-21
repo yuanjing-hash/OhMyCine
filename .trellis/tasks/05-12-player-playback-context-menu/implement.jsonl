@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Implement context/detail menu as immersive Player chrome without conflicting with controls."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Use typed render/datasource contracts and preserve safe playback metadata boundaries."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Follow Player quality checks and credential/path exposure restrictions."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing controls, diagnostics, routing, and redaction helpers instead of duplicating behavior."}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { KnownSubtitleTrackInput, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
@@ -21,6 +21,19 @@ const HISTORY_MIN_SAVE_POSITION = 1
 const HISTORY_MIN_RESUME_POSITION = 30
 const HOME_REFRESH_AFTER_PLAYBACK_DELAY = 1200
 const LOCAL_FILE_SOURCE_ID = 'local-file'
+const CONTEXT_MENU_WIDTH = 336
+const CONTEXT_MENU_MAX_HEIGHT = 448
+const CONTEXT_MENU_MARGIN = 12
+
+interface ContextMenuPosition {
+  x: number
+  y: number
+}
+
+interface PlaybackContextMenuDetail {
+  label: string
+  value: string
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -48,6 +61,9 @@ const bottomChromeRef = ref<HTMLElement | null>(null)
 const topOcclusion = ref(0)
 const bottomOcclusion = ref(0)
 const diagnosticsOpen = ref(false)
+const contextMenuOpen = ref(false)
+const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
+const contextMenuCopyMessage = ref<string | null>(null)
 const pictureSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
 const providerSyncDiagnostics = ref<ProviderPlaybackSyncDiagnostic[]>([])
@@ -64,6 +80,7 @@ let playbackCleanupStarted = false
 let historySaveTimer: number | undefined
 let resumeMessageTimer: number | undefined
 let homeRefreshTimer: number | undefined
+let contextMenuCopyTimer: number | undefined
 let lastSavedPosition = -1
 let playbackStartPosition = 0
 const resumeSeekTimers = new Set<number>()
@@ -82,6 +99,7 @@ const {
   videoFitMode,
   renderStatus,
   renderError,
+  renderBackend,
   renderDiagnostics,
   trackError,
   initializeRender,
@@ -110,8 +128,19 @@ const currentQueueItem = computed(() => {
 const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
-const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value)
+const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value)
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
+const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
+const contextMenuSource = computed(() => currentSafeSourceLabel())
+const contextMenuIdentifier = computed(() => buildSafeContextMenuIdentifier())
+const contextMenuDetails = computed<PlaybackContextMenuDetail[]>(() => [
+  { label: '标题', value: contextMenuTitle.value },
+  { label: '来源', value: contextMenuSource.value },
+  { label: '进度', value: `${formatPlaybackTime(currentTime.value)} / ${formatPlaybackTime(duration.value)}` },
+  { label: '状态', value: isPlaying.value ? '正在播放' : '已暂停' },
+  { label: '渲染状态', value: renderStatusLabel(renderStatus.value) },
+  { label: '渲染 backend', value: renderBackendLabel(renderBackend.value) },
+])
 
 async function updateChromeOcclusion() {
   await nextTick()
@@ -136,7 +165,7 @@ function clearHideTimer() {
 }
 
 function canAutoHideChrome() {
-  return hasMedia.value && isPlaying.value && !controlsInteracting.value && isWindowFocused.value
+  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && isWindowFocused.value
 }
 
 function scheduleChromeHide() {
@@ -222,6 +251,100 @@ function syncPlaybackQueueFromRoute() {
 
 function currentPlaybackContext() {
   return playbackContextId.value ? getPlaybackMediaContext(playbackContextId.value) : null
+}
+
+function looksLikeMediaFilename(value: string): boolean {
+  return /\.(?:3g2|3gp|avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|mts|ogm|ogv|rmvb|ts|webm|wmv)(?:$|[\s"')，。])/i.test(value)
+}
+
+function containsUnsafeDisplayToken(value: string): boolean {
+  const normalized = value.trim()
+  return /^https?:\/\//i.test(normalized)
+    || /^[a-z]:[\\/]/i.test(normalized)
+    || normalized.startsWith('\\\\')
+    || normalized.startsWith('/')
+    || normalized.startsWith('~/')
+    || /\b(?:[a-z]:[\\/]|file:\/\/|https?:\/\/)/i.test(normalized)
+    || /(?:^|[\s"'({])\/(?:[^/\s?#"')]+\/)+[^/\s?#"')]+/.test(normalized)
+    || /(?:^|[\s"'({])\\\\[^\\/\s]+[\\/][^\\/\s]+/.test(normalized)
+    || /\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(normalized)
+    || (!looksLikeMediaFilename(normalized) && /\b(?:localhost|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{2,5})?\b/i.test(normalized))
+}
+
+function truncateMenuText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 1))}…` : value
+}
+
+function safeMenuText(value: unknown, fallback: string, maxLength = 120): string {
+  if (value == null)
+    return fallback
+
+  const text = redactSensitiveText(value).replace(/\s+/g, ' ').trim()
+  if (!text || containsUnsafeDisplayToken(text))
+    return fallback
+
+  return truncateMenuText(text, maxLength)
+}
+
+function safeIdentifierSegment(value: unknown, maxLength = 96): string {
+  const text = safeMenuText(value, '', maxLength)
+  return text && !text.includes('[redacted') ? text : ''
+}
+
+function currentDisplaySourceId(): string {
+  return activeSourceId.value || currentPlaybackContext()?.sourceId || currentQueueItem.value?.sourceId || (hasMedia.value ? LOCAL_FILE_SOURCE_ID : '')
+}
+
+function currentSafeSourceLabel(): string {
+  const sourceId = currentDisplaySourceId()
+  if (sourceId === LOCAL_FILE_SOURCE_ID)
+    return '本地文件'
+
+  const config = store.configs.find(item => item.id === sourceId)
+  return safeMenuText(config?.displayName || config?.name || sourceId, '媒体来源')
+}
+
+function buildSafeContextMenuIdentifier(): string {
+  const sourceId = safeIdentifierSegment(currentDisplaySourceId(), 72)
+  const itemId = safeIdentifierSegment(activeItemId.value || currentPlaybackContext()?.itemId || currentQueueItem.value?.id, 96)
+  if (sourceId && itemId)
+    return `${contextMenuTitle.value}\nsource:${sourceId}\nitem:${itemId}`
+
+  return contextMenuTitle.value
+}
+
+function renderStatusLabel(status: MpvRenderState['status']): string {
+  switch (status) {
+    case 'initializing':
+      return '准备中'
+    case 'ready':
+      return '已就绪'
+    case 'unsupported':
+      return '暂不可用'
+    case 'error':
+      return '需要重试'
+    case 'idle':
+    default:
+      return '待播放'
+  }
+}
+
+function renderBackendLabel(backend: MpvRenderState['backend']): string {
+  switch (backend) {
+    case 'windowsTransparentOverlay':
+      return 'Windows 透明叠层'
+    case 'windowsOpenGl':
+      return 'Windows OpenGL'
+    case 'linuxFuture':
+      return 'Linux 预留 backend'
+    case 'macosFuture':
+      return 'macOS 预留 backend'
+    case 'mobileFuture':
+      return '移动端预留 backend'
+    case 'unsupported':
+    default:
+      return '暂不支持'
+  }
 }
 
 function syncActiveMediaMetadataFromRoute() {
@@ -673,6 +796,7 @@ watch(
     queueSwitchError.value = null
     syncPlaybackQueueFromRoute()
     syncActiveMediaMetadataFromRoute()
+    closePlaybackContextMenu(false)
     revealChrome()
 
     if (nextPath) {
@@ -811,6 +935,67 @@ async function handleTogglePause() {
     await saveCurrentProgress(true, 'paused')
 }
 
+function clampContextMenuPosition(clientX: number, clientY: number): ContextMenuPosition {
+  const maxX = Math.max(CONTEXT_MENU_MARGIN, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN)
+  const maxY = Math.max(CONTEXT_MENU_MARGIN, window.innerHeight - CONTEXT_MENU_MAX_HEIGHT - CONTEXT_MENU_MARGIN)
+  return {
+    x: Math.min(Math.max(clientX, CONTEXT_MENU_MARGIN), maxX),
+    y: Math.min(Math.max(clientY, CONTEXT_MENU_MARGIN), maxY),
+  }
+}
+
+function openPlaybackContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  contextMenuPosition.value = clampContextMenuPosition(event.clientX, event.clientY)
+  contextMenuOpen.value = true
+  contextMenuCopyMessage.value = null
+  chromeVisible.value = true
+  clearHideTimer()
+}
+
+function closePlaybackContextMenu(scheduleHide = true) {
+  if (!contextMenuOpen.value)
+    return
+
+  contextMenuOpen.value = false
+  contextMenuCopyMessage.value = null
+  if (scheduleHide)
+    scheduleChromeHide()
+}
+
+async function copyContextMenuIdentifier() {
+  try {
+    await navigator.clipboard.writeText(contextMenuIdentifier.value)
+    contextMenuCopyMessage.value = '已复制安全标识'
+  }
+  catch {
+    contextMenuCopyMessage.value = '复制失败'
+  }
+
+  if (contextMenuCopyTimer)
+    window.clearTimeout(contextMenuCopyTimer)
+  contextMenuCopyTimer = window.setTimeout(() => {
+    contextMenuCopyTimer = undefined
+    contextMenuCopyMessage.value = null
+  }, 1800)
+}
+
+async function togglePlaybackFromContextMenu() {
+  await handleTogglePause()
+  closePlaybackContextMenu()
+}
+
+function openDiagnosticsFromContextMenu() {
+  diagnosticsOpen.value = true
+  closePlaybackContextMenu()
+}
+
+async function navigateFromContextMenu(name: 'home' | 'settings') {
+  closePlaybackContextMenu(false)
+  await router.push({ name })
+}
+
 async function flushRenderBounds() {
   if (boundsUpdateInFlight || !pendingRenderBounds)
     return
@@ -907,6 +1092,12 @@ function handleBeforeUnload() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && contextMenuOpen.value) {
+    event.preventDefault()
+    closePlaybackContextMenu()
+    return
+  }
+
   // Ctrl+Shift+D (or Cmd+Shift+D) surfaces the diagnostics panel from the WebView overlay.
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'D' || event.key === 'd')) {
     event.preventDefault()
@@ -968,6 +1159,8 @@ onBeforeUnmount(() => {
   document.documentElement.classList.remove('player-chrome-hidden')
   document.body.classList.remove('player-chrome-hidden')
   clearHideTimer()
+  if (contextMenuCopyTimer)
+    window.clearTimeout(contextMenuCopyTimer)
   clearResumeSeekTimers()
   clearResumeMessageTimer()
   window.removeEventListener('blur', handleWindowBlur)
@@ -1004,6 +1197,7 @@ watch(
     @mousemove="revealChrome"
     @mouseleave="scheduleChromeHide"
     @touchstart.passive="revealChrome"
+    @contextmenu="openPlaybackContextMenu"
   >
     <VideoPlayer
       :is-playing="isPlaying"
@@ -1113,6 +1307,72 @@ watch(
         @interaction-change="handleControlsInteraction"
       />
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="contextMenuOpen"
+        class="fixed inset-0 z-[1080]"
+        aria-hidden="false"
+        @pointerdown="closePlaybackContextMenu()"
+        @contextmenu.prevent="openPlaybackContextMenu"
+      >
+        <div
+          class="player-context-menu pointer-events-auto fixed w-[21rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-3xl border border-white/14 bg-black/74 p-3 text-sm text-white/78 shadow-2xl backdrop-blur-2xl"
+          :style="{ left: `${contextMenuPosition.x}px`, top: `${contextMenuPosition.y}px`, maxHeight: `min(${CONTEXT_MENU_MAX_HEIGHT}px, calc(100vh - 1.5rem))` }"
+          role="menu"
+          aria-label="播放详情菜单"
+          tabindex="0"
+          @pointerdown.stop
+          @contextmenu.prevent.stop
+          @keydown.esc.prevent.stop="closePlaybackContextMenu()"
+        >
+          <div class="border-b border-white/10 px-2 pb-3">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/42">
+              Playback details
+            </p>
+            <h2 class="mt-2 line-clamp-2 text-base font-bold leading-6 text-white">
+              {{ contextMenuTitle }}
+            </h2>
+            <p class="mt-1 text-xs text-white/46">
+              {{ contextMenuSource }}
+            </p>
+          </div>
+
+          <dl class="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 px-2 text-xs">
+            <template v-for="detail in contextMenuDetails" :key="detail.label">
+              <dt class="text-white/38">
+                {{ detail.label }}
+              </dt>
+              <dd class="min-w-0 truncate text-right font-medium text-white/76">
+                {{ detail.value }}
+              </dd>
+            </template>
+          </dl>
+
+          <div class="mt-3 grid gap-1.5" role="group" aria-label="播放操作">
+            <button type="button" class="context-menu-action" role="menuitem" @click="togglePlaybackFromContextMenu">
+              {{ isPlaying ? '暂停播放' : '继续播放' }}
+            </button>
+            <button type="button" class="context-menu-action" role="menuitem" @click="copyContextMenuIdentifier">
+              复制安全标题/标识
+            </button>
+            <button type="button" class="context-menu-action" role="menuitem" @click="openDiagnosticsFromContextMenu">
+              打开诊断
+            </button>
+            <button type="button" class="context-menu-action" role="menuitem" @click="navigateFromContextMenu('home')">
+              返回主页
+            </button>
+            <button type="button" class="context-menu-action" role="menuitem" @click="navigateFromContextMenu('settings')">
+              打开设置
+            </button>
+          </div>
+
+          <p v-if="contextMenuCopyMessage" class="mt-2 px-2 text-xs text-white/52">
+            {{ contextMenuCopyMessage }}
+          </p>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1159,6 +1419,36 @@ watch(
 .player-view--transparent {
   background: transparent;
   background-color: transparent;
+}
+
+.player-context-menu {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 24px 80px rgba(0, 0, 0, 0.52);
+}
+
+.context-menu-action {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  padding: 0.58rem 0.72rem;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+
+.context-menu-action:hover,
+.context-menu-action:focus-visible {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.11);
+  transform: translateY(-1px);
 }
 
 .player-chrome-top-enter-active,

@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Check custom player chrome/menu behavior, accessibility, and overlay interaction patterns."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check render-state typing and sensitive playback URL/path redaction contracts."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check frontend validation expectations and forbidden credential/path exposure patterns."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check Player view, mpv render state, and datasource metadata boundaries remain safe."}
