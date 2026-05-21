@@ -8,10 +8,10 @@ use std::{
 use libmpv_sys::{
     mpv_command, mpv_create, mpv_error_string, mpv_format_MPV_FORMAT_DOUBLE,
     mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
-    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
-    mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
-    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_node, mpv_node_list,
-    mpv_set_option_string, mpv_set_property, mpv_set_property_string, mpv_terminate_destroy,
+    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
+    mpv_free, mpv_free_node_contents, mpv_get_property, mpv_get_property_string, mpv_handle,
+    mpv_initialize, mpv_node, mpv_node_list, mpv_set_option_string, mpv_set_property,
+    mpv_set_property_string, mpv_terminate_destroy,
 };
 
 use super::{
@@ -431,7 +431,9 @@ impl MpvPlayer {
                 })
             }
             "volume" | "time-pos" | "duration" | "speed" | "panscan" | "video-zoom" => {
-                let mut value = value.parse::<f64>().map_err(|_| "Invalid numeric mpv value".to_string())?;
+                let mut value = value
+                    .parse::<f64>()
+                    .map_err(|_| "Invalid numeric mpv value".to_string())?;
                 self.check_error(unsafe {
                     mpv_set_property(
                         self.ctx,
@@ -442,13 +444,16 @@ impl MpvPlayer {
                 })
             }
             "sid" | "aid" if value == "no" => {
-                let value = CString::new(value).map_err(|_| "Invalid mpv property value".to_string())?;
+                let value =
+                    CString::new(value).map_err(|_| "Invalid mpv property value".to_string())?;
                 self.check_error(unsafe {
                     mpv_set_property_string(self.ctx, prop.as_ptr(), value.as_ptr())
                 })
             }
             "sid" | "aid" => {
-                let mut value = value.parse::<i64>().map_err(|_| "Invalid track id".to_string())?;
+                let mut value = value
+                    .parse::<i64>()
+                    .map_err(|_| "Invalid track id".to_string())?;
                 self.check_error(unsafe {
                     mpv_set_property(
                         self.ctx,

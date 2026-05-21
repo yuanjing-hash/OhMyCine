@@ -90,7 +90,11 @@ pub fn player_list_continue_watching(
     limit: Option<u32>,
 ) -> Result<Vec<PlaybackHistoryEntry>, String> {
     let storage = PlaybackHistoryStorage::open(&app)?;
-    storage.list_continue_watching(limit.unwrap_or(DEFAULT_CONTINUE_LIMIT).min(MAX_CONTINUE_LIMIT))
+    storage.list_continue_watching(
+        limit
+            .unwrap_or(DEFAULT_CONTINUE_LIMIT)
+            .min(MAX_CONTINUE_LIMIT),
+    )
 }
 
 struct PlaybackHistoryStorage {
@@ -228,7 +232,11 @@ impl PlaybackHistoryStorage {
 
         let entries = statement
             .query_map(
-                params![MIN_RESUME_POSITION_SECONDS, COMPLETED_REMAINING_SECONDS, limit],
+                params![
+                    MIN_RESUME_POSITION_SECONDS,
+                    COMPLETED_REMAINING_SECONDS,
+                    limit
+                ],
                 map_history_entry,
             )
             .map_err(|_| "Failed to read continue watching entries.".to_string())?
@@ -317,7 +325,9 @@ fn identity_key(source_id: &str, media_identity: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn normalize_identity(identity: PlaybackProgressIdentity) -> Result<PlaybackProgressIdentity, String> {
+fn normalize_identity(
+    identity: PlaybackProgressIdentity,
+) -> Result<PlaybackProgressIdentity, String> {
     Ok(PlaybackProgressIdentity {
         source_id: normalize_id(identity.source_id, "Invalid playback source.")?,
         media_identity: normalize_media_identity(identity.media_identity)?,
@@ -434,7 +444,8 @@ fn is_completed(position: f64, duration: Option<f64>) -> bool {
         return false;
     }
 
-    position >= duration * COMPLETED_PROGRESS_RATIO || duration - position <= COMPLETED_REMAINING_SECONDS
+    position >= duration * COMPLETED_PROGRESS_RATIO
+        || duration - position <= COMPLETED_REMAINING_SECONDS
 }
 
 fn progress_ratio(position: f64, duration: Option<f64>) -> Option<f64> {

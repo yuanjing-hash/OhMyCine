@@ -11,6 +11,7 @@ import type {
   ProviderPlaybackSyncDiagnostic,
   SubtitleTrack,
 } from './types'
+import { invoke } from '@tauri-apps/api/core'
 import { ofetch } from 'ofetch'
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readCredential, readEmbyCredential, readRawCredentialBackup, removeCredential, saveEmbyCredential, saveRawCredentialBackup } from './credentialStore'
@@ -72,6 +73,24 @@ interface EmbyRequestBodyObject {
   readonly [key: string]: EmbyRequestBodyValue | undefined
 }
 type EmbyRequestBody = EmbyRequestBodyObject
+
+type EmbyNativeJsonValue = EmbyRequestBodyValue
+
+interface EmbyNativePlaybackJsonRequest {
+  readonly baseUrl: string
+  readonly path: string
+  readonly query?: Record<string, string | number | boolean | null>
+  readonly body?: EmbyNativeJsonValue
+  readonly token: string
+  readonly userId: string
+  readonly deviceId: string
+  readonly authMode: EmbyPlaybackAuthMode
+}
+
+interface EmbyNativePlaybackJsonResponse {
+  readonly status: number
+  readonly body: unknown
+}
 
 interface EmbyConfigExtra {
   readonly userId?: string
@@ -1056,15 +1075,21 @@ export class EmbyDataSource implements DataSource {
   private async postPlaybackJson(path: string, body: EmbyRequestBody | undefined, authMode: EmbyPlaybackAuthMode = 'default', query: EmbyRequestPayload = {}): Promise<unknown> {
     this.ensureConfigured()
     const resolvedPath = path.replace('{UserId}', encodeURIComponent(this.userId))
-    const url = `${this.baseUrl}${resolvedPath}`
 
     try {
-      return await ofetch<unknown>(url, {
-        method: 'POST',
-        query,
-        body,
-        headers: this.playbackAuthHeaders(authMode),
+      const response = await invoke<EmbyNativePlaybackJsonResponse>('emby_post_playback_json', {
+        request: {
+          baseUrl: this.baseUrl,
+          path: resolvedPath,
+          query: toNativePlaybackQuery(query),
+          body,
+          token: this.token,
+          userId: this.userId,
+          deviceId: this.deviceId,
+          authMode,
+        } satisfies EmbyNativePlaybackJsonRequest,
       })
+      return response.body
     }
     catch (error) {
       throw new Error(redactSensitiveText(error))
@@ -1075,19 +1100,6 @@ export class EmbyDataSource implements DataSource {
     return {
       'X-Emby-Token': this.token,
       'X-Emby-Authorization': authorizationHeader(this.deviceId, this.token),
-    }
-  }
-
-  private playbackAuthHeaders(mode: EmbyPlaybackAuthMode): Record<string, string> {
-    if (mode === 'default')
-      return this.authHeaders()
-
-    const header = authorizationHeader(this.deviceId, this.token, this.userId)
-    return {
-      'Authorization': header,
-      'X-MediaBrowser-Token': this.token,
-      'X-Emby-Token': this.token,
-      'X-Emby-Authorization': header,
     }
   }
 
@@ -1614,6 +1626,11 @@ function compactPlaybackBody(body: EmbyRequestPayload): EmbyRequestPayload {
   return Object.fromEntries(
     Object.entries(body).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   ) as EmbyRequestPayload
+}
+
+function toNativePlaybackQuery(query: EmbyRequestPayload): Record<string, string | number | boolean | null> | undefined {
+  const entries = Object.entries(query).filter(([, value]) => value !== undefined && value !== null && value !== '') as Array<[string, string | number | boolean | null]>
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
 function compactPlaybackRequestBody(body: EmbyRequestBody): EmbyRequestBody {

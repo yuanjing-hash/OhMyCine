@@ -7,6 +7,7 @@ mod mpv;
 use tauri::{utils::config::Color, Manager};
 
 use commands::credential::{credential_delete, credential_get, credential_set};
+use commands::emby::emby_post_playback_json;
 use commands::history::{
     player_get_playback_progress, player_list_continue_watching, player_upsert_playback_progress,
 };
@@ -38,6 +39,7 @@ fn main() {
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_list_continue_watching,
+            emby_post_playback_json,
             mpv_load,
             mpv_add_subtitle,
             mpv_pause,

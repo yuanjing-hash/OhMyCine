@@ -19,7 +19,9 @@ pub async fn mpv_add_subtitle(
     language: Option<String>,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
-    let mut player = state.lock().map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
+    let mut player = state
+        .lock()
+        .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
     player.add_subtitle(&url, title.as_deref(), language.as_deref())
 }
 
@@ -53,13 +55,17 @@ pub async fn mpv_set_property(
     value: String,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
-    let player = state.lock().map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
+    let player = state
+        .lock()
+        .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
     player.set_property(&prop, &value)
 }
 
 #[tauri::command]
 pub async fn mpv_track_state(state: State<'_, MpvState>) -> Result<MpvTrackState, String> {
-    let mut player = state.lock().map_err(|_| "播放器轨道信息暂不可用，请稍后重试".to_string())?;
+    let mut player = state
+        .lock()
+        .map_err(|_| "播放器轨道信息暂不可用，请稍后重试".to_string())?;
     player.track_state()
 }
 

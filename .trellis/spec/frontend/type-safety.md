@@ -130,8 +130,8 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 ### Provider Playback Progress Sync Contract
 
 #### 1. Scope / Trigger
-- Trigger: adding or changing DataSource provider-native playback progress sync, watched/completed sync, Player playback-history save hooks, or provider progress metadata such as `mediaSourceId` / `playSessionId`.
-- Applies to the shared `DataSource` interface, Player route/context progress payloads, Emby/Jellyfin provider implementations, local SQLite playback-history coordination, and token redaction boundaries.
+- Trigger: adding or changing DataSource provider-native playback progress sync, watched/completed sync, Player playback-history save hooks, provider progress metadata such as `mediaSourceId` / `playSessionId`, or native HTTP commands used for provider playback reporting.
+- Applies to the shared `DataSource` interface, Player route/context progress payloads, Emby/Jellyfin provider implementations, Tauri playback-sync HTTP commands, local SQLite playback-history coordination, and token redaction boundaries.
 
 #### 2. Signatures
 - Shared event type:
@@ -160,6 +160,26 @@ interface DataSource {
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
 }
 ```
+- Tauri native playback POST command:
+```rust
+emby_post_playback_json(request: EmbyPlaybackJsonRequest) -> Result<EmbyPlaybackJsonResponse, String>
+```
+```ts
+interface EmbyNativePlaybackJsonRequest {
+  baseUrl: string
+  path: string
+  query?: Record<string, string | number | boolean | null>
+  body?: EmbyNativeJsonValue
+  token: string
+  userId: string
+  deviceId: string
+  authMode: 'default' | 'official-compatible'
+}
+interface EmbyNativePlaybackJsonResponse {
+  status: number
+  body: unknown
+}
+```
 - Emby-compatible endpoints:
   - `POST /Items/{Id}/PlaybackInfo` to negotiate playable media sources and, when the server supports the request shape, `PlaySessionId`.
   - `POST /Sessions/Playing` with `ItemId`, `MediaSourceId`, `PlaySessionId`, `PositionTicks`, `RunTimeTicks`, `PlaybackStartTimeTicks`, `CanSeek`, `IsPaused`, `PlayMethod`, `PlaybackRate`, `RepeatMode`, and `VolumeLevel`.
@@ -173,6 +193,8 @@ interface DataSource {
 - Player payload positions, durations, and optional playback start/resume positions are seconds. Provider implementations convert to provider-native units internally; Emby uses ticks (`seconds * 10_000_000`).
 - Remote-provider progress identity must use stable provider item/session fields (`itemId`, optional `mediaSourceId`, optional `playSessionId`) rather than tokenized playback URLs.
 - Provider implementations must reuse their existing authenticated request helper and redaction path. Tokenized stream URLs, image URLs, credentials, filesystem paths, and provider redirect targets must not be used as progress identity, displayed in errors, logged, or persisted.
+- Emby playback-sync POST traffic (`/Items/{Id}/PlaybackInfo` and `/Sessions/Playing*`) must go through the Tauri native HTTP command, not WebView `fetch`, because `POST + JSON + Emby auth headers` can be blocked by browser CORS/OPTIONS preflight before Emby returns an HTTP status. Generic browsing/home/detail requests can stay on the existing DataSource request path unless they hit the same boundary.
+- The native Emby playback command must accept only `http`/`https` base URLs, reject base URL query/fragment/userinfo, reject unsafe playback paths/query-in-path, disable redirects, bound timeouts/body sizes, and return only short redacted error details.
 - Emby sync should preserve or re-obtain `MediaSourceId` and `PlaySessionId` from `/Items/{id}/PlaybackInfo` when practical. Start with the provider's default Emby auth headers and safe request shapes; only try official-compatible `Authorization` / `X-MediaBrowser-*` headers after default-auth requests return media sources but still lack `PlaySessionId`.
 - Emby `/Sessions/Playing*` reports require both `MediaSourceId` and `PlaySessionId` for current server compatibility. If `PlaySessionId` is missing, skip the session report and record a safe diagnostic instead of sending a known-bad payload that returns 400.
 - Do not use legacy `/Users/{UserId}/PlayingItems*` routes as online playback-state fallback for Emby session reporting; source research showed similar clients use `/Sessions/Playing*`, and legacy routes can return 400 without updating active/cloud history.
@@ -184,6 +206,9 @@ interface DataSource {
 | DataSource lacks `syncPlaybackProgress` | Skip provider sync silently; keep local history and playback working |
 | position/duration is NaN, infinite, or negative | Skip provider sync; do not send malformed provider payloads |
 | provider request fails/offline/401 | Swallow or convert to user-safe non-blocking state; do not interrupt playback |
+| WebView `fetch` reports `<no response> Failed to fetch` for Emby playback POST | Route playback-sync POST through the Tauri native command instead of changing payloads blindly |
+| native playback command receives non-http(s), userinfo, query/fragment base URL, or query/fragment embedded in path | Reject before sending the request; return a generic invalid endpoint error |
+| native Emby response is huge or non-success | Bound response reads and return only status plus a short redacted body snippet; never expose tokens/UserId/hostnames |
 | Emby `MediaSourceId` or `PlaySessionId` is missing | Reuse cached playback metadata or refetch playback info when practical; if `PlaySessionId` is still missing, skip `/Sessions/Playing*` and store a safe diagnostic instead of sending a 400-prone report |
 | event is `paused` / `resumed` | Map to provider progress endpoint with an appropriate pause/unpause event where supported |
 | event is `stopped` during route leave or queue switch | Fire provider sync without awaiting it in blocking cleanup paths |
@@ -191,17 +216,20 @@ interface DataSource {
 | tokenized URL appears in stream/artwork/provider error | Redact/drop before display, logging, storage, or provider progress identity construction |
 
 #### 5. Good/Base/Bad Cases
-- Good: Player saves local SQLite progress, then fire-and-forgets `source.syncPlaybackProgress({ itemId, mediaSourceId, playSessionId, position, duration, startPosition, isPaused, completed, event })`; Emby converts seconds to ticks and reports through `/Sessions/Playing/Progress` only when `PlaySessionId` is available.
+- Good: Player saves local SQLite progress, then fire-and-forgets `source.syncPlaybackProgress({ itemId, mediaSourceId, playSessionId, position, duration, startPosition, isPaused, completed, event })`; Emby converts seconds to ticks and reports through native HTTP `/Sessions/Playing/Progress` only when `PlaySessionId` is available.
+- Good: Emby `PlaybackInfo` fails in WebView with CORS-like `<no response> Failed to fetch`; the provider uses `invoke('emby_post_playback_json')` for playback POSTs and diagnostics show native HTTP status/network outcomes instead.
 - Base: A local file or unsupported DataSource has no `syncPlaybackProgress`; local resume still works and no provider call is attempted.
 - Base: Emby `PlaybackInfo` returns media sources but no `PlaySessionId`; playback continues from a stable Emby/static stream URL, provider sync records a redacted diagnostic, and known-bad session reports are skipped.
 - Bad: Player awaits an Emby network progress request before route leave or queue switch, causing the UI to hang when Emby is slow or offline.
 - Bad: Sending legacy `/Users/{UserId}/PlayingItems*` fallback reports after `/Sessions/Playing*` cannot obtain a `PlaySessionId`.
+- Bad: Retrying WebView `fetch` payload variations after repeated `<no response> Failed to fetch` for playback POSTs instead of moving that boundary to native HTTP.
 - Bad: Using `streamUrl` or a signed redirect URL as `itemId` / `mediaIdentity` / provider progress identity.
 
 #### 6. Tests Required
 - `npm run typecheck` must catch drift in `ProviderPlaybackProgressInput` and optional `DataSource.syncPlaybackProgress` calls.
 - `npm run lint` must pass without broad provider-progress `any` payloads or unused queue/progress state.
 - `npm run build` must pass after Player route/control integration.
+- If native playback sync commands change, run `cargo check --manifest-path player/src-tauri/Cargo.toml` in addition to frontend checks.
 - DataSource/provider work should run `npm run tauri:build:windows --prefix player` when Player packaging is in scope; Rust checks are required only if Rust/Tauri files changed.
 - Manual Windows-host checks should verify Emby pause/resume/stop/completed progress appears on the Emby server when Provider sync diagnostics show `playSession=yes`; if `playSession=no`, diagnostics should explain the skipped session report without breaking playback or local continue-watching.
 
@@ -245,6 +273,22 @@ Correct:
 ```ts
 void embyProgressSync().catch(() => undefined)
 await router.replace(nextEpisodeRoute)
+```
+
+Wrong:
+```ts
+await fetch(`${baseUrl}/Items/${itemId}/PlaybackInfo`, {
+  method: 'POST',
+  headers: authHeaders,
+  body: JSON.stringify(body),
+})
+```
+
+Correct:
+```ts
+await invoke('emby_post_playback_json', {
+  request: { baseUrl, path: `/Items/${itemId}/PlaybackInfo`, query, body, token, userId, deviceId, authMode },
+})
 ```
 
 ### Player Playback History Command Contract
