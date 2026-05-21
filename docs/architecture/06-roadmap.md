@@ -133,9 +133,9 @@ Phase 4: 生态系统           ████████████████
 
 - [x] 实现 `useMpv()` composable
 - [x] 响应式状态: `isPlaying`, `currentTime`, `duration`, `volume`
-- [ ] 响应式状态: `subtitleTracks`, `audioTracks`, `currentSubtitle`, `currentAudio`
+- [x] 响应式状态: `subtitleTracks`, `audioTracks`, `currentSubtitle`, `currentAudio`（已接入 mpv 轨道状态、内封/外部字幕和当前音轨/字幕选择）
 - [x] 方法: `load()`, `togglePause()`, `seek()`, `setVolume()`
-- [ ] 方法: `setSubtitle()`, `setAudio()`
+- [x] 方法: `setSubtitle()`, `setAudio()`
 - [x] 事件监听自动清理 (`onUnmounted`)
 
 #### 基础窗口管理
@@ -155,7 +155,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 播放/暂停按钮
 - [~] 快进/快退按钮 (10s 已接入；60s 待后续快捷控制扩展)
 - [x] 音量显示与控制
-- [~] 上一集/下一集按钮占位（UI 已显示为禁用状态；播放列表/剧集队列待后续任务接入）
+- [x] 上一集/下一集按钮（已接入播放队列上下文；剧集/队列播放时按可用状态启用）
 
 **产出**:
 
@@ -177,7 +177,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 定义 `SubtitleTrack`, `AudioTrack` 接口
 - [~] 定义 `DataSourceType` 类型枚举
 - [~] 定义 `DataSourceConfig` 接口 (id, type, name, displayName, iconUrl, order, credentials...)
-- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL)
+- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL, optional syncPlaybackProgress；Jellyfin/OpenList/CloudDrive2 等实现待补齐)
 
 #### DataSourceManager 实现
 
@@ -204,6 +204,7 @@ Phase 4: 生态系统           ████████████████
 - [x] `getImageUrl(itemId, type)` — 构建图片URL
 - [x] 实现 `EmbyDataSource` (implements DataSource)
 - [x] `mapEmbyItem()` — Emby 数据映射到 MediaItem
+- [x] Emby 播放进度同步 — 通过 PlaybackInfo + Sessions/Playing/Progress/Stopped 将 active session、继续观看和播放历史同步回 Emby；本机 SQLite 历史保持 primary，provider sync best-effort
 
 #### JellyfinDataSource 实现
 
@@ -283,11 +284,12 @@ Phase 4: 生态系统           ████████████████
 
 #### 播放器增强
 
-- [ ] `SubtitleMenu.vue` — 字幕菜单
-- [ ] `AudioMenu.vue` — 音轨菜单
-- [ ] `PlaylistPanel.vue` — 播放列表
-- [ ] 播放历史记录 (本地存储)
-- [ ] 继续观看功能
+- [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
+- [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
+- [x] 播放队列面板（已内联在播放控制条并支持上一集/下一集；后续如需复用再拆独立 `PlaylistPanel.vue`）
+- [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）
+- [x] 继续观看功能（本机历史 + provider 原生继续观看聚合，Emby 进度同步后首页刷新）
+- [x] 右键播放菜单 + 播放详情 stats 浮层（紧凑用户菜单、播放详情浮层、HDR/SDR/杜比视界动态范围展示；诊断入口不暴露给普通用户）
 
 **产出**:
 
@@ -739,7 +741,7 @@ Phase 4: 生态系统           ████████████████
   - [~] 列表项进入动画
 - [~] 首页 (`HomeView.vue`)
   - [~] Hero Carousel (跨数据源聚合轮播，自动/手动切换)
-  - [~] 继续观看面板 (播放进度/下一集入口)
+  - [x] 继续观看面板 (本机/Emby 聚合播放进度、剧集标题排布、下一集/续播入口已接入)
   - [~] 最新影片面板 (海报+名称)
 - [~] 单数据源媒体库页 (`SourceLibraryView.vue`)
   - [ ] 数据源级 Hero Carousel (当前来源元数据)
