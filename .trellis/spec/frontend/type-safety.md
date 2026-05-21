@@ -33,6 +33,8 @@ Keep all media sources behind a common interface with these concepts:
 
 `DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `server`, `115`, `123`, and `quark` as planned types.
 
+OpenList/Alist API responses must be parsed from `unknown` envelopes. Treat `code !== 200 && code !== 0` as a provider failure, validate file records before mapping, normalize paths to rooted paths, and reject `.` / `..` path segments before constructing `/d{path}` stream URLs.
+
 ---
 
 ## Validation

@@ -1307,6 +1307,7 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
     extra: {
       credentialRef,
       deviceId: createDeviceId(input.id),
+      credentialVersion: Date.now(),
     },
   }
 
@@ -1893,5 +1894,12 @@ function sanitizeExportConfig(config: DataSourceConfig | null): DataSourceConfig
 }
 
 function isSensitiveConfigKey(key: string): boolean {
-  return ['apiKey', 'token', 'accessToken', 'password', 'username'].includes(key)
+  const normalized = key.toLowerCase()
+  return ['apikey', 'api_key', 'access_token', 'passwd', 'pwd'].includes(normalized)
+    || normalized.includes('token')
+    || normalized.includes('password')
+    || normalized.includes('username')
+    || normalized.includes('authorization')
+    || normalized.includes('cookie')
+    || normalized.includes('passkey')
 }

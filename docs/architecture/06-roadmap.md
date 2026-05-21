@@ -217,15 +217,15 @@ Phase 4: 生态系统           ████████████████
 - [~] 使用 Tauri `app_data_dir` 存储配置
 - [~] 实现 `config.json` 读写 (datasources, server, ai, ui)
 - [~] 配置变更自动保存
-- [~] Emby 账号、密码与访问令牌持久化到 Tauri app data 下的 SQLite 凭证库，并通过 `credentialRef` 引用；字段使用本地生成 master key + AES-GCM 加密，master key 仍保存在本机 app data 文件中，暂未接入 OS Keychain/libsecret/DPAPI
+- [~] Emby 与 OpenList/Alist 账号、密码与访问令牌持久化到 Tauri app data 下的 SQLite 凭证库，并通过 `credentialRef` 引用；字段使用 provider-specific 结构化 envelope + 本地生成 master key + AES-GCM 加密，master key 仍保存在本机 app data 文件中，暂未接入 OS Keychain/libsecret/DPAPI
 
 #### 设置页面 UI
 
-- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、Emby 账号密码登录式添加/编辑表单）
+- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、Emby 与 OpenList/Alist 账号密码登录式添加/编辑表单）
 - [x] 数据源列表管理 (添加/编辑/删除)
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
 - [~] 数据源显示配置 (名称/图标/是否在侧栏显示；当前支持显示名称，图标/侧栏开关待后续)
-- [~] 添加数据源表单 (管理入口→类型选择→Emby URL/账号/密码登录；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
+- [~] 添加数据源表单 (管理入口→类型选择→Emby/OpenList/Alist URL/账号/密码登录；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
 - [x] 连接测试按钮 (显示成功/失败)
 - [~] 数据源状态显示 (在线/离线；当前在测试/浏览错误态中呈现，持久状态徽标待后续)
 
@@ -236,7 +236,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
 - [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现，并改为按媒体库/文件夹/剧集/季/集层级非递归浏览；搜索/首页区块仍可使用递归查询）
 - [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；Windows 宿主已验证可在透明叠层 + mpv 视频底层窗口中显示，Jellyfin 数据源仍待实现）
-- [~] 配置自动持久化（非敏感配置持久化；Emby 账号、密码、token 进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
+- [~] 配置自动持久化（非敏感配置持久化；Emby 与 OpenList/Alist 账号、密码、token 进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 
@@ -244,13 +244,13 @@ Phase 4: 生态系统           ████████████████
 
 #### OpenList/Alist DataSource 实现
 
-- [ ] 实现 OpenList/Alist HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`)
+- [~] 实现 OpenList/Alist HTTP API 客户端 (`/api/auth/login`, `/api/fs/list`, `/api/fs/get`；代码已接入 Player，仍待真实 OpenList/Alist 服务 live test)
 - [ ] 实现 WebDAV 客户端 (备选方案)
-- [ ] `list(path)` — 目录浏览
-- [ ] `search(keyword)` — 搜索
-- [ ] `getStreamURL(path)` — 构建播放URL (`/d{path}`)
-- [ ] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource)
-- [ ] 连接测试
+- [~] `list(path)` — 目录浏览（HTTP API 已实现，待真实服务验证）
+- [~] `search(keyword)` — 搜索（优先 `/api/fs/search`，不可用时有限目录回退搜索；待真实服务验证）
+- [~] `getStreamURL(path)` — 构建播放URL (`/d{path}`，支持 `/api/fs/get` 返回的 sign；待真实服务验证)
+- [~] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource；账号登录-only MVP)
+- [~] 连接测试（设置页添加/编辑时先 `/api/auth/login` 并测试根目录列表，待真实服务验证）
 
 #### CloudDrive2DataSource 实现
 
@@ -293,7 +293,7 @@ Phase 4: 生态系统           ████████████████
 
 **产出**:
 
-- [ ] 能连接 OpenList/Alist 浏览和播放云盘文件
+- [~] 能连接 OpenList/Alist 浏览和播放云盘文件（实现已写入 Player，待真实 OpenList/Alist 服务 live test）
 - [ ] 能连接 CloudDrive2 浏览和播放
 - [~] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；Windows 已验证窗口内视频渲染，本地文件 DataSource 浏览、文件关联与完整本地媒体库能力未完成
 - [ ] 115/123/夸克在 UI 中有占位

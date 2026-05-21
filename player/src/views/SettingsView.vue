@@ -1,20 +1,46 @@
 <script setup lang="ts">
 import type { DataSourceConfig, DataSourceType, MediaLibrary } from '@/services/datasource/types'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { hasPersistentCredentialStorageWarning } from '@/services/datasource/credentialStore'
+import { loginAlistAndCreateConfig } from '@/services/datasource/alist'
+import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { useDataSourceStore } from '@/stores/datasource'
 
+type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
+
 interface DataSourceFormState {
   id: string | null
-  type: DataSourceType
+  type: LoginDataSourceType
   displayName: string
   url: string
   username: string
   password: string
 }
+
+const sourceTypeOptions: Array<{
+  type: LoginDataSourceType
+  label: string
+  defaultName: string
+  urlPlaceholder: string
+  usernamePlaceholder: string
+}> = [
+  {
+    type: 'emby',
+    label: 'Emby',
+    defaultName: 'Emby',
+    urlPlaceholder: 'http://192.168.1.2:8096',
+    usernamePlaceholder: 'Emby 登录账号',
+  },
+  {
+    type: 'alist',
+    label: 'OpenList/Alist',
+    defaultName: 'OpenList/Alist',
+    urlPlaceholder: 'http://192.168.1.2:5244',
+    usernamePlaceholder: 'OpenList/Alist 登录账号',
+  },
+]
 
 const store = useDataSourceStore()
 const route = useRoute()
@@ -32,14 +58,21 @@ const isSaving = ref(false)
 const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
-const persistentCredentialWarning = computed(() => hasPersistentCredentialStorageWarning())
+const persistentCredentialWarning = ref(hasPersistentCredentialStorageWarning())
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
+const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 
 onMounted(() => {
   store.loadConfigs()
+  refreshPersistentCredentialWarning()
   mode.value = route.query.action === 'add' ? 'add' : 'manage'
+})
+
+watch(() => form.type, (type) => {
+  if (!isEditing.value)
+    form.displayName = defaultDisplayName(type)
 })
 
 function goManage(options: { preserveFeedback?: boolean } = {}) {
@@ -59,7 +92,7 @@ function goAdd() {
 function resetForm() {
   form.id = null
   form.type = 'emby'
-  form.displayName = 'Emby'
+  form.displayName = defaultDisplayName(form.type)
   form.url = ''
   form.username = ''
   form.password = ''
@@ -68,6 +101,14 @@ function resetForm() {
 }
 
 function editSource(config: DataSourceConfig) {
+  if (!isLoginDataSourceType(config.type)) {
+    feedback.value = {
+      type: 'error',
+      message: `${sourceTypeLabel(config.type)} 暂不支持在当前设置页编辑。`,
+    }
+    return
+  }
+
   form.id = config.id
   form.type = config.type
   form.displayName = config.displayName ?? config.name
@@ -76,7 +117,7 @@ function editSource(config: DataSourceConfig) {
   form.password = ''
   feedback.value = {
     type: 'info',
-    message: '可修改显示名称、URL 与启用状态；如 URL 或账号变化，请输入 Emby 账号密码重新登录。',
+    message: `可修改显示名称与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   mode.value = 'edit'
@@ -121,8 +162,8 @@ async function saveSource() {
       return
     }
 
-    const id = `emby-${Date.now()}`
-    const result = await loginEmbyAndCreateConfig({
+    const id = `${form.type}-${Date.now()}`
+    const result = await loginAndCreateConfig(form.type, {
       id,
       url: form.url,
       displayName: form.displayName,
@@ -130,19 +171,27 @@ async function saveSource() {
       password: form.password,
       order: store.configs.length,
     })
-    await store.replaceConfig(result.config)
+    try {
+      await store.replaceConfig(result.config)
+    }
+    catch (error) {
+      await restoreCredentialForConfig(result.config, null).catch(() => undefined)
+      throw error
+    }
     const libraryCount = result.libraries.length
+    const label = sourceTypeLabel(form.type)
     resetForm()
-    feedback.value = { type: 'success', message: `Emby 登录成功，已获取 ${libraryCount} 个媒体库。新数据源已添加到左侧侧边栏。` }
+    feedback.value = { type: 'success', message: `${label} 登录测试成功，已验证 ${libraryCount} 个入口。新数据源已添加到左侧侧边栏。` }
     goManage({ preserveFeedback: true })
   }
   catch (error) {
     feedback.value = {
       type: 'error',
-      message: toSafeErrorMessage(error, '添加数据源失败，请检查 Emby URL、账号和密码。'),
+      message: toSafeErrorMessage(error, `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
     }
   }
   finally {
+    refreshPersistentCredentialWarning()
     isSaving.value = false
   }
 }
@@ -151,36 +200,120 @@ async function saveEditedSource(id: string) {
   const existing = store.configs.find(config => config.id === id)
   if (!existing)
     throw new Error('数据源不存在。')
+  if (!isLoginDataSourceType(existing.type))
+    throw new Error(`${sourceTypeLabel(existing.type)} 暂不支持在当前设置页编辑。`)
 
   const username = form.username.trim()
-  const shouldRelogin = Boolean(username || form.password)
+  const nextUrl = form.url.trim()
+  const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
+  const label = sourceTypeLabel(existing.type)
+  const shouldRelogin = normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(existing.url) || Boolean(username || form.password)
   if (shouldRelogin && (!username || !form.password))
-    throw new Error('重新登录时必须同时填写 Emby 账号和密码。')
+    throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
 
   if (shouldRelogin) {
-    const result = await loginEmbyAndCreateConfig({
+    const previousCredential = await readCredentialBackupForConfig(existing)
+    const result = await loginAndCreateConfig(existing.type, {
       id,
-      url: form.url,
-      displayName: form.displayName,
+      url: nextUrl,
+      displayName: nextDisplayName,
       username,
       password: form.password,
       order: existing.order,
     })
-    await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
-    feedback.value = { type: 'success', message: `Emby 已重新登录，并刷新 ${result.libraries.length} 个媒体库。` }
+    try {
+      await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
+    }
+    catch (error) {
+      await restoreCredentialForConfig(result.config, previousCredential).catch(() => undefined)
+      throw error
+    }
+    feedback.value = { type: 'success', message: `${label} 已重新登录，并验证 ${result.libraries.length} 个入口。` }
     form.password = ''
     goManage({ preserveFeedback: true })
     return
   }
 
   await store.updateConfig(id, {
-    name: form.displayName.trim() || existing.name,
-    displayName: form.displayName.trim() || existing.displayName,
-    url: form.url.trim() || existing.url,
+    name: nextDisplayName,
+    displayName: nextDisplayName,
   })
   form.password = ''
   feedback.value = { type: 'success', message: '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
   goManage({ preserveFeedback: true })
+}
+
+function loginAndCreateConfig(type: LoginDataSourceType, input: {
+  id: string
+  url: string
+  displayName: string
+  username: string
+  password: string
+  order: number
+}): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
+  if (type === 'alist')
+    return loginAlistAndCreateConfig(input)
+  return loginEmbyAndCreateConfig(input)
+}
+
+function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
+  return type === 'emby' || type === 'alist'
+}
+
+function sourceTypeLabel(type: DataSourceType): string {
+  switch (type) {
+    case 'emby':
+      return 'Emby'
+    case 'alist':
+      return 'OpenList/Alist'
+    case 'jellyfin':
+      return 'Jellyfin'
+    case 'clouddrive2':
+      return 'CloudDrive2'
+    case 'local':
+      return '本地文件'
+    case 'server':
+      return 'OhMyCine Server'
+    default:
+      return type
+  }
+}
+
+function defaultDisplayName(type: LoginDataSourceType): string {
+  return sourceTypeOptions.find(option => option.type === type)?.defaultName ?? '数据源'
+}
+
+function sourceStatusLine(source: DataSourceConfig): string {
+  const credentialState = typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
+  return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}`
+}
+
+function normalizeComparableUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '')
+}
+
+function refreshPersistentCredentialWarning() {
+  persistentCredentialWarning.value = hasPersistentCredentialStorageWarning()
+}
+
+async function readCredentialBackupForConfig(config: DataSourceConfig): Promise<string | null> {
+  const credentialRef = credentialRefFromConfig(config)
+  return credentialRef ? readRawCredentialBackup(credentialRef) : null
+}
+
+async function restoreCredentialForConfig(config: DataSourceConfig, previousCredential: string | null): Promise<void> {
+  const credentialRef = credentialRefFromConfig(config)
+  if (!credentialRef)
+    return
+
+  if (previousCredential)
+    await saveRawCredentialBackup(credentialRef, previousCredential)
+  else
+    await removeCredential(credentialRef)
+}
+
+function credentialRefFromConfig(config: DataSourceConfig): string | null {
+  return typeof config.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
 }
 </script>
 
@@ -206,7 +339,7 @@ async function saveEditedSource(id: string) {
           设置
         </h1>
         <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-          Player 可直接连接 Emby 浏览和播放媒体，不依赖 OhMyCine Server。当前通过 Emby 账号密码登录，账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。
+          Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。
         </p>
       </header>
 
@@ -214,7 +347,7 @@ async function saveEditedSource(id: string) {
         v-if="persistentCredentialWarning"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
-        当前运行环境不可用 Tauri SQLite 凭证命令，Emby 账号、密码和 token 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
+        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码和 token 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
       </div>
 
       <section v-if="mode === 'manage'" class="glass-panel rounded-[1.75rem] p-6">
@@ -255,7 +388,7 @@ async function saveEditedSource(id: string) {
                   </div>
                 </div>
                 <p class="mt-3 text-xs text-white/34">
-                  状态：{{ source.enabled === false ? '已停用' : '已启用' }} · 用户：{{ source.extra?.userId ?? '登录后自动获取' }}
+                  {{ sourceStatusLine(source) }}
                 </p>
               </div>
 
@@ -295,7 +428,7 @@ async function saveEditedSource(id: string) {
             还没有数据源
           </p>
           <p class="mt-2 text-sm leading-6 text-white/42">
-            添加 Emby 数据源后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
+            添加 Emby 或 OpenList/Alist 数据源后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
           </p>
           <button class="mt-5 rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
             添加数据源
@@ -313,7 +446,7 @@ async function saveEditedSource(id: string) {
               {{ isEditing ? '编辑数据源' : '添加数据源' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              先选择数据源类型，再填写对应登录信息。当前仅开放 Emby；点击添加时会先登录测试，成功后在 SQLite 凭证边界保存账号、密码、token 与用户信息并拉取媒体库。
+              先选择数据源类型，再填写对应登录信息。当前 OpenList/Alist 仅支持账号登录，不提供手填 token、公开目录或 WebDAV 模式；点击添加或保存时会先登录测试，成功后只持久化安全配置和 credentialRef。
             </p>
           </div>
           <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
@@ -329,54 +462,52 @@ async function saveEditedSource(id: string) {
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
               :disabled="isEditing"
             >
-              <option value="emby">
-                Emby
+              <option v-for="option in sourceTypeOptions" :key="option.type" :value="option.type">
+                {{ option.label }}
               </option>
             </select>
           </label>
 
-          <template v-if="form.type === 'emby'">
-            <label class="block">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">显示名称</span>
-              <input
-                v-model="form.displayName"
-                class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                placeholder="家庭 Emby"
-                autocomplete="off"
-              >
-            </label>
+          <label class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">显示名称</span>
+            <input
+              v-model="form.displayName"
+              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :placeholder="selectedProvider.defaultName"
+              autocomplete="off"
+            >
+          </label>
 
-            <label class="block">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
-              <input
-                v-model="form.url"
-                class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                placeholder="http://192.168.1.2:8096"
-                autocomplete="off"
-              >
-            </label>
+          <label class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
+            <input
+              v-model="form.url"
+              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :placeholder="selectedProvider.urlPlaceholder"
+              autocomplete="off"
+            >
+          </label>
 
-            <label class="block">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
-              <input
-                v-model="form.username"
-                class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                placeholder="Emby 登录账号"
-                autocomplete="username"
-              >
-            </label>
+          <label class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
+            <input
+              v-model="form.username"
+              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :placeholder="selectedProvider.usernamePlaceholder"
+              autocomplete="username"
+            >
+          </label>
 
-            <label class="block">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
-              <input
-                v-model="form.password"
-                class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                :placeholder="isEditing ? '留空则不重新登录' : '将保存到 SQLite 凭证边界'"
-                type="password"
-                autocomplete="current-password"
-              >
-            </label>
-          </template>
+          <label class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
+            <input
+              v-model="form.password"
+              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :placeholder="isEditing ? '留空则不重新登录' : '将保存到 SQLite 凭证边界'"
+              type="password"
+              autocomplete="current-password"
+            >
+          </label>
 
           <div
             v-if="feedback"

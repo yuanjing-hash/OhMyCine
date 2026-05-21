@@ -1,4 +1,5 @@
 import type { DataSource, DataSourceConfig, DataSourceType, HomeSection } from './types'
+import { AlistDataSource } from './alist'
 import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 
@@ -111,6 +112,8 @@ export function createDataSource(type: DataSourceType): DataSource {
   switch (type) {
     case 'emby':
       return new EmbyDataSource()
+    case 'alist':
+      return new AlistDataSource()
     default:
       throw new Error(`${type} data source is not implemented yet.`)
   }

@@ -90,6 +90,7 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 #### 3. Contracts
 - `init(config)` normalizes non-sensitive config, loads credentials through a credential reference when available, and does not log tokens.
 - Emby add/edit flows authenticate with account/password through `/Users/AuthenticateByName` or equivalent, then store the returned access token behind `credentialRef`; normal Emby setup must not ask the user to manually paste an access token.
+- OpenList/Alist add/edit flows authenticate with account/password through `/api/auth/login`, then store the returned token behind `credentialRef`; the first Player MVP must not expose manual token entry, public/shared directory access, path passwords, or WebDAV mode in the normal OpenList/Alist setup flow.
 - `test()` returns connection/auth success without exposing raw provider errors or credentials.
 - `listLibraries()` returns `MediaLibrary[]` for source-level library cards and should be fetched after successful add/login so the source is known usable before it appears as connected.
 - `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.

@@ -39,7 +39,28 @@ const errorMessage = ref<string | null>(null)
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
 const pageTitle = computed(() => currentNode.value?.name ?? selectedLibrary.value?.name ?? (sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? 'Data Source'))
-const sourceTypeLabel = computed(() => sourceConfig.value?.type === 'emby' ? 'Emby' : (sourceConfig.value?.type ?? 'Data'))
+const sourceTypeLabel = computed(() => sourceConfig.value ? labelForSourceType(sourceConfig.value.type) : 'Data')
+const searchPlaceholder = computed(() => `搜索 ${sourceTypeLabel.value} 媒体或文件`)
+const breadcrumbLabel = computed(() => `${sourceTypeLabel.value} 浏览路径`)
+const rootBackLabel = computed(() => sourceConfig.value?.type === 'alist' ? '返回文件目录' : '返回媒体库')
+const sectionTitle = computed(() => {
+  if (selectedLibrary.value)
+    return sourceConfig.value?.type === 'alist' ? '目录项目' : '媒体项目'
+  return sourceConfig.value?.type === 'alist' ? '文件目录' : '媒体库'
+})
+const sectionDescription = computed(() => {
+  if (selectedLibrary.value)
+    return '选择视频条目即可进入现有播放加载流程。'
+  if (sourceConfig.value?.type === 'alist')
+    return '进入 OpenList/Alist 文件目录后，可继续浏览子目录或播放视频文件。'
+  return '选择一个媒体库开始浏览。'
+})
+const emptyTitle = computed(() => selectedLibrary.value ? '此目录暂无可显示项目' : `未找到 ${sourceTypeLabel.value} 入口`)
+const emptyDescription = computed(() => {
+  if (selectedLibrary.value)
+    return `请检查 ${sourceTypeLabel.value} 权限、目录内容或搜索条件。`
+  return '请确认设置中的 URL、登录会话和数据源启用状态有效。'
+})
 
 onMounted(async () => {
   store.loadConfigs()
@@ -56,14 +77,23 @@ watch(sourceId, async () => {
 })
 
 async function ensureSource() {
+  source.value = null
+  if (!sourceConfig.value)
+    return
+
   if (isSourceDisabled.value) {
-    source.value = null
     errorMessage.value = '该数据源已停用。请到设置的数据源管理中启用后再浏览。'
     return
   }
 
   await store.syncManager()
   source.value = store.getSource(sourceId.value)
+  if (!source.value) {
+    errorMessage.value = store.lastError || '数据源不可用，请检查登录凭证或到设置中重新登录。'
+    return
+  }
+
+  errorMessage.value = null
 }
 
 async function loadSourceRoot() {
@@ -121,8 +151,12 @@ async function runSearch() {
 
   const keyword = searchKeyword.value.trim()
   if (!keyword) {
-    if (selectedLibrary.value)
+    if (currentNode.value?.isSearch) {
+      backToLibraries()
+    }
+    else if (selectedLibrary.value) {
       await loadLibrary(selectedLibrary.value)
+    }
     return
   }
 
@@ -275,6 +309,25 @@ async function handlePlay(item: MediaItem) {
 function isContainerItem(item: MediaItem): boolean {
   return item.type === 'folder' || item.type === 'series' || item.type === 'season'
 }
+
+function labelForSourceType(type: string): string {
+  switch (type) {
+    case 'emby':
+      return 'Emby'
+    case 'alist':
+      return 'OpenList/Alist'
+    case 'jellyfin':
+      return 'Jellyfin'
+    case 'clouddrive2':
+      return 'CloudDrive2'
+    case 'local':
+      return '本地文件'
+    case 'server':
+      return 'OhMyCine Server'
+    default:
+      return type
+  }
+}
 </script>
 
 <template>
@@ -317,7 +370,7 @@ function isContainerItem(item: MediaItem): boolean {
             <input
               v-model="searchKeyword"
               class="min-w-0 flex-1 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
-              placeholder="搜索 Emby 媒体"
+              :placeholder="searchPlaceholder"
             >
             <button class="rounded-2xl bg-white/10 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/16">
               搜索
@@ -330,9 +383,9 @@ function isContainerItem(item: MediaItem): boolean {
             class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14"
             @click="backToLibraries"
           >
-            返回媒体库
+            {{ rootBackLabel }}
           </button>
-          <nav class="flex flex-wrap items-center gap-2 text-sm text-white/36" aria-label="Emby 浏览路径">
+          <nav class="flex flex-wrap items-center gap-2 text-sm text-white/36" :aria-label="breadcrumbLabel">
             <template v-for="(crumb, index) in navigationStack" :key="`${crumb.id}-${index}`">
               <span v-if="index > 0" class="text-white/20">/</span>
               <button
@@ -360,7 +413,7 @@ function isContainerItem(item: MediaItem): boolean {
                 继续观看
               </h2>
               <p class="mt-1 text-sm text-white/36">
-                从 Emby 恢复列表继续播放。
+                从 {{ sourceTypeLabel }} 恢复列表继续播放。
               </p>
             </div>
           </div>
@@ -374,7 +427,7 @@ function isContainerItem(item: MediaItem): boolean {
                 最新影片与剧集
               </h2>
               <p class="mt-1 text-sm text-white/36">
-                最近加入 Emby 的电影与剧集，避免用单集刷屏。
+                最近加入 {{ sourceTypeLabel }} 的电影与剧集。
               </p>
             </div>
           </div>
@@ -385,10 +438,10 @@ function isContainerItem(item: MediaItem): boolean {
           <div class="mb-4 flex items-end justify-between">
             <div>
               <h2 class="text-xl font-bold text-white">
-                {{ selectedLibrary ? '媒体项目' : '媒体库' }}
+                {{ sectionTitle }}
               </h2>
               <p class="mt-1 text-sm text-white/36">
-                {{ selectedLibrary ? '选择视频条目即可进入现有播放加载流程。' : '选择一个 Emby 媒体库开始浏览。' }}
+                {{ sectionDescription }}
               </p>
             </div>
           </div>
@@ -396,8 +449,8 @@ function isContainerItem(item: MediaItem): boolean {
           <MediaGrid
             :items="displayItems"
             :loading="isLoading"
-            :empty-title="selectedLibrary ? '此媒体库暂无可显示项目' : '未找到 Emby 媒体库'"
-            :empty-description="selectedLibrary ? '请检查 Emby 用户权限、媒体库内容或搜索条件。' : '请确认设置中的 URL、登录会话和数据源启用状态有效。'"
+            :empty-title="emptyTitle"
+            :empty-description="emptyDescription"
             @select="handleSelect"
             @play="handlePlay"
           />

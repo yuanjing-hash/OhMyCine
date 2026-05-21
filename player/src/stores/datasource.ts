@@ -40,20 +40,28 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   async function replaceConfig(config: DataSourceConfig) {
-    const idx = configs.value.findIndex(c => c.id === config.id)
-    if (idx >= 0) {
-      const existing = configs.value[idx]
-      configs.value[idx] = {
-        ...existing,
-        ...config,
-        order: config.order ?? existing.order,
+    const previousConfigs = cloneConfigs(configs.value)
+    try {
+      const safeConfig = sanitizePersistedConfig(config)
+      const idx = configs.value.findIndex(c => c.id === safeConfig.id)
+      if (idx >= 0) {
+        const existing = configs.value[idx]
+        configs.value[idx] = sanitizePersistedConfig({
+          ...existing,
+          ...safeConfig,
+          order: safeConfig.order ?? existing.order,
+        })
       }
+      else {
+        configs.value.push({ ...safeConfig, order: safeConfig.order ?? configs.value.length })
+      }
+      saveConfigs()
+      await syncManager()
     }
-    else {
-      configs.value.push({ ...config, order: config.order ?? configs.value.length })
+    catch (error) {
+      configs.value = previousConfigs
+      throw error
     }
-    saveConfigs()
-    await syncManager()
   }
 
   async function syncManager() {
@@ -69,9 +77,16 @@ export const useDataSourceStore = defineStore('datasource', () => {
   async function addConfig(config: Omit<DataSourceConfig, 'id' | 'order'> & Partial<Pick<DataSourceConfig, 'id' | 'order'>>) {
     const id = config.id ?? `${config.type}-${Date.now()}`
     const order = config.order ?? configs.value.length
-    configs.value.push({ ...config, id, order })
-    saveConfigs()
-    await syncManager()
+    const previousConfigs = cloneConfigs(configs.value)
+    try {
+      configs.value.push(sanitizePersistedConfig({ ...config, id, order }))
+      saveConfigs()
+      await syncManager()
+    }
+    catch (error) {
+      configs.value = previousConfigs
+      throw error
+    }
     return id
   }
 
@@ -79,9 +94,16 @@ export const useDataSourceStore = defineStore('datasource', () => {
     const idx = configs.value.findIndex(c => c.id === id)
     if (idx === -1)
       return
-    configs.value[idx] = { ...configs.value[idx], ...patch }
-    saveConfigs()
-    await syncManager()
+    const previousConfigs = cloneConfigs(configs.value)
+    try {
+      configs.value[idx] = sanitizePersistedConfig({ ...configs.value[idx], ...patch })
+      saveConfigs()
+      await syncManager()
+    }
+    catch (error) {
+      configs.value = previousConfigs
+      throw error
+    }
   }
 
   async function removeConfig(id: string) {
@@ -294,7 +316,21 @@ function sanitizePersistedConfig(config: DataSourceConfig): DataSourceConfig {
 }
 
 function isSensitiveConfigKey(key: string): boolean {
-  return ['apiKey', 'token', 'accessToken', 'password', 'username'].includes(key)
+  const normalized = key.toLowerCase()
+  return ['apikey', 'api_key', 'access_token', 'passwd', 'pwd'].includes(normalized)
+    || normalized.includes('token')
+    || normalized.includes('password')
+    || normalized.includes('username')
+    || normalized.includes('authorization')
+    || normalized.includes('cookie')
+    || normalized.includes('passkey')
+}
+
+function cloneConfigs(configs: readonly DataSourceConfig[]): DataSourceConfig[] {
+  return configs.map(config => ({
+    ...config,
+    extra: config.extra ? { ...config.extra } : undefined,
+  }))
 }
 
 function generatePlaceholderHeroItems(): MediaItem[] {

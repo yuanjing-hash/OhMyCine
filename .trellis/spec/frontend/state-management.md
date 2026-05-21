@@ -61,6 +61,8 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 #### 2. Signatures
 - Persisted config: `DataSourceConfig` stores non-sensitive fields plus `extra.credentialRef` or equivalent; it must not define raw `apiKey`, `username`, or `password` fields.
 - Credential helper: stores/retrieves/removes structured secret values by `credentialRef`, such as Emby `accessToken`, `username`, and `password`.
+- Provider credentials must use provider-specific structured envelopes, for example Emby `{ provider: 'emby', accessToken, username, password }` and OpenList/Alist `{ provider: 'alist', token, username, password }`; readers must reject envelopes for the wrong provider.
+- When a successful re-login changes only the credential value while the visible config stays the same, update a non-sensitive field such as `extra.credentialVersion` so `DataSourceManager` sees a new config signature and reinitializes the source instead of reusing an old in-memory token.
 - Tauri credential commands: `credential_set`, `credential_get`, and `credential_delete` persist/retrieve/delete secret values by credential reference.
 - Add-source flow: generated source id, credential ref, and stored config id must match before the source is persisted.
 
@@ -85,6 +87,7 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 | Store generates a different id than the credential ref expects | Treat as a bug; source id and credential ref must be derived from the same id |
 | Config save fails after credential write | Remove newly written credential |
 | Post-login library validation fails after overwriting existing credential | Restore previous credential or remove new credential for a new source |
+| Re-login succeeds but config signature does not change | Treat as a bug; bump a safe credential version/revision so the manager reloads the token |
 | App restarts in Tauri desktop | Credential should load from persistent credential boundary |
 | App runs in browser/Vite without Tauri commands | Use memory fallback only and show a persistence limitation warning |
 | Source is disabled | Do not initialize it or allow browsing/playback until re-enabled |

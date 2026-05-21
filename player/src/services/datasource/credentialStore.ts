@@ -9,7 +9,15 @@ export interface EmbyCredentialValue {
   readonly password: string
 }
 
-interface StoredCredentialEnvelope {
+export interface AlistCredentialValue {
+  readonly token: string
+  readonly username: string
+  readonly password: string
+}
+
+type CredentialProvider = 'emby' | 'alist'
+
+interface StoredEmbyCredentialEnvelope {
   readonly version: 1
   readonly provider: 'emby'
   readonly accessToken: string
@@ -17,8 +25,16 @@ interface StoredCredentialEnvelope {
   readonly password: string
 }
 
-export function createCredentialRef(sourceId: string): string {
-  return `datasource:${sourceId}:emby-credential`
+interface StoredAlistCredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'alist'
+  readonly token: string
+  readonly username: string
+  readonly password: string
+}
+
+export function createCredentialRef(sourceId: string, provider: CredentialProvider = 'emby'): string {
+  return `datasource:${sourceId}:${provider}-credential`
 }
 
 export async function saveCredential(ref: string, token: string): Promise<void> {
@@ -49,11 +65,28 @@ export async function saveEmbyCredential(ref: string, value: EmbyCredentialValue
     accessToken: value.accessToken,
     username: value.username,
     password: value.password,
-  } satisfies StoredCredentialEnvelope))
+  } satisfies StoredEmbyCredentialEnvelope))
 }
 
 export async function readEmbyCredential(ref: string): Promise<EmbyCredentialValue | null> {
   return parseEmbyCredential(await readRawCredential(ref))
+}
+
+export async function saveAlistCredential(ref: string, value: AlistCredentialValue): Promise<void> {
+  if (!value.token || !value.username || !value.password)
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'alist',
+    token: value.token,
+    username: value.username,
+    password: value.password,
+  } satisfies StoredAlistCredentialEnvelope))
+}
+
+export async function readAlistCredential(ref: string): Promise<AlistCredentialValue | null> {
+  return parseAlistCredential(await readRawCredential(ref))
 }
 
 export async function removeCredential(ref: string): Promise<void> {
@@ -115,6 +148,31 @@ function parseEmbyCredential(raw: string | null): EmbyCredentialValue | null {
       return null
     return {
       accessToken: value.accessToken,
+      username: value.username,
+      password: value.password,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseAlistCredential(raw: string | null): AlistCredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value))
+      return null
+    if (value.provider !== 'alist' || value.version !== 1)
+      return null
+    if (typeof value.token !== 'string' || typeof value.username !== 'string' || typeof value.password !== 'string')
+      return null
+    if (!value.token || !value.username || !value.password)
+      return null
+    return {
+      token: value.token,
       username: value.username,
       password: value.password,
     }

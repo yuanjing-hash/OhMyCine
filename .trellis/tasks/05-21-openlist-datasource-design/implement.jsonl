@@ -1,0 +1,8 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend pre-development checklist for Player DataSource work."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"DataSource implementation boundaries and Settings/SourceLibrary view contracts."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Data source management UI contract and Cinema OS component rules."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Credential reference contract and Pinia persistence rules."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"DataSource type safety and external API response validation rules."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required verification commands and OpenList/Alist consistency checks."}
+{"file":".trellis/tasks/05-21-openlist-datasource-design/prd.md","reason":"Task requirements and product decision: account-login-only OpenList/Alist MVP."}
+{"file":".trellis/tasks/05-21-openlist-datasource-design/research/openlist-auth-patterns.md","reason":"OpenList/Alist auth research and account-login implementation target."}

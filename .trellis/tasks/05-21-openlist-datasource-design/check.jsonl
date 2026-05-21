@@ -1,0 +1,8 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend completion checklist for Player DataSource work."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Verify DataSource boundaries and no provider fetches from views."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify Settings data-source management UI behavior."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Verify credentialRef persistence and no secrets in localStorage/config."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify external API parsing and shared DataSource contracts."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required typecheck/lint/build and OpenList/Alist review points."}
+{"file":".trellis/tasks/05-21-openlist-datasource-design/prd.md","reason":"Acceptance criteria and out-of-scope guardrails."}
+{"file":".trellis/tasks/05-21-openlist-datasource-design/research/openlist-auth-patterns.md","reason":"Verify implementation follows account-login-only decision."}
