@@ -18,6 +18,7 @@ export interface MediaItem {
   resumePosition?: number
   progress?: number
   progressSource?: 'local'
+  seriesName?: string
   seasonNumber?: number
   episodeNumber?: number
   children?: MediaItem[]

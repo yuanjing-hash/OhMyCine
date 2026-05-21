@@ -39,6 +39,7 @@ const ITEM_FIELDS = [
   'ParentLogoItemId',
   'ParentLogoImageTag',
   'PrimaryImageAspectRatio',
+  'SeriesName',
   'Taglines',
 ].join(',')
 
@@ -136,6 +137,7 @@ interface EmbyItemRecord {
   readonly ParentLogoItemId?: string
   readonly ParentLogoImageTag?: string
   readonly PrimaryImageAspectRatio?: number
+  readonly SeriesName?: string
   readonly IndexNumber?: number
   readonly ParentIndexNumber?: number
   readonly ChildCount?: number
@@ -1141,6 +1143,7 @@ export class EmbyDataSource implements DataSource {
       path: item.Id,
       resumePosition,
       progress,
+      seriesName: item.Type === 'Episode' ? nonEmptyString(item.SeriesName) : undefined,
       seasonNumber: item.Type === 'Season' ? item.IndexNumber : item.Type === 'Episode' ? item.ParentIndexNumber : undefined,
       episodeNumber: item.Type === 'Episode' ? item.IndexNumber : undefined,
     }
@@ -1739,6 +1742,11 @@ function progressEventName(event: ProviderPlaybackProgressInput['event']): strin
     default:
       return 'TimeUpdate'
   }
+}
+
+function nonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed || undefined
 }
 
 function normalizeCriticRating(rating: number | undefined): number | undefined {

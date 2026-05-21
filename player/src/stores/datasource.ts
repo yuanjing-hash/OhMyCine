@@ -156,7 +156,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   async function enrichLocalContinueWatchingItem(item: MediaItem): Promise<MediaItem> {
-    if (hasArtwork(item))
+    const needsEpisodeParent = item.type === 'episode' && !item.seriesName
+    if (hasArtwork(item) && !needsEpisodeParent)
       return item
 
     const source = dataSourceManager.getSource(item.sourceId)
@@ -171,6 +172,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
         backdropUrl: firstNonEmpty(item.backdropUrl, detail.backdropUrl),
         duration: item.duration ?? detail.duration,
         libraryId: item.libraryId ?? detail.libraryId,
+        seriesName: firstNonEmpty(item.seriesName, detail.seriesName),
       }
     }
     catch {
@@ -229,14 +231,17 @@ function mergeContinueWatchingSections(sections: readonly HomeSection[], localIt
 
 function mergeContinueWatchingItem(localItem: MediaItem, providerItem: MediaItem): MediaItem {
   return {
-    ...providerItem,
     ...localItem,
-    posterUrl: firstNonEmpty(localItem.posterUrl, providerItem.posterUrl),
-    backdropUrl: firstNonEmpty(localItem.backdropUrl, providerItem.backdropUrl),
-    duration: localItem.duration ?? providerItem.duration,
-    path: localItem.path || providerItem.path,
+    ...providerItem,
+    libraryId: providerItem.libraryId ?? localItem.libraryId,
+    posterUrl: firstNonEmpty(providerItem.posterUrl, localItem.posterUrl),
+    backdropUrl: firstNonEmpty(providerItem.backdropUrl, localItem.backdropUrl),
+    duration: providerItem.duration ?? localItem.duration,
+    path: providerItem.path || localItem.path,
     resumePosition: localItem.resumePosition ?? providerItem.resumePosition,
     progress: localItem.progress ?? providerItem.progress,
+    progressSource: providerItem.progressSource,
+    seriesName: firstNonEmpty(providerItem.seriesName, localItem.seriesName),
   }
 }
 

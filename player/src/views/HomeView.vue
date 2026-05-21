@@ -43,6 +43,17 @@ function progressPercent(item: MediaItem): string {
   return '0%'
 }
 
+function continueItemTitle(item: MediaItem): string {
+  if (item.type !== 'episode')
+    return item.name
+
+  const seriesName = item.seriesName?.trim()
+  if (!seriesName || item.name.includes(seriesName))
+    return item.name
+
+  return `${seriesName} - ${item.name}`
+}
+
 function continueSourceLabel(item: MediaItem): string {
   const config = store.configs.find(source => source.id === item.sourceId)
   const sourceName = item.sourceId === LOCAL_FILE_SOURCE_ID
@@ -137,7 +148,7 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
       ? savePlaybackMediaContext({
           sourceId: item.sourceId,
           itemId: item.id,
-          title: item.name,
+          title: continueItemTitle(item),
           queue,
         })
       : undefined
@@ -145,7 +156,7 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
     await router.push({
       name: 'player',
       query: {
-        title: item.name,
+        title: continueItemTitle(item),
         path,
         sourceId: item.sourceId,
         itemId: item.id,
@@ -356,9 +367,9 @@ function isContainerItem(item: MediaItem): boolean {
               @click="handlePlay(item)"
             >
               <div class="relative h-28 media-placeholder overflow-hidden">
-                <img v-if="itemArtworkUrl(item)" :src="itemArtworkUrl(item)" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                <img v-if="itemArtworkUrl(item)" :src="itemArtworkUrl(item)" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
                 <div v-else class="flex h-full w-full items-center justify-center bg-white/6 p-4 text-center text-xs font-semibold text-white/48">
-                  {{ item.name }}
+                  {{ continueItemTitle(item) }}
                 </div>
                 <div class="progress-track absolute bottom-0 left-0 right-0 h-1">
                   <div class="progress-value h-full rounded-full" :style="{ width: progressPercent(item) }" />
@@ -366,7 +377,7 @@ function isContainerItem(item: MediaItem): boolean {
               </div>
               <div class="px-2 py-3">
                 <h3 class="truncate text-sm font-medium" style="color: var(--gp-text-full)">
-                  {{ item.name }}
+                  {{ continueItemTitle(item) }}
                 </h3>
                 <p class="mt-1 truncate text-[0.68rem]" style="color: var(--gp-text-dim)">
                   {{ continueSourceLabel(item) }}
@@ -413,7 +424,7 @@ function isContainerItem(item: MediaItem): boolean {
               @click="handleDetail(item)"
             >
               <div class="relative aspect-[2/3] media-placeholder">
-                <img v-if="item.posterUrl" :src="item.posterUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                <img v-if="item.posterUrl" :src="item.posterUrl" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
                 <div v-else class="poster-placeholder flex h-full items-center justify-center">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
                     <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5" />
@@ -422,7 +433,7 @@ function isContainerItem(item: MediaItem): boolean {
                 <div class="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     class="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform hover:scale-110"
-                    :aria-label="`${heroActionLabel(item)} ${item.name}`"
+                    :aria-label="`${heroActionLabel(item)} ${continueItemTitle(item)}`"
                     @click.stop="handlePlay(item)"
                   >
                     <svg width="12" height="12" viewBox="0 0 14 14" fill="currentColor">
@@ -432,7 +443,7 @@ function isContainerItem(item: MediaItem): boolean {
                 </div>
               </div>
               <h3 class="truncate px-1 py-2 text-xs font-medium" style="color: var(--gp-text-full)">
-                {{ item.name }}
+                {{ continueItemTitle(item) }}
               </h3>
             </article>
           </div>
