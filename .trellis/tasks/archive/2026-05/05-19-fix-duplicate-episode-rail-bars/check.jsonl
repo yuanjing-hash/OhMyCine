@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check the rail still follows the selected-episode indicator and accessibility contract."}
+{"file":".trellis/tasks/05-19-fix-duplicate-episode-rail-bars/prd.md","reason":"Check only the duplicate scrollbar is removed and existing selection behavior remains."}

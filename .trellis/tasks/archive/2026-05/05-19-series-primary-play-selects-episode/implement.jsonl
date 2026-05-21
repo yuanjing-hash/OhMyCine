@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Implement series detail primary play behavior while preserving the episode rail and media-detail component contract."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Use existing local playback progress/resume state safely when choosing the default series episode."}
+{"file":".trellis/tasks/05-19-series-primary-play-selects-episode/prd.md","reason":"Implement approved requirements for series primary play and default resume episode selection."}

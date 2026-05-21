@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Keep the episode rail interaction and indicator behavior aligned with the current Cinema OS component contract."}
+{"file":".trellis/tasks/05-19-fix-duplicate-episode-rail-bars/prd.md","reason":"Implement the scoped duplicate-bar visual fix without changing rail behavior."}

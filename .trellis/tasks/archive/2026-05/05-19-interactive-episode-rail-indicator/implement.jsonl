@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Implement the episode rail indicator as the single Cinema OS selection/position control while preserving rail interaction contract."}
+{"file":".trellis/tasks/05-19-interactive-episode-rail-indicator/prd.md","reason":"Implement the approved clickable and draggable episode position indicator requirements."}

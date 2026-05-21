@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Cinema OS/detail-page/player media component visual contracts for artwork-first liquid-glass UI and series detail behavior."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"MediaItem/playback history/resume fields used by episode cards and continue playback state."}
+{"file":".trellis/tasks/05-18-player-series-episode-immersive-carousel/research/episode-carousel-patterns.md","reason":"Research-backed episode carousel, season switching, lazy rendering, and metadata display patterns."}

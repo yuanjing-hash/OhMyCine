@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check the series detail button remains aligned with media-detail and episode rail contracts."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check resume/progress selection remains type-safe and provider-agnostic."}
+{"file":".trellis/tasks/05-19-series-primary-play-selects-episode/prd.md","reason":"Check all acceptance criteria for primary play, default first episode, resume history, season reset, and validation."}

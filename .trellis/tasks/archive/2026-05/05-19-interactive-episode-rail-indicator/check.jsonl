@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check the final indicator keeps accessibility and selected-episode rail behavior aligned with frontend component guidance."}
+{"file":".trellis/tasks/05-19-interactive-episode-rail-indicator/prd.md","reason":"Check click/drag quick positioning, single-bar visual behavior, and unchanged rail controls."}
