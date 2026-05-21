@@ -392,8 +392,12 @@ export function useMpv() {
 
   async function load(path: string) {
     selectedKnownSubtitle.value = null
+    currentTime.value = 0
+    duration.value = 0
+    isPlaying.value = false
     await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path })
+    await invoke<void>('mpv_resume')
     currentTime.value = 0
     isPlaying.value = true
     await applyPlaybackSpeed(playbackSpeed.value)

@@ -5,6 +5,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 const props = defineProps<{
   items: MediaItem[]
   interval?: number
+  actionLabel?: (item: MediaItem) => string
 }>()
 
 const emit = defineEmits<{
@@ -15,9 +16,13 @@ const emit = defineEmits<{
 const currentIndex = ref(0)
 const isPaused = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
+let resumeTimer: ReturnType<typeof setTimeout> | null = null
 
 const currentItem = () => props.items[currentIndex.value] ?? null
-const currentActionLabel = computed(() => isPlayable(currentItem()) ? '播放' : '查看详情')
+const currentActionLabel = computed(() => {
+  const item = currentItem()
+  return item ? props.actionLabel?.(item) ?? (isPlayable(item) ? '播放' : '查看详情') : ''
+})
 
 function next() {
   if (props.items.length === 0)
@@ -47,15 +52,18 @@ function onUserNav() {
   isPaused.value = true
   if (timer)
     clearInterval(timer)
+  if (resumeTimer)
+    clearTimeout(resumeTimer)
   // Resume after 15s of inactivity
-  setTimeout(() => {
+  resumeTimer = setTimeout(() => {
     isPaused.value = false
+    resumeTimer = null
     resetTimer()
   }, 15000)
 }
 
 function isPlayable(item: MediaItem | null): boolean {
-  return item != null && item.type !== 'folder' && item.type !== 'series' && item.type !== 'season'
+  return item != null && item.type !== 'folder' && item.type !== 'season'
 }
 
 function handlePrimaryAction() {
@@ -78,6 +86,8 @@ onMounted(resetTimer)
 onUnmounted(() => {
   if (timer)
     clearInterval(timer)
+  if (resumeTimer)
+    clearTimeout(resumeTimer)
 })
 </script>
 
@@ -134,6 +144,7 @@ onUnmounted(() => {
         <div class="mt-6 flex items-center gap-3">
           <button
             class="flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-black shadow-lg transition-transform hover:scale-105"
+            :aria-label="currentItem() ? `${currentActionLabel} ${currentItem()!.name}` : currentActionLabel"
             @click="handlePrimaryAction"
           >
             <svg v-if="isPlayable(currentItem())" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -147,6 +158,7 @@ onUnmounted(() => {
           </button>
           <button
             class="glass flex items-center gap-2 rounded-full px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
+            :aria-label="currentItem() ? `查看 ${currentItem()!.name} 详情` : '查看详情'"
             @click="currentItem() && emit('detail', currentItem()!)"
           >
             详情
@@ -159,6 +171,8 @@ onUnmounted(() => {
     <div v-if="items.length > 1" class="absolute bottom-4 right-8 flex items-center gap-2">
       <button
         class="flex h-8 w-8 items-center justify-center rounded-full text-white/50 transition-colors hover:text-white hover:bg-white/10"
+        aria-label="上一张推荐"
+        title="上一张推荐"
         @click="prev(); onUserNav()"
       >
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -170,10 +184,13 @@ onUnmounted(() => {
         :key="i"
         class="h-2 rounded-full transition-all duration-300"
         :class="i === currentIndex ? 'w-6 bg-white' : 'w-2 bg-white/30 hover:bg-white/50'"
+        :aria-label="`切换到第 ${i + 1} 张推荐`"
         @click="goTo(i); onUserNav()"
       />
       <button
         class="flex h-8 w-8 items-center justify-center rounded-full text-white/50 transition-colors hover:text-white hover:bg-white/10"
+        aria-label="下一张推荐"
+        title="下一张推荐"
         @click="next(); onUserNav()"
       >
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

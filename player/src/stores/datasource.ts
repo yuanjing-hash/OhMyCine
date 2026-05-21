@@ -13,6 +13,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const homeSections = ref<HomeSection[]>([])
   const isLoading = ref(false)
   const lastError = ref<string | null>(null)
+  let homeLoadId = 0
 
   const orderedConfigs = computed(() =>
     [...configs.value].sort((a, b) => a.order - b.order),
@@ -114,6 +115,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   async function loadHomeSections() {
+    const loadId = ++homeLoadId
     isLoading.value = true
     try {
       await syncManager()
@@ -121,15 +123,15 @@ export const useDataSourceStore = defineStore('datasource', () => {
         dataSourceManager.getAggregatedHome(orderedConfigs.value),
         listLocalContinueWatching(20),
       ])
-      const localContinueSection: HomeSection = {
-        id: 'local-continue-watching',
-        title: '本机继续观看',
-        type: 'continueWatching',
-        items: localContinueEntries.map(toContinueWatchingMediaItem),
-      }
-      const mergedSections = localContinueSection.items.length > 0
-        ? [localContinueSection, ...sections.filter(section => section.id !== localContinueSection.id)]
-        : sections
+      const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
+      const continueSection = mergeContinueWatchingSections(sections, localContinueItems)
+      const nonContinueSections = sections.filter(section => section.type !== 'continueWatching')
+      const mergedSections = continueSection.items.length > 0
+        ? [continueSection, ...nonContinueSections]
+        : nonContinueSections
+
+      if (loadId !== homeLoadId)
+        return
 
       homeSections.value = mergedSections.length > 0
         ? mergedSections
@@ -140,11 +142,39 @@ export const useDataSourceStore = defineStore('datasource', () => {
               type: 'hero',
               items: generatePlaceholderHeroItems(),
             },
-            localContinueSection,
+            continueSection,
           ]
     }
     finally {
-      isLoading.value = false
+      if (loadId === homeLoadId)
+        isLoading.value = false
+    }
+  }
+
+  async function enrichLocalContinueWatchingItems(items: readonly MediaItem[]): Promise<MediaItem[]> {
+    return Promise.all(items.map(enrichLocalContinueWatchingItem))
+  }
+
+  async function enrichLocalContinueWatchingItem(item: MediaItem): Promise<MediaItem> {
+    if (hasArtwork(item))
+      return item
+
+    const source = dataSourceManager.getSource(item.sourceId)
+    if (!source)
+      return item
+
+    try {
+      const detail = await source.getDetail(item.id)
+      return {
+        ...item,
+        posterUrl: firstNonEmpty(item.posterUrl, detail.posterUrl),
+        backdropUrl: firstNonEmpty(item.backdropUrl, detail.backdropUrl),
+        duration: item.duration ?? detail.duration,
+        libraryId: item.libraryId ?? detail.libraryId,
+      }
+    }
+    catch {
+      return item
     }
   }
 
@@ -172,6 +202,55 @@ export const useDataSourceStore = defineStore('datasource', () => {
     syncManager,
   }
 })
+
+function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[]): HomeSection {
+  const providerItems = sections.filter(section => section.type === 'continueWatching').flatMap(section => section.items)
+  const merged = new Map<string, MediaItem>()
+
+  for (const item of providerItems)
+    merged.set(continueWatchingKey(item), item)
+
+  for (const item of localItems) {
+    const key = continueWatchingKey(item)
+    const providerItem = merged.get(key)
+    merged.set(key, providerItem ? mergeContinueWatchingItem(item, providerItem) : item)
+  }
+
+  return {
+    id: 'continue-watching',
+    title: '继续观看',
+    type: 'continueWatching',
+    items: [...localItems.map(continueWatchingKey), ...providerItems.map(continueWatchingKey)]
+      .filter((key, index, keys) => keys.indexOf(key) === index)
+      .map(key => merged.get(key))
+      .filter((item): item is MediaItem => item != null),
+  }
+}
+
+function mergeContinueWatchingItem(localItem: MediaItem, providerItem: MediaItem): MediaItem {
+  return {
+    ...providerItem,
+    ...localItem,
+    posterUrl: firstNonEmpty(localItem.posterUrl, providerItem.posterUrl),
+    backdropUrl: firstNonEmpty(localItem.backdropUrl, providerItem.backdropUrl),
+    duration: localItem.duration ?? providerItem.duration,
+    path: localItem.path || providerItem.path,
+    resumePosition: localItem.resumePosition ?? providerItem.resumePosition,
+    progress: localItem.progress ?? providerItem.progress,
+  }
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find(value => typeof value === 'string' && value.trim().length > 0)
+}
+
+function hasArtwork(item: MediaItem): boolean {
+  return firstNonEmpty(item.backdropUrl, item.posterUrl) != null
+}
+
+function continueWatchingKey(item: MediaItem): string {
+  return `${item.sourceId}:${item.id}`
+}
 
 function sanitizeConfigs(value: unknown): DataSourceConfig[] {
   if (!Array.isArray(value))

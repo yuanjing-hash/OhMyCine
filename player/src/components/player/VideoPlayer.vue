@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { MpvRenderDiagnostics, MpvRenderStatus, MpvZOrderStrategy, RenderSurfaceBounds } from '@/composables/useMpv'
+import type { ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { redactSensitiveText } from '@/services/datasource/errors'
 
 const props = defineProps<{
   isPlaying: boolean
@@ -12,6 +14,7 @@ const props = defineProps<{
   topOcclusion: number
   bottomOcclusion: number
   diagnosticsOpen: boolean
+  providerSyncDiagnostics: ProviderPlaybackSyncDiagnostic[]
 }>()
 
 const emit = defineEmits<{
@@ -91,7 +94,7 @@ const renderTitle = computed(() => {
 
 const renderDescription = computed(() => {
   if (props.renderError)
-    return props.renderError
+    return redactDiagnosticText(props.renderError)
 
   switch (props.renderStatus) {
     case 'initializing':
@@ -136,6 +139,36 @@ const diagnosticRows = computed(() => {
     ['scale', diagnostics.scale.toFixed(2)],
     ['syncs', diagnostics.syncs.toString()],
   ]
+})
+
+const providerSyncDiagnosticRows = computed(() => props.providerSyncDiagnostics.map(item => [
+  item.timestamp,
+  formatProviderSyncDiagnostic(item),
+] as const))
+
+const diagnosticText = computed(() => {
+  const lines = [
+    'Render diagnostics',
+    `renderStatus=${props.renderStatus}`,
+    `renderStrategy=${props.renderStrategy}`,
+  ]
+
+  for (const [key, value] of diagnosticRows.value)
+    lines.push(`${key}=${redactDiagnosticText(value)}`)
+
+  if (props.renderError)
+    lines.push(`renderError=${redactDiagnosticText(props.renderError)}`)
+
+  if (providerSyncDiagnosticRows.value.length > 0) {
+    lines.push('', 'Provider sync')
+    for (const [timestamp, value] of providerSyncDiagnosticRows.value)
+      lines.push(`${timestamp} ${redactDiagnosticText(value)}`)
+  }
+  else {
+    lines.push('', 'Provider sync', 'none')
+  }
+
+  return lines.join('\n')
 })
 
 const logFilePath = computed(() => {
@@ -184,11 +217,19 @@ function toggleDiagnosticsClick() {
   emit('toggleDiagnostics')
 }
 
+function redactDiagnosticText(value: unknown): string {
+  return redactSensitiveText(value)
+    .replace(/\b0x[0-9a-f]{6,}\b/gi, '[native-handle]')
+    .replace(/\b((?:owner|mpv)?_?hwnd|hglrc|hdc|handle|pointer|ptr)\s*[:=]\s*-?\d+\b/gi, '$1=[native-handle]')
+}
+
+function formatProviderSyncDiagnostic(item: ProviderPlaybackSyncDiagnostic): string {
+  return `${item.ok ? 'ok' : 'fail'} · ${item.event} · ${item.stage} · ${item.endpoint} · item=${item.itemIdPresent ? 'yes' : 'no'} mediaSource=${item.mediaSourceIdPresent ? 'yes' : 'no'} playSession=${item.playSessionIdPresent ? 'yes' : 'no'} pos=${Math.round(item.position)}${item.message ? ` · ${redactDiagnosticText(item.message)}` : ''}`
+}
+
 async function copyDiagnostics() {
-  if (!props.renderError)
-    return
   try {
-    await navigator.clipboard.writeText(props.renderError)
+    await navigator.clipboard.writeText(diagnosticText.value)
   }
   catch {
     // Clipboard may be unavailable; ignore without exposing UI noise.
@@ -238,60 +279,6 @@ onBeforeUnmount(() => {
       v-if="renderStatus !== 'ready'"
       class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(74,158,255,0.14),transparent_34%),linear-gradient(135deg,#050509,#090911_52%,#030305)]"
     />
-    <div
-      v-if="diagnosticsOpen"
-      id="render-diagnostics-panel"
-      class="pointer-events-auto absolute left-5 top-16 z-30 max-w-[min(44rem,calc(100%-2.5rem))] rounded-2xl border border-white/10 bg-black/72 px-5 py-4 text-[12px] leading-5 text-white/80 shadow-2xl backdrop-blur-xl"
-      role="region"
-      aria-label="Render diagnostics"
-    >
-      <div class="flex items-center justify-between gap-3">
-        <p class="font-semibold uppercase tracking-[0.22em] text-white/58">
-          Render diagnostics
-        </p>
-        <div class="flex items-center gap-2">
-          <button
-            v-if="renderError"
-            type="button"
-            class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-white/70 hover:bg-white/10 hover:text-white"
-            @click="copyDiagnostics"
-          >
-            复制
-          </button>
-          <button
-            type="button"
-            class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-white/70 hover:bg-white/10 hover:text-white"
-            @click="toggleDiagnosticsClick"
-          >
-            关闭
-          </button>
-        </div>
-      </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
-        <span class="text-[11px] uppercase tracking-[0.2em] text-white/48">
-          当前策略: {{ strategyLabel }}
-        </span>
-      </div>
-      <dl v-if="diagnosticRows.length" class="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[11px]">
-        <template v-for="[key, value] in diagnosticRows" :key="key">
-          <dt class="font-mono text-white/44">
-            {{ key }}
-          </dt>
-          <dd class="break-all font-mono text-white/76">
-            {{ value }}
-          </dd>
-        </template>
-      </dl>
-      <p class="mt-3 whitespace-pre-wrap break-words text-white/82">
-        {{ renderError || '当前无额外诊断信息，渲染通路保持默认状态。' }}
-      </p>
-      <p v-if="logFilePath" class="mt-3 break-all text-[11px] text-white/56">
-        诊断日志已写入：<span class="font-mono">{{ logFilePath }}</span>
-      </p>
-      <p class="mt-3 text-[11px] text-white/48">
-        快捷键 Ctrl+Shift+D 可以随时唤起本面板。诊断信息不会泄露媒体路径、凭据或原生窗口指针；如需反馈请复制以上摘要。
-      </p>
-    </div>
     <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
       <div v-if="!hasMedia" class="glass-panel pointer-events-auto max-w-md rounded-3xl p-8 text-center">
         <p class="text-lg font-semibold text-white">
@@ -317,6 +304,95 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="diagnosticsOpen"
+      id="render-diagnostics-panel"
+      class="pointer-events-auto fixed bottom-6 left-5 top-20 z-[1100] flex min-h-0 w-[min(44rem,calc(100vw-2.5rem))] flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/72 px-5 py-4 text-[12px] leading-5 text-white/80 shadow-2xl backdrop-blur-xl"
+      role="region"
+      aria-label="Render diagnostics"
+      tabindex="0"
+      @wheel.stop
+      @pointerdown.stop
+      @mousedown.stop
+      @touchstart.stop
+      @touchmove.stop
+      @mousemove.stop
+    >
+      <div class="flex shrink-0 items-center justify-between gap-3">
+        <p class="font-semibold uppercase tracking-[0.22em] text-white/58">
+          Render diagnostics
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-white/70 hover:bg-white/10 hover:text-white"
+            @click="copyDiagnostics"
+          >
+            复制
+          </button>
+          <button
+            type="button"
+            class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-white/70 hover:bg-white/10 hover:text-white"
+            @click="toggleDiagnosticsClick"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+
+      <div
+        class="cinema-scrollbar mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2"
+        @wheel.stop
+        @pointerdown.stop
+        @mousedown.stop
+        @touchstart.stop
+        @touchmove.stop
+        @mousemove.stop
+      >
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-[11px] uppercase tracking-[0.2em] text-white/48">
+            当前策略: {{ strategyLabel }}
+          </span>
+        </div>
+        <dl v-if="diagnosticRows.length" class="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[11px]">
+          <template v-for="[key, value] in diagnosticRows" :key="key">
+            <dt class="font-mono text-white/44">
+              {{ key }}
+            </dt>
+            <dd class="break-all font-mono text-white/76">
+              {{ redactDiagnosticText(value) }}
+            </dd>
+          </template>
+        </dl>
+        <div v-if="providerSyncDiagnosticRows.length" class="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+          <p class="text-[10px] uppercase tracking-[0.2em] text-white/44">
+            Provider sync
+          </p>
+          <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[11px]">
+            <template v-for="[key, value] in providerSyncDiagnosticRows" :key="key">
+              <dt class="font-mono text-white/44">
+                {{ key }}
+              </dt>
+              <dd class="break-all font-mono text-white/76">
+                {{ redactDiagnosticText(value) }}
+              </dd>
+            </template>
+          </dl>
+        </div>
+        <p class="mt-3 whitespace-pre-wrap break-words text-white/82">
+          {{ renderError ? redactDiagnosticText(renderError) : '当前无额外诊断信息，渲染通路保持默认状态。' }}
+        </p>
+        <p v-if="logFilePath" class="mt-3 break-all text-[11px] text-white/56">
+          诊断日志已写入：<span class="font-mono">{{ logFilePath }}</span>
+        </p>
+        <p class="mt-3 text-[11px] text-white/48">
+          快捷键 Ctrl+Shift+D 可以随时唤起本面板。诊断信息不会泄露媒体路径、凭据或原生窗口指针；如需反馈请复制以上摘要。
+        </p>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>

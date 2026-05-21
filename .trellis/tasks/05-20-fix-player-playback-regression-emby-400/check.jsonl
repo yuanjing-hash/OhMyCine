@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check playback/history regression fix keeps DataSource sync optional and local SQLite primary."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Check missing PlaySessionId and Emby 400 handling follows researched endpoint constraints."}

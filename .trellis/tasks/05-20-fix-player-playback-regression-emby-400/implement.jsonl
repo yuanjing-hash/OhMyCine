@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Provider playback sync and local history must remain best-effort, token-safe, and unable to break playback."}
+{"file":".trellis/tasks/05-19-emby/research/emby-playback-progress-sync.md","reason":"Use Emby/Jellyfin playstate endpoint behavior to interpret 400 responses and missing PlaySessionId."}

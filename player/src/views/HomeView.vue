@@ -1,14 +1,30 @@
 <script setup lang="ts">
-import type { MediaItem } from '@/services/datasource/types'
-import { computed, onMounted } from 'vue'
+import type { DataSource, MediaItem } from '@/services/datasource/types'
+import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
+import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
+import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const LOCAL_FILE_SOURCE_ID = 'local-file'
 
 const router = useRouter()
 const store = useDataSourceStore()
+
+interface SeriesPlaybackTarget {
+  item: MediaItem
+  episodes: MediaItem[]
+  resumePosition?: number
+  canResume: boolean
+}
+
+const seriesPlaybackTargets = ref<Record<string, SeriesPlaybackTarget>>({})
+const errorMessage = ref<string | null>(null)
+let seriesTargetRefreshId = 0
+let settledRefreshTimer: number | undefined
 
 const hasSources = computed(() => store.configs.length > 0)
 const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero'))
@@ -38,45 +54,227 @@ function continueSourceLabel(item: MediaItem): string {
     : sourceName
 }
 
-onMounted(() => {
+function itemArtworkUrl(item: MediaItem): string | undefined {
+  return firstNonEmpty(item.backdropUrl, item.posterUrl)
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find(value => typeof value === 'string' && value.trim().length > 0)
+}
+
+onMounted(async () => {
   store.loadConfigs()
-  store.loadHomeSections()
+  await store.loadHomeSections()
+  scheduleSettledContinueWatchingRefresh()
+  await refreshHeroSeriesPlaybackTargets()
+})
+
+onBeforeUnmount(() => {
+  if (settledRefreshTimer)
+    window.clearTimeout(settledRefreshTimer)
+})
+
+watch(heroItems, () => {
+  void refreshHeroSeriesPlaybackTargets()
 })
 
 function goToSettings() {
   void router.push({ name: 'settings', query: { section: 'datasources' } })
 }
 
+function scheduleSettledContinueWatchingRefresh() {
+  if (settledRefreshTimer)
+    window.clearTimeout(settledRefreshTimer)
+
+  settledRefreshTimer = window.setTimeout(() => {
+    settledRefreshTimer = undefined
+    void store.loadHomeSections()
+  }, 1800)
+}
+
+function heroActionLabel(item: MediaItem): string {
+  if (item.type === 'series')
+    return seriesPlaybackTargets.value[itemKey(item)]?.canResume ? '继续播放' : '播放'
+
+  if (isContainerItem(item))
+    return '查看详情'
+
+  return item.resumePosition ? '继续播放' : '播放'
+}
+
 async function handlePlay(item: MediaItem) {
+  if (item.type === 'series') {
+    await playSeriesFromHome(item)
+    return
+  }
+
   if (isContainerItem(item)) {
     handleDetail(item)
     return
   }
 
-  await store.syncManager()
-  const source = store.getSource(item.sourceId)
-  if (!source && item.sourceId !== 'placeholder' && item.sourceId !== LOCAL_FILE_SOURCE_ID) {
-    handleDetail(item)
+  await playResolvedItem(item, item.resumePosition)
+}
+
+async function playResolvedItem(item: MediaItem, resumePosition?: number, episodes: MediaItem[] = []) {
+  errorMessage.value = null
+  try {
+    await store.syncManager()
+    const source = store.getSource(item.sourceId)
+    if (!source && item.sourceId !== 'placeholder' && item.sourceId !== LOCAL_FILE_SOURCE_ID) {
+      handleDetail(item)
+      return
+    }
+
+    const path = source && item.sourceId !== 'placeholder'
+      ? await source.getStreamURL(item.id)
+      : item.path
+    if (!path)
+      throw new Error('播放地址不可用。')
+
+    const queue = episodes.length > 0 ? createPlaybackQueue(episodes, item.id) : undefined
+    const contextId = queue
+      ? savePlaybackMediaContext({
+          sourceId: item.sourceId,
+          itemId: item.id,
+          title: item.name,
+          queue,
+        })
+      : undefined
+
+    await router.push({
+      name: 'player',
+      query: {
+        title: item.name,
+        path,
+        sourceId: item.sourceId,
+        itemId: item.id,
+        libraryId: item.libraryId,
+        mediaType: item.type,
+        posterUrl: item.posterUrl,
+        backdropUrl: item.backdropUrl,
+        contextId,
+        resumePosition,
+      },
+    })
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, '无法获取播放地址。')
+  }
+}
+
+async function playSeriesFromHome(item: MediaItem) {
+  errorMessage.value = null
+  const target = seriesPlaybackTargets.value[itemKey(item)] ?? await resolveSeriesPlaybackTarget(item)
+  if (!target) {
+    errorMessage.value = '暂时无法找到可播放分集，请打开详情页查看可用内容。'
     return
   }
 
-  const path = source && item.sourceId !== 'placeholder'
-    ? await source.getStreamURL(item.id)
-    : item.path
+  seriesPlaybackTargets.value = {
+    ...seriesPlaybackTargets.value,
+    [itemKey(item)]: target,
+  }
+  await playResolvedItem(target.item, target.resumePosition, target.episodes)
+}
 
-  await router.push({
-    name: 'player',
-    query: {
-      title: item.name,
-      path,
-      sourceId: item.sourceId,
-      itemId: item.id,
-      libraryId: item.libraryId,
-      mediaType: item.type,
-      posterUrl: item.posterUrl,
-      backdropUrl: item.backdropUrl,
-    },
-  })
+async function refreshHeroSeriesPlaybackTargets() {
+  const refreshId = ++seriesTargetRefreshId
+  const seriesItems = heroItems.value.filter(item => item.type === 'series' && item.sourceId !== 'placeholder')
+  const entries = await Promise.all(seriesItems.map(async item => [itemKey(item), await resolveSeriesPlaybackTarget(item)] as const))
+  if (refreshId !== seriesTargetRefreshId)
+    return
+
+  seriesPlaybackTargets.value = Object.fromEntries(entries.filter((entry): entry is readonly [string, SeriesPlaybackTarget] => entry[1] != null))
+}
+
+async function resolveSeriesPlaybackTarget(item: MediaItem): Promise<SeriesPlaybackTarget | null> {
+  try {
+    await store.syncManager()
+    const source = store.getSource(item.sourceId)
+    if (!source)
+      return null
+
+    const episodes = await listSeriesEpisodes(source, item.id)
+    if (episodes.length === 0)
+      return null
+
+    const progressEntries = await Promise.all(episodes.map(episode => getPlaybackProgress({ sourceId: episode.sourceId, mediaIdentity: episode.id })))
+    const localResume = newestLocalResume(progressEntries)
+    const providerResumeIndex = localResume ? -1 : episodes.findIndex(episode => isResumePosition(episode.resumePosition, episode.duration))
+    const index = localResume?.index ?? (providerResumeIndex >= 0 ? providerResumeIndex : 0)
+    const episode = episodes[index]
+    const providerResumePosition = isResumePosition(episode.resumePosition, episode.duration) ? episode.resumePosition : undefined
+
+    return {
+      item: episode,
+      episodes,
+      resumePosition: localResume?.entry.position ?? providerResumePosition,
+      canResume: Boolean(localResume) || providerResumeIndex >= 0,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+async function listSeriesEpisodes(source: DataSource, seriesId: string): Promise<MediaItem[]> {
+  const children = await source.list(seriesId)
+  const directEpisodes = sortSeriesEpisodes(children.filter(isPlayableEpisodeItem))
+  if (directEpisodes.length > 0)
+    return directEpisodes
+
+  const seasons = children.filter(item => item.type === 'season' || item.type === 'folder')
+  const seasonEpisodeGroups = await Promise.all(seasons.map(async season => (await source.list(season.id)).filter(isPlayableEpisodeItem)))
+  return sortSeriesEpisodes(seasonEpisodeGroups.flat())
+}
+
+function isPlayableEpisodeItem(item: MediaItem): boolean {
+  return item.type === 'episode' || item.type === 'file' || item.type === 'movie'
+}
+
+function newestLocalResume(entries: readonly (PlaybackHistoryEntry | null)[]): { index: number, entry: PlaybackHistoryEntry } | null {
+  return entries.reduce<{ index: number, entry: PlaybackHistoryEntry } | null>((best, entry, index) => {
+    if (!shouldResumePlayback(entry))
+      return best
+    if (!best || entry.updatedAt > best.entry.updatedAt)
+      return { index, entry }
+    return best
+  }, null)
+}
+
+function sortSeriesEpisodes(episodes: readonly MediaItem[]): MediaItem[] {
+  return episodes
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => compareEpisodeOrder(left.item, right.item) || left.index - right.index)
+    .map(({ item }) => item)
+}
+
+function compareEpisodeOrder(left: MediaItem, right: MediaItem): number {
+  const leftSeason = normalizedOrderNumber(left.seasonNumber)
+  const rightSeason = normalizedOrderNumber(right.seasonNumber)
+  if (leftSeason !== rightSeason)
+    return leftSeason - rightSeason
+
+  const leftEpisode = normalizedOrderNumber(left.episodeNumber)
+  const rightEpisode = normalizedOrderNumber(right.episodeNumber)
+  return leftEpisode - rightEpisode
+}
+
+function normalizedOrderNumber(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER
+}
+
+function isResumePosition(position: number | undefined, duration: number | undefined): position is number {
+  if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
+    return false
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0)
+    return true
+  return position < duration * 0.92 && duration - position > 90
+}
+
+function itemKey(item: MediaItem): string {
+  return `${item.sourceId}:${item.id}`
 }
 
 function handleDetail(item: MediaItem) {
@@ -97,6 +295,7 @@ function isContainerItem(item: MediaItem): boolean {
         <HeroCarousel
           v-if="heroItems.length"
           :items="heroItems"
+          :action-label="heroActionLabel"
           @play="handlePlay"
           @detail="handleDetail"
         />
@@ -126,6 +325,13 @@ function isContainerItem(item: MediaItem): boolean {
         </div>
       </section>
 
+      <div
+        v-if="errorMessage"
+        class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100"
+      >
+        {{ errorMessage }}
+      </div>
+
       <div class="grid grid-cols-1 gap-6 pb-8 xl:grid-cols-2">
         <section class="glass-panel rounded-[1.75rem] p-6">
           <div class="mb-5 flex items-center justify-between">
@@ -149,8 +355,11 @@ function isContainerItem(item: MediaItem): boolean {
               class="group w-48 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.03]"
               @click="handlePlay(item)"
             >
-              <div class="relative h-28 media-placeholder">
-                <img v-if="item.backdropUrl" :src="item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+              <div class="relative h-28 media-placeholder overflow-hidden">
+                <img v-if="itemArtworkUrl(item)" :src="itemArtworkUrl(item)" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                <div v-else class="flex h-full w-full items-center justify-center bg-white/6 p-4 text-center text-xs font-semibold text-white/48">
+                  {{ item.name }}
+                </div>
                 <div class="progress-track absolute bottom-0 left-0 right-0 h-1">
                   <div class="progress-value h-full rounded-full" :style="{ width: progressPercent(item) }" />
                 </div>
@@ -213,6 +422,7 @@ function isContainerItem(item: MediaItem): boolean {
                 <div class="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     class="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform hover:scale-110"
+                    :aria-label="`${heroActionLabel(item)} ${item.name}`"
                     @click.stop="handlePlay(item)"
                   >
                     <svg width="12" height="12" viewBox="0 0 14 14" fill="currentColor">

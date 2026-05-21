@@ -1,4 +1,9 @@
 const SENSITIVE_QUERY_KEYS = [
+  'Authorization',
+  'X-Emby-Authorization',
+  'X-MediaBrowser-Authorization',
+  'UserId',
+  'userId',
   'api_key',
   'apikey',
   'access_key',
@@ -22,6 +27,7 @@ const SENSITIVE_QUERY_KEYS = [
   'X-Amz-Security-Token',
   'X-Amz-Signature',
   'x-emby-token',
+  'x-mediabrowser-token',
 ]
 
 export function redactSensitiveText(value: unknown): string {
@@ -35,8 +41,17 @@ export function redactSensitiveText(value: unknown): string {
   }
 
   redacted = redacted.replace(/(Token=")[^"]+(")/gi, '$1[redacted]$2')
-  redacted = redacted.replace(/(Authorization:\s*Bearer\s+)\S+/gi, '$1[redacted]')
+  redacted = redacted.replace(/\b(UserId\s*=\s*")[^"]+(")/gi, '$1[redacted]$2')
+  redacted = redacted.replace(/\b(UserId\s*=\s*')[^']+(')/gi, '$1[redacted]$2')
+  redacted = redacted.replace(/(Authorization:)\s*[^\n\r]+/gi, '$1 [redacted]')
+  redacted = redacted.replace(/(X-Emby-Authorization:)\s*[^\n\r]+/gi, '$1 [redacted]')
   redacted = redacted.replace(/(X-Emby-Token:\s*)\S+/gi, '$1[redacted]')
+  redacted = redacted.replace(/(X-MediaBrowser-Token:\s*)\S+/gi, '$1[redacted]')
+  redacted = redacted.replace(/X-MediaBrowser-Authorization:[^\n\r]+/gi, 'X-MediaBrowser-Authorization: [redacted]')
+  redacted = redacted.replace(/\b0x[0-9a-f]{6,}\b/gi, '[native-handle]')
+  redacted = redacted.replace(/\b((?:owner|mpv)?_?hwnd|hglrc|hdc|handle|pointer|ptr)\s*[:=]\s*-?\d+\b/gi, '$1=[native-handle]')
+  redacted = redacted.replace(/https?:\/\/[^/\s"')]+/gi, match => `${match.startsWith('https://') ? 'https' : 'http'}://[redacted-host]`)
+  redacted = redacted.replace(/(\/Users\/)[^/\s?#"')]+/gi, '$1[redacted-user]')
 
   return redacted
 }

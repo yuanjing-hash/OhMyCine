@@ -147,9 +147,11 @@ interface ProviderPlaybackProgressInput {
   mediaType?: MediaItem['type']
   position: number
   duration?: number
+  startPosition?: number
   isPaused: boolean
   completed: boolean
   event: ProviderPlaybackProgressEvent
+  playbackRate?: number
 }
 ```
 - DataSource optional method:
@@ -159,18 +161,21 @@ interface DataSource {
 }
 ```
 - Emby-compatible endpoints:
-  - `POST /Sessions/Playing` with `ItemId`, `MediaSourceId?`, `PlaySessionId?`, `PositionTicks`, `CanSeek`, `IsPaused`, `PlayMethod`.
+  - `POST /Items/{Id}/PlaybackInfo` to negotiate playable media sources and, when the server supports the request shape, `PlaySessionId`.
+  - `POST /Sessions/Playing` with `ItemId`, `MediaSourceId`, `PlaySessionId`, `PositionTicks`, `RunTimeTicks`, `PlaybackStartTimeTicks`, `CanSeek`, `IsPaused`, `PlayMethod`, `PlaybackRate`, `RepeatMode`, and `VolumeLevel`.
   - `POST /Sessions/Playing/Progress` with the same identity/session fields plus `EventName` such as `TimeUpdate`, `Pause`, or `Unpause`.
-  - `POST /Sessions/Playing/Stopped` with `ItemId`, `MediaSourceId?`, `PlaySessionId?`, `PositionTicks`.
+  - `POST /Sessions/Playing/Stopped` with `ItemId`, `MediaSourceId`, `PlaySessionId`, `PositionTicks`, and `RunTimeTicks`.
   - Optional completed marker: `POST /Users/{UserId}/PlayedItems/{Id}` after a completed event.
 
 #### 3. Contracts
 - Provider sync is optional. Player code must call `source.syncPlaybackProgress?.(...)` or equivalent optional checks; non-provider/local sources must not implement no-op shims solely to satisfy typing.
 - Local Tauri SQLite playback history remains the primary persistence path. Provider sync is best-effort and must never block playback startup, route leave, queue switching, pause/resume, close cleanup, or local history save completion.
-- Player payload positions and durations are seconds. Provider implementations convert to provider-native units internally; Emby uses ticks (`seconds * 10_000_000`).
+- Player payload positions, durations, and optional playback start/resume positions are seconds. Provider implementations convert to provider-native units internally; Emby uses ticks (`seconds * 10_000_000`).
 - Remote-provider progress identity must use stable provider item/session fields (`itemId`, optional `mediaSourceId`, optional `playSessionId`) rather than tokenized playback URLs.
 - Provider implementations must reuse their existing authenticated request helper and redaction path. Tokenized stream URLs, image URLs, credentials, filesystem paths, and provider redirect targets must not be used as progress identity, displayed in errors, logged, or persisted.
-- Emby sync should preserve or re-obtain `MediaSourceId` and `PlaySessionId` from `/Items/{id}/PlaybackInfo` when practical, but missing session metadata must degrade to a safe best-effort report instead of crashing playback.
+- Emby sync should preserve or re-obtain `MediaSourceId` and `PlaySessionId` from `/Items/{id}/PlaybackInfo` when practical. Start with the provider's default Emby auth headers and safe request shapes; only try official-compatible `Authorization` / `X-MediaBrowser-*` headers after default-auth requests return media sources but still lack `PlaySessionId`.
+- Emby `/Sessions/Playing*` reports require both `MediaSourceId` and `PlaySessionId` for current server compatibility. If `PlaySessionId` is missing, skip the session report and record a safe diagnostic instead of sending a known-bad payload that returns 400.
+- Do not use legacy `/Users/{UserId}/PlayingItems*` routes as online playback-state fallback for Emby session reporting; source research showed similar clients use `/Sessions/Playing*`, and legacy routes can return 400 without updating active/cloud history.
 - Completed provider sync may send a normal stopped/progress event plus provider-specific watched marking when supported. Failure to mark watched must not undo local completion.
 
 #### 4. Validation & Error Matrix
@@ -179,16 +184,18 @@ interface DataSource {
 | DataSource lacks `syncPlaybackProgress` | Skip provider sync silently; keep local history and playback working |
 | position/duration is NaN, infinite, or negative | Skip provider sync; do not send malformed provider payloads |
 | provider request fails/offline/401 | Swallow or convert to user-safe non-blocking state; do not interrupt playback |
-| Emby `MediaSourceId` or `PlaySessionId` is missing | Reuse cached playback metadata or refetch playback info when practical; otherwise send best-effort payload |
+| Emby `MediaSourceId` or `PlaySessionId` is missing | Reuse cached playback metadata or refetch playback info when practical; if `PlaySessionId` is still missing, skip `/Sessions/Playing*` and store a safe diagnostic instead of sending a 400-prone report |
 | event is `paused` / `resumed` | Map to provider progress endpoint with an appropriate pause/unpause event where supported |
 | event is `stopped` during route leave or queue switch | Fire provider sync without awaiting it in blocking cleanup paths |
 | event is `completed` | Mark local history completed and optionally send provider watched/completed marker best-effort |
 | tokenized URL appears in stream/artwork/provider error | Redact/drop before display, logging, storage, or provider progress identity construction |
 
 #### 5. Good/Base/Bad Cases
-- Good: Player saves local SQLite progress, then fire-and-forgets `source.syncPlaybackProgress({ itemId, mediaSourceId, playSessionId, position, duration, isPaused, completed, event })`; Emby converts seconds to ticks and reports through `/Sessions/Playing/Progress` using the authenticated request helper.
+- Good: Player saves local SQLite progress, then fire-and-forgets `source.syncPlaybackProgress({ itemId, mediaSourceId, playSessionId, position, duration, startPosition, isPaused, completed, event })`; Emby converts seconds to ticks and reports through `/Sessions/Playing/Progress` only when `PlaySessionId` is available.
 - Base: A local file or unsupported DataSource has no `syncPlaybackProgress`; local resume still works and no provider call is attempted.
+- Base: Emby `PlaybackInfo` returns media sources but no `PlaySessionId`; playback continues from a stable Emby/static stream URL, provider sync records a redacted diagnostic, and known-bad session reports are skipped.
 - Bad: Player awaits an Emby network progress request before route leave or queue switch, causing the UI to hang when Emby is slow or offline.
+- Bad: Sending legacy `/Users/{UserId}/PlayingItems*` fallback reports after `/Sessions/Playing*` cannot obtain a `PlaySessionId`.
 - Bad: Using `streamUrl` or a signed redirect URL as `itemId` / `mediaIdentity` / provider progress identity.
 
 #### 6. Tests Required
@@ -196,7 +203,7 @@ interface DataSource {
 - `npm run lint` must pass without broad provider-progress `any` payloads or unused queue/progress state.
 - `npm run build` must pass after Player route/control integration.
 - DataSource/provider work should run `npm run tauri:build:windows --prefix player` when Player packaging is in scope; Rust checks are required only if Rust/Tauri files changed.
-- Manual Windows-host checks should verify Emby pause/resume/stop/completed progress appears on the Emby server, while playback and queue switching remain responsive if Emby sync fails.
+- Manual Windows-host checks should verify Emby pause/resume/stop/completed progress appears on the Emby server when Provider sync diagnostics show `playSession=yes`; if `playSession=no`, diagnostics should explain the skipped session report without breaking playback or local continue-watching.
 
 #### 7. Wrong vs Correct
 
@@ -293,8 +300,10 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 - `streamIdentity` is display/debug metadata only and must be redacted or replaced with a stable identity for remote sources; never persist raw tokenized stream URLs when a stable source/item identity exists.
 - Frontend command calls must go through a typed service/composable with explicit `invoke<T>()` generics and silent/user-safe failure behavior; Player playback must continue if progress persistence fails.
 - Progress saves should be throttled while playing and force-saved on pause, media switch, queue switch, route leave, unmount, and close/beforeunload where practical.
+- Do not force-save a zero/trivial position on initial `isPlaying=true`; doing so can overwrite a valid previous resume position before the Player has a chance to seek.
 - Resume should ignore trivial positions and completed/near-end media. Completed rows should be excluded from local continue-watching noise.
-- Local continue-watching sections must identify their source, for example `progressSource: 'local'` and user-facing copy such as `本机继续观看`, so they are not confused with Emby/Jellyfin provider-native continue-watching.
+- Media detail pages should read local `player_get_playback_progress` for playable detail items and visible episode lists so the primary play action and episode actions can show `继续播放` when a resumable local row exists.
+- Home continue-watching is an aggregate section. Local history rows should keep `progressSource: 'local'` for card subtitles/source labels, but the section title must not imply local-only content. If a local remote-provider row lacks safe persisted artwork, the home aggregation layer may temporarily enrich it from provider detail metadata without writing tokenized image URLs back to SQLite.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |

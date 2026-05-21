@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, ProviderPlaybackProgressEvent } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -18,6 +18,8 @@ import { useDataSourceStore } from '@/stores/datasource'
 const AUTO_HIDE_DELAY = 2800
 const HISTORY_SAVE_INTERVAL = 10000
 const HISTORY_MIN_SAVE_POSITION = 1
+const HISTORY_MIN_RESUME_POSITION = 30
+const HOME_REFRESH_AFTER_PLAYBACK_DELAY = 1200
 const LOCAL_FILE_SOURCE_ID = 'local-file'
 
 const route = useRoute()
@@ -47,6 +49,8 @@ const topOcclusion = ref(0)
 const bottomOcclusion = ref(0)
 const diagnosticsOpen = ref(false)
 const pictureSettingsError = ref<string | null>(null)
+const providerSyncError = ref<string | null>(null)
+const providerSyncDiagnostics = ref<ProviderPlaybackSyncDiagnostic[]>([])
 const resumeMessage = ref<string | null>(null)
 const isPlayerFullscreen = ref(false)
 // Single active strategy for this slice: transparent Tauri/WebView overlay above a full-bleed mpv
@@ -58,7 +62,11 @@ let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
 let playbackCleanupStarted = false
 let historySaveTimer: number | undefined
+let resumeMessageTimer: number | undefined
+let homeRefreshTimer: number | undefined
 let lastSavedPosition = -1
+let playbackStartPosition = 0
+const resumeSeekTimers = new Set<number>()
 
 const {
   isPlaying,
@@ -273,34 +281,118 @@ function currentMediaSourceId(): string | undefined {
   return routeMediaSourceId || currentPlaybackContext()?.mediaSourceId || undefined
 }
 
+function queryNumberValue(value: unknown): number | undefined {
+  const raw = typeof value === 'string' || typeof value === 'number' ? Number.parseFloat(String(value)) : undefined
+  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : undefined
+}
+
+function routeResumePosition(): number | undefined {
+  return queryNumberValue(route.query.resumePosition)
+}
+
+function shouldResumePosition(position: number | undefined, mediaDuration: number | undefined): position is number {
+  if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
+    return false
+
+  return !isCompletedPosition(position, mediaDuration)
+}
+
+function syncProviderDiagnostics(sourceId: string): void {
+  const source = store.getSource(sourceId)
+  providerSyncDiagnostics.value = source?.getPlaybackSyncDiagnostics?.() ?? providerSyncDiagnostics.value
+}
+
+function rememberProviderTriggerDiagnostic(payload: PlaybackProgressUpsert, event: ProviderPlaybackProgressEvent, endpoint: string, message: string): void {
+  providerSyncDiagnostics.value = [{
+    timestamp: new Date().toISOString(),
+    sourceId: payload.sourceId || 'unknown',
+    event,
+    stage: 'trigger',
+    ok: false,
+    endpoint,
+    itemIdPresent: Boolean(payload.itemId),
+    mediaSourceIdPresent: Boolean(currentMediaSourceId()),
+    playSessionIdPresent: false,
+    position: Number.isFinite(payload.position) ? Math.max(0, payload.position) : 0,
+    message: redactSensitiveText(message),
+  }, ...providerSyncDiagnostics.value].slice(0, 12)
+}
+
 async function syncProviderProgress(payload: PlaybackProgressUpsert, event: ProviderPlaybackProgressEvent): Promise<void> {
-  const itemId = payload.itemId ?? payload.mediaIdentity
-  if (!itemId || !payload.sourceId || !Number.isFinite(payload.position))
+  if (!payload.sourceId || !Number.isFinite(payload.position)) {
+    rememberProviderTriggerDiagnostic(payload, event, 'PlayerView.syncProviderProgress', '未触发 provider sync：缺少 sourceId 或 position。')
     return
+  }
+
+  if (payload.sourceId === LOCAL_FILE_SOURCE_ID) {
+    providerSyncDiagnostics.value = []
+    return
+  }
 
   const source = store.getSource(payload.sourceId)
-  if (!source?.syncPlaybackProgress)
+  if (!source) {
+    rememberProviderTriggerDiagnostic(payload, event, 'DataSourceManager.getSource', '未触发 provider sync：播放中的数据源实例不可用。')
     return
+  }
+
+  if (!source.syncPlaybackProgress) {
+    providerSyncDiagnostics.value = []
+    return
+  }
 
   try {
     await source.syncPlaybackProgress({
-      itemId,
+      itemId: payload.itemId ?? '',
       mediaSourceId: currentMediaSourceId(),
       mediaType: payload.mediaType,
       position: payload.position,
       duration: payload.duration,
+      startPosition: playbackStartPosition,
       isPaused: event === 'paused' || event === 'stopped' || event === 'completed' || !isPlaying.value,
       completed: payload.completed ?? false,
       event,
+      playbackRate: playbackSpeed.value,
     })
+    providerSyncError.value = null
   }
-  catch {
-    // Provider progress sync must never block playback or local SQLite history.
+  catch (error) {
+    providerSyncError.value = toSafeErrorMessage(error, 'Emby 播放进度同步失败。')
+  }
+  finally {
+    syncProviderDiagnostics(payload.sourceId)
   }
 }
 
 function providerEventForPayload(payload: PlaybackProgressUpsert, fallback: ProviderPlaybackProgressEvent): ProviderPlaybackProgressEvent {
   return payload.completed ? 'completed' : fallback
+}
+
+function isLowPositionTerminalEvent(payload: PlaybackProgressUpsert, event: ProviderPlaybackProgressEvent): boolean {
+  return !payload.completed && (event === 'paused' || event === 'stopped') && payload.position < HISTORY_MIN_RESUME_POSITION
+}
+
+function shouldRefreshHomeAfterProgressEvent(event: ProviderPlaybackProgressEvent, providerEvent: ProviderPlaybackProgressEvent): boolean {
+  return event === 'stopped' || event === 'completed' || providerEvent === 'completed'
+}
+
+function scheduleHomeSectionsRefreshAfterPlayback() {
+  if (homeRefreshTimer)
+    window.clearTimeout(homeRefreshTimer)
+
+  homeRefreshTimer = window.setTimeout(() => {
+    homeRefreshTimer = undefined
+    void store.loadHomeSections()
+  }, HOME_REFRESH_AFTER_PLAYBACK_DELAY)
+}
+
+function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean, event: ProviderPlaybackProgressEvent): boolean {
+  if (payload.completed)
+    return payload.position >= HISTORY_MIN_SAVE_POSITION
+
+  if (force && isLowPositionTerminalEvent(payload, event))
+    return false
+
+  return payload.position >= HISTORY_MIN_SAVE_POSITION
 }
 
 function queryMediaType(): MediaItem['type'] | undefined {
@@ -317,14 +409,25 @@ async function saveCurrentProgress(force = false, event: ProviderPlaybackProgres
   if (!payload)
     return
 
-  if (!force && (!isPlaying.value || payload.position < HISTORY_MIN_SAVE_POSITION || Math.abs(payload.position - lastSavedPosition) < HISTORY_MIN_SAVE_POSITION))
+  const providerEvent = providerEventForPayload(payload, event)
+  if (!force && (!isPlaying.value || payload.position < HISTORY_MIN_SAVE_POSITION || Math.abs(payload.position - lastSavedPosition) < HISTORY_MIN_SAVE_POSITION)) {
+    if (event !== 'progress' && !isLowPositionTerminalEvent(payload, event))
+      void syncProviderProgress(payload, providerEvent)
+    return
+  }
+
+  if (!shouldSaveLocalProgress(payload, force, event))
     return
 
   const saved = await savePlaybackProgress(payload)
   if (saved)
     lastSavedPosition = saved.position
 
-  void syncProviderProgress(payload, providerEventForPayload(payload, event))
+  const providerSync = syncProviderProgress(payload, providerEvent)
+  if (shouldRefreshHomeAfterProgressEvent(event, providerEvent))
+    void providerSync.finally(scheduleHomeSectionsRefreshAfterPlayback)
+  else
+    void providerSync
 }
 
 function syncProviderPlaybackStarted() {
@@ -343,20 +446,78 @@ async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
 
 async function resumeSavedProgressIfAvailable() {
   const saved = await readSavedProgress()
-  if (!shouldResumePlayback(saved)) {
+  const fallbackPosition = routeResumePosition()
+  const fallbackDuration = duration.value > 0 ? duration.value : currentQueueItem.value?.duration
+  const position = shouldResumePlayback(saved)
+    ? saved.position
+    : shouldResumePosition(fallbackPosition, fallbackDuration)
+      ? fallbackPosition
+      : undefined
+
+  if (position == null) {
+    playbackStartPosition = 0
     resumeMessage.value = null
     return
   }
 
-  await seek(saved.position)
-  resumeMessage.value = `已从 ${formatPlaybackTime(saved.position)} 继续播放`
-  window.setTimeout(() => {
+  playbackStartPosition = position
+  await seekResumePosition(position)
+  resumeMessage.value = `已从 ${formatPlaybackTime(position)} 继续播放`
+  clearResumeMessageTimer()
+  resumeMessageTimer = window.setTimeout(() => {
+    resumeMessageTimer = undefined
     resumeMessage.value = null
   }, 3600)
 }
 
+async function seekResumePosition(position: number) {
+  clearResumeSeekTimers()
+  await seekResumePositionSilently(position)
+  scheduleResumeSeek(position, 250, true)
+  for (const delay of [900, 1800, 3200])
+    scheduleResumeSeek(position, delay, false)
+}
+
+async function seekResumePositionSilently(position: number) {
+  try {
+    await seek(position)
+  }
+  catch {
+    // Resume seek is retried after media metadata settles; failures must not break playback startup.
+  }
+}
+
+function scheduleResumeSeek(position: number, delay: number, force: boolean) {
+  const path = mediaPath.value
+  const timer = window.setTimeout(() => {
+    resumeSeekTimers.delete(timer)
+    if (playbackCleanupStarted || !mediaPath.value || mediaPath.value !== path)
+      return
+    if (force || Math.abs(currentTime.value - position) > 5)
+      void seekResumePositionSilently(position)
+  }, delay)
+  resumeSeekTimers.add(timer)
+}
+
+function clearResumeSeekTimers() {
+  for (const timer of resumeSeekTimers)
+    window.clearTimeout(timer)
+  resumeSeekTimers.clear()
+}
+
+function clearResumeMessageTimer() {
+  if (!resumeMessageTimer)
+    return
+
+  window.clearTimeout(resumeMessageTimer)
+  resumeMessageTimer = undefined
+}
+
 function resetHistorySaveState() {
+  clearResumeSeekTimers()
+  clearResumeMessageTimer()
   lastSavedPosition = -1
+  playbackStartPosition = 0
   resumeMessage.value = null
 }
 
@@ -537,7 +698,7 @@ watch(isPlaying, (playing) => {
   revealChrome()
   if (playing) {
     startHistorySaveTimer()
-    void saveCurrentProgress(true, 'resumed')
+    void saveCurrentProgress(false, 'resumed')
   }
   else {
     void saveCurrentProgress(true, 'paused')
@@ -807,6 +968,8 @@ onBeforeUnmount(() => {
   document.documentElement.classList.remove('player-chrome-hidden')
   document.body.classList.remove('player-chrome-hidden')
   clearHideTimer()
+  clearResumeSeekTimers()
+  clearResumeMessageTimer()
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
   window.removeEventListener('resize', handleWindowResize)
@@ -852,6 +1015,7 @@ watch(
       :top-occlusion="topOcclusion"
       :bottom-occlusion="bottomOcclusion"
       :diagnostics-open="diagnosticsOpen"
+      :provider-sync-diagnostics="providerSyncDiagnostics"
       @file-drop="handleFileDrop"
       @render-bounds="handleRenderBounds"
       @toggle-diagnostics="toggleDiagnosticsPanel"
@@ -891,6 +1055,9 @@ watch(
           </p>
           <p v-if="queueSwitchError" class="mt-2 text-xs text-red-100/80">
             {{ queueSwitchError }}
+          </p>
+          <p v-if="diagnosticsOpen && providerSyncError" class="mt-2 text-xs text-amber-100/80">
+            {{ providerSyncError }}
           </p>
           <p v-if="resumeMessage" class="mt-2 text-xs text-white/60">
             {{ resumeMessage }}

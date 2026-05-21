@@ -4,6 +4,7 @@ import { toSafeErrorMessage } from './errors'
 
 export class DataSourceManager {
   private readonly sources = new Map<string, DataSource>()
+  private readonly configSignatures = new Map<string, string>()
 
   async syncConfigs(configs: readonly DataSourceConfig[]): Promise<void> {
     const enabledConfigs = configs.filter(config => config.enabled !== false)
@@ -14,6 +15,7 @@ export class DataSourceManager {
       if (!nextIds.has(id)) {
         source.destroy()
         this.sources.delete(id)
+        this.configSignatures.delete(id)
       }
     }
 
@@ -32,13 +34,18 @@ export class DataSourceManager {
   }
 
   async addSource(config: DataSourceConfig): Promise<DataSource> {
+    const signature = stableConfigSignature(config)
     const old = this.sources.get(config.id)
+    if (old && this.configSignatures.get(config.id) === signature)
+      return old
+
     if (old)
       old.destroy()
 
     const source = createDataSource(config.type)
     await source.init(config)
     this.sources.set(config.id, source)
+    this.configSignatures.set(config.id, signature)
     return source
   }
 
@@ -47,6 +54,7 @@ export class DataSourceManager {
     source?.clearCache?.()
     source?.destroy()
     this.sources.delete(id)
+    this.configSignatures.delete(id)
   }
 
   clearSourceCache(id: string): void {
@@ -106,6 +114,25 @@ export function createDataSource(type: DataSourceType): DataSource {
     default:
       throw new Error(`${type} data source is not implemented yet.`)
   }
+}
+
+function stableConfigSignature(config: DataSourceConfig): string {
+  return JSON.stringify(sortConfigValue(config))
+}
+
+function sortConfigValue(value: unknown): unknown {
+  if (Array.isArray(value))
+    return value.map(sortConfigValue)
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, sortConfigValue(nested)]),
+    )
+  }
+
+  return value
 }
 
 export const dataSourceManager = new DataSourceManager()

@@ -115,9 +115,25 @@ export interface ProviderPlaybackProgressInput {
   mediaType?: MediaItem['type']
   position: number
   duration?: number
+  startPosition?: number
   isPaused: boolean
   completed: boolean
   event: ProviderPlaybackProgressEvent
+  playbackRate?: number
+}
+
+export interface ProviderPlaybackSyncDiagnostic {
+  timestamp: string
+  sourceId: string
+  event: ProviderPlaybackProgressEvent
+  stage: string
+  ok: boolean
+  endpoint: string
+  itemIdPresent: boolean
+  mediaSourceIdPresent: boolean
+  playSessionIdPresent: boolean
+  position: number
+  message?: string
 }
 
 export interface DataSource {
@@ -141,6 +157,7 @@ export interface DataSource {
 
   getStreamURL: (id: string) => Promise<string>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
+  getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 
   clearCache?: () => void
 
