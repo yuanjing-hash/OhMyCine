@@ -221,11 +221,11 @@ Phase 4: 生态系统           ████████████████
 
 #### 设置页面 UI
 
-- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、Emby 与 OpenList/Alist 账号密码登录式添加/编辑表单）
+- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、Emby 与 OpenList/Alist 账号密码登录式添加/编辑表单，并提供 OpenList/Alist 登录后的根目录选择）
 - [x] 数据源列表管理 (添加/编辑/删除)
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
 - [~] 数据源显示配置 (名称/图标/是否在侧栏显示；当前支持显示名称，图标/侧栏开关待后续)
-- [~] 添加数据源表单 (管理入口→类型选择→Emby/OpenList/Alist URL/账号/密码登录；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
+- [~] 添加数据源表单 (管理入口→可见类型卡片选择→Emby/OpenList/Alist URL/账号/密码登录；OpenList/Alist 登录后可从 `/` 浏览并选择根目录，根目录以 `extra.rootPath` 保存为非敏感配置；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
 - [x] 连接测试按钮 (显示成功/失败)
 - [~] 数据源状态显示 (在线/离线；当前在测试/浏览错误态中呈现，持久状态徽标待后续)
 
@@ -246,11 +246,11 @@ Phase 4: 生态系统           ████████████████
 
 - [~] 实现 OpenList/Alist HTTP API 客户端 (`/api/auth/login`, `/api/fs/list`, `/api/fs/get`；代码已接入 Player，仍待真实 OpenList/Alist 服务 live test)
 - [ ] 实现 WebDAV 客户端 (备选方案)
-- [~] `list(path)` — 目录浏览（HTTP API 已实现，待真实服务验证）
-- [~] `search(keyword)` — 搜索（优先 `/api/fs/search`，不可用时有限目录回退搜索；待真实服务验证）
-- [~] `getStreamURL(path)` — 构建播放URL (`/d{path}`，支持 `/api/fs/get` 返回的 sign；待真实服务验证)
-- [~] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource；账号登录-only MVP)
-- [~] 连接测试（设置页添加/编辑时先 `/api/auth/login` 并测试根目录列表，待真实服务验证）
+- [~] `list(path)` — 目录浏览（HTTP API 已实现，按 `extra.rootPath` 作为库根目录浏览，待真实服务验证）
+- [~] `search(keyword)` — 搜索（优先 `/api/fs/search` 且 parent 指向 `extra.rootPath`，不可用时在选中根目录内有限目录回退搜索；待真实服务验证）
+- [~] `getStreamURL(path)` — 构建播放URL (`/d{path}`，支持 `/api/fs/get` 返回的 sign；路径必须位于 `extra.rootPath` 内，待真实服务验证)
+- [~] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource；账号登录-only MVP；支持 `extra.rootPath` 根目录约束)
+- [~] 连接测试（设置页添加/编辑时先 `/api/auth/login` 并测试根目录列表；登录后可浏览 `/` 并选择 `extra.rootPath`，待真实服务验证）
 
 #### CloudDrive2DataSource 实现
 

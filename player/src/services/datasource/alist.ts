@@ -10,6 +10,7 @@ type AlistRequestPayload = Record<string, string | number | boolean | null | und
 
 interface AlistConfigExtra {
   readonly credentialRef?: string
+  readonly rootPath: string
 }
 
 interface AlistAuthResult {
@@ -44,6 +45,7 @@ export interface AlistLoginConfigInput {
   readonly displayName?: string
   readonly username: string
   readonly password: string
+  readonly rootPath?: string
   readonly order?: number
 }
 
@@ -52,10 +54,20 @@ export interface AlistLoginConfigResult {
   readonly libraries: MediaLibrary[]
 }
 
+export interface AlistSetupSessionInput {
+  readonly id: string
+  readonly url: string
+  readonly displayName?: string
+  readonly username: string
+  readonly password: string
+  readonly order?: number
+}
+
 export class AlistDataSource implements DataSource {
   private config: DataSourceConfig | null = null
   private baseUrl = ''
   private token = ''
+  private rootPath = '/'
   private connected = false
   private readonly cache = new SourceMetadataCache()
 
@@ -77,13 +89,14 @@ export class AlistDataSource implements DataSource {
     this.config = sanitizeExportConfig(config)
     this.baseUrl = normalizeBaseUrl(config.url)
     const extra = readAlistExtra(config)
+    this.rootPath = extra.rootPath
     this.token = await resolveToken(extra)
     this.connected = Boolean(this.baseUrl && this.token)
   }
 
   async test(): Promise<boolean> {
     this.ensureConfigured()
-    await this.requestFsList('/', 1)
+    await this.requestFsList(this.rootPath, 1)
     this.connected = true
     return true
   }
@@ -124,18 +137,18 @@ export class AlistDataSource implements DataSource {
   }
 
   async list(path?: string): Promise<MediaItem[]> {
-    const normalizedPath = normalizeAlistPath(path)
+    const normalizedPath = this.resolveLibraryPath(path)
     const records = await this.cache.getOrSet(`list:${normalizedPath}`, () => this.requestFsList(normalizedPath))
-    return records.map(record => this.mapItem(record))
+    return this.filterRecordsInRoot(records).map(record => this.mapItem(record))
   }
 
   async listLibraries(): Promise<MediaLibrary[]> {
     this.ensureConfigured()
     return [
       {
-        id: '/',
+        id: this.rootPath,
         sourceId: this.id,
-        name: '文件目录',
+        name: this.rootPath === '/' ? '文件目录' : (basename(this.rootPath) ?? this.rootPath),
         type: 'folders',
       },
     ]
@@ -148,17 +161,18 @@ export class AlistDataSource implements DataSource {
 
     try {
       const records = await this.requestFsSearch(trimmed)
-      return records.map(record => this.mapItem(record))
+      return this.filterRecordsInRoot(records).map(record => this.mapItem(record))
     }
     catch {
-      const records = await this.searchByListing('/', trimmed)
-      return records.map(record => this.mapItem(record))
+      const records = await this.searchByListing(this.rootPath, trimmed)
+      return this.filterRecordsInRoot(records).map(record => this.mapItem(record))
     }
   }
 
   async getDetail(id: string): Promise<MediaDetail> {
-    const path = normalizeAlistPath(id)
+    const path = this.resolveLibraryPath(id)
     const record = await this.cache.getOrSet(`detail:${path}`, () => this.requestFsGet(path, false))
+    this.ensureRecordInRoot(record)
     const item = this.mapItem(record)
     return {
       ...item,
@@ -167,8 +181,9 @@ export class AlistDataSource implements DataSource {
   }
 
   async getStreamURL(id: string): Promise<string> {
-    const path = normalizeAlistPath(id)
+    const path = this.resolveLibraryPath(id)
     const record = await this.requestFsGet(path, true)
+    this.ensureRecordInRoot(record)
     if (record.isDir)
       throw new Error('OpenList/Alist 文件夹不能直接播放。')
 
@@ -200,13 +215,13 @@ export class AlistDataSource implements DataSource {
 
   private async requestFsSearch(keyword: string): Promise<AlistFileRecord[]> {
     const data = await this.request('/api/fs/search', {
-      parent: '/',
+      parent: this.rootPath,
       keywords: keyword,
       scope: 0,
       page: 1,
       per_page: 100,
     })
-    return parseListRecords(data, '/')
+    return parseListRecords(data, this.rootPath)
   }
 
   private async request(path: string, body: AlistRequestPayload): Promise<unknown> {
@@ -233,9 +248,10 @@ export class AlistDataSource implements DataSource {
   }
 
   private async searchByListing(rootPath: string, keyword: string, maxDepth = 2, maxVisited = 80): Promise<AlistFileRecord[]> {
+    const searchRoot = normalizeAlistPath(rootPath)
     const normalizedKeyword = keyword.toLocaleLowerCase()
     const results: AlistFileRecord[] = []
-    const queue: Array<{ path: string, depth: number }> = [{ path: rootPath, depth: 0 }]
+    const queue: Array<{ path: string, depth: number }> = [{ path: searchRoot, depth: 0 }]
     let visited = 0
 
     while (queue.length > 0 && visited < maxVisited) {
@@ -244,7 +260,8 @@ export class AlistDataSource implements DataSource {
         break
       visited += 1
 
-      const children = await this.requestFsList(current.path, 100)
+      const children = (await this.requestFsList(current.path, 100))
+        .filter(child => isPathWithinRoot(child.path, searchRoot))
       for (const child of children) {
         if (child.name.toLocaleLowerCase().includes(normalizedKeyword))
           results.push(child)
@@ -261,7 +278,7 @@ export class AlistDataSource implements DataSource {
     return {
       id: record.path,
       sourceId: this.id,
-      libraryId: '/',
+      libraryId: this.rootPath,
       name: record.name,
       type: record.isDir ? 'folder' : 'file',
       size: record.isDir ? undefined : record.size,
@@ -281,6 +298,9 @@ export class AlistDataSource implements DataSource {
   }
 
   private buildDownloadUrl(path: string, sign: string | undefined): string {
+    if (!isPathWithinRoot(path, this.rootPath))
+      throw new Error('OpenList/Alist 路径不在已选择的根目录内。')
+
     const url = new URL(`${this.baseUrl}/d${encodeAlistPath(path)}`)
     if (sign)
       url.searchParams.set('sign', sign)
@@ -293,11 +313,60 @@ export class AlistDataSource implements DataSource {
     if (!this.token)
       throw new Error('OpenList/Alist 登录凭证缺失。请在设置的数据源管理中重新编辑并登录。')
   }
+
+  private resolveLibraryPath(path?: string): string {
+    const raw = path?.trim()
+    if (!raw)
+      return this.rootPath
+
+    const normalized = normalizeAlistPath(raw)
+    if (normalized === '/' && this.rootPath !== '/')
+      return this.rootPath
+    if (!isPathWithinRoot(normalized, this.rootPath))
+      throw new Error('OpenList/Alist 路径不在已选择的根目录内。')
+    return normalized
+  }
+
+  private filterRecordsInRoot(records: readonly AlistFileRecord[]): AlistFileRecord[] {
+    return records.filter(record => isPathWithinRoot(record.path, this.rootPath))
+  }
+
+  private ensureRecordInRoot(record: AlistFileRecord): void {
+    if (!isPathWithinRoot(record.path, this.rootPath))
+      throw new Error('OpenList/Alist 返回的文件路径不在已选择的根目录内。')
+  }
+}
+
+export async function createAuthenticatedAlistSetupSource(input: AlistSetupSessionInput): Promise<AlistDataSource> {
+  const displayName = input.displayName?.trim() || 'OpenList/Alist'
+  const source = new AlistDataSource()
+  try {
+    await source.init({
+      id: input.id,
+      type: 'alist',
+      name: displayName,
+      displayName,
+      order: input.order ?? 0,
+      url: input.url.trim(),
+      enabled: true,
+      extra: {
+        rootPath: '/',
+      },
+    })
+    await source.authenticate(input.username, input.password)
+    await source.test()
+    return source
+  }
+  catch (error) {
+    source.destroy()
+    throw error
+  }
 }
 
 export async function loginAlistAndCreateConfig(input: AlistLoginConfigInput): Promise<AlistLoginConfigResult> {
   const credentialRef = createCredentialRef(input.id, 'alist')
   const displayName = input.displayName?.trim() || 'OpenList/Alist'
+  const rootPath = normalizeAlistPath(input.rootPath)
   const config: DataSourceConfig = {
     id: input.id,
     type: 'alist',
@@ -309,6 +378,7 @@ export async function loginAlistAndCreateConfig(input: AlistLoginConfigInput): P
     extra: {
       credentialRef,
       credentialVersion: Date.now(),
+      rootPath,
     },
   }
 
@@ -386,7 +456,23 @@ function readAlistExtra(config: DataSourceConfig): AlistConfigExtra {
   const extra = config.extra ?? {}
   return {
     credentialRef: typeof extra.credentialRef === 'string' ? extra.credentialRef : undefined,
+    rootPath: typeof extra.rootPath === 'string' ? normalizeAlistPath(extra.rootPath) : '/',
   }
+}
+
+export function readAlistRootPath(config: DataSourceConfig | null | undefined): string {
+  if (!config || config.type !== 'alist')
+    return '/'
+  try {
+    return readAlistExtra(config).rootPath
+  }
+  catch {
+    return '/'
+  }
+}
+
+export function normalizeAlistRootPath(value: string | undefined): string {
+  return normalizeAlistPath(value)
 }
 
 async function resolveToken(extra: AlistConfigExtra): Promise<string> {
@@ -473,7 +559,7 @@ function parseFileRecord(value: unknown, fallbackParent: string, includeSign: bo
 
 function normalizeAlistPath(value: string | undefined): string {
   const trimmed = value?.trim()
-  if (!trimmed || trimmed === '.')
+  if (!trimmed)
     return '/'
   const withRoot = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
   const normalized = withRoot.replace(/\/+/g, '/')
@@ -483,7 +569,7 @@ function normalizeAlistPath(value: string | undefined): string {
     .some(segment => segment === '.' || segment === '..')
   if (hasUnsafeSegment)
     throw new Error('OpenList/Alist 路径包含不安全的相对段。')
-  return normalized
+  return normalized === '/' ? '/' : normalized.replace(/\/+$/, '')
 }
 
 function parentPath(path: string): string {
@@ -492,6 +578,14 @@ function parentPath(path: string): string {
     return '/'
   const index = normalized.lastIndexOf('/')
   return index <= 0 ? '/' : normalized.slice(0, index)
+}
+
+function isPathWithinRoot(path: string, rootPath: string): boolean {
+  const normalizedPath = normalizeAlistPath(path)
+  const normalizedRoot = normalizeAlistPath(rootPath)
+  return normalizedRoot === '/'
+    || normalizedPath === normalizedRoot
+    || normalizedPath.startsWith(`${normalizedRoot}/`)
 }
 
 function joinAlistPath(parent: string, name: string): string {

@@ -28,20 +28,24 @@
 
 * 支持配置 OpenList/Alist base URL。
 * 支持账号登录模式：URL + username + password -> token。
+* 支持账号登录成功后从 `/` 浏览目录并选择数据源根目录。
+* 将选中的 OpenList/Alist 根目录作为非敏感配置保存到 `extra.rootPath`，未选择时默认为 `/`。
 * 支持连接测试。
-* 支持根目录和子目录浏览，并映射成统一 `MediaItem`。
-* 支持按关键字搜索。
+* 支持在选中根目录内浏览子目录，并映射成统一 `MediaItem`。
+* 支持按关键字搜索；OpenList/Alist 搜索和目录回退搜索应尽量限制在选中根目录内。
 * 支持文件详情的基础信息返回。
-* 支持对可播放文件生成 stream URL，并接入现有播放页。
+* 支持对选中根目录内的可播放文件生成 stream URL，并接入现有播放页；越界或不安全路径必须拒绝。
 * 敏感凭据通过凭据存储保存，普通 DataSource config 只保存引用。
 * 普通 UI 不暴露手填 token、公开目录或路径密码模式。
 
 ## Acceptance Criteria (evolving)
 
 * [~] 用户能在 Player 设置中添加 OpenList/Alist 数据源并测试连接。实现已完成，待真实服务验证。
-* [~] 用户能从侧栏进入该数据源并浏览目录。实现已完成，待真实服务验证。
-* [~] 视频文件能从 OpenList/Alist 进入现有播放页播放。实现已完成，待真实服务验证。
+* [~] 用户能在 OpenList/Alist 登录后从 `/` 浏览目录并选择根目录。实现已完成，待真实服务验证。
+* [~] 用户能从侧栏进入该数据源并在已选根目录内浏览目录。实现已完成，待真实服务验证。
+* [~] 视频文件能从 OpenList/Alist 选中根目录内进入现有播放页播放。实现已完成，待真实服务验证。
 * [x] 普通配置持久化中不保存 token、用户名、密码等敏感字段。
+* [x] OpenList/Alist 根目录以 `extra.rootPath` 保存为非敏感配置，默认 `/`。
 * [x] 设计状态同步回路线图。
 
 ## Definition of Done (team quality bar)
@@ -77,3 +81,5 @@
 * Settings now supports Emby and OpenList/Alist login-style add/edit flows.
 * Added safe `credentialVersion` config metadata so re-login forces DataSource reinitialization without persisting secrets.
 * Static verification passed via Player typecheck, lint, build, and `git diff --check`; live OpenList/Alist service verification remains pending.
+* Follow-up added visible source-type tiles so OpenList/Alist is no longer hidden behind native select rendering.
+* Follow-up added OpenList/Alist root directory selection after authenticated login; final config stores `extra.rootPath` and DataSource browsing/search/playback are scoped to that root.

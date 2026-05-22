@@ -91,9 +91,11 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 - `init(config)` normalizes non-sensitive config, loads credentials through a credential reference when available, and does not log tokens.
 - Emby add/edit flows authenticate with account/password through `/Users/AuthenticateByName` or equivalent, then store the returned access token behind `credentialRef`; normal Emby setup must not ask the user to manually paste an access token.
 - OpenList/Alist add/edit flows authenticate with account/password through `/api/auth/login`, then store the returned token behind `credentialRef`; the first Player MVP must not expose manual token entry, public/shared directory access, path passwords, or WebDAV mode in the normal OpenList/Alist setup flow.
+- OpenList/Alist add/edit flows allow selecting a library root after authenticated login by browsing directories from `/`; persist the chosen root as non-sensitive `extra.rootPath`, default to `/`, and do not persist credentials until final Add/Save succeeds.
 - `test()` returns connection/auth success without exposing raw provider errors or credentials.
 - `listLibraries()` returns `MediaLibrary[]` for source-level library cards and should be fetched after successful add/login so the source is known usable before it appears as connected.
 - `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.
+- OpenList/Alist `listLibraries()` exposes the selected `extra.rootPath` as the source library, `list()` treats that path as the source root, `search()` scopes provider search/fallback listing to that root when practical, and `getStreamURL()` rejects unsafe paths or paths outside the selected root before building `/d{path}` URLs.
 - `getDetail(id)` may include provider-derived media source options, audio/subtitle tracks, stills, collections, similar items, and media info, but must not expose local filesystem paths, STRM paths, credentials, or tokenized playback URLs as display fields.
 - `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized; for STRM/remote-provider items, inspect provider playback metadata before falling back to static stream URLs, and return a user-safe error if no real playable URL is exposed.
 - Emby hierarchy browsing must preserve views/libraries at the root, direct children for libraries/folders, series → seasons, and season → episodes; only search/home/recent aggregation should use recursive queries by default.
@@ -109,6 +111,9 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 | Emby auth succeeds but library fetch fails | Do not mark setup as complete unless the UI explicitly supports a connected-but-empty/error state |
 | Provider API returns unexpected shape | Treat as invalid external data and show a safe error/empty state |
 | Provider returns tokenized image/stream URLs | Redact tokens in UI/log/error output; pass real URL only to the component/service that needs it |
+| OpenList/Alist setup login succeeds but root browsing fails | Keep credentials unpersisted for new/changed login input and show a user-safe root browsing error |
+| OpenList/Alist `extra.rootPath` is missing | Default to `/` and expose `/` as the library root |
+| OpenList/Alist path contains `.` / `..` or escapes `extra.rootPath` | Reject before provider stream URL construction or nested browse |
 | Source is disabled | Manager must skip initialization and route views must show disabled state instead of browsing |
 | Source is offline/auth fails | Keep local files and other sources usable; show source-specific error state |
 
@@ -121,6 +126,7 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 - `npm run typecheck`, `npm run lint`, and `npm run build` pass after frontend source changes.
 - For desktop package confidence, `npm run tauri:build:windows` must still produce the Windows executable/installer when Player packaging is in scope.
 - Review Settings add/edit/test/remove, source sidebar appearance, library loading, media item loading, play routing, loading/empty/error states, and token redaction.
+- For OpenList/Alist, review the visible source-type selector, account-login-only flow, root directory picker from `/`, persisted `extra.rootPath`, scoped list/search/playback behavior, and cleanup when final config save or root validation fails.
 
 #### 7. Wrong vs Correct
 

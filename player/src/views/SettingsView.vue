@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import type { DataSourceConfig, DataSourceType, MediaLibrary } from '@/services/datasource/types'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { loginAlistAndCreateConfig } from '@/services/datasource/alist'
+import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
@@ -17,11 +17,14 @@ interface DataSourceFormState {
   url: string
   username: string
   password: string
+  rootPath: string
 }
 
 const sourceTypeOptions: Array<{
   type: LoginDataSourceType
   label: string
+  shortLabel: string
+  description: string
   defaultName: string
   urlPlaceholder: string
   usernamePlaceholder: string
@@ -29,6 +32,8 @@ const sourceTypeOptions: Array<{
   {
     type: 'emby',
     label: 'Emby',
+    shortLabel: 'E',
+    description: '媒体服务器账号登录',
     defaultName: 'Emby',
     urlPlaceholder: 'http://192.168.1.2:8096',
     usernamePlaceholder: 'Emby 登录账号',
@@ -36,6 +41,8 @@ const sourceTypeOptions: Array<{
   {
     type: 'alist',
     label: 'OpenList/Alist',
+    shortLabel: 'A',
+    description: 'OpenList/Alist API 账号登录',
     defaultName: 'OpenList/Alist',
     urlPlaceholder: 'http://192.168.1.2:5244',
     usernamePlaceholder: 'OpenList/Alist 登录账号',
@@ -52,6 +59,7 @@ const form = reactive<DataSourceFormState>({
   url: '',
   username: '',
   password: '',
+  rootPath: '/',
 })
 const mode = ref<'manage' | 'add' | 'edit'>('manage')
 const isSaving = ref(false)
@@ -59,10 +67,19 @@ const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
 const persistentCredentialWarning = ref(hasPersistentCredentialStorageWarning())
+const alistBrowserSource = shallowRef<AlistDataSource | null>(null)
+const alistBrowserPath = ref('/')
+const alistBrowserDirectories = ref<MediaItem[]>([])
+const alistBrowserLoading = ref(false)
+const alistBrowserError = ref<string | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
+const isAlistForm = computed(() => form.type === 'alist')
+const selectedRootPathLabel = computed(() => normalizeAlistRootPath(form.rootPath))
+const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
+const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
 
 onMounted(() => {
   store.loadConfigs()
@@ -73,6 +90,12 @@ onMounted(() => {
 watch(() => form.type, (type) => {
   if (!isEditing.value)
     form.displayName = defaultDisplayName(type)
+  resetAlistBrowser()
+})
+
+watch(() => [form.url, form.username, form.password] as const, () => {
+  if (form.type === 'alist')
+    resetAlistBrowser()
 })
 
 function goManage(options: { preserveFeedback?: boolean } = {}) {
@@ -80,6 +103,7 @@ function goManage(options: { preserveFeedback?: boolean } = {}) {
   if (!options.preserveFeedback)
     feedback.value = null
   lastFetchedLibraries.value = []
+  resetAlistBrowser()
   void router.replace({ name: 'settings', query: { section: 'datasources' } })
 }
 
@@ -96,8 +120,10 @@ function resetForm() {
   form.url = ''
   form.username = ''
   form.password = ''
+  form.rootPath = '/'
   feedback.value = null
   lastFetchedLibraries.value = []
+  resetAlistBrowser()
 }
 
 function editSource(config: DataSourceConfig) {
@@ -115,11 +141,13 @@ function editSource(config: DataSourceConfig) {
   form.url = config.url
   form.username = ''
   form.password = ''
+  form.rootPath = config.type === 'alist' ? readAlistRootPath(config) : '/'
   feedback.value = {
     type: 'info',
     message: `可修改显示名称与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
+  resetAlistBrowser()
   mode.value = 'edit'
   void router.replace({ name: 'settings', query: { section: 'datasources', action: 'edit', id: config.id } })
 }
@@ -169,6 +197,7 @@ async function saveSource() {
       displayName: form.displayName,
       username: form.username,
       password: form.password,
+      rootPath: form.type === 'alist' ? selectedRootPathLabel.value : undefined,
       order: store.configs.length,
     })
     try {
@@ -206,8 +235,9 @@ async function saveEditedSource(id: string) {
   const username = form.username.trim()
   const nextUrl = form.url.trim()
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
+  const nextRootPath = existing.type === 'alist' ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
-  const shouldRelogin = normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(existing.url) || Boolean(username || form.password)
+  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password)
   if (shouldRelogin && (!username || !form.password))
     throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
 
@@ -219,6 +249,7 @@ async function saveEditedSource(id: string) {
       displayName: nextDisplayName,
       username,
       password: form.password,
+      rootPath: nextRootPath,
       order: existing.order,
     })
     try {
@@ -234,9 +265,27 @@ async function saveEditedSource(id: string) {
     return
   }
 
+  const nextExtra = { ...(existing.extra ?? {}) }
+  if (existing.type === 'alist') {
+    const rootPathChanged = nextRootPath !== readAlistRootPath(existing)
+    const libraries = rootPathChanged
+      ? await validateExistingAlistRoot(existing, nextUrl, nextDisplayName, nextRootPath ?? '/')
+      : null
+    nextExtra.rootPath = nextRootPath ?? '/'
+    if (libraries) {
+      nextExtra.libraries = libraries.map(library => ({
+        id: library.id,
+        name: library.name,
+        type: library.type,
+      }))
+    }
+  }
+
   await store.updateConfig(id, {
     name: nextDisplayName,
     displayName: nextDisplayName,
+    url: nextUrl,
+    extra: nextExtra,
   })
   form.password = ''
   feedback.value = { type: 'success', message: '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
@@ -249,6 +298,7 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   displayName: string
   username: string
   password: string
+  rootPath?: string
   order: number
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
   if (type === 'alist')
@@ -285,7 +335,8 @@ function defaultDisplayName(type: LoginDataSourceType): string {
 
 function sourceStatusLine(source: DataSourceConfig): string {
   const credentialState = typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
-  return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}`
+  const rootState = source.type === 'alist' ? ` · 根目录：${readAlistRootPath(source)}` : ''
+  return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}${rootState}`
 }
 
 function normalizeComparableUrl(value: string): string {
@@ -314,6 +365,134 @@ async function restoreCredentialForConfig(config: DataSourceConfig, previousCred
 
 function credentialRefFromConfig(config: DataSourceConfig): string | null {
   return typeof config.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
+}
+
+function selectSourceType(type: LoginDataSourceType) {
+  if (isEditing.value)
+    return
+
+  form.type = type
+  form.displayName = defaultDisplayName(type)
+  feedback.value = null
+  lastFetchedLibraries.value = []
+}
+
+async function loadAlistRootBrowser() {
+  await loadAlistDirectory('/')
+}
+
+async function loadAlistDirectory(path: string) {
+  if (form.type !== 'alist')
+    return
+
+  alistBrowserLoading.value = true
+  alistBrowserError.value = null
+  try {
+    const source = await ensureAlistBrowserSource()
+    const nextPath = normalizeAlistRootPath(path)
+    const items = await source.list(nextPath)
+    alistBrowserPath.value = nextPath
+    alistBrowserDirectories.value = items
+      .filter(item => item.type === 'folder')
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'))
+  }
+  catch (error) {
+    alistBrowserDirectories.value = []
+    alistBrowserError.value = toSafeErrorMessage(error, 'OpenList/Alist 目录加载失败。')
+  }
+  finally {
+    alistBrowserLoading.value = false
+  }
+}
+
+async function ensureAlistBrowserSource(): Promise<AlistDataSource> {
+  if (alistBrowserSource.value)
+    return alistBrowserSource.value
+
+  const sourceId = form.id ?? `alist-setup-${Date.now()}`
+  const displayName = form.displayName.trim() || 'OpenList/Alist'
+  const existing = form.id ? store.configs.find(config => config.id === form.id) : null
+  const username = form.username.trim()
+  const shouldUseExistingCredential = existing?.type === 'alist'
+    && !shouldReloginSource(existing, form.url, username, form.password)
+
+  if (shouldUseExistingCredential) {
+    const source = new AlistDataSource()
+    await source.init({
+      ...existing,
+      name: displayName,
+      displayName,
+      url: form.url.trim(),
+      extra: {
+        ...(existing.extra ?? {}),
+        rootPath: '/',
+      },
+    })
+    await source.test()
+    alistBrowserSource.value = source
+    return source
+  }
+
+  const source = await createAuthenticatedAlistSetupSource({
+    id: sourceId,
+    url: form.url,
+    displayName,
+    username,
+    password: form.password,
+    order: existing?.order ?? store.configs.length,
+  })
+  alistBrowserSource.value = source
+  return source
+}
+
+function selectAlistRoot(path: string) {
+  form.rootPath = normalizeAlistRootPath(path)
+  feedback.value = {
+    type: 'info',
+    message: `已选择 OpenList/Alist 根目录：${form.rootPath}`,
+  }
+}
+
+function resetAlistBrowser() {
+  alistBrowserSource.value?.destroy()
+  alistBrowserSource.value = null
+  alistBrowserPath.value = '/'
+  alistBrowserDirectories.value = []
+  alistBrowserLoading.value = false
+  alistBrowserError.value = null
+}
+
+function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string): boolean {
+  return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || Boolean(username || password)
+}
+
+async function validateExistingAlistRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
+  const source = new AlistDataSource()
+  try {
+    await source.init({
+      ...config,
+      name: displayName,
+      displayName,
+      url,
+      extra: {
+        ...(config.extra ?? {}),
+        rootPath,
+      },
+    })
+    await source.test()
+    return source.listLibraries()
+  }
+  finally {
+    source.destroy()
+  }
+}
+
+function parentDirectoryPath(path: string): string {
+  const normalized = normalizeAlistRootPath(path)
+  if (normalized === '/')
+    return '/'
+  const index = normalized.lastIndexOf('/')
+  return index <= 0 ? '/' : normalized.slice(0, index)
 }
 </script>
 
@@ -455,18 +634,35 @@ function credentialRefFromConfig(config: DataSourceConfig): string | null {
         </div>
 
         <form class="space-y-5" @submit.prevent="saveSource">
-          <label class="block">
+          <div>
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">数据源类型</span>
-            <select
-              v-model="form.type"
-              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
-              :disabled="isEditing"
-            >
-              <option v-for="option in sourceTypeOptions" :key="option.type" :value="option.type">
-                {{ option.label }}
-              </option>
-            </select>
-          </label>
+            <div class="mt-3 grid gap-3 md:grid-cols-2">
+              <button
+                v-for="option in sourceTypeOptions"
+                :key="option.type"
+                type="button"
+                class="flex min-h-24 items-center gap-4 rounded-2xl border p-4 text-left transition-colors disabled:cursor-not-allowed"
+                :class="form.type === option.type ? 'border-primary/60 bg-primary/14 text-white shadow-lg shadow-primary/10' : 'border-white/10 bg-white/5 text-white/70 hover:border-white/20 hover:bg-white/8'"
+                :disabled="isEditing"
+                :aria-pressed="form.type === option.type"
+                @click="selectSourceType(option.type)"
+              >
+                <span
+                  class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold"
+                  :class="form.type === option.type ? 'bg-primary/22 text-primary' : 'bg-white/8 text-white/52'"
+                >
+                  {{ option.shortLabel }}
+                </span>
+                <span class="min-w-0">
+                  <span class="block text-sm font-semibold">{{ option.label }}</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">{{ option.description }}</span>
+                </span>
+                <span v-if="form.type === option.type" class="ml-auto rounded-full bg-primary/20 px-3 py-1 text-xs font-semibold text-primary">
+                  已选择
+                </span>
+              </button>
+            </div>
+          </div>
 
           <label class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">显示名称</span>
@@ -508,6 +704,97 @@ function credentialRefFromConfig(config: DataSourceConfig): string | null {
               autocomplete="current-password"
             >
           </label>
+
+          <div v-if="isAlistForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">OpenList/Alist 根目录</span>
+                <p class="mt-2 text-sm text-white/70">
+                  当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="alistBrowserLoading"
+                @click="loadAlistRootBrowser"
+              >
+                {{ alistBrowserSource ? '刷新目录' : '登录并浏览目录' }}
+              </button>
+            </div>
+
+            <p class="mt-3 text-xs leading-5 text-white/42">
+              不选择时默认使用 `/`。目录浏览使用当前表单的登录会话，只有点击添加或保存成功后才持久化凭据和根目录配置。
+            </p>
+
+            <div
+              v-if="alistBrowserError"
+              class="mt-4 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-100"
+            >
+              {{ alistBrowserError }}
+            </div>
+
+            <div v-if="alistBrowserSource" class="mt-4 rounded-2xl border border-white/8 bg-black/18 p-3">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-xs uppercase tracking-[0.18em] text-white/34">
+                    Browsing
+                  </p>
+                  <p class="mt-1 truncate text-sm font-semibold text-white">
+                    {{ alistBrowserPath }}
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
+                    :disabled="!canBrowseAlistParent || alistBrowserLoading"
+                    @click="loadAlistDirectory(alistParentPath)"
+                  >
+                    上一级
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-xl bg-primary/18 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/26"
+                    @click="selectAlistRoot(alistBrowserPath)"
+                  >
+                    选择当前目录
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="alistBrowserLoading" class="mt-4 rounded-xl bg-white/6 px-4 py-3 text-sm text-white/48">
+                正在加载目录…
+              </div>
+
+              <div v-else-if="alistBrowserDirectories.length" class="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
+                <div
+                  v-for="directory in alistBrowserDirectories"
+                  :key="directory.id"
+                  class="flex items-center justify-between gap-3 rounded-xl bg-white/6 px-3 py-2"
+                >
+                  <button
+                    type="button"
+                    class="min-w-0 flex-1 truncate text-left text-sm text-white/74 transition-colors hover:text-white"
+                    @click="loadAlistDirectory(directory.id)"
+                  >
+                    {{ directory.name }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-lg bg-white/8 px-3 py-1.5 text-xs text-white/62 transition-colors hover:bg-white/14 hover:text-white"
+                    @click="selectAlistRoot(directory.id)"
+                  >
+                    设为根目录
+                  </button>
+                </div>
+              </div>
+
+              <div v-else class="mt-4 rounded-xl bg-white/6 px-4 py-3 text-sm text-white/48">
+                当前目录没有可继续浏览的子目录，可直接选择当前目录作为根目录。
+              </div>
+            </div>
+          </div>
 
           <div
             v-if="feedback"
@@ -556,9 +843,5 @@ function credentialRefFromConfig(config: DataSourceConfig): string | null {
 <style scoped>
 .settings-view {
   background: var(--color-bg);
-}
-
-select option {
-  color: #111827;
 }
 </style>
