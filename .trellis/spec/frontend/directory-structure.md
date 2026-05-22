@@ -86,6 +86,7 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 - Scan input: source id, source type, selected root path, scan mode preference (`auto`, `standard`, `nonStandard`), and optional rule-set id/version.
 - Scan outputs: raw file records, parsed media candidates, matched metadata records, logical category assignment, unresolved records, scan log entries, and local artwork cache references.
 - Rule-set shape: logical groups may be separated by media type internally, but the physical remote folder tree must not be required to contain fixed top-level names such as `movie`, `tv`, `Movies`, or `TV`.
+- Visible source-page MVP: raw sources may expose a local `media-library` view alongside the original `folders` view. The media-library view can be powered by a source/root-scoped local scan cache until the full SQLite scraper DB exists.
 
 #### 3. Contracts
 - The scanner starts from the user's selected root and infers the structure below that root. Never reject or downgrade a library only because the root or first child is not named `movie`/`tv`/`Movies`/`TV`.
@@ -95,6 +96,9 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 - Classification matching may use TMDB detail fields such as `original_language`, `production_countries`, `origin_country`, `genre_ids`, `release_year`, and later top-level detail fields. Multiple fields are ANDed, comma values are ORed, and `!value` excludes a value.
 - Movie and TV rule groups both default to fallback category `未分类`. `外语电影` may be an explicit editable default/example movie category, but fallback defaults, placeholders, and migrated legacy fallback values must not use it.
 - Raw provider paths and provider names are untrusted. Normalize paths before scan parsing, reject plain or URL-encoded `.` / `..` segments, reject provider names containing `/` or `\` when joining with a parent path, and skip invalid provider records instead of throwing through the whole scan.
+- Manual raw-source scans must go through the active `DataSource.list()` boundary, not provider-specific API clients in the view. The folder/file view remains available if scan fails or no scan cache exists.
+- MVP recursive scans must enforce conservative limits such as max depth, max folders, and max entries. Hitting a limit should mark the scan partial and log a local warning, not hang the UI or break folder browsing.
+- Local scan cache writes are best-effort. If persistence fails, keep the current in-memory scan result visible and record a local warning; do not fail the scan solely because cache persistence failed.
 - All scan logs, match decisions, metadata records, posters, backdrops, and derived category assignments are stored locally in Player app data. Do not write them back to OpenList/Alist, CloudDrive2, local source roots, or any provider unless a later task explicitly designs a write-capable workflow.
 - Do not store OpenList/Alist credentials, tokens, tokenized stream URLs, full sensitive provider URLs, or local absolute paths in metadata records intended for display, AI prompts, export, or logs.
 
@@ -105,8 +109,10 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 | Directory has strong title/year or season/episode structure | Prefer standard-mode parsing and use TMDB to confirm/enrich metadata |
 | Directory is mixed or ambiguous | Fall back to non-standard parsing, keep unresolved items playable, and record a local diagnostic |
 | Standard/non-standard confidence is low | Keep scan usable and expose a user confirmation/switch point rather than failing the scan |
+| Recursive scan exceeds depth/folder/file limits | Stop that branch or scan, mark partial, log a warning, and keep already collected results usable |
 | TMDB is unavailable, rate limited, or key is missing | Keep file browsing/playback available, keep unresolved candidates, and show a user-safe metadata-unavailable state |
 | File path contains traversal, encoded traversal, unsafe joined name, or escapes the selected root | Reject/skip the path before browse/detail/stream/scrape work |
+| Local scan cache write fails | Keep the current scan result in memory, log a local warning, and leave folder browsing/playback usable |
 | Classification rule has no explicit conditions | Treat it as a fallback rule within its media-type scope/order |
 | Classification rule references an unsupported field | Ignore that rule with a local validation error; do not break the whole scan |
 | Scan cache is cleared for a source | Clear only that source's local scrape metadata/artwork/log cache; keep DataSource config and credentials intact |

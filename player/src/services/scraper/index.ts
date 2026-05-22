@@ -1,4 +1,5 @@
 export * from './classificationRules'
+export * from './localScanCache'
 export * from './parser'
 export * from './pathUtils'
 export * from './scanner'
