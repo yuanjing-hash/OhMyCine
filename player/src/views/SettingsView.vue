@@ -9,6 +9,10 @@ import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { useDataSourceStore } from '@/stores/datasource'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
+type LoginDataSourceConfig = DataSourceConfig & { type: LoginDataSourceType }
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit'
+type SettingsEntryId = 'datasources' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
+type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 
 interface DataSourceFormState {
   id: string | null
@@ -18,6 +22,16 @@ interface DataSourceFormState {
   username: string
   password: string
   rootPath: string
+}
+
+interface SettingsEntry {
+  id: SettingsEntryId
+  label: string
+  title: string
+  description: string
+  meta: string
+  actionLabel: string
+  disabled: boolean
 }
 
 const sourceTypeOptions: Array<{
@@ -61,7 +75,7 @@ const form = reactive<DataSourceFormState>({
   password: '',
   rootPath: '/',
 })
-const mode = ref<'manage' | 'add' | 'edit'>('manage')
+const mode = ref<SettingsMode>('overview')
 const isSaving = ref(false)
 const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
@@ -80,11 +94,71 @@ const isAlistForm = computed(() => form.type === 'alist')
 const selectedRootPathLabel = computed(() => normalizeAlistRootPath(form.rootPath))
 const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
 const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
+const activeSourceCount = computed(() => configuredSources.value.filter(source => source.enabled !== false).length)
+const dataSourceEntryMeta = computed(() => {
+  if (configuredSources.value.length === 0)
+    return '尚未配置'
+  return `${activeSourceCount.value}/${configuredSources.value.length} 个启用`
+})
+const pageDescription = computed(() => mode.value === 'overview'
+  ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
+  : 'Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。')
+const settingsEntries = computed<SettingsEntry[]>(() => [
+  {
+    id: 'datasources',
+    label: 'DS',
+    title: '管理数据源',
+    description: '连接、编辑、停用或清理 Emby 与 OpenList/Alist 数据源，控制左侧媒体入口。',
+    meta: dataSourceEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
+  },
+  {
+    id: 'playback',
+    label: 'Play',
+    title: '播放',
+    description: '默认音轨、字幕偏好、自动续播和快捷键微调将集中放在这里。',
+    meta: '规划中',
+    actionLabel: '待开放',
+    disabled: true,
+  },
+  {
+    id: 'appearance',
+    label: 'UI',
+    title: '外观',
+    description: '主题、玻璃强度、海报墙密度和动画偏好会随 Cinema OS 设计系统开放。',
+    meta: '规划中',
+    actionLabel: '待开放',
+    disabled: true,
+  },
+  {
+    id: 'ai',
+    label: 'AI',
+    title: 'AI 推荐',
+    description: '本地库索引、模型提供商和隐私边界设置将在推荐功能稳定后接入。',
+    meta: '规划中',
+    actionLabel: '待开放',
+    disabled: true,
+  },
+  {
+    id: 'diagnostics',
+    label: 'Info',
+    title: '关于 / 诊断',
+    description: '版本信息、日志导出、运行环境诊断和依赖状态会在桌面封装稳定后接入。',
+    meta: '规划中',
+    actionLabel: '待开放',
+    disabled: true,
+  },
+])
 
 onMounted(() => {
   store.loadConfigs()
   refreshPersistentCredentialWarning()
-  mode.value = route.query.action === 'add' ? 'add' : 'manage'
+  syncModeFromRoute()
+})
+
+watch(() => route.query, () => {
+  syncModeFromRoute()
 })
 
 watch(() => form.type, (type) => {
@@ -97,6 +171,104 @@ watch(() => [form.url, form.username, form.password] as const, () => {
   if (form.type === 'alist')
     resetAlistBrowser()
 })
+
+function syncModeFromRoute() {
+  if (routeQueryValue('section') !== 'datasources') {
+    replaceSettingsQuery()
+    if (mode.value !== 'overview') {
+      lastFetchedLibraries.value = []
+      resetAlistBrowser()
+    }
+    mode.value = 'overview'
+    return
+  }
+
+  const action = routeQueryValue('action')
+  if (action === 'add') {
+    replaceSettingsQuery({ section: 'datasources', action: 'add' })
+    if (mode.value !== 'add')
+      resetForm()
+    mode.value = 'add'
+    return
+  }
+
+  if (action === 'edit') {
+    const id = routeQueryValue('id')
+    const source = id ? store.configs.find(config => config.id === id) : null
+    if (source && isLoginDataSourceConfig(source)) {
+      replaceSettingsQuery({ section: 'datasources', action: 'edit', id: source.id })
+      if (mode.value !== 'edit' || form.id !== source.id)
+        populateEditForm(source)
+      return
+    }
+    replaceSettingsQuery({ section: 'datasources' })
+    mode.value = 'manage'
+    if (id) {
+      feedback.value = {
+        type: 'error',
+        message: '未找到可编辑的数据源，请从列表中重新选择。',
+      }
+    }
+    return
+  }
+
+  replaceSettingsQuery({ section: 'datasources' })
+  if (mode.value !== 'manage') {
+    lastFetchedLibraries.value = []
+    resetAlistBrowser()
+  }
+  mode.value = 'manage'
+}
+
+function routeQueryValue(key: string): string | null {
+  const value = route.query[key]
+  if (typeof value === 'string')
+    return value
+  if (Array.isArray(value) && typeof value[0] === 'string')
+    return value[0]
+  return null
+}
+
+function replaceSettingsQuery(query: SettingsQueryState = {}) {
+  if (isCurrentSettingsQuery(query))
+    return
+
+  void router.replace({ name: 'settings', query })
+}
+
+function isCurrentSettingsQuery(query: SettingsQueryState): boolean {
+  const currentKeys = Object.keys(route.query)
+  const nextKeys = Object.keys(query)
+
+  return currentKeys.length === nextKeys.length
+    && nextKeys.every((key) => {
+      const currentValue = route.query[key]
+      return typeof currentValue === 'string' && currentValue === query[key as keyof SettingsQueryState]
+    })
+}
+
+function openSettingsEntry(entry: SettingsEntry) {
+  if (entry.disabled)
+    return
+  if (entry.id === 'datasources')
+    goDataSources()
+}
+
+function goOverview() {
+  mode.value = 'overview'
+  feedback.value = null
+  lastFetchedLibraries.value = []
+  resetAlistBrowser()
+  void router.replace({ name: 'settings' })
+}
+
+function goDataSources() {
+  mode.value = 'manage'
+  feedback.value = null
+  lastFetchedLibraries.value = []
+  resetAlistBrowser()
+  void router.push({ name: 'settings', query: { section: 'datasources' } })
+}
 
 function goManage(options: { preserveFeedback?: boolean } = {}) {
   mode.value = 'manage'
@@ -127,7 +299,7 @@ function resetForm() {
 }
 
 function editSource(config: DataSourceConfig) {
-  if (!isLoginDataSourceType(config.type)) {
+  if (!isLoginDataSourceConfig(config)) {
     feedback.value = {
       type: 'error',
       message: `${sourceTypeLabel(config.type)} 暂不支持在当前设置页编辑。`,
@@ -135,6 +307,11 @@ function editSource(config: DataSourceConfig) {
     return
   }
 
+  populateEditForm(config)
+  void router.replace({ name: 'settings', query: { section: 'datasources', action: 'edit', id: config.id } })
+}
+
+function populateEditForm(config: LoginDataSourceConfig) {
   form.id = config.id
   form.type = config.type
   form.displayName = config.displayName ?? config.name
@@ -149,7 +326,6 @@ function editSource(config: DataSourceConfig) {
   lastFetchedLibraries.value = []
   resetAlistBrowser()
   mode.value = 'edit'
-  void router.replace({ name: 'settings', query: { section: 'datasources', action: 'edit', id: config.id } })
 }
 
 async function toggleSource(config: DataSourceConfig) {
@@ -308,6 +484,10 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
 
 function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
   return type === 'emby' || type === 'alist'
+}
+
+function isLoginDataSourceConfig(config: DataSourceConfig): config is LoginDataSourceConfig {
+  return isLoginDataSourceType(config.type)
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -518,18 +698,73 @@ function parentDirectoryPath(path: string): string {
           设置
         </h1>
         <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-          Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。
+          {{ pageDescription }}
         </p>
       </header>
 
       <div
-        v-if="persistentCredentialWarning"
+        v-if="persistentCredentialWarning && mode !== 'overview'"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
         当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码和 token 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
       </div>
 
-      <section v-if="mode === 'manage'" class="glass-panel rounded-[1.75rem] p-6">
+      <div v-if="mode !== 'overview'" class="flex">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 hover:text-white"
+          title="返回设置总览"
+          aria-label="返回设置总览"
+          @click="goOverview"
+        >
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M12.5 4.5L7 10l5.5 5.5M8 10h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          设置总览
+        </button>
+      </div>
+
+      <section v-if="mode === 'overview'" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <button
+          v-for="entry in settingsEntries"
+          :key="entry.id"
+          type="button"
+          class="glass-panel flex min-h-56 flex-col rounded-[1.5rem] p-5 text-left transition-all duration-200 disabled:cursor-not-allowed"
+          :class="entry.disabled ? 'opacity-58' : 'hover:-translate-y-0.5 hover:bg-white/10'"
+          :disabled="entry.disabled"
+          @click="openSettingsEntry(entry)"
+        >
+          <span class="mb-5 flex items-center justify-between gap-3">
+            <span
+              class="flex h-11 min-w-11 items-center justify-center rounded-2xl px-3 text-sm font-bold"
+              :class="entry.disabled ? 'bg-white/8 text-white/42' : 'bg-primary/18 text-primary'"
+            >
+              {{ entry.label }}
+            </span>
+            <span
+              class="rounded-full px-3 py-1 text-xs font-semibold"
+              :class="entry.disabled ? 'bg-white/8 text-white/42' : 'bg-primary/16 text-primary'"
+            >
+              {{ entry.meta }}
+            </span>
+          </span>
+
+          <span class="block text-lg font-bold text-white">
+            {{ entry.title }}
+          </span>
+          <span class="mt-3 block flex-1 text-sm leading-6 text-white/48">
+            {{ entry.description }}
+          </span>
+          <span
+            class="mt-6 inline-flex w-fit items-center rounded-xl px-3 py-2 text-xs font-semibold"
+            :class="entry.disabled ? 'bg-white/6 text-white/36' : 'bg-white/8 text-white/70'"
+          >
+            {{ entry.actionLabel }}
+          </span>
+        </button>
+      </section>
+
+      <section v-else-if="mode === 'manage'" class="glass-panel rounded-[1.75rem] p-6">
         <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <p class="text-xs uppercase tracking-[0.24em] text-white/34">
