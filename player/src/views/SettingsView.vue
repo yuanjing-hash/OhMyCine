@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
+import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
@@ -19,6 +20,13 @@ import {
   TMDB_MOVIE_GENRES,
   TMDB_TV_GENRES,
 } from '@/services/scraper/classificationRules'
+import {
+  clearConfiguredTmdbCredential,
+  hasConfiguredTmdbCredential,
+  loadTmdbLocalSettings,
+  saveConfiguredTmdbCredential,
+  saveTmdbLocalSettings,
+} from '@/services/scraper/tmdb'
 import { useDataSourceStore } from '@/stores/datasource'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
@@ -36,6 +44,13 @@ interface DataSourceFormState {
   username: string
   password: string
   rootPath: string
+}
+
+interface TmdbFormState {
+  authType: TmdbAuthType
+  credential: string
+  language: string
+  region: string
 }
 
 interface SettingsEntry {
@@ -77,6 +92,36 @@ const sourceTypeOptions: Array<{
   },
 ]
 
+const tmdbAuthTypeOptions: Array<{ value: TmdbAuthType, label: string, description: string }> = [
+  {
+    value: 'readAccessToken',
+    label: 'Read Access Token',
+    description: '推荐。粘贴 TMDB 设置页生成的 v4 只读访问令牌。',
+  },
+  {
+    value: 'apiKey',
+    label: 'API Key',
+    description: '兼容旧版 v3 API Key。',
+  },
+]
+
+const tmdbLanguageOptions = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'zh-TW', label: '繁体中文' },
+  { value: 'en-US', label: 'English' },
+  { value: 'ja-JP', label: '日本語' },
+  { value: 'ko-KR', label: '한국어' },
+]
+
+const tmdbRegionOptions = [
+  { value: 'CN', label: '中国内地' },
+  { value: 'TW', label: '中国台湾' },
+  { value: 'HK', label: '中国香港' },
+  { value: 'US', label: '美国' },
+  { value: 'JP', label: '日本' },
+  { value: 'KR', label: '韩国' },
+]
+
 const store = useDataSourceStore()
 const route = useRoute()
 const router = useRouter()
@@ -103,6 +148,15 @@ const alistBrowserError = ref<string | null>(null)
 const scrapeRules = ref(loadScrapeClassificationRules())
 const scrapeRulesDirty = ref(false)
 const scrapeFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+const tmdbSettings = loadTmdbLocalSettings()
+const tmdbForm = reactive<TmdbFormState>({
+  authType: tmdbSettings.authType,
+  credential: '',
+  language: tmdbSettings.language,
+  region: tmdbSettings.region,
+})
+const tmdbCredentialConfigured = ref(false)
+const isSavingTmdbSettings = ref(false)
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
@@ -117,6 +171,11 @@ const dataSourceEntryMeta = computed(() => {
   if (configuredSources.value.length === 0)
     return '尚未配置'
   return `${activeSourceCount.value}/${configuredSources.value.length} 个启用`
+})
+const scrapingEntryMeta = computed(() => {
+  if (scrapeRulesDirty.value)
+    return '规则未保存'
+  return tmdbCredentialConfigured.value ? 'TMDB 已配置' : '需要 TMDB'
 })
 const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
@@ -141,7 +200,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     label: 'Meta',
     title: '刮削与分类',
     description: '管理原始文件源的本地刮削分类规则。电影和剧集分类使用 TMDB 官方类型枚举，通过受控选项编辑。',
-    meta: scrapeRulesDirty.value ? '有未保存修改' : '默认实例可编辑',
+    meta: scrapingEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
   },
@@ -186,6 +245,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
 onMounted(() => {
   store.loadConfigs()
   refreshPersistentCredentialWarning()
+  void refreshTmdbCredentialState()
   syncModeFromRoute()
 })
 
@@ -214,6 +274,7 @@ function syncModeFromRoute() {
     }
     mode.value = 'scraping'
     feedback.value = null
+    void refreshTmdbCredentialState()
     return
   }
 
@@ -856,6 +917,67 @@ function resetScrapeRules() {
   scrapeFeedback.value = { type: 'success', message: '已恢复内置默认分类实例。它只是默认模板，仍可继续按你的库调整。' }
 }
 
+async function saveTmdbSettings() {
+  isSavingTmdbSettings.value = true
+  scrapeFeedback.value = null
+  try {
+    saveTmdbLocalSettings({
+      authType: tmdbForm.authType,
+      language: tmdbForm.language,
+      region: tmdbForm.region,
+    })
+
+    const credential = tmdbForm.credential.trim()
+    if (credential) {
+      await saveConfiguredTmdbCredential(tmdbForm.authType, credential)
+      tmdbForm.credential = ''
+    }
+
+    await refreshTmdbCredentialState()
+    scrapeFeedback.value = {
+      type: tmdbCredentialConfigured.value ? 'success' : 'info',
+      message: tmdbCredentialConfigured.value
+        ? 'TMDB 设置已保存。后续 OpenList/Alist 扫描会用 TMDB 元数据执行分类规则。'
+        : '已保存 TMDB 语言和地区。未填写 token/key 时，扫描会保留本地可播放候选并使用兜底分类。',
+    }
+  }
+  catch (error) {
+    scrapeFeedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, 'TMDB 设置保存失败。'),
+    }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingTmdbSettings.value = false
+  }
+}
+
+async function clearTmdbSettingsCredential() {
+  isSavingTmdbSettings.value = true
+  scrapeFeedback.value = null
+  try {
+    await clearConfiguredTmdbCredential()
+    tmdbForm.credential = ''
+    await refreshTmdbCredentialState()
+    scrapeFeedback.value = { type: 'success', message: '已清除 TMDB token/key。分类规则仍保留，扫描会回到本地兜底分类。' }
+  }
+  catch (error) {
+    scrapeFeedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, '清除 TMDB token/key 失败。'),
+    }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingTmdbSettings.value = false
+  }
+}
+
+async function refreshTmdbCredentialState() {
+  tmdbCredentialConfigured.value = await hasConfiguredTmdbCredential()
+}
+
 function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string {
   if ('id' in option)
     return `${option.label} · ${option.name}`
@@ -890,10 +1012,10 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
       </header>
 
       <div
-        v-if="persistentCredentialWarning && isDataSourceMode"
+        v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping')"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
-        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码和 token 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
+        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、token 与 TMDB key 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
       </div>
 
       <div v-if="mode !== 'overview'" class="flex">
@@ -996,6 +1118,106 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
             {{ scrapeFeedback.message }}
           </div>
         </div>
+
+        <section class="glass-panel rounded-[1.75rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p class="text-xs uppercase tracking-[0.24em] text-white/34">
+                TMDB
+              </p>
+              <h3 class="mt-1 text-xl font-bold text-white">
+                元数据匹配
+              </h3>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
+                token/key 只保存到凭证边界，不写入 localStorage。扫描会把作品名、年份等非敏感查询信息发给 TMDB，不发送 OpenList/Alist 账号、token 或播放地址。
+              </p>
+            </div>
+            <span
+              class="rounded-full px-3 py-1 text-xs font-semibold"
+              :class="tmdbCredentialConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
+            >
+              {{ tmdbCredentialConfigured ? '已配置' : '未配置' }}
+            </span>
+          </div>
+
+          <div class="mt-5 grid gap-4 lg:grid-cols-[1.1fr_1.1fr_0.8fr_0.8fr]">
+            <div class="rounded-2xl bg-black/16 p-4">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                凭据类型
+              </p>
+              <div class="mt-3 grid gap-2">
+                <button
+                  v-for="option in tmdbAuthTypeOptions"
+                  :key="option.value"
+                  type="button"
+                  class="rounded-2xl border px-4 py-3 text-left transition-colors"
+                  :class="tmdbForm.authType === option.value ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  @click="tmdbForm.authType = option.value"
+                >
+                  <span class="block text-sm font-semibold">{{ option.label }}</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">{{ option.description }}</span>
+                </button>
+              </div>
+            </div>
+
+            <label class="rounded-2xl bg-black/16 p-4">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">token / key</span>
+              <input
+                v-model="tmdbForm.credential"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                type="password"
+                autocomplete="off"
+                :placeholder="tmdbCredentialConfigured ? '留空表示保留现有凭据' : '粘贴 TMDB token/key'"
+              >
+              <p class="mt-2 text-xs leading-5 text-white/38">
+                出于安全考虑，已保存的 token/key 不会回填显示。
+              </p>
+            </label>
+
+            <label class="rounded-2xl bg-black/16 p-4">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">语言</span>
+              <select
+                v-model="tmdbForm.language"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+              >
+                <option v-for="option in tmdbLanguageOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+
+            <label class="rounded-2xl bg-black/16 p-4">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">地区</span>
+              <select
+                v-model="tmdbForm.region"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+              >
+                <option v-for="option in tmdbRegionOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingTmdbSettings"
+              @click="saveTmdbSettings"
+            >
+              {{ isSavingTmdbSettings ? '保存中…' : '保存 TMDB 设置' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="isSavingTmdbSettings || !tmdbCredentialConfigured"
+              @click="clearTmdbSettingsCredential"
+            >
+              清除 token/key
+            </button>
+          </div>
+        </section>
 
         <section
           v-for="group in scrapeRuleGroups"

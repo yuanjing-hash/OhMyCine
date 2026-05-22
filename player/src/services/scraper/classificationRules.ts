@@ -46,6 +46,21 @@ export interface ScrapeClassificationRules {
   groups: ScrapeRuleGroup[]
 }
 
+export interface ScrapeClassifiableMetadata {
+  readonly mediaType: ScrapeMediaType
+  readonly genreIds: readonly number[]
+  readonly originalLanguage?: string
+  readonly productionCountries?: readonly string[]
+  readonly originCountries?: readonly string[]
+  readonly releaseYear?: number
+}
+
+export interface ScrapeClassificationResult {
+  readonly categoryName: string
+  readonly matchedRuleId?: string
+  readonly matchedRuleName?: string
+}
+
 export const SCRAPE_CLASSIFICATION_RULES_STORAGE_KEY = 'ohmycine-scrape-classification-rules'
 export const SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME = '未分类'
 const LEGACY_FOREIGN_MOVIE_FALLBACK_CATEGORY_NAME = '外语电影'
@@ -144,6 +159,7 @@ export const DEFAULT_SCRAPE_CLASSIFICATION_RULES: ScrapeClassificationRules = {
       categories: [
         createCategoryRule('国漫', { genreIds: [16], originCountries: ['CN', 'TW', 'HK'] }),
         createCategoryRule('日番', { genreIds: [16], originCountries: ['JP'] }),
+        createCategoryRule('动漫', { genreIds: [16] }),
         createCategoryRule('纪录片', { genreIds: [99] }),
         createCategoryRule('儿童', { genreIds: [10762] }),
         createCategoryRule('综艺', { genreIds: [10764, 10767] }),
@@ -182,6 +198,30 @@ export function normalizeScrapeFallbackCategoryName(value: string | undefined): 
   if (!trimmed || trimmed === LEGACY_FOREIGN_MOVIE_FALLBACK_CATEGORY_NAME)
     return SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME
   return trimmed
+}
+
+export function classifyScrapeMetadata(
+  metadata: ScrapeClassifiableMetadata,
+  rules: ScrapeClassificationRules = loadScrapeClassificationRules(),
+): ScrapeClassificationResult {
+  const group = rules.groups.find(item => item.mediaType === metadata.mediaType)
+  const fallbackCategoryName = normalizeScrapeFallbackCategoryName(group?.fallbackCategoryName)
+
+  if (!group)
+    return { categoryName: fallbackCategoryName }
+
+  for (const category of group.categories) {
+    if (!matchesScrapeCategoryConditions(metadata, category.conditions))
+      continue
+
+    return {
+      categoryName: category.name,
+      matchedRuleId: category.id,
+      matchedRuleName: category.name,
+    }
+  }
+
+  return { categoryName: fallbackCategoryName }
 }
 
 export function cloneScrapeClassificationRules(rules: ScrapeClassificationRules): ScrapeClassificationRules {
@@ -322,6 +362,55 @@ function cloneCondition<T extends string | number>(condition: ScrapeValueConditi
     include: [...condition.include],
     exclude: [...condition.exclude],
   }
+}
+
+function matchesScrapeCategoryConditions(
+  metadata: ScrapeClassifiableMetadata,
+  conditions: ScrapeCategoryConditions,
+): boolean {
+  const countries = metadata.mediaType === 'movie'
+    ? metadata.productionCountries ?? []
+    : metadata.originCountries ?? []
+
+  return matchesValueCondition(metadata.genreIds, conditions.genreIds)
+    && matchesValueCondition(metadata.originalLanguage ? [metadata.originalLanguage] : [], conditions.originalLanguages)
+    && matchesValueCondition(countries, metadata.mediaType === 'movie'
+      ? conditions.productionCountries ?? createCondition([])
+      : conditions.originCountries ?? createCondition([]))
+    && matchesYearRange(metadata.releaseYear, conditions.releaseYear)
+}
+
+function matchesValueCondition<T extends string | number>(
+  actualValues: readonly T[],
+  condition: ScrapeValueCondition<T>,
+): boolean {
+  const normalizedActual = new Set(actualValues.map(normalizeConditionComparable))
+  const includes = condition.include.map(normalizeConditionComparable)
+  const excludes = condition.exclude.map(normalizeConditionComparable)
+
+  if (excludes.some(value => normalizedActual.has(value)))
+    return false
+  if (includes.length > 0 && !includes.some(value => normalizedActual.has(value)))
+    return false
+  return true
+}
+
+function matchesYearRange(year: number | undefined, range: ScrapeYearRange | null): boolean {
+  if (!range)
+    return true
+  if (year == null)
+    return false
+  if (range.from != null && year < range.from)
+    return false
+  if (range.to != null && year > range.to)
+    return false
+  return true
+}
+
+function normalizeConditionComparable<T extends string | number>(value: T): T {
+  if (typeof value === 'string')
+    return value.toUpperCase() as T
+  return value
 }
 
 function genreIdsForMediaType(mediaType: ScrapeMediaType): number[] {

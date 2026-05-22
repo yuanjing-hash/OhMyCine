@@ -1,3 +1,5 @@
+import type { ScrapeMediaType } from './classificationRules'
+import type { TmdbMetadata } from './tmdb'
 import type { DataSourceType } from '@/services/datasource/types'
 
 export type RawFileSourceType = Extract<DataSourceType, 'alist' | 'clouddrive2' | 'local' | '115' | '123' | 'quark'>
@@ -5,6 +7,7 @@ export type RawScanModePreference = 'auto' | 'standard' | 'nonStandard'
 export type RawFileStructureMode = Exclude<RawScanModePreference, 'auto'>
 export type RawMediaCandidateKind = 'movie' | 'tv' | 'episode' | 'unresolved'
 export type RawParseStatus = 'parsed' | 'partial' | 'unresolved'
+export type RawTmdbMatchStatus = 'matched' | 'notConfigured' | 'notFound' | 'failed' | 'skipped'
 
 export interface RawProviderScanItem {
   readonly name?: string
@@ -97,8 +100,34 @@ export interface RawMediaCandidate {
   readonly seasonNumber?: number
   readonly episodeNumber?: number
   readonly categoryHint?: string
+  readonly scrapeMetadata?: TmdbMetadata
+  readonly categoryAssignment?: RawCategoryAssignment
   readonly confidence: number
   readonly signals: string[]
+}
+
+export type RawCategoryAssignmentSource = 'metadataRule' | 'pathHint' | 'kindFallback'
+
+export interface RawCategoryAssignment {
+  readonly categoryName: string
+  readonly source: RawCategoryAssignmentSource
+  readonly matchedRuleId?: string
+  readonly matchedRuleName?: string
+}
+
+export interface RawScrapedMediaItem {
+  readonly recordId: string
+  readonly providerPath: string
+  readonly matchStatus: RawTmdbMatchStatus
+  readonly searchTitles: string[]
+  readonly matchedSearchTitle?: string
+  readonly metadata?: TmdbMetadata
+  readonly mediaType?: ScrapeMediaType
+  readonly categoryName: string
+  readonly matchedRuleId?: string
+  readonly matchedRuleName?: string
+  readonly categoryAssignment?: RawCategoryAssignment
+  readonly errorMessage?: string
 }
 
 export interface RawScanPreview {

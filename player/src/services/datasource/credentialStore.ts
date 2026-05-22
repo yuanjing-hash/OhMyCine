@@ -15,7 +15,12 @@ export interface AlistCredentialValue {
   readonly password: string
 }
 
-type CredentialProvider = 'emby' | 'alist'
+export interface TmdbCredentialValue {
+  readonly authType: 'apiKey' | 'readAccessToken'
+  readonly value: string
+}
+
+type CredentialProvider = 'emby' | 'alist' | 'tmdb'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -31,6 +36,13 @@ interface StoredAlistCredentialEnvelope {
   readonly token: string
   readonly username: string
   readonly password: string
+}
+
+interface StoredTmdbCredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'tmdb'
+  readonly authType: 'apiKey' | 'readAccessToken'
+  readonly value: string
 }
 
 export function createCredentialRef(sourceId: string, provider: CredentialProvider = 'emby'): string {
@@ -87,6 +99,22 @@ export async function saveAlistCredential(ref: string, value: AlistCredentialVal
 
 export async function readAlistCredential(ref: string): Promise<AlistCredentialValue | null> {
   return parseAlistCredential(await readRawCredential(ref))
+}
+
+export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
+  if (!isTmdbAuthType(value.authType) || !value.value.trim())
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'tmdb',
+    authType: value.authType,
+    value: value.value.trim(),
+  } satisfies StoredTmdbCredentialEnvelope))
+}
+
+export async function readTmdbCredential(ref: string): Promise<TmdbCredentialValue | null> {
+  return parseTmdbCredential(await readRawCredential(ref))
 }
 
 export async function removeCredential(ref: string): Promise<void> {
@@ -180,6 +208,34 @@ function parseAlistCredential(raw: string | null): AlistCredentialValue | null {
   catch {
     return null
   }
+}
+
+function parseTmdbCredential(raw: string | null): TmdbCredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value))
+      return null
+    if (value.provider !== 'tmdb' || value.version !== 1)
+      return null
+    if (!isTmdbAuthType(value.authType) || typeof value.value !== 'string')
+      return null
+    if (!value.value.trim())
+      return null
+    return {
+      authType: value.authType,
+      value: value.value.trim(),
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+function isTmdbAuthType(value: unknown): value is TmdbCredentialValue['authType'] {
+  return value === 'apiKey' || value === 'readAccessToken'
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

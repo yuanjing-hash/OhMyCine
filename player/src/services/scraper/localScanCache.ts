@@ -1,10 +1,16 @@
+import type { TmdbMetadata } from './tmdb'
 import type {
+  RawCategoryAssignment,
+  RawFileRecord,
   RawFileSourceType,
+  RawMediaCandidate,
   RawProviderScanItem,
   RawScanPreview,
+  RawScrapedMediaItem,
 } from './types'
 import type { DataSource, MediaItem } from '@/services/datasource/types'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { enrichRawMediaCandidates } from './metadataEnrichment'
 import { isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath } from './pathUtils'
 import { createRawScanPreview } from './scanner'
 
@@ -32,6 +38,7 @@ export interface RawLocalScanCache extends RawScanPreview {
   readonly skippedFileCount: number
   readonly errorCount: number
   readonly logs: RawLocalScanLogEntry[]
+  readonly scrapedItems?: RawScrapedMediaItem[]
 }
 
 export interface RunRawSourceScanInput {
@@ -50,6 +57,24 @@ const RAW_SCAN_CACHE_KEY_PREFIX = 'ohmycine-raw-source-scan-cache-v1'
 const DEFAULT_MAX_DEPTH = 12
 const DEFAULT_MAX_FOLDERS = 600
 const DEFAULT_MAX_ENTRIES = 8_000
+const URL_LIKE_PROVIDER_PATH_RE = /^(?:https?|webdav|ftp|sftp|file|blob):/i
+const SENSITIVE_PROVIDER_PATH_QUERY_KEYS = new Set([
+  'api_key',
+  'apikey',
+  'access_token',
+  'accessToken',
+  'authorization',
+  'cookie',
+  'expires',
+  'exp',
+  'password',
+  'passkey',
+  'security-token',
+  'sig',
+  'sign',
+  'signature',
+  'token',
+])
 
 export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promise<RawLocalScanCache> {
   const rootPath = normalizeProviderPath(input.rootPath)
@@ -151,14 +176,30 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
     sourceType: input.sourceType,
     rootPath,
   })
+  addLog('info', `结构判断：${preview.detection.mode === 'standard' ? '标准目录' : '非标准目录'}，置信度 ${Math.round(preview.detection.confidence * 100)}%。`)
+  const scrapedItems = await enrichRawMediaCandidates(preview.candidates, {
+    onLog: (entry) => {
+      logs.push(entry)
+      input.onLog?.(entry)
+    },
+  })
+  const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
+  const candidates = preview.candidates.map((candidate) => {
+    const scraped = scrapedItemsByRecordId.get(candidate.record.id)
+    return {
+      ...candidate,
+      scrapeMetadata: scraped?.metadata,
+      categoryAssignment: scraped?.categoryAssignment,
+    } satisfies RawMediaCandidate
+  })
   const finishedAt = new Date().toISOString()
   const status: RawLocalScanStatus = errorCount > 0 || stoppedByLimit ? 'partialFailed' : 'completed'
+  const matchedCount = scrapedItems.filter(item => item.matchStatus === 'matched').length
 
   addLog(
     status === 'completed' ? 'info' : 'warning',
-    `扫描完成：识别 ${preview.records.length} 个视频文件，跳过 ${skippedFileCount} 个非视频文件。`,
+    `扫描完成：识别 ${preview.records.length} 个视频文件，TMDB 命中 ${matchedCount} 个候选，跳过 ${skippedFileCount} 个非视频文件。`,
   )
-  addLog('info', `结构判断：${preview.detection.mode === 'standard' ? '标准目录' : '非标准目录'}，置信度 ${Math.round(preview.detection.confidence * 100)}%。`)
 
   let cache: RawLocalScanCache = {
     version: RAW_SCAN_CACHE_VERSION,
@@ -175,6 +216,8 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
     errorCount,
     logs,
     ...preview,
+    candidates,
+    scrapedItems,
   }
 
   if (!saveRawSourceScanCache(cache)) {
@@ -207,7 +250,8 @@ export function loadRawSourceScanCache(
 
 export function saveRawSourceScanCache(cache: RawLocalScanCache): boolean {
   try {
-    localStorage.setItem(rawScanCacheKey(cache.sourceId, cache.sourceType, cache.rootPath), JSON.stringify(cache))
+    const safeCache = sanitizeRawLocalScanCache(cache)
+    localStorage.setItem(rawScanCacheKey(safeCache.sourceId, safeCache.sourceType, safeCache.rootPath), JSON.stringify(safeCache))
     return true
   }
   catch {
@@ -241,6 +285,8 @@ function normalizeMediaItemPath(item: MediaItem): string | null {
   const rawPath = item.path || item.id
   if (!rawPath)
     return null
+  if (isLikelySensitivePlaybackPath(rawPath))
+    return null
 
   try {
     return normalizeProviderPath(rawPath)
@@ -254,6 +300,24 @@ function isDirectoryMediaItem(item: MediaItem): boolean {
   return item.type === 'folder' || item.type === 'season'
 }
 
+function isLikelySensitivePlaybackPath(value: string): boolean {
+  const trimmed = value.trim()
+  if (URL_LIKE_PROVIDER_PATH_RE.test(trimmed))
+    return true
+
+  const queryIndex = trimmed.indexOf('?')
+  if (queryIndex < 0)
+    return false
+
+  const query = trimmed.slice(queryIndex + 1).split('#')[0]
+  const params = new URLSearchParams(query)
+  for (const key of params.keys()) {
+    if (SENSITIVE_PROVIDER_PATH_QUERY_KEYS.has(key) || SENSITIVE_PROVIDER_PATH_QUERY_KEYS.has(key.toLowerCase()))
+      return true
+  }
+  return false
+}
+
 function rawScanCacheKey(sourceId: string, sourceType: RawFileSourceType, rootPath: string): string {
   return `${RAW_SCAN_CACHE_KEY_PREFIX}:${encodeURIComponent(sourceType)}:${encodeURIComponent(sourceId)}:${encodeURIComponent(rootPath)}`
 }
@@ -262,6 +326,135 @@ function createScanId(): string {
   if (globalThis.crypto?.randomUUID)
     return globalThis.crypto.randomUUID()
   return `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function sanitizeRawLocalScanCache(cache: RawLocalScanCache): RawLocalScanCache {
+  const scrapedItems = cache.scrapedItems?.map(sanitizeRawScrapedMediaItem)
+  const scrapedItemsByRecordId = new Map(scrapedItems?.map(item => [item.recordId, item]) ?? [])
+  const candidates = cache.candidates.map((candidate) => {
+    const scraped = scrapedItemsByRecordId.get(candidate.record.id)
+    return sanitizeRawMediaCandidate({
+      ...candidate,
+      scrapeMetadata: scraped?.metadata ?? candidate.scrapeMetadata,
+      categoryAssignment: scraped?.categoryAssignment ?? candidate.categoryAssignment,
+    })
+  })
+
+  return {
+    version: RAW_SCAN_CACHE_VERSION,
+    scanId: cache.scanId,
+    sourceId: cache.sourceId,
+    sourceType: cache.sourceType,
+    rootPath: cache.rootPath,
+    status: cache.status,
+    startedAt: cache.startedAt,
+    finishedAt: cache.finishedAt,
+    folderCount: cache.folderCount,
+    fileCount: cache.fileCount,
+    skippedFileCount: cache.skippedFileCount,
+    errorCount: cache.errorCount,
+    logs: cache.logs.map(entry => ({
+      timestamp: entry.timestamp,
+      level: entry.level,
+      message: entry.message,
+      path: entry.path,
+    })),
+    records: cache.records.map(sanitizeRawFileRecord),
+    detection: cache.detection,
+    candidates,
+    scrapedItems,
+  }
+}
+
+function sanitizeRawMediaCandidate(candidate: RawMediaCandidate): RawMediaCandidate {
+  return {
+    kind: candidate.kind,
+    parseStatus: candidate.parseStatus,
+    record: sanitizeRawFileRecord(candidate.record),
+    title: candidate.title,
+    normalizedTitle: candidate.normalizedTitle,
+    year: candidate.year,
+    seriesTitle: candidate.seriesTitle,
+    seasonNumber: candidate.seasonNumber,
+    episodeNumber: candidate.episodeNumber,
+    categoryHint: candidate.categoryHint,
+    scrapeMetadata: sanitizeTmdbMetadata(candidate.scrapeMetadata),
+    categoryAssignment: sanitizeCategoryAssignment(candidate.categoryAssignment),
+    confidence: candidate.confidence,
+    signals: [...candidate.signals],
+  }
+}
+
+function sanitizeRawFileRecord(record: RawFileRecord): RawFileRecord {
+  return {
+    id: record.id,
+    sourceId: record.sourceId,
+    sourceType: record.sourceType,
+    rootPath: record.rootPath,
+    providerPath: record.providerPath,
+    relativePath: record.relativePath,
+    parentPath: record.parentPath,
+    fileName: record.fileName,
+    extension: record.extension,
+    size: record.size,
+    modifiedAt: record.modifiedAt,
+  }
+}
+
+function sanitizeRawScrapedMediaItem(item: RawScrapedMediaItem): RawScrapedMediaItem {
+  const categoryAssignment = sanitizeCategoryAssignment(item.categoryAssignment)
+  return {
+    recordId: item.recordId,
+    providerPath: item.providerPath,
+    matchStatus: item.matchStatus,
+    searchTitles: [...item.searchTitles],
+    matchedSearchTitle: item.matchedSearchTitle,
+    metadata: sanitizeTmdbMetadata(item.metadata),
+    mediaType: item.mediaType,
+    categoryName: item.categoryName,
+    matchedRuleId: item.matchedRuleId,
+    matchedRuleName: item.matchedRuleName,
+    categoryAssignment,
+    errorMessage: item.errorMessage,
+  }
+}
+
+function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata | undefined {
+  if (!metadata)
+    return undefined
+
+  return {
+    tmdbId: metadata.tmdbId,
+    mediaType: metadata.mediaType,
+    title: metadata.title,
+    originalTitle: metadata.originalTitle,
+    overview: metadata.overview,
+    releaseDate: metadata.releaseDate,
+    releaseYear: metadata.releaseYear,
+    rating: metadata.rating,
+    genreIds: [...metadata.genreIds],
+    genres: [...metadata.genres],
+    originalLanguage: metadata.originalLanguage,
+    originCountries: [...metadata.originCountries],
+    productionCountries: [...metadata.productionCountries],
+    posterPath: metadata.posterPath,
+    backdropPath: metadata.backdropPath,
+    posterUrl: metadata.posterUrl,
+    backdropUrl: metadata.backdropUrl,
+    scrapedAt: metadata.scrapedAt,
+  }
+}
+
+function sanitizeCategoryAssignment(assignment: RawCategoryAssignment | undefined): RawCategoryAssignment | undefined {
+  if (!assignment)
+    return undefined
+
+  return {
+    categoryName: assignment.categoryName,
+    source: assignment.source,
+    matchedRuleId: assignment.matchedRuleId,
+    matchedRuleName: assignment.matchedRuleName,
+  }
 }
 
 function isRawLocalScanCache(
@@ -287,6 +480,7 @@ function isRawLocalScanCache(
     && Array.isArray(value.records)
     && Array.isArray(value.candidates)
     && Array.isArray(value.logs)
+    && (value.scrapedItems == null || Array.isArray(value.scrapedItems))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -23,6 +23,11 @@ const SEASON_SEGMENT_RE = /^Season\s*0*(\d{1,2})$/i
 const S_SEASON_SEGMENT_RE = /^S\s*0*(\d{1,2})$/i
 const CHINESE_SEASON_RE = /第\s*([0-9一二三四五六七八九十百两〇零]+)\s*季/
 const TECH_TOKEN_RE = /\b(?:2160p|1080p|720p|576p|480p|UHD|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|DV|10bit|8bit|Proper|Repack)\b/gi
+const SOURCE_TOKEN_RE = /\b(?:AMZN|Amazon|NF|Netflix|DSNP|Disney\+?|HMAX|HBO|Hulu|ATVP|AppleTV|iTunes|BiliBili|Baha|Crunchyroll|CR|Viu|U-?NEXT|ABEMA|TVING|PrimeVideo|MAX|Peacock|Paramount\+?)\b/g
+const RELEASE_GROUP_TOKEN_RE = /\b(?:GrassTV|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|YTS|MeGusta|VARYG|LoliHouse|ANi|Lilith|U3|CatWEB|MTeam|MWeb|Hares|SweetSub|MagicStar|Skymoon|XiaYong|Nekomoe|DBD-Raws|GM-Team|NC-Raws)\b/gi
+const SUBTITLE_TOKEN_RE = /\b(?:CHS|CHT|CHS&CHT|CHT&CHS|GB|BIG5|SUBS?|MULTI[- .]?SUB)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕/gi
+const CHINESE_TITLE_RE = /[\u4E00-\u9FFF][\u4E00-\u9FFF\s·・、，：:《》“”"'\-—]*/g
+const LATIN_TITLE_RE = /[a-z][a-z0-9\s'’:&.,!?+\-]*/gi
 
 export function parseRawMediaCandidates(
   records: readonly RawFileRecord[],
@@ -168,6 +173,9 @@ export function cleanMediaTitle(value: string): string {
     .replace(EPISODE_ONLY_RE, ' ')
     .replace(/\[[^\]]+\]|\([^)]*\)|【[^】]+】/g, ' ')
     .replace(TECH_TOKEN_RE, ' ')
+    .replace(SOURCE_TOKEN_RE, ' ')
+    .replace(RELEASE_GROUP_TOKEN_RE, ' ')
+    .replace(SUBTITLE_TOKEN_RE, ' ')
     .replace(/[._]+/g, ' ')
     .replace(/\s+-\s+[\da-z]+$/i, ' ')
     .replace(/[-—]+/g, ' ')
@@ -177,6 +185,19 @@ export function cleanMediaTitle(value: string): string {
 
 export function normalizeTitleKey(value: string): string {
   return cleanMediaTitle(value).toLocaleLowerCase()
+}
+
+export function extractMediaSearchTitles(value: string): string[] {
+  const cleaned = cleanSearchTitle(value)
+  const candidates: string[] = []
+
+  for (const match of cleaned.matchAll(CHINESE_TITLE_RE))
+    addSearchTitleCandidate(candidates, match[0])
+  for (const match of cleaned.matchAll(LATIN_TITLE_RE))
+    addSearchTitleCandidate(candidates, match[0])
+  addSearchTitleCandidate(candidates, cleaned)
+
+  return candidates
 }
 
 function parseTitleYear(value: string): TitleYearMatch | null {
@@ -354,6 +375,36 @@ function collectSignals(input: {
 
 function confidenceFromSignals(signals: readonly string[], base: number): number {
   return clamp(base + Math.min(signals.length * 0.06, 0.18), 0.1, 0.96)
+}
+
+function addSearchTitleCandidate(candidates: string[], value: string) {
+  const title = cleanSearchTitle(value)
+  if (!title || isLikelyNoiseTitle(title))
+    return
+
+  const normalized = normalizeTitleKey(title)
+  if (!normalized || candidates.some(candidate => normalizeTitleKey(candidate) === normalized))
+    return
+
+  candidates.push(title)
+}
+
+function cleanSearchTitle(value: string): string {
+  return cleanMediaTitle(value)
+    .replace(/^[\s:：,，.·・《》"']+|[\s:：,，.·・《》"']+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isLikelyNoiseTitle(value: string): boolean {
+  const normalized = value.trim()
+  if (normalized.length < 2)
+    return true
+  if (/^\d+$/.test(normalized))
+    return true
+  if (/^(?:S\d+|EP?\d+)$/i.test(normalized))
+    return true
+  return false
 }
 
 function clamp(value: number, min: number, max: number): number {

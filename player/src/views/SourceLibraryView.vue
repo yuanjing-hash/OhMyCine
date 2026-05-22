@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate } from '@/services/scraper'
+import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem } from '@/services/scraper'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -29,11 +29,14 @@ interface BreadcrumbNode {
 
 type SourceViewMode = 'media-library' | 'folders'
 type ScannedCategoryType = 'movie' | 'tv' | 'unresolved' | 'mixed'
+type ScannedMediaDomain = 'movie' | 'tv' | 'unresolved'
 
 interface ScannedDisplayItem {
   readonly item: MediaItem
   readonly candidate: RawMediaCandidate
+  readonly scraped?: RawScrapedMediaItem
   readonly categoryName: string
+  readonly domain: ScannedMediaDomain
 }
 
 interface ScannedSeriesGroup {
@@ -110,18 +113,27 @@ const emptyDescription = computed(() => {
     return `请检查 ${sourceTypeLabel.value} 权限、目录内容或搜索条件。`
   return '请确认设置中的 URL、登录会话和数据源启用状态有效。'
 })
+const scrapedItemsByRecordId = computed(() =>
+  new Map((scanCache.value?.scrapedItems ?? []).map(item => [item.recordId, item])),
+)
 const scannedDisplayItems = computed<ScannedDisplayItem[]>(() =>
-  (scanCache.value?.candidates ?? []).map(candidate => ({
-    candidate,
-    item: toScannedMediaItem(candidate),
-    categoryName: categoryNameForCandidate(candidate),
-  })),
+  (scanCache.value?.candidates ?? []).map((candidate) => {
+    const scraped = scrapedItemsByRecordId.value.get(candidate.record.id)
+    const domain = domainForScannedEntry(candidate, scraped)
+    return {
+      candidate,
+      scraped,
+      domain,
+      item: toScannedMediaItem(candidate, scraped, domain),
+      categoryName: categoryNameForCandidate(candidate, scraped),
+    }
+  }),
 )
-const scannedMovies = computed(() => scannedDisplayItems.value.filter(entry => entry.candidate.kind === 'movie'))
+const scannedMovies = computed(() => scannedDisplayItems.value.filter(entry => entry.domain === 'movie'))
 const scannedSeriesFiles = computed(() =>
-  scannedDisplayItems.value.filter(entry => entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv'),
+  scannedDisplayItems.value.filter(entry => entry.domain === 'tv'),
 )
-const scannedUnresolved = computed(() => scannedDisplayItems.value.filter(entry => entry.candidate.kind === 'unresolved'))
+const scannedUnresolved = computed(() => scannedDisplayItems.value.filter(entry => entry.domain === 'unresolved'))
 const scannedCategories = computed<ScannedCategory[]>(() => {
   const groups = new Map<string, ScannedDisplayItem[]>()
   for (const entry of scannedDisplayItems.value) {
@@ -139,13 +151,13 @@ const selectedScannedCategory = computed(() =>
 )
 const selectedCategoryEntries = computed(() => selectedScannedCategory.value?.entries ?? [])
 const selectedCategoryMovies = computed(() =>
-  selectedCategoryEntries.value.filter(entry => entry.candidate.kind === 'movie').map(entry => entry.item),
+  selectedCategoryEntries.value.filter(entry => entry.domain === 'movie').map(entry => entry.item),
 )
 const selectedCategoryUnresolved = computed(() =>
-  selectedCategoryEntries.value.filter(entry => entry.candidate.kind === 'unresolved').map(entry => entry.item),
+  selectedCategoryEntries.value.filter(entry => entry.domain === 'unresolved').map(entry => entry.item),
 )
 const selectedCategorySeriesGroups = computed<ScannedSeriesGroup[]>(() => createSeriesGroups(
-  selectedCategoryEntries.value.filter(entry => entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv'),
+  selectedCategoryEntries.value.filter(entry => entry.domain === 'tv'),
 ))
 const selectedCategoryQueueItems = computed(() => [
   ...selectedCategoryMovies.value,
@@ -528,9 +540,9 @@ function backToScannedCategories() {
 }
 
 function createScannedCategory(name: string, entries: ScannedDisplayItem[]): ScannedCategory {
-  const movieCount = entries.filter(entry => entry.candidate.kind === 'movie').length
-  const tvEntries = entries.filter(entry => entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv')
-  const unresolvedCount = entries.filter(entry => entry.candidate.kind === 'unresolved').length
+  const movieCount = entries.filter(entry => entry.domain === 'movie').length
+  const tvEntries = entries.filter(entry => entry.domain === 'tv')
+  const unresolvedCount = entries.filter(entry => entry.domain === 'unresolved').length
   const seriesCount = seriesCountForEntries(tvEntries)
   const type = scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
 
@@ -553,8 +565,11 @@ function createScannedCategory(name: string, entries: ScannedDisplayItem[]): Sca
 function createSeriesGroups(entries: ScannedDisplayItem[]): ScannedSeriesGroup[] {
   const groups = new Map<string, { title: string, items: MediaItem[] }>()
   for (const entry of entries) {
-    const key = entry.candidate.normalizedTitle || entry.candidate.record.providerPath
-    const title = entry.candidate.seriesTitle ?? entry.candidate.title
+    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
+    const key = metadata
+      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
+      : entry.candidate.normalizedTitle || entry.candidate.record.providerPath
+    const title = metadata?.title ?? entry.candidate.seriesTitle ?? entry.candidate.title
     const current = groups.get(key) ?? { title, items: [] }
     current.items.push(entry.item)
     groups.set(key, current)
@@ -597,19 +612,22 @@ function scannedCategorySubtitle(counts: {
 }
 
 function seriesCountForEntries(entries: readonly ScannedDisplayItem[]): number {
-  return new Set(entries.map(entry =>
-    entry.candidate.normalizedTitle
-    || entry.candidate.seriesTitle
-    || entry.candidate.title
-    || entry.candidate.record.providerPath,
-  )).size
+  return new Set(entries.map((entry) => {
+    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
+    return metadata
+      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
+      : entry.candidate.normalizedTitle
+        || entry.candidate.seriesTitle
+        || entry.candidate.title
+        || entry.candidate.record.providerPath
+  })).size
 }
 
 function uniqueDisplayTitles(entries: readonly ScannedDisplayItem[]): string[] {
   const titles: string[] = []
   const seen = new Set<string>()
   for (const entry of entries) {
-    const title = entry.candidate.seriesTitle ?? entry.candidate.title ?? entry.item.name
+    const title = metadataForCandidate(entry.candidate, entry.scraped)?.title ?? entry.candidate.seriesTitle ?? entry.candidate.title ?? entry.item.name
     const normalized = title.trim().toLocaleLowerCase()
     if (!normalized || seen.has(normalized))
       continue
@@ -623,7 +641,10 @@ function uniquePreviewItems(entries: readonly ScannedDisplayItem[]): MediaItem[]
   const items: MediaItem[] = []
   const seen = new Set<string>()
   for (const entry of entries) {
-    const key = entry.candidate.normalizedTitle || entry.item.id
+    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
+    const key = metadata
+      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
+      : entry.candidate.normalizedTitle || entry.item.id
     if (!key || seen.has(key))
       continue
     seen.add(key)
@@ -667,13 +688,18 @@ function categoryToneClass(category: ScannedCategory): string {
   }
 }
 
-function toScannedMediaItem(candidate: RawMediaCandidate): MediaItem {
-  const title = candidateDisplayTitle(candidate)
-  const mediaType: MediaItem['type'] = candidate.kind === 'movie'
+function toScannedMediaItem(
+  candidate: RawMediaCandidate,
+  scraped: RawScrapedMediaItem | undefined,
+  domain: ScannedMediaDomain,
+): MediaItem {
+  const title = candidateDisplayTitle(candidate, scraped)
+  const mediaType: MediaItem['type'] = domain === 'movie'
     ? 'movie'
-    : candidate.kind === 'episode'
+    : domain === 'tv'
       ? 'episode'
       : 'file'
+  const metadata = metadataForCandidate(candidate, scraped)
 
   return {
     id: candidate.record.providerPath,
@@ -681,39 +707,69 @@ function toScannedMediaItem(candidate: RawMediaCandidate): MediaItem {
     libraryId: candidate.record.rootPath,
     name: title,
     type: mediaType,
-    year: candidate.year,
+    posterUrl: metadata?.posterUrl,
+    backdropUrl: metadata?.backdropUrl,
+    year: metadata?.releaseYear ?? candidate.year,
+    rating: metadata?.rating,
     size: candidate.record.size,
     modified: candidate.record.modifiedAt,
     path: candidate.record.providerPath,
-    seriesName: candidate.seriesTitle,
+    seriesName: domain === 'tv' ? metadata?.title ?? candidate.seriesTitle : candidate.seriesTitle,
     seasonNumber: candidate.seasonNumber,
     episodeNumber: candidate.episodeNumber,
-    overview: scannedItemOverview(candidate),
+    overview: metadata?.overview || scannedItemOverview(candidate, scraped),
   }
 }
 
-function candidateDisplayTitle(candidate: RawMediaCandidate): string {
+function candidateDisplayTitle(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
+  const metadataTitle = metadataForCandidate(candidate, scraped)?.title
   if (candidate.kind === 'episode') {
     const episode = candidate.episodeNumber == null ? '' : ` E${String(candidate.episodeNumber).padStart(2, '0')}`
     const season = candidate.seasonNumber == null ? '' : `S${String(candidate.seasonNumber).padStart(2, '0')}`
-    return `${candidate.seriesTitle ?? candidate.title} ${season}${episode}`.trim()
+    return `${metadataTitle ?? candidate.seriesTitle ?? candidate.title} ${season}${episode}`.trim()
   }
 
-  return candidate.title || candidate.record.fileName
+  return (metadataTitle ?? candidate.title) || candidate.record.fileName
 }
 
-function scannedItemOverview(candidate: RawMediaCandidate): string {
+function scannedItemOverview(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
   const parts = [
-    `本地只读扫描：${candidate.parseStatus === 'unresolved' ? '未识别' : '已解析'}`,
-    `分类：${categoryNameForCandidate(candidate)}`,
-    candidate.categoryHint ? `路径提示：${candidate.categoryHint}` : undefined,
+    scraped?.matchStatus === 'matched' ? 'TMDB：已匹配' : `本地只读扫描：${candidate.parseStatus === 'unresolved' ? '未识别' : '已解析'}`,
+    `分类：${categoryNameForCandidate(candidate, scraped)}`,
+    scraped?.matchedRuleName ? `规则：${scraped.matchedRuleName}` : undefined,
+    scraped?.matchedSearchTitle ? `搜索标题：${scraped.matchedSearchTitle}` : undefined,
+    scraped?.matchStatus !== 'matched' && candidate.categoryHint ? `路径提示：${candidate.categoryHint}` : undefined,
     candidate.signals.length ? `信号：${candidate.signals.join(', ')}` : undefined,
   ].filter((part): part is string => Boolean(part))
   return parts.join(' · ')
 }
 
-function categoryNameForCandidate(candidate: RawMediaCandidate): string {
+function categoryNameForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
+  if (scraped?.matchStatus === 'matched')
+    return scraped.categoryName
+  if (candidate.categoryAssignment?.source === 'metadataRule')
+    return candidate.categoryAssignment.categoryName
   return deriveRawCandidateCategoryName(candidate)
+}
+
+function domainForScannedEntry(
+  candidate: RawMediaCandidate,
+  scraped?: RawScrapedMediaItem,
+): ScannedMediaDomain {
+  const metadata = metadataForCandidate(candidate, scraped)
+  if (metadata?.mediaType === 'movie' || scraped?.mediaType === 'movie')
+    return 'movie'
+  if (metadata?.mediaType === 'tv' || scraped?.mediaType === 'tv')
+    return 'tv'
+  if (candidate.kind === 'movie')
+    return 'movie'
+  if (candidate.kind === 'episode' || candidate.kind === 'tv')
+    return 'tv'
+  return 'unresolved'
+}
+
+function metadataForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem) {
+  return scraped?.metadata ?? candidate.scrapeMetadata
 }
 
 function compareScannedMediaItems(a: MediaItem, b: MediaItem): number {
@@ -1008,7 +1064,7 @@ function labelForSourceType(type: string): string {
                     媒体分类
                   </h2>
                   <p class="mt-1 text-sm text-white/38">
-                    优先使用路径中的分类目录；没有分类目录时按电影、剧集和未识别归类。
+                    优先使用 TMDB 元数据和刮削分类规则；路径目录只作为解析提示和兜底信息。
                   </p>
                 </div>
                 <p class="text-sm text-white/38">
