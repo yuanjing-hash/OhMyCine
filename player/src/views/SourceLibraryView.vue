@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { loadRawSourceScanCache, runRawSourceLocalScan, SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME } from '@/services/scraper'
+import { deriveRawCandidateCategoryName, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, runRawSourceLocalScan } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -28,7 +28,7 @@ interface BreadcrumbNode {
 }
 
 type SourceViewMode = 'media-library' | 'folders'
-type LibraryFilter = 'all' | 'movie' | 'tv' | 'unresolved' | 'uncategorized'
+type ScannedCategoryType = 'movie' | 'tv' | 'unresolved' | 'mixed'
 
 interface ScannedDisplayItem {
   readonly item: MediaItem
@@ -42,10 +42,19 @@ interface ScannedSeriesGroup {
   readonly items: MediaItem[]
 }
 
-interface LibraryFilterChip {
-  readonly id: LibraryFilter
-  readonly label: string
+interface ScannedCategory {
+  readonly id: string
+  readonly name: string
+  readonly type: ScannedCategoryType
+  readonly entries: ScannedDisplayItem[]
+  readonly previewItems: MediaItem[]
   readonly count: number
+  readonly movieCount: number
+  readonly tvCount: number
+  readonly unresolvedCount: number
+  readonly seriesCount: number
+  readonly subtitle: string
+  readonly previewTitles: string[]
 }
 
 const source = ref<DataSource | null>(null)
@@ -64,7 +73,8 @@ const scanCache = ref<RawLocalScanCache | null>(null)
 const isScanning = ref(false)
 const scanErrorMessage = ref<string | null>(null)
 const scanLiveLogs = ref<RawLocalScanLogEntry[]>([])
-const libraryFilter = ref<LibraryFilter>('all')
+const isScanManagementOpen = ref(false)
+const selectedScannedCategoryId = ref<string | null>(null)
 
 const isAlistSource = computed(() => sourceConfig.value?.type === 'alist')
 const alistRootPath = computed(() => isAlistSource.value ? readAlistRootPath(sourceConfig.value) : '/')
@@ -112,46 +122,45 @@ const scannedSeriesFiles = computed(() =>
   scannedDisplayItems.value.filter(entry => entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv'),
 )
 const scannedUnresolved = computed(() => scannedDisplayItems.value.filter(entry => entry.candidate.kind === 'unresolved'))
-const libraryFilterChips = computed<LibraryFilterChip[]>(() => [
-  { id: 'all', label: '全部', count: scannedDisplayItems.value.length },
-  { id: 'movie', label: '电影', count: scannedMovies.value.length },
-  { id: 'tv', label: '剧集', count: scannedSeriesFiles.value.length },
-  { id: 'unresolved', label: '未识别', count: scannedUnresolved.value.length },
-  {
-    id: 'uncategorized',
-    label: SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME,
-    count: scannedMovies.value.length + scannedSeriesFiles.value.length,
-  },
-])
-const visibleScannedMovies = computed(() => scannedMovies.value.filter(matchesLibraryFilter).map(entry => entry.item))
-const visibleScannedUnresolved = computed(() => scannedUnresolved.value.filter(matchesLibraryFilter).map(entry => entry.item))
-const visibleScannedSeriesGroups = computed<ScannedSeriesGroup[]>(() => {
-  const groups = new Map<string, { title: string, items: MediaItem[] }>()
-  for (const entry of scannedSeriesFiles.value.filter(matchesLibraryFilter)) {
-    const key = entry.candidate.normalizedTitle || entry.candidate.record.providerPath
-    const title = entry.candidate.seriesTitle ?? entry.candidate.title
-    const current = groups.get(key) ?? { title, items: [] }
-    current.items.push(entry.item)
-    groups.set(key, current)
+const scannedCategories = computed<ScannedCategory[]>(() => {
+  const groups = new Map<string, ScannedDisplayItem[]>()
+  for (const entry of scannedDisplayItems.value) {
+    const current = groups.get(entry.categoryName) ?? []
+    current.push(entry)
+    groups.set(entry.categoryName, current)
   }
 
   return [...groups.entries()]
-    .map(([key, group]) => ({
-      key,
-      title: group.title,
-      items: group.items.sort(compareScannedMediaItems),
-    }))
-    .sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'))
+    .map(([name, entries]) => createScannedCategory(name, entries))
+    .sort(compareScannedCategories)
 })
-const visibleScannedQueueItems = computed(() => [
-  ...visibleScannedMovies.value,
-  ...visibleScannedSeriesGroups.value.flatMap(group => group.items),
-  ...visibleScannedUnresolved.value,
+const selectedScannedCategory = computed(() =>
+  scannedCategories.value.find(category => category.id === selectedScannedCategoryId.value) ?? null,
+)
+const selectedCategoryEntries = computed(() => selectedScannedCategory.value?.entries ?? [])
+const selectedCategoryMovies = computed(() =>
+  selectedCategoryEntries.value.filter(entry => entry.candidate.kind === 'movie').map(entry => entry.item),
+)
+const selectedCategoryUnresolved = computed(() =>
+  selectedCategoryEntries.value.filter(entry => entry.candidate.kind === 'unresolved').map(entry => entry.item),
+)
+const selectedCategorySeriesGroups = computed<ScannedSeriesGroup[]>(() => createSeriesGroups(
+  selectedCategoryEntries.value.filter(entry => entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv'),
+))
+const selectedCategoryQueueItems = computed(() => [
+  ...selectedCategoryMovies.value,
+  ...selectedCategorySeriesGroups.value.flatMap(group => group.items),
+  ...selectedCategoryUnresolved.value,
 ])
-const hasVisibleScannedSections = computed(() =>
-  visibleScannedMovies.value.length > 0
-  || visibleScannedSeriesGroups.value.length > 0
-  || visibleScannedUnresolved.value.length > 0,
+const allScannedQueueItems = computed(() => [
+  ...scannedMovies.value.map(entry => entry.item),
+  ...createSeriesGroups(scannedSeriesFiles.value).flatMap(group => group.items),
+  ...scannedUnresolved.value.map(entry => entry.item),
+])
+const hasSelectedCategorySections = computed(() =>
+  selectedCategoryMovies.value.length > 0
+  || selectedCategorySeriesGroups.value.length > 0
+  || selectedCategoryUnresolved.value.length > 0,
 )
 const scanStats = computed(() => ({
   total: scannedDisplayItems.value.length,
@@ -159,6 +168,18 @@ const scanStats = computed(() => ({
   tv: scannedSeriesFiles.value.length,
   unresolved: scannedUnresolved.value.length,
 }))
+const mediaLibrarySummary = computed(() => {
+  if (!scanCache.value)
+    return `扫描 ${alistRootPath.value} 后生成电影、剧集和未识别文件分类。`
+
+  const parts = [
+    `${scannedCategories.value.length} 个分类`,
+    `${scanStats.value.movie} 部影片`,
+    `${seriesCountForEntries(scannedSeriesFiles.value)} 部剧集`,
+    scanStats.value.unresolved ? `${scanStats.value.unresolved} 个未识别` : undefined,
+  ].filter((part): part is string => Boolean(part))
+  return parts.join(' · ')
+})
 const detectionModeLabel = computed(() => {
   if (!scanCache.value)
     return '未扫描'
@@ -193,7 +214,8 @@ watch(sourceId, async () => {
   libraries.value = []
   scanCache.value = null
   scanLiveLogs.value = []
-  libraryFilter.value = 'all'
+  selectedScannedCategoryId.value = null
+  isScanManagementOpen.value = false
   syncDefaultViewModeForSource()
   await ensureSource()
   loadScanCacheForCurrentSource()
@@ -261,6 +283,8 @@ async function switchViewMode(mode: SourceViewMode) {
     return
   }
 
+  selectedScannedCategoryId.value = null
+  isScanManagementOpen.value = false
   await loadSourceRoot()
 }
 
@@ -453,7 +477,7 @@ async function startLocalScan() {
   isScanning.value = true
   scanErrorMessage.value = null
   scanLiveLogs.value = []
-  libraryFilter.value = 'all'
+  selectedScannedCategoryId.value = null
   try {
     scanCache.value = await runRawSourceLocalScan({
       source: source.value,
@@ -476,10 +500,13 @@ function loadScanCacheForCurrentSource() {
   scanLiveLogs.value = []
   if (!isAlistSource.value) {
     scanCache.value = null
+    selectedScannedCategoryId.value = null
     return
   }
 
   scanCache.value = loadRawSourceScanCache(sourceId.value, 'alist', alistRootPath.value)
+  if (!scanCache.value)
+    selectedScannedCategoryId.value = null
 }
 
 function syncDefaultViewModeForSource() {
@@ -487,22 +514,156 @@ function syncDefaultViewModeForSource() {
 }
 
 function currentQueueItems(): MediaItem[] {
-  return isMediaLibraryView.value ? visibleScannedQueueItems.value : items.value
+  if (!isMediaLibraryView.value)
+    return items.value
+  return selectedScannedCategory.value ? selectedCategoryQueueItems.value : allScannedQueueItems.value
 }
 
-function matchesLibraryFilter(entry: ScannedDisplayItem): boolean {
-  switch (libraryFilter.value) {
+function selectScannedCategory(category: ScannedCategory) {
+  selectedScannedCategoryId.value = category.id
+}
+
+function backToScannedCategories() {
+  selectedScannedCategoryId.value = null
+}
+
+function createScannedCategory(name: string, entries: ScannedDisplayItem[]): ScannedCategory {
+  const movieCount = entries.filter(entry => entry.candidate.kind === 'movie').length
+  const tvEntries = entries.filter(entry => entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv')
+  const unresolvedCount = entries.filter(entry => entry.candidate.kind === 'unresolved').length
+  const seriesCount = seriesCountForEntries(tvEntries)
+  const type = scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
+
+  return {
+    id: `category:${encodeURIComponent(name)}`,
+    name,
+    type,
+    entries,
+    previewItems: uniquePreviewItems(entries).slice(0, 4),
+    count: entries.length,
+    movieCount,
+    tvCount: tvEntries.length,
+    unresolvedCount,
+    seriesCount,
+    subtitle: scannedCategorySubtitle({ movieCount, tvCount: tvEntries.length, unresolvedCount, seriesCount }),
+    previewTitles: uniqueDisplayTitles(entries).slice(0, 3),
+  }
+}
+
+function createSeriesGroups(entries: ScannedDisplayItem[]): ScannedSeriesGroup[] {
+  const groups = new Map<string, { title: string, items: MediaItem[] }>()
+  for (const entry of entries) {
+    const key = entry.candidate.normalizedTitle || entry.candidate.record.providerPath
+    const title = entry.candidate.seriesTitle ?? entry.candidate.title
+    const current = groups.get(key) ?? { title, items: [] }
+    current.items.push(entry.item)
+    groups.set(key, current)
+  }
+
+  return [...groups.entries()]
+    .map(([key, group]) => ({
+      key,
+      title: group.title || '剧集',
+      items: group.items.sort(compareScannedMediaItems),
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'))
+}
+
+function scannedCategoryType(movieCount: number, tvCount: number, unresolvedCount: number): ScannedCategoryType {
+  const activeTypes = [
+    movieCount > 0 ? 'movie' : null,
+    tvCount > 0 ? 'tv' : null,
+    unresolvedCount > 0 ? 'unresolved' : null,
+  ].filter(Boolean)
+
+  if (activeTypes.length !== 1)
+    return 'mixed'
+  return activeTypes[0] as ScannedCategoryType
+}
+
+function scannedCategorySubtitle(counts: {
+  movieCount: number
+  tvCount: number
+  unresolvedCount: number
+  seriesCount: number
+}): string {
+  const parts = [
+    counts.movieCount ? `${counts.movieCount} 部影片` : undefined,
+    counts.tvCount ? `${counts.seriesCount || counts.tvCount} 部剧集` : undefined,
+    counts.unresolvedCount ? `${counts.unresolvedCount} 个未识别` : undefined,
+  ].filter((part): part is string => Boolean(part))
+
+  return parts.join(' · ') || '暂无项目'
+}
+
+function seriesCountForEntries(entries: readonly ScannedDisplayItem[]): number {
+  return new Set(entries.map(entry =>
+    entry.candidate.normalizedTitle
+    || entry.candidate.seriesTitle
+    || entry.candidate.title
+    || entry.candidate.record.providerPath,
+  )).size
+}
+
+function uniqueDisplayTitles(entries: readonly ScannedDisplayItem[]): string[] {
+  const titles: string[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    const title = entry.candidate.seriesTitle ?? entry.candidate.title ?? entry.item.name
+    const normalized = title.trim().toLocaleLowerCase()
+    if (!normalized || seen.has(normalized))
+      continue
+    seen.add(normalized)
+    titles.push(title)
+  }
+  return titles
+}
+
+function uniquePreviewItems(entries: readonly ScannedDisplayItem[]): MediaItem[] {
+  const items: MediaItem[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    const key = entry.candidate.normalizedTitle || entry.item.id
+    if (!key || seen.has(key))
+      continue
+    seen.add(key)
+    items.push(entry.item)
+  }
+  return items
+}
+
+function previewInitial(item: MediaItem): string {
+  return item.name.trim().slice(0, 1).toLocaleUpperCase() || '#'
+}
+
+function compareScannedCategories(a: ScannedCategory, b: ScannedCategory): number {
+  return scannedCategorySortPriority(a) - scannedCategorySortPriority(b)
+    || b.count - a.count
+    || a.name.localeCompare(b.name, 'zh-Hans-CN')
+}
+
+function scannedCategorySortPriority(category: ScannedCategory): number {
+  if (category.name === RAW_UNRESOLVED_CATEGORY_NAME)
+    return 90
+  if (category.name === '未分类')
+    return 80
+  if (category.name === RAW_MOVIE_CATEGORY_NAME)
+    return 60
+  if (category.name === RAW_TV_CATEGORY_NAME)
+    return 61
+  return 20
+}
+
+function categoryToneClass(category: ScannedCategory): string {
+  switch (category.type) {
     case 'movie':
-      return entry.candidate.kind === 'movie'
+      return 'category-card--movie'
     case 'tv':
-      return entry.candidate.kind === 'episode' || entry.candidate.kind === 'tv'
+      return 'category-card--tv'
     case 'unresolved':
-      return entry.candidate.kind === 'unresolved'
-    case 'uncategorized':
-      return entry.categoryName === SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME && entry.candidate.kind !== 'unresolved'
-    case 'all':
+      return 'category-card--unresolved'
     default:
-      return true
+      return 'category-card--mixed'
   }
 }
 
@@ -552,9 +713,7 @@ function scannedItemOverview(candidate: RawMediaCandidate): string {
 }
 
 function categoryNameForCandidate(candidate: RawMediaCandidate): string {
-  if (candidate.kind === 'unresolved')
-    return '未识别'
-  return SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME
+  return deriveRawCandidateCategoryName(candidate)
 }
 
 function compareScannedMediaItems(a: MediaItem, b: MediaItem): number {
@@ -698,71 +857,29 @@ function labelForSourceType(type: string): string {
         </div>
 
         <section v-if="isMediaLibraryView" class="space-y-6">
-          <div class="glass-panel overflow-hidden rounded-[1.75rem] border border-white/10">
-            <div class="library-hero px-6 py-6 md:px-8">
-              <div class="flex flex-wrap items-start justify-between gap-5">
-                <div>
-                  <p class="text-xs uppercase tracking-[0.24em] text-white/36">
-                    OpenList/Alist local library
-                  </p>
-                  <h2 class="mt-3 text-3xl font-bold text-white">
-                    {{ sourceConfig.displayName ?? sourceConfig.name }}
-                  </h2>
-                  <p class="mt-3 max-w-2xl text-sm leading-6 text-white/55">
-                    扫描范围 {{ alistRootPath }}。扫描只读取目录与文件名，结果保存在本机缓存，不会上传、重命名、移动或删除 OpenList/Alist 文件。
-                  </p>
-                </div>
-                <button
-                  class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
-                  :disabled="isScanning || !source"
-                  @click="startLocalScan"
-                >
-                  {{ scanCache ? '重新扫描' : '开始扫描' }}
-                </button>
-              </div>
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p class="text-xs uppercase tracking-[0.24em] text-white/36">
+                OpenList/Alist 媒体库
+              </p>
+              <h2 class="mt-2 text-2xl font-bold text-white">
+                {{ sourceConfig.displayName ?? sourceConfig.name }}
+              </h2>
+              <p class="mt-2 text-sm leading-6 text-white/45">
+                {{ mediaLibrarySummary }}
+              </p>
+            </div>
 
-              <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                <div class="rounded-2xl bg-black/22 px-4 py-3">
-                  <p class="text-xs text-white/34">
-                    状态
-                  </p>
-                  <p class="mt-1 text-lg font-semibold text-white">
-                    {{ scanStatusLabel }}
-                  </p>
-                </div>
-                <div class="rounded-2xl bg-black/22 px-4 py-3">
-                  <p class="text-xs text-white/34">
-                    结构
-                  </p>
-                  <p class="mt-1 text-lg font-semibold text-white">
-                    {{ detectionModeLabel }}
-                  </p>
-                </div>
-                <div class="rounded-2xl bg-black/22 px-4 py-3">
-                  <p class="text-xs text-white/34">
-                    视频
-                  </p>
-                  <p class="mt-1 text-lg font-semibold text-white">
-                    {{ scanStats.total }}
-                  </p>
-                </div>
-                <div class="rounded-2xl bg-black/22 px-4 py-3">
-                  <p class="text-xs text-white/34">
-                    电影 / 剧集
-                  </p>
-                  <p class="mt-1 text-lg font-semibold text-white">
-                    {{ scanStats.movie }} / {{ scanStats.tv }}
-                  </p>
-                </div>
-                <div class="rounded-2xl bg-black/22 px-4 py-3">
-                  <p class="text-xs text-white/34">
-                    未识别
-                  </p>
-                  <p class="mt-1 text-lg font-semibold text-white">
-                    {{ scanStats.unresolved }}
-                  </p>
-                </div>
-              </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <p v-if="scanCache" class="text-sm text-white/38">
+                上次扫描：{{ scanFinishedLabel }}
+              </p>
+              <button
+                class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+                @click="isScanManagementOpen = !isScanManagementOpen"
+              >
+                {{ isScanManagementOpen ? '收起扫描管理' : '扫描管理' }}
+              </button>
             </div>
           </div>
 
@@ -773,76 +890,74 @@ function labelForSourceType(type: string): string {
             {{ scanErrorMessage }}
           </div>
 
-          <div v-if="!scanCache && scanLogEntries.length" class="rounded-2xl border border-white/10 bg-white/6 p-5">
-            <h3 class="text-base font-semibold text-white">
-              扫描日志
-            </h3>
-            <div class="mt-3 space-y-2 text-sm leading-6 text-white/54">
-              <p v-for="(entry, index) in scanLogEntries" :key="`${entry.timestamp}-${index}`">
-                <span
-                  class="mr-2 inline-block h-2 w-2 rounded-full"
-                  :class="entry.level === 'error' ? 'bg-red-300' : entry.level === 'warning' ? 'bg-yellow-300' : 'bg-primary'"
-                />
-                {{ entry.path ? `${entry.message} (${entry.path})` : entry.message }}
-              </p>
-            </div>
+          <div
+            v-if="isScanning && !isScanManagementOpen"
+            class="rounded-2xl border border-primary/25 bg-primary/10 px-5 py-4 text-sm text-primary"
+          >
+            正在扫描 {{ alistRootPath }}，完成后会自动刷新本地媒体库。
           </div>
 
-          <div v-if="!scanCache" class="glass-panel flex min-h-72 flex-col justify-center rounded-[1.75rem] p-8">
-            <p class="text-sm font-semibold text-primary">
-              尚未生成本地媒体库
-            </p>
-            <h2 class="mt-3 text-2xl font-bold text-white">
-              扫描 {{ alistRootPath }} 后显示电影、剧集和未识别文件
-            </h2>
-            <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-              这一步只通过当前 DataSource 读取目录列表，并把 provider path、文件名、解析候选和结构判断保存在本机。播放时仍通过 OpenList/Alist 的 getStreamURL 流程获取地址。
-            </p>
-            <div class="mt-6">
+          <section
+            v-if="isScanManagementOpen"
+            class="scan-management-panel rounded-2xl border border-white/10 bg-white/6 p-5"
+          >
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 class="text-base font-semibold text-white">
+                  扫描管理
+                </h3>
+                <p class="mt-2 max-w-2xl text-sm leading-6 text-white/46">
+                  根目录 {{ alistRootPath }}。扫描只读取目录和文件名，结果保存在本机缓存，不写回 OpenList/Alist。
+                </p>
+              </div>
               <button
                 class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
                 :disabled="isScanning || !source"
                 @click="startLocalScan"
               >
-                {{ isScanning ? '扫描中…' : '开始扫描' }}
+                {{ isScanning ? '扫描中…' : scanCache ? '重新扫描' : '开始扫描' }}
               </button>
             </div>
-          </div>
 
-          <template v-else>
-            <div class="flex flex-wrap items-center justify-between gap-4">
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="chip in libraryFilterChips"
-                  :key="chip.id"
-                  class="rounded-full border px-4 py-2 text-sm font-semibold transition-colors"
-                  :class="libraryFilter === chip.id ? 'border-primary/70 bg-primary/18 text-primary' : 'border-white/10 bg-white/6 text-white/58 hover:bg-white/10 hover:text-white'"
-                  @click="libraryFilter = chip.id"
-                >
-                  {{ chip.label }} · {{ chip.count }}
-                </button>
+            <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div class="scan-stat">
+                <p>状态</p>
+                <strong>{{ scanStatusLabel }}</strong>
               </div>
-              <p class="text-sm text-white/40">
-                上次扫描：{{ scanFinishedLabel }}
-              </p>
+              <div class="scan-stat">
+                <p>结构</p>
+                <strong>{{ detectionModeLabel }}</strong>
+              </div>
+              <div class="scan-stat">
+                <p>视频</p>
+                <strong>{{ scanStats.total }}</strong>
+              </div>
+              <div class="scan-stat">
+                <p>电影 / 剧集</p>
+                <strong>{{ scanStats.movie }} / {{ scanStats.tv }}</strong>
+              </div>
+              <div class="scan-stat">
+                <p>未识别</p>
+                <strong>{{ scanStats.unresolved }}</strong>
+              </div>
             </div>
 
-            <div class="grid gap-4 lg:grid-cols-2">
-              <div class="rounded-2xl border border-white/10 bg-white/6 p-5">
-                <h3 class="text-base font-semibold text-white">
+            <div v-if="scanCache || scanLogEntries.length" class="mt-5 grid gap-4 lg:grid-cols-2">
+              <div v-if="scanCache" class="rounded-2xl border border-white/8 bg-black/14 p-4">
+                <h4 class="text-sm font-semibold text-white">
                   结构判断
-                </h3>
-                <div class="mt-3 space-y-2 text-sm leading-6 text-white/54">
+                </h4>
+                <div class="mt-3 space-y-2 text-sm leading-6 text-white/52">
                   <p v-for="reason in scanCache.detection.reasons" :key="reason">
                     {{ reason }}
                   </p>
                 </div>
               </div>
-              <div class="rounded-2xl border border-white/10 bg-white/6 p-5">
-                <h3 class="text-base font-semibold text-white">
+              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
+                <h4 class="text-sm font-semibold text-white">
                   扫描日志
-                </h3>
-                <div class="mt-3 space-y-2 text-sm leading-6 text-white/54">
+                </h4>
+                <div v-if="scanLogEntries.length" class="mt-3 space-y-2 text-sm leading-6 text-white/52">
                   <p v-for="(entry, index) in scanLogEntries" :key="`${entry.timestamp}-${index}`">
                     <span
                       class="mr-2 inline-block h-2 w-2 rounded-full"
@@ -851,50 +966,167 @@ function labelForSourceType(type: string): string {
                     {{ entry.path ? `${entry.message} (${entry.path})` : entry.message }}
                   </p>
                 </div>
+                <p v-else class="mt-3 text-sm text-white/38">
+                  暂无扫描日志。
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="!scanCache" class="empty-library-state flex min-h-72 flex-col justify-center rounded-[1.75rem] border border-white/10 p-8">
+            <p class="text-sm font-semibold text-primary">
+              尚未生成本地媒体库
+            </p>
+            <h2 class="mt-3 max-w-3xl text-2xl font-bold text-white">
+              扫描后会先展示分类入口，再进入电影、剧集和未识别文件海报墙
+            </h2>
+            <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
+              当前根目录：{{ alistRootPath }}。播放仍通过现有 DataSource.getStreamURL() 获取地址，文件夹视图可随时作为兜底浏览入口。
+            </p>
+            <div class="mt-6 flex flex-wrap gap-3">
+              <button
+                class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
+                :disabled="isScanning || !source"
+                @click="startLocalScan"
+              >
+                {{ isScanning ? '扫描中…' : '开始扫描' }}
+              </button>
+              <button
+                class="rounded-2xl border border-white/10 bg-white/6 px-5 py-3 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+                @click="switchViewMode('folders')"
+              >
+                打开文件夹视图
+              </button>
+            </div>
+          </div>
+
+          <template v-else-if="!selectedScannedCategory">
+            <section class="space-y-4">
+              <div class="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 class="text-xl font-bold text-white">
+                    媒体分类
+                  </h2>
+                  <p class="mt-1 text-sm text-white/38">
+                    优先使用路径中的分类目录；没有分类目录时按电影、剧集和未识别归类。
+                  </p>
+                </div>
+                <p class="text-sm text-white/38">
+                  {{ scanStats.total }} 个视频文件
+                </p>
+              </div>
+
+              <div v-if="scannedCategories.length" class="category-grid">
+                <button
+                  v-for="category in scannedCategories"
+                  :key="category.id"
+                  type="button"
+                  class="category-card group text-left"
+                  :class="categoryToneClass(category)"
+                  @click="selectScannedCategory(category)"
+                >
+                  <div class="category-card-visual">
+                    <div class="category-card-posters" aria-hidden="true">
+                      <div
+                        v-for="(item, index) in category.previewItems"
+                        :key="`${category.id}-${item.id}`"
+                        class="category-card-poster"
+                        :style="{ '--poster-index': index }"
+                      >
+                        <img
+                          v-if="item.posterUrl || item.backdropUrl"
+                          :src="item.posterUrl || item.backdropUrl"
+                          :alt="item.name"
+                          loading="lazy"
+                          decoding="async"
+                        >
+                        <span v-else>{{ previewInitial(item) }}</span>
+                      </div>
+                    </div>
+                    <span class="category-card-count">{{ category.count }}</span>
+                    <span class="category-card-kind">{{ category.type === 'movie' ? 'Movie' : category.type === 'tv' ? 'Series' : category.type === 'unresolved' ? 'Unknown' : 'Mixed' }}</span>
+                  </div>
+                  <div class="p-4">
+                    <p class="line-clamp-1 text-base font-semibold text-white">
+                      {{ category.name }}
+                    </p>
+                    <p class="mt-1 text-sm text-white/48">
+                      {{ category.subtitle }}
+                    </p>
+                    <p v-if="category.previewTitles.length" class="mt-3 line-clamp-2 text-xs leading-5 text-white/34">
+                      {{ category.previewTitles.join(' / ') }}
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              <div v-else class="glass-panel flex min-h-56 flex-col items-center justify-center rounded-[1.75rem] p-8 text-center">
+                <p class="text-base font-semibold text-white">
+                  当前扫描没有可显示的视频
+                </p>
+                <p class="mt-2 max-w-md text-sm leading-6 text-white/45">
+                  可以重新扫描当前根目录，或切换到文件夹视图继续浏览。
+                </p>
+              </div>
+            </section>
+          </template>
+
+          <template v-else>
+            <div class="flex flex-wrap items-center gap-4">
+              <button
+                class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14"
+                @click="backToScannedCategories"
+              >
+                返回分类
+              </button>
+              <div>
+                <p class="text-xs uppercase tracking-[0.2em] text-white/32">
+                  {{ selectedScannedCategory.subtitle }}
+                </p>
+                <h2 class="mt-1 text-2xl font-bold text-white">
+                  {{ selectedScannedCategory.name }}
+                </h2>
               </div>
             </div>
 
             <div
-              v-if="!hasVisibleScannedSections"
+              v-if="!hasSelectedCategorySections"
               class="glass-panel flex min-h-56 flex-col items-center justify-center rounded-[1.75rem] p-8 text-center"
             >
               <p class="text-base font-semibold text-white">
-                当前筛选没有可显示项目
+                这个分类暂时没有可显示项目
               </p>
               <p class="mt-2 max-w-md text-sm leading-6 text-white/45">
-                可以切回“全部”或重新扫描当前 OpenList/Alist 根目录。
+                可以返回分类页或重新扫描当前 OpenList/Alist 根目录。
               </p>
             </div>
 
-            <section v-if="visibleScannedMovies.length">
+            <section v-if="selectedCategoryMovies.length">
               <div class="mb-4">
-                <h2 class="text-xl font-bold text-white">
+                <h3 class="text-lg font-bold text-white">
                   电影
-                </h2>
-                <p class="mt-1 text-sm text-white/36">
-                  本地解析出的电影候选，兜底分类为 {{ SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME }}。
-                </p>
+                </h3>
               </div>
-              <MediaGrid :items="visibleScannedMovies" @select="handleSelect" @play="handlePlay" />
+              <MediaGrid :items="selectedCategoryMovies" @select="handleSelect" @play="handlePlay" />
             </section>
 
-            <section v-if="visibleScannedSeriesGroups.length" class="space-y-5">
+            <section v-if="selectedCategorySeriesGroups.length" class="space-y-5">
               <div>
-                <h2 class="text-xl font-bold text-white">
+                <h3 class="text-lg font-bold text-white">
                   剧集
-                </h2>
+                </h3>
                 <p class="mt-1 text-sm text-white/36">
                   按解析出的剧名聚合，点击分集仍使用 OpenList/Alist 播放流程。
                 </p>
               </div>
-              <div v-for="group in visibleScannedSeriesGroups" :key="group.key" class="space-y-3">
+              <div v-for="group in selectedCategorySeriesGroups" :key="group.key" class="space-y-3">
                 <div class="flex flex-wrap items-end justify-between gap-3">
                   <div>
-                    <h3 class="text-base font-semibold text-white">
+                    <h4 class="text-base font-semibold text-white">
                       {{ group.title }}
-                    </h3>
+                    </h4>
                     <p class="mt-1 text-sm text-white/36">
-                      {{ group.items.length }} 个文件 · {{ SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME }}
+                      {{ group.items.length }} 个文件
                     </p>
                   </div>
                 </div>
@@ -902,16 +1134,16 @@ function labelForSourceType(type: string): string {
               </div>
             </section>
 
-            <section v-if="visibleScannedUnresolved.length">
+            <section v-if="selectedCategoryUnresolved.length">
               <div class="mb-4">
-                <h2 class="text-xl font-bold text-white">
+                <h3 class="text-lg font-bold text-white">
                   未识别
-                </h2>
+                </h3>
                 <p class="mt-1 text-sm text-white/36">
                   暂未解析出标题或季集信息的文件，仍可直接播放。
                 </p>
               </div>
-              <MediaGrid :items="visibleScannedUnresolved" @select="handleSelect" @play="handlePlay" />
+              <MediaGrid :items="selectedCategoryUnresolved" @select="handleSelect" @play="handlePlay" />
             </section>
           </template>
         </section>
@@ -975,9 +1207,142 @@ function labelForSourceType(type: string): string {
   background: var(--color-bg);
 }
 
-.library-hero {
+.scan-management-panel,
+.empty-library-state {
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 18%, transparent), transparent 48%),
-    color-mix(in srgb, var(--color-surface) 72%, transparent);
+    linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 8%, transparent), transparent 46%),
+    color-mix(in srgb, var(--color-surface) 62%, transparent);
+}
+
+.scan-stat {
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: 1rem;
+  background: rgb(0 0 0 / 16%);
+  padding: 0.8rem 1rem;
+}
+
+.scan-stat p {
+  color: rgb(255 255 255 / 34%);
+  font-size: 0.75rem;
+}
+
+.scan-stat strong {
+  display: block;
+  margin-top: 0.25rem;
+  color: white;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
+  gap: 1rem;
+}
+
+.category-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 1.4rem;
+  background: color-mix(in srgb, var(--color-surface) 54%, transparent);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--duration-normal), border-color var(--duration-normal), background var(--duration-normal);
+}
+
+.category-card:hover {
+  transform: translateY(-0.2rem);
+  border-color: rgb(255 255 255 / 24%);
+  background: color-mix(in srgb, var(--color-surface-hover) 60%, transparent);
+}
+
+.category-card-visual {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+}
+
+.category-card-visual::before {
+  position: absolute;
+  inset: 0;
+  content: '';
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 20%), transparent 42%),
+    radial-gradient(circle at 78% 24%, rgb(255 255 255 / 20%), transparent 24%),
+    linear-gradient(0deg, rgb(0 0 0 / 44%), transparent 64%);
+}
+
+.category-card--movie .category-card-visual {
+  background: linear-gradient(135deg, rgb(34 197 94 / 38%), rgb(14 165 233 / 22%)), var(--color-surface);
+}
+
+.category-card--tv .category-card-visual {
+  background: linear-gradient(135deg, rgb(245 158 11 / 34%), rgb(236 72 153 / 22%)), var(--color-surface);
+}
+
+.category-card--unresolved .category-card-visual {
+  background: linear-gradient(135deg, rgb(148 163 184 / 26%), rgb(255 255 255 / 10%)), var(--color-surface);
+}
+
+.category-card--mixed .category-card-visual {
+  background: linear-gradient(135deg, rgb(20 184 166 / 30%), rgb(168 85 247 / 24%)), var(--color-surface);
+}
+
+.category-card-posters {
+  position: absolute;
+  inset: 1.2rem auto 1rem 1rem;
+  display: flex;
+  width: min(68%, 12rem);
+  align-items: center;
+}
+
+.category-card-poster {
+  position: absolute;
+  left: 0;
+  display: flex;
+  aspect-ratio: 2 / 3;
+  height: min(7.8rem, 82%);
+  transform: translateX(calc(var(--poster-index) * 2.1rem)) rotate(calc((var(--poster-index) - 1.5) * 2deg));
+  transform-origin: bottom center;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 0.7rem;
+  background:
+    linear-gradient(160deg, rgb(255 255 255 / 18%), transparent 36%),
+    rgb(0 0 0 / 24%);
+  box-shadow: 0 1rem 1.8rem rgb(0 0 0 / 30%);
+}
+
+.category-card-poster img {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+}
+
+.category-card-poster span {
+  color: rgb(255 255 255 / 72%);
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.category-card-count {
+  position: absolute;
+  right: 1rem;
+  bottom: 0.75rem;
+  color: white;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.category-card-kind {
+  position: absolute;
+  left: 1rem;
+  top: 0.85rem;
+  color: rgb(255 255 255 / 62%);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 </style>
