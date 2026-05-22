@@ -244,13 +244,13 @@ Phase 4: 生态系统           ████████████████
 
 #### OpenList/Alist DataSource 实现
 
-- [~] 实现 OpenList/Alist HTTP API 客户端 (`/api/auth/login`, `/api/fs/list`, `/api/fs/get`；代码已接入 Player，仍待真实 OpenList/Alist 服务 live test)
+- [x] 实现 OpenList/Alist HTTP API 客户端 (`/api/auth/login`, `/api/fs/list`, `/api/fs/get`；已通过本地 OpenList/Alist 服务 live test)
 - [ ] 实现 WebDAV 客户端 (备选方案)
-- [~] `list(path)` — 目录浏览（HTTP API 已实现，按 `extra.rootPath` 作为库根目录浏览，待真实服务验证）
-- [~] `search(keyword)` — 搜索（优先 `/api/fs/search` 且 parent 指向 `extra.rootPath`，不可用时在选中根目录内有限目录回退搜索；待真实服务验证）
-- [~] `getStreamURL(path)` — 构建播放URL (`/d{path}`，支持 `/api/fs/get` 返回的 sign；路径必须位于 `extra.rootPath` 内，待真实服务验证)
-- [~] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource；账号登录-only MVP；支持 `extra.rootPath` 根目录约束)
-- [~] 连接测试（设置页添加/编辑时先 `/api/auth/login` 并测试根目录列表；登录后可浏览 `/` 并选择 `extra.rootPath`，待真实服务验证）
+- [x] `list(path)` — 目录浏览（HTTP API 已实现，按 `extra.rootPath` 作为库根目录浏览，已通过本地 OpenList/Alist 服务验证）
+- [x] `search(keyword)` — 搜索（优先 `/api/fs/search` 且 parent 指向 `extra.rootPath`，不可用时在选中根目录内有限目录回退搜索；已通过本地 OpenList/Alist 服务验证）
+- [x] `getStreamURL(path)` — 构建播放URL (`/d{path}`，支持 `/api/fs/get` 返回的 sign；路径必须位于 `extra.rootPath` 内，已通过本地 OpenList/Alist 服务播放验证)
+- [x] 实现 `AlistDataSource` (OpenList/Alist-compatible, implements DataSource；账号登录-only MVP；支持 `extra.rootPath` 根目录约束)
+- [x] 连接测试（设置页添加/编辑时先 `/api/auth/login` 并测试根目录列表；登录后可浏览 `/` 并选择 `extra.rootPath`，已通过本地 OpenList/Alist 服务验证）
 
 #### CloudDrive2DataSource 实现
 
@@ -293,7 +293,7 @@ Phase 4: 生态系统           ████████████████
 
 **产出**:
 
-- [~] 能连接 OpenList/Alist 浏览和播放云盘文件（实现已写入 Player，待真实 OpenList/Alist 服务 live test）
+- [x] 能连接 OpenList/Alist 浏览和播放云盘文件（已通过本地 OpenList/Alist 服务 live test）
 - [ ] 能连接 CloudDrive2 浏览和播放
 - [~] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；Windows 已验证窗口内视频渲染，本地文件 DataSource 浏览、文件关联与完整本地媒体库能力未完成
 - [ ] 115/123/夸克在 UI 中有占位

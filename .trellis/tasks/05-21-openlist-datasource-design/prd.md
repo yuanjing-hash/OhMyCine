@@ -40,10 +40,10 @@
 
 ## Acceptance Criteria (evolving)
 
-* [~] 用户能在 Player 设置中添加 OpenList/Alist 数据源并测试连接。实现已完成，待真实服务验证。
-* [~] 用户能在 OpenList/Alist 登录后从 `/` 浏览目录并选择根目录。实现已完成，待真实服务验证。
-* [~] 用户能从侧栏进入该数据源并在已选根目录内浏览目录。实现已完成，待真实服务验证。
-* [~] 视频文件能从 OpenList/Alist 选中根目录内进入现有播放页播放。实现已完成，待真实服务验证。
+* [x] 用户能在 Player 设置中添加 OpenList/Alist 数据源并测试连接。
+* [x] 用户能在 OpenList/Alist 登录后从 `/` 浏览目录并选择根目录。
+* [x] 用户能从侧栏进入该数据源并在已选根目录内浏览目录。
+* [x] 视频文件能从 OpenList/Alist 选中根目录内进入现有播放页播放。
 * [x] 普通配置持久化中不保存 token、用户名、密码等敏感字段。
 * [x] OpenList/Alist 根目录以 `extra.rootPath` 保存为非敏感配置，默认 `/`。
 * [x] 设计状态同步回路线图。
@@ -80,6 +80,6 @@
 * Added structured Alist credential envelope in the shared credential store.
 * Settings now supports Emby and OpenList/Alist login-style add/edit flows.
 * Added safe `credentialVersion` config metadata so re-login forces DataSource reinitialization without persisting secrets.
-* Static verification passed via Player typecheck, lint, build, and `git diff --check`; live OpenList/Alist service verification remains pending.
+* Static verification passed via Player typecheck, lint, build, Windows packaging, and `git diff --check`; user live-tested local OpenList/Alist add, root directory selection, browse, search, and playback successfully.
 * Follow-up added visible source-type tiles so OpenList/Alist is no longer hidden behind native select rendering.
 * Follow-up added OpenList/Alist root directory selection after authenticated login; final config stores `extra.rootPath` and DataSource browsing/search/playback are scoped to that root.
