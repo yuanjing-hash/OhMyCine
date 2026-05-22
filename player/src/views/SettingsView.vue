@@ -1,18 +1,32 @@
 <script setup lang="ts">
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import {
+  createEmptyScrapeCategoryRule,
+  loadScrapeClassificationRules,
+  normalizeScrapeFallbackCategoryName,
+  resetScrapeClassificationRules,
+  saveScrapeClassificationRules,
+  SCRAPE_COUNTRY_OPTIONS,
+  SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME,
+  SCRAPE_LANGUAGE_OPTIONS,
+  TMDB_MOVIE_GENRES,
+  TMDB_TV_GENRES,
+} from '@/services/scraper/classificationRules'
 import { useDataSourceStore } from '@/stores/datasource'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
 type LoginDataSourceConfig = DataSourceConfig & { type: LoginDataSourceType }
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit'
-type SettingsEntryId = 'datasources' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping'
+type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
+type ConditionValueState = 'none' | 'include' | 'exclude'
 
 interface DataSourceFormState {
   id: string | null
@@ -86,9 +100,13 @@ const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
 const alistBrowserLoading = ref(false)
 const alistBrowserError = ref<string | null>(null)
+const scrapeRules = ref(loadScrapeClassificationRules())
+const scrapeRulesDirty = ref(false)
+const scrapeFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
+const isDataSourceMode = computed(() => mode.value === 'manage' || mode.value === 'add' || mode.value === 'edit')
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
 const selectedRootPathLabel = computed(() => normalizeAlistRootPath(form.rootPath))
@@ -102,7 +120,12 @@ const dataSourceEntryMeta = computed(() => {
 })
 const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
-  : 'Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。')
+  : mode.value === 'scraping'
+    ? '配置 OpenList/Alist、CloudDrive2、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回网盘目录。'
+    : 'Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。')
+const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
+const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
+const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
 const settingsEntries = computed<SettingsEntry[]>(() => [
   {
     id: 'datasources',
@@ -110,6 +133,15 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     title: '管理数据源',
     description: '连接、编辑、停用或清理 Emby 与 OpenList/Alist 数据源，控制左侧媒体入口。',
     meta: dataSourceEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
+  },
+  {
+    id: 'scraping',
+    label: 'Meta',
+    title: '刮削与分类',
+    description: '管理原始文件源的本地刮削分类规则。电影和剧集分类使用 TMDB 官方类型枚举，通过受控选项编辑。',
+    meta: scrapeRulesDirty.value ? '有未保存修改' : '默认实例可编辑',
     actionLabel: '打开',
     disabled: false,
   },
@@ -173,7 +205,19 @@ watch(() => [form.url, form.username, form.password] as const, () => {
 })
 
 function syncModeFromRoute() {
-  if (routeQueryValue('section') !== 'datasources') {
+  const section = routeQueryValue('section')
+  if (section === 'scraping') {
+    replaceSettingsQuery({ section: 'scraping' })
+    if (mode.value !== 'scraping') {
+      lastFetchedLibraries.value = []
+      resetAlistBrowser()
+    }
+    mode.value = 'scraping'
+    feedback.value = null
+    return
+  }
+
+  if (section !== 'datasources') {
     replaceSettingsQuery()
     if (mode.value !== 'overview') {
       lastFetchedLibraries.value = []
@@ -252,6 +296,8 @@ function openSettingsEntry(entry: SettingsEntry) {
     return
   if (entry.id === 'datasources')
     goDataSources()
+  else if (entry.id === 'scraping')
+    goScrapingSettings()
 }
 
 function goOverview() {
@@ -268,6 +314,15 @@ function goDataSources() {
   lastFetchedLibraries.value = []
   resetAlistBrowser()
   void router.push({ name: 'settings', query: { section: 'datasources' } })
+}
+
+function goScrapingSettings() {
+  mode.value = 'scraping'
+  feedback.value = null
+  scrapeFeedback.value = null
+  lastFetchedLibraries.value = []
+  resetAlistBrowser()
+  void router.push({ name: 'settings', query: { section: 'scraping' } })
 }
 
 function goManage(options: { preserveFeedback?: boolean } = {}) {
@@ -674,6 +729,138 @@ function parentDirectoryPath(path: string): string {
   const index = normalized.lastIndexOf('/')
   return index <= 0 ? '/' : normalized.slice(0, index)
 }
+
+function getScrapeRuleGroup(mediaType: ScrapeMediaType): ScrapeRuleGroup {
+  let group = scrapeRules.value.groups.find(item => item.mediaType === mediaType)
+  if (!group) {
+    group = {
+      mediaType,
+      categories: [],
+      fallbackCategoryName: SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME,
+    }
+    scrapeRules.value.groups.push(group)
+  }
+  return group
+}
+
+function genreOptionsForMediaType(mediaType: ScrapeMediaType): TmdbGenreOption[] {
+  return mediaType === 'movie' ? TMDB_MOVIE_GENRES : TMDB_TV_GENRES
+}
+
+function countryConditionForCategory(category: ScrapeCategoryRule, mediaType: ScrapeMediaType): ScrapeValueCondition<string> {
+  if (mediaType === 'movie') {
+    category.conditions.productionCountries ??= { include: [], exclude: [] }
+    return category.conditions.productionCountries
+  }
+  category.conditions.originCountries ??= { include: [], exclude: [] }
+  return category.conditions.originCountries
+}
+
+function addScrapeCategory(mediaType: ScrapeMediaType) {
+  const group = getScrapeRuleGroup(mediaType)
+  group.categories.push(createEmptyScrapeCategoryRule(mediaType === 'movie' ? '新电影分类' : '新剧集分类'))
+  markScrapeRulesDirty()
+}
+
+function removeScrapeCategory(group: ScrapeRuleGroup, categoryId: string) {
+  group.categories = group.categories.filter(category => category.id !== categoryId)
+  markScrapeRulesDirty()
+}
+
+function moveScrapeCategory(group: ScrapeRuleGroup, index: number, direction: -1 | 1) {
+  const nextIndex = index + direction
+  if (nextIndex < 0 || nextIndex >= group.categories.length)
+    return
+  const next = [...group.categories]
+  const [category] = next.splice(index, 1)
+  if (!category)
+    return
+  next.splice(nextIndex, 0, category)
+  group.categories = next
+  markScrapeRulesDirty()
+}
+
+function conditionValueState<T extends string | number>(condition: ScrapeValueCondition<T>, value: T): ConditionValueState {
+  if (condition.include.includes(value))
+    return 'include'
+  if (condition.exclude.includes(value))
+    return 'exclude'
+  return 'none'
+}
+
+function cycleConditionValue<T extends string | number>(condition: ScrapeValueCondition<T>, value: T) {
+  const current = conditionValueState(condition, value)
+  condition.include = condition.include.filter(item => item !== value)
+  condition.exclude = condition.exclude.filter(item => item !== value)
+  if (current === 'none')
+    condition.include.push(value)
+  else if (current === 'include')
+    condition.exclude.push(value)
+  markScrapeRulesDirty()
+}
+
+function conditionChipClass<T extends string | number>(condition: ScrapeValueCondition<T>, value: T): string {
+  const state = conditionValueState(condition, value)
+  if (state === 'include')
+    return 'border-primary/45 bg-primary/18 text-primary'
+  if (state === 'exclude')
+    return 'border-red-400/35 bg-red-400/12 text-red-100'
+  return 'border-white/10 bg-white/5 text-white/48 hover:border-white/18 hover:bg-white/8 hover:text-white/72'
+}
+
+function conditionChipPrefix<T extends string | number>(condition: ScrapeValueCondition<T>, value: T): string {
+  const state = conditionValueState(condition, value)
+  if (state === 'include')
+    return '包含'
+  if (state === 'exclude')
+    return '排除'
+  return '不限'
+}
+
+function setReleaseYear(category: ScrapeCategoryRule, side: 'from' | 'to', rawValue: string) {
+  const trimmed = rawValue.trim()
+  const nextRange = category.conditions.releaseYear ? { ...category.conditions.releaseYear } : {}
+  if (!trimmed) {
+    delete nextRange[side]
+  }
+  else {
+    const year = Number(trimmed)
+    if (!Number.isInteger(year) || year < 1888 || year > 2200)
+      return
+    nextRange[side] = year
+  }
+  category.conditions.releaseYear = nextRange.from == null && nextRange.to == null ? null : nextRange
+  markScrapeRulesDirty()
+}
+
+function updateFallbackCategoryName(group: ScrapeRuleGroup, value: string) {
+  group.fallbackCategoryName = normalizeScrapeFallbackCategoryName(value)
+  markScrapeRulesDirty()
+}
+
+function markScrapeRulesDirty() {
+  scrapeRulesDirty.value = true
+  scrapeFeedback.value = null
+}
+
+function saveScrapeRules() {
+  saveScrapeClassificationRules(scrapeRules.value)
+  scrapeRules.value = loadScrapeClassificationRules()
+  scrapeRulesDirty.value = false
+  scrapeFeedback.value = { type: 'success', message: '刮削分类规则已保存。后续扫描会按新规则计算本地逻辑分类。' }
+}
+
+function resetScrapeRules() {
+  scrapeRules.value = resetScrapeClassificationRules()
+  scrapeRulesDirty.value = false
+  scrapeFeedback.value = { type: 'success', message: '已恢复内置默认分类实例。它只是默认模板，仍可继续按你的库调整。' }
+}
+
+function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string {
+  if ('id' in option)
+    return `${option.label} · ${option.name}`
+  return option.label
+}
 </script>
 
 <template>
@@ -703,7 +890,7 @@ function parentDirectoryPath(path: string): string {
       </header>
 
       <div
-        v-if="persistentCredentialWarning && mode !== 'overview'"
+        v-if="persistentCredentialWarning && isDataSourceMode"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
         当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码和 token 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
@@ -762,6 +949,236 @@ function parentDirectoryPath(path: string): string {
             {{ entry.actionLabel }}
           </span>
         </button>
+      </section>
+
+      <section v-else-if="mode === 'scraping'" class="space-y-5">
+        <div class="glass-panel rounded-[1.75rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p class="text-xs uppercase tracking-[0.24em] text-white/34">
+                Scraping Rules
+              </p>
+              <h2 class="mt-1 text-2xl font-bold text-white">
+                刮削与分类
+              </h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
+                这里配置的是本地逻辑分类，只影响 OpenList/Alist、CloudDrive2、本地文件等原始文件源的海报墙、筛选和推荐上下文。不会改动远端目录，也不要求目录顶层叫 Movies 或 TV。
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
+                @click="resetScrapeRules"
+              >
+                恢复默认实例
+              </button>
+              <button
+                type="button"
+                class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="!scrapeRulesDirty"
+                @click="saveScrapeRules"
+              >
+                保存规则
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-if="scrapeFeedback"
+            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+            :class="{
+              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': scrapeFeedback.type === 'success',
+              'border-red-400/20 bg-red-400/10 text-red-100': scrapeFeedback.type === 'error',
+              'border-white/12 bg-white/6 text-white/58': scrapeFeedback.type === 'info',
+            }"
+          >
+            {{ scrapeFeedback.message }}
+          </div>
+        </div>
+
+        <section
+          v-for="group in scrapeRuleGroups"
+          :key="group.mediaType"
+          class="glass-panel rounded-[1.75rem] p-6"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p class="text-xs uppercase tracking-[0.24em] text-white/34">
+                {{ group.mediaType === 'movie' ? 'Movie Categories' : 'TV Categories' }}
+              </p>
+              <h3 class="mt-1 text-xl font-bold text-white">
+                {{ group.mediaType === 'movie' ? '电影分类' : '剧集分类' }}
+              </h3>
+              <p class="mt-2 text-sm text-white/42">
+                {{ group.mediaType === 'movie' ? '只展示 TMDB 官方电影类型，不混入剧集类型。' : '只展示 TMDB 官方剧集类型，例如动画、纪录片、儿童、真人秀、脱口秀。' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary"
+              @click="addScrapeCategory(group.mediaType)"
+            >
+              <span class="text-lg leading-none">+</span>
+              添加{{ group.mediaType === 'movie' ? '电影' : '剧集' }}分类
+            </button>
+          </div>
+
+          <div class="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <label class="block">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">兜底分类</span>
+              <input
+                :value="group.fallbackCategoryName"
+                class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                :placeholder="SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME"
+                @input="updateFallbackCategoryName(group, ($event.target as HTMLInputElement).value)"
+              >
+            </label>
+            <p class="mt-2 text-xs leading-5 text-white/38">
+              没有命中上方显式分类时会落入这里。兜底分类不能删除，但可以改名。
+            </p>
+          </div>
+
+          <div v-if="group.categories.length" class="mt-5 space-y-4">
+            <article
+              v-for="(category, index) in group.categories"
+              :key="category.id"
+              class="rounded-2xl border border-white/10 bg-white/5 p-4"
+            >
+              <div class="flex flex-wrap items-start justify-between gap-4">
+                <label class="min-w-56 flex-1">
+                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">分类名称</span>
+                  <input
+                    v-model="category.name"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                    placeholder="例如 华语电影 / 综艺"
+                    @input="markScrapeRulesDirty"
+                  >
+                </label>
+
+                <div class="flex flex-wrap gap-2 pt-6">
+                  <button
+                    type="button"
+                    class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
+                    :disabled="index === 0"
+                    @click="moveScrapeCategory(group, index, -1)"
+                  >
+                    上移
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
+                    :disabled="index === group.categories.length - 1"
+                    @click="moveScrapeCategory(group, index, 1)"
+                  >
+                    下移
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-xl bg-red-500/14 px-3 py-2 text-xs text-red-100 transition-colors hover:bg-red-500/24"
+                    @click="removeScrapeCategory(group, category.id)"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+
+              <div class="mt-5 grid gap-4 xl:grid-cols-2">
+                <div class="rounded-2xl bg-black/16 p-4">
+                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                    类型 / 题材
+                  </p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <button
+                      v-for="genre in genreOptionsForMediaType(group.mediaType)"
+                      :key="genre.id"
+                      type="button"
+                      class="rounded-xl border px-3 py-2 text-xs transition-colors"
+                      :class="conditionChipClass(category.conditions.genreIds, genre.id)"
+                      :title="`${conditionChipPrefix(category.conditions.genreIds, genre.id)} ${genre.name}`"
+                      @click="cycleConditionValue(category.conditions.genreIds, genre.id)"
+                    >
+                      {{ conditionChipPrefix(category.conditions.genreIds, genre.id) }} · {{ optionDisplayLabel(genre) }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="rounded-2xl bg-black/16 p-4">
+                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                    原始语种
+                  </p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <button
+                      v-for="language in SCRAPE_LANGUAGE_OPTIONS"
+                      :key="language.value"
+                      type="button"
+                      class="rounded-xl border px-3 py-2 text-xs transition-colors"
+                      :class="conditionChipClass(category.conditions.originalLanguages, language.value)"
+                      @click="cycleConditionValue(category.conditions.originalLanguages, language.value)"
+                    >
+                      {{ conditionChipPrefix(category.conditions.originalLanguages, language.value) }} · {{ optionDisplayLabel(language) }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="rounded-2xl bg-black/16 p-4">
+                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                    {{ group.mediaType === 'movie' ? '制作国家 / 地区' : '剧集来源国家 / 地区' }}
+                  </p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <button
+                      v-for="country in SCRAPE_COUNTRY_OPTIONS"
+                      :key="country.value"
+                      type="button"
+                      class="rounded-xl border px-3 py-2 text-xs transition-colors"
+                      :class="conditionChipClass(countryConditionForCategory(category, group.mediaType), country.value)"
+                      @click="cycleConditionValue(countryConditionForCategory(category, group.mediaType), country.value)"
+                    >
+                      {{ conditionChipPrefix(countryConditionForCategory(category, group.mediaType), country.value) }} · {{ optionDisplayLabel(country) }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="rounded-2xl bg-black/16 p-4">
+                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                    年份范围
+                  </p>
+                  <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label>
+                      <span class="text-xs text-white/38">起始年份</span>
+                      <input
+                        :value="category.conditions.releaseYear?.from ?? ''"
+                        class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                        inputmode="numeric"
+                        placeholder="不限"
+                        @input="setReleaseYear(category, 'from', ($event.target as HTMLInputElement).value)"
+                      >
+                    </label>
+                    <label>
+                      <span class="text-xs text-white/38">结束年份</span>
+                      <input
+                        :value="category.conditions.releaseYear?.to ?? ''"
+                        class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                        inputmode="numeric"
+                        placeholder="不限"
+                        @input="setReleaseYear(category, 'to', ($event.target as HTMLInputElement).value)"
+                      >
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <div v-else class="mt-5 rounded-2xl border border-dashed border-white/12 p-8 text-center">
+            <p class="text-sm font-semibold text-white">
+              还没有显式分类
+            </p>
+            <p class="mt-2 text-sm leading-6 text-white/42">
+              可以先依赖兜底分类，也可以点击右上角添加一个受控分类规则。
+            </p>
+          </div>
+        </section>
       </section>
 
       <section v-else-if="mode === 'manage'" class="glass-panel rounded-[1.75rem] p-6">

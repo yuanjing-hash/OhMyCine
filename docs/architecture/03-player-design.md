@@ -589,26 +589,175 @@ export class ConfigSync {
 
 Emby/Jellyfin 自带刮削功能，但 OpenList/Alist/CloudDrive2 这类网盘数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
 
+本系统只面向“原始文件源”：OpenList/Alist、CloudDrive2、本地文件以及未来类似的自定义文件源。Emby/Jellyfin 已经由服务端维护媒体库和元数据，默认不套用 Player 本地刮削分类规则。
+
+刮削系统必须遵守三条边界：
+
+1. **只读远端**：Player 不对 OpenList/Alist、CloudDrive2 或本地源执行上传、重命名、移动、删除、创建目录等写操作。
+2. **本地缓存**：扫描日志、匹配结果、海报、背景图、用户修正和分类结果都保存在 Player 本地 app data。
+3. **任意根目录**：从用户选择的根目录开始自动识别结构，不要求物理目录顶层必须叫 `movie`、`tv`、`Movies` 或 `TV`。
+
 ### 5.2 刮削流程
 
 ```
-网盘文件列表 (OpenList/Alist API / CloudDrive2 WebDAV)
+用户选择的根目录 (OpenList/Alist rootPath / CloudDrive2 WebDAV / 本地文件夹)
         │
         ▼
-文件名解析 (parse-torrent-name)
+递归只读扫描 + 视频文件过滤
+        │
+        ▼
+路径结构采样
+  → 自动判断 standard / nonStandard
+        │
+        ├─ 标准目录模式
+        │    → 从路径推断电影/剧集/季/集/年份/可能分类
+        │
+        └─ 非标准目录模式
+             → 把视频文件按散文件处理
+        │
+        ▼
+文件名解析
   "Inception.2010.2160p.UHD.BluRay.x265.TrueHD.Atmos.7.1-FGT.mkv"
   → { title: "Inception", year: 2010, resolution: "2160p", codec: "H.265", ... }
         │
         ▼
-TMDB API 查询 (title + year)
-  → { tmdb_id, poster_url, overview, genres, rating, cast, ... }
+TMDB API 查询与详情补全
+  → { tmdb_id, poster_url, overview, genres, genre_ids, rating, cast, ... }
         │
         ▼
 本地缓存 (SQLite + 海报图片)
   → 数据库记录 + cache/posters/{tmdb_id}.jpg
         │
         ▼
-海报墙展示 (Vue UI)
+通用分类规则
+  → 逻辑分类：华语电影 / 外语电影 / 综艺 / 国产剧 / 未分类...
+        │
+        ▼
+海报墙 / 详情页 / 播放
+```
+
+### 5.2.1 标准目录模式
+
+标准目录模式不是固定目录名，而是扫描器对用户选择根目录下面的结构进行评分后的结果。以下结构都可以作为标准模式信号：
+
+- `分类/片名 (年份)/片名.mkv`
+- `片名 (年份)/片名.mkv`
+- `分类/剧名/Season 01/S01E01.mkv`
+- `剧名/Season 01/S01E01.mkv`
+- `剧名/第01集.mkv`
+
+示例：
+
+```text
+Movies/华语电影/片名 (年份)/片名.mkv
+TV/综艺/剧名/Season 01/S01E01.mkv
+TV/国产剧/剧名/Season 01/S01E01.mkv
+影视库/华语电影/片名 (年份)/片名.mkv
+影视库/综艺/剧名/Season 01/S01E01.mkv
+```
+
+这些示例中的 `Movies` / `TV` 只是可识别路径的一种，不是强制目录名。用户也可以直接选择 `华语电影`、`综艺` 或任何其它根目录，扫描器必须从该根目录下面继续推断。
+
+评分信号包括：
+
+- 目录层级是否稳定表达“分类 / 标题 / 季 / 集”。
+- 文件名是否包含年份、`S01E01`、`Season 01`、`第01集` 等常见信息。
+- 同一剧名目录下是否聚合多集、多季。
+- 单个电影目录下是否通常只有一个主视频和相关字幕/花絮。
+- 同一目录是否混杂大量互不相关标题。
+
+低置信度时，扫描不应失败。Player 可以按推荐模式先执行，并在扫描日志或设置中允许用户切换模式后重新扫描。
+
+### 5.2.2 非标准目录模式
+
+非标准目录模式默认目录信息不可靠，适合所有影片、剧集、综艺混在一个或多个文件夹里的情况。此模式主要依赖文件名解析和 TMDB 匹配：
+
+- 每个视频文件先作为独立候选项。
+- 解析标题、年份、季、集、分辨率、片源、编码、音频和制作组。
+- 剧集文件按标题 + 季集号在本地聚合成剧集。
+- 无法识别的文件保留为 `未识别`，仍然可以从文件夹视图或未识别列表播放。
+- 用户修正写入本地 override 表，不写回网盘。
+
+### 5.2.3 通用分类规则
+
+分类规则是刮削后的**本地逻辑分组**，不是物理目录约束。它影响海报墙分组、筛选、媒体库标签、聚合首页和未来 AI 推荐上下文，但不移动或重命名远端文件。
+
+规则适用于 OpenList/Alist、CloudDrive2、本地文件等原始文件源；Emby/Jellyfin 默认使用服务端已有分类与元数据。
+
+分类规则支持以下 TMDB 字段：
+
+- `genre_ids`
+- `original_language`
+- `production_countries`（电影）
+- `origin_country`（剧集）
+- `release_year`
+- 后续可扩展 TMDB 详情接口中的其它一级字段
+
+多个条件需要同时满足；同一条件可以选择多个值；每个条件支持“包含/排除”。内部可以表达为结构化 JSON，普通用户不直接编辑 YAML/JSON。
+
+用户提供的 MP 风格配置只作为**默认实例**，用于初始化内置分类，不代表规则格式必须暴露为 YAML，也不代表目录必须按这些名字存在。
+
+默认显式分类建议：
+
+- 电影分类：动画电影、华语电影、外语电影
+- 剧集分类：国漫、日番、纪录片、儿童、综艺、国产剧、欧美剧、日韩剧
+- 兜底分类：电影和剧集都默认为 `未分类`
+
+这些默认分类在 UI 中呈现为可编辑的受控规则。例如“动画电影”选择 TMDB movie genre `Animation`，“外语电影”是电影侧显式规则，“综艺”选择 TMDB TV genre `Reality` / `Talk`，“国产剧”选择 origin country `CN` / `TW` / `HK`。
+
+### 5.2.4 分类设置页
+
+设置页中新增“刮削与分类”，与“管理数据源”同级，进入后管理 TMDB 配置、默认语言地区、扫描模式和分类规则。
+
+分类规则编辑必须使用受控设置页：
+
+- 页面分为“电影分类”和“剧集分类”两组。
+- 每组标题右侧提供 `+` 添加分类。
+- 分类名由用户填写，例如 `华语电影`、`动画电影`、`综艺`。
+- 类型/题材使用 TMDB 官方 genre 多选；电影分类只展示 TMDB movie genre，剧集分类只展示 TMDB TV genre。
+- 语种、国家/地区和年份范围使用多选、开关、范围输入等控件。
+- 包含/排除通过切换控件表达，不要求用户理解 `!value` 语法。
+- 分类顺序可调整，匹配时从上到下命中第一个满足条件的分类。
+- 每组保留不可删除的兜底分类，电影和剧集默认都为 `未分类`，可以改名。
+- 高级导入/导出可以后置，MVP 不把自由文本配置作为主流程。
+
+内部结构示例：
+
+```json
+{
+  "version": 1,
+  "groups": [
+    {
+      "mediaType": "movie",
+      "categories": [
+        {
+          "name": "动画电影",
+          "conditions": {
+            "genreIds": { "include": [16], "exclude": [] },
+            "originalLanguages": { "include": [], "exclude": [] },
+            "productionCountries": { "include": [], "exclude": [] },
+            "releaseYear": null
+          }
+        }
+      ],
+      "fallbackCategoryName": "未分类"
+    },
+    {
+      "mediaType": "tv",
+      "categories": [
+        {
+          "name": "综艺",
+          "conditions": {
+            "genreIds": { "include": [10764, 10767], "exclude": [] },
+            "originCountries": { "include": [], "exclude": [] },
+            "releaseYear": null
+          }
+        }
+      ],
+      "fallbackCategoryName": "未分类"
+    }
+  ]
+}
 ```
 
 ### 5.3 文件名解析器

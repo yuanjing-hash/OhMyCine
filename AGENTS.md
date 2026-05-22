@@ -275,6 +275,9 @@ Do not assume a planned directory exists until it is present in the working tree
 - Keep DataSource implementations behind the common DataSource interface.
 - Use UnoCSS and CSS variables for the Cinema OS design system.
 - Player services include datasource, scraper, AI, and sync.
+- For Player-side scraping of raw file sources such as OpenList/Alist, CloudDrive2, and local files, start from the user-selected root and infer structure below it; never require fixed physical top-level folders such as `movie`, `tv`, `Movies`, or `TV`.
+- Raw file source classification rules are local logical grouping rules for scraping, poster walls, filters, and recommendations. They must not rename, move, delete, upload, or otherwise write back to OpenList/Alist or other raw providers.
+- Scrape logs, metadata, match results, poster/backdrop cache, overrides, and category assignments belong in local Player app data. Emby/Jellyfin should use their existing server-side metadata by default instead of this raw-file scraping flow.
 
 ### Rust / Tauri Player backend
 

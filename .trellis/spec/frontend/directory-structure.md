@@ -73,6 +73,91 @@ Important views:
 - `services/sync`: Player ↔ Server structural/full sync flows.
 - `services/danmaku`: parsers, sources, renderer.
 
+### Raw File Source Scraping and Classification
+
+Use this contract when adding Player-side scraping, metadata cache, classification, or poster-wall views for raw file sources such as OpenList/Alist, CloudDrive2, local files, or future custom file sources. Emby/Jellyfin already provide server-side library metadata and must not be forced through this local classification flow by default.
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing local scraping, scan jobs, filename/path parsing, TMDB matching, poster/backdrop cache, scan logs, logical classification rules, or poster-wall rendering for raw file sources.
+- Applies to `services/scraper`, source-scoped local metadata stores, Tauri SQLite/cache commands, source library views, settings for scraping/classification rules, and any DataSource method that exposes scraped results.
+
+#### 2. Signatures
+- Source root input: `DataSourceConfig.extra.rootPath` or equivalent user-selected root. For OpenList/Alist it is a provider path scoped by the DataSource, defaulting to `/`.
+- Scan input: source id, source type, selected root path, scan mode preference (`auto`, `standard`, `nonStandard`), and optional rule-set id/version.
+- Scan outputs: raw file records, parsed media candidates, matched metadata records, logical category assignment, unresolved records, scan log entries, and local artwork cache references.
+- Rule-set shape: logical groups may be separated by media type internally, but the physical remote folder tree must not be required to contain fixed top-level names such as `movie`, `tv`, `Movies`, or `TV`.
+
+#### 3. Contracts
+- The scanner starts from the user's selected root and infers the structure below that root. Never reject or downgrade a library only because the root or first child is not named `movie`/`tv`/`Movies`/`TV`.
+- Standard directory mode is a detection result, not a hard-coded path requirement. It may use folder depth, title-year folders, `Season NN`, episode patterns, known category-name hints, and media-file distribution to infer movie/series/season/episode structure.
+- Non-standard mode treats directory names as unreliable and primarily uses filename parsing plus TMDB matching. It must preserve every playable video as a file/fallback item even when metadata matching fails.
+- Classification rules are local logical grouping rules for poster walls, filters, library sections, AI/recommendation context, and future suggested organization. They must not mutate, validate, rename, move, delete, or upload files on the remote provider.
+- Classification matching may use TMDB detail fields such as `original_language`, `production_countries`, `origin_country`, `genre_ids`, `release_year`, and later top-level detail fields. Multiple fields are ANDed, comma values are ORed, and `!value` excludes a value.
+- Movie and TV rule groups both default to fallback category `未分类`. `外语电影` may be an explicit editable default/example movie category, but fallback defaults, placeholders, and migrated legacy fallback values must not use it.
+- Raw provider paths and provider names are untrusted. Normalize paths before scan parsing, reject plain or URL-encoded `.` / `..` segments, reject provider names containing `/` or `\` when joining with a parent path, and skip invalid provider records instead of throwing through the whole scan.
+- All scan logs, match decisions, metadata records, posters, backdrops, and derived category assignments are stored locally in Player app data. Do not write them back to OpenList/Alist, CloudDrive2, local source roots, or any provider unless a later task explicitly designs a write-capable workflow.
+- Do not store OpenList/Alist credentials, tokens, tokenized stream URLs, full sensitive provider URLs, or local absolute paths in metadata records intended for display, AI prompts, export, or logs.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| User-selected root has no `movie`/`tv` named child | Continue auto detection from the selected root; do not mark it invalid for this reason |
+| Directory has strong title/year or season/episode structure | Prefer standard-mode parsing and use TMDB to confirm/enrich metadata |
+| Directory is mixed or ambiguous | Fall back to non-standard parsing, keep unresolved items playable, and record a local diagnostic |
+| Standard/non-standard confidence is low | Keep scan usable and expose a user confirmation/switch point rather than failing the scan |
+| TMDB is unavailable, rate limited, or key is missing | Keep file browsing/playback available, keep unresolved candidates, and show a user-safe metadata-unavailable state |
+| File path contains traversal, encoded traversal, unsafe joined name, or escapes the selected root | Reject/skip the path before browse/detail/stream/scrape work |
+| Classification rule has no explicit conditions | Treat it as a fallback rule within its media-type scope/order |
+| Classification rule references an unsupported field | Ignore that rule with a local validation error; do not break the whole scan |
+| Scan cache is cleared for a source | Clear only that source's local scrape metadata/artwork/log cache; keep DataSource config and credentials intact |
+| Source is Emby/Jellyfin | Use provider metadata by default; do not apply raw-file scraping/classification unless a future explicit import mode says so |
+
+#### 5. Good/Base/Bad Cases
+- Good: the user selects `/影视库`; the scanner detects `华语电影/片名 (2024)/片名.mkv` as a movie structure and `综艺/剧名/Season 01/S01E01.mkv` as a TV structure without requiring a `Movies` or `TV` parent.
+- Base: a messy folder of mixed files is scanned as non-standard, creates playable unresolved rows for misses, and groups successful TMDB matches through logical categories such as `华语电影`, `外语电影`, `综艺`, or `未分类`.
+- Bad: scanner code checks `root.children.Movies` and `root.children.TV`, then treats every other selected root as non-standard or invalid.
+- Bad: classification code creates or renames remote directories to match category names.
+
+#### 6. Tests Required
+- Unit tests for path normalization, selected-root containment, standard/non-standard detection, filename parsing, rule matching, and fallback classification.
+- Integration or service tests with representative OpenList/Alist-like trees: movie folders with title/year, TV series with seasons/episodes, mixed flat folders, Chinese category names, missing years, and unresolved files.
+- Persistence tests verify local metadata/artwork/log cache is source-scoped and clearing it does not remove config or credentials.
+- UI review verifies poster-wall mode, folder-view fallback, unresolved items, scan status/logs, missing poster fallbacks, and no remote-write affordances.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+if (!children.some((entry) => entry.name === 'Movies') || !children.some((entry) => entry.name === 'TV')) {
+  return { mode: 'nonStandard', reason: 'missing fixed top-level folders' }
+}
+```
+
+Correct:
+```ts
+const detected = detectMediaStructure({
+  rootPath: selectedRoot,
+  entries,
+  hints: ['title-year-folder', 'season-folder', 'episode-number', 'known-category-name'],
+})
+```
+
+Wrong:
+```ts
+await alist.mkdir(`/Movies/${categoryName}`)
+await alist.move(file.path, targetPath)
+```
+
+Correct:
+```ts
+await localScrapeDb.saveCategoryAssignment({
+  sourceId,
+  itemPath: file.path,
+  categoryName,
+  ruleSetVersion,
+})
+```
+
 ### DataSource Implementations
 
 When implementing concrete sources such as Emby, keep provider-specific protocol logic under `services/datasource/` and expose it through a manager/factory rather than directly from views.

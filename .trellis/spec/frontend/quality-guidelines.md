@@ -31,6 +31,8 @@ Frontend quality is measured by Player independence, type safety, immersive UI c
 - Storing API keys, cookies, passwords, AI keys, or Server tokens in regular config/localStorage/Pinia persistence.
 - Sending local absolute paths or credentials to AI providers by default.
 - Hard-coding `Alist` user-facing support without acknowledging OpenList/Alist compatibility.
+- Assuming raw file source scraping requires fixed physical top-level folders such as `movie`, `tv`, `Movies`, or `TV`; use the user-selected root and infer structure below it.
+- Writing scrape logs, TMDB matches, poster/cache files, category assignments, renames, moves, or deletes back to OpenList/Alist or other raw providers as part of Player-side scraping.
 - Assuming Android/iOS parity with desktop before implementation.
 - Adding persistent controls that obstruct artwork/video when hover-revealed chrome is more appropriate.
 - Using broad `any` for core media/config/API types.

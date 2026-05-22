@@ -1,0 +1,13 @@
+{"file":".trellis/tasks/05-22-openlist-scraping-poster-wall/prd.md","reason":"Active PRD for OpenList/Alist local scraping, standard/non-standard detection, controlled classification settings, local cache, and MVP scope."}
+{"file":"docs/architecture/03-player-design.md","reason":"Player architecture source for DataSource abstraction, raw file source scraping flow, local metadata cache, poster wall, and classification settings design."}
+{"file":"docs/architecture/07-security-design.md","reason":"Security constraints for credentials, token redaction, local cache safety, provider URLs, and no secret leakage to metadata/AI/logs."}
+{"file":"AGENTS.md","reason":"Repository-level project rules including raw file source scraping boundaries and no fixed physical movie/tv folder assumptions."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend pre-development checklist and required Player-independent implementation rules."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Code-spec contract for raw file source scraping/classification, DataSource boundaries, source root containment, and no remote writes."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"UI contract for settings, controlled scraping classification editor, media cards, poster wall behavior, and Cinema OS component style."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Pinia/settings/credential/cache state boundaries, source-scoped cache behavior, and sensitive config persistence rules."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"DataSource and media type contracts, runtime validation expectations, and safe provider response mapping."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Composable/service boundaries for data fetching, Tauri IPC, external API calls, and user-safe errors."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required validation commands, Windows packaging expectations, and forbidden patterns for raw source scraping."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Scraping work crosses provider API, parsing, local storage, settings, and UI display layers."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Implementation should reuse existing DataSource, settings, media card/grid, and persistence patterns rather than duplicating them."}

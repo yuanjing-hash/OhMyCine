@@ -1,0 +1,12 @@
+{"file":".trellis/tasks/05-22-openlist-scraping-poster-wall/prd.md","reason":"Primary acceptance criteria for OpenList/Alist scraping, poster wall, controlled classification settings, and no remote writes."}
+{"file":"docs/architecture/03-player-design.md","reason":"Architecture design that implementation must match for raw file scraping flow and classification settings."}
+{"file":"docs/architecture/07-security-design.md","reason":"Review token/credential redaction, local cache safety, and provider/AI data exposure boundaries."}
+{"file":"AGENTS.md","reason":"Repository-level project expectations and raw file source scraping constraints."}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Check raw file source scraping/classification contract, DataSource boundaries, root containment, and cache clearing behavior."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check settings UI, controlled category editor, media/poster components, missing poster states, and route-level behavior."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Check sensitive config, credential references, source-scoped cache invalidation, and local state persistence boundaries."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check TypeScript contracts, runtime validation, no broad any, and safe external/provider data mapping."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Check service/composable boundaries, external TMDB calls, Tauri IPC placement, and user-safe errors."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Check required typecheck/lint/build/Windows package verification and forbidden raw source scraping patterns."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check end-to-end data flow from provider listing through local cache to UI display."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Check reuse of existing DataSource/settings/media/persistence patterns and avoid duplicate constants/logic."}
