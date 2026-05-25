@@ -74,11 +74,11 @@ Home aggregation must isolate external failures at the source/section level. A f
 
 #### 5. Good/Base/Bad Cases
 - Good: Emby Home sections render while OpenList auto indexing fails in the background.
-- Base: OpenList has no cache yet, Home shows "waiting for auto index" status and the source page still offers folder browsing.
+- Base: OpenList has no cache yet, the scheduler/source page can show a waiting-for-index state, and Home keeps its aggregate layout while folder browsing remains available.
 - Bad: Home displays an empty/error OpenList section that hides Emby hero/latest/continue rows.
 
 #### 6. Tests Required
-- Verify source cards show OpenList/Alist as waiting/pending when no local raw scan cache exists.
+- Verify raw-source scheduler/source-page state shows OpenList/Alist as waiting/pending when no local raw scan cache exists.
 - Verify an OpenList indexing failure does not remove Emby hero, continue-watching, or recently-added sections.
 - Verify scheduler cooldown suppresses repeated scans for the same source/root while allowing another source/root to scan.
 - Verify TMDB credential auth routing remains separate from indexing scheduling: API Key uses `api_key`, Read Access Token uses `Authorization: Bearer`.
