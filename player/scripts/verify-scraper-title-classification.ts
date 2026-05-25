@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
-import { deriveRawCandidateCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
+import { deriveRawCandidateCategoryAssignment, resolveRawCandidateCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
+import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
 import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
-import type { RawFileRecord } from '../src/services/scraper/types.ts'
+import type { MediaItem } from '../src/services/datasource/types.ts'
+import type { RawFileRecord, RawScrapedMediaItem } from '../src/services/scraper/types.ts'
 
 const noisyTitle = '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV 1080P 简繁字幕'
 const cleanedTitle = cleanMediaTitle(noisyTitle)
@@ -87,6 +89,33 @@ assert.equal(workFolderPreview.candidates[0]?.categoryHint, undefined)
 assert.notEqual(workFolderAssignment.categoryName, '机械之声的传奇 The Legend of Vox Machina')
 assert.notEqual(workFolderAssignment.categoryName, '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV')
 
+const standardSeriesRecords = [
+  createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina/Season01/S01E01.mkv'),
+  createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina/Season 02/S02E01.mkv'),
+  createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina/S03/S03E01.mkv'),
+]
+const standardSeriesCandidates = standardSeriesRecords.map(record => parseRawMediaCandidate(record))
+assert.deepEqual(standardSeriesCandidates.map(candidate => candidate.seriesTitle), [
+  '机械之声的传奇 The Legend of Vox Machina',
+  '机械之声的传奇 The Legend of Vox Machina',
+  '机械之声的传奇 The Legend of Vox Machina',
+])
+assert.deepEqual(standardSeriesCandidates.map(candidate => candidate.categoryHint), ['动漫', '动漫', '动漫'])
+assert.deepEqual(standardSeriesCandidates.map(candidate => candidate.seasonNumber), [1, 2, 3])
+assert.deepEqual(standardSeriesCandidates.map(candidate => deriveRawCandidateCategoryAssignment(candidate).source), ['pathHint', 'pathHint', 'pathHint'])
+
+const seansonTypoCandidate = parseRawMediaCandidate(createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina/Seanson 04/S04E01.mkv'))
+assert.equal(seansonTypoCandidate.seasonNumber, 4)
+
+const metadataRuleAssignment = {
+  categoryName: '欧美剧',
+  source: 'metadataRule' as const,
+  matchedRuleName: '欧美剧',
+}
+const pathHintMatchedAssignment = resolveRawCandidateCategoryAssignment(standardSeriesCandidates[0], metadataRuleAssignment)
+assert.equal(pathHintMatchedAssignment.categoryName, '动漫')
+assert.equal(pathHintMatchedAssignment.source, 'pathHint')
+
 const flatEpisodeRecord: RawFileRecord = {
   id: 'alist:/未整理/The.Legend.of.Vox.Machina.S01E02.1080p.AMZN.GrassTV.mkv',
   sourceId: 'alist',
@@ -102,6 +131,61 @@ const flatEpisodeCandidate = parseRawMediaCandidate(flatEpisodeRecord)
 assert.equal(flatEpisodeCandidate.seriesTitle, 'The Legend of Vox Machina')
 assert.equal(flatEpisodeCandidate.episodeNumber, 2)
 assert.equal(flatEpisodeCandidate.categoryHint, undefined)
+const noPathHintMatchedAssignment = resolveRawCandidateCategoryAssignment(flatEpisodeCandidate, metadataRuleAssignment)
+assert.equal(noPathHintMatchedAssignment.categoryName, '欧美剧')
+assert.equal(noPathHintMatchedAssignment.source, 'metadataRule')
+
+const matchedSeriesScrape: RawScrapedMediaItem = {
+  recordId: standardSeriesCandidates[0].record.id,
+  providerPath: standardSeriesCandidates[0].record.providerPath,
+  matchStatus: 'matched',
+  searchTitles: ['机械之声的传奇', 'The Legend of Vox Machina'],
+  matchedSearchTitle: 'The Legend of Vox Machina',
+  metadata: {
+    tmdbId: 135934,
+    mediaType: 'tv',
+    title: '机械之声的传奇',
+    originalTitle: 'The Legend of Vox Machina',
+    overview: 'Matched metadata wins for the merged series work.',
+    releaseYear: 2022,
+    rating: 8.2,
+    genreIds: [16],
+    genres: ['动画'],
+    originalLanguage: 'en',
+    originCountries: ['US'],
+    productionCountries: ['US'],
+    posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
+    backdropUrl: 'https://image.tmdb.org/t/p/w780/backdrop.jpg',
+    scrapedAt: '2026-05-25T00:00:00.000Z',
+  },
+  mediaType: 'tv',
+  categoryName: '动漫',
+  categoryAssignment: {
+    categoryName: '动漫',
+    source: 'pathHint',
+  },
+}
+const groupedSeries = groupRawSeriesEntries([
+  { candidate: standardSeriesCandidates[0], scraped: matchedSeriesScrape },
+  { candidate: standardSeriesCandidates[1] },
+])
+assert.equal(groupedSeries.length, 1)
+assert.equal(groupedSeries[0]?.representative.scraped?.matchStatus, 'matched')
+assert.equal(groupedSeries[0]?.title, '机械之声的传奇')
+const groupedEpisodeItems = standardSeriesCandidates.map(candidateToMediaItem)
+const contextSeasonChildren = createRawSeriesSeasonChildren({
+  seriesKey: groupedSeries[0]?.key ?? 'missing',
+  sourceId: 'alist',
+  libraryId: '/',
+  episodes: groupedEpisodeItems,
+  artwork: { posterUrl: matchedSeriesScrape.metadata?.posterUrl, backdropUrl: matchedSeriesScrape.metadata?.backdropUrl },
+})
+assert.deepEqual(contextSeasonChildren.map(season => season.name), ['Season 01', 'Season 02', 'Season 03'])
+assert.deepEqual(contextSeasonChildren.map(season => season.children?.map(episode => episode.seasonNumber)), [[1], [2], [3]])
+const contextualSeries = { children: contextSeasonChildren }
+const contextualSeasons = getContextSeriesSeasons(contextualSeries)
+assert.equal(contextualSeasons.length, 3)
+assert.equal(getPlayableSeasonChildren(contextualSeasons[1]).at(0)?.seasonNumber, 2)
 
 const categoryOnlySeasonRecord: RawFileRecord = {
   id: 'alist:/动漫/Season 01/S01E01.mkv',
@@ -151,7 +235,46 @@ console.log(JSON.stringify({
   workFolderSeason: workFolderCandidate.seasonNumber,
   workFolderEpisode: workFolderCandidate.episodeNumber,
   workFolderSearchTitles: workFolderRecognition.searchTitles,
+  standardSeriesCategoryHint: standardSeriesCandidates[0].categoryHint,
+  standardSeriesSeasons: standardSeriesCandidates.map(candidate => candidate.seasonNumber),
+  pathHintMatchedCategory: pathHintMatchedAssignment.categoryName,
+  noPathHintMatchedCategory: noPathHintMatchedAssignment.categoryName,
+  groupedSeriesCount: groupedSeries.length,
+  contextSeasonChildren: contextSeasonChildren.map(season => ({
+    name: season.name,
+    episodeCount: season.children?.length ?? 0,
+  })),
   flatEpisodeSeriesTitle: flatEpisodeCandidate.seriesTitle,
   categoryOnlySeasonSearchTitles: categoryOnlyRecognition.searchTitles,
   tokenizedPathRecordCount: tokenizedPathPreview.records.length,
 }, null, 2))
+
+function createRecord(providerPath: string): RawFileRecord {
+  const fileName = providerPath.split('/').at(-1) ?? 'video.mkv'
+  const parentPath = providerPath.slice(0, providerPath.lastIndexOf('/')) || '/'
+  return {
+    id: `alist:${providerPath}`,
+    sourceId: 'alist',
+    sourceType: 'alist',
+    rootPath: '/',
+    providerPath,
+    relativePath: providerPath.replace(/^\/+/, ''),
+    parentPath,
+    fileName,
+    extension: 'mkv',
+  }
+}
+
+function candidateToMediaItem(candidate: typeof standardSeriesCandidates[number]): MediaItem {
+  return {
+    id: candidate.record.providerPath,
+    sourceId: candidate.record.sourceId,
+    libraryId: candidate.record.rootPath,
+    name: candidate.title,
+    type: 'episode',
+    path: candidate.record.providerPath,
+    seriesName: candidate.seriesTitle,
+    seasonNumber: candidate.seasonNumber,
+    episodeNumber: candidate.episodeNumber,
+  }
+}

@@ -75,6 +75,13 @@ export function deriveRawCandidateCategoryName(candidate: RawMediaCandidate): st
 }
 
 export function deriveRawCandidateCategoryAssignment(candidate: RawMediaCandidate): RawCategoryAssignment {
+  return resolveRawCandidateCategoryAssignment(candidate)
+}
+
+export function resolveRawCandidateCategoryAssignment(
+  candidate: RawMediaCandidate,
+  metadataAssignment?: RawCategoryAssignment,
+): RawCategoryAssignment {
   const categoryHint = normalizeExplicitCategoryHint(candidate)
   if (categoryHint) {
     return {
@@ -82,6 +89,9 @@ export function deriveRawCandidateCategoryAssignment(candidate: RawMediaCandidat
       source: 'pathHint',
     }
   }
+
+  if (metadataAssignment?.source === 'metadataRule' && metadataAssignment.categoryName.trim())
+    return metadataAssignment
 
   switch (candidate.kind) {
     case 'movie':

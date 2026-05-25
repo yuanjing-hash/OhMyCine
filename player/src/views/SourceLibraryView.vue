@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem } from '@/services/scraper'
+import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSeriesEntryGroup } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { deriveRawCandidateCategoryName, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler } from '@/services/scraper'
+import { createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, resolveRawCandidateCategoryAssignment } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -44,12 +44,14 @@ interface ScannedSeriesWork {
   readonly title: string
   readonly item: MediaItem
   readonly episodes: MediaItem[]
+  readonly seasons: MediaItem[]
 }
 
 interface ScannedWorkItem {
   readonly item: MediaItem
   readonly domain: ScannedMediaDomain
   readonly episodes?: MediaItem[]
+  readonly seasons?: MediaItem[]
 }
 
 interface ScannedCategory {
@@ -180,7 +182,7 @@ const scannedSeriesWorkById = computed(() => {
   for (const category of scannedCategories.value) {
     for (const work of category.works) {
       if (work.domain === 'tv' && work.episodes?.length)
-        series.set(work.item.id, { key: work.item.id, title: work.item.name, item: work.item, episodes: work.episodes })
+        series.set(work.item.id, { key: work.item.id, title: work.item.name, item: work.item, episodes: work.episodes, seasons: work.seasons ?? [] })
     }
   }
   return series
@@ -638,6 +640,7 @@ async function openScannedWorkDetail(work: ScannedWorkItem) {
       title: work.item.name,
       item: work.item,
       episodes: work.episodes,
+      seasons: work.seasons ?? [],
     })
     return
   }
@@ -665,7 +668,7 @@ function createScannedSeriesDetail(series: ScannedSeriesWork): MediaDetail {
   return {
     ...series.item,
     type: 'series',
-    children: series.episodes,
+    children: series.seasons.length > 0 ? series.seasons : series.episodes,
     mediaSources: [],
   }
 }
@@ -722,6 +725,7 @@ function createScannedWorkItems(entries: readonly ScannedDisplayItem[]): Scanned
       item: work.item,
       domain: 'tv' as const,
       episodes: work.episodes,
+      seasons: work.seasons,
     })),
     ...entries.filter(entry => entry.domain === 'unresolved').map(entry => ({
       item: entry.item,
@@ -747,32 +751,30 @@ function createDedupedFileWorks(entries: readonly ScannedDisplayItem[], domain: 
 }
 
 function createSeriesWorks(entries: readonly ScannedDisplayItem[]): ScannedSeriesWork[] {
-  const groups = new Map<string, { title: string, entries: ScannedDisplayItem[], episodes: MediaItem[] }>()
-  for (const entry of entries) {
-    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
-    const key = metadata
-      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
-      : entry.candidate.normalizedTitle || entry.candidate.record.providerPath
-    const title = metadata?.title ?? entry.candidate.seriesTitle ?? entry.candidate.title
-    const current = groups.get(key) ?? { title, entries: [], episodes: [] }
-    current.entries.push(entry)
-    current.episodes.push(entry.item)
-    groups.set(key, current)
-  }
-
-  return [...groups.entries()]
-    .map(([key, group]) => createSeriesWork(key, group))
+  return groupRawSeriesEntries(entries)
+    .map(group => createSeriesWork(group))
     .sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'))
 }
 
-function createSeriesWork(key: string, group: { title: string, entries: ScannedDisplayItem[], episodes: MediaItem[] }): ScannedSeriesWork {
-  const episodes = group.episodes.sort(compareScannedMediaItems)
-  const representative = group.entries.find(entry => metadataForCandidate(entry.candidate, entry.scraped)?.posterUrl || metadataForCandidate(entry.candidate, entry.scraped)?.backdropUrl) ?? group.entries[0]
+function createSeriesWork(group: RawSeriesEntryGroup<ScannedDisplayItem>): ScannedSeriesWork {
+  const episodes = group.entries.map(entry => entry.item).sort(compareScannedMediaItems)
+  const representative = group.representative ?? group.entries[0]
   const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
   const firstEpisode = episodes[0]
   const title = metadata?.title ?? group.title ?? '剧集'
+  const seasons = createRawSeriesSeasonChildren({
+    seriesKey: group.key,
+    sourceId: sourceId.value,
+    libraryId: representative?.candidate.record.rootPath ?? alistRootPath.value,
+    fallbackPath: firstEpisode?.path ?? representative?.candidate.record.providerPath,
+    episodes,
+    artwork: {
+      posterUrl: metadata?.posterUrl,
+      backdropUrl: metadata?.backdropUrl,
+    },
+  })
   const item: MediaItem = {
-    id: `raw-series:${encodeURIComponent(key)}`,
+    id: `raw-series:${encodeURIComponent(group.key)}`,
     sourceId: sourceId.value,
     libraryId: representative?.candidate.record.rootPath ?? alistRootPath.value,
     name: title,
@@ -783,14 +785,15 @@ function createSeriesWork(key: string, group: { title: string, entries: ScannedD
     rating: metadata?.rating ?? firstEpisode?.rating,
     overview: metadata?.overview || `${episodes.length} 个本地识别分集。`,
     path: firstEpisode?.path ?? representative?.candidate.record.providerPath ?? '',
-    children: episodes,
+    children: seasons.length > 0 ? seasons : episodes,
   }
 
   return {
-    key,
+    key: group.key,
     title,
     item,
     episodes,
+    seasons,
   }
 }
 
@@ -844,15 +847,7 @@ function scannedCategorySubtitle(counts: {
 }
 
 function seriesCountForEntries(entries: readonly ScannedDisplayItem[]): number {
-  return new Set(entries.map((entry) => {
-    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
-    return metadata
-      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
-      : entry.candidate.normalizedTitle
-        || entry.candidate.seriesTitle
-        || entry.candidate.title
-        || entry.candidate.record.providerPath
-  })).size
+  return new Set(entries.map(entry => createRawSeriesGroupingKey(entry.candidate, entry.scraped))).size
 }
 
 function uniqueDisplayTitles(entries: readonly ScannedDisplayItem[]): string[] {
@@ -935,7 +930,7 @@ function scannedItemOverview(candidate: RawMediaCandidate, scraped?: RawScrapedM
   const parts = [
     scraped?.matchStatus === 'matched' ? 'TMDB：已匹配' : `本地只读扫描：${candidate.parseStatus === 'unresolved' ? '未识别' : '已解析'}`,
     `分类：${categoryNameForCandidate(candidate, scraped)}`,
-    scraped?.matchedRuleName ? `规则：${scraped.matchedRuleName}` : undefined,
+    resolveRawCandidateCategoryAssignment(candidate, scraped?.categoryAssignment ?? candidate.categoryAssignment).source === 'metadataRule' && scraped?.matchedRuleName ? `规则：${scraped.matchedRuleName}` : undefined,
     scraped?.matchedSearchTitle ? `搜索标题：${scraped.matchedSearchTitle}` : undefined,
     scraped?.matchStatus !== 'matched' && candidate.categoryHint ? `路径提示：${candidate.categoryHint}` : undefined,
     candidate.signals.length ? `信号：${candidate.signals.join(', ')}` : undefined,
@@ -944,11 +939,7 @@ function scannedItemOverview(candidate: RawMediaCandidate, scraped?: RawScrapedM
 }
 
 function categoryNameForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
-  if (scraped?.matchStatus === 'matched')
-    return scraped.categoryName
-  if (candidate.categoryAssignment?.source === 'metadataRule')
-    return candidate.categoryAssignment.categoryName
-  return deriveRawCandidateCategoryName(candidate)
+  return resolveRawCandidateCategoryAssignment(candidate, scraped?.categoryAssignment ?? candidate.categoryAssignment).categoryName
 }
 
 function domainForScannedEntry(
@@ -1295,7 +1286,7 @@ function labelForSourceType(type: string): string {
                     媒体库
                   </h2>
                   <p class="mt-1 text-sm text-white/38">
-                    逻辑媒体库来自 TMDB 分类规则；路径目录只用于标题、季集和兜底识别。
+                    标准目录优先使用路径分类；非标准或无路径分类时再按 TMDB 分类规则兜底。
                   </p>
                 </div>
                 <p class="text-sm text-white/38">

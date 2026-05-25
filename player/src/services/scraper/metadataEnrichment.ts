@@ -1,6 +1,6 @@
 import type { RawLocalScanLogEntry } from './localScanCache'
 import type { RawMediaCandidate, RawScrapedMediaItem, RawTmdbMatchStatus } from './types'
-import { deriveRawCandidateCategoryAssignment } from './categoryGrouping'
+import { deriveRawCandidateCategoryAssignment, resolveRawCandidateCategoryAssignment } from './categoryGrouping'
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
 import { normalizeTitleKey } from './parser'
 import { extractCandidateTmdbSearchTitles, loadTmdbLocalSettings, readConfiguredTmdbCredential, TmdbScraper } from './tmdb'
@@ -57,12 +57,14 @@ export async function enrichRawMediaCandidates(
         originCountries: match.metadata.originCountries,
         releaseYear: match.metadata.releaseYear,
       }, rules)
-      const categoryAssignment = {
+      const metadataAssignment = {
         ...classification,
         source: 'metadataRule' as const,
       }
 
       for (const candidate of group.candidates) {
+        const categoryAssignment = resolveRawCandidateCategoryAssignment(candidate, metadataAssignment)
+        const appliedMetadataRule = categoryAssignment.source === 'metadataRule' ? classification : undefined
         scrapedItems.set(candidate.record.id, {
           recordId: candidate.record.id,
           providerPath: candidate.record.providerPath,
@@ -72,8 +74,8 @@ export async function enrichRawMediaCandidates(
           metadata: match.metadata,
           mediaType: match.metadata.mediaType,
           categoryName: categoryAssignment.categoryName,
-          matchedRuleId: categoryAssignment.matchedRuleId,
-          matchedRuleName: categoryAssignment.matchedRuleName,
+          matchedRuleId: appliedMetadataRule?.matchedRuleId,
+          matchedRuleName: appliedMetadataRule?.matchedRuleName,
           categoryAssignment,
         })
       }

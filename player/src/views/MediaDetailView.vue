@@ -8,6 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { getContextFlatEpisodes, getContextSeriesSeasons, getPlayableSeasonChildren } from '@/services/scraper/rawSeriesGrouping'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -116,7 +117,15 @@ async function loadDetail() {
       selectedSubtitleIndex.value = contextual.detail.subtitles?.find(track => track.isDefault)?.index ?? contextual.detail.subtitles?.[0]?.index ?? null
 
       if (contextual.detail.type === 'series') {
-        episodes.value = contextual.relatedItems.filter(item => item.type === 'episode' || item.type === 'file' || item.type === 'movie')
+        const contextSeasons = getContextSeriesSeasons(contextual.detail)
+        if (contextSeasons.length > 0) {
+          seasons.value = contextSeasons
+          selectedSeasonId.value = contextSeasons[0].id
+          episodes.value = getPlayableSeasonChildren(contextSeasons[0])
+        }
+        else {
+          episodes.value = getContextFlatEpisodes(contextual)
+        }
         resetEpisodeWindow()
         await refreshPlaybackProgress(episodes.value)
         selectInitialEpisodeForSeason()
@@ -190,6 +199,15 @@ async function selectSeason(season: MediaItem) {
     return
 
   selectedSeasonId.value = season.id
+  const contextEpisodes = getPlayableSeasonChildren(season)
+  if (contextEpisodes.length > 0) {
+    episodes.value = contextEpisodes
+    resetEpisodeWindow()
+    await refreshPlaybackProgress(episodes.value)
+    selectInitialEpisodeForSeason()
+    return
+  }
+
   isSeriesContentLoading.value = true
   seriesErrorMessage.value = null
   try {
