@@ -4,6 +4,7 @@ import type { TmdbCredentialValue } from '@/services/datasource/credentialStore'
 import { readTmdbCredential, removeCredential, saveTmdbCredential } from '@/services/datasource/credentialStore'
 import { extractMediaSearchTitles, normalizeTitleKey } from './parser'
 import { stripFileExtension } from './pathUtils'
+import { buildTmdbRequestDescriptor, tmdbHttpFailureMessage } from './tmdbAuth'
 
 export type TmdbAuthType = TmdbCredentialValue['authType']
 
@@ -97,7 +98,14 @@ export async function saveConfiguredTmdbCredential(
 
 export async function readConfiguredTmdbCredential(): Promise<TmdbCredentialValue | null> {
   const settings = loadTmdbLocalSettings()
-  return readTmdbCredential(settings.credentialRef)
+  const credential = await readTmdbCredential(settings.credentialRef)
+  if (!credential || credential.authType !== settings.authType)
+    return null
+  return credential
+}
+
+export async function readStoredTmdbCredential(): Promise<TmdbCredentialValue | null> {
+  return readTmdbCredential(TMDB_CREDENTIAL_REF)
 }
 
 export async function hasConfiguredTmdbCredential(): Promise<boolean> {
@@ -192,35 +200,42 @@ export class TmdbScraper {
   }
 
   private async requestJson(path: string, params: Record<string, string>): Promise<unknown> {
-    const url = new URL(`${TMDB_BASE_URL}${path}`)
-    for (const [key, value] of Object.entries(params)) {
-      if (value)
-        url.searchParams.set(key, value)
-    }
-    if (this.credential.authType === 'apiKey')
-      url.searchParams.set('api_key', this.credential.value)
-
-    const headers = new Headers()
-    headers.set('Accept', 'application/json')
-    if (this.credential.authType === 'readAccessToken')
-      headers.set('Authorization', `Bearer ${this.credential.value}`)
+    const request = buildTmdbRequestDescriptor({
+      baseUrl: TMDB_BASE_URL,
+      path,
+      params,
+      credential: this.credential,
+    })
 
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), this.timeoutMs)
     try {
-      const response = await fetch(url, { headers, signal: controller.signal })
+      const response = await fetch(request.url, { headers: request.headers, signal: controller.signal })
       if (!response.ok)
-        throw new Error(`TMDB request failed with status ${response.status}.`)
+        throw new TmdbHttpError(tmdbHttpFailureMessage(this.credential.authType, response.status, await safeReadResponseText(response)))
       return response.json()
     }
     catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError')
         throw new Error('TMDB 请求超时。')
+      if (error instanceof TmdbHttpError)
+        throw error
       throw new Error('TMDB 请求失败。')
     }
     finally {
       window.clearTimeout(timeout)
     }
+  }
+}
+
+class TmdbHttpError extends Error {}
+
+async function safeReadResponseText(response: Response): Promise<string> {
+  try {
+    return (await response.text()).slice(0, 500)
+  }
+  catch {
+    return ''
   }
 }
 

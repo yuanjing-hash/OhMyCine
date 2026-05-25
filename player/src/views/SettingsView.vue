@@ -22,8 +22,8 @@ import {
 } from '@/services/scraper/classificationRules'
 import {
   clearConfiguredTmdbCredential,
-  hasConfiguredTmdbCredential,
   loadTmdbLocalSettings,
+  readStoredTmdbCredential,
   saveConfiguredTmdbCredential,
   saveTmdbLocalSettings,
 } from '@/services/scraper/tmdb'
@@ -156,6 +156,7 @@ const tmdbForm = reactive<TmdbFormState>({
   region: tmdbSettings.region,
 })
 const tmdbCredentialConfigured = ref(false)
+const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
 const isSavingTmdbSettings = ref(false)
 
 const configuredSources = computed(() => store.orderedConfigs)
@@ -175,7 +176,24 @@ const dataSourceEntryMeta = computed(() => {
 const scrapingEntryMeta = computed(() => {
   if (scrapeRulesDirty.value)
     return '规则未保存'
-  return tmdbCredentialConfigured.value ? 'TMDB 已配置' : '需要 TMDB'
+  if (tmdbCredentialConfigured.value)
+    return 'TMDB 已配置'
+  return tmdbStoredAuthType.value ? '类型待确认' : 'TMDB 可选'
+})
+const tmdbCredentialInputLabel = computed(() =>
+  tmdbForm.authType === 'readAccessToken' ? 'Read Access Token' : 'API Key',
+)
+const tmdbCredentialPlaceholder = computed(() =>
+  tmdbCredentialConfigured.value
+    ? `留空表示保留当前 ${tmdbCredentialInputLabel.value}`
+    : `可选：粘贴 TMDB ${tmdbCredentialInputLabel.value}`,
+)
+const tmdbCredentialStatusLabel = computed(() => {
+  if (tmdbCredentialConfigured.value)
+    return '已配置'
+  if (tmdbStoredAuthType.value)
+    return `已保存 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)}，当前类型未配置`
+  return '未配置，可继续扫描'
 })
 const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
@@ -199,7 +217,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'scraping',
     label: 'Meta',
     title: '刮削与分类',
-    description: '管理原始文件源的本地刮削分类规则。电影和剧集分类使用 TMDB 官方类型枚举，通过受控选项编辑。',
+    description: '管理原始文件源的本地刮削分类规则。TMDB 凭据是可选增强，未配置时仍保留可播放候选和兜底分类。',
     meta: scrapingEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -262,6 +280,10 @@ watch(() => form.type, (type) => {
 watch(() => [form.url, form.username, form.password] as const, () => {
   if (form.type === 'alist')
     resetAlistBrowser()
+})
+
+watch(() => tmdbForm.authType, () => {
+  void refreshTmdbCredentialState()
 })
 
 function syncModeFromRoute() {
@@ -928,6 +950,7 @@ async function saveTmdbSettings() {
     })
 
     const credential = tmdbForm.credential.trim()
+    const savedCredential = Boolean(credential)
     if (credential) {
       await saveConfiguredTmdbCredential(tmdbForm.authType, credential)
       tmdbForm.credential = ''
@@ -937,8 +960,12 @@ async function saveTmdbSettings() {
     scrapeFeedback.value = {
       type: tmdbCredentialConfigured.value ? 'success' : 'info',
       message: tmdbCredentialConfigured.value
-        ? 'TMDB 设置已保存。后续 OpenList/Alist 扫描会用 TMDB 元数据执行分类规则。'
-        : '已保存 TMDB 语言和地区。未填写 token/key 时，扫描会保留本地可播放候选并使用兜底分类。',
+        ? `TMDB 设置已保存。后续 OpenList/Alist 扫描会按 ${tmdbCredentialInputLabel.value} 路由请求并用 TMDB 元数据执行分类规则。`
+        : savedCredential
+          ? `已保存 TMDB 设置，但当前 ${tmdbCredentialInputLabel.value} 不可用。扫描会保留本地可播放候选并使用兜底分类。`
+          : tmdbStoredAuthType.value
+            ? `已保存 TMDB 类型、语言和地区。当前 ${tmdbCredentialInputLabel.value} 未配置；已保存的 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)} 不会用于当前类型。扫描会保留本地可播放候选并使用兜底分类。`
+            : `已保存 TMDB 类型、语言和地区。未填写当前类型的 ${tmdbCredentialInputLabel.value} 时，扫描会保留本地可播放候选并使用兜底分类。`,
     }
   }
   catch (error) {
@@ -960,12 +987,12 @@ async function clearTmdbSettingsCredential() {
     await clearConfiguredTmdbCredential()
     tmdbForm.credential = ''
     await refreshTmdbCredentialState()
-    scrapeFeedback.value = { type: 'success', message: '已清除 TMDB token/key。分类规则仍保留，扫描会回到本地兜底分类。' }
+    scrapeFeedback.value = { type: 'success', message: '已清除 TMDB 凭据。分类规则仍保留，扫描会回到本地兜底分类。' }
   }
   catch (error) {
     scrapeFeedback.value = {
       type: 'error',
-      message: toSafeErrorMessage(error, '清除 TMDB token/key 失败。'),
+      message: toSafeErrorMessage(error, '清除 TMDB 凭据失败。'),
     }
   }
   finally {
@@ -975,13 +1002,19 @@ async function clearTmdbSettingsCredential() {
 }
 
 async function refreshTmdbCredentialState() {
-  tmdbCredentialConfigured.value = await hasConfiguredTmdbCredential()
+  const credential = await readStoredTmdbCredential()
+  tmdbStoredAuthType.value = credential?.authType ?? null
+  tmdbCredentialConfigured.value = credential?.authType === tmdbForm.authType
 }
 
 function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string {
   if ('id' in option)
     return `${option.label} · ${option.name}`
   return option.label
+}
+
+function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
+  return authType === 'readAccessToken' ? 'Read Access Token' : 'API Key'
 }
 </script>
 
@@ -1015,7 +1048,7 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
         v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping')"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
-        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、token 与 TMDB key 仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
+        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、访问令牌与 TMDB 凭据仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
       </div>
 
       <div v-if="mode !== 'overview'" class="flex">
@@ -1126,17 +1159,17 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
                 TMDB
               </p>
               <h3 class="mt-1 text-xl font-bold text-white">
-                元数据匹配
+                元数据匹配（可选增强）
               </h3>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                token/key 只保存到凭证边界，不写入 localStorage。扫描会把作品名、年份等非敏感查询信息发给 TMDB，不发送 OpenList/Alist 账号、token 或播放地址。
+                TMDB 凭据只保存到凭证边界，不写入 localStorage。API Key 只走 api_key query，Read Access Token 只走 Authorization: Bearer。未配置时扫描不会失败，会保留可播放候选、目录识别和兜底分类；后续可接入内置/公共元数据通道。扫描发给 TMDB 的只包含作品名、年份等非敏感查询信息，不发送 OpenList/Alist 账号、token 或播放地址。
               </p>
             </div>
             <span
               class="rounded-full px-3 py-1 text-xs font-semibold"
               :class="tmdbCredentialConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
             >
-              {{ tmdbCredentialConfigured ? '已配置' : '未配置' }}
+              {{ tmdbCredentialStatusLabel }}
             </span>
           </div>
 
@@ -1161,16 +1194,16 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
             </div>
 
             <label class="rounded-2xl bg-black/16 p-4">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">token / key</span>
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ tmdbCredentialInputLabel }}</span>
               <input
                 v-model="tmdbForm.credential"
                 class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                 type="password"
                 autocomplete="off"
-                :placeholder="tmdbCredentialConfigured ? '留空表示保留现有凭据' : '粘贴 TMDB token/key'"
+                :placeholder="tmdbCredentialPlaceholder"
               >
               <p class="mt-2 text-xs leading-5 text-white/38">
-                出于安全考虑，已保存的 token/key 不会回填显示。
+                出于安全考虑，已保存的 TMDB 凭据不会回填显示；切换类型后需填写对应类型的凭据。
               </p>
             </label>
 
@@ -1211,10 +1244,10 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
             <button
               type="button"
               class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="isSavingTmdbSettings || !tmdbCredentialConfigured"
+              :disabled="isSavingTmdbSettings || !tmdbStoredAuthType"
               @click="clearTmdbSettingsCredential"
             >
-              清除 token/key
+              清除 TMDB 凭据
             </button>
           </div>
         </section>

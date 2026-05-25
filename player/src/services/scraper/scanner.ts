@@ -6,9 +6,11 @@ import type {
   RawStructureDetectionResult,
   RawStructureDetectionScores,
 } from './types'
-import { extractRawPathHints, normalizeTitleKey, parseRawMediaCandidates } from './parser'
+import { normalizeTitleKey, parseRawMediaCandidates } from './parser'
+import { recognizePathAwareMedia } from './pathRecognition'
 import {
   getVideoFileExtension,
+  isLikelySensitiveProviderPath,
   isPathWithinRoot,
   isVideoFileName,
   joinProviderPath,
@@ -108,7 +110,7 @@ export function detectRawFileStructure(
   const seriesEpisodeStats = new Map<string, number>()
 
   for (const record of samples) {
-    const hints = extractRawPathHints(record)
+    const { hints } = recognizePathAwareMedia(record)
     if (hints.titleYearFolder)
       accumulator.titleYearFolder += 1
     if (hints.titleYearFile)
@@ -245,6 +247,9 @@ function detectionReasons(scores: RawStructureDetectionScores, mode: 'standard' 
 function resolveItemPath(item: RawProviderScanItem): string | null {
   const directPath = stringValue(item.providerPath) ?? stringValue(item.path)
   if (directPath) {
+    if (isLikelySensitiveProviderPath(directPath))
+      return null
+
     try {
       return normalizeProviderPath(directPath)
     }

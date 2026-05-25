@@ -29,6 +29,7 @@ export async function enrichRawMediaCandidates(
   const scrapedItems = new Map<string, RawScrapedMediaItem>()
   let processedGroupCount = 0
   let matchedGroupCount = 0
+  let authFailureLogged = false
   const maxTmdbGroups = options.maxTmdbGroups ?? DEFAULT_MAX_TMDB_GROUPS
 
   for (const group of groups) {
@@ -77,9 +78,14 @@ export async function enrichRawMediaCandidates(
         })
       }
     }
-    catch {
+    catch (error) {
+      const errorMessage = tmdbMatchErrorMessage(error)
+      if (!authFailureLogged && isTmdbAuthFailureMessage(errorMessage)) {
+        authFailureLogged = true
+        options.onLog?.(createLog('warning', errorMessage))
+      }
       for (const candidate of group.candidates)
-        scrapedItems.set(candidate.record.id, fallbackScrapedItem(candidate, 'failed', 'TMDB 请求失败，已保留本地可播放候选。'))
+        scrapedItems.set(candidate.record.id, fallbackScrapedItem(candidate, 'failed', errorMessage))
     }
   }
 
@@ -97,6 +103,16 @@ export async function enrichRawMediaCandidates(
 
   return candidates.map(candidate =>
     scrapedItems.get(candidate.record.id) ?? fallbackScrapedItem(candidate, 'failed', '本地刮削结果缺失。'))
+}
+
+function tmdbMatchErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim())
+    return `${error.message.trim()} 已保留本地可播放候选。`
+  return 'TMDB 请求失败，已保留本地可播放候选。'
+}
+
+function isTmdbAuthFailureMessage(value: string): boolean {
+  return value.includes('验证失败') && value.includes('切换类型')
 }
 
 function createCandidateGroups(candidates: readonly RawMediaCandidate[]): Array<{

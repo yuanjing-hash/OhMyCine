@@ -27,9 +27,9 @@ let seriesTargetRefreshId = 0
 let settledRefreshTimer: number | undefined
 
 const hasSources = computed(() => store.configs.length > 0)
-const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero'))
-const continueWatchingSection = computed(() => store.homeSections.find(s => s.type === 'continueWatching'))
-const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded'))
+const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero' && s.items.length > 0))
+const continueWatchingSection = computed(() => store.homeSections.find(s => s.type === 'continueWatching' && s.items.length > 0))
+const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded' && s.items.length > 0))
 const heroItems = computed(() => heroSection.value?.items ?? [])
 const recentlyAddedItems = computed(() => recentlyAddedSection.value?.items.slice(0, 6) ?? [])
 
@@ -192,11 +192,16 @@ async function playSeriesFromHome(item: MediaItem) {
 async function refreshHeroSeriesPlaybackTargets() {
   const refreshId = ++seriesTargetRefreshId
   const seriesItems = heroItems.value.filter(item => item.type === 'series' && item.sourceId !== 'placeholder')
-  const entries = await Promise.all(seriesItems.map(async item => [itemKey(item), await resolveSeriesPlaybackTarget(item)] as const))
+  const settled = await Promise.allSettled(seriesItems.map(async item => [itemKey(item), await resolveSeriesPlaybackTarget(item)] as const))
   if (refreshId !== seriesTargetRefreshId)
     return
 
-  seriesPlaybackTargets.value = Object.fromEntries(entries.filter((entry): entry is readonly [string, SeriesPlaybackTarget] => entry[1] != null))
+  seriesPlaybackTargets.value = Object.fromEntries(
+    settled
+      .filter((result): result is PromiseFulfilledResult<readonly [string, SeriesPlaybackTarget | null]> => result.status === 'fulfilled')
+      .map(result => result.value)
+      .filter((entry): entry is readonly [string, SeriesPlaybackTarget] => entry[1] != null),
+  )
 }
 
 async function resolveSeriesPlaybackTarget(item: MediaItem): Promise<SeriesPlaybackTarget | null> {

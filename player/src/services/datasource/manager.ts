@@ -2,6 +2,7 @@ import type { DataSource, DataSourceConfig, DataSourceType, HomeSection } from '
 import { AlistDataSource } from './alist'
 import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
+import { collectHomeSectionsFromSources } from './homeAggregation'
 
 export class DataSourceManager {
   private readonly sources = new Map<string, DataSource>()
@@ -79,28 +80,7 @@ export class DataSourceManager {
   }
 
   async getAggregatedHome(configs: readonly DataSourceConfig[]): Promise<HomeSection[]> {
-    const sections: HomeSection[] = []
-
-    for (const source of this.getOrderedSources(configs)) {
-      if (!source.getHomeSections)
-        continue
-
-      try {
-        const sourceSections = await source.getHomeSections()
-        sections.push(...sourceSections.filter(section => section.items.length > 0))
-      }
-      catch (error) {
-        sections.push({
-          id: `error-${source.id}`,
-          sourceId: source.id,
-          title: `${source.name} 暂不可用：${toSafeErrorMessage(error)}`,
-          type: 'recentlyAdded',
-          items: [],
-        })
-      }
-    }
-
-    return sections
+    return collectHomeSectionsFromSources(this.getOrderedSources(configs))
   }
 
   exportAllConfigs(): DataSourceConfig[] {

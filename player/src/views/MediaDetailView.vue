@@ -107,6 +107,26 @@ async function loadDetail() {
   resetEpisodeWindow()
 
   try {
+    const contextual = recoverContextualDetail()
+    if (contextual) {
+      detail.value = contextual.detail
+      const selectableMediaSources = (contextual.detail.mediaSources ?? []).filter(hasMeaningfulMediaSource)
+      selectedMediaSourceId.value = selectableMediaSources[0]?.id ?? ''
+      selectedAudioIndex.value = contextual.detail.audioTracks?.find(track => track.isDefault)?.index ?? contextual.detail.audioTracks?.[0]?.index ?? null
+      selectedSubtitleIndex.value = contextual.detail.subtitles?.find(track => track.isDefault)?.index ?? contextual.detail.subtitles?.[0]?.index ?? null
+
+      if (contextual.detail.type === 'series') {
+        episodes.value = contextual.relatedItems.filter(item => item.type === 'episode' || item.type === 'file' || item.type === 'movie')
+        resetEpisodeWindow()
+        await refreshPlaybackProgress(episodes.value)
+        selectInitialEpisodeForSeason()
+      }
+      else {
+        await refreshPlaybackProgress([contextual.detail])
+      }
+      return
+    }
+
     const source = await resolveSource()
     const nextDetail = await source.getDetail(itemId.value)
     detail.value = nextDetail
@@ -348,6 +368,45 @@ async function refreshPlaybackProgress(items: readonly MediaItem[]) {
 
 function queryStringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function recoverContextualDetail(): { detail: MediaDetail, relatedItems: MediaItem[] } | null {
+  const contextId = queryStringValue(route.query.contextId)
+  const playbackContext = contextId ? getPlaybackMediaContext(contextId) : null
+  if (!playbackContext?.detail || playbackContext.sourceId !== sourceId.value || playbackContext.itemId !== itemId.value)
+    return null
+
+  const relatedItems = playbackContext.relatedItems?.map(cloneContextMediaItem)
+    ?? playbackContext.queue?.items.map(item => ({
+      id: item.id,
+      sourceId: item.sourceId,
+      libraryId: item.libraryId,
+      name: item.name,
+      type: item.type,
+      posterUrl: item.posterUrl,
+      backdropUrl: item.backdropUrl,
+      overview: item.overview,
+      duration: item.duration,
+      path: item.path,
+      seasonNumber: item.seasonNumber,
+      episodeNumber: item.episodeNumber,
+    }))
+    ?? []
+
+  return {
+    detail: {
+      ...playbackContext.detail,
+      children: playbackContext.detail.children?.map(cloneContextMediaItem),
+    },
+    relatedItems,
+  }
+}
+
+function cloneContextMediaItem(item: MediaItem): MediaItem {
+  return {
+    ...item,
+    children: item.children?.map(cloneContextMediaItem),
+  }
 }
 
 function recoverRoutePlaybackQueue(currentItemId: string): PlaybackQueueInput | undefined {

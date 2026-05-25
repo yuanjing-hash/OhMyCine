@@ -20,6 +20,38 @@ export const VIDEO_FILE_EXTENSIONS = [
 ] as const
 
 const VIDEO_FILE_EXTENSION_SET = new Set<string>(VIDEO_FILE_EXTENSIONS)
+const URL_LIKE_PROVIDER_PATH_RE = /^(?:https?|webdav|ftp|sftp|file|blob):/i
+const SENSITIVE_PROVIDER_PATH_QUERY_KEYS = new Set([
+  'api_key',
+  'apikey',
+  'access_key',
+  'access-token',
+  'accesskeyid',
+  'access_token',
+  'auth_key',
+  'authkey',
+  'authorization',
+  'awsaccesskeyid',
+  'cookie',
+  'expires',
+  'exp',
+  'ossaccesskeyid',
+  'passkey',
+  'password',
+  'passwd',
+  'pwd',
+  'security-token',
+  'sig',
+  'sign',
+  'signature',
+  'token',
+  'x-amz-credential',
+  'x-amz-expires',
+  'x-amz-security-token',
+  'x-amz-signature',
+  'x-oss-credential',
+  'x-oss-signature',
+])
 
 export function isVideoFileExtension(extension: string): boolean {
   const normalized = extension.trim().replace(/^\./, '').toLowerCase()
@@ -38,6 +70,28 @@ export function getVideoFileExtension(value: string): string | null {
 
 export function isVideoFileName(value: string): boolean {
   return getVideoFileExtension(value) != null
+}
+
+export function isLikelySensitiveProviderPath(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed)
+    return false
+
+  if (URL_LIKE_PROVIDER_PATH_RE.test(trimmed))
+    return true
+
+  const queryIndex = trimmed.indexOf('?')
+  if (queryIndex < 0)
+    return false
+
+  const query = trimmed.slice(queryIndex + 1).split('#')[0]
+  const params = new URLSearchParams(query)
+  for (const key of params.keys()) {
+    if (SENSITIVE_PROVIDER_PATH_QUERY_KEYS.has(key.toLowerCase()))
+      return true
+  }
+
+  return false
 }
 
 export function normalizeProviderPath(value: string | undefined): string {

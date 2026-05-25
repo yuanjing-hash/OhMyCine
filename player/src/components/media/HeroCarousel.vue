@@ -100,8 +100,8 @@ onUnmounted(() => {
       class="absolute inset-0 h-full w-full transition-all duration-700 ease-out"
     >
       <img
-        v-if="currentItem()!.backdropUrl"
-        :src="currentItem()!.backdropUrl"
+        v-if="currentItem()!.backdropUrl || currentItem()!.posterUrl"
+        :src="currentItem()!.backdropUrl || currentItem()!.posterUrl"
         :alt="currentItem()!.name"
         class="h-full w-full object-cover object-center"
         loading="eager"

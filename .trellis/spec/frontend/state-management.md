@@ -36,6 +36,8 @@ Use Pinia for state needed across routes/components: configured data sources, pl
 
 Use services and stores to cache external data, but source-of-truth remains the DataSource or Server. Always handle offline/disconnected states.
 
+Home aggregation must isolate external failures at the source/section level. A failed, disabled, misconfigured, or metadata-unavailable source must not replace or hide hero, continue-watching, recently-added, or library rows from other working sources; empty/error placeholders should not be inserted as normal `HomeSection` candidates.
+
 ### URL state
 
 Use Vue Router for route identity: current view, selected source ID, selected media ID, search query where appropriate.

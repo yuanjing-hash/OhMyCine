@@ -1,4 +1,5 @@
 import type { DataSource, DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
+import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { removeCredential } from '@/services/datasource/credentialStore'
@@ -142,8 +143,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     try {
       await syncManager()
       const [sections, localContinueEntries] = await Promise.all([
-        dataSourceManager.getAggregatedHome(orderedConfigs.value),
-        listLocalContinueWatching(20),
+        loadAggregatedHomeSections(orderedConfigs.value),
+        listLocalContinueWatchingSafely(20),
       ])
       const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
       const continueSection = mergeContinueWatchingSections(sections, localContinueItems)
@@ -273,6 +274,24 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 
 function hasArtwork(item: MediaItem): boolean {
   return firstNonEmpty(item.backdropUrl, item.posterUrl) != null
+}
+
+async function loadAggregatedHomeSections(configs: readonly DataSourceConfig[]): Promise<HomeSection[]> {
+  try {
+    return await dataSourceManager.getAggregatedHome(configs)
+  }
+  catch {
+    return []
+  }
+}
+
+async function listLocalContinueWatchingSafely(limit: number): Promise<PlaybackHistoryEntry[]> {
+  try {
+    return await listLocalContinueWatching(limit)
+  }
+  catch {
+    return []
+  }
 }
 
 function continueWatchingKey(item: MediaItem): string {

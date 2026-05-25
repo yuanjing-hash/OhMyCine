@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { deriveRawCandidateCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
+import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
+import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
 import type { RawFileRecord } from '../src/services/scraper/types.ts'
 
 const noisyTitle = '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV 1080P 简繁字幕'
@@ -60,9 +62,82 @@ const workFolderRecord: RawFileRecord = {
 }
 const workFolderCandidate = parseRawMediaCandidate(workFolderRecord)
 const workFolderAssignment = deriveRawCandidateCategoryAssignment(workFolderCandidate)
+const workFolderRecognition = recognizePathAwareMedia(workFolderRecord)
+const workFolderPreview = createRawScanPreview([{
+  name: workFolderRecord.fileName,
+  path: workFolderRecord.providerPath,
+  parentPath: workFolderRecord.parentPath,
+  type: 'file',
+}], {
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+})
 assert.equal(workFolderCandidate.seriesTitle, '机械之声的传奇 The Legend of Vox Machina')
+assert.equal(workFolderCandidate.seasonNumber, 1)
+assert.equal(workFolderCandidate.episodeNumber, 1)
+assert.equal(workFolderRecognition.parentSegment, 'Season 01')
+assert.equal(workFolderRecognition.grandparentSegment, '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV')
+assert.equal(workFolderRecognition.parentIsSeason, true)
+assert.equal(workFolderRecognition.fileIsEpisodeOnly, true)
+assert.equal(workFolderRecognition.searchTitles.includes('The Legend of Vox Machina'), true)
 assert.equal(workFolderAssignment.categoryName, '剧集')
 assert.equal(workFolderAssignment.source, 'kindFallback')
+assert.equal(workFolderPreview.candidates[0]?.categoryHint, undefined)
+assert.notEqual(workFolderAssignment.categoryName, '机械之声的传奇 The Legend of Vox Machina')
+assert.notEqual(workFolderAssignment.categoryName, '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV')
+
+const flatEpisodeRecord: RawFileRecord = {
+  id: 'alist:/未整理/The.Legend.of.Vox.Machina.S01E02.1080p.AMZN.GrassTV.mkv',
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+  providerPath: '/未整理/The.Legend.of.Vox.Machina.S01E02.1080p.AMZN.GrassTV.mkv',
+  relativePath: '未整理/The.Legend.of.Vox.Machina.S01E02.1080p.AMZN.GrassTV.mkv',
+  parentPath: '/未整理',
+  fileName: 'The.Legend.of.Vox.Machina.S01E02.1080p.AMZN.GrassTV.mkv',
+  extension: 'mkv',
+}
+const flatEpisodeCandidate = parseRawMediaCandidate(flatEpisodeRecord)
+assert.equal(flatEpisodeCandidate.seriesTitle, 'The Legend of Vox Machina')
+assert.equal(flatEpisodeCandidate.episodeNumber, 2)
+assert.equal(flatEpisodeCandidate.categoryHint, undefined)
+
+const categoryOnlySeasonRecord: RawFileRecord = {
+  id: 'alist:/动漫/Season 01/S01E01.mkv',
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+  providerPath: '/动漫/Season 01/S01E01.mkv',
+  relativePath: '动漫/Season 01/S01E01.mkv',
+  parentPath: '/动漫/Season 01',
+  fileName: 'S01E01.mkv',
+  extension: 'mkv',
+}
+const categoryOnlySeasonCandidate = parseRawMediaCandidate(categoryOnlySeasonRecord)
+const categoryOnlyRecognition = recognizePathAwareMedia(categoryOnlySeasonRecord)
+assert.equal(categoryOnlySeasonCandidate.seriesTitle, undefined)
+assert.equal(categoryOnlySeasonCandidate.seasonNumber, 1)
+assert.equal(categoryOnlySeasonCandidate.episodeNumber, 1)
+assert.equal(categoryOnlyRecognition.searchTitles.includes('动漫'), false)
+
+const tokenizedPathPreview = createRawScanPreview([
+  {
+    name: 'Movie.mkv',
+    path: '/Movies/Movie.mkv?X-Amz-Signature=secret&X-Amz-Credential=credential',
+    type: 'file',
+  },
+  {
+    name: 'Remote.mkv',
+    path: 'https://cdn.example.test/Remote.mkv',
+    type: 'file',
+  },
+], {
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+})
+assert.equal(tokenizedPathPreview.records.length, 0)
 
 console.log(JSON.stringify({
   cleanedTitle,
@@ -72,4 +147,11 @@ console.log(JSON.stringify({
   legacyFallbackCategory: legacyFallback.categoryName,
   workFolderCategory: workFolderAssignment.categoryName,
   workFolderCategorySource: workFolderAssignment.source,
+  workFolderSeriesTitle: workFolderCandidate.seriesTitle,
+  workFolderSeason: workFolderCandidate.seasonNumber,
+  workFolderEpisode: workFolderCandidate.episodeNumber,
+  workFolderSearchTitles: workFolderRecognition.searchTitles,
+  flatEpisodeSeriesTitle: flatEpisodeCandidate.seriesTitle,
+  categoryOnlySeasonSearchTitles: categoryOnlyRecognition.searchTitles,
+  tokenizedPathRecordCount: tokenizedPathPreview.records.length,
 }, null, 2))

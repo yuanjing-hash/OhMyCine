@@ -636,6 +636,8 @@ TMDB API 查询与详情补全
 海报墙 / 详情页 / 播放
 ```
 
+TMDB 凭据是可选增强，不是扫描可用性的前置条件。未配置用户 token/key、TMDB 超时或请求失败时，扫描应继续保留可播放候选、目录识别、文件名解析和兜底分类；后续可以接入内置/公共元数据通道，但客户端不得硬编码第三方秘密 key。
+
 ### 5.2.1 标准目录模式
 
 标准目录模式不是固定目录名，而是扫描器对用户选择根目录下面的结构进行评分后的结果。以下结构都可以作为标准模式信号：
@@ -645,6 +647,8 @@ TMDB API 查询与详情补全
 - `分类/剧名/Season 01/S01E01.mkv`
 - `剧名/Season 01/S01E01.mkv`
 - `剧名/第01集.mkv`
+
+路径识别采用 MoviePilot-like 的合并顺序：先解析文件名 stem，再解析父目录，再解析祖父目录，并用后续层级补齐缺失的身份字段。`Season 01` / `S01` / `第1季` 这类父目录只提供季信息，不作为标题；`S01E01.mkv` 这类文件名只提供季集信息，不作为标题；在 `剧名/Season 01/S01E01.mkv` 中，祖父目录才是剧名候选。带发布源/制作组噪声的作品目录，例如 `机械之声的传奇 The Legend of Vox Machina AMZN GrassTV`，应清洗出 `机械之声的传奇` / `The Legend of Vox Machina` 作为搜索标题，而不能成为媒体库 root 分类。
 
 示例：
 
@@ -668,7 +672,13 @@ TV/国产剧/剧名/Season 01/S01E01.mkv
 
 低置信度时，扫描不应失败。Player 可以按推荐模式先执行，并在扫描日志或设置中允许用户切换模式后重新扫描。
 
-### 5.2.2 非标准目录模式
+### 5.2.2 数据源页呈现
+
+OpenList/Alist、CloudDrive2、本地文件等原始文件源在完成本地扫描后，数据源首页应与 Emby/Jellyfin 保持同一用户心智：顶部是大海报/背景轮播，下面是媒体库卡片，再进入具体分类的作品海报墙。这里的媒体库卡片来自 TMDB 元数据和本地分类规则，例如 `动漫`、`综艺`、`国产剧`、`华语电影`，不是远端物理文件夹名。
+
+扫描管理是辅助功能。扫描状态、结构判断、日志和重新扫描按钮放在显式“扫描管理”入口内；默认页面优先展示可浏览内容。文件夹视图保留为兜底入口，继续通过 DataSource `list()` 只读浏览和播放，但不替代默认媒体库视图。
+
+### 5.2.3 非标准目录模式
 
 非标准目录模式默认目录信息不可靠，适合所有影片、剧集、综艺混在一个或多个文件夹里的情况。此模式主要依赖文件名解析和 TMDB 匹配：
 
@@ -678,7 +688,7 @@ TV/国产剧/剧名/Season 01/S01E01.mkv
 - 无法识别的文件保留为 `未识别`，仍然可以从文件夹视图或未识别列表播放。
 - 用户修正写入本地 override 表，不写回网盘。
 
-### 5.2.3 通用分类规则
+### 5.2.4 通用分类规则
 
 分类规则是刮削后的**本地逻辑分组**，不是物理目录约束。它影响海报墙分组、筛选、媒体库标签、聚合首页和未来 AI 推荐上下文，但不移动或重命名远端文件。
 
@@ -705,9 +715,9 @@ TV/国产剧/剧名/Season 01/S01E01.mkv
 
 这些默认分类在 UI 中呈现为可编辑的受控规则。例如“动画电影”选择 TMDB movie genre `Animation`，“外语电影”是电影侧显式规则，“综艺”选择 TMDB TV genre `Reality` / `Talk`，“国产剧”选择 origin country `CN` / `TW` / `HK`。
 
-### 5.2.4 分类设置页
+### 5.2.5 分类设置页
 
-设置页中新增“刮削与分类”，与“管理数据源”同级，进入后管理 TMDB 配置、默认语言地区、扫描模式和分类规则。
+设置页中新增“刮削与分类”，与“管理数据源”同级，进入后管理可选 TMDB 凭据、默认语言地区、扫描模式和分类规则。没有用户 TMDB 凭据时，设置页应表达为“可选增强”，不能让用户误以为 OpenList/Alist 扫描或文件夹播放依赖手动填写 key。
 
 分类规则编辑必须使用受控设置页：
 
@@ -806,15 +816,17 @@ export function parseFilename(filename: string): ParsedFilename {
 // src/services/scraper/tmdb.ts
 
 export class TmdbScraper {
-  private apiKey: string
+  private apiKey?: string
   private baseURL = 'https://api.themoviedb.org/3'
   private imageBase = 'https://image.tmdb.org/t/p'
 
-  constructor(apiKey: string) {
+  constructor(apiKey?: string) {
     this.apiKey = apiKey
   }
 
   async search(title: string, year?: number): Promise<TmdbResult | null> {
+    if (!this.apiKey) return null
+
     const params = new URLSearchParams({
       api_key: this.apiKey,
       query: title,

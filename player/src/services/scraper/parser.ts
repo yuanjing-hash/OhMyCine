@@ -28,6 +28,62 @@ const RELEASE_GROUP_TOKEN_RE = /\b(?:GrassTV|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|
 const SUBTITLE_TOKEN_RE = /\b(?:CHS|CHT|CHS&CHT|CHT&CHS|GB|BIG5|SUBS?|MULTI[- .]?SUB)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕/gi
 const CHINESE_TITLE_RE = /[\u4E00-\u9FFF][\u4E00-\u9FFF\s·・、，：:《》“”"'\-—]*/g
 const LATIN_TITLE_RE = /[a-z][a-z0-9\s'’:&.,!?+\-]*/gi
+const GENERIC_TITLE_SEGMENT_KEYS = new Set([
+  'download',
+  'downloads',
+  'complete',
+  'completed',
+  'incoming',
+  'temp',
+  'tmp',
+  'media',
+  'library',
+  'libraries',
+  'movie',
+  'movies',
+  'film',
+  'films',
+  'tv',
+  'tv series',
+  'series',
+  'show',
+  'shows',
+  'video',
+  'videos',
+  '下载',
+  '下载完成',
+  '未整理',
+  '待整理',
+  '临时',
+  '影视',
+  '影视库',
+  '媒体库',
+  '片库',
+  '视频',
+].map(value => normalizeSegmentTitleKey(value)))
+const CATEGORY_TITLE_SEGMENT_KEYS = new Set([
+  '电影',
+  '剧集',
+  '电视剧',
+  '华语电影',
+  '外语电影',
+  '动画电影',
+  '纪录片',
+  '纪录',
+  '综艺',
+  '儿童',
+  '动漫',
+  '国漫',
+  '日番',
+  '国产动漫',
+  '国产剧',
+  '欧美剧',
+  '美剧',
+  '日韩剧',
+  '日剧',
+  '韩剧',
+  '短剧',
+].map(value => normalizeSegmentTitleKey(value)))
 
 export function parseRawMediaCandidates(
   records: readonly RawFileRecord[],
@@ -45,7 +101,7 @@ export function parseRawMediaCandidate(
   const standardMode = detection?.mode === 'standard'
 
   if (hints.episodeNumber != null) {
-    const title = hints.seriesTitle ?? hints.title ?? hints.cleanFileTitle
+    const title = hints.seriesTitle || hints.title || hints.cleanFileTitle || stripFileExtension(record.fileName)
     return {
       kind: 'episode',
       parseStatus: 'parsed',
@@ -53,7 +109,7 @@ export function parseRawMediaCandidate(
       title,
       normalizedTitle: normalizeTitleKey(title),
       year: hints.year,
-      seriesTitle: hints.seriesTitle ?? title,
+      seriesTitle: hints.seriesTitle || undefined,
       seasonNumber: hints.seasonNumber,
       episodeNumber: hints.episodeNumber,
       categoryHint: hints.categoryHint,
@@ -111,21 +167,30 @@ export function extractRawPathHints(record: RawFileRecord): RawPathHints {
   const parentSegments = segments.slice(0, -1)
   const fileStem = stripFileExtension(fileName)
   const cleanFileTitle = cleanMediaTitle(fileStem)
+  const fileEpisodeTitle = cleanEpisodeTitleFromStem(fileStem)
   const titleYearFile = parseTitleYear(fileStem)
   const titleYearFolder = findLastTitleYearSegment(parentSegments)
   const episode = parseEpisode(fileStem)
   const seasonFolder = findLastSeasonFolder(parentSegments)
   const seasonNumber = episode?.seasonNumber ?? seasonFolder?.seasonNumber
   const episodeNumber = episode?.episodeNumber
-  const seriesIndex = seasonFolder ? seasonFolder.index - 1 : parentSegments.length - 1
+  const seriesIndex = seasonFolder
+    ? seasonFolder.index - 1
+    : episodeNumber != null && fileEpisodeTitle
+      ? -1
+      : parentSegments.length - 1
   const seriesTitle = episodeNumber != null
-    ? cleanMediaTitle(parentSegments[seriesIndex] ?? titleBeforeEpisode(fileStem))
+    ? resolveEpisodeSeriesTitle({
+        fileEpisodeTitle,
+        parentSegments,
+        seasonFolderIndex: seasonFolder?.index,
+      })
     : seasonFolder
-      ? cleanMediaTitle(parentSegments[seriesIndex] ?? '')
+      ? cleanWorkTitleSegment(parentSegments[seasonFolder.index - 1])
       : undefined
   const titleMatch = titleYearFolder?.match ?? titleYearFile
   const title = episodeNumber != null
-    ? seriesTitle
+    ? seriesTitle ?? fileEpisodeTitle
     : titleMatch?.title ?? folderTitleFallback(parentSegments, cleanFileTitle)
   const categoryHint = inferCategoryHint(parentSegments, {
     titleFolderIndex: titleYearFolder?.index,
@@ -319,12 +384,60 @@ function titleBeforeEpisode(value: string): string {
     .replace(EPISODE_ONLY_RE, ' '))
 }
 
+function cleanEpisodeTitleFromStem(value: string): string | undefined {
+  return cleanWorkTitleSegment(titleBeforeEpisode(value))
+}
+
+function resolveEpisodeSeriesTitle(input: {
+  fileEpisodeTitle?: string
+  parentSegments: readonly string[]
+  seasonFolderIndex?: number
+}): string | undefined {
+  if (input.seasonFolderIndex != null) {
+    const grandparentTitle = cleanWorkTitleSegment(input.parentSegments[input.seasonFolderIndex - 1])
+    return grandparentTitle ?? input.fileEpisodeTitle
+  }
+
+  if (input.fileEpisodeTitle)
+    return input.fileEpisodeTitle
+
+  return cleanWorkTitleSegment(input.parentSegments.at(-1))
+}
+
+function cleanWorkTitleSegment(value: string | undefined): string | undefined {
+  if (!value)
+    return undefined
+
+  const title = cleanMediaTitle(value)
+  if (!title || isReservedStructureSegment(title))
+    return undefined
+
+  return title
+}
+
+function isReservedStructureSegment(value: string): boolean {
+  const key = normalizeSegmentTitleKey(value)
+  if (!key)
+    return true
+  if (GENERIC_TITLE_SEGMENT_KEYS.has(key) || CATEGORY_TITLE_SEGMENT_KEYS.has(key))
+    return true
+  if (parseSeasonFolder(value) != null)
+    return true
+  if (parseEpisode(value) != null && !titleBeforeEpisode(value))
+    return true
+  return false
+}
+
+function normalizeSegmentTitleKey(value: string): string {
+  return cleanMediaTitle(value).toLocaleLowerCase().replace(/[^a-z0-9\u4E00-\u9FFF]+/g, '')
+}
+
 function folderTitleFallback(parentSegments: readonly string[], cleanFileTitle: string): string | undefined {
   const parent = parentSegments.at(-1)
   if (!parent)
     return cleanFileTitle || undefined
 
-  const cleanParent = cleanMediaTitle(parent)
+  const cleanParent = cleanWorkTitleSegment(parent)
   if (cleanParent && cleanFileTitle && cleanFileTitle.includes(cleanParent))
     return cleanParent
   return cleanFileTitle || cleanParent || undefined

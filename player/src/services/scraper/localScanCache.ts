@@ -11,7 +11,7 @@ import type {
 import type { DataSource, MediaItem } from '@/services/datasource/types'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { enrichRawMediaCandidates } from './metadataEnrichment'
-import { isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath } from './pathUtils'
+import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath } from './pathUtils'
 import { createRawScanPreview } from './scanner'
 
 export type RawLocalScanStatus = 'completed' | 'partialFailed'
@@ -57,25 +57,6 @@ const RAW_SCAN_CACHE_KEY_PREFIX = 'ohmycine-raw-source-scan-cache-v1'
 const DEFAULT_MAX_DEPTH = 12
 const DEFAULT_MAX_FOLDERS = 600
 const DEFAULT_MAX_ENTRIES = 8_000
-const URL_LIKE_PROVIDER_PATH_RE = /^(?:https?|webdav|ftp|sftp|file|blob):/i
-const SENSITIVE_PROVIDER_PATH_QUERY_KEYS = new Set([
-  'api_key',
-  'apikey',
-  'access_token',
-  'accessToken',
-  'authorization',
-  'cookie',
-  'expires',
-  'exp',
-  'password',
-  'passkey',
-  'security-token',
-  'sig',
-  'sign',
-  'signature',
-  'token',
-])
-
 export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promise<RawLocalScanCache> {
   const rootPath = normalizeProviderPath(input.rootPath)
   const maxDepth = input.maxDepth ?? DEFAULT_MAX_DEPTH
@@ -285,7 +266,7 @@ function normalizeMediaItemPath(item: MediaItem): string | null {
   const rawPath = item.path || item.id
   if (!rawPath)
     return null
-  if (isLikelySensitivePlaybackPath(rawPath))
+  if (isLikelySensitiveProviderPath(rawPath))
     return null
 
   try {
@@ -298,24 +279,6 @@ function normalizeMediaItemPath(item: MediaItem): string | null {
 
 function isDirectoryMediaItem(item: MediaItem): boolean {
   return item.type === 'folder' || item.type === 'season'
-}
-
-function isLikelySensitivePlaybackPath(value: string): boolean {
-  const trimmed = value.trim()
-  if (URL_LIKE_PROVIDER_PATH_RE.test(trimmed))
-    return true
-
-  const queryIndex = trimmed.indexOf('?')
-  if (queryIndex < 0)
-    return false
-
-  const query = trimmed.slice(queryIndex + 1).split('#')[0]
-  const params = new URLSearchParams(query)
-  for (const key of params.keys()) {
-    if (SENSITIVE_PROVIDER_PATH_QUERY_KEYS.has(key) || SENSITIVE_PROVIDER_PATH_QUERY_KEYS.has(key.toLowerCase()))
-      return true
-  }
-  return false
 }
 
 function rawScanCacheKey(sourceId: string, sourceType: RawFileSourceType, rootPath: string): string {

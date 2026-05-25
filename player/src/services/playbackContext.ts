@@ -1,4 +1,4 @@
-import type { AudioTrack, MediaItem, SubtitleTrack } from '@/services/datasource/types'
+import type { AudioTrack, MediaDetail, MediaItem, SubtitleTrack } from '@/services/datasource/types'
 
 export interface PlaybackQueueItem {
   id: string
@@ -30,6 +30,8 @@ export interface PlaybackMediaContext {
   subtitles: SubtitleTrack[]
   audioTracks: AudioTrack[]
   queue?: PlaybackQueueState
+  detail?: MediaDetail
+  relatedItems?: MediaItem[]
 }
 
 export interface PlaybackMediaContextInput {
@@ -40,6 +42,8 @@ export interface PlaybackMediaContextInput {
   subtitles?: readonly SubtitleTrack[]
   audioTracks?: readonly AudioTrack[]
   queue?: PlaybackQueueInput
+  detail?: MediaDetail
+  relatedItems?: readonly MediaItem[]
 }
 
 export interface PlaybackQueueInput {
@@ -77,9 +81,38 @@ export function savePlaybackMediaContext(input: PlaybackMediaContextInput): stri
     subtitles: (input.subtitles ?? []).map(track => ({ ...track })),
     audioTracks: (input.audioTracks ?? []).map(track => ({ ...track })),
     queue: normalizeQueue(input.queue),
+    detail: input.detail ? cloneMediaDetail(input.detail) : undefined,
+    relatedItems: input.relatedItems?.map(cloneMediaItem),
   })
   trimOldContexts()
   return id
+}
+
+function cloneMediaDetail(detail: MediaDetail): MediaDetail {
+  return {
+    ...cloneMediaItem(detail),
+    genres: detail.genres ? [...detail.genres] : undefined,
+    directors: detail.directors ? [...detail.directors] : undefined,
+    cast: detail.cast ? [...detail.cast] : undefined,
+    imdbId: detail.imdbId,
+    tmdbId: detail.tmdbId,
+    resolution: detail.resolution,
+    codec: detail.codec,
+    audioCodec: detail.audioCodec,
+    subtitles: detail.subtitles?.map(track => ({ ...track })),
+    audioTracks: detail.audioTracks?.map(track => ({ ...track })),
+    mediaSources: detail.mediaSources?.map(source => ({ ...source })),
+    stills: detail.stills ? [...detail.stills] : undefined,
+    similarItems: detail.similarItems?.map(cloneMediaItem),
+    collections: detail.collections?.map(cloneMediaItem),
+  }
+}
+
+function cloneMediaItem(item: MediaItem): MediaItem {
+  return {
+    ...item,
+    children: item.children?.map(cloneMediaItem),
+  }
 }
 
 export function getPlaybackMediaContext(id: string): PlaybackMediaContext | null {

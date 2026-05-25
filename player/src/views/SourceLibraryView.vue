@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DataSource, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem } from '@/services/scraper'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -39,10 +39,17 @@ interface ScannedDisplayItem {
   readonly domain: ScannedMediaDomain
 }
 
-interface ScannedSeriesGroup {
+interface ScannedSeriesWork {
   readonly key: string
   readonly title: string
-  readonly items: MediaItem[]
+  readonly item: MediaItem
+  readonly episodes: MediaItem[]
+}
+
+interface ScannedWorkItem {
+  readonly item: MediaItem
+  readonly domain: ScannedMediaDomain
+  readonly episodes?: MediaItem[]
 }
 
 interface ScannedCategory {
@@ -50,8 +57,11 @@ interface ScannedCategory {
   readonly name: string
   readonly type: ScannedCategoryType
   readonly entries: ScannedDisplayItem[]
+  readonly works: ScannedWorkItem[]
+  readonly library: MediaLibrary
   readonly previewItems: MediaItem[]
   readonly count: number
+  readonly fileCount: number
   readonly movieCount: number
   readonly tvCount: number
   readonly unresolvedCount: number
@@ -149,30 +159,40 @@ const scannedCategories = computed<ScannedCategory[]>(() => {
 const selectedScannedCategory = computed(() =>
   scannedCategories.value.find(category => category.id === selectedScannedCategoryId.value) ?? null,
 )
-const selectedCategoryEntries = computed(() => selectedScannedCategory.value?.entries ?? [])
-const selectedCategoryMovies = computed(() =>
-  selectedCategoryEntries.value.filter(entry => entry.domain === 'movie').map(entry => entry.item),
-)
-const selectedCategoryUnresolved = computed(() =>
-  selectedCategoryEntries.value.filter(entry => entry.domain === 'unresolved').map(entry => entry.item),
-)
-const selectedCategorySeriesGroups = computed<ScannedSeriesGroup[]>(() => createSeriesGroups(
-  selectedCategoryEntries.value.filter(entry => entry.domain === 'tv'),
-))
+const scannedCategoryLibraries = computed<MediaLibrary[]>(() => scannedCategories.value.map(category => category.library))
+const selectedCategoryWorkItems = computed<MediaItem[]>(() => selectedScannedCategory.value?.works.map(work => work.item) ?? [])
 const selectedCategoryQueueItems = computed(() => [
-  ...selectedCategoryMovies.value,
-  ...selectedCategorySeriesGroups.value.flatMap(group => group.items),
-  ...selectedCategoryUnresolved.value,
+  ...playableItemsFromWorks(selectedScannedCategory.value?.works ?? []),
 ])
-const allScannedQueueItems = computed(() => [
-  ...scannedMovies.value.map(entry => entry.item),
-  ...createSeriesGroups(scannedSeriesFiles.value).flatMap(group => group.items),
-  ...scannedUnresolved.value.map(entry => entry.item),
-])
-const hasSelectedCategorySections = computed(() =>
-  selectedCategoryMovies.value.length > 0
-  || selectedCategorySeriesGroups.value.length > 0
-  || selectedCategoryUnresolved.value.length > 0,
+const allScannedQueueItems = computed(() => playableItemsFromWorks(scannedCategories.value.flatMap(category => category.works)))
+const hasSelectedCategorySections = computed(() => selectedCategoryWorkItems.value.length > 0)
+const scannedWorkById = computed(() => {
+  const works = new Map<string, ScannedWorkItem>()
+  for (const category of scannedCategories.value) {
+    for (const work of category.works)
+      works.set(work.item.id, work)
+  }
+  return works
+})
+const scannedSeriesWorkById = computed(() => {
+  const series = new Map<string, ScannedSeriesWork>()
+  for (const category of scannedCategories.value) {
+    for (const work of category.works) {
+      if (work.domain === 'tv' && work.episodes?.length)
+        series.set(work.item.id, { key: work.item.id, title: work.item.name, item: work.item, episodes: work.episodes })
+    }
+  }
+  return series
+})
+const mediaLibraryHeroItems = computed(() =>
+  scannedCategories.value
+    .flatMap(category => category.works.map(work => work.item))
+    .filter(item => item.backdropUrl || item.posterUrl)
+    .sort(compareHeroScannedItems)
+    .slice(0, 8),
+)
+const sourceLandingHeroItems = computed(() =>
+  mediaLibraryHeroItems.value.length > 0 ? mediaLibraryHeroItems.value : heroItems.value,
 )
 const scanStats = computed(() => ({
   total: scannedDisplayItems.value.length,
@@ -215,7 +235,7 @@ onMounted(async () => {
   syncDefaultViewModeForSource()
   await ensureSource()
   loadScanCacheForCurrentSource()
-  if (isFolderView.value)
+  if (isFolderView.value || isAlistSource.value)
     await loadSourceRoot()
 })
 
@@ -231,7 +251,7 @@ watch(sourceId, async () => {
   syncDefaultViewModeForSource()
   await ensureSource()
   loadScanCacheForCurrentSource()
-  if (isFolderView.value)
+  if (isFolderView.value || isAlistSource.value)
     await loadSourceRoot()
 })
 
@@ -261,26 +281,24 @@ async function loadSourceRoot() {
 
   isLoading.value = true
   errorMessage.value = null
-  try {
-    const [nextLibraries, homeSections] = await Promise.all([
-      source.value.listLibraries ? source.value.listLibraries() : Promise.resolve([]),
-      source.value.getHomeSections ? source.value.getHomeSections() : Promise.resolve([]),
-    ])
-    libraries.value = nextLibraries
-    heroItems.value = homeSections.find(section => section.type === 'hero')?.items ?? []
-    latestItems.value = homeSections.find(section => section.type === 'recentlyAdded')?.items ?? []
-    continueItems.value = homeSections.find(section => section.type === 'continueWatching')?.items ?? []
+  const [librariesResult, homeResult] = await Promise.allSettled([
+    source.value.listLibraries ? source.value.listLibraries() : Promise.resolve([]),
+    source.value.getHomeSections ? source.value.getHomeSections() : Promise.resolve([]),
+  ] as const)
+
+  if (librariesResult.status === 'fulfilled') {
+    libraries.value = librariesResult.value
   }
-  catch (error) {
+  else {
     libraries.value = []
-    heroItems.value = []
-    latestItems.value = []
-    continueItems.value = []
-    errorMessage.value = toSafeErrorMessage(error, '媒体库加载失败。')
+    errorMessage.value = toSafeErrorMessage(librariesResult.reason, '媒体库加载失败。')
   }
-  finally {
-    isLoading.value = false
-  }
+
+  const homeSections = homeResult.status === 'fulfilled' ? homeResult.value : []
+  heroItems.value = findVisibleHomeSection(homeSections, 'hero')?.items ?? []
+  latestItems.value = findVisibleHomeSection(homeSections, 'recentlyAdded')?.items ?? []
+  continueItems.value = findVisibleHomeSection(homeSections, 'continueWatching')?.items ?? []
+  isLoading.value = false
 }
 
 async function switchViewMode(mode: SourceViewMode) {
@@ -292,6 +310,8 @@ async function switchViewMode(mode: SourceViewMode) {
   if (mode === 'media-library') {
     backToLibraries()
     loadScanCacheForCurrentSource()
+    if (libraries.value.length === 0)
+      await loadSourceRoot()
     return
   }
 
@@ -376,6 +396,18 @@ async function navigateToCrumb(index: number) {
 
 async function handleSelect(item: MediaItem | MediaLibrary) {
   if ('path' in item) {
+    const scannedWork = scannedWorkById.value.get(item.id)
+    if (scannedWork) {
+      await openScannedWorkDetail(scannedWork)
+      return
+    }
+
+    const scannedSeries = scannedSeriesWorkById.value.get(item.id)
+    if (scannedSeries) {
+      await openScannedSeriesDetail(scannedSeries)
+      return
+    }
+
     if ((item.type === 'folder' && item.duration == null && !item.overview) || item.type === 'season') {
       if (!selectedLibrary.value) {
         selectedLibrary.value = {
@@ -397,17 +429,31 @@ async function handleSelect(item: MediaItem | MediaLibrary) {
     return
   }
 
+  if (isMediaLibraryView.value) {
+    const category = scannedCategories.value.find(category => category.id === item.id)
+    if (category) {
+      selectScannedCategory(category)
+      return
+    }
+
+    await switchViewMode('folders')
+  }
+
   await loadLibrary(item)
 }
 
 async function openDetail(item: MediaItem) {
   const queue = createPlaybackQueue(currentQueueItems(), item.id)
-  const contextId = queue
+  const contextualDetail = scannedWorkById.value.has(item.id) && item.type !== 'series'
+    ? createScannedMediaDetail(item)
+    : undefined
+  const contextId = queue || contextualDetail
     ? savePlaybackMediaContext({
         sourceId: sourceId.value,
         itemId: item.id,
         title: item.name,
         queue,
+        detail: contextualDetail,
       })
     : undefined
 
@@ -440,6 +486,14 @@ async function loadNestedItems(parentId: string) {
 }
 
 async function handlePlay(item: MediaItem) {
+  const scannedSeries = scannedSeriesWorkById.value.get(item.id)
+  if (scannedSeries) {
+    const firstEpisode = scannedSeries.episodes[0]
+    if (firstEpisode)
+      await handlePlay(firstEpisode)
+    return
+  }
+
   if (isContainerItem(item)) {
     await openDetail(item)
     return
@@ -539,20 +593,103 @@ function backToScannedCategories() {
   selectedScannedCategoryId.value = null
 }
 
+async function openScannedSeriesDetail(series: ScannedSeriesWork) {
+  const firstEpisode = series.episodes[0]
+  const queue = firstEpisode ? createPlaybackQueue(series.episodes, firstEpisode.id) : undefined
+  const contextId = savePlaybackMediaContext({
+    sourceId: sourceId.value,
+    itemId: series.item.id,
+    title: series.item.name,
+    queue,
+    detail: createScannedSeriesDetail(series),
+    relatedItems: series.episodes,
+  })
+
+  await router.push({
+    name: 'media-detail',
+    params: {
+      sourceId: sourceId.value,
+      itemId: series.item.id,
+    },
+    query: { contextId },
+  })
+}
+
+async function openScannedWorkDetail(work: ScannedWorkItem) {
+  if (work.domain === 'tv' && work.episodes?.length) {
+    await openScannedSeriesDetail({
+      key: work.item.id,
+      title: work.item.name,
+      item: work.item,
+      episodes: work.episodes,
+    })
+    return
+  }
+
+  const queue = createPlaybackQueue(currentQueueItems(), work.item.id)
+  const contextId = savePlaybackMediaContext({
+    sourceId: sourceId.value,
+    itemId: work.item.id,
+    title: work.item.name,
+    queue,
+    detail: createScannedMediaDetail(work.item),
+  })
+
+  await router.push({
+    name: 'media-detail',
+    params: {
+      sourceId: sourceId.value,
+      itemId: work.item.id,
+    },
+    query: { contextId },
+  })
+}
+
+function createScannedSeriesDetail(series: ScannedSeriesWork): MediaDetail {
+  return {
+    ...series.item,
+    type: 'series',
+    children: series.episodes,
+    mediaSources: [],
+  }
+}
+
+function createScannedMediaDetail(item: MediaItem): MediaDetail {
+  return {
+    ...item,
+    mediaSources: [],
+  }
+}
+
 function createScannedCategory(name: string, entries: ScannedDisplayItem[]): ScannedCategory {
   const movieCount = entries.filter(entry => entry.domain === 'movie').length
   const tvEntries = entries.filter(entry => entry.domain === 'tv')
   const unresolvedCount = entries.filter(entry => entry.domain === 'unresolved').length
   const seriesCount = seriesCountForEntries(tvEntries)
   const type = scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
+  const works = createScannedWorkItems(entries)
+  const previewItems = works.map(work => work.item).slice(0, 4)
+  const previewArtwork = previewItems.find(item => item.backdropUrl || item.posterUrl)
+  const library: MediaLibrary = {
+    id: `category:${encodeURIComponent(name)}`,
+    sourceId: sourceId.value,
+    name,
+    type: mediaLibraryTypeForCategory(type),
+    posterUrl: previewArtwork?.posterUrl,
+    backdropUrl: previewArtwork?.backdropUrl ?? previewArtwork?.posterUrl,
+    itemCount: works.length,
+  }
 
   return {
-    id: `category:${encodeURIComponent(name)}`,
+    id: library.id,
     name,
     type,
     entries,
-    previewItems: uniquePreviewItems(entries).slice(0, 4),
-    count: entries.length,
+    works,
+    library,
+    previewItems,
+    count: works.length,
+    fileCount: entries.length,
     movieCount,
     tvCount: tvEntries.length,
     unresolvedCount,
@@ -562,26 +699,83 @@ function createScannedCategory(name: string, entries: ScannedDisplayItem[]): Sca
   }
 }
 
-function createSeriesGroups(entries: ScannedDisplayItem[]): ScannedSeriesGroup[] {
-  const groups = new Map<string, { title: string, items: MediaItem[] }>()
+function createScannedWorkItems(entries: readonly ScannedDisplayItem[]): ScannedWorkItem[] {
+  return [
+    ...createDedupedFileWorks(entries.filter(entry => entry.domain === 'movie'), 'movie'),
+    ...createSeriesWorks(entries.filter(entry => entry.domain === 'tv')).map(work => ({
+      item: work.item,
+      domain: 'tv' as const,
+      episodes: work.episodes,
+    })),
+    ...entries.filter(entry => entry.domain === 'unresolved').map(entry => ({
+      item: entry.item,
+      domain: 'unresolved' as const,
+    })),
+  ]
+}
+
+function createDedupedFileWorks(entries: readonly ScannedDisplayItem[], domain: Exclude<ScannedMediaDomain, 'tv'>): ScannedWorkItem[] {
+  const groups = new Map<string, ScannedDisplayItem>()
+  for (const entry of entries) {
+    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
+    const key = metadata
+      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
+      : `${entry.candidate.normalizedTitle || entry.item.id}:${entry.candidate.year ?? ''}`
+    if (!groups.has(key))
+      groups.set(key, entry)
+  }
+
+  return [...groups.values()]
+    .map(entry => ({ item: entry.item, domain }))
+    .sort((a, b) => compareScannedMediaItems(a.item, b.item))
+}
+
+function createSeriesWorks(entries: readonly ScannedDisplayItem[]): ScannedSeriesWork[] {
+  const groups = new Map<string, { title: string, entries: ScannedDisplayItem[], episodes: MediaItem[] }>()
   for (const entry of entries) {
     const metadata = metadataForCandidate(entry.candidate, entry.scraped)
     const key = metadata
       ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
       : entry.candidate.normalizedTitle || entry.candidate.record.providerPath
     const title = metadata?.title ?? entry.candidate.seriesTitle ?? entry.candidate.title
-    const current = groups.get(key) ?? { title, items: [] }
-    current.items.push(entry.item)
+    const current = groups.get(key) ?? { title, entries: [], episodes: [] }
+    current.entries.push(entry)
+    current.episodes.push(entry.item)
     groups.set(key, current)
   }
 
   return [...groups.entries()]
-    .map(([key, group]) => ({
-      key,
-      title: group.title || '剧集',
-      items: group.items.sort(compareScannedMediaItems),
-    }))
+    .map(([key, group]) => createSeriesWork(key, group))
     .sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'))
+}
+
+function createSeriesWork(key: string, group: { title: string, entries: ScannedDisplayItem[], episodes: MediaItem[] }): ScannedSeriesWork {
+  const episodes = group.episodes.sort(compareScannedMediaItems)
+  const representative = group.entries.find(entry => metadataForCandidate(entry.candidate, entry.scraped)?.posterUrl || metadataForCandidate(entry.candidate, entry.scraped)?.backdropUrl) ?? group.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  const firstEpisode = episodes[0]
+  const title = metadata?.title ?? group.title ?? '剧集'
+  const item: MediaItem = {
+    id: `raw-series:${encodeURIComponent(key)}`,
+    sourceId: sourceId.value,
+    libraryId: representative?.candidate.record.rootPath ?? alistRootPath.value,
+    name: title,
+    type: 'series',
+    posterUrl: metadata?.posterUrl ?? firstEpisode?.posterUrl,
+    backdropUrl: metadata?.backdropUrl ?? firstEpisode?.backdropUrl,
+    year: metadata?.releaseYear ?? firstEpisode?.year,
+    rating: metadata?.rating ?? firstEpisode?.rating,
+    overview: metadata?.overview || `${episodes.length} 个本地识别分集。`,
+    path: firstEpisode?.path ?? representative?.candidate.record.providerPath ?? '',
+    children: episodes,
+  }
+
+  return {
+    key,
+    title,
+    item,
+    episodes,
+  }
 }
 
 function scannedCategoryType(movieCount: number, tvCount: number, unresolvedCount: number): ScannedCategoryType {
@@ -594,6 +788,28 @@ function scannedCategoryType(movieCount: number, tvCount: number, unresolvedCoun
   if (activeTypes.length !== 1)
     return 'mixed'
   return activeTypes[0] as ScannedCategoryType
+}
+
+function mediaLibraryTypeForCategory(type: ScannedCategoryType): MediaLibrary['type'] {
+  switch (type) {
+    case 'movie':
+      return 'movies'
+    case 'tv':
+      return 'series'
+    case 'mixed':
+      return 'mixed'
+    case 'unresolved':
+    default:
+      return 'folders'
+  }
+}
+
+function playableItemsFromWorks(works: readonly ScannedWorkItem[]): MediaItem[] {
+  return works.flatMap((work) => {
+    if (work.domain === 'tv')
+      return work.episodes ?? []
+    return work.item.type === 'series' ? [] : [work.item]
+  })
 }
 
 function scannedCategorySubtitle(counts: {
@@ -637,26 +853,6 @@ function uniqueDisplayTitles(entries: readonly ScannedDisplayItem[]): string[] {
   return titles
 }
 
-function uniquePreviewItems(entries: readonly ScannedDisplayItem[]): MediaItem[] {
-  const items: MediaItem[] = []
-  const seen = new Set<string>()
-  for (const entry of entries) {
-    const metadata = metadataForCandidate(entry.candidate, entry.scraped)
-    const key = metadata
-      ? `tmdb:${metadata.mediaType}:${metadata.tmdbId}`
-      : entry.candidate.normalizedTitle || entry.item.id
-    if (!key || seen.has(key))
-      continue
-    seen.add(key)
-    items.push(entry.item)
-  }
-  return items
-}
-
-function previewInitial(item: MediaItem): string {
-  return item.name.trim().slice(0, 1).toLocaleUpperCase() || '#'
-}
-
 function compareScannedCategories(a: ScannedCategory, b: ScannedCategory): number {
   return scannedCategorySortPriority(a) - scannedCategorySortPriority(b)
     || b.count - a.count
@@ -673,19 +869,6 @@ function scannedCategorySortPriority(category: ScannedCategory): number {
   if (category.name === RAW_TV_CATEGORY_NAME)
     return 61
   return 20
-}
-
-function categoryToneClass(category: ScannedCategory): string {
-  switch (category.type) {
-    case 'movie':
-      return 'category-card--movie'
-    case 'tv':
-      return 'category-card--tv'
-    case 'unresolved':
-      return 'category-card--unresolved'
-    default:
-      return 'category-card--mixed'
-  }
 }
 
 function toScannedMediaItem(
@@ -778,6 +961,18 @@ function compareScannedMediaItems(a: MediaItem, b: MediaItem): number {
     || a.name.localeCompare(b.name, 'zh-Hans-CN')
 }
 
+function compareHeroScannedItems(a: MediaItem, b: MediaItem): number {
+  const artworkScore = (item: MediaItem) => (item.backdropUrl ? 2 : 0) + (item.posterUrl ? 1 : 0) + (item.overview ? 0.5 : 0)
+  return artworkScore(b) - artworkScore(a)
+    || (b.rating ?? 0) - (a.rating ?? 0)
+    || (b.year ?? 0) - (a.year ?? 0)
+    || a.name.localeCompare(b.name, 'zh-Hans-CN')
+}
+
+function findVisibleHomeSection(homeSections: readonly HomeSection[], type: 'hero' | 'continueWatching' | 'recentlyAdded'): HomeSection | undefined {
+  return homeSections.find(section => section.type === type && section.items.length > 0)
+}
+
 function formatDateTime(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime()))
@@ -834,6 +1029,10 @@ function labelForSourceType(type: string): string {
           <HeroCarousel :items="heroItems" @play="handlePlay" @detail="openDetail" />
         </section>
 
+        <section v-if="isMediaLibraryView && !selectedScannedCategory && sourceLandingHeroItems.length" class="-mx-6 -mt-16 overflow-hidden rounded-b-[2.4rem] md:-ml-20">
+          <HeroCarousel :items="sourceLandingHeroItems" @play="handlePlay" @detail="handleSelect" />
+        </section>
+
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div class="flex items-center gap-4">
             <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/18 text-lg font-bold text-primary">
@@ -850,6 +1049,21 @@ function labelForSourceType(type: string): string {
             </div>
           </div>
 
+          <div v-if="isMediaLibraryView" class="flex flex-wrap items-center gap-3">
+            <button
+              class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+              @click="isScanManagementOpen = !isScanManagementOpen"
+            >
+              {{ isScanManagementOpen ? '收起扫描管理' : '扫描管理' }}
+            </button>
+            <button
+              class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+              @click="switchViewMode('folders')"
+            >
+              文件夹
+            </button>
+          </div>
+
           <form v-if="isFolderView" class="flex min-w-72 gap-2" @submit.prevent="runSearch">
             <input
               v-model="searchKeyword"
@@ -862,23 +1076,13 @@ function labelForSourceType(type: string): string {
           </form>
         </div>
 
-        <div v-if="isAlistSource" class="flex flex-wrap items-center justify-between gap-3">
-          <div class="inline-flex rounded-2xl border border-white/10 bg-white/6 p-1">
-            <button
-              class="rounded-xl px-4 py-2 text-sm font-semibold transition-colors"
-              :class="isMediaLibraryView ? 'bg-white text-black' : 'text-white/58 hover:bg-white/10 hover:text-white'"
-              @click="switchViewMode('media-library')"
-            >
-              媒体库
-            </button>
-            <button
-              class="rounded-xl px-4 py-2 text-sm font-semibold transition-colors"
-              :class="isFolderView ? 'bg-white text-black' : 'text-white/58 hover:bg-white/10 hover:text-white'"
-              @click="switchViewMode('folders')"
-            >
-              文件夹
-            </button>
-          </div>
+        <div v-if="isAlistSource && isFolderView" class="flex flex-wrap items-center justify-between gap-3">
+          <button
+            class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+            @click="switchViewMode('media-library')"
+          >
+            返回媒体库
+          </button>
           <p class="text-sm text-white/40">
             当前根目录：{{ alistRootPath }}
           </p>
@@ -930,12 +1134,6 @@ function labelForSourceType(type: string): string {
               <p v-if="scanCache" class="text-sm text-white/38">
                 上次扫描：{{ scanFinishedLabel }}
               </p>
-              <button
-                class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-                @click="isScanManagementOpen = !isScanManagementOpen"
-              >
-                {{ isScanManagementOpen ? '收起扫描管理' : '扫描管理' }}
-              </button>
             </div>
           </div>
 
@@ -944,13 +1142,6 @@ function labelForSourceType(type: string): string {
             class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100"
           >
             {{ scanErrorMessage }}
-          </div>
-
-          <div
-            v-if="isScanning && !isScanManagementOpen"
-            class="rounded-2xl border border-primary/25 bg-primary/10 px-5 py-4 text-sm text-primary"
-          >
-            正在扫描 {{ alistRootPath }}，完成后会自动刷新本地媒体库。
           </div>
 
           <section
@@ -1029,101 +1220,80 @@ function labelForSourceType(type: string): string {
             </div>
           </section>
 
-          <div v-if="!scanCache" class="empty-library-state flex min-h-72 flex-col justify-center rounded-[1.75rem] border border-white/10 p-8">
-            <p class="text-sm font-semibold text-primary">
-              尚未生成本地媒体库
-            </p>
-            <h2 class="mt-3 max-w-3xl text-2xl font-bold text-white">
-              扫描后会先展示分类入口，再进入电影、剧集和未识别文件海报墙
-            </h2>
-            <p class="mt-3 max-w-2xl text-sm leading-6 text-white/48">
-              当前根目录：{{ alistRootPath }}。播放仍通过现有 DataSource.getStreamURL() 获取地址，文件夹视图可随时作为兜底浏览入口。
-            </p>
-            <div class="mt-6 flex flex-wrap gap-3">
-              <button
-                class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
-                :disabled="isScanning || !source"
-                @click="startLocalScan"
-              >
-                {{ isScanning ? '扫描中…' : '开始扫描' }}
-              </button>
-              <button
-                class="rounded-2xl border border-white/10 bg-white/6 px-5 py-3 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-                @click="switchViewMode('folders')"
-              >
-                打开文件夹视图
-              </button>
+          <template v-if="!scanCache">
+            <div class="rounded-2xl border border-white/10 bg-white/6 px-5 py-4">
+              <div class="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p class="text-sm font-semibold text-white">
+                    尚未生成本地海报墙
+                  </p>
+                  <p class="mt-1 text-sm leading-6 text-white/42">
+                    当前仍以数据源首页和文件夹入口呈现；扫描管理可生成本地电影、剧集和未识别分类。
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-3">
+                  <button
+                    class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 hover:text-white"
+                    @click="isScanManagementOpen = true"
+                  >
+                    打开扫描管理
+                  </button>
+                  <button
+                    class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+                    @click="switchViewMode('folders')"
+                  >
+                    文件夹视图
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+
+            <section class="space-y-4">
+              <div class="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 class="text-xl font-bold text-white">
+                    文件夹入口
+                  </h2>
+                  <p class="mt-1 text-sm text-white/38">
+                    OpenList/Alist 根目录保持可浏览可播放；本地刮削失败或未配置 TMDB 时不影响这里。
+                  </p>
+                </div>
+              </div>
+
+              <MediaGrid
+                :items="libraries"
+                :loading="isLoading"
+                empty-title="当前数据源没有返回文件夹入口"
+                empty-description="可以检查 OpenList/Alist 登录状态、根目录配置，或直接切换到文件夹视图重试。"
+                @select="handleSelect"
+                @play="handlePlay"
+              />
+            </section>
+          </template>
 
           <template v-else-if="!selectedScannedCategory">
             <section class="space-y-4">
               <div class="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <h2 class="text-xl font-bold text-white">
-                    媒体分类
+                    媒体库
                   </h2>
                   <p class="mt-1 text-sm text-white/38">
-                    优先使用 TMDB 元数据和刮削分类规则；路径目录只作为解析提示和兜底信息。
+                    逻辑媒体库来自 TMDB 分类规则；路径目录只用于标题、季集和兜底识别。
                   </p>
                 </div>
                 <p class="text-sm text-white/38">
-                  {{ scanStats.total }} 个视频文件
+                  {{ scannedCategoryLibraries.length }} 个库 · {{ scanStats.total }} 个视频文件
                 </p>
               </div>
 
-              <div v-if="scannedCategories.length" class="category-grid">
-                <button
-                  v-for="category in scannedCategories"
-                  :key="category.id"
-                  type="button"
-                  class="category-card group text-left"
-                  :class="categoryToneClass(category)"
-                  @click="selectScannedCategory(category)"
-                >
-                  <div class="category-card-visual">
-                    <div class="category-card-posters" aria-hidden="true">
-                      <div
-                        v-for="(item, index) in category.previewItems"
-                        :key="`${category.id}-${item.id}`"
-                        class="category-card-poster"
-                        :style="{ '--poster-index': index }"
-                      >
-                        <img
-                          v-if="item.posterUrl || item.backdropUrl"
-                          :src="item.posterUrl || item.backdropUrl"
-                          :alt="item.name"
-                          loading="lazy"
-                          decoding="async"
-                        >
-                        <span v-else>{{ previewInitial(item) }}</span>
-                      </div>
-                    </div>
-                    <span class="category-card-count">{{ category.count }}</span>
-                    <span class="category-card-kind">{{ category.type === 'movie' ? 'Movie' : category.type === 'tv' ? 'Series' : category.type === 'unresolved' ? 'Unknown' : 'Mixed' }}</span>
-                  </div>
-                  <div class="p-4">
-                    <p class="line-clamp-1 text-base font-semibold text-white">
-                      {{ category.name }}
-                    </p>
-                    <p class="mt-1 text-sm text-white/48">
-                      {{ category.subtitle }}
-                    </p>
-                    <p v-if="category.previewTitles.length" class="mt-3 line-clamp-2 text-xs leading-5 text-white/34">
-                      {{ category.previewTitles.join(' / ') }}
-                    </p>
-                  </div>
-                </button>
-              </div>
-
-              <div v-else class="glass-panel flex min-h-56 flex-col items-center justify-center rounded-[1.75rem] p-8 text-center">
-                <p class="text-base font-semibold text-white">
-                  当前扫描没有可显示的视频
-                </p>
-                <p class="mt-2 max-w-md text-sm leading-6 text-white/45">
-                  可以重新扫描当前根目录，或切换到文件夹视图继续浏览。
-                </p>
-              </div>
+              <MediaGrid
+                :items="scannedCategoryLibraries"
+                empty-title="当前扫描没有可显示的媒体库"
+                empty-description="可以重新扫描当前根目录，或切换到文件夹视图继续浏览。"
+                @select="handleSelect"
+                @play="handlePlay"
+              />
             </section>
           </template>
 
@@ -1133,7 +1303,7 @@ function labelForSourceType(type: string): string {
                 class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14"
                 @click="backToScannedCategories"
               >
-                返回分类
+                返回媒体库
               </button>
               <div>
                 <p class="text-xs uppercase tracking-[0.2em] text-white/32">
@@ -1157,49 +1327,16 @@ function labelForSourceType(type: string): string {
               </p>
             </div>
 
-            <section v-if="selectedCategoryMovies.length">
-              <div class="mb-4">
-                <h3 class="text-lg font-bold text-white">
-                  电影
-                </h3>
-              </div>
-              <MediaGrid :items="selectedCategoryMovies" @select="handleSelect" @play="handlePlay" />
-            </section>
-
-            <section v-if="selectedCategorySeriesGroups.length" class="space-y-5">
+            <section v-else class="space-y-4">
               <div>
                 <h3 class="text-lg font-bold text-white">
-                  剧集
+                  作品
                 </h3>
                 <p class="mt-1 text-sm text-white/36">
-                  按解析出的剧名聚合，点击分集仍使用 OpenList/Alist 播放流程。
+                  电影与剧集都按作品聚合；未识别文件保留为可播放文件卡。
                 </p>
               </div>
-              <div v-for="group in selectedCategorySeriesGroups" :key="group.key" class="space-y-3">
-                <div class="flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <h4 class="text-base font-semibold text-white">
-                      {{ group.title }}
-                    </h4>
-                    <p class="mt-1 text-sm text-white/36">
-                      {{ group.items.length }} 个文件
-                    </p>
-                  </div>
-                </div>
-                <MediaGrid :items="group.items" @select="handleSelect" @play="handlePlay" />
-              </div>
-            </section>
-
-            <section v-if="selectedCategoryUnresolved.length">
-              <div class="mb-4">
-                <h3 class="text-lg font-bold text-white">
-                  未识别
-                </h3>
-                <p class="mt-1 text-sm text-white/36">
-                  暂未解析出标题或季集信息的文件，仍可直接播放。
-                </p>
-              </div>
-              <MediaGrid :items="selectedCategoryUnresolved" @select="handleSelect" @play="handlePlay" />
+              <MediaGrid :items="selectedCategoryWorkItems" @select="handleSelect" @play="handlePlay" />
             </section>
           </template>
         </section>
@@ -1263,8 +1400,7 @@ function labelForSourceType(type: string): string {
   background: var(--color-bg);
 }
 
-.scan-management-panel,
-.empty-library-state {
+.scan-management-panel {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 8%, transparent), transparent 46%),
     color-mix(in srgb, var(--color-surface) 62%, transparent);
@@ -1288,117 +1424,5 @@ function labelForSourceType(type: string): string {
   color: white;
   font-size: 1rem;
   font-weight: 700;
-}
-
-.category-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
-  gap: 1rem;
-}
-
-.category-card {
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  border-radius: 1.4rem;
-  background: color-mix(in srgb, var(--color-surface) 54%, transparent);
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--duration-normal), border-color var(--duration-normal), background var(--duration-normal);
-}
-
-.category-card:hover {
-  transform: translateY(-0.2rem);
-  border-color: rgb(255 255 255 / 24%);
-  background: color-mix(in srgb, var(--color-surface-hover) 60%, transparent);
-}
-
-.category-card-visual {
-  position: relative;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-}
-
-.category-card-visual::before {
-  position: absolute;
-  inset: 0;
-  content: '';
-  background:
-    linear-gradient(135deg, rgb(255 255 255 / 20%), transparent 42%),
-    radial-gradient(circle at 78% 24%, rgb(255 255 255 / 20%), transparent 24%),
-    linear-gradient(0deg, rgb(0 0 0 / 44%), transparent 64%);
-}
-
-.category-card--movie .category-card-visual {
-  background: linear-gradient(135deg, rgb(34 197 94 / 38%), rgb(14 165 233 / 22%)), var(--color-surface);
-}
-
-.category-card--tv .category-card-visual {
-  background: linear-gradient(135deg, rgb(245 158 11 / 34%), rgb(236 72 153 / 22%)), var(--color-surface);
-}
-
-.category-card--unresolved .category-card-visual {
-  background: linear-gradient(135deg, rgb(148 163 184 / 26%), rgb(255 255 255 / 10%)), var(--color-surface);
-}
-
-.category-card--mixed .category-card-visual {
-  background: linear-gradient(135deg, rgb(20 184 166 / 30%), rgb(168 85 247 / 24%)), var(--color-surface);
-}
-
-.category-card-posters {
-  position: absolute;
-  inset: 1.2rem auto 1rem 1rem;
-  display: flex;
-  width: min(68%, 12rem);
-  align-items: center;
-}
-
-.category-card-poster {
-  position: absolute;
-  left: 0;
-  display: flex;
-  aspect-ratio: 2 / 3;
-  height: min(7.8rem, 82%);
-  transform: translateX(calc(var(--poster-index) * 2.1rem)) rotate(calc((var(--poster-index) - 1.5) * 2deg));
-  transform-origin: bottom center;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 20%);
-  border-radius: 0.7rem;
-  background:
-    linear-gradient(160deg, rgb(255 255 255 / 18%), transparent 36%),
-    rgb(0 0 0 / 24%);
-  box-shadow: 0 1rem 1.8rem rgb(0 0 0 / 30%);
-}
-
-.category-card-poster img {
-  height: 100%;
-  width: 100%;
-  object-fit: cover;
-}
-
-.category-card-poster span {
-  color: rgb(255 255 255 / 72%);
-  font-size: 1.5rem;
-  font-weight: 800;
-}
-
-.category-card-count {
-  position: absolute;
-  right: 1rem;
-  bottom: 0.75rem;
-  color: white;
-  font-size: 2rem;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.category-card-kind {
-  position: absolute;
-  left: 1rem;
-  top: 0.85rem;
-  color: rgb(255 255 255 / 62%);
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 </style>
