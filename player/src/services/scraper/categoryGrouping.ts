@@ -1,4 +1,4 @@
-import type { RawCategoryAssignment, RawMediaCandidate } from './types'
+import type { RawCategoryAssignment, RawMediaCandidate, RawScrapedMediaItem } from './types'
 import { SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME } from './classificationRules'
 import { cleanMediaTitle, extractMediaSearchTitles, normalizeTitleKey } from './parser'
 import { stripFileExtension } from './pathUtils'
@@ -78,6 +78,20 @@ export function deriveRawCandidateCategoryAssignment(candidate: RawMediaCandidat
   return resolveRawCandidateCategoryAssignment(candidate)
 }
 
+export function createRawUnresolvedCategoryAssignment(): RawCategoryAssignment {
+  return { categoryName: RAW_UNRESOLVED_CATEGORY_NAME, source: 'kindFallback' }
+}
+
+export function resolveRawScrapedCategoryAssignment(
+  candidate: RawMediaCandidate,
+  scraped?: RawScrapedMediaItem,
+): RawCategoryAssignment {
+  if (!scraped || scraped.matchStatus !== 'matched')
+    return createRawUnresolvedCategoryAssignment()
+
+  return resolveRawCandidateCategoryAssignment(candidate, scraped.categoryAssignment ?? candidate.categoryAssignment)
+}
+
 export function resolveRawCandidateCategoryAssignment(
   candidate: RawMediaCandidate,
   metadataAssignment?: RawCategoryAssignment,
@@ -100,7 +114,7 @@ export function resolveRawCandidateCategoryAssignment(
     case 'tv':
       return { categoryName: RAW_TV_CATEGORY_NAME, source: 'kindFallback' }
     case 'unresolved':
-      return { categoryName: RAW_UNRESOLVED_CATEGORY_NAME, source: 'kindFallback' }
+      return createRawUnresolvedCategoryAssignment()
     default:
       return { categoryName: SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME, source: 'kindFallback' }
   }

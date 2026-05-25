@@ -1,6 +1,6 @@
 import type { RawLocalScanLogEntry } from './localScanCache'
 import type { RawMediaCandidate, RawScrapedMediaItem, RawTmdbMatchStatus } from './types'
-import { deriveRawCandidateCategoryAssignment, resolveRawCandidateCategoryAssignment } from './categoryGrouping'
+import { createRawUnresolvedCategoryAssignment, resolveRawCandidateCategoryAssignment } from './categoryGrouping'
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
 import { normalizeTitleKey } from './parser'
 import { extractCandidateTmdbSearchTitles, loadTmdbLocalSettings, readConfiguredTmdbCredential, TmdbScraper } from './tmdb'
@@ -18,7 +18,7 @@ export async function enrichRawMediaCandidates(
 ): Promise<RawScrapedMediaItem[]> {
   const credential = await readConfiguredTmdbCredential()
   if (!credential) {
-    options.onLog?.(createLog('warning', '未配置 TMDB token/key，本次扫描仅保留可播放候选并使用电影/剧集/未识别兜底分类。'))
+    options.onLog?.(createLog('warning', '未配置 TMDB token/key，本次扫描仅保留可播放候选并统一归入未识别分类。'))
     return candidates.map(candidate => fallbackScrapedItem(candidate, 'notConfigured'))
   }
 
@@ -148,7 +148,7 @@ function fallbackScrapedItem(
   matchStatus: RawTmdbMatchStatus,
   errorMessage?: string,
 ): RawScrapedMediaItem {
-  const categoryAssignment = deriveRawCandidateCategoryAssignment(candidate)
+  const categoryAssignment = createRawUnresolvedCategoryAssignment()
   return {
     recordId: candidate.record.id,
     providerPath: candidate.record.providerPath,

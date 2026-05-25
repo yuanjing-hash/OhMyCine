@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, resolveRawCandidateCategoryAssignment } from '@/services/scraper'
+import { createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, resolveRawScrapedCategoryAssignment } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -146,7 +146,6 @@ const scannedMovies = computed(() => scannedDisplayItems.value.filter(entry => e
 const scannedSeriesFiles = computed(() =>
   scannedDisplayItems.value.filter(entry => entry.domain === 'tv'),
 )
-const scannedUnresolved = computed(() => scannedDisplayItems.value.filter(entry => entry.domain === 'unresolved'))
 const scannedCategories = computed<ScannedCategory[]>(() => {
   const groups = new Map<string, ScannedDisplayItem[]>()
   for (const entry of scannedDisplayItems.value) {
@@ -164,6 +163,11 @@ const selectedScannedCategory = computed(() =>
 )
 const scannedCategoryLibraries = computed<MediaLibrary[]>(() => scannedCategories.value.map(category => category.library))
 const selectedCategoryWorkItems = computed<MediaItem[]>(() => selectedScannedCategory.value?.works.map(work => work.item) ?? [])
+const selectedScannedCategoryDescription = computed(() => {
+  if (selectedScannedCategory.value?.name === RAW_UNRESOLVED_CATEGORY_NAME)
+    return '未识别条目保留解析出的标题、季集和播放路径；剧集候选仍按作品/季/集聚合，便于后续手动识别。'
+  return '电影与剧集都按作品聚合；可直接进入详情或播放。'
+})
 const selectedCategoryQueueItems = computed(() => [
   ...playableItemsFromWorks(selectedScannedCategory.value?.works ?? []),
 ])
@@ -199,18 +203,19 @@ const sourceLandingHeroItems = computed(() =>
 )
 const scanStats = computed(() => ({
   total: scannedDisplayItems.value.length,
-  movie: scannedMovies.value.length,
-  tv: scannedSeriesFiles.value.length,
-  unresolved: scannedUnresolved.value.length,
+  movie: scannedMovies.value.filter(entry => !isUnresolvedCategoryEntry(entry)).length,
+  tv: scannedSeriesFiles.value.filter(entry => !isUnresolvedCategoryEntry(entry)).length,
+  unresolved: scannedDisplayItems.value.filter(isUnresolvedCategoryEntry).length,
 }))
 const mediaLibrarySummary = computed(() => {
   if (!scanCache.value)
     return `后台索引会自动整理 ${alistRootPath.value}，完成后生成电影、剧集和未识别文件分类。`
 
+  const classifiedSeriesCount = seriesCountForEntries(scannedSeriesFiles.value.filter(entry => !isUnresolvedCategoryEntry(entry)))
   const parts = [
     `${scannedCategories.value.length} 个分类`,
-    `${scanStats.value.movie} 部影片`,
-    `${seriesCountForEntries(scannedSeriesFiles.value)} 部剧集`,
+    scanStats.value.movie ? `${scanStats.value.movie} 部影片` : undefined,
+    classifiedSeriesCount ? `${classifiedSeriesCount} 部剧集` : undefined,
     scanStats.value.unresolved ? `${scanStats.value.unresolved} 个未识别` : undefined,
   ].filter((part): part is string => Boolean(part))
   return parts.join(' · ')
@@ -685,7 +690,7 @@ function createScannedCategory(name: string, entries: ScannedDisplayItem[]): Sca
   const tvEntries = entries.filter(entry => entry.domain === 'tv')
   const unresolvedCount = entries.filter(entry => entry.domain === 'unresolved').length
   const seriesCount = seriesCountForEntries(tvEntries)
-  const type = scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
+  const type = name === RAW_UNRESOLVED_CATEGORY_NAME ? 'unresolved' : scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
   const works = createScannedWorkItems(entries)
   const previewItems = works.map(work => work.item).slice(0, 4)
   const previewArtwork = previewItems.find(item => item.backdropUrl || item.posterUrl)
@@ -713,7 +718,7 @@ function createScannedCategory(name: string, entries: ScannedDisplayItem[]): Sca
     tvCount: tvEntries.length,
     unresolvedCount,
     seriesCount,
-    subtitle: scannedCategorySubtitle({ movieCount, tvCount: tvEntries.length, unresolvedCount, seriesCount }),
+    subtitle: scannedCategorySubtitle({ categoryName: name, fileCount: entries.length, movieCount, tvCount: tvEntries.length, unresolvedCount, seriesCount }),
     previewTitles: uniqueDisplayTitles(entries).slice(0, 3),
   }
 }
@@ -832,11 +837,21 @@ function playableItemsFromWorks(works: readonly ScannedWorkItem[]): MediaItem[] 
 }
 
 function scannedCategorySubtitle(counts: {
+  categoryName: string
+  fileCount: number
   movieCount: number
   tvCount: number
   unresolvedCount: number
   seriesCount: number
 }): string {
+  if (counts.categoryName === RAW_UNRESOLVED_CATEGORY_NAME) {
+    const parts = [
+      `${counts.fileCount} 个待识别文件`,
+      counts.seriesCount ? `${counts.seriesCount} 组剧集候选` : undefined,
+    ].filter((part): part is string => Boolean(part))
+    return parts.join(' · ')
+  }
+
   const parts = [
     counts.movieCount ? `${counts.movieCount} 部影片` : undefined,
     counts.tvCount ? `${counts.seriesCount || counts.tvCount} 部剧集` : undefined,
@@ -930,7 +945,7 @@ function scannedItemOverview(candidate: RawMediaCandidate, scraped?: RawScrapedM
   const parts = [
     scraped?.matchStatus === 'matched' ? 'TMDB：已匹配' : `本地只读扫描：${candidate.parseStatus === 'unresolved' ? '未识别' : '已解析'}`,
     `分类：${categoryNameForCandidate(candidate, scraped)}`,
-    resolveRawCandidateCategoryAssignment(candidate, scraped?.categoryAssignment ?? candidate.categoryAssignment).source === 'metadataRule' && scraped?.matchedRuleName ? `规则：${scraped.matchedRuleName}` : undefined,
+    resolveRawScrapedCategoryAssignment(candidate, scraped).source === 'metadataRule' && scraped?.matchedRuleName ? `规则：${scraped.matchedRuleName}` : undefined,
     scraped?.matchedSearchTitle ? `搜索标题：${scraped.matchedSearchTitle}` : undefined,
     scraped?.matchStatus !== 'matched' && candidate.categoryHint ? `路径提示：${candidate.categoryHint}` : undefined,
     candidate.signals.length ? `信号：${candidate.signals.join(', ')}` : undefined,
@@ -939,7 +954,11 @@ function scannedItemOverview(candidate: RawMediaCandidate, scraped?: RawScrapedM
 }
 
 function categoryNameForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
-  return resolveRawCandidateCategoryAssignment(candidate, scraped?.categoryAssignment ?? candidate.categoryAssignment).categoryName
+  return resolveRawScrapedCategoryAssignment(candidate, scraped).categoryName
+}
+
+function isUnresolvedCategoryEntry(entry: ScannedDisplayItem): boolean {
+  return entry.categoryName === RAW_UNRESOLVED_CATEGORY_NAME
 }
 
 function domainForScannedEntry(
@@ -1187,7 +1206,7 @@ function labelForSourceType(type: string): string {
                 <strong>{{ scanStats.total }}</strong>
               </div>
               <div class="scan-stat">
-                <p>电影 / 剧集</p>
+                <p>已分类电影 / 剧集</p>
                 <strong>{{ scanStats.movie }} / {{ scanStats.tv }}</strong>
               </div>
               <div class="scan-stat">
@@ -1340,7 +1359,7 @@ function labelForSourceType(type: string): string {
                   作品
                 </h3>
                 <p class="mt-1 text-sm text-white/36">
-                  电影与剧集都按作品聚合；未识别文件保留为可播放文件卡。
+                  {{ selectedScannedCategoryDescription }}
                 </p>
               </div>
               <MediaGrid :items="selectedCategoryWorkItems" @select="handleSelect" @play="handlePlay" />

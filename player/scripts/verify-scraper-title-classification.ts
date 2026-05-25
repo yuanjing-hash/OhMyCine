@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { deriveRawCandidateCategoryAssignment, resolveRawCandidateCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
+import { deriveRawCandidateCategoryAssignment, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
 import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
 import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
 import type { MediaItem } from '../src/services/datasource/types.ts'
-import type { RawFileRecord, RawScrapedMediaItem } from '../src/services/scraper/types.ts'
+import type { RawFileRecord, RawScrapedMediaItem, RawTmdbMatchStatus } from '../src/services/scraper/types.ts'
 
 const noisyTitle = '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV 1080P 简繁字幕'
 const cleanedTitle = cleanMediaTitle(noisyTitle)
@@ -134,6 +134,19 @@ assert.equal(flatEpisodeCandidate.categoryHint, undefined)
 const noPathHintMatchedAssignment = resolveRawCandidateCategoryAssignment(flatEpisodeCandidate, metadataRuleAssignment)
 assert.equal(noPathHintMatchedAssignment.categoryName, '欧美剧')
 assert.equal(noPathHintMatchedAssignment.source, 'metadataRule')
+const noPathHintMatchedScrape: RawScrapedMediaItem = {
+  recordId: flatEpisodeCandidate.record.id,
+  providerPath: flatEpisodeCandidate.record.providerPath,
+  matchStatus: 'matched',
+  searchTitles: ['The Legend of Vox Machina'],
+  matchedSearchTitle: 'The Legend of Vox Machina',
+  mediaType: 'tv',
+  categoryName: '欧美剧',
+  categoryAssignment: metadataRuleAssignment,
+}
+const noPathHintMatchedDisplayAssignment = resolveRawScrapedCategoryAssignment(flatEpisodeCandidate, noPathHintMatchedScrape)
+assert.equal(noPathHintMatchedDisplayAssignment.categoryName, '欧美剧')
+assert.equal(noPathHintMatchedDisplayAssignment.source, 'metadataRule')
 
 const matchedSeriesScrape: RawScrapedMediaItem = {
   recordId: standardSeriesCandidates[0].record.id,
@@ -165,6 +178,31 @@ const matchedSeriesScrape: RawScrapedMediaItem = {
     source: 'pathHint',
   },
 }
+const pathHintMatchedDisplayAssignment = resolveRawScrapedCategoryAssignment(standardSeriesCandidates[0], matchedSeriesScrape)
+assert.equal(pathHintMatchedDisplayAssignment.categoryName, '动漫')
+assert.equal(pathHintMatchedDisplayAssignment.source, 'pathHint')
+const missingScrapeDisplayAssignment = resolveRawScrapedCategoryAssignment(standardSeriesCandidates[0], undefined)
+assert.equal(missingScrapeDisplayAssignment.categoryName, RAW_UNRESOLVED_CATEGORY_NAME)
+assert.equal(missingScrapeDisplayAssignment.source, 'kindFallback')
+
+const unmatchedStatuses: RawTmdbMatchStatus[] = ['notFound', 'notConfigured', 'failed', 'skipped']
+const unmatchedDisplayCategories = unmatchedStatuses.map((matchStatus) => {
+  const displayAssignment = resolveRawScrapedCategoryAssignment(standardSeriesCandidates[0], {
+    ...matchedSeriesScrape,
+    matchStatus,
+    matchedSearchTitle: undefined,
+    metadata: undefined,
+    categoryName: '动漫',
+    categoryAssignment: {
+      categoryName: '动漫',
+      source: 'pathHint',
+    },
+  })
+  assert.equal(displayAssignment.categoryName, RAW_UNRESOLVED_CATEGORY_NAME)
+  assert.equal(displayAssignment.source, 'kindFallback')
+  return displayAssignment.categoryName
+})
+assert.deepEqual(unmatchedDisplayCategories, unmatchedStatuses.map(() => RAW_UNRESOLVED_CATEGORY_NAME))
 const groupedSeries = groupRawSeriesEntries([
   { candidate: standardSeriesCandidates[0], scraped: matchedSeriesScrape },
   { candidate: standardSeriesCandidates[1] },
@@ -238,7 +276,11 @@ console.log(JSON.stringify({
   standardSeriesCategoryHint: standardSeriesCandidates[0].categoryHint,
   standardSeriesSeasons: standardSeriesCandidates.map(candidate => candidate.seasonNumber),
   pathHintMatchedCategory: pathHintMatchedAssignment.categoryName,
+  pathHintMatchedDisplayCategory: pathHintMatchedDisplayAssignment.categoryName,
+  missingScrapeDisplayCategory: missingScrapeDisplayAssignment.categoryName,
   noPathHintMatchedCategory: noPathHintMatchedAssignment.categoryName,
+  noPathHintMatchedDisplayCategory: noPathHintMatchedDisplayAssignment.categoryName,
+  unmatchedDisplayCategories,
   groupedSeriesCount: groupedSeries.length,
   contextSeasonChildren: contextSeasonChildren.map(season => ({
     name: season.name,
