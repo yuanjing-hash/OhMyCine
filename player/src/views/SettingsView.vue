@@ -95,13 +95,13 @@ const sourceTypeOptions: Array<{
 const tmdbAuthTypeOptions: Array<{ value: TmdbAuthType, label: string, description: string }> = [
   {
     value: 'readAccessToken',
-    label: 'Read Access Token',
-    description: '推荐。粘贴 TMDB 设置页生成的 v4 只读访问令牌。',
+    label: 'API 读访问令牌 / Read Access Token',
+    description: '推荐填写。粘贴 TMDB 设置页生成的 v4 只读访问令牌。',
   },
   {
     value: 'apiKey',
     label: 'API Key',
-    description: '兼容旧版 v3 API Key。',
+    description: '兼容旧版 v3 或短 key；已有 API Key 时可继续使用。',
   },
 ]
 
@@ -181,7 +181,7 @@ const scrapingEntryMeta = computed(() => {
   return tmdbStoredAuthType.value ? '类型待确认' : 'TMDB 可选'
 })
 const tmdbCredentialInputLabel = computed(() =>
-  tmdbForm.authType === 'readAccessToken' ? 'Read Access Token' : 'API Key',
+  tmdbForm.authType === 'readAccessToken' ? 'API 读访问令牌 / Read Access Token' : 'API Key',
 )
 const tmdbCredentialPlaceholder = computed(() =>
   tmdbCredentialConfigured.value
@@ -1014,7 +1014,7 @@ function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string
 }
 
 function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
-  return authType === 'readAccessToken' ? 'Read Access Token' : 'API Key'
+  return authType === 'readAccessToken' ? 'API 读访问令牌 / Read Access Token' : 'API Key'
 }
 </script>
 
@@ -1162,7 +1162,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 元数据匹配（可选增强）
               </h3>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                TMDB 凭据只保存到凭证边界，不写入 localStorage。API Key 只走 api_key query，Read Access Token 只走 Authorization: Bearer。未配置时扫描不会失败，会保留可播放候选、目录识别和兜底分类；后续可接入内置/公共元数据通道。扫描发给 TMDB 的只包含作品名、年份等非敏感查询信息，不发送 OpenList/Alist 账号、token 或播放地址。
+                建议填写 API 读访问令牌 / Read Access Token；API Key 仅作为旧版 v3/短 key 兼容。凭据只保存到凭证边界，不写入 localStorage。Read Access Token 走 Authorization: Bearer，API Key 走 api_key query。未配置时扫描不会失败，会保留可播放候选、目录识别和兜底分类；扫描发给 TMDB 的只包含作品名、年份等非敏感查询信息，不发送 OpenList/Alist 账号、token 或播放地址。
               </p>
             </div>
             <span

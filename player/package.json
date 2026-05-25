@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "verify:scraper": "TMPDIR=/tmp tsx scripts/verify-scraper-title-classification.ts",
     "verify:home-fault-isolation": "TMPDIR=/tmp tsx scripts/verify-home-source-fault-isolation.ts",
+    "verify:home-source-cards": "TMPDIR=/tmp tsx scripts/verify-home-source-cards.ts",
+    "verify:raw-source-index-scheduler": "TMPDIR=/tmp tsx scripts/verify-raw-source-index-scheduler.ts",
     "verify:tmdb-auth": "TMPDIR=/tmp tsx scripts/verify-tmdb-auth-routing.ts",
     "tauri": "tauri",
     "setup:libmpv": "node scripts/setup-libmpv.mjs",

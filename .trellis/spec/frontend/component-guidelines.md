@@ -69,6 +69,9 @@ Required principles:
 - `DataSourceSidebar` renders home, ordered configured data sources, optional Server entry, and settings.
 - The sidebar bottom add/plus affordance must navigate to data-source management, not a provider-specific setup shortcut.
 - Disabled data sources may remain visible for management context, but must look disabled and must not be browsable until re-enabled.
+- `HomeView` must expose a visible media-library/data-source entry area whenever configured sources exist; users must not have to discover a hover-only sidebar before opening a source.
+- Home data-source entry cards should show enabled and disabled sources, route enabled sources to `/source/:id`, and surface short raw-source automatic index states such as `等待自动索引` / `后台整理中` / `已索引` without replacing provider content from other working sources.
+- Raw file source indexing is a background local task: app/home startup may trigger best-effort source-scoped indexing with cooldown, but OpenList/Alist pending or failed indexing must not hide Emby/Jellyfin hero, continue-watching, latest, or library rows.
 - Server entries must not block local/Emby/Jellyfin/OpenList/Alist/CloudDrive2 browsing when disconnected.
 - `WindowChrome` handles frameless window drag/control surfaces and must remain above route/loading content; loading skeletons, hero gradients, and decorative overlays should not intercept pointer events unless they contain real controls.
 - Non-home routes must expose a visible back control in the global layout or route chrome. Prefer `router.back()` when `window.history.state?.back` exists; otherwise navigate to `/`.

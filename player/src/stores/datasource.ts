@@ -141,7 +141,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     const loadId = ++homeLoadId
     isLoading.value = true
     try {
-      await syncManager()
+      await syncManager().catch(() => undefined)
       const [sections, localContinueEntries] = await Promise.all([
         loadAggregatedHomeSections(orderedConfigs.value),
         listLocalContinueWatchingSafely(20),

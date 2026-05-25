@@ -38,6 +38,67 @@ Use services and stores to cache external data, but source-of-truth remains the 
 
 Home aggregation must isolate external failures at the source/section level. A failed, disabled, misconfigured, or metadata-unavailable source must not replace or hide hero, continue-watching, recently-added, or library rows from other working sources; empty/error placeholders should not be inserted as normal `HomeSection` candidates.
 
+### Raw Source Auto Indexing Contract
+
+#### 1. Scope / Trigger
+- Trigger: Player-side scraping/indexing for raw file sources such as OpenList/Alist, CloudDrive2, and local files.
+- Applies to app startup, Home aggregation, raw source pages, scan cache reads/writes, scheduler state, and manual "scan now" controls.
+
+#### 2. Signatures
+- Scheduler factory: `createRawSourceIndexScheduler(options?: RawSourceIndexSchedulerOptions): RawSourceIndexScheduler`.
+- Singleton: `rawSourceIndexScheduler`.
+- Target builder: `createRawSourceAutoIndexTargets(configs, resolveSource): RawSourceIndexTarget[]`.
+- Target shape: `{ sourceId, sourceType, rootPath, source: Pick<DataSource, 'list'> }`.
+- Auto trigger: `triggerAutoIndexForTargets(targets, { intervalMs? }): Promise<RawSourceIndexTriggerResult[]>`.
+- Manual trigger: `forceScan(target, { onLog? }): Promise<RawLocalScanCache>`.
+- Status read: `getStatus({ sourceId, sourceType, rootPath? }): RawSourceIndexStatus`.
+
+#### 3. Contracts
+- App startup should call `startAutoIndexing()` once with current raw-source targets; it must not block first paint or Home loading.
+- The default scheduler interval is `6 * 60 * 60 * 1000` ms unless a test or explicit caller overrides it.
+- Cooldown keys are source-scoped and root-scoped: `sourceType + sourceId + normalized rootPath`.
+- Auto indexing uses `runRawSourceLocalScan()` and the existing local raw scan cache; it must only read provider directory/file metadata and write local app data/cache.
+- Auto indexing failures are background state only. They must not throw through `HomeView`, `DataSourceStore.loadHomeSections()`, or aggregated `HomeSection` collection.
+- Manual scan controls may call `forceScan()` for immediate re-indexing, but manual scan is an advanced override, not the primary UX.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| One raw source scan fails | Mark that source status as `failed`; keep other source Home sections visible |
+| Same source/root triggers during cooldown | Return `cooldown` with `skipped: true`; do not scan again |
+| Another source/root triggers during cooldown | Treat independently and allow scan when its own cooldown permits |
+| A scan is already in flight | Return `running` / skipped state and reuse the in-flight work |
+| Source is disabled or unavailable | Do not create an auto-index target for it |
+| Schedule/cache storage is unavailable | Continue in memory/best-effort mode; browsing and Home must still work |
+| Manual scan fails | Show source-page error only; file browsing and other sources remain usable |
+
+#### 5. Good/Base/Bad Cases
+- Good: Emby Home sections render while OpenList auto indexing fails in the background.
+- Base: OpenList has no cache yet, Home shows "waiting for auto index" status and the source page still offers folder browsing.
+- Bad: Home displays an empty/error OpenList section that hides Emby hero/latest/continue rows.
+
+#### 6. Tests Required
+- Verify source cards show OpenList/Alist as waiting/pending when no local raw scan cache exists.
+- Verify an OpenList indexing failure does not remove Emby hero, continue-watching, or recently-added sections.
+- Verify scheduler cooldown suppresses repeated scans for the same source/root while allowing another source/root to scan.
+- Verify TMDB credential auth routing remains separate from indexing scheduling: API Key uses `api_key`, Read Access Token uses `Authorization: Bearer`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+await rawSourceIndexScheduler.forceScan(target)
+await store.loadHomeSections()
+```
+
+Correct:
+```ts
+rawSourceIndexScheduler.startAutoIndexing({
+  getTargets: async () => createRawSourceAutoIndexTargets(store.orderedConfigs, id => store.getSource(id)),
+})
+await store.loadHomeSections()
+```
+
 ### URL state
 
 Use Vue Router for route identity: current view, selected source ID, selected media ID, search query where appropriate.

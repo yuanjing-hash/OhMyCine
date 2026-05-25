@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem } from '@/services/scraper'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { deriveRawCandidateCategoryName, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, runRawSourceLocalScan } from '@/services/scraper'
+import { deriveRawCandidateCategoryName, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -88,6 +88,7 @@ const scanErrorMessage = ref<string | null>(null)
 const scanLiveLogs = ref<RawLocalScanLogEntry[]>([])
 const isScanManagementOpen = ref(false)
 const selectedScannedCategoryId = ref<string | null>(null)
+let unsubscribeRawIndexStatus: (() => void) | undefined
 
 const isAlistSource = computed(() => sourceConfig.value?.type === 'alist')
 const alistRootPath = computed(() => isAlistSource.value ? readAlistRootPath(sourceConfig.value) : '/')
@@ -202,7 +203,7 @@ const scanStats = computed(() => ({
 }))
 const mediaLibrarySummary = computed(() => {
   if (!scanCache.value)
-    return `扫描 ${alistRootPath.value} 后生成电影、剧集和未识别文件分类。`
+    return `后台索引会自动整理 ${alistRootPath.value}，完成后生成电影、剧集和未识别文件分类。`
 
   const parts = [
     `${scannedCategories.value.length} 个分类`,
@@ -214,7 +215,7 @@ const mediaLibrarySummary = computed(() => {
 })
 const detectionModeLabel = computed(() => {
   if (!scanCache.value)
-    return '未扫描'
+    return '等待索引'
   return scanCache.value.detection.mode === 'standard' ? '标准目录' : '非标准目录'
 })
 const scanFinishedLabel = computed(() => scanCache.value ? formatDateTime(scanCache.value.finishedAt) : '')
@@ -222,8 +223,8 @@ const scanStatusLabel = computed(() => {
   if (isScanning.value)
     return '扫描中'
   if (!scanCache.value)
-    return '未扫描'
-  return scanCache.value.status === 'completed' ? '已完成' : '部分失败'
+    return '等待自动索引'
+  return scanCache.value.status === 'completed' ? '已完成' : '部分索引'
 })
 const scanLogEntries = computed(() => {
   const entries = isScanning.value || !scanCache.value ? scanLiveLogs.value : scanCache.value.logs
@@ -231,12 +232,25 @@ const scanLogEntries = computed(() => {
 })
 
 onMounted(async () => {
+  unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
+    if (status.sourceId === sourceId.value && status.sourceType === 'alist') {
+      isScanning.value = status.state === 'running'
+      loadScanCacheForCurrentSource({ preserveLiveLogs: status.state === 'running' })
+      if (status.state === 'failed')
+        scanErrorMessage.value = status.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
+    }
+  })
   store.loadConfigs()
   syncDefaultViewModeForSource()
   await ensureSource()
   loadScanCacheForCurrentSource()
   if (isFolderView.value || isAlistSource.value)
     await loadSourceRoot()
+})
+
+onBeforeUnmount(() => {
+  unsubscribeRawIndexStatus?.()
+  unsubscribeRawIndexStatus = undefined
 })
 
 watch(sourceId, async () => {
@@ -545,11 +559,12 @@ async function startLocalScan() {
   scanLiveLogs.value = []
   selectedScannedCategoryId.value = null
   try {
-    scanCache.value = await runRawSourceLocalScan({
+    scanCache.value = await rawSourceIndexScheduler.forceScan({
       source: source.value,
       sourceId: sourceId.value,
       sourceType: 'alist',
       rootPath: alistRootPath.value,
+    }, {
       onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
     })
   }
@@ -561,9 +576,10 @@ async function startLocalScan() {
   }
 }
 
-function loadScanCacheForCurrentSource() {
+function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } = {}) {
   scanErrorMessage.value = null
-  scanLiveLogs.value = []
+  if (!options.preserveLiveLogs)
+    scanLiveLogs.value = []
   if (!isAlistSource.value) {
     scanCache.value = null
     selectedScannedCategoryId.value = null
@@ -1162,7 +1178,7 @@ function labelForSourceType(type: string): string {
                 :disabled="isScanning || !source"
                 @click="startLocalScan"
               >
-                {{ isScanning ? '扫描中…' : scanCache ? '重新扫描' : '开始扫描' }}
+                {{ isScanning ? '索引中…' : scanCache ? '立即重扫' : '立即索引' }}
               </button>
             </div>
 
@@ -1225,10 +1241,10 @@ function labelForSourceType(type: string): string {
               <div class="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <p class="text-sm font-semibold text-white">
-                    尚未生成本地海报墙
+                    本地海报墙正在等待后台整理
                   </p>
                   <p class="mt-1 text-sm leading-6 text-white/42">
-                    当前仍以数据源首页和文件夹入口呈现；扫描管理可生成本地电影、剧集和未识别分类。
+                    软件会自动在后台建立本地索引；当前仍可先使用文件夹入口浏览和播放。扫描管理仅作为高级立即重扫入口。
                   </p>
                 </div>
                 <div class="flex flex-wrap gap-3">

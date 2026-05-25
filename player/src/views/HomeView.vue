@@ -1,12 +1,16 @@
 <script setup lang="ts">
+import type { HomeSourceCard, HomeSourceStatusTone } from '@/services/datasource/homeSourceCards'
 import type { DataSource, MediaItem } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { deriveHomeLatestEmptyState, deriveHomeSourceCards } from '@/services/datasource/homeSourceCards'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { rawSourceIndexScheduler } from '@/services/scraper'
+import { loadRawSourceScanCache } from '@/services/scraper/localScanCache'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const LOCAL_FILE_SOURCE_ID = 'local-file'
@@ -23,15 +27,32 @@ interface SeriesPlaybackTarget {
 
 const seriesPlaybackTargets = ref<Record<string, SeriesPlaybackTarget>>({})
 const errorMessage = ref<string | null>(null)
+const rawIndexStatusVersion = ref(0)
 let seriesTargetRefreshId = 0
 let settledRefreshTimer: number | undefined
+let unsubscribeRawIndexStatus: (() => void) | undefined
 
-const hasSources = computed(() => store.configs.length > 0)
+const sourceCards = computed(() =>
+  deriveHomeSourceCards(store.orderedConfigs, {
+    scanCacheReader: input => input.sourceType === 'alist'
+      ? loadRawSourceScanCache(input.sourceId, 'alist', input.rootPath)
+      : null,
+    scanStatusReader: input => rawIndexStatusVersion.value >= 0 && input.sourceType === 'alist'
+      ? rawSourceIndexScheduler.getStatus({
+          sourceId: input.sourceId,
+          sourceType: 'alist',
+          rootPath: input.rootPath,
+        })
+      : null,
+  }),
+)
+const hasSources = computed(() => sourceCards.value.length > 0)
 const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero' && s.items.length > 0))
 const continueWatchingSection = computed(() => store.homeSections.find(s => s.type === 'continueWatching' && s.items.length > 0))
 const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded' && s.items.length > 0))
 const heroItems = computed(() => heroSection.value?.items ?? [])
 const recentlyAddedItems = computed(() => recentlyAddedSection.value?.items.slice(0, 6) ?? [])
+const latestEmptyState = computed(() => deriveHomeLatestEmptyState(sourceCards.value))
 
 function progressPercent(item: MediaItem): string {
   if (typeof item.progress === 'number' && Number.isFinite(item.progress))
@@ -74,6 +95,9 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 }
 
 onMounted(async () => {
+  unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe(() => {
+    rawIndexStatusVersion.value += 1
+  })
   store.loadConfigs()
   await store.loadHomeSections()
   scheduleSettledContinueWatchingRefresh()
@@ -81,6 +105,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  unsubscribeRawIndexStatus?.()
+  unsubscribeRawIndexStatus = undefined
   if (settledRefreshTimer)
     window.clearTimeout(settledRefreshTimer)
 })
@@ -91,6 +117,40 @@ watch(heroItems, () => {
 
 function goToSettings() {
   void router.push({ name: 'settings', query: { section: 'datasources' } })
+}
+
+function openSourceCard(card: HomeSourceCard) {
+  if (!card.isOpenable)
+    return
+
+  void router.push({ name: 'source', params: { sourceId: card.id } })
+}
+
+function runLatestEmptyAction() {
+  const action = latestEmptyState.value.action
+  if (action.kind === 'settings') {
+    goToSettings()
+    return
+  }
+
+  void router.push({ name: 'source', params: { sourceId: action.sourceId } })
+}
+
+function sourceCardToneClass(tone: HomeSourceStatusTone): string {
+  switch (tone) {
+    case 'pending':
+      return 'source-card-status--pending'
+    case 'indexing':
+      return 'source-card-status--indexing'
+    case 'scanned':
+      return 'source-card-status--scanned'
+    case 'partial':
+      return 'source-card-status--partial'
+    case 'disabled':
+      return 'source-card-status--disabled'
+    case 'ready':
+      return 'source-card-status--ready'
+  }
 }
 
 function scheduleSettledContinueWatchingRefresh() {
@@ -348,6 +408,62 @@ function isContainerItem(item: MediaItem): boolean {
         {{ errorMessage }}
       </div>
 
+      <section v-if="sourceCards.length" class="glass-panel rounded-[1.75rem] p-5 sm:p-6">
+        <div class="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p class="text-xs uppercase tracking-[0.24em]" style="color: var(--gp-text-dim)">
+              Sources
+            </p>
+            <h2 class="mt-1 text-xl font-bold" style="color: var(--gp-text-full)">
+              媒体库
+            </h2>
+          </div>
+          <button class="text-xs transition-colors" style="color: var(--gp-text)" @click="goToSettings">
+            管理数据源 >
+          </button>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <button
+            v-for="card in sourceCards"
+            :key="card.id"
+            class="source-card group flex min-h-36 flex-col justify-between rounded-2xl border p-4 text-left transition-all"
+            :class="{ 'source-card--disabled': !card.isOpenable }"
+            :disabled="!card.isOpenable"
+            :aria-label="`${card.title}：${card.statusLabel}`"
+            @click="openSourceCard(card)"
+          >
+            <span class="flex items-start justify-between gap-3">
+              <span class="flex min-w-0 items-center gap-3">
+                <span class="source-card-icon flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl text-sm font-bold">
+                  {{ card.iconLabel }}
+                </span>
+                <span class="min-w-0">
+                  <span class="block truncate text-sm font-semibold" style="color: var(--gp-text-full)">
+                    {{ card.title }}
+                  </span>
+                  <span class="mt-1 block truncate text-xs" style="color: var(--gp-text-dim)">
+                    {{ card.providerLabel }}
+                  </span>
+                </span>
+              </span>
+              <span class="source-card-status flex-shrink-0 rounded-full px-2 py-1 text-[0.68rem] font-semibold" :class="sourceCardToneClass(card.statusTone)">
+                {{ card.statusLabel }}
+              </span>
+            </span>
+
+            <span class="mt-5 block">
+              <span class="line-clamp-2 block text-xs leading-5" style="color: var(--gp-text)">
+                {{ card.description }}
+              </span>
+              <span class="mt-3 inline-flex text-xs font-semibold transition-colors" style="color: var(--gp-text-full)">
+                {{ card.actionLabel }}<span v-if="card.isOpenable" aria-hidden="true">&nbsp;></span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </section>
+
       <div class="grid grid-cols-1 gap-6 pb-8 xl:grid-cols-2">
         <section class="glass-panel rounded-[1.75rem] p-6">
           <div class="mb-5 flex items-center justify-between">
@@ -455,18 +571,17 @@ function isContainerItem(item: MediaItem): boolean {
 
           <div v-else class="flex h-40 flex-col items-center justify-center rounded-3xl empty-panel text-center">
             <p class="text-sm font-medium" style="color: var(--gp-text-full)">
-              等待影视库内容
+              {{ latestEmptyState.title }}
             </p>
             <p class="mt-2 max-w-xs text-xs leading-5" style="color: var(--gp-text)">
-              配置数据源后，最新入库和推荐内容会在这里横向展示。
+              {{ latestEmptyState.description }}
             </p>
             <button
-              v-if="!hasSources"
               class="mt-4 rounded-2xl px-4 py-2 text-xs font-semibold transition-colors"
               style="color: var(--gp-text-full); background: var(--gp-hover)"
-              @click="goToSettings"
+              @click="runLatestEmptyAction"
             >
-              添加数据源
+              {{ latestEmptyState.actionLabel }}
             </button>
           </div>
         </section>
@@ -492,6 +607,68 @@ function isContainerItem(item: MediaItem): boolean {
 
 .poster-placeholder {
   color: var(--color-text-tertiary);
+}
+
+.source-card {
+  color: inherit;
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 48%, transparent);
+}
+
+.source-card:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--color-text) 18%, var(--color-border));
+  background: color-mix(in srgb, var(--color-surface-hover) 64%, transparent);
+  transform: translateY(-2px);
+}
+
+.source-card--disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.source-card-icon {
+  color: var(--gp-text-full);
+  background: var(--gp-hover);
+}
+
+.source-card-status {
+  border: 1px solid transparent;
+}
+
+.source-card-status--ready {
+  color: var(--gp-text-full);
+  border-color: var(--color-border);
+  background: var(--gp-hover);
+}
+
+.source-card-status--pending {
+  color: rgb(253 224 71);
+  border-color: rgb(253 224 71 / 0.18);
+  background: rgb(253 224 71 / 0.1);
+}
+
+.source-card-status--indexing {
+  color: rgb(125 211 252);
+  border-color: rgb(125 211 252 / 0.2);
+  background: rgb(125 211 252 / 0.1);
+}
+
+.source-card-status--scanned {
+  color: rgb(110 231 183);
+  border-color: rgb(110 231 183 / 0.18);
+  background: rgb(110 231 183 / 0.1);
+}
+
+.source-card-status--partial {
+  color: rgb(253 186 116);
+  border-color: rgb(253 186 116 / 0.2);
+  background: rgb(253 186 116 / 0.1);
+}
+
+.source-card-status--disabled {
+  color: var(--gp-text-dim);
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 62%, transparent);
 }
 
 .progress-track {

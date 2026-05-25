@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict'
 import { collectHomeSectionsFromSources } from '../src/services/datasource/homeAggregation.ts'
+import { createRawSourceIndexScheduler } from '../src/services/scraper/rawSourceIndexScheduler.ts'
 import type { DataSource, DataSourceConfig, DataSourceType, HomeSection, MediaDetail, MediaItem } from '../src/services/datasource/types.ts'
+
+class MemoryStorage {
+  private readonly values = new Map<string, string>()
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+}
 
 const embyHeroItem: MediaItem = {
   id: 'emby-movie-1',
@@ -49,14 +62,33 @@ const failingOpenListSource = createFakeSource({
   },
 })
 
+const scheduler = createRawSourceIndexScheduler({
+  storage: new MemoryStorage(),
+  scanRunner: async () => {
+    throw new Error('OpenList background index failed')
+  },
+})
+
+const indexResults = await scheduler.triggerAutoIndexForTargets([
+  {
+    sourceId: 'alist-broken',
+    sourceType: 'alist',
+    rootPath: '/影视库',
+    source: failingOpenListSource,
+  },
+])
 const sections = await collectHomeSectionsFromSources([failingOpenListSource, embySource])
 
+assert.equal(indexResults.length, 1)
+assert.equal(indexResults[0]?.state, 'failed')
+assert.equal(indexResults[0]?.skipped, false)
 assert.equal(sections.some(section => section.id.startsWith('error-')), false)
 assert.equal(sections.find(section => section.type === 'hero')?.items[0]?.sourceId, 'emby-home')
 assert.equal(sections.find(section => section.type === 'continueWatching')?.items[0]?.sourceId, 'emby-home')
 assert.equal(sections.find(section => section.type === 'recentlyAdded')?.items[0]?.sourceId, 'emby-home')
 
 console.log(JSON.stringify({
+  openListIndexState: indexResults[0]?.state,
   sectionCount: sections.length,
   heroSourceId: sections.find(section => section.type === 'hero')?.sourceId,
   continueSourceId: sections.find(section => section.type === 'continueWatching')?.sourceId,
