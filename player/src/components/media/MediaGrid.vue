@@ -12,10 +12,15 @@ defineProps<{
 const emit = defineEmits<{
   select: [item: MediaItem | MediaLibrary]
   play: [item: MediaItem]
+  contextmenu: [item: MediaItem | MediaLibrary, event: MouseEvent]
 }>()
 
 function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
   return 'path' in item
+}
+
+function handleContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
+  emit('contextmenu', item, event)
 }
 </script>
 
@@ -33,6 +38,7 @@ function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
         :kind="hasMediaPath(item) ? 'poster' : 'library'"
         @select="emit('select', $event)"
         @play="emit('play', $event)"
+        @contextmenu="handleContextMenu"
       />
     </div>
 

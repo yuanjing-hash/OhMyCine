@@ -1,6 +1,7 @@
 export * from './categoryGrouping'
 export * from './classificationRules'
 export * from './localScanCache'
+export * from './manualIdentification'
 export * from './metadataEnrichment'
 export * from './parser'
 export * from './pathRecognition'

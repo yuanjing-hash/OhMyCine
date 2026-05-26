@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSeriesEntryGroup } from '@/services/scraper'
+import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbMetadata } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, resolveRawScrapedCategoryAssignment } from '@/services/scraper'
+import { applyRawManualIdentification, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, resolveRawScrapedCategoryAssignment, saveRawSourceScanCache, TmdbScraper } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -43,6 +43,7 @@ interface ScannedSeriesWork {
   readonly key: string
   readonly title: string
   readonly item: MediaItem
+  readonly entries: ScannedDisplayItem[]
   readonly episodes: MediaItem[]
   readonly seasons: MediaItem[]
 }
@@ -50,6 +51,7 @@ interface ScannedSeriesWork {
 interface ScannedWorkItem {
   readonly item: MediaItem
   readonly domain: ScannedMediaDomain
+  readonly entries: ScannedDisplayItem[]
   readonly episodes?: MediaItem[]
   readonly seasons?: MediaItem[]
 }
@@ -72,6 +74,13 @@ interface ScannedCategory {
   readonly previewTitles: string[]
 }
 
+interface WorkContextMenuState {
+  readonly open: boolean
+  readonly x: number
+  readonly y: number
+  readonly work: ScannedWorkItem | null
+}
+
 const source = ref<DataSource | null>(null)
 const libraries = ref<MediaLibrary[]>([])
 const items = ref<MediaItem[]>([])
@@ -90,7 +99,17 @@ const scanErrorMessage = ref<string | null>(null)
 const scanLiveLogs = ref<RawLocalScanLogEntry[]>([])
 const isScanManagementOpen = ref(false)
 const selectedScannedCategoryId = ref<string | null>(null)
+const workContextMenu = ref<WorkContextMenuState>({ open: false, x: 0, y: 0, work: null })
+const identificationTarget = ref<ScannedWorkItem | null>(null)
+const identificationQuery = ref('')
+const identificationMediaType = ref<ScrapeMediaType>('movie')
+const identificationResults = ref<TmdbMetadata[]>([])
+const isIdentificationDialogOpen = ref(false)
+const isIdentificationSearching = ref(false)
+const isIdentificationApplying = ref(false)
+const identificationErrorMessage = ref<string | null>(null)
 let unsubscribeRawIndexStatus: (() => void) | undefined
+let identificationSearchRequestId = 0
 
 const isAlistSource = computed(() => sourceConfig.value?.type === 'alist')
 const alistRootPath = computed(() => isAlistSource.value ? readAlistRootPath(sourceConfig.value) : '/')
@@ -127,7 +146,7 @@ const emptyDescription = computed(() => {
   return '请确认设置中的 URL、登录会话和数据源启用状态有效。'
 })
 const scrapedItemsByRecordId = computed(() =>
-  new Map((scanCache.value?.scrapedItems ?? []).map(item => [item.recordId, item])),
+  createEffectiveRawScrapeItemMap(scanCache.value?.candidates ?? [], scanCache.value?.scrapedItems),
 )
 const scannedDisplayItems = computed<ScannedDisplayItem[]>(() =>
   (scanCache.value?.candidates ?? []).map((candidate) => {
@@ -186,7 +205,7 @@ const scannedSeriesWorkById = computed(() => {
   for (const category of scannedCategories.value) {
     for (const work of category.works) {
       if (work.domain === 'tv' && work.episodes?.length)
-        series.set(work.item.id, { key: work.item.id, title: work.item.name, item: work.item, episodes: work.episodes, seasons: work.seasons ?? [] })
+        series.set(work.item.id, { key: work.item.id, title: work.item.name, item: work.item, entries: work.entries, episodes: work.episodes, seasons: work.seasons ?? [] })
     }
   }
   return series
@@ -239,6 +258,8 @@ const scanLogEntries = computed(() => {
 })
 
 onMounted(async () => {
+  window.addEventListener('click', closeWorkContextMenu)
+  window.addEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
     if (status.sourceId === sourceId.value && status.sourceType === 'alist') {
       isScanning.value = status.state === 'running'
@@ -256,6 +277,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('click', closeWorkContextMenu)
+  window.removeEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus?.()
   unsubscribeRawIndexStatus = undefined
 })
@@ -268,6 +291,8 @@ watch(sourceId, async () => {
   scanCache.value = null
   scanLiveLogs.value = []
   selectedScannedCategoryId.value = null
+  closeWorkContextMenu()
+  closeIdentificationDialog()
   isScanManagementOpen.value = false
   syncDefaultViewModeForSource()
   await ensureSource()
@@ -616,6 +641,153 @@ function backToScannedCategories() {
   selectedScannedCategoryId.value = null
 }
 
+function openScannedWorkContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+
+  if (!('path' in item))
+    return
+
+  const work = scannedWorkById.value.get(item.id)
+  if (!work)
+    return
+
+  workContextMenu.value = {
+    open: true,
+    x: event.clientX,
+    y: event.clientY,
+    work,
+  }
+}
+
+function closeWorkContextMenu() {
+  if (!workContextMenu.value.open)
+    return
+  workContextMenu.value = { open: false, x: 0, y: 0, work: null }
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closeWorkContextMenu()
+    if (isIdentificationDialogOpen.value)
+      closeIdentificationDialog()
+  }
+}
+
+function openIdentificationDialogFromContextMenu() {
+  const work = workContextMenu.value.work
+  closeWorkContextMenu()
+  if (!work)
+    return
+
+  openIdentificationDialog(work)
+}
+
+function openIdentificationDialog(work: ScannedWorkItem) {
+  identificationSearchRequestId += 1
+  identificationTarget.value = work
+  identificationQuery.value = defaultIdentificationQuery(work)
+  identificationMediaType.value = inferIdentificationMediaType(work)
+  identificationResults.value = []
+  identificationErrorMessage.value = null
+  isIdentificationSearching.value = false
+  isIdentificationApplying.value = false
+  isIdentificationDialogOpen.value = true
+}
+
+function closeIdentificationDialog() {
+  identificationSearchRequestId += 1
+  isIdentificationDialogOpen.value = false
+  identificationTarget.value = null
+  identificationResults.value = []
+  identificationErrorMessage.value = null
+  isIdentificationSearching.value = false
+  isIdentificationApplying.value = false
+}
+
+async function searchIdentificationResults() {
+  const keyword = identificationQuery.value.trim()
+  if (!keyword) {
+    identificationErrorMessage.value = '请输入要搜索的片名或剧名。'
+    return
+  }
+
+  isIdentificationSearching.value = true
+  identificationErrorMessage.value = null
+  identificationResults.value = []
+  const requestId = ++identificationSearchRequestId
+  try {
+    const credential = await readConfiguredTmdbCredential()
+    if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+      return
+
+    if (!credential) {
+      identificationErrorMessage.value = '需要先在刮削与分类设置中配置 TMDB token/key。'
+      return
+    }
+
+    const tmdb = new TmdbScraper(credential, loadTmdbLocalSettings())
+    const results = await tmdb.searchChoices(
+      identificationMediaType.value,
+      keyword,
+      identificationTarget.value?.entries[0]?.candidate.year,
+      8,
+    )
+    if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+      return
+
+    identificationResults.value = results
+    if (identificationResults.value.length === 0)
+      identificationErrorMessage.value = '没有找到可用的 TMDB 结果，可以换一个关键词再试。'
+  }
+  catch (error) {
+    if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+      return
+
+    identificationErrorMessage.value = toSafeErrorMessage(error, 'TMDB 搜索失败。')
+  }
+  finally {
+    if (requestId === identificationSearchRequestId)
+      isIdentificationSearching.value = false
+  }
+}
+
+async function applyIdentificationResult(metadata: TmdbMetadata) {
+  const target = identificationTarget.value
+  const targetCandidate = target?.entries[0]?.candidate
+  if (!scanCache.value || !targetCandidate)
+    return
+
+  isIdentificationApplying.value = true
+  identificationErrorMessage.value = null
+  try {
+    const nextCache = applyRawManualIdentification(scanCache.value, {
+      targetRecordId: targetCandidate.record.id,
+      metadata,
+      matchedSearchTitle: identificationQuery.value.trim() || metadata.title,
+      searchTitles: [identificationQuery.value, metadata.title, metadata.originalTitle]
+        .filter((value): value is string => Boolean(value?.trim())),
+    })
+
+    if (!saveRawSourceScanCache(nextCache)) {
+      identificationErrorMessage.value = '本地扫描缓存写入失败，本次修正未保存。'
+      return
+    }
+
+    scanCache.value = nextCache
+    selectedScannedCategoryId.value = categoryIdFromName(
+      nextCache.scrapedItems?.find(item => item.recordId === targetCandidate.record.id)?.categoryName,
+    )
+    closeIdentificationDialog()
+  }
+  catch (error) {
+    identificationErrorMessage.value = toSafeErrorMessage(error, '识别结果写入失败。')
+  }
+  finally {
+    isIdentificationApplying.value = false
+  }
+}
+
 async function openScannedSeriesDetail(series: ScannedSeriesWork) {
   const firstEpisode = series.episodes[0]
   const queue = firstEpisode ? createPlaybackQueue(series.episodes, firstEpisode.id) : undefined
@@ -644,6 +816,7 @@ async function openScannedWorkDetail(work: ScannedWorkItem) {
       key: work.item.id,
       title: work.item.name,
       item: work.item,
+      entries: work.entries,
       episodes: work.episodes,
       seasons: work.seasons ?? [],
     })
@@ -729,12 +902,14 @@ function createScannedWorkItems(entries: readonly ScannedDisplayItem[]): Scanned
     ...createSeriesWorks(entries.filter(entry => entry.domain === 'tv')).map(work => ({
       item: work.item,
       domain: 'tv' as const,
+      entries: work.entries,
       episodes: work.episodes,
       seasons: work.seasons,
     })),
     ...entries.filter(entry => entry.domain === 'unresolved').map(entry => ({
       item: entry.item,
       domain: 'unresolved' as const,
+      entries: [entry],
     })),
   ]
 }
@@ -751,7 +926,7 @@ function createDedupedFileWorks(entries: readonly ScannedDisplayItem[], domain: 
   }
 
   return [...groups.values()]
-    .map(entry => ({ item: entry.item, domain }))
+    .map(entry => ({ item: entry.item, domain, entries: [entry] }))
     .sort((a, b) => compareScannedMediaItems(a.item, b.item))
 }
 
@@ -797,6 +972,7 @@ function createSeriesWork(group: RawSeriesEntryGroup<ScannedDisplayItem>): Scann
     key: group.key,
     title,
     item,
+    entries: group.entries,
     episodes,
     seasons,
   }
@@ -979,6 +1155,40 @@ function domainForScannedEntry(
 
 function metadataForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem) {
   return scraped?.metadata ?? candidate.scrapeMetadata
+}
+
+function defaultIdentificationQuery(work: ScannedWorkItem): string {
+  const representative = work.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  return metadata?.title
+    ?? representative?.candidate.seriesTitle
+    ?? representative?.candidate.title
+    ?? work.item.name
+}
+
+function inferIdentificationMediaType(work: ScannedWorkItem): ScrapeMediaType {
+  const representative = work.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  if (metadata?.mediaType)
+    return metadata.mediaType
+  if (work.domain === 'tv')
+    return 'tv'
+  if (work.domain === 'movie')
+    return 'movie'
+  const candidate = representative?.candidate
+  return candidate?.kind === 'episode' || candidate?.kind === 'tv' ? 'tv' : 'movie'
+}
+
+function categoryIdFromName(categoryName: string | undefined): string | null {
+  return categoryName ? `category:${encodeURIComponent(categoryName)}` : null
+}
+
+function metadataYearLabel(metadata: TmdbMetadata): string {
+  return metadata.releaseYear ? String(metadata.releaseYear) : '年份未知'
+}
+
+function metadataTypeLabel(metadata: TmdbMetadata): string {
+  return metadata.mediaType === 'movie' ? '电影' : '剧集'
 }
 
 function compareScannedMediaItems(a: MediaItem, b: MediaItem): number {
@@ -1362,7 +1572,12 @@ function labelForSourceType(type: string): string {
                   {{ selectedScannedCategoryDescription }}
                 </p>
               </div>
-              <MediaGrid :items="selectedCategoryWorkItems" @select="handleSelect" @play="handlePlay" />
+              <MediaGrid
+                :items="selectedCategoryWorkItems"
+                @select="handleSelect"
+                @play="handlePlay"
+                @contextmenu="openScannedWorkContextMenu"
+              />
             </section>
           </template>
         </section>
@@ -1417,6 +1632,141 @@ function labelForSourceType(type: string): string {
           />
         </section>
       </template>
+    </div>
+
+    <div
+      v-if="workContextMenu.open"
+      class="work-context-menu fixed z-50 min-w-48 rounded-2xl border border-white/10 bg-black/88 p-1.5 shadow-2xl backdrop-blur-xl"
+      :style="{ left: `${workContextMenu.x}px`, top: `${workContextMenu.y}px` }"
+      @click.stop
+    >
+      <button
+        class="w-full rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-white/82 transition-colors hover:bg-white/12 hover:text-white"
+        @click="openIdentificationDialogFromContextMenu"
+      >
+        识别/修正元信息
+      </button>
+    </div>
+
+    <div
+      v-if="isIdentificationDialogOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/68 p-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label="识别/修正元信息"
+      @click.self="closeIdentificationDialog"
+    >
+      <section class="identification-dialog max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
+        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 p-5">
+          <div>
+            <p class="text-xs uppercase tracking-[0.22em] text-white/34">
+              TMDB match
+            </p>
+            <h3 class="mt-1 text-xl font-bold text-white">
+              识别/修正元信息
+            </h3>
+          </div>
+          <button
+            class="rounded-2xl bg-white/8 px-3 py-2 text-sm font-semibold text-white/62 transition-colors hover:bg-white/14 hover:text-white"
+            @click="closeIdentificationDialog"
+          >
+            关闭
+          </button>
+        </div>
+
+        <div class="max-h-[calc(88vh-5rem)] overflow-y-auto p-5">
+          <form class="grid gap-3 lg:grid-cols-[1fr_10rem_auto]" @submit.prevent="searchIdentificationResults">
+            <input
+              v-model="identificationQuery"
+              class="min-w-0 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
+              placeholder="搜索片名或剧名"
+            >
+            <select
+              v-model="identificationMediaType"
+              class="rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none focus:border-primary/60"
+            >
+              <option value="movie">
+                电影
+              </option>
+              <option value="tv">
+                剧集
+              </option>
+            </select>
+            <button
+              class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
+              :disabled="isIdentificationSearching || isIdentificationApplying"
+            >
+              {{ isIdentificationSearching ? '搜索中…' : '搜索' }}
+            </button>
+          </form>
+
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              class="rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-xs font-semibold text-white/36"
+              disabled
+              title="下一步支持本地图片"
+            >
+              上传海报
+            </button>
+            <button
+              class="rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-xs font-semibold text-white/36"
+              disabled
+              title="下一步支持自定义字段"
+            >
+              编辑字段
+            </button>
+          </div>
+
+          <div
+            v-if="identificationErrorMessage"
+            class="mt-4 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-100"
+          >
+            {{ identificationErrorMessage }}
+          </div>
+
+          <div v-if="identificationResults.length" class="mt-5 grid gap-3 md:grid-cols-2">
+            <button
+              v-for="result in identificationResults"
+              :key="`${result.mediaType}-${result.tmdbId}`"
+              class="identification-result grid grid-cols-[5rem_1fr] gap-3 rounded-2xl border border-white/8 bg-white/5 p-3 text-left transition-colors hover:border-primary/50 hover:bg-white/9 disabled:cursor-wait disabled:opacity-60"
+              :disabled="isIdentificationApplying"
+              @click="applyIdentificationResult(result)"
+            >
+              <div class="aspect-[2/3] overflow-hidden rounded-xl bg-white/6">
+                <img
+                  v-if="result.posterUrl"
+                  :src="result.posterUrl"
+                  :alt="result.title"
+                  class="h-full w-full object-cover"
+                  loading="lazy"
+                  decoding="async"
+                >
+                <div v-else class="flex h-full items-center justify-center px-2 text-center text-xs font-semibold text-white/42">
+                  {{ result.title }}
+                </div>
+              </div>
+              <div class="min-w-0">
+                <p class="line-clamp-2 text-sm font-bold text-white">
+                  {{ result.title }}
+                </p>
+                <p class="mt-1 text-xs text-white/42">
+                  {{ metadataYearLabel(result) }} · {{ metadataTypeLabel(result) }}
+                </p>
+                <p v-if="result.rating" class="mt-1 text-xs text-primary">
+                  TMDB {{ result.rating.toFixed(1) }}
+                </p>
+                <p class="mt-2 line-clamp-4 text-xs leading-5 text-white/46">
+                  {{ result.overview || '暂无简介。' }}
+                </p>
+              </div>
+            </button>
+          </div>
+
+          <p v-else-if="!isIdentificationSearching" class="mt-5 rounded-2xl border border-white/8 bg-white/5 px-4 py-5 text-sm text-white/42">
+            选择媒体类型并搜索后，点击结果即可替换本地缓存中的元信息。
+          </p>
+        </div>
+      </section>
     </div>
   </div>
 </template>

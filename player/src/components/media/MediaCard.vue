@@ -11,6 +11,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [item: MediaItem | MediaLibrary]
   play: [item: MediaItem]
+  contextmenu: [item: MediaItem | MediaLibrary, event: MouseEvent]
 }>()
 
 const isMediaItem = computed(() => hasMediaPath(props.item))
@@ -55,6 +56,12 @@ function handlePlay() {
   if (canPlay.value && hasMediaPath(props.item))
     emit('play', props.item)
 }
+
+function handleContextMenu(event: MouseEvent) {
+  if (props.disabled)
+    return
+  emit('contextmenu', props.item, event)
+}
 </script>
 
 <template>
@@ -62,6 +69,7 @@ function handlePlay() {
     class="media-card group overflow-hidden rounded-[1.4rem] border transition-all duration-300"
     :class="[cardClass, disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:-translate-y-1 hover:border-white/24']"
     @click="handleSelect"
+    @contextmenu="handleContextMenu"
   >
     <div class="relative overflow-hidden bg-white/5" :class="imageClass">
       <img

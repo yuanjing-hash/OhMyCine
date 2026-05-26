@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { deriveRawCandidateCategoryAssignment, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
+import { applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
 import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
@@ -203,6 +204,112 @@ const unmatchedDisplayCategories = unmatchedStatuses.map((matchStatus) => {
   return displayAssignment.categoryName
 })
 assert.deepEqual(unmatchedDisplayCategories, unmatchedStatuses.map(() => RAW_UNRESOLVED_CATEGORY_NAME))
+
+const mixedSeriesEffectiveScrapes = createEffectiveRawScrapeItemMap(standardSeriesCandidates, [
+  matchedSeriesScrape,
+  {
+    ...matchedSeriesScrape,
+    recordId: standardSeriesCandidates[1].record.id,
+    providerPath: standardSeriesCandidates[1].record.providerPath,
+    matchStatus: 'notFound',
+    matchedSearchTitle: undefined,
+    metadata: undefined,
+    categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+    categoryAssignment: {
+      categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+      source: 'kindFallback',
+    },
+  },
+])
+const mixedSeriesDisplayCategories = standardSeriesCandidates.map(candidate =>
+  resolveRawScrapedCategoryAssignment(candidate, mixedSeriesEffectiveScrapes.get(candidate.record.id)).categoryName)
+assert.deepEqual([...new Set(mixedSeriesDisplayCategories)], ['动漫'])
+assert.equal(mixedSeriesDisplayCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
+assert.equal(mixedSeriesEffectiveScrapes.get(standardSeriesCandidates[1].record.id)?.metadata?.title, '机械之声的传奇')
+assert.equal(mixedSeriesEffectiveScrapes.get(standardSeriesCandidates[2].record.id)?.matchStatus, 'matched')
+
+const noRepresentativeEffectiveScrapes = createEffectiveRawScrapeItemMap(standardSeriesCandidates, [{
+  ...matchedSeriesScrape,
+  recordId: standardSeriesCandidates[0].record.id,
+  providerPath: standardSeriesCandidates[0].record.providerPath,
+  matchStatus: 'notFound',
+  matchedSearchTitle: undefined,
+  metadata: undefined,
+  categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+  categoryAssignment: {
+    categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+    source: 'kindFallback',
+  },
+}])
+const noRepresentativeDisplayCategories = standardSeriesCandidates.map(candidate =>
+  resolveRawScrapedCategoryAssignment(candidate, noRepresentativeEffectiveScrapes.get(candidate.record.id)).categoryName)
+assert.deepEqual([...new Set(noRepresentativeDisplayCategories)], [RAW_UNRESOLVED_CATEGORY_NAME])
+
+const matchedSeriesMetadata = matchedSeriesScrape.metadata
+assert.ok(matchedSeriesMetadata)
+const manuallyIdentifiedCache = applyRawManualIdentification({
+  version: 1,
+  scanId: 'scan-manual-override',
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+  status: 'completed',
+  startedAt: '2026-05-25T00:00:00.000Z',
+  finishedAt: '2026-05-25T00:00:00.000Z',
+  folderCount: 4,
+  fileCount: standardSeriesCandidates.length,
+  skippedFileCount: 0,
+  errorCount: 0,
+  logs: [],
+  records: standardSeriesRecords,
+  detection: {
+    mode: 'standard',
+    confidence: 0.9,
+    reasons: ['fixture'],
+    samplePaths: standardSeriesRecords.map(record => record.providerPath),
+    scores: {
+      videoCount: standardSeriesRecords.length,
+      sampledCount: standardSeriesRecords.length,
+      titleYearFolder: 0,
+      titleYearFile: 0,
+      seasonFolder: 3,
+      episodePattern: 3,
+      chineseEpisodePattern: 0,
+      categoryTitleSeasonHierarchy: 3,
+      sameSeriesEpisodeGroups: 1,
+      rootLevelVideos: 0,
+      mixedFolderAmbiguity: 0,
+      standardScore: 0.9,
+      nonStandardScore: 0.1,
+    },
+  },
+  candidates: standardSeriesCandidates,
+  scrapedItems: [{
+    ...matchedSeriesScrape,
+    recordId: standardSeriesCandidates[0].record.id,
+    providerPath: standardSeriesCandidates[0].record.providerPath,
+    matchStatus: 'notFound',
+    matchedSearchTitle: undefined,
+    metadata: undefined,
+    categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+    categoryAssignment: {
+      categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+      source: 'kindFallback',
+    },
+  }],
+}, {
+  targetRecordId: standardSeriesCandidates[1].record.id,
+  metadata: matchedSeriesMetadata,
+  matchedSearchTitle: 'The Legend of Vox Machina',
+  searchTitles: ['The Legend of Vox Machina'],
+})
+const manualScrapesByRecordId = createEffectiveRawScrapeItemMap(manuallyIdentifiedCache.candidates, manuallyIdentifiedCache.scrapedItems)
+const manualCategories = manuallyIdentifiedCache.candidates.map(candidate =>
+  resolveRawScrapedCategoryAssignment(candidate, manualScrapesByRecordId.get(candidate.record.id)).categoryName)
+assert.equal(manuallyIdentifiedCache.scrapedItems?.length, standardSeriesCandidates.length)
+assert.deepEqual([...new Set(manualCategories)], ['动漫'])
+assert.equal(manualCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
+
 const groupedSeries = groupRawSeriesEntries([
   { candidate: standardSeriesCandidates[0], scraped: matchedSeriesScrape },
   { candidate: standardSeriesCandidates[1] },
@@ -278,6 +385,9 @@ console.log(JSON.stringify({
   pathHintMatchedCategory: pathHintMatchedAssignment.categoryName,
   pathHintMatchedDisplayCategory: pathHintMatchedDisplayAssignment.categoryName,
   missingScrapeDisplayCategory: missingScrapeDisplayAssignment.categoryName,
+  mixedSeriesDisplayCategories,
+  noRepresentativeDisplayCategories,
+  manualCategories,
   noPathHintMatchedCategory: noPathHintMatchedAssignment.categoryName,
   noPathHintMatchedDisplayCategory: noPathHintMatchedDisplayAssignment.categoryName,
   unmatchedDisplayCategories,

@@ -171,6 +171,15 @@ export class TmdbScraper {
     return this.getDetail(best.mediaType, best.id)
   }
 
+  async searchChoices(mediaType: ScrapeMediaType, title: string, year?: number, limit = 8): Promise<TmdbMetadata[]> {
+    const searchResults = await this.searchResults(mediaType, title, year)
+    const ranked = rankSearchResults(searchResults, title, year).slice(0, Math.max(1, limit))
+    const settled = await Promise.allSettled(ranked.map(result => this.getDetail(result.mediaType, result.id)))
+    return settled
+      .filter((result): result is PromiseFulfilledResult<TmdbMetadata> => result.status === 'fulfilled')
+      .map(result => result.value)
+  }
+
   async getDetail(mediaType: ScrapeMediaType, tmdbId: number): Promise<TmdbMetadata> {
     const data = await this.requestJson(`/${mediaType}/${tmdbId}`, {
       language: this.settings.language,
@@ -266,6 +275,21 @@ function selectBestSearchResult(
   }
 
   return [...acceptable].sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0))[0] ?? null
+}
+
+function rankSearchResults(
+  results: readonly TmdbSearchResult[],
+  query: string,
+  year?: number,
+): TmdbSearchResult[] {
+  return [...results].sort((left, right) => searchResultScore(right, query, year) - searchResultScore(left, query, year))
+}
+
+function searchResultScore(result: TmdbSearchResult, query: string, year?: number): number {
+  const titleMatch = isAcceptableTitleMatch(query, result.title, result.originalTitle) ? 100 : 0
+  const exactYear = year != null && result.year === year ? 40 : 0
+  const nearbyYear = year != null && result.year != null && Math.abs(result.year - year) <= 1 ? 20 : 0
+  return titleMatch + exactYear + nearbyYear + (result.popularity ?? 0)
 }
 
 function isAcceptableTitleMatch(query: string, title: string, originalTitle?: string): boolean {
