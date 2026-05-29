@@ -20,6 +20,8 @@ export interface TmdbMetadata {
   readonly mediaType: ScrapeMediaType
   readonly title: string
   readonly originalTitle?: string
+  readonly imdbId?: string
+  readonly tvdbId?: number
   readonly overview?: string
   readonly releaseDate?: string
   readonly releaseYear?: number
@@ -31,14 +33,30 @@ export interface TmdbMetadata {
   readonly productionCountries: string[]
   readonly posterPath?: string
   readonly backdropPath?: string
+  readonly titleLogoPath?: string
   readonly posterUrl?: string
   readonly backdropUrl?: string
+  readonly titleLogoUrl?: string
   readonly scrapedAt: string
 }
 
 export interface TmdbCandidateMatch {
   readonly metadata: TmdbMetadata
   readonly searchTitle: string
+}
+
+export type TmdbImageKind = 'poster' | 'logo' | 'backdrop'
+
+export interface TmdbImageCandidate {
+  readonly kind: TmdbImageKind
+  readonly filePath: string
+  readonly imageUrl: string
+  readonly language?: string
+  readonly width?: number
+  readonly height?: number
+  readonly aspectRatio?: number
+  readonly voteAverage?: number
+  readonly voteCount?: number
 }
 
 interface TmdbSearchResult {
@@ -183,9 +201,17 @@ export class TmdbScraper {
   async getDetail(mediaType: ScrapeMediaType, tmdbId: number): Promise<TmdbMetadata> {
     const data = await this.requestJson(`/${mediaType}/${tmdbId}`, {
       language: this.settings.language,
-      append_to_response: 'external_ids',
+      append_to_response: 'external_ids,images',
+      include_image_language: preferredImageLanguageParam(this.settings.language),
     })
-    return mapTmdbDetail(data, mediaType)
+    return mapTmdbDetail(data, mediaType, this.settings.language)
+  }
+
+  async getImageCandidates(mediaType: ScrapeMediaType, tmdbId: number, kind: TmdbImageKind): Promise<TmdbImageCandidate[]> {
+    const data = await this.requestJson(`/${mediaType}/${tmdbId}/images`, {
+      include_image_language: preferredImageLanguageParam(this.settings.language),
+    })
+    return mapTmdbImageCandidates(data, kind, this.settings.language)
   }
 
   private async searchResults(mediaType: ScrapeMediaType, title: string, year?: number): Promise<TmdbSearchResult[]> {
@@ -349,7 +375,7 @@ function mapTmdbSearchResult(value: unknown, mediaType: ScrapeMediaType): TmdbSe
   }
 }
 
-function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType): TmdbMetadata {
+function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: string): TmdbMetadata {
   if (!isRecord(value))
     throw new Error('TMDB detail response is invalid.')
 
@@ -361,12 +387,16 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType): TmdbMetadata
   const releaseDate = stringValue(mediaType === 'movie' ? value.release_date : value.first_air_date)
   const posterPath = stringValue(value.poster_path)
   const backdropPath = stringValue(value.backdrop_path)
+  const titleLogoPath = selectPreferredLogoPath(value.images, language)
+  const externalIds = isRecord(value.external_ids) ? value.external_ids : undefined
 
   return {
     tmdbId,
     mediaType,
     title,
     originalTitle: stringValue(mediaType === 'movie' ? value.original_title : value.original_name),
+    imdbId: stringValue(externalIds?.imdb_id),
+    tvdbId: numberValue(externalIds?.tvdb_id),
     overview: stringValue(value.overview),
     releaseDate,
     releaseYear: yearFromDate(releaseDate),
@@ -378,10 +408,119 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType): TmdbMetadata
     productionCountries: productionCountryCodes(value.production_countries),
     posterPath,
     backdropPath,
+    titleLogoPath,
     posterUrl: posterPath ? tmdbImageUrl(posterPath, 'w500') : undefined,
     backdropUrl: backdropPath ? tmdbImageUrl(backdropPath, 'w1280') : undefined,
+    titleLogoUrl: titleLogoPath ? tmdbImageUrl(titleLogoPath, 'w500') : undefined,
     scrapedAt: new Date().toISOString(),
   }
+}
+
+function selectPreferredLogoPath(images: unknown, language: string): string | undefined {
+  if (!isRecord(images))
+    return undefined
+
+  const logos = imageRecords(images.logos)
+  return rankImageRecords(logos, preferredLogoLanguages(language))[0]?.filePath
+}
+
+function mapTmdbImageCandidates(value: unknown, kind: TmdbImageKind, language: string): TmdbImageCandidate[] {
+  if (!isRecord(value))
+    return []
+
+  const records = imageRecords(kind === 'poster' ? value.posters : kind === 'logo' ? value.logos : value.backdrops)
+  const languagePriority = kind === 'logo' ? preferredLogoLanguages(language) : preferredImageLanguages(language)
+  return rankImageRecords(records, languagePriority)
+    .slice(0, 24)
+    .map(record => ({
+      kind,
+      filePath: record.filePath,
+      imageUrl: tmdbImageUrl(record.filePath, kind === 'backdrop' ? 'w780' : 'w500'),
+      language: record.language,
+      width: record.width,
+      height: record.height,
+      aspectRatio: record.aspectRatio,
+      voteAverage: record.voteAverage,
+      voteCount: record.voteCount,
+    }))
+}
+
+interface TmdbImageRecord {
+  readonly filePath: string
+  readonly language?: string
+  readonly width?: number
+  readonly height?: number
+  readonly aspectRatio?: number
+  readonly voteAverage?: number
+  readonly voteCount?: number
+}
+
+function imageRecords(value: unknown): TmdbImageRecord[] {
+  if (!Array.isArray(value))
+    return []
+
+  return value
+    .map((item): TmdbImageRecord | null => {
+      if (!isRecord(item))
+        return null
+      const filePath = stringValue(item.file_path)
+      if (!filePath)
+        return null
+      return {
+        filePath,
+        language: normalizeImageLanguage(item.iso_639_1),
+        width: numberValue(item.width),
+        height: numberValue(item.height),
+        aspectRatio: numberValue(item.aspect_ratio),
+        voteAverage: numberValue(item.vote_average),
+        voteCount: numberValue(item.vote_count),
+      }
+    })
+    .filter((item): item is TmdbImageRecord => item != null)
+}
+
+function rankImageRecords(records: readonly TmdbImageRecord[], languagePriority: readonly (string | undefined)[]): TmdbImageRecord[] {
+  return [...records].sort((left, right) =>
+    imageLanguageScore(right.language, languagePriority) - imageLanguageScore(left.language, languagePriority)
+    || (right.voteAverage ?? 0) - (left.voteAverage ?? 0)
+    || (right.voteCount ?? 0) - (left.voteCount ?? 0)
+    || (right.width ?? 0) - (left.width ?? 0))
+}
+
+function imageLanguageScore(language: string | undefined, priority: readonly (string | undefined)[]): number {
+  const index = priority.findIndex(item => item === language)
+  return index >= 0 ? priority.length - index : 0
+}
+
+function preferredLogoLanguages(language: string): Array<string | undefined> {
+  return uniqueLanguages([primaryLanguage(language), 'zh', 'en', undefined])
+}
+
+function preferredImageLanguages(language: string): Array<string | undefined> {
+  return uniqueLanguages([primaryLanguage(language), 'zh', 'en', undefined])
+}
+
+function preferredImageLanguageParam(language: string): string {
+  return preferredImageLanguages(language).map(value => value ?? 'null').join(',')
+}
+
+function primaryLanguage(language: string): string | undefined {
+  const primary = language.split('-')[0]?.trim().toLocaleLowerCase()
+  return primary || undefined
+}
+
+function uniqueLanguages(values: readonly (string | undefined)[]): Array<string | undefined> {
+  const result: Array<string | undefined> = []
+  for (const value of values) {
+    if (result.includes(value))
+      continue
+    result.push(value)
+  }
+  return result
+}
+
+function normalizeImageLanguage(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim().toLocaleLowerCase() : undefined
 }
 
 function tmdbImageUrl(path: string, size: 'w500' | 'w780' | 'w1280'): string {

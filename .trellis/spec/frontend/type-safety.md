@@ -23,7 +23,7 @@ Use TypeScript strict mode. Shared interfaces define the contracts between views
 
 Keep all media sources behind a common interface with these concepts:
 
-- `MediaItem`: common list/search item fields, including `sourceId`, `type`, title/name, poster/backdrop, path, duration/size/modified.
+- `MediaItem`: common list/search item fields, including `sourceId`, `type`, title/name, poster/backdrop/title-logo artwork, path, duration/size/modified.
 - `MediaLibrary`: source library/folder grouping.
 - `HomeSection`: hero, continue watching, recently added, recommended, library row.
 - `MediaDetail`: extended media metadata, genres, people, IDs, resolution/codec, tracks.
@@ -34,6 +34,89 @@ Keep all media sources behind a common interface with these concepts:
 `DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `server`, `115`, `123`, and `quark` as planned types.
 
 OpenList/Alist API responses must be parsed from `unknown` envelopes. Treat `code !== 200 && code !== 0` as a provider failure, validate file records before mapping, normalize paths to rooted paths, strip trailing slashes except for `/`, and reject `.` / `..` path segments before constructing `/d{path}` stream URLs. When `DataSourceConfig.extra.rootPath` is set, normalize it as a rooted path, default missing values to `/`, scope `listLibraries()`/`list()`/`search()` to that root, and reject browse/detail/stream paths outside that root.
+
+### Raw File Scrape Artwork and Manual Identification Contract
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing Player-side scraping, TMDB metadata mapping, manual identification, artwork editing, raw-source poster walls, or playback/detail artwork propagation for OpenList/Alist, CloudDrive2, local files, or other raw file sources.
+- Applies to scraper metadata types, local scan cache sanitization, manual override helpers, SourceLibrary identify UI, MediaItem/MediaDetail mapping, playback route query, playback context/queue, and local playback history.
+
+#### 2. Signatures
+- `TmdbMetadata` includes `tmdbId`, `mediaType`, `title`, optional `imdbId`, optional `tvdbId`, poster/backdrop/logo paths and URLs, classification fields, and `scrapedAt`.
+- `TmdbImageKind = 'poster' | 'logo' | 'backdrop'`.
+- `TmdbImageCandidate` includes `kind`, `filePath`, `imageUrl`, optional language, dimensions, aspect ratio, and vote fields.
+- `RawManualIdentificationInput` writes one selected `TmdbMetadata` to all same-work candidates.
+- `RawManualArtworkOverrideInput` writes or clears only `poster`, `logo`, or `backdrop` artwork for all same-work candidates.
+- Playback metadata payloads that can render artwork should carry `titleLogoUrl?: string` alongside `posterUrl?: string` and `backdropUrl?: string`.
+
+#### 3. Contracts
+- TMDB detail requests should request external IDs and images when scraping raw-file sources so title logos can be preserved with the same metadata round trip as poster/backdrop.
+- Logo selection should prefer the configured language, then broadly useful fallbacks such as Chinese, English, no-language, and finally the best ranked available logo.
+- Manual identification uses title/year/media type or exact TheMovieDb ID. IMDb and TheTVDB fields may appear as user-facing identifying conditions only when reverse lookup is implemented honestly; do not pretend they were used.
+- Manual artwork search/select/delete writes only to Player local scan cache. It must not upload, rename, delete, or otherwise write to OpenList/Alist or another raw provider.
+- Local scan cache sanitization must preserve `imdbId`, `tvdbId`, `titleLogoPath`, `titleLogoUrl`, poster, and backdrop fields; otherwise manual fixes disappear after reload.
+- `titleLogoUrl` must survive raw work aggregation, series season children, detail recovery, playback route query, queue/context clone, and local playback history so detail and player chrome can use the same logo fallback behavior.
+- UI must fall back to text title if a logo URL is missing or the image fails to load.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| TMDB credential is missing | Show a user-safe configuration prompt; keep local scan candidates playable |
+| title and TMDB ID are both empty | Block search with a clear validation message |
+| TMDB ID/year has non-digit characters | Reject it instead of partially parsing a misleading ID |
+| exact TMDB ID lookup fails | Show a safe TMDB error and do not change local cache |
+| image search returns after dialog target changed/closed | Drop the stale response without mutating the current dialog state |
+| artwork edit is attempted before any metadata/TMDB ID exists | Ask the user to identify or fill TheMovieDb ID first |
+| user deletes poster/logo/backdrop override | Clear only that local artwork field for the same work group |
+| unsupported image type such as thumb/banner/disc/art is shown | Render it as a disabled placeholder until real provider/cache support exists |
+| logo image fails to load in detail/player UI | Mark that URL failed and render the text title fallback |
+
+#### 5. Good/Base/Bad Cases
+- Good: A right-click identify flow searches by title/year, user selects a TMDB result with logo, and the logo appears in the scanned work, detail hero, playback chrome, queue item, and continue-watching row after restart.
+- Good: User searches TMDB logos, selects a different title logo, and only Player local scan cache changes; OpenList/Alist remains untouched.
+- Base: No logo exists on TMDB; the UI keeps the existing text title and still shows poster/backdrop where available.
+- Bad: Editing a logo updates only one episode record, so other seasons of the same series still show stale artwork.
+- Bad: A stale image-search response from a previous target overwrites the currently open identify dialog.
+
+#### 6. Tests Required
+- `npm run verify:scraper` should assert manual identification preserves `titleLogoUrl`, poster/logo/backdrop overrides apply to same-work candidates, clearing a logo removes it, and playback queue/context cloning keeps `titleLogoUrl`.
+- `npm run typecheck` must catch drift between `TmdbMetadata`, local cache sanitizer, `MediaItem`, playback route/context/history payloads, and Vue usages.
+- `npm run lint` must pass without broad `any` in scraper/TMDB response mapping.
+- `npm run build` must pass after UI integration.
+- If playback history schema or Rust commands change, run `cargo check --manifest-path player/src-tauri/Cargo.toml`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+const result = await tmdb.getImageCandidates(mediaType, tmdbId, 'logo')
+artworkSearchResults.value = result
+```
+
+Correct:
+```ts
+const requestId = identificationSearchRequestId
+const result = await tmdb.getImageCandidates(mediaType, tmdbId, 'logo')
+if (requestId === identificationSearchRequestId && isIdentificationDialogOpen.value)
+  artworkSearchResults.value = result
+```
+
+Wrong:
+```ts
+metadata.titleLogoUrl = image.imageUrl
+await alistUpload('/metadata/logo.png', image)
+```
+
+Correct:
+```ts
+const nextCache = applyRawManualArtworkOverride(cache, {
+  targetRecordId,
+  kind: 'logo',
+  imageUrl: image.imageUrl,
+  filePath: image.filePath,
+})
+saveRawSourceScanCache(nextCache)
+```
 
 ---
 
@@ -304,7 +387,7 @@ await invoke('emby_post_playback_json', {
 - Rust command: `player_get_playback_progress(app: AppHandle, identity: PlaybackProgressIdentity) -> Result<Option<PlaybackHistoryEntry>, String>`.
 - Rust command: `player_list_continue_watching(app: AppHandle, limit: Option<u32>) -> Result<Vec<PlaybackHistoryEntry>, String>`.
 - SQLite database: Tauri app-data `history/playback_history.sqlite`.
-- SQLite table: `playback_history(identity_key, source_id, library_id, item_id, media_identity, title, stream_identity, media_type, poster_url, backdrop_url, position, duration, completed, progress_source, created_at, updated_at)`.
+- SQLite table: `playback_history(identity_key, source_id, library_id, item_id, media_identity, title, stream_identity, media_type, poster_url, backdrop_url, title_logo_url, position, duration, completed, progress_source, created_at, updated_at)`.
 - TypeScript payload:
 ```ts
 interface PlaybackProgressIdentity {
@@ -319,6 +402,7 @@ interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
   mediaType?: MediaItem['type']
   posterUrl?: string
   backdropUrl?: string
+  titleLogoUrl?: string
   position: number
   duration?: number
   completed?: boolean
@@ -331,6 +415,7 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   mediaType?: MediaItem['type'] | null
   posterUrl?: string | null
   backdropUrl?: string | null
+  titleLogoUrl?: string | null
   position: number
   duration?: number | null
   progress?: number | null
@@ -350,6 +435,7 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 - Resume should ignore trivial positions and completed/near-end media. Completed rows should be excluded from local continue-watching noise.
 - Media detail pages should read local `player_get_playback_progress` for playable detail items and visible episode lists so the primary play action and episode actions can show `继续播放` when a resumable local row exists.
 - Home continue-watching is an aggregate section. Local history rows should keep `progressSource: 'local'` for card subtitles/source labels, but the section title must not imply local-only content. If a local remote-provider row lacks safe persisted artwork, the home aggregation layer may temporarily enrich it from provider detail metadata without writing tokenized image URLs back to SQLite.
+- Local history and route/context payloads should persist safe `posterUrl`, `backdropUrl`, and `titleLogoUrl` together so continue-watching, detail recovery, queue switching, and Player chrome render consistent artwork. Tokenized artwork URLs still follow the same redaction/drop rules.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
@@ -361,16 +447,16 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 | position/duration is NaN, infinite, or negative | Reject/skip that save |
 | position is below resume threshold | Do not resume and do not surface as meaningful continue-watching progress |
 | position is near the end by remaining seconds or ratio | Mark completed and exclude from continue-watching |
-| stream/artwork URL contains tokens or signed URL params | Redact or drop before storing/displaying; never show raw tokenized values in UI/logs |
+| stream/artwork/title-logo URL contains tokens or signed URL params | Redact or drop before storing/displaying; never show raw tokenized values in UI/logs |
 | continue-watching source is unavailable | Do not pass stable identity strings such as `source:<id>:<item>` as playable URLs |
 
 #### 5. Good/Base/Bad Cases
-- Good: Player saves `sourceId='emby-main'`, `mediaIdentity='<episodeId>'`, `streamIdentity='source:emby-main:<episodeId>'`, position/duration, and local source marker; reopening that episode seeks to the saved position if it is not completed.
+- Good: Player saves `sourceId='emby-main'`, `mediaIdentity='<episodeId>'`, `streamIdentity='source:emby-main:<episodeId>'`, safe poster/backdrop/title-logo artwork, position/duration, and local source marker; reopening that episode seeks to the saved position if it is not completed.
 - Base: Local file playback saves the file path as identity, resumes after restart, and hides previous/next controls when no queue exists.
 - Bad: Persisting `https://server/Videos/.../stream?api_key=...&X-Amz-Signature=...` as the history identity or displaying it on the home continue-watching card.
 
 #### 6. Tests Required
-- `npm run typecheck` verifies frontend command payload/response shapes and `MediaItem` progress fields.
+- `npm run typecheck` verifies frontend command payload/response shapes and `MediaItem` progress/artwork fields.
 - `npm run lint` verifies no unused progress state or broad `any` wrappers are introduced.
 - `npm run build` verifies Home/Player route integration compiles.
 - `cargo check --manifest-path player/src-tauri/Cargo.toml` verifies Rust command registration/schema code compiles.

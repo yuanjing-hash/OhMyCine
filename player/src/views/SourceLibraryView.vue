@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbMetadata } from '@/services/scraper'
+import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { applyRawManualIdentification, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, resolveRawScrapedCategoryAssignment, saveRawSourceScanCache, TmdbScraper } from '@/services/scraper'
+import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, resolveRawScrapedCategoryAssignment, saveRawSourceScanCache, TmdbScraper } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -30,6 +30,8 @@ interface BreadcrumbNode {
 type SourceViewMode = 'media-library' | 'folders'
 type ScannedCategoryType = 'movie' | 'tv' | 'unresolved' | 'mixed'
 type ScannedMediaDomain = 'movie' | 'tv' | 'unresolved'
+type EditableArtworkKind = Extract<TmdbImageKind, 'poster' | 'logo' | 'backdrop'>
+type IdentificationTab = 'match' | 'images'
 
 interface ScannedDisplayItem {
   readonly item: MediaItem
@@ -81,6 +83,14 @@ interface WorkContextMenuState {
   readonly work: ScannedWorkItem | null
 }
 
+interface IdentificationArtworkCard {
+  readonly kind: EditableArtworkKind | 'thumb' | 'banner' | 'disc' | 'art'
+  readonly label: string
+  readonly description: string
+  readonly enabled: boolean
+  readonly currentUrl?: string
+}
+
 const source = ref<DataSource | null>(null)
 const libraries = ref<MediaLibrary[]>([])
 const items = ref<MediaItem[]>([])
@@ -101,13 +111,23 @@ const isScanManagementOpen = ref(false)
 const selectedScannedCategoryId = ref<string | null>(null)
 const workContextMenu = ref<WorkContextMenuState>({ open: false, x: 0, y: 0, work: null })
 const identificationTarget = ref<ScannedWorkItem | null>(null)
+const identificationActiveTab = ref<IdentificationTab>('match')
 const identificationQuery = ref('')
 const identificationMediaType = ref<ScrapeMediaType>('movie')
+const identificationYear = ref('')
+const identificationTmdbId = ref('')
+const identificationImdbId = ref('')
+const identificationTvdbId = ref('')
 const identificationResults = ref<TmdbMetadata[]>([])
 const isIdentificationDialogOpen = ref(false)
 const isIdentificationSearching = ref(false)
 const isIdentificationApplying = ref(false)
 const identificationErrorMessage = ref<string | null>(null)
+const identificationInfoMessage = ref<string | null>(null)
+const artworkSearchKind = ref<EditableArtworkKind | null>(null)
+const artworkSearchResults = ref<TmdbImageCandidate[]>([])
+const isArtworkSearching = ref(false)
+const isArtworkApplying = ref(false)
 let unsubscribeRawIndexStatus: (() => void) | undefined
 let identificationSearchRequestId = 0
 
@@ -255,6 +275,68 @@ const scanStatusLabel = computed(() => {
 const scanLogEntries = computed(() => {
   const entries = isScanning.value || !scanCache.value ? scanLiveLogs.value : scanCache.value.logs
   return entries.slice(-8)
+})
+const identificationSourcePath = computed(() =>
+  identificationTarget.value?.entries[0]?.candidate.record.providerPath
+  ?? identificationTarget.value?.item.path
+  ?? '',
+)
+const identificationCurrentMetadata = computed(() => {
+  const target = identificationTarget.value?.entries[0]?.candidate
+  if (!target)
+    return undefined
+  const scraped = scrapedItemsByRecordId.value.get(target.record.id)
+  return metadataForCandidate(target, scraped)
+})
+const identificationArtworkCards = computed<IdentificationArtworkCard[]>(() => {
+  const metadata = identificationCurrentMetadata.value
+  return [
+    {
+      kind: 'poster',
+      label: '海报',
+      description: '用于海报墙和详情页竖版封面。',
+      enabled: true,
+      currentUrl: metadata?.posterUrl,
+    },
+    {
+      kind: 'logo',
+      label: '徽标',
+      description: '标题 Logo，详情页与播放页优先显示。',
+      enabled: true,
+      currentUrl: metadata?.titleLogoUrl,
+    },
+    {
+      kind: 'backdrop',
+      label: '背景图',
+      description: '用于详情页和播放前的横向背景。',
+      enabled: true,
+      currentUrl: metadata?.backdropUrl,
+    },
+    {
+      kind: 'thumb',
+      label: '缩略图',
+      description: '后续支持本地缩略图覆盖。',
+      enabled: false,
+    },
+    {
+      kind: 'banner',
+      label: '横幅图',
+      description: '后续支持横幅图源。',
+      enabled: false,
+    },
+    {
+      kind: 'disc',
+      label: '光盘封面',
+      description: '后续支持光盘封面。',
+      enabled: false,
+    },
+    {
+      kind: 'art',
+      label: '艺术图',
+      description: '后续支持艺术图覆盖。',
+      enabled: false,
+    },
+  ]
 })
 
 onMounted(async () => {
@@ -570,6 +652,7 @@ async function handlePlay(item: MediaItem) {
         mediaType: item.type,
         posterUrl: item.posterUrl,
         backdropUrl: item.backdropUrl,
+        titleLogoUrl: item.titleLogoUrl,
         contextId: playbackContextId,
       },
     })
@@ -686,12 +769,22 @@ function openIdentificationDialogFromContextMenu() {
 function openIdentificationDialog(work: ScannedWorkItem) {
   identificationSearchRequestId += 1
   identificationTarget.value = work
+  identificationActiveTab.value = 'match'
   identificationQuery.value = defaultIdentificationQuery(work)
   identificationMediaType.value = inferIdentificationMediaType(work)
+  identificationYear.value = defaultIdentificationYear(work)
+  identificationTmdbId.value = defaultIdentificationTmdbId(work)
+  identificationImdbId.value = defaultIdentificationImdbId(work)
+  identificationTvdbId.value = defaultIdentificationTvdbId(work)
   identificationResults.value = []
   identificationErrorMessage.value = null
+  identificationInfoMessage.value = null
+  artworkSearchKind.value = null
+  artworkSearchResults.value = []
   isIdentificationSearching.value = false
   isIdentificationApplying.value = false
+  isArtworkSearching.value = false
+  isArtworkApplying.value = false
   isIdentificationDialogOpen.value = true
 }
 
@@ -699,21 +792,30 @@ function closeIdentificationDialog() {
   identificationSearchRequestId += 1
   isIdentificationDialogOpen.value = false
   identificationTarget.value = null
+  identificationActiveTab.value = 'match'
   identificationResults.value = []
   identificationErrorMessage.value = null
+  identificationInfoMessage.value = null
+  artworkSearchKind.value = null
+  artworkSearchResults.value = []
   isIdentificationSearching.value = false
   isIdentificationApplying.value = false
+  isArtworkSearching.value = false
+  isArtworkApplying.value = false
 }
 
 async function searchIdentificationResults() {
   const keyword = identificationQuery.value.trim()
-  if (!keyword) {
-    identificationErrorMessage.value = '请输入要搜索的片名或剧名。'
+  const tmdbId = parsePositiveInteger(identificationTmdbId.value)
+  const year = parsePositiveInteger(identificationYear.value)
+  if (!keyword && !tmdbId) {
+    identificationErrorMessage.value = '请输入标题，或填写 TheMovieDb 标识符后精确查找。'
     return
   }
 
   isIdentificationSearching.value = true
   identificationErrorMessage.value = null
+  identificationInfoMessage.value = externalIdStatusMessage()
   identificationResults.value = []
   const requestId = ++identificationSearchRequestId
   try {
@@ -727,16 +829,15 @@ async function searchIdentificationResults() {
     }
 
     const tmdb = new TmdbScraper(credential, loadTmdbLocalSettings())
-    const results = await tmdb.searchChoices(
-      identificationMediaType.value,
-      keyword,
-      identificationTarget.value?.entries[0]?.candidate.year,
-      8,
-    )
+    const results = tmdbId
+      ? [await tmdb.getDetail(identificationMediaType.value, tmdbId)]
+      : await tmdb.searchChoices(identificationMediaType.value, keyword, year, 8)
     if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
       return
 
     identificationResults.value = results
+    if (tmdbId)
+      identificationInfoMessage.value = [externalIdStatusMessage(), `已按 TheMovieDb ID ${tmdbId} 精确获取详情。`].filter(Boolean).join(' ')
     if (identificationResults.value.length === 0)
       identificationErrorMessage.value = '没有找到可用的 TMDB 结果，可以换一个关键词再试。'
   }
@@ -778,7 +879,12 @@ async function applyIdentificationResult(metadata: TmdbMetadata) {
     selectedScannedCategoryId.value = categoryIdFromName(
       nextCache.scrapedItems?.find(item => item.recordId === targetCandidate.record.id)?.categoryName,
     )
-    closeIdentificationDialog()
+    identificationTmdbId.value = String(metadata.tmdbId)
+    identificationYear.value = metadata.releaseYear ? String(metadata.releaseYear) : identificationYear.value
+    identificationImdbId.value = metadata.imdbId ?? identificationImdbId.value
+    identificationTvdbId.value = metadata.tvdbId == null ? identificationTvdbId.value : String(metadata.tvdbId)
+    identificationActiveTab.value = 'images'
+    identificationInfoMessage.value = '识别结果已写入本地扫描缓存；可以继续编辑海报、徽标和背景图。'
   }
   catch (error) {
     identificationErrorMessage.value = toSafeErrorMessage(error, '识别结果写入失败。')
@@ -786,6 +892,139 @@ async function applyIdentificationResult(metadata: TmdbMetadata) {
   finally {
     isIdentificationApplying.value = false
   }
+}
+
+async function searchArtworkCandidates(kind: EditableArtworkKind) {
+  const tmdbId = parsePositiveInteger(identificationTmdbId.value) ?? identificationCurrentMetadata.value?.tmdbId
+  if (!tmdbId) {
+    identificationErrorMessage.value = '请先完成识别，或填写 TheMovieDb 标识符后再搜索图片。'
+    identificationActiveTab.value = 'match'
+    return
+  }
+
+  isArtworkSearching.value = true
+  artworkSearchKind.value = kind
+  artworkSearchResults.value = []
+  identificationErrorMessage.value = null
+  identificationInfoMessage.value = null
+  const requestId = ++identificationSearchRequestId
+  try {
+    const credential = await readConfiguredTmdbCredential()
+    if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+      return
+
+    if (!credential) {
+      identificationErrorMessage.value = '需要先在刮削与分类设置中配置 TMDB token/key。'
+      return
+    }
+
+    const tmdb = new TmdbScraper(credential, loadTmdbLocalSettings())
+    if (!identificationCurrentMetadata.value) {
+      const didApplyMetadata = await ensureIdentificationMetadataForArtwork(tmdb, tmdbId, requestId)
+      if (!didApplyMetadata)
+        return
+    }
+
+    const results = await tmdb.getImageCandidates(identificationMediaType.value, tmdbId, kind)
+    if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+      return
+
+    artworkSearchResults.value = results
+    if (artworkSearchResults.value.length === 0)
+      identificationInfoMessage.value = `TMDB 暂无可用${artworkKindLabel(kind)}候选。`
+  }
+  catch (error) {
+    if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+      return
+    identificationErrorMessage.value = toSafeErrorMessage(error, 'TMDB 图片搜索失败。')
+  }
+  finally {
+    if (requestId === identificationSearchRequestId)
+      isArtworkSearching.value = false
+  }
+}
+
+function searchArtworkFromCard(card: IdentificationArtworkCard) {
+  if (!card.enabled || !isEditableArtworkKind(card.kind))
+    return
+  void searchArtworkCandidates(card.kind)
+}
+
+function clearArtworkFromCard(card: IdentificationArtworkCard) {
+  if (!card.enabled || !isEditableArtworkKind(card.kind))
+    return
+  void clearArtworkOverride(card.kind)
+}
+
+async function applyArtworkCandidate(image: TmdbImageCandidate) {
+  if (!isEditableArtworkKind(image.kind))
+    return
+
+  await updateArtworkOverride(image.kind, image.imageUrl, image.filePath)
+}
+
+async function clearArtworkOverride(kind: EditableArtworkKind) {
+  await updateArtworkOverride(kind, undefined, undefined)
+}
+
+async function updateArtworkOverride(kind: EditableArtworkKind, imageUrl: string | undefined, filePath: string | undefined) {
+  const targetCandidate = identificationTarget.value?.entries[0]?.candidate
+  if (!scanCache.value || !targetCandidate)
+    return
+
+  isArtworkApplying.value = true
+  identificationErrorMessage.value = null
+  identificationInfoMessage.value = null
+  try {
+    const nextCache = applyRawManualArtworkOverride(scanCache.value, {
+      targetRecordId: targetCandidate.record.id,
+      kind,
+      imageUrl,
+      filePath,
+    })
+
+    if (!saveRawSourceScanCache(nextCache)) {
+      identificationErrorMessage.value = '本地扫描缓存写入失败，本次图片修改未保存。'
+      return
+    }
+
+    scanCache.value = nextCache
+    identificationInfoMessage.value = `${imageUrl ? '已应用' : '已清除'}${artworkKindLabel(kind)}本地覆盖；不会写回 OpenList/Alist。`
+  }
+  catch (error) {
+    identificationErrorMessage.value = toSafeErrorMessage(error, '图片覆盖写入失败。')
+  }
+  finally {
+    isArtworkApplying.value = false
+  }
+}
+
+async function ensureIdentificationMetadataForArtwork(tmdb: TmdbScraper, tmdbId: number, requestId: number): Promise<boolean> {
+  const targetCandidate = identificationTarget.value?.entries[0]?.candidate
+  if (!scanCache.value || !targetCandidate)
+    return false
+
+  const metadata = await tmdb.getDetail(identificationMediaType.value, tmdbId)
+  if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
+    return false
+
+  const nextCache = applyRawManualIdentification(scanCache.value, {
+    targetRecordId: targetCandidate.record.id,
+    metadata,
+    matchedSearchTitle: identificationQuery.value.trim() || metadata.title,
+    searchTitles: [identificationQuery.value, metadata.title, metadata.originalTitle]
+      .filter((value): value is string => Boolean(value?.trim())),
+  })
+
+  if (!saveRawSourceScanCache(nextCache))
+    throw new Error('本地扫描缓存写入失败，本次图片修改未保存。')
+
+  scanCache.value = nextCache
+  identificationTmdbId.value = String(metadata.tmdbId)
+  identificationYear.value = metadata.releaseYear ? String(metadata.releaseYear) : identificationYear.value
+  identificationImdbId.value = metadata.imdbId ?? identificationImdbId.value
+  identificationTvdbId.value = metadata.tvdbId == null ? identificationTvdbId.value : String(metadata.tvdbId)
+  return true
 }
 
 async function openScannedSeriesDetail(series: ScannedSeriesWork) {
@@ -951,6 +1190,7 @@ function createSeriesWork(group: RawSeriesEntryGroup<ScannedDisplayItem>): Scann
     artwork: {
       posterUrl: metadata?.posterUrl,
       backdropUrl: metadata?.backdropUrl,
+      titleLogoUrl: metadata?.titleLogoUrl,
     },
   })
   const item: MediaItem = {
@@ -961,6 +1201,7 @@ function createSeriesWork(group: RawSeriesEntryGroup<ScannedDisplayItem>): Scann
     type: 'series',
     posterUrl: metadata?.posterUrl ?? firstEpisode?.posterUrl,
     backdropUrl: metadata?.backdropUrl ?? firstEpisode?.backdropUrl,
+    titleLogoUrl: metadata?.titleLogoUrl ?? firstEpisode?.titleLogoUrl,
     year: metadata?.releaseYear ?? firstEpisode?.year,
     rating: metadata?.rating ?? firstEpisode?.rating,
     overview: metadata?.overview || `${episodes.length} 个本地识别分集。`,
@@ -1094,6 +1335,7 @@ function toScannedMediaItem(
     type: mediaType,
     posterUrl: metadata?.posterUrl,
     backdropUrl: metadata?.backdropUrl,
+    titleLogoUrl: metadata?.titleLogoUrl,
     year: metadata?.releaseYear ?? candidate.year,
     rating: metadata?.rating,
     size: candidate.record.size,
@@ -1166,6 +1408,30 @@ function defaultIdentificationQuery(work: ScannedWorkItem): string {
     ?? work.item.name
 }
 
+function defaultIdentificationYear(work: ScannedWorkItem): string {
+  const representative = work.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  return String(metadata?.releaseYear ?? representative?.candidate.year ?? work.item.year ?? '')
+}
+
+function defaultIdentificationTmdbId(work: ScannedWorkItem): string {
+  const representative = work.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  return metadata?.tmdbId == null ? '' : String(metadata.tmdbId)
+}
+
+function defaultIdentificationImdbId(work: ScannedWorkItem): string {
+  const representative = work.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  return metadata?.imdbId ?? ''
+}
+
+function defaultIdentificationTvdbId(work: ScannedWorkItem): string {
+  const representative = work.entries[0]
+  const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
+  return metadata?.tvdbId == null ? '' : String(metadata.tvdbId)
+}
+
 function inferIdentificationMediaType(work: ScannedWorkItem): ScrapeMediaType {
   const representative = work.entries[0]
   const metadata = representative ? metadataForCandidate(representative.candidate, representative.scraped) : undefined
@@ -1177,6 +1443,39 @@ function inferIdentificationMediaType(work: ScannedWorkItem): ScrapeMediaType {
     return 'movie'
   const candidate = representative?.candidate
   return candidate?.kind === 'episode' || candidate?.kind === 'tv' ? 'tv' : 'movie'
+}
+
+function parsePositiveInteger(value: string): number | undefined {
+  const normalized = value.trim()
+  if (!normalized)
+    return undefined
+  if (!/^\d+$/.test(normalized))
+    return undefined
+  const parsed = Number.parseInt(normalized, 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function externalIdStatusMessage(): string | null {
+  const fields = [
+    identificationImdbId.value.trim() ? 'IMDb' : undefined,
+    identificationTvdbId.value.trim() ? 'TheTVDB' : undefined,
+  ].filter((value): value is string => Boolean(value))
+
+  if (fields.length === 0)
+    return null
+  return `${fields.join('/')} 标识符已保留为识别条件备注；当前 MVP 不做外部 ID 反查，请使用标题/年份搜索或 TheMovieDb ID 精确查找。`
+}
+
+function isEditableArtworkKind(value: string): value is EditableArtworkKind {
+  return value === 'poster' || value === 'logo' || value === 'backdrop'
+}
+
+function artworkKindLabel(kind: EditableArtworkKind): string {
+  if (kind === 'poster')
+    return '海报'
+  if (kind === 'logo')
+    return '徽标'
+  return '背景图'
 }
 
 function categoryIdFromName(categoryName: string | undefined): string | null {
@@ -1653,67 +1952,58 @@ function labelForSourceType(type: string): string {
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/68 p-6 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
-      aria-label="识别/修正元信息"
+      aria-label="识别"
       @click.self="closeIdentificationDialog"
     >
-      <section class="identification-dialog max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
-        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 p-5">
-          <div>
-            <p class="text-xs uppercase tracking-[0.22em] text-white/34">
-              TMDB match
-            </p>
-            <h3 class="mt-1 text-xl font-bold text-white">
-              识别/修正元信息
-            </h3>
-          </div>
+      <section class="identification-dialog max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
+        <div class="flex items-center gap-3 border-b border-white/8 p-4">
           <button
-            class="rounded-2xl bg-white/8 px-3 py-2 text-sm font-semibold text-white/62 transition-colors hover:bg-white/14 hover:text-white"
+            class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-white/8 text-white/70 transition-colors hover:bg-white/14 hover:text-white"
+            type="button"
+            aria-label="关闭识别"
+            title="关闭识别"
             @click="closeIdentificationDialog"
           >
-            关闭
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M12.5 4.5 7 10l5.5 5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
           </button>
+          <div class="min-w-0">
+            <h3 class="text-xl font-bold text-white">
+              识别
+            </h3>
+            <p class="mt-1 truncate text-xs text-white/40">
+              {{ identificationTarget?.item.name || '本地媒体' }}
+            </p>
+          </div>
         </div>
 
-        <div class="max-h-[calc(88vh-5rem)] overflow-y-auto p-5">
-          <form class="grid gap-3 lg:grid-cols-[1fr_10rem_auto]" @submit.prevent="searchIdentificationResults">
-            <input
-              v-model="identificationQuery"
-              class="min-w-0 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
-              placeholder="搜索片名或剧名"
-            >
-            <select
-              v-model="identificationMediaType"
-              class="rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none focus:border-primary/60"
-            >
-              <option value="movie">
-                电影
-              </option>
-              <option value="tv">
-                剧集
-              </option>
-            </select>
-            <button
-              class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
-              :disabled="isIdentificationSearching || isIdentificationApplying"
-            >
-              {{ isIdentificationSearching ? '搜索中…' : '搜索' }}
-            </button>
-          </form>
+        <div class="max-h-[calc(90vh-4.5rem)] overflow-y-auto p-5">
+          <div class="rounded-2xl border border-white/8 bg-black/18 p-4">
+            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-white/34">
+              源路径
+            </p>
+            <p class="mt-2 break-all rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-sm text-white/58">
+              {{ identificationSourcePath || '无路径信息' }}
+            </p>
+          </div>
 
-          <div class="mt-3 flex flex-wrap gap-2">
+          <div class="mt-5 flex flex-wrap gap-2">
             <button
-              class="rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-xs font-semibold text-white/36"
-              disabled
-              title="下一步支持本地图片"
+              type="button"
+              class="rounded-2xl px-4 py-2 text-sm font-semibold transition-colors"
+              :class="identificationActiveTab === 'match' ? 'bg-white text-black' : 'bg-white/8 text-white/62 hover:bg-white/14 hover:text-white'"
+              @click="identificationActiveTab = 'match'"
             >
-              上传海报
+              识别信息
             </button>
             <button
-              class="rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-xs font-semibold text-white/36"
-              disabled
-              title="下一步支持自定义字段"
+              type="button"
+              class="rounded-2xl px-4 py-2 text-sm font-semibold transition-colors"
+              :class="identificationActiveTab === 'images' ? 'bg-white text-black' : 'bg-white/8 text-white/62 hover:bg-white/14 hover:text-white'"
+              @click="identificationActiveTab = 'images'"
             >
-              编辑字段
+              编辑图片
             </button>
           </div>
 
@@ -1723,48 +2013,241 @@ function labelForSourceType(type: string): string {
           >
             {{ identificationErrorMessage }}
           </div>
-
-          <div v-if="identificationResults.length" class="mt-5 grid gap-3 md:grid-cols-2">
-            <button
-              v-for="result in identificationResults"
-              :key="`${result.mediaType}-${result.tmdbId}`"
-              class="identification-result grid grid-cols-[5rem_1fr] gap-3 rounded-2xl border border-white/8 bg-white/5 p-3 text-left transition-colors hover:border-primary/50 hover:bg-white/9 disabled:cursor-wait disabled:opacity-60"
-              :disabled="isIdentificationApplying"
-              @click="applyIdentificationResult(result)"
-            >
-              <div class="aspect-[2/3] overflow-hidden rounded-xl bg-white/6">
-                <img
-                  v-if="result.posterUrl"
-                  :src="result.posterUrl"
-                  :alt="result.title"
-                  class="h-full w-full object-cover"
-                  loading="lazy"
-                  decoding="async"
-                >
-                <div v-else class="flex h-full items-center justify-center px-2 text-center text-xs font-semibold text-white/42">
-                  {{ result.title }}
-                </div>
-              </div>
-              <div class="min-w-0">
-                <p class="line-clamp-2 text-sm font-bold text-white">
-                  {{ result.title }}
-                </p>
-                <p class="mt-1 text-xs text-white/42">
-                  {{ metadataYearLabel(result) }} · {{ metadataTypeLabel(result) }}
-                </p>
-                <p v-if="result.rating" class="mt-1 text-xs text-primary">
-                  TMDB {{ result.rating.toFixed(1) }}
-                </p>
-                <p class="mt-2 line-clamp-4 text-xs leading-5 text-white/46">
-                  {{ result.overview || '暂无简介。' }}
-                </p>
-              </div>
-            </button>
+          <div
+            v-if="identificationInfoMessage"
+            class="mt-4 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm leading-6 text-white/58"
+          >
+            {{ identificationInfoMessage }}
           </div>
 
-          <p v-else-if="!isIdentificationSearching" class="mt-5 rounded-2xl border border-white/8 bg-white/5 px-4 py-5 text-sm text-white/42">
-            选择媒体类型并搜索后，点击结果即可替换本地缓存中的元信息。
-          </p>
+          <section v-if="identificationActiveTab === 'match'" class="mt-5 space-y-5">
+            <form class="space-y-4" @submit.prevent="searchIdentificationResults">
+              <div class="grid gap-3 md:grid-cols-[1fr_9rem_10rem]">
+                <label class="block">
+                  <span class="text-xs font-semibold text-white/42">标题</span>
+                  <input
+                    v-model="identificationQuery"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
+                    placeholder="片名或剧名"
+                  >
+                </label>
+                <label class="block">
+                  <span class="text-xs font-semibold text-white/42">年份</span>
+                  <input
+                    v-model="identificationYear"
+                    inputmode="numeric"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
+                    placeholder="可选"
+                  >
+                </label>
+                <label class="block">
+                  <span class="text-xs font-semibold text-white/42">媒体类型</span>
+                  <select
+                    v-model="identificationMediaType"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none focus:border-primary/60"
+                  >
+                    <option value="movie">
+                      电影
+                    </option>
+                    <option value="tv">
+                      剧集
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="grid gap-3 md:grid-cols-3">
+                <label class="block">
+                  <span class="text-xs font-semibold text-white/42">IMDb 标识符</span>
+                  <input
+                    v-model="identificationImdbId"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
+                    placeholder="tt1234567"
+                  >
+                </label>
+                <label class="block">
+                  <span class="text-xs font-semibold text-white/42">TheMovieDb 标识符</span>
+                  <input
+                    v-model="identificationTmdbId"
+                    inputmode="numeric"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
+                    placeholder="填入后精确查找"
+                  >
+                </label>
+                <label class="block">
+                  <span class="text-xs font-semibold text-white/42">TheTVDB 标识符</span>
+                  <input
+                    v-model="identificationTvdbId"
+                    inputmode="numeric"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
+                    placeholder="暂不反查"
+                  >
+                </label>
+              </div>
+
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <p class="max-w-2xl text-xs leading-5 text-white/40">
+                  TheMovieDb 标识符会直接精确获取详情；标题和年份用于普通 TMDB 搜索。IMDb / TheTVDB 字段本轮仅作为可见识别条件保留，不做反向查询。
+                </p>
+                <button
+                  class="rounded-2xl bg-primary px-6 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
+                  :disabled="isIdentificationSearching || isIdentificationApplying"
+                >
+                  {{ isIdentificationSearching ? '搜索中…' : '搜索' }}
+                </button>
+              </div>
+            </form>
+
+            <div v-if="identificationResults.length" class="grid gap-3 md:grid-cols-2">
+              <button
+                v-for="result in identificationResults"
+                :key="`${result.mediaType}-${result.tmdbId}`"
+                class="identification-result grid grid-cols-[5rem_1fr] gap-3 rounded-2xl border border-white/8 bg-white/5 p-3 text-left transition-colors hover:border-primary/50 hover:bg-white/9 disabled:cursor-wait disabled:opacity-60"
+                :disabled="isIdentificationApplying"
+                @click="applyIdentificationResult(result)"
+              >
+                <div class="aspect-[2/3] overflow-hidden rounded-xl bg-white/6">
+                  <img
+                    v-if="result.posterUrl"
+                    :src="result.posterUrl"
+                    :alt="result.title"
+                    class="h-full w-full object-cover"
+                    loading="lazy"
+                    decoding="async"
+                  >
+                  <div v-else class="flex h-full items-center justify-center px-2 text-center text-xs font-semibold text-white/42">
+                    {{ result.title }}
+                  </div>
+                </div>
+                <div class="min-w-0">
+                  <img
+                    v-if="result.titleLogoUrl"
+                    :src="result.titleLogoUrl"
+                    :alt="result.title"
+                    class="mb-2 max-h-8 max-w-44 object-contain object-left"
+                    loading="lazy"
+                    decoding="async"
+                  >
+                  <p class="line-clamp-2 text-sm font-bold text-white">
+                    {{ result.title }}
+                  </p>
+                  <p class="mt-1 text-xs text-white/42">
+                    {{ metadataYearLabel(result) }} · {{ metadataTypeLabel(result) }} · TMDB {{ result.tmdbId }}
+                  </p>
+                  <p v-if="result.rating" class="mt-1 text-xs text-primary">
+                    TMDB {{ result.rating.toFixed(1) }}
+                  </p>
+                  <p class="mt-2 line-clamp-4 text-xs leading-5 text-white/46">
+                    {{ result.overview || '暂无简介。' }}
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            <p v-else-if="!isIdentificationSearching" class="rounded-2xl border border-white/8 bg-white/5 px-4 py-5 text-sm text-white/42">
+              输入识别条件并搜索后，点击候选即可写入本地扫描缓存。
+            </p>
+          </section>
+
+          <section v-else class="mt-5 space-y-5">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <article
+                v-for="card in identificationArtworkCards"
+                :key="card.kind"
+                class="rounded-2xl border border-white/8 bg-white/5 p-4"
+                :class="card.enabled ? '' : 'opacity-55'"
+              >
+                <div class="flex items-start gap-3">
+                  <div class="flex h-24 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl bg-black/28">
+                    <img
+                      v-if="card.currentUrl"
+                      :src="card.currentUrl"
+                      :alt="card.label"
+                      class="h-full w-full object-cover"
+                      loading="lazy"
+                      decoding="async"
+                    >
+                    <span v-else class="px-2 text-center text-xs text-white/32">暂无图片</span>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-2">
+                      <h4 class="text-sm font-bold text-white">
+                        {{ card.label }}
+                      </h4>
+                      <span
+                        class="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+                        :class="card.enabled ? 'border-primary/30 bg-primary/12 text-primary' : 'border-white/8 bg-white/5 text-white/32'"
+                      >
+                        {{ card.enabled ? 'TMDB' : '后续支持' }}
+                      </span>
+                    </div>
+                    <p class="mt-2 line-clamp-2 text-xs leading-5 text-white/42">
+                      {{ card.description }}
+                    </p>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        class="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white/72 transition-colors hover:bg-white/16 disabled:cursor-not-allowed disabled:opacity-45"
+                        :disabled="!card.enabled || isArtworkSearching || isArtworkApplying"
+                        @click="searchArtworkFromCard(card)"
+                      >
+                        {{ isArtworkSearching && artworkSearchKind === card.kind ? '搜索中…' : '搜索' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-xs font-semibold text-white/56 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                        :disabled="!card.enabled || isArtworkApplying || !card.currentUrl"
+                        @click="clearArtworkFromCard(card)"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <div
+              v-if="artworkSearchKind"
+              class="rounded-2xl border border-white/8 bg-black/14 p-4"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h4 class="text-base font-bold text-white">
+                    {{ artworkKindLabel(artworkSearchKind) }}候选
+                  </h4>
+                  <p class="mt-1 text-xs text-white/42">
+                    选择后只写入 Player 本地扫描缓存，不写回 OpenList/Alist。
+                  </p>
+                </div>
+                <span class="text-xs text-white/34">{{ artworkSearchResults.length }} 张</span>
+              </div>
+
+              <div v-if="artworkSearchResults.length" class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <button
+                  v-for="image in artworkSearchResults"
+                  :key="`${image.kind}-${image.filePath}`"
+                  type="button"
+                  class="overflow-hidden rounded-2xl border border-white/8 bg-white/5 text-left transition-colors hover:border-primary/50 hover:bg-white/9 disabled:cursor-wait disabled:opacity-60"
+                  :disabled="isArtworkApplying"
+                  @click="applyArtworkCandidate(image)"
+                >
+                  <div :class="image.kind === 'backdrop' || image.kind === 'logo' ? 'aspect-video' : 'aspect-[2/3]'" class="bg-black/28">
+                    <img :src="image.imageUrl" :alt="artworkKindLabel(image.kind)" class="h-full w-full object-contain" loading="lazy" decoding="async">
+                  </div>
+                  <div class="p-3 text-xs text-white/48">
+                    <p>{{ image.language || '无语言' }}</p>
+                    <p v-if="image.width && image.height" class="mt-1">
+                      {{ image.width }} × {{ image.height }}
+                    </p>
+                  </div>
+                </button>
+              </div>
+              <p v-else-if="!isArtworkSearching" class="mt-4 rounded-xl border border-white/8 bg-white/5 px-4 py-5 text-sm text-white/42">
+                暂无候选。请先完成识别或填写有效 TheMovieDb 标识符后再搜索。
+              </p>
+            </div>
+          </section>
         </div>
       </section>
     </div>

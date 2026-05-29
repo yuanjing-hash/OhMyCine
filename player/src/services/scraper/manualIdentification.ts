@@ -1,5 +1,5 @@
 import type { RawLocalScanCache, RawLocalScanLogEntry } from './localScanCache'
-import type { TmdbMetadata } from './tmdb'
+import type { TmdbImageKind, TmdbMetadata } from './tmdb'
 import type { RawCategoryAssignment, RawMediaCandidate, RawScrapedMediaItem } from './types'
 import { resolveRawCandidateCategoryAssignment } from './categoryGrouping'
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
@@ -11,6 +11,13 @@ export interface RawManualIdentificationInput {
   readonly metadata: TmdbMetadata
   readonly matchedSearchTitle?: string
   readonly searchTitles?: readonly string[]
+}
+
+export interface RawManualArtworkOverrideInput {
+  readonly targetRecordId: string
+  readonly kind: Extract<TmdbImageKind, 'poster' | 'logo' | 'backdrop'>
+  readonly imageUrl?: string
+  readonly filePath?: string
 }
 
 interface RawSeriesCandidateGroup {
@@ -96,6 +103,62 @@ export function applyRawManualIdentification(
   }
 }
 
+export function applyRawManualArtworkOverride(
+  cache: RawLocalScanCache,
+  input: RawManualArtworkOverrideInput,
+): RawLocalScanCache {
+  const target = cache.candidates.find(candidate => candidate.record.id === input.targetRecordId)
+  if (!target)
+    throw new Error('未找到需要编辑图片的本地候选。')
+
+  const targetGroupKey = createRawSeriesGroupingKey(target)
+  const targetCandidates = cache.candidates.filter(candidate => createRawSeriesGroupingKey(candidate) === targetGroupKey)
+  const existingItems = new Map((cache.scrapedItems ?? []).map(item => [item.recordId, item]))
+  const baseMetadata = findArtworkBaseMetadata(targetCandidates, existingItems)
+  if (!baseMetadata)
+    throw new Error('请先完成识别或填写 TMDB ID 获取详情后再编辑图片。')
+
+  for (const candidate of targetCandidates) {
+    const existing = existingItems.get(candidate.record.id)
+    const metadata = patchArtworkMetadata(existing?.metadata ?? candidate.scrapeMetadata ?? baseMetadata, input)
+    existingItems.set(candidate.record.id, existing?.matchStatus === 'matched'
+      ? {
+          ...existing,
+          metadata,
+        }
+      : createMatchedScrapedItem(candidate, metadata, {
+          matchedSearchTitle: existing?.matchedSearchTitle,
+          searchTitles: uniqueSearchTitles([
+            ...(existing?.searchTitles ?? []),
+            ...extractCandidateTmdbSearchTitles(candidate),
+          ]),
+        }))
+  }
+
+  const scrapedItems = cache.candidates
+    .map(candidate => existingItems.get(candidate.record.id))
+    .filter((item): item is RawScrapedMediaItem => item != null)
+  const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
+  const candidates = cache.candidates.map((candidate) => {
+    const scraped = scrapedItemsByRecordId.get(candidate.record.id)
+    return {
+      ...candidate,
+      scrapeMetadata: scraped?.metadata ?? candidate.scrapeMetadata,
+      categoryAssignment: scraped?.categoryAssignment ?? candidate.categoryAssignment,
+    } satisfies RawMediaCandidate
+  })
+
+  return {
+    ...cache,
+    candidates,
+    scrapedItems,
+    logs: [
+      ...cache.logs,
+      createManualArtworkLog(target, input, targetCandidates.length),
+    ],
+  }
+}
+
 function createRawSeriesCandidateGroups(candidates: readonly RawMediaCandidate[]): RawSeriesCandidateGroup[] {
   const groups = new Map<string, RawMediaCandidate[]>()
   for (const candidate of candidates) {
@@ -124,7 +187,25 @@ function findMatchedRepresentative(
 function matchedRepresentativeScore(item: RawScrapedMediaItem): number {
   return (item.metadata?.posterUrl ? 2 : 0)
     + (item.metadata?.backdropUrl ? 1 : 0)
+    + (item.metadata?.titleLogoUrl ? 1 : 0)
     + (item.metadata?.overview ? 0.5 : 0)
+}
+
+function findArtworkBaseMetadata(
+  candidates: readonly RawMediaCandidate[],
+  scrapedByRecordId: ReadonlyMap<string, RawScrapedMediaItem>,
+): TmdbMetadata | undefined {
+  return candidates
+    .map(candidate => scrapedByRecordId.get(candidate.record.id)?.metadata ?? candidate.scrapeMetadata)
+    .filter((metadata): metadata is TmdbMetadata => metadata != null)
+    .sort((left, right) => artworkMetadataScore(right) - artworkMetadataScore(left))[0]
+}
+
+function artworkMetadataScore(metadata: TmdbMetadata): number {
+  return (metadata.posterUrl ? 2 : 0)
+    + (metadata.titleLogoUrl ? 1 : 0)
+    + (metadata.backdropUrl ? 1 : 0)
+    + (metadata.overview ? 0.5 : 0)
 }
 
 function createMatchedScrapedItem(
@@ -173,6 +254,36 @@ function createMetadataCategoryAssignment(metadata: TmdbMetadata): RawCategoryAs
   }
 }
 
+function patchArtworkMetadata(
+  metadata: TmdbMetadata,
+  input: RawManualArtworkOverrideInput,
+): TmdbMetadata {
+  if (input.kind === 'poster') {
+    return {
+      ...metadata,
+      posterPath: input.imageUrl ? input.filePath : undefined,
+      posterUrl: input.imageUrl,
+      scrapedAt: new Date().toISOString(),
+    }
+  }
+
+  if (input.kind === 'logo') {
+    return {
+      ...metadata,
+      titleLogoPath: input.imageUrl ? input.filePath : undefined,
+      titleLogoUrl: input.imageUrl,
+      scrapedAt: new Date().toISOString(),
+    }
+  }
+
+  return {
+    ...metadata,
+    backdropPath: input.imageUrl ? input.filePath : undefined,
+    backdropUrl: input.imageUrl,
+    scrapedAt: new Date().toISOString(),
+  }
+}
+
 function createManualIdentificationLog(
   target: RawMediaCandidate,
   metadata: TmdbMetadata,
@@ -182,6 +293,21 @@ function createManualIdentificationLog(
     timestamp: new Date().toISOString(),
     level: 'info',
     message: `手动识别：${target.seriesTitle ?? target.title} → ${metadata.title}，已更新 ${updatedCount} 个同作品候选。`,
+    path: target.record.providerPath,
+  }
+}
+
+function createManualArtworkLog(
+  target: RawMediaCandidate,
+  input: RawManualArtworkOverrideInput,
+  updatedCount: number,
+): RawLocalScanLogEntry {
+  const action = input.imageUrl ? '更新' : '清除'
+  const label = input.kind === 'poster' ? '海报' : input.kind === 'logo' ? '徽标' : '背景图'
+  return {
+    timestamp: new Date().toISOString(),
+    level: 'info',
+    message: `编辑图片：${action}${label}，已更新 ${updatedCount} 个同作品候选。`,
     path: target.record.providerPath,
   }
 }

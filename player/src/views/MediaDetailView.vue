@@ -30,10 +30,15 @@ const selectedMediaSourceId = ref<string>('')
 const selectedAudioIndex = ref<number | null>(null)
 const selectedSubtitleIndex = ref<number | null>(null)
 const playbackProgressByItemId = ref<Record<string, PlaybackHistoryEntry>>({})
+const failedTitleLogoUrls = ref<Set<string>>(new Set())
 
 const heroStyle = computed(() => {
   const backdrop = detail.value?.backdropUrl
   return backdrop ? { backgroundImage: `url(${backdrop})` } : {}
+})
+const visibleTitleLogoUrl = computed(() => {
+  const url = detail.value?.titleLogoUrl
+  return url && !failedTitleLogoUrls.value.has(url) ? url : ''
 })
 const isSeriesDetail = computed(() => detail.value?.type === 'series')
 const isPlayableDetail = computed(() => detail.value != null && !['series', 'season', 'folder'].includes(detail.value.type))
@@ -403,6 +408,7 @@ function recoverContextualDetail(): { detail: MediaDetail, relatedItems: MediaIt
       type: item.type,
       posterUrl: item.posterUrl,
       backdropUrl: item.backdropUrl,
+      titleLogoUrl: item.titleLogoUrl,
       overview: item.overview,
       duration: item.duration,
       path: item.path,
@@ -536,6 +542,7 @@ async function playItem(item?: MediaItem) {
         mediaType: target.type,
         posterUrl: target.posterUrl,
         backdropUrl: target.backdropUrl,
+        titleLogoUrl: target.titleLogoUrl,
         contextId: playbackContextId,
         mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
         resumePosition: resumePositionForItem(target),
@@ -600,6 +607,10 @@ function episodeTitle(item: MediaItem): string {
 function itemRuntime(item: MediaItem): string {
   return item.duration ? `${Math.round(item.duration / 60)} 分钟` : ''
 }
+
+function markTitleLogoFailed(url: string) {
+  failedTitleLogoUrls.value = new Set([...failedTitleLogoUrls.value, url])
+}
 </script>
 
 <template>
@@ -633,10 +644,19 @@ function itemRuntime(item: MediaItem): string {
           </div>
 
           <div class="max-w-4xl">
-            <p class="text-xs uppercase tracking-[0.28em] text-white/42">
+            <p v-if="!visibleTitleLogoUrl" class="text-xs uppercase tracking-[0.28em] text-white/42">
               {{ isSeriesDetail ? 'OhMyCine Series' : 'OhMyCine Detail' }}
             </p>
-            <h1 class="mt-3 text-4xl font-bold leading-tight drop-shadow-2xl lg:text-6xl">
+            <img
+              v-if="visibleTitleLogoUrl"
+              :src="visibleTitleLogoUrl"
+              :alt="detail.name"
+              class="max-h-28 max-w-[min(30rem,78vw)] object-contain object-left drop-shadow-2xl"
+              loading="eager"
+              decoding="async"
+              @error="markTitleLogoFailed(visibleTitleLogoUrl)"
+            >
+            <h1 :class="visibleTitleLogoUrl ? 'sr-only' : 'mt-3 text-4xl font-bold leading-tight drop-shadow-2xl lg:text-6xl'">
               {{ detail.name }}
             </h1>
             <div class="mt-4 flex flex-wrap items-center gap-3 text-sm text-white/68">

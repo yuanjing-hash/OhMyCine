@@ -20,7 +20,7 @@ export interface CreateRawSeriesSeasonChildrenInput {
   readonly libraryId?: string
   readonly fallbackPath?: string
   readonly episodes: readonly MediaItem[]
-  readonly artwork?: Pick<MediaItem, 'posterUrl' | 'backdropUrl'>
+  readonly artwork?: Pick<MediaItem, 'posterUrl' | 'backdropUrl' | 'titleLogoUrl'>
 }
 
 export function createRawSeriesGroupingKey(
@@ -115,6 +115,7 @@ function representativeScore(entry: RawSeriesGroupableEntry): number {
   return (entry.scraped?.matchStatus === 'matched' ? 4 : 0)
     + (metadata ? 3 : 0)
     + (metadata?.posterUrl ? 2 : 0)
+    + (metadata?.titleLogoUrl ? 1 : 0)
     + (metadata?.backdropUrl ? 1 : 0)
 }
 
@@ -133,6 +134,7 @@ function createSeasonChild(
     type: 'season',
     posterUrl: input.artwork?.posterUrl ?? firstEpisode?.posterUrl,
     backdropUrl: input.artwork?.backdropUrl ?? firstEpisode?.backdropUrl,
+    titleLogoUrl: input.artwork?.titleLogoUrl ?? firstEpisode?.titleLogoUrl,
     year: firstEpisode?.year,
     rating: firstEpisode?.rating,
     overview: `${episodes.length} 集`,

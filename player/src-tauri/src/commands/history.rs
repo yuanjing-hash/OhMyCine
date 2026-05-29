@@ -33,6 +33,7 @@ pub struct PlaybackProgressUpsert {
     media_type: Option<String>,
     poster_url: Option<String>,
     backdrop_url: Option<String>,
+    title_logo_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     completed: Option<bool>,
@@ -50,6 +51,7 @@ pub struct PlaybackHistoryEntry {
     media_type: Option<String>,
     poster_url: Option<String>,
     backdrop_url: Option<String>,
+    title_logo_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     progress: Option<f64>,
@@ -111,6 +113,7 @@ struct NormalizedProgress {
     media_type: Option<String>,
     poster_url: Option<String>,
     backdrop_url: Option<String>,
+    title_logo_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     completed: bool,
@@ -137,6 +140,7 @@ impl PlaybackHistoryStorage {
                 media_type TEXT,
                 poster_url TEXT,
                 backdrop_url TEXT,
+                title_logo_url TEXT,
                 position REAL NOT NULL,
                 duration REAL,
                 completed INTEGER NOT NULL DEFAULT 0,
@@ -148,6 +152,10 @@ impl PlaybackHistoryStorage {
                 ON playback_history (completed, updated_at DESC);",
         )
         .map_err(|_| "Failed to initialize playback history database.".to_string())?;
+        let _ = conn.execute(
+            "ALTER TABLE playback_history ADD COLUMN title_logo_url TEXT",
+            params![],
+        );
 
         Ok(Self { conn })
     }
@@ -157,10 +165,10 @@ impl PlaybackHistoryStorage {
             .execute(
                 "INSERT INTO playback_history (
                     identity_key, source_id, library_id, item_id, media_identity, title,
-                    stream_identity, media_type, poster_url, backdrop_url, position, duration,
-                    completed, progress_source, created_at, updated_at
+                    stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
+                    position, duration, completed, progress_source, created_at, updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'local', unixepoch(), unixepoch())
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'local', unixepoch(), unixepoch())
                 ON CONFLICT(identity_key) DO UPDATE SET
                     source_id = excluded.source_id,
                     library_id = excluded.library_id,
@@ -171,6 +179,7 @@ impl PlaybackHistoryStorage {
                     media_type = excluded.media_type,
                     poster_url = excluded.poster_url,
                     backdrop_url = excluded.backdrop_url,
+                    title_logo_url = excluded.title_logo_url,
                     position = excluded.position,
                     duration = excluded.duration,
                     completed = excluded.completed,
@@ -187,6 +196,7 @@ impl PlaybackHistoryStorage {
                     progress.media_type,
                     progress.poster_url,
                     progress.backdrop_url,
+                    progress.title_logo_url,
                     progress.position,
                     progress.duration,
                     if progress.completed { 1 } else { 0 },
@@ -203,7 +213,7 @@ impl PlaybackHistoryStorage {
         self.conn
             .query_row(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
-                    media_type, poster_url, backdrop_url, position, duration, updated_at,
+                    media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
                     completed, progress_source
                  FROM playback_history
                  WHERE identity_key = ?1",
@@ -219,7 +229,7 @@ impl PlaybackHistoryStorage {
             .conn
             .prepare(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
-                    media_type, poster_url, backdrop_url, position, duration, updated_at,
+                    media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
                     completed, progress_source
                  FROM playback_history
                  WHERE completed = 0
@@ -279,6 +289,7 @@ impl NormalizedProgress {
                 .and_then(|value| sanitize_optional_display_text(value, false)),
             poster_url: payload.poster_url.and_then(sanitize_optional_url),
             backdrop_url: payload.backdrop_url.and_then(sanitize_optional_url),
+            title_logo_url: payload.title_logo_url.and_then(sanitize_optional_url),
             position,
             duration,
             completed,
@@ -287,8 +298,8 @@ impl NormalizedProgress {
 }
 
 fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybackHistoryEntry> {
-    let duration = row.get::<_, Option<f64>>(10)?;
-    let position = row.get::<_, f64>(9)?;
+    let duration = row.get::<_, Option<f64>>(11)?;
+    let position = row.get::<_, f64>(10)?;
     Ok(PlaybackHistoryEntry {
         source_id: row.get(0)?,
         library_id: row.get(1)?,
@@ -299,12 +310,13 @@ fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybackHistor
         media_type: row.get(6)?,
         poster_url: row.get(7)?,
         backdrop_url: row.get(8)?,
+        title_logo_url: row.get(9)?,
         position,
         duration,
         progress: progress_ratio(position, duration),
-        updated_at: row.get(11)?,
-        completed: row.get::<_, i64>(12)? != 0,
-        progress_source: row.get(13)?,
+        updated_at: row.get(12)?,
+        completed: row.get::<_, i64>(13)? != 0,
+        progress_source: row.get(14)?,
     })
 }
 

@@ -47,6 +47,8 @@ const activeLibraryId = ref('')
 const activeMediaType = ref<MediaItem['type'] | undefined>()
 const activePosterUrl = ref('')
 const activeBackdropUrl = ref('')
+const activeTitleLogoUrl = ref('')
+const failedTitleLogoUrls = ref<Set<string>>(new Set())
 const playbackQueue = ref<PlaybackQueueState | null>(null)
 const playbackContextId = ref('')
 const queueSwitchError = ref<string | null>(null)
@@ -124,6 +126,10 @@ const hasMedia = computed(() => mediaPath.value.length > 0)
 const currentQueueItem = computed(() => {
   const queue = playbackQueue.value
   return queue ? queue.items[queue.currentIndex] : null
+})
+const currentTitleLogoUrl = computed(() => {
+  const url = activeTitleLogoUrl.value || currentQueueItem.value?.titleLogoUrl || ''
+  return url && !failedTitleLogoUrls.value.has(url) ? url : ''
 })
 const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
@@ -205,6 +211,10 @@ function handleWindowBlur() {
 
 function handleWindowResize() {
   void updateChromeOcclusion()
+}
+
+function markTitleLogoFailed(url: string) {
+  failedTitleLogoUrls.value = new Set([...failedTitleLogoUrls.value, url])
 }
 
 async function ensureRenderInitialized() {
@@ -407,6 +417,7 @@ function syncActiveMediaMetadataFromRoute() {
   activeMediaType.value = queryMediaType()
   activePosterUrl.value = queryStringValue(route.query.posterUrl)
   activeBackdropUrl.value = queryStringValue(route.query.backdropUrl)
+  activeTitleLogoUrl.value = queryStringValue(route.query.titleLogoUrl)
 }
 
 function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity'> | null {
@@ -446,6 +457,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
     mediaType,
     posterUrl: activePosterUrl.value || queueItem?.posterUrl,
     backdropUrl: activeBackdropUrl.value || queueItem?.backdropUrl,
+    titleLogoUrl: activeTitleLogoUrl.value || queueItem?.titleLogoUrl,
     position,
     duration: mediaDuration,
     completed: isCompletedPosition(position, mediaDuration),
@@ -900,6 +912,7 @@ async function handleFileDrop(path: string) {
   activeMediaType.value = 'file'
   activePosterUrl.value = ''
   activeBackdropUrl.value = ''
+  activeTitleLogoUrl.value = ''
   pictureSettingsError.value = null
   queueSwitchError.value = null
   setKnownSubtitleTracks([])
@@ -952,6 +965,7 @@ async function playQueueItemAt(index: number) {
         mediaType: target.type,
         posterUrl: target.posterUrl,
         backdropUrl: target.backdropUrl,
+        titleLogoUrl: target.titleLogoUrl,
         contextId: playbackContextId.value || undefined,
         mediaSourceId: undefined,
         audioIndex: undefined,
@@ -1287,7 +1301,16 @@ watch(
           <p class="text-xs uppercase tracking-[0.24em] text-white/38">
             Now Playing
           </p>
-          <h1 class="mt-2 truncate text-2xl font-bold text-white drop-shadow-lg">
+          <img
+            v-if="currentTitleLogoUrl"
+            :src="currentTitleLogoUrl"
+            :alt="mediaTitle"
+            class="mt-2 max-h-14 max-w-[min(22rem,72vw)] object-contain object-left drop-shadow-lg"
+            loading="eager"
+            decoding="async"
+            @error="markTitleLogoFailed(currentTitleLogoUrl)"
+          >
+          <h1 :class="currentTitleLogoUrl ? 'mt-2 truncate text-sm font-semibold text-white/72 drop-shadow-lg' : 'mt-2 truncate text-2xl font-bold text-white drop-shadow-lg'">
             {{ mediaTitle }}
           </h1>
           <p v-if="mediaPath" class="mt-2 truncate text-xs text-white/35">

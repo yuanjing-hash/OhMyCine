@@ -17,6 +17,7 @@ export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
   mediaType?: MediaItem['type']
   posterUrl?: string
   backdropUrl?: string
+  titleLogoUrl?: string
   position: number
   duration?: number
   completed?: boolean
@@ -30,6 +31,7 @@ export interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   mediaType?: MediaItem['type'] | null
   posterUrl?: string | null
   backdropUrl?: string | null
+  titleLogoUrl?: string | null
   position: number
   duration?: number | null
   progress?: number | null
@@ -106,6 +108,7 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     type: entry.mediaType ?? 'file',
     posterUrl: safeArtworkUrl(entry.posterUrl),
     backdropUrl: safeArtworkUrl(entry.backdropUrl),
+    titleLogoUrl: safeArtworkUrl(entry.titleLogoUrl),
     duration: entry.duration ?? undefined,
     path: entry.streamIdentity ?? entry.mediaIdentity,
     resumePosition: entry.position,
@@ -142,6 +145,7 @@ function sanitizeProgressInput(input: PlaybackProgressUpsert): PlaybackProgressU
     mediaType: input.mediaType,
     posterUrl: safeArtworkUrl(input.posterUrl),
     backdropUrl: safeArtworkUrl(input.backdropUrl),
+    titleLogoUrl: safeArtworkUrl(input.titleLogoUrl),
     position: input.position,
     duration,
     completed: input.completed ?? isCompletedPosition(input.position, duration),

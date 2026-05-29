@@ -391,6 +391,8 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     mediaType: metadata.mediaType,
     title: metadata.title,
     originalTitle: metadata.originalTitle,
+    imdbId: metadata.imdbId,
+    tvdbId: metadata.tvdbId,
     overview: metadata.overview,
     releaseDate: metadata.releaseDate,
     releaseYear: metadata.releaseYear,
@@ -402,8 +404,10 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     productionCountries: [...metadata.productionCountries],
     posterPath: metadata.posterPath,
     backdropPath: metadata.backdropPath,
+    titleLogoPath: metadata.titleLogoPath,
     posterUrl: metadata.posterUrl,
     backdropUrl: metadata.backdropUrl,
+    titleLogoUrl: metadata.titleLogoUrl,
     scrapedAt: metadata.scrapedAt,
   }
 }

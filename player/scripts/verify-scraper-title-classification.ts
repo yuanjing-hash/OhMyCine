@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { deriveRawCandidateCategoryAssignment, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
-import { applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
+import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
 import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
 import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
+import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '../src/services/playbackContext.ts'
 import type { MediaItem } from '../src/services/datasource/types.ts'
 import type { RawFileRecord, RawScrapedMediaItem, RawTmdbMatchStatus } from '../src/services/scraper/types.ts'
 
@@ -170,6 +171,7 @@ const matchedSeriesScrape: RawScrapedMediaItem = {
     productionCountries: ['US'],
     posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
     backdropUrl: 'https://image.tmdb.org/t/p/w780/backdrop.jpg',
+    titleLogoUrl: 'https://image.tmdb.org/t/p/w500/logo.png',
     scrapedAt: '2026-05-25T00:00:00.000Z',
   },
   mediaType: 'tv',
@@ -309,6 +311,42 @@ const manualCategories = manuallyIdentifiedCache.candidates.map(candidate =>
 assert.equal(manuallyIdentifiedCache.scrapedItems?.length, standardSeriesCandidates.length)
 assert.deepEqual([...new Set(manualCategories)], ['动漫'])
 assert.equal(manualCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
+assert.equal(manuallyIdentifiedCache.scrapedItems?.[0]?.metadata?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/logo.png')
+
+const artworkOverrideCache = applyRawManualArtworkOverride(manuallyIdentifiedCache, {
+  targetRecordId: standardSeriesCandidates[0].record.id,
+  kind: 'logo',
+  imageUrl: 'https://image.tmdb.org/t/p/w500/new-logo.png',
+  filePath: '/new-logo.png',
+})
+const artworkOverrideScrapes = createEffectiveRawScrapeItemMap(artworkOverrideCache.candidates, artworkOverrideCache.scrapedItems)
+assert.equal(artworkOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/new-logo.png')
+assert.equal(artworkOverrideScrapes.get(standardSeriesCandidates[1].record.id)?.metadata?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/new-logo.png')
+
+const posterBackdropOverrideCache = applyRawManualArtworkOverride(
+  applyRawManualArtworkOverride(artworkOverrideCache, {
+    targetRecordId: standardSeriesCandidates[0].record.id,
+    kind: 'poster',
+    imageUrl: 'https://image.tmdb.org/t/p/w500/new-poster.jpg',
+    filePath: '/new-poster.jpg',
+  }),
+  {
+    targetRecordId: standardSeriesCandidates[0].record.id,
+    kind: 'backdrop',
+    imageUrl: 'https://image.tmdb.org/t/p/w780/new-backdrop.jpg',
+    filePath: '/new-backdrop.jpg',
+  },
+)
+const posterBackdropOverrideScrapes = createEffectiveRawScrapeItemMap(posterBackdropOverrideCache.candidates, posterBackdropOverrideCache.scrapedItems)
+assert.equal(posterBackdropOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.posterUrl, 'https://image.tmdb.org/t/p/w500/new-poster.jpg')
+assert.equal(posterBackdropOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.backdropUrl, 'https://image.tmdb.org/t/p/w780/new-backdrop.jpg')
+
+const clearedLogoCache = applyRawManualArtworkOverride(artworkOverrideCache, {
+  targetRecordId: standardSeriesCandidates[0].record.id,
+  kind: 'logo',
+})
+const clearedLogoScrapes = createEffectiveRawScrapeItemMap(clearedLogoCache.candidates, clearedLogoCache.scrapedItems)
+assert.equal(clearedLogoScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.titleLogoUrl, undefined)
 
 const groupedSeries = groupRawSeriesEntries([
   { candidate: standardSeriesCandidates[0], scraped: matchedSeriesScrape },
@@ -323,14 +361,28 @@ const contextSeasonChildren = createRawSeriesSeasonChildren({
   sourceId: 'alist',
   libraryId: '/',
   episodes: groupedEpisodeItems,
-  artwork: { posterUrl: matchedSeriesScrape.metadata?.posterUrl, backdropUrl: matchedSeriesScrape.metadata?.backdropUrl },
+  artwork: { posterUrl: matchedSeriesScrape.metadata?.posterUrl, backdropUrl: matchedSeriesScrape.metadata?.backdropUrl, titleLogoUrl: matchedSeriesScrape.metadata?.titleLogoUrl },
 })
 assert.deepEqual(contextSeasonChildren.map(season => season.name), ['Season 01', 'Season 02', 'Season 03'])
 assert.deepEqual(contextSeasonChildren.map(season => season.children?.map(episode => episode.seasonNumber)), [[1], [2], [3]])
+assert.equal(contextSeasonChildren[0]?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/logo.png')
 const contextualSeries = { children: contextSeasonChildren }
 const contextualSeasons = getContextSeriesSeasons(contextualSeries)
 assert.equal(contextualSeasons.length, 3)
 assert.equal(getPlayableSeasonChildren(contextualSeasons[1]).at(0)?.seasonNumber, 2)
+
+const playbackQueue = createPlaybackQueue([{
+  ...groupedEpisodeItems[0]!,
+  titleLogoUrl: 'https://image.tmdb.org/t/p/w500/episode-logo.png',
+}], groupedEpisodeItems[0]!.id)
+assert.ok(playbackQueue)
+const playbackContextId = savePlaybackMediaContext({
+  sourceId: 'alist',
+  itemId: groupedEpisodeItems[0]!.id,
+  title: groupedEpisodeItems[0]!.name,
+  queue: playbackQueue,
+})
+assert.equal(getPlaybackMediaContext(playbackContextId)?.queue?.items[0]?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/episode-logo.png')
 
 const categoryOnlySeasonRecord: RawFileRecord = {
   id: 'alist:/动漫/Season 01/S01E01.mkv',
@@ -388,6 +440,11 @@ console.log(JSON.stringify({
   mixedSeriesDisplayCategories,
   noRepresentativeDisplayCategories,
   manualCategories,
+  manualTitleLogoUrl: manuallyIdentifiedCache.scrapedItems?.[0]?.metadata?.titleLogoUrl,
+  artworkLogoOverride: artworkOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.titleLogoUrl,
+  posterOverride: posterBackdropOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.posterUrl,
+  backdropOverride: posterBackdropOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.backdropUrl,
+  clearedLogoUrl: clearedLogoScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.titleLogoUrl ?? null,
   noPathHintMatchedCategory: noPathHintMatchedAssignment.categoryName,
   noPathHintMatchedDisplayCategory: noPathHintMatchedDisplayAssignment.categoryName,
   unmatchedDisplayCategories,
@@ -395,7 +452,9 @@ console.log(JSON.stringify({
   contextSeasonChildren: contextSeasonChildren.map(season => ({
     name: season.name,
     episodeCount: season.children?.length ?? 0,
+    titleLogoUrl: season.titleLogoUrl,
   })),
+  playbackQueueTitleLogoUrl: getPlaybackMediaContext(playbackContextId)?.queue?.items[0]?.titleLogoUrl,
   flatEpisodeSeriesTitle: flatEpisodeCandidate.seriesTitle,
   categoryOnlySeasonSearchTitles: categoryOnlyRecognition.searchTitles,
   tokenizedPathRecordCount: tokenizedPathPreview.records.length,

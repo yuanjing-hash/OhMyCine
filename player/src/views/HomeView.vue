@@ -164,6 +164,7 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
         mediaType: item.type,
         posterUrl: item.posterUrl,
         backdropUrl: item.backdropUrl,
+        titleLogoUrl: item.titleLogoUrl,
         contextId,
         resumePosition,
       },
