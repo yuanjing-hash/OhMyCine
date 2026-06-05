@@ -1,5 +1,5 @@
 import type { ScrapeMediaType } from './classificationRules'
-import type { TmdbMetadata } from './tmdb'
+import type { TmdbEpisodeMetadata, TmdbMetadata } from './tmdb'
 import type { DataSourceType } from '@/services/datasource/types'
 
 export type RawFileSourceType = Extract<DataSourceType, 'alist' | 'clouddrive2' | 'local' | '115' | '123' | 'quark'>
@@ -122,6 +122,7 @@ export interface RawScrapedMediaItem {
   readonly searchTitles: string[]
   readonly matchedSearchTitle?: string
   readonly metadata?: TmdbMetadata
+  readonly episodeMetadata?: TmdbEpisodeMetadata
   readonly mediaType?: ScrapeMediaType
   readonly categoryName: string
   readonly matchedRuleId?: string

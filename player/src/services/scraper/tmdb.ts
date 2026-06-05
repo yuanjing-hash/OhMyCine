@@ -40,6 +40,33 @@ export interface TmdbMetadata {
   readonly scrapedAt: string
 }
 
+export interface TmdbEpisodeMetadata {
+  readonly tmdbEpisodeId: number
+  readonly tvTmdbId: number
+  readonly seasonNumber: number
+  readonly episodeNumber: number
+  readonly name?: string
+  readonly overview?: string
+  readonly airDate?: string
+  readonly runtime?: number
+  readonly rating?: number
+  readonly stillPath?: string
+  readonly stillUrl?: string
+  readonly scrapedAt: string
+}
+
+export function isMatchingTmdbEpisodeMetadata(
+  metadata: TmdbEpisodeMetadata | undefined,
+  tvTmdbId: number | undefined,
+  seasonNumber: number | undefined,
+  episodeNumber: number | undefined,
+): metadata is TmdbEpisodeMetadata {
+  return metadata != null
+    && metadata.tvTmdbId === tvTmdbId
+    && metadata.seasonNumber === seasonNumber
+    && metadata.episodeNumber === episodeNumber
+}
+
 export interface TmdbCandidateMatch {
   readonly metadata: TmdbMetadata
   readonly searchTitle: string
@@ -212,6 +239,16 @@ export class TmdbScraper {
       include_image_language: preferredImageLanguageParam(this.settings.language),
     })
     return mapTmdbImageCandidates(data, kind, this.settings.language)
+  }
+
+  async getEpisodeDetail(tvTmdbId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata> {
+    if (!isPositiveInteger(tvTmdbId) || !isPositiveInteger(seasonNumber) || !isPositiveInteger(episodeNumber))
+      throw new Error('TMDB episode request is invalid.')
+
+    const data = await this.requestJson(`/tv/${tvTmdbId}/season/${seasonNumber}/episode/${episodeNumber}`, {
+      language: this.settings.language,
+    })
+    return mapTmdbEpisodeDetail(data, tvTmdbId, seasonNumber, episodeNumber)
   }
 
   private async searchResults(mediaType: ScrapeMediaType, title: string, year?: number): Promise<TmdbSearchResult[]> {
@@ -416,6 +453,36 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: str
   }
 }
 
+function mapTmdbEpisodeDetail(
+  value: unknown,
+  tvTmdbId: number,
+  requestedSeasonNumber: number,
+  requestedEpisodeNumber: number,
+): TmdbEpisodeMetadata {
+  if (!isRecord(value))
+    throw new Error('TMDB episode response is invalid.')
+
+  const tmdbEpisodeId = numberValue(value.id)
+  if (tmdbEpisodeId == null)
+    throw new Error('TMDB episode response is incomplete.')
+
+  const stillPath = stringValue(value.still_path)
+  return {
+    tmdbEpisodeId,
+    tvTmdbId,
+    seasonNumber: positiveIntegerValue(value.season_number) ?? requestedSeasonNumber,
+    episodeNumber: positiveIntegerValue(value.episode_number) ?? requestedEpisodeNumber,
+    name: stringValue(value.name),
+    overview: stringValue(value.overview),
+    airDate: stringValue(value.air_date),
+    runtime: nonNegativeNumberValue(value.runtime),
+    rating: numberValue(value.vote_average),
+    stillPath,
+    stillUrl: stillPath ? tmdbImageUrl(stillPath, 'w780') : undefined,
+    scrapedAt: new Date().toISOString(),
+  }
+}
+
 function selectPreferredLogoPath(images: unknown, language: string): string | undefined {
   if (!isRecord(images))
     return undefined
@@ -588,6 +655,20 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function nonNegativeNumberValue(value: unknown): number | undefined {
+  const number = numberValue(value)
+  return number != null && number >= 0 ? number : undefined
+}
+
+function positiveIntegerValue(value: unknown): number | undefined {
+  const number = numberValue(value)
+  return number != null && Number.isInteger(number) && number > 0 ? number : undefined
+}
+
+function isPositiveInteger(value: number): boolean {
+  return Number.isInteger(value) && value > 0
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

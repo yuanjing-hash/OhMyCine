@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict'
 import { deriveRawCandidateCategoryAssignment, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
+import { loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
+import { toRawScannedMediaItem } from '../src/services/scraper/rawDisplayMapping.ts'
 import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
 import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
+import { TmdbScraper } from '../src/services/scraper/tmdb.ts'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '../src/services/playbackContext.ts'
 import type { MediaItem } from '../src/services/datasource/types.ts'
+import type { RawLocalScanCache } from '../src/services/scraper/localScanCache.ts'
+import type { TmdbEpisodeMetadata } from '../src/services/scraper/tmdb.ts'
 import type { RawFileRecord, RawScrapedMediaItem, RawTmdbMatchStatus } from '../src/services/scraper/types.ts'
 
 const noisyTitle = '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV 1080P 简繁字幕'
@@ -188,6 +193,57 @@ const missingScrapeDisplayAssignment = resolveRawScrapedCategoryAssignment(stand
 assert.equal(missingScrapeDisplayAssignment.categoryName, RAW_UNRESOLVED_CATEGORY_NAME)
 assert.equal(missingScrapeDisplayAssignment.source, 'kindFallback')
 
+const matchedEpisodeMetadata: TmdbEpisodeMetadata = {
+  tmdbEpisodeId: 3376714,
+  tvTmdbId: 135934,
+  seasonNumber: 1,
+  episodeNumber: 1,
+  name: 'The Terror of Tal\'Dorei - Part 1',
+  overview: 'Episode-specific overview wins for S01E01.',
+  airDate: '2022-01-28',
+  runtime: 24,
+  rating: 8.4,
+  stillPath: '/episode-still.jpg',
+  stillUrl: 'https://image.tmdb.org/t/p/w780/episode-still.jpg',
+  scrapedAt: '2026-05-25T00:01:00.000Z',
+}
+const matchedEpisodeScrape: RawScrapedMediaItem = {
+  ...matchedSeriesScrape,
+  episodeMetadata: matchedEpisodeMetadata,
+}
+const episodeDisplayItem = toRawScannedMediaItem(standardSeriesCandidates[0], matchedEpisodeScrape, 'tv')
+assert.equal(episodeDisplayItem.name, 'S01E01 · The Terror of Tal\'Dorei - Part 1')
+assert.equal(episodeDisplayItem.posterUrl, matchedEpisodeMetadata.stillUrl)
+assert.equal(episodeDisplayItem.backdropUrl, matchedEpisodeMetadata.stillUrl)
+assert.equal(episodeDisplayItem.overview, matchedEpisodeMetadata.overview)
+assert.equal(episodeDisplayItem.duration, 24 * 60)
+assert.equal(episodeDisplayItem.rating, matchedEpisodeMetadata.rating)
+
+const fallbackEpisodeDisplayItem = toRawScannedMediaItem(standardSeriesCandidates[1], {
+  ...matchedSeriesScrape,
+  recordId: standardSeriesCandidates[1].record.id,
+  providerPath: standardSeriesCandidates[1].record.providerPath,
+  episodeMetadata: undefined,
+}, 'tv')
+assert.equal(fallbackEpisodeDisplayItem.name, '机械之声的传奇 S02E01')
+assert.equal(fallbackEpisodeDisplayItem.backdropUrl, matchedSeriesScrape.metadata?.backdropUrl)
+assert.equal(fallbackEpisodeDisplayItem.overview, matchedSeriesScrape.metadata?.overview)
+
+const staleEpisodeMetadata: TmdbEpisodeMetadata = {
+  ...matchedEpisodeMetadata,
+  tvTmdbId: 999999,
+  name: 'Stale episode title from another TMDB series',
+  overview: 'This stale overview must not be displayed.',
+  stillUrl: 'https://image.tmdb.org/t/p/w780/stale-episode-still.jpg',
+}
+const staleEpisodeDisplayItem = toRawScannedMediaItem(standardSeriesCandidates[0], {
+  ...matchedSeriesScrape,
+  episodeMetadata: staleEpisodeMetadata,
+}, 'tv')
+assert.equal(staleEpisodeDisplayItem.name, '机械之声的传奇 S01E01')
+assert.equal(staleEpisodeDisplayItem.posterUrl, matchedSeriesScrape.metadata?.posterUrl)
+assert.equal(staleEpisodeDisplayItem.overview, matchedSeriesScrape.metadata?.overview)
+
 const unmatchedStatuses: RawTmdbMatchStatus[] = ['notFound', 'notConfigured', 'failed', 'skipped']
 const unmatchedDisplayCategories = unmatchedStatuses.map((matchStatus) => {
   const displayAssignment = resolveRawScrapedCategoryAssignment(standardSeriesCandidates[0], {
@@ -216,6 +272,7 @@ const mixedSeriesEffectiveScrapes = createEffectiveRawScrapeItemMap(standardSeri
     matchStatus: 'notFound',
     matchedSearchTitle: undefined,
     metadata: undefined,
+    episodeMetadata: matchedEpisodeMetadata,
     categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
     categoryAssignment: {
       categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
@@ -228,6 +285,7 @@ const mixedSeriesDisplayCategories = standardSeriesCandidates.map(candidate =>
 assert.deepEqual([...new Set(mixedSeriesDisplayCategories)], ['动漫'])
 assert.equal(mixedSeriesDisplayCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
 assert.equal(mixedSeriesEffectiveScrapes.get(standardSeriesCandidates[1].record.id)?.metadata?.title, '机械之声的传奇')
+assert.equal(mixedSeriesEffectiveScrapes.get(standardSeriesCandidates[1].record.id)?.episodeMetadata, undefined)
 assert.equal(mixedSeriesEffectiveScrapes.get(standardSeriesCandidates[2].record.id)?.matchStatus, 'matched')
 
 const noRepresentativeEffectiveScrapes = createEffectiveRawScrapeItemMap(standardSeriesCandidates, [{
@@ -312,6 +370,82 @@ assert.equal(manuallyIdentifiedCache.scrapedItems?.length, standardSeriesCandida
 assert.deepEqual([...new Set(manualCategories)], ['动漫'])
 assert.equal(manualCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
 assert.equal(manuallyIdentifiedCache.scrapedItems?.[0]?.metadata?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/logo.png')
+
+const seasonTwoEpisodeMetadata: TmdbEpisodeMetadata = {
+  ...matchedEpisodeMetadata,
+  tmdbEpisodeId: 3376720,
+  seasonNumber: 2,
+  episodeNumber: 1,
+  name: 'Season two episode title',
+  stillUrl: 'https://image.tmdb.org/t/p/w780/season-two-still.jpg',
+}
+const staleManualEpisodeCache = applyRawManualIdentification(createStandardSeriesCache([{
+  ...matchedSeriesScrape,
+  recordId: standardSeriesCandidates[1].record.id,
+  providerPath: standardSeriesCandidates[1].record.providerPath,
+  matchStatus: 'notFound',
+  matchedSearchTitle: undefined,
+  metadata: undefined,
+  episodeMetadata: matchedEpisodeMetadata,
+  categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+  categoryAssignment: {
+    categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+    source: 'kindFallback',
+  },
+}]), {
+  targetRecordId: standardSeriesCandidates[1].record.id,
+  metadata: matchedSeriesMetadata,
+  matchedSearchTitle: 'The Legend of Vox Machina',
+})
+const retainedManualEpisodeCache = applyRawManualIdentification(createStandardSeriesCache([{
+  ...matchedSeriesScrape,
+  recordId: standardSeriesCandidates[1].record.id,
+  providerPath: standardSeriesCandidates[1].record.providerPath,
+  matchStatus: 'notFound',
+  matchedSearchTitle: undefined,
+  metadata: undefined,
+  episodeMetadata: seasonTwoEpisodeMetadata,
+  categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+  categoryAssignment: {
+    categoryName: RAW_UNRESOLVED_CATEGORY_NAME,
+    source: 'kindFallback',
+  },
+}]), {
+  targetRecordId: standardSeriesCandidates[1].record.id,
+  metadata: matchedSeriesMetadata,
+  matchedSearchTitle: 'The Legend of Vox Machina',
+})
+assert.equal(staleManualEpisodeCache.scrapedItems?.find(item => item.recordId === standardSeriesCandidates[1].record.id)?.episodeMetadata, undefined)
+assert.equal(
+  retainedManualEpisodeCache.scrapedItems?.find(item => item.recordId === standardSeriesCandidates[1].record.id)?.episodeMetadata?.name,
+  seasonTwoEpisodeMetadata.name,
+)
+
+const episodeMetadataCache: RawLocalScanCache = {
+  version: 1,
+  scanId: 'scan-episode-metadata',
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+  status: 'completed',
+  startedAt: '2026-05-25T00:00:00.000Z',
+  finishedAt: '2026-05-25T00:00:01.000Z',
+  folderCount: 2,
+  fileCount: 1,
+  skippedFileCount: 0,
+  errorCount: 0,
+  logs: [],
+  records: [standardSeriesCandidates[0].record],
+  detection: createFixtureDetection([standardSeriesCandidates[0].record]),
+  candidates: [standardSeriesCandidates[0]],
+  scrapedItems: [matchedEpisodeScrape],
+}
+withMockLocalStorage(() => {
+  assert.equal(saveRawSourceScanCache(episodeMetadataCache), true)
+  const loadedCache = loadRawSourceScanCache('alist', 'alist', '/')
+  assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.stillUrl, matchedEpisodeMetadata.stillUrl)
+  assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.overview, matchedEpisodeMetadata.overview)
+})
 
 const artworkOverrideCache = applyRawManualArtworkOverride(manuallyIdentifiedCache, {
   targetRecordId: standardSeriesCandidates[0].record.id,
@@ -420,6 +554,8 @@ const tokenizedPathPreview = createRawScanPreview([
 })
 assert.equal(tokenizedPathPreview.records.length, 0)
 
+await verifyTmdbEpisodeDetailMapping()
+
 console.log(JSON.stringify({
   cleanedTitle,
   searchTitles,
@@ -437,9 +573,15 @@ console.log(JSON.stringify({
   pathHintMatchedCategory: pathHintMatchedAssignment.categoryName,
   pathHintMatchedDisplayCategory: pathHintMatchedDisplayAssignment.categoryName,
   missingScrapeDisplayCategory: missingScrapeDisplayAssignment.categoryName,
+  episodeDisplayStillUrl: episodeDisplayItem.backdropUrl,
+  episodeDisplayOverview: episodeDisplayItem.overview,
+  fallbackEpisodeBackdropUrl: fallbackEpisodeDisplayItem.backdropUrl,
+  staleEpisodeDisplayBackdropUrl: staleEpisodeDisplayItem.backdropUrl,
   mixedSeriesDisplayCategories,
   noRepresentativeDisplayCategories,
   manualCategories,
+  cachedEpisodeStillUrl: matchedEpisodeMetadata.stillUrl,
+  retainedManualEpisodeTitle: retainedManualEpisodeCache.scrapedItems?.find(item => item.recordId === standardSeriesCandidates[1].record.id)?.episodeMetadata?.name,
   manualTitleLogoUrl: manuallyIdentifiedCache.scrapedItems?.[0]?.metadata?.titleLogoUrl,
   artworkLogoOverride: artworkOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.titleLogoUrl,
   posterOverride: posterBackdropOverrideScrapes.get(standardSeriesCandidates[0].record.id)?.metadata?.posterUrl,
@@ -459,6 +601,160 @@ console.log(JSON.stringify({
   categoryOnlySeasonSearchTitles: categoryOnlyRecognition.searchTitles,
   tokenizedPathRecordCount: tokenizedPathPreview.records.length,
 }, null, 2))
+
+async function verifyTmdbEpisodeDetailMapping(): Promise<void> {
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch')
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  let requestedUrl = ''
+  const tmdb = new TmdbScraper({
+    authType: 'apiKey',
+    value: 'test-key',
+  }, {
+    credentialRef: 'settings:tmdb-credential',
+    authType: 'apiKey',
+    language: 'zh-CN',
+    region: 'CN',
+  }, 1_000)
+
+  try {
+    Object.defineProperty(globalThis, 'window', {
+      value: globalThis,
+      configurable: true,
+    })
+
+    const episodeFetch: typeof fetch = async (input: RequestInfo | URL) => {
+      requestedUrl = String(input)
+      return new Response(JSON.stringify({
+        id: 3376714,
+        name: 'The Terror of Tal\'Dorei - Part 1',
+        overview: 'TMDB episode overview.',
+        still_path: '/tmdb-still.jpg',
+        air_date: '2022-01-28',
+        runtime: 24,
+        vote_average: 8.4,
+        season_number: 1,
+        episode_number: 1,
+      }), { status: 200 })
+    }
+    Object.defineProperty(globalThis, 'fetch', {
+      value: episodeFetch,
+      configurable: true,
+    })
+
+    const episode = await tmdb.getEpisodeDetail(135934, 1, 1)
+    assert.equal(requestedUrl.includes('/tv/135934/season/1/episode/1'), true)
+    assert.equal(requestedUrl.includes('language=zh-CN'), true)
+    assert.equal(episode.name, 'The Terror of Tal\'Dorei - Part 1')
+    assert.equal(episode.overview, 'TMDB episode overview.')
+    assert.equal(episode.stillPath, '/tmdb-still.jpg')
+    assert.equal(episode.stillUrl, 'https://image.tmdb.org/t/p/w780/tmdb-still.jpg')
+    assert.equal(episode.runtime, 24)
+    assert.equal(episode.rating, 8.4)
+
+    const invalidFetch: typeof fetch = async () => new Response(JSON.stringify({ name: 'Missing ID' }), { status: 200 })
+    Object.defineProperty(globalThis, 'fetch', {
+      value: invalidFetch,
+      configurable: true,
+    })
+    await assert.rejects(
+      () => tmdb.getEpisodeDetail(135934, 1, 2),
+      /TMDB episode response is incomplete/,
+    )
+  }
+  finally {
+    if (fetchDescriptor)
+      Object.defineProperty(globalThis, 'fetch', fetchDescriptor)
+    if (windowDescriptor)
+      Object.defineProperty(globalThis, 'window', windowDescriptor)
+    else
+      delete (globalThis as { window?: unknown }).window
+  }
+}
+
+function withMockLocalStorage(callback: () => void): void {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return values.size
+    },
+    clear() {
+      values.clear()
+    },
+    getItem(key: string) {
+      return values.get(key) ?? null
+    },
+    key(index: number) {
+      return [...values.keys()][index] ?? null
+    },
+    removeItem(key: string) {
+      values.delete(key)
+    },
+    setItem(key: string, value: string) {
+      values.set(key, value)
+    },
+  }
+
+  try {
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storage,
+      configurable: true,
+    })
+    callback()
+  }
+  finally {
+    if (descriptor)
+      Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else
+      delete (globalThis as { localStorage?: Storage }).localStorage
+  }
+}
+
+function createFixtureDetection(records: readonly RawFileRecord[]): RawLocalScanCache['detection'] {
+  return {
+    mode: 'standard',
+    confidence: 0.9,
+    reasons: ['fixture'],
+    samplePaths: records.map(record => record.providerPath),
+    scores: {
+      videoCount: records.length,
+      sampledCount: records.length,
+      titleYearFolder: 0,
+      titleYearFile: 0,
+      seasonFolder: records.length,
+      episodePattern: records.length,
+      chineseEpisodePattern: 0,
+      categoryTitleSeasonHierarchy: records.length,
+      sameSeriesEpisodeGroups: records.length > 1 ? 1 : 0,
+      rootLevelVideos: 0,
+      mixedFolderAmbiguity: 0,
+      standardScore: 0.9,
+      nonStandardScore: 0.1,
+    },
+  }
+}
+
+function createStandardSeriesCache(scrapedItems: readonly RawScrapedMediaItem[]): RawLocalScanCache {
+  return {
+    version: 1,
+    scanId: 'scan-standard-series-fixture',
+    sourceId: 'alist',
+    sourceType: 'alist',
+    rootPath: '/',
+    status: 'completed',
+    startedAt: '2026-05-25T00:00:00.000Z',
+    finishedAt: '2026-05-25T00:00:00.000Z',
+    folderCount: 4,
+    fileCount: standardSeriesCandidates.length,
+    skippedFileCount: 0,
+    errorCount: 0,
+    logs: [],
+    records: standardSeriesRecords,
+    detection: createFixtureDetection(standardSeriesRecords),
+    candidates: standardSeriesCandidates,
+    scrapedItems: [...scrapedItems],
+  }
+}
 
 function createRecord(providerPath: string): RawFileRecord {
   const fileName = providerPath.split('/').at(-1) ?? 'video.mkv'

@@ -1,4 +1,4 @@
-import type { TmdbMetadata } from './tmdb'
+import type { TmdbEpisodeMetadata, TmdbMetadata } from './tmdb'
 import type {
   RawCategoryAssignment,
   RawFileRecord,
@@ -373,6 +373,7 @@ function sanitizeRawScrapedMediaItem(item: RawScrapedMediaItem): RawScrapedMedia
     searchTitles: [...item.searchTitles],
     matchedSearchTitle: item.matchedSearchTitle,
     metadata: sanitizeTmdbMetadata(item.metadata),
+    episodeMetadata: sanitizeTmdbEpisodeMetadata(item.episodeMetadata),
     mediaType: item.mediaType,
     categoryName: item.categoryName,
     matchedRuleId: item.matchedRuleId,
@@ -408,6 +409,26 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     posterUrl: metadata.posterUrl,
     backdropUrl: metadata.backdropUrl,
     titleLogoUrl: metadata.titleLogoUrl,
+    scrapedAt: metadata.scrapedAt,
+  }
+}
+
+function sanitizeTmdbEpisodeMetadata(metadata: TmdbEpisodeMetadata | undefined): TmdbEpisodeMetadata | undefined {
+  if (!metadata)
+    return undefined
+
+  return {
+    tmdbEpisodeId: metadata.tmdbEpisodeId,
+    tvTmdbId: metadata.tvTmdbId,
+    seasonNumber: metadata.seasonNumber,
+    episodeNumber: metadata.episodeNumber,
+    name: metadata.name,
+    overview: metadata.overview,
+    airDate: metadata.airDate,
+    runtime: metadata.runtime,
+    rating: metadata.rating,
+    stillPath: metadata.stillPath,
+    stillUrl: metadata.stillUrl,
     scrapedAt: metadata.scrapedAt,
   }
 }

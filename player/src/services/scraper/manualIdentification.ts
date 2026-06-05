@@ -1,10 +1,10 @@
 import type { RawLocalScanCache, RawLocalScanLogEntry } from './localScanCache'
-import type { TmdbImageKind, TmdbMetadata } from './tmdb'
+import type { TmdbEpisodeMetadata, TmdbImageKind, TmdbMetadata } from './tmdb'
 import type { RawCategoryAssignment, RawMediaCandidate, RawScrapedMediaItem } from './types'
 import { resolveRawCandidateCategoryAssignment } from './categoryGrouping'
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
 import { createRawSeriesGroupingKey } from './rawSeriesGrouping'
-import { extractCandidateTmdbSearchTitles } from './tmdb'
+import { extractCandidateTmdbSearchTitles, isMatchingTmdbEpisodeMetadata } from './tmdb'
 
 export interface RawManualIdentificationInput {
   readonly targetRecordId: string
@@ -43,6 +43,7 @@ export function createEffectiveRawScrapeItemMap(
 
       scrapedByRecordId.set(candidate.record.id, createMatchedScrapedItem(candidate, representative.metadata, {
         matchedSearchTitle: representative.matchedSearchTitle,
+        episodeMetadata: matchingEpisodeMetadataForCandidate(existing?.episodeMetadata, representative.metadata, candidate),
         searchTitles: uniqueSearchTitles([
           ...(existing?.searchTitles ?? []),
           ...representative.searchTitles,
@@ -73,8 +74,10 @@ export function applyRawManualIdentification(
   ])
 
   for (const candidate of targetCandidates) {
+    const existing = existingItems.get(candidate.record.id)
     existingItems.set(candidate.record.id, createMatchedScrapedItem(candidate, input.metadata, {
       matchedSearchTitle: input.matchedSearchTitle,
+      episodeMetadata: matchingEpisodeMetadataForCandidate(existing?.episodeMetadata, input.metadata, candidate),
       searchTitles,
     }))
   }
@@ -213,6 +216,7 @@ function createMatchedScrapedItem(
   metadata: TmdbMetadata,
   options: {
     readonly matchedSearchTitle?: string
+    readonly episodeMetadata?: TmdbEpisodeMetadata
     readonly searchTitles?: readonly string[]
   },
 ): RawScrapedMediaItem {
@@ -230,6 +234,7 @@ function createMatchedScrapedItem(
     ]),
     matchedSearchTitle: options.matchedSearchTitle,
     metadata,
+    episodeMetadata: options.episodeMetadata,
     mediaType: metadata.mediaType,
     categoryName: categoryAssignment.categoryName,
     matchedRuleId: appliedMetadataRule?.matchedRuleId,
@@ -252,6 +257,24 @@ function createMetadataCategoryAssignment(metadata: TmdbMetadata): RawCategoryAs
     ...classification,
     source: 'metadataRule',
   }
+}
+
+function matchingEpisodeMetadataForCandidate(
+  episodeMetadata: TmdbEpisodeMetadata | undefined,
+  metadata: TmdbMetadata,
+  candidate: RawMediaCandidate,
+): TmdbEpisodeMetadata | undefined {
+  if (metadata.mediaType !== 'tv')
+    return undefined
+
+  return isMatchingTmdbEpisodeMetadata(
+    episodeMetadata,
+    metadata.tmdbId,
+    candidate.seasonNumber,
+    candidate.episodeNumber,
+  )
+    ? episodeMetadata
+    : undefined
 }
 
 function patchArtworkMetadata(

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
+import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, resolveRawScrapedCategoryAssignment, saveRawSourceScanCache, TmdbScraper } from '@/services/scraper'
+import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -29,7 +29,7 @@ interface BreadcrumbNode {
 
 type SourceViewMode = 'media-library' | 'folders'
 type ScannedCategoryType = 'movie' | 'tv' | 'unresolved' | 'mixed'
-type ScannedMediaDomain = 'movie' | 'tv' | 'unresolved'
+type ScannedMediaDomain = RawScannedMediaDomain
 type EditableArtworkKind = Extract<TmdbImageKind, 'poster' | 'logo' | 'backdrop'>
 type IdentificationTab = 'match' | 'images'
 
@@ -176,7 +176,7 @@ const scannedDisplayItems = computed<ScannedDisplayItem[]>(() =>
       candidate,
       scraped,
       domain,
-      item: toScannedMediaItem(candidate, scraped, domain),
+      item: toRawScannedMediaItem(candidate, scraped, domain),
       categoryName: categoryNameForCandidate(candidate, scraped),
     }
   }),
@@ -1314,65 +1314,8 @@ function scannedCategorySortPriority(category: ScannedCategory): number {
   return 20
 }
 
-function toScannedMediaItem(
-  candidate: RawMediaCandidate,
-  scraped: RawScrapedMediaItem | undefined,
-  domain: ScannedMediaDomain,
-): MediaItem {
-  const title = candidateDisplayTitle(candidate, scraped)
-  const mediaType: MediaItem['type'] = domain === 'movie'
-    ? 'movie'
-    : domain === 'tv'
-      ? 'episode'
-      : 'file'
-  const metadata = metadataForCandidate(candidate, scraped)
-
-  return {
-    id: candidate.record.providerPath,
-    sourceId: candidate.record.sourceId,
-    libraryId: candidate.record.rootPath,
-    name: title,
-    type: mediaType,
-    posterUrl: metadata?.posterUrl,
-    backdropUrl: metadata?.backdropUrl,
-    titleLogoUrl: metadata?.titleLogoUrl,
-    year: metadata?.releaseYear ?? candidate.year,
-    rating: metadata?.rating,
-    size: candidate.record.size,
-    modified: candidate.record.modifiedAt,
-    path: candidate.record.providerPath,
-    seriesName: domain === 'tv' ? metadata?.title ?? candidate.seriesTitle : candidate.seriesTitle,
-    seasonNumber: candidate.seasonNumber,
-    episodeNumber: candidate.episodeNumber,
-    overview: metadata?.overview || scannedItemOverview(candidate, scraped),
-  }
-}
-
-function candidateDisplayTitle(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
-  const metadataTitle = metadataForCandidate(candidate, scraped)?.title
-  if (candidate.kind === 'episode') {
-    const episode = candidate.episodeNumber == null ? '' : ` E${String(candidate.episodeNumber).padStart(2, '0')}`
-    const season = candidate.seasonNumber == null ? '' : `S${String(candidate.seasonNumber).padStart(2, '0')}`
-    return `${metadataTitle ?? candidate.seriesTitle ?? candidate.title} ${season}${episode}`.trim()
-  }
-
-  return (metadataTitle ?? candidate.title) || candidate.record.fileName
-}
-
-function scannedItemOverview(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
-  const parts = [
-    scraped?.matchStatus === 'matched' ? 'TMDB：已匹配' : `本地只读扫描：${candidate.parseStatus === 'unresolved' ? '未识别' : '已解析'}`,
-    `分类：${categoryNameForCandidate(candidate, scraped)}`,
-    resolveRawScrapedCategoryAssignment(candidate, scraped).source === 'metadataRule' && scraped?.matchedRuleName ? `规则：${scraped.matchedRuleName}` : undefined,
-    scraped?.matchedSearchTitle ? `搜索标题：${scraped.matchedSearchTitle}` : undefined,
-    scraped?.matchStatus !== 'matched' && candidate.categoryHint ? `路径提示：${candidate.categoryHint}` : undefined,
-    candidate.signals.length ? `信号：${candidate.signals.join(', ')}` : undefined,
-  ].filter((part): part is string => Boolean(part))
-  return parts.join(' · ')
-}
-
 function categoryNameForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem): string {
-  return resolveRawScrapedCategoryAssignment(candidate, scraped).categoryName
+  return categoryNameForRawCandidate(candidate, scraped)
 }
 
 function isUnresolvedCategoryEntry(entry: ScannedDisplayItem): boolean {
@@ -1396,7 +1339,7 @@ function domainForScannedEntry(
 }
 
 function metadataForCandidate(candidate: RawMediaCandidate, scraped?: RawScrapedMediaItem) {
-  return scraped?.metadata ?? candidate.scrapeMetadata
+  return metadataForRawCandidate(candidate, scraped)
 }
 
 function defaultIdentificationQuery(work: ScannedWorkItem): string {
