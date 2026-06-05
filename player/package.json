@@ -8,6 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "verify:scraper": "TMPDIR=/tmp tsx scripts/verify-scraper-title-classification.ts",
+    "verify:alist-auth-recovery": "TMPDIR=/tmp tsx scripts/verify-alist-auth-recovery.ts",
     "verify:home-fault-isolation": "TMPDIR=/tmp tsx scripts/verify-home-source-fault-isolation.ts",
     "verify:raw-source-index-scheduler": "TMPDIR=/tmp tsx scripts/verify-raw-source-index-scheduler.ts",
     "verify:tmdb-auth": "TMPDIR=/tmp tsx scripts/verify-tmdb-auth-routing.ts",

@@ -35,6 +35,95 @@ Keep all media sources behind a common interface with these concepts:
 
 OpenList/Alist API responses must be parsed from `unknown` envelopes. Treat `code !== 200 && code !== 0` as a provider failure, validate file records before mapping, normalize paths to rooted paths, strip trailing slashes except for `/`, and reject `.` / `..` path segments before constructing `/d{path}` stream URLs. When `DataSourceConfig.extra.rootPath` is set, normalize it as a rooted path, default missing values to `/`, scope `listLibraries()`/`list()`/`search()` to that root, and reject browse/detail/stream paths outside that root.
 
+### OpenList/Alist Authentication Recovery Contract
+
+#### 1. Scope / Trigger
+- Trigger: implementing or changing `alist` DataSource initialization, request handling, login, token storage, credential refresh, source-manager retry behavior, or OpenList/Alist setup.
+- Applies to `AlistDataSource`, credential-store `AlistCredentialValue`, DataSourceManager source lifetime, SourceLibrary browse/search/detail/play calls, and verification scripts for provider availability.
+
+#### 2. Signatures
+- Stored credential envelope stays in the credential boundary:
+```ts
+interface AlistCredentialValue {
+  token: string
+  username: string
+  password: string
+}
+```
+- `AlistDataSource` may accept test-only injected dependencies, but production defaults must use the existing `ofetch`, `readAlistCredential`, and `saveAlistCredential` helpers.
+- `DataSourceConfig.extra` stores only non-sensitive fields such as `credentialRef`, `credentialVersion`, and `rootPath`.
+
+#### 3. Contracts
+- `init(config)` must not require the OpenList/Alist server to be online. It should normalize config, remember `credentialRef`, read any stored token, and leave future browse calls able to retry.
+- Plain network/offline failures must not destroy the source instance, remove credentials, cache a failed result, or require app restart. The next `list`/`search`/`getDetail`/`getStreamURL` call should try the provider again.
+- If an API request fails because the token is missing, expired, unauthorized, forbidden, or provider text indicates not logged in, the DataSource should re-login once using stored username/password, save the new token through the credential boundary, clear source metadata cache, and retry the original request once.
+- Do not expose manual token entry for OpenList/Alist. If username/password are missing from secure storage, show a safe re-login/edit-data-source message.
+- Login retry must be guarded so concurrent requests share the same refresh attempt instead of issuing duplicate login calls.
+- Errors shown to the user or stored in diagnostics must be redacted with the existing redaction path.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| OpenList/Alist is offline during app startup | Source initializes from config; later browse can retry after the server starts |
+| first browse gets a network `Failed to fetch`/timeout | Mark connected false for display only, throw a safe error, and let the next browse retry |
+| stored token returns 401/403/provider unauthorized code | Re-login once with stored username/password, save the new token, clear cache, and retry the original request |
+| re-login succeeds but retried request still fails | Throw a safe error and avoid an infinite refresh loop |
+| stored credential lacks username/password | Do not prompt for token; tell user to edit/re-login the data source |
+| concurrent requests hit expired token | Run one shared login refresh and reuse its result |
+| successful request after recovery | Mark source connected true |
+
+#### 5. Good/Base/Bad Cases
+- Good: User opens Player before local OpenList starts, sees a temporary error, starts OpenList, clicks the source again, and browsing succeeds without restarting Player.
+- Good: OpenList restarts and invalidates token; the next list request logs in with stored account/password and continues with a fresh token.
+- Base: Persistent credential storage is unavailable and only in-memory fallback existed; after app restart the user must re-login because username/password are gone.
+- Bad: DataSourceManager removes the source forever after an offline `fetch` failure.
+- Bad: The request path retries login on every network error, causing noisy login attempts while the server is still offline.
+- Bad: New token, username, password, or signed URLs are copied into `DataSourceConfig.extra`, localStorage, logs, or normal error text.
+
+#### 6. Tests Required
+- `npm run verify:alist-auth-recovery` should assert stale token -> auth failure -> re-login -> original request succeeds, and first network failure -> later browse succeeds on the same source instance without re-login.
+- `npm run typecheck` must catch drift in injected Alist fetch/credential dependency types.
+- `npm run lint` and `npm run build` must pass after DataSource request changes.
+- Windows package build should run when Player packaging is in scope.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+async init(config: DataSourceConfig) {
+  await this.test()
+}
+```
+
+Correct:
+```ts
+async init(config: DataSourceConfig) {
+  this.config = sanitizeExportConfig(config)
+  this.credentialRef = readAlistExtra(config).credentialRef ?? ''
+  this.token = await this.resolveStoredToken()
+}
+```
+
+Wrong:
+```ts
+catch (error) {
+  this.destroy()
+  throw error
+}
+```
+
+Correct:
+```ts
+catch (error) {
+  if (isAlistAuthenticationFailure(error)) {
+    await this.refreshAuthentication()
+    return this.performRequest(path, body)
+  }
+  this.connected = false
+  throw new Error(redactSensitiveText(error))
+}
+```
+
 ### Raw File Scrape Artwork and Manual Identification Contract
 
 #### 1. Scope / Trigger

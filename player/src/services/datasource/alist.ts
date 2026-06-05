@@ -1,3 +1,4 @@
+import type { AlistCredentialValue } from './credentialStore'
 import type { DataSource, DataSourceConfig, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption } from './types'
 import { ofetch } from 'ofetch'
 import { SourceMetadataCache } from './cache'
@@ -7,6 +8,13 @@ import { redactSensitiveText } from './errors'
 const ALIST_REQUEST_TIMEOUT_MS = 15_000
 
 type AlistRequestPayload = Record<string, string | number | boolean | null | undefined>
+type AlistCredentialReader = (ref: string) => Promise<AlistCredentialValue | null>
+type AlistCredentialSaver = (ref: string, value: AlistCredentialValue) => Promise<void>
+
+export type AlistFetch = <T = unknown>(
+  request: Parameters<typeof ofetch>[0],
+  options?: Parameters<typeof ofetch>[1],
+) => Promise<T>
 
 interface AlistConfigExtra {
   readonly credentialRef?: string
@@ -15,6 +23,12 @@ interface AlistConfigExtra {
 
 interface AlistAuthResult {
   readonly token: string
+}
+
+export interface AlistDataSourceOptions {
+  readonly fetcher?: AlistFetch
+  readonly readCredential?: AlistCredentialReader
+  readonly saveCredential?: AlistCredentialSaver
 }
 
 interface AlistApiEnvelope {
@@ -37,6 +51,13 @@ interface AlistFileRecord {
   readonly modified?: string
   readonly created?: string
   readonly sign?: string
+}
+
+class AlistProviderApiError extends Error {
+  constructor(message: string, readonly code?: number) {
+    super(message)
+    this.name = 'AlistProviderApiError'
+  }
 }
 
 export interface AlistLoginConfigInput {
@@ -67,11 +88,22 @@ export class AlistDataSource implements DataSource {
   private config: DataSourceConfig | null = null
   private baseUrl = ''
   private token = ''
+  private credentialRef = ''
   private rootPath = '/'
   private connected = false
+  private authRefreshPromise: Promise<void> | null = null
   private readonly cache = new SourceMetadataCache()
+  private readonly fetcher: AlistFetch
+  private readonly readCredential: AlistCredentialReader
+  private readonly saveCredential: AlistCredentialSaver
 
   readonly type = 'alist' as const
+
+  constructor(options: AlistDataSourceOptions = {}) {
+    this.fetcher = options.fetcher ?? (ofetch as AlistFetch)
+    this.readCredential = options.readCredential ?? readAlistCredential
+    this.saveCredential = options.saveCredential ?? saveAlistCredential
+  }
 
   get id(): string {
     return this.config?.id ?? ''
@@ -89,13 +121,14 @@ export class AlistDataSource implements DataSource {
     this.config = sanitizeExportConfig(config)
     this.baseUrl = normalizeBaseUrl(config.url)
     const extra = readAlistExtra(config)
+    this.credentialRef = extra.credentialRef ?? ''
     this.rootPath = extra.rootPath
-    this.token = await resolveToken(extra)
+    this.token = await this.resolveStoredToken()
     this.connected = Boolean(this.baseUrl && this.token)
   }
 
   async test(): Promise<boolean> {
-    this.ensureConfigured()
+    this.ensureConfigured({ requireToken: false })
     await this.requestFsList(this.rootPath, 1)
     this.connected = true
     return true
@@ -110,7 +143,7 @@ export class AlistDataSource implements DataSource {
       throw new Error('请输入 OpenList/Alist 账号和密码。')
 
     try {
-      const response = await ofetch<unknown>(`${this.baseUrl}/api/auth/login`, {
+      const response = await this.fetcher<unknown>(`${this.baseUrl}/api/auth/login`, {
         method: 'POST',
         timeout: ALIST_REQUEST_TIMEOUT_MS,
         body: {
@@ -143,7 +176,7 @@ export class AlistDataSource implements DataSource {
   }
 
   async listLibraries(): Promise<MediaLibrary[]> {
-    this.ensureConfigured()
+    this.ensureConfigured({ requireToken: false })
     return [
       {
         id: this.rootPath,
@@ -191,7 +224,7 @@ export class AlistDataSource implements DataSource {
   }
 
   exportConfig(): DataSourceConfig {
-    this.ensureConfigured()
+    this.ensureConfigured({ requireToken: false })
     return sanitizeExportConfig(this.config)
   }
 
@@ -225,26 +258,95 @@ export class AlistDataSource implements DataSource {
   }
 
   private async request(path: string, body: AlistRequestPayload): Promise<unknown> {
-    this.ensureConfigured()
+    await this.ensureAuthenticated()
 
     try {
-      const response = await ofetch<unknown>(`${this.baseUrl}${path}`, {
-        method: 'POST',
-        timeout: ALIST_REQUEST_TIMEOUT_MS,
-        body,
-        headers: this.authHeaders(),
-      })
-      return unwrapAlistData(response)
+      return await this.performRequest(path, body)
     }
     catch (error) {
+      if (isAlistAuthenticationFailure(error)) {
+        try {
+          await this.refreshAuthentication()
+          return await this.performRequest(path, body)
+        }
+        catch (retryError) {
+          this.connected = false
+          throw new Error(redactSensitiveText(retryError))
+        }
+      }
+
+      this.connected = false
       throw new Error(redactSensitiveText(error))
     }
+  }
+
+  private async performRequest(path: string, body: AlistRequestPayload): Promise<unknown> {
+    const response = await this.fetcher<unknown>(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      timeout: ALIST_REQUEST_TIMEOUT_MS,
+      body,
+      headers: this.authHeaders(),
+    })
+    const data = unwrapAlistData(response)
+    this.connected = true
+    return data
   }
 
   private authHeaders(): Record<string, string> {
     return {
       Authorization: this.token,
     }
+  }
+
+  private async ensureAuthenticated(): Promise<void> {
+    this.ensureConfigured({ requireToken: false })
+    if (this.token)
+      return
+
+    const credential = await this.readStoredCredential()
+    if (credential?.token) {
+      this.token = credential.token
+      this.connected = true
+      return
+    }
+
+    await this.refreshAuthentication()
+  }
+
+  private async refreshAuthentication(): Promise<void> {
+    if (this.authRefreshPromise)
+      return this.authRefreshPromise
+
+    this.authRefreshPromise = this.refreshAuthenticationOnce()
+      .finally(() => {
+        this.authRefreshPromise = null
+      })
+    return this.authRefreshPromise
+  }
+
+  private async refreshAuthenticationOnce(): Promise<void> {
+    const credential = await this.readStoredCredential()
+    if (!credential?.username || !credential.password)
+      throw new Error('OpenList/Alist 登录凭证缺失。请在设置的数据源管理中重新编辑并登录。')
+
+    const auth = await this.authenticate(credential.username, credential.password)
+    await this.saveCredential(this.credentialRef, {
+      token: auth.token,
+      username: credential.username,
+      password: credential.password,
+    })
+    this.cache.clear()
+  }
+
+  private async resolveStoredToken(): Promise<string> {
+    const credential = await this.readStoredCredential()
+    return credential?.token ?? ''
+  }
+
+  private async readStoredCredential(): Promise<AlistCredentialValue | null> {
+    if (!this.credentialRef)
+      return null
+    return this.readCredential(this.credentialRef)
   }
 
   private async searchByListing(rootPath: string, keyword: string, maxDepth = 2, maxVisited = 80): Promise<AlistFileRecord[]> {
@@ -307,10 +409,10 @@ export class AlistDataSource implements DataSource {
     return url.toString()
   }
 
-  private ensureConfigured(): void {
+  private ensureConfigured(options: { requireToken?: boolean } = {}): void {
     if (!this.config || !this.baseUrl)
       throw new Error('OpenList/Alist source is not configured.')
-    if (!this.token)
+    if (options.requireToken !== false && !this.token)
       throw new Error('OpenList/Alist 登录凭证缺失。请在设置的数据源管理中重新编辑并登录。')
   }
 
@@ -475,23 +577,87 @@ export function normalizeAlistRootPath(value: string | undefined): string {
   return normalizeAlistPath(value)
 }
 
-async function resolveToken(extra: AlistConfigExtra): Promise<string> {
-  if (!extra.credentialRef)
-    return ''
-
-  const credential = await readAlistCredential(extra.credentialRef)
-  return credential?.token ?? ''
-}
-
 function unwrapAlistData(value: unknown): unknown {
   if (!isObject(value))
     return value
 
   const envelope = value as AlistApiEnvelope
   if (typeof envelope.code === 'number' && envelope.code !== 200 && envelope.code !== 0)
-    throw new Error(envelope.message || 'OpenList/Alist API 返回失败。')
+    throw new AlistProviderApiError(envelope.message || 'OpenList/Alist API 返回失败。', envelope.code)
 
   return Object.prototype.hasOwnProperty.call(value, 'data') ? envelope.data : value
+}
+
+function isAlistAuthenticationFailure(error: unknown): boolean {
+  const status = statusCodeFromError(error)
+  if (status === 401 || status === 403)
+    return true
+
+  if (error instanceof AlistProviderApiError && (error.code === 401 || error.code === 403))
+    return true
+
+  const text = errorText(error).toLowerCase()
+  if (!text)
+    return false
+
+  return [
+    'unauthorized',
+    'forbidden',
+    'invalid token',
+    'token invalid',
+    'expired token',
+    'token expired',
+    'auth failed',
+    'auth error',
+    'authorization failed',
+    'not login',
+    'not logged in',
+    '未登录',
+    '未登入',
+    '登录过期',
+    '登录已过期',
+    '登录失效',
+    '登陆过期',
+    '登陆已过期',
+    '登陆失效',
+    '令牌无效',
+    '令牌过期',
+    '凭证无效',
+    '无权限',
+  ].some(phrase => text.includes(phrase))
+}
+
+function statusCodeFromError(error: unknown): number | undefined {
+  const candidates: unknown[] = []
+  if (isObject(error)) {
+    candidates.push(error.status, error.statusCode)
+    if (isObject(error.response))
+      candidates.push(error.response.status, error.response.statusCode)
+    if (isObject(error.data))
+      candidates.push(error.data.status, error.data.statusCode, error.data.code)
+  }
+  return candidates.find((value): value is number => typeof value === 'number' && Number.isFinite(value))
+}
+
+function errorText(error: unknown): string {
+  const parts: string[] = []
+  if (error instanceof Error)
+    parts.push(error.message)
+  if (isObject(error)) {
+    if (typeof error.message === 'string')
+      parts.push(error.message)
+    if (typeof error.statusMessage === 'string')
+      parts.push(error.statusMessage)
+    if (typeof error.data === 'string')
+      parts.push(error.data)
+    if (isObject(error.data)) {
+      if (typeof error.data.message === 'string')
+        parts.push(error.data.message)
+      if (typeof error.data.error === 'string')
+        parts.push(error.data.error)
+    }
+  }
+  return parts.join(' ')
 }
 
 function parseAuthResponse(value: unknown): AlistAuthResult {
