@@ -23,10 +23,15 @@ interface SeriesPlaybackTarget {
 
 const seriesPlaybackTargets = ref<Record<string, SeriesPlaybackTarget>>({})
 const errorMessage = ref<string | null>(null)
+const hasLoadedInitialHomeState = ref(false)
 let seriesTargetRefreshId = 0
 let settledRefreshTimer: number | undefined
 
-const hasSources = computed(() => store.configs.length > 0)
+const hasConfiguredSources = computed(() => store.configs.length > 0)
+const hasHomeContent = computed(() => store.homeSections.some(section =>
+  section.items.some(item => item.sourceId !== 'placeholder'),
+))
+const isFirstRunHome = computed(() => hasLoadedInitialHomeState.value && !hasConfiguredSources.value && !hasHomeContent.value)
 const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero' && s.items.length > 0))
 const continueWatchingSection = computed(() => store.homeSections.find(s => s.type === 'continueWatching' && s.items.length > 0))
 const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded' && s.items.length > 0))
@@ -75,7 +80,12 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 
 onMounted(async () => {
   store.loadConfigs()
-  await store.loadHomeSections()
+  try {
+    await store.loadHomeSections()
+  }
+  finally {
+    hasLoadedInitialHomeState.value = true
+  }
   scheduleSettledContinueWatchingRefresh()
   await refreshHeroSeriesPlaybackTargets()
 })
@@ -91,6 +101,10 @@ watch(heroItems, () => {
 
 function goToSettings() {
   void router.push({ name: 'settings', query: { section: 'datasources' } })
+}
+
+function goAddDataSource() {
+  void router.push({ name: 'settings', query: { section: 'datasources', action: 'add' } })
 }
 
 function scheduleSettledContinueWatchingRefresh() {
@@ -307,7 +321,59 @@ function isContainerItem(item: MediaItem): boolean {
 
 <template>
   <div class="home-view relative min-h-full transition-colors duration-500">
-    <div class="flex min-h-screen flex-col gap-6 px-4 pb-6 sm:gap-8 sm:px-6 lg:px-8">
+    <div v-if="isFirstRunHome" class="first-run-home relative min-h-screen overflow-hidden px-4 pb-8 pt-28 sm:px-8 sm:pt-32 lg:px-12">
+      <div class="first-run-scene" aria-hidden="true">
+        <div class="first-run-screen" />
+        <div class="first-run-shelf">
+          <span class="first-run-poster first-run-poster--large" />
+          <span class="first-run-poster first-run-poster--mid" />
+          <span class="first-run-poster first-run-poster--small" />
+        </div>
+      </div>
+
+      <section class="relative mx-auto flex min-h-[calc(100vh-10rem)] max-w-6xl items-center">
+        <div class="max-w-xl">
+          <p class="text-sm font-medium" style="color: var(--gp-text)">
+            OhMyCine Player
+          </p>
+          <h1 class="mt-4 text-4xl font-bold leading-tight sm:text-5xl" style="color: var(--gp-text-full)">
+            添加你的第一座影视库
+          </h1>
+          <p class="mt-5 max-w-lg text-base leading-7 sm:text-lg" style="color: var(--gp-text)">
+            连接一个数据源后，首页会自动聚合海报、继续观看和最新入库。
+          </p>
+
+          <div class="mt-8 flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="first-run-primary-action inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition-all"
+              @click="goAddDataSource"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
+              添加数据源
+            </button>
+            <button
+              type="button"
+              class="first-run-secondary-action inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition-all"
+              @click="goToSettings"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
+              管理数据源
+            </button>
+          </div>
+
+          <p class="mt-7 max-w-lg text-sm leading-6" style="color: var(--gp-text-dim)">
+            当前可添加 Emby、OpenList/Alist；Jellyfin、本地文件、CloudDrive2 等来源会继续接入。
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <div v-else class="flex min-h-screen flex-col gap-6 px-4 pb-6 sm:gap-8 sm:px-6 lg:px-8">
       <section class="relative -mx-4 overflow-hidden rounded-b-[2rem] sm:-mx-6 lg:-mx-8">
         <HeroCarousel
           v-if="heroItems.length"
@@ -318,7 +384,7 @@ function isContainerItem(item: MediaItem): boolean {
         />
 
         <div
-          v-if="!hasSources"
+          v-if="!hasConfiguredSources"
           class="pointer-events-none absolute inset-0 flex items-center justify-end p-4 sm:p-8 lg:p-10"
         >
           <div class="glass-panel pointer-events-auto w-full max-w-sm rounded-3xl p-5 sm:p-6 lg:max-w-md">
@@ -462,10 +528,10 @@ function isContainerItem(item: MediaItem): boolean {
               配置数据源后，最新入库和推荐内容会在这里横向展示。
             </p>
             <button
-              v-if="!hasSources"
+              v-if="!hasConfiguredSources"
               class="mt-4 rounded-2xl px-4 py-2 text-xs font-semibold transition-colors"
               style="color: var(--gp-text-full); background: var(--gp-hover)"
-              @click="goToSettings"
+              @click="goAddDataSource"
             >
               添加数据源
             </button>
@@ -480,6 +546,152 @@ function isContainerItem(item: MediaItem): boolean {
 .home-view {
   background: var(--color-bg);
   color: var(--color-text);
+}
+
+.first-run-home {
+  --gp-text: rgba(255, 255, 255, 0.68);
+  --gp-text-full: rgba(255, 255, 255, 0.96);
+  --gp-text-dim: rgba(255, 255, 255, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 24%),
+    linear-gradient(118deg, rgba(74, 158, 255, 0.14), transparent 42%),
+    linear-gradient(248deg, rgba(34, 197, 94, 0.08), transparent 38%),
+    var(--color-bg);
+}
+
+.first-run-scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.first-run-scene::before {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, transparent 0%, rgba(255, 255, 255, 0.06) 58%, transparent 59%);
+  background-size: 92px 100%, 100% 100%;
+  content: '';
+  mask-image: linear-gradient(90deg, transparent, black 34%, black 100%);
+}
+
+.first-run-scene::after {
+  position: absolute;
+  right: -10vw;
+  bottom: -18vh;
+  width: 70vw;
+  height: 42vh;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px 70px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px 52px);
+  content: '';
+  opacity: 0.24;
+  transform: perspective(640px) rotateX(66deg);
+  transform-origin: center bottom;
+}
+
+.first-run-screen {
+  position: absolute;
+  top: 16vh;
+  right: max(6vw, 56px);
+  width: min(48vw, 620px);
+  height: min(44vh, 360px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-2xl);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.02)),
+    linear-gradient(135deg, rgba(74, 158, 255, 0.18), transparent 58%),
+    linear-gradient(245deg, rgba(255, 255, 255, 0.055), transparent 46%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.055),
+    0 36px 120px rgba(0, 0, 0, 0.42);
+  transform: perspective(900px) rotateY(-13deg) rotateX(3deg);
+}
+
+.first-run-screen::before {
+  position: absolute;
+  inset: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.09) 0 1px, transparent 1px 54px);
+  content: '';
+  opacity: 0.62;
+}
+
+.first-run-screen::after {
+  position: absolute;
+  left: 26px;
+  right: 26px;
+  bottom: 24px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.16);
+  content: '';
+}
+
+.first-run-shelf {
+  position: absolute;
+  right: max(10vw, 96px);
+  bottom: 14vh;
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  transform: perspective(820px) rotateY(-16deg);
+}
+
+.first-run-poster {
+  display: block;
+  width: 86px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.035)),
+    linear-gradient(145deg, rgba(74, 158, 255, 0.28), rgba(34, 197, 94, 0.1));
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.34);
+}
+
+.first-run-poster--large {
+  height: 132px;
+}
+
+.first-run-poster--mid {
+  height: 112px;
+  opacity: 0.78;
+}
+
+.first-run-poster--small {
+  height: 92px;
+  opacity: 0.58;
+}
+
+.first-run-primary-action {
+  color: var(--color-text-inverse);
+  background: color-mix(in srgb, var(--color-text) 94%, transparent);
+  box-shadow: 0 16px 42px rgba(255, 255, 255, 0.12);
+}
+
+.first-run-primary-action:hover {
+  transform: translateY(-1px);
+  background: var(--color-text);
+}
+
+.first-run-secondary-action {
+  color: var(--gp-text-full);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+}
+
+.first-run-secondary-action:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .empty-panel {
@@ -501,5 +713,18 @@ function isContainerItem(item: MediaItem): boolean {
 
 .progress-value {
   background: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
+@media (max-width: 900px) {
+  .first-run-screen {
+    top: 20vh;
+    right: -36vw;
+    width: 88vw;
+    opacity: 0.34;
+  }
+
+  .first-run-shelf {
+    display: none;
+  }
 }
 </style>
