@@ -13,6 +13,7 @@ import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/e
 import { enrichRawMediaCandidates } from './metadataEnrichment'
 import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath, relativeProviderPath } from './pathUtils'
 import { createRawScanPreview } from './scanner'
+import { isMatchingTmdbEpisodeMetadata } from './tmdb'
 
 export type RawLocalScanStatus = 'completed' | 'partialFailed'
 export type RawLocalScanLogLevel = 'info' | 'warning' | 'error'
@@ -299,20 +300,23 @@ function sanitizeRawLocalScanCache(cache: RawLocalScanCache): RawLocalScanCache 
     .map(record => sanitizeRawFileRecord(record, rootPath))
     .filter((record): record is RawFileRecord => record != null)
   const recordsById = new Map(records.map(record => [record.id, record]))
-  const scrapedItems = (cache.scrapedItems ?? [])
+  const preliminaryScrapedItems = (cache.scrapedItems ?? [])
     .map(item => sanitizeRawScrapedMediaItem(item, recordsById.get(item.recordId)))
     .filter((item): item is RawScrapedMediaItem => item != null)
-  const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
+  const preliminaryScrapedItemsByRecordId = new Map(preliminaryScrapedItems.map(item => [item.recordId, item]))
   const candidates = cache.candidates
     .map((candidate) => {
       const record = recordsById.get(candidate.record.id)
       if (!record)
         return null
-      const scraped = scrapedItemsByRecordId.get(record.id)
+      const scraped = preliminaryScrapedItemsByRecordId.get(record.id)
       return sanitizeRawMediaCandidate(candidate, record, scraped)
     })
     .filter((candidate): candidate is RawMediaCandidate => candidate != null)
   const candidateRecordIds = new Set(candidates.map(candidate => candidate.record.id))
+  const candidatesByRecordId = new Map(candidates.map(candidate => [candidate.record.id, candidate]))
+  const scrapedItems = preliminaryScrapedItems
+    .map(item => sanitizeRawScrapedEpisodeMetadata(item, candidatesByRecordId.get(item.recordId)))
 
   return {
     version: RAW_SCAN_CACHE_VERSION,
@@ -406,6 +410,26 @@ function sanitizeRawScrapedMediaItem(item: RawScrapedMediaItem, record: RawFileR
     matchedRuleName: item.matchedRuleName,
     categoryAssignment,
     errorMessage: item.errorMessage,
+  }
+}
+
+function sanitizeRawScrapedEpisodeMetadata(
+  item: RawScrapedMediaItem,
+  candidate: RawMediaCandidate | undefined,
+): RawScrapedMediaItem {
+  const episodeMetadata = item.matchStatus === 'matched' && item.metadata?.mediaType === 'tv'
+    && isMatchingTmdbEpisodeMetadata(
+      item.episodeMetadata,
+      item.metadata.tmdbId,
+      candidate?.seasonNumber,
+      candidate?.episodeNumber,
+    )
+    ? item.episodeMetadata
+    : undefined
+
+  return {
+    ...item,
+    episodeMetadata,
   }
 }
 

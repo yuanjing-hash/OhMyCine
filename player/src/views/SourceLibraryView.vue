@@ -8,7 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
+import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, enrichRawScrapedItemsEpisodeMetadata, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -862,13 +862,14 @@ async function applyIdentificationResult(metadata: TmdbMetadata) {
   isIdentificationApplying.value = true
   identificationErrorMessage.value = null
   try {
-    const nextCache = applyRawManualIdentification(scanCache.value, {
+    const identifiedCache = applyRawManualIdentification(scanCache.value, {
       targetRecordId: targetCandidate.record.id,
       metadata,
       matchedSearchTitle: identificationQuery.value.trim() || metadata.title,
       searchTitles: [identificationQuery.value, metadata.title, metadata.originalTitle]
         .filter((value): value is string => Boolean(value?.trim())),
     })
+    const nextCache = await enrichIdentifiedTvEpisodeMetadata(identifiedCache, targetCandidate.record.id, metadata)
 
     if (!saveRawSourceScanCache(nextCache)) {
       identificationErrorMessage.value = '本地扫描缓存写入失败，本次修正未保存。'
@@ -1008,13 +1009,21 @@ async function ensureIdentificationMetadataForArtwork(tmdb: TmdbScraper, tmdbId:
   if (requestId !== identificationSearchRequestId || !isIdentificationDialogOpen.value)
     return false
 
-  const nextCache = applyRawManualIdentification(scanCache.value, {
+  const identifiedCache = applyRawManualIdentification(scanCache.value, {
     targetRecordId: targetCandidate.record.id,
     metadata,
     matchedSearchTitle: identificationQuery.value.trim() || metadata.title,
     searchTitles: [identificationQuery.value, metadata.title, metadata.originalTitle]
       .filter((value): value is string => Boolean(value?.trim())),
   })
+  const nextCache = await enrichIdentifiedTvEpisodeMetadata(identifiedCache, targetCandidate.record.id, metadata, tmdb)
+  if (
+    requestId !== identificationSearchRequestId
+    || !isIdentificationDialogOpen.value
+    || identificationTarget.value?.entries[0]?.candidate.record.id !== targetCandidate.record.id
+  ) {
+    return false
+  }
 
   if (!saveRawSourceScanCache(nextCache))
     throw new Error('本地扫描缓存写入失败，本次图片修改未保存。')
@@ -1025,6 +1034,36 @@ async function ensureIdentificationMetadataForArtwork(tmdb: TmdbScraper, tmdbId:
   identificationImdbId.value = metadata.imdbId ?? identificationImdbId.value
   identificationTvdbId.value = metadata.tvdbId == null ? identificationTvdbId.value : String(metadata.tvdbId)
   return true
+}
+
+async function enrichIdentifiedTvEpisodeMetadata(
+  cache: RawLocalScanCache,
+  targetRecordId: string,
+  metadata: TmdbMetadata,
+  existingTmdb?: TmdbScraper,
+): Promise<RawLocalScanCache> {
+  if (metadata.mediaType !== 'tv')
+    return cache
+
+  const target = cache.candidates.find(candidate => candidate.record.id === targetRecordId)
+  if (!target)
+    return cache
+
+  const credential = existingTmdb ? undefined : await readConfiguredTmdbCredential()
+  const tmdb = existingTmdb ?? (credential ? new TmdbScraper(credential, loadTmdbLocalSettings()) : undefined)
+  if (!tmdb)
+    return cache
+
+  const targetGroupKey = createRawSeriesGroupingKey(target)
+  const targetCandidates = cache.candidates.filter(candidate => createRawSeriesGroupingKey(candidate) === targetGroupKey)
+  const enrichedItems = await enrichRawScrapedItemsEpisodeMetadata(targetCandidates, cache.scrapedItems, tmdb, {
+    onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
+  })
+  const enrichedByRecordId = new Map(enrichedItems.map(item => [item.recordId, item]))
+  return {
+    ...cache,
+    scrapedItems: (cache.scrapedItems ?? []).map(item => enrichedByRecordId.get(item.recordId) ?? item),
+  }
 }
 
 async function openScannedSeriesDetail(series: ScannedSeriesWork) {

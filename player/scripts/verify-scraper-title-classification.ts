@@ -3,6 +3,7 @@ import { deriveRawCandidateCategoryAssignment, RAW_UNRESOLVED_CATEGORY_NAME, res
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
 import { loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
+import { enrichRawMediaCandidates, enrichRawScrapedItemsEpisodeMetadata } from '../src/services/scraper/metadataEnrichment.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
 import { toRawScannedMediaItem } from '../src/services/scraper/rawDisplayMapping.ts'
@@ -12,8 +13,9 @@ import { TmdbScraper } from '../src/services/scraper/tmdb.ts'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '../src/services/playbackContext.ts'
 import type { MediaItem } from '../src/services/datasource/types.ts'
 import type { RawLocalScanCache } from '../src/services/scraper/localScanCache.ts'
-import type { TmdbEpisodeMetadata } from '../src/services/scraper/tmdb.ts'
-import type { RawFileRecord, RawScrapedMediaItem, RawTmdbMatchStatus } from '../src/services/scraper/types.ts'
+import type { RawTmdbMetadataClient } from '../src/services/scraper/metadataEnrichment.ts'
+import type { TmdbCandidateMatch, TmdbEpisodeMetadata } from '../src/services/scraper/tmdb.ts'
+import type { RawFileRecord, RawMediaCandidate, RawScrapedMediaItem, RawTmdbMatchStatus } from '../src/services/scraper/types.ts'
 
 const noisyTitle = '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV 1080P 简繁字幕'
 const cleanedTitle = cleanMediaTitle(noisyTitle)
@@ -377,7 +379,21 @@ const seasonTwoEpisodeMetadata: TmdbEpisodeMetadata = {
   seasonNumber: 2,
   episodeNumber: 1,
   name: 'Season two episode title',
+  overview: 'Season two episode-specific overview must win.',
+  runtime: 25,
+  rating: 8.5,
   stillUrl: 'https://image.tmdb.org/t/p/w780/season-two-still.jpg',
+}
+const seasonThreeEpisodeMetadata: TmdbEpisodeMetadata = {
+  ...matchedEpisodeMetadata,
+  tmdbEpisodeId: 3376730,
+  seasonNumber: 3,
+  episodeNumber: 1,
+  name: 'Season three episode title',
+  overview: 'Season three episode-specific overview must win.',
+  runtime: 26,
+  rating: 8.6,
+  stillUrl: 'https://image.tmdb.org/t/p/w780/season-three-still.jpg',
 }
 const staleManualEpisodeCache = applyRawManualIdentification(createStandardSeriesCache([{
   ...matchedSeriesScrape,
@@ -421,6 +437,119 @@ assert.equal(
   seasonTwoEpisodeMetadata.name,
 )
 
+const multiSeasonEpisodeRequests: string[] = []
+const multiSeasonTmdbClient = {
+  async searchCandidate(): Promise<TmdbCandidateMatch | null> {
+    return {
+      metadata: matchedSeriesMetadata,
+      searchTitle: 'The Legend of Vox Machina',
+    }
+  },
+  async getEpisodeDetail(tvTmdbId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata> {
+    multiSeasonEpisodeRequests.push(`${tvTmdbId}:${seasonNumber}:${episodeNumber}`)
+    const metadata = [
+      matchedEpisodeMetadata,
+      seasonTwoEpisodeMetadata,
+      seasonThreeEpisodeMetadata,
+    ].find(item => item.tvTmdbId === tvTmdbId && item.seasonNumber === seasonNumber && item.episodeNumber === episodeNumber)
+    if (!metadata)
+      throw new Error(`Missing fixture for S${seasonNumber}E${episodeNumber}.`)
+    return metadata
+  },
+} satisfies RawTmdbMetadataClient
+const multiSeasonEnrichedScrapes = await enrichRawMediaCandidates(standardSeriesCandidates, {
+  tmdbClient: multiSeasonTmdbClient,
+})
+const multiSeasonScrapesByRecordId = new Map(multiSeasonEnrichedScrapes.map(item => [item.recordId, item]))
+const multiSeasonDisplayItems = standardSeriesCandidates.map(candidate =>
+  toRawScannedMediaItem(candidate, multiSeasonScrapesByRecordId.get(candidate.record.id), 'tv'))
+assert.deepEqual(multiSeasonEpisodeRequests, [
+  '135934:1:1',
+  '135934:2:1',
+  '135934:3:1',
+])
+assert.deepEqual(multiSeasonDisplayItems.map(item => item.name), [
+  'S01E01 · The Terror of Tal\'Dorei - Part 1',
+  'S02E01 · Season two episode title',
+  'S03E01 · Season three episode title',
+])
+assert.deepEqual(multiSeasonDisplayItems.map(item => item.backdropUrl), [
+  matchedEpisodeMetadata.stillUrl,
+  seasonTwoEpisodeMetadata.stillUrl,
+  seasonThreeEpisodeMetadata.stillUrl,
+])
+assert.deepEqual(multiSeasonDisplayItems.map(item => item.overview), [
+  matchedEpisodeMetadata.overview,
+  seasonTwoEpisodeMetadata.overview,
+  seasonThreeEpisodeMetadata.overview,
+])
+assert.deepEqual(multiSeasonDisplayItems.map(item => item.duration), [24 * 60, 25 * 60, 26 * 60])
+assert.notEqual(multiSeasonDisplayItems[1]?.overview, matchedSeriesScrape.metadata?.overview)
+assert.notEqual(multiSeasonDisplayItems[2]?.overview, matchedSeriesScrape.metadata?.overview)
+
+const splitYearSeriesCandidates = [
+  createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina (2022)/Season 01/S01E01.mkv'),
+  createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina (2023)/Season 02/S02E01.mkv'),
+  createRecord('/动漫/机械之声的传奇 The Legend of Vox Machina (2024)/Season 03/S03E01.mkv'),
+].map(record => parseRawMediaCandidate(record))
+const splitYearSearchYears: Array<number | undefined> = []
+const splitYearEpisodeRequests: string[] = []
+const splitYearTmdbClient = {
+  async searchCandidate(candidate: RawMediaCandidate): Promise<TmdbCandidateMatch | null> {
+    splitYearSearchYears.push(candidate.year)
+    return candidate.year === 2022
+      ? {
+          metadata: matchedSeriesMetadata,
+          searchTitle: 'The Legend of Vox Machina',
+        }
+      : null
+  },
+  async getEpisodeDetail(tvTmdbId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata> {
+    splitYearEpisodeRequests.push(`${tvTmdbId}:${seasonNumber}:${episodeNumber}`)
+    const metadata = [
+      matchedEpisodeMetadata,
+      seasonTwoEpisodeMetadata,
+      seasonThreeEpisodeMetadata,
+    ].find(item => item.tvTmdbId === tvTmdbId && item.seasonNumber === seasonNumber && item.episodeNumber === episodeNumber)
+    if (!metadata)
+      throw new Error(`Missing split-year fixture for S${seasonNumber}E${episodeNumber}.`)
+    return metadata
+  },
+} satisfies RawTmdbMetadataClient
+const splitYearScrapes = await enrichRawMediaCandidates(splitYearSeriesCandidates, {
+  tmdbClient: splitYearTmdbClient,
+})
+const splitYearScrapesByRecordId = new Map(splitYearScrapes.map(item => [item.recordId, item]))
+const splitYearDisplayItems = splitYearSeriesCandidates.map(candidate =>
+  toRawScannedMediaItem(candidate, splitYearScrapesByRecordId.get(candidate.record.id), 'tv'))
+assert.deepEqual(splitYearSearchYears, [2022, 2023, 2024])
+assert.deepEqual(splitYearScrapes.map(item => item.matchStatus), ['matched', 'matched', 'matched'])
+assert.deepEqual(splitYearEpisodeRequests, [
+  '135934:1:1',
+  '135934:2:1',
+  '135934:3:1',
+])
+assert.equal(splitYearScrapesByRecordId.get(splitYearSeriesCandidates[1].record.id)?.matchedSearchTitle, 'The Legend of Vox Machina')
+assert.equal(splitYearDisplayItems[1]?.overview, seasonTwoEpisodeMetadata.overview)
+assert.equal(splitYearDisplayItems[2]?.posterUrl, seasonThreeEpisodeMetadata.stillUrl)
+assert.notEqual(splitYearDisplayItems[1]?.overview, matchedSeriesScrape.metadata?.overview)
+assert.notEqual(splitYearDisplayItems[2]?.overview, matchedSeriesScrape.metadata?.overview)
+
+const existingRequestCount = multiSeasonEpisodeRequests.length
+const manualBackfilledScrapes = await enrichRawScrapedItemsEpisodeMetadata(
+  standardSeriesCandidates,
+  manuallyIdentifiedCache.scrapedItems,
+  multiSeasonTmdbClient,
+)
+const manualBackfilledByRecordId = new Map(manualBackfilledScrapes.map(item => [item.recordId, item]))
+assert.equal(manualBackfilledByRecordId.get(standardSeriesCandidates[1].record.id)?.episodeMetadata?.name, seasonTwoEpisodeMetadata.name)
+assert.equal(manualBackfilledByRecordId.get(standardSeriesCandidates[2].record.id)?.episodeMetadata?.stillUrl, seasonThreeEpisodeMetadata.stillUrl)
+assert.deepEqual(multiSeasonEpisodeRequests.slice(existingRequestCount), [
+  '135934:1:1',
+  '135934:2:1',
+  '135934:3:1',
+])
+
 const episodeMetadataCache: RawLocalScanCache = {
   version: 1,
   scanId: 'scan-episode-metadata',
@@ -445,6 +574,18 @@ withMockLocalStorage(() => {
   const loadedCache = loadRawSourceScanCache('alist', 'alist', '/')
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.stillUrl, matchedEpisodeMetadata.stillUrl)
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.overview, matchedEpisodeMetadata.overview)
+})
+withMockLocalStorage(() => {
+  assert.equal(saveRawSourceScanCache({
+    ...episodeMetadataCache,
+    scanId: 'scan-stale-episode-metadata',
+    scrapedItems: [{
+      ...matchedEpisodeScrape,
+      episodeMetadata: seasonTwoEpisodeMetadata,
+    }],
+  }), true)
+  const loadedCache = loadRawSourceScanCache('alist', 'alist', '/')
+  assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata, undefined)
 })
 
 const artworkOverrideCache = applyRawManualArtworkOverride(manuallyIdentifiedCache, {

@@ -147,8 +147,9 @@ catch (error) {
 - Manual artwork search/select/delete writes only to Player local scan cache. It must not upload, rename, delete, or otherwise write to OpenList/Alist or another raw provider.
 - Local scan cache sanitization must preserve `imdbId`, `tvdbId`, `titleLogoPath`, `titleLogoUrl`, poster, and backdrop fields; otherwise manual fixes disappear after reload.
 - For raw TV candidates with parsed season and episode numbers, successful series matching should also request TMDB episode detail through `/tv/{tvTmdbId}/season/{seasonNumber}/episode/{episodeNumber}`. Episode still/name/overview/runtime/rating enrich the episode `MediaItem`; series-level `TmdbMetadata` remains the work identity and category source.
+- When one candidate in a raw TV work matches successfully, automatic scraping and manual identification may backfill the same series metadata to sibling candidates in the same raw series group, including split-year season folders. Backfilled TV candidates must still fetch their own episode detail by their own `seasonNumber` and `episodeNumber`; Season 02/03 must not silently fall back to Season 01 or series-level artwork/overview unless the episode detail request actually lacks those fields.
 - Episode metadata may be displayed only when `tvTmdbId`, `seasonNumber`, and `episodeNumber` match the current candidate and series metadata. Manual re-identification must drop stale episode metadata for a different TMDB series, season, or episode.
-- Local scan cache sanitization must preserve `episodeMetadata`; otherwise episode stills and summaries disappear after reload.
+- Local scan cache sanitization must preserve valid `episodeMetadata`, but must drop cached episode metadata when it no longer matches the candidate's `tvTmdbId`, `seasonNumber`, and `episodeNumber`; otherwise stale Season 01 or another show's still/summary can survive reload.
 - `titleLogoUrl` must survive raw work aggregation, series season children, detail recovery, playback route query, queue/context clone, and local playback history so detail and player chrome can use the same logo fallback behavior.
 - UI must fall back to text title if a logo URL is missing or the image fails to load.
 
@@ -164,6 +165,7 @@ catch (error) {
 | user deletes poster/logo/backdrop override | Clear only that local artwork field for the same work group |
 | TMDB episode detail request fails after series match succeeds | Keep the series match and playable local candidate; log a safe warning rather than moving the item to failed/unidentified |
 | cached episode metadata belongs to another TV TMDB ID/season/episode | Ignore it for display and manual propagation |
+| sibling season candidate is backfilled from a matched series representative | Fetch `/tv/{tvTmdbId}/season/{candidate.seasonNumber}/episode/{candidate.episodeNumber}` before rendering episode still/name/overview |
 | episode still or overview is missing | Fall back to series artwork/overview and then local scan text |
 | unsupported image type such as thumb/banner/disc/art is shown | Render it as a disabled placeholder until real provider/cache support exists |
 | logo image fails to load in detail/player UI | Mark that URL failed and render the text title fallback |
@@ -172,14 +174,16 @@ catch (error) {
 - Good: A right-click identify flow searches by title/year, user selects a TMDB result with logo, and the logo appears in the scanned work, detail hero, playback chrome, queue item, and continue-watching row after restart.
 - Good: User searches TMDB logos, selects a different title logo, and only Player local scan cache changes; OpenList/Alist remains untouched.
 - Good: A matched OpenList/Alist series episode with `S01E01` uses the TMDB episode still and episode overview in the category poster wall, series detail episode rail, playback queue, and detail context.
+- Good: A raw series with `Season 01`, `Season 02`, and `Season 03` uses each season's own TMDB episode still/name/overview/runtime/rating after automatic scan or manual identification, even if only one season originally produced the representative series match.
 - Base: No logo exists on TMDB; the UI keeps the existing text title and still shows poster/backdrop where available.
 - Base: TMDB has no still/overview for an episode; the card falls back to series backdrop/overview without losing playability.
 - Bad: Editing a logo updates only one episode record, so other seasons of the same series still show stale artwork.
 - Bad: A stale `episodeMetadata` object from another TMDB series is kept after manual identification and makes one episode show another show's still or summary.
+- Bad: Sibling Season 02/03 candidates inherit series metadata from Season 01 but never request their own episode detail, so their cards show the show's generic backdrop and overview.
 - Bad: A stale image-search response from a previous target overwrites the currently open identify dialog.
 
 #### 6. Tests Required
-- `npm run verify:scraper` should assert manual identification preserves `titleLogoUrl`, poster/logo/backdrop overrides apply to same-work candidates, clearing a logo removes it, episode detail mapping returns still/overview/runtime/rating, cached `episodeMetadata` survives reload, stale episode metadata is ignored, and playback queue/context cloning keeps `titleLogoUrl`.
+- `npm run verify:scraper` should assert manual identification preserves `titleLogoUrl`, poster/logo/backdrop overrides apply to same-work candidates, clearing a logo removes it, episode detail mapping returns still/overview/runtime/rating, cached `episodeMetadata` survives reload, stale episode metadata is ignored, multi-season automatic scan and manual backfill request Season 01/02/03 by their own season numbers, split-year sibling seasons receive episode metadata from backfilled series matches, and playback queue/context cloning keeps `titleLogoUrl`.
 - `npm run typecheck` must catch drift between `TmdbMetadata`, `TmdbEpisodeMetadata`, local cache sanitizer, `MediaItem`, playback route/context/history payloads, and Vue usages.
 - `npm run lint` must pass without broad `any` in scraper/TMDB response mapping.
 - `npm run build` must pass after UI integration.

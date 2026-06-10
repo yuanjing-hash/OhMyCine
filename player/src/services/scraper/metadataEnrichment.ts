@@ -1,33 +1,40 @@
+import type { ScrapeClassificationRules } from './classificationRules'
 import type { RawLocalScanLogEntry } from './localScanCache'
-import type { TmdbEpisodeMetadata, TmdbMetadata } from './tmdb'
+import type { TmdbCandidateMatch, TmdbEpisodeMetadata, TmdbMetadata } from './tmdb'
 import type { RawMediaCandidate, RawScrapedMediaItem, RawTmdbMatchStatus } from './types'
 import { createRawUnresolvedCategoryAssignment, resolveRawCandidateCategoryAssignment } from './categoryGrouping'
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
 import { normalizeTitleKey } from './parser'
-import { extractCandidateTmdbSearchTitles, loadTmdbLocalSettings, readConfiguredTmdbCredential, TmdbScraper } from './tmdb'
+import { createRawSeriesGroupingKey } from './rawSeriesGrouping'
+import { extractCandidateTmdbSearchTitles, isMatchingTmdbEpisodeMetadata, loadTmdbLocalSettings, readConfiguredTmdbCredential, TmdbScraper } from './tmdb'
 
 export interface EnrichRawMediaCandidatesOptions {
   readonly maxTmdbGroups?: number
   readonly onLog?: (entry: RawLocalScanLogEntry) => void
+  readonly tmdbClient?: RawTmdbMetadataClient
 }
 
 const DEFAULT_MAX_TMDB_GROUPS = 160
+
+export interface RawTmdbMetadataClient {
+  readonly searchCandidate: (candidate: RawMediaCandidate) => Promise<TmdbCandidateMatch | null>
+  readonly getEpisodeDetail: (tvTmdbId: number, seasonNumber: number, episodeNumber: number) => Promise<TmdbEpisodeMetadata>
+}
 
 export async function enrichRawMediaCandidates(
   candidates: readonly RawMediaCandidate[],
   options: EnrichRawMediaCandidatesOptions = {},
 ): Promise<RawScrapedMediaItem[]> {
-  const credential = await readConfiguredTmdbCredential()
-  if (!credential) {
+  const tmdb = options.tmdbClient ?? await createConfiguredTmdbClient()
+  if (!tmdb) {
     options.onLog?.(createLog('warning', '未配置 TMDB token/key，本次扫描仅保留可播放候选并统一归入未识别分类。'))
     return candidates.map(candidate => fallbackScrapedItem(candidate, 'notConfigured'))
   }
 
-  const settings = loadTmdbLocalSettings()
-  const tmdb = new TmdbScraper(credential, settings)
   const rules = loadScrapeClassificationRules()
   const groups = createCandidateGroups(candidates)
   const scrapedItems = new Map<string, RawScrapedMediaItem>()
+  const episodeMetadataByKey = new Map<string, TmdbEpisodeMetadata | null>()
   let processedGroupCount = 0
   let matchedGroupCount = 0
   let authFailureLogged = false
@@ -51,7 +58,6 @@ export async function enrichRawMediaCandidates(
       }
 
       matchedGroupCount += 1
-      const episodeMetadataByKey = new Map<string, TmdbEpisodeMetadata | null>()
       const classification = classifyScrapeMetadata({
         mediaType: match.metadata.mediaType,
         genreIds: match.metadata.genreIds,
@@ -68,7 +74,12 @@ export async function enrichRawMediaCandidates(
       for (const candidate of group.candidates) {
         const categoryAssignment = resolveRawCandidateCategoryAssignment(candidate, metadataAssignment)
         const appliedMetadataRule = categoryAssignment.source === 'metadataRule' ? classification : undefined
-        const episodeMetadata = await resolveEpisodeMetadataForCandidate(tmdb, match.metadata, candidate, episodeMetadataByKey)
+        const episodeMetadata = await resolveEpisodeMetadataForCandidate({
+          tmdb,
+          metadata: match.metadata,
+          candidate,
+          episodeMetadataByKey,
+        })
           .catch((error) => {
             if (!episodeFailureLogged) {
               episodeFailureLogged = true
@@ -115,16 +126,93 @@ export async function enrichRawMediaCandidates(
     `TMDB 补全完成：匹配 ${matchedGroupCount}/${Math.min(groups.length, maxTmdbGroups)} 组作品。`,
   ))
 
+  const completedScrapedItems = await enrichRawScrapedItemsEpisodeMetadata(
+    candidates,
+    backfillSeriesScrapedItems(candidates, scrapedItems, rules),
+    tmdb,
+    options,
+  )
+  const completedScrapedItemsByRecordId = new Map(completedScrapedItems.map(item => [item.recordId, item]))
+
   return candidates.map(candidate =>
-    scrapedItems.get(candidate.record.id) ?? fallbackScrapedItem(candidate, 'failed', '本地刮削结果缺失。'))
+    completedScrapedItemsByRecordId.get(candidate.record.id) ?? fallbackScrapedItem(candidate, 'failed', '本地刮削结果缺失。'))
+}
+
+export async function enrichRawScrapedItemsEpisodeMetadata(
+  candidates: readonly RawMediaCandidate[],
+  scrapedItems: readonly RawScrapedMediaItem[] | undefined,
+  tmdb: Pick<RawTmdbMetadataClient, 'getEpisodeDetail'>,
+  options: Pick<EnrichRawMediaCandidatesOptions, 'onLog'> = {},
+): Promise<RawScrapedMediaItem[]> {
+  const scrapedByRecordId = new Map((scrapedItems ?? []).map(item => [item.recordId, item]))
+  const episodeMetadataByKey = new Map<string, TmdbEpisodeMetadata | null>()
+  let episodeFailureLogged = false
+  const nextItems: RawScrapedMediaItem[] = []
+
+  for (const candidate of candidates) {
+    const scraped = scrapedByRecordId.get(candidate.record.id)
+    if (!scraped)
+      continue
+    if (scraped.matchStatus !== 'matched' || !scraped.metadata || scraped.metadata.mediaType !== 'tv') {
+      nextItems.push({
+        ...scraped,
+        episodeMetadata: undefined,
+      })
+      continue
+    }
+
+    const existingEpisodeMetadata = isMatchingTmdbEpisodeMetadata(
+      scraped.episodeMetadata,
+      scraped.metadata.tmdbId,
+      candidate.seasonNumber,
+      candidate.episodeNumber,
+    )
+      ? scraped.episodeMetadata
+      : undefined
+    if (existingEpisodeMetadata) {
+      nextItems.push({
+        ...scraped,
+        episodeMetadata: existingEpisodeMetadata,
+      })
+      continue
+    }
+
+    const episodeMetadata = await resolveEpisodeMetadataForCandidate({
+      tmdb,
+      metadata: scraped.metadata,
+      candidate,
+      episodeMetadataByKey,
+    }).catch((error) => {
+      if (!episodeFailureLogged) {
+        episodeFailureLogged = true
+        options.onLog?.(createLog('warning', tmdbEpisodeErrorMessage(error)))
+      }
+      return undefined
+    })
+
+    nextItems.push({
+      ...scraped,
+      episodeMetadata,
+    })
+  }
+
+  return nextItems
+}
+
+async function createConfiguredTmdbClient(): Promise<RawTmdbMetadataClient | null> {
+  const credential = await readConfiguredTmdbCredential()
+  return credential ? new TmdbScraper(credential, loadTmdbLocalSettings()) : null
 }
 
 async function resolveEpisodeMetadataForCandidate(
-  tmdb: TmdbScraper,
-  metadata: TmdbMetadata,
-  candidate: RawMediaCandidate,
-  episodeMetadataByKey: Map<string, TmdbEpisodeMetadata | null>,
+  input: {
+    readonly tmdb: Pick<RawTmdbMetadataClient, 'getEpisodeDetail'>
+    readonly metadata: TmdbMetadata
+    readonly candidate: RawMediaCandidate
+    readonly episodeMetadataByKey: Map<string, TmdbEpisodeMetadata | null>
+  },
 ): Promise<TmdbEpisodeMetadata | undefined> {
+  const { tmdb, metadata, candidate, episodeMetadataByKey } = input
   if (metadata.mediaType !== 'tv' || candidate.seasonNumber == null || candidate.episodeNumber == null)
     return undefined
 
@@ -133,8 +221,16 @@ async function resolveEpisodeMetadataForCandidate(
     return episodeMetadataByKey.get(key) ?? undefined
 
   const episodeMetadata = await tmdb.getEpisodeDetail(metadata.tmdbId, candidate.seasonNumber, candidate.episodeNumber)
-  episodeMetadataByKey.set(key, episodeMetadata)
-  return episodeMetadata
+  const matchingEpisodeMetadata = isMatchingTmdbEpisodeMetadata(
+    episodeMetadata,
+    metadata.tmdbId,
+    candidate.seasonNumber,
+    candidate.episodeNumber,
+  )
+    ? episodeMetadata
+    : undefined
+  episodeMetadataByKey.set(key, matchingEpisodeMetadata ?? null)
+  return matchingEpisodeMetadata
 }
 
 function tmdbMatchErrorMessage(error: unknown): string {
@@ -195,6 +291,117 @@ function fallbackScrapedItem(
     categoryAssignment,
     errorMessage,
   }
+}
+
+function backfillSeriesScrapedItems(
+  candidates: readonly RawMediaCandidate[],
+  scrapedItems: ReadonlyMap<string, RawScrapedMediaItem>,
+  rules: ScrapeClassificationRules,
+): RawScrapedMediaItem[] {
+  const nextItems = new Map(scrapedItems)
+
+  for (const group of groupSeriesCandidates(candidates)) {
+    const representative = findMatchedSeriesRepresentative(group, nextItems)
+    if (!representative?.metadata)
+      continue
+
+    for (const candidate of group) {
+      const existing = nextItems.get(candidate.record.id)
+      if (existing?.matchStatus === 'matched' && existing.metadata)
+        continue
+
+      nextItems.set(candidate.record.id, createMatchedScrapedItemFromMetadata(candidate, representative, rules))
+    }
+  }
+
+  return candidates
+    .map(candidate => nextItems.get(candidate.record.id))
+    .filter((item): item is RawScrapedMediaItem => item != null)
+}
+
+function groupSeriesCandidates(candidates: readonly RawMediaCandidate[]): RawMediaCandidate[][] {
+  const groups = new Map<string, RawMediaCandidate[]>()
+  for (const candidate of candidates) {
+    if (candidate.kind !== 'episode' && candidate.kind !== 'tv')
+      continue
+    const key = createRawSeriesGroupingKey(candidate)
+    const current = groups.get(key) ?? []
+    current.push(candidate)
+    groups.set(key, current)
+  }
+  return [...groups.values()]
+}
+
+function findMatchedSeriesRepresentative(
+  candidates: readonly RawMediaCandidate[],
+  scrapedItems: ReadonlyMap<string, RawScrapedMediaItem>,
+): (RawScrapedMediaItem & { metadata: TmdbMetadata }) | undefined {
+  return candidates
+    .map(candidate => scrapedItems.get(candidate.record.id))
+    .filter((item): item is RawScrapedMediaItem & { metadata: TmdbMetadata } => item?.matchStatus === 'matched' && item.metadata?.mediaType === 'tv')
+    .sort((left, right) => matchedRepresentativeScore(right) - matchedRepresentativeScore(left))[0]
+}
+
+function matchedRepresentativeScore(item: RawScrapedMediaItem): number {
+  return (item.episodeMetadata ? 4 : 0)
+    + (item.metadata?.posterUrl ? 2 : 0)
+    + (item.metadata?.backdropUrl ? 1 : 0)
+    + (item.metadata?.titleLogoUrl ? 1 : 0)
+    + (item.metadata?.overview ? 0.5 : 0)
+}
+
+function createMatchedScrapedItemFromMetadata(
+  candidate: RawMediaCandidate,
+  representative: RawScrapedMediaItem & { metadata: TmdbMetadata },
+  rules: ScrapeClassificationRules,
+): RawScrapedMediaItem {
+  const metadataAssignment = createMetadataCategoryAssignment(representative.metadata, rules)
+  const categoryAssignment = resolveRawCandidateCategoryAssignment(candidate, metadataAssignment)
+  const appliedMetadataRule = categoryAssignment.source === 'metadataRule' ? metadataAssignment : undefined
+
+  return {
+    recordId: candidate.record.id,
+    providerPath: candidate.record.providerPath,
+    matchStatus: 'matched',
+    searchTitles: uniqueSearchTitles([
+      ...representative.searchTitles,
+      ...extractCandidateTmdbSearchTitles(candidate),
+    ]),
+    matchedSearchTitle: representative.matchedSearchTitle,
+    metadata: representative.metadata,
+    mediaType: representative.metadata.mediaType,
+    categoryName: categoryAssignment.categoryName,
+    matchedRuleId: appliedMetadataRule?.matchedRuleId,
+    matchedRuleName: appliedMetadataRule?.matchedRuleName,
+    categoryAssignment,
+  }
+}
+
+function createMetadataCategoryAssignment(metadata: TmdbMetadata, rules: ScrapeClassificationRules) {
+  return {
+    ...classifyScrapeMetadata({
+      mediaType: metadata.mediaType,
+      genreIds: metadata.genreIds,
+      originalLanguage: metadata.originalLanguage,
+      productionCountries: metadata.productionCountries,
+      originCountries: metadata.originCountries,
+      releaseYear: metadata.releaseYear,
+    }, rules),
+    source: 'metadataRule' as const,
+  }
+}
+
+function uniqueSearchTitles(values: readonly string[]): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const normalized = normalizeTitleKey(value)
+    if (!normalized || seen.has(normalized))
+      continue
+    seen.add(normalized)
+    result.push(value)
+  }
+  return result
 }
 
 function fallbackMediaType(candidate: RawMediaCandidate): 'movie' | 'tv' | undefined {
