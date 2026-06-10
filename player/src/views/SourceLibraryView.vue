@@ -246,25 +246,11 @@ const scanStats = computed(() => ({
   tv: scannedSeriesFiles.value.filter(entry => !isUnresolvedCategoryEntry(entry)).length,
   unresolved: scannedDisplayItems.value.filter(isUnresolvedCategoryEntry).length,
 }))
-const mediaLibrarySummary = computed(() => {
-  if (!scanCache.value)
-    return `后台索引会自动整理 ${alistRootPath.value}，完成后生成电影、剧集和未识别文件分类。`
-
-  const classifiedSeriesCount = seriesCountForEntries(scannedSeriesFiles.value.filter(entry => !isUnresolvedCategoryEntry(entry)))
-  const parts = [
-    `${scannedCategories.value.length} 个分类`,
-    scanStats.value.movie ? `${scanStats.value.movie} 部影片` : undefined,
-    classifiedSeriesCount ? `${classifiedSeriesCount} 部剧集` : undefined,
-    scanStats.value.unresolved ? `${scanStats.value.unresolved} 个未识别` : undefined,
-  ].filter((part): part is string => Boolean(part))
-  return parts.join(' · ')
-})
 const detectionModeLabel = computed(() => {
   if (!scanCache.value)
     return '等待索引'
   return scanCache.value.detection.mode === 'standard' ? '标准目录' : '非标准目录'
 })
-const scanFinishedLabel = computed(() => scanCache.value ? formatDateTime(scanCache.value.finishedAt) : '')
 const scanStatusLabel = computed(() => {
   if (isScanning.value)
     return '扫描中'
@@ -1490,18 +1476,6 @@ function findVisibleHomeSection(homeSections: readonly HomeSection[], type: 'her
   return homeSections.find(section => section.type === type && section.items.length > 0)
 }
 
-function formatDateTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime()))
-    return value
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 function isContainerItem(item: MediaItem): boolean {
   return item.type === 'folder' || item.type === 'series' || item.type === 'season'
 }
@@ -1528,7 +1502,7 @@ function labelForSourceType(type: string): string {
 
 <template>
   <div class="source-view relative min-h-full">
-    <div class="space-y-8 p-6 pl-20 pt-16">
+    <div class="space-y-8 p-6 pb-28 pl-20 pt-16">
       <div v-if="!sourceConfig" class="flex flex-col items-center justify-center py-24">
         <p class="text-lg text-white/40">
           Data source not found
@@ -1550,7 +1524,7 @@ function labelForSourceType(type: string): string {
           <HeroCarousel :items="sourceLandingHeroItems" @play="handlePlay" @detail="handleSelect" />
         </section>
 
-        <div class="flex flex-wrap items-center justify-between gap-4">
+        <div v-if="isFolderView" class="flex flex-wrap items-center justify-between gap-4">
           <div class="flex items-center gap-4">
             <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/18 text-lg font-bold text-primary">
               <img v-if="sourceConfig.iconUrl" :src="sourceConfig.iconUrl" class="h-8 w-8 rounded" :alt="sourceConfig.name">
@@ -1566,22 +1540,7 @@ function labelForSourceType(type: string): string {
             </div>
           </div>
 
-          <div v-if="isMediaLibraryView" class="flex flex-wrap items-center gap-3">
-            <button
-              class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-              @click="isScanManagementOpen = !isScanManagementOpen"
-            >
-              {{ isScanManagementOpen ? '收起扫描管理' : '扫描管理' }}
-            </button>
-            <button
-              class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-              @click="switchViewMode('folders')"
-            >
-              文件夹
-            </button>
-          </div>
-
-          <form v-if="isFolderView" class="flex min-w-72 gap-2" @submit.prevent="runSearch">
+          <form class="flex min-w-72 gap-2" @submit.prevent="runSearch">
             <input
               v-model="searchKeyword"
               class="min-w-0 flex-1 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
@@ -1634,26 +1593,6 @@ function labelForSourceType(type: string): string {
         </div>
 
         <section v-if="isMediaLibraryView" class="space-y-6">
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p class="text-xs uppercase tracking-[0.24em] text-white/36">
-                OpenList/Alist 媒体库
-              </p>
-              <h2 class="mt-2 text-2xl font-bold text-white">
-                {{ sourceConfig.displayName ?? sourceConfig.name }}
-              </h2>
-              <p class="mt-2 text-sm leading-6 text-white/45">
-                {{ mediaLibrarySummary }}
-              </p>
-            </div>
-
-            <div class="flex flex-wrap items-center gap-3">
-              <p v-if="scanCache" class="text-sm text-white/38">
-                上次扫描：{{ scanFinishedLabel }}
-              </p>
-            </div>
-          </div>
-
           <div
             v-if="scanErrorMessage"
             class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100"
@@ -1663,6 +1602,7 @@ function labelForSourceType(type: string): string {
 
           <section
             v-if="isScanManagementOpen"
+            id="source-scan-management"
             class="scan-management-panel rounded-2xl border border-white/10 bg-white/6 p-5"
           >
             <div class="flex flex-wrap items-start justify-between gap-4">
@@ -1738,50 +1678,22 @@ function labelForSourceType(type: string): string {
           </section>
 
           <template v-if="!scanCache">
-            <div class="rounded-2xl border border-white/10 bg-white/6 px-5 py-4">
-              <div class="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <p class="text-sm font-semibold text-white">
-                    本地海报墙正在等待后台整理
-                  </p>
-                  <p class="mt-1 text-sm leading-6 text-white/42">
-                    软件会自动在后台建立本地索引；当前仍可先使用文件夹入口浏览和播放。扫描管理仅作为高级立即重扫入口。
-                  </p>
-                </div>
-                <div class="flex flex-wrap gap-3">
-                  <button
-                    class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 hover:text-white"
-                    @click="isScanManagementOpen = true"
-                  >
-                    打开扫描管理
-                  </button>
-                  <button
-                    class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-                    @click="switchViewMode('folders')"
-                  >
-                    文件夹视图
-                  </button>
-                </div>
-              </div>
-            </div>
-
             <section class="space-y-4">
-              <div class="flex flex-wrap items-end justify-between gap-3">
+              <div>
                 <div>
                   <h2 class="text-xl font-bold text-white">
-                    文件夹入口
+                    媒体库
                   </h2>
                   <p class="mt-1 text-sm text-white/38">
-                    OpenList/Alist 根目录保持可浏览可播放；本地刮削失败或未配置 TMDB 时不影响这里。
+                    本地海报墙整理完成后，会在这里显示分类海报墙。
                   </p>
                 </div>
               </div>
 
               <MediaGrid
-                :items="libraries"
-                :loading="isLoading"
-                empty-title="当前数据源没有返回文件夹入口"
-                empty-description="可以检查 OpenList/Alist 登录状态、根目录配置，或直接切换到文件夹视图重试。"
+                :items="[]"
+                empty-title="本地海报墙正在等待整理"
+                empty-description="文件夹浏览和播放保持可用；扫描状态不会影响现有目录访问。"
                 @select="handleSelect"
                 @play="handlePlay"
               />
@@ -1799,15 +1711,12 @@ function labelForSourceType(type: string): string {
                     标准目录优先使用路径分类；非标准或无路径分类时再按 TMDB 分类规则兜底。
                   </p>
                 </div>
-                <p class="text-sm text-white/38">
-                  {{ scannedCategoryLibraries.length }} 个库 · {{ scanStats.total }} 个视频文件
-                </p>
               </div>
 
               <MediaGrid
                 :items="scannedCategoryLibraries"
                 empty-title="当前扫描没有可显示的媒体库"
-                empty-description="可以重新扫描当前根目录，或切换到文件夹视图继续浏览。"
+                empty-description="扫描缓存暂无可展示分类；现有目录访问不受影响。"
                 @select="handleSelect"
                 @play="handlePlay"
               />
@@ -1913,6 +1822,41 @@ function labelForSourceType(type: string): string {
           />
         </section>
       </template>
+    </div>
+
+    <div
+      v-if="isMediaLibraryView"
+      class="source-bottom-controls"
+    >
+      <div class="source-bottom-control-bar" role="toolbar" aria-label="OpenList/Alist 媒体库操作">
+        <button
+          type="button"
+          class="source-bottom-control-button"
+          :class="{ 'is-active': isScanManagementOpen }"
+          :aria-expanded="isScanManagementOpen"
+          aria-controls="source-scan-management"
+          :aria-label="isScanManagementOpen ? '收起扫描管理' : '打开扫描管理'"
+          :title="isScanManagementOpen ? '收起扫描管理' : '扫描管理'"
+          @click="isScanManagementOpen = !isScanManagementOpen"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4.75 5.5h7.5a1 1 0 1 1 0 2h-7.5a1 1 0 0 1 0-2Zm0 5.5h14.5a1 1 0 1 1 0 2H4.75a1 1 0 1 1 0-2Zm0 5.5h5.5a1 1 0 1 1 0 2h-5.5a1 1 0 1 1 0-2Zm12.75-.75a2.75 2.75 0 1 1-2.57 1.75h-1.18a1 1 0 1 1 0-2h1.18a2.75 2.75 0 0 1 2.57-1.75Zm0 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm-2-13.5a2.75 2.75 0 0 1 2.57 1.75h1.18a1 1 0 1 1 0 2h-1.18a2.75 2.75 0 1 1-2.57-3.75Zm0 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
+          </svg>
+          <span>{{ isScanManagementOpen ? '收起管理' : '扫描管理' }}</span>
+        </button>
+        <button
+          type="button"
+          class="source-bottom-control-button"
+          aria-label="打开文件夹视图"
+          title="文件夹"
+          @click="switchViewMode('folders')"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3.5 6.75A2.75 2.75 0 0 1 6.25 4h3.1c.73 0 1.43.29 1.94.8l1.2 1.2h5.26a2.75 2.75 0 0 1 2.75 2.75v8.5A2.75 2.75 0 0 1 17.75 20H6.25a2.75 2.75 0 0 1-2.75-2.75V6.75Zm2.75-.75a.75.75 0 0 0-.75.75v10.5c0 .41.34.75.75.75h11.5c.41 0 .75-.34.75-.75v-8.5a.75.75 0 0 0-.75-.75h-5.67a1.5 1.5 0 0 1-1.06-.44L9.88 6.44A1.5 1.5 0 0 0 8.82 6H6.25Z" />
+          </svg>
+          <span>文件夹</span>
+        </button>
+      </div>
     </div>
 
     <div
@@ -2239,6 +2183,95 @@ function labelForSourceType(type: string): string {
 <style scoped>
 .source-view {
   background: var(--color-bg);
+}
+
+.source-bottom-controls {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  z-index: 45;
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 1.5rem 1rem 0.75rem;
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+
+.source-bottom-controls:hover,
+.source-bottom-controls:focus-within {
+  opacity: 1;
+}
+
+.source-bottom-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-2xl);
+  background: rgba(18, 22, 30, 0.58);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 12px 34px rgba(0, 0, 0, 0.3);
+  padding: 0.45rem;
+  transform: translateY(calc(100% + 0.85rem)) scale(0.98);
+  transition:
+    transform var(--duration-normal) var(--ease-out),
+    border-color var(--duration-normal) var(--ease-out),
+    background var(--duration-normal) var(--ease-out);
+  backdrop-filter: blur(28px) saturate(1.45);
+  -webkit-backdrop-filter: blur(28px) saturate(1.45);
+}
+
+.source-bottom-controls:hover .source-bottom-control-bar,
+.source-bottom-controls:focus-within .source-bottom-control-bar {
+  border-color: rgba(255, 255, 255, 0.24);
+  transform: translateY(0) scale(1);
+}
+
+.source-bottom-control-button {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 1.35rem;
+  color: rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 0.82rem;
+  font-weight: 700;
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.source-bottom-control-button svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+  fill: currentColor;
+}
+
+.source-bottom-control-button:hover,
+.source-bottom-control-button:focus-visible,
+.source-bottom-control-button.is-active {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: white;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.source-bottom-control-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.26);
+  outline-offset: 2px;
+}
+
+.source-bottom-control-button:active {
+  transform: scale(0.98);
 }
 
 .scan-management-panel {
