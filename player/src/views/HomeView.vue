@@ -37,6 +37,7 @@ const continueWatchingSection = computed(() => store.homeSections.find(s => s.ty
 const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded' && s.items.length > 0))
 const heroItems = computed(() => heroSection.value?.items ?? [])
 const recentlyAddedItems = computed(() => recentlyAddedSection.value?.items.slice(0, 6) ?? [])
+const recentlyAddedBrowseSourceId = computed(() => recentlyAddedSection.value?.sourceId)
 
 function progressPercent(item: MediaItem): string {
   if (typeof item.progress === 'number' && Number.isFinite(item.progress))
@@ -481,8 +482,8 @@ function isContainerItem(item: MediaItem): boolean {
             <button
               class="text-xs transition-colors disabled:opacity-30"
               style="color: var(--gp-text)"
-              :disabled="!recentlyAddedSection"
-              @click="recentlyAddedSection && router.push(`/source/${recentlyAddedSection.sourceId}`)"
+              :disabled="!recentlyAddedBrowseSourceId"
+              @click="recentlyAddedBrowseSourceId && router.push(`/source/${recentlyAddedBrowseSourceId}`)"
             >
               浏览全部 >
             </button>
@@ -491,7 +492,7 @@ function isContainerItem(item: MediaItem): boolean {
           <div v-if="recentlyAddedItems.length" class="flex gap-4 overflow-x-auto cinema-scrollbar">
             <article
               v-for="item in recentlyAddedItems"
-              :key="item.id"
+              :key="`${item.sourceId}:${item.id}`"
               class="group w-28 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.04]"
               @click="handleDetail(item)"
             >

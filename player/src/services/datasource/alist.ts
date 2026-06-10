@@ -1,6 +1,7 @@
 import type { AlistCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption } from './types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption } from './types'
 import { ofetch } from 'ofetch'
+import { createRawSourceHomeSections, getRawScannedMediaDetail, isRawScannedSyntheticId, listRawScannedChildren, loadRawSourceScanCache } from '@/services/scraper'
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readAlistCredential, readRawCredentialBackup, removeCredential, saveAlistCredential, saveRawCredentialBackup } from './credentialStore'
 import { redactSensitiveText } from './errors'
@@ -170,6 +171,12 @@ export class AlistDataSource implements DataSource {
   }
 
   async list(path?: string): Promise<MediaItem[]> {
+    const rawChildren = this.listRawScannedChildren(path)
+    if (rawChildren)
+      return rawChildren
+    if (path && isRawScannedSyntheticId(path))
+      return []
+
     const normalizedPath = this.resolveLibraryPath(path)
     const records = await this.cache.getOrSet(`list:${normalizedPath}`, () => this.requestFsList(normalizedPath))
     return this.filterRecordsInRoot(records).map(record => this.mapItem(record))
@@ -203,6 +210,12 @@ export class AlistDataSource implements DataSource {
   }
 
   async getDetail(id: string): Promise<MediaDetail> {
+    const rawDetail = this.getRawScannedDetail(id)
+    if (rawDetail)
+      return rawDetail
+    if (isRawScannedSyntheticId(id))
+      throw new Error('OpenList/Alist 本地扫描详情不可用，请重新扫描或从文件夹视图打开具体文件。')
+
     const path = this.resolveLibraryPath(id)
     const record = await this.cache.getOrSet(`detail:${path}`, () => this.requestFsGet(path, false))
     this.ensureRecordInRoot(record)
@@ -214,6 +227,9 @@ export class AlistDataSource implements DataSource {
   }
 
   async getStreamURL(id: string): Promise<string> {
+    if (isRawScannedSyntheticId(id))
+      throw new Error('OpenList/Alist 剧集合集不能直接播放，请选择具体分集。')
+
     const path = this.resolveLibraryPath(id)
     const record = await this.requestFsGet(path, true)
     this.ensureRecordInRoot(record)
@@ -221,6 +237,16 @@ export class AlistDataSource implements DataSource {
       throw new Error('OpenList/Alist 文件夹不能直接播放。')
 
     return this.buildDownloadUrl(path, record.sign)
+  }
+
+  async getHomeSections(): Promise<HomeSection[]> {
+    try {
+      const cache = this.loadRawScanCache()
+      return cache ? createRawSourceHomeSections(cache, this.name) : []
+    }
+    catch {
+      return []
+    }
   }
 
   exportConfig(): DataSourceConfig {
@@ -436,6 +462,32 @@ export class AlistDataSource implements DataSource {
   private ensureRecordInRoot(record: AlistFileRecord): void {
     if (!isPathWithinRoot(record.path, this.rootPath))
       throw new Error('OpenList/Alist 返回的文件路径不在已选择的根目录内。')
+  }
+
+  private loadRawScanCache() {
+    return loadRawSourceScanCache(this.id, 'alist', this.rootPath)
+  }
+
+  private getRawScannedDetail(id: string): MediaDetail | null {
+    try {
+      const cache = this.loadRawScanCache()
+      return cache ? getRawScannedMediaDetail(cache, id) : null
+    }
+    catch {
+      return null
+    }
+  }
+
+  private listRawScannedChildren(id: string | undefined): MediaItem[] | null {
+    if (!id)
+      return null
+    try {
+      const cache = this.loadRawScanCache()
+      return cache ? listRawScannedChildren(cache, id) : null
+    }
+    catch {
+      return null
+    }
   }
 }
 

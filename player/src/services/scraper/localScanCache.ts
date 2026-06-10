@@ -9,9 +9,9 @@ import type {
   RawScrapedMediaItem,
 } from './types'
 import type { DataSource, MediaItem } from '@/services/datasource/types'
-import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { enrichRawMediaCandidates } from './metadataEnrichment'
-import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath } from './pathUtils'
+import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath, relativeProviderPath } from './pathUtils'
 import { createRawScanPreview } from './scanner'
 
 export type RawLocalScanStatus = 'completed' | 'partialFailed'
@@ -222,7 +222,9 @@ export function loadRawSourceScanCache(
     if (!raw)
       return null
     const value = JSON.parse(raw) as unknown
-    return isRawLocalScanCache(value, sourceId, sourceType, normalizeProviderPath(rootPath)) ? value : null
+    return isRawLocalScanCache(value, sourceId, sourceType, normalizeProviderPath(rootPath))
+      ? sanitizeRawLocalScanCache(value)
+      : null
   }
   catch {
     return null
@@ -292,23 +294,32 @@ function createScanId(): string {
 }
 
 function sanitizeRawLocalScanCache(cache: RawLocalScanCache): RawLocalScanCache {
-  const scrapedItems = cache.scrapedItems?.map(sanitizeRawScrapedMediaItem)
-  const scrapedItemsByRecordId = new Map(scrapedItems?.map(item => [item.recordId, item]) ?? [])
-  const candidates = cache.candidates.map((candidate) => {
-    const scraped = scrapedItemsByRecordId.get(candidate.record.id)
-    return sanitizeRawMediaCandidate({
-      ...candidate,
-      scrapeMetadata: scraped?.metadata ?? candidate.scrapeMetadata,
-      categoryAssignment: scraped?.categoryAssignment ?? candidate.categoryAssignment,
+  const rootPath = safeProviderPath(cache.rootPath) ?? '/'
+  const records = cache.records
+    .map(record => sanitizeRawFileRecord(record, rootPath))
+    .filter((record): record is RawFileRecord => record != null)
+  const recordsById = new Map(records.map(record => [record.id, record]))
+  const scrapedItems = (cache.scrapedItems ?? [])
+    .map(item => sanitizeRawScrapedMediaItem(item, recordsById.get(item.recordId)))
+    .filter((item): item is RawScrapedMediaItem => item != null)
+  const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
+  const candidates = cache.candidates
+    .map((candidate) => {
+      const record = recordsById.get(candidate.record.id)
+      if (!record)
+        return null
+      const scraped = scrapedItemsByRecordId.get(record.id)
+      return sanitizeRawMediaCandidate(candidate, record, scraped)
     })
-  })
+    .filter((candidate): candidate is RawMediaCandidate => candidate != null)
+  const candidateRecordIds = new Set(candidates.map(candidate => candidate.record.id))
 
   return {
     version: RAW_SCAN_CACHE_VERSION,
     scanId: cache.scanId,
     sourceId: cache.sourceId,
     sourceType: cache.sourceType,
-    rootPath: cache.rootPath,
+    rootPath,
     status: cache.status,
     startedAt: cache.startedAt,
     finishedAt: cache.finishedAt,
@@ -319,21 +330,28 @@ function sanitizeRawLocalScanCache(cache: RawLocalScanCache): RawLocalScanCache 
     logs: cache.logs.map(entry => ({
       timestamp: entry.timestamp,
       level: entry.level,
-      message: entry.message,
-      path: entry.path,
+      message: redactSensitiveText(entry.message),
+      path: safeProviderPath(entry.path) ?? undefined,
     })),
-    records: cache.records.map(sanitizeRawFileRecord),
-    detection: cache.detection,
+    records,
+    detection: {
+      ...cache.detection,
+      samplePaths: cache.detection.samplePaths.filter(path => safeProviderPath(path) != null),
+    },
     candidates,
-    scrapedItems,
+    scrapedItems: scrapedItems.filter(item => candidateRecordIds.has(item.recordId)),
   }
 }
 
-function sanitizeRawMediaCandidate(candidate: RawMediaCandidate): RawMediaCandidate {
+function sanitizeRawMediaCandidate(
+  candidate: RawMediaCandidate,
+  record: RawFileRecord,
+  scraped: RawScrapedMediaItem | undefined,
+): RawMediaCandidate {
   return {
     kind: candidate.kind,
     parseStatus: candidate.parseStatus,
-    record: sanitizeRawFileRecord(candidate.record),
+    record,
     title: candidate.title,
     normalizedTitle: candidate.normalizedTitle,
     year: candidate.year,
@@ -341,22 +359,26 @@ function sanitizeRawMediaCandidate(candidate: RawMediaCandidate): RawMediaCandid
     seasonNumber: candidate.seasonNumber,
     episodeNumber: candidate.episodeNumber,
     categoryHint: candidate.categoryHint,
-    scrapeMetadata: sanitizeTmdbMetadata(candidate.scrapeMetadata),
-    categoryAssignment: sanitizeCategoryAssignment(candidate.categoryAssignment),
+    scrapeMetadata: sanitizeTmdbMetadata(scraped?.metadata ?? candidate.scrapeMetadata),
+    categoryAssignment: sanitizeCategoryAssignment(scraped?.categoryAssignment ?? candidate.categoryAssignment),
     confidence: candidate.confidence,
     signals: [...candidate.signals],
   }
 }
 
-function sanitizeRawFileRecord(record: RawFileRecord): RawFileRecord {
+function sanitizeRawFileRecord(record: RawFileRecord, rootPath: string): RawFileRecord | null {
+  const providerPath = safeProviderPath(record.providerPath)
+  if (!providerPath || !isPathWithinRoot(providerPath, rootPath))
+    return null
+
   return {
-    id: record.id,
+    id: `${record.sourceId}:${providerPath}`,
     sourceId: record.sourceId,
     sourceType: record.sourceType,
-    rootPath: record.rootPath,
-    providerPath: record.providerPath,
-    relativePath: record.relativePath,
-    parentPath: record.parentPath,
+    rootPath,
+    providerPath,
+    relativePath: relativeProviderPath(providerPath, rootPath),
+    parentPath: providerParentPath(providerPath),
     fileName: record.fileName,
     extension: record.extension,
     size: record.size,
@@ -364,11 +386,15 @@ function sanitizeRawFileRecord(record: RawFileRecord): RawFileRecord {
   }
 }
 
-function sanitizeRawScrapedMediaItem(item: RawScrapedMediaItem): RawScrapedMediaItem {
+function sanitizeRawScrapedMediaItem(item: RawScrapedMediaItem, record: RawFileRecord | undefined): RawScrapedMediaItem | null {
+  const providerPath = safeProviderPath(item.providerPath)
+  if (!record || !providerPath || providerPath !== record.providerPath)
+    return null
+
   const categoryAssignment = sanitizeCategoryAssignment(item.categoryAssignment)
   return {
-    recordId: item.recordId,
-    providerPath: item.providerPath,
+    recordId: record.id,
+    providerPath: record.providerPath,
     matchStatus: item.matchStatus,
     searchTitles: [...item.searchTitles],
     matchedSearchTitle: item.matchedSearchTitle,
@@ -406,9 +432,9 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     posterPath: metadata.posterPath,
     backdropPath: metadata.backdropPath,
     titleLogoPath: metadata.titleLogoPath,
-    posterUrl: metadata.posterUrl,
-    backdropUrl: metadata.backdropUrl,
-    titleLogoUrl: metadata.titleLogoUrl,
+    posterUrl: sanitizeMetadataUrl(metadata.posterUrl),
+    backdropUrl: sanitizeMetadataUrl(metadata.backdropUrl),
+    titleLogoUrl: sanitizeMetadataUrl(metadata.titleLogoUrl),
     scrapedAt: metadata.scrapedAt,
   }
 }
@@ -428,9 +454,55 @@ function sanitizeTmdbEpisodeMetadata(metadata: TmdbEpisodeMetadata | undefined):
     runtime: metadata.runtime,
     rating: metadata.rating,
     stillPath: metadata.stillPath,
-    stillUrl: metadata.stillUrl,
+    stillUrl: sanitizeMetadataUrl(metadata.stillUrl),
     scrapedAt: metadata.scrapedAt,
   }
+}
+
+function safeProviderPath(value: string | undefined): string | null {
+  if (!value || isLikelySensitiveProviderPath(value))
+    return null
+  try {
+    return normalizeProviderPath(value)
+  }
+  catch {
+    return null
+  }
+}
+
+function sanitizeMetadataUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed)
+    return undefined
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:')
+      return undefined
+    if (url.username || url.password)
+      return undefined
+    if (hasSensitiveUrlQuery(url))
+      return undefined
+    return url.toString()
+  }
+  catch {
+    return undefined
+  }
+}
+
+function hasSensitiveUrlQuery(url: URL): boolean {
+  for (const key of url.searchParams.keys()) {
+    if (isSensitiveUrlQueryKey(key))
+      return true
+  }
+  return false
+}
+
+function isSensitiveUrlQueryKey(key: string): boolean {
+  const normalized = key.toLowerCase()
+  return ['api_key', 'apikey', 'access_key', 'access-token', 'access_token', 'authorization', 'cookie', 'expires', 'exp', 'passkey', 'password', 'passwd', 'pwd', 'security-token', 'sig', 'sign', 'signature', 'token'].includes(normalized)
+    || normalized.includes('token')
+    || normalized.includes('signature')
+    || normalized.includes('credential')
 }
 
 function sanitizeCategoryAssignment(assignment: RawCategoryAssignment | undefined): RawCategoryAssignment | undefined {

@@ -218,6 +218,83 @@ const nextCache = applyRawManualArtworkOverride(cache, {
 saveRawSourceScanCache(nextCache)
 ```
 
+### Raw File Source Home Aggregation Contract
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing Home aggregation, raw scan cache mapping, OpenList/Alist `getHomeSections`, raw series detail recovery, or raw-source playback context.
+- Applies to OpenList/Alist now and must be reusable for future CloudDrive2/local raw file sources.
+
+#### 2. Signatures
+- `createRawSourceHomeSections(cache, sourceName): HomeSection[]` maps local raw scan cache to aggregate Home sections.
+- `getRawScannedMediaDetail(cache, id): MediaDetail | null` recovers virtual raw movie/series details for detail pages.
+- `listRawScannedChildren(cache, id): MediaItem[] | null` recovers virtual series seasons and season episodes.
+- Raw virtual container IDs use internal prefixes such as `raw-series:` and `raw-season:`; playable items keep provider paths as `MediaItem.id`.
+
+#### 3. Contracts
+- Home may include only raw scan items where `RawScrapedMediaItem.matchStatus === 'matched'` and `metadata` exists with `mediaType: 'movie' | 'tv'`.
+- Unmatched, failed, skipped, not-configured, unresolved, or metadata-less candidates must not enter Home hero/latest rows; keep them in the source page and `未识别`.
+- TV entries must aggregate to one `series` Home item with season/episode children recoverable through the DataSource `list`/`getDetail` path. The virtual series/season IDs are not playable stream IDs.
+- Playback must request stream URLs only for concrete provider-path movie/file/episode items. Never call `getStreamURL` on raw virtual series/season IDs except to return a user-safe error.
+- Home aggregation should merge hero/latest items across sources and keep source failures isolated. A broken OpenList/Alist cache or unavailable provider must not hide Emby/Jellyfin/local continue-watching rows.
+- Raw scan cache sanitization must drop URL-like or tokenized provider paths, redact sensitive log text, and drop metadata image URLs with embedded credentials or sensitive query keys before those values can reach Home, detail context, playback queue, or history.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| matched raw movie with metadata | Eligible for latest and hero if artwork/overview quality is sufficient |
+| matched raw TV episodes with metadata | Aggregate to one virtual series item with seasons/episodes |
+| raw item has `notConfigured`/`notFound`/`failed`/`skipped` | Exclude from Home |
+| raw cache has tokenized provider URL or sensitive query path | Drop the record/candidate/scraped item from sanitized cache |
+| metadata image URL contains credentials or token/signature query | Drop that image URL before Home/detail mapping |
+| `getDetail(raw-series:...)` | Return local virtual series detail from cache or a safe unavailable error |
+| `getStreamURL(raw-series:...)` / `getStreamURL(raw-season:...)` | Reject with a safe error; user must choose a concrete episode |
+| OpenList/Alist Home mapping throws | Return no raw sections and keep other sources visible |
+
+#### 5. Good/Base/Bad Cases
+- Good: Emby and OpenList/Alist both have hero-capable items; Home shows one merged hero row and latest row containing both source IDs.
+- Good: A raw series from OpenList appears in Home, opens a series detail page with season children, and plays a concrete episode path.
+- Base: OpenList has only unmatched candidates; source page still shows `未识别`, but Home gets no raw items.
+- Bad: A raw scan failure replaces Home with empty state or removes Emby rows.
+- Bad: A signed `/d/...?...sign=...` URL or credential-bearing image URL is persisted into local cache or Home item data.
+
+#### 6. Tests Required
+- `npm run verify:home-fault-isolation` should assert matched OpenList/Alist raw cache enters hero/latest, unmatched raw cache does not enter Home, mixed Emby/OpenList rows merge, virtual series detail/list recovery works, concrete episode playback IDs remain provider paths, and sensitive URLs are stripped.
+- `npm run verify:scraper` should continue to cover raw display mapping, manual identification, and episode metadata behavior.
+- `npm run verify:raw-source-index-scheduler` should continue to prove background raw indexing failures are isolated.
+- `npm run typecheck`, `npm run lint`, and `npm run build` must pass after Home/DataSource/scraper contract changes.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+const items = cache.candidates.map(candidate => toRawScannedMediaItem(candidate, undefined, 'unresolved'))
+return [{ type: 'recentlyAdded', items }]
+```
+
+Correct:
+```ts
+const matched = cache.candidates
+  .map(candidate => [candidate, scrapedByRecordId.get(candidate.record.id)] as const)
+  .filter(([, scraped]) => scraped?.matchStatus === 'matched' && scraped.metadata)
+return createRawSourceHomeSectionsFromMatched(matched)
+```
+
+Wrong:
+```ts
+async getStreamURL(id: string) {
+  return this.buildDownloadUrl(id, undefined)
+}
+```
+
+Correct:
+```ts
+async getStreamURL(id: string) {
+  if (isRawScannedSyntheticId(id))
+    throw new Error('请选择具体分集。')
+  return this.buildDownloadUrl(this.resolveLibraryPath(id), sign)
+}
+```
+
 ---
 
 ## Validation
