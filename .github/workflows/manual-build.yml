@@ -14,13 +14,13 @@ on:
           - hub
           - all
       platform:
-        description: "构建平台 (仅 Player 生效)"
+        description: "构建平台 (仅 Player 生效，Windows 使用 GNU cross-build)"
         required: false
         type: choice
         options:
           - all
           - ubuntu-latest
-          - windows-latest
+          - windows-gnu
           - macos-latest
         default: all
 
@@ -149,14 +149,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - ${{ inputs.platform == 'all' && 'ubuntu-latest' || inputs.platform }}
-          - ${{ inputs.platform == 'all' && 'windows-latest' || 'skip' }}
-          - ${{ inputs.platform == 'all' && 'macos-latest' || 'skip' }}
+        target:
+          - ${{ inputs.platform == 'all' && 'linux' || inputs.platform == 'ubuntu-latest' && 'linux' || 'skip' }}
+          - ${{ inputs.platform == 'all' && 'windows-gnu' || inputs.platform == 'windows-gnu' && 'windows-gnu' || 'skip' }}
+          - ${{ inputs.platform == 'all' && 'macos' || inputs.platform == 'macos-latest' && 'macos' || 'skip' }}
         exclude:
-          - platform: skip
+          - target: skip
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.target == 'macos' && 'macos-latest' || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: player
@@ -171,15 +171,27 @@ jobs:
           cache-dependency-path: player/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.target != 'windows-gnu'
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.target == 'windows-gnu'
+        with:
+          targets: x86_64-pc-windows-gnu
 
       - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libmpv-dev
 
+      - name: Install Windows cross-build dependencies
+        if: matrix.target == 'windows-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 nsis zip
+
       - name: Install dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.target == 'macos'
         run: brew install mpv
 
       - name: Rust cache
@@ -194,21 +206,29 @@ jobs:
         run: npm run build
 
       - name: Build Tauri
+        if: matrix.target != 'windows-gnu'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: player
 
+      - name: Prepare Windows libmpv runtime
+        if: matrix.target == 'windows-gnu'
+        run: npm run setup:libmpv -- windows
+
+      - name: Build Windows GNU installer
+        if: matrix.target == 'windows-gnu'
+        run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: player-${{ matrix.platform }}
+          name: ${{ matrix.target == 'linux' && 'player-ubuntu-latest' || matrix.target == 'windows-gnu' && 'player-windows-gnu' || 'player-macos-latest' }}
           path: |
             player/src-tauri/target/release/bundle/**/*.deb
             player/src-tauri/target/release/bundle/**/*.AppImage
-            player/src-tauri/target/release/bundle/**/*.msi
-            player/src-tauri/target/release/bundle/**/*.exe
             player/src-tauri/target/release/bundle/**/*.dmg
             player/src-tauri/target/release/bundle/**/*.app
+            player/src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*.exe
           retention-days: 30

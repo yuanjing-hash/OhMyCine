@@ -67,6 +67,65 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | Native file picker / dialog plugin change | Above plus `cargo check` and a `tauri dev` attempt when possible | Static checks prove integration; report partial verification if WSL graphics prevents native dialog/playback interaction |
 | DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows` when Player packaging is in scope | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
 
+## Scenario: Player Beta Release Packaging
+
+### 1. Scope / Trigger
+
+- Trigger: Any GitHub Actions or packaging change that publishes OhMyCine Player beta assets.
+- Scope: Windows GNU target beta releases that produce a GitHub prerelease, a Windows installer, and a portable zip.
+
+### 2. Signatures
+
+- Version input/tag: `vMAJOR.MINOR.BETA`, for example `v0.0.1`.
+- App version written into Player files: `MAJOR.MINOR.BETA` without the leading `v`.
+- Build command: `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`.
+- Target output root: `player/src-tauri/target/x86_64-pc-windows-gnu/release`.
+
+### 3. Contracts
+
+- Release workflow must mark GitHub Releases as prerelease/beta.
+- Release assets must include:
+  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-setup.exe`
+  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-portable.zip`
+  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64.sha256`
+- Portable zip must be curated from the release directory. Include only Windows runtime files such as `ohmycine-player.exe`, `WebView2Loader.dll`, `libmpv-wrapper.dll`, `libmpv-2.dll`, and license text.
+- Do not copy the whole `target/.../release` directory or the whole `target/.../release/lib` directory into the portable zip. Those folders can contain build intermediates or cross-platform resources unrelated to Windows runtime.
+
+### 4. Validation & Error Matrix
+
+- Invalid version format -> fail before install/build steps.
+- Missing `bundle/nsis/*setup.exe` -> fail packaging.
+- Missing `ohmycine-player.exe` or required Windows DLL -> fail portable packaging.
+- Existing GitHub prerelease for the same tag -> upload assets with clobber/update behavior rather than deleting the tag.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `v0.0.1` creates a prerelease with installer, portable zip, and checksum using the Windows GNU release directory.
+- Base: manual `workflow_dispatch` with `version=v0.0.2` creates the tag/release at the workflow commit.
+- Bad: zip contains `deps/`, `.fingerprint/`, `incremental/`, Linux `.so`, or macOS `.dylib` files.
+
+### 6. Tests Required
+
+- Parse workflow YAML and run bash syntax checks for embedded run blocks.
+- Rehearse the packaging script against an existing `target/x86_64-pc-windows-gnu/release` directory when available.
+- Run `cargo check --target x86_64-pc-windows-gnu`; run full `npm run tauri:build:windows` when local Node/npm and cross-build dependencies are available.
+- Document local environment limitations when npm lint/build cannot run.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```bash
+zip -r player-portable.zip player/src-tauri/target/x86_64-pc-windows-gnu/release
+```
+
+#### Correct
+
+```bash
+cp ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll portable/
+zip -r OhMyCine-Player-v0.0.1-windows-x64-portable.zip portable/
+```
+
 For Emby/Jellyfin/OpenList/Alist/CloudDrive2 source work, also review:
 
 - Settings data-source management flow: list, empty add state, type selection, provider-specific fields, cancel/add/save, edit, delete, enable/disable, and browse actions.

@@ -800,7 +800,41 @@ PATCH: 向后兼容的 Bug 修复
 5. CI 自动构建并发布
 6. 合并回 `develop`
 
-### 7.3 Docker 镜像
+### 7.3 Player Beta 自动发版
+
+Player beta 版本使用 `vMAJOR.MINOR.BETA` 规则：
+
+```text
+v0.0.1  # 0.0 阶段第 1 个 beta
+v0.0.2  # 0.0 阶段第 2 个 beta
+v0.1.1  # 0.1 阶段第 1 个 beta
+```
+
+推送 `v*.*.*` tag 或手动触发 `Player Beta Release` workflow 时，CI 会：
+
+1. 将 Player 的 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 临时同步为 tag 版本号
+2. 使用 Windows GNU target 构建 NSIS 安装包
+3. 从 `player/src-tauri/target/x86_64-pc-windows-gnu/release` 整理 portable zip
+4. 创建 GitHub prerelease，并上传安装包、portable zip 和 SHA-256 校验文件
+
+示例：
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```
+
+普通 `Player CI` 和 `Manual Build` 中的 Player Windows 构建也使用同一条 GNU cross-build 链路：
+
+```bash
+cd player
+npm run setup:libmpv -- windows
+RUSTC="$(rustup which rustc)" npm run tauri:build:windows
+```
+
+因此 CI 不再依赖 `windows-latest`/MSVC 来构建 Windows Player 包；Windows 桌面运行、签名和真实播放仍需要在 Windows 宿主环境最终验证。
+
+### 7.4 Docker 镜像
 
 ```dockerfile
 # 多阶段构建

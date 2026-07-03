@@ -1,0 +1,353 @@
+name: Player Beta Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Beta version tag, for example v0.0.1"
+        required: true
+        default: "v0.0.1"
+      release_notes:
+        description: "Optional extra release notes"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    tags:
+      - "v*.*.*"
+    paths:
+      - ".github/workflows/player-beta-release.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/player-beta-release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: player-beta-release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate workflow dry-run
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate workflow guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/player-beta-release.yml')
+          text = workflow.read_text()
+          manual_version_env = 'WORKFLOW_INPUT_VERSION: ' + '$' + '{{ inputs.version }}'
+          forbidden_direct_version = 'raw_version="' + '$' + '{{ inputs.version }}"'
+
+          required = {
+              'release job is gated to manual dispatch or tag push': "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')" in text,
+              'manual version reaches bash through env': manual_version_env in text,
+              'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
+              'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
+              'Windows GNU build uses rustup rustc': 'RUSTC="$(rustup which rustc)" npm run tauri:build:windows' in text,
+              'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
+          }
+
+          failed = [name for name, ok in required.items() if not ok]
+          if failed:
+              for name in failed:
+                  print(f'::error::{name}')
+              raise SystemExit(1)
+
+          if forbidden_direct_version in text:
+              print('::error::inputs.version must not be interpolated directly into a bash run block')
+              raise SystemExit(1)
+          PY
+
+      - name: Dry-run valid beta version parser
+        env:
+          WORKFLOW_EVENT_NAME: workflow_dispatch
+          WORKFLOW_INPUT_VERSION: v0.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
+            raw_version="${WORKFLOW_INPUT_VERSION:-}"
+          else
+            raw_version="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like v0.0.1 or 0.0.1."
+            exit 1
+          fi
+
+          app_version="${raw_version#v}"
+          tag_name="v${app_version}"
+          asset_prefix="OhMyCine-Player-${tag_name}-windows-x64"
+
+          test "$app_version" = "0.0.1"
+          test "$tag_name" = "v0.0.1"
+          test "$asset_prefix" = "OhMyCine-Player-v0.0.1-windows-x64"
+
+      - name: Dry-run invalid beta version rejection
+        env:
+          WORKFLOW_EVENT_NAME: workflow_dispatch
+          WORKFLOW_INPUT_VERSION: beta/0.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          raw_version="${WORKFLOW_INPUT_VERSION:-}"
+          if [[ "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version unexpectedly passed validation."
+            exit 1
+          fi
+
+  release-windows-gnu:
+    name: Build and publish Windows beta
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      TARGET: x86_64-pc-windows-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        env:
+          WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
+            raw_version="${WORKFLOW_INPUT_VERSION:-}"
+          else
+            raw_version="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like v0.0.1 or 0.0.1."
+            exit 1
+          fi
+
+          app_version="${raw_version#v}"
+          tag_name="v${app_version}"
+          asset_prefix="OhMyCine-Player-${tag_name}-windows-x64"
+
+          {
+            echo "app_version=${app_version}"
+            echo "tag_name=${tag_name}"
+            echo "asset_prefix=${asset_prefix}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "APP_VERSION=${app_version}"
+            echo "TAG_NAME=${tag_name}"
+            echo "ASSET_PREFIX=${asset_prefix}"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: player/package-lock.json
+
+      - name: Sync Player version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require('node:fs')
+
+          const version = process.env.APP_VERSION
+          if (!version)
+            throw new Error('APP_VERSION is required')
+
+          function writeJson(path, update) {
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'))
+            update(data)
+            fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`)
+          }
+
+          writeJson('player/package.json', data => {
+            data.version = version
+          })
+
+          writeJson('player/package-lock.json', data => {
+            data.version = version
+            if (data.packages?.[''])
+              data.packages[''].version = version
+          })
+
+          writeJson('player/src-tauri/tauri.conf.json', data => {
+            data.version = version
+          })
+
+          const cargoPath = 'player/src-tauri/Cargo.toml'
+          const cargo = fs.readFileSync(cargoPath, 'utf8')
+          const updatedCargo = cargo.replace(/^version = "[^"]+"/m, `version = "${version}"`)
+          if (updatedCargo === cargo)
+            throw new Error('Could not update Cargo.toml package version')
+          fs.writeFileSync(cargoPath, updatedCargo)
+          NODE
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install Windows cross-build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 nsis zip
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: player/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: player
+        run: npm ci
+
+      - name: Prepare Windows libmpv runtime
+        working-directory: player
+        run: npm run setup:libmpv -- windows
+
+      - name: Build Windows GNU installer
+        working-directory: player
+        run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows
+
+      - name: Package release assets
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_dir="player/src-tauri/target/${TARGET}/release"
+          bundle_dir="${release_dir}/bundle/nsis"
+          dist_dir="dist/player-beta"
+          portable_root="dist/portable"
+          portable_dir="${portable_root}/${ASSET_PREFIX}"
+          setup_asset="${ASSET_PREFIX}-setup.exe"
+          portable_asset="${ASSET_PREFIX}-portable.zip"
+          checksum_asset="${ASSET_PREFIX}.sha256"
+
+          test -d "$release_dir"
+          test -d "$bundle_dir"
+          mkdir -p "$dist_dir" "$portable_dir"
+
+          setup_source="$(find "$bundle_dir" -maxdepth 1 -type f -name '*setup.exe' | sort | head -n 1)"
+          if [[ -z "$setup_source" ]]; then
+            echo "::error::No NSIS setup executable found under ${bundle_dir}."
+            exit 1
+          fi
+          cp "$setup_source" "${dist_dir}/${setup_asset}"
+
+          for file in ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll; do
+            if [[ ! -f "${release_dir}/${file}" ]]; then
+              echo "::error::Required portable file is missing: ${release_dir}/${file}"
+              exit 1
+            fi
+            cp "${release_dir}/${file}" "${portable_dir}/${file}"
+          done
+
+          if [[ -f "player/src-tauri/lib/LICENSE" ]]; then
+            cp "player/src-tauri/lib/LICENSE" "${portable_dir}/THIRD-PARTY-LICENSES.txt"
+          fi
+
+          (cd "$portable_root" && zip -r "../player-beta/${portable_asset}" "${ASSET_PREFIX}")
+          (cd "$dist_dir" && sha256sum "$setup_asset" "$portable_asset" > "$checksum_asset")
+
+          {
+            echo "dist_dir=${dist_dir}"
+            echo "setup_asset=${dist_dir}/${setup_asset}"
+            echo "portable_asset=${dist_dir}/${portable_asset}"
+            echo "checksum_asset=${dist_dir}/${checksum_asset}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        env:
+          EXTRA_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes || '' }}
+          WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/player-beta
+          {
+            echo "OhMyCine Player ${TAG_NAME} beta release."
+            echo
+            echo "Version rule: the first two numbers represent the product version stage, and the last number is the beta iteration."
+            echo
+            echo "Assets:"
+            echo "- Windows x64 NSIS installer"
+            echo "- Windows x64 portable zip"
+            echo "- SHA-256 checksums"
+            if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" && -n "${EXTRA_RELEASE_NOTES:-}" ]]; then
+              echo
+              echo "Extra notes:"
+              printf '%s\n' "$EXTRA_RELEASE_NOTES"
+            fi
+          } > dist/player-beta/release-notes.md
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.asset_prefix }}
+          path: |
+            ${{ steps.package.outputs.setup_asset }}
+            ${{ steps.package.outputs.portable_asset }}
+            ${{ steps.package.outputs.checksum_asset }}
+          retention-days: 30
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          assets=(
+            "${{ steps.package.outputs.setup_asset }}"
+            "${{ steps.package.outputs.portable_asset }}"
+            "${{ steps.package.outputs.checksum_asset }}"
+          )
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+            gh release edit "$TAG_NAME" \
+              --title "OhMyCine Player ${TAG_NAME} Beta" \
+              --notes-file dist/player-beta/release-notes.md \
+              --prerelease
+          else
+            gh release create "$TAG_NAME" "${assets[@]}" \
+              --title "OhMyCine Player ${TAG_NAME} Beta" \
+              --notes-file dist/player-beta/release-notes.md \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --latest=false
+          fi

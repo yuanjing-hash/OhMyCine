@@ -13,7 +13,7 @@ on:
       - ".github/workflows/player.yml"
 
 jobs:
-  lint-and-typecheck:
+  quality:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,14 +37,41 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Build frontend
+        run: npm run build
+
+      - name: Verify scraper classification
+        run: npm run verify:scraper
+
+      - name: Verify OpenList/Alist auth recovery
+        run: npm run verify:alist-auth-recovery
+
+      - name: Verify home fault isolation
+        run: npm run verify:home-fault-isolation
+
+      - name: Verify raw source index scheduler
+        run: npm run verify:raw-source-index-scheduler
+
+      - name: Verify TMDB auth routing
+        run: npm run verify:tmdb-auth
+
   build:
-    needs: lint-and-typecheck
+    needs: quality
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - target: linux
+            runner: ubuntu-latest
+            artifact: player-ubuntu-latest
+          - target: windows-gnu
+            runner: ubuntu-latest
+            artifact: player-windows-gnu
+          - target: macos
+            runner: macos-latest
+            artifact: player-macos-latest
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: player
@@ -59,15 +86,27 @@ jobs:
           cache-dependency-path: player/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.target != 'windows-gnu'
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.target == 'windows-gnu'
+        with:
+          targets: x86_64-pc-windows-gnu
 
       - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libmpv-dev
 
+      - name: Install Windows cross-build dependencies
+        if: matrix.target == 'windows-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 nsis zip
+
       - name: Install dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.target == 'macos'
         run: brew install mpv
 
       - name: Rust cache
@@ -82,21 +121,29 @@ jobs:
         run: npm run build
 
       - name: Build Tauri
+        if: matrix.target != 'windows-gnu'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: player
 
+      - name: Prepare Windows libmpv runtime
+        if: matrix.target == 'windows-gnu'
+        run: npm run setup:libmpv -- windows
+
+      - name: Build Windows GNU installer
+        if: matrix.target == 'windows-gnu'
+        run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: player-${{ matrix.platform }}
+          name: ${{ matrix.artifact }}
           path: |
             player/src-tauri/target/release/bundle/**/*.deb
             player/src-tauri/target/release/bundle/**/*.AppImage
-            player/src-tauri/target/release/bundle/**/*.msi
-            player/src-tauri/target/release/bundle/**/*.exe
             player/src-tauri/target/release/bundle/**/*.dmg
             player/src-tauri/target/release/bundle/**/*.app
+            player/src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*.exe
           retention-days: 30
