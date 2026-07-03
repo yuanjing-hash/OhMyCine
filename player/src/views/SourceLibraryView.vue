@@ -1684,9 +1684,6 @@ function labelForSourceType(type: string): string {
                   <h2 class="text-xl font-bold text-white">
                     媒体库
                   </h2>
-                  <p class="mt-1 text-sm text-white/38">
-                    本地海报墙整理完成后，会在这里显示分类海报墙。
-                  </p>
                 </div>
               </div>
 
@@ -1707,9 +1704,6 @@ function labelForSourceType(type: string): string {
                   <h2 class="text-xl font-bold text-white">
                     媒体库
                   </h2>
-                  <p class="mt-1 text-sm text-white/38">
-                    标准目录优先使用路径分类；非标准或无路径分类时再按 TMDB 分类规则兜底。
-                  </p>
                 </div>
               </div>
 
