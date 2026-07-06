@@ -120,6 +120,14 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Prepare Linux libmpv runtime
+        if: matrix.target == 'linux'
+        run: npm run setup:libmpv -- linux
+
+      - name: Prepare macOS libmpv runtime
+        if: matrix.target == 'macos'
+        run: npm run setup:libmpv -- macos macos-arm64
+
       - name: Build Tauri
         if: matrix.target != 'windows-gnu'
         uses: tauri-apps/tauri-action@v0

@@ -67,6 +67,13 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | Native file picker / dialog plugin change | Above plus `cargo check` and a `tauri dev` attempt when possible | Static checks prove integration; report partial verification if WSL graphics prevents native dialog/playback interaction |
 | DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows` when Player packaging is in scope | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
 
+### Tauri Platform Resource Contract
+
+- Keep platform-specific runtime resources out of the shared `player/src-tauri/tauri.conf.json` `bundle.resources`. Tauri validates every declared resource during packaging, so a Windows GNU CI job that only ran `npm run setup:libmpv -- windows` must not require Linux `.so` or macOS `.dylib` files.
+- Declare runtime resources in `player/src-tauri/tauri.windows.conf.json`, `player/src-tauri/tauri.linux.conf.json`, and `player/src-tauri/tauri.macos.conf.json` so Tauri's platform config merge selects only the target platform's files.
+- Windows resources should include only Windows runtime files such as `lib/libmpv-2.dll`, `lib/libmpv-wrapper.dll`, and license text. Do not include `libmpv.dll.a`; it is a GNU link-time import library, not a runtime bundle resource.
+- Linux CI must run `npm run setup:libmpv -- linux` before native Tauri packaging so `lib/libmpv-wrapper.so` exists. macOS CI must run `npm run setup:libmpv -- macos macos-arm64` before packaging so both wrapper variants exist across runner architectures.
+
 ## Scenario: Player Beta Release Packaging
 
 ### 1. Scope / Trigger

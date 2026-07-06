@@ -18,11 +18,19 @@ on:
     paths:
       - ".github/workflows/player-beta-release.yml"
       - ".github/scripts/generate-player-beta-release-notes.py"
+      - "player/src-tauri/tauri.conf.json"
+      - "player/src-tauri/tauri.windows.conf.json"
+      - "player/src-tauri/tauri.linux.conf.json"
+      - "player/src-tauri/tauri.macos.conf.json"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/player-beta-release.yml"
       - ".github/scripts/generate-player-beta-release-notes.py"
+      - "player/src-tauri/tauri.conf.json"
+      - "player/src-tauri/tauri.windows.conf.json"
+      - "player/src-tauri/tauri.linux.conf.json"
+      - "player/src-tauri/tauri.macos.conf.json"
 
 permissions:
   contents: read
@@ -34,7 +42,6 @@ concurrency:
 jobs:
   validate:
     name: Validate workflow dry-run
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch')
     runs-on: ubuntu-latest
 
     steps:
@@ -47,6 +54,7 @@ jobs:
           set -euo pipefail
 
           python3 <<'PY'
+          import json
           from pathlib import Path
 
           workflow = Path('.github/workflows/player-beta-release.yml')
@@ -65,6 +73,40 @@ jobs:
               'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
               'manual extra notes reach generator through env': 'EXTRA_RELEASE_NOTES: $' + '{{ github.event_name == ' + "'workflow_dispatch'" + ' && inputs.release_notes || ' + "''" + ' }}' in text,
           }
+
+          tauri_configs = {
+              'base': Path('player/src-tauri/tauri.conf.json'),
+              'windows': Path('player/src-tauri/tauri.windows.conf.json'),
+              'linux': Path('player/src-tauri/tauri.linux.conf.json'),
+              'macos': Path('player/src-tauri/tauri.macos.conf.json'),
+          }
+          configs = {name: json.loads(path.read_text()) for name, path in tauri_configs.items()}
+          resources = {
+              name: config.get('bundle', {}).get('resources')
+              for name, config in configs.items()
+          }
+          expected_resources = {
+              'windows': {
+                  'lib/libmpv-2.dll': 'libmpv-2.dll',
+                  'lib/libmpv-wrapper.dll': 'libmpv-wrapper.dll',
+                  'lib/LICENSE': 'lib/LICENSE',
+              },
+              'linux': {
+                  'lib/libmpv-wrapper.so': 'lib/libmpv-wrapper.so',
+                  'lib/LICENSE': 'lib/LICENSE',
+              },
+              'macos': {
+                  'lib/libmpv-wrapper.dylib': 'lib/libmpv-wrapper.dylib',
+                  'lib/libmpv-wrapper-aarch64.dylib': 'lib/libmpv-wrapper-aarch64.dylib',
+                  'lib/LICENSE': 'lib/LICENSE',
+              },
+          }
+          required.update({
+              'shared Tauri config has no platform runtime resources': 'resources' not in configs['base'].get('bundle', {}),
+              'Windows Tauri resources are Windows-only': resources['windows'] == expected_resources['windows'],
+              'Linux Tauri resources are Linux-only': resources['linux'] == expected_resources['linux'],
+              'macOS Tauri resources include both wrapper architectures': resources['macos'] == expected_resources['macos'],
+          })
 
           failed = [name for name, ok in required.items() if not ok]
           if failed:
@@ -204,6 +246,7 @@ jobs:
 
   release-windows-gnu:
     name: Build and publish Windows beta
+    needs: validate
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:

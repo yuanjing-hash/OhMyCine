@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "lib/libmpv-2.dll": "libmpv-2.dll",
+      "lib/libmpv-wrapper.dll": "libmpv-wrapper.dll",
+      "lib/LICENSE": "lib/LICENSE"
+    }
+  }
+}

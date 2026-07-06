@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "lib/libmpv-wrapper.dylib": "lib/libmpv-wrapper.dylib",
+      "lib/libmpv-wrapper-aarch64.dylib": "lib/libmpv-wrapper-aarch64.dylib",
+      "lib/LICENSE": "lib/LICENSE"
+    }
+  }
+}

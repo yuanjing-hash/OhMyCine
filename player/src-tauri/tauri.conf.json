@@ -36,14 +36,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": {
-      "lib/libmpv-2.dll": "libmpv-2.dll",
-      "lib/libmpv-wrapper.dll": "libmpv-wrapper.dll",
-      "lib/libmpv-wrapper.so": "lib/libmpv-wrapper.so",
-      "lib/libmpv-wrapper.dylib": "lib/libmpv-wrapper.dylib",
-      "lib/libmpv-wrapper-aarch64.dylib": "lib/libmpv-wrapper-aarch64.dylib",
-      "lib/LICENSE": "lib/LICENSE"
-    }
+    ]
   }
 }
