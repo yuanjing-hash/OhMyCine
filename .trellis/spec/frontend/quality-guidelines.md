@@ -72,7 +72,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 ### 1. Scope / Trigger
 
 - Trigger: Any GitHub Actions or packaging change that publishes OhMyCine Player beta assets.
-- Scope: Windows GNU target beta releases that produce a GitHub prerelease, a Windows installer, and a portable zip.
+- Scope: Windows GNU target beta releases that produce a GitHub prerelease, release notes, a Windows installer, and a portable zip.
 
 ### 2. Signatures
 
@@ -84,6 +84,11 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 ### 3. Contracts
 
 - Release workflow must mark GitHub Releases as prerelease/beta.
+- Release notes must be generated from git history for the current beta tag. Prefer version-sorted semver-like tags; if no previous `v*.*.*` tag exists, include commits from the repository initial commit through the current release commit.
+- Release notes must group commit subjects by Conventional Commit type: `feat`, `fix`, `docs`, `ci`, `chore`, `refactor`, `test`, and `other`. Keep the original subject so scopes such as `feat(player): ...` remain visible.
+- Manual `workflow_dispatch.inputs.release_notes` may be appended only as an `Extra Notes` section; do not include it for tag-push releases.
+- Release notes must include the beta version rule, asset descriptions, and the SHA-256 checksum file description.
+- Release notes generation must not print secrets, tokens, signed URLs, or GitHub Actions environment dumps. It may use commit subjects and the explicit manual notes input only.
 - Release assets must include:
   - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-setup.exe`
   - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-portable.zip`
@@ -97,16 +102,22 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 - Missing `bundle/nsis/*setup.exe` -> fail packaging.
 - Missing `ohmycine-player.exe` or required Windows DLL -> fail portable packaging.
 - Existing GitHub prerelease for the same tag -> upload assets with clobber/update behavior rather than deleting the tag.
+- No previous release tag -> generate notes from initial commit through the current release commit.
+- Manual dispatch includes `release_notes` -> append them under `Extra Notes` after the generated commit groups.
+- Tag push release has no manual notes input -> omit the `Extra Notes` section.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: `v0.0.1` creates a prerelease with installer, portable zip, and checksum using the Windows GNU release directory.
+- Good: `v0.0.2` release notes use `v0.0.1..v0.0.2`, group commit subjects by type, preserve scopes, and append manual notes only for `workflow_dispatch`.
 - Base: manual `workflow_dispatch` with `version=v0.0.2` creates the tag/release at the workflow commit.
 - Bad: zip contains `deps/`, `.fingerprint/`, `incremental/`, Linux `.so`, or macOS `.dylib` files.
+- Bad: release notes dump `$GITHUB_ENV`, `$GH_TOKEN`, full environment output, signed playback URLs, or credential-like values from build steps.
 
 ### 6. Tests Required
 
 - Parse workflow YAML and run bash syntax checks for embedded run blocks.
+- Dry-run the release-notes generator against synthetic git history covering previous-tag range selection, no-previous-tag fallback, Conventional Commit grouping, manual `Extra Notes`, and omission of environment secrets.
 - Rehearse the packaging script against an existing `target/x86_64-pc-windows-gnu/release` directory when available.
 - Run `cargo check --target x86_64-pc-windows-gnu`; run full `npm run tauri:build:windows` when local Node/npm and cross-build dependencies are available.
 - Document local environment limitations when npm lint/build cannot run.

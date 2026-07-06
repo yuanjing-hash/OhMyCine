@@ -815,7 +815,16 @@ v0.1.1  # 0.1 阶段第 1 个 beta
 1. 将 Player 的 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 临时同步为 tag 版本号
 2. 使用 Windows GNU target 构建 NSIS 安装包
 3. 从 `player/src-tauri/target/x86_64-pc-windows-gnu/release` 整理 portable zip
-4. 创建 GitHub prerelease，并上传安装包、portable zip 和 SHA-256 校验文件
+4. 自动生成 GitHub Release notes
+5. 创建 GitHub prerelease，并上传安装包、portable zip 和 SHA-256 校验文件
+
+Beta Release notes 规则：
+
+- CI 按版本排序查找当前 tag 之前的上一个 `v*.*.*` tag；如果没有上一个 tag，则从仓库初始提交统计到当前提交。
+- Commit 只使用 subject 生成 Markdown，并按 Conventional Commit type 粗略分组：`feat`、`fix`、`docs`、`ci`、`chore`、`refactor`、`test`、`other`；scope 保留在条目里。
+- 手动触发时如果填写 `release_notes`，CI 会作为 `Extra Notes` 附加到自动日志中。
+- Release notes 保留 beta 版本规则、资产说明和 SHA-256 校验文件说明。
+- 生成逻辑不输出 secret、token 或 GitHub Actions 环境变量；不要在 commit subject 或手动补充说明中写入敏感信息。
 
 示例：
 
@@ -870,18 +879,7 @@ CMD ["./server"]
 
 ### 8.3 CHANGELOG
 
-```markdown
-# Changelog
-
-## [1.2.0] - 2026-08-15
-
-### Added
-- 追更引擎: 自动追踪剧集更新
-- 夸克网盘驱动支持
-
-### Changed
-- 优化 302 代理缓存策略
-
-### Fixed
-- 修复 Emby 刷新通知失败的问题
-```
+- 仓库根目录的 `CHANGELOG.md` 记录版本策略和人工维护的正式发布摘要。
+- Player beta 的 GitHub Release notes 由 CI 从 tag/commit 自动生成，不需要人工把每个 beta 的 commit 清单复制进 `CHANGELOG.md`。
+- 正式版发布时，再把相关 beta 的用户可见变化汇总到 `CHANGELOG.md`。
+- 不要在 changelog、release notes、commit subject 或手动补充说明中写入 API key、cookie、token、passkey、下载器密码、AI key 或带签名参数的播放 URL。

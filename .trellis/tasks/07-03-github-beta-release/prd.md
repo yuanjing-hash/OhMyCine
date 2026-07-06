@@ -40,6 +40,9 @@
 * Player CI 保留并显式运行 `lint`、`typecheck`、`build`，以及现有 scraper/auth/fault-isolation/index-scheduler/TMDB verify 脚本。
 * Beta release workflow 需要有 PR/branch push 的 dry-run/validate 路径，验证版本解析和脚本结构，但不执行 `gh release` 发布。
 * `workflow_dispatch.inputs.version` 不直接插入 bash run block，必须先通过环境变量传入再读取。
+* Beta release workflow 需要自动生成 GitHub Release notes：查找当前 tag 之前的上一个 `v*.*.*` tag，没有上一个 tag 时从仓库初始提交开始；将范围内 commit subject 按 `feat`、`fix`、`docs`、`ci`、`chore`、`refactor`、`test`、`other` 分组；手动触发时将 `release_notes` 作为 `Extra Notes` 附加。
+* Release notes 需要保留 beta 版本规则、安装包/portable zip/校验文件说明，且生成逻辑不得输出 secret 或 GitHub Actions 环境变量。
+* 仓库根目录需要 `CHANGELOG.md` 记录版本策略：beta notes 由 CI 自动生成，正式版未来汇总 beta，不伪造尚未发布的版本内容。
 
 ## Acceptance Criteria (evolving)
 
@@ -55,6 +58,10 @@
 * [x] 普通 Player CI 显式运行 Player 关键质量门和 verify 脚本。
 * [x] Beta workflow 增加不发布 GitHub Release 的 dry-run/validate 路径。
 * [x] Beta workflow 的手动 version 输入通过 env 传入 bash，避免直接插入 run block。
+* [x] Beta workflow 自动生成 commit/tag 驱动的 GitHub Release notes。
+* [x] 手动 `release_notes` 输入会作为 `Extra Notes` 附加到自动日志。
+* [x] Dry-run validate 覆盖 release notes 生成的 tag 范围、分组、手动说明和不输出敏感环境变量名等 guardrail。
+* [x] 新增 `CHANGELOG.md`，记录 beta/stable changelog 策略，并把具体 beta 发布内容留给 CI Release notes。
 
 ## Definition of Done (team quality bar)
 
@@ -66,7 +73,8 @@
 ## Out of Scope (explicit)
 
 * 不实现稳定版正式 release 自动化。
-* 不实现自动递增版本号或 changelog 生成。
+* 不实现自动递增版本号。
+* 不实现正式版 changelog 自动汇总；正式版未来从已发布 beta 中人工汇总用户可见变化。
 * 不实现代码签名、公证、Windows 证书签名。
 * 不实现 macOS/Linux release 资产。
 * 不调整 Player 产品代码和播放能力。
@@ -103,3 +111,9 @@
   * `.github/workflows/manual-build.yml` exposes `windows-gnu` instead of `windows-latest` for Player manual builds.
   * Both ordinary CI and manual Windows Player builds run `npm run setup:libmpv -- windows` before `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`.
   * `.github/workflows/player-beta-release.yml` now separates dry-run validation from actual prerelease publishing; PR/branch push validation does not call `gh release`.
+* Release notes update:
+  * Added `.github/scripts/generate-player-beta-release-notes.py` as the shared generator used by release publishing and dry-run validation.
+  * The generator selects the previous semver-like tag by version order and reachability; if none exists, it logs from the initial commit to the release commit.
+  * Commit subjects are grouped by Conventional Commit type while preserving the original subject/scope in each entry.
+  * Manual `workflow_dispatch.inputs.release_notes` is appended only for manual releases.
+  * `CHANGELOG.md` now documents the beta/stable changelog policy without claiming that `v0.0.1` has already shipped.

@@ -72,8 +72,8 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] Docker 构建 CI: `docker build`
 - [ ] Docker 镜像推送: GHCR / Docker Hub
-- [ ] Release CI: tag 触发 GitHub Releases
-- [ ] 自动生成 changelog
+- [~] Release CI: Player beta 已支持 tag/manual GitHub prerelease；正式版和其他组件后置
+- [~] 自动生成 changelog/release notes: Player beta 已由 CI 从 tag/commit 生成；正式版汇总后置
 - [ ] 自动上传正式安装包和二进制文件
 
 ### 0.3 开发环境

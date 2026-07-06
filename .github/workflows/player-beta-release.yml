@@ -17,10 +17,12 @@ on:
       - "v*.*.*"
     paths:
       - ".github/workflows/player-beta-release.yml"
+      - ".github/scripts/generate-player-beta-release-notes.py"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/player-beta-release.yml"
+      - ".github/scripts/generate-player-beta-release-notes.py"
 
 permissions:
   contents: read
@@ -59,6 +61,9 @@ jobs:
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
               'Windows GNU build uses rustup rustc': 'RUSTC="$(rustup which rustc)" npm run tauri:build:windows' in text,
               'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
+              'release notes generator is used': 'python3 .github/scripts/generate-player-beta-release-notes.py' in text,
+              'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
+              'manual extra notes reach generator through env': 'EXTRA_RELEASE_NOTES: $' + '{{ github.event_name == ' + "'workflow_dispatch'" + ' && inputs.release_notes || ' + "''" + ' }}' in text,
           }
 
           failed = [name for name, ok in required.items() if not ok]
@@ -98,6 +103,90 @@ jobs:
           test "$app_version" = "0.0.1"
           test "$tag_name" = "v0.0.1"
           test "$asset_prefix" = "OhMyCine-Player-v0.0.1-windows-x64"
+
+      - name: Dry-run release notes generator
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          script_path="${PWD}/.github/scripts/generate-player-beta-release-notes.py"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          export GIT_AUTHOR_NAME="OhMyCine CI"
+          export GIT_AUTHOR_EMAIL="ci@ohmycine.local"
+          export GIT_COMMITTER_NAME="OhMyCine CI"
+          export GIT_COMMITTER_EMAIL="ci@ohmycine.local"
+
+          (
+            cd "$tmp_dir"
+            git init -q
+            git symbolic-ref HEAD refs/heads/main
+
+            empty_tree="$(git mktree </dev/null)"
+            commit_one="$(printf '%s\n\n' 'chore(repo): 初始化项目' | git commit-tree "$empty_tree")"
+            git update-ref refs/heads/main "$commit_one"
+            git tag v0.0.1 "$commit_one"
+
+            commit_two="$(printf '%s\n\n' 'feat(player): 添加海报墙入口' | git commit-tree "$empty_tree" -p "$commit_one")"
+            git update-ref refs/heads/main "$commit_two"
+            commit_three="$(printf '%s\n\n' 'fix(player): 修复便携包校验' | git commit-tree "$empty_tree" -p "$commit_two")"
+            git update-ref refs/heads/main "$commit_three"
+            commit_four="$(printf '%s\n\n' 'docs: 更新 beta 发版说明' | git commit-tree "$empty_tree" -p "$commit_three")"
+            git update-ref refs/heads/main "$commit_four"
+            commit_five="$(printf '%s\n\n' 'build: 调整临时构建脚本' | git commit-tree "$empty_tree" -p "$commit_four")"
+            git update-ref refs/heads/main "$commit_five"
+
+            TAG_NAME=v0.0.2 \
+              ASSET_PREFIX=OhMyCine-Player-v0.0.2-windows-x64 \
+              WORKFLOW_EVENT_NAME=workflow_dispatch \
+              EXTRA_RELEASE_NOTES='手动补充说明' \
+              OUTPUT_PATH=notes.md \
+              python3 "$script_path"
+
+            grep -Fq 'Range: `v0.0.1..v0.0.2`.' notes.md
+            grep -Fq '### feat' notes.md
+            grep -Fq -- '- feat(player): 添加海报墙入口 (' notes.md
+            grep -Fq '### fix' notes.md
+            grep -Fq '### docs' notes.md
+            grep -Fq '### other' notes.md
+            grep -Fq '## Extra Notes' notes.md
+            grep -Fq '手动补充说明' notes.md
+            grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64.sha256' notes.md
+            if grep -Eiq 'GITHUB_TOKEN|GH_TOKEN|GITHUB_ENV|SECRET|AUTHORIZATION|COOKIE|PASSKEY' notes.md; then
+              echo "::error::Release notes must not contain sensitive environment variable names."
+              exit 1
+            fi
+          )
+
+          (
+            cd "$tmp_dir"
+            rm -rf no-tags
+            mkdir no-tags
+            cd no-tags
+            git init -q
+            git symbolic-ref HEAD refs/heads/main
+
+            empty_tree="$(git mktree </dev/null)"
+            initial_commit="$(printf '%s\n\n' 'ci(player): 初始化 beta 校验' | git commit-tree "$empty_tree")"
+            git update-ref refs/heads/main "$initial_commit"
+
+            TAG_NAME=v0.0.1 \
+              WORKFLOW_EVENT_NAME=push \
+              EXTRA_RELEASE_NOTES='should not be included' \
+              OUTPUT_PATH=notes.md \
+              python3 "$script_path"
+
+            grep -Fq 'Range: `initial commit..v0.0.1`.' notes.md
+            grep -Fq '### ci' notes.md
+            if grep -Eiq 'GITHUB_TOKEN|GH_TOKEN|GITHUB_ENV|SECRET|AUTHORIZATION|COOKIE|PASSKEY' notes.md; then
+              echo "::error::Release notes must not contain sensitive environment variable names."
+              exit 1
+            fi
+            if grep -Fq '## Extra Notes' notes.md; then
+              echo "::error::Push/tag release notes must not include manual extra notes."
+              exit 1
+            fi
+          )
 
       - name: Dry-run invalid beta version rejection
         env:
@@ -289,30 +378,15 @@ jobs:
             echo "checksum_asset=${dist_dir}/${checksum_asset}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Write release notes
+      - name: Generate release notes
         env:
           EXTRA_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes || '' }}
           WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+          OUTPUT_PATH: dist/player-beta/release-notes.md
         shell: bash
         run: |
           set -euo pipefail
-
-          mkdir -p dist/player-beta
-          {
-            echo "OhMyCine Player ${TAG_NAME} beta release."
-            echo
-            echo "Version rule: the first two numbers represent the product version stage, and the last number is the beta iteration."
-            echo
-            echo "Assets:"
-            echo "- Windows x64 NSIS installer"
-            echo "- Windows x64 portable zip"
-            echo "- SHA-256 checksums"
-            if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" && -n "${EXTRA_RELEASE_NOTES:-}" ]]; then
-              echo
-              echo "Extra notes:"
-              printf '%s\n' "$EXTRA_RELEASE_NOTES"
-            fi
-          } > dist/player-beta/release-notes.md
+          python3 .github/scripts/generate-player-beta-release-notes.py
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

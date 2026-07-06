@@ -64,6 +64,10 @@ dist/
 # TypeScript
 *.tsbuildinfo
 
+# Python
+__pycache__/
+*.pyc
+
 # ====================
 # Rust / Tauri (player/src-tauri)
 # ====================
