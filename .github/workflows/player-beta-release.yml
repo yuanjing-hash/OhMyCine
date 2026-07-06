@@ -20,8 +20,6 @@ on:
       - ".github/scripts/generate-player-beta-release-notes.py"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
-      - "player/src-tauri/tauri.linux.conf.json"
-      - "player/src-tauri/tauri.macos.conf.json"
   pull_request:
     branches: [main]
     paths:
@@ -29,8 +27,6 @@ on:
       - ".github/scripts/generate-player-beta-release-notes.py"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
-      - "player/src-tauri/tauri.linux.conf.json"
-      - "player/src-tauri/tauri.macos.conf.json"
 
 permissions:
   contents: read
@@ -77,8 +73,6 @@ jobs:
           tauri_configs = {
               'base': Path('player/src-tauri/tauri.conf.json'),
               'windows': Path('player/src-tauri/tauri.windows.conf.json'),
-              'linux': Path('player/src-tauri/tauri.linux.conf.json'),
-              'macos': Path('player/src-tauri/tauri.macos.conf.json'),
           }
           configs = {name: json.loads(path.read_text()) for name, path in tauri_configs.items()}
           resources = {
@@ -91,21 +85,10 @@ jobs:
                   'lib/libmpv-wrapper.dll': 'libmpv-wrapper.dll',
                   'lib/LICENSE': 'lib/LICENSE',
               },
-              'linux': {
-                  'lib/libmpv-wrapper.so': 'lib/libmpv-wrapper.so',
-                  'lib/LICENSE': 'lib/LICENSE',
-              },
-              'macos': {
-                  'lib/libmpv-wrapper.dylib': 'lib/libmpv-wrapper.dylib',
-                  'lib/libmpv-wrapper-aarch64.dylib': 'lib/libmpv-wrapper-aarch64.dylib',
-                  'lib/LICENSE': 'lib/LICENSE',
-              },
           }
           required.update({
               'shared Tauri config has no platform runtime resources': 'resources' not in configs['base'].get('bundle', {}),
               'Windows Tauri resources are Windows-only': resources['windows'] == expected_resources['windows'],
-              'Linux Tauri resources are Linux-only': resources['linux'] == expected_resources['linux'],
-              'macOS Tauri resources include both wrapper architectures': resources['macos'] == expected_resources['macos'],
           })
 
           failed = [name for name, ok in required.items() if not ok]

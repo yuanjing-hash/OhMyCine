@@ -57,7 +57,7 @@ Phase 4: 生态系统           ████████████████
 - [~] Go 后端 CI: `go test ./...` + `go build` + `golangci-lint`
 - [~] CLI CI: `go test ./...` + `go build`
 - [~] Vue/Player 前端 CI: `eslint` + `vue-tsc --noEmit` + `vite build`
-- [~] Tauri 桌面构建 CI: Windows / macOS / Linux 构建测试包
+- [~] Tauri 桌面构建 CI: 当前只验证 Windows GNU 构建测试包；Linux/macOS Player 渲染器和打包链路完成后再接入 CI
 - [~] Hub 文档站 CI: VitePress build
 - [~] 上传 GitHub Actions Artifacts，方便下载本地测试
 
@@ -65,7 +65,7 @@ Phase 4: 生态系统           ████████████████
 
 - [~] `workflow_dispatch` 手动触发构建
 - [~] 支持选择构建组件: Player / Server / CLI / Hub
-- [~] 支持选择构建平台: Windows / macOS / Linux
+- [~] 支持选择构建平台: 当前 Player 手动构建只保留 Windows GNU；Linux/macOS 后续等渲染器完成后再接入
 - [~] 构建产物保留 7-30 天供测试下载
 
 #### 发布期 CI（后置）
@@ -117,7 +117,7 @@ Phase 4: 生态系统           ████████████████
 
 #### libmpv 嵌入集成
 
-- [~] 下载 libmpv 二进制库 (Windows/macOS/Linux；Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`；WSL Windows GNU cross-build 已通过，Windows 宿主透明叠层 + mpv 视频底层窗口播放已验证；macOS/Linux 打包与运行时仍待后续复验)
+- [~] 下载 libmpv 二进制库 (当前打包/CI 只启用 Windows GNU；Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`；WSL Windows GNU cross-build 已通过，Windows 宿主透明叠层 + mpv 视频底层窗口播放已验证；Linux/macOS 渲染器、runtime resources 与打包 CI 后续完成后再接入)
 - [x] 创建 `src-tauri/src/mpv/` 模块
 - [x] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
 - [x] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
@@ -127,7 +127,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
 - [x] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
 - [x] 配置 Cargo 依赖: 直接使用 `libmpv-sys = "3.1"` 绑定 libmpv C API
-- [~] 编写构建脚本: 自动下载对应平台的 libmpv 库，并为 Windows GNU 链接准备 import library
+- [~] 编写构建脚本: 当前 Windows GNU 路径已能下载运行时 DLL 并准备 import library；Linux/macOS 下载与打包接入后置到对应渲染器完成后
 
 #### Vue 侧播放器 Composable
 

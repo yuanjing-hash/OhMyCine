@@ -615,11 +615,7 @@ src-tauri/
 │   ├── plugins/             # Tauri Plugins
 │   │   └── mpv_plugin.rs
 │   └── utils/               # 工具函数
-├── libs/                    # libmpv 二进制库
-│   ├── windows-x64/
-│   ├── darwin-x64/
-│   ├── darwin-arm64/
-│   └── linux-x64/
+├── lib/                     # 当前只声明 Windows 运行期资源；macOS/Linux 渲染和打包后续完成后再接入
 ├── Cargo.toml
 ├── build.rs                 # 构建脚本
 └── tauri.conf.json
@@ -833,7 +829,9 @@ git tag v0.0.1
 git push origin v0.0.1
 ```
 
-普通 `Player CI` 和 `Manual Build` 中的 Player Windows 构建也使用同一条 GNU cross-build 链路：
+当前普通 `Player CI`、`Manual Build` 和 beta release 中的 Player 包构建只验证/发布 Windows GNU。Linux/macOS Player 渲染器和打包链路完成前，不把 Linux/macOS Player 包加入 CI 阻塞项。
+
+Windows GNU 构建使用同一条 cross-build 链路：
 
 ```bash
 cd player

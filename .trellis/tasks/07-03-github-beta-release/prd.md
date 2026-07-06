@@ -9,11 +9,11 @@
 * 用户希望 GitHub 自动编译 Player，并在 Release 中提供安装包和 `release` 程序目录打包 zip。
 * 版本语义约定为：`v0.0.1`、`v0.0.2`、`v0.0.3` 代表 beta 迭代；前两位代表当前产品版本阶段，最后一位代表 beta 序号。
 * GitHub Release 应标记为 beta/prerelease，即使 tag 形式是标准 `vX.Y.Z`。
-* 仓库已有 `.github/workflows/player.yml`，会在 Player 变更时跑 lint、typecheck、多平台 Tauri build，并上传构建 artifact。
+* 仓库已有 `.github/workflows/player.yml`，会在 Player 变更时跑 lint、typecheck、关键 verify 脚本，并在当前阶段只跑 Windows GNU Tauri package build。
 * 仓库已有 `.github/workflows/manual-build.yml`，支持手动构建各组件。
 * `player/package.json` 当前版本为 `0.1.0`，包含 `tauri:build:windows` 脚本：`tauri build --target x86_64-pc-windows-gnu --bundles nsis`。
 * `player/src-tauri/tauri.conf.json` 和 `player/src-tauri/Cargo.toml` 当前版本均为 `0.1.0`。
-* Tauri bundle 已声明 Windows 运行期资源：`libmpv-2.dll`、`libmpv-wrapper.dll` 等。
+* Tauri bundle 只声明 Windows 运行期资源：`libmpv-2.dll`、`libmpv-wrapper.dll` 等；Linux/macOS runtime resources 等对应渲染和打包链路完成后再接入。
 
 ## Assumptions (temporary)
 
@@ -35,8 +35,9 @@
 * 构建 Windows portable zip，包含可运行程序和必要资源。
 * Release 资产命名包含产品、版本、平台、架构和产物类型。
 * Release 标记为 prerelease/beta。
-* 普通 Player CI 的 Windows 包构建不再使用 `windows-latest`/MSVC Tauri build，统一使用 `ubuntu-latest` + `x86_64-pc-windows-gnu` + `npm run setup:libmpv -- windows` + `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`。
-* 手动 build workflow 中的 Player Windows 构建同样走 Windows GNU cross-build，避免重新引入 MSVC/libmpv 链路。
+* 普通 Player CI 的 Player package build 当前只保留 Windows GNU，不再使用 `windows-latest`/MSVC Tauri build，也不构建 Linux/macOS Player 包；统一使用 `ubuntu-latest` + `x86_64-pc-windows-gnu` + `npm run setup:libmpv -- windows` + `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`。
+* 手动 build workflow 中的 Player 构建同样只保留 Windows GNU cross-build，避免重新引入 MSVC/libmpv 链路或未完成的 Linux/macOS Player 包。
+* Linux/macOS Player 渲染链路和打包资源完成前，不把 Linux/macOS Player package build 加入普通 CI、手动构建或 beta release guardrail。
 * Player CI 保留并显式运行 `lint`、`typecheck`、`build`，以及现有 scraper/auth/fault-isolation/index-scheduler/TMDB verify 脚本。
 * Beta release workflow 需要有 PR/branch push 的 dry-run/validate 路径，验证版本解析和脚本结构，但不执行 `gh release` 发布。
 * `workflow_dispatch.inputs.version` 不直接插入 bash run block，必须先通过环境变量传入再读取。
@@ -53,8 +54,8 @@
 * [x] workflow 构建并上传 Windows portable zip。
 * [x] GitHub Release 使用对应 tag，标记为 prerelease，并附带安装包和 zip。
 * [x] 本地至少完成 workflow YAML 语法/结构检查，以及 Player 现有 lint/typecheck 能力范围内的验证。
-* [x] 普通 Player CI 的 Windows 包构建已切换为 Ubuntu 上的 Windows GNU cross-build。
-* [x] 手动 Player Windows build 已切换为同一 Windows GNU cross-build 路径。
+* [x] 普通 Player CI 的 Player 包构建已收敛为 Ubuntu 上的 Windows GNU cross-build。
+* [x] 手动 Player build 已收敛为同一 Windows GNU cross-build 路径。
 * [x] 普通 Player CI 显式运行 Player 关键质量门和 verify 脚本。
 * [x] Beta workflow 增加不发布 GitHub Release 的 dry-run/validate 路径。
 * [x] Beta workflow 的手动 version 输入通过 env 传入 bash，避免直接插入 run block。
@@ -76,7 +77,7 @@
 * 不实现自动递增版本号。
 * 不实现正式版 changelog 自动汇总；正式版未来从已发布 beta 中人工汇总用户可见变化。
 * 不实现代码签名、公证、Windows 证书签名。
-* 不实现 macOS/Linux release 资产。
+* 不实现 macOS/Linux release 资产，也不在当前阶段实现 Linux/macOS Player 普通 CI/手动包构建。
 * 不调整 Player 产品代码和播放能力。
 
 ## Technical Notes
@@ -107,9 +108,10 @@
   * Local validation covered YAML parsing, bash syntax checks for workflow run blocks, packaging script rehearsal against an existing Windows GNU release directory, direct `vue-tsc --noEmit`, and `cargo check --target x86_64-pc-windows-gnu`.
   * Local npm-based `lint`/`build` could not be completed because WSL only exposes Windows Node/npm; Windows npm fails on UNC working directories and Windows Node cannot use Linux-installed Rollup optional dependencies.
 * CI alignment update:
-  * `.github/workflows/player.yml` keeps Linux/macOS native Tauri builds, but replaces the Windows job with `player-windows-gnu` on `ubuntu-latest`.
-  * `.github/workflows/manual-build.yml` exposes `windows-gnu` instead of `windows-latest` for Player manual builds.
-  * Both ordinary CI and manual Windows Player builds run `npm run setup:libmpv -- windows` before `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`.
+  * `.github/workflows/player.yml` keeps the Player quality job and runs only the `player-windows-gnu` package job on `ubuntu-latest`.
+  * `.github/workflows/manual-build.yml` exposes only `windows-gnu` for Player manual builds.
+  * Both ordinary CI and manual Player builds run `npm run setup:libmpv -- windows` before `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`.
+  * Linux/macOS Player package builds and Tauri runtime resource configs are postponed until their renderers and packaging paths are implemented.
   * `.github/workflows/player-beta-release.yml` now separates dry-run validation from actual prerelease publishing; PR/branch push validation does not call `gh release`.
 * Release notes update:
   * Added `.github/scripts/generate-player-beta-release-notes.py` as the shared generator used by release publishing and dry-run validation.

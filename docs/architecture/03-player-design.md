@@ -6,7 +6,7 @@ OhMyCine Player 是一款**独立可用**的跨平台沉浸式家庭影院播放
 - **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2
 - **Cinema OS 风格 UI** — 液态玻璃设计语言，深色主题，电影感排版
 - **libmpv 引擎** — 全格式支持，硬件解码，HDR/Dolby Vision，沉浸式嵌入渲染
-- **全平台** — Windows, macOS, Linux (桌面), Android (移动)
+- **全平台目标** — 当前 Player MVP 先完成 Windows；macOS、Linux (桌面) 和 Android 渲染/打包链路作为后续平台目标保留
 - **Server 增强** — 可选连接 OhMyCine Server 获取 PT站点管理、自动下载、STRM生成等高级功能
 
 ## 2. 技术栈
@@ -2112,6 +2112,8 @@ impl MpvPlayer {
 
 ### 9.4 平台渲染后端
 
+下表描述目标平台方案。当前已验证的是 Windows MVP 渲染路径；macOS、Linux 和 Android 渲染后端及 Player 打包 CI 尚未完成，不作为当前 CI/release 阻塞项。
+
 | 平台 | 渲染后端 | 窗口嵌入方式 |
 |------|----------|-------------|
 | Windows | ANGLE (OpenGL ES → D3D11) | `HWND` 子窗口 |
@@ -2168,21 +2170,18 @@ libmpv-sys = "3.1"      # libmpv C FFI 绑定
 
 ### 9.7 构建时libmpv处理
 
+当前打包配置只声明 Windows 运行期资源，配合 `x86_64-pc-windows-gnu` 构建。Linux/macOS runtime resources 和 Tauri 平台配置等对应渲染与打包链路完成后再接入。
+
 ```
 src-tauri/
-  libs/
-    windows-x64/
-      libmpv-2.dll      # Windows libmpv 动态库
-      mpv.lib            # 导入库
-    darwin-x64/
-      libmpv.dylib       # macOS Intel
-    darwin-arm64/
-      libmpv.dylib       # macOS Apple Silicon
-    linux-x64/
-      libmpv.so          # Linux
+  lib/
+    libmpv-2.dll          # Windows libmpv 运行期动态库
+    libmpv-wrapper.dll    # Windows wrapper 运行期动态库
+    libmpv.dll.a          # Windows GNU 链接用 import library，不打包为运行期资源
+    LICENSE               # 第三方许可文本
 ```
 
-构建脚本自动下载对应平台的libmpv二进制库，链接到最终产物中。
+构建脚本当前只在 Player CI、manual build 和 beta release 中准备 Windows libmpv 资源。后续平台完成渲染器和打包链路时，再补充 macOS/Linux 下载、资源声明和 CI。
 
 ### 9.8 Android 策略
 
@@ -2565,11 +2564,13 @@ player — 播放器扩展 — 弹幕、歌词、特效
 
 ## 12. 平台适配
 
+当前平台适配状态以 Windows MVP 为先；下表中的非 Windows 项是目标能力，不代表当前 CI 或 beta release 会构建对应 Player 包。
+
 | 功能 | Windows | macOS | Linux | Android |
 |------|---------|-------|-------|---------|
-| 播放引擎 | libmpv (嵌入) | libmpv (嵌入) | libmpv (嵌入) | libmpv Android |
-| HDR | 支持 (Windows HDR) | 支持 (HDR10/DV) | 部分支持 | 设备相关 |
-| 窗口风格 | 无边框 + 自定义标题栏 | 原生标题栏 | GTK/Qt适配 | 全屏 |
-| 通知 | Windows通知 | macOS通知 | libnotify | Android通知 |
-| 快捷键 | 全局快捷键 | 全局快捷键 | 全局快捷键 | 手势 |
-| 文件关联 | .mkv/.mp4等 | .mkv/.mp4等 | .mkv/.mp4等 | Intent Filter |
+| 播放引擎 | 已完成 Windows MVP libmpv 嵌入 | 后续 libmpv 嵌入 | 后续 libmpv 嵌入 | 后续 libmpv Android |
+| HDR | Windows HDR 目标/验证继续推进 | 后续 HDR10/DV | 后续部分支持 | 后续设备相关 |
+| 窗口风格 | 无边框 + 自定义标题栏 | 后续原生标题栏 | 后续 GTK/Qt 适配 | 后续全屏 |
+| 通知 | Windows 通知 | 后续 macOS 通知 | 后续 libnotify | 后续 Android 通知 |
+| 快捷键 | 全局快捷键 | 后续全局快捷键 | 后续全局快捷键 | 后续手势 |
+| 文件关联 | .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 Intent Filter |
