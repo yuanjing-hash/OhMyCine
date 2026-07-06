@@ -78,7 +78,7 @@ const sourceTypeOptions: Array<{
     shortLabel: 'E',
     description: '媒体服务器账号登录',
     defaultName: 'Emby',
-    urlPlaceholder: 'http://192.168.1.2:8096',
+    urlPlaceholder: 'http://emby.example.test:8096',
     usernamePlaceholder: 'Emby 登录账号',
   },
   {
@@ -87,7 +87,7 @@ const sourceTypeOptions: Array<{
     shortLabel: 'A',
     description: 'OpenList/Alist API 账号登录',
     defaultName: 'OpenList/Alist',
-    urlPlaceholder: 'http://192.168.1.2:5244',
+    urlPlaceholder: 'http://openlist.example.test:5244',
     usernamePlaceholder: 'OpenList/Alist 登录账号',
   },
 ]

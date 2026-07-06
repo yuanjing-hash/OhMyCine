@@ -243,7 +243,7 @@ For STRM and cloud plug-in media, Emby may return one of these shapes:
 - `MediaSourceInfo.Path` is the `.strm` file path on the Emby server.
 - `MediaSourceInfo.Path` is the URL contained by the STRM file.
 - `DirectStreamUrl` or `TranscodingUrl` is an Emby-relative URL that will stream/proxy through Emby.
-- `Path`, `DirectStreamUrl`, or plugin metadata points to an internal plug-in redirect URL, e.g. `http://192.168.1.111:3033/api/v1/plugin/P115StrmHelper/redirect_url?...`.
+- `Path`, `DirectStreamUrl`, or plugin metadata points to an internal plug-in redirect URL, e.g. `http://media-server.example.test:3033/api/v1/plugin/P115StrmHelper/redirect_url?...`.
 - `RequiredHttpHeaders` may be needed for some HTTP media sources.
 
 Safe limitations:

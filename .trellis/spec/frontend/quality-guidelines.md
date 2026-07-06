@@ -182,3 +182,5 @@ Do not treat Docker as a local development prerequisite.
 - Keep Server as enhancement/automation layer.
 - Clarify README quick-start or architecture examples as target design if files/features are not yet implemented.
 - Keep final planned scope documented; adjust order, not scope.
+- Before publishing README/docs screenshots, verify every referenced image exists and scan visible text plus PNG strings for credentials, private IPs, personal domains, absolute local paths, and tokenized URLs.
+- Public docs and UI placeholders should use reserved example domains such as `.example.test` instead of private LAN IPs or personal hostnames.

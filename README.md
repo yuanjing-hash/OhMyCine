@@ -54,6 +54,16 @@ OhMyCine
 - **数据源设置与凭据边界**：设置页支持数据源管理、刮削与分类配置；账号、密码和 token 通过 Tauri app data 下的凭据边界保存，普通配置只保留非敏感引用。
 - **Windows 桌面打包链路**：已接入 libmpv 依赖准备、Windows GNU 交叉打包脚本和 NSIS 安装器生成；Windows 实机播放/签名仍需在 Windows 宿主验证。
 
+## Player 运行截图
+
+| 聚合首页 | 媒体主页 |
+|----------|----------|
+| ![Player 聚合首页](png/player/聚合首页.png) | ![Player 媒体主页](png/player/媒体主页.png) |
+| Emby 媒体库 | OpenList/Alist 自动刮削 |
+| ![Player Emby 媒体库](png/player/emby媒体库.png) | ![Player OpenList/Alist 自动刮削](png/player/Alist自动刮削.png) |
+| 播放页面 | |
+| ![Player 播放页面](png/player/播放页面.png) | |
+
 ## 架构概览
 
 ```
