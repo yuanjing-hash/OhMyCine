@@ -2,6 +2,7 @@ import type { RawLocalScanCache, RawLocalScanLogEntry, RunRawSourceScanInput } f
 import type { RawFileSourceType } from './types'
 import type { DataSource, DataSourceConfig } from '@/services/datasource/types'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { readLocalProviderRootPath } from '@/services/datasource/local'
 import { loadRawSourceScanCache, runRawSourceLocalScan } from './localScanCache'
 import { normalizeProviderPath } from './pathUtils'
 
@@ -420,7 +421,7 @@ export function createRawSourceAutoIndexTargets(
   resolveSource: (sourceId: string) => Pick<DataSource, 'list'> | null,
 ): RawSourceIndexTarget[] {
   return configs
-    .filter(config => config.enabled !== false && config.type === 'alist')
+    .filter(config => config.enabled !== false && isIndexableRawSourceType(config.type))
     .map((config) => {
       const source = resolveSource(config.id)
       return source ? createRawSourceIndexTarget(config, source) : null
@@ -432,18 +433,21 @@ export function createRawSourceIndexTarget(
   config: DataSourceConfig,
   source: Pick<DataSource, 'list'>,
 ): RawSourceIndexTarget | null {
-  if (config.enabled === false || config.type !== 'alist')
+  if (config.enabled === false || !isIndexableRawSourceType(config.type))
     return null
 
   return normalizeTarget({
     sourceId: config.id,
-    sourceType: 'alist',
+    sourceType: config.type,
     rootPath: readRawSourceRootPath(config),
     source,
   })
 }
 
 export function readRawSourceRootPath(config: DataSourceConfig): string {
+  if (config.type === 'local')
+    return readLocalProviderRootPath(config)
+
   const rawRootPath = config.extra?.rootPath
   if (typeof rawRootPath !== 'string')
     return '/'
@@ -454,6 +458,10 @@ export function readRawSourceRootPath(config: DataSourceConfig): string {
   catch {
     return '/'
   }
+}
+
+function isIndexableRawSourceType(type: DataSourceConfig['type']): type is RawFileSourceType {
+  return type === 'alist' || type === 'local'
 }
 
 export function createRawSourceIndexScheduler(options: RawSourceIndexSchedulerOptions = {}): RawSourceIndexScheduler {

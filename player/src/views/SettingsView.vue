@@ -2,12 +2,14 @@
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
+import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
 import {
   createEmptyScrapeCategoryRule,
   loadScrapeClassificationRules,
@@ -30,7 +32,8 @@ import {
 import { useDataSourceStore } from '@/stores/datasource'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
-type LoginDataSourceConfig = DataSourceConfig & { type: LoginDataSourceType }
+type EditableDataSourceType = LoginDataSourceType | 'local'
+type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping'
 type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
@@ -38,7 +41,7 @@ type ConditionValueState = 'none' | 'include' | 'exclude'
 
 interface DataSourceFormState {
   id: string | null
-  type: LoginDataSourceType
+  type: EditableDataSourceType
   displayName: string
   url: string
   username: string
@@ -64,7 +67,7 @@ interface SettingsEntry {
 }
 
 const sourceTypeOptions: Array<{
-  type: LoginDataSourceType
+  type: EditableDataSourceType
   label: string
   shortLabel: string
   description: string
@@ -89,6 +92,15 @@ const sourceTypeOptions: Array<{
     defaultName: 'OpenList/Alist',
     urlPlaceholder: 'http://openlist.example.test:5244',
     usernamePlaceholder: 'OpenList/Alist 登录账号',
+  },
+  {
+    type: 'local',
+    label: '本地文件夹',
+    shortLabel: 'L',
+    description: '只读扫描本机媒体目录',
+    defaultName: '本地媒体库',
+    urlPlaceholder: '',
+    usernamePlaceholder: '',
   },
 ]
 
@@ -164,7 +176,10 @@ const isEditing = computed(() => mode.value === 'edit')
 const isDataSourceMode = computed(() => mode.value === 'manage' || mode.value === 'add' || mode.value === 'edit')
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
-const selectedRootPathLabel = computed(() => normalizeAlistRootPath(form.rootPath))
+const isLocalForm = computed(() => form.type === 'local')
+const selectedRootPathLabel = computed(() => isLocalForm.value
+  ? localRootPathLabel(form.rootPath)
+  : normalizeAlistRootPath(form.rootPath))
 const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
 const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
 const activeSourceCount = computed(() => configuredSources.value.filter(source => source.enabled !== false).length)
@@ -199,7 +214,7 @@ const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
     ? '配置 OpenList/Alist、CloudDrive2、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回网盘目录。'
-    : 'Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。')
+    : 'Player 可直接连接 Emby、OpenList/Alist 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -208,7 +223,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '连接、编辑、停用或清理 Emby 与 OpenList/Alist 数据源，控制左侧媒体入口。',
+    description: '连接、编辑、停用或清理 Emby、OpenList/Alist 与本地文件夹数据源，控制左侧媒体入口。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -274,6 +289,18 @@ watch(() => route.query, () => {
 watch(() => form.type, (type) => {
   if (!isEditing.value)
     form.displayName = defaultDisplayName(type)
+  if (type === 'local') {
+    form.url = ''
+    form.username = ''
+    form.password = ''
+    form.rootPath = ''
+  }
+  else if (type === 'emby') {
+    form.rootPath = '/'
+  }
+  else if (type === 'alist' && !form.rootPath) {
+    form.rootPath = '/'
+  }
   resetAlistBrowser()
 })
 
@@ -322,7 +349,7 @@ function syncModeFromRoute() {
   if (action === 'edit') {
     const id = routeQueryValue('id')
     const source = id ? store.configs.find(config => config.id === id) : null
-    if (source && isLoginDataSourceConfig(source)) {
+    if (source && isEditableDataSourceConfig(source)) {
       replaceSettingsQuery({ section: 'datasources', action: 'edit', id: source.id })
       if (mode.value !== 'edit' || form.id !== source.id)
         populateEditForm(source)
@@ -437,7 +464,7 @@ function resetForm() {
 }
 
 function editSource(config: DataSourceConfig) {
-  if (!isLoginDataSourceConfig(config)) {
+  if (!isEditableDataSourceConfig(config)) {
     feedback.value = {
       type: 'error',
       message: `${sourceTypeLabel(config.type)} 暂不支持在当前设置页编辑。`,
@@ -449,17 +476,23 @@ function editSource(config: DataSourceConfig) {
   void router.replace({ name: 'settings', query: { section: 'datasources', action: 'edit', id: config.id } })
 }
 
-function populateEditForm(config: LoginDataSourceConfig) {
+function populateEditForm(config: EditableDataSourceConfig) {
   form.id = config.id
   form.type = config.type
   form.displayName = config.displayName ?? config.name
   form.url = config.url
   form.username = ''
   form.password = ''
-  form.rootPath = config.type === 'alist' ? readAlistRootPath(config) : '/'
+  form.rootPath = config.type === 'alist'
+    ? readAlistRootPath(config)
+    : config.type === 'local'
+      ? readLocalRootPath(config)
+      : '/'
   feedback.value = {
     type: 'info',
-    message: `可修改显示名称与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+    message: config.type === 'local'
+      ? '可修改显示名称或重新选择本地根目录；本地文件源不会保存账号、密码或 token。'
+      : `可修改显示名称与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -505,6 +538,21 @@ async function saveSource() {
     }
 
     const id = `${form.type}-${Date.now()}`
+    if (form.type === 'local') {
+      const result = await createAndValidateLocalConfig({
+        id,
+        displayName: form.displayName,
+        rootPath: form.rootPath,
+        order: store.configs.length,
+      })
+      await store.replaceConfig(result.config)
+      lastFetchedLibraries.value = result.libraries
+      resetForm()
+      feedback.value = { type: 'success', message: `本地文件夹已验证，已添加到左侧侧边栏。` }
+      goManage({ preserveFeedback: true })
+      return
+    }
+
     const result = await loginAndCreateConfig(form.type, {
       id,
       url: form.url,
@@ -530,7 +578,9 @@ async function saveSource() {
   catch (error) {
     feedback.value = {
       type: 'error',
-      message: toSafeErrorMessage(error, `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
+      message: toSafeErrorMessage(error, form.type === 'local'
+        ? '添加本地文件夹失败，请确认目录存在且有读取权限。'
+        : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
     }
   }
   finally {
@@ -543,8 +593,22 @@ async function saveEditedSource(id: string) {
   const existing = store.configs.find(config => config.id === id)
   if (!existing)
     throw new Error('数据源不存在。')
-  if (!isLoginDataSourceType(existing.type))
+  if (!isEditableDataSourceType(existing.type))
     throw new Error(`${sourceTypeLabel(existing.type)} 暂不支持在当前设置页编辑。`)
+
+  if (existing.type === 'local') {
+    const result = await createAndValidateLocalConfig({
+      id,
+      displayName: form.displayName,
+      rootPath: form.rootPath,
+      order: existing.order,
+    })
+    await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
+    lastFetchedLibraries.value = result.libraries
+    feedback.value = { type: 'success', message: '本地文件夹数据源已更新。' }
+    goManage({ preserveFeedback: true })
+    return
+  }
 
   const username = form.username.trim()
   const nextUrl = form.url.trim()
@@ -620,12 +684,40 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   return loginEmbyAndCreateConfig(input)
 }
 
+async function createAndValidateLocalConfig(input: {
+  id: string
+  displayName: string
+  rootPath: string
+  order: number
+}): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
+  const config = createLocalFileDataSourceConfig(input)
+  const libraries = await validateLocalFileDataSourceConfig(config)
+  return {
+    config: {
+      ...config,
+      extra: {
+        ...(config.extra ?? {}),
+        libraries: libraries.map(library => ({
+          id: library.id,
+          name: library.name,
+          type: library.type,
+        })),
+      },
+    },
+    libraries,
+  }
+}
+
 function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
   return type === 'emby' || type === 'alist'
 }
 
-function isLoginDataSourceConfig(config: DataSourceConfig): config is LoginDataSourceConfig {
-  return isLoginDataSourceType(config.type)
+function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
+  return isLoginDataSourceType(type) || type === 'local'
+}
+
+function isEditableDataSourceConfig(config: DataSourceConfig): config is EditableDataSourceConfig {
+  return isEditableDataSourceType(config.type)
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -647,13 +739,19 @@ function sourceTypeLabel(type: DataSourceType): string {
   }
 }
 
-function defaultDisplayName(type: LoginDataSourceType): string {
+function defaultDisplayName(type: EditableDataSourceType): string {
   return sourceTypeOptions.find(option => option.type === type)?.defaultName ?? '数据源'
 }
 
 function sourceStatusLine(source: DataSourceConfig): string {
-  const credentialState = typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
-  const rootState = source.type === 'alist' ? ` · 根目录：${readAlistRootPath(source)}` : ''
+  const credentialState = source.type === 'local'
+    ? '无需凭据'
+    : typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
+  const rootState = source.type === 'alist'
+    ? ` · 根目录：${readAlistRootPath(source)}`
+    : source.type === 'local'
+      ? ` · 根目录：${readLocalRootPath(source)}`
+      : ''
   return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}${rootState}`
 }
 
@@ -685,7 +783,7 @@ function credentialRefFromConfig(config: DataSourceConfig): string | null {
   return typeof config.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
 }
 
-function selectSourceType(type: LoginDataSourceType) {
+function selectSourceType(type: EditableDataSourceType) {
   if (isEditing.value)
     return
 
@@ -693,6 +791,36 @@ function selectSourceType(type: LoginDataSourceType) {
   form.displayName = defaultDisplayName(type)
   feedback.value = null
   lastFetchedLibraries.value = []
+}
+
+async function chooseLocalRootPath() {
+  if (form.type !== 'local')
+    return
+
+  feedback.value = null
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+    })
+
+    if (typeof selected !== 'string')
+      return
+
+    form.rootPath = normalizeLocalRootPath(selected)
+    if (!form.displayName.trim())
+      form.displayName = localRootDisplayName(form.rootPath)
+    feedback.value = {
+      type: 'info',
+      message: `已选择本地根目录：${form.rootPath}`,
+    }
+  }
+  catch (error) {
+    feedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, '选择本地文件夹失败。'),
+    }
+  }
 }
 
 async function loadAlistRootBrowser() {
@@ -811,6 +939,21 @@ function parentDirectoryPath(path: string): string {
     return '/'
   const index = normalized.lastIndexOf('/')
   return index <= 0 ? '/' : normalized.slice(0, index)
+}
+
+function localRootPathLabel(path: string): string {
+  if (!path.trim())
+    return '未选择'
+  try {
+    return normalizeLocalRootPath(path)
+  }
+  catch {
+    return path.trim()
+  }
+}
+
+function localRootDisplayName(path: string): string {
+  return path.trim().replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '本地媒体库'
 }
 
 function getScrapeRuleGroup(mediaType: ScrapeMediaType): ScrapeRuleGroup {
@@ -1532,7 +1675,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ isEditing ? '编辑数据源' : '添加数据源' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              先选择数据源类型，再填写对应登录信息。当前 OpenList/Alist 仅支持账号登录，不提供手填 token、公开目录或 WebDAV 模式；点击添加或保存时会先登录测试，成功后只持久化安全配置和 credentialRef。
+              先选择数据源类型，再填写对应信息。本地文件夹只保存目录根路径；远程数据源点击添加或保存时会先登录测试，成功后只持久化安全配置和 credentialRef。
             </p>
           </div>
           <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
@@ -1581,7 +1724,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label class="block">
+          <label v-if="!isLocalForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
             <input
               v-model="form.url"
@@ -1591,7 +1734,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label class="block">
+          <label v-if="!isLocalForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
             <input
               v-model="form.username"
@@ -1601,7 +1744,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label class="block">
+          <label v-if="!isLocalForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
             <input
               v-model="form.password"
@@ -1611,6 +1754,27 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               autocomplete="current-password"
             >
           </label>
+
+          <div v-if="isLocalForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">本地根目录</span>
+                <p class="mt-2 break-all text-sm text-white/70">
+                  当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
+                @click="chooseLocalRootPath"
+              >
+                选择文件夹
+              </button>
+            </div>
+            <p class="mt-3 text-xs leading-5 text-white/42">
+              本地文件源只读访问所选目录；扫描结果、手动识别和图片覆盖只保存到 Player 本地缓存，不移动、不删除、不改名文件。
+            </p>
+          </div>
 
           <div v-if="isAlistForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
@@ -1738,7 +1902,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               class="rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-45"
               :disabled="isSaving"
             >
-              {{ isSaving ? '登录测试中…' : (isEditing ? '保存' : '添加') }}
+              {{ isSaving ? (isLocalForm ? '验证中…' : '登录测试中…') : (isEditing ? '保存' : '添加') }}
             </button>
           </div>
         </form>

@@ -11,6 +11,7 @@ use commands::emby::emby_post_playback_json;
 use commands::history::{
     player_get_playback_progress, player_list_continue_watching, player_upsert_playback_progress,
 };
+use commands::local_file::{local_file_list, local_file_metadata, local_file_stream_path};
 use commands::player::{
     mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
     mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy,
@@ -43,6 +44,9 @@ fn main() {
             raw_scan_cache_get,
             raw_scan_cache_set,
             raw_scan_cache_delete,
+            local_file_list,
+            local_file_metadata,
+            local_file_stream_path,
             emby_post_playback_json,
             mpv_load,
             mpv_add_subtitle,

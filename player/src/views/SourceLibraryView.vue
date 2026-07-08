@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
+import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
-import { readAlistRootPath } from '@/services/datasource/alist'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { readLocalRootPath } from '@/services/datasource/local'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, enrichRawScrapedItemsEpisodeMetadata, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
+import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, enrichRawScrapedItemsEpisodeMetadata, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, readRawSourceRootPath, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -131,32 +131,37 @@ const isArtworkApplying = ref(false)
 let unsubscribeRawIndexStatus: (() => void) | undefined
 let identificationSearchRequestId = 0
 
-const isAlistSource = computed(() => sourceConfig.value?.type === 'alist')
-const alistRootPath = computed(() => isAlistSource.value ? readAlistRootPath(sourceConfig.value) : '/')
-const activeViewMode = computed<SourceViewMode>(() => isAlistSource.value ? viewMode.value : 'folders')
+const rawSourceType = computed<RawFileSourceType | null>(() => {
+  const type = sourceConfig.value?.type
+  return type === 'alist' || type === 'local' ? type : null
+})
+const isRawFileSource = computed(() => rawSourceType.value != null)
+const rawSourceRootPath = computed(() => sourceConfig.value && isRawFileSource.value ? readRawSourceRootPath(sourceConfig.value) : '/')
+const rawSourceRootLabel = computed(() => sourceConfig.value?.type === 'local' ? readLocalRootPath(sourceConfig.value) : rawSourceRootPath.value)
+const activeViewMode = computed<SourceViewMode>(() => isRawFileSource.value ? viewMode.value : 'folders')
 const isMediaLibraryView = computed(() => activeViewMode.value === 'media-library')
 const isFolderView = computed(() => activeViewMode.value === 'folders')
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
+const sourceTypeLabel = computed(() => sourceConfig.value ? labelForSourceType(sourceConfig.value.type) : 'Data')
 const pageTitle = computed(() => {
   if (isMediaLibraryView.value)
-    return sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? 'OpenList/Alist'
+    return sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? sourceTypeLabel.value
   return currentNode.value?.name ?? selectedLibrary.value?.name ?? (sourceConfig.value?.displayName ?? sourceConfig.value?.name ?? 'Data Source')
 })
-const sourceTypeLabel = computed(() => sourceConfig.value ? labelForSourceType(sourceConfig.value.type) : 'Data')
 const searchPlaceholder = computed(() => `搜索 ${sourceTypeLabel.value} 媒体或文件`)
 const breadcrumbLabel = computed(() => `${sourceTypeLabel.value} 浏览路径`)
-const rootBackLabel = computed(() => sourceConfig.value?.type === 'alist' ? '返回文件目录' : '返回媒体库')
+const rootBackLabel = computed(() => isRawFileSource.value ? '返回文件目录' : '返回媒体库')
 const sectionTitle = computed(() => {
   if (selectedLibrary.value)
-    return sourceConfig.value?.type === 'alist' ? '目录项目' : '媒体项目'
-  return sourceConfig.value?.type === 'alist' ? '文件目录' : '媒体库'
+    return isRawFileSource.value ? '目录项目' : '媒体项目'
+  return isRawFileSource.value ? '文件目录' : '媒体库'
 })
 const sectionDescription = computed(() => {
   if (selectedLibrary.value)
     return '选择视频条目即可进入现有播放加载流程。'
-  if (sourceConfig.value?.type === 'alist')
-    return '进入 OpenList/Alist 文件目录后，可继续浏览子目录或播放视频文件。'
+  if (isRawFileSource.value)
+    return `进入 ${sourceTypeLabel.value} 文件目录后，可继续浏览子目录或播放视频文件。`
   return '选择一个媒体库开始浏览。'
 })
 const emptyTitle = computed(() => selectedLibrary.value ? '此目录暂无可显示项目' : `未找到 ${sourceTypeLabel.value} 入口`)
@@ -329,7 +334,7 @@ onMounted(async () => {
   window.addEventListener('click', closeWorkContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
-    if (status.sourceId === sourceId.value && status.sourceType === 'alist') {
+    if (status.sourceId === sourceId.value && status.sourceType === rawSourceType.value) {
       isScanning.value = status.state === 'running'
       void loadScanCacheForCurrentSource({ preserveLiveLogs: status.state === 'running' })
       if (status.state === 'failed')
@@ -340,7 +345,7 @@ onMounted(async () => {
   syncDefaultViewModeForSource()
   await ensureSource()
   await loadScanCacheForCurrentSource()
-  if (isFolderView.value || isAlistSource.value)
+  if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
 })
 
@@ -365,7 +370,7 @@ watch(sourceId, async () => {
   syncDefaultViewModeForSource()
   await ensureSource()
   await loadScanCacheForCurrentSource()
-  if (isFolderView.value || isAlistSource.value)
+  if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
 })
 
@@ -416,7 +421,7 @@ async function loadSourceRoot() {
 }
 
 async function switchViewMode(mode: SourceViewMode) {
-  if (!isAlistSource.value || viewMode.value === mode)
+  if (!isRawFileSource.value || viewMode.value === mode)
     return
 
   viewMode.value = mode
@@ -652,7 +657,7 @@ async function handlePlay(item: MediaItem) {
 }
 
 async function startLocalScan() {
-  if (!source.value || !isAlistSource.value)
+  if (!source.value || !rawSourceType.value)
     return
 
   isScanning.value = true
@@ -663,8 +668,8 @@ async function startLocalScan() {
     scanCache.value = await rawSourceIndexScheduler.forceScan({
       source: source.value,
       sourceId: sourceId.value,
-      sourceType: 'alist',
-      rootPath: alistRootPath.value,
+      sourceType: rawSourceType.value,
+      rootPath: rawSourceRootPath.value,
     }, {
       onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
     })
@@ -681,19 +686,19 @@ async function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boole
   scanErrorMessage.value = null
   if (!options.preserveLiveLogs)
     scanLiveLogs.value = []
-  if (!isAlistSource.value) {
+  if (!rawSourceType.value) {
     scanCache.value = null
     selectedScannedCategoryId.value = null
     return
   }
 
-  scanCache.value = await loadRawSourceScanCache(sourceId.value, 'alist', alistRootPath.value)
+  scanCache.value = await loadRawSourceScanCache(sourceId.value, rawSourceType.value, rawSourceRootPath.value)
   if (!scanCache.value)
     selectedScannedCategoryId.value = null
 }
 
 function syncDefaultViewModeForSource() {
-  viewMode.value = isAlistSource.value ? 'media-library' : 'folders'
+  viewMode.value = isRawFileSource.value ? 'media-library' : 'folders'
 }
 
 function currentQueueItems(): MediaItem[] {
@@ -976,7 +981,7 @@ async function updateArtworkOverride(kind: EditableArtworkKind, imageUrl: string
     }
 
     scanCache.value = nextCache
-    identificationInfoMessage.value = `${imageUrl ? '已应用' : '已清除'}${artworkKindLabel(kind)}本地覆盖；不会写回 OpenList/Alist。`
+    identificationInfoMessage.value = `${imageUrl ? '已应用' : '已清除'}${artworkKindLabel(kind)}本地覆盖；不会写回数据源目录。`
   }
   catch (error) {
     identificationErrorMessage.value = toSafeErrorMessage(error, '图片覆盖写入失败。')
@@ -1209,7 +1214,7 @@ function createSeriesWork(group: RawSeriesEntryGroup<ScannedDisplayItem>): Scann
   const seasons = createRawSeriesSeasonChildren({
     seriesKey: group.key,
     sourceId: sourceId.value,
-    libraryId: representative?.candidate.record.rootPath ?? alistRootPath.value,
+    libraryId: representative?.candidate.record.rootPath ?? rawSourceRootPath.value,
     fallbackPath: firstEpisode?.path ?? representative?.candidate.record.providerPath,
     episodes,
     artwork: {
@@ -1221,7 +1226,7 @@ function createSeriesWork(group: RawSeriesEntryGroup<ScannedDisplayItem>): Scann
   const item: MediaItem = {
     id: `raw-series:${encodeURIComponent(group.key)}`,
     sourceId: sourceId.value,
-    libraryId: representative?.candidate.record.rootPath ?? alistRootPath.value,
+    libraryId: representative?.candidate.record.rootPath ?? rawSourceRootPath.value,
     name: title,
     type: 'series',
     posterUrl: metadata?.posterUrl ?? firstEpisode?.posterUrl,
@@ -1552,7 +1557,7 @@ function labelForSourceType(type: string): string {
           </form>
         </div>
 
-        <div v-if="isAlistSource && isFolderView" class="flex flex-wrap items-center justify-between gap-3">
+        <div v-if="isRawFileSource && isFolderView" class="flex flex-wrap items-center justify-between gap-3">
           <button
             class="rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
             @click="switchViewMode('media-library')"
@@ -1560,7 +1565,7 @@ function labelForSourceType(type: string): string {
             返回媒体库
           </button>
           <p class="text-sm text-white/40">
-            当前根目录：{{ alistRootPath }}
+            当前根目录：{{ rawSourceRootLabel }}
           </p>
         </div>
 
@@ -1611,7 +1616,7 @@ function labelForSourceType(type: string): string {
                   扫描管理
                 </h3>
                 <p class="mt-2 max-w-2xl text-sm leading-6 text-white/46">
-                  根目录 {{ alistRootPath }}。扫描只读取目录和文件名，结果保存在本机缓存，不写回 OpenList/Alist。
+                  根目录 {{ rawSourceRootLabel }}。扫描只读取目录和文件名，结果保存在本机缓存，不写回数据源目录。
                 </p>
               </div>
               <button
@@ -1743,7 +1748,7 @@ function labelForSourceType(type: string): string {
                 这个分类暂时没有可显示项目
               </p>
               <p class="mt-2 max-w-md text-sm leading-6 text-white/45">
-                可以返回分类页或重新扫描当前 OpenList/Alist 根目录。
+                可以返回分类页或重新扫描当前根目录。
               </p>
             </div>
 
@@ -1822,7 +1827,7 @@ function labelForSourceType(type: string): string {
       v-if="isMediaLibraryView"
       class="source-bottom-controls"
     >
-      <div class="source-bottom-control-bar" role="toolbar" aria-label="OpenList/Alist 媒体库操作">
+      <div class="source-bottom-control-bar" role="toolbar" :aria-label="`${sourceTypeLabel} 媒体库操作`">
         <button
           type="button"
           class="source-bottom-control-button"
@@ -2137,7 +2142,7 @@ function labelForSourceType(type: string): string {
                     {{ artworkKindLabel(artworkSearchKind) }}候选
                   </h4>
                   <p class="mt-1 text-xs text-white/42">
-                    选择后只写入 Player 本地扫描缓存，不写回 OpenList/Alist。
+                    选择后只写入 Player 本地扫描缓存，不写回数据源目录。
                   </p>
                 </div>
                 <span class="text-xs text-white/34">{{ artworkSearchResults.length }} 张</span>

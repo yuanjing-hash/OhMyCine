@@ -12,6 +12,7 @@
     "verify:home-fault-isolation": "TMPDIR=/tmp tsx scripts/verify-home-source-fault-isolation.ts",
     "verify:raw-source-index-scheduler": "TMPDIR=/tmp tsx scripts/verify-raw-source-index-scheduler.ts",
     "verify:raw-scan-cache": "TMPDIR=/tmp tsx scripts/verify-raw-scan-cache-storage.ts",
+    "verify:local-file-datasource": "TMPDIR=/tmp tsx scripts/verify-local-file-datasource.ts",
     "verify:tmdb-auth": "TMPDIR=/tmp tsx scripts/verify-tmdb-auth-routing.ts",
     "tauri": "tauri",
     "setup:libmpv": "node scripts/setup-libmpv.mjs",

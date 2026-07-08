@@ -3,7 +3,7 @@
 ## 1. 概述
 
 OhMyCine Player 是一款**独立可用**的跨平台沉浸式家庭影院播放器，核心特点：
-- **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2
+- **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2/本地文件夹
 - **Cinema OS 风格 UI** — 液态玻璃设计语言，深色主题，电影感排版
 - **libmpv 引擎** — 全格式支持，硬件解码，HDR/Dolby Vision，沉浸式嵌入渲染
 - **全平台目标** — 当前 Player MVP 先完成 Windows；macOS、Linux (桌面) 和 Android 渲染/打包链路作为后续平台目标保留
@@ -159,7 +159,7 @@ ohmycine-player/
 
 ### 4.1 架构设计
 
-Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist 等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
+Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist、本地文件夹等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -172,8 +172,13 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 │              │          │          │          │             │
 │  ┌───────────▼──┐ ┌─────▼────┐ ┌───▼───┐ ┌───▼────────┐  │
 │  │ EmbyDataSource│ │JellyfinDS│ │AlistDS│ │CloudDrive2DS│  │
-│  │ (原生API)    │ │(原生API) │ │(WebDAV)│ │ (WebDAV)   │  │
-│  └──────────────┘ └──────────┘ └───────┘ └────────────┘  │
+│  │ (原生API)    │ │(原生API) │ │(HTTP) │ │ (WebDAV)   │  │
+│  └──────────────┘ └──────────┘ └───────┘ └──────┬─────┘  │
+│                                                  │        │
+│                                  ┌───────────────▼─────┐  │
+│                                  │ LocalFileDataSource │  │
+│                                  │ (Tauri 只读文件命令) │  │
+│                                  └─────────────────────┘  │
 │              │          │          │          │             │
 │  ┌───────────▼──────────▼──────────▼──────────▼────────┐  │
 │  │  CloudDriveDataSource (占位)                          │  │
@@ -200,7 +205,7 @@ export interface MediaItem {
   libraryId?: string
   name: string
   titleLogoUrl?: string
-  type: 'movie' | 'series' | 'episode' | 'folder' | 'file'
+  type: 'movie' | 'series' | 'season' | 'episode' | 'folder' | 'file'
   posterUrl?: string
   backdropUrl?: string
   year?: number
@@ -266,7 +271,7 @@ export interface AudioTrack {
   isDefault: boolean
 }
 
-export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'server' | '115' | '123' | 'quark'
+export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'server' | '115' | '123' | 'quark' | 'local'
 
 export interface DataSourceConfig {
   id: string
@@ -276,10 +281,9 @@ export interface DataSourceConfig {
   iconUrl?: string
   order: number
   url: string
-  apiKey?: string
-  username?: string
-  password?: string
-  // 扩展配置
+  enabled?: boolean
+  // 非敏感扩展配置，例如 credentialRef、rootPath、library ids。
+  // API key、账号、密码、token 不进入普通 DataSourceConfig。
   extra?: Record<string, unknown>
 }
 

@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend Player independent-first checklist and required quality flow."}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "DataSource module boundaries and raw file source scraping/classification contract for local files."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "DataSource, MediaItem, raw scrape metadata, and playback payload type contracts."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Raw source auto indexing, source/root-scoped cache, and Home failure isolation contracts."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Verification commands, Windows GNU package build, and forbidden frontend patterns."}
+{"file": "docs/architecture/03-player-design.md", "reason": "Player DataSource abstraction and raw file source scraping design including local files."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Local file path/root safety, symlink escape, logs, AI payload, and credential security requirements."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Local Tauri command to DataSource to scanner to UI crosses multiple layers."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Implementation should reuse OpenList raw source scanning and display patterns instead of duplicating behavior."}

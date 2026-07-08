@@ -3,6 +3,7 @@ import { AlistDataSource } from './alist'
 import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
+import { LocalFileDataSource } from './local'
 
 export class DataSourceManager {
   private readonly sources = new Map<string, DataSource>()
@@ -94,6 +95,8 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new EmbyDataSource()
     case 'alist':
       return new AlistDataSource()
+    case 'local':
+      return new LocalFileDataSource()
     default:
       throw new Error(`${type} data source is not implemented yet.`)
   }
