@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check RawMediaCandidate and category assignment contracts."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check focused verify, lint, typecheck, build, and Windows GNU packaging."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check path parsing to display/home aggregation behavior."}

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
-import { deriveRawCandidateCategoryAssignment, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
+import { deriveRawCandidateCategoryAssignment, RAW_MOVIE_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
 import { loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
 import { enrichRawMediaCandidates, enrichRawScrapedItemsEpisodeMetadata } from '../src/services/scraper/metadataEnrichment.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
 import { cleanMediaTitle, extractMediaSearchTitles, parseRawMediaCandidate } from '../src/services/scraper/parser.ts'
-import { toRawScannedMediaItem } from '../src/services/scraper/rawDisplayMapping.ts'
+import { categoryNameForRawCandidate, toRawScannedMediaItem } from '../src/services/scraper/rawDisplayMapping.ts'
+import { createRawSourceHomeSections } from '../src/services/scraper/rawHomeMapping.ts'
 import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
 import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
 import { TmdbScraper } from '../src/services/scraper/tmdb.ts'
@@ -14,7 +15,7 @@ import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext 
 import type { MediaItem } from '../src/services/datasource/types.ts'
 import type { RawLocalScanCache } from '../src/services/scraper/localScanCache.ts'
 import type { RawTmdbMetadataClient } from '../src/services/scraper/metadataEnrichment.ts'
-import type { TmdbCandidateMatch, TmdbEpisodeMetadata } from '../src/services/scraper/tmdb.ts'
+import type { TmdbCandidateMatch, TmdbEpisodeMetadata, TmdbMetadata } from '../src/services/scraper/tmdb.ts'
 import type { RawFileRecord, RawMediaCandidate, RawScrapedMediaItem, RawTmdbMatchStatus } from '../src/services/scraper/types.ts'
 
 const noisyTitle = '机械之声的传奇 The Legend of Vox Machina AMZN GrassTV 1080P 简繁字幕'
@@ -395,6 +396,265 @@ const seasonThreeEpisodeMetadata: TmdbEpisodeMetadata = {
   rating: 8.6,
   stillUrl: 'https://image.tmdb.org/t/p/w780/season-three-still.jpg',
 }
+const standaloneAvatarMetadata: TmdbMetadata = {
+  tmdbId: 19995,
+  mediaType: 'movie',
+  title: '阿凡达',
+  originalTitle: 'Avatar',
+  overview: 'A standalone Chinese movie filename should survive raw scan and display as a movie work.',
+  releaseYear: 2009,
+  rating: 7.6,
+  genreIds: [12, 878],
+  genres: ['冒险', '科幻'],
+  originalLanguage: 'en',
+  originCountries: ['US'],
+  productionCountries: ['US'],
+  posterUrl: 'https://image.tmdb.org/t/p/w500/avatar-poster.jpg',
+  backdropUrl: 'https://image.tmdb.org/t/p/w780/avatar-backdrop.jpg',
+  titleLogoUrl: 'https://image.tmdb.org/t/p/w500/avatar-logo.png',
+  scrapedAt: '2026-05-25T00:02:00.000Z',
+}
+const siblingAnimeMetadata: TmdbMetadata = {
+  ...matchedSeriesMetadata,
+  tmdbId: 135935,
+  title: '灵笼',
+  originalTitle: '灵笼',
+  overview: 'Sibling anime series fixture.',
+  releaseYear: 2019,
+  genreIds: [16],
+  genres: ['动画'],
+  originalLanguage: 'zh',
+  originCountries: ['CN'],
+  productionCountries: ['CN'],
+  posterUrl: 'https://image.tmdb.org/t/p/w500/ling-long-poster.jpg',
+  backdropUrl: 'https://image.tmdb.org/t/p/w780/ling-long-backdrop.jpg',
+  titleLogoUrl: 'https://image.tmdb.org/t/p/w500/ling-long-logo.png',
+  scrapedAt: '2026-05-25T00:02:00.000Z',
+}
+const mixedStandalonePreview = createRawScanPreview([
+  {
+    name: '阿凡达.mp4',
+    path: '/阿凡达.mp4',
+    parentPath: '/',
+    type: 'file',
+    modifiedAt: '2026-05-25T00:01:00.000Z',
+  },
+  {
+    name: 'S01E01.mkv',
+    path: '/动漫/灵笼/Season 01/S01E01.mkv',
+    parentPath: '/动漫/灵笼/Season 01',
+    type: 'file',
+    modifiedAt: '2026-05-25T00:00:01.000Z',
+  },
+  {
+    name: 'S02E01.mkv',
+    path: '/动漫/灵笼/Season 02/S02E01.mkv',
+    parentPath: '/动漫/灵笼/Season 02',
+    type: 'file',
+    modifiedAt: '2026-05-25T00:00:02.000Z',
+  },
+  {
+    name: 'S03E01.mkv',
+    path: '/动漫/灵笼/Season 03/S03E01.mkv',
+    parentPath: '/动漫/灵笼/Season 03',
+    type: 'file',
+    modifiedAt: '2026-05-25T00:00:03.000Z',
+  },
+], {
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+})
+const standaloneAvatarCandidate = mixedStandalonePreview.candidates.find(candidate => candidate.record.providerPath === '/阿凡达.mp4')
+assert.ok(standaloneAvatarCandidate)
+assert.equal(standaloneAvatarCandidate.kind, 'movie')
+assert.equal(standaloneAvatarCandidate.parseStatus, 'partial')
+assert.equal(standaloneAvatarCandidate.title, '阿凡达')
+assert.equal(standaloneAvatarCandidate.categoryHint, undefined)
+const standaloneAvatarAssignment = deriveRawCandidateCategoryAssignment(standaloneAvatarCandidate)
+assert.equal(standaloneAvatarAssignment.categoryName, RAW_MOVIE_CATEGORY_NAME)
+assert.equal(standaloneAvatarAssignment.source, 'kindFallback')
+const categoryFolderStandalonePreview = createRawScanPreview([
+  {
+    name: '阿凡达.mp4',
+    path: '/电影/阿凡达.mp4',
+    parentPath: '/电影',
+    type: 'file',
+  },
+  {
+    name: '阿凡达.mp4',
+    path: '/华语电影/阿凡达.mp4',
+    parentPath: '/华语电影',
+    type: 'file',
+  },
+  {
+    name: '阿凡达.mp4',
+    path: '/电影/阿凡达/阿凡达.mp4',
+    parentPath: '/电影/阿凡达',
+    type: 'file',
+  },
+  {
+    name: '阿凡达.mp4',
+    path: '/阿凡达/阿凡达.mp4',
+    parentPath: '/阿凡达',
+    type: 'file',
+  },
+], {
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+})
+const categoryFolderCandidatesByPath = new Map(categoryFolderStandalonePreview.candidates.map(candidate => [candidate.record.providerPath, candidate]))
+const categoryFolderAvatarCandidate = categoryFolderCandidatesByPath.get('/电影/阿凡达.mp4')
+assert.ok(categoryFolderAvatarCandidate)
+assert.equal(categoryFolderAvatarCandidate.kind, 'movie')
+assert.equal(categoryFolderAvatarCandidate.parseStatus, 'partial')
+assert.equal(categoryFolderAvatarCandidate.title, '阿凡达')
+assert.equal(categoryFolderAvatarCandidate.categoryHint, '电影')
+const categoryFolderAvatarAssignment = deriveRawCandidateCategoryAssignment(categoryFolderAvatarCandidate)
+assert.equal(categoryFolderAvatarAssignment.categoryName, '电影')
+assert.equal(categoryFolderAvatarAssignment.source, 'pathHint')
+const chineseCategoryFolderAvatarCandidate = categoryFolderCandidatesByPath.get('/华语电影/阿凡达.mp4')
+assert.ok(chineseCategoryFolderAvatarCandidate)
+assert.equal(chineseCategoryFolderAvatarCandidate.kind, 'movie')
+assert.equal(chineseCategoryFolderAvatarCandidate.categoryHint, '华语电影')
+const chineseCategoryFolderAvatarAssignment = deriveRawCandidateCategoryAssignment(chineseCategoryFolderAvatarCandidate)
+assert.equal(chineseCategoryFolderAvatarAssignment.categoryName, '华语电影')
+assert.equal(chineseCategoryFolderAvatarAssignment.source, 'pathHint')
+const nestedCategoryFolderAvatarCandidate = categoryFolderCandidatesByPath.get('/电影/阿凡达/阿凡达.mp4')
+assert.ok(nestedCategoryFolderAvatarCandidate)
+assert.equal(nestedCategoryFolderAvatarCandidate.kind, 'movie')
+assert.equal(nestedCategoryFolderAvatarCandidate.categoryHint, '电影')
+const nestedCategoryFolderAvatarAssignment = deriveRawCandidateCategoryAssignment(nestedCategoryFolderAvatarCandidate)
+assert.equal(nestedCategoryFolderAvatarAssignment.categoryName, '电影')
+assert.equal(nestedCategoryFolderAvatarAssignment.source, 'pathHint')
+const uncategorizedFolderAvatarCandidate = categoryFolderCandidatesByPath.get('/阿凡达/阿凡达.mp4')
+assert.ok(uncategorizedFolderAvatarCandidate)
+assert.equal(uncategorizedFolderAvatarCandidate.kind, 'movie')
+assert.equal(uncategorizedFolderAvatarCandidate.categoryHint, undefined)
+const uncategorizedFolderAvatarAssignment = deriveRawCandidateCategoryAssignment(uncategorizedFolderAvatarCandidate)
+assert.equal(uncategorizedFolderAvatarAssignment.categoryName, RAW_MOVIE_CATEGORY_NAME)
+assert.equal(uncategorizedFolderAvatarAssignment.source, 'kindFallback')
+const noisyStandalonePreview = createRawScanPreview([
+  {
+    name: 'sample.mp4',
+    path: '/sample.mp4',
+    parentPath: '/',
+    type: 'file',
+  },
+  {
+    name: '4K.mp4',
+    path: '/4K.mp4',
+    parentPath: '/',
+    type: 'file',
+  },
+  {
+    name: 'video.mp4',
+    path: '/video.mp4',
+    parentPath: '/',
+    type: 'file',
+  },
+  {
+    name: 'EP01.mp4',
+    path: '/EP01.mp4',
+    parentPath: '/',
+    type: 'file',
+  },
+], {
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+})
+const noisyStandaloneCandidatesByPath = new Map(noisyStandalonePreview.candidates.map(candidate => [candidate.record.providerPath, candidate]))
+assert.equal(noisyStandaloneCandidatesByPath.get('/sample.mp4')?.kind, 'unresolved')
+assert.equal(noisyStandaloneCandidatesByPath.get('/4K.mp4')?.kind, 'unresolved')
+assert.equal(noisyStandaloneCandidatesByPath.get('/video.mp4')?.kind, 'unresolved')
+assert.equal(noisyStandaloneCandidatesByPath.get('/EP01.mp4')?.kind, 'episode')
+const standardModeSampleCandidate = parseRawMediaCandidate(createRecord('/电影/sample.mp4'), {
+  ...categoryFolderStandalonePreview.detection,
+  mode: 'standard',
+})
+assert.equal(standardModeSampleCandidate.kind, 'unresolved')
+const mixedStandaloneAnimeCandidates = mixedStandalonePreview.candidates.filter(candidate => candidate.record.providerPath.startsWith('/动漫/'))
+assert.deepEqual(mixedStandaloneAnimeCandidates.map(candidate => candidate.kind), ['episode', 'episode', 'episode'])
+assert.deepEqual(mixedStandaloneAnimeCandidates.map(candidate => deriveRawCandidateCategoryAssignment(candidate).categoryName), ['动漫', '动漫', '动漫'])
+
+const mixedStandaloneSearches: string[] = []
+const mixedStandaloneScrapes = await enrichRawMediaCandidates(mixedStandalonePreview.candidates, {
+  tmdbClient: {
+    async searchCandidate(candidate: RawMediaCandidate): Promise<TmdbCandidateMatch | null> {
+      mixedStandaloneSearches.push(`${candidate.kind}:${candidate.title}`)
+      if (candidate.record.providerPath === '/阿凡达.mp4') {
+        return {
+          metadata: standaloneAvatarMetadata,
+          searchTitle: '阿凡达',
+        }
+      }
+      if (candidate.seriesTitle === '灵笼') {
+        return {
+          metadata: siblingAnimeMetadata,
+          searchTitle: '灵笼',
+        }
+      }
+      return null
+    },
+    async getEpisodeDetail(tvTmdbId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata> {
+      return {
+        ...matchedEpisodeMetadata,
+        tmdbEpisodeId: tvTmdbId * 100 + seasonNumber * 10 + episodeNumber,
+        tvTmdbId,
+        seasonNumber,
+        episodeNumber,
+        name: `灵笼 S${seasonNumber}E${episodeNumber}`,
+        overview: `灵笼第 ${seasonNumber} 季第 ${episodeNumber} 集。`,
+        stillUrl: `https://image.tmdb.org/t/p/w780/ling-long-s${seasonNumber}-e${episodeNumber}.jpg`,
+        scrapedAt: '2026-05-25T00:02:30.000Z',
+      }
+    },
+  },
+})
+const mixedStandaloneScrapesByRecordId = new Map(mixedStandaloneScrapes.map(item => [item.recordId, item]))
+const standaloneAvatarScrape = mixedStandaloneScrapesByRecordId.get(standaloneAvatarCandidate.record.id)
+assert.equal(mixedStandaloneSearches.includes('movie:阿凡达'), true)
+assert.equal(standaloneAvatarScrape?.matchStatus, 'matched')
+assert.equal(standaloneAvatarScrape?.mediaType, 'movie')
+assert.equal(standaloneAvatarScrape?.metadata?.title, '阿凡达')
+const standaloneAvatarDisplayAssignment = resolveRawScrapedCategoryAssignment(standaloneAvatarCandidate, standaloneAvatarScrape)
+assert.equal(standaloneAvatarDisplayAssignment.source, 'metadataRule')
+assert.notEqual(categoryNameForRawCandidate(standaloneAvatarCandidate, standaloneAvatarScrape), '动漫')
+assert.notEqual(categoryNameForRawCandidate(standaloneAvatarCandidate, standaloneAvatarScrape), RAW_UNRESOLVED_CATEGORY_NAME)
+const standaloneAvatarDisplayItem = toRawScannedMediaItem(standaloneAvatarCandidate, standaloneAvatarScrape, 'movie')
+assert.equal(standaloneAvatarDisplayItem.type, 'movie')
+assert.equal(standaloneAvatarDisplayItem.name, '阿凡达')
+assert.equal(standaloneAvatarDisplayItem.posterUrl, standaloneAvatarMetadata.posterUrl)
+assert.equal(standaloneAvatarDisplayItem.backdropUrl, standaloneAvatarMetadata.backdropUrl)
+const mixedStandaloneDisplayCategories = mixedStandalonePreview.candidates.map(candidate =>
+  categoryNameForRawCandidate(candidate, mixedStandaloneScrapesByRecordId.get(candidate.record.id)))
+assert.equal(mixedStandaloneDisplayCategories.includes('动漫'), true)
+assert.equal(mixedStandaloneDisplayCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
+assert.notDeepEqual([...new Set(mixedStandaloneDisplayCategories)], ['动漫'])
+const mixedStandaloneHomeSections = createRawSourceHomeSections({
+  version: 1,
+  scanId: 'scan-standalone-avatar-with-anime-siblings',
+  sourceId: 'alist',
+  sourceType: 'alist',
+  rootPath: '/',
+  status: 'completed',
+  startedAt: '2026-05-25T00:00:00.000Z',
+  finishedAt: '2026-05-25T00:00:02.000Z',
+  folderCount: 4,
+  fileCount: mixedStandalonePreview.records.length,
+  skippedFileCount: 0,
+  errorCount: 0,
+  logs: [],
+  records: mixedStandalonePreview.records,
+  detection: mixedStandalonePreview.detection,
+  candidates: mixedStandalonePreview.candidates,
+  scrapedItems: mixedStandaloneScrapes,
+}, 'OpenList')
+const mixedStandaloneHomeItems = mixedStandaloneHomeSections.flatMap(section => section.items)
+assert.ok(mixedStandaloneHomeItems.some(item => item.id === '/阿凡达.mp4' && item.type === 'movie' && item.name === '阿凡达'))
+assert.ok(mixedStandaloneHomeItems.some(item => item.type === 'series' && item.name === '灵笼'))
 const staleManualEpisodeCache = applyRawManualIdentification(createStandardSeriesCache([{
   ...matchedSeriesScrape,
   recordId: standardSeriesCandidates[1].record.id,

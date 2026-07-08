@@ -61,6 +61,49 @@ const GENERIC_TITLE_SEGMENT_KEYS = new Set([
   '片库',
   '视频',
 ].map(value => normalizeSegmentTitleKey(value)))
+const STANDALONE_MOVIE_NOISE_TITLE_KEYS = new Set([
+  'sample',
+  'samples',
+  'trailer',
+  'trailers',
+  'teaser',
+  'preview',
+  'clip',
+  'clips',
+  'extra',
+  'extras',
+  'bonus',
+  'featurette',
+  'behind the scenes',
+  'bts',
+  'test',
+  'demo',
+  'unknown',
+  'untitled',
+  '4k',
+  '8k',
+  'hd',
+  'sd',
+  'fhd',
+  'uhd',
+  'hdr',
+  'dv',
+  'cam',
+  'tc',
+  'ts',
+  '合集',
+  '样片',
+  '预告',
+  '预告片',
+  '片花',
+  '花絮',
+  '测试',
+  '示例',
+  '未知',
+  '未命名',
+  '片头',
+  '片尾',
+].map(value => normalizeSegmentTitleKey(value)))
 const CATEGORY_TITLE_SEGMENT_KEYS = new Set([
   '电影',
   '剧集',
@@ -134,7 +177,13 @@ export function parseRawMediaCandidate(
     }
   }
 
-  if (hints.titleYearFolder || hints.titleYearFile || (standardMode && hints.depth >= 2 && normalizedTitle)) {
+  const standaloneMovieTitle = hasSearchableStandaloneMovieTitle(hints, false)
+  const standardMovieTitle = standardMode
+    && hints.depth >= 2
+    && hasSearchableStandaloneMovieTitle(hints, true)
+  const categorizedNestedMovieTitle = cleanExplicitCategorySegment(hints.categoryHint) != null
+    && hasSearchableStandaloneMovieTitle(hints, true)
+  if (hints.titleYearFolder || hints.titleYearFile || standardMovieTitle || standaloneMovieTitle || categorizedNestedMovieTitle) {
     return {
       kind: 'movie',
       parseStatus: hints.titleYearFolder || hints.titleYearFile ? 'parsed' : 'partial',
@@ -263,6 +312,20 @@ export function extractMediaSearchTitles(value: string): string[] {
   addSearchTitleCandidate(candidates, cleaned)
 
   return candidates
+}
+
+function hasSearchableStandaloneMovieTitle(hints: RawPathHints, allowNested: boolean): boolean {
+  if (hints.episodePattern || hints.seasonFolder)
+    return false
+
+  if (!allowNested && hints.depth > 2)
+    return false
+
+  const title = cleanWorkTitleSegment(hints.title ?? hints.cleanFileTitle)
+  if (!title || isObviousStandaloneMovieNoiseTitle(title))
+    return false
+
+  return extractMediaSearchTitles(title).some(searchTitle => !isObviousStandaloneMovieNoiseTitle(searchTitle))
 }
 
 function parseTitleYear(value: string): TitleYearMatch | null {
@@ -428,6 +491,11 @@ function isReservedStructureSegment(value: string): boolean {
   return false
 }
 
+function isObviousStandaloneMovieNoiseTitle(value: string): boolean {
+  const key = normalizeSegmentTitleKey(value)
+  return !key || isReservedStructureSegment(value) || STANDALONE_MOVIE_NOISE_TITLE_KEYS.has(key)
+}
+
 function normalizeSegmentTitleKey(value: string): string {
   return cleanMediaTitle(value).toLocaleLowerCase().replace(/[^a-z0-9\u4E00-\u9FFF]+/g, '')
 }
@@ -447,6 +515,9 @@ function inferCategoryHint(
   parentSegments: readonly string[],
   indexes: { titleFolderIndex?: number, seasonFolderIndex?: number, seriesIndex?: number },
 ): string | undefined {
+  const directCategoryHint = parentSegments.length === 1
+    ? cleanExplicitCategorySegment(parentSegments[0])
+    : undefined
   const hintIndex = indexes.titleFolderIndex != null
     ? indexes.titleFolderIndex - 1
     : indexes.seasonFolderIndex != null && indexes.seriesIndex != null
@@ -456,10 +527,21 @@ function inferCategoryHint(
         : undefined
 
   if (hintIndex == null || hintIndex < 0)
-    return undefined
+    return directCategoryHint
 
   const hint = cleanMediaTitle(parentSegments[hintIndex])
-  return hint || undefined
+  return hint || directCategoryHint
+}
+
+function cleanExplicitCategorySegment(value: string | undefined): string | undefined {
+  if (!value)
+    return undefined
+
+  const hint = cleanMediaTitle(value)
+  if (!hint || !CATEGORY_TITLE_SEGMENT_KEYS.has(normalizeSegmentTitleKey(hint)))
+    return undefined
+
+  return hint
 }
 
 function collectSignals(input: {

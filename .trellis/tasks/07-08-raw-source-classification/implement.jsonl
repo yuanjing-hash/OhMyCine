@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Raw file scrape parser and display contracts for manual identification, artwork, and home aggregation."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Raw source auto indexing and cache/home behavior must remain isolated and non-blocking."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Verification commands and raw source scraping forbidden patterns."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Parser changes flow through scanner, TMDB enrichment, display categories, Home aggregation, and playback."}
