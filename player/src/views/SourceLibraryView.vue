@@ -331,7 +331,7 @@ onMounted(async () => {
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
     if (status.sourceId === sourceId.value && status.sourceType === 'alist') {
       isScanning.value = status.state === 'running'
-      loadScanCacheForCurrentSource({ preserveLiveLogs: status.state === 'running' })
+      void loadScanCacheForCurrentSource({ preserveLiveLogs: status.state === 'running' })
       if (status.state === 'failed')
         scanErrorMessage.value = status.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
     }
@@ -339,7 +339,7 @@ onMounted(async () => {
   store.loadConfigs()
   syncDefaultViewModeForSource()
   await ensureSource()
-  loadScanCacheForCurrentSource()
+  await loadScanCacheForCurrentSource()
   if (isFolderView.value || isAlistSource.value)
     await loadSourceRoot()
 })
@@ -364,7 +364,7 @@ watch(sourceId, async () => {
   isScanManagementOpen.value = false
   syncDefaultViewModeForSource()
   await ensureSource()
-  loadScanCacheForCurrentSource()
+  await loadScanCacheForCurrentSource()
   if (isFolderView.value || isAlistSource.value)
     await loadSourceRoot()
 })
@@ -423,7 +423,7 @@ async function switchViewMode(mode: SourceViewMode) {
   errorMessage.value = null
   if (mode === 'media-library') {
     backToLibraries()
-    loadScanCacheForCurrentSource()
+    await loadScanCacheForCurrentSource()
     if (libraries.value.length === 0)
       await loadSourceRoot()
     return
@@ -677,7 +677,7 @@ async function startLocalScan() {
   }
 }
 
-function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } = {}) {
+async function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } = {}) {
   scanErrorMessage.value = null
   if (!options.preserveLiveLogs)
     scanLiveLogs.value = []
@@ -687,7 +687,7 @@ function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } =
     return
   }
 
-  scanCache.value = loadRawSourceScanCache(sourceId.value, 'alist', alistRootPath.value)
+  scanCache.value = await loadRawSourceScanCache(sourceId.value, 'alist', alistRootPath.value)
   if (!scanCache.value)
     selectedScannedCategoryId.value = null
 }
@@ -857,7 +857,7 @@ async function applyIdentificationResult(metadata: TmdbMetadata) {
     })
     const nextCache = await enrichIdentifiedTvEpisodeMetadata(identifiedCache, targetCandidate.record.id, metadata)
 
-    if (!saveRawSourceScanCache(nextCache)) {
+    if (!await saveRawSourceScanCache(nextCache)) {
       identificationErrorMessage.value = '本地扫描缓存写入失败，本次修正未保存。'
       return
     }
@@ -970,7 +970,7 @@ async function updateArtworkOverride(kind: EditableArtworkKind, imageUrl: string
       filePath,
     })
 
-    if (!saveRawSourceScanCache(nextCache)) {
+    if (!await saveRawSourceScanCache(nextCache)) {
       identificationErrorMessage.value = '本地扫描缓存写入失败，本次图片修改未保存。'
       return
     }
@@ -1011,7 +1011,7 @@ async function ensureIdentificationMetadataForArtwork(tmdb: TmdbScraper, tmdbId:
     return false
   }
 
-  if (!saveRawSourceScanCache(nextCache))
+  if (!await saveRawSourceScanCache(nextCache))
     throw new Error('本地扫描缓存写入失败，本次图片修改未保存。')
 
   scanCache.value = nextCache

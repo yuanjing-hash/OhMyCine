@@ -286,7 +286,7 @@ Phase 4: 生态系统           ████████████████
 #### 原始文件源本地刮削与海报墙
 
 - [~] 通用刮削分类规则配置（默认实例来自 MP 风格思路，但用户通过受控设置页编辑；分类只作为本地逻辑分组，不要求固定 `movie` / `tv` / `Movies` / `TV` 顶层目录，不写回 OpenList/Alist）
-- [~] OpenList/Alist 递归只读扫描与扫描日志（已接入 SourceLibraryView 手动扫描：通过 DataSource `list()` 从 `extra.rootPath` 递归只读读取，并以 source/root scoped localStorage 缓存保存扫描预览、检测结果与安全日志；Tauri SQLite 扫描库与后台任务待后续）
+- [~] OpenList/Alist 递归只读扫描与扫描日志（已接入 SourceLibraryView 手动扫描：通过 DataSource `list()` 从 `extra.rootPath` 递归只读读取；扫描预览、检测结果、手工识别、图片覆盖与安全日志正迁移到 source/root scoped Tauri app data SQLite 缓存；完整后台任务与图片二进制缓存待后续）
 - [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具；尚未接入递归扫描任务与 UI 确认）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
 - [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）

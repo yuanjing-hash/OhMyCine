@@ -171,7 +171,7 @@ export class AlistDataSource implements DataSource {
   }
 
   async list(path?: string): Promise<MediaItem[]> {
-    const rawChildren = this.listRawScannedChildren(path)
+    const rawChildren = await this.listRawScannedChildren(path)
     if (rawChildren)
       return rawChildren
     if (path && isRawScannedSyntheticId(path))
@@ -210,7 +210,7 @@ export class AlistDataSource implements DataSource {
   }
 
   async getDetail(id: string): Promise<MediaDetail> {
-    const rawDetail = this.getRawScannedDetail(id)
+    const rawDetail = await this.getRawScannedDetail(id)
     if (rawDetail)
       return rawDetail
     if (isRawScannedSyntheticId(id))
@@ -241,7 +241,7 @@ export class AlistDataSource implements DataSource {
 
   async getHomeSections(): Promise<HomeSection[]> {
     try {
-      const cache = this.loadRawScanCache()
+      const cache = await this.loadRawScanCache()
       return cache ? createRawSourceHomeSections(cache, this.name) : []
     }
     catch {
@@ -464,13 +464,13 @@ export class AlistDataSource implements DataSource {
       throw new Error('OpenList/Alist 返回的文件路径不在已选择的根目录内。')
   }
 
-  private loadRawScanCache() {
+  private async loadRawScanCache() {
     return loadRawSourceScanCache(this.id, 'alist', this.rootPath)
   }
 
-  private getRawScannedDetail(id: string): MediaDetail | null {
+  private async getRawScannedDetail(id: string): Promise<MediaDetail | null> {
     try {
-      const cache = this.loadRawScanCache()
+      const cache = await this.loadRawScanCache()
       return cache ? getRawScannedMediaDetail(cache, id) : null
     }
     catch {
@@ -478,11 +478,11 @@ export class AlistDataSource implements DataSource {
     }
   }
 
-  private listRawScannedChildren(id: string | undefined): MediaItem[] | null {
-    if (!id)
+  private async listRawScannedChildren(id: string | undefined): Promise<MediaItem[] | null> {
+    if (!id || !isRawScannedSyntheticId(id))
       return null
     try {
-      const cache = this.loadRawScanCache()
+      const cache = await this.loadRawScanCache()
       return cache ? listRawScannedChildren(cache, id) : null
     }
     catch {

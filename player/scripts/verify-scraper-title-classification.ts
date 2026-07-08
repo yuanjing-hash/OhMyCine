@@ -569,14 +569,14 @@ const episodeMetadataCache: RawLocalScanCache = {
   candidates: [standardSeriesCandidates[0]],
   scrapedItems: [matchedEpisodeScrape],
 }
-withMockLocalStorage(() => {
-  assert.equal(saveRawSourceScanCache(episodeMetadataCache), true)
-  const loadedCache = loadRawSourceScanCache('alist', 'alist', '/')
+await withMockLocalStorage(async () => {
+  assert.equal(await saveRawSourceScanCache(episodeMetadataCache), true)
+  const loadedCache = await loadRawSourceScanCache('alist', 'alist', '/')
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.stillUrl, matchedEpisodeMetadata.stillUrl)
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.overview, matchedEpisodeMetadata.overview)
 })
-withMockLocalStorage(() => {
-  assert.equal(saveRawSourceScanCache({
+await withMockLocalStorage(async () => {
+  assert.equal(await saveRawSourceScanCache({
     ...episodeMetadataCache,
     scanId: 'scan-stale-episode-metadata',
     scrapedItems: [{
@@ -584,7 +584,7 @@ withMockLocalStorage(() => {
       episodeMetadata: seasonTwoEpisodeMetadata,
     }],
   }), true)
-  const loadedCache = loadRawSourceScanCache('alist', 'alist', '/')
+  const loadedCache = await loadRawSourceScanCache('alist', 'alist', '/')
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata, undefined)
 })
 
@@ -812,7 +812,7 @@ async function verifyTmdbEpisodeDetailMapping(): Promise<void> {
   }
 }
 
-function withMockLocalStorage(callback: () => void): void {
+async function withMockLocalStorage(callback: () => Promise<void>): Promise<void> {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const values = new Map<string, string>()
   const storage: Storage = {
@@ -841,7 +841,7 @@ function withMockLocalStorage(callback: () => void): void {
       value: storage,
       configurable: true,
     })
-    callback()
+    await callback()
   }
   finally {
     if (descriptor)

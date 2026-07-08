@@ -144,11 +144,11 @@ export class RawSourceIndexScheduler {
     })
   }
 
-  getStatus(input: {
+  async getStatus(input: {
     readonly sourceId: string
     readonly sourceType: RawFileSourceType
     readonly rootPath?: string
-  }): RawSourceIndexStatus {
+  }): Promise<RawSourceIndexStatus> {
     const rootPath = normalizeProviderPath(input.rootPath)
     const key = sourceIndexKey(input.sourceId, input.sourceType, rootPath)
     const current = this.statuses.get(key)
@@ -156,7 +156,7 @@ export class RawSourceIndexScheduler {
       return current
 
     const record = this.readScheduleRecord(input.sourceId, input.sourceType, rootPath)
-    const cache = loadRawSourceScanCache(input.sourceId, input.sourceType, rootPath)
+    const cache = await loadRawSourceScanCache(input.sourceId, input.sourceType, rootPath)
     const lastAttemptAt = latestIso(record?.lastAttemptAt, cache?.finishedAt)
     const lastSuccessAt = latestIso(record?.lastSuccessAt, cache?.finishedAt)
     if (lastSuccessAt) {
@@ -224,7 +224,7 @@ export class RawSourceIndexScheduler {
       }
     }
 
-    const cooldown = this.cooldownStatus(target, intervalMs)
+    const cooldown = await this.cooldownStatus(target, intervalMs)
     if (cooldown) {
       this.setStatus(cooldown)
       return {
@@ -235,7 +235,7 @@ export class RawSourceIndexScheduler {
 
     try {
       const cache = await this.runScan(target, { throwOnFailure: false })
-      const status = this.getStatus(target)
+      const status = await this.getStatus(target)
       return {
         ...status,
         skipped: false,
@@ -334,12 +334,12 @@ export class RawSourceIndexScheduler {
     }
   }
 
-  private cooldownStatus(target: RawSourceIndexTarget, intervalMs: number): RawSourceIndexStatus | null {
+  private async cooldownStatus(target: RawSourceIndexTarget, intervalMs: number): Promise<RawSourceIndexStatus | null> {
     if (intervalMs <= 0)
       return null
 
     const record = this.readScheduleRecord(target.sourceId, target.sourceType, target.rootPath)
-    const cache = loadRawSourceScanCache(target.sourceId, target.sourceType, target.rootPath)
+    const cache = await loadRawSourceScanCache(target.sourceId, target.sourceType, target.rootPath)
     const lastAttemptMs = latestTimestamp(record?.lastAttemptAt, cache?.finishedAt)
     if (lastAttemptMs == null)
       return null

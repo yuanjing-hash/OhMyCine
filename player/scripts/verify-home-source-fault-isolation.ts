@@ -100,7 +100,7 @@ assert.equal(sections.find(section => section.type === 'recentlyAdded')?.items[0
 const restoreLocalStorage = installMockLocalStorage()
 try {
   const openListCache = createOpenListHomeCache('alist-home')
-  assert.equal(saveRawSourceScanCache(openListCache), true)
+  assert.equal(await saveRawSourceScanCache(openListCache), true)
 
   const alistSource = new AlistDataSource({
     readCredential: async () => ({ token: 'token', username: 'alice', password: 'stored-password' }),
@@ -139,7 +139,7 @@ try {
   assert.equal(mixedRecentSourceIds.has('emby-home'), true)
   assert.equal(mixedRecentSourceIds.has('alist-home'), true)
 
-  assert.equal(saveRawSourceScanCache(createOnlyUnmatchedOpenListCache('alist-unmatched')), true)
+  assert.equal(await saveRawSourceScanCache(createOnlyUnmatchedOpenListCache('alist-unmatched')), true)
   const unmatchedAlistSource = new AlistDataSource({
     readCredential: async () => ({ token: 'token', username: 'alice', password: 'stored-password' }),
     saveCredential: async () => {},
@@ -147,8 +147,8 @@ try {
   await unmatchedAlistSource.init(createAlistConfig('alist-unmatched'))
   assert.deepEqual(await unmatchedAlistSource.getHomeSections(), [])
 
-  assert.equal(saveRawSourceScanCache(createSensitiveOpenListCache('alist-sensitive')), true)
-  const sanitizedSensitiveCache = loadRawSourceScanCache('alist-sensitive', 'alist', '/影视库')
+  assert.equal(await saveRawSourceScanCache(createSensitiveOpenListCache('alist-sensitive')), true)
+  const sanitizedSensitiveCache = await loadRawSourceScanCache('alist-sensitive', 'alist', '/影视库')
   const serializedSensitiveCache = JSON.stringify(sanitizedSensitiveCache)
   assert.equal(sanitizedSensitiveCache?.records.length, 0)
   assert.equal(serializedSensitiveCache.includes('token-secret'), false)

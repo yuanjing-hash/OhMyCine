@@ -9,6 +9,7 @@ import type {
   RawScrapedMediaItem,
 } from './types'
 import type { DataSource, MediaItem } from '@/services/datasource/types'
+import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { enrichRawMediaCandidates } from './metadataEnrichment'
 import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath, relativeProviderPath } from './pathUtils'
@@ -202,7 +203,7 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
     scrapedItems,
   }
 
-  if (!saveRawSourceScanCache(cache)) {
+  if (!await saveRawSourceScanCache(cache)) {
     addLog('warning', '本地扫描缓存写入失败，本次结果仅在当前页面临时可用。')
     cache = {
       ...cache,
@@ -213,17 +214,18 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
   return cache
 }
 
-export function loadRawSourceScanCache(
+export async function loadRawSourceScanCache(
   sourceId: string,
   sourceType: RawFileSourceType,
   rootPath?: string,
-): RawLocalScanCache | null {
+): Promise<RawLocalScanCache | null> {
+  const normalizedRootPath = normalizeProviderPath(rootPath)
   try {
-    const raw = localStorage.getItem(rawScanCacheKey(sourceId, sourceType, normalizeProviderPath(rootPath)))
+    const raw = await readRawScanCachePayload(sourceId, sourceType, normalizedRootPath)
     if (!raw)
       return null
     const value = JSON.parse(raw) as unknown
-    return isRawLocalScanCache(value, sourceId, sourceType, normalizeProviderPath(rootPath))
+    return isRawLocalScanCache(value, sourceId, sourceType, normalizedRootPath)
       ? sanitizeRawLocalScanCache(value)
       : null
   }
@@ -232,10 +234,15 @@ export function loadRawSourceScanCache(
   }
 }
 
-export function saveRawSourceScanCache(cache: RawLocalScanCache): boolean {
+export async function saveRawSourceScanCache(cache: RawLocalScanCache): Promise<boolean> {
   try {
     const safeCache = sanitizeRawLocalScanCache(cache)
-    localStorage.setItem(rawScanCacheKey(safeCache.sourceId, safeCache.sourceType, safeCache.rootPath), JSON.stringify(safeCache))
+    await writeRawScanCachePayload(
+      safeCache.sourceId,
+      safeCache.sourceType,
+      safeCache.rootPath,
+      JSON.stringify(safeCache),
+    )
     return true
   }
   catch {
@@ -243,12 +250,84 @@ export function saveRawSourceScanCache(cache: RawLocalScanCache): boolean {
   }
 }
 
-export function clearRawSourceScanCache(sourceId: string, sourceType: RawFileSourceType, rootPath?: string): void {
+export async function clearRawSourceScanCache(sourceId: string, sourceType: RawFileSourceType, rootPath?: string): Promise<void> {
   try {
-    localStorage.removeItem(rawScanCacheKey(sourceId, sourceType, normalizeProviderPath(rootPath)))
+    await deleteRawScanCachePayload(sourceId, sourceType, normalizeProviderPath(rootPath))
   }
   catch {
     // Cache clearing is best-effort and must not affect browsing/playback.
+  }
+}
+
+async function readRawScanCachePayload(
+  sourceId: string,
+  sourceType: RawFileSourceType,
+  rootPath: string,
+): Promise<string | null> {
+  if (shouldUseTauriRawScanCache()) {
+    return await invoke<string | null>('raw_scan_cache_get', {
+      sourceId,
+      sourceType,
+      rootPath,
+    })
+  }
+
+  return fallbackLocalStorage()?.getItem(rawScanCacheKey(sourceId, sourceType, rootPath)) ?? null
+}
+
+async function writeRawScanCachePayload(
+  sourceId: string,
+  sourceType: RawFileSourceType,
+  rootPath: string,
+  payload: string,
+): Promise<void> {
+  if (shouldUseTauriRawScanCache()) {
+    await invoke('raw_scan_cache_set', {
+      sourceId,
+      sourceType,
+      rootPath,
+      payload,
+    })
+    return
+  }
+
+  const storage = fallbackLocalStorage()
+  if (!storage)
+    throw new Error('Raw scan cache storage is unavailable.')
+  storage.setItem(rawScanCacheKey(sourceId, sourceType, rootPath), payload)
+}
+
+async function deleteRawScanCachePayload(
+  sourceId: string,
+  sourceType: RawFileSourceType,
+  rootPath: string,
+): Promise<void> {
+  if (shouldUseTauriRawScanCache()) {
+    await invoke('raw_scan_cache_delete', {
+      sourceId,
+      sourceType,
+      rootPath,
+    })
+    return
+  }
+
+  fallbackLocalStorage()?.removeItem(rawScanCacheKey(sourceId, sourceType, rootPath))
+}
+
+function shouldUseTauriRawScanCache(): boolean {
+  const root = globalThis as {
+    readonly __TAURI_INTERNALS__?: unknown
+    readonly window?: { readonly __TAURI_INTERNALS__?: unknown }
+  }
+  return root.__TAURI_INTERNALS__ != null || root.window?.__TAURI_INTERNALS__ != null
+}
+
+function fallbackLocalStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null
+  }
+  catch {
+    return null
   }
 }
 

@@ -19,6 +19,7 @@ use commands::player::{
 use commands::preference::{
     player_get_playback_speed_preference, player_set_playback_speed_preference,
 };
+use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -39,6 +40,9 @@ fn main() {
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_list_continue_watching,
+            raw_scan_cache_get,
+            raw_scan_cache_set,
+            raw_scan_cache_delete,
             emby_post_playback_json,
             mpv_load,
             mpv_add_subtitle,
