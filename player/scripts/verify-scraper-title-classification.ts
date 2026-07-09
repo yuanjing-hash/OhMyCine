@@ -956,6 +956,7 @@ const tokenizedPathPreview = createRawScanPreview([
 assert.equal(tokenizedPathPreview.records.length, 0)
 
 await verifyTmdbEpisodeDetailMapping()
+await verifyTmdbExactTitlePreference()
 
 console.log(JSON.stringify({
   cleanedTitle,
@@ -1001,6 +1002,7 @@ console.log(JSON.stringify({
   flatEpisodeSeriesTitle: flatEpisodeCandidate.seriesTitle,
   categoryOnlySeasonSearchTitles: categoryOnlyRecognition.searchTitles,
   tokenizedPathRecordCount: tokenizedPathPreview.records.length,
+  tmdbExactTitlePreference: '复仇者联盟',
 }, null, 2))
 
 async function verifyTmdbEpisodeDetailMapping(): Promise<void> {
@@ -1061,6 +1063,112 @@ async function verifyTmdbEpisodeDetailMapping(): Promise<void> {
       () => tmdb.getEpisodeDetail(135934, 1, 2),
       /TMDB episode response is incomplete/,
     )
+  }
+  finally {
+    if (fetchDescriptor)
+      Object.defineProperty(globalThis, 'fetch', fetchDescriptor)
+    if (windowDescriptor)
+      Object.defineProperty(globalThis, 'window', windowDescriptor)
+    else
+      delete (globalThis as { window?: unknown }).window
+  }
+}
+
+async function verifyTmdbExactTitlePreference(): Promise<void> {
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch')
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const requestedDetailIds: number[] = []
+  const tmdb = new TmdbScraper({
+    authType: 'apiKey',
+    value: 'test-key',
+  }, {
+    credentialRef: 'settings:tmdb-credential',
+    authType: 'apiKey',
+    language: 'zh-CN',
+    region: 'CN',
+  }, 1_000)
+
+  const details = new Map<number, Record<string, unknown>>([
+    [24428, {
+      id: 24428,
+      title: '复仇者联盟',
+      original_title: 'The Avengers',
+      overview: 'Exact title fixture.',
+      release_date: '2012-05-04',
+      vote_average: 7.7,
+      popularity: 45,
+      genres: [{ id: 878, name: '科幻' }],
+      original_language: 'en',
+      production_countries: [{ iso_3166_1: 'US' }],
+      images: { logos: [] },
+    }],
+    [299536, {
+      id: 299536,
+      title: '复仇者联盟3：无限战争',
+      original_title: 'Avengers: Infinity War',
+      overview: 'Sequel fixture with much higher popularity.',
+      release_date: '2018-04-27',
+      vote_average: 8.2,
+      popularity: 9000,
+      genres: [{ id: 878, name: '科幻' }],
+      original_language: 'en',
+      production_countries: [{ iso_3166_1: 'US' }],
+      images: { logos: [] },
+    }],
+  ])
+
+  try {
+    Object.defineProperty(globalThis, 'window', {
+      value: globalThis,
+      configurable: true,
+    })
+
+    const tmdbFetch: typeof fetch = async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/3/search/movie') {
+        return new Response(JSON.stringify({
+          results: [
+            {
+              id: 299536,
+              title: '复仇者联盟3：无限战争',
+              original_title: 'Avengers: Infinity War',
+              release_date: '2018-04-27',
+              popularity: 9000,
+            },
+            {
+              id: 24428,
+              title: '复仇者联盟',
+              original_title: 'The Avengers',
+              release_date: '2012-05-04',
+              popularity: 45,
+            },
+          ],
+        }), { status: 200 })
+      }
+
+      const detailMatch = /^\/3\/movie\/(\d+)$/.exec(url.pathname)
+      if (detailMatch) {
+        const id = Number(detailMatch[1])
+        requestedDetailIds.push(id)
+        const detail = details.get(id)
+        if (detail)
+          return new Response(JSON.stringify(detail), { status: 200 })
+      }
+
+      return new Response(JSON.stringify({ status_message: 'not found' }), { status: 404 })
+    }
+    Object.defineProperty(globalThis, 'fetch', {
+      value: tmdbFetch,
+      configurable: true,
+    })
+
+    const best = await tmdb.search('movie', '复仇者联盟')
+    assert.equal(best?.tmdbId, 24428)
+    assert.equal(best?.title, '复仇者联盟')
+
+    const choices = await tmdb.searchChoices('movie', '复仇者联盟', undefined, 2)
+    assert.deepEqual(choices.map(choice => choice.tmdbId), [24428, 299536])
+    assert.deepEqual(requestedDetailIds, [24428, 24428, 299536])
   }
   finally {
     if (fetchDescriptor)

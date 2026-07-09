@@ -80,12 +80,61 @@ assert.deepEqual(scans, [
   'alist:alist-one:/影视库',
 ])
 
+const foregroundStatuses: string[] = []
+let finishForegroundScan: ((cache: RawLocalScanCache) => void) | undefined
+const foregroundScheduler = createRawSourceIndexScheduler({
+  storage: new MemoryStorage(),
+  now: () => now,
+  scanRunner: async input => new Promise<RawLocalScanCache>((resolve) => {
+    scans.push(`${input.sourceType}:${input.sourceId}:${input.rootPath}:foreground`)
+    finishForegroundScan = resolve
+  }),
+})
+foregroundScheduler.subscribe(status => foregroundStatuses.push(status.state))
+const foregroundTarget = {
+  sourceId: 'local-first-open',
+  sourceType: 'local' as const,
+  rootPath: '/新媒体库',
+  source,
+}
+const foregroundScan = foregroundScheduler.forceScan(foregroundTarget)
+const runningStatus = await foregroundScheduler.getStatus({
+  sourceId: foregroundTarget.sourceId,
+  sourceType: foregroundTarget.sourceType,
+  rootPath: foregroundTarget.rootPath,
+})
+const runningTrigger = await foregroundScheduler.triggerAutoIndexForTargets([foregroundTarget])
+assert.equal(foregroundStatuses.at(-1), 'running')
+assert.equal(runningStatus.state, 'running')
+assert.equal(runningTrigger[0]?.state, 'running')
+assert.equal(runningTrigger[0]?.skipped, true)
+assert.ok(finishForegroundScan)
+finishForegroundScan(createScanCache({
+  source,
+  sourceId: foregroundTarget.sourceId,
+  sourceType: foregroundTarget.sourceType,
+  rootPath: foregroundTarget.rootPath,
+}))
+const foregroundCache = await foregroundScan
+const completedStatus = await foregroundScheduler.getStatus({
+  sourceId: foregroundTarget.sourceId,
+  sourceType: foregroundTarget.sourceType,
+  rootPath: foregroundTarget.rootPath,
+})
+assert.equal(foregroundCache.sourceId, foregroundTarget.sourceId)
+assert.equal(foregroundStatuses.at(-1), 'completed')
+assert.equal(completedStatus.state, 'completed')
+
 console.log(JSON.stringify({
   firstState: first[0]?.state,
   repeatedState: repeated[0]?.state,
   repeatedSkipped: repeated[0]?.skipped,
   independentState: independent[0]?.state,
   afterCooldownState: afterCooldown[0]?.state,
+  foregroundStatuses,
+  runningStatus: runningStatus.state,
+  runningTriggerSkipped: runningTrigger[0]?.skipped,
+  completedStatus: completedStatus.state,
   scans,
 }, null, 2))
 

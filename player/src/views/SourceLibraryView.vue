@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
+import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, RawSourceIndexStatus, RawSourceIndexTarget, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -104,6 +104,7 @@ const isLoading = ref(false)
 const errorMessage = ref<string | null>(null)
 const viewMode = ref<SourceViewMode>('folders')
 const scanCache = ref<RawLocalScanCache | null>(null)
+const rawIndexStatus = ref<RawSourceIndexStatus | null>(null)
 const isScanning = ref(false)
 const scanErrorMessage = ref<string | null>(null)
 const scanLiveLogs = ref<RawLocalScanLogEntry[]>([])
@@ -130,6 +131,7 @@ const isArtworkSearching = ref(false)
 const isArtworkApplying = ref(false)
 let unsubscribeRawIndexStatus: (() => void) | undefined
 let identificationSearchRequestId = 0
+let rawIndexGeneration = 0
 
 const rawSourceType = computed<RawFileSourceType | null>(() => {
   const type = sourceConfig.value?.type
@@ -257,8 +259,16 @@ const detectionModeLabel = computed(() => {
   return scanCache.value.detection.mode === 'standard' ? '标准目录' : '非标准目录'
 })
 const scanStatusLabel = computed(() => {
-  if (isScanning.value)
+  if (isScanning.value || rawIndexStatus.value?.state === 'running')
     return '扫描中'
+  if (rawIndexStatus.value?.state === 'queued')
+    return '准备索引'
+  if (rawIndexStatus.value?.state === 'failed')
+    return '索引失败'
+  if (rawIndexStatus.value?.state === 'completed' && !scanCache.value)
+    return '读取索引结果'
+  if (rawIndexStatus.value?.state === 'cooldown' && !scanCache.value)
+    return '等待重试'
   if (!scanCache.value)
     return '等待自动索引'
   return scanCache.value.status === 'completed' ? '已完成' : '部分索引'
@@ -266,6 +276,49 @@ const scanStatusLabel = computed(() => {
 const scanLogEntries = computed(() => {
   const entries = isScanning.value || !scanCache.value ? scanLiveLogs.value : scanCache.value.logs
   return entries.slice(-8)
+})
+const isRawIndexBusy = computed(() =>
+  isScanning.value || rawIndexStatus.value?.state === 'queued' || rawIndexStatus.value?.state === 'running',
+)
+const firstIndexStatusLabel = computed(() => {
+  if (rawIndexStatus.value?.state === 'failed')
+    return '索引失败'
+  if (rawIndexStatus.value?.state === 'completed')
+    return '读取索引结果'
+  if (rawIndexStatus.value?.state === 'cooldown')
+    return '等待下次自动索引'
+  if (isRawIndexBusy.value)
+    return rawIndexStatus.value?.state === 'queued' ? '准备索引' : '正在索引'
+  return '准备索引'
+})
+const firstIndexTitle = computed(() => {
+  if (rawIndexStatus.value?.state === 'failed')
+    return '这次索引没跑完'
+  if (rawIndexStatus.value?.state === 'completed')
+    return '正在加载索引结果'
+  if (rawIndexStatus.value?.state === 'cooldown')
+    return '正在等待索引窗口'
+  if (isRawIndexBusy.value)
+    return '正在整理本地媒体库'
+  return '即将整理本地媒体库'
+})
+const firstIndexDescription = computed(() => {
+  if (rawIndexStatus.value?.state === 'failed')
+    return rawIndexStatus.value.errorMessage ?? '自动索引失败了，但文件夹浏览和播放仍然可用，可以手动重试。'
+  if (rawIndexStatus.value?.state === 'completed')
+    return '索引已经完成，正在读取本机缓存并生成分类卡片。'
+  if (rawIndexStatus.value?.state === 'cooldown')
+    return '当前源刚刚尝试过自动索引；如果媒体库仍为空，可以手动立即索引。'
+  if (isRawIndexBusy.value)
+    return '第一次进入会读取目录、识别电影/剧集并写入本机缓存，完成后分类会自动出现。'
+  return '正在启动当前根目录的自动索引，文件夹视图可以同时浏览和播放。'
+})
+const firstIndexActionLabel = computed(() => {
+  if (isRawIndexBusy.value)
+    return '索引中…'
+  if (rawIndexStatus.value?.state === 'failed')
+    return '重试索引'
+  return '立即索引'
 })
 const identificationSourcePath = computed(() =>
   identificationTarget.value?.entries[0]?.candidate.record.providerPath
@@ -334,22 +387,26 @@ onMounted(async () => {
   window.addEventListener('click', closeWorkContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
-    if (status.sourceId === sourceId.value && status.sourceType === rawSourceType.value) {
+    if (isCurrentRawIndexStatus(status)) {
+      rawIndexStatus.value = status
       isScanning.value = status.state === 'running'
       void loadScanCacheForCurrentSource({ preserveLiveLogs: status.state === 'running' })
       if (status.state === 'failed')
         scanErrorMessage.value = status.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
+      else if (status.state === 'running' || status.state === 'completed')
+        scanErrorMessage.value = null
     }
   })
   store.loadConfigs()
   syncDefaultViewModeForSource()
   await ensureSource()
-  await loadScanCacheForCurrentSource()
+  await prepareRawSourceIndex()
   if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
 })
 
 onBeforeUnmount(() => {
+  rawIndexGeneration += 1
   window.removeEventListener('click', closeWorkContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus?.()
@@ -357,11 +414,15 @@ onBeforeUnmount(() => {
 })
 
 watch(sourceId, async () => {
+  rawIndexGeneration += 1
   selectedLibrary.value = null
   navigationStack.value = []
   items.value = []
   libraries.value = []
   scanCache.value = null
+  rawIndexStatus.value = null
+  isScanning.value = false
+  scanErrorMessage.value = null
   scanLiveLogs.value = []
   selectedScannedCategoryId.value = null
   closeWorkContextMenu()
@@ -369,7 +430,7 @@ watch(sourceId, async () => {
   isScanManagementOpen.value = false
   syncDefaultViewModeForSource()
   await ensureSource()
-  await loadScanCacheForCurrentSource()
+  await prepareRawSourceIndex()
   if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
 })
@@ -428,7 +489,7 @@ async function switchViewMode(mode: SourceViewMode) {
   errorMessage.value = null
   if (mode === 'media-library') {
     backToLibraries()
-    await loadScanCacheForCurrentSource()
+    await prepareRawSourceIndex()
     if (libraries.value.length === 0)
       await loadSourceRoot()
     return
@@ -656,29 +717,112 @@ async function handlePlay(item: MediaItem) {
   }
 }
 
-async function startLocalScan() {
-  if (!source.value || !rawSourceType.value)
+async function prepareRawSourceIndex() {
+  await loadScanCacheForCurrentSource()
+  await refreshRawIndexStatusForCurrentSource()
+  void ensureRawSourceIndexForCurrentSource()
+}
+
+async function refreshRawIndexStatusForCurrentSource(): Promise<RawSourceIndexStatus | null> {
+  if (!rawSourceType.value) {
+    rawIndexStatus.value = null
+    isScanning.value = false
+    return null
+  }
+
+  const status = await rawSourceIndexScheduler.getStatus({
+    sourceId: sourceId.value,
+    sourceType: rawSourceType.value,
+    rootPath: rawSourceRootPath.value,
+  })
+  if (!isCurrentRawIndexStatus(status))
+    return null
+
+  rawIndexStatus.value = status
+  isScanning.value = status.state === 'running'
+  if (status.state === 'failed')
+    scanErrorMessage.value = status.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
+  return status
+}
+
+async function ensureRawSourceIndexForCurrentSource() {
+  if (scanCache.value || rawIndexStatus.value?.state === 'failed')
     return
 
+  const target = currentRawSourceIndexTarget()
+  if (!target)
+    return
+
+  if (rawIndexStatus.value?.state === 'running' || rawIndexStatus.value?.state === 'queued') {
+    isScanning.value = true
+    return
+  }
+
+  if (rawIndexStatus.value?.state === 'cooldown')
+    return
+
+  const generation = rawIndexGeneration
+  rawIndexStatus.value = {
+    sourceId: target.sourceId,
+    sourceType: target.sourceType,
+    rootPath: target.rootPath,
+    state: 'queued',
+  }
   isScanning.value = true
   scanErrorMessage.value = null
   scanLiveLogs.value = []
   selectedScannedCategoryId.value = null
   try {
-    scanCache.value = await rawSourceIndexScheduler.forceScan({
-      source: source.value,
-      sourceId: sourceId.value,
-      sourceType: rawSourceType.value,
-      rootPath: rawSourceRootPath.value,
-    }, {
+    const cache = await rawSourceIndexScheduler.forceScan(target, {
       onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
     })
+    if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target))
+      scanCache.value = cache
   }
   catch (error) {
-    scanErrorMessage.value = toSafeErrorMessage(error, '扫描失败。文件夹浏览和播放仍可继续使用。')
+    if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target))
+      scanErrorMessage.value = toSafeErrorMessage(error, '扫描失败。文件夹浏览和播放仍可继续使用。')
   }
   finally {
-    isScanning.value = false
+    if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target)) {
+      isScanning.value = false
+      await refreshRawIndexStatusForCurrentSource()
+    }
+  }
+}
+
+async function startLocalScan() {
+  const target = currentRawSourceIndexTarget()
+  if (!target)
+    return
+
+  const generation = rawIndexGeneration
+  rawIndexStatus.value = {
+    sourceId: target.sourceId,
+    sourceType: target.sourceType,
+    rootPath: target.rootPath,
+    state: 'queued',
+  }
+  isScanning.value = true
+  scanErrorMessage.value = null
+  scanLiveLogs.value = []
+  selectedScannedCategoryId.value = null
+  try {
+    const cache = await rawSourceIndexScheduler.forceScan(target, {
+      onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
+    })
+    if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target))
+      scanCache.value = cache
+  }
+  catch (error) {
+    if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target))
+      scanErrorMessage.value = toSafeErrorMessage(error, '扫描失败。文件夹浏览和播放仍可继续使用。')
+  }
+  finally {
+    if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target)) {
+      isScanning.value = false
+      await refreshRawIndexStatusForCurrentSource()
+    }
   }
 }
 
@@ -695,6 +839,30 @@ async function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boole
   scanCache.value = await loadRawSourceScanCache(sourceId.value, rawSourceType.value, rawSourceRootPath.value)
   if (!scanCache.value)
     selectedScannedCategoryId.value = null
+}
+
+function currentRawSourceIndexTarget(): RawSourceIndexTarget | null {
+  if (!source.value || !rawSourceType.value)
+    return null
+
+  return {
+    source: source.value,
+    sourceId: sourceId.value,
+    sourceType: rawSourceType.value,
+    rootPath: rawSourceRootPath.value,
+  }
+}
+
+function isCurrentRawIndexStatus(status: RawSourceIndexStatus): boolean {
+  return status.sourceId === sourceId.value
+    && status.sourceType === rawSourceType.value
+    && status.rootPath === rawSourceRootPath.value
+}
+
+function isCurrentRawIndexTarget(target: Pick<RawSourceIndexTarget, 'sourceId' | 'sourceType' | 'rootPath'>): boolean {
+  return target.sourceId === sourceId.value
+    && target.sourceType === rawSourceType.value
+    && target.rootPath === rawSourceRootPath.value
 }
 
 function syncDefaultViewModeForSource() {
@@ -1692,13 +1860,75 @@ function labelForSourceType(type: string): string {
                 </div>
               </div>
 
-              <MediaGrid
-                :items="[]"
-                empty-title="本地海报墙正在等待整理"
-                empty-description="文件夹浏览和播放保持可用；扫描状态不会影响现有目录访问。"
-                @select="handleSelect"
-                @play="handlePlay"
-              />
+              <div class="first-index-panel rounded-[1.75rem] border border-white/10 p-5">
+                <div class="flex flex-wrap items-start justify-between gap-5">
+                  <div class="flex min-w-0 flex-1 gap-4">
+                    <div class="first-index-spinner" :class="{ 'is-active': isRawIndexBusy }" aria-hidden="true">
+                      <span />
+                    </div>
+                    <div class="min-w-0">
+                      <p class="text-xs font-semibold uppercase tracking-[0.2em] text-primary/80">
+                        {{ firstIndexStatusLabel }}
+                      </p>
+                      <h3 class="mt-2 text-lg font-bold text-white">
+                        {{ firstIndexTitle }}
+                      </h3>
+                      <p class="mt-2 max-w-2xl text-sm leading-6 text-white/52">
+                        {{ firstIndexDescription }}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
+                      :disabled="isRawIndexBusy || !source"
+                      @click="startLocalScan"
+                    >
+                      {{ firstIndexActionLabel }}
+                    </button>
+                    <button
+                      class="rounded-2xl border border-white/10 bg-white/6 px-5 py-3 text-sm font-semibold text-white/70 transition-colors hover:bg-white/12 hover:text-white"
+                      @click="switchViewMode('folders')"
+                    >
+                      文件夹
+                    </button>
+                  </div>
+                </div>
+
+                <div class="raw-index-progress mt-5" :class="{ 'is-active': isRawIndexBusy }">
+                  <span />
+                </div>
+
+                <div class="mt-5 grid gap-3 sm:grid-cols-3">
+                  <div class="scan-stat">
+                    <p>根目录</p>
+                    <strong class="truncate">{{ rawSourceRootLabel }}</strong>
+                  </div>
+                  <div class="scan-stat">
+                    <p>状态</p>
+                    <strong>{{ scanStatusLabel }}</strong>
+                  </div>
+                  <div class="scan-stat">
+                    <p>当前缓存</p>
+                    <strong>尚未生成</strong>
+                  </div>
+                </div>
+
+                <div v-if="scanLogEntries.length" class="mt-5 rounded-2xl border border-white/8 bg-black/14 p-4">
+                  <h4 class="text-sm font-semibold text-white">
+                    最近扫描
+                  </h4>
+                  <div class="mt-3 space-y-2 text-sm leading-6 text-white/52">
+                    <p v-for="(entry, index) in scanLogEntries" :key="`${entry.timestamp}-${index}`">
+                      <span
+                        class="mr-2 inline-block h-2 w-2 rounded-full"
+                        :class="entry.level === 'error' ? 'bg-red-300' : entry.level === 'warning' ? 'bg-yellow-300' : 'bg-primary'"
+                      />
+                      {{ entry.path ? `${entry.message} (${entry.path})` : entry.message }}
+                    </p>
+                  </div>
+                </div>
+              </div>
             </section>
           </template>
 
@@ -2273,6 +2503,60 @@ function labelForSourceType(type: string): string {
   transform: scale(0.98);
 }
 
+.first-index-panel {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), transparent 48%),
+    color-mix(in srgb, var(--color-surface) 66%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 10%),
+    0 18px 44px rgb(0 0 0 / 18%);
+}
+
+.first-index-spinner {
+  position: relative;
+  width: 3rem;
+  height: 3rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  background: rgb(255 255 255 / 6%);
+}
+
+.first-index-spinner span {
+  position: absolute;
+  inset: 0.45rem;
+  border-radius: 999px;
+  border: 2px solid rgb(255 255 255 / 16%);
+  border-top-color: var(--color-primary);
+}
+
+.first-index-spinner.is-active span {
+  animation: raw-index-spin 0.9s linear infinite;
+}
+
+.raw-index-progress {
+  position: relative;
+  height: 0.35rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 8%);
+}
+
+.raw-index-progress span {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 42%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--color-primary), rgb(255 255 255 / 82%));
+  opacity: 0.45;
+}
+
+.raw-index-progress.is-active span {
+  opacity: 1;
+  animation: raw-index-progress 1.35s ease-in-out infinite;
+}
+
 .scan-management-panel {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 8%, transparent), transparent 46%),
@@ -2297,5 +2581,21 @@ function labelForSourceType(type: string): string {
   color: white;
   font-size: 1rem;
   font-weight: 700;
+}
+
+@keyframes raw-index-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes raw-index-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  100% {
+    transform: translateX(250%);
+  }
 }
 </style>
