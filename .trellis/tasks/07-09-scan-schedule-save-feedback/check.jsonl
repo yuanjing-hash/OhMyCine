@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Check settings feedback is visible and consistent with existing UI."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Check config update success/failure behavior and source isolation."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check helper signatures and event values remain typed."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check required verification and package refresh."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check no duplicate toast or save pattern was introduced."}

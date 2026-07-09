@@ -770,26 +770,47 @@ function rawScanScheduleIntervalMinutes(source: DataSourceConfig, scanKind: RawS
 }
 
 async function updateRawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind, enabled: boolean) {
-  await updateRawScanSchedule(source, scanKind, { enabled })
+  await updateRawScanSchedule(
+    source,
+    scanKind,
+    { enabled },
+    `已保存「${sourceDisplayName(source)}」${rawScanKindLabel(scanKind)}：${enabled ? '已启用' : '已停用'}。`,
+  )
 }
 
 async function updateRawScanScheduleInterval(source: DataSourceConfig, scanKind: RawSourceScanKind, value: string) {
   const minutes = Number(value)
-  if (!Number.isFinite(minutes) || minutes <= 0)
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    feedback.value = {
+      type: 'error',
+      message: `${rawScanKindLabel(scanKind)}间隔必须是大于 0 的分钟数。`,
+    }
     return
-  await updateRawScanSchedule(source, scanKind, { intervalMs: intervalMinutesToMs(minutes) })
+  }
+  const intervalMs = intervalMinutesToMs(minutes)
+  await updateRawScanSchedule(
+    source,
+    scanKind,
+    { intervalMs },
+    `已保存「${sourceDisplayName(source)}」${rawScanKindLabel(scanKind)}间隔：${intervalMsToMinutes(intervalMs)} 分钟。`,
+  )
 }
 
 async function updateRawScanSchedule(
   source: DataSourceConfig,
   scanKind: RawSourceScanKind,
   patch: Parameters<typeof updateRawSourceScanScheduleExtra>[2],
+  successMessage: string,
 ) {
   feedback.value = null
   try {
     await store.updateConfig(source.id, {
       extra: updateRawSourceScanScheduleExtra(source.extra, scanKind, patch),
     })
+    feedback.value = {
+      type: 'success',
+      message: successMessage,
+    }
   }
   catch (error) {
     feedback.value = {
@@ -797,6 +818,14 @@ async function updateRawScanSchedule(
       message: toSafeErrorMessage(error, '扫描计划保存失败。'),
     }
   }
+}
+
+function sourceDisplayName(source: DataSourceConfig): string {
+  return source.displayName ?? source.name
+}
+
+function rawScanKindLabel(scanKind: RawSourceScanKind): string {
+  return scanKind === 'full' ? '全量扫描' : '增量扫描'
 }
 
 function normalizeComparableUrl(value: string): string {
