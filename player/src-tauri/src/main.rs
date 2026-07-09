@@ -11,7 +11,10 @@ use commands::emby::emby_post_playback_json;
 use commands::history::{
     player_get_playback_progress, player_list_continue_watching, player_upsert_playback_progress,
 };
-use commands::local_file::{local_file_list, local_file_metadata, local_file_stream_path};
+use commands::local_file::{
+    local_file_list, local_file_metadata, local_file_stream_path, local_file_watch_start,
+    local_file_watch_stop, LocalFileWatcherState,
+};
 use commands::player::{
     mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
     mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy,
@@ -32,6 +35,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(mpv_state)
+        .manage(LocalFileWatcherState::default())
         .invoke_handler(tauri::generate_handler![
             credential_set,
             credential_get,
@@ -47,6 +51,8 @@ fn main() {
             local_file_list,
             local_file_metadata,
             local_file_stream_path,
+            local_file_watch_start,
+            local_file_watch_stop,
             emby_post_playback_json,
             mpv_load,
             mpv_add_subtitle,

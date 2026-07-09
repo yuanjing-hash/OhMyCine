@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, RawSourceIndexStatus, RawSourceIndexTarget, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
+import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, RawSourceIndexStatus, RawSourceIndexTarget, RawSourceScanKind, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
@@ -105,6 +105,7 @@ const errorMessage = ref<string | null>(null)
 const viewMode = ref<SourceViewMode>('folders')
 const scanCache = ref<RawLocalScanCache | null>(null)
 const rawIndexStatus = ref<RawSourceIndexStatus | null>(null)
+const incrementalRawIndexStatus = ref<RawSourceIndexStatus | null>(null)
 const isScanning = ref(false)
 const scanErrorMessage = ref<string | null>(null)
 const scanLiveLogs = ref<RawLocalScanLogEntry[]>([])
@@ -258,6 +259,10 @@ const detectionModeLabel = computed(() => {
     return '等待索引'
   return scanCache.value.detection.mode === 'standard' ? '标准目录' : '非标准目录'
 })
+const fullScanStatusLabel = computed(() => formatRawIndexStatus(rawIndexStatus.value, scanCache.value ? '已完成' : '等待自动索引'))
+const incrementalScanStatusLabel = computed(() => formatRawIndexStatus(incrementalRawIndexStatus.value, '等待增量扫描'))
+const fullScanLastRunLabel = computed(() => formatRawIndexTime(rawIndexStatus.value))
+const incrementalScanLastRunLabel = computed(() => formatRawIndexTime(incrementalRawIndexStatus.value))
 const scanStatusLabel = computed(() => {
   if (isScanning.value || rawIndexStatus.value?.state === 'running')
     return '扫描中'
@@ -388,8 +393,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
     if (isCurrentRawIndexStatus(status)) {
-      rawIndexStatus.value = status
-      isScanning.value = status.state === 'running'
+      setRawIndexStatus(status)
       void loadScanCacheForCurrentSource({ preserveLiveLogs: status.state === 'running' })
       if (status.state === 'failed')
         scanErrorMessage.value = status.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
@@ -726,23 +730,28 @@ async function prepareRawSourceIndex() {
 async function refreshRawIndexStatusForCurrentSource(): Promise<RawSourceIndexStatus | null> {
   if (!rawSourceType.value) {
     rawIndexStatus.value = null
+    incrementalRawIndexStatus.value = null
     isScanning.value = false
     return null
   }
 
-  const status = await rawSourceIndexScheduler.getStatus({
+  const statuses = await rawSourceIndexScheduler.getStatuses({
     sourceId: sourceId.value,
     sourceType: rawSourceType.value,
     rootPath: rawSourceRootPath.value,
   })
-  if (!isCurrentRawIndexStatus(status))
+  if (!isCurrentRawIndexStatus(statuses.full))
     return null
 
-  rawIndexStatus.value = status
-  isScanning.value = status.state === 'running'
-  if (status.state === 'failed')
-    scanErrorMessage.value = status.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
-  return status
+  rawIndexStatus.value = statuses.full
+  incrementalRawIndexStatus.value = statuses.incremental
+  refreshRawIndexBusyState()
+  const failedStatus = statuses.full.state === 'failed'
+    ? statuses.full
+    : statuses.incremental.state === 'failed' ? statuses.incremental : null
+  if (failedStatus)
+    scanErrorMessage.value = failedStatus.errorMessage ?? '后台索引未完成，文件夹浏览和播放仍可继续使用。'
+  return statuses.full
 }
 
 async function ensureRawSourceIndexForCurrentSource() {
@@ -766,6 +775,7 @@ async function ensureRawSourceIndexForCurrentSource() {
     sourceId: target.sourceId,
     sourceType: target.sourceType,
     rootPath: target.rootPath,
+    scanKind: 'full',
     state: 'queued',
   }
   isScanning.value = true
@@ -774,6 +784,7 @@ async function ensureRawSourceIndexForCurrentSource() {
   selectedScannedCategoryId.value = null
   try {
     const cache = await rawSourceIndexScheduler.forceScan(target, {
+      scanKind: 'full',
       onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
     })
     if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target))
@@ -791,24 +802,26 @@ async function ensureRawSourceIndexForCurrentSource() {
   }
 }
 
-async function startLocalScan() {
+async function startLocalScan(scanKind: RawSourceScanKind = 'full') {
   const target = currentRawSourceIndexTarget()
   if (!target)
     return
 
   const generation = rawIndexGeneration
-  rawIndexStatus.value = {
+  setRawIndexStatus({
     sourceId: target.sourceId,
     sourceType: target.sourceType,
     rootPath: target.rootPath,
+    scanKind,
     state: 'queued',
-  }
+  })
   isScanning.value = true
   scanErrorMessage.value = null
   scanLiveLogs.value = []
   selectedScannedCategoryId.value = null
   try {
     const cache = await rawSourceIndexScheduler.forceScan(target, {
+      scanKind,
       onLog: entry => scanLiveLogs.value = [...scanLiveLogs.value.slice(-7), entry],
     })
     if (generation === rawIndexGeneration && isCurrentRawIndexTarget(target))
@@ -851,6 +864,21 @@ function currentRawSourceIndexTarget(): RawSourceIndexTarget | null {
     sourceType: rawSourceType.value,
     rootPath: rawSourceRootPath.value,
   }
+}
+
+function setRawIndexStatus(status: RawSourceIndexStatus): void {
+  if (status.scanKind === 'incremental')
+    incrementalRawIndexStatus.value = status
+  else
+    rawIndexStatus.value = status
+  refreshRawIndexBusyState()
+}
+
+function refreshRawIndexBusyState(): void {
+  isScanning.value = rawIndexStatus.value?.state === 'running'
+    || incrementalRawIndexStatus.value?.state === 'running'
+    || rawIndexStatus.value?.state === 'queued'
+    || incrementalRawIndexStatus.value?.state === 'queued'
 }
 
 function isCurrentRawIndexStatus(status: RawSourceIndexStatus): boolean {
@@ -1653,6 +1681,41 @@ function isContainerItem(item: MediaItem): boolean {
   return item.type === 'folder' || item.type === 'series' || item.type === 'season'
 }
 
+function formatRawIndexStatus(status: RawSourceIndexStatus | null, fallback: string): string {
+  switch (status?.state) {
+    case 'disabled':
+      return '已停用'
+    case 'cooldown':
+      return '等待下次'
+    case 'queued':
+      return '准备扫描'
+    case 'running':
+      return '扫描中'
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'idle':
+    default:
+      return fallback
+  }
+}
+
+function formatRawIndexTime(status: RawSourceIndexStatus | null): string {
+  const value = status?.lastSuccessAt ?? status?.lastAttemptAt ?? status?.lastFailureAt
+  if (!value)
+    return '暂无记录'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp))
+    return '暂无记录'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestamp))
+}
+
 function labelForSourceType(type: string): string {
   switch (type) {
     case 'emby':
@@ -1787,19 +1850,34 @@ function labelForSourceType(type: string): string {
                   根目录 {{ rawSourceRootLabel }}。扫描只读取目录和文件名，结果保存在本机缓存，不写回数据源目录。
                 </p>
               </div>
-              <button
-                class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
-                :disabled="isScanning || !source"
-                @click="startLocalScan"
-              >
-                {{ isScanning ? '索引中…' : scanCache ? '立即重扫' : '立即索引' }}
-              </button>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
+                  :disabled="isScanning || !source"
+                  @click="startLocalScan('full')"
+                >
+                  {{ isScanning ? '索引中…' : scanCache ? '全量重扫' : '立即索引' }}
+                </button>
+                <button
+                  class="rounded-2xl border border-white/10 bg-white/8 px-5 py-3 text-sm font-semibold text-white/74 transition-colors hover:bg-white/14 hover:text-white disabled:cursor-wait disabled:opacity-45"
+                  :disabled="isScanning || !source"
+                  @click="startLocalScan('incremental')"
+                >
+                  增量扫描
+                </button>
+              </div>
             </div>
 
-            <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <div class="scan-stat">
-                <p>状态</p>
-                <strong>{{ scanStatusLabel }}</strong>
+                <p>全量</p>
+                <strong>{{ fullScanStatusLabel }}</strong>
+                <span>{{ fullScanLastRunLabel }}</span>
+              </div>
+              <div class="scan-stat">
+                <p>增量</p>
+                <strong>{{ incrementalScanStatusLabel }}</strong>
+                <span>{{ incrementalScanLastRunLabel }}</span>
               </div>
               <div class="scan-stat">
                 <p>结构</p>
@@ -1882,7 +1960,7 @@ function labelForSourceType(type: string): string {
                     <button
                       class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
                       :disabled="isRawIndexBusy || !source"
-                      @click="startLocalScan"
+                      @click="startLocalScan()"
                     >
                       {{ firstIndexActionLabel }}
                     </button>
@@ -2581,6 +2659,13 @@ function labelForSourceType(type: string): string {
   color: white;
   font-size: 1rem;
   font-weight: 700;
+}
+
+.scan-stat span {
+  display: block;
+  margin-top: 0.15rem;
+  color: rgb(255 255 255 / 34%);
+  font-size: 0.72rem;
 }
 
 @keyframes raw-index-spin {

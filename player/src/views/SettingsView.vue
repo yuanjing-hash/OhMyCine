@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
+import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
@@ -22,6 +23,7 @@ import {
   TMDB_MOVIE_GENRES,
   TMDB_TV_GENRES,
 } from '@/services/scraper/classificationRules'
+import { intervalMinutesToMs, intervalMsToMinutes, readRawSourceScanScheduleConfig, updateRawSourceScanScheduleExtra } from '@/services/scraper/rawSourceScanSchedule'
 import {
   clearConfiguredTmdbCredential,
   loadTmdbLocalSettings,
@@ -753,6 +755,48 @@ function sourceStatusLine(source: DataSourceConfig): string {
       ? ` · 根目录：${readLocalRootPath(source)}`
       : ''
   return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}${rootState}`
+}
+
+function isRawScanScheduleSource(source: DataSourceConfig): boolean {
+  return source.type === 'alist' || source.type === 'local'
+}
+
+function rawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind): boolean {
+  return readRawSourceScanScheduleConfig(source)[scanKind].enabled
+}
+
+function rawScanScheduleIntervalMinutes(source: DataSourceConfig, scanKind: RawSourceScanKind): number {
+  return intervalMsToMinutes(readRawSourceScanScheduleConfig(source)[scanKind].intervalMs)
+}
+
+async function updateRawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind, enabled: boolean) {
+  await updateRawScanSchedule(source, scanKind, { enabled })
+}
+
+async function updateRawScanScheduleInterval(source: DataSourceConfig, scanKind: RawSourceScanKind, value: string) {
+  const minutes = Number(value)
+  if (!Number.isFinite(minutes) || minutes <= 0)
+    return
+  await updateRawScanSchedule(source, scanKind, { intervalMs: intervalMinutesToMs(minutes) })
+}
+
+async function updateRawScanSchedule(
+  source: DataSourceConfig,
+  scanKind: RawSourceScanKind,
+  patch: Parameters<typeof updateRawSourceScanScheduleExtra>[2],
+) {
+  feedback.value = null
+  try {
+    await store.updateConfig(source.id, {
+      extra: updateRawSourceScanScheduleExtra(source.extra, scanKind, patch),
+    })
+  }
+  catch (error) {
+    feedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, '扫描计划保存失败。'),
+    }
+  }
 }
 
 function normalizeComparableUrl(value: string): string {
@@ -1648,6 +1692,81 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                   删除
                 </button>
               </div>
+            </div>
+
+            <div
+              v-if="isRawScanScheduleSource(source)"
+              class="mt-4 grid gap-3 border-t border-white/8 pt-4 lg:grid-cols-2"
+            >
+              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-white">
+                      全量扫描
+                    </p>
+                    <p class="mt-1 text-xs leading-5 text-white/42">
+                      慢速校准整个媒体库，默认 6 小时一次。
+                    </p>
+                  </div>
+                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-white/62">
+                    <input
+                      class="h-4 w-4 accent-primary"
+                      type="checkbox"
+                      :checked="rawScanScheduleEnabled(source, 'full')"
+                      @change="updateRawScanScheduleEnabled(source, 'full', ($event.target as HTMLInputElement).checked)"
+                    >
+                    启用
+                  </label>
+                </div>
+                <label class="mt-3 block">
+                  <span class="text-xs text-white/38">间隔（分钟）</span>
+                  <input
+                    class="mt-2 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :value="rawScanScheduleIntervalMinutes(source, 'full')"
+                    @change="updateRawScanScheduleInterval(source, 'full', ($event.target as HTMLInputElement).value)"
+                  >
+                </label>
+              </div>
+
+              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-white">
+                      增量扫描
+                    </p>
+                    <p class="mt-1 text-xs leading-5 text-white/42">
+                      本地源配合文件监听；远端源用短间隔快照对比。
+                    </p>
+                  </div>
+                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-white/62">
+                    <input
+                      class="h-4 w-4 accent-primary"
+                      type="checkbox"
+                      :checked="rawScanScheduleEnabled(source, 'incremental')"
+                      @change="updateRawScanScheduleEnabled(source, 'incremental', ($event.target as HTMLInputElement).checked)"
+                    >
+                    启用
+                  </label>
+                </div>
+                <label class="mt-3 block">
+                  <span class="text-xs text-white/38">间隔（分钟）</span>
+                  <input
+                    class="mt-2 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :value="rawScanScheduleIntervalMinutes(source, 'incremental')"
+                    @change="updateRawScanScheduleInterval(source, 'incremental', ($event.target as HTMLInputElement).value)"
+                  >
+                </label>
+              </div>
+            </div>
+
+            <div v-else class="mt-4 rounded-2xl border border-white/8 bg-black/12 px-4 py-3 text-xs leading-5 text-white/42">
+              {{ sourceTypeLabel(source.type) }} 的媒体库和元数据由服务端维护，进入媒体库时会直接刷新，不使用 Player 本地扫描计划。
             </div>
           </article>
         </div>

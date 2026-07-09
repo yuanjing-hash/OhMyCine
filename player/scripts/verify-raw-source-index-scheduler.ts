@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { createRawSourceIndexScheduler, DEFAULT_RAW_SOURCE_INDEX_INTERVAL_MS } from '../src/services/scraper/rawSourceIndexScheduler.ts'
-import type { DataSource } from '../src/services/datasource/types.ts'
+import { createRawSourceAutoIndexTargets, createRawSourceIndexScheduler, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS, DEFAULT_RAW_SOURCE_INDEX_INTERVAL_MS } from '../src/services/scraper/rawSourceIndexScheduler.ts'
+import { readRawSourceScanScheduleConfig } from '../src/services/scraper/rawSourceScanSchedule.ts'
+import type { DataSource, DataSourceConfig } from '../src/services/datasource/types.ts'
 import type { RawFileSourceType, RawScanPreview } from '../src/services/scraper/types.ts'
 import type { RawLocalScanCache, RunRawSourceScanInput } from '../src/services/scraper/localScanCache.ts'
 
@@ -125,6 +126,84 @@ assert.equal(foregroundCache.sourceId, foregroundTarget.sourceId)
 assert.equal(foregroundStatuses.at(-1), 'completed')
 assert.equal(completedStatus.state, 'completed')
 
+const targetConfigs: DataSourceConfig[] = [
+  createConfig('alist-target', 'alist', {
+    rootPath: '/影视库',
+    rawSourceScanSchedule: {
+      full: { enabled: true, intervalMs: DEFAULT_RAW_SOURCE_INDEX_INTERVAL_MS },
+      incremental: { enabled: true, intervalMs: DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS },
+    },
+  }),
+  createConfig('local-target', 'local', {
+    rootPath: '/mnt/media',
+  }),
+  createConfig('emby-target', 'emby'),
+]
+const autoTargets = createRawSourceAutoIndexTargets(targetConfigs, () => source)
+assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target'])
+assert.equal(readRawSourceScanScheduleConfig(targetConfigs[0]).incremental.intervalMs, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS)
+
+const dualScans: string[] = []
+const dualScheduler = createRawSourceIndexScheduler({
+  storage: new MemoryStorage(),
+  now: () => now,
+  scanRunner: async (input) => {
+    dualScans.push(input.scanKind ?? 'full')
+    return createScanCache(input)
+  },
+  incrementalScanRunner: async (input) => {
+    dualScans.push(input.scanKind ?? 'incremental')
+    return createScanCache(input)
+  },
+})
+const dualTarget = autoTargets[0]!
+const dualFull = await dualScheduler.triggerAutoIndexForTargets([dualTarget], { scanKind: 'full' })
+const dualIncrementalFirst = await dualScheduler.triggerAutoIndexForTargets([dualTarget], { scanKind: 'incremental' })
+const dualIncrementalCooldown = await dualScheduler.triggerAutoIndexForTargets([dualTarget], { scanKind: 'incremental' })
+now += DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS + 1
+const dualIncremental = await dualScheduler.triggerAutoIndexForTargets([dualTarget], { scanKind: 'incremental' })
+assert.equal(dualFull[0]?.state, 'completed')
+assert.equal(dualIncrementalFirst[0]?.state, 'completed')
+assert.equal(dualIncrementalCooldown[0]?.state, 'cooldown')
+assert.equal(dualIncremental[0]?.state, 'completed')
+assert.deepEqual(dualScans, ['full', 'incremental', 'incremental'])
+
+const disabledIncrementalTarget = {
+  ...dualTarget,
+  sourceId: 'incremental-disabled',
+  schedule: {
+    ...dualTarget.schedule!,
+    incremental: { enabled: false, intervalMs: DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS },
+  },
+}
+const disabledIncremental = await dualScheduler.triggerAutoIndexForTargets([disabledIncrementalTarget], {
+  scanKind: 'incremental',
+  respectSchedule: true,
+})
+assert.equal(disabledIncremental[0]?.state, 'disabled')
+assert.equal(disabledIncremental[0]?.skipped, true)
+
+const dirtyScans: string[] = []
+const dirtyScheduler = createRawSourceIndexScheduler({
+  storage: new MemoryStorage(),
+  now: () => now,
+  dirtyDebounceMs: 0,
+  incrementalScanRunner: async (input) => {
+    dirtyScans.push(`${input.scanKind}:${input.sourceId}`)
+    return createScanCache(input)
+  },
+})
+dirtyScheduler.markIncrementalDirty(dualTarget)
+await new Promise(resolve => setTimeout(resolve, 10))
+const dirtyStatus = await dirtyScheduler.getStatus({
+  sourceId: dualTarget.sourceId,
+  sourceType: dualTarget.sourceType,
+  rootPath: dualTarget.rootPath,
+  scanKind: 'incremental',
+})
+assert.equal(dirtyStatus.state, 'completed')
+assert.deepEqual(dirtyScans, ['incremental:alist-target'])
+
 console.log(JSON.stringify({
   firstState: first[0]?.state,
   repeatedState: repeated[0]?.state,
@@ -135,6 +214,10 @@ console.log(JSON.stringify({
   runningStatus: runningStatus.state,
   runningTriggerSkipped: runningTrigger[0]?.skipped,
   completedStatus: completedStatus.state,
+  autoTargetIds: autoTargets.map(target => target.sourceId),
+  dualScans,
+  disabledIncrementalState: disabledIncremental[0]?.state,
+  dirtyScans,
   scans,
 }, null, 2))
 
@@ -182,5 +265,18 @@ function createScanCache(input: RunRawSourceScanInput): RawLocalScanCache {
     errorCount: 0,
     logs: [],
     ...preview,
+  }
+}
+
+function createConfig(id: string, type: DataSourceConfig['type'], extra: Record<string, unknown> = {}): DataSourceConfig {
+  return {
+    id,
+    type,
+    name: id,
+    displayName: id,
+    order: 0,
+    url: type === 'local' ? 'local://filesystem' : 'https://example.test',
+    enabled: true,
+    extra,
   }
 }

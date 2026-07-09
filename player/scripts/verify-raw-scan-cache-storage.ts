@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { clearRawSourceScanCache, loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
+import { clearRawSourceScanCache, diffRawFileRecords, loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 import type { RawLocalScanCache } from '../src/services/scraper/localScanCache.ts'
 import type { RawFileRecord, RawMediaCandidate } from '../src/services/scraper/types.ts'
 
@@ -53,6 +53,28 @@ try {
   const serializedSensitive = JSON.stringify(loadedSensitive)
   assert.equal(loadedSensitive?.scrapedItems?.[0]?.metadata?.posterUrl, undefined)
   assert.equal(serializedSensitive.includes('secret'), false)
+
+  const baseRecord = loadedFirst?.records[0]
+  assert.ok(baseRecord)
+  const diffSummary = diffRawFileRecords([baseRecord], [
+    {
+      ...baseRecord,
+      size: (baseRecord.size ?? 0) + 1,
+    },
+    {
+      ...baseRecord,
+      id: 'alist-one:/影视库/New.Movie.mkv',
+      providerPath: '/影视库/New.Movie.mkv',
+      relativePath: 'New.Movie.mkv',
+      fileName: 'New.Movie.mkv',
+    },
+  ])
+  assert.deepEqual(diffSummary, {
+    added: 1,
+    removed: 0,
+    changed: 1,
+    unchanged: 0,
+  })
 
   await clearRawSourceScanCache('alist-one', 'alist', '/影视库')
   assert.equal(await loadRawSourceScanCache('alist-one', 'alist', '/影视库'), null)

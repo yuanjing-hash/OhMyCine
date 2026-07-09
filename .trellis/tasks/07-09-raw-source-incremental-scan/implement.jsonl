@@ -1,0 +1,11 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend Player independent-first checklist and doc update rules."}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Raw file source scanning, DataSource boundaries, local file safety and no-write contracts."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Settings/SourceLibrary UI behavior, scan management placement, and raw source page expectations."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Raw source scheduler contract, cooldown/failure isolation, source/root-scoped status behavior and persistence."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "DataSourceConfig extra safety, raw scan cache metadata, TMDB/scraper type contracts."}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "Tauri/local file interaction and event/listener cleanup patterns for watcher integration."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Required verify/typecheck/lint/build/Windows GNU package validation."}
+{"file": "docs/architecture/03-player-design.md", "reason": "Player raw source scraping, DataSource abstraction and scheduler design docs."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Local file path constraints, traversal/symlink/privacy boundaries for watcher and scan logs."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature crosses Tauri watcher, DataSource, scheduler, cache, settings and UI."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing scheduler/cache/settings patterns and avoid duplicate scan logic."}

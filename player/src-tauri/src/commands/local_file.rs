@@ -1,7 +1,18 @@
+use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
+use tauri::{AppHandle, Emitter, State};
+
+const LOCAL_FILE_CHANGED_EVENT: &str = "local-file:changed";
+
+#[derive(Default)]
+pub struct LocalFileWatcherState {
+    watchers: Mutex<HashMap<String, RecommendedWatcher>>,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,6 +22,15 @@ pub struct LocalFileEntry {
     is_dir: bool,
     size: Option<u64>,
     modified_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFileWatchEvent {
+    source_id: String,
+    root_path: String,
+    changed_path: Option<String>,
+    kind: String,
 }
 
 #[tauri::command]
@@ -75,6 +95,54 @@ pub fn local_file_stream_path(root_path: String, path: String) -> Result<String,
     Ok(path_to_string(&target))
 }
 
+#[tauri::command]
+pub fn local_file_watch_start(
+    app: AppHandle,
+    state: State<LocalFileWatcherState>,
+    source_id: String,
+    root_path: String,
+) -> Result<(), String> {
+    validate_source_id(&source_id)?;
+    let root = canonicalize_root(&root_path)?;
+    let event_source_id = source_id.clone();
+    let event_root = root.clone();
+    let app_handle = app.clone();
+    let mut watcher = RecommendedWatcher::new(
+        move |result| {
+            if let Ok(event) = result {
+                emit_local_file_watch_event(&app_handle, &event_source_id, &event_root, event);
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|_| "本地文件监听初始化失败。".to_string())?;
+
+    watcher
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|_| "本地文件监听启动失败。".to_string())?;
+
+    let mut watchers = state
+        .watchers
+        .lock()
+        .map_err(|_| "本地文件监听状态不可用。".to_string())?;
+    watchers.insert(source_id, watcher);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn local_file_watch_stop(
+    state: State<LocalFileWatcherState>,
+    source_id: String,
+) -> Result<(), String> {
+    validate_source_id(&source_id)?;
+    let mut watchers = state
+        .watchers
+        .lock()
+        .map_err(|_| "本地文件监听状态不可用。".to_string())?;
+    watchers.remove(&source_id);
+    Ok(())
+}
+
 fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
     validate_path_text(root_path, "本地文件根目录无效。")?;
     let root = Path::new(root_path);
@@ -84,6 +152,40 @@ fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
     let canonical = fs::canonicalize(root).map_err(|_| "本地文件根目录不可用。".to_string())?;
     ensure_directory(&canonical, "本地文件根目录必须是文件夹。")?;
     Ok(canonical)
+}
+
+fn validate_source_id(source_id: &str) -> Result<(), String> {
+    let trimmed = source_id.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.as_bytes().contains(&0)
+    {
+        return Err("本地文件监听源无效。".to_string());
+    }
+    Ok(())
+}
+
+fn emit_local_file_watch_event(app: &AppHandle, source_id: &str, root: &Path, event: Event) {
+    let changed_path = event
+        .paths
+        .iter()
+        .find_map(|path| provider_path_from_event(root, path));
+    let payload = LocalFileWatchEvent {
+        source_id: source_id.to_string(),
+        root_path: "/".to_string(),
+        changed_path,
+        kind: format!("{:?}", event.kind),
+    };
+    let _ = app.emit(LOCAL_FILE_CHANGED_EVENT, payload);
+}
+
+fn provider_path_from_event(root: &Path, path: &Path) -> Option<String> {
+    if path == root || path.starts_with(root) {
+        Some(provider_path_from_canonical(root, path))
+    } else {
+        None
+    }
 }
 
 fn resolve_target_path(root: &Path, path: Option<&str>) -> Result<PathBuf, String> {
