@@ -1,0 +1,6 @@
+{"file":"player/scripts/verify-clouddrive2-datasource.ts","reason":"验证 CloudDrive2 API Token DataSource 映射与播放请求。"}
+{"file":"player/scripts/verify-webdav-datasource.ts","reason":"验证独立 WebDAV DataSource 浏览、根目录和 Basic Auth。"}
+{"file":"player/scripts/verify-raw-source-index-scheduler.ts","reason":"验证 clouddrive2/webdav raw source 调度接入。"}
+{"file":"player/src-tauri/src/commands/clouddrive2.rs","reason":"审查 gRPC endpoint、Bearer token、响应边界和错误脱敏。"}
+{"file":"docs/architecture/06-roadmap.md","reason":"核对实现状态与协议边界文档一致。"}
+{"ts":"2026-07-27T15:33:00+08:00","status":"passed","summary":"CloudDrive2/WebDAV/扫描调度 focused verification、typecheck、lint、Vite build、Windows GNU cargo check 和 Tauri release build 全部通过。"}

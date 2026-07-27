@@ -384,6 +384,7 @@ docs/
 - **修复分支**：`fix/xxx`，从 `develop` 拉出
 - **发布分支**：`release/x.x.x`，从 `develop` 拉出
 - **生产分支**：`main`，始终可发布
+- **Beta 发布**：功能先合入 `develop`，发布内容再合入 `main`，tag 仅创建在远端 `main` 的最新提交上
 
 版本号遵循 [Semantic Versioning](https://semver.org/)：
 

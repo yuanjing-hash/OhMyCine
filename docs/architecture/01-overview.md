@@ -36,7 +36,7 @@ OhMyCine 是一个**开源、全平台、自托管**的家庭影院生态系统�
 │         │          │          │          │          │                       │
 │  ┌──────▼───┐ ┌────▼─────┐ ┌─▼──────┐ ┌─▼────────┐│  ┌─────────────────┐ │
 │  │  Emby    │ │ Jellyfin │ │ OpenList/Alist  │ │CloudDrive││  │  AI Assistant   │ │
-│  │  原生API │ │ 原生API  │ │ WebDAV │ │   2      ││  │  (用户自带Key)  │ │
+│  │  原生API │ │ 原生API  │ │ HTTP API │ │ 2 gRPC API││  │  (用户自带Key)  │ │
 │  └──────────┘ └──────────┘ └────────┘ └──────────┘│  └─────────────────┘ │
 │         │          │          │          │          │                       │
 │  ┌──────▼──────────▼──────────▼──────────▼──────────▼───────────────────┐  │
@@ -85,14 +85,16 @@ OhMyCine 是一个**开源、全平台、自托管**的家庭影院生态系统�
 ```
 
 **核心设计理念**：
-- **Player 独立可用**：不依赖 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2
+- **Player 独立可用**：不依赖 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2，并提供独立通用 WebDAV 数据源
 - **Server 是增强层**：提供媒体流水线（发现→下载→转移→入库）、追更、302代理等高级功能
 - **三层存储架构**：连接管理 → 存储目标 → 分类规则，清晰解耦
 - **双向配置同步**：Player 连接 Server 时自动同步数据源配置
 
 **数据流说明**：
 - **Player → Emby/Jellyfin**：Player 原生调用 Emby/Jellyfin REST API，直接浏览和播放
-- **Player → OpenList/Alist/CloudDrive2**：通过 WebDAV 协议直接访问云盘文件
+- **Player → OpenList/Alist**：通过 OpenList/Alist HTTP JSON API 浏览、搜索并获取签名播放地址
+- **Player → CloudDrive2**：通过官方 gRPC API 与用户创建的 API Token 浏览、搜索并获取播放直链
+- **Player → WebDAV**：通过独立通用 WebDAV DataSource 使用 `PROPFIND` + Basic Auth 只读访问
 - **Player ↔ Server**：可选连接，同步配置、获取下载任务/追更状态
 - **Server 媒体流水线**：发现页聚合PT搜索 → 下载器下载 → 自动分类 → 转移到存储目标 → 生成STRM(网盘) → 通知Emby刷新
 - **Server → 云盘CDN**：302代理引擎返回重定向，客户端直连CDN

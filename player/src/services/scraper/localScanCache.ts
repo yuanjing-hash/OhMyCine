@@ -1,3 +1,4 @@
+import type { RawSourceScanKind } from './rawSourceScanSchedule'
 import type { TmdbEpisodeMetadata, TmdbMetadata } from './tmdb'
 import type {
   RawCategoryAssignment,
@@ -48,10 +49,30 @@ export interface RunRawSourceScanInput {
   readonly sourceId: string
   readonly sourceType: RawFileSourceType
   readonly rootPath?: string
+  readonly scanKind?: RawSourceScanKind
   readonly maxDepth?: number
   readonly maxFolders?: number
   readonly maxEntries?: number
   readonly onLog?: (entry: RawLocalScanLogEntry) => void
+}
+
+export interface RawSourceIncrementalChangeSummary {
+  readonly added: number
+  readonly removed: number
+  readonly changed: number
+  readonly unchanged: number
+}
+
+interface RawSourceScanSnapshot {
+  readonly rootPath: string
+  readonly startedAt: string
+  readonly folderCount: number
+  readonly fileCount: number
+  readonly skippedFileCount: number
+  readonly errorCount: number
+  readonly stoppedByLimit: boolean
+  readonly logs: RawLocalScanLogEntry[]
+  readonly preview: RawScanPreview
 }
 
 const RAW_SCAN_CACHE_VERSION = 1
@@ -60,6 +81,94 @@ const DEFAULT_MAX_DEPTH = 12
 const DEFAULT_MAX_FOLDERS = 600
 const DEFAULT_MAX_ENTRIES = 8_000
 export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promise<RawLocalScanCache> {
+  const snapshot = await collectRawSourceScanSnapshot(input, '开始只读扫描')
+  const { logs, preview, rootPath, startedAt } = snapshot
+  const scrapedItems = await enrichRawMediaCandidates(preview.candidates, {
+    onLog: (entry) => {
+      logs.push(entry)
+      input.onLog?.(entry)
+    },
+  })
+  const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
+  const candidates = preview.candidates.map((candidate) => {
+    const scraped = scrapedItemsByRecordId.get(candidate.record.id)
+    return {
+      ...candidate,
+      scrapeMetadata: scraped?.metadata,
+      categoryAssignment: scraped?.categoryAssignment,
+    } satisfies RawMediaCandidate
+  })
+  const finishedAt = new Date().toISOString()
+  const status: RawLocalScanStatus = snapshot.errorCount > 0 || snapshot.stoppedByLimit ? 'partialFailed' : 'completed'
+  const matchedCount = scrapedItems.filter(item => item.matchStatus === 'matched').length
+
+  addScanLog(
+    logs,
+    input.onLog,
+    status === 'completed' ? 'info' : 'warning',
+    `扫描完成：识别 ${preview.records.length} 个视频文件，TMDB 命中 ${matchedCount} 个候选，跳过 ${snapshot.skippedFileCount} 个非视频文件。`,
+  )
+
+  let cache: RawLocalScanCache = {
+    version: RAW_SCAN_CACHE_VERSION,
+    scanId: createScanId(),
+    sourceId: input.sourceId,
+    sourceType: input.sourceType,
+    rootPath,
+    status,
+    startedAt,
+    finishedAt,
+    folderCount: snapshot.folderCount,
+    fileCount: snapshot.fileCount,
+    skippedFileCount: snapshot.skippedFileCount,
+    errorCount: snapshot.errorCount,
+    logs,
+    ...preview,
+    candidates,
+    scrapedItems,
+  }
+
+  if (!await saveRawSourceScanCache(cache)) {
+    addScanLog(logs, input.onLog, 'warning', '本地扫描缓存写入失败，本次结果仅在当前页面临时可用。')
+    cache = {
+      ...cache,
+      status: 'partialFailed',
+      logs,
+    }
+  }
+  return cache
+}
+
+export async function runRawSourceIncrementalScan(input: RunRawSourceScanInput): Promise<RawLocalScanCache> {
+  const rootPath = normalizeProviderPath(input.rootPath)
+  const previousCache = await loadRawSourceScanCache(input.sourceId, input.sourceType, rootPath)
+  if (!previousCache) {
+    addScanLog([], input.onLog, 'info', '增量扫描未找到本地缓存，自动升级为全量扫描。')
+    return runRawSourceLocalScan({ ...input, rootPath, scanKind: 'full' })
+  }
+
+  const snapshot = await collectRawSourceScanSnapshot(input, '开始增量快照')
+  const changeSummary = diffRawFileRecords(previousCache.records, snapshot.preview.records)
+  if (hasIncrementalChanges(changeSummary)) {
+    addScanLog(
+      snapshot.logs,
+      input.onLog,
+      'info',
+      `增量扫描发现变化：新增 ${changeSummary.added}、删除 ${changeSummary.removed}、修改 ${changeSummary.changed}，开始刷新本地索引。`,
+    )
+    return runRawSourceLocalScan({ ...input, rootPath, scanKind: 'full' })
+  }
+
+  addScanLog(
+    snapshot.logs,
+    input.onLog,
+    snapshot.errorCount > 0 || snapshot.stoppedByLimit ? 'warning' : 'info',
+    `增量扫描未发现媒体文件变化，已保持当前索引。`,
+  )
+  return previousCache
+}
+
+async function collectRawSourceScanSnapshot(input: RunRawSourceScanInput, startLabel: string): Promise<RawSourceScanSnapshot> {
   const rootPath = normalizeProviderPath(input.rootPath)
   const maxDepth = input.maxDepth ?? DEFAULT_MAX_DEPTH
   const maxFolders = input.maxFolders ?? DEFAULT_MAX_FOLDERS
@@ -74,23 +183,12 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
   let errorCount = 0
   let stoppedByLimit = false
 
-  const addLog = (level: RawLocalScanLogLevel, message: string, path?: string) => {
-    const entry: RawLocalScanLogEntry = {
-      timestamp: new Date().toISOString(),
-      level,
-      message,
-      path,
-    }
-    logs.push(entry)
-    input.onLog?.(entry)
-  }
-
-  addLog('info', `开始只读扫描，范围：${rootPath}`)
+  addScanLog(logs, input.onLog, 'info', `${startLabel}，范围：${rootPath}`)
 
   while (queue.length > 0) {
     if (folderCount >= maxFolders || rawItems.length >= maxEntries) {
       stoppedByLimit = true
-      addLog('warning', `扫描达到 MVP 上限：${folderCount} 个目录、${rawItems.length} 个文件。`)
+      addScanLog(logs, input.onLog, 'warning', `扫描达到 MVP 上限：${folderCount} 个目录、${rawItems.length} 个文件。`)
       break
     }
 
@@ -109,7 +207,7 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
     catch (error) {
       errorCount += 1
       const message = toSafeErrorMessage(error, '目录读取失败，已跳过该分支。')
-      addLog('error', message, currentPath)
+      addScanLog(logs, input.onLog, 'error', message, currentPath)
       if (currentPath === rootPath && rawItems.length === 0)
         throw new Error(message)
       continue
@@ -119,19 +217,19 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
       const childPath = normalizeMediaItemPath(child)
       if (!childPath) {
         errorCount += 1
-        addLog('warning', '跳过了路径格式不安全或缺失的条目。', currentPath)
+        addScanLog(logs, input.onLog, 'warning', '跳过了路径格式不安全或缺失的条目。', currentPath)
         continue
       }
 
       if (isDirectoryMediaItem(child)) {
         if (!isPathWithinRoot(childPath, rootPath)) {
           errorCount += 1
-          addLog('warning', '跳过了不在当前扫描根目录内的目录。', childPath)
+          addScanLog(logs, input.onLog, 'warning', '跳过了不在当前扫描根目录内的目录。', childPath)
           continue
         }
         if (current.depth >= maxDepth) {
           stoppedByLimit = true
-          addLog('warning', `扫描达到深度上限 ${maxDepth}，已跳过更深目录。`, childPath)
+          addScanLog(logs, input.onLog, 'warning', `扫描达到深度上限 ${maxDepth}，已跳过更深目录。`, childPath)
           continue
         }
         if (!visited.has(childPath))
@@ -141,7 +239,7 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
 
       if (!isPathWithinRoot(childPath, rootPath)) {
         errorCount += 1
-        addLog('warning', '跳过了不在当前扫描根目录内的文件。', childPath)
+        addScanLog(logs, input.onLog, 'warning', '跳过了不在当前扫描根目录内的文件。', childPath)
         continue
       }
 
@@ -159,59 +257,74 @@ export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promi
     sourceType: input.sourceType,
     rootPath,
   })
-  addLog('info', `结构判断：${preview.detection.mode === 'standard' ? '标准目录' : '非标准目录'}，置信度 ${Math.round(preview.detection.confidence * 100)}%。`)
-  const scrapedItems = await enrichRawMediaCandidates(preview.candidates, {
-    onLog: (entry) => {
-      logs.push(entry)
-      input.onLog?.(entry)
-    },
-  })
-  const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
-  const candidates = preview.candidates.map((candidate) => {
-    const scraped = scrapedItemsByRecordId.get(candidate.record.id)
-    return {
-      ...candidate,
-      scrapeMetadata: scraped?.metadata,
-      categoryAssignment: scraped?.categoryAssignment,
-    } satisfies RawMediaCandidate
-  })
-  const finishedAt = new Date().toISOString()
-  const status: RawLocalScanStatus = errorCount > 0 || stoppedByLimit ? 'partialFailed' : 'completed'
-  const matchedCount = scrapedItems.filter(item => item.matchStatus === 'matched').length
+  addScanLog(logs, input.onLog, 'info', `结构判断：${preview.detection.mode === 'standard' ? '标准目录' : '非标准目录'}，置信度 ${Math.round(preview.detection.confidence * 100)}%。`)
 
-  addLog(
-    status === 'completed' ? 'info' : 'warning',
-    `扫描完成：识别 ${preview.records.length} 个视频文件，TMDB 命中 ${matchedCount} 个候选，跳过 ${skippedFileCount} 个非视频文件。`,
-  )
-
-  let cache: RawLocalScanCache = {
-    version: RAW_SCAN_CACHE_VERSION,
-    scanId: createScanId(),
-    sourceId: input.sourceId,
-    sourceType: input.sourceType,
+  return {
     rootPath,
-    status,
     startedAt,
-    finishedAt,
     folderCount,
     fileCount: rawItems.length,
     skippedFileCount,
     errorCount,
+    stoppedByLimit,
     logs,
-    ...preview,
-    candidates,
-    scrapedItems,
+    preview,
+  }
+}
+
+export function diffRawFileRecords(
+  previousRecords: readonly RawFileRecord[],
+  nextRecords: readonly RawFileRecord[],
+): RawSourceIncrementalChangeSummary {
+  const previous = new Map(previousRecords.map(record => [record.providerPath, rawRecordFingerprint(record)]))
+  const next = new Map(nextRecords.map(record => [record.providerPath, rawRecordFingerprint(record)]))
+  let added = 0
+  let removed = 0
+  let changed = 0
+  let unchanged = 0
+
+  for (const [providerPath, fingerprint] of next) {
+    if (!previous.has(providerPath)) {
+      added += 1
+      continue
+    }
+    if (previous.get(providerPath) === fingerprint)
+      unchanged += 1
+    else
+      changed += 1
   }
 
-  if (!await saveRawSourceScanCache(cache)) {
-    addLog('warning', '本地扫描缓存写入失败，本次结果仅在当前页面临时可用。')
-    cache = {
-      ...cache,
-      status: 'partialFailed',
-      logs,
-    }
+  for (const providerPath of previous.keys()) {
+    if (!next.has(providerPath))
+      removed += 1
   }
-  return cache
+
+  return { added, removed, changed, unchanged }
+}
+
+function rawRecordFingerprint(record: RawFileRecord): string {
+  return `${record.size ?? ''}:${record.modifiedAt ?? ''}`
+}
+
+function hasIncrementalChanges(summary: RawSourceIncrementalChangeSummary): boolean {
+  return summary.added > 0 || summary.removed > 0 || summary.changed > 0
+}
+
+function addScanLog(
+  logs: RawLocalScanLogEntry[],
+  onLog: ((entry: RawLocalScanLogEntry) => void) | undefined,
+  level: RawLocalScanLogLevel,
+  message: string,
+  path?: string,
+): void {
+  const entry: RawLocalScanLogEntry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    path,
+  }
+  logs.push(entry)
+  onLog?.(entry)
 }
 
 export async function loadRawSourceScanCache(

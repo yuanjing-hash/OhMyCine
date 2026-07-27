@@ -328,16 +328,7 @@ function selectBestSearchResult(
   if (acceptable.length === 0)
     return null
 
-  if (year) {
-    const exactYear = acceptable.find(result => result.year === year)
-    if (exactYear)
-      return exactYear
-    const nearbyYear = acceptable.find(result => result.year != null && Math.abs(result.year - year) <= 1)
-    if (nearbyYear)
-      return nearbyYear
-  }
-
-  return [...acceptable].sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0))[0] ?? null
+  return rankSearchResults(acceptable, query, year)[0] ?? null
 }
 
 function rankSearchResults(
@@ -345,35 +336,67 @@ function rankSearchResults(
   query: string,
   year?: number,
 ): TmdbSearchResult[] {
-  return [...results].sort((left, right) => searchResultScore(right, query, year) - searchResultScore(left, query, year))
+  return [...results].sort((left, right) =>
+    searchResultScore(right, query, year) - searchResultScore(left, query, year)
+    || (right.popularity ?? 0) - (left.popularity ?? 0)
+    || left.title.localeCompare(right.title, 'zh-Hans-CN'))
 }
 
 function searchResultScore(result: TmdbSearchResult, query: string, year?: number): number {
-  const titleMatch = isAcceptableTitleMatch(query, result.title, result.originalTitle) ? 100 : 0
-  const exactYear = year != null && result.year === year ? 40 : 0
-  const nearbyYear = year != null && result.year != null && Math.abs(result.year - year) <= 1 ? 20 : 0
-  return titleMatch + exactYear + nearbyYear + (result.popularity ?? 0)
+  const titleMatch = titleMatchQuality(query, result.title, result.originalTitle)
+  const exactYear = year != null && result.year === year ? 1_000_000 : 0
+  const nearbyYear = year != null && result.year != null && Math.abs(result.year - year) <= 1 ? 500_000 : 0
+  return exactYear + nearbyYear + titleMatch * 1_000 + (result.popularity ?? 0)
 }
 
 function isAcceptableTitleMatch(query: string, title: string, originalTitle?: string): boolean {
+  return titleMatchQuality(query, title, originalTitle) > 0
+}
+
+function titleMatchQuality(query: string, title: string, originalTitle?: string): number {
   const queryKey = compactTitleKey(query)
-  const titleKeys = [title, originalTitle].map(compactTitleKey).filter(Boolean)
-  if (!queryKey || titleKeys.length === 0)
-    return false
-  if (titleKeys.some(key => key === queryKey || key.includes(queryKey) || queryKey.includes(key)))
-    return true
+  const queryNormalized = normalizeTitleKey(query)
+  const titleValues = [title, originalTitle].filter((value): value is string => Boolean(value?.trim()))
+  if (!queryKey || titleValues.length === 0)
+    return 0
+
+  let bestQuality = 0
+  for (const titleValue of titleValues) {
+    const titleKey = compactTitleKey(titleValue)
+    if (!titleKey)
+      continue
+
+    if (normalizeTitleKey(titleValue) === queryNormalized) {
+      bestQuality = Math.max(bestQuality, 1000)
+      continue
+    }
+    if (titleKey === queryKey) {
+      bestQuality = Math.max(bestQuality, 950)
+      continue
+    }
+    if (titleKey.startsWith(queryKey) || queryKey.startsWith(titleKey)) {
+      bestQuality = Math.max(bestQuality, 650)
+      continue
+    }
+    if (titleKey.includes(queryKey) || queryKey.includes(titleKey))
+      bestQuality = Math.max(bestQuality, 550)
+  }
 
   const queryTokens = tokenizeTitle(query)
   if (queryTokens.length === 0)
-    return false
+    return bestQuality
 
-  return titleKeys.some((key) => {
-    const titleTokens = tokenizeTitle(key)
+  for (const titleValue of titleValues) {
+    const titleTokens = tokenizeTitle(titleValue)
     if (titleTokens.length === 0)
-      return false
+      continue
     const overlap = queryTokens.filter(token => titleTokens.includes(token)).length
-    return overlap / Math.max(queryTokens.length, titleTokens.length) >= 0.55
-  })
+    const overlapRatio = overlap / Math.max(queryTokens.length, titleTokens.length)
+    if (overlapRatio >= 0.55)
+      bestQuality = Math.max(bestQuality, 400 + Math.round(overlapRatio * 100))
+  }
+
+  return bestQuality
 }
 
 function compactTitleKey(value: string | undefined): string {

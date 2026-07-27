@@ -93,7 +93,7 @@ export interface AudioTrack {
   isDefault: boolean
 }
 
-export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'server' | '115' | '123' | 'quark' | 'local'
+export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'server' | '115' | '123' | 'quark' | 'local'
 
 export interface DataSourceConfig {
   id: string
@@ -105,6 +105,11 @@ export interface DataSourceConfig {
   url: string
   enabled?: boolean
   extra?: Record<string, unknown>
+}
+
+export interface MediaStreamRequest {
+  readonly url: string
+  readonly headers?: Record<string, string>
 }
 
 export type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
@@ -157,6 +162,7 @@ export interface DataSource {
   getDetail: (id: string) => Promise<MediaDetail>
 
   getStreamURL: (id: string) => Promise<string>
+  getStreamRequest?: (id: string) => Promise<MediaStreamRequest>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
   getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 

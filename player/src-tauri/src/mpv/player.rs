@@ -110,8 +110,13 @@ impl MpvPlayer {
         Ok(player)
     }
 
-    pub fn load_file(&mut self, path: &str) -> Result<(), String> {
+    pub fn load_file_with_headers(
+        &mut self,
+        path: &str,
+        headers: &[(String, String)],
+    ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
+        self.apply_http_headers(headers)?;
         self.command(&["loadfile", path, "replace"])
     }
 
@@ -510,6 +515,16 @@ impl MpvPlayer {
         self.set_option("keep-open", "yes")?;
         self.set_option("osc", "no")?;
         Ok(())
+    }
+
+    fn apply_http_headers(&self, headers: &[(String, String)]) -> Result<(), String> {
+        let header_fields = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.set_property("http-header-fields", &header_fields)
+            .map_err(|_| "播放请求头设置失败。".to_string())
     }
 
     /// Finalize `mpv_initialize`. Only call once per handle lifetime.

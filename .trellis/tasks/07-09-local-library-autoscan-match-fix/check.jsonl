@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Check raw file source media-library default state, folder fallback, and DataSource boundary."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Check first-load index/progress UI, empty states, scan management affordance, and text clarity."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check TMDB match scoring, scraper metadata, and raw-source display type drift."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Check source/root-scoped scheduler status, cooldown, failure isolation, and Home/source page behavior."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check required verify/typecheck/lint/build/cargo/package commands and Windows exe refresh."}
+{"file": "docs/architecture/03-player-design.md", "reason": "Check docs remain aligned with raw source scanning UX and local datasource behavior."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Check no local absolute paths or sensitive provider data leak into cache/display/logs."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check data flow from scheduler status to UI and TMDB search result to cache/display."}

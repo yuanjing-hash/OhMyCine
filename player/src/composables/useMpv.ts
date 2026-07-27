@@ -44,6 +44,15 @@ export interface KnownSubtitleTrackInput {
   unavailableReason?: string
 }
 
+export interface MpvLoadOptions {
+  readonly headers?: Record<string, string>
+}
+
+interface MpvHttpHeaderPayload {
+  name: string
+  value: string
+}
+
 interface MpvTrackState {
   tracks: Track[]
   currentSubtitle?: number | null
@@ -463,14 +472,14 @@ export function useMpv() {
     }
   }
 
-  async function load(path: string) {
+  async function load(path: string, options: MpvLoadOptions = {}) {
     selectedKnownSubtitle.value = null
     currentTime.value = 0
     duration.value = 0
     isPlaying.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     await ensurePlaybackSpeedPreferenceLoaded()
-    await invoke<void>('mpv_load', { path })
+    await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     await invoke<void>('mpv_resume')
     currentTime.value = 0
     isPlaying.value = true
@@ -625,4 +634,14 @@ export function useMpv() {
     setVideoFit,
     stop,
   }
+}
+
+function toMpvHeaderPayload(headers: Record<string, string> | undefined): MpvHttpHeaderPayload[] | undefined {
+  if (!headers)
+    return undefined
+
+  const payload = Object.entries(headers)
+    .map(([name, value]) => ({ name, value }))
+    .filter(header => header.name.trim() && header.value.trim())
+  return payload.length > 0 ? payload : undefined
 }

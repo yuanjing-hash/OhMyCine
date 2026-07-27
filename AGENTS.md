@@ -58,7 +58,7 @@ Player responsibilities:
 - support local files, drag-and-drop playback, file association, playlists, playback history, subtitles, audio tracks, keyboard shortcuts
 - implement a DataSource abstraction so all media sources expose common operations: list, search, getDetail, getStreamURL
 - connect directly to Emby/Jellyfin via native APIs
-- connect directly to OpenList/Alist and CloudDrive2/WebDAV
+- connect directly to OpenList/Alist through its HTTP API, CloudDrive2 through its gRPC API Token flow, and generic WebDAV as a separate DataSource
 - support local-file media sources
 - reserve future DataSources such as 115, 123, Quark, and ServerDataSource
 - scrape metadata locally for file/cloud sources that lack media metadata: filename parse → TMDB lookup → local SQLite/cache → poster wall
@@ -143,14 +143,14 @@ CLI responsibilities:
 
 ## Security architecture
 
-The project handles many sensitive assets: media-server API keys, 115 cookies, OpenList tokens, CloudDrive2/WebDAV credentials, PT cookies/passkeys, downloader passwords, AI API keys, JWT/session tokens, and proxy URLs.
+The project handles many sensitive assets: media-server API keys, 115 cookies, OpenList tokens, CloudDrive2 API Tokens, WebDAV credentials, PT cookies/passkeys, downloader passwords, AI API keys, JWT/session tokens, and proxy URLs.
 
 Important security expectations:
 
 - Server API should require authentication by default except minimal login/health endpoints.
 - `/proxy/*` must not be publicly open by default. Prefer signed URLs for STRM use; authenticated and trusted-LAN modes are possible deployment choices.
 - Server-side sensitive configuration should be encrypted at rest, preferably AES-GCM with a deployment-provided or locally generated master key.
-- Player credentials should use OS secure storage where available: Windows Credential Manager/DPAPI, macOS Keychain, Linux Secret Service/libsecret, Android Keystore, iOS Keychain.
+- Player credentials should use OS secure storage where available: Windows Credential Manager/DPAPI, macOS Keychain, Linux Secret Service/libsecret, Android Keystore, iOS Keychain. CloudDrive2 API Tokens and generic WebDAV username/password credentials must use separate provider envelopes and source types.
 - Player ↔ Server sync should default to structural sync only. API keys, cookies, passwords, AI keys, and PT passkeys require explicit user confirmation for full sync.
 - Logs must redact Authorization, cookies, API keys, passkeys, JWTs, downloader passwords, CDN token URLs, and AI keys.
 - Local file operations must constrain paths to configured roots and defend against traversal and symlink escape.
@@ -314,6 +314,12 @@ Project docs specify Conventional Commits:
 Common scopes: `player`, `server`, `hub`, `cli`, `docs`, `api`, `db`.
 
 Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`.
+
+Git push and release rules:
+
+- Do not push branches, commits, or tags to GitHub unless the project owner explicitly requests a GitHub push in the current task.
+- Normal development happens on `develop`; feature and fix branches start from `develop` and merge back into it after verification.
+- Player beta tags must be created only after the release content has been merged into `main`, and the tag must point to the latest remote `main` commit. Never publish a beta directly from a feature, fix, develop, or release branch commit.
 
 Commit message language rule: keep the Conventional Commits `type` and optional `scope` in English, but write the short description and body in Chinese. Standard footer/trailer fields such as `Closes #123` and `Co-Authored-By: Codex Opus 4.7 <noreply@anthropic.com>` may remain in English.
 

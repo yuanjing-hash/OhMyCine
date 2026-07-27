@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend pre-development checklist and quality expectations."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Settings UI feedback behavior, Vue component structure and accessibility."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "DataSource config persistence and scan schedule state boundaries."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Type-safe DataSourceConfig extra and settings update helpers."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Required typecheck/lint/build and Windows GNU validation."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing SettingsView feedback surface instead of creating another notification pattern."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Confirm UI feedback maps cleanly to store.updateConfig success/failure."}
