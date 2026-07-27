@@ -93,7 +93,7 @@ export interface AudioTrack {
   isDefault: boolean
 }
 
-export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'server' | '115' | '123' | 'quark' | 'local'
+export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'server' | '115' | '123' | 'quark' | 'local'
 
 export interface DataSourceConfig {
   id: string

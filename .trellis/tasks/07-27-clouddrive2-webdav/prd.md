@@ -1,5 +1,7 @@
 # 接入 CloudDrive2 WebDAV 数据源
 
+> 已废弃：该 MVP 将通用 WebDAV 错误地绑定到了 `clouddrive2` 类型。后续任务 `07-27-clouddrive2-api-webdav-split` 已将 CloudDrive2 改为官方 gRPC API Token，并把 WebDAV 拆为独立 `webdav` DataSource。本文件仅保留历史决策记录。
+
 ## Goal
 
 在 Player 独立版中接入 CloudDrive2 数据源，让用户可以通过 CloudDrive2 暴露的 WebDAV 地址添加媒体库，完成根目录选择、目录浏览、视频播放，并复用现有原始文件源扫描、分类、海报墙、全量/增量扫描调度和首页聚合能力。

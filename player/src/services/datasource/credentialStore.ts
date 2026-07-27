@@ -16,6 +16,10 @@ export interface AlistCredentialValue {
 }
 
 export interface CloudDrive2CredentialValue {
+  readonly apiToken: string
+}
+
+export interface WebDavCredentialValue {
   readonly username: string
   readonly password: string
 }
@@ -25,7 +29,7 @@ export interface TmdbCredentialValue {
   readonly value: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'tmdb'
+type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -44,8 +48,14 @@ interface StoredAlistCredentialEnvelope {
 }
 
 interface StoredCloudDrive2CredentialEnvelope {
-  readonly version: 1
+  readonly version: 2
   readonly provider: 'clouddrive2'
+  readonly apiToken: string
+}
+
+interface StoredWebDavCredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'webdav'
   readonly username: string
   readonly password: string
 }
@@ -114,19 +124,34 @@ export async function readAlistCredential(ref: string): Promise<AlistCredentialV
 }
 
 export async function saveCloudDrive2Credential(ref: string, value: CloudDrive2CredentialValue): Promise<void> {
-  if (!value.username || !value.password)
+  if (!value.apiToken.trim())
     throw new Error('Credential value is incomplete.')
 
   await saveRawCredential(ref, JSON.stringify({
-    version: 1,
+    version: 2,
     provider: 'clouddrive2',
-    username: value.username,
-    password: value.password,
+    apiToken: value.apiToken.trim(),
   } satisfies StoredCloudDrive2CredentialEnvelope))
 }
 
 export async function readCloudDrive2Credential(ref: string): Promise<CloudDrive2CredentialValue | null> {
   return parseCloudDrive2Credential(await readRawCredential(ref))
+}
+
+export async function saveWebDavCredential(ref: string, value: WebDavCredentialValue): Promise<void> {
+  if (!value.username || !value.password)
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'webdav',
+    username: value.username,
+    password: value.password,
+  } satisfies StoredWebDavCredentialEnvelope))
+}
+
+export async function readWebDavCredential(ref: string): Promise<WebDavCredentialValue | null> {
+  return parseWebDavCredential(await readRawCredential(ref))
 }
 
 export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
@@ -246,7 +271,28 @@ function parseCloudDrive2Credential(raw: string | null): CloudDrive2CredentialVa
     const value = JSON.parse(raw) as unknown
     if (!isObject(value))
       return null
-    if (value.provider !== 'clouddrive2' || value.version !== 1)
+    if (value.provider !== 'clouddrive2' || value.version !== 2)
+      return null
+    if (typeof value.apiToken !== 'string' || !value.apiToken.trim())
+      return null
+    return {
+      apiToken: value.apiToken.trim(),
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseWebDavCredential(raw: string | null): WebDavCredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value))
+      return null
+    if (value.provider !== 'webdav' || value.version !== 1)
       return null
     if (typeof value.username !== 'string' || typeof value.password !== 'string')
       return null

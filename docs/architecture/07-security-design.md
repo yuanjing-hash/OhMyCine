@@ -17,7 +17,7 @@ OhMyCine 是自托管家庭影院生态系统，安全设计的核心目标是�
 | 资产 | 示例 | 风险 |
 |------|------|------|
 | 媒体服务器凭据 | Emby/Jellyfin API Key | 被盗后可读取媒体库、刷新媒体库、访问播放地址 |
-| 网盘凭据 | 115 Cookie、OpenList Token、CloudDrive2 账号、WebDAV 密码 | 被盗后可访问或操作网盘文件 |
+| 网盘凭据 | 115 Cookie、OpenList Token、CloudDrive2 API Token、WebDAV 密码 | 被盗后可访问或操作网盘文件 |
 | PT 站点凭据 | Cookie、Passkey、User ID | 被盗后可能导致账号风险 |
 | 下载器凭据 | qBittorrent/Transmission 用户名密码 | 被盗后可添加、删除、控制下载任务 |
 | AI API Key | OpenAI/Claude/自定义 Provider Key | 被盗后产生费用或泄露请求内容 |
@@ -139,7 +139,8 @@ Server 需要保存的敏感字段包括：
 
 - Emby/Jellyfin API Key
 - OpenList Token / 用户名密码
-- CloudDrive2 WebDAV 账号密码
+- CloudDrive2 应用 API Token
+- 通用 WebDAV 账号密码
 - 115 Cookie
 - PT 站点 Cookie / Passkey
 - 下载器用户名密码
@@ -186,6 +187,12 @@ Player 本地需要保存：
 | iOS | Keychain |
 
 普通配置文件只保存非敏感字段，敏感字段保存引用 ID。
+
+CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
+
+- `clouddrive2` 保存用户在 CloudDrive2 中创建的应用 API Token，通过 Tauri Rust gRPC 客户端以 Bearer metadata 瞬时使用；不保存 CloudDrive2 主账号密码。
+- `webdav` 保存独立 WebDAV 用户名和密码，通过 Basic Auth 瞬时使用；账号密码禁止嵌入 URL。
+- 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
 
 示例：
 

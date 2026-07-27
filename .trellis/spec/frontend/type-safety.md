@@ -31,7 +31,7 @@ Keep all media sources behind a common interface with these concepts:
 - `DataSourceConfig`: id, type, display data, order, URL, credential references/extra config.
 - `DataSource`: lifecycle, list/search/detail/stream URL, optional home/library methods, config export.
 
-`DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `server`, `115`, `123`, and `quark` as planned types.
+`DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `webdav`, `server`, `115`, `123`, and `quark` as planned types.
 
 OpenList/Alist API responses must be parsed from `unknown` envelopes. Treat `code !== 200 && code !== 0` as a provider failure, validate file records before mapping, normalize paths to rooted paths, strip trailing slashes except for `/`, and reject `.` / `..` path segments before constructing `/d{path}` stream URLs. When `DataSourceConfig.extra.rootPath` is set, normalize it as a rooted path, default missing values to `/`, scope `listLibraries()`/`list()`/`search()` to that root, and reject browse/detail/stream paths outside that root.
 
@@ -121,6 +121,94 @@ catch (error) {
   }
   this.connected = false
   throw new Error(redactSensitiveText(error))
+}
+```
+
+### CloudDrive2 Native API and WebDAV Separation Contract
+
+#### 1. Scope / Trigger
+- Trigger: implementing or changing CloudDrive2, generic WebDAV, their credentials, Tauri network commands, root browsing, raw-source scanning, or remote playback headers.
+- Applies to `CloudDrive2DataSource`, `WebDavDataSource`, credential envelopes, `DataSourceType`, Settings provider forms, Tauri commands, mpv stream requests, raw-source scheduling, and verification scripts.
+
+#### 2. Signatures
+- CloudDrive2 credential envelope:
+```ts
+interface CloudDrive2CredentialValue {
+  apiToken: string
+}
+```
+- Generic WebDAV credential envelope:
+```ts
+interface WebDavCredentialValue {
+  username: string
+  password: string
+}
+```
+- CloudDrive2 Tauri request fields are `baseUrl`, `apiToken`, and provider `path`; search also includes `keyword`.
+- CloudDrive2 stream response is `{ url: string, headers: Record<string, string> }`.
+- DataSource identifiers are separate: `clouddrive2` and `webdav`.
+
+#### 3. Contracts
+- `clouddrive2` uses the official gRPC API with a user-created application API Token and `Authorization: Bearer <token>` metadata. Normal setup must not ask for the CloudDrive2 account password.
+- CloudDrive2 file operations run in Tauri Rust, not WebView fetch. Use `GetSubFiles` for listing, `GetSearchResults` for search, and `GetDownloadUrlPath` for playback URL/header resolution.
+- `webdav` uses `PROPFIND` plus Basic Auth and is an independent generic source. Do not label or implement it as CloudDrive2.
+- OpenList/Alist remains on its native HTTP JSON API (`/api/auth/login`, `/api/fs/*`, `/d/...`) and must not be moved to WebDAV unless a future explicit compatibility mode is designed.
+- API Tokens, WebDAV passwords, Bearer/Basic headers, direct URLs, and signed URLs stay in the credential/native playback boundary and must not enter `DataSourceConfig.extra`, localStorage, scan cache, logs, diagnostics, or playback history.
+- Both raw sources may store non-sensitive `credentialRef`, `credentialVersion`, `rootPath`, library summaries, and scan schedule config.
+- Provider paths must be normalized and constrained to the selected root before list/detail/search/playback mapping.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| CloudDrive2 URL has a path, userinfo, query, fragment, or non-HTTP scheme | Reject before opening a gRPC channel |
+| CloudDrive2 Token is empty, malformed, revoked, expired, or under-permissioned | Return a safe reconnect/permission error without echoing token or host |
+| CloudDrive2 returns a direct URL plus headers | Pass them only to mpv through `MediaStreamRequest` |
+| CloudDrive2 returns a download path template | Replace documented placeholders from the validated endpoint, then validate the final HTTP(S) URL |
+| WebDAV URL embeds credentials | Reject; credentials belong in the credential envelope |
+| WebDAV response contains an out-of-root or traversal path | Skip/reject before mapping or caching |
+| Existing `clouddrive2` credential contains the old username/password envelope | Do not reinterpret it as an API Token; require the user to enter a real API Token |
+| Source type is `webdav` | Include it in raw-source scan scheduling and media-library fallback behavior |
+
+#### 5. Good/Base/Bad Cases
+- Good: User creates a root-scoped read-only CloudDrive2 API Token, adds the gRPC endpoint, browses the allowed root, and plays a returned direct URL with temporary provider headers.
+- Good: User adds a non-CloudDrive WebDAV server as `webdav` using username/password without exposing credentials in its URL.
+- Base: CloudDrive2 native search is unavailable because the Token lacks search permission; the source shows a safe permission error and keeps config/credentials intact.
+- Bad: The CloudDrive2 card asks for email/password and sends `PROPFIND /dav`.
+- Bad: Generic WebDAV is hidden behind the `clouddrive2` identifier.
+- Bad: A CloudDrive2 API Token or signed playback URL is persisted in scan cache or ordinary config.
+
+#### 6. Tests Required
+- `npm run verify:clouddrive2-datasource` asserts native bridge list/search/stream calls receive the API Token, root filtering works, and exported config is redacted.
+- `npm run verify:webdav-datasource` asserts `PROPFIND`, Basic Auth header generation, root containment, video filtering, and credential-free URLs.
+- `npm run verify:raw-source-index-scheduler` asserts both `clouddrive2` and `webdav` become auto-index targets while Emby/Jellyfin do not.
+- Rust checks must compile the gRPC command for the Windows GNU target and cover endpoint/path/download-template validation.
+- `npm run typecheck`, `npm run lint`, `npm run build`, and the Windows GNU release build must pass.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+class CloudDrive2DataSource {
+  async list(path: string) {
+    return propfind(`${this.url}/dav${path}`, basicAuth(this.username, this.password))
+  }
+}
+```
+
+Correct:
+```ts
+class CloudDrive2DataSource {
+  async list(path: string) {
+    return invoke('clouddrive2_list', {
+      request: { baseUrl: this.url, apiToken: this.credential.apiToken, path },
+    })
+  }
+}
+
+class WebDavDataSource {
+  async list(path: string) {
+    return this.requestPropfind(path, 1)
+  }
 }
 ```
 

@@ -15,6 +15,7 @@ const sourceIcons: Record<string, string> = {
   jellyfin: 'J',
   alist: 'A',
   clouddrive2: 'C',
+  webdav: 'W',
   local: 'L',
   server: 'S',
   115: '1',

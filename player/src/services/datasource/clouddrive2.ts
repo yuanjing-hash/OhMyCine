@@ -1,54 +1,56 @@
 import type { CloudDrive2CredentialValue } from './credentialStore'
 import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest } from './types'
-import { ofetch } from 'ofetch'
+import { invoke } from '@tauri-apps/api/core'
 import { createRawSourceHomeSections, getRawScannedMediaDetail, isRawScannedSyntheticId, listRawScannedChildren, loadRawSourceScanCache } from '@/services/scraper'
-import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerBasename, splitProviderPath } from '@/services/scraper/pathUtils'
+import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerBasename } from '@/services/scraper/pathUtils'
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readCloudDrive2Credential, readRawCredentialBackup, removeCredential, saveCloudDrive2Credential, saveRawCredentialBackup } from './credentialStore'
 import { redactSensitiveText } from './errors'
-
-const CLOUDDRIVE2_REQUEST_TIMEOUT_MS = 15_000
-
-type CloudDrive2CredentialReader = (ref: string) => Promise<CloudDrive2CredentialValue | null>
-
-export type CloudDrive2Fetch = <T = unknown>(
-  request: Parameters<typeof ofetch>[0],
-  options?: Parameters<typeof ofetch>[1],
-) => Promise<T>
 
 interface CloudDrive2ConfigExtra {
   readonly credentialRef?: string
   readonly rootPath: string
 }
 
-interface CloudDrive2FileRecord {
+interface CloudDrive2NativeFileEntry {
   readonly name: string
   readonly path: string
   readonly isDir: boolean
   readonly size?: number
-  readonly modified?: string
+  readonly modifiedMs?: number
 }
 
-interface NodeBufferLike {
-  from: (input: string, encoding: 'utf8') => { toString: (encoding: 'base64') => string }
+interface CloudDrive2NativeRequest {
+  readonly baseUrl: string
+  readonly apiToken: string
+  readonly path: string
+}
+
+interface CloudDrive2NativeSearchRequest extends CloudDrive2NativeRequest {
+  readonly keyword: string
+}
+
+export interface CloudDrive2Bridge {
+  list: (request: CloudDrive2NativeRequest) => Promise<unknown>
+  search: (request: CloudDrive2NativeSearchRequest) => Promise<unknown>
+  getStream: (request: CloudDrive2NativeRequest) => Promise<unknown>
 }
 
 export interface CloudDrive2DataSourceOptions {
-  readonly fetcher?: CloudDrive2Fetch
-  readonly readCredential?: CloudDrive2CredentialReader
+  readonly bridge?: CloudDrive2Bridge
+  readonly readCredential?: (ref: string) => Promise<CloudDrive2CredentialValue | null>
 }
 
-export interface CloudDrive2LoginConfigInput {
+export interface CloudDrive2TokenConfigInput {
   readonly id: string
   readonly url: string
   readonly displayName?: string
-  readonly username: string
-  readonly password: string
+  readonly apiToken: string
   readonly rootPath?: string
   readonly order?: number
 }
 
-export interface CloudDrive2LoginConfigResult {
+export interface CloudDrive2TokenConfigResult {
   readonly config: DataSourceConfig
   readonly libraries: MediaLibrary[]
 }
@@ -57,9 +59,14 @@ export interface CloudDrive2SetupSessionInput {
   readonly id: string
   readonly url: string
   readonly displayName?: string
-  readonly username: string
-  readonly password: string
+  readonly apiToken: string
   readonly order?: number
+}
+
+const defaultCloudDrive2Bridge: CloudDrive2Bridge = {
+  list: request => invoke('clouddrive2_list', { request }),
+  search: request => invoke('clouddrive2_search', { request }),
+  getStream: request => invoke('clouddrive2_get_stream', { request }),
 }
 
 export class CloudDrive2DataSource implements DataSource {
@@ -70,13 +77,13 @@ export class CloudDrive2DataSource implements DataSource {
   private rootPath = '/'
   private connected = false
   private readonly cache = new SourceMetadataCache()
-  private readonly fetcher: CloudDrive2Fetch
-  private readonly readCredential: CloudDrive2CredentialReader
+  private readonly bridge: CloudDrive2Bridge
+  private readonly readCredential: (ref: string) => Promise<CloudDrive2CredentialValue | null>
 
   readonly type = 'clouddrive2' as const
 
   constructor(options: CloudDrive2DataSourceOptions = {}) {
-    this.fetcher = options.fetcher ?? (ofetch as CloudDrive2Fetch)
+    this.bridge = options.bridge ?? defaultCloudDrive2Bridge
     this.readCredential = options.readCredential ?? readCloudDrive2Credential
   }
 
@@ -104,7 +111,7 @@ export class CloudDrive2DataSource implements DataSource {
 
   async test(): Promise<boolean> {
     this.ensureConfigured()
-    await this.requestPropfind(this.rootPath, 1)
+    await this.listProviderEntries(this.rootPath)
     this.connected = true
     return true
   }
@@ -125,60 +132,47 @@ export class CloudDrive2DataSource implements DataSource {
       return []
 
     const providerPath = this.resolveLibraryPath(path)
-    const records = await this.cache.getOrSet(`list:${providerPath}`, () => this.requestPropfind(providerPath, 1))
-    return this.filterRecordsInRoot(records)
-      .filter(record => record.path !== providerPath)
-      .filter(record => record.isDir || isVideoFileName(record.name))
-      .map(record => this.mapItem(record))
+    const entries = await this.cache.getOrSet(`list:${providerPath}`, () => this.listProviderEntries(providerPath))
+    return entries
+      .filter(entry => isPathWithinRoot(entry.path, this.rootPath))
+      .filter(entry => entry.path !== providerPath)
+      .filter(entry => entry.isDir || isVideoFileName(entry.name))
+      .map(entry => this.mapItem(entry))
   }
 
   async listLibraries(): Promise<MediaLibrary[]> {
     this.ensureConfigured()
-    return [
-      {
-        id: this.rootPath,
-        sourceId: this.id,
-        name: this.rootPath === '/' ? 'WebDAV 文件目录' : (providerBasename(this.rootPath) ?? this.rootPath),
-        type: 'folders',
-      },
-    ]
+    return [{
+      id: this.rootPath,
+      sourceId: this.id,
+      name: this.rootPath === '/' ? 'CloudDrive2 文件目录' : (providerBasename(this.rootPath) ?? this.rootPath),
+      type: 'folders',
+    }]
   }
 
   async search(keyword: string): Promise<MediaItem[]> {
     const trimmed = keyword.trim()
     if (!trimmed)
       return []
-
-    const normalizedKeyword = trimmed.toLocaleLowerCase()
-    const results: MediaItem[] = []
-    const queue: Array<{ path: string, depth: number }> = [{ path: this.rootPath, depth: 0 }]
-    const visited = new Set<string>()
-    const maxDepth = 2
-    const maxVisited = 80
-
-    while (queue.length > 0 && visited.size < maxVisited) {
-      const current = queue.shift()
-      if (!current || visited.has(current.path))
-        continue
-      visited.add(current.path)
-
-      let children: MediaItem[]
-      try {
-        children = await this.list(current.path)
-      }
-      catch {
-        continue
-      }
-
-      for (const child of children) {
-        if (child.name.toLocaleLowerCase().includes(normalizedKeyword))
-          results.push(child)
-        if (child.type === 'folder' && current.depth < maxDepth)
-          queue.push({ path: child.path, depth: current.depth + 1 })
-      }
+    const credential = await this.ensureCredential()
+    try {
+      const response = await this.bridge.search({
+        baseUrl: this.baseUrl,
+        apiToken: credential.apiToken,
+        path: this.rootPath,
+        keyword: trimmed,
+      })
+      this.connected = true
+      return parseNativeFileEntries(response)
+        .filter(entry => isPathWithinRoot(entry.path, this.rootPath))
+        .filter(entry => entry.isDir || isVideoFileName(entry.name))
+        .map(entry => this.mapItem(entry))
+        .slice(0, 100)
     }
-
-    return results.slice(0, 100)
+    catch (error) {
+      this.connected = false
+      throw new Error(redactSensitiveText(error))
+    }
   }
 
   async getDetail(id: string): Promise<MediaDetail> {
@@ -188,29 +182,44 @@ export class CloudDrive2DataSource implements DataSource {
     if (isRawScannedSyntheticId(id))
       throw new Error('CloudDrive2 本地扫描合集不能直接播放，请选择具体文件或分集。')
 
-    const providerPath = this.resolveLibraryPath(id)
-    const record = await this.cache.getOrSet(`detail:${providerPath}`, async () => {
-      const records = await this.requestPropfind(providerPath, 0)
-      return records.find(item => item.path === providerPath) ?? createFallbackRecord(providerPath)
+    const path = this.resolveLibraryPath(id)
+    const entry = await this.cache.getOrSet(`detail:${path}`, async () => {
+      if (path === '/')
+        return createFallbackEntry(path, true)
+      const entries = await this.listProviderEntries(parentProviderPath(path))
+      return entries.find(item => item.path === path) ?? createFallbackEntry(path, false)
     })
-    this.ensureRecordInRoot(record)
-    const item = this.mapItem(record)
+    this.ensureEntryInRoot(entry)
+    const item = this.mapItem(entry)
     return {
       ...item,
-      mediaSources: item.type === 'folder' || !isVideoFileName(item.name) ? [] : [this.mapMediaSource(record)],
+      mediaSources: item.type === 'folder' || !isVideoFileName(item.name) ? [] : [this.mapMediaSource(entry)],
     }
   }
 
   async getStreamURL(id: string): Promise<string> {
-    const path = await this.resolvePlayablePath(id)
-    return this.buildWebDavUrl(path, false)
+    return (await this.getStreamRequest(id)).url
   }
 
   async getStreamRequest(id: string): Promise<MediaStreamRequest> {
-    const url = await this.getStreamURL(id)
-    return {
-      url,
-      headers: await this.authHeaders(),
+    if (isRawScannedSyntheticId(id))
+      throw new Error('CloudDrive2 剧集合集不能直接播放，请选择具体分集。')
+    const path = this.resolveLibraryPath(id)
+    if (!isVideoFileName(providerBasename(path) ?? ''))
+      throw new Error('该 CloudDrive2 文件不是支持的视频格式。')
+    const credential = await this.ensureCredential()
+    try {
+      const response = parseNativeStreamResponse(await this.bridge.getStream({
+        baseUrl: this.baseUrl,
+        apiToken: credential.apiToken,
+        path,
+      }))
+      this.connected = true
+      return response
+    }
+    catch (error) {
+      this.connected = false
+      throw new Error(redactSensitiveText(error))
     }
   }
 
@@ -229,40 +238,16 @@ export class CloudDrive2DataSource implements DataSource {
     return sanitizeExportConfig(this.config)
   }
 
-  private async resolvePlayablePath(id: string): Promise<string> {
-    if (isRawScannedSyntheticId(id))
-      throw new Error('CloudDrive2 剧集合集不能直接播放，请选择具体分集。')
-
-    const path = this.resolveLibraryPath(id)
-    const records = await this.requestPropfind(path, 0)
-    const record = records.find(item => item.path === path) ?? createFallbackRecord(path)
-    this.ensureRecordInRoot(record)
-    if (record.isDir)
-      throw new Error('CloudDrive2 文件夹不能直接播放。')
-    if (!isVideoFileName(record.name))
-      throw new Error('该 CloudDrive2 文件不是支持的视频格式。')
-
-    return path
-  }
-
-  private async requestPropfind(path: string, depth: 0 | 1): Promise<CloudDrive2FileRecord[]> {
-    this.ensureConfigured()
-    const providerPath = this.resolveLibraryPath(path)
+  private async listProviderEntries(path: string): Promise<CloudDrive2NativeFileEntry[]> {
+    const credential = await this.ensureCredential()
     try {
-      const response = await this.fetcher<string>(this.buildWebDavUrl(providerPath, depth === 1), {
-        method: 'PROPFIND',
-        timeout: CLOUDDRIVE2_REQUEST_TIMEOUT_MS,
-        responseType: 'text',
-        body: webDavPropfindBody(),
-        headers: {
-          ...(await this.authHeaders()),
-          'Depth': String(depth),
-          'Content-Type': 'application/xml; charset=utf-8',
-        },
+      const response = await this.bridge.list({
+        baseUrl: this.baseUrl,
+        apiToken: credential.apiToken,
+        path: this.resolveLibraryPath(path),
       })
-      const records = parsePropfindRecords(String(response), this.baseUrl)
       this.connected = true
-      return records
+      return parseNativeFileEntries(response)
     }
     catch (error) {
       this.connected = false
@@ -270,22 +255,13 @@ export class CloudDrive2DataSource implements DataSource {
     }
   }
 
-  private async authHeaders(): Promise<Record<string, string>> {
-    const credential = await this.ensureCredential()
-    return {
-      Authorization: `Basic ${base64Utf8(`${credential.username}:${credential.password}`)}`,
-    }
-  }
-
   private async ensureCredential(): Promise<CloudDrive2CredentialValue> {
     this.ensureConfigured({ requireCredential: false })
     if (this.credential)
       return this.credential
-
     const credential = await this.readStoredCredential()
     if (!credential)
-      throw new Error('CloudDrive2 登录凭证缺失。请在设置的数据源管理中重新编辑并登录。')
-
+      throw new Error('CloudDrive2 API Token 缺失。请在设置的数据源管理中重新编辑。')
     this.credential = credential
     this.connected = true
     return credential
@@ -297,40 +273,33 @@ export class CloudDrive2DataSource implements DataSource {
     return this.readCredential(this.credentialRef)
   }
 
-  private mapItem(record: CloudDrive2FileRecord): MediaItem {
+  private mapItem(entry: CloudDrive2NativeFileEntry): MediaItem {
     return {
-      id: record.path,
+      id: entry.path,
       sourceId: this.id,
       libraryId: this.rootPath,
-      name: record.name,
-      type: record.isDir ? 'folder' : 'file',
-      size: record.isDir ? undefined : record.size,
-      modified: record.modified,
-      path: record.path,
+      name: entry.name,
+      type: entry.isDir ? 'folder' : 'file',
+      size: entry.isDir ? undefined : entry.size,
+      modified: modifiedIso(entry.modifiedMs),
+      path: entry.path,
     }
   }
 
-  private mapMediaSource(record: CloudDrive2FileRecord): MediaSourceOption {
+  private mapMediaSource(entry: CloudDrive2NativeFileEntry): MediaSourceOption {
     return {
       id: 'default',
-      name: 'WebDAV',
-      container: getVideoFileExtension(record.name) ?? undefined,
-      size: record.size,
+      name: 'CloudDrive2 原生直链',
+      container: getVideoFileExtension(entry.name) ?? undefined,
+      size: entry.size,
       isRemote: true,
     }
-  }
-
-  private buildWebDavUrl(path: string, directory: boolean): string {
-    if (!isPathWithinRoot(path, this.rootPath))
-      throw new Error('CloudDrive2 路径不在已选择的根目录内。')
-    return buildWebDavUrl(this.baseUrl, path, directory)
   }
 
   private resolveLibraryPath(path?: string): string {
     const raw = path?.trim()
     if (!raw)
       return this.rootPath
-
     const normalized = normalizeCloudDrive2Path(raw)
     if (normalized === '/' && this.rootPath !== '/')
       return this.rootPath
@@ -339,12 +308,8 @@ export class CloudDrive2DataSource implements DataSource {
     return normalized
   }
 
-  private filterRecordsInRoot(records: readonly CloudDrive2FileRecord[]): CloudDrive2FileRecord[] {
-    return records.filter(record => isPathWithinRoot(record.path, this.rootPath))
-  }
-
-  private ensureRecordInRoot(record: CloudDrive2FileRecord): void {
-    if (!isPathWithinRoot(record.path, this.rootPath))
+  private ensureEntryInRoot(entry: CloudDrive2NativeFileEntry): void {
+    if (!isPathWithinRoot(entry.path, this.rootPath))
       throw new Error('CloudDrive2 返回的文件路径不在已选择的根目录内。')
   }
 
@@ -352,7 +317,7 @@ export class CloudDrive2DataSource implements DataSource {
     if (!this.config || !this.baseUrl)
       throw new Error('CloudDrive2 数据源未配置。')
     if (options.requireCredential !== false && !this.credential && !this.credentialRef)
-      throw new Error('CloudDrive2 登录凭证缺失。请在设置的数据源管理中重新编辑并登录。')
+      throw new Error('CloudDrive2 API Token 缺失。请在设置的数据源管理中重新编辑。')
   }
 
   private async loadRawScanCache() {
@@ -383,12 +348,10 @@ export class CloudDrive2DataSource implements DataSource {
 }
 
 export async function createAuthenticatedCloudDrive2SetupSource(input: CloudDrive2SetupSessionInput): Promise<CloudDrive2DataSource> {
-  const credential = normalizeLoginCredential(input.username, input.password)
+  const credential = normalizeApiToken(input.apiToken)
   const displayName = input.displayName?.trim() || 'CloudDrive2'
   const credentialRef = createCredentialRef(input.id, 'clouddrive2')
-  const source = new CloudDrive2DataSource({
-    readCredential: async () => credential,
-  })
+  const source = new CloudDrive2DataSource({ readCredential: async () => credential })
   try {
     await source.init({
       id: input.id,
@@ -398,10 +361,7 @@ export async function createAuthenticatedCloudDrive2SetupSource(input: CloudDriv
       order: input.order ?? 0,
       url: input.url.trim(),
       enabled: true,
-      extra: {
-        credentialRef,
-        rootPath: '/',
-      },
+      extra: { credentialRef, rootPath: '/' },
     })
     await source.test()
     return source
@@ -412,8 +372,8 @@ export async function createAuthenticatedCloudDrive2SetupSource(input: CloudDriv
   }
 }
 
-export async function loginCloudDrive2AndCreateConfig(input: CloudDrive2LoginConfigInput): Promise<CloudDrive2LoginConfigResult> {
-  const credential = normalizeLoginCredential(input.username, input.password)
+export async function saveCloudDrive2TokenAndCreateConfig(input: CloudDrive2TokenConfigInput): Promise<CloudDrive2TokenConfigResult> {
+  const credential = normalizeApiToken(input.apiToken)
   const credentialRef = createCredentialRef(input.id, 'clouddrive2')
   const displayName = input.displayName?.trim() || 'CloudDrive2'
   const rootPath = normalizeCloudDrive2Path(input.rootPath)
@@ -431,7 +391,6 @@ export async function loginCloudDrive2AndCreateConfig(input: CloudDrive2LoginCon
       rootPath,
     },
   }
-
   const previousCredential = await readRawCredentialBackup(credentialRef)
   try {
     await saveCloudDrive2Credential(credentialRef, credential)
@@ -441,11 +400,20 @@ export async function loginCloudDrive2AndCreateConfig(input: CloudDrive2LoginCon
   }
 
   const source = new CloudDrive2DataSource()
-  let libraries: MediaLibrary[] = []
   try {
     await source.init(config)
     await source.test()
-    libraries = await source.listLibraries()
+    const libraries = await source.listLibraries()
+    return {
+      config: {
+        ...config,
+        extra: {
+          ...config.extra,
+          libraries: libraries.map(library => ({ id: library.id, name: library.name, type: library.type })),
+        },
+      },
+      libraries,
+    }
   }
   catch (error) {
     if (previousCredential)
@@ -456,21 +424,6 @@ export async function loginCloudDrive2AndCreateConfig(input: CloudDrive2LoginCon
   }
   finally {
     source.destroy()
-  }
-
-  return {
-    config: {
-      ...config,
-      extra: {
-        ...config.extra,
-        libraries: libraries.map(library => ({
-          id: library.id,
-          name: library.name,
-          type: library.type,
-        })),
-      },
-    },
-    libraries,
   }
 }
 
@@ -489,42 +442,35 @@ export function normalizeCloudDrive2RootPath(value: string | undefined): string 
   return normalizeCloudDrive2Path(value)
 }
 
-function normalizeLoginCredential(username: string, password: string): CloudDrive2CredentialValue {
-  const trimmedUsername = username.trim()
-  if (!trimmedUsername || !password)
-    throw new Error('请输入 CloudDrive2 WebDAV 账号和密码。')
-  return {
-    username: trimmedUsername,
-    password,
-  }
+function normalizeApiToken(value: string): CloudDrive2CredentialValue {
+  const apiToken = value.trim()
+  if (!apiToken)
+    throw new Error('请输入 CloudDrive2 API Token。')
+  return { apiToken }
 }
 
 function normalizeCloudDrive2BaseUrl(value: string): string {
   const trimmed = value.trim()
   if (!trimmed)
-    throw new Error('请输入 CloudDrive2 WebDAV URL。')
-
+    throw new Error('请输入 CloudDrive2 gRPC 服务地址。')
   try {
     const url = new URL(trimmed)
     if (url.protocol !== 'http:' && url.protocol !== 'https:')
-      throw new Error('CloudDrive2 WebDAV URL 仅支持 http 或 https。')
-    if (url.username || url.password || url.search || url.hash)
-      throw new Error('CloudDrive2 WebDAV URL 不能包含账号、密码、查询参数或片段。')
-
-    const pathname = url.pathname.replace(/\/+$/, '')
-    return `${url.origin}${pathname === '/' ? '' : pathname}`
+      throw new Error('CloudDrive2 gRPC 服务地址仅支持 http 或 https。')
+    if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== ''))
+      throw new Error('CloudDrive2 gRPC 服务地址不能包含路径、账号、密码、查询参数或片段。')
+    return url.origin
   }
   catch (error) {
     if (error instanceof Error && error.message.includes('CloudDrive2'))
       throw error
-    throw new Error('CloudDrive2 WebDAV URL 格式无效。')
+    throw new Error('CloudDrive2 gRPC 服务地址格式无效。')
   }
 }
 
 function readCloudDrive2Extra(config: DataSourceConfig): CloudDrive2ConfigExtra {
   if (config.type !== 'clouddrive2')
     throw new Error('CloudDrive2 数据源类型无效。')
-
   const extra = config.extra ?? {}
   return {
     credentialRef: typeof extra.credentialRef === 'string' ? extra.credentialRef : undefined,
@@ -539,16 +485,74 @@ function normalizeCloudDrive2Path(value: string | undefined): string {
 function sanitizeExportConfig(config: DataSourceConfig | null): DataSourceConfig {
   if (!config)
     throw new Error('CloudDrive2 数据源未配置。')
+  const safeExtra = Object.fromEntries(Object.entries(config.extra ?? {}).filter(([key]) => !isSensitiveConfigKey(key)))
+  return { ...config, url: normalizeCloudDrive2BaseUrl(config.url), extra: safeExtra }
+}
 
-  const safeExtra = Object.fromEntries(
-    Object.entries(config.extra ?? {}).filter(([key]) => !isSensitiveConfigKey(key)),
-  )
+function parseNativeFileEntries(value: unknown): CloudDrive2NativeFileEntry[] {
+  if (!Array.isArray(value))
+    throw new Error('CloudDrive2 返回了无效的文件列表。')
+  return value.map(parseNativeFileEntry).filter((entry): entry is CloudDrive2NativeFileEntry => entry != null)
+}
 
-  return {
-    ...config,
-    url: normalizeCloudDrive2BaseUrl(config.url),
-    extra: safeExtra,
+function parseNativeFileEntry(value: unknown): CloudDrive2NativeFileEntry | null {
+  if (!isObject(value) || typeof value.name !== 'string' || typeof value.path !== 'string' || typeof value.isDir !== 'boolean')
+    return null
+  try {
+    const path = normalizeCloudDrive2Path(value.path)
+    const name = value.name.trim()
+    if (!name)
+      return null
+    return {
+      name,
+      path,
+      isDir: value.isDir,
+      size: finiteNonNegativeNumber(value.size),
+      modifiedMs: finiteNumber(value.modifiedMs),
+    }
   }
+  catch {
+    return null
+  }
+}
+
+function parseNativeStreamResponse(value: unknown): MediaStreamRequest {
+  if (!isObject(value) || typeof value.url !== 'string')
+    throw new Error('CloudDrive2 返回了无效的播放地址。')
+  const url = new URL(value.url)
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+    throw new Error('CloudDrive2 返回了无效的播放地址。')
+  const headers = isObject(value.headers)
+    ? Object.fromEntries(Object.entries(value.headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+    : {}
+  return { url: url.toString(), headers }
+}
+
+function createFallbackEntry(path: string, isDir: boolean): CloudDrive2NativeFileEntry {
+  return { name: providerBasename(path) ?? 'CloudDrive2', path, isDir }
+}
+
+function parentProviderPath(path: string): string {
+  const normalized = normalizeCloudDrive2Path(path)
+  if (normalized === '/')
+    return '/'
+  const index = normalized.lastIndexOf('/')
+  return index <= 0 ? '/' : normalized.slice(0, index)
+}
+
+function modifiedIso(value: number | undefined): string | undefined {
+  if (value == null)
+    return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+}
+
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function isSensitiveConfigKey(key: string): boolean {
@@ -562,158 +566,6 @@ function isSensitiveConfigKey(key: string): boolean {
     || normalized.includes('passkey')
 }
 
-function webDavPropfindBody(): string {
-  return [
-    '<?xml version="1.0" encoding="utf-8"?>',
-    '<d:propfind xmlns:d="DAV:">',
-    '<d:prop>',
-    '<d:displayname />',
-    '<d:resourcetype />',
-    '<d:getcontentlength />',
-    '<d:getlastmodified />',
-    '</d:prop>',
-    '</d:propfind>',
-  ].join('')
-}
-
-function parsePropfindRecords(xml: string, baseUrl: string): CloudDrive2FileRecord[] {
-  return matchXmlBlocks(xml, 'response')
-    .filter(isSuccessfulResponseBlock)
-    .map((block): CloudDrive2FileRecord | null => {
-      const href = xmlTagText(block, 'href')
-      if (!href)
-        return null
-      const path = providerPathFromHref(href, baseUrl)
-      const displayName = xmlTagText(block, 'displayname')
-      const isDir = xmlTagExists(block, 'collection') || href.trim().endsWith('/')
-      const size = isDir ? undefined : numberValue(xmlTagText(block, 'getcontentlength'))
-      const modified = modifiedIso(xmlTagText(block, 'getlastmodified'))
-      return {
-        name: displayName?.trim() || providerBasename(path) || '文件目录',
-        path,
-        isDir,
-        size,
-        modified,
-      }
-    })
-    .filter((record): record is CloudDrive2FileRecord => record != null)
-}
-
-function matchXmlBlocks(xml: string, localName: string): string[] {
-  const pattern = new RegExp(`<(?:[\\w.-]+:)?${localName}\\b[\\s\\S]*?<\\/(?:[\\w.-]+:)?${localName}>`, 'gi')
-  return xml.match(pattern) ?? []
-}
-
-function xmlTagText(xml: string, localName: string): string | undefined {
-  const pattern = new RegExp(`<(?:[\\w.-]+:)?${localName}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${localName}>`, 'i')
-  const match = pattern.exec(xml)
-  return match ? decodeXmlText(match[1].trim()) : undefined
-}
-
-function xmlTagExists(xml: string, localName: string): boolean {
-  const pattern = new RegExp(`<(?:[\\w.-]+:)?${localName}\\b`, 'i')
-  return pattern.test(xml)
-}
-
-function isSuccessfulResponseBlock(block: string): boolean {
-  const statusTexts = matchXmlBlocks(block, 'status').map(item => xmlTagText(item, 'status') ?? '')
-  if (statusTexts.length === 0)
-    return true
-  return statusTexts.some((status) => {
-    const code = /\s(\d{3})\s/.exec(status)?.[1]
-    return code ? code.startsWith('2') : false
-  })
-}
-
-function decodeXmlText(value: string): string {
-  return value
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, '\'')
-    .replace(/&amp;/g, '&')
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
-}
-
-function providerPathFromHref(href: string, baseUrl: string): string {
-  const base = new URL(baseUrl)
-  const url = new URL(href, `${baseUrl}/`)
-  const basePath = base.pathname.replace(/\/+$/, '')
-  let pathname = url.pathname
-  if (basePath && (pathname === basePath || pathname.startsWith(`${basePath}/`)))
-    pathname = pathname.slice(basePath.length) || '/'
-  return normalizeProviderPath(decodeProviderPathname(pathname))
-}
-
-function decodeProviderPathname(pathname: string): string {
-  return pathname
-    .split('/')
-    .map((segment) => {
-      try {
-        return decodeURIComponent(segment)
-      }
-      catch {
-        return segment
-      }
-    })
-    .join('/')
-}
-
-function buildWebDavUrl(baseUrl: string, path: string, directory: boolean): string {
-  const url = new URL(baseUrl)
-  const basePath = url.pathname.replace(/\/+$/, '')
-  const encodedSegments = splitProviderPath(path).map(segment => encodeURIComponent(segment))
-  const nextPath = [basePath, ...encodedSegments].filter(Boolean).join('/')
-  url.pathname = `/${nextPath}`.replace(/\/+/g, '/')
-  if (directory && !url.pathname.endsWith('/'))
-    url.pathname = `${url.pathname}/`
-  url.search = ''
-  url.hash = ''
-  return url.toString()
-}
-
-function createFallbackRecord(path: string): CloudDrive2FileRecord {
-  return {
-    name: providerBasename(path) ?? path,
-    path,
-    isDir: false,
-  }
-}
-
-function modifiedIso(value: string | undefined): string | undefined {
-  if (!value)
-    return undefined
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
-}
-
-function numberValue(value: string | undefined): number | undefined {
-  if (!value)
-    return undefined
-  const numeric = Number(value)
-  return Number.isFinite(numeric) ? numeric : undefined
-}
-
-function base64Utf8(value: string): string {
-  const encoder = globalThis.TextEncoder ? new TextEncoder() : null
-  if (typeof globalThis.btoa === 'function' && encoder) {
-    const bytes = encoder.encode(value)
-    let binary = ''
-    for (const byte of bytes)
-      binary += String.fromCharCode(byte)
-    return globalThis.btoa(binary)
-  }
-
-  const buffer = Reflect.get(globalThis, 'Buffer') as unknown
-  if (isNodeBufferLike(buffer))
-    return buffer.from(value, 'utf8').toString('base64')
-
-  throw new Error('当前运行环境不支持 Basic Auth 编码。')
-}
-
-function isNodeBufferLike(value: unknown): value is NodeBufferLike {
-  return typeof value === 'object'
-    && value != null
-    && typeof Reflect.get(value, 'from') === 'function'
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value != null
 }

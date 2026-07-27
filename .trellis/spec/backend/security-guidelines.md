@@ -29,7 +29,8 @@ Sensitive fields include:
 
 - Emby/Jellyfin API keys.
 - OpenList/Alist tokens, usernames, and passwords.
-- CloudDrive2/WebDAV credentials.
+- CloudDrive2 API Tokens.
+- Generic WebDAV usernames and passwords.
 - 115 cookies and API proxy credentials.
 - PT cookies, passkeys, and user IDs.
 - qBittorrent/Transmission credentials.

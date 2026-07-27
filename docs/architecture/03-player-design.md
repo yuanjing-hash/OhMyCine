@@ -3,7 +3,7 @@
 ## 1. 概述
 
 OhMyCine Player 是一款**独立可用**的跨平台沉浸式家庭影院播放器，核心特点：
-- **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2/本地文件夹
+- **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2/WebDAV/本地文件夹
 - **Cinema OS 风格 UI** — 液态玻璃设计语言，深色主题，电影感排版
 - **libmpv 引擎** — 全格式支持，硬件解码，HDR/Dolby Vision，沉浸式嵌入渲染
 - **全平台目标** — 当前 Player MVP 先完成 Windows；macOS、Linux (桌面) 和 Android 渲染/打包链路作为后续平台目标保留
@@ -159,7 +159,7 @@ ohmycine-player/
 
 ### 4.1 架构设计
 
-Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist、本地文件夹等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
+Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist、CloudDrive2、WebDAV、本地文件夹等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -172,13 +172,13 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 │              │          │          │          │             │
 │  ┌───────────▼──┐ ┌─────▼────┐ ┌───▼───┐ ┌───▼────────┐  │
 │  │ EmbyDataSource│ │JellyfinDS│ │AlistDS│ │CloudDrive2DS│  │
-│  │ (原生API)    │ │(原生API) │ │(HTTP) │ │ (WebDAV)   │  │
-│  └──────────────┘ └──────────┘ └───────┘ └──────┬─────┘  │
-│                                                  │        │
-│                                  ┌───────────────▼─────┐  │
-│                                  │ LocalFileDataSource │  │
-│                                  │ (Tauri 只读文件命令) │  │
-│                                  └─────────────────────┘  │
+│  │ (原生API)    │ │(原生API) │ │(HTTP) │ │ (gRPC API) │  │
+│  └──────────────┘ └──────────┘ └───────┘ └─────────────┘  │
+│                                                             │
+│  ┌─────────────────────┐       ┌─────────────────────┐     │
+│  │ WebDavDataSource    │       │ LocalFileDataSource │     │
+│  │ (PROPFIND + Basic)  │       │ (Tauri 只读文件命令) │     │
+│  └─────────────────────┘       └─────────────────────┘     │
 │              │          │          │          │             │
 │  ┌───────────▼──────────▼──────────▼──────────▼────────┐  │
 │  │  CloudDriveDataSource (占位)                          │  │
@@ -271,7 +271,7 @@ export interface AudioTrack {
   isDefault: boolean
 }
 
-export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'server' | '115' | '123' | 'quark' | 'local'
+export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'server' | '115' | '123' | 'quark' | 'local'
 
 export interface DataSourceConfig {
   id: string
@@ -392,6 +392,8 @@ export class EmbyDataSource implements DataSource {
 
 ### 4.4 OpenList/Alist DataSource 实现
 
+OpenList/Alist 使用自身 HTTP JSON API：账号密码调用 `/api/auth/login` 获取 token，目录和搜索调用 `/api/fs/*`，播放使用 `/d{path}` 与服务端返回的签名。它不是 WebDAV DataSource。
+
 ```typescript
 // src/services/datasource/alist.ts
 
@@ -440,6 +442,12 @@ export class AlistDataSource implements DataSource {
   // ... 其他方法
 }
 ```
+
+#### CloudDrive2 与通用 WebDAV 协议边界
+
+- `CloudDrive2DataSource` 使用 CloudDrive2 官方 gRPC API，只接受服务地址和用户创建的应用 API Token。Tauri Rust 负责 `GetSubFiles`、`GetSearchResults` 和 `GetDownloadUrlPath`，Bearer Token 只存在于凭据边界和瞬时原生请求中。
+- `WebDavDataSource` 是独立通用数据源，使用 WebDAV URL、用户名、密码、`PROPFIND` 与 Basic Auth。它不冒充 CloudDrive2，也不复用 CloudDrive2 API Token。
+- 两类数据源都只读，支持用户选择 `extra.rootPath`、本地 raw scan cache、海报墙、Home 聚合和全量/增量扫描。
 
 ### 4.5 DataSourceManager
 
@@ -505,6 +513,7 @@ export class DataSourceManager {
       case 'jellyfin': return new JellyfinDataSource()
       case 'alist': return new AlistDataSource()
       case 'clouddrive2': return new CloudDrive2DataSource()
+      case 'webdav': return new WebDavDataSource()
       case 'server': return new ServerDataSource()
       // 占位
       case '115': throw new Error('115网盘支持即将推出')
@@ -591,20 +600,20 @@ export class ConfigSync {
 
 ### 5.1 设计背景
 
-Emby/Jellyfin 自带刮削功能，但 OpenList/Alist/CloudDrive2 这类网盘数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
+Emby/Jellyfin 自带刮削功能，但 OpenList/Alist/CloudDrive2/WebDAV 这类原始文件数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
 
-本系统只面向“原始文件源”：OpenList/Alist、CloudDrive2、本地文件以及未来类似的自定义文件源。Emby/Jellyfin 已经由服务端维护媒体库和元数据，默认不套用 Player 本地刮削分类规则。
+本系统只面向“原始文件源”：OpenList/Alist、CloudDrive2、WebDAV、本地文件以及未来类似的自定义文件源。Emby/Jellyfin 已经由服务端维护媒体库和元数据，默认不套用 Player 本地刮削分类规则。
 
 刮削系统必须遵守三条边界：
 
-1. **只读远端**：Player 不对 OpenList/Alist、CloudDrive2 或本地源执行上传、重命名、移动、删除、创建目录等写操作。
+1. **只读远端**：Player 不对 OpenList/Alist、CloudDrive2、WebDAV 或本地源执行上传、重命名、移动、删除、创建目录等写操作。
 2. **本地缓存**：扫描日志、匹配结果、海报、背景图、用户修正和分类结果都保存在 Player 本地 app data；后续右键识别、手动选择 TMDB 结果、海报/剧照上传和元信息编辑都属于本地覆盖层，只写本地 app data/cache，不写回 OpenList/Alist。
 3. **任意根目录**：从用户选择的根目录开始自动识别结构，不要求物理目录顶层必须叫 `movie`、`tv`、`Movies` 或 `TV`。
 
 ### 5.2 刮削流程
 
 ```
-用户选择的根目录 (OpenList/Alist rootPath / CloudDrive2 WebDAV / 本地文件夹)
+用户选择的根目录 (OpenList/Alist / CloudDrive2 gRPC / WebDAV / 本地文件夹)
         │
         ▼
 递归只读扫描 + 视频文件过滤
@@ -678,13 +687,13 @@ TV/国产剧/剧名/Season 01/S01E01.mkv
 
 ### 5.2.2 数据源页呈现
 
-OpenList/Alist、CloudDrive2、本地文件等原始文件源在完成本地扫描后，数据源首页应与 Emby/Jellyfin 保持同一用户心智：顶部是大海报/背景轮播，下面是媒体库卡片，再进入具体分类的作品海报墙。只有 TMDB `matched` 条目才进入正式分类优先级：标准目录优先使用明确的路径分类目录作为媒体库分类，例如 `动漫`、`综艺`、`国产剧`；非标准目录或没有清晰路径分类时，再使用 TMDB 元数据和本地分类规则生成分类。分类不应来自作品目录名或发布组噪声目录名。
+OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源在完成本地扫描后，数据源首页应与 Emby/Jellyfin 保持同一用户心智：顶部是大海报/背景轮播，下面是媒体库卡片，再进入具体分类的作品海报墙。只有 TMDB `matched` 条目才进入正式分类优先级：标准目录优先使用明确的路径分类目录作为媒体库分类，例如 `动漫`、`综艺`、`国产剧`；非标准目录或没有清晰路径分类时，再使用 TMDB 元数据和本地分类规则生成分类。分类不应来自作品目录名或发布组噪声目录名。
 
 未完成 TMDB 匹配的条目统一显示在 `未识别` 分类。即使路径已经解析出电影、剧集、分类提示、季号或集号，也只把这些结构作为 `未识别` 内部的作品/季集聚合和后续手动识别依据，不把它们提升为媒体库分类卡片。
 
 扫描管理是辅助功能。扫描状态、结构判断、日志、全量扫描和增量扫描按钮放在显式“扫描管理”入口内；默认页面优先展示可浏览内容。首次进入原始文件源且本地 scan cache 尚未生成时，媒体库区域应显示当前源/root 的自动索引进度、状态和可进入文件夹视图的兜底入口，而不是空媒体库。文件夹视图保留为兜底入口，继续通过 DataSource `list()` 只读浏览和播放，但不替代默认媒体库视图。
 
-原始文件源使用双通道扫描：`full` 全量扫描默认 6 小时一次，负责完整递归扫描和一致性校准；`incremental` 增量扫描默认 1 分钟一次，先对比 provider path、大小和修改时间，有新增、删除或修改时再刷新本地索引。设置页按数据源保存 `extra.rawSourceScanSchedule`，可分别启停全量/增量并调整间隔。当前覆盖 OpenList/Alist、CloudDrive2 和本地文件夹；本地文件夹通过 Tauri root-scoped watcher 监听变更，事件只用于标记 source/root 需要增量扫描，前端和缓存仍只使用 `/...` provider path，不展示或持久化本地绝对路径。OpenList/Alist 与 CloudDrive2 暂以短间隔 polling/diff 实现近实时增量；Emby/Jellyfin 使用服务端媒体库和元数据，不进入 Player 原始文件扫描调度。
+原始文件源使用双通道扫描：`full` 全量扫描默认 6 小时一次，负责完整递归扫描和一致性校准；`incremental` 增量扫描默认 1 分钟一次，先对比 provider path、大小和修改时间，有新增、删除或修改时再刷新本地索引。设置页按数据源保存 `extra.rawSourceScanSchedule`，可分别启停全量/增量并调整间隔。当前覆盖 OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹；本地文件夹通过 Tauri root-scoped watcher 监听变更，事件只用于标记 source/root 需要增量扫描，前端和缓存仍只使用 `/...` provider path，不展示或持久化本地绝对路径。OpenList/Alist、CloudDrive2 与 WebDAV 暂以短间隔 polling/diff 实现近实时增量；Emby/Jellyfin 使用服务端媒体库和元数据，不进入 Player 原始文件扫描调度。
 
 ### 5.2.3 非标准目录模式
 
@@ -701,7 +710,7 @@ OpenList/Alist、CloudDrive2、本地文件等原始文件源在完成本地扫�
 
 分类规则是刮削后的**本地逻辑分组**，不是物理目录约束。它影响海报墙分组、筛选、媒体库标签、聚合首页和未来 AI 推荐上下文，但不移动或重命名远端文件。分类规则只作用于已完成 TMDB 匹配的条目；未完成匹配的条目统一显示为 `未识别`。
 
-规则适用于 OpenList/Alist、CloudDrive2、本地文件等原始文件源；Emby/Jellyfin 默认使用服务端已有分类与元数据。
+规则适用于 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源；Emby/Jellyfin 默认使用服务端已有分类与元数据。
 
 分类规则支持以下 TMDB 字段：
 
@@ -1158,7 +1167,7 @@ export class PosterCache {
 
 ### 5.8 刮削调度
 
-当前 Player MVP 使用 source/root-scoped 的 `rawSourceIndexScheduler`，并区分 `full` / `incremental` 两类状态、冷却和最近执行时间。app 启动后会按每个原始文件源的 `extra.rawSourceScanSchedule` 触发后台 best-effort 调度：全量扫描默认 6 小时一次，增量扫描默认 1 分钟一次。本地文件源额外启用 Tauri 文件系统 watcher，watcher 事件只标记对应 source/root dirty，实际刷新仍走 scheduler 和 DataSource `list()`；OpenList/Alist 与 CloudDrive2 使用增量 polling/diff。数据源页首次无缓存时会读取当前源/root 状态并启动或绑定正在运行的全量索引任务。手动扫描可选择全量或增量；所有扫描只读取 DataSource/Tauri 安全边界并写入本地 Player cache，不阻塞文件夹浏览和播放。Emby/Jellyfin 不进入此调度。
+当前 Player MVP 使用 source/root-scoped 的 `rawSourceIndexScheduler`，并区分 `full` / `incremental` 两类状态、冷却和最近执行时间。app 启动后会按每个原始文件源的 `extra.rawSourceScanSchedule` 触发后台 best-effort 调度：全量扫描默认 6 小时一次，增量扫描默认 1 分钟一次。本地文件源额外启用 Tauri 文件系统 watcher，watcher 事件只标记对应 source/root dirty，实际刷新仍走 scheduler 和 DataSource `list()`；OpenList/Alist、CloudDrive2 与 WebDAV 使用增量 polling/diff。数据源页首次无缓存时会读取当前源/root 状态并启动或绑定正在运行的全量索引任务。手动扫描可选择全量或增量；所有扫描只读取 DataSource/Tauri 安全边界并写入本地 Player cache，不阻塞文件夹浏览和播放。Emby/Jellyfin 不进入此调度。
 
 ```typescript
 // src/services/scraper/scheduler.ts
@@ -1705,14 +1714,14 @@ export const useSettingsStore = defineStore('settings', () => {
 **Hero Carousel 数据来源**：
 - 优先使用媒体源已有元数据：标题 Logo（类似 Emby logo image）、backdrop、poster、overview、year、genres、rating、duration。
 - Emby/Jellyfin 直接使用服务端已刮削数据。
-- OpenList/Alist、CloudDrive2、本地文件若缺元数据，使用 Player 本地刮削结果补齐。
+- OpenList/Alist、CloudDrive2、WebDAV、本地文件若缺元数据，使用 Player 本地刮削结果补齐。
 - 轮播支持左右切换，并按固定间隔自动切换；用户手动切换后短暂暂停自动轮播。
 - Hero 选择逻辑优先使用：继续观看中的高优先级项目、最近添加、评分较高项目；避免展示缺少 backdrop/overview 的裸文件。
 
 **动态数据源侧栏**：
 - 侧栏固定在首页和媒体库页面左侧，采用液态玻璃竖向导航。
 - 顶部固定为“首页/聚合首页”。
-- 其后按 `DataSourceConfig.order` 展示用户已绑定的数据源，例如 Emby、123 云盘、OpenList/Alist、CloudDrive2、本地文件。
+- 其后按 `DataSourceConfig.order` 展示用户已绑定的数据源，例如 Emby、123 云盘、OpenList/Alist、CloudDrive2、WebDAV、本地文件。
 - 数据源图标和名称来自绑定配置；未配置图标时按类型使用默认图标。
 - 点击某个数据源进入 `SourceLibraryView`，只浏览该数据源下的媒体库。
 - 设置入口固定在底部；Server 连接作为可选数据源或增强入口，不阻塞首页。

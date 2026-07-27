@@ -61,7 +61,8 @@ Expected DataSource types:
 - Emby
 - Jellyfin
 - OpenList/Alist
-- CloudDrive2/WebDAV
+- CloudDrive2 through its native gRPC API Token flow
+- generic WebDAV as a separate DataSource
 - ServerDataSource
 - future 115 / 123 / Quark and other cloud sources
 

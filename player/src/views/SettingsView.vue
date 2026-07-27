@@ -7,11 +7,12 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
-import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, loginCloudDrive2AndCreateConfig, normalizeCloudDrive2RootPath, readCloudDrive2RootPath } from '@/services/datasource/clouddrive2'
+import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
+import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import {
   createEmptyScrapeCategoryRule,
   loadScrapeClassificationRules,
@@ -34,7 +35,7 @@ import {
 } from '@/services/scraper/tmdb'
 import { useDataSourceStore } from '@/stores/datasource'
 
-type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2'>
+type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping'
@@ -49,6 +50,7 @@ interface DataSourceFormState {
   url: string
   username: string
   password: string
+  apiToken: string
   rootPath: string
 }
 
@@ -100,10 +102,19 @@ const sourceTypeOptions: Array<{
     type: 'clouddrive2',
     label: 'CloudDrive2',
     shortLabel: 'C',
-    description: 'CloudDrive2 WebDAV 账号登录',
+    description: 'CloudDrive2 原生 gRPC API Token',
     defaultName: 'CloudDrive2',
-    urlPlaceholder: 'http://clouddrive2.example.test:19798/dav',
-    usernamePlaceholder: 'CloudDrive2 WebDAV 账号',
+    urlPlaceholder: 'http://clouddrive2.example.test:19798',
+    usernamePlaceholder: '',
+  },
+  {
+    type: 'webdav',
+    label: 'WebDAV',
+    shortLabel: 'W',
+    description: '通用 WebDAV 只读数据源',
+    defaultName: 'WebDAV',
+    urlPlaceholder: 'https://dav.example.test/media',
+    usernamePlaceholder: 'WebDAV 用户名',
   },
   {
     type: 'local',
@@ -156,6 +167,7 @@ const form = reactive<DataSourceFormState>({
   url: '',
   username: '',
   password: '',
+  apiToken: '',
   rootPath: '/',
 })
 const mode = ref<SettingsMode>('overview')
@@ -164,7 +176,7 @@ const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
 const persistentCredentialWarning = ref(hasPersistentCredentialStorageWarning())
-const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | null>(null)
+const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | null>(null)
 const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
 const alistBrowserLoading = ref(false)
@@ -189,8 +201,10 @@ const isDataSourceMode = computed(() => mode.value === 'manage' || mode.value ==
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
 const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
-const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value)
+const isWebDavForm = computed(() => form.type === 'webdav')
 const isLocalForm = computed(() => form.type === 'local')
+const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value)
+const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value)
 const selectedRootPathLabel = computed(() => isLocalForm.value
   ? localRootPathLabel(form.rootPath)
   : normalizeRemoteRootPath(form.rootPath))
@@ -227,8 +241,8 @@ const tmdbCredentialStatusLabel = computed(() => {
 const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
-    ? '配置 OpenList/Alist、CloudDrive2、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回网盘目录。'
-    : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
+    ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
+    : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -237,7 +251,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '连接、编辑、停用或清理 Emby、OpenList/Alist、CloudDrive2 与本地文件夹数据源，控制左侧媒体入口。',
+    description: '连接、编辑、停用或清理 Emby、OpenList/Alist、CloudDrive2、WebDAV 与本地文件夹数据源，控制左侧媒体入口。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -307,6 +321,7 @@ watch(() => form.type, (type) => {
     form.url = ''
     form.username = ''
     form.password = ''
+    form.apiToken = ''
     form.rootPath = ''
   }
   else if (type === 'emby') {
@@ -315,10 +330,17 @@ watch(() => form.type, (type) => {
   else if (isRootSelectableRemoteSourceType(type) && !form.rootPath) {
     form.rootPath = '/'
   }
+  if (type === 'clouddrive2') {
+    form.username = ''
+    form.password = ''
+  }
+  else {
+    form.apiToken = ''
+  }
   resetAlistBrowser()
 })
 
-watch(() => [form.url, form.username, form.password] as const, () => {
+watch(() => [form.url, form.username, form.password, form.apiToken] as const, () => {
   if (isRootSelectableRemoteSourceType(form.type))
     resetAlistBrowser()
 })
@@ -471,6 +493,7 @@ function resetForm() {
   form.url = ''
   form.username = ''
   form.password = ''
+  form.apiToken = ''
   form.rootPath = '/'
   feedback.value = null
   lastFetchedLibraries.value = []
@@ -497,10 +520,13 @@ function populateEditForm(config: EditableDataSourceConfig) {
   form.url = config.url
   form.username = ''
   form.password = ''
+  form.apiToken = ''
   if (config.type === 'alist')
     form.rootPath = readAlistRootPath(config)
   else if (config.type === 'clouddrive2')
     form.rootPath = readCloudDrive2RootPath(config)
+  else if (config.type === 'webdav')
+    form.rootPath = readWebDavRootPath(config)
   else if (config.type === 'local')
     form.rootPath = readLocalRootPath(config)
   else
@@ -509,7 +535,9 @@ function populateEditForm(config: EditableDataSourceConfig) {
     type: 'info',
     message: config.type === 'local'
       ? '可修改显示名称或重新选择本地根目录；本地文件源不会保存账号、密码或 token。'
-      : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+      : config.type === 'clouddrive2'
+        ? '可修改显示名称、根目录与启用状态；API Token 留空表示保留，修改服务地址时必须重新输入 Token。'
+        : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -576,6 +604,7 @@ async function saveSource() {
       displayName: form.displayName,
       username: form.username,
       password: form.password,
+      apiToken: form.apiToken,
       rootPath: isRootSelectableRemoteSourceType(form.type) ? selectedRootPathLabel.value : undefined,
       order: store.configs.length,
     })
@@ -589,7 +618,7 @@ async function saveSource() {
     const libraryCount = result.libraries.length
     const label = sourceTypeLabel(form.type)
     resetForm()
-    feedback.value = { type: 'success', message: `${label} 登录测试成功，已验证 ${libraryCount} 个入口。新数据源已添加到左侧侧边栏。` }
+    feedback.value = { type: 'success', message: `${label} 连接测试成功，已验证 ${libraryCount} 个入口。新数据源已添加到左侧侧边栏。` }
     goManage({ preserveFeedback: true })
   }
   catch (error) {
@@ -597,7 +626,9 @@ async function saveSource() {
       type: 'error',
       message: toSafeErrorMessage(error, form.type === 'local'
         ? '添加本地文件夹失败，请确认目录存在且有读取权限。'
-        : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
+        : form.type === 'clouddrive2'
+          ? '添加 CloudDrive2 失败，请检查 gRPC 服务地址、API Token 权限和服务状态。'
+          : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
     }
   }
   finally {
@@ -632,8 +663,10 @@ async function saveEditedSource(id: string) {
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
   const nextRootPath = isRootSelectableRemoteSourceType(existing.type) ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
-  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password)
-  if (shouldRelogin && (!username || !form.password))
+  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password, form.apiToken)
+  if (shouldRelogin && existing.type === 'clouddrive2' && !form.apiToken.trim())
+    throw new Error('更新 CloudDrive2 服务地址或 Token 时必须填写 API Token。')
+  if (shouldRelogin && existing.type !== 'clouddrive2' && (!username || !form.password))
     throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
 
   if (shouldRelogin) {
@@ -644,6 +677,7 @@ async function saveEditedSource(id: string) {
       displayName: nextDisplayName,
       username,
       password: form.password,
+      apiToken: form.apiToken,
       rootPath: nextRootPath,
       order: existing.order,
     })
@@ -654,8 +688,9 @@ async function saveEditedSource(id: string) {
       await restoreCredentialForConfig(result.config, previousCredential).catch(() => undefined)
       throw error
     }
-    feedback.value = { type: 'success', message: `${label} 已重新登录，并验证 ${result.libraries.length} 个入口。` }
+    feedback.value = { type: 'success', message: `${label} 已重新连接，并验证 ${result.libraries.length} 个入口。` }
     form.password = ''
+    form.apiToken = ''
     goManage({ preserveFeedback: true })
     return
   }
@@ -683,7 +718,10 @@ async function saveEditedSource(id: string) {
     extra: nextExtra,
   })
   form.password = ''
-  feedback.value = { type: 'success', message: '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
+  form.apiToken = ''
+  feedback.value = { type: 'success', message: existing.type === 'clouddrive2'
+    ? '数据源已更新。若 API Token 已撤销或权限变化，请再次编辑并输入新的 Token。'
+    : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
   goManage({ preserveFeedback: true })
 }
 
@@ -693,13 +731,16 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   displayName: string
   username: string
   password: string
+  apiToken: string
   rootPath?: string
   order: number
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
   if (type === 'alist')
     return loginAlistAndCreateConfig(input)
   if (type === 'clouddrive2')
-    return loginCloudDrive2AndCreateConfig(input)
+    return saveCloudDrive2TokenAndCreateConfig(input)
+  if (type === 'webdav')
+    return loginWebDavAndCreateConfig(input)
   return loginEmbyAndCreateConfig(input)
 }
 
@@ -728,7 +769,7 @@ async function createAndValidateLocalConfig(input: {
 }
 
 function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist' || type === 'clouddrive2'
+  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav'
 }
 
 function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
@@ -739,8 +780,8 @@ function isEditableDataSourceConfig(config: DataSourceConfig): config is Editabl
   return isEditableDataSourceType(config.type)
 }
 
-function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2'> {
-  return type === 'alist' || type === 'clouddrive2'
+function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav'> {
+  return type === 'alist' || type === 'clouddrive2' || type === 'webdav'
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -753,6 +794,8 @@ function sourceTypeLabel(type: DataSourceType): string {
       return 'Jellyfin'
     case 'clouddrive2':
       return 'CloudDrive2'
+    case 'webdav':
+      return 'WebDAV'
     case 'local':
       return '本地文件'
     case 'server':
@@ -779,18 +822,22 @@ function sourceStatusLine(source: DataSourceConfig): string {
 }
 
 function isRawScanScheduleSource(source: DataSourceConfig): boolean {
-  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'local'
+  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === 'local'
 }
 
 function readRemoteRootPath(config: DataSourceConfig): string {
   if (config.type === 'clouddrive2')
     return readCloudDrive2RootPath(config)
+  if (config.type === 'webdav')
+    return readWebDavRootPath(config)
   return readAlistRootPath(config)
 }
 
 function normalizeRemoteRootPath(path: string | undefined): string {
   if (form.type === 'clouddrive2')
     return normalizeCloudDrive2RootPath(path)
+  if (form.type === 'webdav')
+    return normalizeWebDavRootPath(path)
   return normalizeAlistRootPath(path)
 }
 
@@ -957,7 +1004,7 @@ async function loadAlistDirectory(path: string) {
   }
 }
 
-async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource> {
+async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource> {
   if (alistBrowserSource.value)
     return alistBrowserSource.value
 
@@ -967,12 +1014,14 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2
   const username = form.username.trim()
   const shouldUseExistingCredential = existing?.type === form.type
     && isRootSelectableRemoteSourceType(existing.type)
-    && !shouldReloginSource(existing, form.url, username, form.password)
+    && !shouldReloginSource(existing, form.url, username, form.password, form.apiToken)
 
   if (shouldUseExistingCredential) {
     const source = existing.type === 'clouddrive2'
       ? new CloudDrive2DataSource()
-      : new AlistDataSource()
+      : existing.type === 'webdav'
+        ? new WebDavDataSource()
+        : new AlistDataSource()
     await source.init({
       ...existing,
       name: displayName,
@@ -994,11 +1043,14 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2
     displayName,
     username,
     password: form.password,
+    apiToken: form.apiToken,
     order: existing?.order ?? store.configs.length,
   }
   const source = form.type === 'clouddrive2'
     ? await createAuthenticatedCloudDrive2SetupSource(setupInput)
-    : await createAuthenticatedAlistSetupSource(setupInput)
+    : form.type === 'webdav'
+      ? await createAuthenticatedWebDavSetupSource(setupInput)
+      : await createAuthenticatedAlistSetupSource(setupInput)
   alistBrowserSource.value = source
   return source
 }
@@ -1020,8 +1072,9 @@ function resetAlistBrowser() {
   alistBrowserError.value = null
 }
 
-function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string): boolean {
-  return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || Boolean(username || password)
+function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string, apiToken: string): boolean {
+  const credentialChanged = config.type === 'clouddrive2' ? Boolean(apiToken.trim()) : Boolean(username || password)
+  return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || credentialChanged
 }
 
 async function validateExistingRemoteRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
@@ -1030,7 +1083,9 @@ async function validateExistingRemoteRoot(config: DataSourceConfig, url: string,
 
   const source = config.type === 'clouddrive2'
     ? new CloudDrive2DataSource()
-    : new AlistDataSource()
+    : config.type === 'webdav'
+      ? new WebDavDataSource()
+      : new AlistDataSource()
   try {
     await source.init({
       ...config,
@@ -1867,7 +1922,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ isEditing ? '编辑数据源' : '添加数据源' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              先选择数据源类型，再填写对应信息。本地文件夹只保存目录根路径；远程数据源点击添加或保存时会先登录测试，成功后只持久化安全配置和 credentialRef。
+              先选择数据源类型，再填写对应信息。本地文件夹只保存目录根路径；远程数据源点击添加或保存时会先连接测试，成功后只持久化安全配置和 credentialRef。
             </p>
           </div>
           <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
@@ -1926,7 +1981,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label v-if="!isLocalForm" class="block">
+          <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
             <input
               v-model="form.username"
@@ -1936,7 +1991,21 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label v-if="!isLocalForm" class="block">
+          <label v-if="isCloudDrive2Form" class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">API Token</span>
+            <input
+              v-model="form.apiToken"
+              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :placeholder="isEditing ? '留空则保留当前 API Token' : '粘贴 CloudDrive2 中创建的只读 API Token'"
+              type="password"
+              autocomplete="off"
+            >
+            <span class="mt-2 block text-xs leading-5 text-white/42">
+              请在 CloudDrive2 中创建应用专用 API Token，并授予目标根目录的文件读取权限。Token 可单独撤销，不需要提供 CloudDrive2 账号密码。
+            </span>
+          </label>
+
+          <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
             <input
               v-model="form.password"
@@ -1982,12 +2051,12 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 :disabled="alistBrowserLoading"
                 @click="loadAlistRootBrowser"
               >
-                {{ alistBrowserSource ? '刷新目录' : '登录并浏览目录' }}
+                {{ alistBrowserSource ? '刷新目录' : '连接并浏览目录' }}
               </button>
             </div>
 
             <p class="mt-3 text-xs leading-5 text-white/42">
-              不选择时默认使用 `/`。目录浏览使用当前表单的登录会话，只有点击添加或保存成功后才持久化凭据和根目录配置。
+              不选择时默认使用 `/`。目录浏览使用当前表单的临时连接，只有点击添加或保存成功后才持久化凭据和根目录配置。
             </p>
 
             <div

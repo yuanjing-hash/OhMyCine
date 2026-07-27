@@ -1,3 +1,4 @@
+pub mod clouddrive2;
 pub mod credential;
 pub mod emby;
 pub mod history;

@@ -1,0 +1,11 @@
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"DataSource、Tauri 命令与 raw source 模块边界。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"设置页 provider-specific 表单与凭据提示。"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"CloudDrive2 API Token 与 WebDAV 凭据引用和持久化边界。"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"DataSource 类型、运行时响应校验、播放 URL/header 安全。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player 和 Tauri 完整验证要求。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有 WebDAV、raw scan 与 credential helper。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"设置页到凭据、DataSource、Tauri gRPC、mpv 的跨层数据流。"}
+{"file":"docs/architecture/03-player-design.md","reason":"CloudDrive2/OpenList/WebDAV 数据源协议设计。"}
+{"file":"docs/architecture/07-security-design.md","reason":"API Token、Basic Auth 与播放直链安全边界。"}
+{"ts":"2026-07-27T15:33:00+08:00","status":"implemented","summary":"CloudDrive2 改为 Tauri Rust gRPC API Token 数据源，使用 GetSubFiles/GetSearchResults/GetDownloadUrlPath；现有 PROPFIND + Basic Auth 拆为独立 webdav DataSource。"}
+{"ts":"2026-07-27T15:33:00+08:00","status":"documented","summary":"同步 README、AGENTS、Player 总览/设计/安全/路线图与 Trellis code-spec，固化 OpenList HTTP API、CloudDrive2 gRPC API Token、WebDAV 独立数据源三条协议边界。"}

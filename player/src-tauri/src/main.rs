@@ -6,6 +6,9 @@ mod mpv;
 
 use tauri::{utils::config::Color, Manager};
 
+use commands::clouddrive2::{
+    clouddrive2_get_stream, clouddrive2_list, clouddrive2_search, CloudDrive2GrpcState,
+};
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::emby::emby_post_playback_json;
 use commands::history::{
@@ -35,11 +38,15 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(mpv_state)
+        .manage(CloudDrive2GrpcState::default())
         .manage(LocalFileWatcherState::default())
         .invoke_handler(tauri::generate_handler![
             credential_set,
             credential_get,
             credential_delete,
+            clouddrive2_list,
+            clouddrive2_search,
+            clouddrive2_get_stream,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
             player_upsert_playback_progress,
