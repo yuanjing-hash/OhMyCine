@@ -137,10 +137,13 @@ const targetConfigs: DataSourceConfig[] = [
   createConfig('local-target', 'local', {
     rootPath: '/mnt/media',
   }),
+  createConfig('clouddrive2-target', 'clouddrive2', {
+    rootPath: '/媒体库',
+  }),
   createConfig('emby-target', 'emby'),
 ]
 const autoTargets = createRawSourceAutoIndexTargets(targetConfigs, () => source)
-assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target'])
+assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target', 'clouddrive2-target'])
 assert.equal(readRawSourceScanScheduleConfig(targetConfigs[0]).incremental.intervalMs, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS)
 
 const dualScans: string[] = []

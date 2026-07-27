@@ -15,12 +15,17 @@ export interface AlistCredentialValue {
   readonly password: string
 }
 
+export interface CloudDrive2CredentialValue {
+  readonly username: string
+  readonly password: string
+}
+
 export interface TmdbCredentialValue {
   readonly authType: 'apiKey' | 'readAccessToken'
   readonly value: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'tmdb'
+type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'tmdb'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -34,6 +39,13 @@ interface StoredAlistCredentialEnvelope {
   readonly version: 1
   readonly provider: 'alist'
   readonly token: string
+  readonly username: string
+  readonly password: string
+}
+
+interface StoredCloudDrive2CredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'clouddrive2'
   readonly username: string
   readonly password: string
 }
@@ -99,6 +111,22 @@ export async function saveAlistCredential(ref: string, value: AlistCredentialVal
 
 export async function readAlistCredential(ref: string): Promise<AlistCredentialValue | null> {
   return parseAlistCredential(await readRawCredential(ref))
+}
+
+export async function saveCloudDrive2Credential(ref: string, value: CloudDrive2CredentialValue): Promise<void> {
+  if (!value.username || !value.password)
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'clouddrive2',
+    username: value.username,
+    password: value.password,
+  } satisfies StoredCloudDrive2CredentialEnvelope))
+}
+
+export async function readCloudDrive2Credential(ref: string): Promise<CloudDrive2CredentialValue | null> {
+  return parseCloudDrive2Credential(await readRawCredential(ref))
 }
 
 export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
@@ -201,6 +229,30 @@ function parseAlistCredential(raw: string | null): AlistCredentialValue | null {
       return null
     return {
       token: value.token,
+      username: value.username,
+      password: value.password,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseCloudDrive2Credential(raw: string | null): CloudDrive2CredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value))
+      return null
+    if (value.provider !== 'clouddrive2' || value.version !== 1)
+      return null
+    if (typeof value.username !== 'string' || typeof value.password !== 'string')
+      return null
+    if (!value.username || !value.password)
+      return null
+    return {
       username: value.username,
       password: value.password,
     }

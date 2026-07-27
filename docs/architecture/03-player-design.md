@@ -684,7 +684,7 @@ OpenList/Alist、CloudDrive2、本地文件等原始文件源在完成本地扫�
 
 扫描管理是辅助功能。扫描状态、结构判断、日志、全量扫描和增量扫描按钮放在显式“扫描管理”入口内；默认页面优先展示可浏览内容。首次进入原始文件源且本地 scan cache 尚未生成时，媒体库区域应显示当前源/root 的自动索引进度、状态和可进入文件夹视图的兜底入口，而不是空媒体库。文件夹视图保留为兜底入口，继续通过 DataSource `list()` 只读浏览和播放，但不替代默认媒体库视图。
 
-原始文件源使用双通道扫描：`full` 全量扫描默认 6 小时一次，负责完整递归扫描和一致性校准；`incremental` 增量扫描默认 1 分钟一次，先对比 provider path、大小和修改时间，有新增、删除或修改时再刷新本地索引。设置页按数据源保存 `extra.rawSourceScanSchedule`，可分别启停全量/增量并调整间隔。当前覆盖 OpenList/Alist 和本地文件夹；本地文件夹通过 Tauri root-scoped watcher 监听变更，事件只用于标记 source/root 需要增量扫描，前端和缓存仍只使用 `/...` provider path，不展示或持久化本地绝对路径。OpenList/Alist 暂以短间隔 polling/diff 实现近实时增量；Emby/Jellyfin 使用服务端媒体库和元数据，不进入 Player 原始文件扫描调度。
+原始文件源使用双通道扫描：`full` 全量扫描默认 6 小时一次，负责完整递归扫描和一致性校准；`incremental` 增量扫描默认 1 分钟一次，先对比 provider path、大小和修改时间，有新增、删除或修改时再刷新本地索引。设置页按数据源保存 `extra.rawSourceScanSchedule`，可分别启停全量/增量并调整间隔。当前覆盖 OpenList/Alist、CloudDrive2 和本地文件夹；本地文件夹通过 Tauri root-scoped watcher 监听变更，事件只用于标记 source/root 需要增量扫描，前端和缓存仍只使用 `/...` provider path，不展示或持久化本地绝对路径。OpenList/Alist 与 CloudDrive2 暂以短间隔 polling/diff 实现近实时增量；Emby/Jellyfin 使用服务端媒体库和元数据，不进入 Player 原始文件扫描调度。
 
 ### 5.2.3 非标准目录模式
 
@@ -1158,7 +1158,7 @@ export class PosterCache {
 
 ### 5.8 刮削调度
 
-当前 Player MVP 使用 source/root-scoped 的 `rawSourceIndexScheduler`，并区分 `full` / `incremental` 两类状态、冷却和最近执行时间。app 启动后会按每个原始文件源的 `extra.rawSourceScanSchedule` 触发后台 best-effort 调度：全量扫描默认 6 小时一次，增量扫描默认 1 分钟一次。本地文件源额外启用 Tauri 文件系统 watcher，watcher 事件只标记对应 source/root dirty，实际刷新仍走 scheduler 和 DataSource `list()`；OpenList/Alist 使用增量 polling/diff。数据源页首次无缓存时会读取当前源/root 状态并启动或绑定正在运行的全量索引任务。手动扫描可选择全量或增量；所有扫描只读取 DataSource/Tauri 安全边界并写入本地 Player cache，不阻塞文件夹浏览和播放。Emby/Jellyfin 不进入此调度。
+当前 Player MVP 使用 source/root-scoped 的 `rawSourceIndexScheduler`，并区分 `full` / `incremental` 两类状态、冷却和最近执行时间。app 启动后会按每个原始文件源的 `extra.rawSourceScanSchedule` 触发后台 best-effort 调度：全量扫描默认 6 小时一次，增量扫描默认 1 分钟一次。本地文件源额外启用 Tauri 文件系统 watcher，watcher 事件只标记对应 source/root dirty，实际刷新仍走 scheduler 和 DataSource `list()`；OpenList/Alist 与 CloudDrive2 使用增量 polling/diff。数据源页首次无缓存时会读取当前源/root 状态并启动或绑定正在运行的全量索引任务。手动扫描可选择全量或增量；所有扫描只读取 DataSource/Tauri 安全边界并写入本地 Player cache，不阻塞文件夹浏览和播放。Emby/Jellyfin 不进入此调度。
 
 ```typescript
 // src/services/scraper/scheduler.ts

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -418,6 +418,21 @@ function syncActiveMediaMetadataFromRoute() {
   activePosterUrl.value = queryStringValue(route.query.posterUrl)
   activeBackdropUrl.value = queryStringValue(route.query.backdropUrl)
   activeTitleLogoUrl.value = queryStringValue(route.query.titleLogoUrl)
+}
+
+async function resolvePlaybackLoadRequest(path: string): Promise<MediaStreamRequest> {
+  const sourceId = queryStringValue(route.query.sourceId)
+  const itemId = queryStringValue(route.query.itemId)
+  if (!sourceId || !itemId)
+    return { url: path }
+
+  store.loadConfigs()
+  await store.syncManager()
+  const source = store.getSource(sourceId)
+  if (!source?.getStreamRequest)
+    return { url: path }
+
+  return source.getStreamRequest(itemId)
 }
 
 function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity'> | null {
@@ -870,7 +885,9 @@ watch(
       await ensureRenderInitialized()
       if (playbackCleanupStarted)
         return
-      await load(nextPath)
+      const request = await resolvePlaybackLoadRequest(nextPath)
+      mediaPath.value = request.url
+      await load(request.url, { headers: request.headers })
       startHistorySaveTimer()
       await resumeSavedProgressIfAvailable()
       syncProviderPlaybackStarted()

@@ -18,8 +18,8 @@ export const DEFAULT_RAW_SOURCE_INCREMENTAL_SCAN_INTERVAL_MS = 60 * 1000
 export const MIN_RAW_SOURCE_SCAN_INTERVAL_MS = 60 * 1000
 export const RAW_SOURCE_SCAN_SCHEDULE_EXTRA_KEY = 'rawSourceScanSchedule'
 
-export function isAutoIndexableRawSourceType(type: DataSourceConfig['type']): type is Extract<RawFileSourceType, 'alist' | 'local'> {
-  return type === 'alist' || type === 'local'
+export function isAutoIndexableRawSourceType(type: DataSourceConfig['type']): type is Extract<RawFileSourceType, 'alist' | 'clouddrive2' | 'local'> {
+  return type === 'alist' || type === 'clouddrive2' || type === 'local'
 }
 
 export function readRawSourceScanScheduleConfig(config: DataSourceConfig | null | undefined): RawSourceScanScheduleConfig {

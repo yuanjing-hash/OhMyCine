@@ -1,0 +1,12 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Verify Settings and SourceLibrary UX follows existing source management and raw-source contracts."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify credentialRef persistence, scheduler behavior and source failure isolation."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Verify WebDAV parsing, DataSource output types, root containment and playback URL handling."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Verify typecheck, lint, build and Windows GNU package refresh."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check CloudDrive2 reuses established raw source and settings patterns."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check config/credential/source/scanner/UI data round trip and error boundaries."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Check no WebDAV credentials or sensitive URLs leak into config, UI, logs or scan cache."}
+{"ts": "2026-07-27T12:07:54+08:00", "check": "npm run verify:clouddrive2-datasource", "status": "passed", "notes": "覆盖 CloudDrive2 根目录、目录过滤、搜索、详情、播放 URL、Authorization header、root containment 与安全导出。"}
+{"ts": "2026-07-27T12:07:54+08:00", "check": "npm run verify:raw-source-index-scheduler", "status": "passed", "notes": "确认 clouddrive2-target 进入全量/增量自动索引目标，调度 cooldown/running/disabled/dirty 行为保持有效。"}
+{"ts": "2026-07-27T12:07:54+08:00", "check": "npm run typecheck && npm run lint && npm run build", "status": "passed", "notes": "Vue/TypeScript 静态检查、ESLint 和 Vite production build 均通过。"}
+{"ts": "2026-07-27T12:07:54+08:00", "check": "cargo check --target x86_64-pc-windows-gnu", "status": "passed", "notes": "Rust/Tauri mpv header 透传命令通过 Windows GNU target 检查。"}
+{"ts": "2026-07-27T12:10:35+08:00", "check": "npm run tauri:build:windows --prefix player", "status": "passed", "notes": "已刷新 player/src-tauri/target/x86_64-pc-windows-gnu/release/ohmycine-player.exe，大小 30313025 bytes；NSIS 安装包也生成，签名因非 Windows host 跳过。"}

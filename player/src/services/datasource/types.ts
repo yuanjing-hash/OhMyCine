@@ -107,6 +107,11 @@ export interface DataSourceConfig {
   extra?: Record<string, unknown>
 }
 
+export interface MediaStreamRequest {
+  readonly url: string
+  readonly headers?: Record<string, string>
+}
+
 export type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
 
 export interface ProviderPlaybackProgressInput {
@@ -157,6 +162,7 @@ export interface DataSource {
   getDetail: (id: string) => Promise<MediaDetail>
 
   getStreamURL: (id: string) => Promise<string>
+  getStreamRequest?: (id: string) => Promise<MediaStreamRequest>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
   getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 

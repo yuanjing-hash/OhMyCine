@@ -136,7 +136,7 @@ let rawIndexGeneration = 0
 
 const rawSourceType = computed<RawFileSourceType | null>(() => {
   const type = sourceConfig.value?.type
-  return type === 'alist' || type === 'local' ? type : null
+  return type === 'alist' || type === 'clouddrive2' || type === 'local' ? type : null
 })
 const isRawFileSource = computed(() => rawSourceType.value != null)
 const rawSourceRootPath = computed(() => sourceConfig.value && isRawFileSource.value ? readRawSourceRootPath(sourceConfig.value) : '/')

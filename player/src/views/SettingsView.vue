@@ -7,6 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
+import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, loginCloudDrive2AndCreateConfig, normalizeCloudDrive2RootPath, readCloudDrive2RootPath } from '@/services/datasource/clouddrive2'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
@@ -33,7 +34,7 @@ import {
 } from '@/services/scraper/tmdb'
 import { useDataSourceStore } from '@/stores/datasource'
 
-type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
+type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping'
@@ -96,6 +97,15 @@ const sourceTypeOptions: Array<{
     usernamePlaceholder: 'OpenList/Alist 登录账号',
   },
   {
+    type: 'clouddrive2',
+    label: 'CloudDrive2',
+    shortLabel: 'C',
+    description: 'CloudDrive2 WebDAV 账号登录',
+    defaultName: 'CloudDrive2',
+    urlPlaceholder: 'http://clouddrive2.example.test:19798/dav',
+    usernamePlaceholder: 'CloudDrive2 WebDAV 账号',
+  },
+  {
     type: 'local',
     label: '本地文件夹',
     shortLabel: 'L',
@@ -154,7 +164,7 @@ const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
 const persistentCredentialWarning = ref(hasPersistentCredentialStorageWarning())
-const alistBrowserSource = shallowRef<AlistDataSource | null>(null)
+const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | null>(null)
 const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
 const alistBrowserLoading = ref(false)
@@ -178,10 +188,12 @@ const isEditing = computed(() => mode.value === 'edit')
 const isDataSourceMode = computed(() => mode.value === 'manage' || mode.value === 'add' || mode.value === 'edit')
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
+const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
+const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value)
 const isLocalForm = computed(() => form.type === 'local')
 const selectedRootPathLabel = computed(() => isLocalForm.value
   ? localRootPathLabel(form.rootPath)
-  : normalizeAlistRootPath(form.rootPath))
+  : normalizeRemoteRootPath(form.rootPath))
 const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
 const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
 const activeSourceCount = computed(() => configuredSources.value.filter(source => source.enabled !== false).length)
@@ -216,7 +228,7 @@ const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
     ? '配置 OpenList/Alist、CloudDrive2、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回网盘目录。'
-    : 'Player 可直接连接 Emby、OpenList/Alist 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
+    : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -225,7 +237,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '连接、编辑、停用或清理 Emby、OpenList/Alist 与本地文件夹数据源，控制左侧媒体入口。',
+    description: '连接、编辑、停用或清理 Emby、OpenList/Alist、CloudDrive2 与本地文件夹数据源，控制左侧媒体入口。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -300,14 +312,14 @@ watch(() => form.type, (type) => {
   else if (type === 'emby') {
     form.rootPath = '/'
   }
-  else if (type === 'alist' && !form.rootPath) {
+  else if (isRootSelectableRemoteSourceType(type) && !form.rootPath) {
     form.rootPath = '/'
   }
   resetAlistBrowser()
 })
 
 watch(() => [form.url, form.username, form.password] as const, () => {
-  if (form.type === 'alist')
+  if (isRootSelectableRemoteSourceType(form.type))
     resetAlistBrowser()
 })
 
@@ -485,16 +497,19 @@ function populateEditForm(config: EditableDataSourceConfig) {
   form.url = config.url
   form.username = ''
   form.password = ''
-  form.rootPath = config.type === 'alist'
-    ? readAlistRootPath(config)
-    : config.type === 'local'
-      ? readLocalRootPath(config)
-      : '/'
+  if (config.type === 'alist')
+    form.rootPath = readAlistRootPath(config)
+  else if (config.type === 'clouddrive2')
+    form.rootPath = readCloudDrive2RootPath(config)
+  else if (config.type === 'local')
+    form.rootPath = readLocalRootPath(config)
+  else
+    form.rootPath = '/'
   feedback.value = {
     type: 'info',
     message: config.type === 'local'
       ? '可修改显示名称或重新选择本地根目录；本地文件源不会保存账号、密码或 token。'
-      : `可修改显示名称与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+      : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -561,7 +576,7 @@ async function saveSource() {
       displayName: form.displayName,
       username: form.username,
       password: form.password,
-      rootPath: form.type === 'alist' ? selectedRootPathLabel.value : undefined,
+      rootPath: isRootSelectableRemoteSourceType(form.type) ? selectedRootPathLabel.value : undefined,
       order: store.configs.length,
     })
     try {
@@ -615,7 +630,7 @@ async function saveEditedSource(id: string) {
   const username = form.username.trim()
   const nextUrl = form.url.trim()
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
-  const nextRootPath = existing.type === 'alist' ? selectedRootPathLabel.value : undefined
+  const nextRootPath = isRootSelectableRemoteSourceType(existing.type) ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
   const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password)
   if (shouldRelogin && (!username || !form.password))
@@ -646,10 +661,10 @@ async function saveEditedSource(id: string) {
   }
 
   const nextExtra = { ...(existing.extra ?? {}) }
-  if (existing.type === 'alist') {
-    const rootPathChanged = nextRootPath !== readAlistRootPath(existing)
+  if (isRootSelectableRemoteSourceType(existing.type)) {
+    const rootPathChanged = nextRootPath !== readRemoteRootPath(existing)
     const libraries = rootPathChanged
-      ? await validateExistingAlistRoot(existing, nextUrl, nextDisplayName, nextRootPath ?? '/')
+      ? await validateExistingRemoteRoot(existing, nextUrl, nextDisplayName, nextRootPath ?? '/')
       : null
     nextExtra.rootPath = nextRootPath ?? '/'
     if (libraries) {
@@ -683,6 +698,8 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
   if (type === 'alist')
     return loginAlistAndCreateConfig(input)
+  if (type === 'clouddrive2')
+    return loginCloudDrive2AndCreateConfig(input)
   return loginEmbyAndCreateConfig(input)
 }
 
@@ -711,7 +728,7 @@ async function createAndValidateLocalConfig(input: {
 }
 
 function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist'
+  return type === 'emby' || type === 'alist' || type === 'clouddrive2'
 }
 
 function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
@@ -720,6 +737,10 @@ function isEditableDataSourceType(type: DataSourceType): type is EditableDataSou
 
 function isEditableDataSourceConfig(config: DataSourceConfig): config is EditableDataSourceConfig {
   return isEditableDataSourceType(config.type)
+}
+
+function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2'> {
+  return type === 'alist' || type === 'clouddrive2'
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -749,8 +770,8 @@ function sourceStatusLine(source: DataSourceConfig): string {
   const credentialState = source.type === 'local'
     ? '无需凭据'
     : typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
-  const rootState = source.type === 'alist'
-    ? ` · 根目录：${readAlistRootPath(source)}`
+  const rootState = isRootSelectableRemoteSourceType(source.type)
+    ? ` · 根目录：${readRemoteRootPath(source)}`
     : source.type === 'local'
       ? ` · 根目录：${readLocalRootPath(source)}`
       : ''
@@ -758,7 +779,19 @@ function sourceStatusLine(source: DataSourceConfig): string {
 }
 
 function isRawScanScheduleSource(source: DataSourceConfig): boolean {
-  return source.type === 'alist' || source.type === 'local'
+  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'local'
+}
+
+function readRemoteRootPath(config: DataSourceConfig): string {
+  if (config.type === 'clouddrive2')
+    return readCloudDrive2RootPath(config)
+  return readAlistRootPath(config)
+}
+
+function normalizeRemoteRootPath(path: string | undefined): string {
+  if (form.type === 'clouddrive2')
+    return normalizeCloudDrive2RootPath(path)
+  return normalizeAlistRootPath(path)
 }
 
 function rawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind): boolean {
@@ -901,14 +934,14 @@ async function loadAlistRootBrowser() {
 }
 
 async function loadAlistDirectory(path: string) {
-  if (form.type !== 'alist')
+  if (!isRootSelectableRemoteSourceType(form.type))
     return
 
   alistBrowserLoading.value = true
   alistBrowserError.value = null
   try {
     const source = await ensureAlistBrowserSource()
-    const nextPath = normalizeAlistRootPath(path)
+    const nextPath = normalizeRemoteRootPath(path)
     const items = await source.list(nextPath)
     alistBrowserPath.value = nextPath
     alistBrowserDirectories.value = items
@@ -917,26 +950,29 @@ async function loadAlistDirectory(path: string) {
   }
   catch (error) {
     alistBrowserDirectories.value = []
-    alistBrowserError.value = toSafeErrorMessage(error, 'OpenList/Alist 目录加载失败。')
+    alistBrowserError.value = toSafeErrorMessage(error, `${sourceTypeLabel(form.type)} 目录加载失败。`)
   }
   finally {
     alistBrowserLoading.value = false
   }
 }
 
-async function ensureAlistBrowserSource(): Promise<AlistDataSource> {
+async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource> {
   if (alistBrowserSource.value)
     return alistBrowserSource.value
 
-  const sourceId = form.id ?? `alist-setup-${Date.now()}`
-  const displayName = form.displayName.trim() || 'OpenList/Alist'
+  const sourceId = form.id ?? `${form.type}-setup-${Date.now()}`
+  const displayName = form.displayName.trim() || defaultDisplayName(form.type)
   const existing = form.id ? store.configs.find(config => config.id === form.id) : null
   const username = form.username.trim()
-  const shouldUseExistingCredential = existing?.type === 'alist'
+  const shouldUseExistingCredential = existing?.type === form.type
+    && isRootSelectableRemoteSourceType(existing.type)
     && !shouldReloginSource(existing, form.url, username, form.password)
 
   if (shouldUseExistingCredential) {
-    const source = new AlistDataSource()
+    const source = existing.type === 'clouddrive2'
+      ? new CloudDrive2DataSource()
+      : new AlistDataSource()
     await source.init({
       ...existing,
       name: displayName,
@@ -952,23 +988,26 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource> {
     return source
   }
 
-  const source = await createAuthenticatedAlistSetupSource({
+  const setupInput = {
     id: sourceId,
     url: form.url,
     displayName,
     username,
     password: form.password,
     order: existing?.order ?? store.configs.length,
-  })
+  }
+  const source = form.type === 'clouddrive2'
+    ? await createAuthenticatedCloudDrive2SetupSource(setupInput)
+    : await createAuthenticatedAlistSetupSource(setupInput)
   alistBrowserSource.value = source
   return source
 }
 
 function selectAlistRoot(path: string) {
-  form.rootPath = normalizeAlistRootPath(path)
+  form.rootPath = normalizeRemoteRootPath(path)
   feedback.value = {
     type: 'info',
-    message: `已选择 OpenList/Alist 根目录：${form.rootPath}`,
+    message: `已选择 ${sourceTypeLabel(form.type)} 根目录：${form.rootPath}`,
   }
 }
 
@@ -985,8 +1024,13 @@ function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username
   return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || Boolean(username || password)
 }
 
-async function validateExistingAlistRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
-  const source = new AlistDataSource()
+async function validateExistingRemoteRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
+  if (!isRootSelectableRemoteSourceType(config.type))
+    return []
+
+  const source = config.type === 'clouddrive2'
+    ? new CloudDrive2DataSource()
+    : new AlistDataSource()
   try {
     await source.init({
       ...config,
@@ -1007,7 +1051,7 @@ async function validateExistingAlistRoot(config: DataSourceConfig, url: string, 
 }
 
 function parentDirectoryPath(path: string): string {
-  const normalized = normalizeAlistRootPath(path)
+  const normalized = normalizeRemoteRootPath(path)
   if (normalized === '/')
     return '/'
   const index = normalized.lastIndexOf('/')
@@ -1176,7 +1220,7 @@ async function saveTmdbSettings() {
     scrapeFeedback.value = {
       type: tmdbCredentialConfigured.value ? 'success' : 'info',
       message: tmdbCredentialConfigured.value
-        ? `TMDB 设置已保存。后续 OpenList/Alist 扫描会按 ${tmdbCredentialInputLabel.value} 路由请求并用 TMDB 元数据执行分类规则。`
+        ? `TMDB 设置已保存。后续 OpenList/Alist、CloudDrive2 和本地文件扫描会按 ${tmdbCredentialInputLabel.value} 路由请求并用 TMDB 元数据执行分类规则。`
         : savedCredential
           ? `已保存 TMDB 设置，但当前 ${tmdbCredentialInputLabel.value} 不可用。扫描会保留本地可播放候选并使用兜底分类。`
           : tmdbStoredAuthType.value
@@ -1805,7 +1849,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             还没有数据源
           </p>
           <p class="mt-2 text-sm leading-6 text-white/42">
-            添加 Emby 或 OpenList/Alist 数据源后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
+            添加 Emby、OpenList/Alist、CloudDrive2 或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
           </p>
           <button class="mt-5 rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
             添加数据源
@@ -1924,10 +1968,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             </p>
           </div>
 
-          <div v-if="isAlistForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div v-if="isRemoteRootBrowserForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">OpenList/Alist 根目录</span>
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ sourceTypeLabel(form.type) }} 根目录</span>
                 <p class="mt-2 text-sm text-white/70">
                   当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
                 </p>
