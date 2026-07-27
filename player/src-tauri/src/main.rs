@@ -6,10 +6,17 @@ mod mpv;
 
 use tauri::{utils::config::Color, Manager};
 
+use commands::clouddrive2::{
+    clouddrive2_get_stream, clouddrive2_list, clouddrive2_search, CloudDrive2GrpcState,
+};
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::emby::emby_post_playback_json;
 use commands::history::{
     player_get_playback_progress, player_list_continue_watching, player_upsert_playback_progress,
+};
+use commands::local_file::{
+    local_file_list, local_file_metadata, local_file_stream_path, local_file_watch_start,
+    local_file_watch_stop, LocalFileWatcherState,
 };
 use commands::player::{
     mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
@@ -19,6 +26,7 @@ use commands::player::{
 use commands::preference::{
     player_get_playback_speed_preference, player_set_playback_speed_preference,
 };
+use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -30,15 +38,28 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(mpv_state)
+        .manage(CloudDrive2GrpcState::default())
+        .manage(LocalFileWatcherState::default())
         .invoke_handler(tauri::generate_handler![
             credential_set,
             credential_get,
             credential_delete,
+            clouddrive2_list,
+            clouddrive2_search,
+            clouddrive2_get_stream,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_list_continue_watching,
+            raw_scan_cache_get,
+            raw_scan_cache_set,
+            raw_scan_cache_delete,
+            local_file_list,
+            local_file_metadata,
+            local_file_stream_path,
+            local_file_watch_start,
+            local_file_watch_stop,
             emby_post_playback_json,
             mpv_load,
             mpv_add_subtitle,

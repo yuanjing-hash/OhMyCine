@@ -97,7 +97,7 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 1: Player 独立版 MVP (Week 3-8)
 
-> Player 独立可用版本 — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2
+> Player 独立可用版本 — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2/本地文件夹
 
 ### Sprint 1.1: Tauri 项目 + libmpv (Week 3-4)
 
@@ -177,7 +177,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 定义 `SubtitleTrack`, `AudioTrack` 接口
 - [~] 定义 `DataSourceType` 类型枚举
 - [~] 定义 `DataSourceConfig` 接口 (id, type, name, displayName, iconUrl, order, credentials...)
-- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL, optional syncPlaybackProgress；Jellyfin/OpenList/CloudDrive2 等实现待补齐)
+- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL, optional getStreamRequest / syncPlaybackProgress；Jellyfin 等实现待补齐)
 
 #### DataSourceManager 实现
 
@@ -189,7 +189,7 @@ Phase 4: 生态系统           ████████████████
 - [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据（已接 Emby，更多源待扩展）
 - [ ] `searchAll()` — 跨数据源并发搜索
 - [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出（已能导出已实例化安全配置，完整文件导入导出待后续）
-- [x] `createDataSource(type)` — 工厂方法（当前实现 Emby，其他类型保留扩展）
+- [x] `createDataSource(type)` — 工厂方法（当前实现 Emby、OpenList/Alist、CloudDrive2、本地文件；其他类型保留扩展）
 
 #### EmbyDataSource 实现
 
@@ -217,16 +217,16 @@ Phase 4: 生态系统           ████████████████
 - [~] 使用 Tauri `app_data_dir` 存储配置
 - [~] 实现 `config.json` 读写 (datasources, server, ai, ui)
 - [~] 配置变更自动保存
-- [~] Emby 与 OpenList/Alist 账号、密码与访问令牌持久化到 Tauri app data 下的 SQLite 凭证库，并通过 `credentialRef` 引用；字段使用 provider-specific 结构化 envelope + 本地生成 master key + AES-GCM 加密，master key 仍保存在本机 app data 文件中，暂未接入 OS Keychain/libsecret/DPAPI
+- [~] Emby/OpenList 账号密码与令牌、CloudDrive2 API Token、WebDAV 账号密码持久化到 Tauri app data 下的 SQLite 凭证库，并通过 `credentialRef` 引用；字段使用 provider-specific 结构化 envelope + 本地生成 master key + AES-GCM 加密，master key 仍保存在本机 app data 文件中，暂未接入 OS Keychain/libsecret/DPAPI
 
 #### 设置页面 UI
 
-- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、刮削与分类入口、Emby 与 OpenList/Alist 账号密码登录式添加/编辑表单，并提供 OpenList/Alist 登录后的根目录选择）
+- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、刮削与分类入口；Emby/OpenList 使用账号密码、CloudDrive2 使用 gRPC 服务地址 + API Token、WebDAV 使用独立 URL + 账号密码；OpenList/CloudDrive2/WebDAV 均可连接后浏览并选择根目录，本地文件夹使用目录选择式添加/编辑）
 - [x] 数据源列表管理 (添加/编辑/删除)
 - [~] 刮削与分类设置页（已提供电影/剧集分组、TMDB 官方 genre 受控选项、默认分类实例、包含/排除条件、年份范围、兜底分类和本地结构化规则持久化；TMDB 凭据是可选增强，未配置时扫描保留本地候选和兜底分类；扫描任务与实际规则执行待后续完善）
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
 - [~] 数据源显示配置 (名称/图标/是否在侧栏显示；当前支持显示名称，图标/侧栏开关待后续)
-- [~] 添加数据源表单 (管理入口→可见类型卡片选择→Emby/OpenList/Alist URL/账号/密码登录；OpenList/Alist 登录后可从 `/` 浏览并选择根目录，根目录以 `extra.rootPath` 保存为非敏感配置；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
+- [~] 添加数据源表单 (管理入口→可见类型卡片选择→Emby/OpenList 账号登录、CloudDrive2 API Token、WebDAV Basic Auth；OpenList/CloudDrive2/WebDAV 连接后可从 `/` 浏览并选择根目录，根目录以 `extra.rootPath` 保存为非敏感配置；本地文件夹通过 Tauri 目录选择器保存只读 root；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
 - [x] 连接测试按钮 (显示成功/失败)
 - [~] 数据源状态显示 (在线/离线；当前在测试/浏览错误态中呈现，持久状态徽标待后续)
 
@@ -237,7 +237,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
 - [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现，并改为按媒体库/文件夹/剧集/季/集层级非递归浏览；搜索/首页区块仍可使用递归查询）
 - [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；Windows 宿主已验证可在透明叠层 + mpv 视频底层窗口中显示，Jellyfin 数据源仍待实现）
-- [~] 配置自动持久化（非敏感配置持久化；Emby 与 OpenList/Alist 账号、密码、token 进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
+- [~] 配置自动持久化（非敏感配置持久化；Emby/OpenList 凭据、CloudDrive2 API Token、WebDAV 账号密码进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 
@@ -246,7 +246,7 @@ Phase 4: 生态系统           ████████████████
 #### OpenList/Alist DataSource 实现
 
 - [x] 实现 OpenList/Alist HTTP API 客户端 (`/api/auth/login`, `/api/fs/list`, `/api/fs/get`；已通过本地 OpenList/Alist 服务 live test)
-- [ ] 实现 WebDAV 客户端 (备选方案)
+- [x] OpenList/Alist 保持原生 HTTP API 路线；WebDAV 已拆分为独立通用 DataSource，不作为 OpenList/Alist 或 CloudDrive2 的替代身份
 - [x] `list(path)` — 目录浏览（HTTP API 已实现，按 `extra.rootPath` 作为库根目录浏览，已通过本地 OpenList/Alist 服务验证）
 - [x] `search(keyword)` — 搜索（优先 `/api/fs/search` 且 parent 指向 `extra.rootPath`，不可用时在选中根目录内有限目录回退搜索；已通过本地 OpenList/Alist 服务验证）
 - [x] `getStreamURL(path)` — 构建播放URL (`/d{path}`，支持 `/api/fs/get` 返回的 sign；路径必须位于 `extra.rootPath` 内，已通过本地 OpenList/Alist 服务播放验证)
@@ -255,19 +255,26 @@ Phase 4: 生态系统           ████████████████
 
 #### CloudDrive2DataSource 实现
 
-- [ ] 实现 WebDAV 客户端 (CloudDrive2 暴露 WebDAV)
-- [ ] `list(path)` — 目录浏览
-- [ ] `getStreamURL(path)` — 构建播放URL
-- [ ] 实现 `CloudDrive2DataSource` (implements DataSource)
-- [ ] 连接测试
+- [x] 实现 Tauri Rust CloudDrive2 gRPC 客户端，使用用户创建的应用 API Token 与 `Authorization: Bearer` metadata
+- [x] `list(path)` / `search(keyword)` — 使用 `GetSubFiles` / `GetSearchResults`，按 `extra.rootPath` 约束并过滤支持的视频文件
+- [x] `getStreamURL(path)` / `getStreamRequest(path)` — 使用 `GetDownloadUrlPath` 获取直链、User-Agent 与附加 header，播放信息不写入普通配置或缓存
+- [x] 实现 `CloudDrive2DataSource` (implements DataSource；支持列表、详情、原生搜索、播放、raw scan cache Home sections)
+- [~] 连接测试（已覆盖 focused verification、Tauri Windows GNU 编译、设置页 API Token/选根目录流程；真实 CloudDrive2 服务和用户 Token 仍需实机验证）
+
+#### 通用 WebDAV DataSource 实现
+
+- [x] 新增独立 `webdav` DataSource 类型，不再以 CloudDrive2 名义承载 WebDAV
+- [x] 使用 `PROPFIND` + Basic Auth 只读浏览，账号密码不嵌入 URL
+- [x] 支持根目录选择、有限递归搜索、视频详情、临时播放 Authorization header、raw scan cache 与双通道扫描调度
+- [~] 连接测试（focused verification 与 Windows GNU 编译已覆盖；不同 WebDAV 服务端兼容性仍需真实环境验证）
 
 #### LocalFileDataSource 实现
 
-- [ ] 本地文件系统浏览 (Tauri `fs` API)
-- [ ] 文件类型过滤 (视频文件)
-- [~] 播放页视频区域拖拽播放和右下角悬浮播放按钮打开本地视频文件选择器已实现；当前可进入播放页并交给 libmpv 加载，Windows 内嵌视频渲染已验证，尚不等同于 LocalFileDataSource 浏览能力
+- [x] 本地文件系统浏览（已通过 Tauri `local_file_list` / `local_file_metadata` 在用户选择 root 内只读列目录与文件；前端只暴露 `/` 开头的逻辑路径，真实绝对路径只在 root-scoped Tauri 命令内解析）
+- [x] 文件类型过滤（本地源可浏览文件夹和普通文件，播放入口仅允许支持的视频扩展；扫描继续复用原始文件源视频过滤）
+- [x] 播放页视频区域拖拽播放、右下角悬浮播放按钮打开本地视频文件选择器，以及 LocalFileDataSource 文件夹浏览播放均已接入现有 libmpv 加载流程；Windows 内嵌视频渲染已验证
 - [ ] 文件关联 (双击打开)
-- [ ] 实现 `LocalFileDataSource` (implements DataSource)
+- [x] 实现 `LocalFileDataSource` (implements DataSource；支持设置页添加/编辑本地文件夹、目录浏览、有限搜索、详情、播放路径、raw scan cache Home sections)
 
 #### 云盘占位符
 
@@ -280,17 +287,17 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] 跨数据源搜索结果合并与去重
 - [ ] 统一媒体浏览 (合并所有 DataSource 的内容)
-- [~] 云盘/本地文件刮削结果接入聚合首页 Hero / 最新影片（已接入 OpenList/Alist 本地刮削缓存中的 `matched` + metadata 条目；未匹配/失败/跳过/未配置条目不进入 Home，缓存读取失败按源隔离；CloudDrive2 与本地文件待复用）
+- [~] 云盘/本地文件刮削结果接入聚合首页 Hero / 最新影片（已接入 OpenList/Alist、CloudDrive2、WebDAV 与本地文件 raw scan cache 中的 `matched` + metadata 条目；未匹配/失败/跳过/未配置条目不进入 Home，缓存读取失败按源隔离）
 - [ ] 配置导入/导出 (JSON 文件)
 
 #### 原始文件源本地刮削与海报墙
 
 - [~] 通用刮削分类规则配置（默认实例来自 MP 风格思路，但用户通过受控设置页编辑；分类只作为本地逻辑分组，不要求固定 `movie` / `tv` / `Movies` / `TV` 顶层目录，不写回 OpenList/Alist）
-- [~] OpenList/Alist 递归只读扫描与扫描日志（已接入 SourceLibraryView 手动扫描：通过 DataSource `list()` 从 `extra.rootPath` 递归只读读取，并以 source/root scoped localStorage 缓存保存扫描预览、检测结果与安全日志；Tauri SQLite 扫描库与后台任务待后续）
-- [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具；尚未接入递归扫描任务与 UI 确认）
+- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；Emby/Jellyfin 不进入 Player 原始文件扫描调度；图片二进制缓存待后续）
+- [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具并接入递归扫描；首次进入无缓存媒体库时显示索引进度/状态，不再用空媒体库误导）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
-- [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
-- [~] OpenList/Alist Emby-like 媒体库首页与文件夹兜底视图（已提供 `alist` 可见 MVP：默认进入大海报轮播 + 逻辑媒体库卡片，分类内电影/剧集/未识别按作品聚合成海报墙；文件夹浏览通过按钮作为兜底入口；扫描状态、结构判断和日志已收进扫描管理面板；标准目录优先使用路径分类，非标准或无路径分类时再使用 TMDB 分类规则兜底）
+- [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；无年份自动匹配优先精确标题，避免基础片名被包含匹配/热度误导到续集；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
+- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件 Emby-like 媒体库首页与文件夹兜底视图（已提供 `alist` / `clouddrive2` / `webdav` / `local` 可见 MVP：默认进入大海报轮播 + 逻辑媒体库卡片，分类内电影/剧集/未识别按作品聚合成海报墙；无缓存首次进入会显示自动索引进度/状态并在完成后加载分类；文件夹浏览通过按钮作为兜底入口；扫描状态、结构判断和日志已收进扫描管理面板；标准目录优先使用路径分类，非标准或无路径分类时再使用 TMDB 分类规则兜底）
 
 #### 播放器增强
 
@@ -304,8 +311,9 @@ Phase 4: 生态系统           ████████████████
 **产出**:
 
 - [x] 能连接 OpenList/Alist 浏览和播放云盘文件（已通过本地 OpenList/Alist 服务 live test）
-- [ ] 能连接 CloudDrive2 浏览和播放
-- [~] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；Windows 已验证窗口内视频渲染，本地文件 DataSource 浏览、文件关联与完整本地媒体库能力未完成
+- [~] 能连接 CloudDrive2 浏览和播放（原生 gRPC API Token DataSource、Tauri 命令、设置页和播放直链/header 已完成；待真实 CloudDrive2 服务实机验证）
+- [~] 能连接通用 WebDAV 浏览和播放（独立 `webdav` DataSource、Basic Auth、设置页、扫描调度和播放 header 已完成；待更多真实 WebDAV 服务兼容性验证）
+- [x] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；也能把本地文件夹添加为数据源，像 OpenList/Alist 一样浏览、扫描、生成媒体库并播放 root 内视频；文件关联仍待后续
 - [ ] 115/123/夸克在 UI 中有占位
 
 ---

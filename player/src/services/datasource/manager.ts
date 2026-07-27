@@ -1,8 +1,11 @@
 import type { DataSource, DataSourceConfig, DataSourceType, HomeSection } from './types'
 import { AlistDataSource } from './alist'
+import { CloudDrive2DataSource } from './clouddrive2'
 import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
+import { LocalFileDataSource } from './local'
+import { WebDavDataSource } from './webdav'
 
 export class DataSourceManager {
   private readonly sources = new Map<string, DataSource>()
@@ -94,6 +97,12 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new EmbyDataSource()
     case 'alist':
       return new AlistDataSource()
+    case 'clouddrive2':
+      return new CloudDrive2DataSource()
+    case 'webdav':
+      return new WebDavDataSource()
+    case 'local':
+      return new LocalFileDataSource()
     default:
       throw new Error(`${type} data source is not implemented yet.`)
   }

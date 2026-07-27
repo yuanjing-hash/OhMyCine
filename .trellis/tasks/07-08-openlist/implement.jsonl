@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Player independent-first constraints, frontend completion checklist, and roadmap update requirement."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TypeScript/runtime validation rules for DataSource and scraper cache payload migration."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Required frontend verification commands and forbidden patterns for Player changes."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Before adding new storage helpers, search and reuse existing Tauri SQLite command patterns."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans Vue services, Tauri commands, Rust SQLite, and route/home aggregation behavior."}

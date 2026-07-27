@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Check LocalFileDataSource respects raw source media-library and no-write contracts."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check DataSource/MediaItem/raw scrape type drift and playback payload compatibility."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Check raw source cache isolation and Home failure isolation for local files."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check required verify/typecheck/lint/build/cargo/package commands and Windows GNU exe generation."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Check local path traversal, symlink escape, absolute path leakage, and read-only file operation boundaries."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check Tauri command, DataSource, scanner, cache, and UI data flow end to end."}

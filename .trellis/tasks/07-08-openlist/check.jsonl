@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Check Player independence, DataSource boundaries, and roadmap status update."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check lint/typecheck/build and focused verification expectations."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check strict typing and runtime validation for persisted scan cache payloads."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check that new storage code follows existing patterns instead of duplicating avoidable logic."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check data flow across scanner, cache API, source detail/home aggregation, and Tauri SQLite."}

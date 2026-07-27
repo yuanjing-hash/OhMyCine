@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend Player independent-first checklist and roadmap/doc update rules."}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Raw file source media-library, DataSource boundaries, local file scraping and no-write contracts."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "SourceLibraryView empty/loading/progress UI expectations and Cinema OS component behavior."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TMDB scraper, raw-source mapping, DataSource and media item type contracts."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Raw source auto indexing scheduler contract, cooldown/failure isolation, and source/root-scoped status behavior."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Required frontend/Rust/package validation and Windows GNU build contract."}
+{"file": "docs/architecture/03-player-design.md", "reason": "Player DataSource abstraction and raw file source scraping UX design."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Local path and metadata/AI privacy boundary; ensure no absolute path leakage."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature crosses scheduler, scanner, TMDB matching, source page UI, and local cache."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing raw source scheduler and scraper verify patterns instead of ad-hoc UI/client logic."}

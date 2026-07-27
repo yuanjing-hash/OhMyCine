@@ -180,3 +180,38 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: 修复原始文件源单文件电影识别
+
+**Date**: 2026-07-08
+**Task**: 修复原始文件源单文件电影识别
+**Branch**: `develop-new/openlist-scrape-cache`
+
+### Summary
+
+完成 OpenList/Alist 原始文件源分类修复：根目录单文件电影和显式分类目录下电影可被识别，作品目录不伪造分类，噪声文件保持未识别；已通过 verify、typecheck、lint、build、cargo check 和 Windows GNU Tauri build，刷新 release exe；补充 frontend spec 并归档 Trellis 任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dc186fb` | (see git log) |
+| `a334610` | (see git log) |
+| `1827789` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

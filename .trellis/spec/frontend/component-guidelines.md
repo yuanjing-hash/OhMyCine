@@ -94,6 +94,8 @@ Required principles:
 - Add flow starts with a source type selector; unsupported/planned source types should be disabled or clearly unavailable.
 - Provider-specific fields are shown dynamically after type selection. For Emby, normal setup uses server URL, account/username, and password fields; it must not ask for an access token as the primary UX.
 - For OpenList/Alist, normal setup uses server URL, account/username, and password fields; it must not expose manual token entry, public/shared directory mode, path password fields, or WebDAV controls until those modes have their own explicit design.
+- For CloudDrive2, normal setup uses the gRPC service URL and a user-created application API Token. Do not ask for the CloudDrive2 account username/password and do not present its WebDAV endpoint as the CloudDrive2 provider.
+- Generic WebDAV is a separate `webdav` source with URL, username, and password fields. Keep it visually and behaviorally distinct from CloudDrive2 and OpenList/Alist.
 - For OpenList/Alist, the type choice should be visible without relying only on native select rendering, and account login should unlock a directory picker that browses from `/`, lets the user choose a root path, and stores only non-sensitive `extra.rootPath` after final save.
 - Add/Save must authenticate/test first, then persist non-sensitive config and credential references only after success.
 - Forms must include Cancel and Add/Save actions and show loading/error states without leaking passwords, tokens, or tokenized URLs.

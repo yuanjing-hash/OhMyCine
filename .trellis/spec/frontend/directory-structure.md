@@ -92,6 +92,7 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 - The scanner starts from the user's selected root and infers the structure below that root. Never reject or downgrade a library only because the root or first child is not named `movie`/`tv`/`Movies`/`TV`.
 - Standard directory mode is a detection result, not a hard-coded path requirement. It may use folder depth, title-year folders, `Season NN`, episode patterns, known category-name hints, and media-file distribution to infer movie/series/season/episode structure.
 - Path-aware recognition for raw files must follow a MoviePilot-like merge order: parse the file stem first, then the parent segment, then the grandparent segment, and merge missing identity fields from later segments. A parent folder named `Season 01`, `S01`, or `第1季` is a season signal, not a title. A file stem such as `S01E01` is an episode signal, not a title. In `剧名/Season 01/S01E01.mkv`, the grandparent `剧名` supplies the series-title candidates.
+- Clear standalone movie filenames must become movie candidates even when they have no year and are placed directly under the selected root, for example `阿凡达.mp4`. If the first parent segment is a known explicit category such as `电影` or `华语电影`, `电影/阿凡达.mp4` and `电影/阿凡达/阿凡达.mp4` must keep that path category hint. A likely work folder such as `阿凡达/阿凡达.mp4` must not create a fake category hint from `阿凡达`; classification should come from TMDB metadata rules or media-kind fallback. Obvious non-work filenames such as `sample.mp4`, `4K.mp4`, `video.mp4`, trailers, clips, extras, and test/demo files must remain unresolved until manually identified or matched by a stronger signal.
 - Non-standard mode treats directory names as unreliable and primarily uses filename parsing plus TMDB matching. It must preserve every playable video as a file/fallback item even when metadata matching fails.
 - Path-derived category hints from standard directory structures are final library categories before TMDB rule assignment for matched items. The final media-library grouping priority for matched raw-source items is explicit path/category-folder hints such as `综艺` / `动漫` / `国产剧`, then TMDB metadata rule assignment when no clear path category exists, then media-kind fallback (`电影`, `剧集`, `未识别`). TMDB metadata may enrich title, poster, overview, and detail fields, but it must not duplicate the same path-scoped work into another TMDB-derived category. Never create a category card from a likely work folder such as `机械之声的传奇 The Legend of Vox Machina AMZN GrassTV`.
 - Any raw scraped item whose TMDB match status is missing or not `matched` (`notConfigured`, `notFound`, `failed`, `skipped`, or future non-matched states) must use visible category `未识别` in media-library category cards, regardless of parsed media kind, path category hint, or path-derived movie/TV structure. Keep the parsed title, series title, season number, episode number, provider path, and fallback media type so the `未识别` category can still aggregate playable files by work/season/episode and support later manual identification.
@@ -115,6 +116,10 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 | User-selected root has no `movie`/`tv` named child | Continue auto detection from the selected root; do not mark it invalid for this reason |
 | Directory has strong title/year or season/episode structure | Prefer standard-mode parsing and use TMDB to confirm/enrich metadata |
 | Directory is mixed or ambiguous | Fall back to non-standard parsing, keep unresolved items playable, and record a local diagnostic |
+| Root contains a clear standalone movie file such as `阿凡达.mp4` | Parse it as a partial movie candidate and attempt TMDB matching without requiring a movie folder or year token |
+| Path starts with a known manual category such as `电影/阿凡达.mp4` or `电影/阿凡达/阿凡达.mp4` | Preserve the explicit category path hint for matched display grouping |
+| Path uses a work folder without a category such as `阿凡达/阿凡达.mp4` | Parse the movie candidate but do not use the work folder as a visible category |
+| Filename is obvious non-work noise such as `sample.mp4`, `4K.mp4`, or `video.mp4` | Keep it unresolved rather than creating a noisy movie candidate |
 | Standard/non-standard confidence is low | Keep scan usable and expose a user confirmation/switch point rather than failing the scan |
 | Recursive scan exceeds depth/folder/file limits | Stop that branch or scan, mark partial, log a warning, and keep already collected results usable |
 | TMDB is unavailable, rate limited, or key is missing | Keep file browsing/playback available, keep unresolved candidates, and show a user-safe metadata-unavailable state |
@@ -131,15 +136,20 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 
 #### 5. Good/Base/Bad Cases
 - Good: the user selects `/影视库`; the scanner detects `华语电影/片名 (2024)/片名.mkv` as a movie structure and `综艺/剧名/Season 01/S01E01.mkv` as a TV structure without requiring a `Movies` or `TV` parent.
+- Good: the selected root contains both `阿凡达.mp4` and `动漫/灵笼/Season 01/S01E01.mkv`; the movie is matched and displayed through movie/TMDB classification while the series keeps the `动漫` path category.
+- Good: `电影/阿凡达.mp4`, `华语电影/阿凡达.mp4`, and `电影/阿凡达/阿凡达.mp4` preserve the explicit category folder, but `阿凡达/阿凡达.mp4` does not show a category card named `阿凡达`.
 - Good: `机械之声的传奇 The Legend of Vox Machina AMZN GrassTV/Season 01/S01E01.mkv` is searched as `机械之声的传奇` / `The Legend of Vox Machina`, TMDB confirms TV animation from the US, and the poster wall groups it under the configured animation category such as `动漫`, not under the work-folder name.
 - Base: a messy folder of mixed files is scanned as non-standard, creates playable unresolved rows for misses, and groups successful TMDB matches through logical categories such as `华语电影`, `外语电影`, `综艺`, or `未分类`.
+- Base: `sample.mp4`, `4K.mp4`, and `video.mp4` stay under unresolved/manual-identification flows instead of creating low-quality movie matches.
 - Bad: scanner code checks `root.children.Movies` and `root.children.TV`, then treats every other selected root as non-standard or invalid.
 - Bad: classification code creates or renames remote directories to match category names.
 - Bad: the media-library root shows a category card named after a release folder such as `The Legend of Vox Machina AMZN GrassTV`.
+- Bad: all matched items in a mixed root are displayed only under the first matched path category, so a root-level movie disappears when a sibling `动漫/...` series exists.
 
 #### 6. Tests Required
 - Unit tests for path normalization, selected-root containment, standard/non-standard detection, filename parsing, rule matching, and fallback classification.
 - Integration or service tests with representative OpenList/Alist-like trees: movie folders with title/year, TV series with seasons/episodes, mixed flat folders, Chinese category names, missing years, and unresolved files.
+- Parser/display regression tests must cover `阿凡达.mp4`, `阿凡达/阿凡达.mp4`, `电影/阿凡达.mp4`, `华语电影/阿凡达.mp4`, `电影/阿凡达/阿凡达.mp4`, sibling anime series folders, and noise files such as `sample.mp4`, `4K.mp4`, and `video.mp4`.
 - Persistence tests verify local metadata/artwork/log cache is source-scoped and clearing it does not remove config or credentials.
 - UI review verifies poster-wall mode, folder-view fallback, unresolved items, scan status/logs, missing poster fallbacks, and no remote-write affordances.
 

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-05-15
+- **Total Sessions**: 6
+- **Last Active**: 2026-07-08
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~182 | Active |
+| `journal-1.md` | ~217 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-07-08 | 修复原始文件源单文件电影识别 | `dc186fb`, `a334610`, `1827789` | `develop-new/openlist-scrape-cache` |
 | 5 | 2026-05-15 | 完成 Player 播放高级控制 | `e242134`, `fd58a7c` | `main` |
 | 4 | 2026-05-13 | 完成 Player 播放设置面板 | `9e4b4bd`, `f08f4d0` | `main` |
 | 3 | 2026-05-12 | 完成 Player Windows 嵌入式渲染 | `13199b5`, `cdea94d` | `main` |

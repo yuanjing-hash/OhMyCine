@@ -1,0 +1,29 @@
+{
+  "id": "raw-source-classification",
+  "name": "raw-source-classification",
+  "title": "修复原始文件源分类与单文件电影识别",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-07-08",
+  "completedAt": "2026-07-08",
+  "branch": "develop-new/openlist-scrape-cache",
+  "base_branch": "develop-new/openlist-scrape-cache",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "07-08-openlist",
+  "relatedFiles": [
+    "player/src/services/scraper/parser.ts",
+    "player/scripts/verify-scraper-title-classification.ts"
+  ],
+  "notes": "",
+  "meta": {}
+}

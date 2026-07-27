@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Check raw source scan implementation stays behind DataSource/local safe boundary."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Check scan scheduling UI is clear without disrupting default media-library layout."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Check full/incremental scheduler status, interval, cooldown and fault isolation behavior."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check config/cache/status types and sensitive extra sanitization."}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "Check watcher lifecycle and Tauri event cleanup."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check required frontend/Rust/package validation and Windows exe refresh."}
+{"file": "docs/architecture/03-player-design.md", "reason": "Check docs align with dual scan scheduler and raw source behavior."}
+{"file": "docs/architecture/07-security-design.md", "reason": "Check no local absolute paths or sensitive provider URLs leak through watcher/cache/logs."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check source event to scheduler to cache to UI data flow."}

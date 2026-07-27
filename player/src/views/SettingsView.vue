@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
+import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
+import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
+import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
+import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import {
   createEmptyScrapeCategoryRule,
   loadScrapeClassificationRules,
@@ -20,6 +25,7 @@ import {
   TMDB_MOVIE_GENRES,
   TMDB_TV_GENRES,
 } from '@/services/scraper/classificationRules'
+import { intervalMinutesToMs, intervalMsToMinutes, readRawSourceScanScheduleConfig, updateRawSourceScanScheduleExtra } from '@/services/scraper/rawSourceScanSchedule'
 import {
   clearConfiguredTmdbCredential,
   loadTmdbLocalSettings,
@@ -29,8 +35,9 @@ import {
 } from '@/services/scraper/tmdb'
 import { useDataSourceStore } from '@/stores/datasource'
 
-type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist'>
-type LoginDataSourceConfig = DataSourceConfig & { type: LoginDataSourceType }
+type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
+type EditableDataSourceType = LoginDataSourceType | 'local'
+type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping'
 type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
@@ -38,11 +45,12 @@ type ConditionValueState = 'none' | 'include' | 'exclude'
 
 interface DataSourceFormState {
   id: string | null
-  type: LoginDataSourceType
+  type: EditableDataSourceType
   displayName: string
   url: string
   username: string
   password: string
+  apiToken: string
   rootPath: string
 }
 
@@ -64,7 +72,7 @@ interface SettingsEntry {
 }
 
 const sourceTypeOptions: Array<{
-  type: LoginDataSourceType
+  type: EditableDataSourceType
   label: string
   shortLabel: string
   description: string
@@ -89,6 +97,33 @@ const sourceTypeOptions: Array<{
     defaultName: 'OpenList/Alist',
     urlPlaceholder: 'http://openlist.example.test:5244',
     usernamePlaceholder: 'OpenList/Alist 登录账号',
+  },
+  {
+    type: 'clouddrive2',
+    label: 'CloudDrive2',
+    shortLabel: 'C',
+    description: 'CloudDrive2 原生 gRPC API Token',
+    defaultName: 'CloudDrive2',
+    urlPlaceholder: 'http://clouddrive2.example.test:19798',
+    usernamePlaceholder: '',
+  },
+  {
+    type: 'webdav',
+    label: 'WebDAV',
+    shortLabel: 'W',
+    description: '通用 WebDAV 只读数据源',
+    defaultName: 'WebDAV',
+    urlPlaceholder: 'https://dav.example.test/media',
+    usernamePlaceholder: 'WebDAV 用户名',
+  },
+  {
+    type: 'local',
+    label: '本地文件夹',
+    shortLabel: 'L',
+    description: '只读扫描本机媒体目录',
+    defaultName: '本地媒体库',
+    urlPlaceholder: '',
+    usernamePlaceholder: '',
   },
 ]
 
@@ -132,6 +167,7 @@ const form = reactive<DataSourceFormState>({
   url: '',
   username: '',
   password: '',
+  apiToken: '',
   rootPath: '/',
 })
 const mode = ref<SettingsMode>('overview')
@@ -140,7 +176,7 @@ const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
 const persistentCredentialWarning = ref(hasPersistentCredentialStorageWarning())
-const alistBrowserSource = shallowRef<AlistDataSource | null>(null)
+const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | null>(null)
 const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
 const alistBrowserLoading = ref(false)
@@ -164,7 +200,14 @@ const isEditing = computed(() => mode.value === 'edit')
 const isDataSourceMode = computed(() => mode.value === 'manage' || mode.value === 'add' || mode.value === 'edit')
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
-const selectedRootPathLabel = computed(() => normalizeAlistRootPath(form.rootPath))
+const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
+const isWebDavForm = computed(() => form.type === 'webdav')
+const isLocalForm = computed(() => form.type === 'local')
+const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value)
+const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value)
+const selectedRootPathLabel = computed(() => isLocalForm.value
+  ? localRootPathLabel(form.rootPath)
+  : normalizeRemoteRootPath(form.rootPath))
 const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
 const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
 const activeSourceCount = computed(() => configuredSources.value.filter(source => source.enabled !== false).length)
@@ -198,8 +241,8 @@ const tmdbCredentialStatusLabel = computed(() => {
 const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
-    ? '配置 OpenList/Alist、CloudDrive2、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回网盘目录。'
-    : 'Player 可直接连接 Emby 和 OpenList/Alist 浏览播放媒体，不依赖 OhMyCine Server。账号、密码和访问令牌保存到 Tauri app data 下的 SQLite 凭证边界中，DataSource 配置和 localStorage 只保留 credentialRef 等非敏感字段。')
+    ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
+    : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -208,7 +251,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '连接、编辑、停用或清理 Emby 与 OpenList/Alist 数据源，控制左侧媒体入口。',
+    description: '连接、编辑、停用或清理 Emby、OpenList/Alist、CloudDrive2、WebDAV 与本地文件夹数据源，控制左侧媒体入口。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -274,11 +317,31 @@ watch(() => route.query, () => {
 watch(() => form.type, (type) => {
   if (!isEditing.value)
     form.displayName = defaultDisplayName(type)
+  if (type === 'local') {
+    form.url = ''
+    form.username = ''
+    form.password = ''
+    form.apiToken = ''
+    form.rootPath = ''
+  }
+  else if (type === 'emby') {
+    form.rootPath = '/'
+  }
+  else if (isRootSelectableRemoteSourceType(type) && !form.rootPath) {
+    form.rootPath = '/'
+  }
+  if (type === 'clouddrive2') {
+    form.username = ''
+    form.password = ''
+  }
+  else {
+    form.apiToken = ''
+  }
   resetAlistBrowser()
 })
 
-watch(() => [form.url, form.username, form.password] as const, () => {
-  if (form.type === 'alist')
+watch(() => [form.url, form.username, form.password, form.apiToken] as const, () => {
+  if (isRootSelectableRemoteSourceType(form.type))
     resetAlistBrowser()
 })
 
@@ -322,7 +385,7 @@ function syncModeFromRoute() {
   if (action === 'edit') {
     const id = routeQueryValue('id')
     const source = id ? store.configs.find(config => config.id === id) : null
-    if (source && isLoginDataSourceConfig(source)) {
+    if (source && isEditableDataSourceConfig(source)) {
       replaceSettingsQuery({ section: 'datasources', action: 'edit', id: source.id })
       if (mode.value !== 'edit' || form.id !== source.id)
         populateEditForm(source)
@@ -430,6 +493,7 @@ function resetForm() {
   form.url = ''
   form.username = ''
   form.password = ''
+  form.apiToken = ''
   form.rootPath = '/'
   feedback.value = null
   lastFetchedLibraries.value = []
@@ -437,7 +501,7 @@ function resetForm() {
 }
 
 function editSource(config: DataSourceConfig) {
-  if (!isLoginDataSourceConfig(config)) {
+  if (!isEditableDataSourceConfig(config)) {
     feedback.value = {
       type: 'error',
       message: `${sourceTypeLabel(config.type)} 暂不支持在当前设置页编辑。`,
@@ -449,17 +513,31 @@ function editSource(config: DataSourceConfig) {
   void router.replace({ name: 'settings', query: { section: 'datasources', action: 'edit', id: config.id } })
 }
 
-function populateEditForm(config: LoginDataSourceConfig) {
+function populateEditForm(config: EditableDataSourceConfig) {
   form.id = config.id
   form.type = config.type
   form.displayName = config.displayName ?? config.name
   form.url = config.url
   form.username = ''
   form.password = ''
-  form.rootPath = config.type === 'alist' ? readAlistRootPath(config) : '/'
+  form.apiToken = ''
+  if (config.type === 'alist')
+    form.rootPath = readAlistRootPath(config)
+  else if (config.type === 'clouddrive2')
+    form.rootPath = readCloudDrive2RootPath(config)
+  else if (config.type === 'webdav')
+    form.rootPath = readWebDavRootPath(config)
+  else if (config.type === 'local')
+    form.rootPath = readLocalRootPath(config)
+  else
+    form.rootPath = '/'
   feedback.value = {
     type: 'info',
-    message: `可修改显示名称与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+    message: config.type === 'local'
+      ? '可修改显示名称或重新选择本地根目录；本地文件源不会保存账号、密码或 token。'
+      : config.type === 'clouddrive2'
+        ? '可修改显示名称、根目录与启用状态；API Token 留空表示保留，修改服务地址时必须重新输入 Token。'
+        : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -505,13 +583,29 @@ async function saveSource() {
     }
 
     const id = `${form.type}-${Date.now()}`
+    if (form.type === 'local') {
+      const result = await createAndValidateLocalConfig({
+        id,
+        displayName: form.displayName,
+        rootPath: form.rootPath,
+        order: store.configs.length,
+      })
+      await store.replaceConfig(result.config)
+      lastFetchedLibraries.value = result.libraries
+      resetForm()
+      feedback.value = { type: 'success', message: `本地文件夹已验证，已添加到左侧侧边栏。` }
+      goManage({ preserveFeedback: true })
+      return
+    }
+
     const result = await loginAndCreateConfig(form.type, {
       id,
       url: form.url,
       displayName: form.displayName,
       username: form.username,
       password: form.password,
-      rootPath: form.type === 'alist' ? selectedRootPathLabel.value : undefined,
+      apiToken: form.apiToken,
+      rootPath: isRootSelectableRemoteSourceType(form.type) ? selectedRootPathLabel.value : undefined,
       order: store.configs.length,
     })
     try {
@@ -524,13 +618,17 @@ async function saveSource() {
     const libraryCount = result.libraries.length
     const label = sourceTypeLabel(form.type)
     resetForm()
-    feedback.value = { type: 'success', message: `${label} 登录测试成功，已验证 ${libraryCount} 个入口。新数据源已添加到左侧侧边栏。` }
+    feedback.value = { type: 'success', message: `${label} 连接测试成功，已验证 ${libraryCount} 个入口。新数据源已添加到左侧侧边栏。` }
     goManage({ preserveFeedback: true })
   }
   catch (error) {
     feedback.value = {
       type: 'error',
-      message: toSafeErrorMessage(error, `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
+      message: toSafeErrorMessage(error, form.type === 'local'
+        ? '添加本地文件夹失败，请确认目录存在且有读取权限。'
+        : form.type === 'clouddrive2'
+          ? '添加 CloudDrive2 失败，请检查 gRPC 服务地址、API Token 权限和服务状态。'
+          : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
     }
   }
   finally {
@@ -543,16 +641,32 @@ async function saveEditedSource(id: string) {
   const existing = store.configs.find(config => config.id === id)
   if (!existing)
     throw new Error('数据源不存在。')
-  if (!isLoginDataSourceType(existing.type))
+  if (!isEditableDataSourceType(existing.type))
     throw new Error(`${sourceTypeLabel(existing.type)} 暂不支持在当前设置页编辑。`)
+
+  if (existing.type === 'local') {
+    const result = await createAndValidateLocalConfig({
+      id,
+      displayName: form.displayName,
+      rootPath: form.rootPath,
+      order: existing.order,
+    })
+    await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
+    lastFetchedLibraries.value = result.libraries
+    feedback.value = { type: 'success', message: '本地文件夹数据源已更新。' }
+    goManage({ preserveFeedback: true })
+    return
+  }
 
   const username = form.username.trim()
   const nextUrl = form.url.trim()
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
-  const nextRootPath = existing.type === 'alist' ? selectedRootPathLabel.value : undefined
+  const nextRootPath = isRootSelectableRemoteSourceType(existing.type) ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
-  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password)
-  if (shouldRelogin && (!username || !form.password))
+  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password, form.apiToken)
+  if (shouldRelogin && existing.type === 'clouddrive2' && !form.apiToken.trim())
+    throw new Error('更新 CloudDrive2 服务地址或 Token 时必须填写 API Token。')
+  if (shouldRelogin && existing.type !== 'clouddrive2' && (!username || !form.password))
     throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
 
   if (shouldRelogin) {
@@ -563,6 +677,7 @@ async function saveEditedSource(id: string) {
       displayName: nextDisplayName,
       username,
       password: form.password,
+      apiToken: form.apiToken,
       rootPath: nextRootPath,
       order: existing.order,
     })
@@ -573,17 +688,18 @@ async function saveEditedSource(id: string) {
       await restoreCredentialForConfig(result.config, previousCredential).catch(() => undefined)
       throw error
     }
-    feedback.value = { type: 'success', message: `${label} 已重新登录，并验证 ${result.libraries.length} 个入口。` }
+    feedback.value = { type: 'success', message: `${label} 已重新连接，并验证 ${result.libraries.length} 个入口。` }
     form.password = ''
+    form.apiToken = ''
     goManage({ preserveFeedback: true })
     return
   }
 
   const nextExtra = { ...(existing.extra ?? {}) }
-  if (existing.type === 'alist') {
-    const rootPathChanged = nextRootPath !== readAlistRootPath(existing)
+  if (isRootSelectableRemoteSourceType(existing.type)) {
+    const rootPathChanged = nextRootPath !== readRemoteRootPath(existing)
     const libraries = rootPathChanged
-      ? await validateExistingAlistRoot(existing, nextUrl, nextDisplayName, nextRootPath ?? '/')
+      ? await validateExistingRemoteRoot(existing, nextUrl, nextDisplayName, nextRootPath ?? '/')
       : null
     nextExtra.rootPath = nextRootPath ?? '/'
     if (libraries) {
@@ -602,7 +718,10 @@ async function saveEditedSource(id: string) {
     extra: nextExtra,
   })
   form.password = ''
-  feedback.value = { type: 'success', message: '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
+  form.apiToken = ''
+  feedback.value = { type: 'success', message: existing.type === 'clouddrive2'
+    ? '数据源已更新。若 API Token 已撤销或权限变化，请再次编辑并输入新的 Token。'
+    : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
   goManage({ preserveFeedback: true })
 }
 
@@ -612,20 +731,57 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   displayName: string
   username: string
   password: string
+  apiToken: string
   rootPath?: string
   order: number
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
   if (type === 'alist')
     return loginAlistAndCreateConfig(input)
+  if (type === 'clouddrive2')
+    return saveCloudDrive2TokenAndCreateConfig(input)
+  if (type === 'webdav')
+    return loginWebDavAndCreateConfig(input)
   return loginEmbyAndCreateConfig(input)
 }
 
-function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist'
+async function createAndValidateLocalConfig(input: {
+  id: string
+  displayName: string
+  rootPath: string
+  order: number
+}): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
+  const config = createLocalFileDataSourceConfig(input)
+  const libraries = await validateLocalFileDataSourceConfig(config)
+  return {
+    config: {
+      ...config,
+      extra: {
+        ...(config.extra ?? {}),
+        libraries: libraries.map(library => ({
+          id: library.id,
+          name: library.name,
+          type: library.type,
+        })),
+      },
+    },
+    libraries,
+  }
 }
 
-function isLoginDataSourceConfig(config: DataSourceConfig): config is LoginDataSourceConfig {
-  return isLoginDataSourceType(config.type)
+function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
+  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav'
+}
+
+function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
+  return isLoginDataSourceType(type) || type === 'local'
+}
+
+function isEditableDataSourceConfig(config: DataSourceConfig): config is EditableDataSourceConfig {
+  return isEditableDataSourceType(config.type)
+}
+
+function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav'> {
+  return type === 'alist' || type === 'clouddrive2' || type === 'webdav'
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -638,6 +794,8 @@ function sourceTypeLabel(type: DataSourceType): string {
       return 'Jellyfin'
     case 'clouddrive2':
       return 'CloudDrive2'
+    case 'webdav':
+      return 'WebDAV'
     case 'local':
       return '本地文件'
     case 'server':
@@ -647,14 +805,107 @@ function sourceTypeLabel(type: DataSourceType): string {
   }
 }
 
-function defaultDisplayName(type: LoginDataSourceType): string {
+function defaultDisplayName(type: EditableDataSourceType): string {
   return sourceTypeOptions.find(option => option.type === type)?.defaultName ?? '数据源'
 }
 
 function sourceStatusLine(source: DataSourceConfig): string {
-  const credentialState = typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
-  const rootState = source.type === 'alist' ? ` · 根目录：${readAlistRootPath(source)}` : ''
+  const credentialState = source.type === 'local'
+    ? '无需凭据'
+    : typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
+  const rootState = isRootSelectableRemoteSourceType(source.type)
+    ? ` · 根目录：${readRemoteRootPath(source)}`
+    : source.type === 'local'
+      ? ` · 根目录：${readLocalRootPath(source)}`
+      : ''
   return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}${rootState}`
+}
+
+function isRawScanScheduleSource(source: DataSourceConfig): boolean {
+  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === 'local'
+}
+
+function readRemoteRootPath(config: DataSourceConfig): string {
+  if (config.type === 'clouddrive2')
+    return readCloudDrive2RootPath(config)
+  if (config.type === 'webdav')
+    return readWebDavRootPath(config)
+  return readAlistRootPath(config)
+}
+
+function normalizeRemoteRootPath(path: string | undefined): string {
+  if (form.type === 'clouddrive2')
+    return normalizeCloudDrive2RootPath(path)
+  if (form.type === 'webdav')
+    return normalizeWebDavRootPath(path)
+  return normalizeAlistRootPath(path)
+}
+
+function rawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind): boolean {
+  return readRawSourceScanScheduleConfig(source)[scanKind].enabled
+}
+
+function rawScanScheduleIntervalMinutes(source: DataSourceConfig, scanKind: RawSourceScanKind): number {
+  return intervalMsToMinutes(readRawSourceScanScheduleConfig(source)[scanKind].intervalMs)
+}
+
+async function updateRawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind, enabled: boolean) {
+  await updateRawScanSchedule(
+    source,
+    scanKind,
+    { enabled },
+    `已保存「${sourceDisplayName(source)}」${rawScanKindLabel(scanKind)}：${enabled ? '已启用' : '已停用'}。`,
+  )
+}
+
+async function updateRawScanScheduleInterval(source: DataSourceConfig, scanKind: RawSourceScanKind, value: string) {
+  const minutes = Number(value)
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    feedback.value = {
+      type: 'error',
+      message: `${rawScanKindLabel(scanKind)}间隔必须是大于 0 的分钟数。`,
+    }
+    return
+  }
+  const intervalMs = intervalMinutesToMs(minutes)
+  await updateRawScanSchedule(
+    source,
+    scanKind,
+    { intervalMs },
+    `已保存「${sourceDisplayName(source)}」${rawScanKindLabel(scanKind)}间隔：${intervalMsToMinutes(intervalMs)} 分钟。`,
+  )
+}
+
+async function updateRawScanSchedule(
+  source: DataSourceConfig,
+  scanKind: RawSourceScanKind,
+  patch: Parameters<typeof updateRawSourceScanScheduleExtra>[2],
+  successMessage: string,
+) {
+  feedback.value = null
+  try {
+    await store.updateConfig(source.id, {
+      extra: updateRawSourceScanScheduleExtra(source.extra, scanKind, patch),
+    })
+    feedback.value = {
+      type: 'success',
+      message: successMessage,
+    }
+  }
+  catch (error) {
+    feedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, '扫描计划保存失败。'),
+    }
+  }
+}
+
+function sourceDisplayName(source: DataSourceConfig): string {
+  return source.displayName ?? source.name
+}
+
+function rawScanKindLabel(scanKind: RawSourceScanKind): string {
+  return scanKind === 'full' ? '全量扫描' : '增量扫描'
 }
 
 function normalizeComparableUrl(value: string): string {
@@ -685,7 +936,7 @@ function credentialRefFromConfig(config: DataSourceConfig): string | null {
   return typeof config.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
 }
 
-function selectSourceType(type: LoginDataSourceType) {
+function selectSourceType(type: EditableDataSourceType) {
   if (isEditing.value)
     return
 
@@ -695,19 +946,49 @@ function selectSourceType(type: LoginDataSourceType) {
   lastFetchedLibraries.value = []
 }
 
+async function chooseLocalRootPath() {
+  if (form.type !== 'local')
+    return
+
+  feedback.value = null
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+    })
+
+    if (typeof selected !== 'string')
+      return
+
+    form.rootPath = normalizeLocalRootPath(selected)
+    if (!form.displayName.trim())
+      form.displayName = localRootDisplayName(form.rootPath)
+    feedback.value = {
+      type: 'info',
+      message: `已选择本地根目录：${form.rootPath}`,
+    }
+  }
+  catch (error) {
+    feedback.value = {
+      type: 'error',
+      message: toSafeErrorMessage(error, '选择本地文件夹失败。'),
+    }
+  }
+}
+
 async function loadAlistRootBrowser() {
   await loadAlistDirectory('/')
 }
 
 async function loadAlistDirectory(path: string) {
-  if (form.type !== 'alist')
+  if (!isRootSelectableRemoteSourceType(form.type))
     return
 
   alistBrowserLoading.value = true
   alistBrowserError.value = null
   try {
     const source = await ensureAlistBrowserSource()
-    const nextPath = normalizeAlistRootPath(path)
+    const nextPath = normalizeRemoteRootPath(path)
     const items = await source.list(nextPath)
     alistBrowserPath.value = nextPath
     alistBrowserDirectories.value = items
@@ -716,26 +997,31 @@ async function loadAlistDirectory(path: string) {
   }
   catch (error) {
     alistBrowserDirectories.value = []
-    alistBrowserError.value = toSafeErrorMessage(error, 'OpenList/Alist 目录加载失败。')
+    alistBrowserError.value = toSafeErrorMessage(error, `${sourceTypeLabel(form.type)} 目录加载失败。`)
   }
   finally {
     alistBrowserLoading.value = false
   }
 }
 
-async function ensureAlistBrowserSource(): Promise<AlistDataSource> {
+async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource> {
   if (alistBrowserSource.value)
     return alistBrowserSource.value
 
-  const sourceId = form.id ?? `alist-setup-${Date.now()}`
-  const displayName = form.displayName.trim() || 'OpenList/Alist'
+  const sourceId = form.id ?? `${form.type}-setup-${Date.now()}`
+  const displayName = form.displayName.trim() || defaultDisplayName(form.type)
   const existing = form.id ? store.configs.find(config => config.id === form.id) : null
   const username = form.username.trim()
-  const shouldUseExistingCredential = existing?.type === 'alist'
-    && !shouldReloginSource(existing, form.url, username, form.password)
+  const shouldUseExistingCredential = existing?.type === form.type
+    && isRootSelectableRemoteSourceType(existing.type)
+    && !shouldReloginSource(existing, form.url, username, form.password, form.apiToken)
 
   if (shouldUseExistingCredential) {
-    const source = new AlistDataSource()
+    const source = existing.type === 'clouddrive2'
+      ? new CloudDrive2DataSource()
+      : existing.type === 'webdav'
+        ? new WebDavDataSource()
+        : new AlistDataSource()
     await source.init({
       ...existing,
       name: displayName,
@@ -751,23 +1037,29 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource> {
     return source
   }
 
-  const source = await createAuthenticatedAlistSetupSource({
+  const setupInput = {
     id: sourceId,
     url: form.url,
     displayName,
     username,
     password: form.password,
+    apiToken: form.apiToken,
     order: existing?.order ?? store.configs.length,
-  })
+  }
+  const source = form.type === 'clouddrive2'
+    ? await createAuthenticatedCloudDrive2SetupSource(setupInput)
+    : form.type === 'webdav'
+      ? await createAuthenticatedWebDavSetupSource(setupInput)
+      : await createAuthenticatedAlistSetupSource(setupInput)
   alistBrowserSource.value = source
   return source
 }
 
 function selectAlistRoot(path: string) {
-  form.rootPath = normalizeAlistRootPath(path)
+  form.rootPath = normalizeRemoteRootPath(path)
   feedback.value = {
     type: 'info',
-    message: `已选择 OpenList/Alist 根目录：${form.rootPath}`,
+    message: `已选择 ${sourceTypeLabel(form.type)} 根目录：${form.rootPath}`,
   }
 }
 
@@ -780,12 +1072,20 @@ function resetAlistBrowser() {
   alistBrowserError.value = null
 }
 
-function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string): boolean {
-  return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || Boolean(username || password)
+function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string, apiToken: string): boolean {
+  const credentialChanged = config.type === 'clouddrive2' ? Boolean(apiToken.trim()) : Boolean(username || password)
+  return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || credentialChanged
 }
 
-async function validateExistingAlistRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
-  const source = new AlistDataSource()
+async function validateExistingRemoteRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
+  if (!isRootSelectableRemoteSourceType(config.type))
+    return []
+
+  const source = config.type === 'clouddrive2'
+    ? new CloudDrive2DataSource()
+    : config.type === 'webdav'
+      ? new WebDavDataSource()
+      : new AlistDataSource()
   try {
     await source.init({
       ...config,
@@ -806,11 +1106,26 @@ async function validateExistingAlistRoot(config: DataSourceConfig, url: string, 
 }
 
 function parentDirectoryPath(path: string): string {
-  const normalized = normalizeAlistRootPath(path)
+  const normalized = normalizeRemoteRootPath(path)
   if (normalized === '/')
     return '/'
   const index = normalized.lastIndexOf('/')
   return index <= 0 ? '/' : normalized.slice(0, index)
+}
+
+function localRootPathLabel(path: string): string {
+  if (!path.trim())
+    return '未选择'
+  try {
+    return normalizeLocalRootPath(path)
+  }
+  catch {
+    return path.trim()
+  }
+}
+
+function localRootDisplayName(path: string): string {
+  return path.trim().replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '本地媒体库'
 }
 
 function getScrapeRuleGroup(mediaType: ScrapeMediaType): ScrapeRuleGroup {
@@ -960,7 +1275,7 @@ async function saveTmdbSettings() {
     scrapeFeedback.value = {
       type: tmdbCredentialConfigured.value ? 'success' : 'info',
       message: tmdbCredentialConfigured.value
-        ? `TMDB 设置已保存。后续 OpenList/Alist 扫描会按 ${tmdbCredentialInputLabel.value} 路由请求并用 TMDB 元数据执行分类规则。`
+        ? `TMDB 设置已保存。后续 OpenList/Alist、CloudDrive2 和本地文件扫描会按 ${tmdbCredentialInputLabel.value} 路由请求并用 TMDB 元数据执行分类规则。`
         : savedCredential
           ? `已保存 TMDB 设置，但当前 ${tmdbCredentialInputLabel.value} 不可用。扫描会保留本地可播放候选并使用兜底分类。`
           : tmdbStoredAuthType.value
@@ -1506,6 +1821,81 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 </button>
               </div>
             </div>
+
+            <div
+              v-if="isRawScanScheduleSource(source)"
+              class="mt-4 grid gap-3 border-t border-white/8 pt-4 lg:grid-cols-2"
+            >
+              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-white">
+                      全量扫描
+                    </p>
+                    <p class="mt-1 text-xs leading-5 text-white/42">
+                      慢速校准整个媒体库，默认 6 小时一次。
+                    </p>
+                  </div>
+                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-white/62">
+                    <input
+                      class="h-4 w-4 accent-primary"
+                      type="checkbox"
+                      :checked="rawScanScheduleEnabled(source, 'full')"
+                      @change="updateRawScanScheduleEnabled(source, 'full', ($event.target as HTMLInputElement).checked)"
+                    >
+                    启用
+                  </label>
+                </div>
+                <label class="mt-3 block">
+                  <span class="text-xs text-white/38">间隔（分钟）</span>
+                  <input
+                    class="mt-2 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :value="rawScanScheduleIntervalMinutes(source, 'full')"
+                    @change="updateRawScanScheduleInterval(source, 'full', ($event.target as HTMLInputElement).value)"
+                  >
+                </label>
+              </div>
+
+              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-white">
+                      增量扫描
+                    </p>
+                    <p class="mt-1 text-xs leading-5 text-white/42">
+                      本地源配合文件监听；远端源用短间隔快照对比。
+                    </p>
+                  </div>
+                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-white/62">
+                    <input
+                      class="h-4 w-4 accent-primary"
+                      type="checkbox"
+                      :checked="rawScanScheduleEnabled(source, 'incremental')"
+                      @change="updateRawScanScheduleEnabled(source, 'incremental', ($event.target as HTMLInputElement).checked)"
+                    >
+                    启用
+                  </label>
+                </div>
+                <label class="mt-3 block">
+                  <span class="text-xs text-white/38">间隔（分钟）</span>
+                  <input
+                    class="mt-2 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :value="rawScanScheduleIntervalMinutes(source, 'incremental')"
+                    @change="updateRawScanScheduleInterval(source, 'incremental', ($event.target as HTMLInputElement).value)"
+                  >
+                </label>
+              </div>
+            </div>
+
+            <div v-else class="mt-4 rounded-2xl border border-white/8 bg-black/12 px-4 py-3 text-xs leading-5 text-white/42">
+              {{ sourceTypeLabel(source.type) }} 的媒体库和元数据由服务端维护，进入媒体库时会直接刷新，不使用 Player 本地扫描计划。
+            </div>
           </article>
         </div>
 
@@ -1514,7 +1904,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             还没有数据源
           </p>
           <p class="mt-2 text-sm leading-6 text-white/42">
-            添加 Emby 或 OpenList/Alist 数据源后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
+            添加 Emby、OpenList/Alist、CloudDrive2 或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
           </p>
           <button class="mt-5 rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
             添加数据源
@@ -1532,7 +1922,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ isEditing ? '编辑数据源' : '添加数据源' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              先选择数据源类型，再填写对应登录信息。当前 OpenList/Alist 仅支持账号登录，不提供手填 token、公开目录或 WebDAV 模式；点击添加或保存时会先登录测试，成功后只持久化安全配置和 credentialRef。
+              先选择数据源类型，再填写对应信息。本地文件夹只保存目录根路径；远程数据源点击添加或保存时会先连接测试，成功后只持久化安全配置和 credentialRef。
             </p>
           </div>
           <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
@@ -1581,7 +1971,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label class="block">
+          <label v-if="!isLocalForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
             <input
               v-model="form.url"
@@ -1591,7 +1981,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label class="block">
+          <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
             <input
               v-model="form.username"
@@ -1601,7 +1991,21 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label class="block">
+          <label v-if="isCloudDrive2Form" class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">API Token</span>
+            <input
+              v-model="form.apiToken"
+              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :placeholder="isEditing ? '留空则保留当前 API Token' : '粘贴 CloudDrive2 中创建的只读 API Token'"
+              type="password"
+              autocomplete="off"
+            >
+            <span class="mt-2 block text-xs leading-5 text-white/42">
+              请在 CloudDrive2 中创建应用专用 API Token，并授予目标根目录的文件读取权限。Token 可单独撤销，不需要提供 CloudDrive2 账号密码。
+            </span>
+          </label>
+
+          <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
             <input
               v-model="form.password"
@@ -1612,10 +2016,31 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <div v-if="isAlistForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div v-if="isLocalForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">本地根目录</span>
+                <p class="mt-2 break-all text-sm text-white/70">
+                  当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
+                @click="chooseLocalRootPath"
+              >
+                选择文件夹
+              </button>
+            </div>
+            <p class="mt-3 text-xs leading-5 text-white/42">
+              本地文件源只读访问所选目录；扫描结果、手动识别和图片覆盖只保存到 Player 本地缓存，不移动、不删除、不改名文件。
+            </p>
+          </div>
+
+          <div v-if="isRemoteRootBrowserForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">OpenList/Alist 根目录</span>
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ sourceTypeLabel(form.type) }} 根目录</span>
                 <p class="mt-2 text-sm text-white/70">
                   当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
                 </p>
@@ -1626,12 +2051,12 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 :disabled="alistBrowserLoading"
                 @click="loadAlistRootBrowser"
               >
-                {{ alistBrowserSource ? '刷新目录' : '登录并浏览目录' }}
+                {{ alistBrowserSource ? '刷新目录' : '连接并浏览目录' }}
               </button>
             </div>
 
             <p class="mt-3 text-xs leading-5 text-white/42">
-              不选择时默认使用 `/`。目录浏览使用当前表单的登录会话，只有点击添加或保存成功后才持久化凭据和根目录配置。
+              不选择时默认使用 `/`。目录浏览使用当前表单的临时连接，只有点击添加或保存成功后才持久化凭据和根目录配置。
             </p>
 
             <div
@@ -1738,7 +2163,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               class="rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-45"
               :disabled="isSaving"
             >
-              {{ isSaving ? '登录测试中…' : (isEditing ? '保存' : '添加') }}
+              {{ isSaving ? (isLocalForm ? '验证中…' : '登录测试中…') : (isEditing ? '保存' : '添加') }}
             </button>
           </div>
         </form>
