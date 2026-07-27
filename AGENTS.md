@@ -315,6 +315,12 @@ Common scopes: `player`, `server`, `hub`, `cli`, `docs`, `api`, `db`.
 
 Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`.
 
+Git push and release rules:
+
+- Do not push branches, commits, or tags to GitHub unless the project owner explicitly requests a GitHub push in the current task.
+- Normal development happens on `develop`; feature and fix branches start from `develop` and merge back into it after verification.
+- Player beta tags must be created only after the release content has been merged into `main`, and the tag must point to the latest remote `main` commit. Never publish a beta directly from a feature, fix, develop, or release branch commit.
+
 Commit message language rule: keep the Conventional Commits `type` and optional `scope` in English, but write the short description and body in Chinese. Standard footer/trailer fields such as `Closes #123` and `Co-Authored-By: Codex Opus 4.7 <noreply@anthropic.com>` may remain in English.
 
 Example:

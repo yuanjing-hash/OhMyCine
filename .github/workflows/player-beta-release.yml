@@ -60,6 +60,7 @@ jobs:
 
           required = {
               'release job is gated to manual dispatch or tag push': "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')" in text,
+              'release commit is verified against origin/main': 'git fetch origin main --no-tags' in text and 'release_sha="$(git rev-parse HEAD)"' in text,
               'manual version reaches bash through env': manual_version_env in text,
               'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
@@ -279,6 +280,20 @@ jobs:
             echo "TAG_NAME=${tag_name}"
             echo "ASSET_PREFIX=${asset_prefix}"
           } >> "$GITHUB_ENV"
+
+      - name: Verify release commit is main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main --no-tags
+          release_sha="$(git rev-parse HEAD)"
+          main_sha="$(git rev-parse origin/main)"
+
+          if [[ "$release_sha" != "$main_sha" ]]; then
+            echo "::error::Player beta releases must use the latest commit on main. Release ${release_sha}, main ${main_sha}."
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

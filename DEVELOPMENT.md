@@ -789,12 +789,13 @@ PATCH: 向后兼容的 Bug 修复
 
 ### 7.2 发布流程
 
-1. 从 `develop` 创建 `release/x.x.x` 分支
-2. 在 release 分支上修复最后的 Bug
-3. 更新版本号和 CHANGELOG
-4. 合并到 `main` 并打 tag
-5. CI 自动构建并发布
-6. 合并回 `develop`
+1. 功能分支完成验证后先合并到 `develop`
+2. 从 `develop` 创建 `release/x.x.x` 分支
+3. 在 release 分支上修复最后的 Bug，并同步回 `develop`
+4. 更新版本号和 CHANGELOG
+5. 将 release 分支合并到 `main`
+6. 仅在 `main` 最新提交上创建并推送 tag
+7. CI 自动构建并发布
 
 ### 7.3 Player Beta 自动发版
 
@@ -808,11 +809,12 @@ v0.1.1  # 0.1 阶段第 1 个 beta
 
 推送 `v*.*.*` tag 或手动触发 `Player Beta Release` workflow 时，CI 会：
 
-1. 将 Player 的 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 临时同步为 tag 版本号
-2. 使用 Windows GNU target 构建 NSIS 安装包
-3. 从 `player/src-tauri/target/x86_64-pc-windows-gnu/release` 整理 portable zip
-4. 自动生成 GitHub Release notes
-5. 创建 GitHub prerelease，并上传安装包、portable zip 和 SHA-256 校验文件
+1. 校验发版提交与远端 `main` 最新提交完全一致；功能分支或历史提交上的 tag 会被拒绝
+2. 将 Player 的 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 临时同步为 tag 版本号
+3. 使用 Windows GNU target 构建 NSIS 安装包
+4. 从 `player/src-tauri/target/x86_64-pc-windows-gnu/release` 整理 portable zip
+5. 自动生成 GitHub Release notes
+6. 创建 GitHub prerelease，并上传安装包、portable zip 和 SHA-256 校验文件
 
 Beta Release notes 规则：
 
@@ -825,9 +827,13 @@ Beta Release notes 规则：
 示例：
 
 ```bash
-git tag v0.0.1
+git switch main
+git pull --ff-only origin main
+git tag -a v0.0.1 -m "OhMyCine Player v0.0.1 Beta"
 git push origin v0.0.1
 ```
+
+不要直接在 `feature/*`、`fix/*`、`develop` 或 `release/*` 分支提交上创建发布 tag。手动触发 Beta workflow 时也必须从 `main` 最新提交触发。
 
 当前普通 `Player CI`、`Manual Build` 和 beta release 中的 Player 包构建只验证/发布 Windows GNU。Linux/macOS Player 渲染器和打包链路完成前，不把 Linux/macOS Player 包加入 CI 阻塞项。
 
