@@ -1,5 +1,5 @@
 import type { WebDavCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest } from './types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackRequest } from './types'
 import { ofetch } from 'ofetch'
 import { createRawSourceHomeSections, getRawScannedMediaDetail, isRawScannedSyntheticId, listRawScannedChildren, loadRawSourceScanCache } from '@/services/scraper'
 import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerBasename, splitProviderPath } from '@/services/scraper/pathUtils'
@@ -206,8 +206,8 @@ export class WebDavDataSource implements DataSource {
     return this.buildWebDavUrl(path, false)
   }
 
-  async getStreamRequest(id: string): Promise<MediaStreamRequest> {
-    const url = await this.getStreamURL(id)
+  async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
+    const url = await this.getStreamURL(request.itemId)
     return {
       url,
       headers: await this.authHeaders(),

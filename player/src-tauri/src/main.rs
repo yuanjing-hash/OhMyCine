@@ -12,7 +12,8 @@ use commands::clouddrive2::{
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::emby::emby_post_playback_json;
 use commands::history::{
-    player_get_playback_progress, player_list_continue_watching, player_upsert_playback_progress,
+    player_delete_playback_history_for_source, player_get_playback_progress,
+    player_list_continue_watching, player_upsert_playback_progress,
 };
 use commands::local_file::{
     local_file_list, local_file_metadata, local_file_stream_path, local_file_watch_start,
@@ -52,6 +53,7 @@ fn main() {
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_list_continue_watching,
+            player_delete_playback_history_for_source,
             raw_scan_cache_get,
             raw_scan_cache_set,
             raw_scan_cache_delete,

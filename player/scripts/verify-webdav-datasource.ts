@@ -102,7 +102,7 @@ assert.equal(streamUrl, 'https://cloud.example.test/dav/%E5%AA%92%E4%BD%93%E5%BA
 assert.equal(streamUrl.includes('webdav-user'), false)
 assert.equal(streamUrl.includes('webdav-pass'), false)
 
-const streamRequest = await source.getStreamRequest?.('/媒体库/阿凡达.mp4')
+const streamRequest = await source.getStreamRequest?.({ itemId: '/媒体库/阿凡达.mp4' })
 assert.equal(streamRequest?.url, streamUrl)
 assert.equal(streamRequest?.headers?.Authorization, `Basic ${Buffer.from('webdav-user:webdav-pass', 'utf8').toString('base64')}`)
 

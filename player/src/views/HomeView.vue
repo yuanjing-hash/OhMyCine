@@ -152,27 +152,21 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
       return
     }
 
-    const path = source && item.sourceId !== 'placeholder'
-      ? await source.getStreamURL(item.id)
-      : item.path
-    if (!path)
-      throw new Error('播放地址不可用。')
-
     const queue = episodes.length > 0 ? createPlaybackQueue(episodes, item.id) : undefined
-    const contextId = queue
-      ? savePlaybackMediaContext({
-          sourceId: item.sourceId,
-          itemId: item.id,
-          title: continueItemTitle(item),
-          queue,
-        })
-      : undefined
+    const contextId = savePlaybackMediaContext({
+      sourceId: item.sourceId,
+      itemId: item.id,
+      title: continueItemTitle(item),
+      locator: item.sourceId === LOCAL_FILE_SOURCE_ID || item.sourceId === 'placeholder'
+        ? { kind: 'localPath', path: item.path }
+        : undefined,
+      queue,
+    })
 
     await router.push({
       name: 'player',
       query: {
         title: continueItemTitle(item),
-        path,
         sourceId: item.sourceId,
         itemId: item.id,
         libraryId: item.libraryId,

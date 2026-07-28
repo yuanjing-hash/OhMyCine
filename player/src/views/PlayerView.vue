@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -420,19 +420,38 @@ function syncActiveMediaMetadataFromRoute() {
   activeTitleLogoUrl.value = queryStringValue(route.query.titleLogoUrl)
 }
 
-async function resolvePlaybackLoadRequest(path: string): Promise<MediaStreamRequest> {
-  const sourceId = queryStringValue(route.query.sourceId)
-  const itemId = queryStringValue(route.query.itemId)
-  if (!sourceId || !itemId)
-    return { url: path }
+async function resolvePlaybackLoadRequest(): Promise<MediaStreamRequest> {
+  const context = currentPlaybackContext()
+  const sourceId = queryStringValue(route.query.sourceId) || context?.sourceId || ''
+  const itemId = queryStringValue(route.query.itemId) || context?.itemId || ''
+  const locator = context?.locator
+
+  if (locator?.kind === 'localPath' && context?.sourceId === sourceId && context.itemId === itemId)
+    return { url: locator.path }
+
+  const legacyPath = queryStringValue(route.query.path)
+  if (!sourceId || !itemId) {
+    if (legacyPath)
+      return { url: legacyPath }
+    throw new Error('缺少可解析的播放上下文。')
+  }
 
   store.loadConfigs()
   await store.syncManager()
   const source = store.getSource(sourceId)
-  if (!source?.getStreamRequest)
-    return { url: path }
+  if (!source) {
+    if (legacyPath)
+      return { url: legacyPath }
+    throw new Error('数据源不可用，请检查设置或重新登录。')
+  }
 
-  return source.getStreamRequest(itemId)
+  const request: PlaybackRequest = {
+    itemId,
+    mediaSourceId: currentMediaSourceId(),
+  }
+  return source.getStreamRequest
+    ? source.getStreamRequest(request)
+    : { url: await source.getStreamURL(request.itemId) }
 }
 
 function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity'> | null {
@@ -481,7 +500,19 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
 
 function currentMediaSourceId(): string | undefined {
   const routeMediaSourceId = queryStringValue(route.query.mediaSourceId)
-  return routeMediaSourceId || currentPlaybackContext()?.mediaSourceId || undefined
+  if (routeMediaSourceId)
+    return routeMediaSourceId
+
+  const context = currentPlaybackContext()
+  const sourceId = activeSourceId.value || queryStringValue(route.query.sourceId)
+  const itemId = activeItemId.value || queryStringValue(route.query.itemId)
+  if (!context || context.sourceId !== sourceId || context.itemId !== itemId)
+    return undefined
+
+  if (context.locator.kind === 'dataSource')
+    return context.locator.mediaSourceId ?? context.mediaSourceId
+
+  return context.mediaSourceId
 }
 
 function queryNumberValue(value: unknown): number | undefined {
@@ -865,12 +896,11 @@ async function resizeWindowForAspect(mode: VideoAspectMode) {
 }
 
 watch(
-  () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId],
-  async ([path]) => {
+  () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
+  async () => {
     await saveCurrentProgress(true, 'stopped')
-    const nextPath = typeof path === 'string' ? path : ''
     resetHistorySaveState()
-    mediaPath.value = nextPath
+    mediaPath.value = ''
     mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
     pictureSettingsError.value = null
     queueSwitchError.value = null
@@ -880,19 +910,32 @@ watch(
     closePlaybackDetailPanel(false)
     revealChrome()
 
-    if (nextPath) {
+    const context = currentPlaybackContext()
+    const hasPlaybackTarget = Boolean(
+      queryStringValue(route.query.path)
+      || (queryStringValue(route.query.sourceId) && queryStringValue(route.query.itemId))
+      || context?.locator,
+    )
+
+    if (hasPlaybackTarget) {
       await syncKnownSubtitleTracks()
       await ensureRenderInitialized()
       if (playbackCleanupStarted)
         return
-      const request = await resolvePlaybackLoadRequest(nextPath)
-      mediaPath.value = request.url
-      await load(request.url, { headers: request.headers })
-      startHistorySaveTimer()
-      await resumeSavedProgressIfAvailable()
-      syncProviderPlaybackStarted()
-      if (playbackCleanupStarted)
-        await stopPlaybackSilently()
+      try {
+        const request = await resolvePlaybackLoadRequest()
+        mediaPath.value = request.url
+        await load(request.url, { headers: request.headers })
+        startHistorySaveTimer()
+        await resumeSavedProgressIfAvailable()
+        syncProviderPlaybackStarted()
+        if (playbackCleanupStarted)
+          await stopPlaybackSilently()
+      }
+      catch (error) {
+        mediaPath.value = ''
+        queueSwitchError.value = toSafeErrorMessage(error, '无法解析播放地址。')
+      }
     }
     else {
       setKnownSubtitleTracks([])
@@ -962,7 +1005,6 @@ async function playQueueItemAt(index: number) {
     if (!source)
       throw new Error('数据源不可用，请检查设置或重新登录。')
 
-    const streamUrl = await source.getStreamURL(target.id)
     if (playbackCleanupStarted)
       return
 
@@ -973,9 +1015,7 @@ async function playQueueItemAt(index: number) {
     await router.replace({
       name: 'player',
       query: {
-        ...route.query,
         title: target.title,
-        path: streamUrl,
         sourceId: target.sourceId,
         itemId: target.id,
         libraryId: target.libraryId,

@@ -1,5 +1,5 @@
 import type { CloudDrive2CredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest } from './types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackRequest } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { createRawSourceHomeSections, getRawScannedMediaDetail, isRawScannedSyntheticId, listRawScannedChildren, loadRawSourceScanCache } from '@/services/scraper'
 import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerBasename } from '@/services/scraper/pathUtils'
@@ -198,10 +198,11 @@ export class CloudDrive2DataSource implements DataSource {
   }
 
   async getStreamURL(id: string): Promise<string> {
-    return (await this.getStreamRequest(id)).url
+    return (await this.getStreamRequest({ itemId: id })).url
   }
 
-  async getStreamRequest(id: string): Promise<MediaStreamRequest> {
+  async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
+    const id = request.itemId
     if (isRawScannedSyntheticId(id))
       throw new Error('CloudDrive2 剧集合集不能直接播放，请选择具体分集。')
     const path = this.resolveLibraryPath(id)

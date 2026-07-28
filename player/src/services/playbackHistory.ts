@@ -79,6 +79,20 @@ export async function listLocalContinueWatching(limit = 20): Promise<PlaybackHis
   }
 }
 
+export async function deletePlaybackHistoryForSource(sourceId: string): Promise<boolean> {
+  const normalizedSourceId = sourceId.trim()
+  if (!normalizedSourceId)
+    return false
+
+  try {
+    await invoke<number>('player_delete_playback_history_for_source', { sourceId: normalizedSourceId })
+    return true
+  }
+  catch {
+    return false
+  }
+}
+
 export function shouldResumePlayback(entry: PlaybackHistoryEntry | null | undefined): entry is PlaybackHistoryEntry {
   if (!entry || entry.completed || !Number.isFinite(entry.position))
     return false

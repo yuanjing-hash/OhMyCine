@@ -99,6 +99,16 @@ pub fn player_list_continue_watching(
     )
 }
 
+#[tauri::command]
+pub fn player_delete_playback_history_for_source(
+    app: AppHandle,
+    source_id: String,
+) -> Result<u64, String> {
+    let source_id = normalize_id(source_id, "Invalid playback source.")?;
+    let storage = PlaybackHistoryStorage::open(&app)?;
+    storage.delete_for_source(&source_id)
+}
+
 struct PlaybackHistoryStorage {
     conn: Connection,
 }
@@ -128,36 +138,20 @@ impl PlaybackHistoryStorage {
         let db_path = dir.join(DATABASE_FILE);
         let conn = Connection::open(db_path)
             .map_err(|_| "Failed to open playback history database.".to_string())?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS playback_history (
-                identity_key TEXT PRIMARY KEY NOT NULL,
-                source_id TEXT NOT NULL,
-                library_id TEXT,
-                item_id TEXT,
-                media_identity TEXT NOT NULL,
-                title TEXT NOT NULL,
-                stream_identity TEXT,
-                media_type TEXT,
-                poster_url TEXT,
-                backdrop_url TEXT,
-                title_logo_url TEXT,
-                position REAL NOT NULL,
-                duration REAL,
-                completed INTEGER NOT NULL DEFAULT 0,
-                progress_source TEXT NOT NULL DEFAULT 'local',
-                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE INDEX IF NOT EXISTS idx_playback_history_continue
-                ON playback_history (completed, updated_at DESC);",
-        )
-        .map_err(|_| "Failed to initialize playback history database.".to_string())?;
-        let _ = conn.execute(
-            "ALTER TABLE playback_history ADD COLUMN title_logo_url TEXT",
-            params![],
-        );
+        initialize_schema(&conn)?;
 
         Ok(Self { conn })
+    }
+
+    fn delete_for_source(&self, source_id: &str) -> Result<u64, String> {
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM playback_history WHERE source_id = ?1",
+                params![source_id],
+            )
+            .map_err(|_| "Failed to delete playback history for source.".to_string())?;
+        Ok(deleted as u64)
     }
 
     fn upsert(&self, progress: &NormalizedProgress) -> Result<(), String> {
@@ -255,6 +249,40 @@ impl PlaybackHistoryStorage {
 
         Ok(entries)
     }
+}
+
+fn initialize_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS playback_history (
+            identity_key TEXT PRIMARY KEY NOT NULL,
+            source_id TEXT NOT NULL,
+            library_id TEXT,
+            item_id TEXT,
+            media_identity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            stream_identity TEXT,
+            media_type TEXT,
+            poster_url TEXT,
+            backdrop_url TEXT,
+            title_logo_url TEXT,
+            position REAL NOT NULL,
+            duration REAL,
+            completed INTEGER NOT NULL DEFAULT 0,
+            progress_source TEXT NOT NULL DEFAULT 'local',
+            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_playback_history_continue
+            ON playback_history (completed, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_playback_history_source
+            ON playback_history (source_id);",
+    )
+    .map_err(|_| "Failed to initialize playback history database.".to_string())?;
+    let _ = conn.execute(
+        "ALTER TABLE playback_history ADD COLUMN title_logo_url TEXT",
+        params![],
+    );
+    Ok(())
 }
 
 impl NormalizedProgress {
@@ -546,4 +574,66 @@ fn redact_query_value(value: &str, key: &str) -> String {
 
     output.push_str(&value[index..]);
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        initialize_schema, NormalizedProgress, PlaybackHistoryStorage, PlaybackProgressIdentity,
+    };
+    use rusqlite::Connection;
+
+    #[test]
+    fn deleting_source_history_does_not_touch_other_sources() {
+        let conn = Connection::open_in_memory().expect("open playback history test database");
+        initialize_schema(&conn).expect("initialize playback history schema");
+        let storage = PlaybackHistoryStorage { conn };
+
+        storage
+            .upsert(&progress("source-a", "movie-1"))
+            .expect("insert source a history");
+        storage
+            .upsert(&progress("source-b", "movie-2"))
+            .expect("insert source b history");
+
+        assert_eq!(
+            storage
+                .delete_for_source("source-a")
+                .expect("delete source a history"),
+            1
+        );
+        assert!(storage
+            .get(&identity("source-a", "movie-1"))
+            .expect("query source a")
+            .is_none());
+        assert!(storage
+            .get(&identity("source-b", "movie-2"))
+            .expect("query source b")
+            .is_some());
+    }
+
+    fn identity(source_id: &str, media_identity: &str) -> PlaybackProgressIdentity {
+        PlaybackProgressIdentity {
+            source_id: source_id.to_string(),
+            media_identity: media_identity.to_string(),
+        }
+    }
+
+    fn progress(source_id: &str, media_identity: &str) -> NormalizedProgress {
+        NormalizedProgress {
+            source_id: source_id.to_string(),
+            library_id: None,
+            item_id: Some(media_identity.to_string()),
+            media_identity: media_identity.to_string(),
+            title: media_identity.to_string(),
+            stream_identity: None,
+            media_type: Some("movie".to_string()),
+            poster_url: None,
+            backdrop_url: None,
+            title_logo_url: None,
+            position: 120.0,
+            duration: Some(3600.0),
+            completed: false,
+        }
+    }
 }

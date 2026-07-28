@@ -103,6 +103,8 @@ await store.loadHomeSections()
 
 Use Vue Router for route identity: current view, selected source ID, selected media ID, search query where appropriate.
 
+Playback routes may contain only media identity and non-sensitive selection state: `sourceId`, `itemId`, optional `mediaSourceId`, and a short-lived in-memory `contextId`. Resolved stream URLs, signed URLs, request headers, and local absolute paths must not enter route query/history. `PlayerView` is the single resolution boundary and calls `getStreamRequest({ itemId, mediaSourceId })` immediately before loading mpv; local file paths required by file drop or continue-watching live only in the process-local playback context.
+
 ---
 
 ## DataSource Configuration
@@ -136,7 +138,7 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 - Browser/Vite-only fallback may keep credentials in memory only and must show/carry a limitation state when persistence is unavailable.
 - If config save or post-login validation fails after writing a credential, remove the newly written credential or restore the full previous structured credential for existing sources.
 - If a stored source is missing its credential after restart, show a reconnect/re-enter-token state instead of treating the source as deleted or connected.
-- Removing a source must delete the persistent SQLite credential row and any in-memory fallback for that `credentialRef`.
+- Removing a source must delete the persistent SQLite credential row and any in-memory fallback for that `credentialRef`, delete local playback history by exact `sourceId`, and clear source-scoped raw scan cache without affecting another source.
 - Persistence sanitization must reconstruct safe config fields and drop sensitive `extra` keys before writing config to localStorage.
 - Export/sync includes source structure by default, not the secret value.
 - DataSource metadata caches may keep mapped or raw provider metadata in memory for faster repeat navigation, but must not persist or cache credentials, passwords, access tokens, raw stream URLs, or tokenized playback URLs.
@@ -155,7 +157,7 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 | App runs in browser/Vite without Tauri commands | Use memory fallback only and show a persistence limitation warning |
 | Source is disabled | Do not initialize it or allow browsing/playback until re-enabled |
 | User clicks clear cache for a source | Clear only source-scoped metadata cache; keep config and credentials intact |
-| Source is removed | Delete persistent SQLite credential row, memory fallback, and source-scoped metadata cache |
+| Source is removed | Delete persistent SQLite credential row, memory fallback, source-scoped playback history, and raw scan/metadata cache; keep other sources intact |
 | Legacy plaintext credential file fallback exists | Remove it; credential reads/writes/deletes must use SQLite boundary only |
 | Config includes sensitive top-level or `extra` keys | Drop them before persistence/export |
 | Export config is requested | Redact or omit credential values |
