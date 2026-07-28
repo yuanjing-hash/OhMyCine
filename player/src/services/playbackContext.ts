@@ -22,10 +22,23 @@ export interface PlaybackQueueState {
   currentIndex: number
 }
 
+export type PlaybackLocator
+  = | {
+    kind: 'dataSource'
+    sourceId: string
+    itemId: string
+    mediaSourceId?: string
+  }
+  | {
+    kind: 'localPath'
+    path: string
+  }
+
 export interface PlaybackMediaContext {
   id: string
   sourceId: string
   itemId: string
+  locator: PlaybackLocator
   title?: string
   mediaSourceId?: string
   subtitles: SubtitleTrack[]
@@ -38,6 +51,7 @@ export interface PlaybackMediaContext {
 export interface PlaybackMediaContextInput {
   sourceId: string
   itemId: string
+  locator?: PlaybackLocator
   title?: string
   mediaSourceId?: string
   subtitles?: readonly SubtitleTrack[]
@@ -78,6 +92,12 @@ export function savePlaybackMediaContext(input: PlaybackMediaContextInput): stri
     id,
     sourceId: input.sourceId,
     itemId: input.itemId,
+    locator: clonePlaybackLocator(input.locator ?? {
+      kind: 'dataSource',
+      sourceId: input.sourceId,
+      itemId: input.itemId,
+      mediaSourceId: input.mediaSourceId,
+    }),
     title: input.title,
     mediaSourceId: input.mediaSourceId,
     subtitles: (input.subtitles ?? []).map(track => ({ ...track })),
@@ -88,6 +108,12 @@ export function savePlaybackMediaContext(input: PlaybackMediaContextInput): stri
   })
   trimOldContexts()
   return id
+}
+
+function clonePlaybackLocator(locator: PlaybackLocator): PlaybackLocator {
+  return locator.kind === 'localPath'
+    ? { kind: 'localPath', path: locator.path }
+    : { ...locator }
 }
 
 function cloneMediaDetail(detail: MediaDetail): MediaDetail {

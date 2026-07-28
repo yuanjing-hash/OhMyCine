@@ -193,6 +193,8 @@ CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类�
 - `clouddrive2` 保存用户在 CloudDrive2 中创建的应用 API Token，通过 Tauri Rust gRPC 客户端以 Bearer metadata 瞬时使用；不保存 CloudDrive2 主账号密码。
 - `webdav` 保存独立 WebDAV 用户名和密码，通过 Basic Auth 瞬时使用；账号密码禁止嵌入 URL。
 - 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
+- Vue Router 只保存 `sourceId`、`itemId`、可选媒体版本 ID 和短生命周期上下文 ID；远程播放 URL、签名参数、播放 header 与本地绝对路径不得进入 route query/history。PlayerView 只在调用 mpv 前即时解析播放请求。
+- 删除媒体源时，必须按精确 `sourceId` 删除该来源的本机播放历史，并按 source/root 清理原始文件扫描缓存；禁止使用空来源或不受约束的批量删除。
 
 示例：
 

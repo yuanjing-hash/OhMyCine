@@ -177,7 +177,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 定义 `SubtitleTrack`, `AudioTrack` 接口
 - [~] 定义 `DataSourceType` 类型枚举
 - [~] 定义 `DataSourceConfig` 接口 (id, type, name, displayName, iconUrl, order, credentials...)
-- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL, optional getStreamRequest / syncPlaybackProgress；Jellyfin 等实现待补齐)
+- [~] 定义 `DataSource` 接口 (init, test, destroy, list, listLibraries, getHomeSections, getFeaturedItems, getContinueWatching, getRecentlyAdded, search, getDetail, getStreamURL, optional `getStreamRequest({ itemId, mediaSourceId })` / syncPlaybackProgress；播放路由只保存媒体身份，Jellyfin 等实现待补齐)
 
 #### DataSourceManager 实现
 
@@ -205,6 +205,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 实现 `EmbyDataSource` (implements DataSource)
 - [x] `mapEmbyItem()` — Emby 数据映射到 MediaItem
 - [x] Emby 播放进度同步 — 通过 PlaybackInfo + Sessions/Playing/Progress/Stopped 将 active session、继续观看和播放历史同步回 Emby；本机 SQLite 历史保持 primary，provider sync best-effort
+- [x] Emby 多版本播放 — 详情页选择的 `mediaSourceId` 参与即时播放请求解析，并沿用到对应播放进度会话；失效版本不再静默回退到首个版本
 
 #### JellyfinDataSource 实现
 
@@ -293,7 +294,7 @@ Phase 4: 生态系统           ████████████████
 #### 原始文件源本地刮削与海报墙
 
 - [~] 通用刮削分类规则配置（默认实例来自 MP 风格思路，但用户通过受控设置页编辑；分类只作为本地逻辑分组，不要求固定 `movie` / `tv` / `Movies` / `TV` 顶层目录，不写回 OpenList/Alist）
-- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；Emby/Jellyfin 不进入 Player 原始文件扫描调度；图片二进制缓存待后续）
+- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；WebDAV 已纳入 Tauri SQLite raw scan cache 白名单；Emby/Jellyfin 不进入 Player 原始文件扫描调度；图片二进制缓存待后续）
 - [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具并接入递归扫描；首次进入无缓存媒体库时显示索引进度/状态，不再用空媒体库误导）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
 - [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；无年份自动匹配优先精确标题，避免基础片名被包含匹配/热度误导到续集；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
@@ -305,6 +306,8 @@ Phase 4: 生态系统           ████████████████
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
 - [x] 播放队列面板（已内联在播放控制条并支持上一集/下一集；后续如需复用再拆独立 `PlaylistPanel.vue`）
 - [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）
+- [x] 媒体源删除生命周期（删除配置后按 `sourceId` 清理本机播放历史，并按 source/root 清理原始文件扫描缓存，不影响其他来源）
+- [x] 安全播放上下文（Home、详情页、数据源页和队列只把媒体身份写入路由，播放 URL/header 与本地绝对路径仅在 PlayerView 即时解析或短生命周期内存中使用）
 - [x] 继续观看功能（本机历史 + provider 原生继续观看聚合，Emby 进度同步后首页刷新）
 - [x] 右键播放菜单 + 播放详情 stats 浮层（紧凑用户菜单、播放详情浮层、HDR/SDR/杜比视界动态范围展示；诊断入口不暴露给普通用户）
 

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"检查播放请求接口与各数据源实现一致。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查 lint、typecheck、build 和回归验证。"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"检查删除命令输入校验、作用域和 SQLite 行为。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查路由到 mpv、设置删除到历史数据库的跨层闭环。"}
+{"file":"docs/architecture/07-security-design.md","reason":"确认播放 URL、header 与本地路径未进入持久化边界。"}

@@ -77,7 +77,7 @@ const detail = await source.getDetail('/媒体库/电影/流浪地球.mkv')
 assert.equal(detail.mediaSources?.[0]?.container, 'mkv')
 assert.equal(detail.mediaSources?.[0]?.name, 'CloudDrive2 原生直链')
 
-const streamRequest = await source.getStreamRequest?.('/媒体库/电影/流浪地球.mkv')
+const streamRequest = await source.getStreamRequest?.({ itemId: '/媒体库/电影/流浪地球.mkv' })
 assert.equal(streamRequest?.url, 'https://cdn.example.test/video.mkv?signature=temporary')
 assert.deepEqual(streamRequest?.headers, {
   Referer: 'https://provider.example.test/',

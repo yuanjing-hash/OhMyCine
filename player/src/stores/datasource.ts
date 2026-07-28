@@ -1,10 +1,12 @@
 import type { DataSource, DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
+import type { RawFileSourceType } from '@/services/scraper/types'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
-import { listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { deletePlaybackHistoryForSource, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 
 const STORAGE_KEY = 'ohmycine-datasources'
 
@@ -110,12 +112,34 @@ export const useDataSourceStore = defineStore('datasource', () => {
   async function removeConfig(id: string) {
     const config = configs.value.find(c => c.id === id)
     const credentialRef = typeof config?.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
-    if (credentialRef)
-      await removeCredential(credentialRef)
     dataSourceManager.removeSource(id)
     configs.value = configs.value.filter(c => c.id !== id)
     configs.value.forEach((c, i) => c.order = i)
     saveConfigs()
+    homeLoadId++
+    isLoading.value = false
+    if (activeSourceId.value === id)
+      activeSourceId.value = null
+    homeSections.value = homeSections.value
+      .filter(section => section.sourceId !== id)
+      .map(section => ({
+        ...section,
+        items: section.items.filter(item => item.sourceId !== id),
+      }))
+      .filter(section => section.items.length > 0)
+
+    const cleanupTasks: Promise<unknown>[] = [deletePlaybackHistoryForSource(id)]
+    if (config && isRawFileSourceType(config.type)) {
+      cleanupTasks.push(clearRawSourceScanCache(
+        id,
+        config.type,
+        config.type === 'local' ? '/' : readConfiguredRootPath(config),
+      ))
+    }
+    if (credentialRef)
+      cleanupTasks.push(removeCredential(credentialRef))
+
+    await Promise.allSettled(cleanupTasks)
   }
 
   async function clearSourceCache(id: string) {
@@ -228,6 +252,17 @@ export const useDataSourceStore = defineStore('datasource', () => {
     syncManager,
   }
 })
+
+const RAW_FILE_SOURCE_TYPES = new Set<RawFileSourceType>(['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'])
+
+function isRawFileSourceType(type: DataSourceConfig['type']): type is RawFileSourceType {
+  return RAW_FILE_SOURCE_TYPES.has(type as RawFileSourceType)
+}
+
+function readConfiguredRootPath(config: DataSourceConfig): string {
+  const rootPath = typeof config.extra?.rootPath === 'string' ? config.extra.rootPath.trim() : ''
+  return rootPath || '/'
+}
 
 function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[]): HomeSection {
   const providerItems = sections.filter(section => section.type === 'continueWatching').flatMap(section => section.items)

@@ -310,11 +310,16 @@ export interface DataSource {
 
   // 播放
   getStreamURL(id: string): Promise<string>
+  getStreamRequest?(request: PlaybackRequest): Promise<MediaStreamRequest>
 
   // 配置导出（用于同步给Server）
   exportConfig(): DataSourceConfig
 }
 ```
+
+播放导航只携带 `sourceId`、`itemId`、可选 `mediaSourceId` 和短生命周期 `contextId`。Home、详情页、数据源媒体库和播放队列不得在 Vue Router query/history 中保存远程直链、签名 URL、认证 header 或本地绝对路径；`PlayerView` 在即将调用 mpv 时通过 `getStreamRequest({ itemId, mediaSourceId })` 即时解析播放请求。文件拖放和本机继续观看所需的绝对路径只进入当前进程内存中的 `PlaybackMediaContext.locator`，不持久化。Emby 多版本选择必须把选中的 `mediaSourceId` 传到流解析和后续进度同步会话，版本已失效时明确要求用户重新选择。
+
+删除媒体源时，配置删除是主操作，同时按 `sourceId` 清理本机 SQLite 播放历史，并按 source/root 清理原始文件扫描缓存；清理范围不得影响其他媒体源。凭据、历史或缓存清理失败不应把已经删除的数据源重新加入 UI。
 
 ### 4.3 Emby/Jellyfin DataSource 实现
 
@@ -1742,6 +1747,8 @@ export const useSettingsStore = defineStore('settings', () => {
 - 不同数据源的页面结构统一，具体能力由 DataSource 接口返回值决定。
 
 #### 播放器页面 (PlayerView)
+
+PlayerView 是播放 URL 与 header 的唯一解析边界：路由先提供媒体身份，PlayerView 再从内存播放上下文恢复本地路径或调用对应 DataSource 获取瞬时 `MediaStreamRequest`，随后直接交给 mpv。队列切换同样只更新媒体身份，不把已解析 URL 回写路由。
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
