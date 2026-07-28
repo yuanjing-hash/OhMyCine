@@ -177,7 +177,7 @@ fn validate_source_type(value: &str) -> Result<(), String> {
     }
 
     match value {
-        "alist" | "clouddrive2" | "local" | "115" | "123" | "quark" => Ok(()),
+        "alist" | "clouddrive2" | "webdav" | "local" | "115" | "123" | "quark" => Ok(()),
         _ => Err("Unsupported raw scan cache source type.".to_string()),
     }
 }
@@ -194,4 +194,24 @@ fn validate_payload(value: &str) -> Result<(), String> {
         return Err("Invalid raw scan cache payload.".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_source_type;
+
+    #[test]
+    fn accepts_all_frontend_raw_source_types() {
+        for source_type in [
+            "alist",
+            "clouddrive2",
+            "webdav",
+            "local",
+            "115",
+            "123",
+            "quark",
+        ] {
+            assert!(validate_source_type(source_type).is_ok(), "{source_type}");
+        }
+    }
 }

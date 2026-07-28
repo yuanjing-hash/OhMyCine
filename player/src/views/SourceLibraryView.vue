@@ -689,7 +689,6 @@ async function handlePlay(item: MediaItem) {
   isLoading.value = true
   errorMessage.value = null
   try {
-    const streamUrl = await source.value.getStreamURL(item.id)
     const queue = createPlaybackQueue(currentQueueItems(), item.id)
     const playbackContextId = savePlaybackMediaContext({
       sourceId: sourceId.value,
@@ -701,7 +700,6 @@ async function handlePlay(item: MediaItem) {
       name: 'player',
       query: {
         title: item.name,
-        path: streamUrl,
         sourceId: sourceId.value,
         itemId: item.id,
         libraryId: item.libraryId,

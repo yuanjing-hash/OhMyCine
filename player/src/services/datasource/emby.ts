@@ -7,6 +7,8 @@ import type {
   MediaItem,
   MediaLibrary,
   MediaSourceOption,
+  MediaStreamRequest,
+  PlaybackRequest,
   ProviderPlaybackProgressInput,
   ProviderPlaybackSyncDiagnostic,
   SubtitleTrack,
@@ -435,32 +437,47 @@ export class EmbyDataSource implements DataSource {
   }
 
   async getStreamURL(id: string): Promise<string> {
+    return (await this.getStreamRequest({ itemId: id })).url
+  }
+
+  async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
     this.ensureConfigured()
+    const id = request.itemId.trim()
+    if (!id)
+      throw new Error('缺少可播放的 Emby 媒体条目。')
+
     const item = await this.getItem(id)
     const mediaSources = await this.getPlayableMediaSources(id, item)
     if (mediaSources.length === 0)
       throw new Error('Emby 未返回可播放的媒体源。')
 
-    const embyPlaybackSource = mediaSources.find(source => Boolean(this.resolveMediaSourceUrl(source, false)))
+    const requestedMediaSourceId = request.mediaSourceId?.trim()
+    const playableSources = requestedMediaSourceId
+      ? mediaSources.filter(source => source.Id === requestedMediaSourceId)
+      : mediaSources
+    if (requestedMediaSourceId && playableSources.length === 0)
+      throw new Error('所选 Emby 媒体版本已不可用，请返回详情页重新选择。')
+
+    const embyPlaybackSource = playableSources.find(source => Boolean(this.resolveMediaSourceUrl(source, false)))
     if (embyPlaybackSource) {
       this.rememberPlaybackSession(id, embyPlaybackSource.Id)
       const resolvedUrl = this.resolveMediaSourceUrl(embyPlaybackSource, false)
       if (resolvedUrl)
-        return resolvedUrl
+        return { url: resolvedUrl }
     }
 
-    const staticStreamSource = mediaSources.find(source => typeof source.Id === 'string') ?? mediaSources[0]
+    const staticStreamSource = playableSources.find(source => typeof source.Id === 'string') ?? playableSources[0]
     if (staticStreamSource) {
       this.rememberPlaybackSession(id, staticStreamSource.Id)
-      return this.buildStaticStreamUrl(id, staticStreamSource.Id)
+      return { url: this.buildStaticStreamUrl(id, staticStreamSource.Id) }
     }
 
-    const remotePlaybackSource = mediaSources.find(source => Boolean(this.resolveMediaSourceUrl(source, true)))
+    const remotePlaybackSource = playableSources.find(source => Boolean(this.resolveMediaSourceUrl(source, true)))
     if (remotePlaybackSource) {
       this.rememberPlaybackSession(id, remotePlaybackSource.Id)
       const resolvedUrl = this.resolveMediaSourceUrl(remotePlaybackSource, true)
       if (resolvedUrl)
-        return resolvedUrl
+        return { url: resolvedUrl }
     }
 
     throw new Error('Emby 未暴露可由 Player 直接播放的流地址。请检查该条目的播放权限或 Emby/插件直链配置。')

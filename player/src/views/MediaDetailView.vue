@@ -518,8 +518,7 @@ async function playItem(item?: MediaItem) {
   isPlaying.value = true
   errorMessage.value = null
   try {
-    const source = await resolveSource()
-    const path = await source.getStreamURL(target.id)
+    await resolveSource()
     const isCurrentDetail = target.id === detail.value?.id
     const queue = (item ? createPlaybackQueue(episodes.value, item.id) : undefined) ?? recoverRoutePlaybackQueue(target.id)
     const playbackContextId = savePlaybackMediaContext({
@@ -527,6 +526,12 @@ async function playItem(item?: MediaItem) {
       itemId: target.id,
       title: target.name,
       mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
+      locator: {
+        kind: 'dataSource',
+        sourceId: sourceId.value,
+        itemId: target.id,
+        mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
+      },
       subtitles: isCurrentDetail ? detail.value?.subtitles : undefined,
       audioTracks: isCurrentDetail ? detail.value?.audioTracks : undefined,
       queue,
@@ -535,7 +540,6 @@ async function playItem(item?: MediaItem) {
       name: 'player',
       query: {
         title: target.name,
-        path,
         sourceId: sourceId.value,
         itemId: target.id,
         libraryId: target.libraryId,
