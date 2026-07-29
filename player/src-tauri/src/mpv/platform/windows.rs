@@ -658,12 +658,7 @@ fn resolve_log_path(window: &tauri::Window) -> Option<std::path::PathBuf> {
     use tauri::Manager;
 
     let app = window.app_handle();
-    let path_api = app.path();
-
-    let base = path_api
-        .app_log_dir()
-        .or_else(|_| path_api.app_config_dir())
-        .ok()?;
+    let base = crate::storage::initialize(app).ok()?.log_dir;
 
     if std::fs::create_dir_all(&base).is_err() {
         return None;

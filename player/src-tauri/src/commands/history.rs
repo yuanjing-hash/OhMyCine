@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+
+use crate::storage;
 
 const DATABASE_FILE: &str = "playback_history.sqlite";
 const MIN_RESUME_POSITION_SECONDS: f64 = 30.0;
@@ -131,11 +131,7 @@ struct NormalizedProgress {
 
 impl PlaybackHistoryStorage {
     fn open(app: &AppHandle) -> Result<Self, String> {
-        let dir = history_dir(app)?;
-        fs::create_dir_all(&dir)
-            .map_err(|_| "Failed to prepare playback history storage.".to_string())?;
-
-        let db_path = dir.join(DATABASE_FILE);
+        let db_path = storage::data_file(app, DATABASE_FILE)?;
         let conn = Connection::open(db_path)
             .map_err(|_| "Failed to open playback history database.".to_string())?;
         initialize_schema(&conn)?;
@@ -346,15 +342,6 @@ fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybackHistor
         completed: row.get::<_, i64>(13)? != 0,
         progress_source: row.get(14)?,
     })
-}
-
-fn history_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let mut dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Failed to resolve app data directory.".to_string())?;
-    dir.push("history");
-    Ok(dir)
 }
 
 fn identity_key(source_id: &str, media_identity: &str) -> String {

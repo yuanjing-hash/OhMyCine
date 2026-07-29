@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+
+use crate::storage;
 
 const DATABASE_FILE: &str = "player_preferences.sqlite";
 const PLAYBACK_SPEED_KEY: &str = "playback_speed";
@@ -41,11 +41,7 @@ struct PreferenceStorage {
 
 impl PreferenceStorage {
     fn open(app: &AppHandle) -> Result<Self, String> {
-        let dir = preference_dir(app)?;
-        fs::create_dir_all(&dir)
-            .map_err(|_| "Failed to prepare player preferences.".to_string())?;
-
-        let db_path = dir.join(DATABASE_FILE);
+        let db_path = storage::data_file(app, DATABASE_FILE)?;
         let conn = Connection::open(db_path)
             .map_err(|_| "Failed to open player preferences.".to_string())?;
         conn.execute_batch(
@@ -93,15 +89,6 @@ impl PreferenceStorage {
             .map_err(|_| "Failed to save player preferences.".to_string())?;
         Ok(())
     }
-}
-
-fn preference_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let mut dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Failed to resolve app data directory.".to_string())?;
-    dir.push("preferences");
-    Ok(dir)
 }
 
 fn validate_playback_speed(speed: f64) -> Result<(), String> {
