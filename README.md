@@ -51,8 +51,8 @@ OhMyCine
 - **OpenList/Alist、CloudDrive2 与 WebDAV 数据源**：OpenList/Alist 使用原生 HTTP API 账号登录；CloudDrive2 使用官方 gRPC API 与用户创建的 API Token；通用 WebDAV 使用独立 URL 与 Basic Auth。三者都支持只读根目录选择、目录浏览、搜索和云端播放。
 - **本地只读刮削与海报墙**：OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹选中根目录后可在 Player 本地扫描，生成媒体库分类、作品海报墙、未识别兜底和扫描日志，不重命名、不移动、不写回远端。
 - **TMDB 元数据增强**：可选 TMDB token/key，支持电影/剧集匹配、海报/背景/标题 Logo、剧集分季分集图文和受控分类规则。
-- **数据源设置与凭据边界**：设置页支持数据源管理、刮削与分类配置；账号、密码和 token 通过 Tauri app data 下的凭据边界保存，普通配置只保留非敏感引用。
-- **Windows 桌面打包链路**：已接入 libmpv 依赖准备、Windows GNU 交叉打包脚本和 NSIS 安装器生成；Windows 实机播放/签名仍需在 Windows 宿主验证。
+- **统一存储与便携模式**：Windows 默认把配置、历史、扫描索引和凭据数据库放在 `%LOCALAPPDATA%/com.ohmycine.player/data`；portable ZIP 通过 `portable.flag` 把 Player 自有 data/cache/logs 放在 EXE 同目录。非敏感配置进入 SQLite，标准模式凭据主密钥由 Windows DPAPI 保护。
+- **Windows 桌面打包链路**：每个 Beta 同时发布 NSIS 安装包、使用普通用户数据目录的标准免安装 ZIP，以及数据跟随程序目录的 portable ZIP；已接入 libmpv 依赖准备和 Windows GNU 交叉构建，Windows 实机播放/签名仍需在 Windows 宿主验证。
 
 ## Player 运行截图
 

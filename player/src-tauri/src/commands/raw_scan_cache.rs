@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+
+use crate::storage;
 
 const DATABASE_FILE: &str = "raw_scan_cache.sqlite";
 const MAX_SOURCE_ID_LENGTH: usize = 512;
@@ -73,11 +73,7 @@ impl RawScanCacheIdentity {
 
 impl RawScanCacheStorage {
     fn open(app: &AppHandle) -> Result<Self, String> {
-        let dir = raw_scan_cache_dir(app)?;
-        fs::create_dir_all(&dir)
-            .map_err(|_| "Failed to prepare raw scan cache storage.".to_string())?;
-
-        let db_path = dir.join(DATABASE_FILE);
+        let db_path = storage::data_file(app, DATABASE_FILE)?;
         let conn =
             Connection::open(db_path).map_err(|_| "Failed to open raw scan cache.".to_string())?;
         conn.execute_batch(
@@ -143,15 +139,6 @@ impl RawScanCacheStorage {
             .map_err(|_| "Failed to delete raw scan cache.".to_string())?;
         Ok(())
     }
-}
-
-fn raw_scan_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let mut dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Failed to resolve app data directory.".to_string())?;
-    dir.push("scraper");
-    Ok(dir)
 }
 
 fn cache_key(identity: &RawScanCacheIdentity) -> String {

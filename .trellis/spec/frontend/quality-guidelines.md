@@ -80,7 +80,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 ### 1. Scope / Trigger
 
 - Trigger: Any GitHub Actions or packaging change that publishes OhMyCine Player beta assets.
-- Scope: Windows GNU target beta releases that produce a GitHub prerelease, release notes, a Windows installer, and a portable zip.
+- Scope: Windows GNU target beta releases that produce a GitHub prerelease, release notes, a Windows installer, a standard zip, and a portable zip.
 
 ### 2. Signatures
 
@@ -99,16 +99,19 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 - Release notes generation must not print secrets, tokens, signed URLs, or GitHub Actions environment dumps. It may use commit subjects and the explicit manual notes input only.
 - Release assets must include:
   - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-setup.exe`
+  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-standard.zip`
   - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-portable.zip`
   - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64.sha256`
-- Portable zip must be curated from the release directory. Include only Windows runtime files such as `ohmycine-player.exe`, `WebView2Loader.dll`, `libmpv-wrapper.dll`, `libmpv-2.dll`, and license text.
-- Do not copy the whole `target/.../release` directory or the whole `target/.../release/lib` directory into the portable zip. Those folders can contain build intermediates or cross-platform resources unrelated to Windows runtime.
+- Standard and portable zips must be curated from the release directory. Include only Windows runtime files such as `ohmycine-player.exe`, `WebView2Loader.dll`, `libmpv-wrapper.dll`, `libmpv-2.dll`, and license text.
+- Standard zip must not contain `portable.flag`, `data`, `cache`, or `logs`; it uses the normal LocalAppData profile.
+- Portable zip must contain `portable.flag` but must not ship pre-created `data`, `cache`, or `logs`; its first launch creates an empty EXE-adjacent profile.
+- Do not copy the whole `target/.../release` directory or the whole `target/.../release/lib` directory into either zip. Those folders can contain build intermediates or cross-platform resources unrelated to Windows runtime.
 
 ### 4. Validation & Error Matrix
 
 - Invalid version format -> fail before install/build steps.
 - Missing `bundle/nsis/*setup.exe` -> fail packaging.
-- Missing `ohmycine-player.exe` or required Windows DLL -> fail portable packaging.
+- Missing `ohmycine-player.exe` or required Windows DLL -> fail standard and portable packaging.
 - Existing GitHub prerelease for the same tag -> upload assets with clobber/update behavior rather than deleting the tag.
 - No previous release tag -> generate notes from initial commit through the current release commit.
 - Manual dispatch includes `release_notes` -> append them under `Extra Notes` after the generated commit groups.
@@ -116,7 +119,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `v0.0.1` creates a prerelease with installer, portable zip, and checksum using the Windows GNU release directory.
+- Good: `v0.0.1` creates a prerelease with installer, standard zip, portable zip, and checksum using the Windows GNU release directory.
 - Good: `v0.0.2` release notes use `v0.0.1..v0.0.2`, group commit subjects by type, preserve scopes, and append manual notes only for `workflow_dispatch`.
 - Base: manual `workflow_dispatch` with `version=v0.0.2` creates the tag/release at the workflow commit.
 - Bad: zip contains `deps/`, `.fingerprint/`, `incremental/`, Linux `.so`, or macOS `.dylib` files.
@@ -141,7 +144,12 @@ zip -r player-portable.zip player/src-tauri/target/x86_64-pc-windows-gnu/release
 #### Correct
 
 ```bash
-cp ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll portable/
+for file in ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll; do
+  cp "$file" standard/
+  cp "$file" portable/
+done
+touch portable/portable.flag
+zip -r OhMyCine-Player-v0.0.1-windows-x64-standard.zip standard/
 zip -r OhMyCine-Player-v0.0.1-windows-x64-portable.zip portable/
 ```
 

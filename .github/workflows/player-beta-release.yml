@@ -65,6 +65,8 @@ jobs:
               'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
               'Windows GNU build uses rustup rustc': 'RUSTC="$(rustup which rustc)" npm run tauri:build:windows' in text,
+              'standard zip asset is published': 'standard_asset="${ASSET_PREFIX}-standard.zip"' in text and 'steps.package.outputs.standard_asset' in text,
+              'portable package enables portable mode': 'portable_dir}/portable.flag' in text,
               'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
               'release notes generator is used': 'python3 .github/scripts/generate-player-beta-release-notes.py' in text,
               'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
@@ -177,6 +179,8 @@ jobs:
             grep -Fq '### other' notes.md
             grep -Fq '## Extra Notes' notes.md
             grep -Fq '手动补充说明' notes.md
+            grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64-standard.zip' notes.md
+            grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64-portable.zip' notes.md
             grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64.sha256' notes.md
             if grep -Eiq 'GITHUB_TOKEN|GH_TOKEN|GITHUB_ENV|SECRET|AUTHORIZATION|COOKIE|PASSKEY' notes.md; then
               echo "::error::Release notes must not contain sensitive environment variable names."
@@ -380,15 +384,18 @@ jobs:
           release_dir="player/src-tauri/target/${TARGET}/release"
           bundle_dir="${release_dir}/bundle/nsis"
           dist_dir="dist/player-beta"
+          standard_root="dist/standard"
+          standard_dir="${standard_root}/${ASSET_PREFIX}"
           portable_root="dist/portable"
           portable_dir="${portable_root}/${ASSET_PREFIX}"
           setup_asset="${ASSET_PREFIX}-setup.exe"
+          standard_asset="${ASSET_PREFIX}-standard.zip"
           portable_asset="${ASSET_PREFIX}-portable.zip"
           checksum_asset="${ASSET_PREFIX}.sha256"
 
           test -d "$release_dir"
           test -d "$bundle_dir"
-          mkdir -p "$dist_dir" "$portable_dir"
+          mkdir -p "$dist_dir" "$standard_dir" "$portable_dir"
 
           setup_source="$(find "$bundle_dir" -maxdepth 1 -type f -name '*setup.exe' | sort | head -n 1)"
           if [[ -z "$setup_source" ]]; then
@@ -399,22 +406,34 @@ jobs:
 
           for file in ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll; do
             if [[ ! -f "${release_dir}/${file}" ]]; then
-              echo "::error::Required portable file is missing: ${release_dir}/${file}"
+              echo "::error::Required Windows runtime file is missing: ${release_dir}/${file}"
               exit 1
             fi
+            cp "${release_dir}/${file}" "${standard_dir}/${file}"
             cp "${release_dir}/${file}" "${portable_dir}/${file}"
           done
+          printf 'OhMyCine portable mode\n' > "${portable_dir}/portable.flag"
 
           if [[ -f "player/src-tauri/lib/LICENSE" ]]; then
+            cp "player/src-tauri/lib/LICENSE" "${standard_dir}/THIRD-PARTY-LICENSES.txt"
             cp "player/src-tauri/lib/LICENSE" "${portable_dir}/THIRD-PARTY-LICENSES.txt"
           fi
 
+          test ! -e "${standard_dir}/portable.flag"
+          test -f "${portable_dir}/portable.flag"
+          for generated_dir in data cache logs; do
+            test ! -e "${standard_dir}/${generated_dir}"
+            test ! -e "${portable_dir}/${generated_dir}"
+          done
+
+          (cd "$standard_root" && zip -r "../player-beta/${standard_asset}" "${ASSET_PREFIX}")
           (cd "$portable_root" && zip -r "../player-beta/${portable_asset}" "${ASSET_PREFIX}")
-          (cd "$dist_dir" && sha256sum "$setup_asset" "$portable_asset" > "$checksum_asset")
+          (cd "$dist_dir" && sha256sum "$setup_asset" "$standard_asset" "$portable_asset" > "$checksum_asset")
 
           {
             echo "dist_dir=${dist_dir}"
             echo "setup_asset=${dist_dir}/${setup_asset}"
+            echo "standard_asset=${dist_dir}/${standard_asset}"
             echo "portable_asset=${dist_dir}/${portable_asset}"
             echo "checksum_asset=${dist_dir}/${checksum_asset}"
           } >> "$GITHUB_OUTPUT"
@@ -435,6 +454,7 @@ jobs:
           name: ${{ steps.version.outputs.asset_prefix }}
           path: |
             ${{ steps.package.outputs.setup_asset }}
+            ${{ steps.package.outputs.standard_asset }}
             ${{ steps.package.outputs.portable_asset }}
             ${{ steps.package.outputs.checksum_asset }}
           retention-days: 30
@@ -448,6 +468,7 @@ jobs:
 
           assets=(
             "${{ steps.package.outputs.setup_asset }}"
+            "${{ steps.package.outputs.standard_asset }}"
             "${{ steps.package.outputs.portable_asset }}"
             "${{ steps.package.outputs.checksum_asset }}"
           )

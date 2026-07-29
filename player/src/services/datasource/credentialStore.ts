@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSettings'
 
 const PERSISTENT_UNAVAILABLE_KEY = 'ohmycine:persistent-credentials-unavailable'
 const memoryCredentials = new Map<string, string>()
@@ -183,7 +184,7 @@ export async function removeCredential(ref: string): Promise<void> {
 }
 
 export function hasPersistentCredentialStorageWarning(): boolean {
-  return localStorage.getItem(PERSISTENT_UNAVAILABLE_KEY) === 'true'
+  return getAppSetting(PERSISTENT_UNAVAILABLE_KEY) === 'true'
 }
 
 async function saveRawCredential(ref: string, value: string): Promise<void> {
@@ -193,10 +194,10 @@ async function saveRawCredential(ref: string, value: string): Promise<void> {
   try {
     await invoke('credential_set', { refName: ref, token: value })
     memoryCredentials.delete(ref)
-    localStorage.removeItem(PERSISTENT_UNAVAILABLE_KEY)
+    void removeAppSetting(PERSISTENT_UNAVAILABLE_KEY)
   }
   catch {
-    localStorage.setItem(PERSISTENT_UNAVAILABLE_KEY, 'true')
+    void setAppSetting(PERSISTENT_UNAVAILABLE_KEY, 'true')
     memoryCredentials.set(ref, value)
   }
 }

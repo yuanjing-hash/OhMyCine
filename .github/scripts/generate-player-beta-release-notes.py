@@ -157,12 +157,13 @@ def build_markdown(
             "## Assets",
             "",
             f"- Windows x64 NSIS installer: `{asset_prefix}-setup.exe`",
-            f"- Windows x64 portable zip: `{asset_prefix}-portable.zip`",
+            f"- Windows x64 standard zip (uses the normal LocalAppData profile): `{asset_prefix}-standard.zip`",
+            f"- Windows x64 portable zip (stores Player data beside the executable): `{asset_prefix}-portable.zip`",
             f"- SHA-256 checksums: `{asset_prefix}.sha256`",
             "",
             "## Checksums",
             "",
-            "The `.sha256` file is generated with `sha256sum` and contains checksums for the installer and portable zip.",
+            "The `.sha256` file is generated with `sha256sum` and contains checksums for the installer, standard zip, and portable zip.",
         ]
     )
 

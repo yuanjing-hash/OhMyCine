@@ -1,3 +1,5 @@
+import { getAppSetting, setAppSetting } from '@/services/appSettings'
+
 export type ScrapeMediaType = 'movie' | 'tv'
 
 export interface TmdbGenreOption {
@@ -173,7 +175,7 @@ export const DEFAULT_SCRAPE_CLASSIFICATION_RULES: ScrapeClassificationRules = {
 
 export function loadScrapeClassificationRules(): ScrapeClassificationRules {
   try {
-    const raw = localStorage.getItem(SCRAPE_CLASSIFICATION_RULES_STORAGE_KEY)
+    const raw = getAppSetting(SCRAPE_CLASSIFICATION_RULES_STORAGE_KEY)
     if (!raw)
       return cloneScrapeClassificationRules(DEFAULT_SCRAPE_CLASSIFICATION_RULES)
     return sanitizeScrapeClassificationRules(JSON.parse(raw) as unknown)
@@ -184,7 +186,7 @@ export function loadScrapeClassificationRules(): ScrapeClassificationRules {
 }
 
 export function saveScrapeClassificationRules(rules: ScrapeClassificationRules): void {
-  localStorage.setItem(SCRAPE_CLASSIFICATION_RULES_STORAGE_KEY, JSON.stringify(sanitizeScrapeClassificationRules(rules)))
+  void setAppSetting(SCRAPE_CLASSIFICATION_RULES_STORAGE_KEY, JSON.stringify(sanitizeScrapeClassificationRules(rules)))
 }
 
 export function resetScrapeClassificationRules(): ScrapeClassificationRules {

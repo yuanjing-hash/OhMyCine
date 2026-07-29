@@ -6,3 +6,4 @@ pub mod local_file;
 pub mod player;
 pub mod preference;
 pub mod raw_scan_cache;
+pub mod settings;

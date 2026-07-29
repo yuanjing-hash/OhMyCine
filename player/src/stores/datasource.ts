@@ -3,6 +3,7 @@ import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { RawFileSourceType } from '@/services/scraper/types'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
 import { deletePlaybackHistoryForSource, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
@@ -28,7 +29,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
 
   function loadConfigs() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
+      const raw = getAppSetting(STORAGE_KEY)
       if (raw)
         configs.value = sanitizeConfigs(JSON.parse(raw) as unknown)
       void syncManager()
@@ -38,8 +39,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     }
   }
 
-  function saveConfigs() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(configs.value.map(sanitizePersistedConfig)))
+  async function saveConfigs() {
+    await setAppSetting(STORAGE_KEY, JSON.stringify(configs.value.map(sanitizePersistedConfig)))
   }
 
   async function replaceConfig(config: DataSourceConfig) {
@@ -58,11 +59,12 @@ export const useDataSourceStore = defineStore('datasource', () => {
       else {
         configs.value.push({ ...safeConfig, order: safeConfig.order ?? configs.value.length })
       }
-      saveConfigs()
+      await saveConfigs()
       await syncManager()
     }
     catch (error) {
       configs.value = previousConfigs
+      await saveConfigs().catch(() => undefined)
       throw error
     }
   }
@@ -83,11 +85,12 @@ export const useDataSourceStore = defineStore('datasource', () => {
     const previousConfigs = cloneConfigs(configs.value)
     try {
       configs.value.push(sanitizePersistedConfig({ ...config, id, order }))
-      saveConfigs()
+      await saveConfigs()
       await syncManager()
     }
     catch (error) {
       configs.value = previousConfigs
+      await saveConfigs().catch(() => undefined)
       throw error
     }
     return id
@@ -100,11 +103,12 @@ export const useDataSourceStore = defineStore('datasource', () => {
     const previousConfigs = cloneConfigs(configs.value)
     try {
       configs.value[idx] = sanitizePersistedConfig({ ...configs.value[idx], ...patch })
-      saveConfigs()
+      await saveConfigs()
       await syncManager()
     }
     catch (error) {
       configs.value = previousConfigs
+      await saveConfigs().catch(() => undefined)
       throw error
     }
   }
@@ -112,10 +116,17 @@ export const useDataSourceStore = defineStore('datasource', () => {
   async function removeConfig(id: string) {
     const config = configs.value.find(c => c.id === id)
     const credentialRef = typeof config?.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
-    dataSourceManager.removeSource(id)
+    const previousConfigs = cloneConfigs(configs.value)
     configs.value = configs.value.filter(c => c.id !== id)
     configs.value.forEach((c, i) => c.order = i)
-    saveConfigs()
+    try {
+      await saveConfigs()
+    }
+    catch (error) {
+      configs.value = previousConfigs
+      throw error
+    }
+    dataSourceManager.removeSource(id)
     homeLoadId++
     isLoading.value = false
     if (activeSourceId.value === id)
@@ -148,7 +159,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     homeSections.value = homeSections.value.filter(section => section.sourceId !== id)
   }
 
-  function reorderConfigs(ids: string[]) {
+  async function reorderConfigs(ids: string[]) {
     const map = new Map(configs.value.map(c => [c.id, c]))
     configs.value = ids
       .map((id, order) => {
@@ -158,7 +169,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
         return c
       })
       .filter((c): c is DataSourceConfig => c != null)
-    saveConfigs()
+    await saveConfigs()
   }
 
   async function loadHomeSections() {
