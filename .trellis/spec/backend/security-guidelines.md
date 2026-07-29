@@ -45,7 +45,7 @@ Rules:
 - Exported configs are redacted by default. Full export requires explicit confirmation.
 - API responses must not include sensitive plaintext or encrypted blobs unless explicitly designed as backup export.
 - Player Rust storage must use the shared storage layout. Windows standard mode stores app databases under LocalAppData and DPAPI-wraps the credential master key; portable mode uses EXE-adjacent data with an explicit reduced-protection warning.
-- Legacy Player storage migration is file/key allowlisted, never overwrites newer target data, and portable-mode import copies standard data without deleting the standard profile.
+- Legacy Player storage migration is file/key allowlisted and never overwrites newer target data. It runs only in standard mode; portable mode never imports standard-profile, legacy Roaming, or shared WebView localStorage data automatically.
 
 ---
 

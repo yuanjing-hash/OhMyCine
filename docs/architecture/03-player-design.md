@@ -548,7 +548,7 @@ Player 使用统一 Rust `storage` layout，应用数据库不写入安装目录
     └── render-diagnostics.log
 ```
 
-`settings.sqlite` 保存数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划。旧 WebView localStorage key 在升级后的首次启动导入 SQLite，成功后删除；localStorage 只保留浏览器/Vite fallback。旧 `%APPDATA%/com.ohmycine.player` 下的 SQLite 文件自动迁移到统一 `data` 目录，迁移不得覆盖已有新文件。
+`settings.sqlite` 保存数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划。标准模式升级后的首次启动会把旧 WebView localStorage key 导入 SQLite，成功后删除；localStorage 只保留浏览器/Vite fallback。旧 `%APPDATA%/com.ohmycine.player` 下的 SQLite 文件也只在标准模式自动迁移到统一 `data` 目录，迁移不得覆盖已有新文件。
 
 EXE 同目录存在 `portable.flag` 或使用 `--portable` 时启用便携模式：
 
@@ -561,7 +561,9 @@ OhMyCine/
 └── logs/
 ```
 
-正式 portable ZIP 必须自带 `portable.flag`，安装包不得包含。便携模式携带 Player 自有配置、数据库和日志；WebView2 的网页/GPU 缓存仍是 Windows 管理的可丢弃机器缓存，不作为配置来源。标准模式与便携模式使用独立目录，切换模式不会互相覆盖。
+正式 portable ZIP 必须自带 `portable.flag`，安装包不得包含。便携模式携带 Player 自有配置、数据库和日志；WebView2 的网页/GPU 缓存仍是 Windows 管理的可丢弃机器缓存，不作为配置来源。标准模式与便携模式是完全隔离的配置档案：没有 `data` 的全新便携目录必须空白启动，便携模式不自动导入标准目录、旧 Roaming 目录或共享 WebView localStorage；已有便携 `data` 则继续复用。未来如提供标准数据导入，必须由用户显式操作。
+
+便携目录位于 UNC、WSL 映射或其他网络式路径时仍可运行，但 SQLite、日志和缓存的频繁小文件读写可能明显变慢。Player 应在设置诊断页提示用户把完整便携目录移动到 Windows 本地磁盘（例如 `C:\OhMyCine-Portable`）后运行。
 
 Windows 标准模式使用 DPAPI 包装 AES 主密钥；便携模式为了能随目录移动，使用目录内文件密钥，因此整个便携文件夹都应视为敏感数据。
 

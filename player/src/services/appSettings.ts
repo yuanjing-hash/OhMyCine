@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 export type PlayerStorageMode = 'standard' | 'portable'
 export type PlayerCredentialProtection = 'windowsDpapi' | 'portableFileKey' | 'localFileKey'
+export type PlayerStoragePerformance = 'local' | 'networkLike'
 
 export interface PlayerStorageInfo {
   mode: PlayerStorageMode
@@ -11,6 +12,7 @@ export interface PlayerStorageInfo {
   logDir: string
   portableMarkerPath: string
   credentialProtection: PlayerCredentialProtection
+  storagePerformance: PlayerStoragePerformance
 }
 
 interface SettingStorage {
@@ -36,13 +38,26 @@ let initialized = false
 let desktopStorage = false
 let writeQueue: Promise<void> = Promise.resolve()
 let pendingWriteError: unknown = null
+let storageInfoCache: PlayerStorageInfo | undefined
 
 export async function initializeAppSettings(): Promise<void> {
   if (initialized)
     return
 
-  const legacyEntries = readLegacyEntries()
   if (isTauriRuntime()) {
+    let storageInfo: PlayerStorageInfo
+    try {
+      storageInfo = await invoke<PlayerStorageInfo>('player_get_storage_info')
+      storageInfoCache = storageInfo
+    }
+    catch {
+      initialized = true
+      return
+    }
+
+    const legacyEntries = shouldImportLegacyAppSettings(storageInfo.mode)
+      ? readLegacyEntries()
+      : []
     try {
       const persisted = await invoke<Record<string, string>>('player_settings_get_all')
       for (const [key, value] of Object.entries(persisted))
@@ -59,10 +74,14 @@ export async function initializeAppSettings(): Promise<void> {
       return
     }
     catch {
-      // The browser fallback below keeps development and recovery mode usable.
+      for (const [key, value] of legacyEntries)
+        settings.set(key, value)
+      initialized = true
+      return
     }
   }
 
+  const legacyEntries = readLegacyEntries()
   for (const [key, value] of legacyEntries)
     settings.set(key, value)
   initialized = true
@@ -108,13 +127,20 @@ export async function flushAppSettings(): Promise<void> {
 export async function getPlayerStorageInfo(): Promise<PlayerStorageInfo | null> {
   if (!isTauriRuntime())
     return null
+  if (storageInfoCache)
+    return storageInfoCache
 
   try {
-    return await invoke<PlayerStorageInfo>('player_get_storage_info')
+    storageInfoCache = await invoke<PlayerStorageInfo>('player_get_storage_info')
+    return storageInfoCache
   }
   catch {
     return null
   }
+}
+
+export function shouldImportLegacyAppSettings(mode: PlayerStorageMode): boolean {
+  return mode === 'standard'
 }
 
 export const appSettingsStorage: SettingStorage = {

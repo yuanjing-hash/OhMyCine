@@ -216,10 +216,10 @@ Phase 4: 生态系统           ████████████████
 #### 配置持久化
 
 - [x] 建立统一 Tauri storage layout：Windows 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data`，数据库、缓存和日志不写入安装目录
-- [x] 使用 `settings.sqlite` 保存 datasources、主题、TMDB 非敏感设置、分类规则和扫描计划；旧 WebView localStorage 首次启动自动迁移并删除旧 key
+- [x] 使用 `settings.sqlite` 保存 datasources、主题、TMDB 非敏感设置、分类规则和扫描计划；标准模式首次启动自动迁移旧 WebView localStorage 并删除旧 key，便携模式保持独立空白配置
 - [x] 配置变更自动排队写入 SQLite，数据源和用户主动保存流程等待持久化完成后再提示成功
 - [~] Emby/OpenList 账号密码与令牌、CloudDrive2 API Token、WebDAV 账号密码通过 provider-specific envelope + `credentialRef` 进入 AES-GCM SQLite 凭证库；Windows 标准模式已使用 DPAPI 包装主密钥，便携模式使用目录内文件密钥；macOS Keychain、Linux libsecret 后续接入
-- [x] 支持 `portable.flag` / `--portable` 便携模式，portable ZIP 自动携带标记，应用自有 data/cache/logs 写入 EXE 同目录
+- [x] 支持 `portable.flag` / `--portable` 便携模式，portable ZIP 自动携带标记，应用自有 data/cache/logs 写入 EXE 同目录；禁止自动导入标准配置，并对 WSL/UNC 存储路径显示性能提示
 
 #### 设置页面 UI
 

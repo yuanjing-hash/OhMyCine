@@ -243,6 +243,9 @@ const tmdbCredentialStatusLabel = computed(() => {
 })
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
+const portableStorageIsNetworkLike = computed(() =>
+  storageInfo.value?.mode === 'portable' && storageInfo.value.storagePerformance === 'networkLike',
+)
 const credentialProtectionLabel = computed(() => {
   switch (storageInfo.value?.credentialProtection) {
     case 'windowsDpapi':
@@ -1522,7 +1525,14 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             </div>
           </div>
 
-          <div v-else class="mt-5 rounded-xl bg-white/6 px-4 py-3 text-sm leading-6 text-white/48">
+          <div
+            v-if="portableStorageIsNetworkLike"
+            class="mt-4 border-l-2 border-amber-400/70 bg-amber-400/8 px-4 py-3 text-sm leading-6 text-amber-100/80"
+          >
+            当前便携目录位于 WSL 或网络映射路径，SQLite、日志和缓存读写会明显变慢。请把完整便携文件夹复制到 Windows 本地磁盘，例如 <code class="text-amber-100">C:\OhMyCine-Portable</code>，再从那里启动。
+          </div>
+
+          <div v-if="!storageInfo" class="mt-5 rounded-xl bg-white/6 px-4 py-3 text-sm leading-6 text-white/48">
             当前是浏览器开发模式，没有可查询的 Tauri 桌面存储路径。
           </div>
         </div>

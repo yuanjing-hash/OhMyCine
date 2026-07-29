@@ -135,6 +135,8 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 - New API keys/tokens/passwords must not be written to `localStorage`, regular config JSON, settings SQLite, or Pinia persistence snapshots.
 - Tauri desktop non-sensitive settings use the shared `appSettings` service backed by `settings.sqlite`; direct localStorage reads/writes are limited to the migration/fallback implementation and raw scan browser fallback.
 - The storage layout is selected once per process. Standard Windows mode uses LocalAppData; `portable.flag` or `--portable` selects EXE-adjacent data/cache/log directories.
+- A fresh portable directory is a separate empty profile. Portable mode reuses only its own existing `data` directory and must not automatically import standard-profile files, legacy Roaming files, or shared WebView localStorage keys; any future import must be an explicit user action.
+- Portable storage on UNC, WSL-mounted, or other network-like paths remains supported but should show a performance warning because SQLite, logs, and cache writes can be much slower than on a native local disk.
 - Desktop Player credentials should survive app restart through the Tauri credential boundary when available.
 - The SQLite credential boundary stores encrypted secret payloads in `credentials.sqlite` keyed by hashed credential references. Windows standard mode wraps the AES master key with DPAPI. Portable mode uses an EXE-adjacent file key and must display the reduced-protection warning; macOS/Linux OS key stores remain future work.
 - Browser/Vite-only fallback may keep credentials in memory only and must show/carry a limitation state when persistence is unavailable.

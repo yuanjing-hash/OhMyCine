@@ -190,7 +190,7 @@ Player 本地需要保存：
 
 Player 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data` 保存应用数据库。Windows 标准模式下，AES-GCM 凭据数据库的主密钥必须由当前 Windows 用户的 DPAPI 包装；旧裸 Base64 主密钥首次读取后原地升级。EXE 同目录存在 `portable.flag` 或使用 `--portable` 时，Player 改用 EXE 同目录 `data`、`cache`、`logs`。便携模式为了跨目录/设备移动使用文件主密钥，设置页必须明确提示保护等级低于 DPAPI，用户需要保护整个便携目录。
 
-数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划进入 `settings.sqlite`。WebView localStorage 只作为旧版本迁移输入或浏览器开发 fallback，不得继续作为 Tauri 桌面版配置源。迁移只处理固定 namespaced key 和固定 SQLite 文件白名单，不接受任意路径或敏感明文。
+数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划进入 `settings.sqlite`。WebView localStorage 只作为标准模式的旧版本迁移输入或浏览器开发 fallback，不得继续作为 Tauri 桌面版配置源。迁移只处理固定 namespaced key 和固定 SQLite 文件白名单，不接受任意路径或敏感明文。便携模式是独立配置档案，不得自动读取、复制或删除标准目录、旧 Roaming 目录以及共享 WebView localStorage 中的数据；跨模式导入只能由用户显式触发。
 
 CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
 

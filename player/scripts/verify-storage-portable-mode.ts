@@ -11,6 +11,8 @@ const restoreLocalStorage = installMockLocalStorage({
 
 try {
   const settings = await import('../src/services/appSettings.ts')
+  assert.equal(settings.shouldImportLegacyAppSettings('standard'), true)
+  assert.equal(settings.shouldImportLegacyAppSettings('portable'), false)
   await settings.initializeAppSettings()
 
   assert.equal(settings.getAppSetting('ohmycine-theme'), 'dark')
@@ -50,6 +52,7 @@ try {
     browserFallbackRoundTrip: true,
     directLocalStorageConsumers: 0,
     portableReleaseMarker: true,
+    portableLegacyImportDisabled: true,
   }, null, 2))
 }
 finally {

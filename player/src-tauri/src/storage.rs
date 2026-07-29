@@ -29,6 +29,13 @@ pub enum StorageMode {
     Portable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StoragePerformance {
+    Local,
+    NetworkLike,
+}
+
 #[derive(Clone, Debug)]
 pub struct StorageLayout {
     pub mode: StorageMode,
@@ -49,6 +56,7 @@ pub struct StorageInfo {
     log_dir: String,
     portable_marker_path: String,
     credential_protection: String,
+    storage_performance: StoragePerformance,
 }
 
 pub fn initialize(app: &AppHandle) -> Result<StorageLayout, String> {
@@ -95,6 +103,7 @@ pub fn storage_info(app: &AppHandle) -> Result<StorageInfo, String> {
         log_dir: display_path(&layout.log_dir),
         portable_marker_path: display_path(&layout.portable_marker_path),
         credential_protection: credential_protection_label(layout.mode).to_string(),
+        storage_performance: storage_performance(&layout),
     })
 }
 
@@ -130,40 +139,31 @@ fn prepare_layout(layout: &StorageLayout) -> Result<(), String> {
 }
 
 fn migrate_legacy_storage(app: &AppHandle, layout: &StorageLayout) -> Result<(), String> {
+    if layout.mode == StorageMode::Portable {
+        return Ok(());
+    }
+
     let legacy_roaming = app
         .path()
         .app_data_dir()
         .map_err(|_| "Failed to resolve legacy Player data directory.".to_string())?;
-    let standard_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|_| "Failed to resolve Player local data directory.".to_string())?
-        .join(DATA_DIR);
+    migrate_legacy_storage_from(&legacy_roaming, layout)
+}
 
-    if layout.mode == StorageMode::Portable && standard_data != layout.data_dir {
-        for (_, target_name) in MIGRATION_FILES {
-            copy_if_missing(
-                &standard_data.join(target_name),
-                &layout.data_dir.join(target_name),
-            )?;
-        }
-        copy_if_missing(
-            &standard_data.join("settings.sqlite"),
-            &layout.data_dir.join("settings.sqlite"),
-        )?;
+fn migrate_legacy_storage_from(
+    legacy_roaming: &Path,
+    layout: &StorageLayout,
+) -> Result<(), String> {
+    if layout.mode == StorageMode::Portable {
+        return Ok(());
     }
 
     for (legacy_relative, target_name) in MIGRATION_FILES {
         let source = legacy_roaming.join(legacy_relative);
         let target = layout.data_dir.join(target_name);
-        match layout.mode {
-            StorageMode::Standard => migrate_if_missing(&source, &target)?,
-            StorageMode::Portable => copy_if_missing(&source, &target)?,
-        }
+        migrate_if_missing(&source, &target)?;
     }
-    if layout.mode == StorageMode::Standard {
-        remove_empty_legacy_dirs(&legacy_roaming);
-    }
+    remove_empty_legacy_dirs(legacy_roaming);
     Ok(())
 }
 
@@ -234,13 +234,28 @@ fn credential_protection_label(mode: StorageMode) -> &'static str {
     }
 }
 
+fn storage_performance(layout: &StorageLayout) -> StoragePerformance {
+    if layout.mode == StorageMode::Portable && is_network_like_path(&layout.base_dir) {
+        StoragePerformance::NetworkLike
+    } else {
+        StoragePerformance::Local
+    }
+}
+
+fn is_network_like_path(path: &Path) -> bool {
+    display_path(path).replace('\\', "/").starts_with("//")
+}
+
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_if_missing, migrate_if_missing, resolve_from, StorageMode};
+    use super::{
+        copy_if_missing, migrate_if_missing, migrate_legacy_storage_from, prepare_layout,
+        resolve_from, storage_performance, StorageMode, StoragePerformance,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -345,5 +360,97 @@ mod tests {
         migrate_if_missing(&source, &target).expect("preserve different source");
         assert!(source.exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn portable_layout_never_imports_standard_or_legacy_data() {
+        let root = std::env::temp_dir().join(format!(
+            "ohmycine-portable-isolation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let standard = root.join("standard");
+        let portable = root.join("portable");
+        let legacy = root.join("roaming");
+        fs::create_dir_all(standard.join("data")).expect("create standard data");
+        fs::create_dir_all(legacy.join("history")).expect("create legacy history");
+        fs::write(standard.join("data/settings.sqlite"), "standard-settings")
+            .expect("write standard settings");
+        fs::write(
+            legacy.join("history/playback_history.sqlite"),
+            "legacy-history",
+        )
+        .expect("write legacy history");
+
+        let layout = resolve_from(&standard, &portable.join("ohmycine-player.exe"), true);
+        prepare_layout(&layout).expect("prepare portable layout");
+        fs::write(layout.data_dir.join("existing.sqlite"), "portable-data")
+            .expect("write existing portable data");
+        migrate_legacy_storage_from(&legacy, &layout).expect("skip portable migration");
+
+        assert!(!layout.data_dir.join("settings.sqlite").exists());
+        assert!(!layout.data_dir.join("playback_history.sqlite").exists());
+        assert_eq!(
+            fs::read_to_string(layout.data_dir.join("existing.sqlite"))
+                .expect("read existing portable data"),
+            "portable-data"
+        );
+        assert!(legacy.join("history/playback_history.sqlite").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn standard_layout_still_migrates_legacy_data() {
+        let root = std::env::temp_dir().join(format!(
+            "ohmycine-standard-migration-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let standard = root.join("standard");
+        let legacy = root.join("roaming");
+        let executable = root.join("program/ohmycine-player.exe");
+        let layout = resolve_from(&standard, &executable, false);
+        prepare_layout(&layout).expect("prepare standard layout");
+        fs::create_dir_all(legacy.join("history")).expect("create legacy history");
+        fs::write(
+            legacy.join("history/playback_history.sqlite"),
+            "legacy-history",
+        )
+        .expect("write legacy history");
+
+        migrate_legacy_storage_from(&legacy, &layout).expect("migrate standard data");
+
+        assert_eq!(
+            fs::read_to_string(layout.data_dir.join("playback_history.sqlite"))
+                .expect("read migrated history"),
+            "legacy-history"
+        );
+        assert!(!legacy.join("history/playback_history.sqlite").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn portable_unc_path_is_reported_as_network_like() {
+        let layout = resolve_from(
+            Path::new("C:/Users/Test/AppData/Local/com.ohmycine.player"),
+            Path::new("//wsl.localhost/Ubuntu/home/develop/OhMyCine/ohmycine-player.exe"),
+            true,
+        );
+
+        assert_eq!(
+            storage_performance(&layout),
+            StoragePerformance::NetworkLike
+        );
+    }
+
+    #[test]
+    fn portable_native_drive_is_reported_as_local() {
+        let layout = resolve_from(
+            Path::new("C:/Users/Test/AppData/Local/com.ohmycine.player"),
+            Path::new("C:/OhMyCine-Portable/ohmycine-player.exe"),
+            true,
+        );
+
+        assert_eq!(storage_performance(&layout), StoragePerformance::Local);
     }
 }
