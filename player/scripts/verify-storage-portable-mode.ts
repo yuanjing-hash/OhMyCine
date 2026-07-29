@@ -40,6 +40,8 @@ try {
   }
 
   const workflow = await readFile(fileURLToPath(new URL('../../.github/workflows/player-beta-release.yml', import.meta.url)), 'utf8')
+  assert.match(workflow, /standard_asset="\$\{ASSET_PREFIX\}-standard\.zip"/)
+  assert.match(workflow, /steps\.package\.outputs\.standard_asset/)
   assert.match(workflow, /portable_dir}\/portable\.flag/)
 
   const rustStorage = await readFile(fileURLToPath(new URL('../src-tauri/src/storage.rs', import.meta.url)), 'utf8')
@@ -52,6 +54,7 @@ try {
     browserFallbackRoundTrip: true,
     directLocalStorageConsumers: 0,
     portableReleaseMarker: true,
+    standardReleaseAsset: true,
     portableLegacyImportDisabled: true,
   }, null, 2))
 }
