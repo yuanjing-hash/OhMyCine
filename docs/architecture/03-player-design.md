@@ -2204,7 +2204,7 @@ src-tauri/
     LICENSE               # 第三方许可文本
 ```
 
-构建脚本当前只在 Player CI、manual build 和 beta release 中准备 Windows libmpv 资源。后续平台完成渲染器和打包链路时，再补充 macOS/Linux 下载、资源声明和 CI。
+构建脚本当前只在 Player CI、manual build 和 beta release 中准备 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。后续平台完成渲染器和打包链路时，再补充 macOS/Linux 下载、资源声明和 CI。
 
 ### 9.8 Android 策略
 

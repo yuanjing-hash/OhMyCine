@@ -7,6 +7,7 @@ This file records OhMyCine release policy and human-written release summaries. P
 - Player beta tags use `vMAJOR.MINOR.BETA`, for example `v0.0.1`.
 - For beta releases, CI generates GitHub Release notes from commits between the current tag and the previous semver-like tag. If no previous tag exists, CI uses the repository history from the initial commit to the current commit.
 - Manual `workflow_dispatch` beta releases may append the `release_notes` input as an `Extra Notes` section.
+- Player beta releases publish an NSIS installer, a standard no-install zip that uses LocalAppData, a portable zip that stores Player data beside the executable, and a shared SHA-256 checksum file.
 - Future stable releases should summarize the relevant beta iterations here instead of copying the generated beta notes verbatim.
 
 ## [Unreleased]
