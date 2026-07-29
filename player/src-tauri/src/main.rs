@@ -3,6 +3,7 @@
 
 mod commands;
 mod mpv;
+mod storage;
 
 use tauri::{utils::config::Color, Manager};
 
@@ -28,6 +29,9 @@ use commands::preference::{
     player_get_playback_speed_preference, player_set_playback_speed_preference,
 };
 use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
+use commands::settings::{
+    player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
+};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -57,6 +61,10 @@ fn main() {
             raw_scan_cache_get,
             raw_scan_cache_set,
             raw_scan_cache_delete,
+            player_settings_get_all,
+            player_settings_set,
+            player_settings_delete,
+            player_get_storage_info,
             local_file_list,
             local_file_metadata,
             local_file_stream_path,
@@ -111,6 +119,7 @@ fn main() {
             }
         })
         .setup(|app| {
+            storage::initialize(app.handle()).map_err(std::io::Error::other)?;
             let webview_transparency_applied = app
                 .get_webview_window("main")
                 .map(|window| window.set_background_color(Some(Color(0, 0, 0, 0))).is_ok())

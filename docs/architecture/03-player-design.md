@@ -532,41 +532,38 @@ export class DataSourceManager {
 
 ### 4.6 配置存储
 
-Player 配置存储在 Tauri 的 `app_data_dir` 下：
+Player 使用统一 Rust `storage` layout，应用数据库不写入安装目录，也不再依赖 WebView localStorage。Windows 默认结构：
 
-```json
-// {app_data_dir}/config.json
-{
-  "datasources": [
-    {
-      "type": "emby",
-      "name": "家庭Emby",
-      "url": "http://nas:8096",
-      "apiKey": "xxx"
-    },
-    {
-      "type": "alist",
-      "name": "NAS OpenList/Alist",
-      "url": "http://nas:5244",
-      "password": ""
-    }
-  ],
-  "server": {
-    "url": "",
-    "apiKey": ""
-  },
-  "ai": {
-    "provider": "openai",
-    "apiKey": "",
-    "model": "gpt-4o"
-  },
-  "ui": {
-    "theme": "dark",
-    "language": "zh-CN",
-    "homeLayout": [...]
-  }
-}
+```text
+%LOCALAPPDATA%/com.ohmycine.player/
+├── data/
+│   ├── settings.sqlite
+│   ├── credentials.sqlite
+│   ├── master.key
+│   ├── playback_history.sqlite
+│   ├── player_preferences.sqlite
+│   └── raw_scan_cache.sqlite
+├── cache/
+└── logs/
+    └── render-diagnostics.log
 ```
+
+`settings.sqlite` 保存数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划。旧 WebView localStorage key 在升级后的首次启动导入 SQLite，成功后删除；localStorage 只保留浏览器/Vite fallback。旧 `%APPDATA%/com.ohmycine.player` 下的 SQLite 文件自动迁移到统一 `data` 目录，迁移不得覆盖已有新文件。
+
+EXE 同目录存在 `portable.flag` 或使用 `--portable` 时启用便携模式：
+
+```text
+OhMyCine/
+├── ohmycine-player.exe
+├── portable.flag
+├── data/
+├── cache/
+└── logs/
+```
+
+正式 portable ZIP 必须自带 `portable.flag`，安装包不得包含。便携模式携带 Player 自有配置、数据库和日志；WebView2 的网页/GPU 缓存仍是 Windows 管理的可丢弃机器缓存，不作为配置来源。标准模式与便携模式使用独立目录，切换模式不会互相覆盖。
+
+Windows 标准模式使用 DPAPI 包装 AES 主密钥；便携模式为了能随目录移动，使用目录内文件密钥，因此整个便携文件夹都应视为敏感数据。
 
 ### 4.7 配置同步机制
 

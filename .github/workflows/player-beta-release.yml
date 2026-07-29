@@ -65,6 +65,7 @@ jobs:
               'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
               'Windows GNU build uses rustup rustc': 'RUSTC="$(rustup which rustc)" npm run tauri:build:windows' in text,
+              'portable package enables portable mode': 'portable_dir}/portable.flag' in text,
               'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
               'release notes generator is used': 'python3 .github/scripts/generate-player-beta-release-notes.py' in text,
               'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
@@ -404,6 +405,7 @@ jobs:
             fi
             cp "${release_dir}/${file}" "${portable_dir}/${file}"
           done
+          printf 'OhMyCine portable mode\n' > "${portable_dir}/portable.flag"
 
           if [[ -f "player/src-tauri/lib/LICENSE" ]]; then
             cp "player/src-tauri/lib/LICENSE" "${portable_dir}/THIRD-PARTY-LICENSES.txt"

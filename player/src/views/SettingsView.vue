@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
@@ -6,6 +7,7 @@ import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
 import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
@@ -38,7 +40,7 @@ import { useDataSourceStore } from '@/stores/datasource'
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'diagnostics'
 type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
@@ -194,6 +196,7 @@ const tmdbForm = reactive<TmdbFormState>({
 const tmdbCredentialConfigured = ref(false)
 const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
 const isSavingTmdbSettings = ref(false)
+const storageInfo = ref<PlayerStorageInfo | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
@@ -238,11 +241,36 @@ const tmdbCredentialStatusLabel = computed(() => {
     return `已保存 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)}，当前类型未配置`
   return '未配置，可继续扫描'
 })
+const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
+const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
+const credentialProtectionLabel = computed(() => {
+  switch (storageInfo.value?.credentialProtection) {
+    case 'windowsDpapi':
+      return 'Windows DPAPI'
+    case 'portableFileKey':
+      return '便携文件密钥'
+    case 'localFileKey':
+      return '本机文件密钥'
+    default:
+      return '当前会话内存'
+  }
+})
+const storageModeDescription = computed(() => {
+  if (!storageInfo.value)
+    return '当前是浏览器开发模式，配置只使用浏览器 fallback，不代表桌面版真实存储路径。'
+  if (storageInfo.value.mode === 'portable')
+    return '应用数据库、日志和后续应用缓存跟随当前程序目录移动。便携凭据使用目录内文件密钥，请妥善保护整个文件夹。'
+  if (storageInfo.value.credentialProtection === 'windowsDpapi')
+    return '应用数据库使用 Windows 用户目录，升级或替换程序文件不会影响配置和播放历史。凭据主密钥由当前 Windows 用户的 DPAPI 保护。'
+  return '应用数据库使用当前系统的用户数据目录，升级或替换程序文件不会影响配置和播放历史。'
+})
 const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
     ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
-    : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri app data 下的 SQLite 凭证边界中，本地文件夹不需要凭据。')
+    : mode.value === 'diagnostics'
+      ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
+      : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -294,12 +322,12 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
   },
   {
     id: 'diagnostics',
-    label: 'Info',
-    title: '关于 / 诊断',
-    description: '版本信息、日志导出、运行环境诊断和依赖状态会在桌面封装稳定后接入。',
-    meta: '规划中',
-    actionLabel: '待开放',
-    disabled: true,
+    label: 'Disk',
+    title: '存储 / 诊断',
+    description: '查看标准或便携模式、数据库位置、缓存目录、日志目录和当前凭据保护方式。',
+    meta: storageEntryMeta.value,
+    actionLabel: '查看',
+    disabled: false,
   },
 ])
 
@@ -307,6 +335,7 @@ onMounted(() => {
   store.loadConfigs()
   refreshPersistentCredentialWarning()
   void refreshTmdbCredentialState()
+  void refreshStorageInfo()
   syncModeFromRoute()
 })
 
@@ -351,6 +380,14 @@ watch(() => tmdbForm.authType, () => {
 
 function syncModeFromRoute() {
   const section = routeQueryValue('section')
+  if (section === 'diagnostics') {
+    replaceSettingsQuery({ section: 'diagnostics' })
+    mode.value = 'diagnostics'
+    feedback.value = null
+    void refreshStorageInfo()
+    return
+  }
+
   if (section === 'scraping') {
     replaceSettingsQuery({ section: 'scraping' })
     if (mode.value !== 'scraping') {
@@ -444,6 +481,19 @@ function openSettingsEntry(entry: SettingsEntry) {
     goDataSources()
   else if (entry.id === 'scraping')
     goScrapingSettings()
+  else if (entry.id === 'diagnostics')
+    goStorageDiagnostics()
+}
+
+function goStorageDiagnostics() {
+  mode.value = 'diagnostics'
+  feedback.value = null
+  void router.push({ name: 'settings', query: { section: 'diagnostics' } })
+  void refreshStorageInfo()
+}
+
+async function refreshStorageInfo() {
+  storageInfo.value = await getPlayerStorageInfo()
 }
 
 function goOverview() {
@@ -1241,17 +1291,29 @@ function markScrapeRulesDirty() {
   scrapeFeedback.value = null
 }
 
-function saveScrapeRules() {
-  saveScrapeClassificationRules(scrapeRules.value)
-  scrapeRules.value = loadScrapeClassificationRules()
-  scrapeRulesDirty.value = false
-  scrapeFeedback.value = { type: 'success', message: '刮削分类规则已保存。后续扫描会按新规则计算本地逻辑分类。' }
+async function saveScrapeRules() {
+  try {
+    saveScrapeClassificationRules(scrapeRules.value)
+    await flushAppSettings()
+    scrapeRules.value = loadScrapeClassificationRules()
+    scrapeRulesDirty.value = false
+    scrapeFeedback.value = { type: 'success', message: '刮削分类规则已保存。后续扫描会按新规则计算本地逻辑分类。' }
+  }
+  catch (error) {
+    scrapeFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '刮削分类规则保存失败。') }
+  }
 }
 
-function resetScrapeRules() {
-  scrapeRules.value = resetScrapeClassificationRules()
-  scrapeRulesDirty.value = false
-  scrapeFeedback.value = { type: 'success', message: '已恢复内置默认分类实例。它只是默认模板，仍可继续按你的库调整。' }
+async function resetScrapeRules() {
+  try {
+    scrapeRules.value = resetScrapeClassificationRules()
+    await flushAppSettings()
+    scrapeRulesDirty.value = false
+    scrapeFeedback.value = { type: 'success', message: '已恢复内置默认分类实例。它只是默认模板，仍可继续按你的库调整。' }
+  }
+  catch (error) {
+    scrapeFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '默认分类规则恢复失败。') }
+  }
 }
 
 async function saveTmdbSettings() {
@@ -1270,6 +1332,7 @@ async function saveTmdbSettings() {
       await saveConfiguredTmdbCredential(tmdbForm.authType, credential)
       tmdbForm.credential = ''
     }
+    await flushAppSettings()
 
     await refreshTmdbCredentialState()
     scrapeFeedback.value = {
@@ -1419,6 +1482,54 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             {{ entry.actionLabel }}
           </span>
         </button>
+      </section>
+
+      <section v-else-if="mode === 'diagnostics'" class="space-y-5">
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Storage Mode
+              </p>
+              <h2 class="mt-2 text-xl font-bold text-white">
+                {{ storageModeLabel }}
+              </h2>
+              <p class="mt-2 max-w-2xl text-sm leading-6 text-white/48">
+                {{ storageModeDescription }}
+              </p>
+            </div>
+            <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
+              {{ credentialProtectionLabel }}
+            </span>
+          </div>
+
+          <div v-if="storageInfo" class="divide-y divide-white/8">
+            <div class="grid gap-2 py-4 md:grid-cols-[9rem_1fr]">
+              <span class="text-sm font-semibold text-white/66">数据目录</span>
+              <code class="break-all text-sm text-white/48">{{ storageInfo.dataDir }}</code>
+            </div>
+            <div class="grid gap-2 py-4 md:grid-cols-[9rem_1fr]">
+              <span class="text-sm font-semibold text-white/66">缓存目录</span>
+              <code class="break-all text-sm text-white/48">{{ storageInfo.cacheDir }}</code>
+            </div>
+            <div class="grid gap-2 py-4 md:grid-cols-[9rem_1fr]">
+              <span class="text-sm font-semibold text-white/66">日志目录</span>
+              <code class="break-all text-sm text-white/48">{{ storageInfo.logDir }}</code>
+            </div>
+            <div class="grid gap-2 py-4 md:grid-cols-[9rem_1fr]">
+              <span class="text-sm font-semibold text-white/66">便携标记</span>
+              <code class="break-all text-sm text-white/48">{{ storageInfo.portableMarkerPath }}</code>
+            </div>
+          </div>
+
+          <div v-else class="mt-5 rounded-xl bg-white/6 px-4 py-3 text-sm leading-6 text-white/48">
+            当前是浏览器开发模式，没有可查询的 Tauri 桌面存储路径。
+          </div>
+        </div>
+
+        <div class="border-l-2 border-primary/36 px-5 py-1 text-sm leading-7 text-white/50">
+          正式便携 ZIP 会自带 <code class="text-white/70">portable.flag</code>。直接使用单个 EXE 时，在 EXE 同目录创建同名空文件并重启即可进入便携模式；删除标记并重启则回到标准模式。两种模式使用独立数据目录，不会自动互相覆盖。
+        </div>
       </section>
 
       <section v-else-if="mode === 'scraping'" class="space-y-5">

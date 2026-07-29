@@ -1,6 +1,7 @@
 import type { ScrapeMediaType } from './classificationRules'
 import type { RawMediaCandidate } from './types'
 import type { TmdbCredentialValue } from '@/services/datasource/credentialStore'
+import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { readTmdbCredential, removeCredential, saveTmdbCredential } from '@/services/datasource/credentialStore'
 import { extractMediaSearchTitles, normalizeTitleKey } from './parser'
 import { stripFileExtension } from './pathUtils'
@@ -112,7 +113,7 @@ const DEFAULT_TMDB_TIMEOUT_MS = 10_000
 
 export function loadTmdbLocalSettings(): TmdbLocalSettings {
   try {
-    const raw = localStorage.getItem(TMDB_SETTINGS_STORAGE_KEY)
+    const raw = getAppSetting(TMDB_SETTINGS_STORAGE_KEY)
     if (!raw)
       return { ...DEFAULT_TMDB_SETTINGS }
     return sanitizeTmdbLocalSettings(JSON.parse(raw) as unknown)
@@ -128,7 +129,7 @@ export function saveTmdbLocalSettings(settings: Partial<TmdbLocalSettings>): Tmd
     ...settings,
     credentialRef: TMDB_CREDENTIAL_REF,
   })
-  localStorage.setItem(TMDB_SETTINGS_STORAGE_KEY, JSON.stringify(sanitized))
+  void setAppSetting(TMDB_SETTINGS_STORAGE_KEY, JSON.stringify(sanitized))
   return sanitized
 }
 

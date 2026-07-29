@@ -215,10 +215,11 @@ Phase 4: 生态系统           ████████████████
 
 #### 配置持久化
 
-- [~] 使用 Tauri `app_data_dir` 存储配置
-- [~] 实现 `config.json` 读写 (datasources, server, ai, ui)
-- [~] 配置变更自动保存
-- [~] Emby/OpenList 账号密码与令牌、CloudDrive2 API Token、WebDAV 账号密码持久化到 Tauri app data 下的 SQLite 凭证库，并通过 `credentialRef` 引用；字段使用 provider-specific 结构化 envelope + 本地生成 master key + AES-GCM 加密，master key 仍保存在本机 app data 文件中，暂未接入 OS Keychain/libsecret/DPAPI
+- [x] 建立统一 Tauri storage layout：Windows 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data`，数据库、缓存和日志不写入安装目录
+- [x] 使用 `settings.sqlite` 保存 datasources、主题、TMDB 非敏感设置、分类规则和扫描计划；旧 WebView localStorage 首次启动自动迁移并删除旧 key
+- [x] 配置变更自动排队写入 SQLite，数据源和用户主动保存流程等待持久化完成后再提示成功
+- [~] Emby/OpenList 账号密码与令牌、CloudDrive2 API Token、WebDAV 账号密码通过 provider-specific envelope + `credentialRef` 进入 AES-GCM SQLite 凭证库；Windows 标准模式已使用 DPAPI 包装主密钥，便携模式使用目录内文件密钥；macOS Keychain、Linux libsecret 后续接入
+- [x] 支持 `portable.flag` / `--portable` 便携模式，portable ZIP 自动携带标记，应用自有 data/cache/logs 写入 EXE 同目录
 
 #### 设置页面 UI
 
@@ -238,7 +239,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
 - [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现，并改为按媒体库/文件夹/剧集/季/集层级非递归浏览；搜索/首页区块仍可使用递归查询）
 - [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；Windows 宿主已验证可在透明叠层 + mpv 视频底层窗口中显示，Jellyfin 数据源仍待实现）
-- [~] 配置自动持久化（非敏感配置持久化；Emby/OpenList 凭据、CloudDrive2 API Token、WebDAV 账号密码进入 Tauri app data 下 SQLite 凭证库，敏感字段以本地 master key 加密；OS secure storage/Keychain/libsecret/DPAPI 后续接入）
+- [x] 配置自动持久化（非敏感配置进入统一 settings.sqlite；凭据进入 AES-GCM SQLite；Windows 标准模式主密钥由 DPAPI 保护；便携模式明确使用目录内文件密钥）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 

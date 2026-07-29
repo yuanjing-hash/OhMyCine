@@ -2,6 +2,7 @@ import type { RawLocalScanCache, RawLocalScanLogEntry, RunRawSourceScanInput } f
 import type { RawSourceScanKind, RawSourceScanScheduleConfig } from './rawSourceScanSchedule'
 import type { RawFileSourceType } from './types'
 import type { DataSource, DataSourceConfig } from '@/services/datasource/types'
+import { appSettingsStorage } from '@/services/appSettings'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalProviderRootPath } from '@/services/datasource/local'
 import { loadRawSourceScanCache, runRawSourceIncrementalScan, runRawSourceLocalScan } from './localScanCache'
@@ -676,12 +677,7 @@ function legacyScheduleKey(sourceId: string, sourceType: RawFileSourceType, root
 }
 
 function resolveDefaultStorage(): RawSourceIndexStorage | null {
-  try {
-    return globalThis.localStorage ?? null
-  }
-  catch {
-    return null
-  }
+  return appSettingsStorage
 }
 
 function isScheduleRecord(
