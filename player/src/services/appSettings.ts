@@ -26,6 +26,7 @@ const MIGRATABLE_EXACT_KEYS = new Set([
   'ohmycine-theme',
   'ohmycine-tmdb-settings-v1',
   'ohmycine-subtitle-search-settings-v1',
+  'ohmycine-updater-settings-v1',
   'ohmycine-scrape-classification-rules',
   'ohmycine:persistent-credentials-unavailable',
 ])

@@ -377,6 +377,17 @@ api_key=sk-***redacted***
 Location=https://cdn.example.com/file?token=***redacted***
 ```
 
+### 10.4 Player 更新信任根
+
+- Player updater 公钥可以提交到仓库和打包进应用；私钥不得提交、打印、写入 Release notes 或普通构建产物。
+- 本地私钥默认位于 `~/.config/ohmycine/updater/ohmycine-updater.key`，权限必须为 `0600`，并在首次正式发布前做离线备份。
+- GitHub Actions 只通过 `TAURI_SIGNING_PRIVATE_KEY` 和可选 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Secret 读取私钥。Secret 缺失时发布必须失败，禁止生成无签名清单。
+- 更新清单和安装包只接受固定 `yuanjing-hash/OhMyCine` GitHub Release asset；用户不能配置自定义 updater URL，避免把更新器变成 SSRF 或任意代码安装入口。
+- `latest.json` 必须包含目标平台安装包 URL 和 `.sig` 内容。Tauri updater 在安装前校验 minisign 签名；SHA-256 只用于人工校验，不能替代签名信任根。
+- 更新发现后必须由用户确认。自动检测不等于自动安装，不能在播放中静默退出应用。
+- 便携模式只把 NSIS 目标目录设置为当前 EXE 目录，不删除 `portable.flag`、`data`、`cache` 或 `logs`，也不把便携配置迁入标准目录。
+- 私钥丢失后不能仅替换应用内公钥来修复已安装客户端；必须保护并备份原私钥。
+
 ## 11. 插件与 Hub 安全
 
 插件系统是长期能力，但安全边界需要提前设计。

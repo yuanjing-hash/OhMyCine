@@ -1,12 +1,20 @@
-name: Player Beta Release
+name: Player Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Beta version tag, for example v0.0.1"
+        description: "Release version tag, for example v0.0.6"
         required: true
-        default: "v0.0.1"
+        default: "v0.0.6"
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        default: beta
+        options:
+          - beta
+          - stable
       release_notes:
         description: "Optional extra release notes"
         required: false
@@ -20,6 +28,9 @@ on:
       - ".github/scripts/generate-player-beta-release-notes.py"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
+      - "player/src-tauri/tauri.updater.conf.json"
+      - "player/src-tauri/Cargo.toml"
+      - "player/src-tauri/src/commands/updater.rs"
   pull_request:
     branches: [main]
     paths:
@@ -27,12 +38,15 @@ on:
       - ".github/scripts/generate-player-beta-release-notes.py"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
+      - "player/src-tauri/tauri.updater.conf.json"
+      - "player/src-tauri/Cargo.toml"
+      - "player/src-tauri/src/commands/updater.rs"
 
 permissions:
   contents: read
 
 concurrency:
-  group: player-beta-release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  group: player-release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -56,15 +70,20 @@ jobs:
           workflow = Path('.github/workflows/player-beta-release.yml')
           text = workflow.read_text()
           manual_version_env = 'WORKFLOW_INPUT_VERSION: ' + '$' + '{{ inputs.version }}'
+          manual_channel_env = 'WORKFLOW_INPUT_CHANNEL: ' + '$' + '{{ inputs.channel }}'
           forbidden_direct_version = 'raw_version="' + '$' + '{{ inputs.version }}"'
 
           required = {
               'release job is gated to manual dispatch or tag push': "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')" in text,
               'release commit is verified against origin/main': 'git fetch origin main --no-tags' in text and 'release_sha="$(git rev-parse HEAD)"' in text,
               'manual version reaches bash through env': manual_version_env in text,
+              'manual channel reaches bash through env': manual_channel_env in text,
               'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
-              'Windows GNU build uses rustup rustc': 'RUSTC="$(rustup which rustc)" npm run tauri:build:windows' in text,
+              'Windows GNU updater build uses rustup rustc': 'npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json' in text,
+              'updater signing secret is required': 'TAURI_SIGNING_PRIVATE_KEY: $' + '{{ secrets.TAURI_SIGNING_PRIVATE_KEY }}' in text,
+              'signed updater manifest is published': 'latest.json' in text and 'setup_signature_asset' in text,
+              'release channel controls prerelease': 'RELEASE_CHANNEL' in text and 'release_flags' in text,
               'standard zip asset is published': 'standard_asset="${ASSET_PREFIX}-standard.zip"' in text and 'steps.package.outputs.standard_asset' in text,
               'portable package enables portable mode': 'portable_dir}/portable.flag' in text,
               'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
@@ -76,6 +95,7 @@ jobs:
           tauri_configs = {
               'base': Path('player/src-tauri/tauri.conf.json'),
               'windows': Path('player/src-tauri/tauri.windows.conf.json'),
+              'updater': Path('player/src-tauri/tauri.updater.conf.json'),
           }
           configs = {name: json.loads(path.read_text()) for name, path in tauri_configs.items()}
           resources = {
@@ -92,6 +112,8 @@ jobs:
           required.update({
               'shared Tauri config has no platform runtime resources': 'resources' not in configs['base'].get('bundle', {}),
               'Windows Tauri resources are Windows-only': resources['windows'] == expected_resources['windows'],
+              'Updater release config creates signed artifacts': configs['updater'].get('bundle', {}).get('createUpdaterArtifacts') is True,
+              'Updater public key is committed in base config': bool(configs['base'].get('plugins', {}).get('updater', {}).get('pubkey')),
           })
 
           failed = [name for name, ok in required.items() if not ok]
@@ -105,18 +127,21 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Dry-run valid beta version parser
+      - name: Dry-run valid release version and channel parser
         env:
           WORKFLOW_EVENT_NAME: workflow_dispatch
           WORKFLOW_INPUT_VERSION: v0.0.1
+          WORKFLOW_INPUT_CHANNEL: beta
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
             raw_version="${WORKFLOW_INPUT_VERSION:-}"
+            release_channel="${WORKFLOW_INPUT_CHANNEL:-beta}"
           else
             raw_version="${GITHUB_REF_NAME}"
+            release_channel="beta"
           fi
 
           if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -131,6 +156,7 @@ jobs:
           test "$app_version" = "0.0.1"
           test "$tag_name" = "v0.0.1"
           test "$asset_prefix" = "OhMyCine-Player-v0.0.1-windows-x64"
+          test "$release_channel" = "beta"
 
       - name: Dry-run release notes generator
         shell: bash
@@ -233,7 +259,7 @@ jobs:
           fi
 
   release-windows-gnu:
-    name: Build and publish Windows beta
+    name: Build and publish Windows release
     needs: validate
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
@@ -254,14 +280,17 @@ jobs:
         env:
           WORKFLOW_EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+          WORKFLOW_INPUT_CHANNEL: ${{ inputs.channel }}
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
             raw_version="${WORKFLOW_INPUT_VERSION:-}"
+            release_channel="${WORKFLOW_INPUT_CHANNEL:-beta}"
           else
             raw_version="${GITHUB_REF_NAME}"
+            release_channel="beta"
           fi
 
           if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -272,17 +301,23 @@ jobs:
           app_version="${raw_version#v}"
           tag_name="v${app_version}"
           asset_prefix="OhMyCine-Player-${tag_name}-windows-x64"
+          if [[ "$release_channel" != "beta" && "$release_channel" != "stable" ]]; then
+            echo "::error::Release channel must be beta or stable."
+            exit 1
+          fi
 
           {
             echo "app_version=${app_version}"
             echo "tag_name=${tag_name}"
             echo "asset_prefix=${asset_prefix}"
+            echo "release_channel=${release_channel}"
           } >> "$GITHUB_OUTPUT"
 
           {
             echo "APP_VERSION=${app_version}"
             echo "TAG_NAME=${tag_name}"
             echo "ASSET_PREFIX=${asset_prefix}"
+            echo "RELEASE_CHANNEL=${release_channel}"
           } >> "$GITHUB_ENV"
 
       - name: Verify release commit is main
@@ -295,7 +330,7 @@ jobs:
           main_sha="$(git rev-parse origin/main)"
 
           if [[ "$release_sha" != "$main_sha" ]]; then
-            echo "::error::Player beta releases must use the latest commit on main. Release ${release_sha}, main ${main_sha}."
+            echo "::error::Player releases must use the latest commit on main. Release ${release_sha}, main ${main_sha}."
             exit 1
           fi
 
@@ -372,8 +407,18 @@ jobs:
         run: npm run setup:libmpv -- windows
 
       - name: Build Windows GNU installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         working-directory: player
-        run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY GitHub Secret is required for signed updater artifacts."
+            exit 1
+          fi
+          RUSTC="$(rustup which rustc)" npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json
 
       - name: Package release assets
         id: package
@@ -389,6 +434,7 @@ jobs:
           portable_root="dist/portable"
           portable_dir="${portable_root}/${ASSET_PREFIX}"
           setup_asset="${ASSET_PREFIX}-setup.exe"
+          setup_signature_asset="${setup_asset}.sig"
           standard_asset="${ASSET_PREFIX}-standard.zip"
           portable_asset="${ASSET_PREFIX}-portable.zip"
           checksum_asset="${ASSET_PREFIX}.sha256"
@@ -403,6 +449,11 @@ jobs:
             exit 1
           fi
           cp "$setup_source" "${dist_dir}/${setup_asset}"
+          if [[ ! -f "${setup_source}.sig" ]]; then
+            echo "::error::Signed NSIS updater artifact is missing: ${setup_source}.sig"
+            exit 1
+          fi
+          cp "${setup_source}.sig" "${dist_dir}/${setup_signature_asset}"
 
           for file in ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll; do
             if [[ ! -f "${release_dir}/${file}" ]]; then
@@ -428,11 +479,12 @@ jobs:
 
           (cd "$standard_root" && zip -r "../player-beta/${standard_asset}" "${ASSET_PREFIX}")
           (cd "$portable_root" && zip -r "../player-beta/${portable_asset}" "${ASSET_PREFIX}")
-          (cd "$dist_dir" && sha256sum "$setup_asset" "$standard_asset" "$portable_asset" > "$checksum_asset")
+          (cd "$dist_dir" && sha256sum "$setup_asset" "$setup_signature_asset" "$standard_asset" "$portable_asset" > "$checksum_asset")
 
           {
             echo "dist_dir=${dist_dir}"
             echo "setup_asset=${dist_dir}/${setup_asset}"
+            echo "setup_signature_asset=${dist_dir}/${setup_signature_asset}"
             echo "standard_asset=${dist_dir}/${standard_asset}"
             echo "portable_asset=${dist_dir}/${portable_asset}"
             echo "checksum_asset=${dist_dir}/${checksum_asset}"
@@ -442,11 +494,49 @@ jobs:
         env:
           EXTRA_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes || '' }}
           WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_CHANNEL: ${{ steps.version.outputs.release_channel }}
           OUTPUT_PATH: dist/player-beta/release-notes.md
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/generate-player-beta-release-notes.py
+
+      - name: Generate signed updater manifest
+        env:
+          SETUP_ASSET: ${{ steps.package.outputs.setup_asset }}
+          SETUP_SIGNATURE_ASSET: ${{ steps.package.outputs.setup_signature_asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          setup_path = Path(os.environ['SETUP_ASSET'])
+          signature_path = Path(os.environ['SETUP_SIGNATURE_ASSET'])
+          signature = signature_path.read_text(encoding='utf-8').strip()
+          if not signature:
+              raise SystemExit('Updater signature is empty')
+
+          notes_path = Path('dist/player-beta/release-notes.md')
+          manifest = {
+              'version': os.environ['APP_VERSION'],
+              'notes': notes_path.read_text(encoding='utf-8'),
+              'pub_date': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+              'platforms': {
+                  'windows-x86_64': {
+                      'signature': signature,
+                      'url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['TAG_NAME']}/{setup_path.name}",
+                  },
+              },
+          }
+          Path('dist/player-beta/latest.json').write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          PY
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -454,12 +544,14 @@ jobs:
           name: ${{ steps.version.outputs.asset_prefix }}
           path: |
             ${{ steps.package.outputs.setup_asset }}
+            ${{ steps.package.outputs.setup_signature_asset }}
             ${{ steps.package.outputs.standard_asset }}
             ${{ steps.package.outputs.portable_asset }}
             ${{ steps.package.outputs.checksum_asset }}
+            dist/player-beta/latest.json
           retention-days: 30
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -468,22 +560,32 @@ jobs:
 
           assets=(
             "${{ steps.package.outputs.setup_asset }}"
+            "${{ steps.package.outputs.setup_signature_asset }}"
             "${{ steps.package.outputs.standard_asset }}"
             "${{ steps.package.outputs.portable_asset }}"
             "${{ steps.package.outputs.checksum_asset }}"
+            "dist/player-beta/latest.json"
           )
+
+          release_title="OhMyCine Player ${TAG_NAME}"
+          release_flags=()
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+            release_title="${release_title} Beta"
+            release_flags+=(--prerelease --latest=false)
+          else
+            release_flags+=(--prerelease=false --latest)
+          fi
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "${assets[@]}" --clobber
             gh release edit "$TAG_NAME" \
-              --title "OhMyCine Player ${TAG_NAME} Beta" \
+              --title "$release_title" \
               --notes-file dist/player-beta/release-notes.md \
-              --prerelease
+              "${release_flags[@]}"
           else
             gh release create "$TAG_NAME" "${assets[@]}" \
-              --title "OhMyCine Player ${TAG_NAME} Beta" \
+              --title "$release_title" \
               --notes-file dist/player-beta/release-notes.md \
               --target "$GITHUB_SHA" \
-              --prerelease \
-              --latest=false
+              "${release_flags[@]}"
           fi

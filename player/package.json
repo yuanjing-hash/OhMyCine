@@ -18,6 +18,7 @@
     "verify:playback-source-lifecycle": "TMPDIR=/tmp tsx scripts/verify-playback-source-lifecycle.ts",
     "verify:window-fullscreen-resize": "TMPDIR=/tmp tsx scripts/verify-window-fullscreen-resize-sync.ts",
     "verify:subtitle-search": "TMPDIR=/tmp tsx scripts/verify-subtitle-search.ts",
+    "verify:auto-update": "TMPDIR=/tmp tsx scripts/verify-auto-update.ts",
     "verify:storage-portable": "TMPDIR=/tmp tsx scripts/verify-storage-portable-mode.ts",
     "verify:tmdb-auth": "TMPDIR=/tmp tsx scripts/verify-tmdb-auth-routing.ts",
     "tauri": "tauri",
