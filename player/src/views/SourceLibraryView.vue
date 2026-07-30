@@ -1738,7 +1738,7 @@ function labelForSourceType(type: string): string {
 
 <template>
   <div class="source-view relative min-h-full">
-    <div class="space-y-8 p-6 pb-28 pl-20 pt-16">
+    <div class="mobile-nav-safe space-y-8 px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
       <div v-if="!sourceConfig" class="flex flex-col items-center justify-center py-24">
         <p class="text-lg text-white/40">
           Data source not found
@@ -1752,11 +1752,11 @@ function labelForSourceType(type: string): string {
       </div>
 
       <template v-else>
-        <section v-if="isFolderView && !selectedLibrary && heroItems.length" class="-mx-6 -mt-16 overflow-hidden rounded-b-[2.4rem] md:-ml-20">
+        <section v-if="isFolderView && !selectedLibrary && heroItems.length" class="-mx-4 -mt-20 overflow-hidden rounded-b-[2.4rem] sm:-mx-6 md:-ml-20">
           <HeroCarousel :items="heroItems" @play="handlePlay" @detail="openDetail" />
         </section>
 
-        <section v-if="isMediaLibraryView && !selectedScannedCategory && sourceLandingHeroItems.length" class="-mx-6 -mt-16 overflow-hidden rounded-b-[2.4rem] md:-ml-20">
+        <section v-if="isMediaLibraryView && !selectedScannedCategory && sourceLandingHeroItems.length" class="-mx-4 -mt-20 overflow-hidden rounded-b-[2.4rem] sm:-mx-6 md:-ml-20">
           <HeroCarousel :items="sourceLandingHeroItems" @play="handlePlay" @detail="handleSelect" />
         </section>
 

@@ -92,7 +92,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative min-h-[560px] overflow-hidden bg-black">
+  <div class="relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]">
     <!-- Background -->
     <div
       v-if="currentItem()"
@@ -113,7 +113,7 @@ onUnmounted(() => {
     <div class="absolute inset-0 bg-gradient-to-t from-black/72 via-black/12 to-black/32" />
 
     <!-- Content -->
-    <div v-if="currentItem()" class="relative flex min-h-[560px] items-end p-10">
+    <div v-if="currentItem()" class="relative flex min-h-[30rem] items-end p-5 pb-16 sm:min-h-[35rem] sm:p-8 sm:pb-16 lg:p-10">
       <div class="max-w-2xl">
         <!-- Tagline -->
         <p v-if="currentItem()!.tagline" class="mb-3 text-sm font-medium uppercase tracking-widest text-primary-light/80">
@@ -121,7 +121,7 @@ onUnmounted(() => {
         </p>
 
         <!-- Title -->
-        <h2 class="text-5xl font-bold leading-tight text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.5)]">
+        <h2 class="text-3xl font-bold leading-tight text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.5)] sm:text-4xl lg:text-5xl">
           {{ currentItem()!.name }}
         </h2>
 
@@ -141,7 +141,7 @@ onUnmounted(() => {
         </p>
 
         <!-- Actions -->
-        <div class="mt-6 flex items-center gap-3">
+        <div class="mt-6 flex flex-wrap items-center gap-3">
           <button
             class="flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-black shadow-lg transition-transform hover:scale-105"
             :aria-label="currentItem() ? `${currentActionLabel} ${currentItem()!.name}` : currentActionLabel"
@@ -168,7 +168,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Navigation dots -->
-    <div v-if="items.length > 1" class="absolute bottom-4 right-8 flex items-center gap-2">
+    <div v-if="items.length > 1" class="absolute bottom-4 right-4 flex max-w-[calc(100vw-2rem)] items-center gap-2 sm:right-8">
       <button
         class="flex h-8 w-8 items-center justify-center rounded-full text-white/50 transition-colors hover:text-white hover:bg-white/10"
         aria-label="上一张推荐"

@@ -16,6 +16,18 @@ html, body {
   transition: background-color var(--duration-slow) var(--ease-in-out);
 }
 
+button,
+input,
+select {
+  touch-action: manipulation;
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .mobile-nav-safe {
+    padding-bottom: calc(6rem + env(safe-area-inset-bottom)) !important;
+  }
+}
+
 .cinema-scrollbar {
   scrollbar-color: rgba(255, 255, 255, 0.34) rgba(255, 255, 255, 0.04);
   scrollbar-width: thin;
