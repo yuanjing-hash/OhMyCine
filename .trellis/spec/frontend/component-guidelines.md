@@ -76,6 +76,7 @@ Required principles:
 - When raw file sources have completed local scraping, only `matched` items with metadata may join Home hero/latest rows. Treat those items like normal aggregate media items, not source-entry cards; unmatched, failed, skipped, or not-configured raw scan candidates stay inside the source page or `未识别`.
 - Server entries must not block local/Emby/Jellyfin/OpenList/Alist/CloudDrive2 browsing when disconnected.
 - `WindowChrome` handles frameless window drag/control surfaces and must remain above route/loading content; loading skeletons, hero gradients, and decorative overlays should not intercept pointer events unless they contain real controls.
+- Window maximize/restore and Player fullscreen are separate states. `WindowChrome` owns only minimize, maximize/restore, drag, and close; its maximize button must show a restore icon while maximized and must not be repurposed as the playback fullscreen action. Entering Player fullscreen from a maximized window should temporarily unmaximize, enter verified native fullscreen, and restore maximized state after exit.
 - Non-home routes must expose a visible back control in the global layout or route chrome. Prefer `router.back()` when `window.history.state?.back` exists; otherwise navigate to `/`.
 
 ### Back Navigation Control Contract
@@ -137,6 +138,7 @@ Required principles:
 - When a playback queue has multiple items, the queue/playlist control should be actionable and open a lightweight read-only queue panel/popover with thumbnail, title, brief metadata/overview, current item state, and click-to-switch behavior. Hide or disable it only for no-queue/single-item playback.
 - Reserve the playback settings panel for picture/display options such as aspect ratio, fit/fill mode, and future image-processing controls. Do not put recent-play/history, window always-on-top, fullscreen, speed, subtitle, audio, or queue actions in that panel.
 - The player fullscreen affordance belongs at the far right of the playback bar and should toggle the whole Player window/fullscreen experience, not only a nested DOM panel.
+- A native fullscreen call is successful only after `isFullscreen()` reports the requested state. Tauri window resize/focus events and browser `fullscreenchange` must resynchronize the control state so external Escape or OS transitions cannot leave a stale fullscreen icon.
 - Render diagnostics must not appear as a persistent chip in normal playback UI; keep diagnostics behind explicit debug shortcuts or debug-only panels.
 
 ### Immersive Player Chrome Contract

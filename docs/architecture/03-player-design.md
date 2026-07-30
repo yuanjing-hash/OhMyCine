@@ -2206,6 +2206,8 @@ src-tauri/
 
 构建脚本当前只在 Player CI、manual build 和 beta release 中准备 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。后续平台完成渲染器和打包链路时，再补充 macOS/Linux 下载、资源声明和 CI。
 
+Windows 透明 WebView 叠层与 mpv HWND 底层窗口必须使用单一几何时序：移动、缩放和 DPI 变化先由 WebView 在下一布局帧读取实际 surface rect，再把逻辑坐标传给 Rust 转换为物理像素。原生 owner resize 事件只负责最小化/恢复可见性和层级，不得抢先按 Win32 客户区尺寸拉伸视频，否则视频画面会领先控制遮罩层缩放。窗口最大化/还原与 Player 全屏也是独立状态；从最大化进入全屏时临时还原窗口，退出全屏后恢复最大化。
+
 ### 9.8 Android 策略
 
 Android 使用相同方案的移动端版本：

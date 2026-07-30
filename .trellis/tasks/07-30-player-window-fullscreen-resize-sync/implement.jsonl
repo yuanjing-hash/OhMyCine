@@ -1,0 +1,6 @@
+{"file":"player/src/components/layout/WindowChrome.vue","reason":"同步最大化状态并显示正确的最大化/还原图标。"}
+{"file":"player/src/components/player/PlayerControls.vue","reason":"实现最大化到全屏的可靠状态转换和实际状态确认。"}
+{"file":"player/src-tauri/src/mpv/platform/windows.rs","reason":"让 owner resize 等待 WebView surface bounds，避免原生视频抢跑。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"固化最大化、全屏和标题栏按钮职责。"}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"固化透明 WebView 与 mpv HWND 的 resize 时序。"}
+{"file":".github/workflows/player.yml","reason":"把全屏与 resize 专项回归接入常规 Player CI。"}

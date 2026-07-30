@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -14,16 +15,46 @@ const router = useRouter()
 
 let dragStart: { x: number, y: number } | null = null
 let isDragStarting = false
+let disposed = false
+const windowEventUnlisteners: Array<() => void> = []
+const isMaximized = ref(false)
+const isFullscreen = ref(false)
+
+async function syncWindowState() {
+  try {
+    const [maximized, fullscreen] = await Promise.all([
+      appWindow.isMaximized(),
+      appWindow.isFullscreen(),
+    ])
+    isMaximized.value = maximized
+    isFullscreen.value = fullscreen
+  }
+  catch {
+    // Browser development mode has no native window state.
+  }
+}
+
+function trackWindowListener(listener: Promise<() => void>) {
+  void listener.then((unlisten) => {
+    if (disposed)
+      unlisten()
+    else
+      windowEventUnlisteners.push(unlisten)
+  }).catch(() => undefined)
+}
 
 async function minimize() {
   await appWindow.minimize()
 }
 
 async function toggleMaximize() {
+  if (await appWindow.isFullscreen())
+    return
   if (await appWindow.isMaximized())
     await appWindow.unmaximize()
   else
     await appWindow.maximize()
+  await syncWindowState()
 }
 
 async function close() {
@@ -67,6 +98,19 @@ async function dragIfMoved(event: MouseEvent) {
 function endDrag() {
   dragStart = null
 }
+
+onMounted(() => {
+  void syncWindowState()
+  trackWindowListener(appWindow.onResized(syncWindowState))
+  trackWindowListener(appWindow.onFocusChanged(syncWindowState))
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  for (const unlisten of windowEventUnlisteners)
+    unlisten()
+  windowEventUnlisteners.length = 0
+})
 </script>
 
 <template>
@@ -75,6 +119,7 @@ function endDrag() {
     <div
       data-tauri-drag-region
       class="pointer-events-auto absolute inset-x-0 top-0 z-0 h-16"
+      :class="{ hidden: isFullscreen }"
       @dblclick="toggleMaximize"
       @mousedown="beginDrag"
       @mouseleave="endDrag"
@@ -85,6 +130,7 @@ function endDrag() {
     <!-- Player route keeps a compact back affordance above the drag region without restoring the full nav. -->
     <button
       v-if="hideNav && route.path !== '/'"
+      v-show="!isFullscreen"
       class="glass-panel player-window-back pointer-events-auto absolute left-6 top-3 z-20 flex h-10 items-center gap-2 rounded-2xl px-3 text-sm font-semibold transition-all duration-200"
       type="button"
       title="返回"
@@ -98,7 +144,7 @@ function endDrag() {
     </button>
 
     <!-- Center navigation glass panel -->
-    <nav v-if="!hideNav" class="glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
+    <nav v-if="!hideNav" v-show="!isFullscreen" class="glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200"
         :class="route.path === '/' || route.path.startsWith('/source') ? 'is-active' : ''"
@@ -126,7 +172,7 @@ function endDrag() {
     </nav>
 
     <!-- Separate window controls glass panel -->
-    <div class="glass-panel pointer-events-auto absolute right-6 top-3 z-10 flex items-center gap-1 rounded-2xl px-2 py-1.5">
+    <div v-show="!isFullscreen" class="glass-panel pointer-events-auto absolute right-6 top-3 z-10 flex items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn gp-win-ctrl flex h-10 w-10 items-center justify-center rounded-xl transition-colors"
         @click.stop="minimize"
@@ -137,9 +183,15 @@ function endDrag() {
       </button>
       <button
         class="gp-btn gp-win-ctrl flex h-10 w-10 items-center justify-center rounded-xl transition-colors"
+        :title="isMaximized ? '还原窗口' : '最大化窗口'"
+        :aria-label="isMaximized ? '还原窗口' : '最大化窗口'"
         @click.stop="toggleMaximize"
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <svg v-if="isMaximized" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <rect x="1.75" y="3.75" width="6.5" height="6.5" rx="1" stroke="currentColor" stroke-width="1.25" />
+          <path d="M3.75 3.5V2.75a1 1 0 0 1 1-1h4.5a1 1 0 0 1 1 1v4.5a1 1 0 0 1-1 1H8.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+        </svg>
+        <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
           <rect x="2.5" y="2.5" width="7" height="7" rx="1.2" stroke="currentColor" stroke-width="1.5" />
         </svg>
       </button>

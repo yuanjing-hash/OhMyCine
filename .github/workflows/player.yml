@@ -55,6 +55,9 @@ jobs:
       - name: Verify TMDB auth routing
         run: npm run verify:tmdb-auth
 
+      - name: Verify window fullscreen and resize synchronization
+        run: npm run verify:window-fullscreen-resize
+
   build:
     needs: quality
     runs-on: ubuntu-latest
