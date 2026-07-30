@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import type { SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { SubtitleLanguage } from '@/services/subtitle'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+
+type SubtitleKeywordMode = 'mediaTitle' | 'fileName' | 'custom'
 
 const props = defineProps<{
   open: boolean
   requiresSourceChoice: boolean
   origin: SubtitleSearchOrigin | null
   defaultLanguage: SubtitleLanguage
+  mediaTitle: string
+  fileName: string
   results: readonly SubtitleSearchResult[]
   loading: boolean
   downloadingId: string | null
@@ -17,12 +21,20 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   selectOrigin: [origin: SubtitleSearchOrigin]
-  search: [language: SubtitleLanguage]
+  search: [language: SubtitleLanguage, keyword: string]
   download: [result: SubtitleSearchResult]
   back: []
 }>()
 
 const language = ref<SubtitleLanguage>(props.defaultLanguage)
+const keywordMode = ref<SubtitleKeywordMode>('mediaTitle')
+const customKeyword = ref('')
+const selectedKeyword = computed(() => {
+  if (keywordMode.value === 'custom')
+    return customKeyword.value.trim()
+  return keywordMode.value === 'fileName' ? props.fileName.trim() : props.mediaTitle.trim()
+})
+const effectiveKeyword = computed(() => props.origin === 'local' ? selectedKeyword.value : props.mediaTitle.trim())
 
 const languages: Array<{ value: SubtitleLanguage, label: string }> = [
   { value: 'zh-CN', label: '简体中文' },
@@ -35,6 +47,10 @@ const languages: Array<{ value: SubtitleLanguage, label: string }> = [
 watch(() => props.open, (open) => {
   if (open)
     language.value = props.defaultLanguage
+  if (open) {
+    keywordMode.value = 'mediaTitle'
+    customKeyword.value = ''
+  }
 })
 
 function resultMeta(result: SubtitleSearchResult): string {
@@ -102,21 +118,50 @@ function resultFlags(result: SubtitleSearchResult): string[] {
       </div>
 
       <template v-else>
-        <div class="flex flex-wrap items-end gap-3 border-b border-white/8 px-6 py-4">
-          <button v-if="requiresSourceChoice" type="button" class="rounded-xl bg-white/8 px-3 py-2 text-sm font-semibold text-white/68 transition-colors hover:bg-white/14 hover:text-white" @click="emit('back')">
-            返回选择来源
-          </button>
-          <label class="min-w-44 flex-1">
-            <span class="text-xs font-semibold uppercase tracking-[0.16em] text-white/38">字幕语言</span>
-            <select v-model="language" class="mt-2 w-full rounded-xl border border-white/10 bg-white/8 px-3 py-2.5 text-sm text-white outline-none focus:border-primary/55">
-              <option v-for="option in languages" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </option>
-            </select>
-          </label>
-          <button type="button" class="rounded-xl bg-primary/80 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55" :disabled="loading || downloadingId !== null" @click="emit('search', language)">
-            {{ loading ? '搜索中…' : '开始搜索' }}
-          </button>
+        <div class="border-b border-white/8 px-6 py-4">
+          <div v-if="origin === 'local'" class="mb-4">
+            <span class="text-xs font-semibold uppercase tracking-[0.16em] text-white/38">搜索关键词</span>
+            <div class="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-white/5 p-1" role="group" aria-label="字幕搜索关键词来源">
+              <button type="button" class="rounded-lg px-3 py-2 text-xs font-semibold transition-colors" :class="keywordMode === 'mediaTitle' ? 'bg-white/14 text-white' : 'text-white/46 hover:text-white/76'" @click="keywordMode = 'mediaTitle'">
+                媒体名称
+              </button>
+              <button type="button" class="rounded-lg px-3 py-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-35" :class="keywordMode === 'fileName' ? 'bg-white/14 text-white' : 'text-white/46 hover:text-white/76'" :disabled="!fileName" @click="keywordMode = 'fileName'">
+                原始文件名
+              </button>
+              <button type="button" class="rounded-lg px-3 py-2 text-xs font-semibold transition-colors" :class="keywordMode === 'custom' ? 'bg-white/14 text-white' : 'text-white/46 hover:text-white/76'" @click="keywordMode = 'custom'">
+                自定义
+              </button>
+            </div>
+            <input
+              v-if="keywordMode === 'custom'"
+              v-model="customKeyword"
+              class="mt-2 w-full rounded-xl border border-white/10 bg-white/8 px-3 py-2.5 text-sm text-white outline-none placeholder:text-white/28 focus:border-primary/55"
+              type="text"
+              maxlength="160"
+              placeholder="输入片名、年份或发布版本"
+              @keydown.enter.prevent="effectiveKeyword && emit('search', language, effectiveKeyword)"
+            >
+            <div v-else class="mt-2 truncate rounded-xl border border-white/8 bg-white/5 px-3 py-2.5 text-sm text-white/66" :title="selectedKeyword">
+              {{ selectedKeyword || '当前没有可用关键词' }}
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-end gap-3">
+            <button v-if="requiresSourceChoice" type="button" class="rounded-xl bg-white/8 px-3 py-2 text-sm font-semibold text-white/68 transition-colors hover:bg-white/14 hover:text-white" @click="emit('back')">
+              返回选择来源
+            </button>
+            <label class="min-w-44 flex-1">
+              <span class="text-xs font-semibold uppercase tracking-[0.16em] text-white/38">字幕语言</span>
+              <select v-model="language" class="mt-2 w-full rounded-xl border border-white/10 bg-white/8 px-3 py-2.5 text-sm text-white outline-none focus:border-primary/55">
+                <option v-for="option in languages" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <button type="button" class="rounded-xl bg-primary/80 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55" :disabled="loading || downloadingId !== null || !effectiveKeyword" @click="emit('search', language, effectiveKeyword)">
+              {{ loading ? '搜索中…' : '开始搜索' }}
+            </button>
+          </div>
         </div>
 
         <div class="min-h-48 flex-1 overflow-y-auto p-4">

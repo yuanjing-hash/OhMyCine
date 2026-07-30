@@ -338,9 +338,10 @@ export interface DataSource {
 - Emby 媒体点击“搜索字幕”后先选择 `Emby 搜索` 或 `本地搜索`。Emby 搜索调用服务端远程字幕 API，下载由 Emby 保存；Player 刷新媒体轨道并把新增外部字幕立即加载到 mpv。
 - OpenList/Alist、CloudDrive2、WebDAV、本地文件等其他媒体源直接进入 Player 本地搜索，不显示 Emby 来源选择。
 - Player 本地搜索通过独立 `SubtitleProvider` 抽象扩展，当前支持 OpenSubtitles、射手网和迅雷字幕，不在 Vue 组件中抓取网站页面。
-- 各字幕提供器独立运行和容错。OpenSubtitles 未配置 API Key 时只跳过自身，不得阻断已启用的射手网或迅雷字幕；单个提供器失败也不得丢弃其他提供器已经返回的结果。
-- OpenSubtitles API Key 保存到 Player 凭据边界；可选账号密码通过官方 `/login` 换取 JWT。官方账号登录仍要求请求携带 API Key，设置界面必须把必需的 API 访问凭据和可选账号会话分区呈现。密码只保存在凭据库，JWT 只存在 Rust 进程内并按有效期刷新。
-- OpenSubtitles 搜索和下载由 Tauri Rust 受控 HTTP 命令执行。只允许 HTTPS OpenSubtitles 域名、有限重定向和有限响应体。
+- 各字幕提供器独立运行和容错。OpenSubtitles 未配置时只跳过自身，不得阻断已启用的射手网或迅雷字幕；是否允许本地哈希只根据当前播放目标是否为真实本机绝对路径判断，不额外依赖可能尚未同步的数据源类型。单个提供器失败也不得丢弃其他提供器已经返回的结果。
+- OpenSubtitles 提供互斥的二选一认证：API Key 模式使用 OpenSubtitles.com REST API；账号密码模式使用固定 HTTPS OpenSubtitles.org XML-RPC 接口，不要求用户再填写 API Key。旧版 `API Key + 账号` 凭据迁移时，有完整账号密码则转为账号模式，否则转为 API Key 模式。
+- 两种 OpenSubtitles 凭据都保存到 Player 凭据边界。REST 下载只接受受信任 HTTPS OpenSubtitles 域名；XML-RPC 固定请求官方 HTTPS 端点，限制响应大小，账号会话只保存在 Rust 进程内，下载内容经受限 Base64/gzip 解码后写入 Tauri 字幕缓存。
+- 字幕搜索关键词提供三种明确来源：默认使用刮削/展示媒体名称；可切换为不含目录的原始文件名；也可手动输入自定义关键词。不得把目录、签名 URL、查询参数、本地绝对路径或凭据作为标题查询发送给字幕服务。
 - 射手网使用本地视频四段 MD5 内容哈希，通过固定 HTTPS API 精确匹配；迅雷字幕使用本地视频三段 SHA-1 CID。两者当前只参与本地文件播放，远程数据源不读取 Range 内容计算哈希。
 - 迅雷 CID 查询接口当前仅提供固定 HTTP 地址，因此设置中默认关闭并明确标记实验性；字幕下载地址必须升级并限制到 `subtitle.v.geilijiasu.com` HTTPS。
 - 本地绝对路径只通过 IPC 进入 Rust 读取哈希片段。外部字幕服务只接收内容哈希、文件名和语言，不接收绝对路径、远程播放 URL、数据源账号或 Token。

@@ -912,7 +912,7 @@ function resetSubtitleSearchOrigin() {
   subtitleSearchError.value = null
 }
 
-async function searchSubtitles(language: SubtitleLanguage) {
+async function searchSubtitles(language: SubtitleLanguage, keyword: string) {
   const origin = subtitleSearchOrigin.value
   if (!origin)
     return
@@ -921,7 +921,7 @@ async function searchSubtitles(language: SubtitleLanguage) {
   subtitleSearchError.value = null
   subtitleSearchResults.value = []
   try {
-    const context = currentSubtitleSearchContext()
+    const context = currentSubtitleSearchContext(keyword)
     if (origin === 'emby') {
       store.loadConfigs()
       await store.syncManager()
@@ -982,14 +982,14 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
   }
 }
 
-function currentSubtitleSearchContext(): SubtitleSearchMediaContext {
+function currentSubtitleSearchContext(keyword?: string): SubtitleSearchMediaContext {
   const playbackContext = currentPlaybackContext()
   const detail = playbackContext?.detail
   const queueItem = currentQueueItem.value
   return {
     itemId: activeItemId.value || playbackContext?.itemId || queueItem?.id || '',
     mediaSourceId: currentMediaSourceId(),
-    title: mediaTitle.value || detail?.name || queueItem?.title || queueItem?.name || '未命名影片',
+    title: keyword?.trim() || currentSubtitleMediaTitle(),
     localFilePath: currentLocalSubtitleFilePath(),
     year: detail?.year,
     mediaType: activeMediaType.value ?? detail?.type ?? queueItem?.type,
@@ -1001,17 +1001,60 @@ function currentSubtitleSearchContext(): SubtitleSearchMediaContext {
 }
 
 function currentLocalSubtitleFilePath(): string | undefined {
-  const sourceId = currentDisplaySourceId()
-  const sourceType = store.configs.find(config => config.id === sourceId)?.type
-  if (sourceId !== LOCAL_FILE_SOURCE_ID && sourceType !== 'local')
-    return undefined
-
+  const locator = currentPlaybackContext()?.locator
+  if (locator?.kind === 'localPath' && isAbsoluteLocalMediaPath(locator.path))
+    return locator.path.trim()
   const value = mediaPath.value.trim()
-  if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value))
-    return undefined
-  return /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/')
-    ? value
-    : undefined
+  return isAbsoluteLocalMediaPath(value) ? value : undefined
+}
+
+function isAbsoluteLocalMediaPath(value: string): boolean {
+  return Boolean(value)
+    && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)
+    && (/^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/'))
+}
+
+function currentSubtitleMediaTitle(): string {
+  const playbackContext = currentPlaybackContext()
+  const queueItem = currentQueueItem.value
+  const value = playbackContext?.detail?.name
+    || queueItem?.title
+    || queueItem?.name
+    || mediaTitle.value
+    || '未命名影片'
+  return value.replace(/\.[a-z0-9]{2,5}$/i, '').trim() || value
+}
+
+function currentSubtitleFileName(): string {
+  const playbackContext = currentPlaybackContext()
+  const candidates = [
+    currentLocalSubtitleFilePath(),
+    currentQueueItem.value?.path,
+    playbackContext?.detail?.path,
+    mediaPath.value,
+  ]
+  for (const candidate of candidates) {
+    const fileName = subtitleFileNameFromPath(candidate)
+    if (fileName)
+      return fileName
+  }
+  return ''
+}
+
+function subtitleFileNameFromPath(value: string | undefined): string {
+  const trimmed = value?.trim()
+  if (!trimmed)
+    return ''
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      const pathname = new URL(trimmed).pathname
+      return decodeURIComponent(pathname.split('/').filter(Boolean).at(-1) ?? '')
+    }
+  }
+  catch {
+    return ''
+  }
+  return trimmed.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? ''
 }
 
 function showTransientPlayerMessage(message: string) {
@@ -1609,6 +1652,8 @@ watch(
         :requires-source-choice="subtitleSearchRequiresSourceChoice"
         :origin="subtitleSearchOrigin"
         :default-language="subtitleSearchDefaultLanguage"
+        :media-title="currentSubtitleMediaTitle()"
+        :file-name="currentSubtitleFileName()"
         :results="subtitleSearchResults"
         :loading="subtitleSearchLoading"
         :downloading-id="subtitleDownloadingId"
