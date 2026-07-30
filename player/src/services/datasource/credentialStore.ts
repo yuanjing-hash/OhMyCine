@@ -32,6 +32,8 @@ export interface TmdbCredentialValue {
 
 export interface OpenSubtitlesCredentialValue {
   readonly apiKey: string
+  readonly username?: string
+  readonly password?: string
 }
 
 type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb' | 'opensubtitles'
@@ -73,9 +75,11 @@ interface StoredTmdbCredentialEnvelope {
 }
 
 interface StoredOpenSubtitlesCredentialEnvelope {
-  readonly version: 1
+  readonly version: 2
   readonly provider: 'opensubtitles'
   readonly apiKey: string
+  readonly username?: string
+  readonly password?: string
 }
 
 export function createCredentialRef(sourceId: string, provider: CredentialProvider = 'emby'): string {
@@ -185,10 +189,17 @@ export async function saveOpenSubtitlesCredential(ref: string, value: OpenSubtit
   if (!value.apiKey.trim())
     throw new Error('Credential value is incomplete.')
 
+  const username = value.username?.trim() || undefined
+  const password = value.password || undefined
+  if (Boolean(username) !== Boolean(password))
+    throw new Error('OpenSubtitles account credential is incomplete.')
+
   await saveRawCredential(ref, JSON.stringify({
-    version: 1,
+    version: 2,
     provider: 'opensubtitles',
     apiKey: value.apiKey.trim(),
+    username,
+    password,
   } satisfies StoredOpenSubtitlesCredentialEnvelope))
 }
 
@@ -210,6 +221,18 @@ export async function removeCredential(ref: string): Promise<void> {
 
 export function hasPersistentCredentialStorageWarning(): boolean {
   return getAppSetting(PERSISTENT_UNAVAILABLE_KEY) === 'true'
+}
+
+export async function probePersistentCredentialStorage(): Promise<boolean> {
+  try {
+    await invoke<string | null>('credential_get', { refName: 'player:credential-health-check' })
+    await removeAppSetting(PERSISTENT_UNAVAILABLE_KEY)
+    return true
+  }
+  catch {
+    await setAppSetting(PERSISTENT_UNAVAILABLE_KEY, 'true')
+    return false
+  }
 }
 
 async function saveRawCredential(ref: string, value: string): Promise<void> {
@@ -272,9 +295,20 @@ function parseOpenSubtitlesCredential(raw: string | null): OpenSubtitlesCredenti
     const value = JSON.parse(raw) as unknown
     if (!isObject(value))
       return null
-    if (value.provider !== 'opensubtitles' || value.version !== 1 || typeof value.apiKey !== 'string' || !value.apiKey.trim())
+    if (value.provider !== 'opensubtitles' || (value.version !== 1 && value.version !== 2) || typeof value.apiKey !== 'string' || !value.apiKey.trim())
       return null
-    return { apiKey: value.apiKey.trim() }
+    if (value.version === 1)
+      return { apiKey: value.apiKey.trim() }
+
+    const username = typeof value.username === 'string' ? value.username.trim() : ''
+    const password = typeof value.password === 'string' ? value.password : ''
+    if (Boolean(username) !== Boolean(password))
+      return null
+    return {
+      apiKey: value.apiKey.trim(),
+      username: username || undefined,
+      password: password || undefined,
+    }
   }
   catch {
     return null

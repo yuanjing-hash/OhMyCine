@@ -1,7 +1,7 @@
 import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
-import { readOpenSubtitlesApiKey } from './settings'
+import { readOpenSubtitlesCredentials } from './settings'
 
 interface OpenSubtitlesSearchResponse {
   data?: unknown[]
@@ -33,10 +33,10 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
   readonly name = 'OpenSubtitles'
 
   async search(input: LocalSubtitleSearchInput): Promise<SubtitleSearchResult[]> {
-    const apiKey = await requiredApiKey()
+    const credential = await requiredCredential()
     const payload = await invoke<OpenSubtitlesSearchResponse>('subtitle_search_opensubtitles', {
       request: {
-        apiKey,
+        ...credential,
         language: toOpenSubtitlesLanguage(input.language),
         query: input.title,
         imdbId: input.imdbId,
@@ -54,13 +54,13 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
   }
 
   async download(result: SubtitleSearchResult): Promise<LocalSubtitleDownloadResult> {
-    const apiKey = await requiredApiKey()
+    const credential = await requiredCredential()
     const fileId = Number.parseInt(result.downloadRef ?? '', 10)
     if (!Number.isSafeInteger(fileId) || fileId <= 0)
       throw new Error('该 OpenSubtitles 结果缺少可下载文件。')
 
     const downloaded = await invoke<DownloadedSubtitle>('subtitle_download_opensubtitles', {
-      request: { apiKey, fileId },
+      request: { ...credential, fileId },
     })
     return {
       path: downloaded.path,
@@ -71,11 +71,11 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
   }
 }
 
-async function requiredApiKey(): Promise<string> {
-  const apiKey = await readOpenSubtitlesApiKey()
-  if (!apiKey)
+async function requiredCredential() {
+  const credential = await readOpenSubtitlesCredentials()
+  if (!credential)
     throw new Error('尚未配置 OpenSubtitles API Key，请先到“设置 → 播放与字幕”完成配置。')
-  return apiKey
+  return credential
 }
 
 function parseRecord(value: unknown): SubtitleSearchResult | null {

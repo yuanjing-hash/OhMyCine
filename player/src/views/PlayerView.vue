@@ -988,6 +988,7 @@ function currentSubtitleSearchContext(): SubtitleSearchMediaContext {
     itemId: activeItemId.value || playbackContext?.itemId || queueItem?.id || '',
     mediaSourceId: currentMediaSourceId(),
     title: mediaTitle.value || detail?.name || queueItem?.title || queueItem?.name || '未命名影片',
+    localFilePath: currentLocalSubtitleFilePath(),
     year: detail?.year,
     mediaType: activeMediaType.value ?? detail?.type ?? queueItem?.type,
     seasonNumber: detail?.seasonNumber ?? queueItem?.seasonNumber,
@@ -995,6 +996,20 @@ function currentSubtitleSearchContext(): SubtitleSearchMediaContext {
     imdbId: detail?.imdbId,
     tmdbId: detail?.tmdbId,
   }
+}
+
+function currentLocalSubtitleFilePath(): string | undefined {
+  const sourceId = currentDisplaySourceId()
+  const sourceType = store.configs.find(config => config.id === sourceId)?.type
+  if (sourceId !== LOCAL_FILE_SOURCE_ID && sourceType !== 'local')
+    return undefined
+
+  const value = mediaPath.value.trim()
+  if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value))
+    return undefined
+  return /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/')
+    ? value
+    : undefined
 }
 
 function showTransientPlayerMessage(message: string) {

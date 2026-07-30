@@ -142,6 +142,8 @@ Required principles:
 - Render diagnostics must not appear as a persistent chip in normal playback UI; keep diagnostics behind explicit debug shortcuts or debug-only panels.
 - The subtitle menu ends with a `搜索字幕` action. For Emby playback it first asks the user to choose `Emby 搜索` or `本地搜索`; for every non-Emby source it opens Player local search directly. Do not silently merge both origins into one request.
 - Subtitle search results identify their provider and useful match metadata. Downloading a result loads it into the current mpv session without leaving playback; search/download errors remain in the dialog and must not expose credentials or signed URLs.
+- Local subtitle settings expose OpenSubtitles API Key plus optional account login, Shooter, and Xunlei provider switches. OpenSubtitles account login never replaces the required API Key. Shooter is local-file hash matching; Xunlei is an explicitly marked experimental opt-in because its fixed CID query endpoint is HTTP-only.
+- Shooter and Xunlei must not run for remote playback until a separately designed bounded Range-hash path exists. The UI may pass a local path to native Rust hashing, but external providers receive only content hashes, file name, and language.
 - Settings exposes a dedicated software-update surface with an auto-check toggle, Beta/Stable segmented choice, explicit save feedback, and a manual check action. Beta means prerelease plus stable; Stable excludes prerelease.
 - A discovered update opens a global confirmation dialog with version, notes, signature assurance, and download progress. Never silently install or close active playback; installation begins only after the user clicks the install action.
 

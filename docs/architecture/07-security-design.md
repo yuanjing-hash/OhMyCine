@@ -377,7 +377,15 @@ api_key=sk-***redacted***
 Location=https://cdn.example.com/file?token=***redacted***
 ```
 
-### 10.4 Player 更新信任根
+### 10.4 Player 字幕提供器凭据与下载边界
+
+- OpenSubtitles REST API 始终要求应用 API Key。用户可选保存账号密码换取账号 JWT；API Key、账号和密码进入 Player 凭据库，JWT 只缓存于 Rust 进程内，不写入 SQLite 普通设置、日志或导出配置。
+- 射手网和迅雷字幕只对本地视频计算内容哈希。绝对路径不离开 Player；外部服务只接收哈希、文件名和语言。
+- 射手网搜索和下载固定到 HTTPS `www.shooter.cn`。迅雷 CID 查询固定到 `sub.xmp.sandai.net:8000`，由于仅支持 HTTP，必须默认关闭并由用户显式启用；下载 URL 必须升级并限制到 HTTPS `subtitle.v.geilijiasu.com`。
+- 射手网和迅雷返回的下载 URL 不进入 Vue 状态、设置或日志。Rust 使用有数量和时间上限的短期不透明引用映射，并在下载时再次校验提供器和域名。
+- 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式的 `cache/subtitles`。
+
+### 10.5 Player 更新信任根
 
 - Player updater 公钥可以提交到仓库和打包进应用；私钥不得提交、打印、写入 Release notes 或普通构建产物。
 - 本地私钥默认位于 `~/.config/ohmycine/updater/ohmycine-updater.key`，权限必须为 `0600`，并在首次正式发布前做离线备份。

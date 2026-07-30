@@ -32,10 +32,12 @@ use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_sc
 use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
 };
-use commands::subtitle::{subtitle_download_opensubtitles, subtitle_search_opensubtitles};
-use commands::updater::{
-    player_check_for_updates, player_install_update, PendingUpdate,
+use commands::subtitle::{
+    subtitle_download_hash_provider, subtitle_download_opensubtitles, subtitle_login_opensubtitles,
+    subtitle_search_hash_provider, subtitle_search_opensubtitles, OpenSubtitlesSessionState,
+    SubtitleDownloadState,
 };
+use commands::updater::{player_check_for_updates, player_install_update, PendingUpdate};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -51,6 +53,8 @@ fn main() {
         .manage(CloudDrive2GrpcState::default())
         .manage(LocalFileWatcherState::default())
         .manage(PendingUpdate::default())
+        .manage(OpenSubtitlesSessionState::default())
+        .manage(SubtitleDownloadState::default())
         .invoke_handler(tauri::generate_handler![
             credential_set,
             credential_get,
@@ -73,6 +77,9 @@ fn main() {
             player_get_storage_info,
             subtitle_search_opensubtitles,
             subtitle_download_opensubtitles,
+            subtitle_login_opensubtitles,
+            subtitle_search_hash_provider,
+            subtitle_download_hash_provider,
             player_check_for_updates,
             player_install_update,
             local_file_list,

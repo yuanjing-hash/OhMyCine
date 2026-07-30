@@ -139,6 +139,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
                 <span class="min-w-0">
                   <span class="block truncate text-sm font-bold text-white">{{ result.title }}</span>
                   <span class="mt-1 block text-xs leading-5 text-white/42">{{ resultMeta(result) }}</span>
+                  <span v-if="result.comments" class="mt-1 block line-clamp-2 text-xs leading-5 text-white/34">{{ result.comments }}</span>
                   <span v-if="resultFlags(result).length" class="mt-2 flex flex-wrap gap-1.5">
                     <small v-for="flag in resultFlags(result)" :key="flag" class="rounded-full bg-white/8 px-2 py-1 text-[10px] font-semibold text-white/52">{{ flag }}</small>
                   </span>
