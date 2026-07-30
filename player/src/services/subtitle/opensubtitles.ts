@@ -73,7 +73,7 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
 
 async function requiredCredential() {
   const credential = await readOpenSubtitlesCredentials()
-  if (!credential)
+  if (!credential?.apiKey.trim())
     throw new Error('尚未配置 OpenSubtitles API Key，请先到“设置 → 播放与字幕”完成配置。')
   return credential
 }

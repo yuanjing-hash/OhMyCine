@@ -2,7 +2,7 @@ import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitlePro
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { HashSubtitleProvider } from './hashProviders'
 import { OpenSubtitlesProvider } from './opensubtitles'
-import { loadSubtitleSearchSettings } from './settings'
+import { loadSubtitleSearchSettings, readOpenSubtitlesCredentials } from './settings'
 
 const providers: Record<'opensubtitles' | 'shooter' | 'xunlei', SubtitleProvider> = {
   opensubtitles: new OpenSubtitlesProvider(),
@@ -12,13 +12,27 @@ const providers: Record<'opensubtitles' | 'shooter' | 'xunlei', SubtitleProvider
 
 export async function searchLocalSubtitles(input: LocalSubtitleSearchInput): Promise<SubtitleSearchResult[]> {
   const settings = loadSubtitleSearchSettings()
+  const openSubtitlesCredential = settings.openSubtitlesEnabled
+    ? await readOpenSubtitlesCredentials()
+    : null
+  const hasOpenSubtitlesApiKey = Boolean(openSubtitlesCredential?.apiKey.trim())
+  const canUseHashProviders = Boolean(input.localFilePath)
   const enabledProviders = [
-    settings.openSubtitlesEnabled ? providers.opensubtitles : null,
-    settings.shooterEnabled ? providers.shooter : null,
-    settings.xunleiEnabled ? providers.xunlei : null,
+    settings.openSubtitlesEnabled && hasOpenSubtitlesApiKey ? providers.opensubtitles : null,
+    settings.shooterEnabled && canUseHashProviders ? providers.shooter : null,
+    settings.xunleiEnabled && canUseHashProviders ? providers.xunlei : null,
   ].filter((provider): provider is SubtitleProvider => provider != null)
-  if (enabledProviders.length === 0)
-    throw new Error('当前没有启用的 Player 本地字幕提供器，请先到“设置 → 播放与字幕”启用。')
+
+  if (enabledProviders.length === 0 && settings.openSubtitlesEnabled && !hasOpenSubtitlesApiKey) {
+    if (!canUseHashProviders && (settings.shooterEnabled || settings.xunleiEnabled))
+      throw new Error('射手网和迅雷字幕目前只支持本地视频；当前媒体还需要配置 OpenSubtitles API Key 才能搜索。')
+    throw new Error('尚未配置可用于当前媒体的字幕提供器。可配置 OpenSubtitles API Key，或为本地视频启用射手网、迅雷字幕。')
+  }
+  if (enabledProviders.length === 0) {
+    throw new Error(canUseHashProviders
+      ? '当前没有启用的 Player 本地字幕提供器，请先到“设置 → 播放与字幕”启用。'
+      : '当前媒体没有可用的字幕提供器。射手网和迅雷字幕目前只支持本地视频。')
+  }
 
   const settled = await Promise.allSettled(enabledProviders.map(provider => provider.search(input)))
   const results = settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])
