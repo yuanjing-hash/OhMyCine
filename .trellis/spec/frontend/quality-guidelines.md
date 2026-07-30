@@ -55,6 +55,8 @@ For Tauri/Rust changes, also run the relevant Cargo command when configured, suc
 
 When cross-compiling Windows GNU targets from WSL, prefer the rustup toolchain explicitly if PATH contains another Rust distribution. Homebrew/system `cargo` can see project config but not rustup-installed target stdlibs, causing false `can't find crate for core/std` failures. Use `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path player/src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` for the target check, and pass the same `RUSTC` override to Windows package builds.
 
+Runtime verification must be non-destructive by default. Preserve the owner's existing standard and portable Player profiles, including data sources, credentials, settings, playback history, scrape caches, and WebView state. Tests that need a clean profile should use an isolated temporary/portable directory. Never clear the real profile unless the owner explicitly requests it or approves the exact destructive test scope in advance.
+
 When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavior, the verification contract is:
 
 | Case | Required check | Completion rule |

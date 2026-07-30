@@ -173,6 +173,8 @@ When working on Windows desktop packaging, WebView2, MSVC, Windows-specific libm
 
 Do not silently assume a WSL-built artifact is equivalent to a Windows-native Tauri desktop build.
 
+Player runtime tests must preserve the owner's existing standard and portable profiles by default. Do not delete, reset, migrate, or overwrite configured data sources, credentials, settings, playback history, scrape caches, WebView data, or app-data directories merely to obtain a clean test state. Use an isolated temporary profile, a fresh portable test directory, or non-destructive inspection instead. Destructive profile cleanup is allowed only when the owner explicitly requests it or when a test genuinely cannot proceed otherwise; in the latter case, explain the exact paths and data scope and obtain confirmation before deletion.
+
 ## Development commands
 
 The repository currently may not have runnable component directories yet. Use the commands below only once the relevant component files exist. Prefer running them inside WSL unless the task specifically requires Windows-native desktop packaging or runtime testing.

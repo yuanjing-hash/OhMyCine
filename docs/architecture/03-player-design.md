@@ -1564,6 +1564,12 @@ export const useSettingsStore = defineStore('settings', () => {
 
 ## 7. 设计系统 — Cinema OS
 
+### 应用图标
+
+OhMyCine 使用“影院之眼”作为应用主标识：深黑圆角银幕底、白色 O 形镜头/光圈结构，以及暖红色播放光束。标记不使用胶片条、爆米花或场记板等常见影视模板，确保在 Windows 任务栏、安装包和未来移动端桌面图标的 16–32px 小尺寸下仍有清晰轮廓。
+
+透明母版位于 `player/src-tauri/icons/icon.png`，`32x32.png`、`128x128.png`、`128x128@2x.png`、`icon.ico` 和 `icon.icns` 均由 Tauri CLI 从该母版生成，不直接手工修改派生文件。后续 Android/iOS 工程建立时继续使用同一母版生成平台资源，避免不同平台出现多套品牌标记。
+
 ### 7.1 设计Token (CSS Variables)
 
 ```css
