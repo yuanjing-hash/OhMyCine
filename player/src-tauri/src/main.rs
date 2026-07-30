@@ -33,6 +33,9 @@ use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
 };
 use commands::subtitle::{subtitle_download_opensubtitles, subtitle_search_opensubtitles};
+use commands::updater::{
+    player_check_for_updates, player_install_update, PendingUpdate,
+};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -43,9 +46,11 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(mpv_state)
         .manage(CloudDrive2GrpcState::default())
         .manage(LocalFileWatcherState::default())
+        .manage(PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             credential_set,
             credential_get,
@@ -68,6 +73,8 @@ fn main() {
             player_get_storage_info,
             subtitle_search_opensubtitles,
             subtitle_download_opensubtitles,
+            player_check_for_updates,
+            player_install_update,
             local_file_list,
             local_file_metadata,
             local_file_stream_path,

@@ -18,6 +18,7 @@ Planned stores:
 - `media`: cached media lists, selected item/detail, playback history, continue watching.
 - `server`: optional Server URL/session/status, sync status, enhanced feature availability.
 - `settings`: UI, language, DataSource configs, AI provider config references.
+- `updater`: updater settings, current/available version, check/install status, progress, prompt state, and last error.
 - `ui`: layout, theme, sidebar state, modals/toasts.
 
 ---
@@ -31,6 +32,8 @@ Use component refs for transient UI state such as hover state, menu open state, 
 ### Global app state
 
 Use Pinia for state needed across routes/components: configured data sources, playback status, settings, Server connection, theme.
+
+Updater startup checks and Settings manual checks must share one Pinia store and one in-flight promise. Persist only `autoCheck` and `channel`; pending update handles, signatures, download URLs, bytes, and transient errors remain in process memory. Startup checks are best-effort and must not open an error dialog when GitHub is unavailable; a discovered signed update may open the global confirmation dialog.
 
 ### Server/external state
 

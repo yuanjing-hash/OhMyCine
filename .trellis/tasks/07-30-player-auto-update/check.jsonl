@@ -1,0 +1,5 @@
+{"file":"player/src-tauri/src/commands/updater.rs","reason":"检查固定仓库、渠道筛选、签名 updater 和便携安装参数。"}
+{"file":"player/src/stores/updater.ts","reason":"检查启动检测、手动检测、并发和状态转换。"}
+{"file":"player/src/views/SettingsView.vue","reason":"检查保存反馈、渠道选择和立即检测操作。"}
+{"file":".github/workflows/player-beta-release.yml","reason":"检查签名 Secret、channel、latest.json、sig 和 Release prerelease 状态。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查专项验证、lint、typecheck、build、Rust 和 Windows EXE。"}

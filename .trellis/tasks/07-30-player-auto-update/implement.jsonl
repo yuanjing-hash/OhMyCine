@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/state-management.md","reason":"持久化自动检测开关、更新渠道和全局更新状态。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"实现设置入口、全局确认弹窗、下载进度和错误反馈。"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"约束签名密钥、固定 GitHub 仓库、清单 URL 和安装行为。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"覆盖 GitHub Release 解析、Tauri updater、Vue store、设置与发布流水线。"}
+{"file":"docs/architecture/07-security-design.md","reason":"记录 updater 信任根、私钥和便携更新边界。"}

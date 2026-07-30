@@ -621,6 +621,28 @@ export class ConfigSync {
 }
 ```
 
+### 4.8 签名自动更新
+
+Player 使用 Tauri updater 的 minisign 信任根，不直接下载 GitHub EXE 覆盖自身：
+
+```text
+GitHub Releases API
+  → 按 Beta / Stable 选择 Release
+  → 固定仓库 latest.json
+  → Tauri updater 校验 manifest + NSIS 签名
+  → 用户确认
+  → 下载进度
+  → Windows NSIS 安装并重启
+```
+
+- Beta 渠道选择最新非草稿发布，包括 prerelease 和正式发布；Stable 只选择非草稿且非 prerelease。
+- GitHub API 和 manifest URL 固定到 `yuanjing-hash/OhMyCine`，不接受用户自定义更新服务器。
+- 启动自动检测和设置页手动检测复用同一个 Pinia updater store，并合并并发检查。
+- 发现更新只弹确认窗，不静默安装。下载完成后仍由 Tauri updater 使用内置公钥验证签名。
+- 普通设置只保存 `autoCheck` 和 `channel`，不保存私钥、签名或临时下载 URL。
+- 标准模式使用默认 NSIS 安装；便携模式向安装器传入当前 EXE 目录，保留 `portable.flag` 和便携数据目录。
+- 普通本地构建不要求签名私钥。GitHub Release 构建额外启用 `tauri.updater.conf.json`，生成 `.sig` 和 `latest.json`。
+
 ## 5. 网盘自动刮削系统
 
 ### 5.1 设计背景

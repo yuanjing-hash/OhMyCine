@@ -115,6 +115,8 @@ Use a controlled HTTP client for external calls:
 - Treat user-configured URLs as privileged admin configuration; ordinary user inputs must not be able to probe internal management addresses.
 - Plugins and site/cloud adapters should route network calls through the same controlled client when plugin architecture exists.
 - Player subtitle providers use provider-specific controlled native clients. OpenSubtitles API Keys stay in the credential boundary; downloads allow only trusted HTTPS provider domains, bounded redirects/response sizes, allowlisted subtitle extensions, generated cache filenames, and the shared Player `cache/subtitles` directory.
+- Player updates use the Tauri updater minisign trust root. Commit only the public key; keep the private key outside the repository and in GitHub Actions Secret storage, require signed artifacts, and fail release builds when the secret is absent.
+- Update discovery is pinned to the HTTPS `yuanjing-hash/OhMyCine` GitHub Releases API and exact release-asset manifest path. Do not expose custom updater URLs. Portable updates may target the current executable directory but must not delete `portable.flag` or portable data directories.
 
 ---
 

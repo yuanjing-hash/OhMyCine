@@ -8,3 +8,4 @@ pub mod preference;
 pub mod raw_scan_cache;
 pub mod settings;
 pub mod subtitle;
+pub mod updater;

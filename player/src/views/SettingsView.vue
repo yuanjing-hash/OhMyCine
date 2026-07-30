@@ -5,6 +5,7 @@ import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRule
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import type { SubtitleLanguage } from '@/services/subtitle'
+import type { UpdateChannel } from '@/services/updater'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -44,12 +45,13 @@ import {
   saveSubtitleSearchSettings,
 } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
+import { useUpdaterStore } from '@/stores/updater'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'diagnostics'
-type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'updates' | 'diagnostics'
+type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
 
@@ -75,6 +77,11 @@ interface SubtitleSettingsFormState {
   defaultLanguage: SubtitleLanguage
   openSubtitlesEnabled: boolean
   apiKey: string
+}
+
+interface UpdaterSettingsFormState {
+  autoCheck: boolean
+  channel: UpdateChannel
 }
 
 interface SettingsEntry {
@@ -182,6 +189,7 @@ const subtitleLanguageOptions: Array<{ value: SubtitleLanguage, label: string }>
 ]
 
 const store = useDataSourceStore()
+const updaterStore = useUpdaterStore()
 const route = useRoute()
 const router = useRouter()
 const form = reactive<DataSourceFormState>({
@@ -227,6 +235,12 @@ const subtitleForm = reactive<SubtitleSettingsFormState>({
 const openSubtitlesConfigured = ref(false)
 const isSavingSubtitleSettings = ref(false)
 const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+const updateForm = reactive<UpdaterSettingsFormState>({
+  autoCheck: updaterStore.settings.autoCheck,
+  channel: updaterStore.settings.channel,
+})
+const isSavingUpdaterSettings = ref(false)
+const updateFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const storageInfo = ref<PlayerStorageInfo | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
@@ -275,6 +289,7 @@ const tmdbCredentialStatusLabel = computed(() => {
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
 const playbackEntryMeta = computed(() => openSubtitlesConfigured.value ? '字幕搜索已配置' : '可配置字幕搜索')
+const updateEntryMeta = computed(() => `${updaterStore.settings.channel === 'beta' ? 'Beta' : '正式版'} · ${updaterStore.settings.autoCheck ? '自动检测' : '手动检测'}`)
 const portableStorageIsNetworkLike = computed(() =>
   storageInfo.value?.mode === 'portable' && storageInfo.value.storagePerformance === 'networkLike',
 )
@@ -305,9 +320,11 @@ const pageDescription = computed(() => mode.value === 'overview'
     ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
     : mode.value === 'playback'
       ? '配置播放中的字幕搜索语言和 Player 本地字幕提供器。Emby 自带字幕搜索仍使用对应服务器配置。'
-      : mode.value === 'diagnostics'
-        ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
-        : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
+      : mode.value === 'updates'
+        ? '从 OhMyCine GitHub Releases 检查签名更新，选择 Beta 或正式渠道，并控制启动自动检测。'
+        : mode.value === 'diagnostics'
+          ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
+          : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -358,6 +375,15 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     disabled: true,
   },
   {
+    id: 'updates',
+    label: 'Up',
+    title: '软件更新',
+    description: '检测 GitHub Releases 中的签名更新，选择 Beta 或正式版渠道，并控制启动自动检测。',
+    meta: updateEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
+  },
+  {
     id: 'diagnostics',
     label: 'Disk',
     title: '存储 / 诊断',
@@ -374,6 +400,7 @@ onMounted(() => {
   void refreshTmdbCredentialState()
   void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
+  void updaterStore.initialize().then(syncUpdaterForm)
   syncModeFromRoute()
 })
 
@@ -444,6 +471,15 @@ function syncModeFromRoute() {
     feedback.value = null
     subtitleFeedback.value = null
     void refreshOpenSubtitlesCredentialState()
+    return
+  }
+
+  if (section === 'updates') {
+    replaceSettingsQuery({ section: 'updates' })
+    mode.value = 'updates'
+    feedback.value = null
+    updateFeedback.value = null
+    syncUpdaterForm()
     return
   }
 
@@ -530,6 +566,8 @@ function openSettingsEntry(entry: SettingsEntry) {
     goScrapingSettings()
   else if (entry.id === 'playback')
     goPlaybackSettings()
+  else if (entry.id === 'updates')
+    goUpdaterSettings()
   else if (entry.id === 'diagnostics')
     goStorageDiagnostics()
 }
@@ -576,6 +614,61 @@ function goPlaybackSettings() {
   subtitleFeedback.value = null
   void router.push({ name: 'settings', query: { section: 'playback' } })
   void refreshOpenSubtitlesCredentialState()
+}
+
+function goUpdaterSettings() {
+  mode.value = 'updates'
+  feedback.value = null
+  updateFeedback.value = null
+  syncUpdaterForm()
+  void router.push({ name: 'settings', query: { section: 'updates' } })
+}
+
+function syncUpdaterForm() {
+  updateForm.autoCheck = updaterStore.settings.autoCheck
+  updateForm.channel = updaterStore.settings.channel
+}
+
+async function saveUpdaterPreferences(showFeedback = true) {
+  isSavingUpdaterSettings.value = true
+  if (showFeedback)
+    updateFeedback.value = null
+  try {
+    await updaterStore.persistSettings({
+      autoCheck: updateForm.autoCheck,
+      channel: updateForm.channel,
+    })
+    updaterStore.cancelStartupCheck()
+    if (updateForm.autoCheck)
+      updaterStore.scheduleStartupCheck()
+    if (showFeedback) {
+      updateFeedback.value = {
+        type: 'success',
+        message: `更新设置已保存。当前使用${updateForm.channel === 'beta' ? ' Beta' : '正式版'}渠道${updateForm.autoCheck ? '，启动后会自动检测。' : '，仅在手动点击时检测。'}`,
+      }
+    }
+  }
+  catch (error) {
+    updateFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '更新设置保存失败。') }
+    throw error
+  }
+  finally {
+    isSavingUpdaterSettings.value = false
+  }
+}
+
+async function checkForUpdatesNow() {
+  updateFeedback.value = null
+  try {
+    await saveUpdaterPreferences(false)
+    const result = await updaterStore.checkForUpdates(false)
+    updateFeedback.value = result.available
+      ? { type: 'success', message: `发现新版本 ${result.version}，已打开签名更新确认窗口。` }
+      : { type: 'success', message: `当前 ${result.currentVersion} 已是${updateForm.channel === 'beta' ? ' Beta' : '正式版'}渠道的最新版本。` }
+  }
+  catch (error) {
+    updateFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '更新检查失败。') }
+  }
 }
 
 async function refreshOpenSubtitlesCredentialState() {
@@ -1592,6 +1685,107 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             {{ entry.actionLabel }}
           </span>
         </button>
+      </section>
+
+      <section v-else-if="mode === 'updates'" class="space-y-5">
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Signed Updates
+              </p>
+              <h2 class="mt-2 text-xl font-bold text-white">
+                软件更新
+              </h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                Player 只安装通过内置公钥验证的 OhMyCine GitHub Release。Beta 渠道可收到 prerelease 和正式发布；正式版渠道只接收非 prerelease 发布。发现更新后仍会等待你确认，不会静默关闭播放器。
+              </p>
+            </div>
+            <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
+              当前版本 {{ updaterStore.currentVersion || '读取中…' }}
+            </span>
+          </div>
+
+          <div
+            v-if="updateFeedback"
+            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+            :class="{
+              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': updateFeedback.type === 'success',
+              'border-red-400/20 bg-red-400/10 text-red-100': updateFeedback.type === 'error',
+              'border-white/12 bg-white/6 text-white/58': updateFeedback.type === 'info',
+            }"
+          >
+            {{ updateFeedback.message }}
+          </div>
+
+          <div class="mt-5 grid gap-4 lg:grid-cols-2">
+            <div class="rounded-2xl bg-black/16 p-4">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                更新渠道
+              </p>
+              <div class="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  class="rounded-2xl border px-4 py-3 text-left transition-colors"
+                  :class="updateForm.channel === 'beta' ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  @click="updateForm.channel = 'beta'"
+                >
+                  <span class="block text-sm font-semibold">Beta</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">优先获得新功能，也会接收后续正式发布。</span>
+                </button>
+                <button
+                  type="button"
+                  class="rounded-2xl border px-4 py-3 text-left transition-colors"
+                  :class="updateForm.channel === 'stable' ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  @click="updateForm.channel = 'stable'"
+                >
+                  <span class="block text-sm font-semibold">正式版</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">只接收 GitHub 中标记为正式发布的版本。</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="rounded-2xl bg-black/16 p-4">
+              <label class="flex items-center justify-between gap-4">
+                <span>
+                  <span class="block text-sm font-semibold text-white">启动时自动检测</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">启动约 3 秒后后台检查一次；没有更新或网络失败时不会打断使用。</span>
+                </span>
+                <input v-model="updateForm.autoCheck" type="checkbox" class="h-5 w-5 accent-primary">
+              </label>
+              <div class="mt-4 border-t border-white/8 pt-4 text-xs leading-5 text-white/38">
+                标准版由签名 NSIS 更新。便携版会把安装目录固定为当前 EXE 目录，并保留 <code class="text-white/58">portable.flag</code> 与便携数据目录。
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingUpdaterSettings || updaterStore.status === 'checking'"
+              @click="saveUpdaterPreferences()"
+            >
+              {{ isSavingUpdaterSettings ? '保存中…' : '保存更新设置' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold text-white/78 transition-colors hover:bg-white/16 disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingUpdaterSettings || updaterStore.status === 'checking' || updaterStore.status === 'downloading' || updaterStore.status === 'installing'"
+              @click="checkForUpdatesNow"
+            >
+              {{ updaterStore.status === 'checking' ? '检测中…' : '立即检测更新' }}
+            </button>
+            <button
+              v-if="updaterStore.availableUpdate && !updaterStore.promptOpen"
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
+              @click="updaterStore.reopenPrompt()"
+            >
+              查看 {{ updaterStore.availableUpdate.version }}
+            </button>
+          </div>
+        </div>
       </section>
 
       <section v-else-if="mode === 'diagnostics'" class="space-y-5">
