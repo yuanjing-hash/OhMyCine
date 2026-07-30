@@ -17,7 +17,9 @@ assert.match(playerView, /subtitleSearchRequiresSourceChoice\.value = sourceType
 assert.match(playerView, /subtitleSearchOrigin\.value = sourceType === 'emby' \? null : 'local'/)
 assert.match(playerView, /if \(origin === 'emby'\)[\s\S]*source\.searchSubtitles/)
 assert.match(playerView, /else \{[\s\S]*searchLocalSubtitles/)
-assert.match(playerView, /currentSubtitleSearchContext\(keyword\)/)
+assert.match(playerView, /currentSubtitleSearchContext\(keyword, keywordMode\)/)
+assert.match(playerView, /year: keywordMode === 'custom' \? undefined/)
+assert.match(playerView, /imdbId: keywordMode === 'custom' \? undefined/)
 assert.match(playerView, /currentLocalSubtitleFilePath\(\)[\s\S]*isAbsoluteLocalMediaPath/)
 assert.match(playerView, /remoteMediaUrl: currentRemoteSubtitleMediaUrl\(\)/)
 assert.match(playerView, /remoteMediaHeaders: currentRemoteSubtitleMediaUrl\(\) \? \{ \.\.\.mediaHeaders\.value \}/)
@@ -28,7 +30,7 @@ const searchDialog = await read('src/components/player/SubtitleSearchDialog.vue'
 assert.match(searchDialog, /媒体名称/)
 assert.match(searchDialog, /原始文件名/)
 assert.match(searchDialog, /自定义/)
-assert.match(searchDialog, /search: \[language: SubtitleLanguage, keyword: string\]/)
+assert.match(searchDialog, /search: \[language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode\]/)
 
 const emby = await read('src/services/datasource/emby.ts')
 assert.match(emby, /RemoteSearch\/Subtitles\/\$\{encodeURIComponent\(language\)\}/)
@@ -86,6 +88,8 @@ assert.match(rust, /Range 读取/)
 assert.match(rust, /ACCEPT_ENCODING/)
 assert.match(rust, /if !same_url_origin\(&url, &next\)[\s\S]*headers\.clear\(\)/)
 assert.match(rust, /remote_range_hashes_match_local_file_hashes/)
+assert.match(rust, /custom_keyword_is_written_to_opensubtitles_search_request/)
+assert.match(rust, /anonymous_status/)
 assert.doesNotMatch(rust, /println!|dbg!|log::.*password/)
 
 console.log(JSON.stringify({
@@ -95,10 +99,12 @@ console.log(JSON.stringify({
   downloadsAreConstrainedToSubtitleCache: true,
   openSubtitlesSupportsExclusiveApiKeyAndAccountModes: true,
   openSubtitlesAccountModeUsesXmlRpcSession: true,
+  modernAccount401FallsBackToAnonymousXmlRpc: true,
   shooterAndXunleiSupportLocalAndRemoteHashes: true,
   remoteHashHeadersStayInsideRust: true,
   hashProviderDownloadsUseOpaqueReferences: true,
   missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,
   subtitleDelayUsesMpvSubDelay: true,
   subtitleSearchOffersThreeKeywordModes: true,
+  customKeywordOmitsCurrentMediaConstraints: true,
 }, null, 2))

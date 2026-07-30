@@ -699,6 +699,7 @@ async function refreshOpenSubtitlesCredentialState() {
 async function savePlaybackSubtitleSettings() {
   isSavingSubtitleSettings.value = true
   subtitleFeedback.value = null
+  let accountAuthenticated: boolean | null = null
   try {
     const existing = await readOpenSubtitlesCredentials()
     const enteredApiKey = subtitleForm.apiKey.trim()
@@ -723,8 +724,10 @@ async function savePlaybackSubtitleSettings() {
         throw new Error('请输入 OpenSubtitles API Key。')
       if (nextCredential.authMode === 'account' && (!nextCredential.username || !nextCredential.password))
         throw new Error('请输入完整的 OpenSubtitles 账号和密码。')
-      if (nextCredential.authMode === 'account')
-        await testOpenSubtitlesLogin(nextCredential)
+      if (nextCredential.authMode === 'account') {
+        const loginStatus = await testOpenSubtitlesLogin(nextCredential)
+        accountAuthenticated = loginStatus.authenticated
+      }
       await saveOpenSubtitlesCredentials(nextCredential)
     }
 
@@ -742,10 +745,12 @@ async function savePlaybackSubtitleSettings() {
     await flushAppSettings()
     await refreshOpenSubtitlesCredentialState()
     subtitleFeedback.value = {
-      type: 'success',
-      message: openSubtitlesConfigured.value
-        ? `播放与字幕设置已保存。OpenSubtitles ${openSubtitlesConfiguredAuthMode.value === 'account' ? '账号密码' : 'API Key'}模式、射手网和迅雷开关已生效。`
-        : '播放与字幕设置已保存。射手网和迅雷字幕可直接用于本地文件。',
+      type: accountAuthenticated === false ? 'info' : 'success',
+      message: accountAuthenticated === false
+        ? '设置已保存。当前账号不兼容 OpenSubtitles.org 旧账号接口，Player 已自动使用免 API Key 兼容搜索；自定义关键词和字幕下载仍可正常使用。'
+        : openSubtitlesConfigured.value
+          ? `播放与字幕设置已保存。OpenSubtitles ${openSubtitlesConfiguredAuthMode.value === 'account' ? '账号密码' : 'API Key'}模式、射手网和迅雷开关已生效。`
+          : '播放与字幕设置已保存。射手网和迅雷字幕可直接用于本地文件。',
     }
   }
   catch (error) {
@@ -1967,7 +1972,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 </label>
                 <div v-else>
                   <span class="block text-xs font-semibold text-white/72">OpenSubtitles 账号登录</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/38">通过 OpenSubtitles.org XML-RPC 账号接口登录，无需填写 API Key。</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/38">优先通过 OpenSubtitles.org 旧账号接口登录；现代邮箱账号不兼容时自动使用免 API Key 兼容搜索。</span>
                   <div class="mt-3 grid gap-3 md:grid-cols-2">
                     <label>
                       <span class="text-xs font-semibold text-white/42">账号</span>

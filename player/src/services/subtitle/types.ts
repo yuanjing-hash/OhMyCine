@@ -1,6 +1,7 @@
 import type { MediaItem, SubtitleSearchInput, SubtitleSearchResult } from '@/services/datasource/types'
 
 export type SubtitleLanguage = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
+export type SubtitleKeywordMode = 'mediaTitle' | 'fileName' | 'custom'
 
 export interface LocalSubtitleSearchInput extends Omit<SubtitleSearchInput, 'language'> {
   language: SubtitleLanguage

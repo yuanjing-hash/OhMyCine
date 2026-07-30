@@ -3,7 +3,7 @@ import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, Render
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
-import type { SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
+import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -913,7 +913,7 @@ function resetSubtitleSearchOrigin() {
   subtitleSearchError.value = null
 }
 
-async function searchSubtitles(language: SubtitleLanguage, keyword: string) {
+async function searchSubtitles(language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode) {
   const origin = subtitleSearchOrigin.value
   if (!origin)
     return
@@ -922,7 +922,7 @@ async function searchSubtitles(language: SubtitleLanguage, keyword: string) {
   subtitleSearchError.value = null
   subtitleSearchResults.value = []
   try {
-    const context = currentSubtitleSearchContext(keyword)
+    const context = currentSubtitleSearchContext(keyword, keywordMode)
     if (origin === 'emby') {
       store.loadConfigs()
       await store.syncManager()
@@ -983,7 +983,7 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
   }
 }
 
-function currentSubtitleSearchContext(keyword?: string): SubtitleSearchMediaContext {
+function currentSubtitleSearchContext(keyword?: string, keywordMode: SubtitleKeywordMode = 'mediaTitle'): SubtitleSearchMediaContext {
   const playbackContext = currentPlaybackContext()
   const detail = playbackContext?.detail
   const queueItem = currentQueueItem.value
@@ -995,12 +995,12 @@ function currentSubtitleSearchContext(keyword?: string): SubtitleSearchMediaCont
     remoteMediaUrl: currentRemoteSubtitleMediaUrl(),
     remoteMediaHeaders: currentRemoteSubtitleMediaUrl() ? { ...mediaHeaders.value } : undefined,
     mediaFileName: currentSubtitleFileName(),
-    year: detail?.year,
-    mediaType: activeMediaType.value ?? detail?.type ?? queueItem?.type,
-    seasonNumber: detail?.seasonNumber ?? queueItem?.seasonNumber,
-    episodeNumber: detail?.episodeNumber ?? queueItem?.episodeNumber,
-    imdbId: detail?.imdbId,
-    tmdbId: detail?.tmdbId,
+    year: keywordMode === 'custom' ? undefined : detail?.year,
+    mediaType: keywordMode === 'custom' ? undefined : activeMediaType.value ?? detail?.type ?? queueItem?.type,
+    seasonNumber: keywordMode === 'custom' ? undefined : detail?.seasonNumber ?? queueItem?.seasonNumber,
+    episodeNumber: keywordMode === 'custom' ? undefined : detail?.episodeNumber ?? queueItem?.episodeNumber,
+    imdbId: keywordMode === 'custom' ? undefined : detail?.imdbId,
+    tmdbId: keywordMode === 'custom' ? undefined : detail?.tmdbId,
   }
 }
 
