@@ -2262,6 +2262,8 @@ Android 使用相同方案的移动端版本：
 3. 渲染到 `SurfaceView`，Vue UI 覆盖在上方
 4. 参考项目：[mpv-android](https://github.com/mpv-android/mpv-android)
 
+Player Web UI 当前保留桌面优先设计，但响应式外壳已提供窄屏页面边距、触屏底部数据源导航、触屏快捷工具常驻和 `safe-area` 底部留白。该基础只保证主要浏览与设置入口在触屏窄屏上可操作，不代表 Android 已可发布。Android 版本仍需独立完成原生 libmpv 渲染、媒体与目录权限、系统返回键、横竖屏播放器布局、触摸手势和移动端更新策略；桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
+
 ### 9.9 GPL 合规说明
 
 libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由于 OhMyCine 本身采用 GPL-3.0 协议，这没有冲突。但需要注意：

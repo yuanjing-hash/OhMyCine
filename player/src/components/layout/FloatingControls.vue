@@ -28,7 +28,8 @@ const VIDEO_EXTENSIONS = [
 const router = useRouter()
 const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
-const isHovered = ref(false)
+const isTouchUi = window.matchMedia('(hover: none) and (pointer: coarse)').matches
+const isHovered = ref(isTouchUi)
 const isOpeningFile = ref(false)
 const isPlayerRoute = computed(() => route.name === 'player')
 
@@ -72,7 +73,7 @@ async function openLocalVideo() {
 
 <template>
   <div
-    class="fixed bottom-4 right-4 z-50"
+    class="floating-controls fixed bottom-4 right-4 z-50"
     @mouseenter="isHovered = true"
     @mouseleave="isHovered = false"
   >
@@ -81,7 +82,7 @@ async function openLocalVideo() {
     <Transition name="fade-up">
       <div
         v-show="isHovered"
-        class="glass-panel relative flex items-center gap-1 rounded-2xl p-1.5"
+        class="floating-controls-panel glass-panel relative flex items-center gap-1 rounded-2xl p-1.5"
       >
         <!-- Navigation buttons — only on player page (top bar/sidebar hidden there) -->
         <template v-if="isPlayerRoute">
@@ -212,5 +213,16 @@ async function openLocalVideo() {
 .is-light .icon-moon {
   opacity: 0;
   transform: rotate(-90deg) scale(0);
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .floating-controls {
+    right: 0.75rem;
+    bottom: calc(max(0.75rem, env(safe-area-inset-bottom)) + 3.75rem);
+  }
+
+  .floating-controls-panel {
+    display: flex !important;
+  }
 }
 </style>

@@ -58,4 +58,12 @@ function goBack() {
   background: var(--gp-active);
   transform: translateX(-1px) scale(0.98);
 }
+
+@media (max-width: 767px) {
+  .gp-back-btn {
+    left: 1rem;
+    top: max(0.75rem, env(safe-area-inset-top));
+    padding-inline: 0.75rem;
+  }
+}
 </style>
