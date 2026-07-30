@@ -337,10 +337,13 @@ export interface DataSource {
 
 - Emby 媒体点击“搜索字幕”后先选择 `Emby 搜索` 或 `本地搜索`。Emby 搜索调用服务端远程字幕 API，下载由 Emby 保存；Player 刷新媒体轨道并把新增外部字幕立即加载到 mpv。
 - OpenList/Alist、CloudDrive2、WebDAV、本地文件等其他媒体源直接进入 Player 本地搜索，不显示 Emby 来源选择。
-- Player 本地搜索通过独立 `SubtitleProvider` 抽象扩展，首个提供器为 OpenSubtitles REST API。后续提供器继续走同一搜索/下载契约，不在 Vue 组件中抓取网站页面。
-- OpenSubtitles API Key 保存到 Player 凭据边界；普通设置只保存默认语言和提供器启用状态。
-- OpenSubtitles 搜索和下载由 Tauri Rust 受控 HTTP 命令执行。只允许 HTTPS OpenSubtitles 域名、有限重定向和有限响应体，下载文件使用受控哈希文件名写入当前存储模式的 `cache/subtitles`，不写入媒体目录。
-- 本地搜索只发送 IMDb/TMDB ID、标题、年份、媒体类型、季集号等元数据，不发送本地绝对路径、远程播放 URL、数据源账号或 Token。
+- Player 本地搜索通过独立 `SubtitleProvider` 抽象扩展，当前支持 OpenSubtitles、射手网和迅雷字幕，不在 Vue 组件中抓取网站页面。
+- OpenSubtitles API Key 保存到 Player 凭据边界；可选账号密码通过官方 `/login` 换取 JWT。密码只保存在凭据库，JWT 只存在 Rust 进程内并按有效期刷新。
+- OpenSubtitles 搜索和下载由 Tauri Rust 受控 HTTP 命令执行。只允许 HTTPS OpenSubtitles 域名、有限重定向和有限响应体。
+- 射手网使用本地视频四段 MD5 内容哈希，通过固定 HTTPS API 精确匹配；迅雷字幕使用本地视频三段 SHA-1 CID。两者当前只参与本地文件播放，远程数据源不读取 Range 内容计算哈希。
+- 迅雷 CID 查询接口当前仅提供固定 HTTP 地址，因此设置中默认关闭并明确标记实验性；字幕下载地址必须升级并限制到 `subtitle.v.geilijiasu.com` HTTPS。
+- 本地绝对路径只通过 IPC 进入 Rust 读取哈希片段。外部字幕服务只接收内容哈希、文件名和语言，不接收绝对路径、远程播放 URL、数据源账号或 Token。
+- 射手网和迅雷下载 URL 保存在 Rust 短期内存表中，Vue 仅持有不透明引用。所有提供器下载均限制域名、重定向、响应大小和扩展名，并使用受控哈希文件名写入当前存储模式的 `cache/subtitles`，不写入媒体目录。
 
 ### 4.3 Emby/Jellyfin DataSource 实现
 

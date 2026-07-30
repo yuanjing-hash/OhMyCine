@@ -22,16 +22,38 @@ assert.match(emby, /this\.cache\.clear\(\)/)
 
 const settings = await read('src/services/subtitle/settings.ts')
 assert.match(settings, /saveOpenSubtitlesCredential/)
+assert.match(settings, /subtitle_login_opensubtitles/)
+assert.match(settings, /shooterEnabled/)
+assert.match(settings, /xunleiEnabled/)
 assert.doesNotMatch(settings, /setAppSetting\([^)]*apiKey/)
+
+const credentialStore = await read('src/services/datasource/credentialStore.ts')
+assert.match(credentialStore, /version: 2,[\s\S]*provider: 'opensubtitles'/)
+assert.match(credentialStore, /value\.version !== 1 && value\.version !== 2/)
+assert.match(credentialStore, /probePersistentCredentialStorage[\s\S]*credential-health-check/)
+
+const providers = await read('src/services/subtitle/hashProviders.ts')
+assert.match(providers, /if \(!input\.localFilePath\)[\s\S]*return \[\]/)
+assert.match(providers, /subtitle_search_hash_provider/)
+assert.doesNotMatch(providers, /downloadRef.*https?:/)
 
 const rust = await read('src-tauri/src/commands/subtitle.rs')
 assert.match(rust, /host == "opensubtitles\.com" \|\| host\.ends_with\("\.opensubtitles\.com"\)/)
 assert.match(rust, /layout\.cache_dir\.join\("subtitles"\)/)
 assert.match(rust, /MAX_DOWNLOAD_RESPONSE_BYTES/)
+assert.match(rust, /compute_shooter_hash/)
+assert.match(rust, /compute_xunlei_cid/)
+assert.match(rust, /url\.host_str\(\) != Some\("www\.shooter\.cn"\)/)
+assert.match(rust, /url\.host_str\(\) != Some\("subtitle\.v\.geilijiasu\.com"\)/)
+assert.match(rust, /DOWNLOAD_REFERENCE_TTL/)
+assert.doesNotMatch(rust, /println!|dbg!|log::.*password/)
 
 console.log(JSON.stringify({
   embyRequiresExplicitOriginChoice: true,
   nonEmbyUsesLocalSearchDirectly: true,
   credentialsUseSecureStore: true,
   downloadsAreConstrainedToSubtitleCache: true,
+  openSubtitlesAccountLoginUsesEphemeralJwt: true,
+  shooterAndXunleiRequireLocalFileHashes: true,
+  hashProviderDownloadsUseOpaqueReferences: true,
 }, null, 2))

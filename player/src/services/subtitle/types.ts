@@ -4,6 +4,7 @@ export type SubtitleLanguage = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
 
 export interface LocalSubtitleSearchInput extends Omit<SubtitleSearchInput, 'language'> {
   language: SubtitleLanguage
+  localFilePath?: string
 }
 
 export interface LocalSubtitleDownloadResult {
@@ -23,6 +24,7 @@ export interface SubtitleProvider {
 export interface SubtitleSearchMediaContext {
   itemId: string
   title: string
+  localFilePath?: string
   mediaSourceId?: string
   year?: number
   mediaType?: MediaItem['type']

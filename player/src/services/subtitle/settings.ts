@@ -1,4 +1,6 @@
 import type { SubtitleLanguage } from './types'
+import type { OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
+import { invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { readOpenSubtitlesCredential, removeCredential, saveOpenSubtitlesCredential } from '@/services/datasource/credentialStore'
 
@@ -8,11 +10,15 @@ export const OPENSUBTITLES_CREDENTIAL_REF = 'player:subtitle:opensubtitles-api-k
 export interface SubtitleSearchSettings {
   defaultLanguage: SubtitleLanguage
   openSubtitlesEnabled: boolean
+  shooterEnabled: boolean
+  xunleiEnabled: boolean
 }
 
 const DEFAULT_SETTINGS: SubtitleSearchSettings = {
   defaultLanguage: 'zh-CN',
   openSubtitlesEnabled: true,
+  shooterEnabled: true,
+  xunleiEnabled: false,
 }
 
 export function loadSubtitleSearchSettings(): SubtitleSearchSettings {
@@ -24,6 +30,8 @@ export function loadSubtitleSearchSettings(): SubtitleSearchSettings {
     return {
       defaultLanguage: isSubtitleLanguage(value.defaultLanguage) ? value.defaultLanguage : DEFAULT_SETTINGS.defaultLanguage,
       openSubtitlesEnabled: value.openSubtitlesEnabled !== false,
+      shooterEnabled: value.shooterEnabled !== false,
+      xunleiEnabled: value.xunleiEnabled === true,
     }
   }
   catch {
@@ -35,19 +43,40 @@ export async function saveSubtitleSearchSettings(settings: SubtitleSearchSetting
   await setAppSetting(SETTINGS_KEY, JSON.stringify({
     defaultLanguage: isSubtitleLanguage(settings.defaultLanguage) ? settings.defaultLanguage : DEFAULT_SETTINGS.defaultLanguage,
     openSubtitlesEnabled: settings.openSubtitlesEnabled,
+    shooterEnabled: settings.shooterEnabled,
+    xunleiEnabled: settings.xunleiEnabled,
   }))
 }
 
-export async function saveOpenSubtitlesApiKey(apiKey: string): Promise<void> {
-  await saveOpenSubtitlesCredential(OPENSUBTITLES_CREDENTIAL_REF, { apiKey })
+export async function saveOpenSubtitlesCredentials(value: OpenSubtitlesCredentialValue): Promise<void> {
+  await saveOpenSubtitlesCredential(OPENSUBTITLES_CREDENTIAL_REF, value)
 }
 
-export async function readOpenSubtitlesApiKey(): Promise<string | null> {
-  return (await readOpenSubtitlesCredential(OPENSUBTITLES_CREDENTIAL_REF))?.apiKey ?? null
+export async function readOpenSubtitlesCredentials(): Promise<OpenSubtitlesCredentialValue | null> {
+  return readOpenSubtitlesCredential(OPENSUBTITLES_CREDENTIAL_REF)
 }
 
-export async function clearOpenSubtitlesApiKey(): Promise<void> {
+export async function clearOpenSubtitlesCredentials(): Promise<void> {
   await removeCredential(OPENSUBTITLES_CREDENTIAL_REF)
+}
+
+export async function clearOpenSubtitlesAccount(): Promise<void> {
+  const existing = await readOpenSubtitlesCredentials()
+  if (!existing)
+    return
+  await saveOpenSubtitlesCredentials({ apiKey: existing.apiKey })
+}
+
+export async function testOpenSubtitlesLogin(value: OpenSubtitlesCredentialValue): Promise<void> {
+  if (!value.username || !value.password)
+    throw new Error('请输入完整的 OpenSubtitles 账号和密码。')
+  await invoke('subtitle_login_opensubtitles', {
+    request: {
+      apiKey: value.apiKey,
+      username: value.username,
+      password: value.password,
+    },
+  })
 }
 
 export function isSubtitleLanguage(value: unknown): value is SubtitleLanguage {
