@@ -15,7 +15,7 @@ import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { useDataSourceStore } from '@/stores/datasource'
 
-const AUTO_HIDE_DELAY = 2800
+const AUTO_HIDE_DELAY = 3000
 const HISTORY_SAVE_INTERVAL = 10000
 const HISTORY_MIN_SAVE_POSITION = 1
 const HISTORY_MIN_RESUME_POSITION = 30
@@ -56,7 +56,6 @@ const isQueueSwitching = ref(false)
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
 const controlsInteracting = ref(false)
-const isWindowFocused = ref(true)
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -176,7 +175,7 @@ function clearHideTimer() {
 }
 
 function canAutoHideChrome() {
-  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value && isWindowFocused.value
+  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
 }
 
 function scheduleChromeHide() {
@@ -205,8 +204,8 @@ function handleControlsInteraction(next: boolean) {
 }
 
 function handleWindowBlur() {
-  isWindowFocused.value = false
-  revealChrome()
+  controlsInteracting.value = false
+  scheduleChromeHide()
 }
 
 function handleWindowResize() {
@@ -229,7 +228,6 @@ async function ensureRenderInitialized() {
 }
 
 function handleWindowFocus() {
-  isWindowFocused.value = true
   revealChrome()
 }
 

@@ -13,6 +13,7 @@
 - 外部退出全屏或窗口状态变化后，Player 控制条和标题栏状态必须重新同步。
 - Windows mpv 底层窗口在 owner resize 事件中不得抢在 WebView 布局前使用原生客户区尺寸；resize 尺寸以 `ResizeObserver` 上报的最终 surface bounds 为准。
 - 移动、DPI 变化、最小化、恢复和关闭仍保持原生窗口生命周期同步。
+- 播放中且没有菜单、弹窗或控制交互时，控制遮罩统一在 3 秒后隐藏；鼠标移出程序或窗口失焦不得阻止计时器，并应清理残留交互状态。
 - 更新 Player 窗口/渲染设计规范并补充专项验证。
 
 ## Acceptance Criteria
@@ -21,6 +22,7 @@
 - 最大化窗口可以进入全屏，退出后恢复最大化。
 - 最大化按钮在普通与最大化状态显示不同图标，点击后只负责最大化/还原。
 - 手动拖动窗口尺寸时，mpv 视频底层窗口不再比 WebView 控制遮罩层提前缩放。
+- 播放时静置 3 秒遮罩消失；鼠标移出程序后最多 3 秒遮罩消失，移回窗口后重新显示并重新计时。
 - TypeScript、lint、Vite、Rust 测试、Windows GNU check 和 release EXE 构建通过。
 
 ## Out Of Scope

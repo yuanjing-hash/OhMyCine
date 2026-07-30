@@ -4,3 +4,4 @@
 {"file":".trellis/spec/frontend/component-guidelines.md","reason":"固化最大化、全屏和标题栏按钮职责。"}
 {"file":".trellis/spec/frontend/directory-structure.md","reason":"固化透明 WebView 与 mpv HWND 的 resize 时序。"}
 {"file":".github/workflows/player.yml","reason":"把全屏与 resize 专项回归接入常规 Player CI。"}
+{"file":"player/src/views/PlayerView.vue","reason":"修复窗口失焦阻止遮罩自动隐藏，并统一为 3 秒。"}
