@@ -19,6 +19,8 @@ assert.match(playerView, /if \(origin === 'emby'\)[\s\S]*source\.searchSubtitles
 assert.match(playerView, /else \{[\s\S]*searchLocalSubtitles/)
 assert.match(playerView, /currentSubtitleSearchContext\(keyword\)/)
 assert.match(playerView, /currentLocalSubtitleFilePath\(\)[\s\S]*isAbsoluteLocalMediaPath/)
+assert.match(playerView, /remoteMediaUrl: currentRemoteSubtitleMediaUrl\(\)/)
+assert.match(playerView, /remoteMediaHeaders: currentRemoteSubtitleMediaUrl\(\) \? \{ \.\.\.mediaHeaders\.value \}/)
 assert.match(playerView, /:media-title="currentSubtitleMediaTitle\(\)"/)
 assert.match(playerView, /:file-name="currentSubtitleFileName\(\)"/)
 
@@ -60,7 +62,9 @@ assert.match(credentialStore, /authMode: 'account'/)
 assert.match(credentialStore, /probePersistentCredentialStorage[\s\S]*credential-health-check/)
 
 const providers = await read('src/services/subtitle/hashProviders.ts')
-assert.match(providers, /if \(!input\.localFilePath\)[\s\S]*return \[\]/)
+assert.match(providers, /if \(!input\.localFilePath && !input\.remoteMediaUrl\)[\s\S]*return \[\]/)
+assert.match(providers, /remoteUrl: input\.remoteMediaUrl/)
+assert.match(providers, /headers: toHeaderPayload/)
 assert.match(providers, /subtitle_search_hash_provider/)
 assert.doesNotMatch(providers, /downloadRef.*https?:/)
 
@@ -77,6 +81,11 @@ assert.match(rust, /https:\/\/api\.opensubtitles\.org\/xml-rpc/)
 assert.match(rust, /SearchSubtitles/)
 assert.match(rust, /DownloadSubtitles/)
 assert.match(rust, /GzDecoder/)
+assert.match(rust, /request_remote_media_range/)
+assert.match(rust, /Range 读取/)
+assert.match(rust, /ACCEPT_ENCODING/)
+assert.match(rust, /if !same_url_origin\(&url, &next\)[\s\S]*headers\.clear\(\)/)
+assert.match(rust, /remote_range_hashes_match_local_file_hashes/)
 assert.doesNotMatch(rust, /println!|dbg!|log::.*password/)
 
 console.log(JSON.stringify({
@@ -86,7 +95,8 @@ console.log(JSON.stringify({
   downloadsAreConstrainedToSubtitleCache: true,
   openSubtitlesSupportsExclusiveApiKeyAndAccountModes: true,
   openSubtitlesAccountModeUsesXmlRpcSession: true,
-  shooterAndXunleiRequireLocalFileHashes: true,
+  shooterAndXunleiSupportLocalAndRemoteHashes: true,
+  remoteHashHeadersStayInsideRust: true,
   hashProviderDownloadsUseOpaqueReferences: true,
   missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,
   subtitleDelayUsesMpvSubDelay: true,

@@ -44,6 +44,7 @@ const store = useDataSourceStore()
 const appWindow = getCurrentWindow()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
+const mediaHeaders = ref<Record<string, string>>({})
 const activeSourceId = ref('')
 const activeItemId = ref('')
 const activeLibraryId = ref('')
@@ -991,6 +992,9 @@ function currentSubtitleSearchContext(keyword?: string): SubtitleSearchMediaCont
     mediaSourceId: currentMediaSourceId(),
     title: keyword?.trim() || currentSubtitleMediaTitle(),
     localFilePath: currentLocalSubtitleFilePath(),
+    remoteMediaUrl: currentRemoteSubtitleMediaUrl(),
+    remoteMediaHeaders: currentRemoteSubtitleMediaUrl() ? { ...mediaHeaders.value } : undefined,
+    mediaFileName: currentSubtitleFileName(),
     year: detail?.year,
     mediaType: activeMediaType.value ?? detail?.type ?? queueItem?.type,
     seasonNumber: detail?.seasonNumber ?? queueItem?.seasonNumber,
@@ -1012,6 +1016,11 @@ function isAbsoluteLocalMediaPath(value: string): boolean {
   return Boolean(value)
     && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)
     && (/^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/'))
+}
+
+function currentRemoteSubtitleMediaUrl(): string | undefined {
+  const value = mediaPath.value.trim()
+  return /^https?:\/\//i.test(value) ? value : undefined
 }
 
 function currentSubtitleMediaTitle(): string {
@@ -1105,6 +1114,7 @@ watch(
     await saveCurrentProgress(true, 'stopped')
     resetHistorySaveState()
     mediaPath.value = ''
+    mediaHeaders.value = {}
     mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
     pictureSettingsError.value = null
     queueSwitchError.value = null
@@ -1129,6 +1139,7 @@ watch(
       try {
         const request = await resolvePlaybackLoadRequest()
         mediaPath.value = request.url
+        mediaHeaders.value = { ...(request.headers ?? {}) }
         await load(request.url, { headers: request.headers })
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
@@ -1138,6 +1149,7 @@ watch(
       }
       catch (error) {
         mediaPath.value = ''
+        mediaHeaders.value = {}
         queueSwitchError.value = toSafeErrorMessage(error, '无法解析播放地址。')
       }
     }
@@ -1167,6 +1179,7 @@ async function handleFileDrop(path: string) {
   await saveCurrentProgress(true, 'stopped')
   resetHistorySaveState()
   mediaPath.value = path
+  mediaHeaders.value = {}
   mediaTitle.value = path.split(/[\\/]/).pop() || '本地视频'
   playbackQueue.value = null
   playbackContextId.value = ''

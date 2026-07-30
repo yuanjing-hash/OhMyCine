@@ -1997,7 +1997,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             <label class="flex items-start justify-between gap-4 rounded-2xl bg-black/16 p-4">
               <span>
                 <span class="block text-sm font-semibold text-white">射手网</span>
-                <span class="mt-1 block text-xs leading-5 text-white/42">HTTPS 内容哈希匹配，仅在播放本地视频时参与搜索，无需账号。</span>
+                <span class="mt-1 block text-xs leading-5 text-white/42">HTTPS 内容哈希匹配。本地文件直接读取，远程媒体通过受限 Range 片段在本机计算，无需账号。</span>
               </span>
               <input v-model="subtitleForm.shooterEnabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary">
             </label>
@@ -2005,7 +2005,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             <label class="flex items-start justify-between gap-4 rounded-2xl border border-amber-300/12 bg-amber-300/6 p-4 lg:col-span-2">
               <span>
                 <span class="block text-sm font-semibold text-white">迅雷字幕（实验性）</span>
-                <span class="mt-1 block text-xs leading-5 text-amber-100/55">CID 查询接口仅提供固定 HTTP 地址，下载会强制升级到受信任 HTTPS 域名。默认关闭，仅适用于本地视频。</span>
+                <span class="mt-1 block text-xs leading-5 text-amber-100/55">CID 在本机通过本地文件或远程 Range 片段计算。查询接口仅提供固定 HTTP 地址，下载会强制升级到受信任 HTTPS 域名，因此默认关闭。</span>
               </span>
               <input v-model="subtitleForm.xunleiEnabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary">
             </label>
