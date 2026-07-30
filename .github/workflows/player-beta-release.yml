@@ -79,6 +79,7 @@ jobs:
               'manual version reaches bash through env': manual_version_env in text,
               'manual channel reaches bash through env': manual_channel_env in text,
               'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
+              'version sync accepts an already-current Cargo version': 'const cargoVersion = cargo.match' in text and 'Could not find Cargo.toml package version' in text and 'updatedCargo === cargo' not in text,
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
               'Windows GNU updater build uses rustup rustc': 'npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json' in text,
               'updater signing secret is required': 'TAURI_SIGNING_PRIVATE_KEY: $' + '{{ secrets.TAURI_SIGNING_PRIVATE_KEY }}' in text,
@@ -375,9 +376,10 @@ jobs:
 
           const cargoPath = 'player/src-tauri/Cargo.toml'
           const cargo = fs.readFileSync(cargoPath, 'utf8')
+          const cargoVersion = cargo.match(/^version = "([^"]+)"/m)
+          if (!cargoVersion)
+            throw new Error('Could not find Cargo.toml package version')
           const updatedCargo = cargo.replace(/^version = "[^"]+"/m, `version = "${version}"`)
-          if (updatedCargo === cargo)
-            throw new Error('Could not update Cargo.toml package version')
           fs.writeFileSync(cargoPath, updatedCargo)
           NODE
 
