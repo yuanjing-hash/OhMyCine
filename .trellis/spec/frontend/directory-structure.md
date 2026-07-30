@@ -447,6 +447,7 @@ When cross-building Player for `x86_64-pc-windows-gnu` from WSL/Linux, treat lib
 - Do not commit generated `libmpv.dll.a`, downloaded DLLs, installers, or `target/` outputs.
 - Keep native Linux builds using system libmpv/pkg-config; only add the explicit link-search path for `x86_64-pc-windows-gnu`.
 - WSL cross-build success proves executable/installer generation only; Windows installation, signing, launch, and playback require a Windows host.
+- In the Windows transparent WebView + mpv underlay model, WebView-reported surface bounds are the sole geometry authority during move, resize, and DPI changes. Native owner events may synchronize visibility/z-order, but must not resize the mpv HWND ahead of the WebView layout frame; `ResizeObserver` plus Tauri moved/resized/scale events report the final logical bounds back to Rust.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |

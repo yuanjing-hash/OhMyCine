@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { MpvRenderDiagnostics, MpvRenderStatus, MpvZOrderStrategy, RenderSurfaceBounds } from '@/composables/useMpv'
 import type { ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { redactSensitiveText } from '@/services/datasource/errors'
 
@@ -27,6 +28,8 @@ const emit = defineEmits<{
 const surfaceHost = ref<HTMLElement | null>(null)
 let resizeObserver: ResizeObserver | undefined
 let pendingFrame = 0
+let disposed = false
+const windowEventUnlisteners: Array<() => void> = []
 
 // Transparent-overlay model: mpv renders into a full-bleed native underlay window and the
 // Tauri/WebView window above it stays transparent where the video should show through. The previous
@@ -206,6 +209,15 @@ function reportBounds() {
   })
 }
 
+function trackWindowListener(listener: Promise<() => void>) {
+  void listener.then((unlisten) => {
+    if (disposed)
+      unlisten()
+    else
+      windowEventUnlisteners.push(unlisten)
+  }).catch(() => undefined)
+}
+
 function handleDrop(event: DragEvent) {
   const file = event.dataTransfer?.files.item(0) as (File & { path?: string }) | null
   if (!file?.path)
@@ -250,12 +262,20 @@ onMounted(() => {
     resizeObserver.observe(surfaceHost.value)
   }
   window.addEventListener('resize', reportBounds)
+  const appWindow = getCurrentWindow()
+  trackWindowListener(appWindow.onResized(reportBounds))
+  trackWindowListener(appWindow.onMoved(reportBounds))
+  trackWindowListener(appWindow.onScaleChanged(reportBounds))
   reportBounds()
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   resizeObserver?.disconnect()
   window.removeEventListener('resize', reportBounds)
+  for (const unlisten of windowEventUnlisteners)
+    unlisten()
+  windowEventUnlisteners.length = 0
   if (pendingFrame)
     window.cancelAnimationFrame(pendingFrame)
 })
