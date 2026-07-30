@@ -797,7 +797,7 @@ PATCH: 向后兼容的 Bug 修复
 6. 仅在 `main` 最新提交上创建并推送 tag
 7. CI 自动构建并发布
 
-### 7.3 Player Beta 自动发版
+### 7.3 Player 签名自动发版与更新
 
 Player beta 版本使用 `vMAJOR.MINOR.BETA` 规则：
 
@@ -807,14 +807,30 @@ v0.0.2  # 0.0 阶段第 2 个 beta
 v0.1.1  # 0.1 阶段第 1 个 beta
 ```
 
-推送 `v*.*.*` tag 或手动触发 `Player Beta Release` workflow 时，CI 会：
+推送 `v*.*.*` tag 或手动触发 `Player Release` workflow 时，CI 会：
 
 1. 校验发版提交与远端 `main` 最新提交完全一致；功能分支或历史提交上的 tag 会被拒绝
 2. 将 Player 的 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 临时同步为 tag 版本号
-3. 使用 Windows GNU target 构建 NSIS 安装包
+3. 使用 Windows GNU target 构建 NSIS 安装包，并用 Tauri updater 私钥生成 `.sig`
 4. 从 `player/src-tauri/target/x86_64-pc-windows-gnu/release` 整理 portable zip
 5. 自动生成 GitHub Release notes
-6. 创建 GitHub prerelease，并上传安装包、portable zip 和 SHA-256 校验文件
+6. 生成 `latest.json` 签名更新清单，并上传安装包、签名、标准 zip、portable zip 和 SHA-256 校验文件
+7. 手动触发时按 `channel=beta|stable` 创建 prerelease 或正式 Release；tag push 默认保持 Beta
+
+签名密钥要求：
+
+- 仓库只提交 `player/src-tauri/tauri.conf.json` 中的 updater 公钥。
+- 本地私钥默认位于 `~/.config/ohmycine/updater/ohmycine-updater.key`，文件权限必须为 `0600`，并在首次正式发版前做离线备份。
+- GitHub Actions 必须配置 `TAURI_SIGNING_PRIVATE_KEY` Secret，并配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（当前无密码密钥使用空值）。工作流缺少私钥时必须失败，不允许回退到未签名更新。
+- 私钥丢失后，已经安装的客户端无法验证后续更新；不能通过替换仓库公钥修复旧客户端。
+- 普通 `npm run tauri:build:windows` 不生成 updater artifact，也不要求私钥。发布工作流额外合并 `src-tauri/tauri.updater.conf.json`。
+
+应用内更新规则：
+
+- Beta 渠道接收最新非草稿 Release，包括 prerelease 和正式版；正式渠道只接收非 prerelease。
+- 更新必须经过 `latest.json` 中的签名验证，不能直接下载 GitHub EXE 覆盖程序。
+- 标准模式使用签名 NSIS 更新；便携模式把安装目录固定为当前 EXE 目录并保留 `portable.flag` 与便携数据。
+- 第一版包含 updater 的 Player 仍需要用户手动安装/替换一次；从该版本开始才可以自动更新后续版本。
 
 Beta Release notes 规则：
 
@@ -833,7 +849,7 @@ git tag -a v0.0.1 -m "OhMyCine Player v0.0.1 Beta"
 git push origin v0.0.1
 ```
 
-不要直接在 `feature/*`、`fix/*`、`develop` 或 `release/*` 分支提交上创建发布 tag。手动触发 Beta workflow 时也必须从 `main` 最新提交触发。
+不要直接在 `feature/*`、`fix/*`、`develop` 或 `release/*` 分支提交上创建发布 tag。手动触发 Release workflow 时也必须从 `main` 最新提交触发。
 
 当前普通 `Player CI`、`Manual Build` 和 beta release 中的 Player 包构建只验证/发布 Windows GNU。Linux/macOS Player 渲染器和打包链路完成前，不把 Linux/macOS Player 包加入 CI 阻塞项。
 

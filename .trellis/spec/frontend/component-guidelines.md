@@ -76,6 +76,7 @@ Required principles:
 - When raw file sources have completed local scraping, only `matched` items with metadata may join Home hero/latest rows. Treat those items like normal aggregate media items, not source-entry cards; unmatched, failed, skipped, or not-configured raw scan candidates stay inside the source page or `未识别`.
 - Server entries must not block local/Emby/Jellyfin/OpenList/Alist/CloudDrive2 browsing when disconnected.
 - `WindowChrome` handles frameless window drag/control surfaces and must remain above route/loading content; loading skeletons, hero gradients, and decorative overlays should not intercept pointer events unless they contain real controls.
+- Window maximize/restore and Player fullscreen are separate states. `WindowChrome` owns only minimize, maximize/restore, drag, and close; its maximize button must show a restore icon while maximized and must not be repurposed as the playback fullscreen action. Entering Player fullscreen from a maximized window should temporarily unmaximize, enter verified native fullscreen, and restore maximized state after exit.
 - Non-home routes must expose a visible back control in the global layout or route chrome. Prefer `router.back()` when `window.history.state?.back` exists; otherwise navigate to `/`.
 
 ### Back Navigation Control Contract
@@ -137,13 +138,20 @@ Required principles:
 - When a playback queue has multiple items, the queue/playlist control should be actionable and open a lightweight read-only queue panel/popover with thumbnail, title, brief metadata/overview, current item state, and click-to-switch behavior. Hide or disable it only for no-queue/single-item playback.
 - Reserve the playback settings panel for picture/display options such as aspect ratio, fit/fill mode, and future image-processing controls. Do not put recent-play/history, window always-on-top, fullscreen, speed, subtitle, audio, or queue actions in that panel.
 - The player fullscreen affordance belongs at the far right of the playback bar and should toggle the whole Player window/fullscreen experience, not only a nested DOM panel.
+- A native fullscreen call is successful only after `isFullscreen()` reports the requested state. Tauri window resize/focus events and browser `fullscreenchange` must resynchronize the control state so external Escape or OS transitions cannot leave a stale fullscreen icon.
 - Render diagnostics must not appear as a persistent chip in normal playback UI; keep diagnostics behind explicit debug shortcuts or debug-only panels.
+- The subtitle menu ends with a `搜索字幕` action. For Emby playback it first asks the user to choose `Emby 搜索` or `本地搜索`; for every non-Emby source it opens Player local search directly. Do not silently merge both origins into one request.
+- Subtitle search results identify their provider and useful match metadata. Downloading a result loads it into the current mpv session without leaving playback; search/download errors remain in the dialog and must not expose credentials or signed URLs.
+- Local subtitle settings expose OpenSubtitles API Key plus optional account login, Shooter, and Xunlei provider switches. OpenSubtitles account login never replaces the required API Key. Shooter is local-file hash matching; Xunlei is an explicitly marked experimental opt-in because its fixed CID query endpoint is HTTP-only.
+- Shooter and Xunlei must not run for remote playback until a separately designed bounded Range-hash path exists. The UI may pass a local path to native Rust hashing, but external providers receive only content hashes, file name, and language.
+- Settings exposes a dedicated software-update surface with an auto-check toggle, Beta/Stable segmented choice, explicit save feedback, and a manual check action. Beta means prerelease plus stable; Stable excludes prerelease.
+- A discovered update opens a global confirmation dialog with version, notes, signature assurance, and download progress. Never silently install or close active playback; installation begins only after the user clicks the install action.
 
 ### Immersive Player Chrome Contract
 
 - Show playback chrome when the mouse moves, controls receive focus, or the player is paused / has no loaded media.
 - Hide playback chrome after about 2.5-3 seconds of pointer inactivity while media is playing and no control interaction is active.
-- Keep chrome visible while the window is unfocused, while a control is hovered/focused, and while progress or volume controls are being dragged.
+- Window blur or pointer exit starts the same three-second auto-hide timer used for pointer inactivity. Clear stale hover/focus interaction state on window blur; only an actually open menu/dialog, paused/no-media state, or active in-window control interaction may keep chrome visible.
 - Aggregate interaction state from parent and child controls; a child ending drag/hover must not hide chrome while the parent container is still hovered or focused.
 - Use Cinema OS / liquid-glass tokens for the control bar, buttons, progress, and volume surfaces; do not fall back to native browser-style media controls.
 - If embedded video rendering is not complete, show a truthful in-app placeholder instead of letting an external mpv window become the user-visible player.

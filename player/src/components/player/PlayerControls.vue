@@ -2,7 +2,8 @@
 import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { transitionWindowFullscreen } from '@/services/windowFullscreen'
 import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
@@ -41,6 +42,7 @@ const emit = defineEmits<{
   setVolume: [volume: number]
   setPlaybackSpeed: [speed: number]
   setSubtitle: [trackId: SubtitleSelectionId | null]
+  searchSubtitles: []
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
@@ -62,6 +64,9 @@ const settingsPanelInteracting = ref(false)
 const isFullscreen = ref(false)
 const fullscreenBusy = ref(false)
 const fullscreenError = ref<string | null>(null)
+let restoreMaximizedOnExit = false
+let disposed = false
+const windowEventUnlisteners: Array<() => void> = []
 
 const fullscreenTitle = computed(() => {
   if (fullscreenError.value)
@@ -156,6 +161,11 @@ function chooseSubtitle(trackId: SubtitleSelectionId | null) {
   closeMenus()
 }
 
+function openSubtitleSearch() {
+  closeMenus()
+  emit('searchSubtitles')
+}
+
 function chooseAudio(trackId: number) {
   emit('setAudio', trackId)
   closeMenus()
@@ -227,12 +237,42 @@ function subtitleSourceLabel(track: SubtitleTrackOption): string {
 
 async function syncFullscreenState() {
   try {
-    isFullscreen.value = await appWindow.isFullscreen()
+    const nextFullscreen = await appWindow.isFullscreen()
+    const previousFullscreen = isFullscreen.value
+    if (fullscreenBusy.value) {
+      isFullscreen.value = nextFullscreen
+      return
+    }
+    if (previousFullscreen && !nextFullscreen && restoreMaximizedOnExit) {
+      restoreMaximizedOnExit = false
+      await appWindow.maximize()
+    }
+    isFullscreen.value = nextFullscreen
     fullscreenError.value = null
+    if (previousFullscreen !== nextFullscreen)
+      emit('fullscreenChanged', nextFullscreen)
   }
   catch {
-    isFullscreen.value = document.fullscreenElement !== null
+    const nextFullscreen = document.fullscreenElement !== null
+    const previousFullscreen = isFullscreen.value
+    isFullscreen.value = nextFullscreen
+    if (previousFullscreen !== nextFullscreen)
+      emit('fullscreenChanged', nextFullscreen)
   }
+}
+
+function trackWindowListener(listener: Promise<() => void>) {
+  void listener.then((unlisten) => {
+    if (disposed)
+      unlisten()
+    else
+      windowEventUnlisteners.push(unlisten)
+  }).catch(() => undefined)
+}
+
+function isTauriRuntime(): boolean {
+  const root = globalThis as { readonly __TAURI_INTERNALS__?: unknown }
+  return root.__TAURI_INTERNALS__ != null
 }
 
 async function toggleBrowserFullscreen(nextFullscreen: boolean) {
@@ -255,12 +295,21 @@ async function toggleFullscreen() {
   emitInteractionState()
   try {
     const nextFullscreen = !(await appWindow.isFullscreen())
-    await appWindow.setFullscreen(nextFullscreen)
-    isFullscreen.value = nextFullscreen
+    const result = await transitionWindowFullscreen(
+      appWindow,
+      nextFullscreen,
+      restoreMaximizedOnExit,
+    )
+    restoreMaximizedOnExit = result.restoreMaximizedOnExit
+    isFullscreen.value = result.fullscreen
     fullscreenError.value = null
-    emit('fullscreenChanged', nextFullscreen)
+    emit('fullscreenChanged', result.fullscreen)
   }
-  catch {
+  catch (error) {
+    if (isTauriRuntime()) {
+      fullscreenError.value = error instanceof Error ? error.message : '窗口全屏状态切换失败'
+      return
+    }
     try {
       const nextFullscreen = document.fullscreenElement === null
       await toggleBrowserFullscreen(nextFullscreen)
@@ -304,6 +353,17 @@ watch(showQueueControl, (visible) => {
 
 onMounted(() => {
   void syncFullscreenState()
+  trackWindowListener(appWindow.onResized(syncFullscreenState))
+  trackWindowListener(appWindow.onFocusChanged(syncFullscreenState))
+  document.addEventListener('fullscreenchange', syncFullscreenState)
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  for (const unlisten of windowEventUnlisteners)
+    unlisten()
+  windowEventUnlisteners.length = 0
+  document.removeEventListener('fullscreenchange', syncFullscreenState)
 })
 </script>
 
@@ -390,6 +450,10 @@ onMounted(() => {
             <p v-else-if="!trackError" class="menu-empty">
               暂未检测到字幕轨道，且媒体详情未提供可显示的字幕信息
             </p>
+            <button type="button" class="menu-option menu-option--search" role="menuitem" @click="openSubtitleSearch">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 20.2-4.35-4.35m1.4-5.1a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+              搜索字幕
+            </button>
           </div>
         </Transition>
       </div>
@@ -781,6 +845,21 @@ onMounted(() => {
   font-size: 0.62rem;
   font-weight: 600;
   letter-spacing: 0.08em;
+}
+
+.menu-option--search {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+  border-top-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.menu-option--search svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .menu-empty {

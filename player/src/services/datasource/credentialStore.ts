@@ -30,7 +30,13 @@ export interface TmdbCredentialValue {
   readonly value: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb'
+export interface OpenSubtitlesCredentialValue {
+  readonly apiKey: string
+  readonly username?: string
+  readonly password?: string
+}
+
+type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -66,6 +72,14 @@ interface StoredTmdbCredentialEnvelope {
   readonly provider: 'tmdb'
   readonly authType: 'apiKey' | 'readAccessToken'
   readonly value: string
+}
+
+interface StoredOpenSubtitlesCredentialEnvelope {
+  readonly version: 2
+  readonly provider: 'opensubtitles'
+  readonly apiKey: string
+  readonly username?: string
+  readonly password?: string
 }
 
 export function createCredentialRef(sourceId: string, provider: CredentialProvider = 'emby'): string {
@@ -171,6 +185,28 @@ export async function readTmdbCredential(ref: string): Promise<TmdbCredentialVal
   return parseTmdbCredential(await readRawCredential(ref))
 }
 
+export async function saveOpenSubtitlesCredential(ref: string, value: OpenSubtitlesCredentialValue): Promise<void> {
+  if (!value.apiKey.trim())
+    throw new Error('Credential value is incomplete.')
+
+  const username = value.username?.trim() || undefined
+  const password = value.password || undefined
+  if (Boolean(username) !== Boolean(password))
+    throw new Error('OpenSubtitles account credential is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 2,
+    provider: 'opensubtitles',
+    apiKey: value.apiKey.trim(),
+    username,
+    password,
+  } satisfies StoredOpenSubtitlesCredentialEnvelope))
+}
+
+export async function readOpenSubtitlesCredential(ref: string): Promise<OpenSubtitlesCredentialValue | null> {
+  return parseOpenSubtitlesCredential(await readRawCredential(ref))
+}
+
 export async function removeCredential(ref: string): Promise<void> {
   if (!ref)
     return
@@ -185,6 +221,18 @@ export async function removeCredential(ref: string): Promise<void> {
 
 export function hasPersistentCredentialStorageWarning(): boolean {
   return getAppSetting(PERSISTENT_UNAVAILABLE_KEY) === 'true'
+}
+
+export async function probePersistentCredentialStorage(): Promise<boolean> {
+  try {
+    await invoke<string | null>('credential_get', { refName: 'player:credential-health-check' })
+    await removeAppSetting(PERSISTENT_UNAVAILABLE_KEY)
+    return true
+  }
+  catch {
+    await setAppSetting(PERSISTENT_UNAVAILABLE_KEY, 'true')
+    return false
+  }
 }
 
 async function saveRawCredential(ref: string, value: string): Promise<void> {
@@ -232,6 +280,34 @@ function parseEmbyCredential(raw: string | null): EmbyCredentialValue | null {
       accessToken: value.accessToken,
       username: value.username,
       password: value.password,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseOpenSubtitlesCredential(raw: string | null): OpenSubtitlesCredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value))
+      return null
+    if (value.provider !== 'opensubtitles' || (value.version !== 1 && value.version !== 2) || typeof value.apiKey !== 'string' || !value.apiKey.trim())
+      return null
+    if (value.version === 1)
+      return { apiKey: value.apiKey.trim() }
+
+    const username = typeof value.username === 'string' ? value.username.trim() : ''
+    const password = typeof value.password === 'string' ? value.password : ''
+    if (Boolean(username) !== Boolean(password))
+      return null
+    return {
+      apiKey: value.apiKey.trim(),
+      username: username || undefined,
+      password: password || undefined,
     }
   }
   catch {

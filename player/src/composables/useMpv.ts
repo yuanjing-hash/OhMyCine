@@ -564,6 +564,22 @@ export function useMpv() {
     }
   }
 
+  async function addExternalSubtitle(url: string, title: string, language?: string) {
+    trackError.value = null
+    try {
+      await invoke<void>('mpv_add_subtitle', {
+        url,
+        title: title || language || '外部字幕',
+        language: language || null,
+      })
+      await refreshTrackState()
+    }
+    catch (error) {
+      trackError.value = safeErrorMessage(error, '外部字幕加载失败')
+      throw error
+    }
+  }
+
   async function setAudio(trackId: number) {
     await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
     currentAudio.value = trackId
@@ -629,6 +645,7 @@ export function useMpv() {
     setVolume,
     setPlaybackSpeed,
     setSubtitle,
+    addExternalSubtitle,
     setAudio,
     setVideoAspect,
     setVideoFit,

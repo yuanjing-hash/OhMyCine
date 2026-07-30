@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import type { PlayerStorageInfo } from '@/services/appSettings'
+import type { OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
+import type { SubtitleLanguage } from '@/services/subtitle'
+import type { UpdateChannel } from '@/services/updater'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
-import { hasPersistentCredentialStorageWarning, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
+import { hasPersistentCredentialStorageWarning, probePersistentCredentialStorage, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
@@ -35,13 +38,23 @@ import {
   saveConfiguredTmdbCredential,
   saveTmdbLocalSettings,
 } from '@/services/scraper/tmdb'
+import {
+  clearOpenSubtitlesAccount,
+  clearOpenSubtitlesCredentials,
+  loadSubtitleSearchSettings,
+  readOpenSubtitlesCredentials,
+  saveOpenSubtitlesCredentials,
+  saveSubtitleSearchSettings,
+  testOpenSubtitlesLogin,
+} from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
+import { useUpdaterStore } from '@/stores/updater'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'diagnostics'
-type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'updates' | 'diagnostics'
+type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
 
@@ -61,6 +74,21 @@ interface TmdbFormState {
   credential: string
   language: string
   region: string
+}
+
+interface SubtitleSettingsFormState {
+  defaultLanguage: SubtitleLanguage
+  openSubtitlesEnabled: boolean
+  shooterEnabled: boolean
+  xunleiEnabled: boolean
+  apiKey: string
+  username: string
+  password: string
+}
+
+interface UpdaterSettingsFormState {
+  autoCheck: boolean
+  channel: UpdateChannel
 }
 
 interface SettingsEntry {
@@ -159,7 +187,16 @@ const tmdbRegionOptions = [
   { value: 'KR', label: '韩国' },
 ]
 
+const subtitleLanguageOptions: Array<{ value: SubtitleLanguage, label: string }> = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'zh-TW', label: '繁体中文' },
+  { value: 'en', label: 'English' },
+  { value: 'ja', label: '日本語' },
+  { value: 'ko', label: '한국어' },
+]
+
 const store = useDataSourceStore()
+const updaterStore = useUpdaterStore()
 const route = useRoute()
 const router = useRouter()
 const form = reactive<DataSourceFormState>({
@@ -196,6 +233,26 @@ const tmdbForm = reactive<TmdbFormState>({
 const tmdbCredentialConfigured = ref(false)
 const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
 const isSavingTmdbSettings = ref(false)
+const subtitleSettings = loadSubtitleSearchSettings()
+const subtitleForm = reactive<SubtitleSettingsFormState>({
+  defaultLanguage: subtitleSettings.defaultLanguage,
+  openSubtitlesEnabled: subtitleSettings.openSubtitlesEnabled,
+  shooterEnabled: subtitleSettings.shooterEnabled,
+  xunleiEnabled: subtitleSettings.xunleiEnabled,
+  apiKey: '',
+  username: '',
+  password: '',
+})
+const openSubtitlesConfigured = ref(false)
+const openSubtitlesAccountConfigured = ref(false)
+const isSavingSubtitleSettings = ref(false)
+const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+const updateForm = reactive<UpdaterSettingsFormState>({
+  autoCheck: updaterStore.settings.autoCheck,
+  channel: updaterStore.settings.channel,
+})
+const isSavingUpdaterSettings = ref(false)
+const updateFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const storageInfo = ref<PlayerStorageInfo | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
@@ -243,6 +300,15 @@ const tmdbCredentialStatusLabel = computed(() => {
 })
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
+const playbackEntryMeta = computed(() => {
+  const enabled = [
+    subtitleForm.openSubtitlesEnabled && openSubtitlesConfigured.value ? 'OpenSubtitles' : null,
+    subtitleForm.shooterEnabled ? '射手网' : null,
+    subtitleForm.xunleiEnabled ? '迅雷' : null,
+  ].filter(Boolean)
+  return enabled.length > 0 ? `${enabled.length} 个本地提供器` : '可配置字幕搜索'
+})
+const updateEntryMeta = computed(() => `${updaterStore.settings.channel === 'beta' ? 'Beta' : '正式版'} · ${updaterStore.settings.autoCheck ? '自动检测' : '手动检测'}`)
 const portableStorageIsNetworkLike = computed(() =>
   storageInfo.value?.mode === 'portable' && storageInfo.value.storagePerformance === 'networkLike',
 )
@@ -271,9 +337,13 @@ const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
     ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
-    : mode.value === 'diagnostics'
-      ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
-      : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
+    : mode.value === 'playback'
+      ? '配置播放中的字幕搜索语言和 Player 本地字幕提供器。Emby 自带字幕搜索仍使用对应服务器配置。'
+      : mode.value === 'updates'
+        ? '从 OhMyCine GitHub Releases 检查签名更新，选择 Beta 或正式渠道，并控制启动自动检测。'
+        : mode.value === 'diagnostics'
+          ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
+          : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -299,11 +369,11 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
   {
     id: 'playback',
     label: 'Play',
-    title: '播放',
-    description: '默认音轨、字幕偏好、自动续播和快捷键微调将集中放在这里。',
-    meta: '规划中',
-    actionLabel: '待开放',
-    disabled: true,
+    title: '播放与字幕',
+    description: '配置 OpenSubtitles、射手网和迅雷字幕提供器。Emby 搜索继续使用服务器自身字幕源。',
+    meta: playbackEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
   },
   {
     id: 'appearance',
@@ -324,6 +394,15 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     disabled: true,
   },
   {
+    id: 'updates',
+    label: 'Up',
+    title: '软件更新',
+    description: '检测 GitHub Releases 中的签名更新，选择 Beta 或正式版渠道，并控制启动自动检测。',
+    meta: updateEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
+  },
+  {
     id: 'diagnostics',
     label: 'Disk',
     title: '存储 / 诊断',
@@ -337,8 +416,11 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
 onMounted(() => {
   store.loadConfigs()
   refreshPersistentCredentialWarning()
+  void probePersistentCredentialStorage().then(refreshPersistentCredentialWarning)
   void refreshTmdbCredentialState()
+  void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
+  void updaterStore.initialize().then(syncUpdaterForm)
   syncModeFromRoute()
 })
 
@@ -400,6 +482,24 @@ function syncModeFromRoute() {
     mode.value = 'scraping'
     feedback.value = null
     void refreshTmdbCredentialState()
+    return
+  }
+
+  if (section === 'playback') {
+    replaceSettingsQuery({ section: 'playback' })
+    mode.value = 'playback'
+    feedback.value = null
+    subtitleFeedback.value = null
+    void refreshOpenSubtitlesCredentialState()
+    return
+  }
+
+  if (section === 'updates') {
+    replaceSettingsQuery({ section: 'updates' })
+    mode.value = 'updates'
+    feedback.value = null
+    updateFeedback.value = null
+    syncUpdaterForm()
     return
   }
 
@@ -484,6 +584,10 @@ function openSettingsEntry(entry: SettingsEntry) {
     goDataSources()
   else if (entry.id === 'scraping')
     goScrapingSettings()
+  else if (entry.id === 'playback')
+    goPlaybackSettings()
+  else if (entry.id === 'updates')
+    goUpdaterSettings()
   else if (entry.id === 'diagnostics')
     goStorageDiagnostics()
 }
@@ -522,6 +626,168 @@ function goScrapingSettings() {
   lastFetchedLibraries.value = []
   resetAlistBrowser()
   void router.push({ name: 'settings', query: { section: 'scraping' } })
+}
+
+function goPlaybackSettings() {
+  mode.value = 'playback'
+  feedback.value = null
+  subtitleFeedback.value = null
+  void router.push({ name: 'settings', query: { section: 'playback' } })
+  void refreshOpenSubtitlesCredentialState()
+}
+
+function goUpdaterSettings() {
+  mode.value = 'updates'
+  feedback.value = null
+  updateFeedback.value = null
+  syncUpdaterForm()
+  void router.push({ name: 'settings', query: { section: 'updates' } })
+}
+
+function syncUpdaterForm() {
+  updateForm.autoCheck = updaterStore.settings.autoCheck
+  updateForm.channel = updaterStore.settings.channel
+}
+
+async function saveUpdaterPreferences(showFeedback = true) {
+  isSavingUpdaterSettings.value = true
+  if (showFeedback)
+    updateFeedback.value = null
+  try {
+    await updaterStore.persistSettings({
+      autoCheck: updateForm.autoCheck,
+      channel: updateForm.channel,
+    })
+    updaterStore.cancelStartupCheck()
+    if (updateForm.autoCheck)
+      updaterStore.scheduleStartupCheck()
+    if (showFeedback) {
+      updateFeedback.value = {
+        type: 'success',
+        message: `更新设置已保存。当前使用${updateForm.channel === 'beta' ? ' Beta' : '正式版'}渠道${updateForm.autoCheck ? '，启动后会自动检测。' : '，仅在手动点击时检测。'}`,
+      }
+    }
+  }
+  catch (error) {
+    updateFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '更新设置保存失败。') }
+    throw error
+  }
+  finally {
+    isSavingUpdaterSettings.value = false
+  }
+}
+
+async function checkForUpdatesNow() {
+  updateFeedback.value = null
+  try {
+    await saveUpdaterPreferences(false)
+    const result = await updaterStore.checkForUpdates(false)
+    updateFeedback.value = result.available
+      ? { type: 'success', message: `发现新版本 ${result.version}，已打开签名更新确认窗口。` }
+      : { type: 'success', message: `当前 ${result.currentVersion} 已是${updateForm.channel === 'beta' ? ' Beta' : '正式版'}渠道的最新版本。` }
+  }
+  catch (error) {
+    updateFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '更新检查失败。') }
+  }
+}
+
+async function refreshOpenSubtitlesCredentialState() {
+  const credential = await readOpenSubtitlesCredentials()
+  openSubtitlesConfigured.value = Boolean(credential?.apiKey)
+  openSubtitlesAccountConfigured.value = Boolean(credential?.username && credential.password)
+}
+
+async function savePlaybackSubtitleSettings() {
+  isSavingSubtitleSettings.value = true
+  subtitleFeedback.value = null
+  try {
+    const existing = await readOpenSubtitlesCredentials()
+    const enteredApiKey = subtitleForm.apiKey.trim()
+    const enteredUsername = subtitleForm.username.trim()
+    const enteredPassword = subtitleForm.password
+    const accountEdited = Boolean(enteredUsername || enteredPassword)
+    if (accountEdited && (!enteredUsername || !enteredPassword))
+      throw new Error('OpenSubtitles 账号和密码必须同时填写。')
+
+    const apiKey = enteredApiKey || existing?.apiKey || ''
+    const nextCredential: OpenSubtitlesCredentialValue | null = apiKey
+      ? {
+          apiKey,
+          username: accountEdited ? enteredUsername : existing?.username,
+          password: accountEdited ? enteredPassword : existing?.password,
+        }
+      : null
+    if ((enteredApiKey || accountEdited) && nextCredential?.username && nextCredential.password)
+      await testOpenSubtitlesLogin(nextCredential)
+    if (nextCredential && (enteredApiKey || accountEdited || !existing))
+      await saveOpenSubtitlesCredentials(nextCredential)
+
+    if (enteredApiKey || accountEdited) {
+      subtitleForm.apiKey = ''
+      subtitleForm.username = ''
+      subtitleForm.password = ''
+    }
+    await saveSubtitleSearchSettings({
+      defaultLanguage: subtitleForm.defaultLanguage,
+      openSubtitlesEnabled: subtitleForm.openSubtitlesEnabled,
+      shooterEnabled: subtitleForm.shooterEnabled,
+      xunleiEnabled: subtitleForm.xunleiEnabled,
+    })
+    await flushAppSettings()
+    await refreshOpenSubtitlesCredentialState()
+    subtitleFeedback.value = {
+      type: 'success',
+      message: openSubtitlesConfigured.value
+        ? `播放与字幕设置已保存。OpenSubtitles ${openSubtitlesAccountConfigured.value ? '账号登录' : 'API Key'}、射手网和迅雷开关已生效。`
+        : '播放与字幕设置已保存。射手网可直接用于本地文件；OpenSubtitles 需要配置 API Key。',
+    }
+  }
+  catch (error) {
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '播放与字幕设置保存失败。') }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingSubtitleSettings.value = false
+  }
+}
+
+async function clearOpenSubtitlesCredential() {
+  isSavingSubtitleSettings.value = true
+  subtitleFeedback.value = null
+  try {
+    await clearOpenSubtitlesCredentials()
+    subtitleForm.apiKey = ''
+    subtitleForm.username = ''
+    subtitleForm.password = ''
+    await refreshOpenSubtitlesCredentialState()
+    subtitleFeedback.value = { type: 'success', message: 'OpenSubtitles API Key 与账号登录信息已清除。' }
+  }
+  catch (error) {
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles API Key 清除失败。') }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingSubtitleSettings.value = false
+  }
+}
+
+async function clearOpenSubtitlesAccountLogin() {
+  isSavingSubtitleSettings.value = true
+  subtitleFeedback.value = null
+  try {
+    await clearOpenSubtitlesAccount()
+    subtitleForm.username = ''
+    subtitleForm.password = ''
+    await refreshOpenSubtitlesCredentialState()
+    subtitleFeedback.value = { type: 'success', message: 'OpenSubtitles 账号登录已清除，继续使用 API Key 匿名额度。' }
+  }
+  catch (error) {
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles 账号登录清除失败。') }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingSubtitleSettings.value = false
+  }
 }
 
 function goManage(options: { preserveFeedback?: boolean } = {}) {
@@ -1426,10 +1692,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
       </header>
 
       <div
-        v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping')"
+        v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping' || mode === 'playback')"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
-        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、访问令牌与 TMDB 凭据仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
+        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、访问令牌、TMDB 与字幕提供器凭据仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
       </div>
 
       <div v-if="mode !== 'overview'" class="flex">
@@ -1487,6 +1753,107 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
         </button>
       </section>
 
+      <section v-else-if="mode === 'updates'" class="space-y-5">
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Signed Updates
+              </p>
+              <h2 class="mt-2 text-xl font-bold text-white">
+                软件更新
+              </h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                Player 只安装通过内置公钥验证的 OhMyCine GitHub Release。Beta 渠道可收到 prerelease 和正式发布；正式版渠道只接收非 prerelease 发布。发现更新后仍会等待你确认，不会静默关闭播放器。
+              </p>
+            </div>
+            <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
+              当前版本 {{ updaterStore.currentVersion || '读取中…' }}
+            </span>
+          </div>
+
+          <div
+            v-if="updateFeedback"
+            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+            :class="{
+              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': updateFeedback.type === 'success',
+              'border-red-400/20 bg-red-400/10 text-red-100': updateFeedback.type === 'error',
+              'border-white/12 bg-white/6 text-white/58': updateFeedback.type === 'info',
+            }"
+          >
+            {{ updateFeedback.message }}
+          </div>
+
+          <div class="mt-5 grid gap-4 lg:grid-cols-2">
+            <div class="rounded-2xl bg-black/16 p-4">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                更新渠道
+              </p>
+              <div class="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  class="rounded-2xl border px-4 py-3 text-left transition-colors"
+                  :class="updateForm.channel === 'beta' ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  @click="updateForm.channel = 'beta'"
+                >
+                  <span class="block text-sm font-semibold">Beta</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">优先获得新功能，也会接收后续正式发布。</span>
+                </button>
+                <button
+                  type="button"
+                  class="rounded-2xl border px-4 py-3 text-left transition-colors"
+                  :class="updateForm.channel === 'stable' ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  @click="updateForm.channel = 'stable'"
+                >
+                  <span class="block text-sm font-semibold">正式版</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">只接收 GitHub 中标记为正式发布的版本。</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="rounded-2xl bg-black/16 p-4">
+              <label class="flex items-center justify-between gap-4">
+                <span>
+                  <span class="block text-sm font-semibold text-white">启动时自动检测</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">启动约 3 秒后后台检查一次；没有更新或网络失败时不会打断使用。</span>
+                </span>
+                <input v-model="updateForm.autoCheck" type="checkbox" class="h-5 w-5 accent-primary">
+              </label>
+              <div class="mt-4 border-t border-white/8 pt-4 text-xs leading-5 text-white/38">
+                标准版由签名 NSIS 更新。便携版会把安装目录固定为当前 EXE 目录，并保留 <code class="text-white/58">portable.flag</code> 与便携数据目录。
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingUpdaterSettings || updaterStore.status === 'checking'"
+              @click="saveUpdaterPreferences()"
+            >
+              {{ isSavingUpdaterSettings ? '保存中…' : '保存更新设置' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold text-white/78 transition-colors hover:bg-white/16 disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingUpdaterSettings || updaterStore.status === 'checking' || updaterStore.status === 'downloading' || updaterStore.status === 'installing'"
+              @click="checkForUpdatesNow"
+            >
+              {{ updaterStore.status === 'checking' ? '检测中…' : '立即检测更新' }}
+            </button>
+            <button
+              v-if="updaterStore.availableUpdate && !updaterStore.promptOpen"
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
+              @click="updaterStore.reopenPrompt()"
+            >
+              查看 {{ updaterStore.availableUpdate.version }}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section v-else-if="mode === 'diagnostics'" class="space-y-5">
         <div class="glass-panel rounded-[1.5rem] p-6">
           <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
@@ -1539,6 +1906,145 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 
         <div class="border-l-2 border-primary/36 px-5 py-1 text-sm leading-7 text-white/50">
           正式便携 ZIP 会自带 <code class="text-white/70">portable.flag</code>。直接使用单个 EXE 时，在 EXE 同目录创建同名空文件并重启即可进入便携模式；删除标记并重启则回到标准模式。两种模式使用独立数据目录，不会自动互相覆盖。
+        </div>
+      </section>
+
+      <section v-else-if="mode === 'playback'" class="space-y-5">
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Subtitle Search
+              </p>
+              <h2 class="mt-2 text-xl font-bold text-white">
+                播放与字幕
+              </h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                Emby 播放时可选择 Emby 服务器搜索或 Player 本地搜索；其他媒体源直接使用这里配置的提供器。OpenSubtitles 发送作品元数据，本地文件的射手网与迅雷匹配只发送内容哈希和文件名，不发送绝对路径、数据源凭据或播放地址。
+              </p>
+            </div>
+            <span
+              class="rounded-full px-3 py-1.5 text-xs font-semibold"
+              :class="openSubtitlesConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
+            >
+              {{ openSubtitlesConfigured ? `OpenSubtitles ${openSubtitlesAccountConfigured ? '账号已配置' : 'API Key 已配置'}` : 'OpenSubtitles 未配置' }}
+            </span>
+          </div>
+
+          <div
+            v-if="subtitleFeedback"
+            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+            :class="{
+              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': subtitleFeedback.type === 'success',
+              'border-red-400/20 bg-red-400/10 text-red-100': subtitleFeedback.type === 'error',
+              'border-white/12 bg-white/6 text-white/58': subtitleFeedback.type === 'info',
+            }"
+          >
+            {{ subtitleFeedback.message }}
+          </div>
+
+          <div class="mt-5 grid gap-4 lg:grid-cols-3">
+            <label class="rounded-2xl bg-black/16 p-4 lg:col-span-1">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">默认搜索语言</span>
+              <select
+                v-model="subtitleForm.defaultLanguage"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+              >
+                <option v-for="option in subtitleLanguageOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+              <span class="mt-2 block text-xs leading-5 text-white/38">OpenSubtitles 支持全部语言；射手网支持中文和英文；迅雷按返回语言筛选。</span>
+            </label>
+
+            <div class="rounded-2xl bg-black/16 p-4 lg:col-span-2">
+              <label class="flex items-center justify-between gap-4">
+                <span>
+                  <span class="block text-sm font-semibold text-white">启用 OpenSubtitles</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">API Key 为必需项；账号密码登录为可选项，登录后使用账号下载额度。</span>
+                </span>
+                <input v-model="subtitleForm.openSubtitlesEnabled" type="checkbox" class="h-5 w-5 accent-primary">
+              </label>
+
+              <div class="mt-4 grid gap-3 border-t border-white/8 pt-4 md:grid-cols-2">
+                <label class="md:col-span-2">
+                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">OpenSubtitles API Key</span>
+                  <input
+                    v-model="subtitleForm.apiKey"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                    type="password"
+                    autocomplete="off"
+                    :placeholder="openSubtitlesConfigured ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
+                  >
+                </label>
+                <label>
+                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号</span>
+                  <input
+                    v-model="subtitleForm.username"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                    type="text"
+                    autocomplete="username"
+                    :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前账号' : 'OpenSubtitles 用户名'"
+                  >
+                </label>
+                <label>
+                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
+                  <input
+                    v-model="subtitleForm.password"
+                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                    type="password"
+                    autocomplete="current-password"
+                    :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前密码' : '可选：账号密码登录'"
+                  >
+                </label>
+              </div>
+              <span class="mt-3 block text-xs leading-5 text-white/38">保存新账号时会先验证登录。API Key、账号和密码只进入安全凭据库，JWT 只保存在当前 Rust 进程内。</span>
+            </div>
+
+            <label class="flex items-start justify-between gap-4 rounded-2xl bg-black/16 p-4">
+              <span>
+                <span class="block text-sm font-semibold text-white">射手网</span>
+                <span class="mt-1 block text-xs leading-5 text-white/42">HTTPS 内容哈希匹配，仅在播放本地视频时参与搜索，无需账号。</span>
+              </span>
+              <input v-model="subtitleForm.shooterEnabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary">
+            </label>
+
+            <label class="flex items-start justify-between gap-4 rounded-2xl border border-amber-300/12 bg-amber-300/6 p-4 lg:col-span-2">
+              <span>
+                <span class="block text-sm font-semibold text-white">迅雷字幕（实验性）</span>
+                <span class="mt-1 block text-xs leading-5 text-amber-100/55">CID 查询接口仅提供固定 HTTP 地址，下载会强制升级到受信任 HTTPS 域名。默认关闭，仅适用于本地视频。</span>
+              </span>
+              <input v-model="subtitleForm.xunleiEnabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary">
+            </label>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingSubtitleSettings"
+              @click="savePlaybackSubtitleSettings"
+            >
+              {{ isSavingSubtitleSettings ? '保存中…' : '保存播放与字幕设置' }}
+            </button>
+            <button
+              v-if="openSubtitlesAccountConfigured"
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="isSavingSubtitleSettings"
+              @click="clearOpenSubtitlesAccountLogin"
+            >
+              清除账号登录
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="isSavingSubtitleSettings || !openSubtitlesConfigured"
+              @click="clearOpenSubtitlesCredential"
+            >
+              清除全部 OpenSubtitles 凭据
+            </button>
+          </div>
         </div>
       </section>
 

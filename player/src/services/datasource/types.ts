@@ -85,6 +85,46 @@ export interface SubtitleTrack {
   url?: string
 }
 
+export type SubtitleSearchOrigin = 'emby' | 'local'
+
+export interface SubtitleSearchInput {
+  itemId: string
+  language: string
+  mediaSourceId?: string
+  title?: string
+  year?: number
+  mediaType?: MediaItem['type']
+  seasonNumber?: number
+  episodeNumber?: number
+  imdbId?: string
+  tmdbId?: number
+}
+
+export interface SubtitleSearchResult {
+  id: string
+  origin: SubtitleSearchOrigin
+  providerName: string
+  language: string
+  title: string
+  format?: string
+  author?: string
+  comments?: string
+  rating?: number
+  downloadCount?: number
+  isHashMatch?: boolean
+  aiTranslated?: boolean
+  machineTranslated?: boolean
+  forced?: boolean
+  hearingImpaired?: boolean
+  downloadRef?: string
+}
+
+export interface SubtitleDownloadInput {
+  itemId: string
+  mediaSourceId?: string
+  result: SubtitleSearchResult
+}
+
 export interface AudioTrack {
   index: number
   language: string
@@ -168,6 +208,8 @@ export interface DataSource {
 
   getStreamURL: (id: string) => Promise<string>
   getStreamRequest?: (request: PlaybackRequest) => Promise<MediaStreamRequest>
+  searchSubtitles?: (input: SubtitleSearchInput) => Promise<SubtitleSearchResult[]>
+  downloadSubtitle?: (input: SubtitleDownloadInput) => Promise<SubtitleTrack>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
   getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 

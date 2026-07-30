@@ -308,15 +308,90 @@ impl WindowsRenderSurface {
             }
             OwnerWindowEvent::Restored => {
                 self.show_mpv_hwnd();
+                self.note_waiting_for_webview_bounds("owner restored");
+                return;
+            }
+            OwnerWindowEvent::Resized => {
+                self.sync_visibility_from_owner();
+                self.note_waiting_for_webview_bounds("owner resized");
+                return;
+            }
+            OwnerWindowEvent::Moved => {
+                self.note_waiting_for_webview_bounds("owner moved");
+                return;
+            }
+            OwnerWindowEvent::ScaleFactorChanged => {
+                self.note_waiting_for_webview_bounds("owner scale changed");
+                return;
             }
             OwnerWindowEvent::FocusChanged(focused) => {
                 log_diagnostics(&self.log_path, &format!("owner focus changed: {focused}"));
             }
-            _ => {}
         }
 
-        // For Moved, Resized, ScaleFactorChanged, FocusChanged: re-sync geometry.
+        // Focus changes only reassert the current z-order/geometry. Move, resize, and DPI changes
+        // return above and wait for the WebView's next-frame surface bounds.
         self.sync_geometry_from_owner();
+    }
+
+    fn note_waiting_for_webview_bounds(&self, event: &str) {
+        update_diagnostics(&self.diagnostics, |d| {
+            d.last_sync_result = "waiting-webview-bounds".to_string();
+        });
+        log_diagnostics(
+            &self.log_path,
+            &format!("{event}: waiting for WebView ResizeObserver bounds"),
+        );
+    }
+
+    fn sync_visibility_from_owner(&self) {
+        if !self.mpv_ready {
+            return;
+        }
+
+        let owner = self.owner as isize;
+        let hwnd = self.mpv_hwnd as isize;
+        let diagnostics = Arc::clone(&self.diagnostics);
+        let log_path = self.log_path.clone();
+        if let Err(err) = self.window.run_on_main_thread(move || {
+            let owner = owner as HWND;
+            let hwnd = hwnd as HWND;
+            if unsafe { IsIconic(owner) } != 0 {
+                unsafe { ShowWindow(hwnd, SW_HIDE) };
+                update_diagnostics(&diagnostics, |d| {
+                    d.fullscreen_state = "minimized".to_string();
+                    d.geometry_following = true;
+                    d.last_sync_result = "hidden-minimized".to_string();
+                });
+                return;
+            }
+
+            unsafe { ShowWindow(hwnd, SW_SHOW) };
+            let ok = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    owner,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                )
+            };
+            update_diagnostics(&diagnostics, |d| {
+                d.z_order_underlay_applied = ok != 0;
+                d.last_sync_result = if ok != 0 {
+                    "visible-waiting-webview-bounds".to_string()
+                } else {
+                    "visibility-sync-failed".to_string()
+                };
+            });
+            if ok == 0 {
+                log_diagnostics(&log_path, "sync_visibility_from_owner: SetWindowPos failed");
+            }
+        }) {
+            log::warn!("failed to schedule owner visibility sync on main thread: {err}");
+        }
     }
 
     // -----------------------------------------------------------------------

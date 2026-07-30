@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate OhMyCine Player beta GitHub Release notes from git history."""
+"""Generate OhMyCine Player GitHub Release notes from git history."""
 
 from __future__ import annotations
 
@@ -107,20 +107,29 @@ def build_markdown(
     extra_notes: str,
     workflow_event_name: str,
     asset_prefix: str,
+    release_channel: str,
 ) -> str:
     grouped: dict[str, list[tuple[str, str]]] = {group: [] for group in GROUP_ORDER}
     for sha, subject in commits:
         grouped[group_for_subject(subject)].append((sha, subject))
 
     range_label = f"{previous_tag}..{tag_name}" if previous_tag else f"initial commit..{tag_name}"
+    is_beta = release_channel != "stable"
+    release_label = "Beta" if is_beta else "Stable"
+    release_description = "OhMyCine Player beta prerelease." if is_beta else "OhMyCine Player stable release."
+    version_rule = (
+        "`vMAJOR.MINOR.BETA` is used during the current Player beta stage. Player app files use the same version without the leading `v`."
+        if is_beta
+        else "Stable Player releases use semantic versions in the form `vMAJOR.MINOR.PATCH`. Player app files use the same version without the leading `v`."
+    )
     lines = [
-        f"# OhMyCine Player {tag_name} Beta",
+        f"# OhMyCine Player {tag_name} {release_label}",
         "",
-        "OhMyCine Player beta prerelease.",
+        release_description,
         "",
         "## Version Rule",
         "",
-        "`vMAJOR.MINOR.BETA` is used for Player beta releases. The first two numbers identify the product stage, and the last number is the beta iteration. Player app files use the same version without the leading `v`.",
+        version_rule,
         "",
         "## Changes",
         "",
@@ -157,13 +166,15 @@ def build_markdown(
             "## Assets",
             "",
             f"- Windows x64 NSIS installer: `{asset_prefix}-setup.exe`",
+            f"- Tauri updater signature: `{asset_prefix}-setup.exe.sig`",
             f"- Windows x64 standard zip (uses the normal LocalAppData profile): `{asset_prefix}-standard.zip`",
             f"- Windows x64 portable zip (stores Player data beside the executable): `{asset_prefix}-portable.zip`",
+            "- Signed updater manifest: `latest.json`",
             f"- SHA-256 checksums: `{asset_prefix}.sha256`",
             "",
             "## Checksums",
             "",
-            "The `.sha256` file is generated with `sha256sum` and contains checksums for the installer, standard zip, and portable zip.",
+            "The `.sha256` file is generated with `sha256sum` and contains checksums for the installer, updater signature, standard zip, and portable zip. The application updater verifies the minisign signature from `latest.json`; SHA-256 is an additional manual check.",
         ]
     )
 
@@ -196,6 +207,7 @@ def main() -> None:
             extra_notes=os.environ.get("EXTRA_RELEASE_NOTES", ""),
             workflow_event_name=os.environ.get("WORKFLOW_EVENT_NAME", ""),
             asset_prefix=asset_prefix,
+            release_channel=os.environ.get("RELEASE_CHANNEL", "beta").strip().lower(),
         ),
         encoding="utf-8",
     )

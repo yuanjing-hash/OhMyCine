@@ -30,6 +30,7 @@ Keep all media sources behind a common interface with these concepts:
 - `SubtitleTrack` and `AudioTrack`.
 - `DataSourceConfig`: id, type, display data, order, URL, credential references/extra config.
 - `DataSource`: lifecycle, list/search/detail/stream URL, optional home/library methods, config export.
+- `SubtitleSearchInput`, `SubtitleSearchResult`, and `SubtitleDownloadInput`: common provider-native subtitle search/download contracts. Provider secrets never belong in these UI-facing values.
 
 `DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `webdav`, `server`, `115`, `123`, and `quark` as planned types.
 

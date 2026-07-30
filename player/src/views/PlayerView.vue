@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
+import type { SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
+import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { downloadLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
-const AUTO_HIDE_DELAY = 2800
+const AUTO_HIDE_DELAY = 3000
 const HISTORY_SAVE_INTERVAL = 10000
 const HISTORY_MIN_SAVE_POSITION = 1
 const HISTORY_MIN_RESUME_POSITION = 30
@@ -56,7 +59,6 @@ const isQueueSwitching = ref(false)
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
 const controlsInteracting = ref(false)
-const isWindowFocused = ref(true)
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -65,6 +67,14 @@ const bottomOcclusion = ref(0)
 const diagnosticsOpen = ref(false)
 const contextMenuOpen = ref(false)
 const playbackDetailOpen = ref(false)
+const subtitleSearchOpen = ref(false)
+const subtitleSearchRequiresSourceChoice = ref(false)
+const subtitleSearchOrigin = ref<SubtitleSearchOrigin | null>(null)
+const subtitleSearchResults = ref<SubtitleSearchResult[]>([])
+const subtitleSearchLoading = ref(false)
+const subtitleDownloadingId = ref<string | null>(null)
+const subtitleSearchError = ref<string | null>(null)
+const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSettings().defaultLanguage)
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
@@ -116,6 +126,7 @@ const {
   setVolume,
   setPlaybackSpeed,
   setSubtitle,
+  addExternalSubtitle,
   setAudio,
   setVideoAspect,
   setVideoFit,
@@ -134,7 +145,7 @@ const currentTitleLogoUrl = computed(() => {
 const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
-const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value)
+const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
@@ -176,7 +187,7 @@ function clearHideTimer() {
 }
 
 function canAutoHideChrome() {
-  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value && isWindowFocused.value
+  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
 }
 
 function scheduleChromeHide() {
@@ -205,8 +216,8 @@ function handleControlsInteraction(next: boolean) {
 }
 
 function handleWindowBlur() {
-  isWindowFocused.value = false
-  revealChrome()
+  controlsInteracting.value = false
+  scheduleChromeHide()
 }
 
 function handleWindowResize() {
@@ -229,7 +240,6 @@ async function ensureRenderInitialized() {
 }
 
 function handleWindowFocus() {
-  isWindowFocused.value = true
   revealChrome()
 }
 
@@ -862,6 +872,155 @@ function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTra
   }
 }
 
+function openSubtitleSearch() {
+  subtitleSearchDefaultLanguage.value = loadSubtitleSearchSettings().defaultLanguage
+  subtitleSearchResults.value = []
+  subtitleSearchError.value = null
+  subtitleSearchLoading.value = false
+  subtitleDownloadingId.value = null
+
+  const sourceId = currentDisplaySourceId()
+  const sourceType = store.configs.find(config => config.id === sourceId)?.type
+  subtitleSearchRequiresSourceChoice.value = sourceType === 'emby'
+  subtitleSearchOrigin.value = sourceType === 'emby' ? null : 'local'
+  subtitleSearchOpen.value = true
+  revealChrome()
+}
+
+function closeSubtitleSearch() {
+  if (subtitleSearchLoading.value || subtitleDownloadingId.value)
+    return
+  subtitleSearchOpen.value = false
+  subtitleSearchError.value = null
+  subtitleSearchResults.value = []
+  scheduleChromeHide()
+}
+
+function selectSubtitleSearchOrigin(origin: SubtitleSearchOrigin) {
+  subtitleSearchOrigin.value = origin
+  subtitleSearchResults.value = []
+  subtitleSearchError.value = null
+}
+
+function resetSubtitleSearchOrigin() {
+  if (!subtitleSearchRequiresSourceChoice.value)
+    return
+  subtitleSearchOrigin.value = null
+  subtitleSearchResults.value = []
+  subtitleSearchError.value = null
+}
+
+async function searchSubtitles(language: SubtitleLanguage) {
+  const origin = subtitleSearchOrigin.value
+  if (!origin)
+    return
+
+  subtitleSearchLoading.value = true
+  subtitleSearchError.value = null
+  subtitleSearchResults.value = []
+  try {
+    const context = currentSubtitleSearchContext()
+    if (origin === 'emby') {
+      store.loadConfigs()
+      await store.syncManager()
+      const source = store.getSource(currentDisplaySourceId())
+      if (!source?.searchSubtitles)
+        throw new Error('当前 Emby 数据源不支持字幕搜索。')
+      subtitleSearchResults.value = await source.searchSubtitles({ ...context, language })
+    }
+    else {
+      subtitleSearchResults.value = await searchLocalSubtitles({ ...context, language })
+    }
+
+    if (subtitleSearchResults.value.length === 0)
+      subtitleSearchError.value = '没有找到符合当前媒体和语言的字幕，可以切换语言或更换搜索来源。'
+  }
+  catch (error) {
+    subtitleSearchError.value = toSafeErrorMessage(error, '字幕搜索失败。')
+  }
+  finally {
+    subtitleSearchLoading.value = false
+  }
+}
+
+async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
+  subtitleDownloadingId.value = result.id
+  subtitleSearchError.value = null
+  try {
+    if (result.origin === 'emby') {
+      store.loadConfigs()
+      await store.syncManager()
+      const source = store.getSource(currentDisplaySourceId())
+      if (!source?.downloadSubtitle)
+        throw new Error('当前 Emby 数据源不支持字幕下载。')
+      const track = await source.downloadSubtitle({
+        itemId: currentSubtitleSearchContext().itemId,
+        mediaSourceId: currentMediaSourceId(),
+        result,
+      })
+      if (!track.url)
+        throw new Error('Emby 已下载字幕，但没有返回可加载的字幕地址。')
+      await addExternalSubtitle(track.url, track.title ?? result.title, track.language)
+    }
+    else {
+      const downloaded = await downloadLocalSubtitle(result)
+      await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language)
+    }
+
+    showTransientPlayerMessage(`已加载字幕：${result.title}`)
+    subtitleSearchOpen.value = false
+    subtitleSearchResults.value = []
+    scheduleChromeHide()
+  }
+  catch (error) {
+    subtitleSearchError.value = toSafeErrorMessage(error, '字幕下载或加载失败。')
+  }
+  finally {
+    subtitleDownloadingId.value = null
+  }
+}
+
+function currentSubtitleSearchContext(): SubtitleSearchMediaContext {
+  const playbackContext = currentPlaybackContext()
+  const detail = playbackContext?.detail
+  const queueItem = currentQueueItem.value
+  return {
+    itemId: activeItemId.value || playbackContext?.itemId || queueItem?.id || '',
+    mediaSourceId: currentMediaSourceId(),
+    title: mediaTitle.value || detail?.name || queueItem?.title || queueItem?.name || '未命名影片',
+    localFilePath: currentLocalSubtitleFilePath(),
+    year: detail?.year,
+    mediaType: activeMediaType.value ?? detail?.type ?? queueItem?.type,
+    seasonNumber: detail?.seasonNumber ?? queueItem?.seasonNumber,
+    episodeNumber: detail?.episodeNumber ?? queueItem?.episodeNumber,
+    imdbId: detail?.imdbId,
+    tmdbId: detail?.tmdbId,
+  }
+}
+
+function currentLocalSubtitleFilePath(): string | undefined {
+  const sourceId = currentDisplaySourceId()
+  const sourceType = store.configs.find(config => config.id === sourceId)?.type
+  if (sourceId !== LOCAL_FILE_SOURCE_ID && sourceType !== 'local')
+    return undefined
+
+  const value = mediaPath.value.trim()
+  if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value))
+    return undefined
+  return /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/')
+    ? value
+    : undefined
+}
+
+function showTransientPlayerMessage(message: string) {
+  clearResumeMessageTimer()
+  resumeMessage.value = message
+  resumeMessageTimer = window.setTimeout(() => {
+    resumeMessageTimer = undefined
+    resumeMessage.value = null
+  }, 3500)
+}
+
 async function resizeWindowForAspect(mode: VideoAspectMode) {
   const ratio = aspectRatioValue(mode)
   if (!ratio)
@@ -1210,6 +1369,11 @@ function handleBeforeUnload() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && subtitleSearchOpen.value) {
+    event.preventDefault()
+    closeSubtitleSearch()
+    return
+  }
   if (event.key === 'Escape' && (contextMenuOpen.value || playbackDetailOpen.value)) {
     event.preventDefault()
     closePlaybackContextMenu(false)
@@ -1425,6 +1589,7 @@ watch(
         @set-volume="setVolume"
         @set-playback-speed="setPlaybackSpeed"
         @set-subtitle="setSubtitle"
+        @search-subtitles="openSubtitleSearch"
         @set-audio="setAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
@@ -1435,6 +1600,22 @@ watch(
     </div>
 
     <Teleport to="body">
+      <SubtitleSearchDialog
+        :open="subtitleSearchOpen"
+        :requires-source-choice="subtitleSearchRequiresSourceChoice"
+        :origin="subtitleSearchOrigin"
+        :default-language="subtitleSearchDefaultLanguage"
+        :results="subtitleSearchResults"
+        :loading="subtitleSearchLoading"
+        :downloading-id="subtitleDownloadingId"
+        :error="subtitleSearchError"
+        @close="closeSubtitleSearch"
+        @select-origin="selectSubtitleSearchOrigin"
+        @back="resetSubtitleSearchOrigin"
+        @search="searchSubtitles"
+        @download="downloadAndLoadSubtitle"
+      />
+
       <div
         v-if="contextMenuOpen"
         class="fixed inset-0 z-[1080]"

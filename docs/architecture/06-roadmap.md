@@ -72,7 +72,7 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] Docker 构建 CI: `docker build`
 - [ ] Docker 镜像推送: GHCR / Docker Hub
-- [~] Release CI: Player beta 已支持 tag/manual GitHub prerelease，并同时发布安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；正式版和其他组件后置
+- [~] Release CI: Player 已支持 tag/manual GitHub Release、Beta/Stable 渠道、签名 NSIS updater artifact、`latest.json`、安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；待配置 GitHub updater 私钥 Secret 并完成首个实机更新发布
 - [~] 自动生成 changelog/release notes: Player beta 已由 CI 从 tag/commit 生成；正式版汇总后置
 - [ ] 自动上传正式安装包和二进制文件
 
@@ -304,6 +304,8 @@ Phase 4: 生态系统           ████████████████
 #### 播放器增强
 
 - [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
+- [~] 播放中字幕搜索（已实现 Emby 搜索/本地搜索显式二选一、非 Emby 直达本地搜索、Emby 远程字幕 API、OpenSubtitles API Key + 可选账号 JWT、射手网四段 MD5、迅雷 CID、Rust 短期下载引用与 Tauri cache 即时加载；待真实账号、媒体文件和字幕结果实机验证）
+- [~] 签名自动更新（已实现启动自动检测、设置页手动检测、Beta/正式渠道、全局更新确认、下载进度、Tauri minisign 验证、标准/便携 NSIS 安装目录处理和 GitHub Release 签名清单发布；待配置 GitHub Secret 并发布首个 updater 版本实机验证）
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
 - [x] 播放队列面板（已内联在播放控制条并支持上一集/下一集；后续如需复用再拆独立 `PlaylistPanel.vue`）
 - [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）

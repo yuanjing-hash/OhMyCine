@@ -263,6 +263,16 @@ export interface SubtitleTrack {
   isDefault: boolean
 }
 
+export interface SubtitleSearchResult {
+  id: string
+  origin: 'emby' | 'local'
+  providerName: string
+  language: string
+  title: string
+  format?: string
+  downloadRef?: string
+}
+
 export interface AudioTrack {
   index: number
   language: string
@@ -311,6 +321,8 @@ export interface DataSource {
   // 播放
   getStreamURL(id: string): Promise<string>
   getStreamRequest?(request: PlaybackRequest): Promise<MediaStreamRequest>
+  searchSubtitles?(input: SubtitleSearchInput): Promise<SubtitleSearchResult[]>
+  downloadSubtitle?(input: SubtitleDownloadInput): Promise<SubtitleTrack>
 
   // 配置导出（用于同步给Server）
   exportConfig(): DataSourceConfig
@@ -320,6 +332,18 @@ export interface DataSource {
 播放导航只携带 `sourceId`、`itemId`、可选 `mediaSourceId` 和短生命周期 `contextId`。Home、详情页、数据源媒体库和播放队列不得在 Vue Router query/history 中保存远程直链、签名 URL、认证 header 或本地绝对路径；`PlayerView` 在即将调用 mpv 时通过 `getStreamRequest({ itemId, mediaSourceId })` 即时解析播放请求。文件拖放和本机继续观看所需的绝对路径只进入当前进程内存中的 `PlaybackMediaContext.locator`，不持久化。Emby 多版本选择必须把选中的 `mediaSourceId` 传到流解析和后续进度同步会话，版本已失效时明确要求用户重新选择。
 
 删除媒体源时，配置删除是主操作，同时按 `sourceId` 清理本机 SQLite 播放历史，并按 source/root 清理原始文件扫描缓存；清理范围不得影响其他媒体源。凭据、历史或缓存清理失败不应把已经删除的数据源重新加入 UI。
+
+播放中字幕搜索分为两条明确路径，不把多个来源静默混合成一次请求：
+
+- Emby 媒体点击“搜索字幕”后先选择 `Emby 搜索` 或 `本地搜索`。Emby 搜索调用服务端远程字幕 API，下载由 Emby 保存；Player 刷新媒体轨道并把新增外部字幕立即加载到 mpv。
+- OpenList/Alist、CloudDrive2、WebDAV、本地文件等其他媒体源直接进入 Player 本地搜索，不显示 Emby 来源选择。
+- Player 本地搜索通过独立 `SubtitleProvider` 抽象扩展，当前支持 OpenSubtitles、射手网和迅雷字幕，不在 Vue 组件中抓取网站页面。
+- OpenSubtitles API Key 保存到 Player 凭据边界；可选账号密码通过官方 `/login` 换取 JWT。密码只保存在凭据库，JWT 只存在 Rust 进程内并按有效期刷新。
+- OpenSubtitles 搜索和下载由 Tauri Rust 受控 HTTP 命令执行。只允许 HTTPS OpenSubtitles 域名、有限重定向和有限响应体。
+- 射手网使用本地视频四段 MD5 内容哈希，通过固定 HTTPS API 精确匹配；迅雷字幕使用本地视频三段 SHA-1 CID。两者当前只参与本地文件播放，远程数据源不读取 Range 内容计算哈希。
+- 迅雷 CID 查询接口当前仅提供固定 HTTP 地址，因此设置中默认关闭并明确标记实验性；字幕下载地址必须升级并限制到 `subtitle.v.geilijiasu.com` HTTPS。
+- 本地绝对路径只通过 IPC 进入 Rust 读取哈希片段。外部字幕服务只接收内容哈希、文件名和语言，不接收绝对路径、远程播放 URL、数据源账号或 Token。
+- 射手网和迅雷下载 URL 保存在 Rust 短期内存表中，Vue 仅持有不透明引用。所有提供器下载均限制域名、重定向、响应大小和扩展名，并使用受控哈希文件名写入当前存储模式的 `cache/subtitles`，不写入媒体目录。
 
 ### 4.3 Emby/Jellyfin DataSource 实现
 
@@ -599,6 +623,28 @@ export class ConfigSync {
   }
 }
 ```
+
+### 4.8 签名自动更新
+
+Player 使用 Tauri updater 的 minisign 信任根，不直接下载 GitHub EXE 覆盖自身：
+
+```text
+GitHub Releases API
+  → 按 Beta / Stable 选择 Release
+  → 固定仓库 latest.json
+  → Tauri updater 校验 manifest + NSIS 签名
+  → 用户确认
+  → 下载进度
+  → Windows NSIS 安装并重启
+```
+
+- Beta 渠道选择最新非草稿发布，包括 prerelease 和正式发布；Stable 只选择非草稿且非 prerelease。
+- GitHub API 和 manifest URL 固定到 `yuanjing-hash/OhMyCine`，不接受用户自定义更新服务器。
+- 启动自动检测和设置页手动检测复用同一个 Pinia updater store，并合并并发检查。
+- 发现更新只弹确认窗，不静默安装。下载完成后仍由 Tauri updater 使用内置公钥验证签名。
+- 普通设置只保存 `autoCheck` 和 `channel`，不保存私钥、签名或临时下载 URL。
+- 标准模式使用默认 NSIS 安装；便携模式向安装器传入当前 EXE 目录，保留 `portable.flag` 和便携数据目录。
+- 普通本地构建不要求签名私钥。GitHub Release 构建额外启用 `tauri.updater.conf.json`，生成 `.sig` 和 `latest.json`。
 
 ## 5. 网盘自动刮削系统
 
@@ -2205,6 +2251,8 @@ src-tauri/
 ```
 
 构建脚本当前只在 Player CI、manual build 和 beta release 中准备 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。后续平台完成渲染器和打包链路时，再补充 macOS/Linux 下载、资源声明和 CI。
+
+Windows 透明 WebView 叠层与 mpv HWND 底层窗口必须使用单一几何时序：移动、缩放和 DPI 变化先由 WebView 在下一布局帧读取实际 surface rect，再把逻辑坐标传给 Rust 转换为物理像素。原生 owner resize 事件只负责最小化/恢复可见性和层级，不得抢先按 Win32 客户区尺寸拉伸视频，否则视频画面会领先控制遮罩层缩放。窗口最大化/还原与 Player 全屏也是独立状态；从最大化进入全屏时临时还原窗口，退出全屏后恢复最大化。
 
 ### 9.8 Android 策略
 

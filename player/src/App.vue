@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import UpdateDialog from '@/components/layout/UpdateDialog.vue'
 import { createRawSourceAutoIndexTargets, createRawSourceLocalWatcherController, rawSourceIndexScheduler } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
+import { useUpdaterStore } from '@/stores/updater'
 
 const store = useDataSourceStore()
+const updater = useUpdaterStore()
 const localWatcherController = createRawSourceLocalWatcherController({
   resolveSource: sourceId => store.getSource(sourceId),
   markDirty: target => rawSourceIndexScheduler.markIncrementalDirty(target),
@@ -19,6 +22,7 @@ onMounted(() => {
     },
   })
   void store.syncManager().finally(() => localWatcherController.sync(store.orderedConfigs))
+  void updater.initialize().then(() => updater.scheduleStartupCheck())
 })
 
 watch(
@@ -30,6 +34,7 @@ watch(
 onBeforeUnmount(() => {
   rawSourceIndexScheduler.stopAutoIndexing()
   void localWatcherController.dispose()
+  updater.cancelStartupCheck()
 })
 </script>
 
@@ -37,4 +42,5 @@ onBeforeUnmount(() => {
   <AppLayout>
     <RouterView />
   </AppLayout>
+  <UpdateDialog />
 </template>
