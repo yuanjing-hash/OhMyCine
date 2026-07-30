@@ -110,6 +110,9 @@ export interface RenderSurfaceBounds {
 const DEFAULT_PLAYBACK_SPEED = 1
 const MIN_PLAYBACK_SPEED = 0.25
 const MAX_PLAYBACK_SPEED = 4
+const DEFAULT_SUBTITLE_DELAY = 0
+const MIN_SUBTITLE_DELAY = -30
+const MAX_SUBTITLE_DELAY = 30
 
 interface PlaybackSpeedPreference {
   playbackSpeed: number
@@ -141,6 +144,13 @@ function normalizePlaybackSpeed(speed: number): number {
   if (!Number.isFinite(speed))
     return DEFAULT_PLAYBACK_SPEED
   return Math.max(MIN_PLAYBACK_SPEED, Math.min(MAX_PLAYBACK_SPEED, speed))
+}
+
+function normalizeSubtitleDelay(delay: number): number {
+  if (!Number.isFinite(delay))
+    return DEFAULT_SUBTITLE_DELAY
+  const bounded = Math.max(MIN_SUBTITLE_DELAY, Math.min(MAX_SUBTITLE_DELAY, delay))
+  return Math.round(bounded * 10) / 10
 }
 
 async function readSavedPlaybackSpeed(): Promise<number> {
@@ -239,6 +249,7 @@ export function useMpv() {
   const volume = ref(100)
   const isMuted = ref(false)
   const playbackSpeed = ref(DEFAULT_PLAYBACK_SPEED)
+  const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
   const knownSubtitleTracks = ref<SubtitleTrackOption[]>([])
   const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, knownSubtitleTracks.value))
@@ -259,6 +270,8 @@ export function useMpv() {
   let playbackSpeedPreferenceLoaded = false
   let playbackSpeedPreferenceLoading: Promise<void> | null = null
   let playbackSpeedChangedLocally = false
+  let subtitleDelayCommand = Promise.resolve()
+  let subtitleDelayGeneration = 0
 
   function ensurePlaybackSpeedPreferenceLoaded(): Promise<void> {
     if (playbackSpeedPreferenceLoaded)
@@ -473,17 +486,21 @@ export function useMpv() {
   }
 
   async function load(path: string, options: MpvLoadOptions = {}) {
+    subtitleDelayGeneration += 1
     selectedKnownSubtitle.value = null
     currentTime.value = 0
     duration.value = 0
     isPlaying.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
+    subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
+    await subtitleDelayCommand.catch(() => undefined)
     await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     await invoke<void>('mpv_resume')
     currentTime.value = 0
     isPlaying.value = true
     await applyPlaybackSpeed(playbackSpeed.value)
+    await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
     await refreshTrackState()
     await refreshVideoDynamicRange()
     scheduleTrackRefresh(400)
@@ -522,6 +539,24 @@ export function useMpv() {
     playbackSpeedChangedLocally = true
     await applyPlaybackSpeed(rate)
     void savePlaybackSpeedPreference(playbackSpeed.value)
+  }
+
+  async function applySubtitleDelay(delay: number) {
+    const next = normalizeSubtitleDelay(delay)
+    subtitleDelay.value = next
+    await invoke<void>('mpv_set_property', { prop: 'sub-delay', value: next.toString() })
+  }
+
+  async function setSubtitleDelay(delay: number) {
+    const next = normalizeSubtitleDelay(delay)
+    const generation = subtitleDelayGeneration
+    subtitleDelay.value = next
+    subtitleDelayCommand = subtitleDelayCommand
+      .catch(() => undefined)
+      .then(() => generation === subtitleDelayGeneration
+        ? invoke<void>('mpv_set_property', { prop: 'sub-delay', value: next.toString() })
+        : undefined)
+    await subtitleDelayCommand
   }
 
   async function setSubtitle(trackId: SubtitleSelectionId | null) {
@@ -621,6 +656,7 @@ export function useMpv() {
     volume,
     isMuted,
     playbackSpeed,
+    subtitleDelay,
     subtitleTracks,
     audioTracks,
     currentSubtitle,
@@ -644,6 +680,7 @@ export function useMpv() {
     seekRelative,
     setVolume,
     setPlaybackSpeed,
+    setSubtitleDelay,
     setSubtitle,
     addExternalSubtitle,
     setAudio,

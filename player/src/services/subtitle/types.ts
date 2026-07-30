@@ -1,10 +1,14 @@
 import type { MediaItem, SubtitleSearchInput, SubtitleSearchResult } from '@/services/datasource/types'
 
 export type SubtitleLanguage = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko'
+export type SubtitleKeywordMode = 'mediaTitle' | 'fileName' | 'custom'
 
 export interface LocalSubtitleSearchInput extends Omit<SubtitleSearchInput, 'language'> {
   language: SubtitleLanguage
   localFilePath?: string
+  remoteMediaUrl?: string
+  remoteMediaHeaders?: Record<string, string>
+  mediaFileName?: string
 }
 
 export interface LocalSubtitleDownloadResult {
@@ -25,6 +29,9 @@ export interface SubtitleSearchMediaContext {
   itemId: string
   title: string
   localFilePath?: string
+  remoteMediaUrl?: string
+  remoteMediaHeaders?: Record<string, string>
+  mediaFileName?: string
   mediaSourceId?: string
   year?: number
   mediaType?: MediaItem['type']

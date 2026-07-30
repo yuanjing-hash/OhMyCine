@@ -3,7 +3,7 @@ import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, Render
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
-import type { SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
+import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -44,6 +44,7 @@ const store = useDataSourceStore()
 const appWindow = getCurrentWindow()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
+const mediaHeaders = ref<Record<string, string>>({})
 const activeSourceId = ref('')
 const activeItemId = ref('')
 const activeLibraryId = ref('')
@@ -102,6 +103,7 @@ const {
   duration,
   volume,
   playbackSpeed,
+  subtitleDelay,
   subtitleTracks,
   audioTracks,
   currentSubtitle,
@@ -125,6 +127,7 @@ const {
   seekRelative,
   setVolume,
   setPlaybackSpeed,
+  setSubtitleDelay,
   setSubtitle,
   addExternalSubtitle,
   setAudio,
@@ -910,7 +913,7 @@ function resetSubtitleSearchOrigin() {
   subtitleSearchError.value = null
 }
 
-async function searchSubtitles(language: SubtitleLanguage) {
+async function searchSubtitles(language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode) {
   const origin = subtitleSearchOrigin.value
   if (!origin)
     return
@@ -919,7 +922,7 @@ async function searchSubtitles(language: SubtitleLanguage) {
   subtitleSearchError.value = null
   subtitleSearchResults.value = []
   try {
-    const context = currentSubtitleSearchContext()
+    const context = currentSubtitleSearchContext(keyword, keywordMode)
     if (origin === 'emby') {
       store.loadConfigs()
       await store.syncManager()
@@ -980,36 +983,87 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
   }
 }
 
-function currentSubtitleSearchContext(): SubtitleSearchMediaContext {
+function currentSubtitleSearchContext(keyword?: string, keywordMode: SubtitleKeywordMode = 'mediaTitle'): SubtitleSearchMediaContext {
   const playbackContext = currentPlaybackContext()
   const detail = playbackContext?.detail
   const queueItem = currentQueueItem.value
   return {
     itemId: activeItemId.value || playbackContext?.itemId || queueItem?.id || '',
     mediaSourceId: currentMediaSourceId(),
-    title: mediaTitle.value || detail?.name || queueItem?.title || queueItem?.name || '未命名影片',
+    title: keyword?.trim() || currentSubtitleMediaTitle(),
     localFilePath: currentLocalSubtitleFilePath(),
-    year: detail?.year,
-    mediaType: activeMediaType.value ?? detail?.type ?? queueItem?.type,
-    seasonNumber: detail?.seasonNumber ?? queueItem?.seasonNumber,
-    episodeNumber: detail?.episodeNumber ?? queueItem?.episodeNumber,
-    imdbId: detail?.imdbId,
-    tmdbId: detail?.tmdbId,
+    remoteMediaUrl: currentRemoteSubtitleMediaUrl(),
+    remoteMediaHeaders: currentRemoteSubtitleMediaUrl() ? { ...mediaHeaders.value } : undefined,
+    mediaFileName: currentSubtitleFileName(),
+    year: keywordMode === 'custom' ? undefined : detail?.year,
+    mediaType: keywordMode === 'custom' ? undefined : activeMediaType.value ?? detail?.type ?? queueItem?.type,
+    seasonNumber: keywordMode === 'custom' ? undefined : detail?.seasonNumber ?? queueItem?.seasonNumber,
+    episodeNumber: keywordMode === 'custom' ? undefined : detail?.episodeNumber ?? queueItem?.episodeNumber,
+    imdbId: keywordMode === 'custom' ? undefined : detail?.imdbId,
+    tmdbId: keywordMode === 'custom' ? undefined : detail?.tmdbId,
   }
 }
 
 function currentLocalSubtitleFilePath(): string | undefined {
-  const sourceId = currentDisplaySourceId()
-  const sourceType = store.configs.find(config => config.id === sourceId)?.type
-  if (sourceId !== LOCAL_FILE_SOURCE_ID && sourceType !== 'local')
-    return undefined
-
+  const locator = currentPlaybackContext()?.locator
+  if (locator?.kind === 'localPath' && isAbsoluteLocalMediaPath(locator.path))
+    return locator.path.trim()
   const value = mediaPath.value.trim()
-  if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value))
-    return undefined
-  return /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/')
-    ? value
-    : undefined
+  return isAbsoluteLocalMediaPath(value) ? value : undefined
+}
+
+function isAbsoluteLocalMediaPath(value: string): boolean {
+  return Boolean(value)
+    && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)
+    && (/^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\') || value.startsWith('/'))
+}
+
+function currentRemoteSubtitleMediaUrl(): string | undefined {
+  const value = mediaPath.value.trim()
+  return /^https?:\/\//i.test(value) ? value : undefined
+}
+
+function currentSubtitleMediaTitle(): string {
+  const playbackContext = currentPlaybackContext()
+  const queueItem = currentQueueItem.value
+  const value = playbackContext?.detail?.name
+    || queueItem?.title
+    || queueItem?.name
+    || mediaTitle.value
+    || '未命名影片'
+  return value.replace(/\.[a-z0-9]{2,5}$/i, '').trim() || value
+}
+
+function currentSubtitleFileName(): string {
+  const playbackContext = currentPlaybackContext()
+  const candidates = [
+    currentLocalSubtitleFilePath(),
+    currentQueueItem.value?.path,
+    playbackContext?.detail?.path,
+    mediaPath.value,
+  ]
+  for (const candidate of candidates) {
+    const fileName = subtitleFileNameFromPath(candidate)
+    if (fileName)
+      return fileName
+  }
+  return ''
+}
+
+function subtitleFileNameFromPath(value: string | undefined): string {
+  const trimmed = value?.trim()
+  if (!trimmed)
+    return ''
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      const pathname = new URL(trimmed).pathname
+      return decodeURIComponent(pathname.split('/').filter(Boolean).at(-1) ?? '')
+    }
+  }
+  catch {
+    return ''
+  }
+  return trimmed.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? ''
 }
 
 function showTransientPlayerMessage(message: string) {
@@ -1060,6 +1114,7 @@ watch(
     await saveCurrentProgress(true, 'stopped')
     resetHistorySaveState()
     mediaPath.value = ''
+    mediaHeaders.value = {}
     mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
     pictureSettingsError.value = null
     queueSwitchError.value = null
@@ -1084,6 +1139,7 @@ watch(
       try {
         const request = await resolvePlaybackLoadRequest()
         mediaPath.value = request.url
+        mediaHeaders.value = { ...(request.headers ?? {}) }
         await load(request.url, { headers: request.headers })
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
@@ -1093,6 +1149,7 @@ watch(
       }
       catch (error) {
         mediaPath.value = ''
+        mediaHeaders.value = {}
         queueSwitchError.value = toSafeErrorMessage(error, '无法解析播放地址。')
       }
     }
@@ -1122,6 +1179,7 @@ async function handleFileDrop(path: string) {
   await saveCurrentProgress(true, 'stopped')
   resetHistorySaveState()
   mediaPath.value = path
+  mediaHeaders.value = {}
   mediaTitle.value = path.split(/[\\/]/).pop() || '本地视频'
   playbackQueue.value = null
   playbackContextId.value = ''
@@ -1566,6 +1624,7 @@ watch(
         :duration="duration"
         :volume="volume"
         :playback-speed="playbackSpeed"
+        :subtitle-delay="subtitleDelay"
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
         :queue-item-count="playbackQueueItemCount"
@@ -1588,6 +1647,7 @@ watch(
         @seek-relative="seekRelative"
         @set-volume="setVolume"
         @set-playback-speed="setPlaybackSpeed"
+        @set-subtitle-delay="setSubtitleDelay"
         @set-subtitle="setSubtitle"
         @search-subtitles="openSubtitleSearch"
         @set-audio="setAudio"
@@ -1605,6 +1665,8 @@ watch(
         :requires-source-choice="subtitleSearchRequiresSourceChoice"
         :origin="subtitleSearchOrigin"
         :default-language="subtitleSearchDefaultLanguage"
+        :media-title="currentSubtitleMediaTitle()"
+        :file-name="currentSubtitleFileName()"
         :results="subtitleSearchResults"
         :loading="subtitleSearchLoading"
         :downloading-id="subtitleDownloadingId"

@@ -8,12 +8,29 @@ const read = (path: string) => readFile(fileURLToPath(new URL(path, root)), 'utf
 const controls = await read('src/components/player/PlayerControls.vue')
 assert.match(controls, /搜索字幕/)
 assert.match(controls, /emit\('searchSubtitles'\)/)
+assert.match(controls, /字幕偏移/)
+assert.match(controls, /emit\('setSubtitleDelay'/)
+assert.match(controls, /type="range"[\s\S]*min="-30"[\s\S]*max="30"/)
 
 const playerView = await read('src/views/PlayerView.vue')
 assert.match(playerView, /subtitleSearchRequiresSourceChoice\.value = sourceType === 'emby'/)
 assert.match(playerView, /subtitleSearchOrigin\.value = sourceType === 'emby' \? null : 'local'/)
 assert.match(playerView, /if \(origin === 'emby'\)[\s\S]*source\.searchSubtitles/)
 assert.match(playerView, /else \{[\s\S]*searchLocalSubtitles/)
+assert.match(playerView, /currentSubtitleSearchContext\(keyword, keywordMode\)/)
+assert.match(playerView, /year: keywordMode === 'custom' \? undefined/)
+assert.match(playerView, /imdbId: keywordMode === 'custom' \? undefined/)
+assert.match(playerView, /currentLocalSubtitleFilePath\(\)[\s\S]*isAbsoluteLocalMediaPath/)
+assert.match(playerView, /remoteMediaUrl: currentRemoteSubtitleMediaUrl\(\)/)
+assert.match(playerView, /remoteMediaHeaders: currentRemoteSubtitleMediaUrl\(\) \? \{ \.\.\.mediaHeaders\.value \}/)
+assert.match(playerView, /:media-title="currentSubtitleMediaTitle\(\)"/)
+assert.match(playerView, /:file-name="currentSubtitleFileName\(\)"/)
+
+const searchDialog = await read('src/components/player/SubtitleSearchDialog.vue')
+assert.match(searchDialog, /媒体名称/)
+assert.match(searchDialog, /原始文件名/)
+assert.match(searchDialog, /自定义/)
+assert.match(searchDialog, /search: \[language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode\]/)
 
 const emby = await read('src/services/datasource/emby.ts')
 assert.match(emby, /RemoteSearch\/Subtitles\/\$\{encodeURIComponent\(language\)\}/)
@@ -27,13 +44,29 @@ assert.match(settings, /shooterEnabled/)
 assert.match(settings, /xunleiEnabled/)
 assert.doesNotMatch(settings, /setAppSetting\([^)]*apiKey/)
 
+const subtitleIndex = await read('src/services/subtitle/index.ts')
+assert.match(subtitleIndex, /hasOpenSubtitlesCredential/)
+assert.match(subtitleIndex, /settings\.shooterEnabled && canUseHashProviders/)
+assert.match(subtitleIndex, /settings\.xunleiEnabled && canUseHashProviders/)
+assert.match(subtitleIndex, /Promise\.allSettled/)
+
+const useMpv = await read('src/composables/useMpv.ts')
+assert.match(useMpv, /prop: 'sub-delay'/)
+assert.match(useMpv, /MIN_SUBTITLE_DELAY = -30/)
+assert.match(useMpv, /MAX_SUBTITLE_DELAY = 30/)
+assert.match(useMpv, /applySubtitleDelay\(DEFAULT_SUBTITLE_DELAY\)/)
+
 const credentialStore = await read('src/services/datasource/credentialStore.ts')
-assert.match(credentialStore, /version: 2,[\s\S]*provider: 'opensubtitles'/)
-assert.match(credentialStore, /value\.version !== 1 && value\.version !== 2/)
+assert.match(credentialStore, /version: 3,[\s\S]*provider: 'opensubtitles'/)
+assert.match(credentialStore, /value\.version !== 1 && value\.version !== 2 && value\.version !== 3/)
+assert.match(credentialStore, /authMode: 'apiKey'/)
+assert.match(credentialStore, /authMode: 'account'/)
 assert.match(credentialStore, /probePersistentCredentialStorage[\s\S]*credential-health-check/)
 
 const providers = await read('src/services/subtitle/hashProviders.ts')
-assert.match(providers, /if \(!input\.localFilePath\)[\s\S]*return \[\]/)
+assert.match(providers, /if \(!input\.localFilePath && !input\.remoteMediaUrl\)[\s\S]*return \[\]/)
+assert.match(providers, /remoteUrl: input\.remoteMediaUrl/)
+assert.match(providers, /headers: toHeaderPayload/)
 assert.match(providers, /subtitle_search_hash_provider/)
 assert.doesNotMatch(providers, /downloadRef.*https?:/)
 
@@ -46,6 +79,17 @@ assert.match(rust, /compute_xunlei_cid/)
 assert.match(rust, /url\.host_str\(\) != Some\("www\.shooter\.cn"\)/)
 assert.match(rust, /url\.host_str\(\) != Some\("subtitle\.v\.geilijiasu\.com"\)/)
 assert.match(rust, /DOWNLOAD_REFERENCE_TTL/)
+assert.match(rust, /https:\/\/api\.opensubtitles\.org\/xml-rpc/)
+assert.match(rust, /SearchSubtitles/)
+assert.match(rust, /DownloadSubtitles/)
+assert.match(rust, /GzDecoder/)
+assert.match(rust, /request_remote_media_range/)
+assert.match(rust, /Range 读取/)
+assert.match(rust, /ACCEPT_ENCODING/)
+assert.match(rust, /if !same_url_origin\(&url, &next\)[\s\S]*headers\.clear\(\)/)
+assert.match(rust, /remote_range_hashes_match_local_file_hashes/)
+assert.match(rust, /custom_keyword_is_written_to_opensubtitles_search_request/)
+assert.match(rust, /anonymous_status/)
 assert.doesNotMatch(rust, /println!|dbg!|log::.*password/)
 
 console.log(JSON.stringify({
@@ -53,7 +97,14 @@ console.log(JSON.stringify({
   nonEmbyUsesLocalSearchDirectly: true,
   credentialsUseSecureStore: true,
   downloadsAreConstrainedToSubtitleCache: true,
-  openSubtitlesAccountLoginUsesEphemeralJwt: true,
-  shooterAndXunleiRequireLocalFileHashes: true,
+  openSubtitlesSupportsExclusiveApiKeyAndAccountModes: true,
+  openSubtitlesAccountModeUsesXmlRpcSession: true,
+  modernAccount401FallsBackToAnonymousXmlRpc: true,
+  shooterAndXunleiSupportLocalAndRemoteHashes: true,
+  remoteHashHeadersStayInsideRust: true,
   hashProviderDownloadsUseOpaqueReferences: true,
+  missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,
+  subtitleDelayUsesMpvSubDelay: true,
+  subtitleSearchOffersThreeKeywordModes: true,
+  customKeywordOmitsCurrentMediaConstraints: true,
 }, null, 2))

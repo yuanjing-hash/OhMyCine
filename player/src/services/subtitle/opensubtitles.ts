@@ -60,7 +60,7 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
       throw new Error('该 OpenSubtitles 结果缺少可下载文件。')
 
     const downloaded = await invoke<DownloadedSubtitle>('subtitle_download_opensubtitles', {
-      request: { ...credential, fileId },
+      request: { ...credential, fileId, format: result.format },
     })
     return {
       path: downloaded.path,
@@ -74,7 +74,7 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
 async function requiredCredential() {
   const credential = await readOpenSubtitlesCredentials()
   if (!credential)
-    throw new Error('尚未配置 OpenSubtitles API Key，请先到“设置 → 播放与字幕”完成配置。')
+    throw new Error('尚未配置 OpenSubtitles，请先到“设置 → 播放与字幕”选择 API Key 或账号密码模式。')
   return credential
 }
 

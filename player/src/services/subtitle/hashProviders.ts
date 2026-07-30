@@ -18,13 +18,16 @@ export class HashSubtitleProvider implements SubtitleProvider {
   }
 
   async search(input: LocalSubtitleSearchInput): Promise<SubtitleSearchResult[]> {
-    if (!input.localFilePath)
+    if (!input.localFilePath && !input.remoteMediaUrl)
       return []
 
     return invoke<SubtitleSearchResult[]>('subtitle_search_hash_provider', {
       request: {
         provider: this.id,
-        filePath: input.localFilePath,
+        filePath: input.localFilePath ?? null,
+        remoteUrl: input.remoteMediaUrl ?? null,
+        headers: toHeaderPayload(input.remoteMediaHeaders),
+        fileName: input.mediaFileName ?? null,
         language: input.language,
       },
     })
@@ -47,4 +50,12 @@ export class HashSubtitleProvider implements SubtitleProvider {
       format: result.format,
     }
   }
+}
+
+function toHeaderPayload(headers: Record<string, string> | undefined) {
+  if (!headers)
+    return []
+  return Object.entries(headers)
+    .filter(([name, value]) => name.trim() && value.trim())
+    .map(([name, value]) => ({ name, value }))
 }

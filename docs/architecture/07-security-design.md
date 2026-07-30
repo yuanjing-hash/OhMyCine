@@ -199,9 +199,9 @@ CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类�
 - 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
 - Vue Router 只保存 `sourceId`、`itemId`、可选媒体版本 ID 和短生命周期上下文 ID；远程播放 URL、签名参数、播放 header 与本地绝对路径不得进入 route query/history。PlayerView 只在调用 mpv 前即时解析播放请求。
 - 删除媒体源时，必须按精确 `sourceId` 删除该来源的本机播放历史，并按 source/root 清理原始文件扫描缓存；禁止使用空来源或不受约束的批量删除。
-- OpenSubtitles API Key 与其他 Player 外部服务密钥一样进入独立 credential envelope，不得进入普通设置、localStorage、日志或导出配置。普通设置只保存默认字幕语言和提供器启用状态。
-- Player 本地字幕下载只允许 Tauri 受控客户端访问 OpenSubtitles HTTPS API 和受信任下载域名，限制超时、重定向、搜索响应和字幕文件大小。远端文件名不得直接成为本地路径；只读取允许的字幕扩展名并使用哈希文件名写入当前存储模式的 `cache/subtitles`。
-- 字幕搜索只向提供器发送作品 ID、标题、年份、媒体类型和季集号，不发送本地绝对路径、数据源凭据、签名播放 URL 或播放 Header。
+- OpenSubtitles API Key 或账号密码以互斥认证模式进入独立 credential envelope，不得进入普通设置、localStorage、日志或导出配置。普通设置只保存默认字幕语言和提供器启用状态；旧组合凭据迁移时不得同时保留两套秘密。
+- Player 本地字幕下载只允许 Tauri 受控客户端访问固定 OpenSubtitles HTTPS REST/XML-RPC 端点和受信任下载域名，限制超时、重定向、搜索响应、Base64/gzip 解码后大小和字幕文件大小。XML 响应拒绝 DTD/Entity，远端文件名不得直接成为本地路径；只读取允许的字幕扩展名并使用哈希文件名写入当前存储模式的 `cache/subtitles`。
+- 字幕搜索只向提供器发送作品 ID、用户当前选择的媒体标题/文件 basename/自定义关键词、年份、媒体类型和季集号，不发送目录、本地绝对路径、数据源凭据、签名播放 URL、查询参数或播放 Header。
 
 示例：
 
@@ -379,8 +379,9 @@ Location=https://cdn.example.com/file?token=***redacted***
 
 ### 10.4 Player 字幕提供器凭据与下载边界
 
-- OpenSubtitles REST API 始终要求应用 API Key。用户可选保存账号密码换取账号 JWT；API Key、账号和密码进入 Player 凭据库，JWT 只缓存于 Rust 进程内，不写入 SQLite 普通设置、日志或导出配置。
-- 射手网和迅雷字幕只对本地视频计算内容哈希。绝对路径不离开 Player；外部服务只接收哈希、文件名和语言。
+- OpenSubtitles API Key 模式使用 OpenSubtitles.com REST API；账号密码模式使用固定 HTTPS OpenSubtitles.org 旧 XML-RPC 接口，两种模式互斥。旧接口对现代邮箱账号返回 401 时只允许回退到官方匿名 XML-RPC 会话，并必须向用户显示未认证兼容状态；不得尝试网页抓取、复用第三方应用 API Key 或把 401 伪装成账号登录成功。API Key 或账号密码进入 Player 凭据库，认证/匿名 XML-RPC 会话只缓存于 Rust 进程内，不写入 SQLite 普通设置、日志或导出配置。
+- 射手网和迅雷字幕对本地文件直接计算内容哈希，对远程媒体只在 Rust 中使用当前播放 URL 与 Header 做受限 Range 取样。播放 URL、签名参数、Authorization/Cookie 和数据源 Header 不进入 Vue 结果状态、日志或字幕提供器请求；外部字幕服务只接收哈希、文件 basename 和语言。
+- 远程媒体哈希必须固定为 HTTP(S)，限制 Header 数量与总大小，禁止调用方覆盖 `Range/Host/Content-Length/Connection/Accept-Encoding`，先用单字节 Range 验证总大小，再读取算法要求的精确片段。重定向次数受限，跨源时清空数据源 Header，HTTPS 不得降级到 HTTP，服务端忽略 Range 时直接停止而不是下载完整媒体。
 - 射手网搜索和下载固定到 HTTPS `www.shooter.cn`。迅雷 CID 查询固定到 `sub.xmp.sandai.net:8000`，由于仅支持 HTTP，必须默认关闭并由用户显式启用；下载 URL 必须升级并限制到 HTTPS `subtitle.v.geilijiasu.com`。
 - 射手网和迅雷返回的下载 URL 不进入 Vue 状态、设置或日志。Rust 使用有数量和时间上限的短期不透明引用映射，并在下载时再次校验提供器和域名。
 - 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式的 `cache/subtitles`。

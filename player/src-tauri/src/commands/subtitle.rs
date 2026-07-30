@@ -1,8 +1,10 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use flate2::read::GzDecoder;
 use rand::RngCore;
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, LOCATION, USER_AGENT,
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_RANGE, CONTENT_TYPE,
+    LOCATION, RANGE, USER_AGENT,
 };
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -19,12 +21,15 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 
 const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
+const OPENSUBTITLES_XMLRPC_URL: &str = "https://api.opensubtitles.org/xml-rpc";
+const OPENSUBTITLES_XMLRPC_USER_AGENT: &str = "OhMyCine v0.1";
 const SHOOTER_API_URL: &str = "https://www.shooter.cn/api/subapi.php";
 const XUNLEI_API_PREFIX: &str = "http://sub.xmp.sandai.net:8000/subxl/";
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DOWNLOAD_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
+const MAX_REMOTE_MEDIA_HEADERS: usize = 32;
 const DOWNLOAD_REFERENCE_TTL: Duration = Duration::from_secs(30 * 60);
 const OPENSUBTITLES_SESSION_TTL: Duration = Duration::from_secs(23 * 60 * 60);
 const MAX_PENDING_DOWNLOADS: usize = 256;
@@ -36,7 +41,14 @@ pub struct OpenSubtitlesSessionState(tokio::sync::Mutex<Option<OpenSubtitlesSess
 struct OpenSubtitlesSession {
     credential_fingerprint: [u8; 32],
     token: String,
+    authenticated: bool,
     expires_at: Instant,
+}
+
+#[derive(Clone)]
+struct OpenSubtitlesXmlRpcSession {
+    token: String,
+    authenticated: bool,
 }
 
 #[derive(Default)]
@@ -76,7 +88,23 @@ impl HashSubtitleProvider {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSubtitlesLoginRequest {
-    api_key: String,
+    auth_mode: OpenSubtitlesAuthMode,
+    api_key: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum OpenSubtitlesAuthMode {
+    ApiKey,
+    Account,
+}
+
+#[derive(Clone)]
+struct ValidatedOpenSubtitlesCredential {
+    auth_mode: OpenSubtitlesAuthMode,
+    api_key: Option<String>,
     username: String,
     password: String,
 }
@@ -84,7 +112,8 @@ pub struct OpenSubtitlesLoginRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSubtitlesSearchRequest {
-    api_key: String,
+    auth_mode: OpenSubtitlesAuthMode,
+    api_key: Option<String>,
     username: Option<String>,
     password: Option<String>,
     language: String,
@@ -100,18 +129,44 @@ pub struct OpenSubtitlesSearchRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSubtitlesDownloadRequest {
-    api_key: String,
+    auth_mode: OpenSubtitlesAuthMode,
+    api_key: Option<String>,
     username: Option<String>,
     password: Option<String>,
     file_id: u64,
+    format: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HashSubtitleSearchRequest {
     provider: HashSubtitleProvider,
-    file_path: String,
+    file_path: Option<String>,
+    remote_url: Option<String>,
+    #[serde(default)]
+    headers: Vec<RemoteMediaHeader>,
+    file_name: Option<String>,
     language: String,
+}
+
+#[derive(Deserialize)]
+struct RemoteMediaHeader {
+    name: String,
+    value: String,
+}
+
+enum HashMediaSource {
+    Local {
+        path: PathBuf,
+        file_name: String,
+    },
+    Remote {
+        client: reqwest::Client,
+        url: Url,
+        headers: HeaderMap,
+        file_name: String,
+        size: u64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -129,6 +184,12 @@ pub struct DownloadedSubtitle {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenSubtitlesLoginStatus {
+    authenticated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HashSubtitleSearchResult {
     id: String,
     origin: &'static str,
@@ -141,11 +202,6 @@ pub struct HashSubtitleSearchResult {
     download_count: Option<u64>,
     is_hash_match: bool,
     download_ref: String,
-}
-
-#[derive(Deserialize)]
-struct OpenSubtitlesLoginResponse {
-    token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -192,13 +248,27 @@ struct XunleiRecord {
 pub async fn subtitle_login_opensubtitles(
     sessions: State<'_, OpenSubtitlesSessionState>,
     request: OpenSubtitlesLoginRequest,
-) -> Result<(), String> {
-    let api_key = validate_api_key(&request.api_key)?;
-    let username = validate_account_field(&request.username, "账号")?;
-    let password = validate_account_field(&request.password, "密码")?;
-    ensure_opensubtitles_token(&sessions, &api_key, Some((&username, &password)))
-        .await
-        .map(|_| ())
+) -> Result<OpenSubtitlesLoginStatus, String> {
+    let credential = validate_opensubtitles_credential(
+        request.auth_mode,
+        request.api_key.as_deref(),
+        request.username.as_deref(),
+        request.password.as_deref(),
+    )?;
+    if credential.auth_mode == OpenSubtitlesAuthMode::Account {
+        let session = ensure_opensubtitles_account_token(
+            &sessions,
+            &credential.username,
+            &credential.password,
+        )
+        .await?;
+        return Ok(OpenSubtitlesLoginStatus {
+            authenticated: session.authenticated,
+        });
+    }
+    Ok(OpenSubtitlesLoginStatus {
+        authenticated: true,
+    })
 }
 
 #[tauri::command]
@@ -206,17 +276,33 @@ pub async fn subtitle_search_opensubtitles(
     sessions: State<'_, OpenSubtitlesSessionState>,
     request: OpenSubtitlesSearchRequest,
 ) -> Result<Value, String> {
-    let api_key = validate_api_key(&request.api_key)?;
-    let account =
-        validate_optional_account(request.username.as_deref(), request.password.as_deref())?;
-    let token = ensure_opensubtitles_token(
-        &sessions,
-        &api_key,
-        account
-            .as_ref()
-            .map(|(username, password)| (username.as_str(), password.as_str())),
-    )
-    .await?;
+    let credential = validate_opensubtitles_credential(
+        request.auth_mode,
+        request.api_key.as_deref(),
+        request.username.as_deref(),
+        request.password.as_deref(),
+    )?;
+    match credential.auth_mode {
+        OpenSubtitlesAuthMode::ApiKey => {
+            search_opensubtitles_rest(&request, credential.api_key.as_deref().unwrap_or_default())
+                .await
+        }
+        OpenSubtitlesAuthMode::Account => {
+            search_opensubtitles_xmlrpc(
+                &sessions,
+                &request,
+                &credential.username,
+                &credential.password,
+            )
+            .await
+        }
+    }
+}
+
+async fn search_opensubtitles_rest(
+    request: &OpenSubtitlesSearchRequest,
+    api_key: &str,
+) -> Result<Value, String> {
     let mut url = Url::parse(&format!("{OPENSUBTITLES_API_BASE}/subtitles/"))
         .map_err(|_| "字幕搜索服务地址无效。".to_string())?;
     {
@@ -249,7 +335,7 @@ pub async fn subtitle_search_opensubtitles(
 
     let response = http_client()?
         .get(url)
-        .headers(opensubtitles_headers(&api_key, token.as_deref())?)
+        .headers(opensubtitles_headers(api_key)?)
         .send()
         .await
         .map_err(network_error)?;
@@ -263,24 +349,45 @@ pub async fn subtitle_download_opensubtitles(
     sessions: State<'_, OpenSubtitlesSessionState>,
     request: OpenSubtitlesDownloadRequest,
 ) -> Result<DownloadedSubtitle, String> {
-    let api_key = validate_api_key(&request.api_key)?;
-    let account =
-        validate_optional_account(request.username.as_deref(), request.password.as_deref())?;
-    let token = ensure_opensubtitles_token(
-        &sessions,
-        &api_key,
-        account
-            .as_ref()
-            .map(|(username, password)| (username.as_str(), password.as_str())),
-    )
-    .await?;
+    let credential = validate_opensubtitles_credential(
+        request.auth_mode,
+        request.api_key.as_deref(),
+        request.username.as_deref(),
+        request.password.as_deref(),
+    )?;
     if request.file_id == 0 {
         return Err("字幕下载标识无效。".to_string());
     }
+    match credential.auth_mode {
+        OpenSubtitlesAuthMode::ApiKey => {
+            download_opensubtitles_rest(
+                &app,
+                &request,
+                credential.api_key.as_deref().unwrap_or_default(),
+            )
+            .await
+        }
+        OpenSubtitlesAuthMode::Account => {
+            download_opensubtitles_xmlrpc(
+                &app,
+                &sessions,
+                &request,
+                &credential.username,
+                &credential.password,
+            )
+            .await
+        }
+    }
+}
 
+async fn download_opensubtitles_rest(
+    app: &AppHandle,
+    request: &OpenSubtitlesDownloadRequest,
+    api_key: &str,
+) -> Result<DownloadedSubtitle, String> {
     let response = http_client()?
         .post(format!("{OPENSUBTITLES_API_BASE}/download"))
-        .headers(opensubtitles_headers(&api_key, token.as_deref())?)
+        .headers(opensubtitles_headers(api_key)?)
         .header(CONTENT_TYPE, "application/json")
         .json(&serde_json::json!({ "file_id": request.file_id }))
         .send()
@@ -299,7 +406,7 @@ pub async fn subtitle_download_opensubtitles(
     let content =
         download_with_redirects(download_url, validate_opensubtitles_download_url).await?;
     write_subtitle_cache(
-        &app,
+        app,
         "opensubtitles",
         &request.file_id.to_string(),
         extension,
@@ -312,15 +419,12 @@ pub async fn subtitle_search_hash_provider(
     downloads: State<'_, SubtitleDownloadState>,
     request: HashSubtitleSearchRequest,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
-    let file_path = validate_hashable_video_path(&request.file_path)?;
-    let file_name = safe_local_file_name(&file_path)?;
+    let media = resolve_hash_media_source(&request).await?;
     let language = normalize_language(&request.language)?;
 
     match request.provider {
-        HashSubtitleProvider::Shooter => {
-            search_shooter(&downloads, &file_path, &file_name, &language).await
-        }
-        HashSubtitleProvider::Xunlei => search_xunlei(&downloads, &file_path, &language).await,
+        HashSubtitleProvider::Shooter => search_shooter(&downloads, &media, &language).await,
+        HashSubtitleProvider::Xunlei => search_xunlei(&downloads, &media, &language).await,
     }
 }
 
@@ -348,49 +452,371 @@ pub async fn subtitle_download_hash_provider(
     )
 }
 
-async fn ensure_opensubtitles_token(
+async fn ensure_opensubtitles_account_token(
     sessions: &OpenSubtitlesSessionState,
-    api_key: &str,
-    account: Option<(&str, &str)>,
-) -> Result<Option<String>, String> {
-    let Some((username, password)) = account else {
-        return Ok(None);
-    };
-    let fingerprint = credential_fingerprint(api_key, username, password);
+    username: &str,
+    password: &str,
+) -> Result<OpenSubtitlesXmlRpcSession, String> {
+    let fingerprint = credential_fingerprint("xmlrpc", username, password);
     let mut session = sessions.0.lock().await;
     if let Some(existing) = session.as_ref() {
         if existing.credential_fingerprint == fingerprint && existing.expires_at > Instant::now() {
-            return Ok(Some(existing.token.clone()));
+            return Ok(OpenSubtitlesXmlRpcSession {
+                token: existing.token.clone(),
+                authenticated: existing.authenticated,
+            });
         }
     }
 
-    let response = http_client()?
-        .post(format!("{OPENSUBTITLES_API_BASE}/login"))
-        .headers(opensubtitles_headers(api_key, None)?)
-        .header(CONTENT_TYPE, "application/json")
-        .json(&serde_json::json!({ "username": username, "password": password }))
-        .send()
-        .await
-        .map_err(network_error)?;
-    let bytes = read_limited_response(response, MAX_SEARCH_RESPONSE_BYTES).await?;
-    let payload: OpenSubtitlesLoginResponse = serde_json::from_slice(&bytes)
-        .map_err(|_| "OpenSubtitles 登录返回了无法解析的数据。".to_string())?;
-    let token = payload
-        .token
+    let (status, token) = request_opensubtitles_xmlrpc_login(username, password).await?;
+    let (token, authenticated) = if status.starts_with("200") {
+        (token, true)
+    } else if status.starts_with("401") {
+        let (anonymous_status, anonymous_token) =
+            request_opensubtitles_xmlrpc_login("", "").await?;
+        if !anonymous_status.starts_with("200") {
+            return Err(format!(
+                "OpenSubtitles 免 Key 兼容登录失败：{anonymous_status}"
+            ));
+        }
+        (anonymous_token, false)
+    } else {
+        return Err(format!("OpenSubtitles 账号登录失败：{status}"));
+    };
+    let token = token
         .filter(|value| !value.trim().is_empty() && value.len() <= 4096)
         .ok_or_else(|| "OpenSubtitles 登录没有返回有效会话。".to_string())?;
     *session = Some(OpenSubtitlesSession {
         credential_fingerprint: fingerprint,
         token: token.clone(),
+        authenticated,
         expires_at: Instant::now() + OPENSUBTITLES_SESSION_TTL,
     });
-    Ok(Some(token))
+    Ok(OpenSubtitlesXmlRpcSession {
+        token,
+        authenticated,
+    })
+}
+
+async fn request_opensubtitles_xmlrpc_login(
+    username: &str,
+    password: &str,
+) -> Result<(String, Option<String>), String> {
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><methodCall><methodName>LogIn</methodName><params><param><value><string>{}</string></value></param><param><value><string>{}</string></value></param><param><value><string>en</string></value></param><param><value><string>{}</string></value></param></params></methodCall>",
+        xml_escape(username),
+        xml_escape(password),
+        OPENSUBTITLES_XMLRPC_USER_AGENT,
+    );
+    let payload = post_opensubtitles_xmlrpc(&body, MAX_SEARCH_RESPONSE_BYTES).await?;
+    let data = xmlrpc_struct(&payload)?;
+    let status = xmlrpc_string_member(data, "status")
+        .filter(|value| !value.trim().is_empty() && value.len() <= 128)
+        .ok_or_else(|| "OpenSubtitles 登录没有返回状态。".to_string())?;
+    let token = xmlrpc_string_member(data, "token").map(str::to_string);
+    Ok((status.to_string(), token))
+}
+
+async fn search_opensubtitles_xmlrpc(
+    sessions: &OpenSubtitlesSessionState,
+    request: &OpenSubtitlesSearchRequest,
+    username: &str,
+    password: &str,
+) -> Result<Value, String> {
+    let session = ensure_opensubtitles_account_token(sessions, username, password).await?;
+    let body = build_opensubtitles_xmlrpc_search_body(&session.token, request)?;
+    let payload = post_opensubtitles_xmlrpc(&body, MAX_SEARCH_RESPONSE_BYTES).await?;
+    let data = xmlrpc_struct(&payload)?;
+    ensure_xmlrpc_success(data)?;
+    let records = match data.get("data") {
+        Some(XmlRpcValue::Array(records)) => records,
+        _ => return Ok(serde_json::json!({ "data": [] })),
+    };
+    let normalized_language = normalize_language(&request.language)?;
+    let results: Vec<Value> = records
+        .iter()
+        .filter_map(|record| legacy_record_to_rest_shape(record, &normalized_language))
+        .collect();
+    Ok(serde_json::json!({ "data": results }))
+}
+
+fn build_opensubtitles_xmlrpc_search_body(
+    token: &str,
+    request: &OpenSubtitlesSearchRequest,
+) -> Result<String, String> {
+    let language = normalize_xmlrpc_language(&request.language)?;
+    let query = normalized_query(request.query.as_deref())?
+        .ok_or_else(|| "请输入用于搜索字幕的媒体名称或关键词。".to_string())?;
+    let mut members = vec![
+        xmlrpc_string_member_xml("sublanguageid", language),
+        xmlrpc_string_member_xml("query", &query),
+    ];
+    if let Some(imdb_id) = normalize_imdb_id(request.imdb_id.as_deref())? {
+        members.push(xmlrpc_string_member_xml("imdbid", &imdb_id));
+    }
+    if let Some(season) = request.season_number {
+        members.push(xmlrpc_string_member_xml("season", &season.to_string()));
+    }
+    if let Some(episode) = request.episode_number {
+        members.push(xmlrpc_string_member_xml("episode", &episode.to_string()));
+    }
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><methodCall><methodName>SearchSubtitles</methodName><params><param><value><string>{}</string></value></param><param><value><array><data><value><struct>{}</struct></value></data></array></value></param></params></methodCall>",
+        xml_escape(token),
+        members.join(""),
+    ))
+}
+
+async fn download_opensubtitles_xmlrpc(
+    app: &AppHandle,
+    sessions: &OpenSubtitlesSessionState,
+    request: &OpenSubtitlesDownloadRequest,
+    username: &str,
+    password: &str,
+) -> Result<DownloadedSubtitle, String> {
+    let session = ensure_opensubtitles_account_token(sessions, username, password).await?;
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><methodCall><methodName>DownloadSubtitles</methodName><params><param><value><string>{}</string></value></param><param><value><array><data><value><string>{}</string></value></data></array></value></param></params></methodCall>",
+        xml_escape(&session.token),
+        request.file_id,
+    );
+    let payload = post_opensubtitles_xmlrpc(&body, MAX_DOWNLOAD_RESPONSE_BYTES).await?;
+    let data = xmlrpc_struct(&payload)?;
+    ensure_xmlrpc_success(data)?;
+    let encoded = match data.get("data") {
+        Some(XmlRpcValue::Array(records)) => records
+            .first()
+            .and_then(|record| xmlrpc_struct(record).ok())
+            .and_then(|record| xmlrpc_string_member(record, "data")),
+        _ => None,
+    }
+    .ok_or_else(|| "OpenSubtitles 下载没有返回字幕内容。".to_string())?;
+    let compressed = STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|_| "OpenSubtitles 字幕内容编码无效。".to_string())?;
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut content = Vec::new();
+    decoder
+        .by_ref()
+        .take((MAX_DOWNLOAD_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut content)
+        .map_err(|_| "OpenSubtitles 字幕解压失败。".to_string())?;
+    if content.len() > MAX_DOWNLOAD_RESPONSE_BYTES {
+        return Err("OpenSubtitles 字幕解压后过大，已拒绝处理。".to_string());
+    }
+    let extension = request
+        .format
+        .as_deref()
+        .and_then(normalized_subtitle_extension)
+        .unwrap_or("srt");
+    write_subtitle_cache(
+        app,
+        "opensubtitles-account",
+        &request.file_id.to_string(),
+        extension,
+        content,
+    )
+}
+
+#[derive(Debug)]
+enum XmlRpcValue {
+    String(String),
+    Struct(HashMap<String, XmlRpcValue>),
+    Array(Vec<XmlRpcValue>),
+}
+
+async fn post_opensubtitles_xmlrpc(body: &str, max_bytes: usize) -> Result<XmlRpcValue, String> {
+    let response = http_client()?
+        .post(OPENSUBTITLES_XMLRPC_URL)
+        .header(CONTENT_TYPE, "text/xml; charset=utf-8")
+        .header(ACCEPT, "text/xml")
+        .header(USER_AGENT, OPENSUBTITLES_XMLRPC_USER_AGENT)
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(network_error)?;
+    let bytes = read_limited_response(response, max_bytes).await?;
+    parse_xmlrpc_response(&bytes)
+}
+
+fn parse_xmlrpc_response(bytes: &[u8]) -> Result<XmlRpcValue, String> {
+    let xml = std::str::from_utf8(bytes)
+        .map_err(|_| "OpenSubtitles XML-RPC 返回了无效文本。".to_string())?;
+    if xml.contains("<!DOCTYPE") || xml.contains("<!ENTITY") {
+        return Err("OpenSubtitles XML-RPC 返回了不受支持的文档声明。".to_string());
+    }
+    let document = roxmltree::Document::parse(xml)
+        .map_err(|_| "OpenSubtitles XML-RPC 返回了无法解析的数据。".to_string())?;
+    if let Some(fault) = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "fault")
+    {
+        let message = fault
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "string")
+            .and_then(|node| node.text())
+            .unwrap_or("OpenSubtitles XML-RPC 请求失败。");
+        return Err(message.to_string());
+    }
+    let value = document
+        .descendants()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().name() == "param"
+                && node
+                    .ancestors()
+                    .any(|ancestor| ancestor.is_element() && ancestor.tag_name().name() == "params")
+        })
+        .and_then(|param| {
+            param
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == "value")
+        })
+        .ok_or_else(|| "OpenSubtitles XML-RPC 没有返回有效结果。".to_string())?;
+    parse_xmlrpc_value(value)
+}
+
+fn parse_xmlrpc_value(node: roxmltree::Node<'_, '_>) -> Result<XmlRpcValue, String> {
+    let Some(kind) = node.children().find(|child| child.is_element()) else {
+        return Ok(XmlRpcValue::String(
+            node.text().unwrap_or_default().to_string(),
+        ));
+    };
+    match kind.tag_name().name() {
+        "struct" => {
+            let mut fields = HashMap::new();
+            for member in kind
+                .children()
+                .filter(|child| child.is_element() && child.tag_name().name() == "member")
+            {
+                let name = member
+                    .children()
+                    .find(|child| child.is_element() && child.tag_name().name() == "name")
+                    .and_then(|child| child.text())
+                    .ok_or_else(|| "OpenSubtitles XML-RPC 字段缺少名称。".to_string())?;
+                let value = member
+                    .children()
+                    .find(|child| child.is_element() && child.tag_name().name() == "value")
+                    .ok_or_else(|| "OpenSubtitles XML-RPC 字段缺少值。".to_string())?;
+                fields.insert(name.to_string(), parse_xmlrpc_value(value)?);
+            }
+            Ok(XmlRpcValue::Struct(fields))
+        }
+        "array" => {
+            let values = kind
+                .children()
+                .find(|child| child.is_element() && child.tag_name().name() == "data")
+                .into_iter()
+                .flat_map(|data| data.children())
+                .filter(|child| child.is_element() && child.tag_name().name() == "value")
+                .map(parse_xmlrpc_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(XmlRpcValue::Array(values))
+        }
+        "string" | "int" | "i4" | "i8" | "double" | "boolean" | "base64" | "dateTime.iso8601" => {
+            Ok(XmlRpcValue::String(
+                kind.text().unwrap_or_default().to_string(),
+            ))
+        }
+        _ => Ok(XmlRpcValue::String(
+            kind.text().unwrap_or_default().to_string(),
+        )),
+    }
+}
+
+fn xmlrpc_struct(value: &XmlRpcValue) -> Result<&HashMap<String, XmlRpcValue>, String> {
+    match value {
+        XmlRpcValue::Struct(fields) => Ok(fields),
+        _ => Err("OpenSubtitles XML-RPC 返回结构无效。".to_string()),
+    }
+}
+
+fn xmlrpc_string_member<'a>(
+    fields: &'a HashMap<String, XmlRpcValue>,
+    name: &str,
+) -> Option<&'a str> {
+    match fields.get(name) {
+        Some(XmlRpcValue::String(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn ensure_xmlrpc_success(fields: &HashMap<String, XmlRpcValue>) -> Result<(), String> {
+    let status = xmlrpc_string_member(fields, "status").unwrap_or_default();
+    if status.starts_with("200") {
+        Ok(())
+    } else {
+        Err(if status.is_empty() {
+            "OpenSubtitles XML-RPC 请求失败。".to_string()
+        } else {
+            format!("OpenSubtitles XML-RPC 请求失败：{status}")
+        })
+    }
+}
+
+fn legacy_record_to_rest_shape(record: &XmlRpcValue, language: &str) -> Option<Value> {
+    let fields = xmlrpc_struct(record).ok()?;
+    let file_id = xmlrpc_string_member(fields, "IDSubtitleFile")?
+        .parse::<u64>()
+        .ok()?;
+    if file_id == 0 {
+        return None;
+    }
+    let file_name = xmlrpc_string_member(fields, "SubFileName").unwrap_or_default();
+    let release = xmlrpc_string_member(fields, "MovieReleaseName")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(file_name);
+    let rating =
+        xmlrpc_string_member(fields, "SubRating").and_then(|value| value.parse::<f64>().ok());
+    let download_count =
+        xmlrpc_string_member(fields, "SubDownloadsCnt").and_then(|value| value.parse::<u64>().ok());
+    let hearing_impaired = xmlrpc_string_member(fields, "SubHearingImpaired") == Some("1");
+    Some(serde_json::json!({
+        "id": format!("xmlrpc-{file_id}"),
+        "attributes": {
+            "language": language,
+            "download_count": download_count,
+            "hearing_impaired": hearing_impaired,
+            "ratings": rating,
+            "release": release,
+            "comments": xmlrpc_string_member(fields, "SubAuthorComment"),
+            "uploader": { "name": xmlrpc_string_member(fields, "UserNickName") },
+            "files": [{ "file_id": file_id, "file_name": file_name }],
+        }
+    }))
+}
+
+fn normalize_xmlrpc_language(value: &str) -> Result<&'static str, String> {
+    match normalize_language(value)?.as_str() {
+        "zh-cn" => Ok("chi"),
+        "zh-tw" => Ok("zht"),
+        "en" => Ok("eng"),
+        "ja" => Ok("jpn"),
+        "ko" => Ok("kor"),
+        _ => Err("OpenSubtitles 账号模式暂不支持该字幕语言。".to_string()),
+    }
+}
+
+fn xmlrpc_string_member_xml(name: &str, value: &str) -> String {
+    format!(
+        "<member><name>{}</name><value><string>{}</string></value></member>",
+        xml_escape(name),
+        xml_escape(value),
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 async fn search_shooter(
     downloads: &SubtitleDownloadState,
-    file_path: &Path,
-    file_name: &str,
+    media: &HashMediaSource,
     language: &str,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
     let query_language = match language {
@@ -398,7 +824,8 @@ async fn search_shooter(
         "en" => "Eng",
         _ => return Ok(Vec::new()),
     };
-    let file_hash = compute_shooter_hash(file_path)?;
+    let file_hash = compute_shooter_media_hash(media).await?;
+    let file_name = hash_media_file_name(media);
     let response = http_client()?
         .post(SHOOTER_API_URL)
         .header(USER_AGENT, "OhMyCine Player v0.1")
@@ -462,10 +889,10 @@ async fn search_shooter(
 
 async fn search_xunlei(
     downloads: &SubtitleDownloadState,
-    file_path: &Path,
+    media: &HashMediaSource,
     language: &str,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
-    let cid = compute_xunlei_cid(file_path)?;
+    let cid = compute_xunlei_media_cid(media).await?;
     let url = format!("{XUNLEI_API_PREFIX}{cid}.json");
     let response = http_client()?
         .get(url)
@@ -588,6 +1015,244 @@ fn resolve_pending_download(
     Ok(value)
 }
 
+async fn resolve_hash_media_source(
+    request: &HashSubtitleSearchRequest,
+) -> Result<HashMediaSource, String> {
+    if let Some(path) = request
+        .file_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let path = validate_hashable_video_path(path)?;
+        let file_name = safe_local_file_name(&path)?;
+        return Ok(HashMediaSource::Local { path, file_name });
+    }
+
+    let url = validate_remote_media_url(request.remote_url.as_deref().unwrap_or_default())?;
+    let headers = validate_remote_media_headers(&request.headers)?;
+    let file_name = request
+        .file_name
+        .as_deref()
+        .and_then(validate_remote_media_file_name)
+        .or_else(|| remote_media_file_name(&url))
+        .unwrap_or_else(|| "remote-media".to_string());
+    let client = http_client()?;
+    let (url, headers, size) = probe_remote_media(&client, url, headers).await?;
+    if size < MIN_HASHABLE_FILE_SIZE {
+        return Err("远程视频过小，无法计算字幕匹配哈希。".to_string());
+    }
+    Ok(HashMediaSource::Remote {
+        client,
+        url,
+        headers,
+        file_name,
+        size,
+    })
+}
+
+fn validate_remote_media_url(value: &str) -> Result<Url, String> {
+    let url = Url::parse(value.trim()).map_err(|_| "远程视频播放地址无效。".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.fragment().is_some()
+    {
+        return Err("远程视频播放地址不受支持。".to_string());
+    }
+    Ok(url)
+}
+
+fn validate_remote_media_headers(values: &[RemoteMediaHeader]) -> Result<HeaderMap, String> {
+    if values.len() > MAX_REMOTE_MEDIA_HEADERS {
+        return Err("远程视频播放 Header 数量过多。".to_string());
+    }
+    let mut headers = HeaderMap::new();
+    let mut total_size = 0_usize;
+    for header in values {
+        total_size = total_size
+            .saturating_add(header.name.len())
+            .saturating_add(header.value.len());
+        if total_size > 32 * 1024 {
+            return Err("远程视频播放 Header 过大。".to_string());
+        }
+        let name = HeaderName::from_bytes(header.name.trim().as_bytes())
+            .map_err(|_| "远程视频播放 Header 名称无效。".to_string())?;
+        if matches!(
+            name.as_str(),
+            "range"
+                | "host"
+                | "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "accept-encoding"
+        ) {
+            return Err("远程视频播放 Header 包含受限字段。".to_string());
+        }
+        let value = HeaderValue::from_str(&header.value)
+            .map_err(|_| "远程视频播放 Header 值无效。".to_string())?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+fn validate_remote_media_file_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 255
+        || value.contains(['/', '\\'])
+        || value.chars().any(|character| character.is_control())
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn remote_media_file_name(url: &Url) -> Option<String> {
+    url.path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .next_back()
+        .and_then(validate_remote_media_file_name)
+}
+
+async fn probe_remote_media(
+    client: &reqwest::Client,
+    url: Url,
+    headers: HeaderMap,
+) -> Result<(Url, HeaderMap, u64), String> {
+    let (response, final_url, final_headers) =
+        request_remote_media_range(client, url, headers, 0, 0).await?;
+    if !response.status().is_success() {
+        return Err(http_error(response.status()));
+    }
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        return Err("当前远程媒体源不支持 Range 读取，无法计算字幕匹配哈希。".to_string());
+    }
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "远程媒体源没有返回文件大小。".to_string())?;
+    let (start, end, total) = parse_content_range(content_range)?;
+    if start != 0 || end != 0 {
+        return Err("远程媒体源返回了错误的 Range 范围。".to_string());
+    }
+    Ok((final_url, final_headers, total))
+}
+
+async fn read_remote_media_range(
+    client: &reqwest::Client,
+    url: &Url,
+    headers: &HeaderMap,
+    start: u64,
+    length: usize,
+    expected_total: u64,
+) -> Result<Vec<u8>, String> {
+    let end = start
+        .checked_add(length.saturating_sub(1) as u64)
+        .ok_or_else(|| "远程媒体 Range 范围无效。".to_string())?;
+    let (response, _, _) =
+        request_remote_media_range(client, url.clone(), headers.clone(), start, end).await?;
+    if !response.status().is_success() {
+        return Err(http_error(response.status()));
+    }
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        return Err("当前远程媒体源未按 Range 返回视频片段。".to_string());
+    }
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "远程媒体片段缺少 Content-Range。".to_string())?;
+    let (actual_start, actual_end, total) = parse_content_range(content_range)?;
+    if actual_start != start || actual_end != end || total != expected_total {
+        return Err("远程媒体源返回了不一致的视频片段。".to_string());
+    }
+    let bytes = read_limited_response(response, length).await?;
+    if bytes.len() != length {
+        return Err("远程媒体源返回的视频片段长度不足。".to_string());
+    }
+    Ok(bytes)
+}
+
+async fn request_remote_media_range(
+    client: &reqwest::Client,
+    mut url: Url,
+    mut headers: HeaderMap,
+    start: u64,
+    end: u64,
+) -> Result<(reqwest::Response, Url, HeaderMap), String> {
+    for _ in 0..=MAX_REDIRECTS {
+        let mut request_headers = headers.clone();
+        request_headers.insert(
+            RANGE,
+            HeaderValue::from_str(&format!("bytes={start}-{end}"))
+                .map_err(|_| "远程媒体 Range 格式无效。".to_string())?,
+        );
+        request_headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        let response = client
+            .get(url.clone())
+            .headers(request_headers)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "远程媒体重定向缺少目标地址。".to_string())?;
+            let next = validate_remote_media_url(
+                url.join(location)
+                    .map_err(|_| "远程媒体重定向地址无效。".to_string())?
+                    .as_str(),
+            )?;
+            if url.scheme() == "https" && next.scheme() != "https" {
+                return Err("远程媒体拒绝从 HTTPS 降级到 HTTP。".to_string());
+            }
+            if !same_url_origin(&url, &next) {
+                headers.clear();
+            }
+            url = next;
+            continue;
+        }
+        return Ok((response, url, headers));
+    }
+    Err("远程媒体重定向次数过多。".to_string())
+}
+
+fn same_url_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn parse_content_range(value: &str) -> Result<(u64, u64, u64), String> {
+    let value = value
+        .trim()
+        .strip_prefix("bytes ")
+        .ok_or_else(|| "远程媒体 Content-Range 格式无效。".to_string())?;
+    let (range, total) = value
+        .split_once('/')
+        .ok_or_else(|| "远程媒体 Content-Range 格式无效。".to_string())?;
+    let (start, end) = range
+        .split_once('-')
+        .ok_or_else(|| "远程媒体 Content-Range 格式无效。".to_string())?;
+    let start = start
+        .parse::<u64>()
+        .map_err(|_| "远程媒体 Content-Range 起点无效。".to_string())?;
+    let end = end
+        .parse::<u64>()
+        .map_err(|_| "远程媒体 Content-Range 终点无效。".to_string())?;
+    let total = total
+        .parse::<u64>()
+        .map_err(|_| "远程媒体 Content-Range 总大小无效。".to_string())?;
+    if start > end || end >= total {
+        return Err("远程媒体 Content-Range 数值无效。".to_string());
+    }
+    Ok((start, end, total))
+}
+
 fn validate_hashable_video_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty()
@@ -643,6 +1308,60 @@ fn safe_local_file_name(path: &Path) -> Result<String, String> {
         return Err("本地视频文件名无效。".to_string());
     }
     Ok(name.to_string())
+}
+
+fn hash_media_file_name(media: &HashMediaSource) -> &str {
+    match media {
+        HashMediaSource::Local { file_name, .. } | HashMediaSource::Remote { file_name, .. } => {
+            file_name
+        }
+    }
+}
+
+async fn compute_shooter_media_hash(media: &HashMediaSource) -> Result<String, String> {
+    match media {
+        HashMediaSource::Local { path, .. } => compute_shooter_hash(path),
+        HashMediaSource::Remote {
+            client,
+            url,
+            headers,
+            size,
+            ..
+        } => {
+            let positions = [4096, size.saturating_mul(2) / 3, size / 3, size - 8192];
+            let mut hashes = Vec::with_capacity(4);
+            for position in positions {
+                let sample =
+                    read_remote_media_range(client, url, headers, position, 4096, *size).await?;
+                hashes.push(format!("{:x}", md5::compute(sample)));
+            }
+            Ok(hashes.join(";"))
+        }
+    }
+}
+
+async fn compute_xunlei_media_cid(media: &HashMediaSource) -> Result<String, String> {
+    match media {
+        HashMediaSource::Local { path, .. } => compute_xunlei_cid(path),
+        HashMediaSource::Remote {
+            client,
+            url,
+            headers,
+            size,
+            ..
+        } => {
+            let sample_size = 0x5000_usize;
+            let positions = [0, size / 3, size - sample_size as u64];
+            let mut hasher = Sha1::new();
+            for position in positions {
+                let sample =
+                    read_remote_media_range(client, url, headers, position, sample_size, *size)
+                        .await?;
+                hasher.update(sample);
+            }
+            Ok(format!("{:X}", hasher.finalize()))
+        }
+    }
 }
 
 fn compute_shooter_hash(path: &Path) -> Result<String, String> {
@@ -702,7 +1421,7 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|_| "无法初始化字幕网络客户端。".to_string())
 }
 
-fn opensubtitles_headers(api_key: &str, token: Option<&str>) -> Result<HeaderMap, String> {
+fn opensubtitles_headers(api_key: &str) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("OhMyCine Player v0.1"));
@@ -711,13 +1430,6 @@ fn opensubtitles_headers(api_key: &str, token: Option<&str>) -> Result<HeaderMap
         HeaderValue::from_str(api_key)
             .map_err(|_| "OpenSubtitles API Key 格式无效。".to_string())?,
     );
-    if let Some(token) = token {
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|_| "OpenSubtitles 登录会话格式无效。".to_string())?,
-        );
-    }
     Ok(headers)
 }
 
@@ -752,7 +1464,7 @@ async fn download_with_redirects(
 }
 
 async fn read_limited_response(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
     let status = response.status();
@@ -762,14 +1474,17 @@ async fn read_limited_response(
     {
         return Err("字幕服务响应过大，已拒绝处理。".to_string());
     }
-    let bytes = response.bytes().await.map_err(network_error)?;
-    if bytes.len() > max_bytes {
-        return Err("字幕服务响应过大，已拒绝处理。".to_string());
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err("字幕服务响应过大，已拒绝处理。".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
     }
     if !status.is_success() {
         return Err(http_error(status));
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 fn write_subtitle_cache(
@@ -871,20 +1586,25 @@ fn validate_api_key(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn validate_optional_account<'a>(
-    username: Option<&'a str>,
-    password: Option<&'a str>,
-) -> Result<Option<(String, String)>, String> {
-    match (
-        username.filter(|value| !value.trim().is_empty()),
-        password.filter(|value| !value.is_empty()),
-    ) {
-        (None, None) => Ok(None),
-        (Some(username), Some(password)) => Ok(Some((
-            validate_account_field(username, "账号")?,
-            validate_account_field(password, "密码")?,
-        ))),
-        _ => Err("OpenSubtitles 账号和密码必须同时配置。".to_string()),
+fn validate_opensubtitles_credential(
+    auth_mode: OpenSubtitlesAuthMode,
+    api_key: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<ValidatedOpenSubtitlesCredential, String> {
+    match auth_mode {
+        OpenSubtitlesAuthMode::ApiKey => Ok(ValidatedOpenSubtitlesCredential {
+            auth_mode,
+            api_key: Some(validate_api_key(api_key.unwrap_or_default())?),
+            username: String::new(),
+            password: String::new(),
+        }),
+        OpenSubtitlesAuthMode::Account => Ok(ValidatedOpenSubtitlesCredential {
+            auth_mode,
+            api_key: None,
+            username: validate_account_field(username.unwrap_or_default(), "账号")?,
+            password: validate_account_field(password.unwrap_or_default(), "密码")?,
+        }),
     }
 }
 
@@ -1050,11 +1770,18 @@ fn http_error(status: StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_shooter_hash, compute_xunlei_cid, normalize_xunlei_download_url,
-        safe_subtitle_extension, validate_opensubtitles_download_url,
-        validate_shooter_download_url, validate_xunlei_download_url,
+        build_opensubtitles_xmlrpc_search_body, compute_shooter_hash, compute_shooter_media_hash,
+        compute_xunlei_cid, compute_xunlei_media_cid, normalize_xunlei_download_url,
+        parse_xmlrpc_response, resolve_hash_media_source, safe_subtitle_extension,
+        validate_opensubtitles_download_url, validate_shooter_download_url,
+        validate_xunlei_download_url, xmlrpc_string_member, xmlrpc_struct, HashSubtitleProvider,
+        HashSubtitleSearchRequest, OpenSubtitlesAuthMode, OpenSubtitlesSearchRequest,
+        RemoteMediaHeader,
     };
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn only_accepts_opensubtitles_https_downloads() {
@@ -1114,5 +1841,132 @@ mod tests {
             "c67faf40372a3d42b00e265e0f6b36a9;1dcd314fb09563fd575fe44a2b8d2795;dde61e0ad768e24c52c3c1dedffe1dcd;e346c820a8e2fcb70c7f4eab58f6b8d8"
         );
         assert_eq!(xunlei, "6069A88CF640B2405499F07040361A1C0CD5FCE8");
+    }
+
+    #[test]
+    fn remote_range_hashes_match_local_file_hashes() {
+        let content = (0..0x12002)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let path =
+            std::env::temp_dir().join(format!("ohmycine-remote-hash-{}.mp4", std::process::id()));
+        fs::write(&path, &content).unwrap();
+        let expected_shooter = compute_shooter_hash(&path).unwrap();
+        let expected_xunlei = compute_xunlei_cid(&path).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_content = content.clone();
+        let server = thread::spawn(move || {
+            for _ in 0..8 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer range-test"));
+                let range = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim())
+                    .and_then(|value| value.strip_prefix("bytes="))
+                    .and_then(|value| value.split_once('-'))
+                    .map(|(start, end)| {
+                        (
+                            start.parse::<usize>().unwrap(),
+                            end.parse::<usize>().unwrap(),
+                        )
+                    })
+                    .unwrap();
+                let body = &server_content[range.0..=range.1];
+                write!(
+                    stream,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    range.0,
+                    range.1,
+                    server_content.len(),
+                    body.len(),
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            }
+        });
+
+        let request = HashSubtitleSearchRequest {
+            provider: HashSubtitleProvider::Shooter,
+            file_path: None,
+            remote_url: Some(format!("http://{address}/movie.mp4")),
+            headers: vec![RemoteMediaHeader {
+                name: "Authorization".to_string(),
+                value: "Bearer range-test".to_string(),
+            }],
+            file_name: Some("movie.mp4".to_string()),
+            language: "zh-CN".to_string(),
+        };
+        let (actual_shooter, actual_xunlei) = tauri::async_runtime::block_on(async {
+            let media = resolve_hash_media_source(&request).await.unwrap();
+            (
+                compute_shooter_media_hash(&media).await.unwrap(),
+                compute_xunlei_media_cid(&media).await.unwrap(),
+            )
+        });
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(actual_shooter, expected_shooter);
+        assert_eq!(actual_xunlei, expected_xunlei);
+    }
+
+    #[test]
+    fn parses_opensubtitles_xmlrpc_structs_and_arrays() {
+        let xml = br#"<?xml version="1.0"?><methodResponse><params><param><value><struct>
+          <member><name>status</name><value><string>200 OK</string></value></member>
+          <member><name>data</name><value><array><data><value><struct>
+            <member><name>IDSubtitleFile</name><value><string>123</string></value></member>
+          </struct></value></data></array></value></member>
+        </struct></value></param></params></methodResponse>"#;
+        let payload = parse_xmlrpc_response(xml).unwrap();
+        let fields = xmlrpc_struct(&payload).unwrap();
+        assert_eq!(xmlrpc_string_member(fields, "status"), Some("200 OK"));
+        assert!(
+            matches!(fields.get("data"), Some(super::XmlRpcValue::Array(values)) if values.len() == 1)
+        );
+    }
+
+    #[test]
+    fn rejects_xmlrpc_document_declarations() {
+        let xml = br#"<?xml version="1.0"?><!DOCTYPE foo><methodResponse/>"#;
+        assert!(parse_xmlrpc_response(xml).is_err());
+    }
+
+    #[test]
+    fn custom_keyword_is_written_to_opensubtitles_search_request() {
+        let request = OpenSubtitlesSearchRequest {
+            auth_mode: OpenSubtitlesAuthMode::Account,
+            api_key: None,
+            username: Some("account".to_string()),
+            password: Some("password".to_string()),
+            language: "zh-CN".to_string(),
+            query: Some("复仇者联盟 & 2012".to_string()),
+            imdb_id: None,
+            tmdb_id: None,
+            year: None,
+            season_number: None,
+            episode_number: None,
+            media_type: Some("movie".to_string()),
+        };
+        let body = build_opensubtitles_xmlrpc_search_body("session-token", &request).unwrap();
+        assert!(body.contains("复仇者联盟 &amp; 2012"));
+        assert!(body.contains("<name>sublanguageid</name><value><string>chi</string>"));
+        assert!(!body.contains("account"));
+        assert!(!body.contains("password"));
     }
 }

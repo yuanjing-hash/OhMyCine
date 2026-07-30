@@ -30,8 +30,11 @@ export interface TmdbCredentialValue {
   readonly value: string
 }
 
+export type OpenSubtitlesAuthMode = 'apiKey' | 'account'
+
 export interface OpenSubtitlesCredentialValue {
-  readonly apiKey: string
+  readonly authMode: OpenSubtitlesAuthMode
+  readonly apiKey?: string
   readonly username?: string
   readonly password?: string
 }
@@ -75,9 +78,10 @@ interface StoredTmdbCredentialEnvelope {
 }
 
 interface StoredOpenSubtitlesCredentialEnvelope {
-  readonly version: 2
+  readonly version: 3
   readonly provider: 'opensubtitles'
-  readonly apiKey: string
+  readonly authMode: OpenSubtitlesAuthMode
+  readonly apiKey?: string
   readonly username?: string
   readonly password?: string
 }
@@ -186,20 +190,21 @@ export async function readTmdbCredential(ref: string): Promise<TmdbCredentialVal
 }
 
 export async function saveOpenSubtitlesCredential(ref: string, value: OpenSubtitlesCredentialValue): Promise<void> {
-  if (!value.apiKey.trim())
-    throw new Error('Credential value is incomplete.')
-
+  const apiKey = value.apiKey?.trim() || undefined
   const username = value.username?.trim() || undefined
   const password = value.password || undefined
-  if (Boolean(username) !== Boolean(password))
+  if (value.authMode === 'apiKey' && !apiKey)
+    throw new Error('OpenSubtitles API Key is incomplete.')
+  if (value.authMode === 'account' && (!username || !password))
     throw new Error('OpenSubtitles account credential is incomplete.')
 
   await saveRawCredential(ref, JSON.stringify({
-    version: 2,
+    version: 3,
     provider: 'opensubtitles',
-    apiKey: value.apiKey.trim(),
-    username,
-    password,
+    authMode: value.authMode,
+    apiKey: value.authMode === 'apiKey' ? apiKey : undefined,
+    username: value.authMode === 'account' ? username : undefined,
+    password: value.authMode === 'account' ? password : undefined,
   } satisfies StoredOpenSubtitlesCredentialEnvelope))
 }
 
@@ -295,20 +300,27 @@ function parseOpenSubtitlesCredential(raw: string | null): OpenSubtitlesCredenti
     const value = JSON.parse(raw) as unknown
     if (!isObject(value))
       return null
-    if (value.provider !== 'opensubtitles' || (value.version !== 1 && value.version !== 2) || typeof value.apiKey !== 'string' || !value.apiKey.trim())
+    if (value.provider !== 'opensubtitles' || (value.version !== 1 && value.version !== 2 && value.version !== 3))
       return null
-    if (value.version === 1)
-      return { apiKey: value.apiKey.trim() }
+    if (value.version === 1) {
+      return typeof value.apiKey === 'string' && value.apiKey.trim()
+        ? { authMode: 'apiKey', apiKey: value.apiKey.trim() }
+        : null
+    }
 
+    const apiKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
     const username = typeof value.username === 'string' ? value.username.trim() : ''
     const password = typeof value.password === 'string' ? value.password : ''
-    if (Boolean(username) !== Boolean(password))
-      return null
-    return {
-      apiKey: value.apiKey.trim(),
-      username: username || undefined,
-      password: password || undefined,
+    if (value.version === 2) {
+      if (username && password)
+        return { authMode: 'account', username, password }
+      return apiKey ? { authMode: 'apiKey', apiKey } : null
     }
+    if (value.authMode === 'apiKey' && apiKey)
+      return { authMode: 'apiKey', apiKey }
+    if (value.authMode === 'account' && username && password)
+      return { authMode: 'account', username, password }
+    return null
   }
   catch {
     return null

@@ -16,6 +16,7 @@ const props = defineProps<{
   duration: number
   volume: number
   playbackSpeed: number
+  subtitleDelay: number
   subtitleTracks: readonly SubtitleTrackOption[]
   audioTracks: readonly Track[]
   queueItemCount: number
@@ -41,6 +42,7 @@ const emit = defineEmits<{
   seekRelative: [offset: number]
   setVolume: [volume: number]
   setPlaybackSpeed: [speed: number]
+  setSubtitleDelay: [delay: number]
   setSubtitle: [trackId: SubtitleSelectionId | null]
   searchSubtitles: []
   setAudio: [trackId: number]
@@ -159,6 +161,20 @@ function chooseSpeed(speed: number) {
 function chooseSubtitle(trackId: SubtitleSelectionId | null) {
   emit('setSubtitle', trackId)
   closeMenus()
+}
+
+function adjustSubtitleDelay(delta: number) {
+  emit('setSubtitleDelay', props.subtitleDelay + delta)
+}
+
+function updateSubtitleDelay(event: Event) {
+  emit('setSubtitleDelay', Number.parseFloat((event.target as HTMLInputElement).value))
+}
+
+function formatSubtitleDelay(delay: number): string {
+  if (Math.abs(delay) < 0.05)
+    return '同步 0.0 秒'
+  return delay > 0 ? `延后 +${delay.toFixed(1)} 秒` : `提前 ${Math.abs(delay).toFixed(1)} 秒`
 }
 
 function openSubtitleSearch() {
@@ -450,6 +466,33 @@ onBeforeUnmount(() => {
             <p v-else-if="!trackError" class="menu-empty">
               暂未检测到字幕轨道，且媒体详情未提供可显示的字幕信息
             </p>
+            <div class="subtitle-delay-control" role="group" aria-label="字幕偏移">
+              <div class="subtitle-delay-header">
+                <span>字幕偏移</span>
+                <output>{{ formatSubtitleDelay(subtitleDelay) }}</output>
+              </div>
+              <input
+                class="subtitle-delay-slider"
+                type="range"
+                min="-30"
+                max="30"
+                step="0.1"
+                :value="subtitleDelay"
+                aria-label="字幕偏移秒数，负数提前，正数延后"
+                @input="updateSubtitleDelay"
+              >
+              <div class="subtitle-delay-actions">
+                <button type="button" title="字幕提前 0.5 秒" aria-label="字幕提前 0.5 秒" @click="adjustSubtitleDelay(-0.5)">
+                  -0.5s
+                </button>
+                <button type="button" title="重置字幕偏移" @click="emit('setSubtitleDelay', 0)">
+                  重置
+                </button>
+                <button type="button" title="字幕延后 0.5 秒" aria-label="字幕延后 0.5 秒" @click="adjustSubtitleDelay(0.5)">
+                  +0.5s
+                </button>
+              </div>
+            </div>
             <button type="button" class="menu-option menu-option--search" role="menuitem" @click="openSubtitleSearch">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 20.2-4.35-4.35m1.4-5.1a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
               搜索字幕
@@ -667,6 +710,8 @@ onBeforeUnmount(() => {
 
 .track-popover {
   min-width: 15rem;
+  max-height: min(34rem, 72vh);
+  overflow-y: auto;
 }
 
 .queue-popover {
@@ -860,6 +905,59 @@ onBeforeUnmount(() => {
   width: 1rem;
   height: 1rem;
   flex: 0 0 auto;
+}
+
+.subtitle-delay-control {
+  margin-top: 0.35rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.75rem 0.7rem 0.45rem;
+}
+
+.subtitle-delay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.subtitle-delay-header output {
+  color: rgba(255, 255, 255, 0.58);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.subtitle-delay-slider {
+  width: 100%;
+  margin: 0.7rem 0 0.55rem;
+  accent-color: rgba(255, 255, 255, 0.92);
+}
+
+.subtitle-delay-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.subtitle-delay-actions button {
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  transition: border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.subtitle-delay-actions button:hover,
+.subtitle-delay-actions button:focus-visible {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .menu-empty {
