@@ -30,14 +30,14 @@ function getSourceIcon(type: string) {
 
 <template>
   <div
-    class="fixed bottom-24 left-0 top-24 z-40 w-2"
+    class="desktop-sidebar-trigger fixed bottom-24 left-0 top-24 z-40 w-2"
     @mouseenter="isVisible = true"
   />
 
   <Transition name="sidebar-reveal">
     <aside
       v-show="isVisible"
-      class="glass-panel fixed left-6 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-2 select-none rounded-2xl px-1.5 py-4"
+      class="desktop-sidebar glass-panel fixed left-6 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-2 select-none rounded-2xl px-1.5 py-4"
       @mouseenter="isVisible = true"
       @mouseleave="isVisible = false"
     >
@@ -79,6 +79,45 @@ function getSourceIcon(type: string) {
       </button>
     </aside>
   </Transition>
+
+  <nav class="mobile-source-nav glass-panel fixed inset-x-3 bottom-3 z-50 hidden items-center gap-1 overflow-x-auto rounded-2xl p-1.5" aria-label="媒体导航">
+    <button
+      class="gp-btn flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-all duration-200"
+      :class="route.path === '/' ? 'is-active' : ''"
+      :title="t('nav.home')"
+      :aria-label="t('nav.home')"
+      @click="router.push('/')"
+    >
+      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M3 10l7-7 7 7M5 8v8h3v-4h4v4h3V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+
+    <button
+      v-for="config in store.orderedConfigs"
+      :key="`mobile-${config.id}`"
+      class="gp-btn flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-sm font-bold transition-all duration-200"
+      :class="route.params.sourceId === config.id ? 'is-active' : ''"
+      :title="config.enabled === false ? `${config.displayName ?? config.name}（已停用）` : (config.displayName ?? config.name)"
+      :aria-label="config.displayName ?? config.name"
+      :disabled="config.enabled === false"
+      @click="router.push(`/source/${config.id}`)"
+    >
+      <img v-if="config.iconUrl" :src="config.iconUrl" class="h-6 w-6 rounded" :alt="config.name">
+      <span v-else>{{ getSourceIcon(config.type) }}</span>
+    </button>
+
+    <button
+      class="gp-btn ml-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-all duration-200"
+      title="管理数据源"
+      aria-label="管理数据源"
+      @click="router.push({ name: 'settings', query: { section: 'datasources' } })"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    </button>
+  </nav>
 </template>
 
 <style scoped>
@@ -113,5 +152,23 @@ function getSourceIcon(type: string) {
 .sidebar-reveal-leave-from {
   opacity: 1;
   transform: translateX(0) translateY(-50%) scale(1);
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .desktop-sidebar-trigger,
+  .desktop-sidebar {
+    display: none;
+  }
+
+  .mobile-source-nav {
+    display: flex;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    max-width: calc(100vw - 1.5rem);
+    scrollbar-width: none;
+  }
+
+  .mobile-source-nav::-webkit-scrollbar {
+    display: none;
+  }
 }
 </style>

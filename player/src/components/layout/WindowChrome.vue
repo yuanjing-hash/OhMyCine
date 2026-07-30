@@ -118,7 +118,7 @@ onBeforeUnmount(() => {
     <!-- full-width invisible drag region so the top area still drags above route/loading content -->
     <div
       data-tauri-drag-region
-      class="pointer-events-auto absolute inset-x-0 top-0 z-0 h-16"
+      class="desktop-window-drag pointer-events-auto absolute inset-x-0 top-0 z-0 h-16"
       :class="{ hidden: isFullscreen }"
       @dblclick="toggleMaximize"
       @mousedown="beginDrag"
@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
     </button>
 
     <!-- Center navigation glass panel -->
-    <nav v-if="!hideNav" v-show="!isFullscreen" class="glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
+    <nav v-if="!hideNav" v-show="!isFullscreen" class="desktop-window-nav glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200"
         :class="route.path === '/' || route.path.startsWith('/source') ? 'is-active' : ''"
@@ -172,7 +172,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <!-- Separate window controls glass panel -->
-    <div v-show="!isFullscreen" class="glass-panel pointer-events-auto absolute right-6 top-3 z-10 flex items-center gap-1 rounded-2xl px-2 py-1.5">
+    <div v-show="!isFullscreen" class="desktop-window-controls glass-panel pointer-events-auto absolute right-6 top-3 z-10 flex items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn gp-win-ctrl flex h-10 w-10 items-center justify-center rounded-xl transition-colors"
         @click.stop="minimize"
@@ -256,5 +256,23 @@ onBeforeUnmount(() => {
 .gp-close:hover {
   color: white;
   background: var(--gp-close-hover);
+}
+
+@media (max-width: 767px) {
+  .desktop-window-nav {
+    display: none !important;
+  }
+}
+
+@media (max-width: 767px) and (hover: none) and (pointer: coarse) {
+  .desktop-window-drag,
+  .desktop-window-controls {
+    display: none !important;
+  }
+
+  .player-window-back {
+    left: 1rem;
+    top: max(0.75rem, env(safe-area-inset-top));
+  }
 }
 </style>

@@ -639,7 +639,7 @@ function markTitleLogoFailed(url: string) {
       <section class="relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
-        <div class="relative flex min-h-[68vh] items-end gap-8 px-6 pb-12 pl-24 pt-24 lg:px-12 lg:pl-28">
+        <div class="relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
           <div class="hidden w-56 flex-shrink-0 overflow-hidden rounded-[1.8rem] border border-white/12 bg-white/6 shadow-2xl md:block">
             <img v-if="detail.posterUrl" :src="detail.posterUrl" :alt="detail.name" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async">
             <div v-else class="flex aspect-[2/3] items-center justify-center p-6 text-center text-sm text-white/45">
@@ -660,7 +660,7 @@ function markTitleLogoFailed(url: string) {
               decoding="async"
               @error="markTitleLogoFailed(visibleTitleLogoUrl)"
             >
-            <h1 :class="visibleTitleLogoUrl ? 'sr-only' : 'mt-3 text-4xl font-bold leading-tight drop-shadow-2xl lg:text-6xl'">
+            <h1 :class="visibleTitleLogoUrl ? 'sr-only' : 'mt-3 text-3xl font-bold leading-tight drop-shadow-2xl sm:text-4xl lg:text-6xl'">
               {{ detail.name }}
             </h1>
             <div class="mt-4 flex flex-wrap items-center gap-3 text-sm text-white/68">
@@ -685,12 +685,12 @@ function markTitleLogoFailed(url: string) {
         </div>
       </section>
 
-      <main class="space-y-10 px-6 pb-14 pl-24 lg:px-12 lg:pl-28">
+      <main class="mobile-nav-safe space-y-10 px-4 pb-14 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
         <div v-if="errorMessage" class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100">
           {{ errorMessage }}
         </div>
 
-        <section v-if="isSeriesDetail" class="episode-rail-shell relative overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.045] p-6 shadow-2xl">
+        <section v-if="isSeriesDetail" class="episode-rail-shell relative overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.045] p-4 shadow-2xl sm:p-6">
           <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.13),transparent_36%),linear-gradient(135deg,rgba(255,255,255,0.08),transparent_42%)]" />
           <div class="relative flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -726,7 +726,7 @@ function markTitleLogoFailed(url: string) {
           </div>
 
           <div v-if="isSeriesContentLoading" class="relative mt-7 flex gap-4 overflow-hidden" aria-hidden="true">
-            <div v-for="i in 4" :key="i" class="h-72 min-w-[20rem] animate-pulse rounded-[1.7rem] bg-white/6" />
+            <div v-for="i in 4" :key="i" class="h-72 min-w-[min(20rem,calc(100vw-4rem))] animate-pulse rounded-[1.7rem] bg-white/6 md:min-w-[23rem]" />
           </div>
 
           <div v-else-if="episodes.length" class="episode-rail group relative mt-7">
@@ -766,7 +766,7 @@ function markTitleLogoFailed(url: string) {
                 v-for="(episode, visibleIndex) in visibleEpisodes"
                 :id="`episode-card-${episodeWindowStart + visibleIndex}`"
                 :key="episode.id"
-                class="episode-card group/card flex min-w-[20rem] max-w-[20rem] cursor-pointer flex-col overflow-hidden rounded-[1.7rem] border shadow-xl shadow-black/24 outline-none transition-all duration-300 hover:-translate-y-1 hover:border-white/24 hover:bg-white/[0.075] focus-visible:-translate-y-1 focus-visible:border-white/42 focus-visible:ring-2 focus-visible:ring-white/22 md:min-w-[23rem] md:max-w-[23rem]"
+                class="episode-card group/card flex min-w-[min(20rem,calc(100vw-4rem))] max-w-[min(20rem,calc(100vw-4rem))] cursor-pointer flex-col overflow-hidden rounded-[1.7rem] border shadow-xl shadow-black/24 outline-none transition-all duration-300 hover:-translate-y-1 hover:border-white/24 hover:bg-white/[0.075] focus-visible:-translate-y-1 focus-visible:border-white/42 focus-visible:ring-2 focus-visible:ring-white/22 md:min-w-[23rem] md:max-w-[23rem]"
                 :class="selectedEpisodeIndex === episodeWindowStart + visibleIndex ? '-translate-y-1 border-white/46 bg-white/[0.105] ring-2 ring-white/18' : 'border-white/10 bg-black/22'"
                 :data-episode-index="episodeWindowStart + visibleIndex"
                 role="option"

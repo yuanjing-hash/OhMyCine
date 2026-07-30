@@ -13,7 +13,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
-import { hasPersistentCredentialStorageWarning, probePersistentCredentialStorage, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
+import { readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
@@ -214,7 +214,6 @@ const isSaving = ref(false)
 const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
-const persistentCredentialWarning = ref(hasPersistentCredentialStorageWarning())
 const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | null>(null)
 const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
@@ -257,7 +256,6 @@ const storageInfo = ref<PlayerStorageInfo | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
-const isDataSourceMode = computed(() => mode.value === 'manage' || mode.value === 'add' || mode.value === 'edit')
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
 const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
@@ -326,24 +324,24 @@ const credentialProtectionLabel = computed(() => {
 })
 const storageModeDescription = computed(() => {
   if (!storageInfo.value)
-    return '当前是浏览器开发模式，配置只使用浏览器 fallback，不代表桌面版真实存储路径。'
+    return '当前是浏览器开发模式，桌面版存储信息不可用。'
   if (storageInfo.value.mode === 'portable')
-    return '应用数据库、日志和后续应用缓存跟随当前程序目录移动。便携凭据使用目录内文件密钥，请妥善保护整个文件夹。'
+    return '配置、播放记录、日志和缓存跟随当前程序目录移动。'
   if (storageInfo.value.credentialProtection === 'windowsDpapi')
-    return '应用数据库使用 Windows 用户目录，升级或替换程序文件不会影响配置和播放历史。凭据主密钥由当前 Windows 用户的 DPAPI 保护。'
+    return '配置和播放记录保存在 Windows 用户目录，升级程序不会清除数据。'
   return '应用数据库使用当前系统的用户数据目录，升级或替换程序文件不会影响配置和播放历史。'
 })
 const pageDescription = computed(() => mode.value === 'overview'
-  ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
+  ? '管理数据源、播放、字幕、刮削、更新和本地存储。'
   : mode.value === 'scraping'
-    ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
+    ? '设置原始文件媒体库的元数据匹配与分类规则。'
     : mode.value === 'playback'
-      ? '配置播放中的字幕搜索语言和 Player 本地字幕提供器。Emby 自带字幕搜索仍使用对应服务器配置。'
+      ? '设置字幕搜索语言和字幕提供器。'
       : mode.value === 'updates'
-        ? '从 OhMyCine GitHub Releases 检查签名更新，选择 Beta 或正式渠道，并控制启动自动检测。'
+        ? '选择更新渠道并检查新版本。'
         : mode.value === 'diagnostics'
-          ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
-          : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
+          ? '查看当前运行模式和数据目录。'
+          : '添加、编辑和管理媒体数据源。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -352,7 +350,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '连接、编辑、停用或清理 Emby、OpenList/Alist、CloudDrive2、WebDAV 与本地文件夹数据源，控制左侧媒体入口。',
+    description: '添加和管理 Emby、OpenList/Alist、CloudDrive2、WebDAV 与本地文件夹。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -361,7 +359,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'scraping',
     label: 'Meta',
     title: '刮削与分类',
-    description: '管理原始文件源的本地刮削分类规则。TMDB 凭据是可选增强，未配置时仍保留可播放候选和兜底分类。',
+    description: '设置海报、简介等元数据匹配和媒体分类规则。',
     meta: scrapingEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -370,7 +368,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'playback',
     label: 'Play',
     title: '播放与字幕',
-    description: '配置 OpenSubtitles、射手网和迅雷字幕提供器。Emby 搜索继续使用服务器自身字幕源。',
+    description: '配置 OpenSubtitles、射手网和迅雷字幕搜索。',
     meta: playbackEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -397,7 +395,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'updates',
     label: 'Up',
     title: '软件更新',
-    description: '检测 GitHub Releases 中的签名更新，选择 Beta 或正式版渠道，并控制启动自动检测。',
+    description: '选择 Beta 或正式版渠道，检查并安装新版本。',
     meta: updateEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -406,7 +404,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'diagnostics',
     label: 'Disk',
     title: '存储 / 诊断',
-    description: '查看标准或便携模式、数据库位置、缓存目录、日志目录和当前凭据保护方式。',
+    description: '查看标准或便携模式，以及数据、缓存和日志目录。',
     meta: storageEntryMeta.value,
     actionLabel: '查看',
     disabled: false,
@@ -415,8 +413,6 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
 
 onMounted(() => {
   store.loadConfigs()
-  refreshPersistentCredentialWarning()
-  void probePersistentCredentialStorage().then(refreshPersistentCredentialWarning)
   void refreshTmdbCredentialState()
   void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
@@ -746,7 +742,6 @@ async function savePlaybackSubtitleSettings() {
     subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '播放与字幕设置保存失败。') }
   }
   finally {
-    refreshPersistentCredentialWarning()
     isSavingSubtitleSettings.value = false
   }
 }
@@ -766,7 +761,6 @@ async function clearOpenSubtitlesCredential() {
     subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles API Key 清除失败。') }
   }
   finally {
-    refreshPersistentCredentialWarning()
     isSavingSubtitleSettings.value = false
   }
 }
@@ -785,7 +779,6 @@ async function clearOpenSubtitlesAccountLogin() {
     subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles 账号登录清除失败。') }
   }
   finally {
-    refreshPersistentCredentialWarning()
     isSavingSubtitleSettings.value = false
   }
 }
@@ -951,7 +944,6 @@ async function saveSource() {
     }
   }
   finally {
-    refreshPersistentCredentialWarning()
     isSaving.value = false
   }
 }
@@ -1130,8 +1122,8 @@ function defaultDisplayName(type: EditableDataSourceType): string {
 
 function sourceStatusLine(source: DataSourceConfig): string {
   const credentialState = source.type === 'local'
-    ? '无需凭据'
-    : typeof source.extra?.credentialRef === 'string' ? '凭据已绑定' : '需要重新登录'
+    ? '无需登录'
+    : typeof source.extra?.credentialRef === 'string' ? '登录信息已保存' : '需要重新登录'
   const rootState = isRootSelectableRemoteSourceType(source.type)
     ? ` · 根目录：${readRemoteRootPath(source)}`
     : source.type === 'local'
@@ -1229,10 +1221,6 @@ function rawScanKindLabel(scanKind: RawSourceScanKind): string {
 
 function normalizeComparableUrl(value: string): string {
   return value.trim().replace(/\/+$/, '')
-}
-
-function refreshPersistentCredentialWarning() {
-  persistentCredentialWarning.value = hasPersistentCredentialStorageWarning()
 }
 
 async function readCredentialBackupForConfig(config: DataSourceConfig): Promise<string | null> {
@@ -1622,7 +1610,6 @@ async function saveTmdbSettings() {
     }
   }
   finally {
-    refreshPersistentCredentialWarning()
     isSavingTmdbSettings.value = false
   }
 }
@@ -1643,7 +1630,6 @@ async function clearTmdbSettingsCredential() {
     }
   }
   finally {
-    refreshPersistentCredentialWarning()
     isSavingTmdbSettings.value = false
   }
 }
@@ -1666,10 +1652,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 </script>
 
 <template>
-  <div class="settings-view min-h-full p-6 pl-20 pt-16">
+  <div class="settings-view mobile-nav-safe min-h-full px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
     <div
       v-if="feedback && mode === 'manage'"
-      class="fixed right-6 top-20 z-50 max-w-md rounded-2xl border px-4 py-3 text-sm shadow-2xl backdrop-blur-xl"
+      class="fixed inset-x-4 top-20 z-50 max-w-md rounded-2xl border px-4 py-3 text-sm shadow-2xl backdrop-blur-xl sm:left-auto sm:right-6"
       :class="{
         'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': feedback.type === 'success',
         'border-red-400/20 bg-red-400/10 text-red-100': feedback.type === 'error',
@@ -1691,13 +1677,6 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
         </p>
       </header>
 
-      <div
-        v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping' || mode === 'playback')"
-        class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
-      >
-        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、访问令牌、TMDB 与字幕提供器凭据仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
-      </div>
-
       <div v-if="mode !== 'overview'" class="flex">
         <button
           type="button"
@@ -1718,7 +1697,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
           v-for="entry in settingsEntries"
           :key="entry.id"
           type="button"
-          class="glass-panel flex min-h-56 flex-col rounded-[1.5rem] p-5 text-left transition-all duration-200 disabled:cursor-not-allowed"
+          class="glass-panel flex min-h-0 flex-col rounded-[1.5rem] p-5 text-left transition-all duration-200 disabled:cursor-not-allowed sm:min-h-56"
           :class="entry.disabled ? 'opacity-58' : 'hover:-translate-y-0.5 hover:bg-white/10'"
           :disabled="entry.disabled"
           @click="openSettingsEntry(entry)"
@@ -1764,7 +1743,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 软件更新
               </h2>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
-                Player 只安装通过内置公钥验证的 OhMyCine GitHub Release。Beta 渠道可收到 prerelease 和正式发布；正式版渠道只接收非 prerelease 发布。发现更新后仍会等待你确认，不会静默关闭播放器。
+                选择更新渠道，保存后可立即检测。发现新版本后会先征求确认。
               </p>
             </div>
             <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
@@ -1789,7 +1768,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
                 更新渠道
               </p>
-              <div class="mt-3 grid grid-cols-2 gap-2">
+              <div class="mt-3 grid gap-2 sm:grid-cols-2">
                 <button
                   type="button"
                   class="rounded-2xl border px-4 py-3 text-left transition-colors"
@@ -1797,7 +1776,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                   @click="updateForm.channel = 'beta'"
                 >
                   <span class="block text-sm font-semibold">Beta</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/40">优先获得新功能，也会接收后续正式发布。</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">优先获得新功能。</span>
                 </button>
                 <button
                   type="button"
@@ -1806,7 +1785,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                   @click="updateForm.channel = 'stable'"
                 >
                   <span class="block text-sm font-semibold">正式版</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/40">只接收 GitHub 中标记为正式发布的版本。</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/40">只接收正式发布。</span>
                 </button>
               </div>
             </div>
@@ -1815,13 +1794,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               <label class="flex items-center justify-between gap-4">
                 <span>
                   <span class="block text-sm font-semibold text-white">启动时自动检测</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/42">启动约 3 秒后后台检查一次；没有更新或网络失败时不会打断使用。</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">启动后自动检查一次。</span>
                 </span>
                 <input v-model="updateForm.autoCheck" type="checkbox" class="h-5 w-5 accent-primary">
               </label>
-              <div class="mt-4 border-t border-white/8 pt-4 text-xs leading-5 text-white/38">
-                标准版由签名 NSIS 更新。便携版会把安装目录固定为当前 EXE 目录，并保留 <code class="text-white/58">portable.flag</code> 与便携数据目录。
-              </div>
             </div>
           </div>
 
@@ -1920,7 +1896,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 播放与字幕
               </h2>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
-                Emby 播放时可选择 Emby 服务器搜索或 Player 本地搜索；其他媒体源直接使用这里配置的提供器。OpenSubtitles 发送作品元数据，本地文件的射手网与迅雷匹配只发送内容哈希和文件名，不发送绝对路径、数据源凭据或播放地址。
+                Emby 播放可选择服务器搜索或本地搜索，其他媒体源使用本地字幕提供器。
               </p>
             </div>
             <span
@@ -1998,7 +1974,6 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                   >
                 </label>
               </div>
-              <span class="mt-3 block text-xs leading-5 text-white/38">保存新账号时会先验证登录。API Key、账号和密码只进入安全凭据库，JWT 只保存在当前 Rust 进程内。</span>
             </div>
 
             <label class="flex items-start justify-between gap-4 rounded-2xl bg-black/16 p-4">
@@ -2059,7 +2034,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 刮削与分类
               </h2>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                这里配置的是本地逻辑分类，只影响 OpenList/Alist、CloudDrive2、本地文件等原始文件源的海报墙、筛选和推荐上下文。不会改动远端目录，也不要求目录顶层叫 Movies 或 TV。
+                分类用于整理海报墙和筛选，不会改动媒体文件或远端目录。
               </p>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -2104,7 +2079,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 元数据匹配（可选增强）
               </h3>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                建议填写 API 读访问令牌 / Read Access Token；API Key 仅作为旧版 v3/短 key 兼容。凭据只保存到凭证边界，不写入 localStorage。Read Access Token 走 Authorization: Bearer，API Key 走 api_key query。未配置时扫描不会失败，会保留可播放候选、目录识别和兜底分类；扫描发给 TMDB 的只包含作品名、年份等非敏感查询信息，不发送 OpenList/Alist 账号、token 或播放地址。
+                TMDB 用于匹配海报、简介和分类。未配置时仍可扫描和播放媒体。
               </p>
             </div>
             <span
@@ -2145,7 +2120,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 :placeholder="tmdbCredentialPlaceholder"
               >
               <p class="mt-2 text-xs leading-5 text-white/38">
-                出于安全考虑，已保存的 TMDB 凭据不会回填显示；切换类型后需填写对应类型的凭据。
+                已保存的内容不会显示，留空表示保留当前值。
               </p>
             </label>
 
@@ -2549,7 +2524,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ isEditing ? '编辑数据源' : '添加数据源' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              先选择数据源类型，再填写对应信息。本地文件夹只保存目录根路径；远程数据源点击添加或保存时会先连接测试，成功后只持久化安全配置和 credentialRef。
+              选择数据源类型并填写连接信息，保存前会先测试连接。
             </p>
           </div>
           <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
@@ -2628,7 +2603,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               autocomplete="off"
             >
             <span class="mt-2 block text-xs leading-5 text-white/42">
-              请在 CloudDrive2 中创建应用专用 API Token，并授予目标根目录的文件读取权限。Token 可单独撤销，不需要提供 CloudDrive2 账号密码。
+              请先在 CloudDrive2 中创建应用 API Token。
             </span>
           </label>
 
@@ -2637,7 +2612,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             <input
               v-model="form.password"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-              :placeholder="isEditing ? '留空则不重新登录' : '将保存到 SQLite 凭证边界'"
+              :placeholder="isEditing ? '留空则不重新登录' : '输入登录密码'"
               type="password"
               autocomplete="current-password"
             >
@@ -2660,7 +2635,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               </button>
             </div>
             <p class="mt-3 text-xs leading-5 text-white/42">
-              本地文件源只读访问所选目录；扫描结果、手动识别和图片覆盖只保存到 Player 本地缓存，不移动、不删除、不改名文件。
+              只扫描所选文件夹，不会移动、删除或重命名媒体文件。
             </p>
           </div>
 
@@ -2683,7 +2658,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             </div>
 
             <p class="mt-3 text-xs leading-5 text-white/42">
-              不选择时默认使用 `/`。目录浏览使用当前表单的临时连接，只有点击添加或保存成功后才持久化凭据和根目录配置。
+              不选择时默认使用 `/`，也可以先连接并选择目录。
             </p>
 
             <div

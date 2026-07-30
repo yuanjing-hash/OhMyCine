@@ -316,7 +316,7 @@ function isContainerItem(item: MediaItem): boolean {
 
 <template>
   <div class="home-view relative min-h-full transition-colors duration-500">
-    <div v-if="isFirstRunHome" class="first-run-home relative min-h-screen overflow-hidden px-4 pb-8 pt-28 sm:px-8 sm:pt-32 lg:px-12">
+    <div v-if="isFirstRunHome" class="first-run-home mobile-nav-safe relative min-h-screen overflow-hidden px-4 pb-8 pt-20 sm:px-8 sm:pt-32 lg:px-12">
       <div class="first-run-scene" aria-hidden="true">
         <div class="first-run-screen" />
         <div class="first-run-shelf">
@@ -368,7 +368,7 @@ function isContainerItem(item: MediaItem): boolean {
       </section>
     </div>
 
-    <div v-else class="flex min-h-screen flex-col gap-6 px-4 pb-6 sm:gap-8 sm:px-6 lg:px-8">
+    <div v-else class="mobile-nav-safe flex min-h-screen flex-col gap-6 px-4 pb-6 sm:gap-8 sm:px-6 lg:px-8">
       <section class="relative -mx-4 overflow-hidden rounded-b-[2rem] sm:-mx-6 lg:-mx-8">
         <HeroCarousel
           v-if="heroItems.length"
