@@ -263,6 +263,16 @@ export interface SubtitleTrack {
   isDefault: boolean
 }
 
+export interface SubtitleSearchResult {
+  id: string
+  origin: 'emby' | 'local'
+  providerName: string
+  language: string
+  title: string
+  format?: string
+  downloadRef?: string
+}
+
 export interface AudioTrack {
   index: number
   language: string
@@ -311,6 +321,8 @@ export interface DataSource {
   // 播放
   getStreamURL(id: string): Promise<string>
   getStreamRequest?(request: PlaybackRequest): Promise<MediaStreamRequest>
+  searchSubtitles?(input: SubtitleSearchInput): Promise<SubtitleSearchResult[]>
+  downloadSubtitle?(input: SubtitleDownloadInput): Promise<SubtitleTrack>
 
   // 配置导出（用于同步给Server）
   exportConfig(): DataSourceConfig
@@ -320,6 +332,15 @@ export interface DataSource {
 播放导航只携带 `sourceId`、`itemId`、可选 `mediaSourceId` 和短生命周期 `contextId`。Home、详情页、数据源媒体库和播放队列不得在 Vue Router query/history 中保存远程直链、签名 URL、认证 header 或本地绝对路径；`PlayerView` 在即将调用 mpv 时通过 `getStreamRequest({ itemId, mediaSourceId })` 即时解析播放请求。文件拖放和本机继续观看所需的绝对路径只进入当前进程内存中的 `PlaybackMediaContext.locator`，不持久化。Emby 多版本选择必须把选中的 `mediaSourceId` 传到流解析和后续进度同步会话，版本已失效时明确要求用户重新选择。
 
 删除媒体源时，配置删除是主操作，同时按 `sourceId` 清理本机 SQLite 播放历史，并按 source/root 清理原始文件扫描缓存；清理范围不得影响其他媒体源。凭据、历史或缓存清理失败不应把已经删除的数据源重新加入 UI。
+
+播放中字幕搜索分为两条明确路径，不把多个来源静默混合成一次请求：
+
+- Emby 媒体点击“搜索字幕”后先选择 `Emby 搜索` 或 `本地搜索`。Emby 搜索调用服务端远程字幕 API，下载由 Emby 保存；Player 刷新媒体轨道并把新增外部字幕立即加载到 mpv。
+- OpenList/Alist、CloudDrive2、WebDAV、本地文件等其他媒体源直接进入 Player 本地搜索，不显示 Emby 来源选择。
+- Player 本地搜索通过独立 `SubtitleProvider` 抽象扩展，首个提供器为 OpenSubtitles REST API。后续提供器继续走同一搜索/下载契约，不在 Vue 组件中抓取网站页面。
+- OpenSubtitles API Key 保存到 Player 凭据边界；普通设置只保存默认语言和提供器启用状态。
+- OpenSubtitles 搜索和下载由 Tauri Rust 受控 HTTP 命令执行。只允许 HTTPS OpenSubtitles 域名、有限重定向和有限响应体，下载文件使用受控哈希文件名写入当前存储模式的 `cache/subtitles`，不写入媒体目录。
+- 本地搜索只发送 IMDb/TMDB ID、标题、年份、媒体类型、季集号等元数据，不发送本地绝对路径、远程播放 URL、数据源账号或 Token。
 
 ### 4.3 Emby/Jellyfin DataSource 实现
 

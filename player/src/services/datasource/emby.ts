@@ -11,6 +11,9 @@ import type {
   PlaybackRequest,
   ProviderPlaybackProgressInput,
   ProviderPlaybackSyncDiagnostic,
+  SubtitleDownloadInput,
+  SubtitleSearchInput,
+  SubtitleSearchResult,
   SubtitleTrack,
 } from './types'
 import { invoke } from '@tauri-apps/api/core'
@@ -218,6 +221,23 @@ interface EmbyPlaybackInfoVariant {
 interface EmbyPlaybackInfoFailure {
   readonly expiresAt: number
   readonly message: string
+}
+
+interface EmbyRemoteSubtitleRecord {
+  readonly ThreeLetterISOLanguageName?: string
+  readonly Id?: string
+  readonly ProviderName?: string
+  readonly Name?: string
+  readonly Format?: string
+  readonly Author?: string
+  readonly Comment?: string
+  readonly CommunityRating?: number
+  readonly DownloadCount?: number
+  readonly IsHashMatch?: boolean
+  readonly AiTranslated?: boolean
+  readonly MachineTranslated?: boolean
+  readonly Forced?: boolean
+  readonly HearingImpaired?: boolean
 }
 
 interface EmbyPlaybackInfoOptions {
@@ -438,6 +458,85 @@ export class EmbyDataSource implements DataSource {
 
   async getStreamURL(id: string): Promise<string> {
     return (await this.getStreamRequest({ itemId: id })).url
+  }
+
+  async searchSubtitles(input: SubtitleSearchInput): Promise<SubtitleSearchResult[]> {
+    const itemId = input.itemId.trim()
+    if (!itemId)
+      throw new Error('缺少可搜索字幕的 Emby 媒体条目。')
+
+    const language = toEmbySubtitleLanguage(input.language)
+    const response = await this.request(
+      `/Items/${encodeURIComponent(itemId)}/RemoteSearch/Subtitles/${encodeURIComponent(language)}`,
+      { IsPerfectMatch: 'false' },
+    )
+
+    return parseEmbyRemoteSubtitleRecords(response).map(record => ({
+      id: record.Id!,
+      origin: 'emby',
+      providerName: record.ProviderName?.trim() || 'Emby',
+      language: record.ThreeLetterISOLanguageName?.trim() || input.language,
+      title: record.Name?.trim() || `${record.ProviderName?.trim() || 'Emby'} 字幕`,
+      format: record.Format?.trim() || undefined,
+      author: record.Author?.trim() || undefined,
+      comments: record.Comment?.trim() || undefined,
+      rating: finiteNumber(record.CommunityRating),
+      downloadCount: finiteInteger(record.DownloadCount),
+      isHashMatch: record.IsHashMatch,
+      aiTranslated: record.AiTranslated,
+      machineTranslated: record.MachineTranslated,
+      forced: record.Forced,
+      hearingImpaired: record.HearingImpaired,
+    }))
+  }
+
+  async downloadSubtitle(input: SubtitleDownloadInput): Promise<SubtitleTrack> {
+    const itemId = input.itemId.trim()
+    const subtitleId = input.result.id.trim()
+    if (!itemId || !subtitleId || input.result.origin !== 'emby')
+      throw new Error('Emby 字幕下载参数无效。')
+
+    const before = await this.getItem(itemId)
+    const beforeKeys = new Set((before.MediaStreams ?? [])
+      .filter(stream => stream.Type === 'Subtitle')
+      .map(embySubtitleStreamKey))
+
+    await this.postPlaybackJson(
+      `/Items/${encodeURIComponent(itemId)}/RemoteSearch/Subtitles/${encodeURIComponent(subtitleId)}`,
+      undefined,
+      'official-compatible',
+    )
+    this.cache.clear()
+
+    let latestSubtitles: EmbyMediaStreamRecord[] = []
+    let latestMediaSourceId = input.mediaSourceId
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (attempt > 0)
+        await delay(500)
+      const item = await this.getItem(itemId)
+      latestMediaSourceId = input.mediaSourceId ?? item.MediaSources?.find(source => typeof source.Id === 'string')?.Id
+      latestSubtitles = (item.MediaStreams ?? []).filter(stream => stream.Type === 'Subtitle')
+      const downloaded = latestSubtitles.find(stream => !beforeKeys.has(embySubtitleStreamKey(stream)))
+      if (!downloaded)
+        continue
+
+      const track = this.mapSubtitleTrack(itemId, downloaded, latestMediaSourceId)
+      if (track.url)
+        return track
+    }
+
+    const refreshedMatch = latestSubtitles.find(stream =>
+      stream.IsExternal
+      && subtitleLanguageMatches(stream, input.result.language)
+      && subtitleTitleMatches(stream, input.result.title),
+    )
+    if (refreshedMatch) {
+      const track = this.mapSubtitleTrack(itemId, refreshedMatch, latestMediaSourceId)
+      if (track.url)
+        return track
+    }
+
+    throw new Error('Emby 已接收字幕下载请求，但媒体轨道尚未刷新。请稍后重新打开字幕菜单。')
   }
 
   async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
@@ -1432,6 +1531,63 @@ function parseItemsResponse(value: unknown): EmbyItemRecord[] {
   if (!Array.isArray(response.Items))
     return []
   return response.Items.filter(isEmbyItemRecord)
+}
+
+function parseEmbyRemoteSubtitleRecords(value: unknown): EmbyRemoteSubtitleRecord[] {
+  if (!Array.isArray(value))
+    return []
+  return value.filter((record): record is EmbyRemoteSubtitleRecord =>
+    isObject(record) && typeof record.Id === 'string' && record.Id.trim().length > 0,
+  )
+}
+
+function toEmbySubtitleLanguage(language: string): string {
+  switch (language.toLowerCase()) {
+    case 'zh-cn':
+    case 'zh-hans':
+      return 'chi'
+    case 'zh-tw':
+    case 'zh-hant':
+      return 'zho'
+    case 'en':
+      return 'eng'
+    case 'ja':
+      return 'jpn'
+    case 'ko':
+      return 'kor'
+    default:
+      return language.trim() || 'chi'
+  }
+}
+
+function embySubtitleStreamKey(stream: EmbyMediaStreamRecord): string {
+  return [stream.Index ?? '', stream.Language ?? '', stream.DisplayTitle ?? '', stream.Title ?? '', stream.Codec ?? '', stream.DeliveryUrl ?? ''].join('|')
+}
+
+function subtitleLanguageMatches(stream: EmbyMediaStreamRecord, language: string): boolean {
+  const expected = toEmbySubtitleLanguage(language).toLowerCase()
+  return [stream.Language, stream.DisplayLanguage]
+    .some(value => value?.toLowerCase() === expected || value?.toLowerCase() === language.toLowerCase())
+}
+
+function subtitleTitleMatches(stream: EmbyMediaStreamRecord, title: string): boolean {
+  const expected = title.trim().toLowerCase()
+  if (!expected)
+    return false
+  return [stream.Title, stream.DisplayTitle]
+    .some(value => value?.trim().toLowerCase() === expected)
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function finiteInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => globalThis.setTimeout(resolve, milliseconds))
 }
 
 function parseLibraryResponse(value: unknown): EmbyItemRecord[] {

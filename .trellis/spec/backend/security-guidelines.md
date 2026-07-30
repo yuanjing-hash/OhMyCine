@@ -114,6 +114,7 @@ Use a controlled HTTP client for external calls:
 - Reject `file://`, `gopher://`, and unexpected schemes.
 - Treat user-configured URLs as privileged admin configuration; ordinary user inputs must not be able to probe internal management addresses.
 - Plugins and site/cloud adapters should route network calls through the same controlled client when plugin architecture exists.
+- Player subtitle providers use provider-specific controlled native clients. OpenSubtitles API Keys stay in the credential boundary; downloads allow only trusted HTTPS provider domains, bounded redirects/response sizes, allowlisted subtitle extensions, generated cache filenames, and the shared Player `cache/subtitles` directory.
 
 ---
 

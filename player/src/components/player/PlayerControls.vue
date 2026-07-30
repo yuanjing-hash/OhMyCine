@@ -42,6 +42,7 @@ const emit = defineEmits<{
   setVolume: [volume: number]
   setPlaybackSpeed: [speed: number]
   setSubtitle: [trackId: SubtitleSelectionId | null]
+  searchSubtitles: []
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
@@ -158,6 +159,11 @@ function chooseSpeed(speed: number) {
 function chooseSubtitle(trackId: SubtitleSelectionId | null) {
   emit('setSubtitle', trackId)
   closeMenus()
+}
+
+function openSubtitleSearch() {
+  closeMenus()
+  emit('searchSubtitles')
 }
 
 function chooseAudio(trackId: number) {
@@ -444,6 +450,10 @@ onBeforeUnmount(() => {
             <p v-else-if="!trackError" class="menu-empty">
               暂未检测到字幕轨道，且媒体详情未提供可显示的字幕信息
             </p>
+            <button type="button" class="menu-option menu-option--search" role="menuitem" @click="openSubtitleSearch">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 20.2-4.35-4.35m1.4-5.1a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+              搜索字幕
+            </button>
           </div>
         </Transition>
       </div>
@@ -835,6 +845,21 @@ onBeforeUnmount(() => {
   font-size: 0.62rem;
   font-weight: 600;
   letter-spacing: 0.08em;
+}
+
+.menu-option--search {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+  border-top-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.menu-option--search svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .menu-empty {

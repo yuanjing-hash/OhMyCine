@@ -32,6 +32,7 @@ use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_sc
 use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
 };
+use commands::subtitle::{subtitle_download_opensubtitles, subtitle_search_opensubtitles};
 use mpv::surface::OwnerWindowEvent;
 
 fn main() {
@@ -65,6 +66,8 @@ fn main() {
             player_settings_set,
             player_settings_delete,
             player_get_storage_info,
+            subtitle_search_opensubtitles,
+            subtitle_download_opensubtitles,
             local_file_list,
             local_file_metadata,
             local_file_stream_path,

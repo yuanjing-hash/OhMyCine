@@ -304,6 +304,7 @@ Phase 4: 生态系统           ████████████████
 #### 播放器增强
 
 - [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
+- [~] 播放中字幕搜索（已实现 Emby 搜索/本地搜索显式二选一、非 Emby 直达本地搜索、Emby 远程字幕 API、OpenSubtitles 安全凭据与 Tauri cache 下载、下载后即时加载 mpv；待真实 Emby 字幕插件和 OpenSubtitles API Key 实机验证）
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
 - [x] 播放队列面板（已内联在播放控制条并支持上一集/下一集；后续如需复用再拆独立 `PlaylistPanel.vue`）
 - [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/type-safety.md","reason":"定义公共字幕搜索、提供器、下载与加载契约。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"实现字幕菜单入口、Emby 来源选择和搜索结果面板。"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"限制字幕 API 凭据、远端下载 URL、响应体和缓存写入路径。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"覆盖 DataSource、字幕提供器、Tauri HTTP、缓存文件和 mpv 加载完整链路。"}
+{"file":"docs/architecture/03-player-design.md","reason":"记录 Player 字幕搜索提供器与 Emby 原生搜索边界。"}

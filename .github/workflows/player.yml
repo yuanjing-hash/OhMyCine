@@ -58,6 +58,9 @@ jobs:
       - name: Verify window fullscreen and resize synchronization
         run: npm run verify:window-fullscreen-resize
 
+      - name: Verify subtitle search routing and security boundaries
+        run: npm run verify:subtitle-search
+
   build:
     needs: quality
     runs-on: ubuntu-latest

@@ -30,7 +30,11 @@ export interface TmdbCredentialValue {
   readonly value: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb'
+export interface OpenSubtitlesCredentialValue {
+  readonly apiKey: string
+}
+
+type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -66,6 +70,12 @@ interface StoredTmdbCredentialEnvelope {
   readonly provider: 'tmdb'
   readonly authType: 'apiKey' | 'readAccessToken'
   readonly value: string
+}
+
+interface StoredOpenSubtitlesCredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'opensubtitles'
+  readonly apiKey: string
 }
 
 export function createCredentialRef(sourceId: string, provider: CredentialProvider = 'emby'): string {
@@ -171,6 +181,21 @@ export async function readTmdbCredential(ref: string): Promise<TmdbCredentialVal
   return parseTmdbCredential(await readRawCredential(ref))
 }
 
+export async function saveOpenSubtitlesCredential(ref: string, value: OpenSubtitlesCredentialValue): Promise<void> {
+  if (!value.apiKey.trim())
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'opensubtitles',
+    apiKey: value.apiKey.trim(),
+  } satisfies StoredOpenSubtitlesCredentialEnvelope))
+}
+
+export async function readOpenSubtitlesCredential(ref: string): Promise<OpenSubtitlesCredentialValue | null> {
+  return parseOpenSubtitlesCredential(await readRawCredential(ref))
+}
+
 export async function removeCredential(ref: string): Promise<void> {
   if (!ref)
     return
@@ -233,6 +258,23 @@ function parseEmbyCredential(raw: string | null): EmbyCredentialValue | null {
       username: value.username,
       password: value.password,
     }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseOpenSubtitlesCredential(raw: string | null): OpenSubtitlesCredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value))
+      return null
+    if (value.provider !== 'opensubtitles' || value.version !== 1 || typeof value.apiKey !== 'string' || !value.apiKey.trim())
+      return null
+    return { apiKey: value.apiKey.trim() }
   }
   catch {
     return null

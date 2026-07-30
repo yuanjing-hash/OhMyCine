@@ -140,6 +140,8 @@ Required principles:
 - The player fullscreen affordance belongs at the far right of the playback bar and should toggle the whole Player window/fullscreen experience, not only a nested DOM panel.
 - A native fullscreen call is successful only after `isFullscreen()` reports the requested state. Tauri window resize/focus events and browser `fullscreenchange` must resynchronize the control state so external Escape or OS transitions cannot leave a stale fullscreen icon.
 - Render diagnostics must not appear as a persistent chip in normal playback UI; keep diagnostics behind explicit debug shortcuts or debug-only panels.
+- The subtitle menu ends with a `搜索字幕` action. For Emby playback it first asks the user to choose `Emby 搜索` or `本地搜索`; for every non-Emby source it opens Player local search directly. Do not silently merge both origins into one request.
+- Subtitle search results identify their provider and useful match metadata. Downloading a result loads it into the current mpv session without leaving playback; search/download errors remain in the dialog and must not expose credentials or signed URLs.
 
 ### Immersive Player Chrome Contract
 

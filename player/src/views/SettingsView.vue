@@ -4,6 +4,7 @@ import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
+import type { SubtitleLanguage } from '@/services/subtitle'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -35,12 +36,19 @@ import {
   saveConfiguredTmdbCredential,
   saveTmdbLocalSettings,
 } from '@/services/scraper/tmdb'
+import {
+  clearOpenSubtitlesApiKey,
+  loadSubtitleSearchSettings,
+  readOpenSubtitlesApiKey,
+  saveOpenSubtitlesApiKey,
+  saveSubtitleSearchSettings,
+} from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'diagnostics'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'diagnostics'
 type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
@@ -61,6 +69,12 @@ interface TmdbFormState {
   credential: string
   language: string
   region: string
+}
+
+interface SubtitleSettingsFormState {
+  defaultLanguage: SubtitleLanguage
+  openSubtitlesEnabled: boolean
+  apiKey: string
 }
 
 interface SettingsEntry {
@@ -159,6 +173,14 @@ const tmdbRegionOptions = [
   { value: 'KR', label: '韩国' },
 ]
 
+const subtitleLanguageOptions: Array<{ value: SubtitleLanguage, label: string }> = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'zh-TW', label: '繁体中文' },
+  { value: 'en', label: 'English' },
+  { value: 'ja', label: '日本語' },
+  { value: 'ko', label: '한국어' },
+]
+
 const store = useDataSourceStore()
 const route = useRoute()
 const router = useRouter()
@@ -196,6 +218,15 @@ const tmdbForm = reactive<TmdbFormState>({
 const tmdbCredentialConfigured = ref(false)
 const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
 const isSavingTmdbSettings = ref(false)
+const subtitleSettings = loadSubtitleSearchSettings()
+const subtitleForm = reactive<SubtitleSettingsFormState>({
+  defaultLanguage: subtitleSettings.defaultLanguage,
+  openSubtitlesEnabled: subtitleSettings.openSubtitlesEnabled,
+  apiKey: '',
+})
+const openSubtitlesConfigured = ref(false)
+const isSavingSubtitleSettings = ref(false)
+const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const storageInfo = ref<PlayerStorageInfo | null>(null)
 
 const configuredSources = computed(() => store.orderedConfigs)
@@ -243,6 +274,7 @@ const tmdbCredentialStatusLabel = computed(() => {
 })
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
+const playbackEntryMeta = computed(() => openSubtitlesConfigured.value ? '字幕搜索已配置' : '可配置字幕搜索')
 const portableStorageIsNetworkLike = computed(() =>
   storageInfo.value?.mode === 'portable' && storageInfo.value.storagePerformance === 'networkLike',
 )
@@ -271,9 +303,11 @@ const pageDescription = computed(() => mode.value === 'overview'
   ? '集中管理 Player 的本机体验、数据源连接和后续增强能力。当前可直接配置数据源，其余入口会按功能完成度逐步开放。'
   : mode.value === 'scraping'
     ? '配置 OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源的本地刮削分类规则。规则只影响本地海报墙、筛选和推荐上下文，不写回远端目录。'
-    : mode.value === 'diagnostics'
-      ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
-      : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
+    : mode.value === 'playback'
+      ? '配置播放中的字幕搜索语言和 Player 本地字幕提供器。Emby 自带字幕搜索仍使用对应服务器配置。'
+      : mode.value === 'diagnostics'
+        ? '查看 Player 当前使用的标准或便携存储模式、真实数据路径和凭据保护边界。'
+        : 'Player 可直接连接 Emby、OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹浏览播放媒体，不依赖 OhMyCine Server。远程账号、密码和 API Token 保存到 Tauri SQLite 凭证边界中，本地文件夹不需要凭据。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -299,11 +333,11 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
   {
     id: 'playback',
     label: 'Play',
-    title: '播放',
-    description: '默认音轨、字幕偏好、自动续播和快捷键微调将集中放在这里。',
-    meta: '规划中',
-    actionLabel: '待开放',
-    disabled: true,
+    title: '播放与字幕',
+    description: '配置字幕搜索默认语言和 Player 本地 OpenSubtitles 提供器。Emby 搜索使用服务器自身字幕源。',
+    meta: playbackEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
   },
   {
     id: 'appearance',
@@ -338,6 +372,7 @@ onMounted(() => {
   store.loadConfigs()
   refreshPersistentCredentialWarning()
   void refreshTmdbCredentialState()
+  void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
   syncModeFromRoute()
 })
@@ -400,6 +435,15 @@ function syncModeFromRoute() {
     mode.value = 'scraping'
     feedback.value = null
     void refreshTmdbCredentialState()
+    return
+  }
+
+  if (section === 'playback') {
+    replaceSettingsQuery({ section: 'playback' })
+    mode.value = 'playback'
+    feedback.value = null
+    subtitleFeedback.value = null
+    void refreshOpenSubtitlesCredentialState()
     return
   }
 
@@ -484,6 +528,8 @@ function openSettingsEntry(entry: SettingsEntry) {
     goDataSources()
   else if (entry.id === 'scraping')
     goScrapingSettings()
+  else if (entry.id === 'playback')
+    goPlaybackSettings()
   else if (entry.id === 'diagnostics')
     goStorageDiagnostics()
 }
@@ -522,6 +568,67 @@ function goScrapingSettings() {
   lastFetchedLibraries.value = []
   resetAlistBrowser()
   void router.push({ name: 'settings', query: { section: 'scraping' } })
+}
+
+function goPlaybackSettings() {
+  mode.value = 'playback'
+  feedback.value = null
+  subtitleFeedback.value = null
+  void router.push({ name: 'settings', query: { section: 'playback' } })
+  void refreshOpenSubtitlesCredentialState()
+}
+
+async function refreshOpenSubtitlesCredentialState() {
+  openSubtitlesConfigured.value = Boolean(await readOpenSubtitlesApiKey())
+}
+
+async function savePlaybackSubtitleSettings() {
+  isSavingSubtitleSettings.value = true
+  subtitleFeedback.value = null
+  try {
+    const apiKey = subtitleForm.apiKey.trim()
+    if (apiKey) {
+      await saveOpenSubtitlesApiKey(apiKey)
+      subtitleForm.apiKey = ''
+    }
+    await saveSubtitleSearchSettings({
+      defaultLanguage: subtitleForm.defaultLanguage,
+      openSubtitlesEnabled: subtitleForm.openSubtitlesEnabled,
+    })
+    await flushAppSettings()
+    await refreshOpenSubtitlesCredentialState()
+    subtitleFeedback.value = {
+      type: 'success',
+      message: openSubtitlesConfigured.value
+        ? '播放与字幕设置已保存，OpenSubtitles 本地搜索已可使用。'
+        : '播放与字幕设置已保存。配置 OpenSubtitles API Key 后即可使用 Player 本地搜索。',
+    }
+  }
+  catch (error) {
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '播放与字幕设置保存失败。') }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingSubtitleSettings.value = false
+  }
+}
+
+async function clearOpenSubtitlesCredential() {
+  isSavingSubtitleSettings.value = true
+  subtitleFeedback.value = null
+  try {
+    await clearOpenSubtitlesApiKey()
+    subtitleForm.apiKey = ''
+    await refreshOpenSubtitlesCredentialState()
+    subtitleFeedback.value = { type: 'success', message: 'OpenSubtitles API Key 已清除，本地字幕搜索已停用。' }
+  }
+  catch (error) {
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles API Key 清除失败。') }
+  }
+  finally {
+    refreshPersistentCredentialWarning()
+    isSavingSubtitleSettings.value = false
+  }
 }
 
 function goManage(options: { preserveFeedback?: boolean } = {}) {
@@ -1426,10 +1533,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
       </header>
 
       <div
-        v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping')"
+        v-if="persistentCredentialWarning && (isDataSourceMode || mode === 'scraping' || mode === 'playback')"
         class="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm leading-6 text-amber-100"
       >
-        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、访问令牌与 TMDB 凭据仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
+        当前运行环境不可用 Tauri SQLite 凭证命令，数据源账号、密码、访问令牌、TMDB 与字幕提供器凭据仅保存在内存中。请使用 Tauri 桌面应用运行以跨重启保留登录状态。
       </div>
 
       <div v-if="mode !== 'overview'" class="flex">
@@ -1539,6 +1646,97 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 
         <div class="border-l-2 border-primary/36 px-5 py-1 text-sm leading-7 text-white/50">
           正式便携 ZIP 会自带 <code class="text-white/70">portable.flag</code>。直接使用单个 EXE 时，在 EXE 同目录创建同名空文件并重启即可进入便携模式；删除标记并重启则回到标准模式。两种模式使用独立数据目录，不会自动互相覆盖。
+        </div>
+      </section>
+
+      <section v-else-if="mode === 'playback'" class="space-y-5">
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Subtitle Search
+              </p>
+              <h2 class="mt-2 text-xl font-bold text-white">
+                播放与字幕
+              </h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                Emby 播放时可选择 Emby 服务器搜索或 Player 本地搜索；其他媒体源直接使用这里配置的本地字幕提供器。搜索只发送作品标识、标题、年份和季集信息，不发送媒体路径、数据源凭据或播放地址。
+              </p>
+            </div>
+            <span
+              class="rounded-full px-3 py-1.5 text-xs font-semibold"
+              :class="openSubtitlesConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
+            >
+              {{ openSubtitlesConfigured ? 'OpenSubtitles 已配置' : 'OpenSubtitles 未配置' }}
+            </span>
+          </div>
+
+          <div
+            v-if="subtitleFeedback"
+            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+            :class="{
+              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': subtitleFeedback.type === 'success',
+              'border-red-400/20 bg-red-400/10 text-red-100': subtitleFeedback.type === 'error',
+              'border-white/12 bg-white/6 text-white/58': subtitleFeedback.type === 'info',
+            }"
+          >
+            {{ subtitleFeedback.message }}
+          </div>
+
+          <div class="mt-5 grid gap-4 lg:grid-cols-[0.8fr_1.4fr]">
+            <label class="rounded-2xl bg-black/16 p-4">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">默认搜索语言</span>
+              <select
+                v-model="subtitleForm.defaultLanguage"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+              >
+                <option v-for="option in subtitleLanguageOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+
+            <div class="rounded-2xl bg-black/16 p-4">
+              <label class="flex items-center justify-between gap-4">
+                <span>
+                  <span class="block text-sm font-semibold text-white">启用 OpenSubtitles</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">使用公开 REST API 搜索并把字幕下载到 Player cache，不写入媒体目录。</span>
+                </span>
+                <input v-model="subtitleForm.openSubtitlesEnabled" type="checkbox" class="h-5 w-5 accent-primary">
+              </label>
+
+              <label class="mt-4 block border-t border-white/8 pt-4">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">OpenSubtitles API Key</span>
+                <input
+                  v-model="subtitleForm.apiKey"
+                  class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                  type="password"
+                  autocomplete="off"
+                  :placeholder="openSubtitlesConfigured ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
+                >
+                <span class="mt-2 block text-xs leading-5 text-white/38">API Key 只保存到当前标准或便携模式的安全凭据边界，保存后不会回填显示。</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingSubtitleSettings"
+              @click="savePlaybackSubtitleSettings"
+            >
+              {{ isSavingSubtitleSettings ? '保存中…' : '保存播放与字幕设置' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="isSavingSubtitleSettings || !openSubtitlesConfigured"
+              @click="clearOpenSubtitlesCredential"
+            >
+              清除 OpenSubtitles API Key
+            </button>
+          </div>
         </div>
       </section>
 
