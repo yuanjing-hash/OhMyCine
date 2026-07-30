@@ -41,7 +41,14 @@ pub struct OpenSubtitlesSessionState(tokio::sync::Mutex<Option<OpenSubtitlesSess
 struct OpenSubtitlesSession {
     credential_fingerprint: [u8; 32],
     token: String,
+    authenticated: bool,
     expires_at: Instant,
+}
+
+#[derive(Clone)]
+struct OpenSubtitlesXmlRpcSession {
+    token: String,
+    authenticated: bool,
 }
 
 #[derive(Default)]
@@ -177,6 +184,12 @@ pub struct DownloadedSubtitle {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenSubtitlesLoginStatus {
+    authenticated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HashSubtitleSearchResult {
     id: String,
     origin: &'static str,
@@ -235,7 +248,7 @@ struct XunleiRecord {
 pub async fn subtitle_login_opensubtitles(
     sessions: State<'_, OpenSubtitlesSessionState>,
     request: OpenSubtitlesLoginRequest,
-) -> Result<(), String> {
+) -> Result<OpenSubtitlesLoginStatus, String> {
     let credential = validate_opensubtitles_credential(
         request.auth_mode,
         request.api_key.as_deref(),
@@ -243,10 +256,19 @@ pub async fn subtitle_login_opensubtitles(
         request.password.as_deref(),
     )?;
     if credential.auth_mode == OpenSubtitlesAuthMode::Account {
-        ensure_opensubtitles_account_token(&sessions, &credential.username, &credential.password)
-            .await?;
+        let session = ensure_opensubtitles_account_token(
+            &sessions,
+            &credential.username,
+            &credential.password,
+        )
+        .await?;
+        return Ok(OpenSubtitlesLoginStatus {
+            authenticated: session.authenticated,
+        });
     }
-    Ok(())
+    Ok(OpenSubtitlesLoginStatus {
+        authenticated: true,
+    })
 }
 
 #[tauri::command]
@@ -434,15 +456,52 @@ async fn ensure_opensubtitles_account_token(
     sessions: &OpenSubtitlesSessionState,
     username: &str,
     password: &str,
-) -> Result<String, String> {
+) -> Result<OpenSubtitlesXmlRpcSession, String> {
     let fingerprint = credential_fingerprint("xmlrpc", username, password);
     let mut session = sessions.0.lock().await;
     if let Some(existing) = session.as_ref() {
         if existing.credential_fingerprint == fingerprint && existing.expires_at > Instant::now() {
-            return Ok(existing.token.clone());
+            return Ok(OpenSubtitlesXmlRpcSession {
+                token: existing.token.clone(),
+                authenticated: existing.authenticated,
+            });
         }
     }
 
+    let (status, token) = request_opensubtitles_xmlrpc_login(username, password).await?;
+    let (token, authenticated) = if status.starts_with("200") {
+        (token, true)
+    } else if status.starts_with("401") {
+        let (anonymous_status, anonymous_token) =
+            request_opensubtitles_xmlrpc_login("", "").await?;
+        if !anonymous_status.starts_with("200") {
+            return Err(format!(
+                "OpenSubtitles 免 Key 兼容登录失败：{anonymous_status}"
+            ));
+        }
+        (anonymous_token, false)
+    } else {
+        return Err(format!("OpenSubtitles 账号登录失败：{status}"));
+    };
+    let token = token
+        .filter(|value| !value.trim().is_empty() && value.len() <= 4096)
+        .ok_or_else(|| "OpenSubtitles 登录没有返回有效会话。".to_string())?;
+    *session = Some(OpenSubtitlesSession {
+        credential_fingerprint: fingerprint,
+        token: token.clone(),
+        authenticated,
+        expires_at: Instant::now() + OPENSUBTITLES_SESSION_TTL,
+    });
+    Ok(OpenSubtitlesXmlRpcSession {
+        token,
+        authenticated,
+    })
+}
+
+async fn request_opensubtitles_xmlrpc_login(
+    username: &str,
+    password: &str,
+) -> Result<(String, Option<String>), String> {
     let body = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><methodCall><methodName>LogIn</methodName><params><param><value><string>{}</string></value></param><param><value><string>{}</string></value></param><param><value><string>en</string></value></param><param><value><string>{}</string></value></param></params></methodCall>",
         xml_escape(username),
@@ -451,16 +510,11 @@ async fn ensure_opensubtitles_account_token(
     );
     let payload = post_opensubtitles_xmlrpc(&body, MAX_SEARCH_RESPONSE_BYTES).await?;
     let data = xmlrpc_struct(&payload)?;
-    ensure_xmlrpc_success(data)?;
-    let token = xmlrpc_string_member(data, "token")
-        .filter(|value| !value.trim().is_empty() && value.len() <= 4096)
-        .ok_or_else(|| "OpenSubtitles 登录没有返回有效会话。".to_string())?;
-    *session = Some(OpenSubtitlesSession {
-        credential_fingerprint: fingerprint,
-        token: token.to_string(),
-        expires_at: Instant::now() + OPENSUBTITLES_SESSION_TTL,
-    });
-    Ok(token.to_string())
+    let status = xmlrpc_string_member(data, "status")
+        .filter(|value| !value.trim().is_empty() && value.len() <= 128)
+        .ok_or_else(|| "OpenSubtitles 登录没有返回状态。".to_string())?;
+    let token = xmlrpc_string_member(data, "token").map(str::to_string);
+    Ok((status.to_string(), token))
 }
 
 async fn search_opensubtitles_xmlrpc(
@@ -469,7 +523,27 @@ async fn search_opensubtitles_xmlrpc(
     username: &str,
     password: &str,
 ) -> Result<Value, String> {
-    let token = ensure_opensubtitles_account_token(sessions, username, password).await?;
+    let session = ensure_opensubtitles_account_token(sessions, username, password).await?;
+    let body = build_opensubtitles_xmlrpc_search_body(&session.token, request)?;
+    let payload = post_opensubtitles_xmlrpc(&body, MAX_SEARCH_RESPONSE_BYTES).await?;
+    let data = xmlrpc_struct(&payload)?;
+    ensure_xmlrpc_success(data)?;
+    let records = match data.get("data") {
+        Some(XmlRpcValue::Array(records)) => records,
+        _ => return Ok(serde_json::json!({ "data": [] })),
+    };
+    let normalized_language = normalize_language(&request.language)?;
+    let results: Vec<Value> = records
+        .iter()
+        .filter_map(|record| legacy_record_to_rest_shape(record, &normalized_language))
+        .collect();
+    Ok(serde_json::json!({ "data": results }))
+}
+
+fn build_opensubtitles_xmlrpc_search_body(
+    token: &str,
+    request: &OpenSubtitlesSearchRequest,
+) -> Result<String, String> {
     let language = normalize_xmlrpc_language(&request.language)?;
     let query = normalized_query(request.query.as_deref())?
         .ok_or_else(|| "请输入用于搜索字幕的媒体名称或关键词。".to_string())?;
@@ -486,24 +560,11 @@ async fn search_opensubtitles_xmlrpc(
     if let Some(episode) = request.episode_number {
         members.push(xmlrpc_string_member_xml("episode", &episode.to_string()));
     }
-    let body = format!(
+    Ok(format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><methodCall><methodName>SearchSubtitles</methodName><params><param><value><string>{}</string></value></param><param><value><array><data><value><struct>{}</struct></value></data></array></value></param></params></methodCall>",
-        xml_escape(&token),
+        xml_escape(token),
         members.join(""),
-    );
-    let payload = post_opensubtitles_xmlrpc(&body, MAX_SEARCH_RESPONSE_BYTES).await?;
-    let data = xmlrpc_struct(&payload)?;
-    ensure_xmlrpc_success(data)?;
-    let records = match data.get("data") {
-        Some(XmlRpcValue::Array(records)) => records,
-        _ => return Ok(serde_json::json!({ "data": [] })),
-    };
-    let normalized_language = normalize_language(&request.language)?;
-    let results: Vec<Value> = records
-        .iter()
-        .filter_map(|record| legacy_record_to_rest_shape(record, &normalized_language))
-        .collect();
-    Ok(serde_json::json!({ "data": results }))
+    ))
 }
 
 async fn download_opensubtitles_xmlrpc(
@@ -513,10 +574,10 @@ async fn download_opensubtitles_xmlrpc(
     username: &str,
     password: &str,
 ) -> Result<DownloadedSubtitle, String> {
-    let token = ensure_opensubtitles_account_token(sessions, username, password).await?;
+    let session = ensure_opensubtitles_account_token(sessions, username, password).await?;
     let body = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><methodCall><methodName>DownloadSubtitles</methodName><params><param><value><string>{}</string></value></param><param><value><array><data><value><string>{}</string></value></data></array></value></param></params></methodCall>",
-        xml_escape(&token),
+        xml_escape(&session.token),
         request.file_id,
     );
     let payload = post_opensubtitles_xmlrpc(&body, MAX_DOWNLOAD_RESPONSE_BYTES).await?;
@@ -1709,11 +1770,13 @@ fn http_error(status: StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_shooter_hash, compute_shooter_media_hash, compute_xunlei_cid,
-        compute_xunlei_media_cid, normalize_xunlei_download_url, parse_xmlrpc_response,
-        resolve_hash_media_source, safe_subtitle_extension, validate_opensubtitles_download_url,
-        validate_shooter_download_url, validate_xunlei_download_url, xmlrpc_string_member,
-        xmlrpc_struct, HashSubtitleProvider, HashSubtitleSearchRequest, RemoteMediaHeader,
+        build_opensubtitles_xmlrpc_search_body, compute_shooter_hash, compute_shooter_media_hash,
+        compute_xunlei_cid, compute_xunlei_media_cid, normalize_xunlei_download_url,
+        parse_xmlrpc_response, resolve_hash_media_source, safe_subtitle_extension,
+        validate_opensubtitles_download_url, validate_shooter_download_url,
+        validate_xunlei_download_url, xmlrpc_string_member, xmlrpc_struct, HashSubtitleProvider,
+        HashSubtitleSearchRequest, OpenSubtitlesAuthMode, OpenSubtitlesSearchRequest,
+        RemoteMediaHeader,
     };
     use std::fs;
     use std::io::{Read, Write};
@@ -1882,5 +1945,28 @@ mod tests {
     fn rejects_xmlrpc_document_declarations() {
         let xml = br#"<?xml version="1.0"?><!DOCTYPE foo><methodResponse/>"#;
         assert!(parse_xmlrpc_response(xml).is_err());
+    }
+
+    #[test]
+    fn custom_keyword_is_written_to_opensubtitles_search_request() {
+        let request = OpenSubtitlesSearchRequest {
+            auth_mode: OpenSubtitlesAuthMode::Account,
+            api_key: None,
+            username: Some("account".to_string()),
+            password: Some("password".to_string()),
+            language: "zh-CN".to_string(),
+            query: Some("复仇者联盟 & 2012".to_string()),
+            imdb_id: None,
+            tmdb_id: None,
+            year: None,
+            season_number: None,
+            episode_number: None,
+            media_type: Some("movie".to_string()),
+        };
+        let body = build_opensubtitles_xmlrpc_search_body("session-token", &request).unwrap();
+        assert!(body.contains("复仇者联盟 &amp; 2012"));
+        assert!(body.contains("<name>sublanguageid</name><value><string>chi</string>"));
+        assert!(!body.contains("account"));
+        assert!(!body.contains("password"));
     }
 }

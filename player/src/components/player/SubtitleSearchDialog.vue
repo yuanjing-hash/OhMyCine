@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import type { SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
-import type { SubtitleLanguage } from '@/services/subtitle'
+import type { SubtitleKeywordMode, SubtitleLanguage } from '@/services/subtitle'
 import { computed, ref, watch } from 'vue'
-
-type SubtitleKeywordMode = 'mediaTitle' | 'fileName' | 'custom'
 
 const props = defineProps<{
   open: boolean
@@ -21,7 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   selectOrigin: [origin: SubtitleSearchOrigin]
-  search: [language: SubtitleLanguage, keyword: string]
+  search: [language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode]
   download: [result: SubtitleSearchResult]
   back: []
 }>()
@@ -35,6 +33,7 @@ const selectedKeyword = computed(() => {
   return keywordMode.value === 'fileName' ? props.fileName.trim() : props.mediaTitle.trim()
 })
 const effectiveKeyword = computed(() => props.origin === 'local' ? selectedKeyword.value : props.mediaTitle.trim())
+const effectiveKeywordMode = computed<SubtitleKeywordMode>(() => props.origin === 'local' ? keywordMode.value : 'mediaTitle')
 
 const languages: Array<{ value: SubtitleLanguage, label: string }> = [
   { value: 'zh-CN', label: '简体中文' },
@@ -139,7 +138,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
               type="text"
               maxlength="160"
               placeholder="输入片名、年份或发布版本"
-              @keydown.enter.prevent="effectiveKeyword && emit('search', language, effectiveKeyword)"
+              @keydown.enter.prevent="effectiveKeyword && emit('search', language, effectiveKeyword, effectiveKeywordMode)"
             >
             <div v-else class="mt-2 truncate rounded-xl border border-white/8 bg-white/5 px-3 py-2.5 text-sm text-white/66" :title="selectedKeyword">
               {{ selectedKeyword || '当前没有可用关键词' }}
@@ -158,7 +157,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
                 </option>
               </select>
             </label>
-            <button type="button" class="rounded-xl bg-primary/80 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55" :disabled="loading || downloadingId !== null || !effectiveKeyword" @click="emit('search', language, effectiveKeyword)">
+            <button type="button" class="rounded-xl bg-primary/80 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55" :disabled="loading || downloadingId !== null || !effectiveKeyword" @click="emit('search', language, effectiveKeyword, effectiveKeywordMode)">
               {{ loading ? '搜索中…' : '开始搜索' }}
             </button>
           </div>
