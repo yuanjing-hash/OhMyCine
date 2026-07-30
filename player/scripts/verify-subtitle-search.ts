@@ -8,6 +8,9 @@ const read = (path: string) => readFile(fileURLToPath(new URL(path, root)), 'utf
 const controls = await read('src/components/player/PlayerControls.vue')
 assert.match(controls, /搜索字幕/)
 assert.match(controls, /emit\('searchSubtitles'\)/)
+assert.match(controls, /字幕偏移/)
+assert.match(controls, /emit\('setSubtitleDelay'/)
+assert.match(controls, /type="range"[\s\S]*min="-30"[\s\S]*max="30"/)
 
 const playerView = await read('src/views/PlayerView.vue')
 assert.match(playerView, /subtitleSearchRequiresSourceChoice\.value = sourceType === 'emby'/)
@@ -26,6 +29,18 @@ assert.match(settings, /subtitle_login_opensubtitles/)
 assert.match(settings, /shooterEnabled/)
 assert.match(settings, /xunleiEnabled/)
 assert.doesNotMatch(settings, /setAppSetting\([^)]*apiKey/)
+
+const subtitleIndex = await read('src/services/subtitle/index.ts')
+assert.match(subtitleIndex, /hasOpenSubtitlesApiKey/)
+assert.match(subtitleIndex, /settings\.shooterEnabled && canUseHashProviders/)
+assert.match(subtitleIndex, /settings\.xunleiEnabled && canUseHashProviders/)
+assert.match(subtitleIndex, /Promise\.allSettled/)
+
+const useMpv = await read('src/composables/useMpv.ts')
+assert.match(useMpv, /prop: 'sub-delay'/)
+assert.match(useMpv, /MIN_SUBTITLE_DELAY = -30/)
+assert.match(useMpv, /MAX_SUBTITLE_DELAY = 30/)
+assert.match(useMpv, /applySubtitleDelay\(DEFAULT_SUBTITLE_DELAY\)/)
 
 const credentialStore = await read('src/services/datasource/credentialStore.ts')
 assert.match(credentialStore, /version: 2,[\s\S]*provider: 'opensubtitles'/)
@@ -56,4 +71,6 @@ console.log(JSON.stringify({
   openSubtitlesAccountLoginUsesEphemeralJwt: true,
   shooterAndXunleiRequireLocalFileHashes: true,
   hashProviderDownloadsUseOpaqueReferences: true,
+  missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,
+  subtitleDelayUsesMpvSubDelay: true,
 }, null, 2))

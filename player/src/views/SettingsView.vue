@@ -1903,7 +1903,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               class="rounded-full px-3 py-1.5 text-xs font-semibold"
               :class="openSubtitlesConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
             >
-              {{ openSubtitlesConfigured ? `OpenSubtitles ${openSubtitlesAccountConfigured ? '账号已配置' : 'API Key 已配置'}` : 'OpenSubtitles 未配置' }}
+              {{ openSubtitlesConfigured ? `OpenSubtitles ${openSubtitlesAccountConfigured ? 'API Key + 账号已配置' : 'API Key 已配置'}` : 'OpenSubtitles 未配置' }}
             </span>
           </div>
 
@@ -1942,9 +1942,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 <input v-model="subtitleForm.openSubtitlesEnabled" type="checkbox" class="h-5 w-5 accent-primary">
               </label>
 
-              <div class="mt-4 grid gap-3 border-t border-white/8 pt-4 md:grid-cols-2">
-                <label class="md:col-span-2">
-                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">OpenSubtitles API Key</span>
+              <div class="mt-4 space-y-3 border-t border-white/8 pt-4">
+                <label class="block">
+                  <span class="block text-xs font-semibold text-white/72">API Key（必需）</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/38">用于访问 OpenSubtitles.com 官方 API；不填写时只跳过此提供器，不影响射手网和迅雷字幕。</span>
                   <input
                     v-model="subtitleForm.apiKey"
                     class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
@@ -1953,26 +1954,32 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                     :placeholder="openSubtitlesConfigured ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
                   >
                 </label>
-                <label>
-                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号</span>
-                  <input
-                    v-model="subtitleForm.username"
-                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                    type="text"
-                    autocomplete="username"
-                    :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前账号' : 'OpenSubtitles 用户名'"
-                  >
-                </label>
-                <label>
-                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
-                  <input
-                    v-model="subtitleForm.password"
-                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                    type="password"
-                    autocomplete="current-password"
-                    :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前密码' : '可选：账号密码登录'"
-                  >
-                </label>
+                <div class="border-t border-white/8 pt-3">
+                  <span class="block text-xs font-semibold text-white/72">账号会话（可选）</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/38">官方账号登录仍会携带上方 API Key；登录后使用账号对应的下载额度。</span>
+                  <div class="mt-3 grid gap-3 md:grid-cols-2">
+                    <label>
+                      <span class="text-xs font-semibold text-white/42">账号</span>
+                      <input
+                        v-model="subtitleForm.username"
+                        class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                        type="text"
+                        autocomplete="username"
+                        :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前账号' : 'OpenSubtitles 用户名'"
+                      >
+                    </label>
+                    <label>
+                      <span class="text-xs font-semibold text-white/42">密码</span>
+                      <input
+                        v-model="subtitleForm.password"
+                        class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                        type="password"
+                        autocomplete="current-password"
+                        :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前密码' : '可选：账号密码登录'"
+                      >
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
 

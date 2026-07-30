@@ -102,6 +102,7 @@ const {
   duration,
   volume,
   playbackSpeed,
+  subtitleDelay,
   subtitleTracks,
   audioTracks,
   currentSubtitle,
@@ -125,6 +126,7 @@ const {
   seekRelative,
   setVolume,
   setPlaybackSpeed,
+  setSubtitleDelay,
   setSubtitle,
   addExternalSubtitle,
   setAudio,
@@ -1566,6 +1568,7 @@ watch(
         :duration="duration"
         :volume="volume"
         :playback-speed="playbackSpeed"
+        :subtitle-delay="subtitleDelay"
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
         :queue-item-count="playbackQueueItemCount"
@@ -1588,6 +1591,7 @@ watch(
         @seek-relative="seekRelative"
         @set-volume="setVolume"
         @set-playback-speed="setPlaybackSpeed"
+        @set-subtitle-delay="setSubtitleDelay"
         @set-subtitle="setSubtitle"
         @search-subtitles="openSubtitleSearch"
         @set-audio="setAudio"
