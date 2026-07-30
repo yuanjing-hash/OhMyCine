@@ -15,18 +15,18 @@ export async function searchLocalSubtitles(input: LocalSubtitleSearchInput): Pro
   const openSubtitlesCredential = settings.openSubtitlesEnabled
     ? await readOpenSubtitlesCredentials()
     : null
-  const hasOpenSubtitlesApiKey = Boolean(openSubtitlesCredential?.apiKey.trim())
+  const hasOpenSubtitlesCredential = Boolean(openSubtitlesCredential)
   const canUseHashProviders = Boolean(input.localFilePath)
   const enabledProviders = [
-    settings.openSubtitlesEnabled && hasOpenSubtitlesApiKey ? providers.opensubtitles : null,
+    settings.openSubtitlesEnabled && hasOpenSubtitlesCredential ? providers.opensubtitles : null,
     settings.shooterEnabled && canUseHashProviders ? providers.shooter : null,
     settings.xunleiEnabled && canUseHashProviders ? providers.xunlei : null,
   ].filter((provider): provider is SubtitleProvider => provider != null)
 
-  if (enabledProviders.length === 0 && settings.openSubtitlesEnabled && !hasOpenSubtitlesApiKey) {
+  if (enabledProviders.length === 0 && settings.openSubtitlesEnabled && !hasOpenSubtitlesCredential) {
     if (!canUseHashProviders && (settings.shooterEnabled || settings.xunleiEnabled))
-      throw new Error('射手网和迅雷字幕目前只支持本地视频；当前媒体还需要配置 OpenSubtitles API Key 才能搜索。')
-    throw new Error('尚未配置可用于当前媒体的字幕提供器。可配置 OpenSubtitles API Key，或为本地视频启用射手网、迅雷字幕。')
+      throw new Error('射手网和迅雷字幕目前只支持本地视频；当前媒体还需要配置 OpenSubtitles 才能搜索。')
+    throw new Error('尚未配置可用于当前媒体的字幕提供器。可配置 OpenSubtitles，或为本地视频启用射手网、迅雷字幕。')
   }
   if (enabledProviders.length === 0) {
     throw new Error(canUseHashProviders

@@ -304,7 +304,7 @@ Phase 4: 生态系统           ████████████████
 #### 播放器增强
 
 - [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
-- [~] 播放中字幕搜索（已实现 Emby 搜索/本地搜索显式二选一、非 Emby 直达本地搜索、Emby 远程字幕 API、OpenSubtitles API Key + 可选账号 JWT、射手网四段 MD5、迅雷 CID、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；待真实账号、媒体文件和字幕结果实机验证）
+- [~] 播放中字幕搜索（已实现 Emby 搜索/本地搜索显式二选一、非 Emby 直达本地搜索、媒体名称/原始文件名/自定义关键词三选一、Emby 远程字幕 API、OpenSubtitles REST API Key 与 XML-RPC 账号密码二选一、射手网四段 MD5、迅雷 CID、按真实本地路径启用哈希提供器、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；待真实账号、媒体文件和字幕结果实机验证）
 - [x] 播放中字幕偏移（字幕菜单内即时控制 mpv `sub-delay`，支持提前/延后 30 秒、0.1 秒滑动、0.5 秒步进和重置，新媒体加载时归零）
 - [~] 签名自动更新（已实现启动自动检测、设置页手动检测、Beta/正式渠道、全局更新确认、下载进度、Tauri minisign 验证、标准/便携 NSIS 安装目录处理和 GitHub Release 签名清单发布；待配置 GitHub Secret 并发布首个 updater 版本实机验证）
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）

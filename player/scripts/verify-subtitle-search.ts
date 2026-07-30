@@ -17,6 +17,16 @@ assert.match(playerView, /subtitleSearchRequiresSourceChoice\.value = sourceType
 assert.match(playerView, /subtitleSearchOrigin\.value = sourceType === 'emby' \? null : 'local'/)
 assert.match(playerView, /if \(origin === 'emby'\)[\s\S]*source\.searchSubtitles/)
 assert.match(playerView, /else \{[\s\S]*searchLocalSubtitles/)
+assert.match(playerView, /currentSubtitleSearchContext\(keyword\)/)
+assert.match(playerView, /currentLocalSubtitleFilePath\(\)[\s\S]*isAbsoluteLocalMediaPath/)
+assert.match(playerView, /:media-title="currentSubtitleMediaTitle\(\)"/)
+assert.match(playerView, /:file-name="currentSubtitleFileName\(\)"/)
+
+const searchDialog = await read('src/components/player/SubtitleSearchDialog.vue')
+assert.match(searchDialog, /媒体名称/)
+assert.match(searchDialog, /原始文件名/)
+assert.match(searchDialog, /自定义/)
+assert.match(searchDialog, /search: \[language: SubtitleLanguage, keyword: string\]/)
 
 const emby = await read('src/services/datasource/emby.ts')
 assert.match(emby, /RemoteSearch\/Subtitles\/\$\{encodeURIComponent\(language\)\}/)
@@ -31,7 +41,7 @@ assert.match(settings, /xunleiEnabled/)
 assert.doesNotMatch(settings, /setAppSetting\([^)]*apiKey/)
 
 const subtitleIndex = await read('src/services/subtitle/index.ts')
-assert.match(subtitleIndex, /hasOpenSubtitlesApiKey/)
+assert.match(subtitleIndex, /hasOpenSubtitlesCredential/)
 assert.match(subtitleIndex, /settings\.shooterEnabled && canUseHashProviders/)
 assert.match(subtitleIndex, /settings\.xunleiEnabled && canUseHashProviders/)
 assert.match(subtitleIndex, /Promise\.allSettled/)
@@ -43,8 +53,10 @@ assert.match(useMpv, /MAX_SUBTITLE_DELAY = 30/)
 assert.match(useMpv, /applySubtitleDelay\(DEFAULT_SUBTITLE_DELAY\)/)
 
 const credentialStore = await read('src/services/datasource/credentialStore.ts')
-assert.match(credentialStore, /version: 2,[\s\S]*provider: 'opensubtitles'/)
-assert.match(credentialStore, /value\.version !== 1 && value\.version !== 2/)
+assert.match(credentialStore, /version: 3,[\s\S]*provider: 'opensubtitles'/)
+assert.match(credentialStore, /value\.version !== 1 && value\.version !== 2 && value\.version !== 3/)
+assert.match(credentialStore, /authMode: 'apiKey'/)
+assert.match(credentialStore, /authMode: 'account'/)
 assert.match(credentialStore, /probePersistentCredentialStorage[\s\S]*credential-health-check/)
 
 const providers = await read('src/services/subtitle/hashProviders.ts')
@@ -61,6 +73,10 @@ assert.match(rust, /compute_xunlei_cid/)
 assert.match(rust, /url\.host_str\(\) != Some\("www\.shooter\.cn"\)/)
 assert.match(rust, /url\.host_str\(\) != Some\("subtitle\.v\.geilijiasu\.com"\)/)
 assert.match(rust, /DOWNLOAD_REFERENCE_TTL/)
+assert.match(rust, /https:\/\/api\.opensubtitles\.org\/xml-rpc/)
+assert.match(rust, /SearchSubtitles/)
+assert.match(rust, /DownloadSubtitles/)
+assert.match(rust, /GzDecoder/)
 assert.doesNotMatch(rust, /println!|dbg!|log::.*password/)
 
 console.log(JSON.stringify({
@@ -68,9 +84,11 @@ console.log(JSON.stringify({
   nonEmbyUsesLocalSearchDirectly: true,
   credentialsUseSecureStore: true,
   downloadsAreConstrainedToSubtitleCache: true,
-  openSubtitlesAccountLoginUsesEphemeralJwt: true,
+  openSubtitlesSupportsExclusiveApiKeyAndAccountModes: true,
+  openSubtitlesAccountModeUsesXmlRpcSession: true,
   shooterAndXunleiRequireLocalFileHashes: true,
   hashProviderDownloadsUseOpaqueReferences: true,
   missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,
   subtitleDelayUsesMpvSubDelay: true,
+  subtitleSearchOffersThreeKeywordModes: true,
 }, null, 2))

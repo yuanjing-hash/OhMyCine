@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PlayerStorageInfo } from '@/services/appSettings'
-import type { OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
+import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
@@ -39,7 +39,6 @@ import {
   saveTmdbLocalSettings,
 } from '@/services/scraper/tmdb'
 import {
-  clearOpenSubtitlesAccount,
   clearOpenSubtitlesCredentials,
   loadSubtitleSearchSettings,
   readOpenSubtitlesCredentials,
@@ -79,6 +78,7 @@ interface TmdbFormState {
 interface SubtitleSettingsFormState {
   defaultLanguage: SubtitleLanguage
   openSubtitlesEnabled: boolean
+  openSubtitlesAuthMode: OpenSubtitlesAuthMode
   shooterEnabled: boolean
   xunleiEnabled: boolean
   apiKey: string
@@ -236,6 +236,7 @@ const subtitleSettings = loadSubtitleSearchSettings()
 const subtitleForm = reactive<SubtitleSettingsFormState>({
   defaultLanguage: subtitleSettings.defaultLanguage,
   openSubtitlesEnabled: subtitleSettings.openSubtitlesEnabled,
+  openSubtitlesAuthMode: 'apiKey',
   shooterEnabled: subtitleSettings.shooterEnabled,
   xunleiEnabled: subtitleSettings.xunleiEnabled,
   apiKey: '',
@@ -243,7 +244,7 @@ const subtitleForm = reactive<SubtitleSettingsFormState>({
   password: '',
 })
 const openSubtitlesConfigured = ref(false)
-const openSubtitlesAccountConfigured = ref(false)
+const openSubtitlesConfiguredAuthMode = ref<OpenSubtitlesAuthMode | null>(null)
 const isSavingSubtitleSettings = ref(false)
 const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const updateForm = reactive<UpdaterSettingsFormState>({
@@ -689,8 +690,10 @@ async function checkForUpdatesNow() {
 
 async function refreshOpenSubtitlesCredentialState() {
   const credential = await readOpenSubtitlesCredentials()
-  openSubtitlesConfigured.value = Boolean(credential?.apiKey)
-  openSubtitlesAccountConfigured.value = Boolean(credential?.username && credential.password)
+  openSubtitlesConfigured.value = credential != null
+  openSubtitlesConfiguredAuthMode.value = credential?.authMode ?? null
+  if (credential)
+    subtitleForm.openSubtitlesAuthMode = credential.authMode
 }
 
 async function savePlaybackSubtitleSettings() {
@@ -701,24 +704,31 @@ async function savePlaybackSubtitleSettings() {
     const enteredApiKey = subtitleForm.apiKey.trim()
     const enteredUsername = subtitleForm.username.trim()
     const enteredPassword = subtitleForm.password
-    const accountEdited = Boolean(enteredUsername || enteredPassword)
-    if (accountEdited && (!enteredUsername || !enteredPassword))
-      throw new Error('OpenSubtitles 账号和密码必须同时填写。')
-
-    const apiKey = enteredApiKey || existing?.apiKey || ''
-    const nextCredential: OpenSubtitlesCredentialValue | null = apiKey
-      ? {
-          apiKey,
-          username: accountEdited ? enteredUsername : existing?.username,
-          password: accountEdited ? enteredPassword : existing?.password,
-        }
-      : null
-    if ((enteredApiKey || accountEdited) && nextCredential?.username && nextCredential.password)
-      await testOpenSubtitlesLogin(nextCredential)
-    if (nextCredential && (enteredApiKey || accountEdited || !existing))
+    const modeChanged = Boolean(existing && existing.authMode !== subtitleForm.openSubtitlesAuthMode)
+    const credentialEdited = modeChanged || (subtitleForm.openSubtitlesAuthMode === 'apiKey'
+      ? Boolean(enteredApiKey)
+      : Boolean(enteredUsername || enteredPassword))
+    if (credentialEdited) {
+      const nextCredential: OpenSubtitlesCredentialValue = subtitleForm.openSubtitlesAuthMode === 'apiKey'
+        ? {
+            authMode: 'apiKey',
+            apiKey: enteredApiKey || (existing?.authMode === 'apiKey' ? existing.apiKey : undefined),
+          }
+        : {
+            authMode: 'account',
+            username: enteredUsername || (existing?.authMode === 'account' ? existing.username : undefined),
+            password: enteredPassword || (existing?.authMode === 'account' ? existing.password : undefined),
+          }
+      if (nextCredential.authMode === 'apiKey' && !nextCredential.apiKey)
+        throw new Error('请输入 OpenSubtitles API Key。')
+      if (nextCredential.authMode === 'account' && (!nextCredential.username || !nextCredential.password))
+        throw new Error('请输入完整的 OpenSubtitles 账号和密码。')
+      if (nextCredential.authMode === 'account')
+        await testOpenSubtitlesLogin(nextCredential)
       await saveOpenSubtitlesCredentials(nextCredential)
+    }
 
-    if (enteredApiKey || accountEdited) {
+    if (credentialEdited) {
       subtitleForm.apiKey = ''
       subtitleForm.username = ''
       subtitleForm.password = ''
@@ -734,8 +744,8 @@ async function savePlaybackSubtitleSettings() {
     subtitleFeedback.value = {
       type: 'success',
       message: openSubtitlesConfigured.value
-        ? `播放与字幕设置已保存。OpenSubtitles ${openSubtitlesAccountConfigured.value ? '账号登录' : 'API Key'}、射手网和迅雷开关已生效。`
-        : '播放与字幕设置已保存。射手网可直接用于本地文件；OpenSubtitles 需要配置 API Key。',
+        ? `播放与字幕设置已保存。OpenSubtitles ${openSubtitlesConfiguredAuthMode.value === 'account' ? '账号密码' : 'API Key'}模式、射手网和迅雷开关已生效。`
+        : '播放与字幕设置已保存。射手网和迅雷字幕可直接用于本地文件。',
     }
   }
   catch (error) {
@@ -755,28 +765,10 @@ async function clearOpenSubtitlesCredential() {
     subtitleForm.username = ''
     subtitleForm.password = ''
     await refreshOpenSubtitlesCredentialState()
-    subtitleFeedback.value = { type: 'success', message: 'OpenSubtitles API Key 与账号登录信息已清除。' }
+    subtitleFeedback.value = { type: 'success', message: 'OpenSubtitles 登录凭据已清除。' }
   }
   catch (error) {
-    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles API Key 清除失败。') }
-  }
-  finally {
-    isSavingSubtitleSettings.value = false
-  }
-}
-
-async function clearOpenSubtitlesAccountLogin() {
-  isSavingSubtitleSettings.value = true
-  subtitleFeedback.value = null
-  try {
-    await clearOpenSubtitlesAccount()
-    subtitleForm.username = ''
-    subtitleForm.password = ''
-    await refreshOpenSubtitlesCredentialState()
-    subtitleFeedback.value = { type: 'success', message: 'OpenSubtitles 账号登录已清除，继续使用 API Key 匿名额度。' }
-  }
-  catch (error) {
-    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles 账号登录清除失败。') }
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, 'OpenSubtitles 凭据清除失败。') }
   }
   finally {
     isSavingSubtitleSettings.value = false
@@ -1903,7 +1895,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               class="rounded-full px-3 py-1.5 text-xs font-semibold"
               :class="openSubtitlesConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
             >
-              {{ openSubtitlesConfigured ? `OpenSubtitles ${openSubtitlesAccountConfigured ? 'API Key + 账号已配置' : 'API Key 已配置'}` : 'OpenSubtitles 未配置' }}
+              {{ openSubtitlesConfigured ? `OpenSubtitles ${openSubtitlesConfiguredAuthMode === 'account' ? '账号密码模式' : 'API Key 模式'}` : 'OpenSubtitles 未配置' }}
             </span>
           </div>
 
@@ -1937,26 +1929,45 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               <label class="flex items-center justify-between gap-4">
                 <span>
                   <span class="block text-sm font-semibold text-white">启用 OpenSubtitles</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/42">API Key 为必需项；账号密码登录为可选项，登录后使用账号下载额度。</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">API Key 与账号密码是两种并列登录方式，选择一种即可。</span>
                 </span>
                 <input v-model="subtitleForm.openSubtitlesEnabled" type="checkbox" class="h-5 w-5 accent-primary">
               </label>
 
-              <div class="mt-4 space-y-3 border-t border-white/8 pt-4">
-                <label class="block">
-                  <span class="block text-xs font-semibold text-white/72">API Key（必需）</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/38">用于访问 OpenSubtitles.com 官方 API；不填写时只跳过此提供器，不影响射手网和迅雷字幕。</span>
+              <div class="mt-4 space-y-4 border-t border-white/8 pt-4">
+                <div class="grid grid-cols-2 gap-2 rounded-xl bg-white/5 p-1" role="group" aria-label="OpenSubtitles 登录方式">
+                  <button
+                    type="button"
+                    class="rounded-lg px-3 py-2 text-xs font-semibold transition-colors"
+                    :class="subtitleForm.openSubtitlesAuthMode === 'apiKey' ? 'bg-white/14 text-white' : 'text-white/46 hover:text-white/76'"
+                    @click="subtitleForm.openSubtitlesAuthMode = 'apiKey'"
+                  >
+                    API Key
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-lg px-3 py-2 text-xs font-semibold transition-colors"
+                    :class="subtitleForm.openSubtitlesAuthMode === 'account' ? 'bg-white/14 text-white' : 'text-white/46 hover:text-white/76'"
+                    @click="subtitleForm.openSubtitlesAuthMode = 'account'"
+                  >
+                    账号密码
+                  </button>
+                </div>
+
+                <label v-if="subtitleForm.openSubtitlesAuthMode === 'apiKey'" class="block">
+                  <span class="block text-xs font-semibold text-white/72">OpenSubtitles API Key</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/38">通过 OpenSubtitles.com REST API 搜索和下载字幕。</span>
                   <input
                     v-model="subtitleForm.apiKey"
                     class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                     type="password"
                     autocomplete="off"
-                    :placeholder="openSubtitlesConfigured ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
+                    :placeholder="openSubtitlesConfiguredAuthMode === 'apiKey' ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
                   >
                 </label>
-                <div class="border-t border-white/8 pt-3">
-                  <span class="block text-xs font-semibold text-white/72">账号会话（可选）</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/38">官方账号登录仍会携带上方 API Key；登录后使用账号对应的下载额度。</span>
+                <div v-else>
+                  <span class="block text-xs font-semibold text-white/72">OpenSubtitles 账号登录</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/38">通过 OpenSubtitles.org XML-RPC 账号接口登录，无需填写 API Key。</span>
                   <div class="mt-3 grid gap-3 md:grid-cols-2">
                     <label>
                       <span class="text-xs font-semibold text-white/42">账号</span>
@@ -1965,7 +1976,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                         class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                         type="text"
                         autocomplete="username"
-                        :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前账号' : 'OpenSubtitles 用户名'"
+                        :placeholder="openSubtitlesConfiguredAuthMode === 'account' ? '留空表示保留当前账号' : 'OpenSubtitles 用户名'"
                       >
                     </label>
                     <label>
@@ -1975,7 +1986,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                         class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                         type="password"
                         autocomplete="current-password"
-                        :placeholder="openSubtitlesAccountConfigured ? '留空表示保留当前密码' : '可选：账号密码登录'"
+                        :placeholder="openSubtitlesConfiguredAuthMode === 'account' ? '留空表示保留当前密码' : 'OpenSubtitles 密码'"
                       >
                     </label>
                   </div>
@@ -2010,21 +2021,12 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ isSavingSubtitleSettings ? '保存中…' : '保存播放与字幕设置' }}
             </button>
             <button
-              v-if="openSubtitlesAccountConfigured"
-              type="button"
-              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="isSavingSubtitleSettings"
-              @click="clearOpenSubtitlesAccountLogin"
-            >
-              清除账号登录
-            </button>
-            <button
               type="button"
               class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="isSavingSubtitleSettings || !openSubtitlesConfigured"
               @click="clearOpenSubtitlesCredential"
             >
-              清除全部 OpenSubtitles 凭据
+              清除 OpenSubtitles 登录
             </button>
           </div>
         </div>

@@ -60,19 +60,12 @@ export async function clearOpenSubtitlesCredentials(): Promise<void> {
   await removeCredential(OPENSUBTITLES_CREDENTIAL_REF)
 }
 
-export async function clearOpenSubtitlesAccount(): Promise<void> {
-  const existing = await readOpenSubtitlesCredentials()
-  if (!existing)
-    return
-  await saveOpenSubtitlesCredentials({ apiKey: existing.apiKey })
-}
-
 export async function testOpenSubtitlesLogin(value: OpenSubtitlesCredentialValue): Promise<void> {
-  if (!value.username || !value.password)
-    throw new Error('请输入完整的 OpenSubtitles 账号和密码。')
+  if (value.authMode !== 'account' || !value.username || !value.password)
+    throw new Error('请选择账号密码模式并填写完整凭据。')
   await invoke('subtitle_login_opensubtitles', {
     request: {
-      apiKey: value.apiKey,
+      authMode: value.authMode,
       username: value.username,
       password: value.password,
     },
