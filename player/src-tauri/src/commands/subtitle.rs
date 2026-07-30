@@ -2,7 +2,10 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use flate2::read::GzDecoder;
 use rand::RngCore;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, LOCATION, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_RANGE, CONTENT_TYPE,
+    LOCATION, RANGE, USER_AGENT,
+};
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +29,7 @@ const HTTP_TIMEOUT_SECONDS: u64 = 20;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DOWNLOAD_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
+const MAX_REMOTE_MEDIA_HEADERS: usize = 32;
 const DOWNLOAD_REFERENCE_TTL: Duration = Duration::from_secs(30 * 60);
 const OPENSUBTITLES_SESSION_TTL: Duration = Duration::from_secs(23 * 60 * 60);
 const MAX_PENDING_DOWNLOADS: usize = 256;
@@ -130,8 +134,32 @@ pub struct OpenSubtitlesDownloadRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HashSubtitleSearchRequest {
     provider: HashSubtitleProvider,
-    file_path: String,
+    file_path: Option<String>,
+    remote_url: Option<String>,
+    #[serde(default)]
+    headers: Vec<RemoteMediaHeader>,
+    file_name: Option<String>,
     language: String,
+}
+
+#[derive(Deserialize)]
+struct RemoteMediaHeader {
+    name: String,
+    value: String,
+}
+
+enum HashMediaSource {
+    Local {
+        path: PathBuf,
+        file_name: String,
+    },
+    Remote {
+        client: reqwest::Client,
+        url: Url,
+        headers: HeaderMap,
+        file_name: String,
+        size: u64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -369,15 +397,12 @@ pub async fn subtitle_search_hash_provider(
     downloads: State<'_, SubtitleDownloadState>,
     request: HashSubtitleSearchRequest,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
-    let file_path = validate_hashable_video_path(&request.file_path)?;
-    let file_name = safe_local_file_name(&file_path)?;
+    let media = resolve_hash_media_source(&request).await?;
     let language = normalize_language(&request.language)?;
 
     match request.provider {
-        HashSubtitleProvider::Shooter => {
-            search_shooter(&downloads, &file_path, &file_name, &language).await
-        }
-        HashSubtitleProvider::Xunlei => search_xunlei(&downloads, &file_path, &language).await,
+        HashSubtitleProvider::Shooter => search_shooter(&downloads, &media, &language).await,
+        HashSubtitleProvider::Xunlei => search_xunlei(&downloads, &media, &language).await,
     }
 }
 
@@ -730,8 +755,7 @@ fn xml_escape(value: &str) -> String {
 
 async fn search_shooter(
     downloads: &SubtitleDownloadState,
-    file_path: &Path,
-    file_name: &str,
+    media: &HashMediaSource,
     language: &str,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
     let query_language = match language {
@@ -739,7 +763,8 @@ async fn search_shooter(
         "en" => "Eng",
         _ => return Ok(Vec::new()),
     };
-    let file_hash = compute_shooter_hash(file_path)?;
+    let file_hash = compute_shooter_media_hash(media).await?;
+    let file_name = hash_media_file_name(media);
     let response = http_client()?
         .post(SHOOTER_API_URL)
         .header(USER_AGENT, "OhMyCine Player v0.1")
@@ -803,10 +828,10 @@ async fn search_shooter(
 
 async fn search_xunlei(
     downloads: &SubtitleDownloadState,
-    file_path: &Path,
+    media: &HashMediaSource,
     language: &str,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
-    let cid = compute_xunlei_cid(file_path)?;
+    let cid = compute_xunlei_media_cid(media).await?;
     let url = format!("{XUNLEI_API_PREFIX}{cid}.json");
     let response = http_client()?
         .get(url)
@@ -929,6 +954,244 @@ fn resolve_pending_download(
     Ok(value)
 }
 
+async fn resolve_hash_media_source(
+    request: &HashSubtitleSearchRequest,
+) -> Result<HashMediaSource, String> {
+    if let Some(path) = request
+        .file_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let path = validate_hashable_video_path(path)?;
+        let file_name = safe_local_file_name(&path)?;
+        return Ok(HashMediaSource::Local { path, file_name });
+    }
+
+    let url = validate_remote_media_url(request.remote_url.as_deref().unwrap_or_default())?;
+    let headers = validate_remote_media_headers(&request.headers)?;
+    let file_name = request
+        .file_name
+        .as_deref()
+        .and_then(validate_remote_media_file_name)
+        .or_else(|| remote_media_file_name(&url))
+        .unwrap_or_else(|| "remote-media".to_string());
+    let client = http_client()?;
+    let (url, headers, size) = probe_remote_media(&client, url, headers).await?;
+    if size < MIN_HASHABLE_FILE_SIZE {
+        return Err("远程视频过小，无法计算字幕匹配哈希。".to_string());
+    }
+    Ok(HashMediaSource::Remote {
+        client,
+        url,
+        headers,
+        file_name,
+        size,
+    })
+}
+
+fn validate_remote_media_url(value: &str) -> Result<Url, String> {
+    let url = Url::parse(value.trim()).map_err(|_| "远程视频播放地址无效。".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.fragment().is_some()
+    {
+        return Err("远程视频播放地址不受支持。".to_string());
+    }
+    Ok(url)
+}
+
+fn validate_remote_media_headers(values: &[RemoteMediaHeader]) -> Result<HeaderMap, String> {
+    if values.len() > MAX_REMOTE_MEDIA_HEADERS {
+        return Err("远程视频播放 Header 数量过多。".to_string());
+    }
+    let mut headers = HeaderMap::new();
+    let mut total_size = 0_usize;
+    for header in values {
+        total_size = total_size
+            .saturating_add(header.name.len())
+            .saturating_add(header.value.len());
+        if total_size > 32 * 1024 {
+            return Err("远程视频播放 Header 过大。".to_string());
+        }
+        let name = HeaderName::from_bytes(header.name.trim().as_bytes())
+            .map_err(|_| "远程视频播放 Header 名称无效。".to_string())?;
+        if matches!(
+            name.as_str(),
+            "range"
+                | "host"
+                | "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "accept-encoding"
+        ) {
+            return Err("远程视频播放 Header 包含受限字段。".to_string());
+        }
+        let value = HeaderValue::from_str(&header.value)
+            .map_err(|_| "远程视频播放 Header 值无效。".to_string())?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+fn validate_remote_media_file_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 255
+        || value.contains(['/', '\\'])
+        || value.chars().any(|character| character.is_control())
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn remote_media_file_name(url: &Url) -> Option<String> {
+    url.path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .next_back()
+        .and_then(validate_remote_media_file_name)
+}
+
+async fn probe_remote_media(
+    client: &reqwest::Client,
+    url: Url,
+    headers: HeaderMap,
+) -> Result<(Url, HeaderMap, u64), String> {
+    let (response, final_url, final_headers) =
+        request_remote_media_range(client, url, headers, 0, 0).await?;
+    if !response.status().is_success() {
+        return Err(http_error(response.status()));
+    }
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        return Err("当前远程媒体源不支持 Range 读取，无法计算字幕匹配哈希。".to_string());
+    }
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "远程媒体源没有返回文件大小。".to_string())?;
+    let (start, end, total) = parse_content_range(content_range)?;
+    if start != 0 || end != 0 {
+        return Err("远程媒体源返回了错误的 Range 范围。".to_string());
+    }
+    Ok((final_url, final_headers, total))
+}
+
+async fn read_remote_media_range(
+    client: &reqwest::Client,
+    url: &Url,
+    headers: &HeaderMap,
+    start: u64,
+    length: usize,
+    expected_total: u64,
+) -> Result<Vec<u8>, String> {
+    let end = start
+        .checked_add(length.saturating_sub(1) as u64)
+        .ok_or_else(|| "远程媒体 Range 范围无效。".to_string())?;
+    let (response, _, _) =
+        request_remote_media_range(client, url.clone(), headers.clone(), start, end).await?;
+    if !response.status().is_success() {
+        return Err(http_error(response.status()));
+    }
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        return Err("当前远程媒体源未按 Range 返回视频片段。".to_string());
+    }
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "远程媒体片段缺少 Content-Range。".to_string())?;
+    let (actual_start, actual_end, total) = parse_content_range(content_range)?;
+    if actual_start != start || actual_end != end || total != expected_total {
+        return Err("远程媒体源返回了不一致的视频片段。".to_string());
+    }
+    let bytes = read_limited_response(response, length).await?;
+    if bytes.len() != length {
+        return Err("远程媒体源返回的视频片段长度不足。".to_string());
+    }
+    Ok(bytes)
+}
+
+async fn request_remote_media_range(
+    client: &reqwest::Client,
+    mut url: Url,
+    mut headers: HeaderMap,
+    start: u64,
+    end: u64,
+) -> Result<(reqwest::Response, Url, HeaderMap), String> {
+    for _ in 0..=MAX_REDIRECTS {
+        let mut request_headers = headers.clone();
+        request_headers.insert(
+            RANGE,
+            HeaderValue::from_str(&format!("bytes={start}-{end}"))
+                .map_err(|_| "远程媒体 Range 格式无效。".to_string())?,
+        );
+        request_headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        let response = client
+            .get(url.clone())
+            .headers(request_headers)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "远程媒体重定向缺少目标地址。".to_string())?;
+            let next = validate_remote_media_url(
+                url.join(location)
+                    .map_err(|_| "远程媒体重定向地址无效。".to_string())?
+                    .as_str(),
+            )?;
+            if url.scheme() == "https" && next.scheme() != "https" {
+                return Err("远程媒体拒绝从 HTTPS 降级到 HTTP。".to_string());
+            }
+            if !same_url_origin(&url, &next) {
+                headers.clear();
+            }
+            url = next;
+            continue;
+        }
+        return Ok((response, url, headers));
+    }
+    Err("远程媒体重定向次数过多。".to_string())
+}
+
+fn same_url_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn parse_content_range(value: &str) -> Result<(u64, u64, u64), String> {
+    let value = value
+        .trim()
+        .strip_prefix("bytes ")
+        .ok_or_else(|| "远程媒体 Content-Range 格式无效。".to_string())?;
+    let (range, total) = value
+        .split_once('/')
+        .ok_or_else(|| "远程媒体 Content-Range 格式无效。".to_string())?;
+    let (start, end) = range
+        .split_once('-')
+        .ok_or_else(|| "远程媒体 Content-Range 格式无效。".to_string())?;
+    let start = start
+        .parse::<u64>()
+        .map_err(|_| "远程媒体 Content-Range 起点无效。".to_string())?;
+    let end = end
+        .parse::<u64>()
+        .map_err(|_| "远程媒体 Content-Range 终点无效。".to_string())?;
+    let total = total
+        .parse::<u64>()
+        .map_err(|_| "远程媒体 Content-Range 总大小无效。".to_string())?;
+    if start > end || end >= total {
+        return Err("远程媒体 Content-Range 数值无效。".to_string());
+    }
+    Ok((start, end, total))
+}
+
 fn validate_hashable_video_path(value: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty()
@@ -984,6 +1247,60 @@ fn safe_local_file_name(path: &Path) -> Result<String, String> {
         return Err("本地视频文件名无效。".to_string());
     }
     Ok(name.to_string())
+}
+
+fn hash_media_file_name(media: &HashMediaSource) -> &str {
+    match media {
+        HashMediaSource::Local { file_name, .. } | HashMediaSource::Remote { file_name, .. } => {
+            file_name
+        }
+    }
+}
+
+async fn compute_shooter_media_hash(media: &HashMediaSource) -> Result<String, String> {
+    match media {
+        HashMediaSource::Local { path, .. } => compute_shooter_hash(path),
+        HashMediaSource::Remote {
+            client,
+            url,
+            headers,
+            size,
+            ..
+        } => {
+            let positions = [4096, size.saturating_mul(2) / 3, size / 3, size - 8192];
+            let mut hashes = Vec::with_capacity(4);
+            for position in positions {
+                let sample =
+                    read_remote_media_range(client, url, headers, position, 4096, *size).await?;
+                hashes.push(format!("{:x}", md5::compute(sample)));
+            }
+            Ok(hashes.join(";"))
+        }
+    }
+}
+
+async fn compute_xunlei_media_cid(media: &HashMediaSource) -> Result<String, String> {
+    match media {
+        HashMediaSource::Local { path, .. } => compute_xunlei_cid(path),
+        HashMediaSource::Remote {
+            client,
+            url,
+            headers,
+            size,
+            ..
+        } => {
+            let sample_size = 0x5000_usize;
+            let positions = [0, size / 3, size - sample_size as u64];
+            let mut hasher = Sha1::new();
+            for position in positions {
+                let sample =
+                    read_remote_media_range(client, url, headers, position, sample_size, *size)
+                        .await?;
+                hasher.update(sample);
+            }
+            Ok(format!("{:X}", hasher.finalize()))
+        }
+    }
 }
 
 fn compute_shooter_hash(path: &Path) -> Result<String, String> {
@@ -1392,12 +1709,16 @@ fn http_error(status: StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_shooter_hash, compute_xunlei_cid, normalize_xunlei_download_url,
-        parse_xmlrpc_response, safe_subtitle_extension, validate_opensubtitles_download_url,
+        compute_shooter_hash, compute_shooter_media_hash, compute_xunlei_cid,
+        compute_xunlei_media_cid, normalize_xunlei_download_url, parse_xmlrpc_response,
+        resolve_hash_media_source, safe_subtitle_extension, validate_opensubtitles_download_url,
         validate_shooter_download_url, validate_xunlei_download_url, xmlrpc_string_member,
-        xmlrpc_struct,
+        xmlrpc_struct, HashSubtitleProvider, HashSubtitleSearchRequest, RemoteMediaHeader,
     };
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn only_accepts_opensubtitles_https_downloads() {
@@ -1457,6 +1778,88 @@ mod tests {
             "c67faf40372a3d42b00e265e0f6b36a9;1dcd314fb09563fd575fe44a2b8d2795;dde61e0ad768e24c52c3c1dedffe1dcd;e346c820a8e2fcb70c7f4eab58f6b8d8"
         );
         assert_eq!(xunlei, "6069A88CF640B2405499F07040361A1C0CD5FCE8");
+    }
+
+    #[test]
+    fn remote_range_hashes_match_local_file_hashes() {
+        let content = (0..0x12002)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let path =
+            std::env::temp_dir().join(format!("ohmycine-remote-hash-{}.mp4", std::process::id()));
+        fs::write(&path, &content).unwrap();
+        let expected_shooter = compute_shooter_hash(&path).unwrap();
+        let expected_xunlei = compute_xunlei_cid(&path).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_content = content.clone();
+        let server = thread::spawn(move || {
+            for _ in 0..8 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer range-test"));
+                let range = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim())
+                    .and_then(|value| value.strip_prefix("bytes="))
+                    .and_then(|value| value.split_once('-'))
+                    .map(|(start, end)| {
+                        (
+                            start.parse::<usize>().unwrap(),
+                            end.parse::<usize>().unwrap(),
+                        )
+                    })
+                    .unwrap();
+                let body = &server_content[range.0..=range.1];
+                write!(
+                    stream,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    range.0,
+                    range.1,
+                    server_content.len(),
+                    body.len(),
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            }
+        });
+
+        let request = HashSubtitleSearchRequest {
+            provider: HashSubtitleProvider::Shooter,
+            file_path: None,
+            remote_url: Some(format!("http://{address}/movie.mp4")),
+            headers: vec![RemoteMediaHeader {
+                name: "Authorization".to_string(),
+                value: "Bearer range-test".to_string(),
+            }],
+            file_name: Some("movie.mp4".to_string()),
+            language: "zh-CN".to_string(),
+        };
+        let (actual_shooter, actual_xunlei) = tauri::async_runtime::block_on(async {
+            let media = resolve_hash_media_source(&request).await.unwrap();
+            (
+                compute_shooter_media_hash(&media).await.unwrap(),
+                compute_xunlei_media_cid(&media).await.unwrap(),
+            )
+        });
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(actual_shooter, expected_shooter);
+        assert_eq!(actual_xunlei, expected_xunlei);
     }
 
     #[test]

@@ -113,7 +113,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
         </button>
         <button type="button" class="rounded-2xl border border-white/10 bg-white/6 p-5 text-left transition-colors hover:border-primary/45 hover:bg-primary/14" @click="emit('selectOrigin', 'local')">
           <span class="block text-base font-bold text-white">本地搜索</span>
-          <span class="mt-2 block text-sm leading-6 text-white/46">调用 Player 自己配置的 OpenSubtitles 等提供器，不经过 Emby 服务器。</span>
+          <span class="mt-2 block text-sm leading-6 text-white/46">调用 Player 自己配置的字幕提供器，适用于本地文件和远程媒体源；字幕只保存到 Player 缓存。</span>
         </button>
       </div>
 

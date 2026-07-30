@@ -380,7 +380,8 @@ Location=https://cdn.example.com/file?token=***redacted***
 ### 10.4 Player 字幕提供器凭据与下载边界
 
 - OpenSubtitles API Key 模式使用 OpenSubtitles.com REST API；账号密码模式使用固定 HTTPS OpenSubtitles.org XML-RPC 接口，两种模式互斥。API Key 或账号密码进入 Player 凭据库，XML-RPC 会话只缓存于 Rust 进程内，不写入 SQLite 普通设置、日志或导出配置。
-- 射手网和迅雷字幕只对本地视频计算内容哈希。绝对路径不离开 Player；外部服务只接收哈希、文件名和语言。
+- 射手网和迅雷字幕对本地文件直接计算内容哈希，对远程媒体只在 Rust 中使用当前播放 URL 与 Header 做受限 Range 取样。播放 URL、签名参数、Authorization/Cookie 和数据源 Header 不进入 Vue 结果状态、日志或字幕提供器请求；外部字幕服务只接收哈希、文件 basename 和语言。
+- 远程媒体哈希必须固定为 HTTP(S)，限制 Header 数量与总大小，禁止调用方覆盖 `Range/Host/Content-Length/Connection/Accept-Encoding`，先用单字节 Range 验证总大小，再读取算法要求的精确片段。重定向次数受限，跨源时清空数据源 Header，HTTPS 不得降级到 HTTP，服务端忽略 Range 时直接停止而不是下载完整媒体。
 - 射手网搜索和下载固定到 HTTPS `www.shooter.cn`。迅雷 CID 查询固定到 `sub.xmp.sandai.net:8000`，由于仅支持 HTTP，必须默认关闭并由用户显式启用；下载 URL 必须升级并限制到 HTTPS `subtitle.v.geilijiasu.com`。
 - 射手网和迅雷返回的下载 URL 不进入 Vue 状态、设置或日志。Rust 使用有数量和时间上限的短期不透明引用映射，并在下载时再次校验提供器和域名。
 - 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式的 `cache/subtitles`。
