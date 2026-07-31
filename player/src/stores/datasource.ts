@@ -6,6 +6,8 @@ import { computed, ref } from 'vue'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
+import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
+import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
 import { deletePlaybackHistoryForSource, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 
@@ -139,7 +141,11 @@ export const useDataSourceStore = defineStore('datasource', () => {
       }))
       .filter(section => section.items.length > 0)
 
-    const cleanupTasks: Promise<unknown>[] = [deletePlaybackHistoryForSource(id)]
+    const cleanupTasks: Promise<unknown>[] = [
+      deletePlaybackHistoryForSource(id),
+      deleteMediaPlaybackPreferencesForSource(id),
+      removeNavigationShortcutBinding(`source:${id}`),
+    ]
     if (config && isRawFileSourceType(config.type)) {
       cleanupTasks.push(clearRawSourceScanCache(
         id,
@@ -157,6 +163,14 @@ export const useDataSourceStore = defineStore('datasource', () => {
     await syncManager()
     dataSourceManager.clearSourceCache(id)
     homeSections.value = homeSections.value.filter(section => section.sourceId !== id)
+  }
+
+  async function clearAllMediaCaches() {
+    await syncManager().catch(() => undefined)
+    dataSourceManager.clearAllSourceCaches()
+    homeLoadId++
+    homeSections.value = []
+    return clearPlayerMediaCache()
   }
 
   async function reorderConfigs(ids: string[]) {
@@ -257,6 +271,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     updateConfig,
     removeConfig,
     clearSourceCache,
+    clearAllMediaCaches,
     reorderConfigs,
     loadHomeSections,
     getSource,

@@ -1,6 +1,6 @@
 {
   "name": "@ohmycine/player",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,6 +16,7 @@
     "verify:clouddrive2-datasource": "TMPDIR=/tmp tsx scripts/verify-clouddrive2-datasource.ts",
     "verify:webdav-datasource": "TMPDIR=/tmp tsx scripts/verify-webdav-datasource.ts",
     "verify:playback-source-lifecycle": "TMPDIR=/tmp tsx scripts/verify-playback-source-lifecycle.ts",
+    "verify:playback-preferences-shortcuts": "TMPDIR=/tmp tsx scripts/verify-playback-preferences-shortcuts.ts",
     "verify:window-fullscreen-resize": "TMPDIR=/tmp tsx scripts/verify-window-fullscreen-resize-sync.ts",
     "verify:subtitle-search": "TMPDIR=/tmp tsx scripts/verify-subtitle-search.ts",
     "verify:auto-update": "TMPDIR=/tmp tsx scripts/verify-auto-update.ts",

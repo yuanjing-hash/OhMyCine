@@ -19,7 +19,11 @@ const source = new CloudDrive2DataSource({
         ]
       }
       if (request.path === '/媒体库/电影') {
-        return [{ name: '流浪地球.mkv', path: '/媒体库/电影/流浪地球.mkv', isDir: false, size: 4096 }]
+        return [
+          { name: '流浪地球.mkv', path: '/媒体库/电影/流浪地球.mkv', isDir: false, size: 4096 },
+          { name: '流浪地球.zh.ass', path: '/媒体库/电影/流浪地球.zh.ass', isDir: false, size: 128 },
+          { name: '流浪地球2.srt', path: '/媒体库/电影/流浪地球2.srt', isDir: false, size: 128 },
+        ]
       }
       throw new Error(`unexpected list path ${request.path}`)
     },
@@ -33,7 +37,9 @@ const source = new CloudDrive2DataSource({
     getStream: async (request) => {
       calls.push({ operation: 'stream', ...request })
       return {
-        url: 'https://cdn.example.test/video.mkv?signature=temporary',
+        url: request.path.endsWith('.ass')
+          ? 'https://cdn.example.test/subtitle.ass?signature=temporary'
+          : 'https://cdn.example.test/video.mkv?signature=temporary',
         headers: {
           Referer: 'https://provider.example.test/',
           'User-Agent': 'CloudDrive2',
@@ -76,6 +82,10 @@ assert.deepEqual(searchResults.map(item => item.id), ['/媒体库/电影/流浪�
 const detail = await source.getDetail('/媒体库/电影/流浪地球.mkv')
 assert.equal(detail.mediaSources?.[0]?.container, 'mkv')
 assert.equal(detail.mediaSources?.[0]?.name, 'CloudDrive2 原生直链')
+assert.deepEqual(detail.subtitles?.map(track => ({ title: track.title, url: track.url })), [{
+  title: '流浪地球.zh.ass',
+  url: 'https://cdn.example.test/subtitle.ass?signature=temporary',
+}])
 
 const streamRequest = await source.getStreamRequest?.({ itemId: '/媒体库/电影/流浪地球.mkv' })
 assert.equal(streamRequest?.url, 'https://cdn.example.test/video.mkv?signature=temporary')

@@ -22,11 +22,16 @@ export interface LocalSubtitleDownloadResult {
   format?: string
 }
 
+export interface SubtitleCacheOwner {
+  sourceId: string
+  mediaIdentity: string
+}
+
 export interface SubtitleProvider {
   readonly id: string
   readonly name: string
   search: (input: LocalSubtitleSearchInput) => Promise<SubtitleSearchResult[]>
-  download: (result: SubtitleSearchResult) => Promise<LocalSubtitleDownloadResult>
+  download: (result: SubtitleSearchResult, cacheOwner?: SubtitleCacheOwner) => Promise<LocalSubtitleDownloadResult>
 }
 
 export interface SubtitleSearchMediaContext {

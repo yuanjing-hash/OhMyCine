@@ -2,12 +2,14 @@
 import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
+import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import type { SubtitleLanguage } from '@/services/subtitle'
 import type { UpdateChannel } from '@/services/updater'
-import { open } from '@tauri-apps/plugin-dialog'
+import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
@@ -18,6 +20,21 @@ import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
+import {
+  loadNavigationShortcutBindings,
+  resetNavigationShortcutBindings,
+  saveNavigationShortcutBindings,
+  shortcutDisplayLabel,
+  shortcutFromKeyboardEvent,
+  validateUniqueNavigationShortcuts,
+} from '@/services/navigationShortcuts'
+import { loadPlayerInteractionSettings, normalizeLongPressPlaybackSpeed, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import {
+  loadPlayerShortcutBindings,
+  resetPlayerShortcutBindings,
+  savePlayerShortcutBindings,
+  validateUniquePlayerShortcuts,
+} from '@/services/playerShortcuts'
 import {
   createEmptyScrapeCategoryRule,
   loadScrapeClassificationRules,
@@ -52,8 +69,8 @@ import { useUpdaterStore } from '@/stores/updater'
 type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'updates' | 'diagnostics'
-type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'shortcuts' | 'updates' | 'diagnostics'
+type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'shortcuts' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
 
@@ -84,6 +101,7 @@ interface SubtitleSettingsFormState {
   apiKey: string
   username: string
   password: string
+  longPressPlaybackSpeed: number
 }
 
 interface UpdaterSettingsFormState {
@@ -233,6 +251,7 @@ const tmdbCredentialConfigured = ref(false)
 const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
 const isSavingTmdbSettings = ref(false)
 const subtitleSettings = loadSubtitleSearchSettings()
+const playerInteractionSettings = loadPlayerInteractionSettings()
 const subtitleForm = reactive<SubtitleSettingsFormState>({
   defaultLanguage: subtitleSettings.defaultLanguage,
   openSubtitlesEnabled: subtitleSettings.openSubtitlesEnabled,
@@ -242,11 +261,17 @@ const subtitleForm = reactive<SubtitleSettingsFormState>({
   apiKey: '',
   username: '',
   password: '',
+  longPressPlaybackSpeed: playerInteractionSettings.longPressPlaybackSpeed,
 })
 const openSubtitlesConfigured = ref(false)
 const openSubtitlesConfiguredAuthMode = ref<OpenSubtitlesAuthMode | null>(null)
 const isSavingSubtitleSettings = ref(false)
 const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+const navigationShortcutForm = reactive<NavigationShortcutBindings>(loadNavigationShortcutBindings())
+const playerShortcutForm = reactive<PlayerShortcutBindings>(loadPlayerShortcutBindings())
+const shortcutFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+const isSavingShortcuts = ref(false)
+const isClearingPlayerCache = ref(false)
 const updateForm = reactive<UpdaterSettingsFormState>({
   autoCheck: updaterStore.settings.autoCheck,
   channel: updaterStore.settings.channel,
@@ -307,6 +332,35 @@ const playbackEntryMeta = computed(() => {
   ].filter(Boolean)
   return enabled.length > 0 ? `${enabled.length} 个本地提供器` : '可配置字幕搜索'
 })
+const shortcutEntries = computed(() => [
+  { target: 'home' as const, label: '首页', description: '返回海报墙首页。' },
+  { target: 'settings' as const, label: '设置', description: '打开设置总览。' },
+  { target: 'datasources' as const, label: '管理数据源', description: '打开数据源管理页面。' },
+  ...configuredSources.value.map(source => ({
+    target: `source:${source.id}` as NavigationShortcutTarget,
+    label: source.displayName ?? source.name,
+    description: source.enabled === false ? '当前数据源已停用。' : `打开 ${sourceTypeLabel(source.type)} 媒体库。`,
+  })),
+])
+const playerShortcutEntries: Array<{ target: PlayerShortcutTarget, label: string, description: string }> = [
+  { target: 'hideControls', label: '隐藏控制 UI', description: '立即隐藏控制界面，移动鼠标恢复。' },
+  { target: 'playPrevious', label: '上一集', description: '对应控制栏第一个按钮。' },
+  { target: 'seekBackward', label: '后退 10 秒', description: '对应控制栏后退按钮。' },
+  { target: 'togglePause', label: '播放 / 暂停', description: '对应控制栏播放按钮。' },
+  { target: 'seekForward', label: '前进 10 秒', description: '对应控制栏前进按钮。' },
+  { target: 'playNext', label: '下一集', description: '对应控制栏下一集按钮。' },
+  { target: 'toggleMute', label: '静音 / 恢复音量', description: '对应控制栏音量按钮。' },
+  { target: 'toggleSpeedMenu', label: '切换倍速', description: '循环切换可用倍速。' },
+  { target: 'toggleSubtitleMenu', label: '切换字幕', description: '循环切换关闭和可用字幕。' },
+  { target: 'toggleAudioMenu', label: '切换音轨', description: '循环切换可用音轨。' },
+  { target: 'toggleQueueMenu', label: '播放队列状态', description: '显示当前队列位置和媒体标题。' },
+  { target: 'toggleSettings', label: '画面设置状态', description: '显示当前画面比例和适配模式。' },
+  { target: 'toggleFullscreen', label: '全屏', description: '进入或退出播放器全屏。' },
+]
+const configuredNavigationShortcutCount = computed(() => shortcutEntries.value.filter(entry => navigationShortcutForm[entry.target]).length)
+const configuredPlayerShortcutCount = computed(() => playerShortcutEntries.filter(entry => playerShortcutForm[entry.target]).length)
+const configuredShortcutCount = computed(() => configuredNavigationShortcutCount.value + configuredPlayerShortcutCount.value)
+const shortcutEntryCount = computed(() => shortcutEntries.value.length + playerShortcutEntries.length)
 const openSubtitlesStatusLabel = computed(() => {
   if (!openSubtitlesConfigured.value)
     return 'OpenSubtitles 未配置'
@@ -346,11 +400,13 @@ const pageDescription = computed(() => mode.value === 'overview'
     ? '设置原始文件媒体库的元数据匹配与分类规则。'
     : mode.value === 'playback'
       ? '设置字幕搜索语言和字幕提供器。'
-      : mode.value === 'updates'
-        ? '选择更新渠道并检查新版本。'
-        : mode.value === 'diagnostics'
-          ? '查看当前运行模式和数据目录。'
-          : '添加、编辑和管理媒体数据源。')
+      : mode.value === 'shortcuts'
+        ? '配置播放器控制和页面导航快捷键。'
+        : mode.value === 'updates'
+          ? '选择更新渠道并检查新版本。'
+          : mode.value === 'diagnostics'
+            ? '查看当前运行模式和数据目录。'
+            : '添加、编辑和管理媒体数据源。')
 const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
 const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
 const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
@@ -379,6 +435,15 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     title: '播放与字幕',
     description: '配置 OpenSubtitles、射手网和迅雷字幕搜索。',
     meta: playbackEntryMeta.value,
+    actionLabel: '打开',
+    disabled: false,
+  },
+  {
+    id: 'shortcuts',
+    label: 'Key',
+    title: '快捷键',
+    description: '自定义播放器控制、控制栏按钮和页面导航按键。',
+    meta: `${configuredShortcutCount.value}/${shortcutEntryCount.value} 个已设置`,
     actionLabel: '打开',
     disabled: false,
   },
@@ -499,6 +564,15 @@ function syncModeFromRoute() {
     return
   }
 
+  if (section === 'shortcuts') {
+    replaceSettingsQuery({ section: 'shortcuts' })
+    mode.value = 'shortcuts'
+    feedback.value = null
+    shortcutFeedback.value = null
+    syncShortcutForms()
+    return
+  }
+
   if (section === 'updates') {
     replaceSettingsQuery({ section: 'updates' })
     mode.value = 'updates'
@@ -591,6 +665,8 @@ function openSettingsEntry(entry: SettingsEntry) {
     goScrapingSettings()
   else if (entry.id === 'playback')
     goPlaybackSettings()
+  else if (entry.id === 'shortcuts')
+    goShortcutSettings()
   else if (entry.id === 'updates')
     goUpdaterSettings()
   else if (entry.id === 'diagnostics')
@@ -639,6 +715,101 @@ function goPlaybackSettings() {
   subtitleFeedback.value = null
   void router.push({ name: 'settings', query: { section: 'playback' } })
   void refreshOpenSubtitlesCredentialState()
+}
+
+function goShortcutSettings() {
+  mode.value = 'shortcuts'
+  feedback.value = null
+  shortcutFeedback.value = null
+  syncShortcutForms()
+  void router.push({ name: 'settings', query: { section: 'shortcuts' } })
+}
+
+function syncShortcutForms() {
+  replaceReactiveRecord(navigationShortcutForm, loadNavigationShortcutBindings())
+  replaceReactiveRecord(playerShortcutForm, loadPlayerShortcutBindings())
+}
+
+function captureNavigationShortcut(event: KeyboardEvent, target: NavigationShortcutTarget) {
+  event.preventDefault()
+  event.stopPropagation()
+  shortcutFeedback.value = null
+  if (event.code === 'Backspace' || event.code === 'Delete') {
+    delete navigationShortcutForm[target]
+    return
+  }
+  const shortcut = shortcutFromKeyboardEvent(event)
+  if (!shortcut) {
+    shortcutFeedback.value = {
+      type: 'info',
+      message: '该按键已保留给播放器或不能单独绑定，请换一个组合键。',
+    }
+    return
+  }
+  navigationShortcutForm[target] = shortcut
+}
+
+function clearNavigationShortcut(target: NavigationShortcutTarget) {
+  delete navigationShortcutForm[target]
+  shortcutFeedback.value = null
+}
+
+function capturePlayerShortcut(event: KeyboardEvent, target: PlayerShortcutTarget) {
+  event.preventDefault()
+  event.stopPropagation()
+  shortcutFeedback.value = null
+  if (event.code === 'Backspace' || event.code === 'Delete') {
+    delete playerShortcutForm[target]
+    return
+  }
+  const shortcut = shortcutFromKeyboardEvent(event)
+  if (!shortcut) {
+    shortcutFeedback.value = {
+      type: 'info',
+      message: '空格、方向键和 Esc 使用固定播放行为，不能覆盖。',
+    }
+    return
+  }
+  playerShortcutForm[target] = shortcut
+}
+
+function clearPlayerShortcut(target: PlayerShortcutTarget) {
+  delete playerShortcutForm[target]
+  shortcutFeedback.value = null
+}
+
+function resetShortcuts() {
+  replaceReactiveRecord(navigationShortcutForm, resetNavigationShortcutBindings())
+  replaceReactiveRecord(playerShortcutForm, resetPlayerShortcutBindings())
+  shortcutFeedback.value = { type: 'info', message: '已恢复默认映射，点击保存后生效。' }
+}
+
+async function saveNavigationShortcuts() {
+  isSavingShortcuts.value = true
+  shortcutFeedback.value = null
+  try {
+    validateUniqueNavigationShortcuts(navigationShortcutForm)
+    validateUniquePlayerShortcuts(playerShortcutForm)
+    await Promise.all([
+      saveNavigationShortcutBindings(navigationShortcutForm),
+      savePlayerShortcutBindings(playerShortcutForm),
+    ])
+    await flushAppSettings()
+    syncShortcutForms()
+    shortcutFeedback.value = { type: 'success', message: '快捷键已保存并立即生效。' }
+  }
+  catch (error) {
+    shortcutFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '快捷键保存失败。') }
+  }
+  finally {
+    isSavingShortcuts.value = false
+  }
+}
+
+function replaceReactiveRecord(target: Record<string, string | undefined>, source: Record<string, string | undefined>) {
+  for (const key of Object.keys(target))
+    delete target[key]
+  Object.assign(target, source)
 }
 
 function goUpdaterSettings() {
@@ -765,6 +936,10 @@ async function savePlaybackSubtitleSettings() {
       shooterEnabled: subtitleForm.shooterEnabled,
       xunleiEnabled: subtitleForm.xunleiEnabled,
     })
+    subtitleForm.longPressPlaybackSpeed = normalizeLongPressPlaybackSpeed(subtitleForm.longPressPlaybackSpeed)
+    await savePlayerInteractionSettings({
+      longPressPlaybackSpeed: subtitleForm.longPressPlaybackSpeed,
+    })
     await flushAppSettings()
     await refreshOpenSubtitlesCredentialState()
     subtitleFeedback.value = {
@@ -777,6 +952,31 @@ async function savePlaybackSubtitleSettings() {
   }
   finally {
     isSavingSubtitleSettings.value = false
+  }
+}
+
+async function clearPlaybackCache() {
+  const confirmed = await confirmDialog(
+    '将清除所有媒体缓存和单独视频的字幕、音轨、字幕偏移、倍速及画面设置。数据源、登录凭据和全局软件设置会保留。',
+    { title: '清除播放缓存', kind: 'warning' },
+  )
+  if (!confirmed)
+    return
+
+  isClearingPlayerCache.value = true
+  subtitleFeedback.value = null
+  try {
+    const result = await store.clearAllMediaCaches()
+    subtitleFeedback.value = {
+      type: 'success',
+      message: `播放缓存已清除：移除 ${result.playbackPreferencesDeleted} 条单视频设置和 ${result.rawScanCacheEntriesDeleted} 条媒体扫描缓存。数据源、登录凭据、播放记录和全局设置均已保留。`,
+    }
+  }
+  catch (error) {
+    subtitleFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '播放缓存清除失败。') }
+  }
+  finally {
+    isClearingPlayerCache.value = false
   }
 }
 
@@ -1901,6 +2101,151 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
         </div>
       </section>
 
+      <section v-else-if="mode === 'shortcuts'" class="space-y-5">
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Keyboard Controls
+              </p>
+              <h2 class="mt-2 text-xl font-bold text-white">
+                快捷键
+              </h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                空格、方向键和 Esc 使用固定播放行为；其他播放控制和页面导航按键均可自定义。
+              </p>
+            </div>
+            <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
+              {{ configuredShortcutCount }}/{{ shortcutEntryCount }} 个已设置
+            </span>
+          </div>
+
+          <div
+            v-if="shortcutFeedback"
+            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+            :class="{
+              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': shortcutFeedback.type === 'success',
+              'border-red-400/20 bg-red-400/10 text-red-100': shortcutFeedback.type === 'error',
+              'border-white/12 bg-white/6 text-white/58': shortcutFeedback.type === 'info',
+            }"
+          >
+            {{ shortcutFeedback.message }}
+          </div>
+
+          <div class="mt-6 flex items-end justify-between gap-4 border-b border-white/8 pb-3">
+            <div>
+              <h3 class="text-sm font-bold text-white/82">
+                播放控制
+              </h3>
+              <p class="mt-1 text-xs text-white/40">
+                仅在播放器页面生效，操作结果显示在右上角。
+              </p>
+            </div>
+            <span class="text-xs font-semibold text-white/38">
+              {{ configuredPlayerShortcutCount }}/{{ playerShortcutEntries.length }}
+            </span>
+          </div>
+
+          <div class="divide-y divide-white/8">
+            <div
+              v-for="entry in playerShortcutEntries"
+              :key="entry.target"
+              class="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_13rem_auto] md:items-center"
+            >
+              <div>
+                <p class="text-sm font-semibold text-white/82">
+                  {{ entry.label }}
+                </p>
+                <p class="mt-1 text-xs leading-5 text-white/40">
+                  {{ entry.description }}
+                </p>
+              </div>
+              <button
+                type="button"
+                class="h-11 rounded-xl border border-white/12 bg-black/18 px-3 text-left font-mono text-sm text-white/76 outline-none transition-colors focus:border-primary/70 focus:bg-primary/10"
+                :title="`当前快捷键：${shortcutDisplayLabel(playerShortcutForm[entry.target])}。点击后按下新按键。`"
+                @keydown="capturePlayerShortcut($event, entry.target)"
+              >
+                {{ shortcutDisplayLabel(playerShortcutForm[entry.target]) }}
+              </button>
+              <button
+                type="button"
+                class="h-10 rounded-xl bg-white/8 px-3 text-xs font-semibold text-white/60 transition-colors hover:bg-white/14 hover:text-white disabled:opacity-35"
+                :disabled="!playerShortcutForm[entry.target]"
+                @click="clearPlayerShortcut(entry.target)"
+              >
+                清除
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-7 flex items-end justify-between gap-4 border-b border-white/8 pb-3">
+            <div>
+              <h3 class="text-sm font-bold text-white/82">
+                页面导航
+              </h3>
+              <p class="mt-1 text-xs text-white/40">
+                首页、设置和媒体源入口。
+              </p>
+            </div>
+            <span class="text-xs font-semibold text-white/38">
+              {{ configuredNavigationShortcutCount }}/{{ shortcutEntries.length }}
+            </span>
+          </div>
+
+          <div class="divide-y divide-white/8">
+            <div
+              v-for="entry in shortcutEntries"
+              :key="entry.target"
+              class="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_13rem_auto] md:items-center"
+            >
+              <div>
+                <p class="text-sm font-semibold text-white/82">
+                  {{ entry.label }}
+                </p>
+                <p class="mt-1 text-xs leading-5 text-white/40">
+                  {{ entry.description }}
+                </p>
+              </div>
+              <button
+                type="button"
+                class="h-11 rounded-xl border border-white/12 bg-black/18 px-3 text-left font-mono text-sm text-white/76 outline-none transition-colors focus:border-primary/70 focus:bg-primary/10"
+                :title="`当前快捷键：${shortcutDisplayLabel(navigationShortcutForm[entry.target])}。点击后按下新按键。`"
+                @keydown="captureNavigationShortcut($event, entry.target)"
+              >
+                {{ shortcutDisplayLabel(navigationShortcutForm[entry.target]) }}
+              </button>
+              <button
+                type="button"
+                class="h-10 rounded-xl bg-white/8 px-3 text-xs font-semibold text-white/60 transition-colors hover:bg-white/14 hover:text-white disabled:opacity-35"
+                :disabled="!navigationShortcutForm[entry.target]"
+                @click="clearNavigationShortcut(entry.target)"
+              >
+                清除
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-3 border-t border-white/8 pt-5">
+            <button
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="isSavingShortcuts"
+              @click="saveNavigationShortcuts"
+            >
+              {{ isSavingShortcuts ? '保存中…' : '保存快捷键' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
+              @click="resetShortcuts"
+            >
+              恢复默认
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section v-else-if="mode === 'playback'" class="space-y-5">
         <div class="glass-panel rounded-[1.5rem] p-6">
           <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
@@ -1936,6 +2281,19 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
           </div>
 
           <div class="mt-5 grid gap-4 lg:grid-cols-3">
+            <label class="rounded-2xl bg-black/16 p-4 lg:col-span-1">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">方向键长按倍速</span>
+              <select
+                v-model.number="subtitleForm.longPressPlaybackSpeed"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+              >
+                <option v-for="speed in [1.25, 1.5, 2, 2.5, 3, 4]" :key="speed" :value="speed">
+                  {{ speed }}x
+                </option>
+              </select>
+              <span class="mt-2 block text-xs leading-5 text-white/38">长按右方向键临时使用该倍速，松开后恢复当前视频原来的速度；长按左方向键持续后退。</span>
+            </label>
+
             <label class="rounded-2xl bg-black/16 p-4 lg:col-span-1">
               <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">默认搜索语言</span>
               <select
@@ -2051,6 +2409,30 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               @click="clearOpenSubtitlesCredential"
             >
               清除 OpenSubtitles 登录
+            </button>
+          </div>
+        </div>
+
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-center justify-between gap-5">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Playback Cache
+              </p>
+              <h3 class="mt-2 text-lg font-bold text-white">
+                清除播放缓存
+              </h3>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                清除海报与扫描缓存、已下载字幕缓存，以及每个视频单独保存的字幕、音轨、字幕偏移、倍速和画面设置。不会删除数据源、登录凭据、播放记录或全局软件设置。
+              </p>
+            </div>
+            <button
+              type="button"
+              class="rounded-2xl border border-red-300/20 bg-red-400/10 px-4 py-2 text-sm font-semibold text-red-100 transition-colors hover:bg-red-400/16 disabled:cursor-wait disabled:opacity-55"
+              :disabled="isClearingPlayerCache"
+              @click="clearPlaybackCache"
+            >
+              {{ isClearingPlayerCache ? '清除中…' : '清除播放缓存' }}
             </button>
           </div>
         </div>

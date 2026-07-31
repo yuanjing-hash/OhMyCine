@@ -198,9 +198,10 @@ CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类�
 - `webdav` 保存独立 WebDAV 用户名和密码，通过 Basic Auth 瞬时使用；账号密码禁止嵌入 URL。
 - 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
 - Vue Router 只保存 `sourceId`、`itemId`、可选媒体版本 ID 和短生命周期上下文 ID；远程播放 URL、签名参数、播放 header 与本地绝对路径不得进入 route query/history。PlayerView 只在调用 mpv 前即时解析播放请求。
-- 删除媒体源时，必须按精确 `sourceId` 删除该来源的本机播放历史，并按 source/root 清理原始文件扫描缓存；禁止使用空来源或不受约束的批量删除。
+- 删除媒体源时，必须按精确 `sourceId` 删除该来源的本机播放历史、单视频播放偏好和来源拥有的字幕缓存，并按 source/root 清理原始文件扫描缓存；禁止使用空来源或不受约束的批量删除。
 - OpenSubtitles API Key 或账号密码以互斥认证模式进入独立 credential envelope，不得进入普通设置、localStorage、日志或导出配置。普通设置只保存默认字幕语言和提供器启用状态；旧组合凭据迁移时不得同时保留两套秘密。
-- Player 本地字幕下载只允许 Tauri 受控客户端访问固定 OpenSubtitles HTTPS REST/XML-RPC 端点和受信任下载域名，限制超时、重定向、搜索响应、Base64/gzip 解码后大小和字幕文件大小。XML 响应拒绝 DTD/Entity，远端文件名不得直接成为本地路径；只读取允许的字幕扩展名并使用哈希文件名写入当前存储模式的 `cache/subtitles`。
+- Player 本地字幕下载只允许 Tauri 受控客户端访问固定 OpenSubtitles HTTPS REST/XML-RPC 端点和受信任下载域名，限制超时、重定向、搜索响应、Base64/gzip 解码后大小和字幕文件大小。XML 响应拒绝 DTD/Entity，远端文件名不得直接成为本地路径；只读取允许的字幕扩展名并使用哈希文件名写入当前存储模式的 `cache/subtitles/<source-hash>/<media-hash>`，以便按媒体源安全清理。
+- 单视频播放偏好只允许保存稳定媒体身份、字幕/音轨指纹、字幕偏移、倍速和画面模式。缓存字幕路径读取时必须 canonicalize 并确认仍位于当前 Player `cache/subtitles` 根目录内；不得保存远程字幕 URL、播放直链、签名参数、请求 Header 或凭据。全局清缓存只能清媒体缓存、扫描缓存和单视频偏好，不得删除凭据、数据源配置、播放记录或全局软件设置。
 - 字幕搜索只向提供器发送作品 ID、用户当前选择的媒体标题/文件 basename/自定义关键词、年份、媒体类型和季集号，不发送目录、本地绝对路径、数据源凭据、签名播放 URL、查询参数或播放 Header。
 
 示例：
@@ -385,7 +386,7 @@ Location=https://cdn.example.com/file?token=***redacted***
 - 射手网搜索和下载固定到 HTTPS `www.shooter.cn`。迅雷名称搜索固定到 HTTPS `api-shoulei-ssl.xunlei.com/oracle/subtitle`，CID 只作为本机限时可选增强，Range/302/CID 失败不得阻断名称结果；下载 URL 必须限制到 HTTPS `subtitle.v.geilijiasu.com`。
 - 迅雷结果精筛使用的媒体类型、年份、原始标题、时长、季集号和文件名 token 只在 Player 本地参与评分，不得作为额外查询参数、日志字段或诊断明文发送到迅雷；外部请求仍只包含用户当前选定的单一搜索词。
 - 射手网和迅雷返回的下载 URL 不进入 Vue 状态、设置或日志。Rust 使用有数量和时间上限的短期不透明引用映射，并在下载时再次校验提供器和域名。
-- 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式的 `cache/subtitles`。
+- 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式下按来源和媒体身份哈希隔离的 `cache/subtitles` 子目录。
 
 ### 10.5 Player 更新信任根
 

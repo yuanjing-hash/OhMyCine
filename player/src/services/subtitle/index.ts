@@ -1,4 +1,4 @@
-import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleProvider } from './types'
+import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { HashSubtitleProvider } from './hashProviders'
 import { OpenSubtitlesProvider } from './opensubtitles'
@@ -53,12 +53,12 @@ export async function searchLocalSubtitles(input: LocalSubtitleSearchInput): Pro
   return []
 }
 
-export async function downloadLocalSubtitle(result: SubtitleSearchResult): Promise<LocalSubtitleDownloadResult> {
+export async function downloadLocalSubtitle(result: SubtitleSearchResult, cacheOwner?: SubtitleCacheOwner): Promise<LocalSubtitleDownloadResult> {
   const providerId = result.id.split(':', 1)[0]
   const provider = Object.values(providers).find(candidate => candidate.id === providerId)
   if (!provider)
     throw new Error('找不到该字幕结果对应的 Player 提供器。')
-  return provider.download(result)
+  return provider.download(result, cacheOwner)
 }
 
 export * from './settings'

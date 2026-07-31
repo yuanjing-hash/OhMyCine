@@ -1,4 +1,5 @@
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -91,6 +92,14 @@ pub fn resolve(app: &AppHandle) -> Result<StorageLayout, String> {
 pub fn data_file(app: &AppHandle, file_name: &str) -> Result<PathBuf, String> {
     let layout = initialize(app)?;
     Ok(layout.data_dir.join(file_name))
+}
+
+pub fn scoped_cache_key(scope: &str, value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(scope.as_bytes());
+    hasher.update([0]);
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 pub fn storage_info(app: &AppHandle) -> Result<StorageInfo, String> {

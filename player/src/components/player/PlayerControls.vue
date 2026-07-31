@@ -3,6 +3,7 @@ import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, 
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { transitionWindowFullscreen } from '@/services/windowFullscreen'
 import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
@@ -48,12 +49,9 @@ const emit = defineEmits<{
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
-  refreshTracks: []
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
 }>()
-
-const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
 
 const appWindow = getCurrentWindow()
 const settingsButton = ref<HTMLButtonElement | null>(null)
@@ -90,6 +88,8 @@ const audioLabel = computed(() => {
 const showAudioControl = computed(() => props.audioTracks.length > 1)
 const showQueueControl = computed(() => props.queueItemCount > 1)
 const queueLabel = computed(() => `${Math.max(0, props.currentQueueIndex + 1)}/${props.queueItemCount}`)
+const downloadedSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source === 'downloaded'))
+const mediaSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source !== 'downloaded'))
 
 function isInteracting() {
   return pointerInside.value
@@ -129,13 +129,18 @@ function toggleMenu(menu: ControlMenu) {
   settingsPanelOpen.value = false
   settingsPanelInteracting.value = false
   activeMenu.value = activeMenu.value === menu ? null : menu
-  if (activeMenu.value === 'subtitle' || activeMenu.value === 'audio')
-    emit('refreshTracks')
   emitInteractionState()
 }
 
 function closeMenus() {
   activeMenu.value = null
+  emitInteractionState()
+}
+
+function dismissTransientUi() {
+  activeMenu.value = null
+  settingsPanelOpen.value = false
+  settingsPanelInteracting.value = false
   emitInteractionState()
 }
 
@@ -244,7 +249,13 @@ function fullTrackLabel(track: Track | SubtitleTrackOption): string {
 }
 
 function subtitleSourceLabel(track: SubtitleTrackOption): string {
-  const sourceLabel = track.source === 'embedded' ? '内嵌轨道' : track.source === 'external' ? '外部字幕' : '媒体详情'
+  const sourceLabel = track.source === 'downloaded'
+    ? '本地下载'
+    : track.source === 'embedded'
+      ? '视频内嵌'
+      : track.source === 'provider'
+        ? '媒体源提供'
+        : '媒体详情'
   const status = track.isDefault ? ' · 默认' : ''
   if (!track.selectable)
     return `${sourceLabel} · 暂不可加载`
@@ -302,13 +313,15 @@ async function toggleBrowserFullscreen(nextFullscreen: boolean) {
     await document.exitFullscreen()
 }
 
-async function toggleFullscreen() {
+async function toggleFullscreen(silent = false) {
   if (fullscreenBusy.value)
     return
 
-  closeMenus()
+  if (!silent)
+    closeMenus()
   fullscreenBusy.value = true
-  emitInteractionState()
+  if (!silent)
+    emitInteractionState()
   try {
     const nextFullscreen = !(await appWindow.isFullscreen())
     const result = await transitionWindowFullscreen(
@@ -339,8 +352,17 @@ async function toggleFullscreen() {
   }
   finally {
     fullscreenBusy.value = false
-    emitInteractionState()
+    if (!silent)
+      emitInteractionState()
   }
+}
+
+function handleFullscreenButtonClick() {
+  void toggleFullscreen(false)
+}
+
+async function toggleFullscreenFromShortcut() {
+  await toggleFullscreen(true)
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -381,10 +403,13 @@ onBeforeUnmount(() => {
   windowEventUnlisteners.length = 0
   document.removeEventListener('fullscreenchange', syncFullscreenState)
 })
+
+defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 </script>
 
 <template>
   <div
+    data-player-click-ignore
     class="player-controls-glass pointer-events-auto relative mx-auto flex w-full max-w-7xl min-w-0 items-center gap-3 overflow-visible rounded-[28px] px-5 py-3"
     @mouseenter="setPointerInside(true)"
     @mouseleave="setPointerInside(false)"
@@ -456,14 +481,28 @@ onBeforeUnmount(() => {
             <button type="button" class="menu-option" :class="{ 'is-selected': currentSubtitle === null }" role="menuitemradio" :aria-checked="currentSubtitle === null" @click="chooseSubtitle(null)">
               关闭字幕
             </button>
-            <template v-if="subtitleTracks.length">
-              <button v-for="track in subtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
+            <template v-if="downloadedSubtitleTracks.length">
+              <p class="subtitle-group-label">
+                本地下载
+              </p>
+              <button v-for="track in downloadedSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
                 <span>{{ fullTrackLabel(track) }}</span>
                 <small>{{ subtitleSourceLabel(track) }}</small>
                 <small v-if="track.unavailableReason">{{ track.unavailableReason }}</small>
               </button>
             </template>
-            <p v-else-if="!trackError" class="menu-empty">
+            <div v-if="downloadedSubtitleTracks.length && mediaSubtitleTracks.length" class="subtitle-group-divider" aria-hidden="true" />
+            <template v-if="mediaSubtitleTracks.length">
+              <p class="subtitle-group-label">
+                视频与媒体源
+              </p>
+              <button v-for="track in mediaSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
+                <span>{{ fullTrackLabel(track) }}</span>
+                <small>{{ subtitleSourceLabel(track) }}</small>
+                <small v-if="track.unavailableReason">{{ track.unavailableReason }}</small>
+              </button>
+            </template>
+            <p v-if="!subtitleTracks.length && !trackError" class="menu-empty">
               暂未检测到字幕轨道，且媒体详情未提供可显示的字幕信息
             </p>
             <div class="subtitle-delay-control" role="group" aria-label="字幕偏移">
@@ -557,7 +596,7 @@ onBeforeUnmount(() => {
         <span class="settings-entry-label">设置</span>
       </button>
 
-      <button class="control-button fullscreen-button secondary" :class="{ 'is-active': isFullscreen }" type="button" :title="fullscreenTitle" :aria-label="fullscreenTitle" :aria-pressed="isFullscreen" :disabled="fullscreenBusy" @click="toggleFullscreen">
+      <button class="control-button fullscreen-button secondary" :class="{ 'is-active': isFullscreen }" type="button" :title="fullscreenTitle" :aria-label="fullscreenTitle" :aria-pressed="isFullscreen" :disabled="fullscreenBusy" @click="handleFullscreenButtonClick">
         <svg v-if="isFullscreen" class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a1 1 0 0 1 1 1v3.25A1.75 1.75 0 0 1 8.25 10H5a1 1 0 0 1 0-2h3V5a1 1 0 0 1 1-1Zm6 0a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2h-3.25A1.75 1.75 0 0 1 14 8.25V5a1 1 0 0 1 1-1ZM4 15a1 1 0 0 1 1-1h3.25A1.75 1.75 0 0 1 10 15.75V19a1 1 0 1 1-2 0v-3H5a1 1 0 0 1-1-1Zm10 0.75A1.75 1.75 0 0 1 15.75 14H19a1 1 0 1 1 0 2h-3v3a1 1 0 1 1-2 0v-3.25Z" /></svg>
         <svg v-else class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4a1 1 0 0 1 0 2H6v3a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1Zm10 1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6h-3a1 1 0 0 1-1-1ZM4 15a1 1 0 1 1 2 0v3h3a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1v-4Zm16-1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 1 1 0-2h3v-3a1 1 0 0 1 1-1Z" /></svg>
       </button>
@@ -890,6 +929,19 @@ onBeforeUnmount(() => {
   font-size: 0.62rem;
   font-weight: 600;
   letter-spacing: 0.08em;
+}
+
+.subtitle-group-label {
+  margin: 0.35rem 0.45rem 0.25rem;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.subtitle-group-divider {
+  height: 1px;
+  margin: 0.55rem 0.35rem 0.35rem;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .menu-option--search {

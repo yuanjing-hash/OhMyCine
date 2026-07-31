@@ -6,6 +6,7 @@ import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProv
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readCloudDrive2Credential, readRawCredentialBackup, removeCredential, saveCloudDrive2Credential, saveRawCredentialBackup } from './credentialStore'
 import { redactSensitiveText } from './errors'
+import { withSiblingSubtitles } from './siblingSubtitles'
 
 interface CloudDrive2ConfigExtra {
   readonly credentialRef?: string
@@ -178,7 +179,7 @@ export class CloudDrive2DataSource implements DataSource {
   async getDetail(id: string): Promise<MediaDetail> {
     const rawDetail = await this.getRawScannedDetail(id)
     if (rawDetail)
-      return rawDetail
+      return this.withSiblingSubtitles(rawDetail)
     if (isRawScannedSyntheticId(id))
       throw new Error('CloudDrive2 本地扫描合集不能直接播放，请选择具体文件或分集。')
 
@@ -191,10 +192,10 @@ export class CloudDrive2DataSource implements DataSource {
     })
     this.ensureEntryInRoot(entry)
     const item = this.mapItem(entry)
-    return {
+    return this.withSiblingSubtitles({
       ...item,
       mediaSources: item.type === 'folder' || !isVideoFileName(item.name) ? [] : [this.mapMediaSource(entry)],
-    }
+    })
   }
 
   async getStreamURL(id: string): Promise<string> {
@@ -295,6 +296,22 @@ export class CloudDrive2DataSource implements DataSource {
       size: entry.size,
       isRemote: true,
     }
+  }
+
+  private async withSiblingSubtitles(detail: MediaDetail): Promise<MediaDetail> {
+    return withSiblingSubtitles(
+      detail,
+      parentPath => this.listProviderEntries(parentPath),
+      async (path) => {
+        const credential = await this.ensureCredential()
+        const response = await this.bridge.getStream({
+          baseUrl: this.baseUrl,
+          apiToken: credential.apiToken,
+          path: this.resolveLibraryPath(path),
+        })
+        return parseNativeStreamResponse(response).url
+      },
+    )
   }
 
   private resolveLibraryPath(path?: string): string {

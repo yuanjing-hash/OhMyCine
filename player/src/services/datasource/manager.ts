@@ -67,6 +67,11 @@ export class DataSourceManager {
     source?.clearCache?.()
   }
 
+  clearAllSourceCaches(): void {
+    for (const source of this.sources.values())
+      source.clearCache?.()
+  }
+
   getSource(id: string): DataSource | null {
     return this.sources.get(id) ?? null
   }
