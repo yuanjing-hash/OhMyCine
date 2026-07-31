@@ -28,6 +28,8 @@ const source = new WebDavDataSource({
         collection('/dav/%E5%AA%92%E4%BD%93%E5%BA%93/', '媒体库'),
         collection('/dav/%E5%AA%92%E4%BD%93%E5%BA%93/%E7%94%B5%E5%BD%B1/', '电影'),
         file('/dav/%E5%AA%92%E4%BD%93%E5%BA%93/%E9%98%BF%E5%87%A1%E8%BE%BE.mp4', '阿凡达.mp4', 2048),
+        file('/dav/%E5%AA%92%E4%BD%93%E5%BA%93/%E9%98%BF%E5%87%A1%E8%BE%BE.chs.srt', '阿凡达.chs.srt', 128),
+        file('/dav/%E5%AA%92%E4%BD%93%E5%BA%93/%E9%98%BF%E5%87%A1%E8%BE%BE2.srt', '阿凡达2.srt', 128),
         file('/dav/%E5%AA%92%E4%BD%93%E5%BA%93/README.txt', 'README.txt', 12),
       ])
 
@@ -96,6 +98,11 @@ assert.deepEqual(searchResults.map(item => item.id), ['/媒体库/电影/流浪�
 const detail = await source.getDetail('/媒体库/阿凡达.mp4')
 assert.equal(detail.mediaSources?.[0]?.container, 'mp4')
 assert.equal(detail.mediaSources?.[0]?.isRemote, true)
+assert.deepEqual(detail.subtitles?.map(track => ({ title: track.title, language: track.language, url: track.url })), [{
+  title: '阿凡达.chs.srt',
+  language: 'zh-CN',
+  url: 'https://cloud.example.test/dav/%E5%AA%92%E4%BD%93%E5%BA%93/%E9%98%BF%E5%87%A1%E8%BE%BE.chs.srt',
+}])
 
 const streamUrl = await source.getStreamURL('/媒体库/阿凡达.mp4')
 assert.equal(streamUrl, 'https://cloud.example.test/dav/%E5%AA%92%E4%BD%93%E5%BA%93/%E9%98%BF%E5%87%A1%E8%BE%BE.mp4')

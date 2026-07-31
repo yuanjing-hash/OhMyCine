@@ -11,7 +11,7 @@ const DEFAULT_BINDINGS: NavigationShortcutBindings = {
   settings: 'Alt+Comma',
   datasources: 'Alt+KeyD',
 }
-const RESERVED_PLAYER_SHORTCUTS = new Set(['Space', 'ArrowLeft', 'ArrowRight', 'Escape'])
+const RESERVED_PLAYER_SHORTCUTS = new Set(['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape'])
 
 export function loadNavigationShortcutBindings(): NavigationShortcutBindings {
   const raw = getAppSetting(STORAGE_KEY)
@@ -72,7 +72,7 @@ export function shortcutFromKeyboardEvent(event: KeyboardEvent): string | null {
     parts.push('Meta')
   parts.push(event.code)
   const shortcut = parts.join('+')
-  return RESERVED_PLAYER_SHORTCUTS.has(shortcut) ? null : shortcut
+  return isReservedPlayerShortcutCode(event.code) ? null : shortcut
 }
 
 export function shortcutDisplayLabel(shortcut: string | undefined): string {
@@ -115,8 +115,8 @@ export function validateUniqueNavigationShortcuts(bindings: NavigationShortcutBi
   for (const [target, shortcut] of Object.entries(bindings)) {
     if (!shortcut)
       continue
-    if (RESERVED_PLAYER_SHORTCUTS.has(shortcut))
-      throw new Error('空格、左右方向键和 Esc 已保留给播放器，不能绑定为导航快捷键。')
+    if (isReservedPlayerShortcut(shortcut))
+      throw new Error('空格、方向键和 Esc 已保留给播放器，不能绑定为导航快捷键。')
     const previous = used.get(shortcut)
     if (previous)
       throw new Error(`快捷键 ${shortcutDisplayLabel(shortcut)} 已被其他导航入口占用。`)
@@ -133,7 +133,7 @@ function normalizeStoredShortcut(value: string): string {
   if (parts.length === 0)
     return ''
   const code = parts.at(-1) ?? ''
-  if (!code || isModifierCode(code))
+  if (!code || isModifierCode(code) || isReservedPlayerShortcutCode(code))
     return ''
   const modifiers = ['Ctrl', 'Alt', 'Shift', 'Meta'].filter(modifier => parts.includes(modifier))
   return [...modifiers, code].join('+')
@@ -141,4 +141,13 @@ function normalizeStoredShortcut(value: string): string {
 
 function isModifierCode(code: string): boolean {
   return ['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight'].includes(code)
+}
+
+function isReservedPlayerShortcut(shortcut: string): boolean {
+  const code = shortcut.split('+').at(-1)?.trim() ?? ''
+  return isReservedPlayerShortcutCode(code)
+}
+
+export function isReservedPlayerShortcutCode(code: string): boolean {
+  return RESERVED_PLAYER_SHORTCUTS.has(code)
 }

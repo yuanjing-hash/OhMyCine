@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps<{
   volume: number
@@ -10,19 +10,16 @@ const emit = defineEmits<{
   interactionChange: [active: boolean]
 }>()
 
-const isMuted = ref(false)
 const prevVolume = ref(100)
 
-const displayVolume = computed(() => isMuted.value ? 0 : props.volume)
+const displayVolume = computed(() => props.volume)
 
 function toggleMute() {
-  if (isMuted.value) {
-    isMuted.value = false
+  if (props.volume <= 0) {
     emit('setVolume', prevVolume.value)
   }
   else {
     prevVolume.value = props.volume
-    isMuted.value = true
     emit('setVolume', 0)
   }
 }
@@ -30,7 +27,6 @@ function toggleMute() {
 function handleVolumeChange(e: Event) {
   const target = e.target as HTMLInputElement
   const vol = Math.max(0, Math.min(100, Number(target.value)))
-  isMuted.value = false
   prevVolume.value = vol || prevVolume.value
   emit('setVolume', vol)
 }
@@ -38,6 +34,11 @@ function handleVolumeChange(e: Event) {
 function finishSliderInteraction() {
   emit('interactionChange', false)
 }
+
+watch(() => props.volume, (volume) => {
+  if (volume > 0)
+    prevVolume.value = volume
+}, { immediate: true })
 </script>
 
 <template>

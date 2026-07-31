@@ -6,6 +6,7 @@ import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProv
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readRawCredentialBackup, readWebDavCredential, removeCredential, saveRawCredentialBackup, saveWebDavCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
+import { withSiblingSubtitles } from './siblingSubtitles'
 
 const WEBDAV_REQUEST_TIMEOUT_MS = 15_000
 
@@ -184,7 +185,7 @@ export class WebDavDataSource implements DataSource {
   async getDetail(id: string): Promise<MediaDetail> {
     const rawDetail = await this.getRawScannedDetail(id)
     if (rawDetail)
-      return rawDetail
+      return this.withSiblingSubtitles(rawDetail)
     if (isRawScannedSyntheticId(id))
       throw new Error('WebDAV 本地扫描合集不能直接播放，请选择具体文件或分集。')
 
@@ -195,10 +196,10 @@ export class WebDavDataSource implements DataSource {
     })
     this.ensureRecordInRoot(record)
     const item = this.mapItem(record)
-    return {
+    return this.withSiblingSubtitles({
       ...item,
       mediaSources: item.type === 'folder' || !isVideoFileName(item.name) ? [] : [this.mapMediaSource(record)],
-    }
+    })
   }
 
   async getStreamURL(id: string): Promise<string> {
@@ -318,6 +319,17 @@ export class WebDavDataSource implements DataSource {
       size: record.size,
       isRemote: true,
     }
+  }
+
+  private async withSiblingSubtitles(detail: MediaDetail): Promise<MediaDetail> {
+    return withSiblingSubtitles(
+      detail,
+      async (parentPath) => {
+        const records = await this.requestPropfind(parentPath, 1)
+        return this.filterRecordsInRoot(records).filter(record => record.path !== parentPath)
+      },
+      path => Promise.resolve(this.buildWebDavUrl(path, false)),
+    )
   }
 
   private buildWebDavUrl(path: string, directory: boolean): string {

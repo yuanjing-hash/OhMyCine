@@ -6,12 +6,13 @@ use std::{
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_create, mpv_error_string, mpv_format_MPV_FORMAT_DOUBLE,
-    mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
-    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
-    mpv_free, mpv_free_node_contents, mpv_get_property, mpv_get_property_string, mpv_handle,
-    mpv_initialize, mpv_node, mpv_node_list, mpv_set_option_string, mpv_set_property,
-    mpv_set_property_string, mpv_terminate_destroy,
+    mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_NONE,
+    mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
+    mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
+    mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
+    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_node, mpv_node_list,
+    mpv_set_option_string, mpv_set_property, mpv_set_property_string, mpv_terminate_destroy,
+    mpv_wait_event,
 };
 
 use super::{
@@ -122,15 +123,15 @@ impl MpvPlayer {
 
     pub fn add_subtitle(
         &mut self,
-        url: &str,
+        path: &str,
         title: Option<&str>,
         language: Option<&str>,
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         let title = title.unwrap_or("外部字幕");
         let language = language.unwrap_or("");
-        self.command(&["sub-add", url, "select", title, language])
-            .map_err(|_| "外部字幕暂时无法加载".to_string())
+        self.command(&["sub-add", path, "select", title, language])
+            .map_err(|error| format!("外部字幕暂时无法加载：{error}"))
     }
 
     pub fn render_state(&self) -> MpvRenderState {
@@ -417,9 +418,10 @@ impl MpvPlayer {
     }
 
     pub fn set_property(&self, prop: &str, value: &str) -> Result<(), String> {
-        let prop = CString::new(prop).map_err(|err| err.to_string())?;
+        let property_name = prop;
+        let prop = CString::new(property_name).map_err(|err| err.to_string())?;
 
-        match prop.to_str().unwrap_or_default() {
+        match property_name {
             "pause" => {
                 let mut value = if value == "true" || value == "1" {
                     1
@@ -448,26 +450,7 @@ impl MpvPlayer {
                     )
                 })
             }
-            "sid" | "aid" if value == "no" => {
-                let value =
-                    CString::new(value).map_err(|_| "Invalid mpv property value".to_string())?;
-                self.check_error(unsafe {
-                    mpv_set_property_string(self.ctx, prop.as_ptr(), value.as_ptr())
-                })
-            }
-            "sid" | "aid" => {
-                let mut value = value
-                    .parse::<i64>()
-                    .map_err(|_| "Invalid track id".to_string())?;
-                self.check_error(unsafe {
-                    mpv_set_property(
-                        self.ctx,
-                        prop.as_ptr(),
-                        mpv_format_MPV_FORMAT_INT64,
-                        (&mut value as *mut i64).cast::<c_void>(),
-                    )
-                })
-            }
+            "sid" | "aid" => self.command(&["set", property_name, value]),
             _ => {
                 let value = CString::new(value).map_err(|err| err.to_string())?;
                 self.check_error(unsafe {
@@ -560,6 +543,15 @@ impl MpvPlayer {
             .collect::<Vec<*const c_char>>();
 
         self.check_error(unsafe { mpv_command(self.ctx, raw_args.as_mut_ptr()) })
+    }
+
+    pub fn drain_events(&self) {
+        loop {
+            let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
+            if event.is_null() || unsafe { (*event).event_id } == mpv_event_id_MPV_EVENT_NONE {
+                break;
+            }
+        }
     }
 
     fn get_property_string(&self, prop: &str) -> Result<Option<String>, String> {

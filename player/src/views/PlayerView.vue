@@ -4,6 +4,7 @@ import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRe
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
+import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -17,7 +18,8 @@ import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/e
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
-import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { downloadLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -66,7 +68,14 @@ const queueSwitchError = ref<string | null>(null)
 const isQueueSwitching = ref(false)
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
+const chromeManuallyHidden = ref(false)
 const controlsInteracting = ref(false)
+const playerControlsRef = ref<{
+  dismissTransientUi: () => void
+  toggleFullscreenFromShortcut: () => Promise<void>
+} | null>(null)
+const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
+const keyboardOsdMessage = ref('')
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -107,11 +116,23 @@ let activeCachedSubtitlePath: string | null = null
 let mediaPreferenceSaveTimer: number | undefined
 let mediaPreferenceRestoreGeneration = 0
 let restoringMediaPreference = false
+let pendingTrackPreference: {
+  preference: MediaPlaybackPreference
+  generation: number
+  audioRestored: boolean
+  subtitleRestored: boolean
+} | null = null
+let trackPreferenceRestoreInFlight = false
 let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
 let heldArrowTimer: number | undefined
 let rewindHoldTimer: number | undefined
 let arrowHoldActivated = false
 let arrowBasePlaybackSpeed = 1
+let pendingKeyboardVolume: number | null = null
+let keyboardVolumeCommand: Promise<void> = Promise.resolve()
+let keyboardChromeSuppression = 0
+let keyboardOsdTimer: number | undefined
+let keyboardPreviousVolume = 100
 
 const {
   isPlaying,
@@ -135,7 +156,6 @@ const {
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
-  refreshTrackState,
   setKnownSubtitleTracks,
   load,
   togglePause,
@@ -166,7 +186,7 @@ const currentTitleLogoUrl = computed(() => {
 const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
-const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
+const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value))
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
@@ -208,7 +228,7 @@ function clearHideTimer() {
 }
 
 function canAutoHideChrome() {
-  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
+  return hasMedia.value && isPlaying.value && !chromeManuallyHidden.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
 }
 
 function scheduleChromeHide() {
@@ -223,8 +243,62 @@ function scheduleChromeHide() {
 }
 
 function revealChrome() {
+  if (chromeManuallyHidden.value || keyboardChromeSuppression > 0)
+    return
   chromeVisible.value = true
   scheduleChromeHide()
+}
+
+function revealChromeFromPointer() {
+  chromeManuallyHidden.value = false
+  chromeVisible.value = true
+  scheduleChromeHide()
+}
+
+function hideChromeFromKeyboard() {
+  clearHideTimer()
+  chromeManuallyHidden.value = true
+  playerControlsRef.value?.dismissTransientUi()
+  controlsInteracting.value = false
+  chromeVisible.value = false
+}
+
+function reloadPlayerShortcuts() {
+  playerShortcuts.value = loadPlayerShortcutBindings()
+}
+
+function adjustVolumeFromKeyboard(delta: number): number {
+  const base = pendingKeyboardVolume ?? volume.value
+  const target = Math.max(0, Math.min(100, base + delta))
+  pendingKeyboardVolume = target
+  keyboardVolumeCommand = keyboardVolumeCommand
+    .catch(() => undefined)
+    .then(() => setVolume(target))
+    .finally(() => {
+      if (pendingKeyboardVolume === target)
+        pendingKeyboardVolume = null
+    })
+  return target
+}
+
+function showKeyboardOsd(message: string) {
+  if (keyboardOsdTimer)
+    window.clearTimeout(keyboardOsdTimer)
+  keyboardOsdMessage.value = message
+  keyboardOsdTimer = window.setTimeout(() => {
+    keyboardOsdTimer = undefined
+    keyboardOsdMessage.value = ''
+  }, 1800)
+}
+
+async function runKeyboardAction(action: () => Promise<void> | void) {
+  keyboardChromeSuppression += 1
+  try {
+    await action()
+  }
+  finally {
+    keyboardChromeSuppression = Math.max(0, keyboardChromeSuppression - 1)
+  }
 }
 
 function handleControlsInteraction(next: boolean) {
@@ -430,7 +504,13 @@ function selectedSubtitleTrackLabel(): string {
   if (!track)
     return String(currentSubtitle.value)
 
-  const source = track.source === 'embedded' ? '内封' : track.source === 'external' ? '外挂' : '详情'
+  const source = track.source === 'embedded'
+    ? '内封'
+    : track.source === 'downloaded'
+      ? '本地下载'
+      : track.source === 'provider'
+        ? '媒体源'
+        : '详情'
   return compactTrackLabel([source, track.language, track.title, track.codec], String(track.id))
 }
 
@@ -581,11 +661,13 @@ async function restoreMediaPlaybackPreference() {
     await applySubtitleDelay(preference.subtitleDelay)
     await setVideoAspect(preference.aspectMode)
     await setVideoFit(preference.fitMode)
-    await refreshTrackState()
-    if (generation !== mediaPreferenceRestoreGeneration)
-      return
-    await restoreAudioPreference(preference)
-    await restoreSubtitlePreference(preference)
+    pendingTrackPreference = {
+      preference,
+      generation,
+      audioRestored: preference.audio == null,
+      subtitleRestored: preference.subtitle == null,
+    }
+    await restorePendingTrackPreference()
     scheduleRenderBoundsSync()
   }
   finally {
@@ -593,20 +675,48 @@ async function restoreMediaPlaybackPreference() {
   }
 }
 
-async function restoreAudioPreference(preference: MediaPlaybackPreference) {
-  const track = matchTrackPreference(audioTracks.value, preference.audio)
-  if (track)
-    await setAudio(track.id)
+async function restorePendingTrackPreference() {
+  const pending = pendingTrackPreference
+  if (!pending || trackPreferenceRestoreInFlight || pending.generation !== mediaPreferenceRestoreGeneration)
+    return
+
+  trackPreferenceRestoreInFlight = true
+  restoringMediaPreference = true
+  try {
+    if (!pending.audioRestored)
+      pending.audioRestored = await restoreAudioPreference(pending.preference)
+    if (!pending.subtitleRestored)
+      pending.subtitleRestored = await restoreSubtitlePreference(pending.preference)
+    if (pending === pendingTrackPreference && pending.audioRestored && pending.subtitleRestored)
+      pendingTrackPreference = null
+  }
+  finally {
+    restoringMediaPreference = false
+    trackPreferenceRestoreInFlight = false
+  }
 }
 
-async function restoreSubtitlePreference(preference: MediaPlaybackPreference) {
+function cancelPendingTrackPreferenceRestore() {
+  mediaPreferenceRestoreGeneration += 1
+  pendingTrackPreference = null
+}
+
+async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
+  const track = matchTrackPreference(audioTracks.value, preference.audio)
+  if (!track)
+    return false
+  await setAudio(track.id)
+  return true
+}
+
+async function restoreSubtitlePreference(preference: MediaPlaybackPreference): Promise<boolean> {
   const subtitle = preference.subtitle
-  activeCachedSubtitlePath = null
   if (!subtitle)
-    return
+    return true
   if (subtitle.kind === 'off') {
+    activeCachedSubtitlePath = null
     await setSubtitle(null)
-    return
+    return true
   }
   if (subtitle.kind === 'cachedExternal' && subtitle.cachedPath) {
     await addExternalSubtitle(
@@ -615,11 +725,14 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference) {
       subtitle.track?.language ?? undefined,
     )
     activeCachedSubtitlePath = subtitle.cachedPath
-    return
+    return true
   }
   const track = matchTrackPreference(subtitleTracks.value, subtitle.track)
-  if (track)
-    await setSubtitle(track.id)
+  if (!track)
+    return false
+  activeCachedSubtitlePath = null
+  await setSubtitle(track.id)
+  return true
 }
 
 function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: readonly T[], preference: MediaTrackPreference | null | undefined): T | null {
@@ -1038,7 +1151,7 @@ function mergeDataSourceSubtitleTracks(...groups: readonly DataSourceSubtitleTra
 }
 
 function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTrackInput {
-  const source = track.source === 'external' ? 'external' : 'detail'
+  const source = track.url ? 'provider' : 'detail'
   const hasUrl = Boolean(track.url)
   return {
     id: track.index,
@@ -1049,7 +1162,7 @@ function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTra
     isDefault: track.isDefault,
     url: track.url,
     selectable: hasUrl,
-    unavailableReason: source === 'external'
+    unavailableReason: source === 'provider'
       ? '该外部字幕缺少可加载地址，暂时只能在详情页确认存在。'
       : '该字幕来自媒体详情，但当前播放流未暴露可直接加载的字幕地址。',
   }
@@ -1127,6 +1240,7 @@ async function searchSubtitles(language: SubtitleLanguage, keyword: string, keyw
 }
 
 async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
+  cancelPendingTrackPreferenceRestore()
   subtitleDownloadingId.value = result.id
   subtitleSearchError.value = null
   try {
@@ -1143,12 +1257,12 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
       })
       if (!track.url)
         throw new Error('Emby 已下载字幕，但没有返回可加载的字幕地址。')
-      await addExternalSubtitle(track.url, track.title ?? result.title, track.language)
+      await addExternalSubtitle(track.url, track.title ?? result.title, track.language, 'provider')
     }
     else {
       const cacheOwner = currentMediaPreferenceIdentity() ?? undefined
       const downloaded = await downloadLocalSubtitle(result, cacheOwner)
-      await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language)
+      await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language, 'downloaded')
       activeCachedSubtitlePath = downloaded.path
     }
 
@@ -1303,6 +1417,7 @@ watch(
   async () => {
     await saveCurrentProgress(true, 'stopped')
     mediaPreferenceRestoreGeneration += 1
+    pendingTrackPreference = null
     clearMediaPreferenceSaveTimer()
     activeCachedSubtitlePath = null
     await releaseHeldArrow(false)
@@ -1370,9 +1485,14 @@ watch([shouldShowChrome, hasMedia], () => {
   void updateChromeOcclusion()
 })
 
+watch([audioTracks, subtitleTracks], () => {
+  void restorePendingTrackPreference()
+})
+
 async function handleFileDrop(path: string) {
   await saveCurrentProgress(true, 'stopped')
   mediaPreferenceRestoreGeneration += 1
+  pendingTrackPreference = null
   clearMediaPreferenceSaveTimer()
   activeCachedSubtitlePath = null
   await releaseHeldArrow(false)
@@ -1488,14 +1608,144 @@ async function handleSetSubtitleDelay(delay: number) {
 }
 
 async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0]) {
+  cancelPendingTrackPreferenceRestore()
   activeCachedSubtitlePath = null
   await setSubtitle(trackId)
   scheduleMediaPreferenceSave()
 }
 
 async function handleSetAudio(trackId: number) {
+  cancelPendingTrackPreferenceRestore()
   await setAudio(trackId)
   scheduleMediaPreferenceSave()
+}
+
+function nextPlaybackSpeed(): number {
+  const currentIndex = PLAYBACK_SPEED_OPTIONS.findIndex(speed => Math.abs(speed - playbackSpeed.value) < 0.001)
+  return PLAYBACK_SPEED_OPTIONS[(currentIndex + 1) % PLAYBACK_SPEED_OPTIONS.length]
+}
+
+async function cycleSubtitleFromKeyboard() {
+  const selectable = subtitleTracks.value.filter(track => track.selectable)
+  const choices: Array<Parameters<typeof handleSetSubtitle>[0]> = [null, ...selectable.map(track => track.id)]
+  const currentIndex = choices.findIndex(choice => choice === currentSubtitle.value)
+  const next = choices[(currentIndex + 1) % choices.length]
+  await handleSetSubtitle(next)
+  showKeyboardOsd(`字幕 · ${selectedSubtitleTrackLabel()}`)
+}
+
+async function cycleAudioFromKeyboard() {
+  if (audioTracks.value.length === 0) {
+    showKeyboardOsd('音轨 · 暂未检测到可用音轨')
+    return
+  }
+  const currentIndex = audioTracks.value.findIndex(track => track.id === currentAudio.value)
+  const next = audioTracks.value[(currentIndex + 1) % audioTracks.value.length]
+  await handleSetAudio(next.id)
+  showKeyboardOsd(`音轨 · ${selectedAudioTrackLabel()}`)
+}
+
+async function toggleMuteFromKeyboard() {
+  if (volume.value > 0) {
+    keyboardPreviousVolume = volume.value
+    await setVolume(0)
+    showKeyboardOsd('音量 · 静音')
+    return
+  }
+  const restoredVolume = Math.max(1, Math.min(100, keyboardPreviousVolume || 50))
+  await setVolume(restoredVolume)
+  showKeyboardOsd(`音量 · ${Math.round(restoredVolume)}%`)
+}
+
+function showQueueKeyboardOsd() {
+  const queue = playbackQueue.value
+  if (!queue || queue.items.length <= 1) {
+    showKeyboardOsd('播放队列 · 当前仅有一个项目')
+    return
+  }
+  const item = queue.items[queue.currentIndex]
+  showKeyboardOsd(`播放队列 ${queue.currentIndex + 1}/${queue.items.length} · ${safeMenuText(item?.title || item?.name, '当前项目', 48)}`)
+}
+
+async function executePlayerShortcutFromKeyboard(target: PlayerShortcutTarget) {
+  if (target === 'hideControls') {
+    hideChromeFromKeyboard()
+    showKeyboardOsd('控制界面已隐藏 · 移动鼠标可恢复')
+    return
+  }
+
+  if (!shouldShowChrome.value) {
+    chromeManuallyHidden.value = true
+    chromeVisible.value = false
+  }
+
+  try {
+    await runKeyboardAction(async () => {
+      switch (target) {
+        case 'playPrevious': {
+          const queue = playbackQueue.value
+          if (!queue || !canPlayPrevious.value) {
+            showKeyboardOsd('没有上一集')
+            return
+          }
+          const item = queue.items[queue.currentIndex - 1]
+          await playQueueItemAt(queue.currentIndex - 1)
+          showKeyboardOsd(`上一集 · ${safeMenuText(item?.title || item?.name, '上一集', 48)}`)
+          return
+        }
+        case 'seekBackward':
+          await seekRelative(-10)
+          showKeyboardOsd('后退 10 秒')
+          return
+        case 'togglePause':
+          await handleTogglePause()
+          showKeyboardOsd(isPlaying.value ? '继续播放' : '暂停')
+          return
+        case 'seekForward':
+          await seekRelative(10)
+          showKeyboardOsd('前进 10 秒')
+          return
+        case 'playNext': {
+          const queue = playbackQueue.value
+          if (!queue || !canPlayNext.value) {
+            showKeyboardOsd('没有下一集')
+            return
+          }
+          const item = queue.items[queue.currentIndex + 1]
+          await playQueueItemAt(queue.currentIndex + 1)
+          showKeyboardOsd(`下一集 · ${safeMenuText(item?.title || item?.name, '下一集', 48)}`)
+          return
+        }
+        case 'toggleMute':
+          await toggleMuteFromKeyboard()
+          return
+        case 'toggleSpeedMenu': {
+          const speed = nextPlaybackSpeed()
+          await handleSetPlaybackSpeed(speed)
+          showKeyboardOsd(`播放速度 · ${Number.isInteger(speed) ? speed.toFixed(1) : speed}x`)
+          return
+        }
+        case 'toggleSubtitleMenu':
+          await cycleSubtitleFromKeyboard()
+          return
+        case 'toggleAudioMenu':
+          await cycleAudioFromKeyboard()
+          return
+        case 'toggleQueueMenu':
+          showQueueKeyboardOsd()
+          return
+        case 'toggleSettings':
+          showKeyboardOsd(`画面 · ${videoAspectLabel(videoAspectMode.value)} · ${videoFitLabel(videoFitMode.value)}`)
+          return
+        case 'toggleFullscreen':
+          await playerControlsRef.value?.toggleFullscreenFromShortcut()
+          showKeyboardOsd(isPlayerFullscreen.value ? '进入全屏' : '退出全屏')
+      }
+    })
+  }
+  catch (error) {
+    showKeyboardOsd(toSafeErrorMessage(error, '快捷键操作失败'))
+  }
 }
 
 function clampContextMenuPosition(clientX: number, clientY: number): ContextMenuPosition {
@@ -1671,17 +1921,34 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 
   if (!hasMedia.value || shouldIgnorePlaybackShortcut(event))
     return
-  if (event.code === 'Space') {
+  const hasModifier = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
+  if (!hasModifier && event.code === 'Space') {
+    if (event.target instanceof Element && event.target.closest('button'))
+      return
     event.preventDefault()
     if (!event.repeat)
-      void handleTogglePause()
+      void executePlayerShortcutFromKeyboard('togglePause')
     return
   }
-  if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
+  if (!hasModifier && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
     event.preventDefault()
     if (!event.repeat)
       beginHeldArrow(event.code)
+    return
   }
+  if (!hasModifier && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) {
+    event.preventDefault()
+    const delta = event.code === 'ArrowUp' ? 5 : -5
+    const target = adjustVolumeFromKeyboard(delta)
+    showKeyboardOsd(target === 0 ? '音量 · 静音' : `音量 · ${Math.round(target)}%`)
+    return
+  }
+
+  const shortcutTarget = playerShortcutTargetForEvent(event, playerShortcuts.value)
+  if (!shortcutTarget || event.repeat)
+    return
+  event.preventDefault()
+  void executePlayerShortcutFromKeyboard(shortcutTarget)
 }
 
 function handleGlobalKeyup(event: KeyboardEvent) {
@@ -1692,12 +1959,12 @@ function handleGlobalKeyup(event: KeyboardEvent) {
 }
 
 function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
-  if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey)
+  if (event.defaultPrevented || event.isComposing)
     return true
   const target = event.target
   if (!(target instanceof HTMLElement))
     return false
-  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName)
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
 }
 
 function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
@@ -1712,8 +1979,10 @@ function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
     if (key === 'ArrowRight') {
       const configuredSpeed = loadPlayerInteractionSettings().longPressPlaybackSpeed
       void applyPlaybackSpeed(configuredSpeed)
+      showKeyboardOsd(`长按快进 · ${configuredSpeed}x`)
       return
     }
+    showKeyboardOsd('连续后退')
     void seekRelative(-ARROW_TAP_SEEK_SECONDS)
     rewindHoldTimer = window.setInterval(() => {
       void seekRelative(-ARROW_TAP_SEEK_SECONDS)
@@ -1736,10 +2005,13 @@ async function releaseHeldArrow(triggerTap: boolean) {
     return
   if (key === 'ArrowRight' && wasHold) {
     await applyPlaybackSpeed(arrowBasePlaybackSpeed)
+    showKeyboardOsd(`播放速度 · ${Number.isInteger(arrowBasePlaybackSpeed) ? arrowBasePlaybackSpeed.toFixed(1) : arrowBasePlaybackSpeed}x`)
     return
   }
-  if (triggerTap && !wasHold)
+  if (triggerTap && !wasHold) {
     await seekRelative(key === 'ArrowLeft' ? -ARROW_TAP_SEEK_SECONDS : ARROW_TAP_SEEK_SECONDS)
+    showKeyboardOsd(key === 'ArrowLeft' ? `后退 ${ARROW_TAP_SEEK_SECONDS} 秒` : `前进 ${ARROW_TAP_SEEK_SECONDS} 秒`)
+  }
 }
 
 function handlePlayerAreaClick(event: MouseEvent) {
@@ -1792,6 +2064,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('keyup', handleGlobalKeyup)
+  window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
@@ -1810,12 +2083,16 @@ onBeforeUnmount(() => {
   void releaseHeldArrow(false)
   clearResumeSeekTimers()
   clearResumeMessageTimer()
+  if (keyboardOsdTimer)
+    window.clearTimeout(keyboardOsdTimer)
+  keyboardOsdTimer = undefined
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('keyup', handleGlobalKeyup)
+  window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
 })
 
 watch(
@@ -1842,9 +2119,9 @@ watch(
       { 'is-chrome-hidden': !shouldShowChrome },
       isTransparentRootActive ? 'player-view--transparent' : 'bg-black',
     ]"
-    @mousemove="revealChrome"
+    @mousemove="revealChromeFromPointer"
     @mouseleave="scheduleChromeHide"
-    @touchstart.passive="revealChrome"
+    @touchstart.passive="revealChromeFromPointer"
     @click="handlePlayerAreaClick"
     @contextmenu="openPlaybackContextMenu"
   >
@@ -1869,16 +2146,27 @@ watch(
       v-if="hasMedia"
       class="pointer-events-auto absolute inset-x-0 top-0 z-5 h-24"
       aria-hidden="true"
-      @mouseenter="revealChrome"
-      @mousemove="revealChrome"
+      @mouseenter="revealChromeFromPointer"
+      @mousemove="revealChromeFromPointer"
     />
     <div
       v-if="hasMedia"
       class="pointer-events-auto absolute inset-x-0 bottom-0 z-5 h-32"
       aria-hidden="true"
-      @mouseenter="revealChrome"
-      @mousemove="revealChrome"
+      @mouseenter="revealChromeFromPointer"
+      @mousemove="revealChromeFromPointer"
     />
+
+    <Transition name="keyboard-osd">
+      <div
+        v-if="keyboardOsdMessage"
+        class="keyboard-osd pointer-events-none absolute right-6 top-16 z-30 max-w-[min(24rem,calc(100vw-3rem))] rounded-lg border border-white/14 bg-black/72 px-4 py-2.5 text-sm font-semibold text-white/90 shadow-2xl backdrop-blur-xl"
+        role="status"
+        aria-live="polite"
+      >
+        {{ keyboardOsdMessage }}
+      </div>
+    </Transition>
 
     <Transition name="player-chrome-top">
       <div
@@ -1923,12 +2211,14 @@ watch(
     <div
       v-if="hasMedia"
       ref="bottomChromeRef"
-      class="pointer-events-auto absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
-      :class="shouldShowChrome ? 'opacity-100' : 'opacity-0'"
-      @mouseenter="revealChrome"
-      @mousemove="revealChrome"
+      data-player-click-ignore
+      class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
+      :class="shouldShowChrome ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'"
+      @mouseenter="revealChromeFromPointer"
+      @mousemove="revealChromeFromPointer"
     >
       <PlayerControls
+        ref="playerControlsRef"
         :is-playing="isPlaying"
         :current-time="currentTime"
         :duration="duration"
@@ -1963,7 +2253,6 @@ watch(
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
-        @refresh-tracks="refreshTrackState"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
       />
@@ -2121,6 +2410,17 @@ watch(
 
 .player-view.is-chrome-hidden {
   cursor: none;
+}
+
+.keyboard-osd-enter-active,
+.keyboard-osd-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.keyboard-osd-enter-from,
+.keyboard-osd-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .player-view--transparent {

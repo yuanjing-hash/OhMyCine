@@ -28,6 +28,7 @@ const MIGRATABLE_EXACT_KEYS = new Set([
   'ohmycine-subtitle-search-settings-v1',
   'ohmycine-player-interaction-settings-v1',
   'ohmycine-navigation-shortcuts-v1',
+  'ohmycine-player-shortcuts-v1',
   'ohmycine-updater-settings-v1',
   'ohmycine-scrape-classification-rules',
   'ohmycine:persistent-credentials-unavailable',
