@@ -48,7 +48,8 @@ const subtitleIndex = await read('src/services/subtitle/index.ts')
 assert.match(subtitleIndex, /hasOpenSubtitlesCredential/)
 assert.match(subtitleIndex, /const openSubtitlesCredential = await readOpenSubtitlesCredentials\(\)/)
 assert.match(subtitleIndex, /settings\.shooterEnabled && canUseHashProviders/)
-assert.match(subtitleIndex, /settings\.xunleiEnabled && canUseHashProviders/)
+assert.match(subtitleIndex, /settings\.xunleiEnabled \? providers\.xunlei/)
+assert.match(subtitleIndex, /hasKeywordProvider = openSubtitlesActive \|\| settings\.xunleiEnabled/)
 assert.match(subtitleIndex, /Promise\.allSettled/)
 assert.match(subtitleIndex, /openSubtitlesActive/)
 assert.match(subtitleIndex, /OpenSubtitles 已配置但当前处于关闭状态/)
@@ -73,7 +74,9 @@ assert.match(credentialStore, /authMode: 'account'/)
 assert.match(credentialStore, /probePersistentCredentialStorage[\s\S]*credential-health-check/)
 
 const providers = await read('src/services/subtitle/hashProviders.ts')
-assert.match(providers, /if \(!input\.localFilePath && !input\.remoteMediaUrl\)[\s\S]*return \[\]/)
+assert.match(providers, /this\.id === 'shooter' && !input\.localFilePath && !input\.remoteMediaUrl/)
+assert.match(providers, /this\.id === 'xunlei' && !query/)
+assert.match(providers, /query: query \?\? null/)
 assert.match(providers, /remoteUrl: input\.remoteMediaUrl/)
 assert.match(providers, /headers: toHeaderPayload/)
 assert.match(providers, /subtitle_search_hash_provider/)
@@ -85,6 +88,12 @@ assert.match(rust, /layout\.cache_dir\.join\("subtitles"\)/)
 assert.match(rust, /MAX_DOWNLOAD_RESPONSE_BYTES/)
 assert.match(rust, /compute_shooter_hash/)
 assert.match(rust, /compute_xunlei_cid/)
+assert.match(rust, /https:\/\/api-shoulei-ssl\.xunlei\.com\/oracle\/subtitle/)
+assert.match(rust, /append_pair\("name", query\)/)
+assert.match(rust, /optional_xunlei_media_cid/)
+assert.match(rust, /XUNLEI_OPTIONAL_CID_TIMEOUT_SECONDS/)
+assert.match(rust, /迅雷名称搜索 · CID 精确匹配/)
+assert.doesNotMatch(rust, /sub\.xmp\.sandai\.net/)
 assert.match(rust, /url\.host_str\(\) != Some\("www\.shooter\.cn"\)/)
 assert.match(rust, /url\.host_str\(\) != Some\("subtitle\.v\.geilijiasu\.com"\)/)
 assert.match(rust, /DOWNLOAD_REFERENCE_TTL/)
@@ -109,7 +118,9 @@ console.log(JSON.stringify({
   openSubtitlesSupportsExclusiveApiKeyAndAccountModes: true,
   openSubtitlesAccountModeUsesXmlRpcSession: true,
   modernAccount401FallsBackToAnonymousXmlRpc: true,
-  shooterAndXunleiSupportLocalAndRemoteHashes: true,
+  shooterSupportsLocalAndRemoteHashes: true,
+  xunleiUsesNameSearchWithOptionalCidRanking: true,
+  xunleiNameSearchDoesNotRequireRangeAccess: true,
   remoteHashHeadersStayInsideRust: true,
   hashProviderDownloadsUseOpaqueReferences: true,
   missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,
