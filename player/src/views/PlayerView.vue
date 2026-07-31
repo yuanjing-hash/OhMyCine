@@ -4,6 +4,7 @@ import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRe
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
+import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -18,6 +19,7 @@ import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/servi
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { downloadLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -66,7 +68,13 @@ const queueSwitchError = ref<string | null>(null)
 const isQueueSwitching = ref(false)
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
+const chromeManuallyHidden = ref(false)
 const controlsInteracting = ref(false)
+const playerControlsRef = ref<{
+  dismissTransientUi: () => void
+  executeShortcut: (target: PlayerShortcutTarget) => void
+} | null>(null)
+const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -119,6 +127,8 @@ let heldArrowTimer: number | undefined
 let rewindHoldTimer: number | undefined
 let arrowHoldActivated = false
 let arrowBasePlaybackSpeed = 1
+let pendingKeyboardVolume: number | null = null
+let keyboardVolumeCommand: Promise<void> = Promise.resolve()
 
 const {
   isPlaying,
@@ -172,7 +182,7 @@ const currentTitleLogoUrl = computed(() => {
 const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
-const shouldShowChrome = computed(() => chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
+const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value))
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
@@ -214,7 +224,7 @@ function clearHideTimer() {
 }
 
 function canAutoHideChrome() {
-  return hasMedia.value && isPlaying.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
+  return hasMedia.value && isPlaying.value && !chromeManuallyHidden.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
 }
 
 function scheduleChromeHide() {
@@ -229,8 +239,45 @@ function scheduleChromeHide() {
 }
 
 function revealChrome() {
+  if (chromeManuallyHidden.value)
+    return
   chromeVisible.value = true
   scheduleChromeHide()
+}
+
+function forceRevealChrome() {
+  chromeManuallyHidden.value = false
+  chromeVisible.value = true
+  scheduleChromeHide()
+}
+
+function toggleChromeVisibility() {
+  clearHideTimer()
+  if (shouldShowChrome.value) {
+    chromeManuallyHidden.value = true
+    playerControlsRef.value?.dismissTransientUi()
+    controlsInteracting.value = false
+    chromeVisible.value = false
+    return
+  }
+  forceRevealChrome()
+}
+
+function reloadPlayerShortcuts() {
+  playerShortcuts.value = loadPlayerShortcutBindings()
+}
+
+function adjustVolumeFromKeyboard(delta: number) {
+  const base = pendingKeyboardVolume ?? volume.value
+  const target = Math.max(0, Math.min(100, base + delta))
+  pendingKeyboardVolume = target
+  keyboardVolumeCommand = keyboardVolumeCommand
+    .catch(() => undefined)
+    .then(() => setVolume(target))
+    .finally(() => {
+      if (pendingKeyboardVolume === target)
+        pendingKeyboardVolume = null
+    })
 }
 
 function handleControlsInteraction(next: boolean) {
@@ -1725,17 +1772,42 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 
   if (!hasMedia.value || shouldIgnorePlaybackShortcut(event))
     return
-  if (event.code === 'Space') {
+  const hasModifier = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
+  if (!hasModifier && event.code === 'Space') {
+    if (event.target instanceof Element && event.target.closest('button'))
+      return
     event.preventDefault()
     if (!event.repeat)
       void handleTogglePause()
     return
   }
-  if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
+  if (!hasModifier && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
     event.preventDefault()
     if (!event.repeat)
       beginHeldArrow(event.code)
+    return
   }
+  if (!hasModifier && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) {
+    event.preventDefault()
+    const delta = event.code === 'ArrowUp' ? 5 : -5
+    adjustVolumeFromKeyboard(delta)
+    return
+  }
+
+  const shortcutTarget = playerShortcutTargetForEvent(event, playerShortcuts.value)
+  if (!shortcutTarget || event.repeat)
+    return
+  event.preventDefault()
+  if (shortcutTarget === 'hideControls') {
+    toggleChromeVisibility()
+    return
+  }
+  const opensChromeUi = ['toggleSpeedMenu', 'toggleSubtitleMenu', 'toggleAudioMenu', 'toggleQueueMenu', 'toggleSettings'].includes(shortcutTarget)
+  if (opensChromeUi)
+    forceRevealChrome()
+  else
+    revealChrome()
+  playerControlsRef.value?.executeShortcut(shortcutTarget)
 }
 
 function handleGlobalKeyup(event: KeyboardEvent) {
@@ -1746,12 +1818,12 @@ function handleGlobalKeyup(event: KeyboardEvent) {
 }
 
 function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
-  if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey)
+  if (event.defaultPrevented || event.isComposing)
     return true
   const target = event.target
   if (!(target instanceof HTMLElement))
     return false
-  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName)
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
 }
 
 function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
@@ -1846,6 +1918,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('keyup', handleGlobalKeyup)
+  window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
@@ -1870,6 +1943,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('keyup', handleGlobalKeyup)
+  window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
 })
 
 watch(
@@ -1978,12 +2052,13 @@ watch(
       v-if="hasMedia"
       ref="bottomChromeRef"
       data-player-click-ignore
-      class="pointer-events-auto absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
-      :class="shouldShowChrome ? 'opacity-100' : 'opacity-0'"
+      class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
+      :class="shouldShowChrome ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'"
       @mouseenter="revealChrome"
       @mousemove="revealChrome"
     >
       <PlayerControls
+        ref="playerControlsRef"
         :is-playing="isPlaying"
         :current-time="currentTime"
         :duration="duration"

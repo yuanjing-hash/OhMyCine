@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
+import type { PlayerShortcutTarget } from '@/services/playerShortcuts'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { transitionWindowFullscreen } from '@/services/windowFullscreen'
@@ -56,6 +57,7 @@ const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
 
 const appWindow = getCurrentWindow()
 const settingsButton = ref<HTMLButtonElement | null>(null)
+const volumeControl = ref<{ toggleMute: () => void } | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
 const childInteracting = ref(false)
@@ -135,6 +137,13 @@ function toggleMenu(menu: ControlMenu) {
 
 function closeMenus() {
   activeMenu.value = null
+  emitInteractionState()
+}
+
+function dismissTransientUi() {
+  activeMenu.value = null
+  settingsPanelOpen.value = false
+  settingsPanelInteracting.value = false
   emitInteractionState()
 }
 
@@ -348,6 +357,51 @@ async function toggleFullscreen() {
   }
 }
 
+function executeShortcut(target: PlayerShortcutTarget) {
+  switch (target) {
+    case 'playPrevious':
+      if (props.canPlayPrevious)
+        emit('playPrevious')
+      break
+    case 'seekBackward':
+      emit('seekRelative', -10)
+      break
+    case 'togglePause':
+      emit('togglePause')
+      break
+    case 'seekForward':
+      emit('seekRelative', 10)
+      break
+    case 'playNext':
+      if (props.canPlayNext)
+        emit('playNext')
+      break
+    case 'toggleMute':
+      volumeControl.value?.toggleMute()
+      break
+    case 'toggleSpeedMenu':
+      toggleMenu('speed')
+      break
+    case 'toggleSubtitleMenu':
+      toggleMenu('subtitle')
+      break
+    case 'toggleAudioMenu':
+      if (showAudioControl.value)
+        toggleMenu('audio')
+      break
+    case 'toggleQueueMenu':
+      if (showQueueControl.value)
+        toggleMenu('queue')
+      break
+    case 'toggleSettings':
+      toggleSettingsPanel()
+      break
+    case 'toggleFullscreen':
+      void toggleFullscreen()
+      break
+  }
+}
+
 function handleKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape')
     return
@@ -386,6 +440,8 @@ onBeforeUnmount(() => {
   windowEventUnlisteners.length = 0
   document.removeEventListener('fullscreenchange', syncFullscreenState)
 })
+
+defineExpose({ dismissTransientUi, executeShortcut })
 </script>
 
 <template>
@@ -434,7 +490,7 @@ onBeforeUnmount(() => {
     <span class="time-label w-16 shrink-0 text-right">{{ formatTime(duration) }}</span>
 
     <div class="right-controls flex shrink-0 items-center gap-2">
-      <VolumeControl class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
+      <VolumeControl ref="volumeControl" class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
 
       <div class="control-menu-anchor">
         <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'speed' }" type="button" title="倍速" aria-label="倍速" aria-haspopup="menu" :aria-expanded="activeMenu === 'speed'" @click="toggleMenu('speed')">

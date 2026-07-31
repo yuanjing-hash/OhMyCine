@@ -3,6 +3,7 @@ import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
+import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
@@ -25,8 +26,15 @@ import {
   saveNavigationShortcutBindings,
   shortcutDisplayLabel,
   shortcutFromKeyboardEvent,
+  validateUniqueNavigationShortcuts,
 } from '@/services/navigationShortcuts'
 import { loadPlayerInteractionSettings, normalizeLongPressPlaybackSpeed, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import {
+  loadPlayerShortcutBindings,
+  resetPlayerShortcutBindings,
+  savePlayerShortcutBindings,
+  validateUniquePlayerShortcuts,
+} from '@/services/playerShortcuts'
 import {
   createEmptyScrapeCategoryRule,
   loadScrapeClassificationRules,
@@ -260,6 +268,7 @@ const openSubtitlesConfiguredAuthMode = ref<OpenSubtitlesAuthMode | null>(null)
 const isSavingSubtitleSettings = ref(false)
 const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const navigationShortcutForm = reactive<NavigationShortcutBindings>(loadNavigationShortcutBindings())
+const playerShortcutForm = reactive<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 const shortcutFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const isSavingShortcuts = ref(false)
 const isClearingPlayerCache = ref(false)
@@ -333,7 +342,25 @@ const shortcutEntries = computed(() => [
     description: source.enabled === false ? '当前数据源已停用。' : `打开 ${sourceTypeLabel(source.type)} 媒体库。`,
   })),
 ])
-const configuredShortcutCount = computed(() => shortcutEntries.value.filter(entry => navigationShortcutForm[entry.target]).length)
+const playerShortcutEntries: Array<{ target: PlayerShortcutTarget, label: string, description: string }> = [
+  { target: 'hideControls', label: '隐藏 / 显示控制 UI', description: '立即切换播放器控制界面。' },
+  { target: 'playPrevious', label: '上一集', description: '对应控制栏第一个按钮。' },
+  { target: 'seekBackward', label: '后退 10 秒', description: '对应控制栏后退按钮。' },
+  { target: 'togglePause', label: '播放 / 暂停', description: '对应控制栏播放按钮。' },
+  { target: 'seekForward', label: '前进 10 秒', description: '对应控制栏前进按钮。' },
+  { target: 'playNext', label: '下一集', description: '对应控制栏下一集按钮。' },
+  { target: 'toggleMute', label: '静音 / 恢复音量', description: '对应控制栏音量按钮。' },
+  { target: 'toggleSpeedMenu', label: '倍速菜单', description: '打开或关闭倍速选择。' },
+  { target: 'toggleSubtitleMenu', label: '字幕菜单', description: '打开或关闭字幕选择。' },
+  { target: 'toggleAudioMenu', label: '音轨菜单', description: '存在多个音轨时打开音轨选择。' },
+  { target: 'toggleQueueMenu', label: '播放队列', description: '存在播放队列时打开队列。' },
+  { target: 'toggleSettings', label: '播放设置', description: '打开或关闭画面设置。' },
+  { target: 'toggleFullscreen', label: '全屏', description: '进入或退出播放器全屏。' },
+]
+const configuredNavigationShortcutCount = computed(() => shortcutEntries.value.filter(entry => navigationShortcutForm[entry.target]).length)
+const configuredPlayerShortcutCount = computed(() => playerShortcutEntries.filter(entry => playerShortcutForm[entry.target]).length)
+const configuredShortcutCount = computed(() => configuredNavigationShortcutCount.value + configuredPlayerShortcutCount.value)
+const shortcutEntryCount = computed(() => shortcutEntries.value.length + playerShortcutEntries.length)
 const openSubtitlesStatusLabel = computed(() => {
   if (!openSubtitlesConfigured.value)
     return 'OpenSubtitles 未配置'
@@ -374,7 +401,7 @@ const pageDescription = computed(() => mode.value === 'overview'
     : mode.value === 'playback'
       ? '设置字幕搜索语言和字幕提供器。'
       : mode.value === 'shortcuts'
-        ? '为首页、设置和每个媒体源入口配置导航快捷键。'
+        ? '配置播放器控制和页面导航快捷键。'
         : mode.value === 'updates'
           ? '选择更新渠道并检查新版本。'
           : mode.value === 'diagnostics'
@@ -414,9 +441,9 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
   {
     id: 'shortcuts',
     label: 'Key',
-    title: '导航快捷键',
-    description: '为导航栏首页、设置、数据源管理和每个媒体源绑定按键。',
-    meta: `${configuredShortcutCount.value}/${shortcutEntries.value.length} 个已设置`,
+    title: '快捷键',
+    description: '自定义播放器控制、控制栏按钮和页面导航按键。',
+    meta: `${configuredShortcutCount.value}/${shortcutEntryCount.value} 个已设置`,
     actionLabel: '打开',
     disabled: false,
   },
@@ -542,7 +569,7 @@ function syncModeFromRoute() {
     mode.value = 'shortcuts'
     feedback.value = null
     shortcutFeedback.value = null
-    syncNavigationShortcutForm()
+    syncShortcutForms()
     return
   }
 
@@ -694,12 +721,13 @@ function goShortcutSettings() {
   mode.value = 'shortcuts'
   feedback.value = null
   shortcutFeedback.value = null
-  syncNavigationShortcutForm()
+  syncShortcutForms()
   void router.push({ name: 'settings', query: { section: 'shortcuts' } })
 }
 
-function syncNavigationShortcutForm() {
+function syncShortcutForms() {
   replaceReactiveRecord(navigationShortcutForm, loadNavigationShortcutBindings())
+  replaceReactiveRecord(playerShortcutForm, loadPlayerShortcutBindings())
 }
 
 function captureNavigationShortcut(event: KeyboardEvent, target: NavigationShortcutTarget) {
@@ -726,8 +754,33 @@ function clearNavigationShortcut(target: NavigationShortcutTarget) {
   shortcutFeedback.value = null
 }
 
-function resetNavigationShortcuts() {
+function capturePlayerShortcut(event: KeyboardEvent, target: PlayerShortcutTarget) {
+  event.preventDefault()
+  event.stopPropagation()
+  shortcutFeedback.value = null
+  if (event.code === 'Backspace' || event.code === 'Delete') {
+    delete playerShortcutForm[target]
+    return
+  }
+  const shortcut = shortcutFromKeyboardEvent(event)
+  if (!shortcut) {
+    shortcutFeedback.value = {
+      type: 'info',
+      message: '空格、方向键和 Esc 使用固定播放行为，不能覆盖。',
+    }
+    return
+  }
+  playerShortcutForm[target] = shortcut
+}
+
+function clearPlayerShortcut(target: PlayerShortcutTarget) {
+  delete playerShortcutForm[target]
+  shortcutFeedback.value = null
+}
+
+function resetShortcuts() {
   replaceReactiveRecord(navigationShortcutForm, resetNavigationShortcutBindings())
+  replaceReactiveRecord(playerShortcutForm, resetPlayerShortcutBindings())
   shortcutFeedback.value = { type: 'info', message: '已恢复默认映射，点击保存后生效。' }
 }
 
@@ -735,20 +788,25 @@ async function saveNavigationShortcuts() {
   isSavingShortcuts.value = true
   shortcutFeedback.value = null
   try {
-    await saveNavigationShortcutBindings(navigationShortcutForm)
+    validateUniqueNavigationShortcuts(navigationShortcutForm)
+    validateUniquePlayerShortcuts(playerShortcutForm)
+    await Promise.all([
+      saveNavigationShortcutBindings(navigationShortcutForm),
+      savePlayerShortcutBindings(playerShortcutForm),
+    ])
     await flushAppSettings()
-    syncNavigationShortcutForm()
-    shortcutFeedback.value = { type: 'success', message: '导航快捷键已保存并立即生效。' }
+    syncShortcutForms()
+    shortcutFeedback.value = { type: 'success', message: '快捷键已保存并立即生效。' }
   }
   catch (error) {
-    shortcutFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '导航快捷键保存失败。') }
+    shortcutFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '快捷键保存失败。') }
   }
   finally {
     isSavingShortcuts.value = false
   }
 }
 
-function replaceReactiveRecord(target: NavigationShortcutBindings, source: NavigationShortcutBindings) {
+function replaceReactiveRecord(target: Record<string, string | undefined>, source: Record<string, string | undefined>) {
   for (const key of Object.keys(target))
     delete target[key]
   Object.assign(target, source)
@@ -2048,17 +2106,17 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
           <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
             <div>
               <p class="text-xs uppercase tracking-[0.2em] text-white/36">
-                Navigation Keys
+                Keyboard Controls
               </p>
               <h2 class="mt-2 text-xl font-bold text-white">
-                导航快捷键
+                快捷键
               </h2>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
-                点击按键区域后直接按下新组合键。Backspace 或 Delete 可清空；输入框聚焦时不会触发导航。
+                空格、方向键和 Esc 使用固定播放行为；其他播放控制和页面导航按键均可自定义。
               </p>
             </div>
             <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
-              {{ configuredShortcutCount }}/{{ shortcutEntries.length }} 个已设置
+              {{ configuredShortcutCount }}/{{ shortcutEntryCount }} 个已设置
             </span>
           </div>
 
@@ -2074,7 +2132,68 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             {{ shortcutFeedback.message }}
           </div>
 
-          <div class="mt-5 divide-y divide-white/8">
+          <div class="mt-6 flex items-end justify-between gap-4 border-b border-white/8 pb-3">
+            <div>
+              <h3 class="text-sm font-bold text-white/82">
+                播放控制
+              </h3>
+              <p class="mt-1 text-xs text-white/40">
+                仅在播放器页面生效。
+              </p>
+            </div>
+            <span class="text-xs font-semibold text-white/38">
+              {{ configuredPlayerShortcutCount }}/{{ playerShortcutEntries.length }}
+            </span>
+          </div>
+
+          <div class="divide-y divide-white/8">
+            <div
+              v-for="entry in playerShortcutEntries"
+              :key="entry.target"
+              class="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_13rem_auto] md:items-center"
+            >
+              <div>
+                <p class="text-sm font-semibold text-white/82">
+                  {{ entry.label }}
+                </p>
+                <p class="mt-1 text-xs leading-5 text-white/40">
+                  {{ entry.description }}
+                </p>
+              </div>
+              <button
+                type="button"
+                class="h-11 rounded-xl border border-white/12 bg-black/18 px-3 text-left font-mono text-sm text-white/76 outline-none transition-colors focus:border-primary/70 focus:bg-primary/10"
+                :title="`当前快捷键：${shortcutDisplayLabel(playerShortcutForm[entry.target])}。点击后按下新按键。`"
+                @keydown="capturePlayerShortcut($event, entry.target)"
+              >
+                {{ shortcutDisplayLabel(playerShortcutForm[entry.target]) }}
+              </button>
+              <button
+                type="button"
+                class="h-10 rounded-xl bg-white/8 px-3 text-xs font-semibold text-white/60 transition-colors hover:bg-white/14 hover:text-white disabled:opacity-35"
+                :disabled="!playerShortcutForm[entry.target]"
+                @click="clearPlayerShortcut(entry.target)"
+              >
+                清除
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-7 flex items-end justify-between gap-4 border-b border-white/8 pb-3">
+            <div>
+              <h3 class="text-sm font-bold text-white/82">
+                页面导航
+              </h3>
+              <p class="mt-1 text-xs text-white/40">
+                首页、设置和媒体源入口。
+              </p>
+            </div>
+            <span class="text-xs font-semibold text-white/38">
+              {{ configuredNavigationShortcutCount }}/{{ shortcutEntries.length }}
+            </span>
+          </div>
+
+          <div class="divide-y divide-white/8">
             <div
               v-for="entry in shortcutEntries"
               :key="entry.target"
@@ -2119,7 +2238,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             <button
               type="button"
               class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
-              @click="resetNavigationShortcuts"
+              @click="resetShortcuts"
             >
               恢复默认
             </button>

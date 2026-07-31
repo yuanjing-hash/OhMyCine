@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
+import type { PlayerShortcutBindings } from '@/services/playerShortcuts'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { loadNavigationShortcutBindings, NAVIGATION_SHORTCUTS_CHANGED_EVENT, navigationShortcutTargetForEvent, shouldIgnoreNavigationShortcut } from '@/services/navigationShortcuts'
+import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { useDataSourceStore } from '@/stores/datasource'
 import BackButton from './BackButton.vue'
 import DataSourceSidebar from './DataSourceSidebar.vue'
@@ -14,13 +16,20 @@ const router = useRouter()
 const store = useDataSourceStore()
 const isPlayerRoute = computed(() => route.name === 'player')
 const navigationShortcuts = ref<NavigationShortcutBindings>(loadNavigationShortcutBindings())
+const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 
 function reloadNavigationShortcuts() {
   navigationShortcuts.value = loadNavigationShortcutBindings()
 }
 
+function reloadPlayerShortcuts() {
+  playerShortcuts.value = loadPlayerShortcutBindings()
+}
+
 function handleNavigationShortcut(event: KeyboardEvent) {
   if (shouldIgnoreNavigationShortcut(event))
+    return
+  if (isPlayerRoute.value && playerShortcutTargetForEvent(event, playerShortcuts.value))
     return
   const target = navigationShortcutTargetForEvent(event, navigationShortcuts.value)
   if (!target)
@@ -52,11 +61,13 @@ onMounted(() => {
   store.loadConfigs()
   window.addEventListener('keydown', handleNavigationShortcut)
   window.addEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
+  window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleNavigationShortcut)
   window.removeEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
+  window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
 })
 </script>
 

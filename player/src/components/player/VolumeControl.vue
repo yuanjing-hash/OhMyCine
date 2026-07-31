@@ -38,6 +38,8 @@ function handleVolumeChange(e: Event) {
 function finishSliderInteraction() {
   emit('interactionChange', false)
 }
+
+defineExpose({ toggleMute })
 </script>
 
 <template>

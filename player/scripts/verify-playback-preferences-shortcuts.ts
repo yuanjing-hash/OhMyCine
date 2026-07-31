@@ -5,6 +5,11 @@ import {
   shortcutFromKeyboardEvent,
   validateUniqueNavigationShortcuts,
 } from '../src/services/navigationShortcuts.ts'
+import {
+  loadPlayerShortcutBindings,
+  playerShortcutTargetForEvent,
+  validateUniquePlayerShortcuts,
+} from '../src/services/playerShortcuts.ts'
 
 async function source(relativePath: string) {
   return readFile(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
@@ -23,6 +28,10 @@ assert.match(subtitleCommand, /scoped_cache_key\(\s*"subtitle-media"/)
 const playerView = await source('../src/views/PlayerView.vue')
 assert.match(playerView, /restoreMediaPlaybackPreference/)
 assert.match(playerView, /event\.code === 'Space'/)
+assert.match(playerView, /event\.code === 'ArrowUp'/)
+assert.match(playerView, /adjustVolumeFromKeyboard/)
+assert.match(playerView, /playerShortcutTargetForEvent/)
+assert.match(playerView, /toggleChromeVisibility/)
 assert.match(playerView, /ARROW_HOLD_DELAY/)
 assert.match(playerView, /releaseHeldArrow\(false\)/)
 assert.match(playerView, /@click="handlePlayerAreaClick"/)
@@ -38,6 +47,14 @@ assert.doesNotMatch(toggleMenuBody, /refreshTracks/, 'opening subtitle/audio men
 assert.match(playerControls, /downloadedSubtitleTracks/)
 assert.match(playerControls, /mediaSubtitleTracks/)
 assert.match(playerControls, /subtitle-group-divider/)
+assert.match(playerControls, /defineExpose\(\{ dismissTransientUi, executeShortcut \}\)/)
+assert.match(playerControls, /case 'toggleFullscreen'/)
+
+const volumeControl = await source('../src/components/player/VolumeControl.vue')
+assert.match(volumeControl, /defineExpose\(\{ toggleMute \}\)/)
+
+const appLayout = await source('../src/components/layout/AppLayout.vue')
+assert.match(appLayout, /isPlayerRoute\.value && playerShortcutTargetForEvent/)
 
 const mpvComposable = await source('../src/composables/useMpv.ts')
 for (const functionName of ['setSubtitle', 'setAudio']) {
@@ -70,6 +87,8 @@ assert.match(dataSourceStore, /removeNavigationShortcutBinding\(`source:\$\{id\}
 const settingsView = await source('../src/views/SettingsView.vue')
 assert.match(settingsView, /不会删除数据源、登录凭据、播放记录或全局软件设置/)
 assert.match(settingsView, /saveNavigationShortcutBindings/)
+assert.match(settingsView, /savePlayerShortcutBindings/)
+assert.match(settingsView, /playerShortcutEntries/)
 assert.match(settingsView, /longPressPlaybackSpeed/)
 
 const shortcut = shortcutFromKeyboardEvent({
@@ -87,6 +106,46 @@ assert.throws(() => validateUniqueNavigationShortcuts({
 }), /已被其他导航入口占用/)
 assert.throws(() => validateUniqueNavigationShortcuts({ home: 'Space' }), /已保留给播放器/)
 
+const playerBindings = loadPlayerShortcutBindings()
+assert.equal(playerBindings.hideControls, 'KeyH')
+assert.deepEqual(
+  [
+    playerBindings.playPrevious,
+    playerBindings.seekBackward,
+    playerBindings.togglePause,
+    playerBindings.seekForward,
+    playerBindings.playNext,
+    playerBindings.toggleMute,
+    playerBindings.toggleSpeedMenu,
+    playerBindings.toggleSubtitleMenu,
+    playerBindings.toggleAudioMenu,
+    playerBindings.toggleQueueMenu,
+    playerBindings.toggleSettings,
+    playerBindings.toggleFullscreen,
+  ],
+  ['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP', 'BracketLeft', 'BracketRight'],
+)
+assert.equal(playerShortcutTargetForEvent({
+  code: 'KeyH',
+  altKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  metaKey: false,
+  isComposing: false,
+} as KeyboardEvent, playerBindings), 'hideControls')
+assert.throws(() => validateUniquePlayerShortcuts({
+  hideControls: 'KeyH',
+  togglePause: 'KeyH',
+}), /已被其他播放动作占用/)
+assert.equal(shortcutFromKeyboardEvent({
+  code: 'ArrowUp',
+  altKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  metaKey: false,
+  isComposing: false,
+} as KeyboardEvent), null)
+
 console.log(JSON.stringify({
   mediaPreferenceSqlite: true,
   sourceScopedSubtitleCache: true,
@@ -99,4 +158,6 @@ console.log(JSON.stringify({
   trackRestoreWaitsForMetadata: true,
   cacheClearPreservesGlobalState: true,
   customizableNavigationShortcuts: true,
+  customizablePlayerShortcuts: true,
+  fixedVolumeArrowShortcuts: true,
 }, null, 2))

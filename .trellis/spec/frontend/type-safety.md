@@ -829,7 +829,7 @@ const path = source ? await source.getStreamURL(item.id) : item.path
 router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: item.id } })
 ```
 
-### Player Per-Media Preferences, Cache, and Navigation Shortcut Contract
+### Player Per-Media Preferences, Cache, and Shortcut Contract
 
 #### 1. Scope / Trigger
 - Trigger: changing saved subtitle/audio choices, subtitle delay, per-video speed/aspect/fit, downloaded subtitle cache ownership, Player click/keyboard controls, cache clearing, or navigation shortcut settings.
@@ -839,13 +839,13 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 - SQLite table: `media_playback_preferences(identity_key, source_id, media_identity, subtitle_json, audio_json, subtitle_delay, playback_speed, aspect_mode, fit_mode, created_at, updated_at)` in `player_preferences.sqlite`.
 - Rust commands: `player_get_media_playback_preference`, `player_upsert_media_playback_preference`, `player_delete_media_playback_preferences_for_source`, and `player_clear_media_cache`.
 - Subtitle download requests may include `cacheOwner: { sourceId, mediaIdentity }`; owned files are written below `cache/subtitles/<source-hash>/<media-hash>`.
-- Global ordinary settings: `ohmycine-player-interaction-settings-v1` and `ohmycine-navigation-shortcuts-v1` in `settings.sqlite`.
+- Global ordinary settings: `ohmycine-player-interaction-settings-v1`, `ohmycine-player-shortcuts-v1`, and `ohmycine-navigation-shortcuts-v1` in `settings.sqlite`.
 
 #### 3. Contracts
 - Per-media identity is exact `sourceId + mediaIdentity`; remote media prefer provider item IDs, while local file/drop media may use the local path identity.
 - Subtitle/audio persistence stores stable fingerprints (`language`, `title`, `codec`, optional `channels`) and uses numeric mpv track ID only as fallback.
 - A cached external subtitle path is valid only after canonicalization proves it remains inside the current storage profile's `cache/subtitles` root and has an allowed subtitle extension.
-- `Space` toggles pause; arrow tap seeks 5 seconds; right hold temporarily applies the configured speed and restores the previous speed on release/blur; left hold repeatedly seeks backward. Editable controls ignore these bindings.
+- `Space` toggles pause; left/right arrow tap seeks 5 seconds; right hold temporarily applies the configured speed and restores the previous speed on release/blur; left hold repeatedly seeks backward; up/down arrows adjust volume in 5-point steps. Editable controls ignore these bindings.
 - Opening subtitle/audio menus and selecting an already-known track must not synchronously re-read mpv's full `track-list`. Menu state and selected IDs update optimistically from the tracks already loaded; full track refresh is reserved for media load stabilization or an explicitly bounded background refresh. This prevents a transient libmpv property query from holding the shared Player mutex and making every control appear frozen while video continues independently.
 - `SubtitleTrackOption.source` distinguishes `downloaded`, `provider`, `embedded`, and metadata-only `detail` tracks. Do not infer ownership from the `external:*` selection ID prefix, which is only an internal identifier namespace.
 - Local/OpenList/Alist/CloudDrive2/WebDAV sibling subtitle discovery accepts `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sub`, requires an exact video basename or delimiter-led suffix match, and treats listing/URL failures as best-effort so media detail remains playable. Re-read the owning directory when detail is requested instead of keeping a permanent sibling list cache, so newly added subtitle files appear without restarting Player.
@@ -853,7 +853,8 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 - Player-downloaded Windows subtitle cache paths may exceed `MAX_PATH` and be canonicalized as `\\?\C:\...`. Do not strip that prefix and pass the now-invalid long path to libmpv. Before `sub-add`, copy local subtitles or bounded-download provider HTTP(S) subtitles into `cache/mpv-subtitles/<opaque-hash>.<ext>` and pass only that short local runtime path to mpv. Never persist the original signed URL, token, or headers in the runtime-cache filename or playback preference.
 - A manual subtitle/audio selection or subtitle download cancels any pending deferred track-preference restore. Already queued restore commands complete before the new ordered command, but no stale restore may be retried afterward.
 - Restored/user-selected `sid` and `aid` changes and external `sub-add` commands run only after duration/track metadata is available and return their synchronous libmpv result. The event forwarder may drain ordinary events, but track interaction must not introduce an async command-reply queue. Per-media track restoration retries from reactive track updates instead of issuing track commands during the initial remote stream load.
-- Navigation bindings cover home, settings, data-source management, and dynamic `source:<id>` targets. Duplicate bindings and bare `Space`/arrow/`Escape` are rejected.
+- Player bindings cover immediate chrome hide/show plus the control-bar actions in stable left-to-right order. Defaults are `H` and `QWERTYUIOP[]`; unavailable conditional audio/queue controls are no-ops rather than shifting later actions.
+- Navigation bindings cover home, settings, data-source management, and dynamic `source:<id>` targets. Player bindings take priority on the Player route; navigation bindings remain active elsewhere. Duplicate bindings within one context and bare `Space`/arrow/`Escape` are rejected.
 - Source deletion removes history, per-media preferences, source-owned subtitles, source-specific shortcut, and source scan cache. Global cache clearing removes cache contents, scan rows, and per-media preferences but preserves credentials, source config, playback history, and global settings.
 
 #### 4. Validation & Error Matrix
@@ -864,8 +865,8 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 | arrow key is released, window blurs, route changes, or component unmounts | Cancel timers and restore temporary right-hold speed |
 | subtitle/audio menu opens or a known track is selected | Do not issue an immediate `mpv_track_state`; update UI from cached tracks/current selection |
 | saved audio/subtitle preference exists while the remote stream is still loading | Apply scalar settings immediately, defer track matching, then queue async `aid`/`sid`/`sub-add` after tracks appear |
-| shortcut duplicates another navigation shortcut | Reject save with a user-visible conflict message |
-| shortcut is bare Space, ArrowLeft, ArrowRight, or Escape | Reject because the Player owns it |
+| shortcut duplicates another shortcut in the same Player/navigation context | Reject save with a user-visible conflict message |
+| shortcut is bare Space, any arrow key, or Escape | Reject because the Player owns it |
 | source is deleted | Clear exact source-owned state only; keep every other source intact |
 | user clears playback cache | Preserve credentials, data-source config, playback history, updater/theme, interaction speed, and navigation shortcuts |
 
