@@ -123,15 +123,14 @@ impl MpvPlayer {
 
     pub fn add_subtitle(
         &mut self,
-        url: &str,
+        path: &str,
         title: Option<&str>,
         language: Option<&str>,
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
-        let url = normalize_mpv_subtitle_input(url);
         let title = title.unwrap_or("外部字幕");
         let language = language.unwrap_or("");
-        self.command(&["sub-add", &url, "select", title, language])
+        self.command(&["sub-add", path, "select", title, language])
             .map_err(|error| format!("外部字幕暂时无法加载：{error}"))
     }
 
@@ -623,13 +622,6 @@ impl MpvPlayer {
     }
 }
 
-fn normalize_mpv_subtitle_input(value: &str) -> String {
-    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{path}");
-    }
-    value.strip_prefix(r"\\?\").unwrap_or(value).to_string()
-}
-
 unsafe fn parse_track_list_node(node: &mpv_node) -> Vec<MpvTrack> {
     if node.format != mpv_format_MPV_FORMAT_NODE_ARRAY {
         return Vec::new();
@@ -772,25 +764,4 @@ fn failed_surface_state(message: String) -> MpvRenderState {
 
 pub fn create_state() -> Result<MpvState, String> {
     Ok(Arc::new(Mutex::new(MpvPlayer::new()?)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_mpv_subtitle_input;
-
-    #[test]
-    fn normalizes_windows_extended_subtitle_paths() {
-        assert_eq!(
-            normalize_mpv_subtitle_input(r"\\?\C:\Media\Movie.srt"),
-            r"C:\Media\Movie.srt"
-        );
-        assert_eq!(
-            normalize_mpv_subtitle_input(r"\\?\UNC\nas\Media\Movie.srt"),
-            r"\\nas\Media\Movie.srt"
-        );
-        assert_eq!(
-            normalize_mpv_subtitle_input("https://media.example.test/subtitle.srt"),
-            "https://media.example.test/subtitle.srt"
-        );
-    }
 }

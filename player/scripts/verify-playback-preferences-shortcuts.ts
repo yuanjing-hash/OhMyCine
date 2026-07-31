@@ -53,10 +53,14 @@ assert.doesNotMatch(
 const nativePlayer = await source('../src-tauri/src/mpv/player.rs')
 assert.doesNotMatch(nativePlayer, /mpv_command_async/)
 assert.match(nativePlayer, /"sid" \| "aid" => self\.command\(&\["set", property_name, value\]\)/)
-assert.match(nativePlayer, /self\.command\(&\["sub-add", &url, "select", title, language\]\)/)
-assert.match(nativePlayer, /normalize_mpv_subtitle_input/)
+assert.match(nativePlayer, /self\.command\(&\["sub-add", path, "select", title, language\]\)/)
 assert.doesNotMatch(nativePlayer, /mpv_set_property_async/)
 assert.match(nativePlayer, /pub fn drain_events/)
+
+const playerCommands = await source('../src-tauri/src/commands/player.rs')
+assert.match(playerCommands, /prepare_external_subtitle/)
+assert.match(playerCommands, /layout\.cache_dir\.join\("mpv-subtitles"\)/)
+assert.match(playerCommands, /MAX_PREPARED_SUBTITLE_BYTES/)
 
 const dataSourceStore = await source('../src/stores/datasource.ts')
 assert.match(dataSourceStore, /deletePlaybackHistoryForSource\(id\)/)
@@ -90,6 +94,7 @@ console.log(JSON.stringify({
   controlChromeIgnoresVideoClickToPause: true,
   subtitleMenuGroupsDownloadedAndMediaTracks: true,
   externalSubtitleCommandsReturnActualResult: true,
+  externalSubtitlesUseShortRuntimeCache: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
   trackRestoreWaitsForMetadata: true,
   cacheClearPreservesGlobalState: true,
