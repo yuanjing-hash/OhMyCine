@@ -34,6 +34,61 @@ Keep all media sources behind a common interface with these concepts:
 
 `DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `webdav`, `server`, `115`, `123`, and `quark` as planned types.
 
+### Xunlei Subtitle Identity Ranking Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Player local subtitle search context, Emby/raw media title mapping, Xunlei request fields, CID enrichment, or Xunlei result ranking/filtering.
+
+#### 2. Signatures
+- `MediaItem.originalTitle?: string` preserves provider/TMDB original-language titles.
+- `LocalSubtitleSearchInput` and `SubtitleSearchMediaContext` may carry `originalTitle`, `seriesName`, `duration` in seconds, and `keywordMode` together with existing year/type/season/episode fields.
+- Xunlei Tauri search requests use camelCase `query`, `originalTitle`, `seriesName`, `durationSeconds`, `keywordMode`, `year`, `mediaType`, `seasonNumber`, and `episodeNumber`. Xunlei response `duration` is milliseconds.
+
+#### 3. Contracts
+- `mediaTitle` and `fileName` modes carry current-media identity constraints. `custom` remains free text and must omit current-media year/type/season/episode/title aliases/duration constraints.
+- CID equality is the highest-confidence result. CID calculation is optional and must not block HTTPS name search when local/remote bytes are unavailable.
+- Movie ranking rejects episode-shaped names (`S01E01`, `1x01`, `Season`, `Episode`, `第01集`) and candidates containing a conflicting 1900-2099 year. Exact year, close duration, original-title match, and safe filename-token overlap increase confidence.
+- Episode ranking rejects explicit season/episode mismatches. Exact season/episode, close duration, series-title match, and CID increase confidence.
+- Emby requests include `OriginalTitle`; raw TMDB mappings preserve `originalTitle`. These identity fields stay inside Player and are not sent to Xunlei except for the single selected name query.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| movie 2026 result is `Supergirl.S01E01...` | Reject it before rendering |
+| movie 2026 result explicitly contains 1984 | Reject it unless CID is exact |
+| movie result lacks year but duration is within 1-3% | Keep below exact-year/CID results |
+| episode S01E01 result explicitly says S01E02 | Reject it |
+| remote 302/Range/CID fails | Continue name search and rank with metadata |
+| custom keyword mode | Keep broad provider results without current-media filtering |
+
+#### 5. Good/Base/Bad Cases
+- Good: `超级少女` movie, year 2026, original title `Supergirl`, duration 6462 seconds ranks `Supergirl.2026.WEB-DL...` first and removes `S01E...` results.
+- Base: No CID and no original filename, but Emby title/year/type/duration still produce useful ordering.
+- Bad: Treat every Xunlei name result as equally relevant or discard all results because a 302 URL cannot provide Range bytes.
+
+#### 6. Tests Required
+- Rust tests cover Supergirl 2026 movie filtering, wrong-year rejection, Chinese/English episode-marker rejection, exact/mismatched season episodes, custom broad search, duration scoring, and CID precedence.
+- `npm run verify:subtitle-search`, typecheck, lint, and the Windows GNU build must pass.
+
+#### 7. Wrong vs Correct
+Wrong:
+```ts
+request: { query: mediaTitle }
+```
+
+Correct:
+```ts
+request: {
+  query: mediaTitle,
+  originalTitle,
+  year,
+  mediaType,
+  durationSeconds,
+  seasonNumber,
+  episodeNumber,
+}
+```
+
 OpenList/Alist API responses must be parsed from `unknown` envelopes. Treat `code !== 200 && code !== 0` as a provider failure, validate file records before mapping, normalize paths to rooted paths, strip trailing slashes except for `/`, and reject `.` / `..` path segments before constructing `/d{path}` stream URLs. When `DataSourceConfig.extra.rootPath` is set, normalize it as a rooted path, default missing values to `/`, scope `listLibraries()`/`list()`/`search()` to that root, and reject browse/detail/stream paths outside that root.
 
 ### OpenList/Alist Authentication Recovery Contract

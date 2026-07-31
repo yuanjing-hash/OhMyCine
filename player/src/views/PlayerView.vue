@@ -995,6 +995,12 @@ function currentSubtitleSearchContext(keyword?: string, keywordMode: SubtitleKey
     remoteMediaUrl: currentRemoteSubtitleMediaUrl(),
     remoteMediaHeaders: currentRemoteSubtitleMediaUrl() ? { ...mediaHeaders.value } : undefined,
     mediaFileName: currentSubtitleFileName(),
+    originalTitle: keywordMode === 'custom' ? undefined : detail?.originalTitle ?? queueItem?.originalTitle,
+    seriesName: keywordMode === 'custom' ? undefined : detail?.seriesName ?? queueItem?.seriesName,
+    duration: keywordMode === 'custom'
+      ? undefined
+      : detail?.duration ?? queueItem?.duration ?? (duration.value > 0 ? duration.value : undefined),
+    keywordMode,
     year: keywordMode === 'custom' ? undefined : detail?.year,
     mediaType: keywordMode === 'custom' ? undefined : activeMediaType.value ?? detail?.type ?? queueItem?.type,
     seasonNumber: keywordMode === 'custom' ? undefined : detail?.seasonNumber ?? queueItem?.seasonNumber,
