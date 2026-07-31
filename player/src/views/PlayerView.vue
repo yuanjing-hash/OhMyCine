@@ -18,7 +18,7 @@ import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/e
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
-import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { downloadLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -72,9 +72,10 @@ const chromeManuallyHidden = ref(false)
 const controlsInteracting = ref(false)
 const playerControlsRef = ref<{
   dismissTransientUi: () => void
-  executeShortcut: (target: PlayerShortcutTarget) => void
+  toggleFullscreenFromShortcut: () => Promise<void>
 } | null>(null)
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
+const keyboardOsdMessage = ref('')
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -129,6 +130,9 @@ let arrowHoldActivated = false
 let arrowBasePlaybackSpeed = 1
 let pendingKeyboardVolume: number | null = null
 let keyboardVolumeCommand: Promise<void> = Promise.resolve()
+let keyboardChromeSuppression = 0
+let keyboardOsdTimer: number | undefined
+let keyboardPreviousVolume = 100
 
 const {
   isPlaying,
@@ -239,35 +243,31 @@ function scheduleChromeHide() {
 }
 
 function revealChrome() {
-  if (chromeManuallyHidden.value)
+  if (chromeManuallyHidden.value || keyboardChromeSuppression > 0)
     return
   chromeVisible.value = true
   scheduleChromeHide()
 }
 
-function forceRevealChrome() {
+function revealChromeFromPointer() {
   chromeManuallyHidden.value = false
   chromeVisible.value = true
   scheduleChromeHide()
 }
 
-function toggleChromeVisibility() {
+function hideChromeFromKeyboard() {
   clearHideTimer()
-  if (shouldShowChrome.value) {
-    chromeManuallyHidden.value = true
-    playerControlsRef.value?.dismissTransientUi()
-    controlsInteracting.value = false
-    chromeVisible.value = false
-    return
-  }
-  forceRevealChrome()
+  chromeManuallyHidden.value = true
+  playerControlsRef.value?.dismissTransientUi()
+  controlsInteracting.value = false
+  chromeVisible.value = false
 }
 
 function reloadPlayerShortcuts() {
   playerShortcuts.value = loadPlayerShortcutBindings()
 }
 
-function adjustVolumeFromKeyboard(delta: number) {
+function adjustVolumeFromKeyboard(delta: number): number {
   const base = pendingKeyboardVolume ?? volume.value
   const target = Math.max(0, Math.min(100, base + delta))
   pendingKeyboardVolume = target
@@ -278,6 +278,27 @@ function adjustVolumeFromKeyboard(delta: number) {
       if (pendingKeyboardVolume === target)
         pendingKeyboardVolume = null
     })
+  return target
+}
+
+function showKeyboardOsd(message: string) {
+  if (keyboardOsdTimer)
+    window.clearTimeout(keyboardOsdTimer)
+  keyboardOsdMessage.value = message
+  keyboardOsdTimer = window.setTimeout(() => {
+    keyboardOsdTimer = undefined
+    keyboardOsdMessage.value = ''
+  }, 1800)
+}
+
+async function runKeyboardAction(action: () => Promise<void> | void) {
+  keyboardChromeSuppression += 1
+  try {
+    await action()
+  }
+  finally {
+    keyboardChromeSuppression = Math.max(0, keyboardChromeSuppression - 1)
+  }
 }
 
 function handleControlsInteraction(next: boolean) {
@@ -1599,6 +1620,134 @@ async function handleSetAudio(trackId: number) {
   scheduleMediaPreferenceSave()
 }
 
+function nextPlaybackSpeed(): number {
+  const currentIndex = PLAYBACK_SPEED_OPTIONS.findIndex(speed => Math.abs(speed - playbackSpeed.value) < 0.001)
+  return PLAYBACK_SPEED_OPTIONS[(currentIndex + 1) % PLAYBACK_SPEED_OPTIONS.length]
+}
+
+async function cycleSubtitleFromKeyboard() {
+  const selectable = subtitleTracks.value.filter(track => track.selectable)
+  const choices: Array<Parameters<typeof handleSetSubtitle>[0]> = [null, ...selectable.map(track => track.id)]
+  const currentIndex = choices.findIndex(choice => choice === currentSubtitle.value)
+  const next = choices[(currentIndex + 1) % choices.length]
+  await handleSetSubtitle(next)
+  showKeyboardOsd(`字幕 · ${selectedSubtitleTrackLabel()}`)
+}
+
+async function cycleAudioFromKeyboard() {
+  if (audioTracks.value.length === 0) {
+    showKeyboardOsd('音轨 · 暂未检测到可用音轨')
+    return
+  }
+  const currentIndex = audioTracks.value.findIndex(track => track.id === currentAudio.value)
+  const next = audioTracks.value[(currentIndex + 1) % audioTracks.value.length]
+  await handleSetAudio(next.id)
+  showKeyboardOsd(`音轨 · ${selectedAudioTrackLabel()}`)
+}
+
+async function toggleMuteFromKeyboard() {
+  if (volume.value > 0) {
+    keyboardPreviousVolume = volume.value
+    await setVolume(0)
+    showKeyboardOsd('音量 · 静音')
+    return
+  }
+  const restoredVolume = Math.max(1, Math.min(100, keyboardPreviousVolume || 50))
+  await setVolume(restoredVolume)
+  showKeyboardOsd(`音量 · ${Math.round(restoredVolume)}%`)
+}
+
+function showQueueKeyboardOsd() {
+  const queue = playbackQueue.value
+  if (!queue || queue.items.length <= 1) {
+    showKeyboardOsd('播放队列 · 当前仅有一个项目')
+    return
+  }
+  const item = queue.items[queue.currentIndex]
+  showKeyboardOsd(`播放队列 ${queue.currentIndex + 1}/${queue.items.length} · ${safeMenuText(item?.title || item?.name, '当前项目', 48)}`)
+}
+
+async function executePlayerShortcutFromKeyboard(target: PlayerShortcutTarget) {
+  if (target === 'hideControls') {
+    hideChromeFromKeyboard()
+    showKeyboardOsd('控制界面已隐藏 · 移动鼠标可恢复')
+    return
+  }
+
+  if (!shouldShowChrome.value) {
+    chromeManuallyHidden.value = true
+    chromeVisible.value = false
+  }
+
+  try {
+    await runKeyboardAction(async () => {
+      switch (target) {
+        case 'playPrevious': {
+          const queue = playbackQueue.value
+          if (!queue || !canPlayPrevious.value) {
+            showKeyboardOsd('没有上一集')
+            return
+          }
+          const item = queue.items[queue.currentIndex - 1]
+          await playQueueItemAt(queue.currentIndex - 1)
+          showKeyboardOsd(`上一集 · ${safeMenuText(item?.title || item?.name, '上一集', 48)}`)
+          return
+        }
+        case 'seekBackward':
+          await seekRelative(-10)
+          showKeyboardOsd('后退 10 秒')
+          return
+        case 'togglePause':
+          await handleTogglePause()
+          showKeyboardOsd(isPlaying.value ? '继续播放' : '暂停')
+          return
+        case 'seekForward':
+          await seekRelative(10)
+          showKeyboardOsd('前进 10 秒')
+          return
+        case 'playNext': {
+          const queue = playbackQueue.value
+          if (!queue || !canPlayNext.value) {
+            showKeyboardOsd('没有下一集')
+            return
+          }
+          const item = queue.items[queue.currentIndex + 1]
+          await playQueueItemAt(queue.currentIndex + 1)
+          showKeyboardOsd(`下一集 · ${safeMenuText(item?.title || item?.name, '下一集', 48)}`)
+          return
+        }
+        case 'toggleMute':
+          await toggleMuteFromKeyboard()
+          return
+        case 'toggleSpeedMenu': {
+          const speed = nextPlaybackSpeed()
+          await handleSetPlaybackSpeed(speed)
+          showKeyboardOsd(`播放速度 · ${Number.isInteger(speed) ? speed.toFixed(1) : speed}x`)
+          return
+        }
+        case 'toggleSubtitleMenu':
+          await cycleSubtitleFromKeyboard()
+          return
+        case 'toggleAudioMenu':
+          await cycleAudioFromKeyboard()
+          return
+        case 'toggleQueueMenu':
+          showQueueKeyboardOsd()
+          return
+        case 'toggleSettings':
+          showKeyboardOsd(`画面 · ${videoAspectLabel(videoAspectMode.value)} · ${videoFitLabel(videoFitMode.value)}`)
+          return
+        case 'toggleFullscreen':
+          await playerControlsRef.value?.toggleFullscreenFromShortcut()
+          showKeyboardOsd(isPlayerFullscreen.value ? '进入全屏' : '退出全屏')
+      }
+    })
+  }
+  catch (error) {
+    showKeyboardOsd(toSafeErrorMessage(error, '快捷键操作失败'))
+  }
+}
+
 function clampContextMenuPosition(clientX: number, clientY: number): ContextMenuPosition {
   const maxX = Math.max(CONTEXT_MENU_MARGIN, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN)
   const maxY = Math.max(CONTEXT_MENU_MARGIN, window.innerHeight - CONTEXT_MENU_MAX_HEIGHT - CONTEXT_MENU_MARGIN)
@@ -1778,7 +1927,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
       return
     event.preventDefault()
     if (!event.repeat)
-      void handleTogglePause()
+      void executePlayerShortcutFromKeyboard('togglePause')
     return
   }
   if (!hasModifier && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
@@ -1790,7 +1939,8 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (!hasModifier && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) {
     event.preventDefault()
     const delta = event.code === 'ArrowUp' ? 5 : -5
-    adjustVolumeFromKeyboard(delta)
+    const target = adjustVolumeFromKeyboard(delta)
+    showKeyboardOsd(target === 0 ? '音量 · 静音' : `音量 · ${Math.round(target)}%`)
     return
   }
 
@@ -1798,16 +1948,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (!shortcutTarget || event.repeat)
     return
   event.preventDefault()
-  if (shortcutTarget === 'hideControls') {
-    toggleChromeVisibility()
-    return
-  }
-  const opensChromeUi = ['toggleSpeedMenu', 'toggleSubtitleMenu', 'toggleAudioMenu', 'toggleQueueMenu', 'toggleSettings'].includes(shortcutTarget)
-  if (opensChromeUi)
-    forceRevealChrome()
-  else
-    revealChrome()
-  playerControlsRef.value?.executeShortcut(shortcutTarget)
+  void executePlayerShortcutFromKeyboard(shortcutTarget)
 }
 
 function handleGlobalKeyup(event: KeyboardEvent) {
@@ -1838,8 +1979,10 @@ function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
     if (key === 'ArrowRight') {
       const configuredSpeed = loadPlayerInteractionSettings().longPressPlaybackSpeed
       void applyPlaybackSpeed(configuredSpeed)
+      showKeyboardOsd(`长按快进 · ${configuredSpeed}x`)
       return
     }
+    showKeyboardOsd('连续后退')
     void seekRelative(-ARROW_TAP_SEEK_SECONDS)
     rewindHoldTimer = window.setInterval(() => {
       void seekRelative(-ARROW_TAP_SEEK_SECONDS)
@@ -1862,10 +2005,13 @@ async function releaseHeldArrow(triggerTap: boolean) {
     return
   if (key === 'ArrowRight' && wasHold) {
     await applyPlaybackSpeed(arrowBasePlaybackSpeed)
+    showKeyboardOsd(`播放速度 · ${Number.isInteger(arrowBasePlaybackSpeed) ? arrowBasePlaybackSpeed.toFixed(1) : arrowBasePlaybackSpeed}x`)
     return
   }
-  if (triggerTap && !wasHold)
+  if (triggerTap && !wasHold) {
     await seekRelative(key === 'ArrowLeft' ? -ARROW_TAP_SEEK_SECONDS : ARROW_TAP_SEEK_SECONDS)
+    showKeyboardOsd(key === 'ArrowLeft' ? `后退 ${ARROW_TAP_SEEK_SECONDS} 秒` : `前进 ${ARROW_TAP_SEEK_SECONDS} 秒`)
+  }
 }
 
 function handlePlayerAreaClick(event: MouseEvent) {
@@ -1937,6 +2083,9 @@ onBeforeUnmount(() => {
   void releaseHeldArrow(false)
   clearResumeSeekTimers()
   clearResumeMessageTimer()
+  if (keyboardOsdTimer)
+    window.clearTimeout(keyboardOsdTimer)
+  keyboardOsdTimer = undefined
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
   window.removeEventListener('resize', handleWindowResize)
@@ -1970,9 +2119,9 @@ watch(
       { 'is-chrome-hidden': !shouldShowChrome },
       isTransparentRootActive ? 'player-view--transparent' : 'bg-black',
     ]"
-    @mousemove="revealChrome"
+    @mousemove="revealChromeFromPointer"
     @mouseleave="scheduleChromeHide"
-    @touchstart.passive="revealChrome"
+    @touchstart.passive="revealChromeFromPointer"
     @click="handlePlayerAreaClick"
     @contextmenu="openPlaybackContextMenu"
   >
@@ -1997,16 +2146,27 @@ watch(
       v-if="hasMedia"
       class="pointer-events-auto absolute inset-x-0 top-0 z-5 h-24"
       aria-hidden="true"
-      @mouseenter="revealChrome"
-      @mousemove="revealChrome"
+      @mouseenter="revealChromeFromPointer"
+      @mousemove="revealChromeFromPointer"
     />
     <div
       v-if="hasMedia"
       class="pointer-events-auto absolute inset-x-0 bottom-0 z-5 h-32"
       aria-hidden="true"
-      @mouseenter="revealChrome"
-      @mousemove="revealChrome"
+      @mouseenter="revealChromeFromPointer"
+      @mousemove="revealChromeFromPointer"
     />
+
+    <Transition name="keyboard-osd">
+      <div
+        v-if="keyboardOsdMessage"
+        class="keyboard-osd pointer-events-none absolute right-6 top-16 z-30 max-w-[min(24rem,calc(100vw-3rem))] rounded-lg border border-white/14 bg-black/72 px-4 py-2.5 text-sm font-semibold text-white/90 shadow-2xl backdrop-blur-xl"
+        role="status"
+        aria-live="polite"
+      >
+        {{ keyboardOsdMessage }}
+      </div>
+    </Transition>
 
     <Transition name="player-chrome-top">
       <div
@@ -2054,8 +2214,8 @@ watch(
       data-player-click-ignore
       class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
       :class="shouldShowChrome ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'"
-      @mouseenter="revealChrome"
-      @mousemove="revealChrome"
+      @mouseenter="revealChromeFromPointer"
+      @mousemove="revealChromeFromPointer"
     >
       <PlayerControls
         ref="playerControlsRef"
@@ -2250,6 +2410,17 @@ watch(
 
 .player-view.is-chrome-hidden {
   cursor: none;
+}
+
+.keyboard-osd-enter-active,
+.keyboard-osd-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.keyboard-osd-enter-from,
+.keyboard-osd-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .player-view--transparent {

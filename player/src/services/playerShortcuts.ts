@@ -47,8 +47,6 @@ const DEFAULT_BINDINGS: PlayerShortcutBindings = {
   toggleSubtitleMenu: 'KeyI',
   toggleAudioMenu: 'KeyO',
   toggleQueueMenu: 'KeyP',
-  toggleSettings: 'BracketLeft',
-  toggleFullscreen: 'BracketRight',
 }
 
 export function loadPlayerShortcutBindings(): PlayerShortcutBindings {

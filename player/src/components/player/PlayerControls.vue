@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
-import type { PlayerShortcutTarget } from '@/services/playerShortcuts'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { transitionWindowFullscreen } from '@/services/windowFullscreen'
 import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
@@ -53,11 +53,8 @@ const emit = defineEmits<{
   interactionChange: [active: boolean]
 }>()
 
-const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
-
 const appWindow = getCurrentWindow()
 const settingsButton = ref<HTMLButtonElement | null>(null)
-const volumeControl = ref<{ toggleMute: () => void } | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
 const childInteracting = ref(false)
@@ -316,13 +313,15 @@ async function toggleBrowserFullscreen(nextFullscreen: boolean) {
     await document.exitFullscreen()
 }
 
-async function toggleFullscreen() {
+async function toggleFullscreen(silent = false) {
   if (fullscreenBusy.value)
     return
 
-  closeMenus()
+  if (!silent)
+    closeMenus()
   fullscreenBusy.value = true
-  emitInteractionState()
+  if (!silent)
+    emitInteractionState()
   try {
     const nextFullscreen = !(await appWindow.isFullscreen())
     const result = await transitionWindowFullscreen(
@@ -353,53 +352,17 @@ async function toggleFullscreen() {
   }
   finally {
     fullscreenBusy.value = false
-    emitInteractionState()
+    if (!silent)
+      emitInteractionState()
   }
 }
 
-function executeShortcut(target: PlayerShortcutTarget) {
-  switch (target) {
-    case 'playPrevious':
-      if (props.canPlayPrevious)
-        emit('playPrevious')
-      break
-    case 'seekBackward':
-      emit('seekRelative', -10)
-      break
-    case 'togglePause':
-      emit('togglePause')
-      break
-    case 'seekForward':
-      emit('seekRelative', 10)
-      break
-    case 'playNext':
-      if (props.canPlayNext)
-        emit('playNext')
-      break
-    case 'toggleMute':
-      volumeControl.value?.toggleMute()
-      break
-    case 'toggleSpeedMenu':
-      toggleMenu('speed')
-      break
-    case 'toggleSubtitleMenu':
-      toggleMenu('subtitle')
-      break
-    case 'toggleAudioMenu':
-      if (showAudioControl.value)
-        toggleMenu('audio')
-      break
-    case 'toggleQueueMenu':
-      if (showQueueControl.value)
-        toggleMenu('queue')
-      break
-    case 'toggleSettings':
-      toggleSettingsPanel()
-      break
-    case 'toggleFullscreen':
-      void toggleFullscreen()
-      break
-  }
+function handleFullscreenButtonClick() {
+  void toggleFullscreen(false)
+}
+
+async function toggleFullscreenFromShortcut() {
+  await toggleFullscreen(true)
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -441,7 +404,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncFullscreenState)
 })
 
-defineExpose({ dismissTransientUi, executeShortcut })
+defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 </script>
 
 <template>
@@ -490,7 +453,7 @@ defineExpose({ dismissTransientUi, executeShortcut })
     <span class="time-label w-16 shrink-0 text-right">{{ formatTime(duration) }}</span>
 
     <div class="right-controls flex shrink-0 items-center gap-2">
-      <VolumeControl ref="volumeControl" class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
+      <VolumeControl class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
 
       <div class="control-menu-anchor">
         <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'speed' }" type="button" title="倍速" aria-label="倍速" aria-haspopup="menu" :aria-expanded="activeMenu === 'speed'" @click="toggleMenu('speed')">
@@ -633,7 +596,7 @@ defineExpose({ dismissTransientUi, executeShortcut })
         <span class="settings-entry-label">设置</span>
       </button>
 
-      <button class="control-button fullscreen-button secondary" :class="{ 'is-active': isFullscreen }" type="button" :title="fullscreenTitle" :aria-label="fullscreenTitle" :aria-pressed="isFullscreen" :disabled="fullscreenBusy" @click="toggleFullscreen">
+      <button class="control-button fullscreen-button secondary" :class="{ 'is-active': isFullscreen }" type="button" :title="fullscreenTitle" :aria-label="fullscreenTitle" :aria-pressed="isFullscreen" :disabled="fullscreenBusy" @click="handleFullscreenButtonClick">
         <svg v-if="isFullscreen" class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a1 1 0 0 1 1 1v3.25A1.75 1.75 0 0 1 8.25 10H5a1 1 0 0 1 0-2h3V5a1 1 0 0 1 1-1Zm6 0a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2h-3.25A1.75 1.75 0 0 1 14 8.25V5a1 1 0 0 1 1-1ZM4 15a1 1 0 0 1 1-1h3.25A1.75 1.75 0 0 1 10 15.75V19a1 1 0 1 1-2 0v-3H5a1 1 0 0 1-1-1Zm10 0.75A1.75 1.75 0 0 1 15.75 14H19a1 1 0 1 1 0 2h-3v3a1 1 0 1 1-2 0v-3.25Z" /></svg>
         <svg v-else class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4a1 1 0 0 1 0 2H6v3a1 1 0 1 1-2 0V5a1 1 0 0 1 1-1Zm10 1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6h-3a1 1 0 0 1-1-1ZM4 15a1 1 0 1 1 2 0v3h3a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1v-4Zm16-1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 1 1 0-2h3v-3a1 1 0 0 1 1-1Z" /></svg>
       </button>

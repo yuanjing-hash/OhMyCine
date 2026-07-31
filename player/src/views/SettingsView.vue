@@ -343,18 +343,18 @@ const shortcutEntries = computed(() => [
   })),
 ])
 const playerShortcutEntries: Array<{ target: PlayerShortcutTarget, label: string, description: string }> = [
-  { target: 'hideControls', label: '隐藏 / 显示控制 UI', description: '立即切换播放器控制界面。' },
+  { target: 'hideControls', label: '隐藏控制 UI', description: '立即隐藏控制界面，移动鼠标恢复。' },
   { target: 'playPrevious', label: '上一集', description: '对应控制栏第一个按钮。' },
   { target: 'seekBackward', label: '后退 10 秒', description: '对应控制栏后退按钮。' },
   { target: 'togglePause', label: '播放 / 暂停', description: '对应控制栏播放按钮。' },
   { target: 'seekForward', label: '前进 10 秒', description: '对应控制栏前进按钮。' },
   { target: 'playNext', label: '下一集', description: '对应控制栏下一集按钮。' },
   { target: 'toggleMute', label: '静音 / 恢复音量', description: '对应控制栏音量按钮。' },
-  { target: 'toggleSpeedMenu', label: '倍速菜单', description: '打开或关闭倍速选择。' },
-  { target: 'toggleSubtitleMenu', label: '字幕菜单', description: '打开或关闭字幕选择。' },
-  { target: 'toggleAudioMenu', label: '音轨菜单', description: '存在多个音轨时打开音轨选择。' },
-  { target: 'toggleQueueMenu', label: '播放队列', description: '存在播放队列时打开队列。' },
-  { target: 'toggleSettings', label: '播放设置', description: '打开或关闭画面设置。' },
+  { target: 'toggleSpeedMenu', label: '切换倍速', description: '循环切换可用倍速。' },
+  { target: 'toggleSubtitleMenu', label: '切换字幕', description: '循环切换关闭和可用字幕。' },
+  { target: 'toggleAudioMenu', label: '切换音轨', description: '循环切换可用音轨。' },
+  { target: 'toggleQueueMenu', label: '播放队列状态', description: '显示当前队列位置和媒体标题。' },
+  { target: 'toggleSettings', label: '画面设置状态', description: '显示当前画面比例和适配模式。' },
   { target: 'toggleFullscreen', label: '全屏', description: '进入或退出播放器全屏。' },
 ]
 const configuredNavigationShortcutCount = computed(() => shortcutEntries.value.filter(entry => navigationShortcutForm[entry.target]).length)
@@ -2138,7 +2138,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 播放控制
               </h3>
               <p class="mt-1 text-xs text-white/40">
-                仅在播放器页面生效。
+                仅在播放器页面生效，操作结果显示在右上角。
               </p>
             </div>
             <span class="text-xs font-semibold text-white/38">

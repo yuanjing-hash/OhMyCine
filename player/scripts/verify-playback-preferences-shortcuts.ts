@@ -31,7 +31,13 @@ assert.match(playerView, /event\.code === 'Space'/)
 assert.match(playerView, /event\.code === 'ArrowUp'/)
 assert.match(playerView, /adjustVolumeFromKeyboard/)
 assert.match(playerView, /playerShortcutTargetForEvent/)
-assert.match(playerView, /toggleChromeVisibility/)
+assert.match(playerView, /hideChromeFromKeyboard/)
+assert.match(playerView, /showKeyboardOsd/)
+assert.match(playerView, /runKeyboardAction/)
+assert.match(playerView, /cycleSubtitleFromKeyboard/)
+assert.match(playerView, /cycleAudioFromKeyboard/)
+assert.match(playerView, /revealChromeFromPointer/)
+assert.match(playerView, /<Transition name="keyboard-osd">/)
 assert.match(playerView, /ARROW_HOLD_DELAY/)
 assert.match(playerView, /releaseHeldArrow\(false\)/)
 assert.match(playerView, /@click="handlePlayerAreaClick"/)
@@ -47,11 +53,11 @@ assert.doesNotMatch(toggleMenuBody, /refreshTracks/, 'opening subtitle/audio men
 assert.match(playerControls, /downloadedSubtitleTracks/)
 assert.match(playerControls, /mediaSubtitleTracks/)
 assert.match(playerControls, /subtitle-group-divider/)
-assert.match(playerControls, /defineExpose\(\{ dismissTransientUi, executeShortcut \}\)/)
-assert.match(playerControls, /case 'toggleFullscreen'/)
+assert.match(playerControls, /defineExpose\(\{ dismissTransientUi, toggleFullscreenFromShortcut \}\)/)
+assert.match(playerControls, /async function toggleFullscreenFromShortcut/)
 
 const volumeControl = await source('../src/components/player/VolumeControl.vue')
-assert.match(volumeControl, /defineExpose\(\{ toggleMute \}\)/)
+assert.match(volumeControl, /const displayVolume = computed\(\(\) => props\.volume\)/)
 
 const appLayout = await source('../src/components/layout/AppLayout.vue')
 assert.match(appLayout, /isPlayerRoute\.value && playerShortcutTargetForEvent/)
@@ -120,11 +126,11 @@ assert.deepEqual(
     playerBindings.toggleSubtitleMenu,
     playerBindings.toggleAudioMenu,
     playerBindings.toggleQueueMenu,
-    playerBindings.toggleSettings,
-    playerBindings.toggleFullscreen,
   ],
-  ['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP', 'BracketLeft', 'BracketRight'],
+  ['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP'],
 )
+assert.equal(playerBindings.toggleSettings, undefined)
+assert.equal(playerBindings.toggleFullscreen, undefined)
 assert.equal(playerShortcutTargetForEvent({
   code: 'KeyH',
   altKey: false,
@@ -160,4 +166,6 @@ console.log(JSON.stringify({
   customizableNavigationShortcuts: true,
   customizablePlayerShortcuts: true,
   fixedVolumeArrowShortcuts: true,
+  keyboardActionsUseCompactOsd: true,
+  keyboardActionsDoNotRevealChrome: true,
 }, null, 2))

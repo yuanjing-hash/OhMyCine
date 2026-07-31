@@ -4,6 +4,8 @@ export interface PlayerInteractionSettings {
   longPressPlaybackSpeed: number
 }
 
+export const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
+
 const STORAGE_KEY = 'ohmycine-player-interaction-settings-v1'
 const DEFAULT_SETTINGS: PlayerInteractionSettings = {
   longPressPlaybackSpeed: 2,
