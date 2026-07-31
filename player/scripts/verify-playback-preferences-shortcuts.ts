@@ -27,6 +27,16 @@ assert.match(playerView, /ARROW_HOLD_DELAY/)
 assert.match(playerView, /releaseHeldArrow\(false\)/)
 assert.match(playerView, /@click="handlePlayerAreaClick"/)
 
+const playerControls = await source('../src/components/player/PlayerControls.vue')
+const toggleMenuBody = playerControls.match(/function toggleMenu\(menu: ControlMenu\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+assert.doesNotMatch(toggleMenuBody, /refreshTracks/, 'opening subtitle/audio menus must not synchronously query mpv track-list')
+
+const mpvComposable = await source('../src/composables/useMpv.ts')
+for (const functionName of ['setSubtitle', 'setAudio']) {
+  const functionBody = mpvComposable.match(new RegExp(`async function ${functionName}\\([^)]*\\) \\{([\\s\\S]*?)\\n  \\}`))?.[1] ?? ''
+  assert.doesNotMatch(functionBody, /await refreshTrackState\(\)/, `${functionName} must not immediately re-read track-list during a track switch`)
+}
+
 const dataSourceStore = await source('../src/stores/datasource.ts')
 assert.match(dataSourceStore, /deletePlaybackHistoryForSource\(id\)/)
 assert.match(dataSourceStore, /deleteMediaPlaybackPreferencesForSource\(id\)/)
@@ -56,6 +66,7 @@ console.log(JSON.stringify({
   mediaPreferenceSqlite: true,
   sourceScopedSubtitleCache: true,
   playbackTapAndHoldKeys: true,
+  subtitleControlsAvoidSynchronousTrackRefresh: true,
   cacheClearPreservesGlobalState: true,
   customizableNavigationShortcuts: true,
 }, null, 2))

@@ -1963,7 +1963,6 @@ watch(
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
-        @refresh-tracks="refreshTrackState"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
       />

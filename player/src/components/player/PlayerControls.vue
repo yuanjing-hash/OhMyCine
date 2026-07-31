@@ -48,7 +48,6 @@ const emit = defineEmits<{
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
-  refreshTracks: []
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
 }>()
@@ -129,8 +128,6 @@ function toggleMenu(menu: ControlMenu) {
   settingsPanelOpen.value = false
   settingsPanelInteracting.value = false
   activeMenu.value = activeMenu.value === menu ? null : menu
-  if (activeMenu.value === 'subtitle' || activeMenu.value === 'audio')
-    emit('refreshTracks')
   emitInteractionState()
 }
 

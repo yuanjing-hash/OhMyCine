@@ -272,6 +272,7 @@ export function useMpv() {
   let playbackSpeedChangedLocally = false
   let subtitleDelayCommand = Promise.resolve()
   let subtitleDelayGeneration = 0
+  let loadedExternalSubtitleSequence = 0
 
   function ensurePlaybackSpeedPreferenceLoaded(): Promise<void> {
     if (playbackSpeedPreferenceLoaded)
@@ -568,7 +569,6 @@ export function useMpv() {
       selectedKnownSubtitle.value = null
       await invoke<void>('mpv_set_property', { prop: 'sid', value: 'no' })
       currentSubtitle.value = null
-      await refreshTrackState()
       return
     }
 
@@ -577,7 +577,6 @@ export function useMpv() {
       selectedKnownSubtitle.value = null
       await invoke<void>('mpv_set_property', { prop: 'sid', value: embeddedId.toString() })
       currentSubtitle.value = trackId
-      await refreshTrackState()
       return
     }
 
@@ -596,7 +595,6 @@ export function useMpv() {
       selectedKnownSubtitle.value = trackId
       currentSubtitle.value = trackId
       trackError.value = null
-      await refreshTrackState()
     }
     catch (error: unknown) {
       trackError.value = safeErrorMessage(error, '外部字幕加载失败')
@@ -611,7 +609,20 @@ export function useMpv() {
         title: title || language || '外部字幕',
         language: language || null,
       })
-      await refreshTrackState()
+      const loadedTrack = toKnownSubtitleTrack({
+        id: `loaded:${++loadedExternalSubtitleSequence}`,
+        source: 'external',
+        language: language || null,
+        title: title || language || '外部字幕',
+        url,
+        selectable: true,
+      })
+      knownSubtitleTracks.value = [
+        ...knownSubtitleTracks.value.filter(track => !String(track.id).startsWith('external:loaded:')),
+        loadedTrack,
+      ]
+      selectedKnownSubtitle.value = loadedTrack.id
+      currentSubtitle.value = loadedTrack.id
     }
     catch (error) {
       trackError.value = safeErrorMessage(error, '外部字幕加载失败')
@@ -622,7 +633,6 @@ export function useMpv() {
   async function setAudio(trackId: number) {
     await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
     currentAudio.value = trackId
-    await refreshTrackState()
   }
 
   async function setVideoAspect(mode: VideoAspectMode) {

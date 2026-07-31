@@ -846,6 +846,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 - Subtitle/audio persistence stores stable fingerprints (`language`, `title`, `codec`, optional `channels`) and uses numeric mpv track ID only as fallback.
 - A cached external subtitle path is valid only after canonicalization proves it remains inside the current storage profile's `cache/subtitles` root and has an allowed subtitle extension.
 - `Space` toggles pause; arrow tap seeks 5 seconds; right hold temporarily applies the configured speed and restores the previous speed on release/blur; left hold repeatedly seeks backward. Editable controls ignore these bindings.
+- Opening subtitle/audio menus and selecting an already-known track must not synchronously re-read mpv's full `track-list`. Menu state and selected IDs update optimistically from the tracks already loaded; full track refresh is reserved for media load stabilization or an explicitly bounded background refresh. This prevents a transient libmpv property query from holding the shared Player mutex and making every control appear frozen while video continues independently.
 - Navigation bindings cover home, settings, data-source management, and dynamic `source:<id>` targets. Duplicate bindings and bare `Space`/arrow/`Escape` are rejected.
 - Source deletion removes history, per-media preferences, source-owned subtitles, source-specific shortcut, and source scan cache. Global cache clearing removes cache contents, scan rows, and per-media preferences but preserves credentials, source config, playback history, and global settings.
 
@@ -855,6 +856,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 | cached subtitle path is missing, outside cache root, or unsupported | Ignore/reject that subtitle preference without blocking playback |
 | saved track fingerprint no longer matches available tracks | Keep provider/mpv default track and continue playback |
 | arrow key is released, window blurs, route changes, or component unmounts | Cancel timers and restore temporary right-hold speed |
+| subtitle/audio menu opens or a known track is selected | Do not issue an immediate `mpv_track_state`; update UI from cached tracks/current selection |
 | shortcut duplicates another navigation shortcut | Reject save with a user-visible conflict message |
 | shortcut is bare Space, ArrowLeft, ArrowRight, or Escape | Reject because the Player owns it |
 | source is deleted | Clear exact source-owned state only; keep every other source intact |
@@ -867,7 +869,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 
 #### 6. Tests Required
 - Rust unit tests prove source deletion leaves other source rows, global cache clearing leaves `player_preferences` globals, and subtitle owner directories contain hashes rather than raw IDs.
-- `npm run verify:playback-preferences-shortcuts` checks command registration, schema, source lifecycle, fixed Player key handling, cache-clear preservation text, and shortcut conflicts.
+- `npm run verify:playback-preferences-shortcuts` checks command registration, schema, source lifecycle, fixed Player key handling, cache-clear preservation text, shortcut conflicts, and the absence of synchronous track refresh from subtitle/audio interactions.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, `cargo test`, and the Windows GNU release build.
 - Manual Windows checks cover replay restore, cached subtitle restore, click-to-pause, arrow tap/hold/release/blur, shortcut capture/conflict, source deletion, and cache clearing.
 
