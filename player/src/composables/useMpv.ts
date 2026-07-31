@@ -273,6 +273,7 @@ export function useMpv() {
   let subtitleDelayCommand = Promise.resolve()
   let subtitleDelayGeneration = 0
   let loadedExternalSubtitleSequence = 0
+  let trackRefreshScheduledForCurrentMedia = false
 
   function ensurePlaybackSpeedPreferenceLoaded(): Promise<void> {
     if (playbackSpeedPreferenceLoaded)
@@ -301,6 +302,10 @@ export function useMpv() {
     }),
     listen<{ duration: number }>('mpv:duration-change', (event) => {
       duration.value = event.payload.duration
+      if (event.payload.duration > 0 && !trackRefreshScheduledForCurrentMedia) {
+        trackRefreshScheduledForCurrentMedia = true
+        scheduleTrackRefresh(150)
+      }
     }),
     listen('mpv:paused', () => {
       isPlaying.value = false
@@ -491,6 +496,7 @@ export function useMpv() {
     selectedKnownSubtitle.value = null
     currentTime.value = 0
     duration.value = 0
+    trackRefreshScheduledForCurrentMedia = false
     isPlaying.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
@@ -506,10 +512,8 @@ export function useMpv() {
     await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
     await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
     await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
-    await refreshTrackState()
     await refreshVideoDynamicRange()
-    scheduleTrackRefresh(400)
-    scheduleTrackRefresh(1200)
+    scheduleTrackRefresh(2500)
   }
 
   async function togglePause() {

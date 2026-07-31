@@ -6,12 +6,13 @@ use std::{
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_create, mpv_error_string, mpv_format_MPV_FORMAT_DOUBLE,
-    mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
-    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
-    mpv_free, mpv_free_node_contents, mpv_get_property, mpv_get_property_string, mpv_handle,
-    mpv_initialize, mpv_node, mpv_node_list, mpv_set_option_string, mpv_set_property,
-    mpv_set_property_string, mpv_terminate_destroy,
+    mpv_command, mpv_command_async, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_NONE,
+    mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
+    mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
+    mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
+    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_node, mpv_node_list,
+    mpv_set_option_string, mpv_set_property, mpv_set_property_async, mpv_set_property_string,
+    mpv_terminate_destroy, mpv_wait_event,
 };
 
 use super::{
@@ -129,7 +130,7 @@ impl MpvPlayer {
         self.ensure_initialized_fallback()?;
         let title = title.unwrap_or("外部字幕");
         let language = language.unwrap_or("");
-        self.command(&["sub-add", url, "select", title, language])
+        self.command_async(&["sub-add", url, "select", title, language])
             .map_err(|_| "外部字幕暂时无法加载".to_string())
     }
 
@@ -449,25 +450,9 @@ impl MpvPlayer {
                 })
             }
             "sid" | "aid" if value == "no" => {
-                let value =
-                    CString::new(value).map_err(|_| "Invalid mpv property value".to_string())?;
-                self.check_error(unsafe {
-                    mpv_set_property_string(self.ctx, prop.as_ptr(), value.as_ptr())
-                })
+                self.set_property_string_async(prop.as_c_str(), value)
             }
-            "sid" | "aid" => {
-                let mut value = value
-                    .parse::<i64>()
-                    .map_err(|_| "Invalid track id".to_string())?;
-                self.check_error(unsafe {
-                    mpv_set_property(
-                        self.ctx,
-                        prop.as_ptr(),
-                        mpv_format_MPV_FORMAT_INT64,
-                        (&mut value as *mut i64).cast::<c_void>(),
-                    )
-                })
-            }
+            "sid" | "aid" => self.set_property_int64_async(prop.as_c_str(), value),
             _ => {
                 let value = CString::new(value).map_err(|err| err.to_string())?;
                 self.check_error(unsafe {
@@ -560,6 +545,58 @@ impl MpvPlayer {
             .collect::<Vec<*const c_char>>();
 
         self.check_error(unsafe { mpv_command(self.ctx, raw_args.as_mut_ptr()) })
+    }
+
+    fn command_async(&self, args: &[&str]) -> Result<(), String> {
+        let c_args = args
+            .iter()
+            .map(|arg| CString::new(*arg).map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut raw_args = c_args
+            .iter()
+            .map(|arg| arg.as_ptr())
+            .chain(std::iter::once(ptr::null()))
+            .collect::<Vec<*const c_char>>();
+
+        self.check_error(unsafe { mpv_command_async(self.ctx, 0, raw_args.as_mut_ptr()) })
+    }
+
+    fn set_property_string_async(&self, prop: &CStr, value: &str) -> Result<(), String> {
+        let value = CString::new(value).map_err(|_| "Invalid mpv property value".to_string())?;
+        let mut raw_value = value.as_ptr();
+        self.check_error(unsafe {
+            mpv_set_property_async(
+                self.ctx,
+                0,
+                prop.as_ptr(),
+                mpv_format_MPV_FORMAT_STRING,
+                (&mut raw_value as *mut *const c_char).cast::<c_void>(),
+            )
+        })
+    }
+
+    fn set_property_int64_async(&self, prop: &CStr, value: &str) -> Result<(), String> {
+        let mut value = value
+            .parse::<i64>()
+            .map_err(|_| "Invalid track id".to_string())?;
+        self.check_error(unsafe {
+            mpv_set_property_async(
+                self.ctx,
+                0,
+                prop.as_ptr(),
+                mpv_format_MPV_FORMAT_INT64,
+                (&mut value as *mut i64).cast::<c_void>(),
+            )
+        })
+    }
+
+    pub fn drain_events(&self) {
+        loop {
+            let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
+            if event.is_null() || unsafe { (*event).event_id } == mpv_event_id_MPV_EVENT_NONE {
+                break;
+            }
+        }
     }
 
     fn get_property_string(&self, prop: &str) -> Result<Option<String>, String> {

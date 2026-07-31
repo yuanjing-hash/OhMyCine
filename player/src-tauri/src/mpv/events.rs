@@ -25,10 +25,10 @@ pub fn start_event_forwarder(app_handle: AppHandle) {
                 break;
             };
 
-            let snapshot = state
-                .lock()
-                .ok()
-                .map(|player| (player.time_pos(), player.duration(), player.paused()));
+            let snapshot = state.lock().ok().map(|player| {
+                player.drain_events();
+                (player.time_pos(), player.duration(), player.paused())
+            });
 
             if let Some((time, duration, paused)) = snapshot {
                 if (time - last_time).abs() >= 0.25 {

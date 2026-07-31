@@ -36,6 +36,16 @@ for (const functionName of ['setSubtitle', 'setAudio']) {
   const functionBody = mpvComposable.match(new RegExp(`async function ${functionName}\\([^)]*\\) \\{([\\s\\S]*?)\\n  \\}`))?.[1] ?? ''
   assert.doesNotMatch(functionBody, /await refreshTrackState\(\)/, `${functionName} must not immediately re-read track-list during a track switch`)
 }
+assert.doesNotMatch(
+  mpvComposable.match(/async function load\([^)]*\) \{([\s\S]*?)\n  \}/)?.[1] ?? '',
+  /await refreshTrackState\(\)/,
+  'media load must not synchronously query track-list before duration metadata is ready',
+)
+
+const nativePlayer = await source('../src-tauri/src/mpv/player.rs')
+assert.match(nativePlayer, /mpv_set_property_async/)
+assert.match(nativePlayer, /mpv_command_async/)
+assert.match(nativePlayer, /pub fn drain_events/)
 
 const dataSourceStore = await source('../src/stores/datasource.ts')
 assert.match(dataSourceStore, /deletePlaybackHistoryForSource\(id\)/)
@@ -67,6 +77,7 @@ console.log(JSON.stringify({
   sourceScopedSubtitleCache: true,
   playbackTapAndHoldKeys: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
+  trackRestoreUsesAsyncNativeCommands: true,
   cacheClearPreservesGlobalState: true,
   customizableNavigationShortcuts: true,
 }, null, 2))

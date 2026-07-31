@@ -847,6 +847,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 - A cached external subtitle path is valid only after canonicalization proves it remains inside the current storage profile's `cache/subtitles` root and has an allowed subtitle extension.
 - `Space` toggles pause; arrow tap seeks 5 seconds; right hold temporarily applies the configured speed and restores the previous speed on release/blur; left hold repeatedly seeks backward. Editable controls ignore these bindings.
 - Opening subtitle/audio menus and selecting an already-known track must not synchronously re-read mpv's full `track-list`. Menu state and selected IDs update optimistically from the tracks already loaded; full track refresh is reserved for media load stabilization or an explicitly bounded background refresh. This prevents a transient libmpv property query from holding the shared Player mutex and making every control appear frozen while video continues independently.
+- Restored/user-selected `sid` and `aid` changes and external `sub-add` commands must be queued through libmpv asynchronous APIs so the Rust `MpvState` mutex is released immediately. The event forwarder must drain async reply events. Per-media track restoration waits for duration/track metadata and retries from reactive track updates instead of issuing track commands during the initial remote stream load.
 - Navigation bindings cover home, settings, data-source management, and dynamic `source:<id>` targets. Duplicate bindings and bare `Space`/arrow/`Escape` are rejected.
 - Source deletion removes history, per-media preferences, source-owned subtitles, source-specific shortcut, and source scan cache. Global cache clearing removes cache contents, scan rows, and per-media preferences but preserves credentials, source config, playback history, and global settings.
 
@@ -857,6 +858,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 | saved track fingerprint no longer matches available tracks | Keep provider/mpv default track and continue playback |
 | arrow key is released, window blurs, route changes, or component unmounts | Cancel timers and restore temporary right-hold speed |
 | subtitle/audio menu opens or a known track is selected | Do not issue an immediate `mpv_track_state`; update UI from cached tracks/current selection |
+| saved audio/subtitle preference exists while the remote stream is still loading | Apply scalar settings immediately, defer track matching, then queue async `aid`/`sid`/`sub-add` after tracks appear |
 | shortcut duplicates another navigation shortcut | Reject save with a user-visible conflict message |
 | shortcut is bare Space, ArrowLeft, ArrowRight, or Escape | Reject because the Player owns it |
 | source is deleted | Clear exact source-owned state only; keep every other source intact |

@@ -107,6 +107,13 @@ let activeCachedSubtitlePath: string | null = null
 let mediaPreferenceSaveTimer: number | undefined
 let mediaPreferenceRestoreGeneration = 0
 let restoringMediaPreference = false
+let pendingTrackPreference: {
+  preference: MediaPlaybackPreference
+  generation: number
+  audioRestored: boolean
+  subtitleRestored: boolean
+} | null = null
+let trackPreferenceRestoreInFlight = false
 let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
 let heldArrowTimer: number | undefined
 let rewindHoldTimer: number | undefined
@@ -135,7 +142,6 @@ const {
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
-  refreshTrackState,
   setKnownSubtitleTracks,
   load,
   togglePause,
@@ -581,11 +587,13 @@ async function restoreMediaPlaybackPreference() {
     await applySubtitleDelay(preference.subtitleDelay)
     await setVideoAspect(preference.aspectMode)
     await setVideoFit(preference.fitMode)
-    await refreshTrackState()
-    if (generation !== mediaPreferenceRestoreGeneration)
-      return
-    await restoreAudioPreference(preference)
-    await restoreSubtitlePreference(preference)
+    pendingTrackPreference = {
+      preference,
+      generation,
+      audioRestored: preference.audio == null,
+      subtitleRestored: preference.subtitle == null,
+    }
+    await restorePendingTrackPreference()
     scheduleRenderBoundsSync()
   }
   finally {
@@ -593,20 +601,43 @@ async function restoreMediaPlaybackPreference() {
   }
 }
 
-async function restoreAudioPreference(preference: MediaPlaybackPreference) {
-  const track = matchTrackPreference(audioTracks.value, preference.audio)
-  if (track)
-    await setAudio(track.id)
+async function restorePendingTrackPreference() {
+  const pending = pendingTrackPreference
+  if (!pending || trackPreferenceRestoreInFlight || pending.generation !== mediaPreferenceRestoreGeneration)
+    return
+
+  trackPreferenceRestoreInFlight = true
+  restoringMediaPreference = true
+  try {
+    if (!pending.audioRestored)
+      pending.audioRestored = await restoreAudioPreference(pending.preference)
+    if (!pending.subtitleRestored)
+      pending.subtitleRestored = await restoreSubtitlePreference(pending.preference)
+    if (pending === pendingTrackPreference && pending.audioRestored && pending.subtitleRestored)
+      pendingTrackPreference = null
+  }
+  finally {
+    restoringMediaPreference = false
+    trackPreferenceRestoreInFlight = false
+  }
 }
 
-async function restoreSubtitlePreference(preference: MediaPlaybackPreference) {
+async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
+  const track = matchTrackPreference(audioTracks.value, preference.audio)
+  if (!track)
+    return false
+  await setAudio(track.id)
+  return true
+}
+
+async function restoreSubtitlePreference(preference: MediaPlaybackPreference): Promise<boolean> {
   const subtitle = preference.subtitle
-  activeCachedSubtitlePath = null
   if (!subtitle)
-    return
+    return true
   if (subtitle.kind === 'off') {
+    activeCachedSubtitlePath = null
     await setSubtitle(null)
-    return
+    return true
   }
   if (subtitle.kind === 'cachedExternal' && subtitle.cachedPath) {
     await addExternalSubtitle(
@@ -615,11 +646,14 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference) {
       subtitle.track?.language ?? undefined,
     )
     activeCachedSubtitlePath = subtitle.cachedPath
-    return
+    return true
   }
   const track = matchTrackPreference(subtitleTracks.value, subtitle.track)
-  if (track)
-    await setSubtitle(track.id)
+  if (!track)
+    return false
+  activeCachedSubtitlePath = null
+  await setSubtitle(track.id)
+  return true
 }
 
 function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: readonly T[], preference: MediaTrackPreference | null | undefined): T | null {
@@ -1303,6 +1337,7 @@ watch(
   async () => {
     await saveCurrentProgress(true, 'stopped')
     mediaPreferenceRestoreGeneration += 1
+    pendingTrackPreference = null
     clearMediaPreferenceSaveTimer()
     activeCachedSubtitlePath = null
     await releaseHeldArrow(false)
@@ -1370,9 +1405,14 @@ watch([shouldShowChrome, hasMedia], () => {
   void updateChromeOcclusion()
 })
 
+watch([audioTracks, subtitleTracks], () => {
+  void restorePendingTrackPreference()
+})
+
 async function handleFileDrop(path: string) {
   await saveCurrentProgress(true, 'stopped')
   mediaPreferenceRestoreGeneration += 1
+  pendingTrackPreference = null
   clearMediaPreferenceSaveTimer()
   activeCachedSubtitlePath = null
   await releaseHeldArrow(false)
