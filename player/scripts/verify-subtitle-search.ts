@@ -46,9 +46,18 @@ assert.doesNotMatch(settings, /setAppSetting\([^)]*apiKey/)
 
 const subtitleIndex = await read('src/services/subtitle/index.ts')
 assert.match(subtitleIndex, /hasOpenSubtitlesCredential/)
+assert.match(subtitleIndex, /const openSubtitlesCredential = await readOpenSubtitlesCredentials\(\)/)
 assert.match(subtitleIndex, /settings\.shooterEnabled && canUseHashProviders/)
 assert.match(subtitleIndex, /settings\.xunleiEnabled && canUseHashProviders/)
 assert.match(subtitleIndex, /Promise\.allSettled/)
+assert.match(subtitleIndex, /openSubtitlesActive/)
+assert.match(subtitleIndex, /OpenSubtitles 已配置但当前处于关闭状态/)
+assert.match(subtitleIndex, /输入的关键词没有被查询/)
+
+const settingsView = await read('src/views/SettingsView.vue')
+assert.match(settingsView, /await saveOpenSubtitlesCredentials\(nextCredential\)[\s\S]*subtitleForm\.openSubtitlesEnabled = true/)
+assert.match(settingsView, /openSubtitlesStatusLabel/)
+assert.match(settingsView, /登录已保留但提供器处于关闭状态/)
 
 const useMpv = await read('src/composables/useMpv.ts')
 assert.match(useMpv, /prop: 'sub-delay'/)
@@ -107,4 +116,6 @@ console.log(JSON.stringify({
   subtitleDelayUsesMpvSubDelay: true,
   subtitleSearchOffersThreeKeywordModes: true,
   customKeywordOmitsCurrentMediaConstraints: true,
+  savingOpenSubtitlesCredentialsEnablesProvider: true,
+  disabledKeywordProviderIsReportedClearly: true,
 }, null, 2))
