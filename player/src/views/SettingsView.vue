@@ -307,6 +307,14 @@ const playbackEntryMeta = computed(() => {
   ].filter(Boolean)
   return enabled.length > 0 ? `${enabled.length} 个本地提供器` : '可配置字幕搜索'
 })
+const openSubtitlesStatusLabel = computed(() => {
+  if (!openSubtitlesConfigured.value)
+    return 'OpenSubtitles 未配置'
+  const modeLabel = openSubtitlesConfiguredAuthMode.value === 'account' ? '账号密码模式' : 'API Key 模式'
+  return subtitleForm.openSubtitlesEnabled
+    ? `OpenSubtitles ${modeLabel} · 已启用`
+    : `OpenSubtitles ${modeLabel} · 已关闭`
+})
 const updateEntryMeta = computed(() => `${updaterStore.settings.channel === 'beta' ? 'Beta' : '正式版'} · ${updaterStore.settings.autoCheck ? '自动检测' : '手动检测'}`)
 const portableStorageIsNetworkLike = computed(() =>
   storageInfo.value?.mode === 'portable' && storageInfo.value.storagePerformance === 'networkLike',
@@ -696,6 +704,20 @@ async function refreshOpenSubtitlesCredentialState() {
     subtitleForm.openSubtitlesAuthMode = credential.authMode
 }
 
+function subtitleSettingsSavedMessage(accountAuthenticated: boolean | null): string {
+  if (accountAuthenticated === false) {
+    return '设置已保存。当前账号不兼容 OpenSubtitles.org 旧账号接口，Player 已自动使用免 API Key 兼容搜索；自定义关键词和字幕下载仍可正常使用。'
+  }
+  if (openSubtitlesConfigured.value && subtitleForm.openSubtitlesEnabled) {
+    const modeLabel = openSubtitlesConfiguredAuthMode.value === 'account' ? '账号密码' : 'API Key'
+    return `播放与字幕设置已保存。OpenSubtitles ${modeLabel}模式、射手网和迅雷开关已生效。`
+  }
+  if (openSubtitlesConfigured.value) {
+    return '播放与字幕设置已保存。OpenSubtitles 登录已保留但提供器处于关闭状态；射手网和迅雷只会按视频文件哈希匹配。'
+  }
+  return '播放与字幕设置已保存。射手网和迅雷字幕可直接用于本地文件。'
+}
+
 async function savePlaybackSubtitleSettings() {
   isSavingSubtitleSettings.value = true
   subtitleFeedback.value = null
@@ -729,6 +751,7 @@ async function savePlaybackSubtitleSettings() {
         accountAuthenticated = loginStatus.authenticated
       }
       await saveOpenSubtitlesCredentials(nextCredential)
+      subtitleForm.openSubtitlesEnabled = true
     }
 
     if (credentialEdited) {
@@ -746,11 +769,7 @@ async function savePlaybackSubtitleSettings() {
     await refreshOpenSubtitlesCredentialState()
     subtitleFeedback.value = {
       type: accountAuthenticated === false ? 'info' : 'success',
-      message: accountAuthenticated === false
-        ? '设置已保存。当前账号不兼容 OpenSubtitles.org 旧账号接口，Player 已自动使用免 API Key 兼容搜索；自定义关键词和字幕下载仍可正常使用。'
-        : openSubtitlesConfigured.value
-          ? `播放与字幕设置已保存。OpenSubtitles ${openSubtitlesConfiguredAuthMode.value === 'account' ? '账号密码' : 'API Key'}模式、射手网和迅雷开关已生效。`
-          : '播放与字幕设置已保存。射手网和迅雷字幕可直接用于本地文件。',
+      message: subtitleSettingsSavedMessage(accountAuthenticated),
     }
   }
   catch (error) {
@@ -1898,9 +1917,9 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             </div>
             <span
               class="rounded-full px-3 py-1.5 text-xs font-semibold"
-              :class="openSubtitlesConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
+              :class="openSubtitlesConfigured && subtitleForm.openSubtitlesEnabled ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
             >
-              {{ openSubtitlesConfigured ? `OpenSubtitles ${openSubtitlesConfiguredAuthMode === 'account' ? '账号密码模式' : 'API Key 模式'}` : 'OpenSubtitles 未配置' }}
+              {{ openSubtitlesStatusLabel }}
             </span>
           </div>
 
