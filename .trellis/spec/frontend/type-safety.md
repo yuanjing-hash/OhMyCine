@@ -761,6 +761,10 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 - Media detail pages should read local `player_get_playback_progress` for playable detail items and visible episode lists so the primary play action and episode actions can show `继续播放` when a resumable local row exists.
 - Home continue-watching is an aggregate section. Local history rows should keep `progressSource: 'local'` for card subtitles/source labels, but the section title must not imply local-only content. If a local remote-provider row lacks safe persisted artwork, the home aggregation layer may temporarily enrich it from provider detail metadata without writing tokenized image URLs back to SQLite.
 - Local history and route/context payloads should persist safe `posterUrl`, `backdropUrl`, and `titleLogoUrl` together so continue-watching, detail recovery, queue switching, and Player chrome render consistent artwork. Tokenized artwork URLs still follow the same redaction/drop rules.
+- Per-media playback preferences use the same `sourceId + mediaIdentity` identity boundary as playback history but live in `player_preferences.sqlite`. They may store subtitle/audio fingerprints, subtitle delay, playback speed, aspect mode, fit mode, and a canonical local path only when that path remains inside the current Player `cache/subtitles` root. Remote subtitle URLs, signed stream URLs, headers, and credentials are forbidden.
+- Restoring subtitle/audio choices must prefer stable language/title/codec/channel fingerprints and use numeric mpv track IDs only as fallback. A missing cached subtitle file or changed track list must degrade to the available/default track without blocking playback startup.
+- Space and left/right arrow playback controls are fixed Player interactions and must ignore editable controls. Navigation shortcuts are global non-sensitive settings, must reject duplicate bindings and fixed Player keys, and must remove source-specific bindings when the source is deleted.
+- Global media-cache clearing deletes cache-directory contents, raw scan cache rows, and per-media playback preference rows only. It must preserve data-source config, credential storage, playback history, updater/theme/global interaction settings, and other ordinary application settings.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
@@ -823,6 +827,79 @@ Correct:
 const source = store.getSource(item.sourceId)
 const path = source ? await source.getStreamURL(item.id) : item.path
 router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: item.id } })
+```
+
+### Player Per-Media Preferences, Cache, and Navigation Shortcut Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing saved subtitle/audio choices, subtitle delay, per-video speed/aspect/fit, downloaded subtitle cache ownership, Player click/keyboard controls, cache clearing, or navigation shortcut settings.
+- Applies to `commands/preference.rs`, `commands/subtitle.rs`, `mediaPlaybackPreferences.ts`, `PlayerView.vue`, `SettingsView.vue`, `AppLayout.vue`, and data-source removal lifecycle.
+
+#### 2. Signatures
+- SQLite table: `media_playback_preferences(identity_key, source_id, media_identity, subtitle_json, audio_json, subtitle_delay, playback_speed, aspect_mode, fit_mode, created_at, updated_at)` in `player_preferences.sqlite`.
+- Rust commands: `player_get_media_playback_preference`, `player_upsert_media_playback_preference`, `player_delete_media_playback_preferences_for_source`, and `player_clear_media_cache`.
+- Subtitle download requests may include `cacheOwner: { sourceId, mediaIdentity }`; owned files are written below `cache/subtitles/<source-hash>/<media-hash>`.
+- Global ordinary settings: `ohmycine-player-interaction-settings-v1` and `ohmycine-navigation-shortcuts-v1` in `settings.sqlite`.
+
+#### 3. Contracts
+- Per-media identity is exact `sourceId + mediaIdentity`; remote media prefer provider item IDs, while local file/drop media may use the local path identity.
+- Subtitle/audio persistence stores stable fingerprints (`language`, `title`, `codec`, optional `channels`) and uses numeric mpv track ID only as fallback.
+- A cached external subtitle path is valid only after canonicalization proves it remains inside the current storage profile's `cache/subtitles` root and has an allowed subtitle extension.
+- `Space` toggles pause; arrow tap seeks 5 seconds; right hold temporarily applies the configured speed and restores the previous speed on release/blur; left hold repeatedly seeks backward. Editable controls ignore these bindings.
+- Navigation bindings cover home, settings, data-source management, and dynamic `source:<id>` targets. Duplicate bindings and bare `Space`/arrow/`Escape` are rejected.
+- Source deletion removes history, per-media preferences, source-owned subtitles, source-specific shortcut, and source scan cache. Global cache clearing removes cache contents, scan rows, and per-media preferences but preserves credentials, source config, playback history, and global settings.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| cached subtitle path is missing, outside cache root, or unsupported | Ignore/reject that subtitle preference without blocking playback |
+| saved track fingerprint no longer matches available tracks | Keep provider/mpv default track and continue playback |
+| arrow key is released, window blurs, route changes, or component unmounts | Cancel timers and restore temporary right-hold speed |
+| shortcut duplicates another navigation shortcut | Reject save with a user-visible conflict message |
+| shortcut is bare Space, ArrowLeft, ArrowRight, or Escape | Reject because the Player owns it |
+| source is deleted | Clear exact source-owned state only; keep every other source intact |
+| user clears playback cache | Preserve credentials, data-source config, playback history, updater/theme, interaction speed, and navigation shortcuts |
+
+#### 5. Good/Base/Bad Cases
+- Good: A downloaded subtitle for one Emby episode is restored from a hashed source/media cache directory and removed when that Emby source is deleted.
+- Base: A saved audio track disappears after the file changes; Player uses the new default audio and remains playable.
+- Bad: Persisting an Emby subtitle URL with API key, using one global subtitle cache folder with no owner, or clearing `settings.sqlite`/`credentials.sqlite` from the cache button.
+
+#### 6. Tests Required
+- Rust unit tests prove source deletion leaves other source rows, global cache clearing leaves `player_preferences` globals, and subtitle owner directories contain hashes rather than raw IDs.
+- `npm run verify:playback-preferences-shortcuts` checks command registration, schema, source lifecycle, fixed Player key handling, cache-clear preservation text, and shortcut conflicts.
+- Run `npm run typecheck`, `npm run lint`, `npm run build`, `cargo test`, and the Windows GNU release build.
+- Manual Windows checks cover replay restore, cached subtitle restore, click-to-pause, arrow tap/hold/release/blur, shortcut capture/conflict, source deletion, and cache clearing.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+await saveMediaPreference({ mediaIdentity: streamUrl, subtitleUrl, headers })
+```
+
+Correct:
+```ts
+await saveMediaPlaybackPreference({
+  sourceId,
+  mediaIdentity: itemId,
+  subtitle: { kind: 'embedded', track: { language, title, codec } },
+  audio: { language: audioLanguage, title: audioTitle, codec: audioCodec },
+  subtitleDelay,
+  playbackSpeed,
+  aspectMode,
+  fitMode,
+})
+```
+
+Wrong:
+```ts
+localStorage.clear()
+```
+
+Correct:
+```ts
+await invoke('player_clear_media_cache')
 ```
 
 ### Player Render Surface Command Contract

@@ -26,7 +26,9 @@ use commands::player::{
     mpv_track_state, mpv_update_render_surface_bounds,
 };
 use commands::preference::{
-    player_get_playback_speed_preference, player_set_playback_speed_preference,
+    player_clear_media_cache, player_delete_media_playback_preferences_for_source,
+    player_get_media_playback_preference, player_get_playback_speed_preference,
+    player_set_playback_speed_preference, player_upsert_media_playback_preference,
 };
 use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
 use commands::settings::{
@@ -64,6 +66,10 @@ fn main() {
             clouddrive2_get_stream,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
+            player_get_media_playback_preference,
+            player_upsert_media_playback_preference,
+            player_delete_media_playback_preferences_for_source,
+            player_clear_media_cache,
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_list_continue_watching,

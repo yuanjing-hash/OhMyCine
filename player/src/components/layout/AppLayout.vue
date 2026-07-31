@@ -1,13 +1,63 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { loadNavigationShortcutBindings, NAVIGATION_SHORTCUTS_CHANGED_EVENT, navigationShortcutTargetForEvent, shouldIgnoreNavigationShortcut } from '@/services/navigationShortcuts'
+import { useDataSourceStore } from '@/stores/datasource'
 import BackButton from './BackButton.vue'
 import DataSourceSidebar from './DataSourceSidebar.vue'
 import FloatingControls from './FloatingControls.vue'
 import WindowChrome from './WindowChrome.vue'
 
 const route = useRoute()
+const router = useRouter()
+const store = useDataSourceStore()
 const isPlayerRoute = computed(() => route.name === 'player')
+const navigationShortcuts = ref<NavigationShortcutBindings>(loadNavigationShortcutBindings())
+
+function reloadNavigationShortcuts() {
+  navigationShortcuts.value = loadNavigationShortcutBindings()
+}
+
+function handleNavigationShortcut(event: KeyboardEvent) {
+  if (shouldIgnoreNavigationShortcut(event))
+    return
+  const target = navigationShortcutTargetForEvent(event, navigationShortcuts.value)
+  if (!target)
+    return
+  event.preventDefault()
+  navigateToShortcutTarget(target)
+}
+
+function navigateToShortcutTarget(target: NavigationShortcutTarget) {
+  if (target === 'home') {
+    void router.push({ name: 'home' })
+    return
+  }
+  if (target === 'settings') {
+    void router.push({ name: 'settings' })
+    return
+  }
+  if (target === 'datasources') {
+    void router.push({ name: 'settings', query: { section: 'datasources' } })
+    return
+  }
+  const sourceId = target.slice('source:'.length)
+  const source = store.configs.find(config => config.id === sourceId)
+  if (source && source.enabled !== false)
+    void router.push({ name: 'source', params: { sourceId } })
+}
+
+onMounted(() => {
+  store.loadConfigs()
+  window.addEventListener('keydown', handleNavigationShortcut)
+  window.addEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleNavigationShortcut)
+  window.removeEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
+})
 </script>
 
 <template>

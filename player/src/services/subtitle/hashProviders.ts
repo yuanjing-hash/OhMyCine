@@ -1,4 +1,4 @@
-import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleProvider } from './types'
+import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -45,7 +45,7 @@ export class HashSubtitleProvider implements SubtitleProvider {
     })
   }
 
-  async download(result: SubtitleSearchResult): Promise<LocalSubtitleDownloadResult> {
+  async download(result: SubtitleSearchResult, cacheOwner?: SubtitleCacheOwner): Promise<LocalSubtitleDownloadResult> {
     if (!result.downloadRef)
       throw new Error(`该${this.name}结果已经过期，请重新搜索。`)
 
@@ -53,6 +53,7 @@ export class HashSubtitleProvider implements SubtitleProvider {
       request: {
         provider: this.id,
         downloadRef: result.downloadRef,
+        cacheOwner: cacheOwner ?? null,
       },
     })
     return {

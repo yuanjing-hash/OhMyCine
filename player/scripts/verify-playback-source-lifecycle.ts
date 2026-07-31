@@ -48,9 +48,16 @@ assert.match(embySource, /所选 Emby 媒体版本已不可用/)
 const historyCommand = await readFile(fileURLToPath(new URL('../src-tauri/src/commands/history.rs', import.meta.url)), 'utf8')
 assert.match(historyCommand, /DELETE FROM playback_history WHERE source_id = \?1/)
 
+const preferenceCommand = await readFile(fileURLToPath(new URL('../src-tauri/src/commands/preference.rs', import.meta.url)), 'utf8')
+assert.match(preferenceCommand, /DELETE FROM media_playback_preferences WHERE source_id = \?1/)
+
+const dataSourceStore = await readFile(fileURLToPath(new URL('../src/stores/datasource.ts', import.meta.url)), 'utf8')
+assert.match(dataSourceStore, /deleteMediaPlaybackPreferencesForSource\(id\)/)
+
 console.log(JSON.stringify({
   checkedViews: viewFiles.length,
   localPathStoredOnlyInMemory: true,
   embyMediaSourceId: embyContext?.mediaSourceId,
   sourceScopedHistoryDelete: true,
+  sourceScopedPlaybackPreferenceDelete: true,
 }, null, 2))
