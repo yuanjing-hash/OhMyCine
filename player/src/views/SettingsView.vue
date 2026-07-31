@@ -713,7 +713,7 @@ function subtitleSettingsSavedMessage(accountAuthenticated: boolean | null): str
     return `播放与字幕设置已保存。OpenSubtitles ${modeLabel}模式、射手网和迅雷开关已生效。`
   }
   if (openSubtitlesConfigured.value) {
-    return '播放与字幕设置已保存。OpenSubtitles 登录已保留但提供器处于关闭状态；射手网和迅雷只会按视频文件哈希匹配。'
+    return '播放与字幕设置已保存。OpenSubtitles 登录已保留但提供器处于关闭状态；迅雷仍会按关键词搜索，射手网按视频文件哈希匹配。'
   }
   return '播放与字幕设置已保存。射手网和迅雷字幕可直接用于本地文件。'
 }
@@ -2029,7 +2029,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             <label class="flex items-start justify-between gap-4 rounded-2xl border border-amber-300/12 bg-amber-300/6 p-4 lg:col-span-2">
               <span>
                 <span class="block text-sm font-semibold text-white">迅雷字幕（实验性）</span>
-                <span class="mt-1 block text-xs leading-5 text-amber-100/55">CID 在本机通过本地文件或远程 Range 片段计算。查询接口仅提供固定 HTTP 地址，下载会强制升级到受信任 HTTPS 域名，因此默认关闭。</span>
+                <span class="mt-1 block text-xs leading-5 text-amber-100/55">通过固定 HTTPS 接口按媒体名或自定义关键词搜索；本地文件及支持 Range 的远程视频会额外计算 CID，用于标记和优先展示精确匹配结果。</span>
               </span>
               <input v-model="subtitleForm.xunleiEnabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary">
             </label>

@@ -340,12 +340,12 @@ export interface DataSource {
 - Player 本地搜索通过独立 `SubtitleProvider` 抽象扩展，当前支持 OpenSubtitles、射手网和迅雷字幕，不在 Vue 组件中抓取网站页面。
 - “本地搜索”表示搜索逻辑运行在 Player 本机、下载字幕写入 Player cache，不表示媒体文件必须位于本地硬盘。Emby、OpenList/Alist、CloudDrive2、WebDAV 和后续远程 DataSource 均可使用本地搜索。
 - 各字幕提供器独立运行和容错。OpenSubtitles 未配置时只跳过自身，不得阻断已启用的射手网或迅雷字幕；哈希来源根据当前播放目标选择真实本机绝对路径或当前 HTTP(S) 播放请求，不额外依赖可能尚未同步的数据源类型。单个提供器失败也不得丢弃其他提供器已经返回的结果。
-- 提供器能力必须明确区分：OpenSubtitles 使用媒体名称、文件名或自定义关键词查询；射手网和迅雷不消费关键词，只按当前视频内容哈希精确匹配。保存新的 OpenSubtitles 凭据时自动启用该提供器；若凭据存在但开关关闭且哈希提供器未命中，搜索界面必须明确提示“输入的关键词没有被查询”，不得显示成所有提供器都完成关键词搜索后的普通零结果。
+- 提供器能力必须明确区分：OpenSubtitles 和迅雷使用媒体名称、文件名或自定义关键词查询；射手网只按当前视频内容哈希精确匹配。保存新的 OpenSubtitles 凭据时自动启用该提供器；若 OpenSubtitles 与迅雷均未启用且射手网未命中，搜索界面必须明确提示“输入的关键词没有被查询”，不得显示成所有提供器都完成关键词搜索后的普通零结果。
 - OpenSubtitles 提供互斥的二选一模式：API Key 模式使用 OpenSubtitles.com REST API；账号密码模式使用固定 HTTPS OpenSubtitles.org 旧 XML-RPC 接口，不要求用户再填写 API Key。现代 OpenSubtitles.com 邮箱账号可能不属于旧账号体系并返回 401；此时 Player 自动使用官方匿名 XML-RPC 会话继续免 Key 搜索，并在设置反馈中明确显示兼容状态，不得伪称账号已认证。旧版 `API Key + 账号` 凭据迁移时，有完整账号密码则转为账号模式，否则转为 API Key 模式。
 - 两种 OpenSubtitles 凭据都保存到 Player 凭据边界。REST 下载只接受受信任 HTTPS OpenSubtitles 域名；XML-RPC 固定请求官方 HTTPS 端点，限制响应大小，认证或匿名兼容会话只保存在 Rust 进程内，下载内容经受限 Base64/gzip 解码后写入 Tauri 字幕缓存。
 - 字幕搜索关键词提供三种明确来源：默认使用刮削/展示媒体名称；可切换为不含目录的原始文件名；也可手动输入自定义关键词。自定义模式只发送关键词和语言，不附带当前媒体的 IMDb/TMDB、年份、类型或季集条件。不得把目录、签名 URL、查询参数、本地绝对路径或凭据作为标题查询发送给字幕服务。
-- 射手网使用四段 MD5 内容哈希，通过固定 HTTPS API 精确匹配；迅雷字幕使用三段 SHA-1 CID。本地文件由 Rust 直接读取，远程媒体由 Rust 使用当前播放 URL 与必要 Header 做受限 Range 读取：先请求 `bytes=0-0` 验证 Range 和总大小，再只读取算法要求的片段。跨源重定向清除数据源 Header，拒绝 HTTPS 降级、非 HTTP(S) 地址、非 Range 响应和超限 Header。
-- 迅雷 CID 查询接口当前仅提供固定 HTTP 地址，因此设置中默认关闭并明确标记实验性；字幕下载地址必须升级并限制到 `subtitle.v.geilijiasu.com` HTTPS。
+- 射手网使用四段 MD5 内容哈希，通过固定 HTTPS API 精确匹配。迅雷固定请求 `https://api-shoulei-ssl.xunlei.com/oracle/subtitle?name=...` 进行名称搜索；同时在 Rust 内限时尝试三段 SHA-1 CID，用于标记并优先展示精确匹配，CID 失败不得阻断名称结果。
+- 本地文件由 Rust 直接读取哈希片段；远程媒体由 Rust 使用当前播放 URL 与必要 Header 做受限 Range 读取：先请求 `bytes=0-0` 验证 Range 和总大小，再只读取算法要求的片段。跨源重定向清除数据源 Header，拒绝 HTTPS 降级、非 HTTP(S) 地址、非 Range 响应和超限 Header。迅雷名称请求只发送用户选定的媒体名、文件名或自定义关键词，不发送播放 URL、目录、Header 或凭据。
 - 本地绝对路径只通过 IPC 进入 Rust 读取哈希片段。外部字幕服务只接收内容哈希、文件名和语言，不接收绝对路径、远程播放 URL、数据源账号或 Token。
 - 射手网和迅雷下载 URL 保存在 Rust 短期内存表中，Vue 仅持有不透明引用。所有提供器下载均限制域名、重定向、响应大小和扩展名，并使用受控哈希文件名写入当前存储模式的 `cache/subtitles`，不写入媒体目录。
 - 播放器字幕菜单内提供轻量字幕偏移控制，直接设置 mpv `sub-delay`，范围为提前 30 秒到延后 30 秒并支持 0.1 秒滑动、0.5 秒步进和一键重置。调节过程不打开遮挡视频的全屏弹窗，新媒体加载时重置为同步状态。

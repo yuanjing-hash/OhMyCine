@@ -18,12 +18,16 @@ export class HashSubtitleProvider implements SubtitleProvider {
   }
 
   async search(input: LocalSubtitleSearchInput): Promise<SubtitleSearchResult[]> {
-    if (!input.localFilePath && !input.remoteMediaUrl)
+    const query = input.title?.trim() || input.mediaFileName?.trim()
+    if (this.id === 'shooter' && !input.localFilePath && !input.remoteMediaUrl)
+      return []
+    if (this.id === 'xunlei' && !query)
       return []
 
     return invoke<SubtitleSearchResult[]>('subtitle_search_hash_provider', {
       request: {
         provider: this.id,
+        query: query ?? null,
         filePath: input.localFilePath ?? null,
         remoteUrl: input.remoteMediaUrl ?? null,
         headers: toHeaderPayload(input.remoteMediaHeaders),

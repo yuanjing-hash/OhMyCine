@@ -16,10 +16,11 @@ export async function searchLocalSubtitles(input: LocalSubtitleSearchInput): Pro
   const hasOpenSubtitlesCredential = Boolean(openSubtitlesCredential)
   const openSubtitlesActive = settings.openSubtitlesEnabled && hasOpenSubtitlesCredential
   const canUseHashProviders = Boolean(input.localFilePath || input.remoteMediaUrl)
+  const hasKeywordProvider = openSubtitlesActive || settings.xunleiEnabled
   const enabledProviders = [
     openSubtitlesActive ? providers.opensubtitles : null,
     settings.shooterEnabled && canUseHashProviders ? providers.shooter : null,
-    settings.xunleiEnabled && canUseHashProviders ? providers.xunlei : null,
+    settings.xunleiEnabled ? providers.xunlei : null,
   ].filter((provider): provider is SubtitleProvider => provider != null)
 
   if (enabledProviders.length === 0 && settings.openSubtitlesEnabled && !hasOpenSubtitlesCredential) {
@@ -40,10 +41,10 @@ export async function searchLocalSubtitles(input: LocalSubtitleSearchInput): Pro
   const failure = settled.find(result => result.status === 'rejected')
   if (failure?.status === 'rejected')
     throw failure.reason
-  if (!openSubtitlesActive) {
-    const hashSearchSummary = canUseHashProviders && (settings.shooterEnabled || settings.xunleiEnabled)
-      ? '射手网和迅雷已按当前视频文件哈希查询，但没有命中字幕。'
-      : '当前媒体无法进行射手网或迅雷文件哈希查询。'
+  if (!hasKeywordProvider) {
+    const hashSearchSummary = canUseHashProviders && settings.shooterEnabled
+      ? '射手网已按当前视频文件哈希查询，但没有命中字幕。'
+      : '当前媒体无法进行射手网文件哈希查询。'
     if (hasOpenSubtitlesCredential) {
       throw new Error(`${hashSearchSummary} OpenSubtitles 已配置但当前处于关闭状态，输入的关键词没有被查询；请到“设置 → 播放与字幕”启用 OpenSubtitles。`)
     }

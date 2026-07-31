@@ -24,8 +24,9 @@ const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
 const OPENSUBTITLES_XMLRPC_URL: &str = "https://api.opensubtitles.org/xml-rpc";
 const OPENSUBTITLES_XMLRPC_USER_AGENT: &str = "OhMyCine v0.1";
 const SHOOTER_API_URL: &str = "https://www.shooter.cn/api/subapi.php";
-const XUNLEI_API_PREFIX: &str = "http://sub.xmp.sandai.net:8000/subxl/";
+const XUNLEI_NAME_SEARCH_URL: &str = "https://api-shoulei-ssl.xunlei.com/oracle/subtitle";
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
+const XUNLEI_OPTIONAL_CID_TIMEOUT_SECONDS: u64 = 4;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DOWNLOAD_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
@@ -141,6 +142,7 @@ pub struct OpenSubtitlesDownloadRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HashSubtitleSearchRequest {
     provider: HashSubtitleProvider,
+    query: Option<String>,
     file_path: Option<String>,
     remote_url: Option<String>,
     #[serde(default)]
@@ -223,25 +225,27 @@ struct ShooterFile {
 }
 
 #[derive(Deserialize, Default)]
-struct XunleiResponse {
+struct XunleiNameSearchResponse {
     #[serde(default)]
-    sublist: Vec<XunleiRecord>,
+    code: i64,
+    #[serde(default)]
+    data: Vec<XunleiNameSearchRecord>,
 }
 
 #[derive(Deserialize, Default)]
-struct XunleiRecord {
+struct XunleiNameSearchRecord {
     #[serde(default)]
-    scid: String,
+    cid: String,
     #[serde(default)]
-    sname: String,
+    name: String,
     #[serde(default)]
-    language: String,
+    url: String,
     #[serde(default)]
-    rate: String,
+    ext: String,
     #[serde(default)]
-    surl: String,
+    languages: Vec<String>,
     #[serde(default)]
-    svote: u64,
+    score: i64,
 }
 
 #[tauri::command]
@@ -419,12 +423,14 @@ pub async fn subtitle_search_hash_provider(
     downloads: State<'_, SubtitleDownloadState>,
     request: HashSubtitleSearchRequest,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
-    let media = resolve_hash_media_source(&request).await?;
     let language = normalize_language(&request.language)?;
 
     match request.provider {
-        HashSubtitleProvider::Shooter => search_shooter(&downloads, &media, &language).await,
-        HashSubtitleProvider::Xunlei => search_xunlei(&downloads, &media, &language).await,
+        HashSubtitleProvider::Shooter => {
+            let media = resolve_hash_media_source(&request).await?;
+            search_shooter(&downloads, &media, &language).await
+        }
+        HashSubtitleProvider::Xunlei => search_xunlei(&downloads, &request, &language).await,
     }
 }
 
@@ -889,67 +895,107 @@ async fn search_shooter(
 
 async fn search_xunlei(
     downloads: &SubtitleDownloadState,
-    media: &HashMediaSource,
+    request: &HashSubtitleSearchRequest,
     language: &str,
 ) -> Result<Vec<HashSubtitleSearchResult>, String> {
-    let cid = compute_xunlei_media_cid(media).await?;
-    let url = format!("{XUNLEI_API_PREFIX}{cid}.json");
-    let response = http_client()?
-        .get(url)
-        .header(USER_AGENT, "OhMyCine Player v0.1")
-        .send()
-        .await
-        .map_err(network_error)?;
-    let bytes = read_limited_response(response, MAX_SEARCH_RESPONSE_BYTES).await?;
-    let text = String::from_utf8_lossy(&bytes);
-    let mut payload: XunleiResponse =
-        serde_json::from_str(&text).map_err(|_| "迅雷字幕返回了无法解析的数据。".to_string())?;
-    payload.sublist.sort_by_key(|record| Reverse(record.svote));
-
+    if !matches!(language, "zh-cn" | "zh-tw") {
+        return Ok(Vec::new());
+    }
+    let query = normalized_query(request.query.as_deref())?
+        .or_else(|| {
+            request
+                .file_name
+                .as_deref()
+                .and_then(validate_remote_media_file_name)
+        })
+        .ok_or_else(|| "请输入用于迅雷字幕搜索的媒体名称或关键词。".to_string())?;
+    let url = build_xunlei_name_search_url(&query)?;
+    let search = async {
+        let response = http_client()?
+            .get(url)
+            .header(USER_AGENT, "OhMyCine Player v0.1")
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(network_error)?;
+        let bytes = read_limited_response(response, MAX_SEARCH_RESPONSE_BYTES).await?;
+        let payload: XunleiNameSearchResponse = serde_json::from_slice(&bytes)
+            .map_err(|_| "迅雷字幕返回了无法解析的数据。".to_string())?;
+        if payload.code != 0 {
+            return Err("迅雷字幕搜索服务返回了失败状态。".to_string());
+        }
+        Ok::<_, String>(payload.data)
+    };
+    let (records, cid) = tokio::join!(search, optional_xunlei_media_cid(request));
+    let mut records = records?;
+    records.sort_by_key(|record| Reverse(record.score));
+    let normalized_cid = cid
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let mut results = Vec::new();
-    for record in payload.sublist {
-        if record.scid.trim().is_empty() || !xunlei_language_matches(&record.language, language) {
+    for record in records {
+        let title = record.name.trim();
+        if title.is_empty() {
             continue;
         }
-        let Some(extension) = safe_subtitle_extension(Some(&record.sname)) else {
+        let Some(extension) = normalized_subtitle_extension(&record.ext)
+            .or_else(|| safe_subtitle_extension(Some(title)))
+        else {
             continue;
         };
-        let url = match normalize_xunlei_download_url(&record.surl) {
+        let url = match normalize_xunlei_download_url(&record.url) {
             Ok(url) => url,
             Err(_) => continue,
         };
+        let is_hash_match = normalized_cid.is_some_and(|cid| {
+            !record.cid.trim().is_empty() && record.cid.trim().eq_ignore_ascii_case(cid)
+        });
         let download_ref =
             register_pending_download(downloads, HashSubtitleProvider::Xunlei, url, extension)?;
-        let title = if record.sname.trim().is_empty() {
-            format!(
-                "迅雷字幕 {}",
-                record.scid.chars().take(8).collect::<String>()
-            )
-        } else {
-            record.sname.trim().chars().take(180).collect()
-        };
         results.push(HashSubtitleSearchResult {
             id: format!("xunlei:{download_ref}"),
             origin: "local",
             provider_name: HashSubtitleProvider::Xunlei.display_name(),
-            language: normalize_xunlei_language(&record.language, language),
-            title,
+            language: normalize_xunlei_languages(&record.languages, language),
+            title: title.chars().take(180).collect(),
             format: extension.to_string(),
-            comments: Some(format!("按本地视频 CID 精确匹配 · {} 票", record.svote)),
-            rating: record
-                .rate
-                .parse::<f64>()
-                .ok()
-                .filter(|value| value.is_finite()),
+            comments: Some(if is_hash_match {
+                "迅雷名称搜索 · CID 精确匹配".to_string()
+            } else {
+                "迅雷名称搜索".to_string()
+            }),
+            rating: (record.score > 0).then_some(record.score as f64),
             download_count: None,
-            is_hash_match: true,
+            is_hash_match,
             download_ref,
         });
-        if results.len() >= 30 {
+        if results.len() >= 50 {
             break;
         }
     }
+    results.sort_by_key(|result| !result.is_hash_match);
     Ok(results)
+}
+
+fn build_xunlei_name_search_url(query: &str) -> Result<Url, String> {
+    let mut url =
+        Url::parse(XUNLEI_NAME_SEARCH_URL).map_err(|_| "迅雷字幕搜索服务地址无效。".to_string())?;
+    url.query_pairs_mut().append_pair("name", query);
+    Ok(url)
+}
+
+async fn optional_xunlei_media_cid(request: &HashSubtitleSearchRequest) -> Option<String> {
+    tokio::time::timeout(
+        Duration::from_secs(XUNLEI_OPTIONAL_CID_TIMEOUT_SECONDS),
+        async {
+            let media = resolve_hash_media_source(request).await.ok()?;
+            compute_xunlei_media_cid(&media).await.ok()
+        },
+    )
+    .await
+    .ok()
+    .flatten()
 }
 
 fn register_pending_download(
@@ -1709,30 +1755,11 @@ fn subtitle_cache_path(
     directory.join(format!("{:x}.{extension}", hasher.finalize()))
 }
 
-fn xunlei_language_matches(value: &str, requested: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    match requested {
-        "zh-cn" => {
-            normalized.contains("简") || normalized.contains("中") || normalized.contains("未知")
-        }
-        "zh-tw" => {
-            normalized.contains("繁") || normalized.contains("中") || normalized.contains("未知")
-        }
-        "en" => normalized.contains("英") || normalized.contains("english") || normalized == "en",
-        "ja" => normalized.contains("日") || normalized.contains("japanese") || normalized == "ja",
-        "ko" => {
-            normalized.contains("韩")
-                || normalized.contains("朝")
-                || normalized.contains("korean")
-                || normalized == "ko"
-        }
-        _ => false,
-    }
-}
-
-fn normalize_xunlei_language(value: &str, fallback: &str) -> String {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.contains("简") {
+fn normalize_xunlei_languages(values: &[String], fallback: &str) -> String {
+    let normalized = values.join(" ").trim().to_ascii_lowercase();
+    if normalized.contains("繁") && fallback == "zh-tw" {
+        "zh-TW".to_string()
+    } else if normalized.contains("简") {
         "zh-CN".to_string()
     } else if normalized.contains("繁") {
         "zh-TW".to_string()
@@ -1770,13 +1797,13 @@ fn http_error(status: StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_opensubtitles_xmlrpc_search_body, compute_shooter_hash, compute_shooter_media_hash,
-        compute_xunlei_cid, compute_xunlei_media_cid, normalize_xunlei_download_url,
-        parse_xmlrpc_response, resolve_hash_media_source, safe_subtitle_extension,
-        validate_opensubtitles_download_url, validate_shooter_download_url,
-        validate_xunlei_download_url, xmlrpc_string_member, xmlrpc_struct, HashSubtitleProvider,
-        HashSubtitleSearchRequest, OpenSubtitlesAuthMode, OpenSubtitlesSearchRequest,
-        RemoteMediaHeader,
+        build_opensubtitles_xmlrpc_search_body, build_xunlei_name_search_url, compute_shooter_hash,
+        compute_shooter_media_hash, compute_xunlei_cid, compute_xunlei_media_cid,
+        normalize_xunlei_download_url, normalize_xunlei_languages, parse_xmlrpc_response,
+        resolve_hash_media_source, safe_subtitle_extension, validate_opensubtitles_download_url,
+        validate_shooter_download_url, validate_xunlei_download_url, xmlrpc_string_member,
+        xmlrpc_struct, HashSubtitleProvider, HashSubtitleSearchRequest, OpenSubtitlesAuthMode,
+        OpenSubtitlesSearchRequest, RemoteMediaHeader,
     };
     use std::fs;
     use std::io::{Read, Write};
@@ -1814,6 +1841,54 @@ mod tests {
                 .is_ok()
         );
         assert!(validate_xunlei_download_url("https://example.test/AA/BB/test.ass").is_err());
+    }
+
+    #[test]
+    fn builds_xunlei_name_search_without_media_hash() {
+        let url = build_xunlei_name_search_url("超级少女 S01E01 & test").unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("api-shoulei-ssl.xunlei.com"));
+        assert_eq!(url.path(), "/oracle/subtitle");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![("name".into(), "超级少女 S01E01 & test".into())]
+        );
+    }
+
+    #[test]
+    fn normalizes_xunlei_name_result_languages() {
+        assert_eq!(
+            normalize_xunlei_languages(&["简体&英语".to_string()], "zh-cn"),
+            "zh-CN"
+        );
+        assert_eq!(
+            normalize_xunlei_languages(&["繁体".to_string()], "zh-tw"),
+            "zh-TW"
+        );
+        assert_eq!(normalize_xunlei_languages(&[], "zh-cn"), "zh-cn");
+    }
+
+    #[test]
+    fn parses_xunlei_name_search_response() {
+        let payload: super::XunleiNameSearchResponse = serde_json::from_str(
+            r#"{
+              "code": 0,
+              "result": "ok",
+              "data": [{
+                "cid": "ABC123",
+                "url": "https://subtitle.v.geilijiasu.com/AA/BB/test.srt",
+                "ext": "srt",
+                "name": "超级少女.S01E01.简体.srt",
+                "languages": ["简体&英语"],
+                "score": 8
+              }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(payload.code, 0);
+        assert_eq!(payload.data.len(), 1);
+        assert_eq!(payload.data[0].cid, "ABC123");
+        assert_eq!(payload.data[0].score, 8);
     }
 
     #[test]
@@ -1903,6 +1978,7 @@ mod tests {
 
         let request = HashSubtitleSearchRequest {
             provider: HashSubtitleProvider::Shooter,
+            query: Some("movie".to_string()),
             file_path: None,
             remote_url: Some(format!("http://{address}/movie.mp4")),
             headers: vec![RemoteMediaHeader {
