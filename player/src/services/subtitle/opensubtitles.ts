@@ -1,4 +1,4 @@
-import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleProvider } from './types'
+import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 import { readOpenSubtitlesCredentials } from './settings'
@@ -53,14 +53,14 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
       .filter((result): result is SubtitleSearchResult => result != null)
   }
 
-  async download(result: SubtitleSearchResult): Promise<LocalSubtitleDownloadResult> {
+  async download(result: SubtitleSearchResult, cacheOwner?: SubtitleCacheOwner): Promise<LocalSubtitleDownloadResult> {
     const credential = await requiredCredential()
     const fileId = Number.parseInt(result.downloadRef ?? '', 10)
     if (!Number.isSafeInteger(fileId) || fileId <= 0)
       throw new Error('该 OpenSubtitles 结果缺少可下载文件。')
 
     const downloaded = await invoke<DownloadedSubtitle>('subtitle_download_opensubtitles', {
-      request: { ...credential, fileId, format: result.format },
+      request: { ...credential, fileId, format: result.format, cacheOwner: cacheOwner ?? null },
     })
     return {
       path: downloaded.path,

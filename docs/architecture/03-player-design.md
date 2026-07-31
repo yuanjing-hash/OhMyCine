@@ -571,7 +571,7 @@ Player 使用统一 Rust `storage` layout，应用数据库不写入安装目录
 │   ├── credentials.sqlite
 │   ├── master.key
 │   ├── playback_history.sqlite
-│   ├── player_preferences.sqlite
+│   ├── player_preferences.sqlite  # 全局播放偏好 + 按 source/media 保存的单视频播放设置
 │   └── raw_scan_cache.sqlite
 ├── cache/
 └── logs/
@@ -2284,6 +2284,12 @@ libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由
 - 修改过的 libmpv 源码必须公开
 
 ## 10. 快捷键系统
+
+当前 Player 已实现以下基础交互：点击视频区域或按 `Space` 切换播放/暂停；左右方向键短按后退/前进 5 秒；长按右方向键临时切换到设置中的长按倍速，松开恢复当前视频原速度；长按左方向键连续后退。播放器固定按键在输入框、选择框和可编辑区域聚焦时不得触发。
+
+首页、设置、数据源管理和每个动态媒体源入口使用独立的导航快捷键映射。导航映射保存到普通全局设置，可在设置页捕获组合键、检测重复占用、清空或恢复默认；它不得覆盖 `Space`、左右方向键和 `Escape` 等播放器固定按键。删除媒体源时同步删除该动态入口的快捷键映射。
+
+每个视频按 `sourceId + mediaIdentity` 在 `player_preferences.sqlite` 保存字幕选择、音轨、字幕偏移、播放速度、画面比例和填充模式。字幕/音轨优先使用语言、标题、编码、声道等稳定指纹恢复，数字轨道 ID 仅作兜底；本地下载字幕只保存 Player `cache/subtitles` 内的受控缓存路径，禁止保存远程字幕 URL、签名播放 URL 或 Header。删除媒体源时同步删除来源播放记录、单视频偏好和来源拥有的字幕缓存。设置页“清除播放缓存”清除媒体/扫描/字幕缓存和全部单视频偏好，但保留数据源、凭据、播放记录与全局软件设置。
 
 ```typescript
 // src/composables/useKeyboard.ts

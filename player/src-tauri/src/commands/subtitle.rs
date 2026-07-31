@@ -136,6 +136,7 @@ pub struct OpenSubtitlesDownloadRequest {
     password: Option<String>,
     file_id: u64,
     format: Option<String>,
+    cache_owner: Option<SubtitleCacheOwner>,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +185,14 @@ enum HashMediaSource {
 pub struct HashSubtitleDownloadRequest {
     provider: HashSubtitleProvider,
     download_ref: String,
+    cache_owner: Option<SubtitleCacheOwner>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubtitleCacheOwner {
+    source_id: String,
+    media_identity: String,
 }
 
 #[derive(Serialize)]
@@ -431,6 +440,7 @@ async fn download_opensubtitles_rest(
         &request.file_id.to_string(),
         extension,
         content,
+        request.cache_owner.as_ref(),
     )
 }
 
@@ -471,6 +481,7 @@ pub async fn subtitle_download_hash_provider(
         &request.download_ref,
         &pending.extension,
         content,
+        request.cache_owner.as_ref(),
     )
 }
 
@@ -637,6 +648,7 @@ async fn download_opensubtitles_xmlrpc(
         &request.file_id.to_string(),
         extension,
         content,
+        request.cache_owner.as_ref(),
     )
 }
 
@@ -1817,6 +1829,7 @@ fn write_subtitle_cache(
     identity: &str,
     extension: &str,
     content: Vec<u8>,
+    cache_owner: Option<&SubtitleCacheOwner>,
 ) -> Result<DownloadedSubtitle, String> {
     if content.is_empty() || content.len() > MAX_DOWNLOAD_RESPONSE_BYTES {
         return Err("字幕文件为空或大小无效。".to_string());
@@ -1824,13 +1837,42 @@ fn write_subtitle_cache(
     let extension = normalized_subtitle_extension(extension)
         .ok_or_else(|| "字幕文件扩展名不受支持。".to_string())?;
     let layout = crate::storage::initialize(app)?;
-    let subtitle_dir = layout.cache_dir.join("subtitles");
+    let subtitle_dir = subtitle_cache_owner_directory(&layout.cache_dir, cache_owner)?;
     fs::create_dir_all(&subtitle_dir).map_err(|_| "无法创建字幕缓存目录。".to_string())?;
     let target = subtitle_cache_path(&subtitle_dir, provider, identity, extension);
     fs::write(&target, content).map_err(|_| "无法写入字幕缓存文件。".to_string())?;
     Ok(DownloadedSubtitle {
         path: target.to_string_lossy().to_string(),
     })
+}
+
+fn subtitle_cache_owner_directory(
+    cache_dir: &Path,
+    cache_owner: Option<&SubtitleCacheOwner>,
+) -> Result<PathBuf, String> {
+    let mut subtitle_dir = cache_dir.join("subtitles");
+    if let Some(owner) = cache_owner {
+        validate_subtitle_cache_identity(&owner.source_id, 512)?;
+        validate_subtitle_cache_identity(&owner.media_identity, 2048)?;
+        subtitle_dir = subtitle_dir
+            .join(crate::storage::scoped_cache_key(
+                "subtitle-source",
+                owner.source_id.trim(),
+            ))
+            .join(crate::storage::scoped_cache_key(
+                "subtitle-media",
+                owner.media_identity.trim(),
+            ));
+    }
+    Ok(subtitle_dir)
+}
+
+fn validate_subtitle_cache_identity(value: &str, max_length: usize) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > max_length || value.chars().any(char::is_control) {
+        return Err("字幕缓存归属信息无效。".to_string());
+    }
+    Ok(())
 }
 
 fn validate_opensubtitles_download_url(value: &str) -> Result<Url, String> {
@@ -2079,15 +2121,32 @@ mod tests {
         compute_shooter_hash, compute_shooter_media_hash, compute_xunlei_cid,
         compute_xunlei_media_cid, normalize_xunlei_download_url, normalize_xunlei_languages,
         parse_episode_marker, parse_xmlrpc_response, resolve_hash_media_source,
-        safe_subtitle_extension, validate_opensubtitles_download_url,
-        validate_shooter_download_url, validate_xunlei_download_url, xmlrpc_string_member,
-        xmlrpc_struct, HashSubtitleProvider, HashSubtitleSearchRequest, OpenSubtitlesAuthMode,
-        OpenSubtitlesSearchRequest, RemoteMediaHeader, XunleiNameSearchRecord,
+        safe_subtitle_extension, subtitle_cache_owner_directory,
+        validate_opensubtitles_download_url, validate_shooter_download_url,
+        validate_xunlei_download_url, xmlrpc_string_member, xmlrpc_struct, HashSubtitleProvider,
+        HashSubtitleSearchRequest, OpenSubtitlesAuthMode, OpenSubtitlesSearchRequest,
+        RemoteMediaHeader, SubtitleCacheOwner, XunleiNameSearchRecord,
     };
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn subtitle_cache_owner_uses_hashed_source_and_media_directories() {
+        let root = std::path::PathBuf::from("cache-root");
+        let owner = SubtitleCacheOwner {
+            source_id: "emby-private".to_string(),
+            media_identity: "episode-secret".to_string(),
+        };
+        let directory = subtitle_cache_owner_directory(&root, Some(&owner))
+            .expect("build scoped subtitle cache directory");
+        let display = directory.to_string_lossy();
+
+        assert!(directory.starts_with(root.join("subtitles")));
+        assert!(!display.contains("emby-private"));
+        assert!(!display.contains("episode-secret"));
+    }
 
     fn xunlei_request(media_type: Option<&str>) -> HashSubtitleSearchRequest {
         HashSubtitleSearchRequest {

@@ -493,6 +493,8 @@ export function useMpv() {
     isPlaying.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
+    videoAspectMode.value = 'default'
+    videoFitMode.value = 'fit'
     await subtitleDelayCommand.catch(() => undefined)
     await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
@@ -501,6 +503,8 @@ export function useMpv() {
     isPlaying.value = true
     await applyPlaybackSpeed(playbackSpeed.value)
     await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
+    await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
+    await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
     await refreshTrackState()
     await refreshVideoDynamicRange()
     scheduleTrackRefresh(400)
@@ -679,7 +683,9 @@ export function useMpv() {
     seek,
     seekRelative,
     setVolume,
+    applyPlaybackSpeed,
     setPlaybackSpeed,
+    applySubtitleDelay,
     setSubtitleDelay,
     setSubtitle,
     addExternalSubtitle,

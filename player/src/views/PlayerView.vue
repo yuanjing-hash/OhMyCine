@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
+import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
@@ -13,8 +14,10 @@ import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useMpv } from '@/composables/useMpv'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
+import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { downloadLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -27,6 +30,10 @@ const LOCAL_FILE_SOURCE_ID = 'local-file'
 const CONTEXT_MENU_WIDTH = 224
 const CONTEXT_MENU_MAX_HEIGHT = 360
 const CONTEXT_MENU_MARGIN = 12
+const ARROW_TAP_SEEK_SECONDS = 5
+const ARROW_HOLD_DELAY = 350
+const REWIND_HOLD_INTERVAL = 220
+const MEDIA_PREFERENCE_SAVE_DELAY = 180
 
 interface ContextMenuPosition {
   x: number
@@ -96,6 +103,15 @@ let homeRefreshTimer: number | undefined
 let lastSavedPosition = -1
 let playbackStartPosition = 0
 const resumeSeekTimers = new Set<number>()
+let activeCachedSubtitlePath: string | null = null
+let mediaPreferenceSaveTimer: number | undefined
+let mediaPreferenceRestoreGeneration = 0
+let restoringMediaPreference = false
+let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
+let heldArrowTimer: number | undefined
+let rewindHoldTimer: number | undefined
+let arrowHoldActivated = false
+let arrowBasePlaybackSpeed = 1
 
 const {
   isPlaying,
@@ -126,7 +142,9 @@ const {
   seek,
   seekRelative,
   setVolume,
+  applyPlaybackSpeed,
   setPlaybackSpeed,
+  applySubtitleDelay,
   setSubtitleDelay,
   setSubtitle,
   addExternalSubtitle,
@@ -220,6 +238,7 @@ function handleControlsInteraction(next: boolean) {
 
 function handleWindowBlur() {
   controlsInteracting.value = false
+  void releaseHeldArrow(false)
   scheduleChromeHide()
 }
 
@@ -480,6 +499,167 @@ function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'me
     return null
 
   return { sourceId, mediaIdentity }
+}
+
+function currentMediaPreferenceIdentity(): MediaPlaybackPreferenceIdentity | null {
+  return currentHistoryIdentity()
+}
+
+function trackPreference(track: Track | SubtitleTrackOption | undefined): MediaTrackPreference | null {
+  if (!track)
+    return null
+  return {
+    language: track.language ?? null,
+    title: track.title ?? null,
+    codec: track.codec ?? null,
+    channels: track.channels ?? null,
+    trackId: numericTrackId(track),
+  }
+}
+
+function currentSubtitlePreference(): MediaSubtitlePreference {
+  const selected = subtitleTracks.value.find(track => track.id === currentSubtitle.value)
+  if (activeCachedSubtitlePath) {
+    return {
+      kind: 'cachedExternal',
+      track: trackPreference(selected),
+      cachedPath: activeCachedSubtitlePath,
+    }
+  }
+  if (!currentSubtitle.value)
+    return { kind: 'off' }
+  return {
+    kind: 'embedded',
+    track: trackPreference(selected),
+  }
+}
+
+function currentAudioPreference(): MediaTrackPreference | null {
+  return trackPreference(audioTracks.value.find(track => track.id === currentAudio.value))
+}
+
+function clearMediaPreferenceSaveTimer() {
+  if (!mediaPreferenceSaveTimer)
+    return
+  window.clearTimeout(mediaPreferenceSaveTimer)
+  mediaPreferenceSaveTimer = undefined
+}
+
+function scheduleMediaPreferenceSave() {
+  if (restoringMediaPreference)
+    return
+  clearMediaPreferenceSaveTimer()
+  const identity = currentMediaPreferenceIdentity()
+  if (!identity)
+    return
+  mediaPreferenceSaveTimer = window.setTimeout(() => {
+    mediaPreferenceSaveTimer = undefined
+    void saveMediaPlaybackPreference({
+      ...identity,
+      subtitle: currentSubtitlePreference(),
+      audio: currentAudioPreference(),
+      subtitleDelay: subtitleDelay.value,
+      playbackSpeed: playbackSpeed.value,
+      aspectMode: videoAspectMode.value,
+      fitMode: videoFitMode.value,
+    })
+  }, MEDIA_PREFERENCE_SAVE_DELAY)
+}
+
+async function restoreMediaPlaybackPreference() {
+  const identity = currentMediaPreferenceIdentity()
+  if (!identity)
+    return
+  const generation = ++mediaPreferenceRestoreGeneration
+  const preference = await getMediaPlaybackPreference(identity)
+  if (!preference || generation !== mediaPreferenceRestoreGeneration || playbackCleanupStarted)
+    return
+
+  restoringMediaPreference = true
+  try {
+    await applyPlaybackSpeed(preference.playbackSpeed)
+    await applySubtitleDelay(preference.subtitleDelay)
+    await setVideoAspect(preference.aspectMode)
+    await setVideoFit(preference.fitMode)
+    await refreshTrackState()
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return
+    await restoreAudioPreference(preference)
+    await restoreSubtitlePreference(preference)
+    scheduleRenderBoundsSync()
+  }
+  finally {
+    restoringMediaPreference = false
+  }
+}
+
+async function restoreAudioPreference(preference: MediaPlaybackPreference) {
+  const track = matchTrackPreference(audioTracks.value, preference.audio)
+  if (track)
+    await setAudio(track.id)
+}
+
+async function restoreSubtitlePreference(preference: MediaPlaybackPreference) {
+  const subtitle = preference.subtitle
+  activeCachedSubtitlePath = null
+  if (!subtitle)
+    return
+  if (subtitle.kind === 'off') {
+    await setSubtitle(null)
+    return
+  }
+  if (subtitle.kind === 'cachedExternal' && subtitle.cachedPath) {
+    await addExternalSubtitle(
+      subtitle.cachedPath,
+      subtitle.track?.title ?? subtitle.track?.language ?? '已保存字幕',
+      subtitle.track?.language ?? undefined,
+    )
+    activeCachedSubtitlePath = subtitle.cachedPath
+    return
+  }
+  const track = matchTrackPreference(subtitleTracks.value, subtitle.track)
+  if (track)
+    await setSubtitle(track.id)
+}
+
+function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: readonly T[], preference: MediaTrackPreference | null | undefined): T | null {
+  if (!preference)
+    return null
+  let best: { track: T, score: number } | null = null
+  for (const track of tracks) {
+    let score = 0
+    if (sameTrackText(preference.title, track.title))
+      score += 6
+    if (sameTrackText(preference.language, track.language))
+      score += 4
+    if (sameTrackText(preference.codec, track.codec))
+      score += 2
+    if (preference.channels != null && track.channels === preference.channels)
+      score += 2
+    const trackId = numericTrackId(track)
+    if (preference.trackId != null && trackId === preference.trackId)
+      score += 1
+    if (!best || score > best.score)
+      best = { track, score }
+  }
+  const minimumScore = preference.title || preference.language
+    ? 4
+    : preference.codec || preference.channels != null
+      ? 2
+      : 1
+  return best && best.score >= minimumScore ? best.track : null
+}
+
+function numericTrackId(track: Track | SubtitleTrackOption): number | null {
+  if ('mpvId' in track && typeof track.mpvId === 'number')
+    return track.mpvId
+  return typeof track.id === 'number' ? track.id : null
+}
+
+function sameTrackText(expected: string | null | undefined, actual: string | null | undefined): boolean {
+  if (!expected || !actual)
+    return false
+  return expected.trim().toLocaleLowerCase() === actual.trim().toLocaleLowerCase()
 }
 
 function currentHistoryPayload(): PlaybackProgressUpsert | null {
@@ -966,9 +1146,13 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
       await addExternalSubtitle(track.url, track.title ?? result.title, track.language)
     }
     else {
-      const downloaded = await downloadLocalSubtitle(result)
+      const cacheOwner = currentMediaPreferenceIdentity() ?? undefined
+      const downloaded = await downloadLocalSubtitle(result, cacheOwner)
       await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language)
+      activeCachedSubtitlePath = downloaded.path
     }
+
+    scheduleMediaPreferenceSave()
 
     showTransientPlayerMessage(`已加载字幕：${result.title}`)
     subtitleSearchOpen.value = false
@@ -1118,6 +1302,10 @@ watch(
   () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
   async () => {
     await saveCurrentProgress(true, 'stopped')
+    mediaPreferenceRestoreGeneration += 1
+    clearMediaPreferenceSaveTimer()
+    activeCachedSubtitlePath = null
+    await releaseHeldArrow(false)
     resetHistorySaveState()
     mediaPath.value = ''
     mediaHeaders.value = {}
@@ -1147,6 +1335,7 @@ watch(
         mediaPath.value = request.url
         mediaHeaders.value = { ...(request.headers ?? {}) }
         await load(request.url, { headers: request.headers })
+        await restoreMediaPlaybackPreference()
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
         syncProviderPlaybackStarted()
@@ -1183,6 +1372,10 @@ watch([shouldShowChrome, hasMedia], () => {
 
 async function handleFileDrop(path: string) {
   await saveCurrentProgress(true, 'stopped')
+  mediaPreferenceRestoreGeneration += 1
+  clearMediaPreferenceSaveTimer()
+  activeCachedSubtitlePath = null
+  await releaseHeldArrow(false)
   resetHistorySaveState()
   mediaPath.value = path
   mediaHeaders.value = {}
@@ -1204,6 +1397,7 @@ async function handleFileDrop(path: string) {
   if (playbackCleanupStarted)
     return
   await load(path)
+  await restoreMediaPlaybackPreference()
   startHistorySaveTimer()
   await resumeSavedProgressIfAvailable()
   if (playbackCleanupStarted)
@@ -1281,6 +1475,27 @@ async function handleTogglePause() {
   await togglePause()
   if (willPause)
     await saveCurrentProgress(true, 'paused')
+}
+
+async function handleSetPlaybackSpeed(speed: number) {
+  await setPlaybackSpeed(speed)
+  scheduleMediaPreferenceSave()
+}
+
+async function handleSetSubtitleDelay(delay: number) {
+  await setSubtitleDelay(delay)
+  scheduleMediaPreferenceSave()
+}
+
+async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0]) {
+  activeCachedSubtitlePath = null
+  await setSubtitle(trackId)
+  scheduleMediaPreferenceSave()
+}
+
+async function handleSetAudio(trackId: number) {
+  await setAudio(trackId)
+  scheduleMediaPreferenceSave()
 }
 
 function clampContextMenuPosition(clientX: number, clientY: number): ContextMenuPosition {
@@ -1402,11 +1617,13 @@ async function handleSetVideoAspect(mode: VideoAspectMode) {
   await setVideoAspect(mode)
   await resizeWindowForAspect(mode)
   scheduleRenderBoundsSync()
+  scheduleMediaPreferenceSave()
 }
 
 async function handleSetVideoFit(mode: VideoFitMode) {
   await setVideoFit(mode)
   scheduleRenderBoundsSync()
+  scheduleMediaPreferenceSave()
 }
 
 async function stopPlaybackSilently() {
@@ -1449,7 +1666,89 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'D' || event.key === 'd')) {
     event.preventDefault()
     diagnosticsOpen.value = !diagnosticsOpen.value
+    return
   }
+
+  if (!hasMedia.value || shouldIgnorePlaybackShortcut(event))
+    return
+  if (event.code === 'Space') {
+    event.preventDefault()
+    if (!event.repeat)
+      void handleTogglePause()
+    return
+  }
+  if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
+    event.preventDefault()
+    if (!event.repeat)
+      beginHeldArrow(event.code)
+  }
+}
+
+function handleGlobalKeyup(event: KeyboardEvent) {
+  if (event.code !== heldArrowKey)
+    return
+  event.preventDefault()
+  void releaseHeldArrow(true)
+}
+
+function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
+  if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey)
+    return true
+  const target = event.target
+  if (!(target instanceof HTMLElement))
+    return false
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName)
+}
+
+function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
+  if (heldArrowKey)
+    return
+  heldArrowKey = key
+  arrowHoldActivated = false
+  arrowBasePlaybackSpeed = playbackSpeed.value
+  heldArrowTimer = window.setTimeout(() => {
+    heldArrowTimer = undefined
+    arrowHoldActivated = true
+    if (key === 'ArrowRight') {
+      const configuredSpeed = loadPlayerInteractionSettings().longPressPlaybackSpeed
+      void applyPlaybackSpeed(configuredSpeed)
+      return
+    }
+    void seekRelative(-ARROW_TAP_SEEK_SECONDS)
+    rewindHoldTimer = window.setInterval(() => {
+      void seekRelative(-ARROW_TAP_SEEK_SECONDS)
+    }, REWIND_HOLD_INTERVAL)
+  }, ARROW_HOLD_DELAY)
+}
+
+async function releaseHeldArrow(triggerTap: boolean) {
+  const key = heldArrowKey
+  const wasHold = arrowHoldActivated
+  if (heldArrowTimer)
+    window.clearTimeout(heldArrowTimer)
+  if (rewindHoldTimer)
+    window.clearInterval(rewindHoldTimer)
+  heldArrowTimer = undefined
+  rewindHoldTimer = undefined
+  heldArrowKey = null
+  arrowHoldActivated = false
+  if (!key)
+    return
+  if (key === 'ArrowRight' && wasHold) {
+    await applyPlaybackSpeed(arrowBasePlaybackSpeed)
+    return
+  }
+  if (triggerTap && !wasHold)
+    await seekRelative(key === 'ArrowLeft' ? -ARROW_TAP_SEEK_SECONDS : ARROW_TAP_SEEK_SECONDS)
+}
+
+function handlePlayerAreaClick(event: MouseEvent) {
+  if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
+    return
+  const target = event.target
+  if (target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
+    return
+  void handleTogglePause()
 }
 
 function syncTransparentRootClass(active: boolean) {
@@ -1492,6 +1791,7 @@ onMounted(() => {
   window.addEventListener('resize', handleWindowResize)
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener('keyup', handleGlobalKeyup)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
@@ -1506,6 +1806,8 @@ onBeforeUnmount(() => {
   document.documentElement.classList.remove('player-chrome-hidden')
   document.body.classList.remove('player-chrome-hidden')
   clearHideTimer()
+  clearMediaPreferenceSaveTimer()
+  void releaseHeldArrow(false)
   clearResumeSeekTimers()
   clearResumeMessageTimer()
   window.removeEventListener('blur', handleWindowBlur)
@@ -1513,6 +1815,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('keyup', handleGlobalKeyup)
 })
 
 watch(
@@ -1542,6 +1845,7 @@ watch(
     @mousemove="revealChrome"
     @mouseleave="scheduleChromeHide"
     @touchstart.passive="revealChrome"
+    @click="handlePlayerAreaClick"
     @contextmenu="openPlaybackContextMenu"
   >
     <VideoPlayer
@@ -1652,11 +1956,11 @@ watch(
         @seek="seek"
         @seek-relative="seekRelative"
         @set-volume="setVolume"
-        @set-playback-speed="setPlaybackSpeed"
-        @set-subtitle-delay="setSubtitleDelay"
-        @set-subtitle="setSubtitle"
+        @set-playback-speed="handleSetPlaybackSpeed"
+        @set-subtitle-delay="handleSetSubtitleDelay"
+        @set-subtitle="handleSetSubtitle"
         @search-subtitles="openSubtitleSearch"
-        @set-audio="setAudio"
+        @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
         @refresh-tracks="refreshTrackState"
