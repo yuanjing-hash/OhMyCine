@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::mpv::{
-    player::{MpvCommandReceiver, MpvState, MpvTrackState},
+    player::{MpvState, MpvTrackState},
     render::MpvRenderState,
     surface::{RenderSurfaceBounds, ZOrderStrategy},
 };
@@ -31,13 +31,10 @@ pub async fn mpv_add_subtitle(
     language: Option<String>,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
-    let receiver = {
-        let mut player = state
-            .lock()
-            .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
-        player.add_subtitle(&url, title.as_deref(), language.as_deref())?
-    };
-    await_mpv_command(receiver, "外部字幕加载失败").await
+    let mut player = state
+        .lock()
+        .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
+    player.add_subtitle(&url, title.as_deref(), language.as_deref())
 }
 
 #[tauri::command]
@@ -70,16 +67,6 @@ pub async fn mpv_set_property(
     value: String,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
-    if matches!(prop.as_str(), "sid" | "aid") {
-        let receiver = {
-            let mut player = state
-                .lock()
-                .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
-            player.set_track_property(&prop, &value)?
-        };
-        return await_mpv_command(receiver, "轨道切换失败").await;
-    }
-
     let player = state
         .lock()
         .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
@@ -169,16 +156,4 @@ fn is_valid_header_name(value: &str) -> bool {
                     | b'~'
             )
     })
-}
-
-async fn await_mpv_command(
-    receiver: MpvCommandReceiver,
-    failure_prefix: &str,
-) -> Result<(), String> {
-    match tokio::time::timeout(std::time::Duration::from_secs(22), receiver).await {
-        Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(error))) => Err(format!("{failure_prefix}：{error}")),
-        Ok(Err(_)) => Err(format!("{failure_prefix}：播放器命令队列已关闭")),
-        Err(_) => Err(format!("{failure_prefix}：等待播放器响应超时")),
-    }
 }
