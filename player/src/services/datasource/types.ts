@@ -3,6 +3,7 @@ export interface MediaItem {
   sourceId: string
   libraryId?: string
   name: string
+  originalTitle?: string
   titleLogoUrl?: string
   type: 'movie' | 'series' | 'season' | 'episode' | 'folder' | 'file'
   posterUrl?: string

@@ -25,6 +25,7 @@ export function toRawScannedMediaItem(
     sourceId: candidate.record.sourceId,
     libraryId: candidate.record.rootPath,
     name: rawCandidateDisplayTitle(candidate, scraped, domain),
+    originalTitle: metadata?.originalTitle,
     type: mediaType,
     posterUrl: episodeStillUrl ?? metadata?.posterUrl,
     backdropUrl: episodeStillUrl ?? metadata?.backdropUrl,

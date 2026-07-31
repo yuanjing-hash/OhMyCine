@@ -9,6 +9,10 @@ export interface LocalSubtitleSearchInput extends Omit<SubtitleSearchInput, 'lan
   remoteMediaUrl?: string
   remoteMediaHeaders?: Record<string, string>
   mediaFileName?: string
+  originalTitle?: string
+  seriesName?: string
+  duration?: number
+  keywordMode?: SubtitleKeywordMode
 }
 
 export interface LocalSubtitleDownloadResult {
@@ -33,6 +37,10 @@ export interface SubtitleSearchMediaContext {
   remoteMediaHeaders?: Record<string, string>
   mediaFileName?: string
   mediaSourceId?: string
+  originalTitle?: string
+  seriesName?: string
+  duration?: number
+  keywordMode?: SubtitleKeywordMode
   year?: number
   mediaType?: MediaItem['type']
   seasonNumber?: number
