@@ -628,6 +628,11 @@ async function restorePendingTrackPreference() {
   }
 }
 
+function cancelPendingTrackPreferenceRestore() {
+  mediaPreferenceRestoreGeneration += 1
+  pendingTrackPreference = null
+}
+
 async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
   const track = matchTrackPreference(audioTracks.value, preference.audio)
   if (!track)
@@ -1167,6 +1172,7 @@ async function searchSubtitles(language: SubtitleLanguage, keyword: string, keyw
 }
 
 async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
+  cancelPendingTrackPreferenceRestore()
   subtitleDownloadingId.value = result.id
   subtitleSearchError.value = null
   try {
@@ -1534,12 +1540,14 @@ async function handleSetSubtitleDelay(delay: number) {
 }
 
 async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0]) {
+  cancelPendingTrackPreferenceRestore()
   activeCachedSubtitlePath = null
   await setSubtitle(trackId)
   scheduleMediaPreferenceSave()
 }
 
 async function handleSetAudio(trackId: number) {
+  cancelPendingTrackPreferenceRestore()
   await setAudio(trackId)
   scheduleMediaPreferenceSave()
 }

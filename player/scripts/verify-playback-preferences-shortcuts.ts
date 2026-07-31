@@ -29,6 +29,8 @@ assert.match(playerView, /@click="handlePlayerAreaClick"/)
 assert.match(playerView, /ref="bottomChromeRef"[\s\S]*data-player-click-ignore/)
 assert.match(playerView, /addExternalSubtitle\(track\.url, track\.title \?\? result\.title, track\.language, 'provider'\)/)
 assert.match(playerView, /addExternalSubtitle\(downloaded\.path, downloaded\.title, downloaded\.language, 'downloaded'\)/)
+assert.match(playerView, /function cancelPendingTrackPreferenceRestore\(\)/)
+assert.match(playerView, /async function handleSetSubtitle[\s\S]*cancelPendingTrackPreferenceRestore\(\)/)
 
 const playerControls = await source('../src/components/player/PlayerControls.vue')
 const toggleMenuBody = playerControls.match(/function toggleMenu\(menu: ControlMenu\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
@@ -50,9 +52,16 @@ assert.doesNotMatch(
 
 const nativePlayer = await source('../src-tauri/src/mpv/player.rs')
 assert.match(nativePlayer, /mpv_command_async/)
-assert.match(nativePlayer, /"sid" \| "aid" => self\.command_async\(&\["set", property_name, value\]\)/)
+assert.match(nativePlayer, /pub fn set_track_property/)
+assert.match(nativePlayer, /self\.queue_command\(&\["set", prop, value\]\)/)
+assert.match(nativePlayer, /MPV_EVENT_COMMAND_REPLY/)
+assert.match(nativePlayer, /normalize_mpv_subtitle_input/)
 assert.doesNotMatch(nativePlayer, /mpv_set_property_async/)
 assert.match(nativePlayer, /pub fn drain_events/)
+
+const playerCommands = await source('../src-tauri/src/commands/player.rs')
+assert.match(playerCommands, /await_mpv_command\(receiver, "外部字幕加载失败"\)\.await/)
+assert.match(playerCommands, /tokio::time::timeout/)
 
 const dataSourceStore = await source('../src/stores/datasource.ts')
 assert.match(dataSourceStore, /deletePlaybackHistoryForSource\(id\)/)
@@ -85,6 +94,7 @@ console.log(JSON.stringify({
   playbackTapAndHoldKeys: true,
   controlChromeIgnoresVideoClickToPause: true,
   subtitleMenuGroupsDownloadedAndMediaTracks: true,
+  externalSubtitleCommandsAwaitCompletion: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
   trackRestoreUsesAsyncNativeCommands: true,
   cacheClearPreservesGlobalState: true,

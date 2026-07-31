@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::mpv::{
-    player::{MpvState, MpvTrackState},
+    player::{MpvCommandReceiver, MpvState, MpvTrackState},
     render::MpvRenderState,
     surface::{RenderSurfaceBounds, ZOrderStrategy},
 };
@@ -31,10 +31,13 @@ pub async fn mpv_add_subtitle(
     language: Option<String>,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
-    let mut player = state
-        .lock()
-        .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
-    player.add_subtitle(&url, title.as_deref(), language.as_deref())
+    let receiver = {
+        let mut player = state
+            .lock()
+            .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
+        player.add_subtitle(&url, title.as_deref(), language.as_deref())?
+    };
+    await_mpv_command(receiver, "外部字幕加载失败").await
 }
 
 #[tauri::command]
@@ -67,6 +70,16 @@ pub async fn mpv_set_property(
     value: String,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
+    if matches!(prop.as_str(), "sid" | "aid") {
+        let receiver = {
+            let mut player = state
+                .lock()
+                .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
+            player.set_track_property(&prop, &value)?
+        };
+        return await_mpv_command(receiver, "轨道切换失败").await;
+    }
+
     let player = state
         .lock()
         .map_err(|_| "播放器控制暂不可用，请稍后重试".to_string())?;
@@ -127,9 +140,7 @@ fn sanitize_http_headers(headers: Vec<MpvHttpHeader>) -> Result<Vec<(String, Str
             if name.is_empty() || value.is_empty() {
                 return Err("播放请求 header 格式无效。".to_string());
             }
-            if !is_valid_header_name(&name)
-                || value.chars().any(|ch| ch == '\r' || ch == '\n')
-            {
+            if !is_valid_header_name(&name) || value.chars().any(|ch| ch == '\r' || ch == '\n') {
                 return Err("播放请求 header 格式无效。".to_string());
             }
             Ok((name, value))
@@ -158,4 +169,16 @@ fn is_valid_header_name(value: &str) -> bool {
                     | b'~'
             )
     })
+}
+
+async fn await_mpv_command(
+    receiver: MpvCommandReceiver,
+    failure_prefix: &str,
+) -> Result<(), String> {
+    match tokio::time::timeout(std::time::Duration::from_secs(22), receiver).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(format!("{failure_prefix}：{error}")),
+        Ok(Err(_)) => Err(format!("{failure_prefix}：播放器命令队列已关闭")),
+        Err(_) => Err(format!("{failure_prefix}：等待播放器响应超时")),
+    }
 }

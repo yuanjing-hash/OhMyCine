@@ -1,12 +1,15 @@
 use std::{
+    collections::VecDeque,
     ffi::{CStr, CString},
     os::raw::{c_char, c_int, c_void},
     ptr,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_command_async, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_NONE,
+    mpv_command, mpv_command_async, mpv_create, mpv_error_string,
+    mpv_event_id_MPV_EVENT_COMMAND_REPLY, mpv_event_id_MPV_EVENT_NONE,
     mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
     mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
     mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
@@ -14,6 +17,7 @@ use libmpv_sys::{
     mpv_set_option_string, mpv_set_property, mpv_set_property_string, mpv_terminate_destroy,
     mpv_wait_event,
 };
+use tokio::sync::oneshot;
 
 use super::{
     render::{current_render_state, MpvRenderState, RenderStatus},
@@ -21,6 +25,20 @@ use super::{
 };
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
+pub type MpvCommandReceiver = oneshot::Receiver<Result<(), String>>;
+
+struct QueuedCommand {
+    args: Vec<String>,
+    completion: oneshot::Sender<Result<(), String>>,
+}
+
+struct ActiveCommand {
+    request_id: u64,
+    started_at: Instant,
+    completion: oneshot::Sender<Result<(), String>>,
+}
+
+const ASYNC_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +67,9 @@ pub struct MpvPlayer {
     initialized: bool,
     render_surface: Option<NativeRenderSurface>,
     render_state: MpvRenderState,
+    next_command_request_id: u64,
+    active_command: Option<ActiveCommand>,
+    queued_commands: VecDeque<QueuedCommand>,
 }
 
 // MpvPlayer is only accessed through Arc<Mutex<_>> in Tauri state. libmpv handles are designed
@@ -89,6 +110,9 @@ impl MpvPlayer {
             initialized: false,
             render_surface: None,
             render_state: current_render_state(),
+            next_command_request_id: 1,
+            active_command: None,
+            queued_commands: VecDeque::new(),
         };
 
         // Non-Windows: initialize immediately in the no-visible-video safety mode. Visible video
@@ -126,12 +150,28 @@ impl MpvPlayer {
         url: &str,
         title: Option<&str>,
         language: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<MpvCommandReceiver, String> {
         self.ensure_initialized_fallback()?;
+        let url = normalize_mpv_subtitle_input(url);
         let title = title.unwrap_or("外部字幕");
         let language = language.unwrap_or("");
-        self.command_async(&["sub-add", url, "select", title, language])
-            .map_err(|_| "外部字幕暂时无法加载".to_string())
+        self.queue_command(&["sub-add", &url, "select", title, language])
+    }
+
+    pub fn set_track_property(
+        &mut self,
+        prop: &str,
+        value: &str,
+    ) -> Result<MpvCommandReceiver, String> {
+        if !matches!(prop, "sid" | "aid") {
+            return Err("Invalid mpv track property".to_string());
+        }
+        if value != "no" {
+            value
+                .parse::<i64>()
+                .map_err(|_| "Invalid track id".to_string())?;
+        }
+        self.queue_command(&["set", prop, value])
     }
 
     pub fn render_state(&self) -> MpvRenderState {
@@ -450,7 +490,7 @@ impl MpvPlayer {
                     )
                 })
             }
-            "sid" | "aid" => self.command_async(&["set", property_name, value]),
+            "sid" | "aid" => Err("Track properties require the async command queue".to_string()),
             _ => {
                 let value = CString::new(value).map_err(|err| err.to_string())?;
                 self.check_error(unsafe {
@@ -545,10 +585,48 @@ impl MpvPlayer {
         self.check_error(unsafe { mpv_command(self.ctx, raw_args.as_mut_ptr()) })
     }
 
-    fn command_async(&self, args: &[&str]) -> Result<(), String> {
+    fn queue_command(&mut self, args: &[&str]) -> Result<MpvCommandReceiver, String> {
+        let args = args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        for arg in &args {
+            CString::new(arg.as_str()).map_err(|err| err.to_string())?;
+        }
+
+        let (completion, receiver) = oneshot::channel();
+        self.queued_commands
+            .push_back(QueuedCommand { args, completion });
+        self.dispatch_next_command();
+        Ok(receiver)
+    }
+
+    fn dispatch_next_command(&mut self) {
+        while self.active_command.is_none() {
+            let Some(command) = self.queued_commands.pop_front() else {
+                return;
+            };
+            let request_id = self.next_command_request_id;
+            self.next_command_request_id = self.next_command_request_id.wrapping_add(1).max(1);
+            match self.command_async(request_id, &command.args) {
+                Ok(()) => {
+                    self.active_command = Some(ActiveCommand {
+                        request_id,
+                        started_at: Instant::now(),
+                        completion: command.completion,
+                    });
+                }
+                Err(error) => {
+                    let _ = command.completion.send(Err(error));
+                }
+            }
+        }
+    }
+
+    fn command_async(&self, request_id: u64, args: &[String]) -> Result<(), String> {
         let c_args = args
             .iter()
-            .map(|arg| CString::new(*arg).map_err(|err| err.to_string()))
+            .map(|arg| CString::new(arg.as_str()).map_err(|err| err.to_string()))
             .collect::<Result<Vec<_>, _>>()?;
         let mut raw_args = c_args
             .iter()
@@ -556,16 +634,54 @@ impl MpvPlayer {
             .chain(std::iter::once(ptr::null()))
             .collect::<Vec<*const c_char>>();
 
-        self.check_error(unsafe { mpv_command_async(self.ctx, 0, raw_args.as_mut_ptr()) })
+        self.check_error(unsafe { mpv_command_async(self.ctx, request_id, raw_args.as_mut_ptr()) })
     }
 
-    pub fn drain_events(&self) {
+    pub fn drain_events(&mut self) {
+        self.expire_active_command();
         loop {
             let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
             if event.is_null() || unsafe { (*event).event_id } == mpv_event_id_MPV_EVENT_NONE {
                 break;
             }
+
+            let event = unsafe { &*event };
+            if event.event_id != mpv_event_id_MPV_EVENT_COMMAND_REPLY {
+                continue;
+            }
+            let Some(active) = self.active_command.as_ref() else {
+                continue;
+            };
+            if event.reply_userdata != active.request_id {
+                continue;
+            }
+
+            let active = self
+                .active_command
+                .take()
+                .expect("active command checked above");
+            let result = self.check_error(event.error);
+            let _ = active.completion.send(result);
+            self.dispatch_next_command();
         }
+        self.expire_active_command();
+    }
+
+    fn expire_active_command(&mut self) {
+        let expired = self
+            .active_command
+            .as_ref()
+            .is_some_and(|command| command.started_at.elapsed() >= ASYNC_COMMAND_TIMEOUT);
+        if !expired {
+            return;
+        }
+
+        if let Some(active) = self.active_command.take() {
+            let _ = active
+                .completion
+                .send(Err("等待 libmpv 命令完成超时".to_string()));
+        }
+        self.dispatch_next_command();
     }
 
     fn get_property_string(&self, prop: &str) -> Result<Option<String>, String> {
@@ -634,6 +750,13 @@ impl MpvPlayer {
             .into_owned();
         Err(message)
     }
+}
+
+fn normalize_mpv_subtitle_input(value: &str) -> String {
+    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{path}");
+    }
+    value.strip_prefix(r"\\?\").unwrap_or(value).to_string()
 }
 
 unsafe fn parse_track_list_node(node: &mpv_node) -> Vec<MpvTrack> {
@@ -778,4 +901,25 @@ fn failed_surface_state(message: String) -> MpvRenderState {
 
 pub fn create_state() -> Result<MpvState, String> {
     Ok(Arc::new(Mutex::new(MpvPlayer::new()?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_mpv_subtitle_input;
+
+    #[test]
+    fn normalizes_windows_extended_subtitle_paths() {
+        assert_eq!(
+            normalize_mpv_subtitle_input(r"\\?\C:\Media\Movie.srt"),
+            r"C:\Media\Movie.srt"
+        );
+        assert_eq!(
+            normalize_mpv_subtitle_input(r"\\?\UNC\nas\Media\Movie.srt"),
+            r"\\nas\Media\Movie.srt"
+        );
+        assert_eq!(
+            normalize_mpv_subtitle_input("https://media.example.test/subtitle.srt"),
+            "https://media.example.test/subtitle.srt"
+        );
+    }
 }

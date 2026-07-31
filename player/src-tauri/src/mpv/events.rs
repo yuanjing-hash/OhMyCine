@@ -25,7 +25,7 @@ pub fn start_event_forwarder(app_handle: AppHandle) {
                 break;
             };
 
-            let snapshot = state.lock().ok().map(|player| {
+            let snapshot = state.lock().ok().map(|mut player| {
                 player.drain_events();
                 (player.time_pos(), player.duration(), player.paused())
             });
