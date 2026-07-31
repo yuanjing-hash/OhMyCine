@@ -345,6 +345,7 @@ export interface DataSource {
 - 两种 OpenSubtitles 凭据都保存到 Player 凭据边界。REST 下载只接受受信任 HTTPS OpenSubtitles 域名；XML-RPC 固定请求官方 HTTPS 端点，限制响应大小，认证或匿名兼容会话只保存在 Rust 进程内，下载内容经受限 Base64/gzip 解码后写入 Tauri 字幕缓存。
 - 字幕搜索关键词提供三种明确来源：默认使用刮削/展示媒体名称；可切换为不含目录的原始文件名；也可手动输入自定义关键词。自定义模式只发送关键词和语言，不附带当前媒体的 IMDb/TMDB、年份、类型或季集条件。不得把目录、签名 URL、查询参数、本地绝对路径或凭据作为标题查询发送给字幕服务。
 - 射手网使用四段 MD5 内容哈希，通过固定 HTTPS API 精确匹配。迅雷固定请求 `https://api-shoulei-ssl.xunlei.com/oracle/subtitle?name=...` 进行名称搜索；同时在 Rust 内限时尝试三段 SHA-1 CID，用于标记并优先展示精确匹配，CID 失败不得阻断名称结果。
+- 迅雷名称结果在 Player 本地进行媒体身份精筛：CID 完全一致最高；电影按类型、年份、原始标题、文件名 token 与时长排序，明确排除 `S01E01`、`1x01`、`Season/Episode`、`第01集` 等剧集结果和冲突年份；剧集按剧名、季集编号与时长筛选并排除明确错集。Emby 的 `OriginalTitle`、`ProductionYear`、`RunTimeTicks`、`SeriesName` 与季集号，以及本地刮削的 TMDB 原始标题均可参与本地排序，但发给迅雷的仍只有本次选定的搜索词。
 - 本地文件由 Rust 直接读取哈希片段；远程媒体由 Rust 使用当前播放 URL 与必要 Header 做受限 Range 读取：先请求 `bytes=0-0` 验证 Range 和总大小，再只读取算法要求的片段。跨源重定向清除数据源 Header，拒绝 HTTPS 降级、非 HTTP(S) 地址、非 Range 响应和超限 Header。迅雷名称请求只发送用户选定的媒体名、文件名或自定义关键词，不发送播放 URL、目录、Header 或凭据。
 - 本地绝对路径只通过 IPC 进入 Rust 读取哈希片段。外部字幕服务只接收内容哈希、文件名和语言，不接收绝对路径、远程播放 URL、数据源账号或 Token。
 - 射手网和迅雷下载 URL 保存在 Rust 短期内存表中，Vue 仅持有不透明引用。所有提供器下载均限制域名、重定向、响应大小和扩展名，并使用受控哈希文件名写入当前存储模式的 `cache/subtitles`，不写入媒体目录。

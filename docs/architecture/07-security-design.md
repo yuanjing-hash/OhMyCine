@@ -383,6 +383,7 @@ Location=https://cdn.example.com/file?token=***redacted***
 - 射手网和迅雷 CID 增强对本地文件直接计算内容哈希，对远程媒体只在 Rust 中使用当前播放 URL 与 Header 做受限 Range 取样。播放 URL、签名参数、Authorization/Cookie 和数据源 Header 不进入 Vue 结果状态、日志或字幕提供器请求；射手网只接收哈希、安全文件 basename 和语言，迅雷名称接口只接收用户选定的媒体名、文件名或自定义关键词。
 - 远程媒体哈希必须固定为 HTTP(S)，限制 Header 数量与总大小，禁止调用方覆盖 `Range/Host/Content-Length/Connection/Accept-Encoding`，先用单字节 Range 验证总大小，再读取算法要求的精确片段。重定向次数受限，跨源时清空数据源 Header，HTTPS 不得降级到 HTTP，服务端忽略 Range 时直接停止而不是下载完整媒体。
 - 射手网搜索和下载固定到 HTTPS `www.shooter.cn`。迅雷名称搜索固定到 HTTPS `api-shoulei-ssl.xunlei.com/oracle/subtitle`，CID 只作为本机限时可选增强，Range/302/CID 失败不得阻断名称结果；下载 URL 必须限制到 HTTPS `subtitle.v.geilijiasu.com`。
+- 迅雷结果精筛使用的媒体类型、年份、原始标题、时长、季集号和文件名 token 只在 Player 本地参与评分，不得作为额外查询参数、日志字段或诊断明文发送到迅雷；外部请求仍只包含用户当前选定的单一搜索词。
 - 射手网和迅雷返回的下载 URL 不进入 Vue 状态、设置或日志。Rust 使用有数量和时间上限的短期不透明引用映射，并在下载时再次校验提供器和域名。
 - 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式的 `cache/subtitles`。
 

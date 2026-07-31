@@ -20,6 +20,9 @@ assert.match(playerView, /else \{[\s\S]*searchLocalSubtitles/)
 assert.match(playerView, /currentSubtitleSearchContext\(keyword, keywordMode\)/)
 assert.match(playerView, /year: keywordMode === 'custom' \? undefined/)
 assert.match(playerView, /imdbId: keywordMode === 'custom' \? undefined/)
+assert.match(playerView, /originalTitle: keywordMode === 'custom' \? undefined/)
+assert.match(playerView, /duration: keywordMode === 'custom'/)
+assert.match(playerView, /keywordMode,/)
 assert.match(playerView, /currentLocalSubtitleFilePath\(\)[\s\S]*isAbsoluteLocalMediaPath/)
 assert.match(playerView, /remoteMediaUrl: currentRemoteSubtitleMediaUrl\(\)/)
 assert.match(playerView, /remoteMediaHeaders: currentRemoteSubtitleMediaUrl\(\) \? \{ \.\.\.mediaHeaders\.value \}/)
@@ -33,6 +36,8 @@ assert.match(searchDialog, /自定义/)
 assert.match(searchDialog, /search: \[language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode\]/)
 
 const emby = await read('src/services/datasource/emby.ts')
+assert.match(emby, /'OriginalTitle'/)
+assert.match(emby, /originalTitle: nonEmptyString\(item\.OriginalTitle\)/)
 assert.match(emby, /RemoteSearch\/Subtitles\/\$\{encodeURIComponent\(language\)\}/)
 assert.match(emby, /postPlaybackJson\([\s\S]*RemoteSearch\/Subtitles/)
 assert.match(emby, /this\.cache\.clear\(\)/)
@@ -77,6 +82,9 @@ const providers = await read('src/services/subtitle/hashProviders.ts')
 assert.match(providers, /this\.id === 'shooter' && !input\.localFilePath && !input\.remoteMediaUrl/)
 assert.match(providers, /this\.id === 'xunlei' && !query/)
 assert.match(providers, /query: query \?\? null/)
+assert.match(providers, /originalTitle: input\.originalTitle \?\? null/)
+assert.match(providers, /durationSeconds: input\.duration \?\? null/)
+assert.match(providers, /mediaType: input\.mediaType \?\? null/)
 assert.match(providers, /remoteUrl: input\.remoteMediaUrl/)
 assert.match(providers, /headers: toHeaderPayload/)
 assert.match(providers, /subtitle_search_hash_provider/)
@@ -92,7 +100,12 @@ assert.match(rust, /https:\/\/api-shoulei-ssl\.xunlei\.com\/oracle\/subtitle/)
 assert.match(rust, /append_pair\("name", query\)/)
 assert.match(rust, /optional_xunlei_media_cid/)
 assert.match(rust, /XUNLEI_OPTIONAL_CID_TIMEOUT_SECONDS/)
-assert.match(rust, /迅雷名称搜索 · CID 精确匹配/)
+assert.match(rust, /CID 精确匹配/)
+assert.match(rust, /assess_xunlei_match/)
+assert.match(rust, /xunlei_duration_match_score/)
+assert.match(rust, /parse_episode_marker/)
+assert.match(rust, /ranks_supergirl_2026_movie_and_rejects_tv_episodes/)
+assert.match(rust, /ranks_exact_episode_and_rejects_other_episode_numbers/)
 assert.doesNotMatch(rust, /sub\.xmp\.sandai\.net/)
 assert.match(rust, /url\.host_str\(\) != Some\("www\.shooter\.cn"\)/)
 assert.match(rust, /url\.host_str\(\) != Some\("subtitle\.v\.geilijiasu\.com"\)/)
@@ -121,6 +134,9 @@ console.log(JSON.stringify({
   shooterSupportsLocalAndRemoteHashes: true,
   xunleiUsesNameSearchWithOptionalCidRanking: true,
   xunleiNameSearchDoesNotRequireRangeAccess: true,
+  xunleiRanksByMediaIdentityYearAndDuration: true,
+  xunleiRejectsMovieEpisodeResults: true,
+  xunleiRejectsWrongSeasonEpisodeResults: true,
   remoteHashHeadersStayInsideRust: true,
   hashProviderDownloadsUseOpaqueReferences: true,
   missingOpenSubtitlesKeyDoesNotBlockHashProviders: true,

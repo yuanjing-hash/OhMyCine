@@ -6,6 +6,8 @@ export interface PlaybackQueueItem {
   libraryId?: string
   title: string
   name: string
+  originalTitle?: string
+  seriesName?: string
   path: string
   type: MediaItem['type']
   posterUrl?: string
@@ -72,6 +74,8 @@ export interface PlaybackQueueItemInput {
   libraryId?: string
   title?: string
   name: string
+  originalTitle?: string
+  seriesName?: string
   path: string
   type: MediaItem['type']
   posterUrl?: string
@@ -154,6 +158,8 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     libraryId: item.libraryId,
     title: item.name,
     name: item.name,
+    originalTitle: item.originalTitle,
+    seriesName: item.seriesName,
     path: item.path,
     type: item.type,
     posterUrl: item.posterUrl,
@@ -191,6 +197,8 @@ function normalizeQueue(queue: PlaybackQueueInput | undefined): PlaybackQueueSta
     libraryId: item.libraryId,
     title: item.title ?? item.name,
     name: item.name,
+    originalTitle: item.originalTitle,
+    seriesName: item.seriesName,
     path: item.path,
     type: item.type,
     posterUrl: item.posterUrl,

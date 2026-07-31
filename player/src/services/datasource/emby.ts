@@ -24,6 +24,7 @@ import { redactSensitiveText } from './errors'
 
 const ITEM_FIELDS = [
   'Overview',
+  'OriginalTitle',
   'Genres',
   'People',
   'ProviderIds',
@@ -122,6 +123,7 @@ interface EmbyAuthResult {
 interface EmbyItemRecord {
   readonly Id: string
   readonly Name: string
+  readonly OriginalTitle?: string
   readonly Type?: string
   readonly CollectionType?: string
   readonly ProductionYear?: number
@@ -1245,6 +1247,7 @@ export class EmbyDataSource implements DataSource {
       sourceId,
       libraryId,
       name: item.Name,
+      originalTitle: nonEmptyString(item.OriginalTitle),
       type: mapMediaType(item.Type),
       posterUrl: this.posterUrl(item),
       backdropUrl: this.backdropUrl(item),

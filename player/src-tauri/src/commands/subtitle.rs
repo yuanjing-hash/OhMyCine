@@ -143,6 +143,14 @@ pub struct OpenSubtitlesDownloadRequest {
 pub struct HashSubtitleSearchRequest {
     provider: HashSubtitleProvider,
     query: Option<String>,
+    original_title: Option<String>,
+    series_name: Option<String>,
+    duration_seconds: Option<f64>,
+    keyword_mode: Option<String>,
+    year: Option<u16>,
+    media_type: Option<String>,
+    season_number: Option<u16>,
+    episode_number: Option<u16>,
     file_path: Option<String>,
     remote_url: Option<String>,
     #[serde(default)]
@@ -246,6 +254,14 @@ struct XunleiNameSearchRecord {
     languages: Vec<String>,
     #[serde(default)]
     score: i64,
+    #[serde(default)]
+    duration: u64,
+}
+
+struct XunleiMatchAssessment {
+    score: i64,
+    is_hash_match: bool,
+    label: &'static str,
 }
 
 #[tauri::command]
@@ -927,14 +943,21 @@ async fn search_xunlei(
         Ok::<_, String>(payload.data)
     };
     let (records, cid) = tokio::join!(search, optional_xunlei_media_cid(request));
-    let mut records = records?;
-    records.sort_by_key(|record| Reverse(record.score));
+    let records = records?;
     let normalized_cid = cid
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let mut ranked_records = records
+        .into_iter()
+        .filter_map(|record| {
+            assess_xunlei_match(&record, request, normalized_cid)
+                .map(|assessment| (record, assessment))
+        })
+        .collect::<Vec<_>>();
+    ranked_records.sort_by_key(|(_, assessment)| Reverse(assessment.score));
     let mut results = Vec::new();
-    for record in records {
+    for (record, assessment) in ranked_records {
         let title = record.name.trim();
         if title.is_empty() {
             continue;
@@ -948,9 +971,6 @@ async fn search_xunlei(
             Ok(url) => url,
             Err(_) => continue,
         };
-        let is_hash_match = normalized_cid.is_some_and(|cid| {
-            !record.cid.trim().is_empty() && record.cid.trim().eq_ignore_ascii_case(cid)
-        });
         let download_ref =
             register_pending_download(downloads, HashSubtitleProvider::Xunlei, url, extension)?;
         results.push(HashSubtitleSearchResult {
@@ -960,22 +980,280 @@ async fn search_xunlei(
             language: normalize_xunlei_languages(&record.languages, language),
             title: title.chars().take(180).collect(),
             format: extension.to_string(),
-            comments: Some(if is_hash_match {
-                "迅雷名称搜索 · CID 精确匹配".to_string()
-            } else {
-                "迅雷名称搜索".to_string()
-            }),
+            comments: Some(format!("迅雷名称搜索 · {}", assessment.label)),
             rating: (record.score > 0).then_some(record.score as f64),
             download_count: None,
-            is_hash_match,
+            is_hash_match: assessment.is_hash_match,
             download_ref,
         });
         if results.len() >= 50 {
             break;
         }
     }
-    results.sort_by_key(|result| !result.is_hash_match);
     Ok(results)
+}
+
+fn assess_xunlei_match(
+    record: &XunleiNameSearchRecord,
+    request: &HashSubtitleSearchRequest,
+    cid: Option<&str>,
+) -> Option<XunleiMatchAssessment> {
+    let candidate = record.name.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    let is_hash_match = cid.is_some_and(|expected| {
+        !record.cid.trim().is_empty() && record.cid.trim().eq_ignore_ascii_case(expected)
+    });
+    if is_hash_match {
+        return Some(XunleiMatchAssessment {
+            score: 20_000 + record.score.max(0),
+            is_hash_match: true,
+            label: "CID 精确匹配",
+        });
+    }
+    if request.keyword_mode.as_deref() == Some("custom") {
+        return Some(XunleiMatchAssessment {
+            score: record.score.max(0),
+            is_hash_match: false,
+            label: "自定义关键词匹配",
+        });
+    }
+
+    let media_type = normalize_media_type(request.media_type.as_deref());
+    let episode_marker = parse_episode_marker(candidate);
+    if media_type == Some("movie") && looks_like_tv_episode(candidate, episode_marker) {
+        return None;
+    }
+    if media_type == Some("episode") {
+        if let (Some(expected_season), Some(expected_episode), Some((season, episode))) = (
+            request.season_number,
+            request.episode_number,
+            episode_marker,
+        ) {
+            if season != expected_season || episode != expected_episode {
+                return None;
+            }
+        }
+    }
+
+    let mut score = record.score.max(0);
+    let candidate_years = extract_years(candidate);
+    let year_matches = request
+        .year
+        .is_some_and(|year| candidate_years.contains(&year));
+    if request.year.is_some() {
+        if year_matches {
+            score += 1_200;
+        } else if !candidate_years.is_empty() {
+            return None;
+        }
+    }
+
+    let title_score = xunlei_title_match_score(candidate, request);
+    score += title_score;
+    let duration_score = xunlei_duration_match_score(record.duration, request.duration_seconds);
+    if duration_score < 0 {
+        return None;
+    }
+    score += duration_score;
+
+    let episode_matches = media_type == Some("episode")
+        && request.season_number.is_some()
+        && request.episode_number.is_some()
+        && episode_marker == request.season_number.zip(request.episode_number);
+    if episode_matches {
+        score += 1_400;
+    }
+    if media_type == Some("movie") {
+        score += 200;
+        if request.year.is_some() && !year_matches && duration_score < 350 {
+            return None;
+        }
+    } else if media_type == Some("episode")
+        && request.season_number.is_some()
+        && request.episode_number.is_some()
+        && !episode_matches
+        && duration_score < 350
+    {
+        return None;
+    }
+
+    let label = if score >= 1_400 {
+        "高置信度匹配"
+    } else if score >= 700 {
+        "较高置信度匹配"
+    } else {
+        "模糊匹配"
+    };
+    Some(XunleiMatchAssessment {
+        score,
+        is_hash_match: false,
+        label,
+    })
+}
+
+fn xunlei_title_match_score(candidate: &str, request: &HashSubtitleSearchRequest) -> i64 {
+    let candidate_key = compact_match_key(candidate);
+    let aliases = [
+        request.query.as_deref(),
+        request.original_title.as_deref(),
+        request.series_name.as_deref(),
+    ];
+    let alias_match = aliases
+        .into_iter()
+        .flatten()
+        .map(compact_match_key)
+        .filter(|value| value.chars().count() >= 3)
+        .map(|value| {
+            if candidate_key == value {
+                700
+            } else if candidate_key.contains(&value) || value.contains(&candidate_key) {
+                450
+            } else {
+                0
+            }
+        })
+        .max()
+        .unwrap_or_default();
+    let file_token_score = request
+        .file_name
+        .as_deref()
+        .map(|file_name| shared_match_token_count(candidate, file_name).min(6) as i64 * 55)
+        .unwrap_or_default();
+    alias_match + file_token_score
+}
+
+fn xunlei_duration_match_score(record_duration_ms: u64, expected_seconds: Option<f64>) -> i64 {
+    let Some(expected) = expected_seconds.filter(|value| value.is_finite() && *value > 0.0) else {
+        return 0;
+    };
+    if record_duration_ms == 0 {
+        return 0;
+    }
+    let actual = record_duration_ms as f64 / 1000.0;
+    let difference = (actual - expected).abs() / expected;
+    if difference <= 0.01 {
+        900
+    } else if difference <= 0.03 {
+        700
+    } else if difference <= 0.08 {
+        400
+    } else if difference <= 0.15 {
+        150
+    } else if difference > 0.30 {
+        -1
+    } else {
+        0
+    }
+}
+
+fn compact_match_key(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|character| character.is_alphanumeric())
+        .collect()
+}
+
+fn shared_match_token_count(left: &str, right: &str) -> usize {
+    let left_tokens = match_tokens(left);
+    let right_tokens = match_tokens(right);
+    left_tokens
+        .iter()
+        .filter(|token| right_tokens.contains(token))
+        .count()
+}
+
+fn match_tokens(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .map(str::trim)
+        .filter(|token| token.chars().count() >= 2)
+        .map(str::to_lowercase)
+        .filter(|token| {
+            !matches!(
+                token.as_str(),
+                "srt" | "ass" | "ssa" | "vtt" | "mkv" | "mp4"
+            )
+        })
+        .collect()
+}
+
+fn extract_years(value: &str) -> Vec<u16> {
+    value
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|token| token.len() == 4)
+        .filter_map(|token| token.parse::<u16>().ok())
+        .filter(|year| (1900..=2099).contains(year))
+        .collect()
+}
+
+fn parse_episode_marker(value: &str) -> Option<(u16, u16)> {
+    let normalized = value.to_ascii_lowercase();
+    parse_episode_pattern(normalized.as_bytes(), b's', b'e')
+        .or_else(|| parse_episode_pattern(normalized.as_bytes(), 0, b'x'))
+}
+
+fn looks_like_tv_episode(value: &str, marker: Option<(u16, u16)>) -> bool {
+    if marker.is_some() {
+        return true;
+    }
+    let normalized = value.to_ascii_lowercase();
+    if normalized.contains("season") || normalized.contains("episode") {
+        return true;
+    }
+    let Some(start) = value.find('第') else {
+        return false;
+    };
+    let Some(end_offset) = value[start..].find('集') else {
+        return false;
+    };
+    value[start..start + end_offset]
+        .chars()
+        .any(|character| character.is_ascii_digit())
+}
+
+fn parse_episode_pattern(
+    bytes: &[u8],
+    season_prefix: u8,
+    episode_prefix: u8,
+) -> Option<(u16, u16)> {
+    for index in 0..bytes.len() {
+        let season_start = if season_prefix == 0 {
+            index
+        } else if bytes[index] == season_prefix {
+            index + 1
+        } else {
+            continue;
+        };
+        let Some((season, separator_index)) = parse_ascii_number(bytes, season_start, 2) else {
+            continue;
+        };
+        if bytes.get(separator_index).copied() != Some(episode_prefix) {
+            continue;
+        }
+        let Some((episode, _)) = parse_ascii_number(bytes, separator_index + 1, 3) else {
+            continue;
+        };
+        return Some((season, episode));
+    }
+    None
+}
+
+fn parse_ascii_number(bytes: &[u8], start: usize, max_digits: usize) -> Option<(u16, usize)> {
+    let mut end = start;
+    while end < bytes.len() && end - start < max_digits && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end == start {
+        return None;
+    }
+    std::str::from_utf8(&bytes[start..end])
+        .ok()?
+        .parse::<u16>()
+        .ok()
+        .map(|value| (value, end))
 }
 
 fn build_xunlei_name_search_url(query: &str) -> Result<Url, String> {
@@ -1797,18 +2075,51 @@ fn http_error(status: StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_opensubtitles_xmlrpc_search_body, build_xunlei_name_search_url, compute_shooter_hash,
-        compute_shooter_media_hash, compute_xunlei_cid, compute_xunlei_media_cid,
-        normalize_xunlei_download_url, normalize_xunlei_languages, parse_xmlrpc_response,
-        resolve_hash_media_source, safe_subtitle_extension, validate_opensubtitles_download_url,
+        assess_xunlei_match, build_opensubtitles_xmlrpc_search_body, build_xunlei_name_search_url,
+        compute_shooter_hash, compute_shooter_media_hash, compute_xunlei_cid,
+        compute_xunlei_media_cid, normalize_xunlei_download_url, normalize_xunlei_languages,
+        parse_episode_marker, parse_xmlrpc_response, resolve_hash_media_source,
+        safe_subtitle_extension, validate_opensubtitles_download_url,
         validate_shooter_download_url, validate_xunlei_download_url, xmlrpc_string_member,
         xmlrpc_struct, HashSubtitleProvider, HashSubtitleSearchRequest, OpenSubtitlesAuthMode,
-        OpenSubtitlesSearchRequest, RemoteMediaHeader,
+        OpenSubtitlesSearchRequest, RemoteMediaHeader, XunleiNameSearchRecord,
     };
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn xunlei_request(media_type: Option<&str>) -> HashSubtitleSearchRequest {
+        HashSubtitleSearchRequest {
+            provider: HashSubtitleProvider::Xunlei,
+            query: Some("超级少女".to_string()),
+            original_title: Some("Supergirl".to_string()),
+            series_name: None,
+            duration_seconds: Some(6462.0),
+            keyword_mode: Some("mediaTitle".to_string()),
+            year: Some(2026),
+            media_type: media_type.map(str::to_string),
+            season_number: None,
+            episode_number: None,
+            file_path: None,
+            remote_url: None,
+            headers: Vec::new(),
+            file_name: Some("Supergirl.2026.1080p.WEB-DL.mkv".to_string()),
+            language: "zh-CN".to_string(),
+        }
+    }
+
+    fn xunlei_record(name: &str, duration: u64) -> XunleiNameSearchRecord {
+        XunleiNameSearchRecord {
+            cid: String::new(),
+            name: name.to_string(),
+            url: "https://subtitle.v.geilijiasu.com/AA/BB/test.srt".to_string(),
+            ext: "srt".to_string(),
+            languages: vec!["简体".to_string()],
+            score: 0,
+            duration,
+        }
+    }
 
     #[test]
     fn only_accepts_opensubtitles_https_downloads() {
@@ -1889,6 +2200,49 @@ mod tests {
         assert_eq!(payload.data.len(), 1);
         assert_eq!(payload.data[0].cid, "ABC123");
         assert_eq!(payload.data[0].score, 8);
+    }
+
+    #[test]
+    fn ranks_supergirl_2026_movie_and_rejects_tv_episodes() {
+        let request = xunlei_request(Some("movie"));
+        let movie = xunlei_record("Supergirl.2026.WEB-DL.Chs.ass", 6_462_000);
+        let series = xunlei_record("Supergirl.S01E01.1080p.WEB-DL.Chs.srt", 2_540_000);
+        let chinese_episode = xunlei_record("超级少女.第01集.简体.srt", 2_540_000);
+        let wrong_year = xunlei_record("Supergirl.1984.BluRay.Chs.srt", 6_300_000);
+        let assessment = assess_xunlei_match(&movie, &request, None).unwrap();
+        assert!(assessment.score >= 1_400);
+        assert_eq!(assessment.label, "高置信度匹配");
+        assert!(assess_xunlei_match(&series, &request, None).is_none());
+        assert!(assess_xunlei_match(&chinese_episode, &request, None).is_none());
+        assert!(assess_xunlei_match(&wrong_year, &request, None).is_none());
+    }
+
+    #[test]
+    fn ranks_exact_episode_and_rejects_other_episode_numbers() {
+        let mut request = xunlei_request(Some("episode"));
+        request.query = Some("超级少女".to_string());
+        request.series_name = Some("Supergirl".to_string());
+        request.year = None;
+        request.duration_seconds = Some(2540.0);
+        request.season_number = Some(1);
+        request.episode_number = Some(1);
+        let exact = xunlei_record("Supergirl.S01E01.1080p.WEB-DL.Chs.srt", 2_540_000);
+        let wrong = xunlei_record("Supergirl.S01E02.1080p.WEB-DL.Chs.srt", 2_540_000);
+        assert!(assess_xunlei_match(&exact, &request, None).is_some());
+        assert!(assess_xunlei_match(&wrong, &request, None).is_none());
+        assert_eq!(parse_episode_marker("Supergirl.1x01.srt"), Some((1, 1)));
+    }
+
+    #[test]
+    fn custom_xunlei_search_keeps_broad_results() {
+        let mut request = xunlei_request(None);
+        request.keyword_mode = Some("custom".to_string());
+        request.year = None;
+        request.duration_seconds = None;
+        request.original_title = None;
+        let result = xunlei_record("Supergirl.S01E01.1080p.WEB-DL.Chs.srt", 2_540_000);
+        let assessment = assess_xunlei_match(&result, &request, None).unwrap();
+        assert_eq!(assessment.label, "自定义关键词匹配");
     }
 
     #[test]
@@ -1979,6 +2333,14 @@ mod tests {
         let request = HashSubtitleSearchRequest {
             provider: HashSubtitleProvider::Shooter,
             query: Some("movie".to_string()),
+            original_title: None,
+            series_name: None,
+            duration_seconds: None,
+            keyword_mode: Some("mediaTitle".to_string()),
+            year: None,
+            media_type: Some("movie".to_string()),
+            season_number: None,
+            episode_number: None,
             file_path: None,
             remote_url: Some(format!("http://{address}/movie.mp4")),
             headers: vec![RemoteMediaHeader {
