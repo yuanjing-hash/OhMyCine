@@ -5,6 +5,7 @@ import { createRawSourceHomeSections, getRawScannedMediaDetail, isRawScannedSynt
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readAlistCredential, readRawCredentialBackup, removeCredential, saveAlistCredential, saveRawCredentialBackup } from './credentialStore'
 import { redactSensitiveText } from './errors'
+import { withSiblingSubtitles } from './siblingSubtitles'
 
 const ALIST_REQUEST_TIMEOUT_MS = 15_000
 
@@ -212,7 +213,7 @@ export class AlistDataSource implements DataSource {
   async getDetail(id: string): Promise<MediaDetail> {
     const rawDetail = await this.getRawScannedDetail(id)
     if (rawDetail)
-      return rawDetail
+      return this.withSiblingSubtitles(rawDetail)
     if (isRawScannedSyntheticId(id))
       throw new Error('OpenList/Alist 本地扫描详情不可用，请重新扫描或从文件夹视图打开具体文件。')
 
@@ -220,10 +221,10 @@ export class AlistDataSource implements DataSource {
     const record = await this.cache.getOrSet(`detail:${path}`, () => this.requestFsGet(path, false))
     this.ensureRecordInRoot(record)
     const item = this.mapItem(record)
-    return {
+    return this.withSiblingSubtitles({
       ...item,
       mediaSources: item.type === 'folder' ? [] : [this.mapMediaSource(record)],
-    }
+    })
   }
 
   async getStreamURL(id: string): Promise<string> {
@@ -423,6 +424,18 @@ export class AlistDataSource implements DataSource {
       size: record.size,
       isRemote: true,
     }
+  }
+
+  private async withSiblingSubtitles(detail: MediaDetail): Promise<MediaDetail> {
+    return withSiblingSubtitles(
+      detail,
+      parent => this.requestFsList(parent),
+      async (path) => {
+        const record = await this.requestFsGet(path, true)
+        this.ensureRecordInRoot(record)
+        return this.buildDownloadUrl(path, record.sign)
+      },
+    )
   }
 
   private buildDownloadUrl(path: string, sign: string | undefined): string {

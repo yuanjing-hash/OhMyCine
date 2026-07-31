@@ -10,6 +10,8 @@ const entriesByPath = new Map<string, LocalFileEntry[]>([
     entry('电影', '/电影', true),
     entry('动漫', '/动漫', true),
     entry('阿凡达.mp4', '/阿凡达.mp4', false, 2_048),
+    entry('阿凡达.zh-CN.srt', '/阿凡达.zh-CN.srt', false, 128),
+    entry('阿凡达3.srt', '/阿凡达3.srt', false, 128),
     entry('README.txt', '/README.txt', false, 12),
   ]],
   ['/电影', [
@@ -90,6 +92,11 @@ assert.equal(rootItems.find(item => item.id === '/阿凡达.mp4')?.type, 'file')
 const movieDetail = await source.getDetail('/阿凡达.mp4')
 assert.equal(movieDetail.mediaSources?.[0]?.isRemote, false)
 assert.equal(movieDetail.mediaSources?.[0]?.container, 'mp4')
+assert.deepEqual(movieDetail.subtitles?.map(track => ({ title: track.title, language: track.language, url: track.url })), [{
+  title: '阿凡达.zh-CN.srt',
+  language: 'zh-CN',
+  url: '/mnt/ohmycine-media/阿凡达.zh-CN.srt',
+}])
 
 assert.equal(await source.getStreamURL('/阿凡达.mp4'), '/mnt/ohmycine-media/阿凡达.mp4')
 await assert.rejects(() => source.getStreamURL('/动漫'), /不能直接播放/)

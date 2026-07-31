@@ -26,10 +26,16 @@ assert.match(playerView, /event\.code === 'Space'/)
 assert.match(playerView, /ARROW_HOLD_DELAY/)
 assert.match(playerView, /releaseHeldArrow\(false\)/)
 assert.match(playerView, /@click="handlePlayerAreaClick"/)
+assert.match(playerView, /ref="bottomChromeRef"[\s\S]*data-player-click-ignore/)
+assert.match(playerView, /addExternalSubtitle\(track\.url, track\.title \?\? result\.title, track\.language, 'provider'\)/)
+assert.match(playerView, /addExternalSubtitle\(downloaded\.path, downloaded\.title, downloaded\.language, 'downloaded'\)/)
 
 const playerControls = await source('../src/components/player/PlayerControls.vue')
 const toggleMenuBody = playerControls.match(/function toggleMenu\(menu: ControlMenu\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
 assert.doesNotMatch(toggleMenuBody, /refreshTracks/, 'opening subtitle/audio menus must not synchronously query mpv track-list')
+assert.match(playerControls, /downloadedSubtitleTracks/)
+assert.match(playerControls, /mediaSubtitleTracks/)
+assert.match(playerControls, /subtitle-group-divider/)
 
 const mpvComposable = await source('../src/composables/useMpv.ts')
 for (const functionName of ['setSubtitle', 'setAudio']) {
@@ -43,8 +49,9 @@ assert.doesNotMatch(
 )
 
 const nativePlayer = await source('../src-tauri/src/mpv/player.rs')
-assert.match(nativePlayer, /mpv_set_property_async/)
 assert.match(nativePlayer, /mpv_command_async/)
+assert.match(nativePlayer, /"sid" \| "aid" => self\.command_async\(&\["set", property_name, value\]\)/)
+assert.doesNotMatch(nativePlayer, /mpv_set_property_async/)
 assert.match(nativePlayer, /pub fn drain_events/)
 
 const dataSourceStore = await source('../src/stores/datasource.ts')
@@ -76,6 +83,8 @@ console.log(JSON.stringify({
   mediaPreferenceSqlite: true,
   sourceScopedSubtitleCache: true,
   playbackTapAndHoldKeys: true,
+  controlChromeIgnoresVideoClickToPause: true,
+  subtitleMenuGroupsDownloadedAndMediaTracks: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
   trackRestoreUsesAsyncNativeCommands: true,
   cacheClearPreservesGlobalState: true,

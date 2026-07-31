@@ -92,7 +92,7 @@ assert.doesNotMatch(providers, /downloadRef.*https?:/)
 
 const rust = await read('src-tauri/src/commands/subtitle.rs')
 assert.match(rust, /host == "opensubtitles\.com" \|\| host\.ends_with\("\.opensubtitles\.com"\)/)
-assert.match(rust, /layout\.cache_dir\.join\("subtitles"\)/)
+assert.match(rust, /cache_dir\.join\("subtitles"\)/)
 assert.match(rust, /MAX_DOWNLOAD_RESPONSE_BYTES/)
 assert.match(rust, /compute_shooter_hash/)
 assert.match(rust, /compute_xunlei_cid/)

@@ -89,6 +89,8 @@ const audioLabel = computed(() => {
 const showAudioControl = computed(() => props.audioTracks.length > 1)
 const showQueueControl = computed(() => props.queueItemCount > 1)
 const queueLabel = computed(() => `${Math.max(0, props.currentQueueIndex + 1)}/${props.queueItemCount}`)
+const downloadedSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source === 'downloaded'))
+const mediaSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source !== 'downloaded'))
 
 function isInteracting() {
   return pointerInside.value
@@ -241,7 +243,13 @@ function fullTrackLabel(track: Track | SubtitleTrackOption): string {
 }
 
 function subtitleSourceLabel(track: SubtitleTrackOption): string {
-  const sourceLabel = track.source === 'embedded' ? '内嵌轨道' : track.source === 'external' ? '外部字幕' : '媒体详情'
+  const sourceLabel = track.source === 'downloaded'
+    ? '本地下载'
+    : track.source === 'embedded'
+      ? '视频内嵌'
+      : track.source === 'provider'
+        ? '媒体源提供'
+        : '媒体详情'
   const status = track.isDefault ? ' · 默认' : ''
   if (!track.selectable)
     return `${sourceLabel} · 暂不可加载`
@@ -382,6 +390,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
+    data-player-click-ignore
     class="player-controls-glass pointer-events-auto relative mx-auto flex w-full max-w-7xl min-w-0 items-center gap-3 overflow-visible rounded-[28px] px-5 py-3"
     @mouseenter="setPointerInside(true)"
     @mouseleave="setPointerInside(false)"
@@ -453,14 +462,28 @@ onBeforeUnmount(() => {
             <button type="button" class="menu-option" :class="{ 'is-selected': currentSubtitle === null }" role="menuitemradio" :aria-checked="currentSubtitle === null" @click="chooseSubtitle(null)">
               关闭字幕
             </button>
-            <template v-if="subtitleTracks.length">
-              <button v-for="track in subtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
+            <template v-if="downloadedSubtitleTracks.length">
+              <p class="subtitle-group-label">
+                本地下载
+              </p>
+              <button v-for="track in downloadedSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
                 <span>{{ fullTrackLabel(track) }}</span>
                 <small>{{ subtitleSourceLabel(track) }}</small>
                 <small v-if="track.unavailableReason">{{ track.unavailableReason }}</small>
               </button>
             </template>
-            <p v-else-if="!trackError" class="menu-empty">
+            <div v-if="downloadedSubtitleTracks.length && mediaSubtitleTracks.length" class="subtitle-group-divider" aria-hidden="true" />
+            <template v-if="mediaSubtitleTracks.length">
+              <p class="subtitle-group-label">
+                视频与媒体源
+              </p>
+              <button v-for="track in mediaSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
+                <span>{{ fullTrackLabel(track) }}</span>
+                <small>{{ subtitleSourceLabel(track) }}</small>
+                <small v-if="track.unavailableReason">{{ track.unavailableReason }}</small>
+              </button>
+            </template>
+            <p v-if="!subtitleTracks.length && !trackError" class="menu-empty">
               暂未检测到字幕轨道，且媒体详情未提供可显示的字幕信息
             </p>
             <div class="subtitle-delay-control" role="group" aria-label="字幕偏移">
@@ -887,6 +910,19 @@ onBeforeUnmount(() => {
   font-size: 0.62rem;
   font-weight: 600;
   letter-spacing: 0.08em;
+}
+
+.subtitle-group-label {
+  margin: 0.35rem 0.45rem 0.25rem;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.subtitle-group-divider {
+  height: 1px;
+  margin: 0.55rem 0.35rem 0.35rem;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .menu-option--search {

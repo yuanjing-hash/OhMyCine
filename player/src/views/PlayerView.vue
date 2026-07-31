@@ -436,7 +436,13 @@ function selectedSubtitleTrackLabel(): string {
   if (!track)
     return String(currentSubtitle.value)
 
-  const source = track.source === 'embedded' ? '内封' : track.source === 'external' ? '外挂' : '详情'
+  const source = track.source === 'embedded'
+    ? '内封'
+    : track.source === 'downloaded'
+      ? '本地下载'
+      : track.source === 'provider'
+        ? '媒体源'
+        : '详情'
   return compactTrackLabel([source, track.language, track.title, track.codec], String(track.id))
 }
 
@@ -1072,7 +1078,7 @@ function mergeDataSourceSubtitleTracks(...groups: readonly DataSourceSubtitleTra
 }
 
 function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTrackInput {
-  const source = track.source === 'external' ? 'external' : 'detail'
+  const source = track.url ? 'provider' : 'detail'
   const hasUrl = Boolean(track.url)
   return {
     id: track.index,
@@ -1083,7 +1089,7 @@ function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTra
     isDefault: track.isDefault,
     url: track.url,
     selectable: hasUrl,
-    unavailableReason: source === 'external'
+    unavailableReason: source === 'provider'
       ? '该外部字幕缺少可加载地址，暂时只能在详情页确认存在。'
       : '该字幕来自媒体详情，但当前播放流未暴露可直接加载的字幕地址。',
   }
@@ -1177,12 +1183,12 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
       })
       if (!track.url)
         throw new Error('Emby 已下载字幕，但没有返回可加载的字幕地址。')
-      await addExternalSubtitle(track.url, track.title ?? result.title, track.language)
+      await addExternalSubtitle(track.url, track.title ?? result.title, track.language, 'provider')
     }
     else {
       const cacheOwner = currentMediaPreferenceIdentity() ?? undefined
       const downloaded = await downloadLocalSubtitle(result, cacheOwner)
-      await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language)
+      await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language, 'downloaded')
       activeCachedSubtitlePath = downloaded.path
     }
 
@@ -1963,6 +1969,7 @@ watch(
     <div
       v-if="hasMedia"
       ref="bottomChromeRef"
+      data-player-click-ignore
       class="pointer-events-auto absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
       :class="shouldShowChrome ? 'opacity-100' : 'opacity-0'"
       @mouseenter="revealChrome"

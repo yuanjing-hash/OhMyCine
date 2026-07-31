@@ -4,6 +4,7 @@ import { loadRawSourceScanCache } from '@/services/scraper/localScanCache'
 import { getVideoFileExtension, isPathWithinRoot, isVideoFileName, normalizeProviderPath } from '@/services/scraper/pathUtils'
 import { createRawSourceHomeSections, getRawScannedMediaDetail, isRawScannedSyntheticId, listRawScannedChildren } from '@/services/scraper/rawHomeMapping'
 import { SourceMetadataCache } from './cache'
+import { withSiblingSubtitles } from './siblingSubtitles'
 
 const LOCAL_FILE_URL = 'local://filesystem'
 
@@ -150,17 +151,17 @@ export class LocalFileDataSource implements DataSource {
   async getDetail(id: string): Promise<MediaDetail> {
     const rawDetail = await this.getRawScannedDetail(id)
     if (rawDetail)
-      return rawDetail
+      return this.withSiblingSubtitles(rawDetail)
     if (isRawScannedSyntheticId(id))
       throw new Error('本地扫描合集不能直接播放，请选择具体文件或分集。')
 
     const providerPath = this.resolveProviderPath(id)
     const entry = await this.cache.getOrSet(`detail:${providerPath}`, () => this.getMetadataEntry(this.rootPath, providerPath))
     const item = this.mapItem(entry)
-    return {
+    return this.withSiblingSubtitles({
       ...item,
       mediaSources: item.type === 'folder' || !isVideoFileName(item.name) ? [] : [this.mapMediaSource(item, entry)],
-    }
+    })
   }
 
   async getStreamURL(id: string): Promise<string> {
@@ -214,6 +215,14 @@ export class LocalFileDataSource implements DataSource {
       size: entry.size,
       isRemote: false,
     }
+  }
+
+  private async withSiblingSubtitles(detail: MediaDetail): Promise<MediaDetail> {
+    return withSiblingSubtitles(
+      detail,
+      parentPath => this.listEntries(this.rootPath, parentPath),
+      path => this.getStreamFilePath(this.rootPath, path),
+    )
   }
 
   private resolveProviderPath(path?: string): string {

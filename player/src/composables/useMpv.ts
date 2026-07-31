@@ -14,7 +14,7 @@ export interface Track {
 }
 
 export type SubtitleSelectionId = `embedded:${number}` | `external:${string}`
-export type SubtitleTrackSource = 'embedded' | 'external' | 'detail'
+export type SubtitleTrackSource = 'embedded' | 'downloaded' | 'provider' | 'detail'
 
 export interface SubtitleTrackOption {
   id: SubtitleSelectionId
@@ -211,7 +211,7 @@ function toEmbeddedSubtitleTrack(track: Track): SubtitleTrackOption {
 function toKnownSubtitleTrack(track: KnownSubtitleTrackInput): SubtitleTrackOption {
   const hasUrl = typeof track.url === 'string' && track.url.length > 0
   const selectable = track.selectable ?? hasUrl
-  const source = track.source ?? (hasUrl ? 'external' : 'detail')
+  const source = track.source ?? (hasUrl ? 'provider' : 'detail')
 
   return {
     id: knownSubtitleId(track.id),
@@ -605,7 +605,7 @@ export function useMpv() {
     }
   }
 
-  async function addExternalSubtitle(url: string, title: string, language?: string) {
+  async function addExternalSubtitle(url: string, title: string, language?: string, source: 'downloaded' | 'provider' = 'downloaded') {
     trackError.value = null
     try {
       await invoke<void>('mpv_add_subtitle', {
@@ -615,7 +615,7 @@ export function useMpv() {
       })
       const loadedTrack = toKnownSubtitleTrack({
         id: `loaded:${++loadedExternalSubtitleSequence}`,
-        source: 'external',
+        source,
         language: language || null,
         title: title || language || '外部字幕',
         url,
