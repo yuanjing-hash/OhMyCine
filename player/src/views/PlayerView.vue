@@ -11,6 +11,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import MobilePlayerControls from '@/components/player/MobilePlayerControls.vue'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
@@ -22,6 +23,7 @@ import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, sav
 import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -81,7 +83,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null
-const isNativeAndroidPlayer = /Android/i.test(globalThis.navigator?.userAgent ?? '')
+const isNativeAndroidPlayer = isNativeAndroidRuntime()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const mediaHeaders = ref<Record<string, string>>({})
@@ -193,6 +195,7 @@ const {
   renderError,
   renderBackend,
   renderDiagnostics,
+  playbackDiagnostics,
   orientationSupported,
   orientationMode,
   videoDynamicRange,
@@ -565,6 +568,13 @@ function handleWindowBlur() {
 
 function handleWindowResize() {
   void updateChromeOcclusion()
+}
+
+function handlePlayerBack() {
+  if (window.history.state?.back)
+    router.back()
+  else
+    void router.push('/')
 }
 
 function markTitleLogoFailed(url: string) {
@@ -2454,6 +2464,7 @@ watch(
       :render-status="renderStatus"
       :render-error="renderError"
       :render-diagnostics="renderDiagnostics"
+      :playback-diagnostics="playbackDiagnostics"
       :render-strategy="renderStrategy"
       :top-occlusion="topOcclusion"
       :bottom-occlusion="bottomOcclusion"
@@ -2466,14 +2477,14 @@ watch(
     />
 
     <div
-      v-if="hasMedia"
+      v-if="hasMedia && !isNativeAndroidPlayer"
       class="pointer-events-auto absolute inset-x-0 top-0 z-5 h-24"
       aria-hidden="true"
       @mouseenter="revealChromeFromPointer"
       @mousemove="revealChromeFromPointer"
     />
     <div
-      v-if="hasMedia"
+      v-if="hasMedia && !isNativeAndroidPlayer"
       class="pointer-events-auto absolute inset-x-0 bottom-0 z-5 h-32"
       aria-hidden="true"
       @mouseenter="revealChromeFromPointer"
@@ -2514,6 +2525,7 @@ watch(
 
     <Transition name="player-chrome-top">
       <div
+        v-if="!isNativeAndroidPlayer"
         v-show="shouldShowChrome"
         ref="topChromeRef"
         class="player-top-chrome pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black via-black/82 to-transparent px-6 pb-8 pt-16"
@@ -2553,7 +2565,7 @@ watch(
     <!-- Bottom chrome: always in DOM when media loaded so occlusion stays valid.
          Controls fade via opacity transition; the gradient div itself never disappears. -->
     <div
-      v-if="hasMedia"
+      v-if="hasMedia && !isNativeAndroidPlayer"
       ref="bottomChromeRef"
       data-player-click-ignore
       class="player-bottom-chrome absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
@@ -2583,7 +2595,7 @@ watch(
         :video-fit-mode="videoFitMode"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
-        :mobile-layout="isNativeAndroidPlayer"
+        :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
         @play-previous="handlePlayPrevious"
@@ -2606,6 +2618,56 @@ watch(
         @interaction-change="handleControlsInteraction"
       />
     </div>
+
+    <Transition name="player-chrome-top">
+      <MobilePlayerControls
+        v-if="hasMedia && isNativeAndroidPlayer"
+        v-show="shouldShowChrome"
+        ref="playerControlsRef"
+        :title="mediaTitle"
+        :title-logo-url="currentTitleLogoUrl"
+        :is-playing="isPlaying"
+        :current-time="currentTime"
+        :duration="duration"
+        :volume="volume"
+        :playback-speed="playbackSpeed"
+        :subtitle-delay="subtitleDelay"
+        :subtitle-tracks="subtitleTracks"
+        :audio-tracks="audioTracks"
+        :queue-item-count="playbackQueueItemCount"
+        :queue-items="playbackQueue?.items ?? []"
+        :current-queue-index="playbackQueue?.currentIndex ?? 0"
+        :is-queue-switching="isQueueSwitching"
+        :can-play-previous="canPlayPrevious"
+        :can-play-next="canPlayNext"
+        :current-subtitle="currentSubtitle"
+        :current-audio="currentAudio"
+        :video-aspect-mode="videoAspectMode"
+        :video-fit-mode="videoFitMode"
+        :track-error="trackError"
+        :picture-settings-error="pictureSettingsError"
+        :orientation-supported="orientationSupported"
+        :orientation-mode="orientationMode"
+        @back="handlePlayerBack"
+        @play-previous="handlePlayPrevious"
+        @toggle-pause="handleTogglePause"
+        @play-next="handlePlayNext"
+        @select-queue-item="playQueueItemAt"
+        @seek="seek"
+        @seek-relative="seekRelative"
+        @set-volume="setVolume"
+        @set-playback-speed="handleSetPlaybackSpeed"
+        @set-subtitle-delay="handleSetSubtitleDelay"
+        @set-subtitle="handleSetSubtitle"
+        @load-local-subtitle="loadLocalSubtitleFile"
+        @search-subtitles="openSubtitleSearch"
+        @set-audio="handleSetAudio"
+        @set-video-aspect="handleSetVideoAspect"
+        @set-video-fit="handleSetVideoFit"
+        @set-orientation-mode="handleSetOrientationMode"
+        @interaction-change="handleControlsInteraction"
+      />
+    </Transition>
 
     <Teleport to="body">
       <SubtitleSearchDialog

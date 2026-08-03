@@ -42,6 +42,22 @@ pub struct AndroidSurfaceStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidPlaybackDiagnostics {
+    pub state: String,
+    pub last_event: String,
+    pub last_error: Option<String>,
+    pub file_loaded: bool,
+    pub video_format: Option<String>,
+    pub audio_codec: Option<String>,
+    pub vo_configured: bool,
+    pub hardware_decoder: Option<String>,
+    pub video_output: String,
+    pub video_output_fallback_used: bool,
+    pub logs: Vec<String>,
+}
+
 #[derive(Clone, Serialize)]
 struct TimeUpdatePayload {
     time: f64,

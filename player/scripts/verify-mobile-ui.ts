@@ -12,6 +12,9 @@ async function source(path: string): Promise<string> {
 const appLayout = await source('src/components/layout/AppLayout.vue')
 assert.match(appLayout, /import MobileNavigation from '\.\/MobileNavigation\.vue'/)
 assert.match(appLayout, /<MobileNavigation v-if="!isPlayerRoute"/)
+assert.match(appLayout, /isNativeAndroidRuntime/)
+assert.match(appLayout, /<WindowChrome v-if="!isNativeAndroid"/)
+assert.match(appLayout, /<FloatingControls v-if="!isNativeAndroid"/)
 
 const mobileNavigation = await source('src/components/layout/MobileNavigation.vue')
 assert.match(mobileNavigation, /首页/)
@@ -46,13 +49,23 @@ assert.match(sourceLibrary, /bottom: calc\(5\.25rem \+ env\(safe-area-inset-bott
 const playerControls = await source('src/components/player/PlayerControls.vue')
 assert.match(playerControls, /grid-template-columns: auto minmax\(0, 1fr\) auto/)
 assert.match(playerControls, /\.control-popover \{[\s\S]*?position: fixed;/)
-assert.match(playerControls, /mobileLayout: boolean/)
-assert.match(playerControls, /'mobile-layout': mobileLayout/)
-assert.match(playerControls, /\.player-controls-glass\.mobile-layout/)
 assert.match(playerControls, /orientationSupported: boolean/)
 assert.match(playerControls, /自动横屏/)
 assert.match(playerControls, /锁定横屏/)
 assert.match(playerControls, /锁定竖屏/)
+
+const mobilePlayerControls = await source('src/components/player/MobilePlayerControls.vue')
+assert.match(mobilePlayerControls, /mobile-control-layer/)
+assert.match(mobilePlayerControls, /mobile-player-top/)
+assert.match(mobilePlayerControls, /mobile-transport/)
+assert.match(mobilePlayerControls, /mobile-player-bottom/)
+assert.match(mobilePlayerControls, /mobile-player-sheet/)
+assert.match(mobilePlayerControls, /自动横屏/)
+assert.match(mobilePlayerControls, /锁定横屏/)
+assert.match(mobilePlayerControls, /锁定竖屏/)
+assert.match(mobilePlayerControls, /搜索字幕/)
+assert.match(mobilePlayerControls, /载入本地字幕/)
+assert.match(mobilePlayerControls, /@media \(orientation: portrait\)/)
 
 const progressBar = await source('src/components/player/ProgressBar.vue')
 assert.match(progressBar, /@pointerdown\.prevent="handlePointerDown"/)
@@ -84,9 +97,11 @@ assert.match(playerView, /beginHeldArrow\(touchGestureSession\.holdArrowKey, 'to
 assert.match(playerView, /heldArrowOwner === 'touch' && arrowHoldActivated/)
 assert.match(playerView, /releaseHeldArrow\(false, 'touch'\)/)
 assert.match(playerView, /loadPlayerInteractionSettings\(\)\.longPressPlaybackSpeed/)
-assert.match(playerView, /const isNativeAndroidPlayer = \/Android\/i\.test/)
+assert.match(playerView, /const isNativeAndroidPlayer = isNativeAndroidRuntime\(\)/)
 assert.match(playerView, /player-view--native-mobile/)
-assert.match(playerView, /:mobile-layout="isNativeAndroidPlayer"/)
+assert.match(playerView, /<MobilePlayerControls/)
+assert.match(playerView, /v-if="hasMedia && isNativeAndroidPlayer"/)
+assert.match(playerView, /:mobile-layout="false"/)
 assert.match(playerView, /if \(isNativeAndroidPlayer\) \{\s+toggleChromeFromTouch\(\)/)
 assert.match(playerView, /showKeyboardOsd\(`屏幕方向 · \$\{label\}`\)/)
 
@@ -115,6 +130,8 @@ console.log(JSON.stringify({
   browserResponsivePreviewSupported: true,
   verticalScrollThroughHomeMediaRows: true,
   nativeAndroidPlayerLayout: true,
+  nativeAndroidDesktopChromeRemoved: true,
+  nativeAndroidDedicatedControls: true,
   nativeAndroidTapChromeFallback: true,
   conciseWaitingPlaybackState: true,
   nativeOrientationLockControl: true,

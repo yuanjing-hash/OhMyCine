@@ -114,6 +114,61 @@ watch(
 )
 ```
 
+### Android Native Playback Diagnostics Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Android libmpv initialization, SurfaceView lifecycle, native playback commands, renderer fallback, or Player playback diagnostics.
+- Applies across Kotlin `MpvSurfaceHost`, the Tauri mobile plugin, Rust commands, `useMpv`, and `VideoPlayer`.
+
+#### 2. Signatures
+- Tauri command: `mpv_playback_diagnostics() -> MpvPlaybackDiagnostics`.
+- Kotlin plugin command: `playbackDiagnostics` delegates to `MpvSurfaceHost.playbackDiagnostics()`.
+- Frontend state: `useMpv().playbackDiagnostics: Ref<MpvPlaybackDiagnostics | null>`.
+
+#### 3. Contracts
+- Response fields: `state`, `lastEvent`, `lastError`, `fileLoaded`, `videoFormat`, `audioCodec`, `voConfigured`, `hardwareDecoder`, `videoOutput`, `videoOutputFallbackUsed`, and `logs`.
+- `videoOutput` starts as `gpu-next`; `videoOutputFallbackUsed` becomes true only when native error logs caused a per-playback fallback to `gpu`.
+- Observe at least `START_FILE`, `FILE_LOADED`, `END_FILE`, `VIDEO_RECONFIG`, `AUDIO_RECONFIG`, and `PLAYBACK_RESTART`.
+- Diagnostic text must redact remote URLs, authorization values, cookies, API keys, tokens, signatures, and query credentials before crossing IPC.
+- Diagnostics must never include the media path, request headers, provider credentials, signed playback URL, or cookies.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Surface not attached | Keep render state initializing; do not issue load until the bounded readiness wait succeeds |
+| `FILE_LOADED` received | Set `state=playing`, `fileLoaded=true`, and clear stale load errors |
+| `END_FILE` before file load | Set `state=error` and expose a safe diagnostic reason |
+| User or route requests stop | Report idle/stopped; do not misclassify the resulting `END_FILE` as a load error |
+| `gpu-next` log explicitly reports GPU/VO failure during loading | Retry this playback with `gpu`, mark fallback used, and retain `gpu-next` as the next playback/default |
+| Log contains URL/token/header material | Replace sensitive values before retaining or returning the line |
+
+#### 5. Good/Base/Bad Cases
+- Good: a failed Android load shows an in-app diagnostic action with safe state, codec/VO facts, and redacted mpv logs.
+- Base: a successful `gpu-next` playback never uses fallback and reports `fileLoaded=true` plus configured video output.
+- Bad: assuming every black screen is a `gpu-next` incompatibility, globally switching to `gpu`, or asking users to expose full logcat URLs and tokens.
+
+#### 6. Tests Required
+- Kotlin compilation asserts observer interfaces, event handling, SurfaceView lifecycle, and diagnostic serialization compile together.
+- Static verification asserts `gpu-next` default, conditional `gpu` fallback, event coverage, and log sanitization.
+- Frontend checks assert diagnostics are polled only for the Android backend and rendered behind an explicit debug/error surface.
+- Run `npm run verify:android-playback`, `npm run typecheck`, `npm run lint`, Android Kotlin compilation, and the Android APK build.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```kotlin
+MPVLib.setOptionString("vo", "gpu") // globally downgrade based on an unverified black-screen report
+```
+
+Correct:
+```kotlin
+MPVLib.setOptionString("vo", "gpu-next")
+if (nativeLogConfirmsGpuOutputFailure()) {
+    MPVLib.setPropertyString("vo", "gpu")
+    videoOutputFallbackUsed = true
+}
+```
+
 ---
 
 ## Keyboard Shortcuts

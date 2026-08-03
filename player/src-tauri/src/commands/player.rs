@@ -13,6 +13,39 @@ use crate::storage;
 
 const MAX_PREPARED_SUBTITLE_BYTES: usize = 12 * 1024 * 1024;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPlaybackDiagnostics {
+    state: &'static str,
+    last_event: &'static str,
+    last_error: Option<String>,
+    file_loaded: bool,
+    video_format: Option<String>,
+    audio_codec: Option<String>,
+    vo_configured: bool,
+    hardware_decoder: Option<String>,
+    video_output: &'static str,
+    video_output_fallback_used: bool,
+    logs: Vec<String>,
+}
+
+#[tauri::command]
+pub fn mpv_playback_diagnostics() -> DesktopPlaybackDiagnostics {
+    DesktopPlaybackDiagnostics {
+        state: "desktop",
+        last_event: "desktop-backend",
+        last_error: None,
+        file_loaded: false,
+        video_format: None,
+        audio_codec: None,
+        vo_configured: false,
+        hardware_decoder: None,
+        video_output: "desktop",
+        video_output_fallback_used: false,
+        logs: Vec::new(),
+    }
+}
+
 #[tauri::command]
 pub async fn mpv_load(
     path: String,

@@ -98,6 +98,20 @@ export interface MpvRenderState {
   diagnostics?: MpvRenderDiagnostics | null
 }
 
+export interface MpvPlaybackDiagnostics {
+  state: 'idle' | 'loading' | 'playing' | 'ended' | 'error' | 'desktop' | string
+  lastEvent: string
+  lastError?: string | null
+  fileLoaded: boolean
+  videoFormat?: string | null
+  audioCodec?: string | null
+  voConfigured: boolean
+  hardwareDecoder?: string | null
+  videoOutput: string
+  videoOutputFallbackUsed: boolean
+  logs: string[]
+}
+
 export interface VideoDynamicRangeState {
   label: string
   details: string
@@ -270,6 +284,7 @@ export function useMpv() {
   const renderError = ref<string | null>(null)
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
+  const playbackDiagnostics = ref<MpvPlaybackDiagnostics | null>(null)
   const orientationSupported = ref(false)
   const orientationMode = ref<MpvOrientationMode>('auto')
   const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
@@ -357,13 +372,26 @@ export function useMpv() {
     }
   }
 
+  async function refreshPlaybackDiagnostics() {
+    try {
+      const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
+      playbackDiagnostics.value = diagnostics.state === 'desktop' ? null : diagnostics
+    }
+    catch {
+      playbackDiagnostics.value = null
+    }
+  }
+
   function startRenderDiagnosticsPolling() {
     if (renderDiagnosticsTimer)
       return
 
     renderDiagnosticsTimer = window.setInterval(() => {
-      if (renderStatus.value === 'initializing' || renderStatus.value === 'ready')
+      if (renderStatus.value === 'initializing' || renderStatus.value === 'ready') {
         void refreshRenderStatus()
+        if (renderBackend.value === 'androidSurface')
+          void refreshPlaybackDiagnostics()
+      }
     }, 1000)
   }
 
@@ -374,6 +402,8 @@ export function useMpv() {
     try {
       const state = await invoke<MpvRenderState>('mpv_init_render_surface')
       applyRenderState(state)
+      if (state.backend === 'androidSurface')
+        await refreshPlaybackDiagnostics()
       if (state.status === 'initializing' || state.status === 'ready')
         startRenderDiagnosticsPolling()
     }
@@ -534,6 +564,8 @@ export function useMpv() {
     await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     await invoke<void>('mpv_resume')
+    if (renderBackend.value === 'androidSurface')
+      await refreshPlaybackDiagnostics()
     await refreshOrientationState()
     currentTime.value = 0
     isPlaying.value = true
@@ -731,6 +763,7 @@ export function useMpv() {
     renderError,
     renderBackend,
     renderDiagnostics,
+    playbackDiagnostics,
     orientationSupported,
     orientationMode,
     videoDynamicRange,

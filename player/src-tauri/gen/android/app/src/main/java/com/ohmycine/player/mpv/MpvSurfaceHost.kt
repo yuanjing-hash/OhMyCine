@@ -12,7 +12,11 @@ import android.widget.FrameLayout
 import `is`.xyz.mpv.MPVLib
 import java.io.File
 
-internal object MpvSurfaceHost {
+internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
+    private const val PRIMARY_ANDROID_VIDEO_OUTPUT = "gpu-next"
+    private const val FALLBACK_ANDROID_VIDEO_OUTPUT = "gpu"
+    private const val MAX_DIAGNOSTIC_LOGS = 24
+
     @Volatile
     private var initialized = false
 
@@ -26,6 +30,21 @@ internal object MpvSurfaceHost {
     private var surfaceContainer: FrameLayout? = null
     @Volatile
     private var pendingLoad: PendingLoad? = null
+    @Volatile
+    private var playbackState = "idle"
+    @Volatile
+    private var lastPlaybackEvent = "not-started"
+    @Volatile
+    private var lastPlaybackError: String? = null
+    @Volatile
+    private var fileLoaded = false
+    @Volatile
+    private var stopRequested = false
+    @Volatile
+    private var activeVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+    @Volatile
+    private var videoOutputFallbackUsed = false
+    private val diagnosticLogs = ArrayDeque<String>()
 
     fun install(activity: Activity, webView: WebView) {
         webView.post {
@@ -72,6 +91,14 @@ internal object MpvSurfaceHost {
         surfaceAttached = false
         initialized = false
         initializationError = null
+        playbackState = "idle"
+        lastPlaybackEvent = "destroyed"
+        lastPlaybackError = null
+        fileLoaded = false
+        stopRequested = false
+        activeVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+        videoOutputFallbackUsed = false
+        synchronized(diagnosticLogs) { diagnosticLogs.clear() }
     }
 
     fun isReady(): Boolean = initialized && surfaceAttached
@@ -90,6 +117,17 @@ internal object MpvSurfaceHost {
     @Synchronized
     private fun play(request: PendingLoad) {
         pendingLoad = null
+        playbackState = "loading"
+        lastPlaybackEvent = "load-command"
+        lastPlaybackError = null
+        fileLoaded = false
+        stopRequested = false
+        if (activeVideoOutput != PRIMARY_ANDROID_VIDEO_OUTPUT) {
+            MPVLib.setPropertyString("vo", PRIMARY_ANDROID_VIDEO_OUTPUT)
+            activeVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+        }
+        videoOutputFallbackUsed = false
+        synchronized(diagnosticLogs) { diagnosticLogs.clear() }
         val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
@@ -108,8 +146,13 @@ internal object MpvSurfaceHost {
 
     fun stop() {
         pendingLoad = null
-        if (initialized)
+        if (initialized) {
+            stopRequested = true
             MPVLib.command(arrayOf("stop"))
+            playbackState = "idle"
+            lastPlaybackEvent = "stopped"
+            fileLoaded = false
+        }
     }
 
     fun seek(position: Double) {
@@ -171,6 +214,150 @@ internal object MpvSurfaceHost {
         )
     }
 
+    fun playbackDiagnostics(): MpvPlaybackDiagnostics {
+        val logs = synchronized(diagnosticLogs) { diagnosticLogs.toList() }
+        return MpvPlaybackDiagnostics(
+            state = playbackState,
+            lastEvent = lastPlaybackEvent,
+            lastError = lastPlaybackError,
+            fileLoaded = fileLoaded,
+            videoFormat = safePropertyString("video-format"),
+            audioCodec = safePropertyString("audio-codec-name"),
+            voConfigured = safePropertyBoolean("vo-configured") ?: false,
+            hardwareDecoder = safePropertyString("hwdec-current"),
+            videoOutput = activeVideoOutput,
+            videoOutputFallbackUsed = videoOutputFallbackUsed,
+            logs = logs,
+        )
+    }
+
+    override fun eventProperty(property: String) = Unit
+
+    override fun eventProperty(property: String, value: Long) = Unit
+
+    override fun eventProperty(property: String, value: Boolean) {
+        if (property == "vo-configured" && value)
+            lastPlaybackEvent = "video-output-ready"
+    }
+
+    override fun eventProperty(property: String, value: String) {
+        when (property) {
+            "video-format" -> if (value.isNotBlank()) lastPlaybackEvent = "video-format-ready"
+            "audio-codec-name" -> if (value.isNotBlank()) lastPlaybackEvent = "audio-format-ready"
+        }
+    }
+
+    override fun eventProperty(property: String, value: Double) = Unit
+
+    override fun event(eventId: Int) {
+        when (eventId) {
+            MPVLib.MpvEvent.START_FILE -> {
+                stopRequested = false
+                playbackState = "loading"
+                lastPlaybackEvent = "start-file"
+                lastPlaybackError = null
+                fileLoaded = false
+            }
+            MPVLib.MpvEvent.FILE_LOADED -> {
+                playbackState = "playing"
+                lastPlaybackEvent = "file-loaded"
+                lastPlaybackError = null
+                fileLoaded = true
+            }
+            MPVLib.MpvEvent.VIDEO_RECONFIG -> lastPlaybackEvent = "video-reconfig"
+            MPVLib.MpvEvent.AUDIO_RECONFIG -> lastPlaybackEvent = "audio-reconfig"
+            MPVLib.MpvEvent.PLAYBACK_RESTART -> {
+                playbackState = "playing"
+                lastPlaybackEvent = "playback-restart"
+            }
+            MPVLib.MpvEvent.END_FILE -> {
+                if (stopRequested) {
+                    playbackState = "idle"
+                    lastPlaybackEvent = "stopped"
+                    stopRequested = false
+                    return
+                }
+                val error = safePropertyString("error")
+                if (!fileLoaded || (!error.isNullOrBlank() && error != "success")) {
+                    playbackState = "error"
+                    lastPlaybackEvent = "end-file-error"
+                    lastPlaybackError = error?.takeUnless { it == "success" }
+                        ?: "媒体文件未能完成加载，请打开播放诊断查看原因。"
+                } else {
+                    playbackState = "ended"
+                    lastPlaybackEvent = "end-file"
+                }
+            }
+        }
+    }
+
+    override fun logMessage(prefix: String, level: Int, text: String) {
+        val line = sanitizeDiagnosticLine(prefix, text)
+        if (line.isBlank())
+            return
+        synchronized(diagnosticLogs) {
+            diagnosticLogs.addLast(line)
+            while (diagnosticLogs.size > MAX_DIAGNOSTIC_LOGS)
+                diagnosticLogs.removeFirst()
+        }
+        if (level <= 20 && playbackState == "loading")
+            lastPlaybackError = line
+        if (shouldFallbackVideoOutput(level, line)) {
+            activeVideoOutput = FALLBACK_ANDROID_VIDEO_OUTPUT
+            videoOutputFallbackUsed = true
+            lastPlaybackEvent = "video-output-fallback"
+            MPVLib.setPropertyString("vo", FALLBACK_ANDROID_VIDEO_OUTPUT)
+        }
+    }
+
+    private fun safePropertyString(name: String): String? {
+        if (!initialized)
+            return null
+        return runCatching { MPVLib.getPropertyString(name) }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && it != "unknown" }
+    }
+
+    private fun safePropertyBoolean(name: String): Boolean? {
+        if (!initialized)
+            return null
+        return runCatching { MPVLib.getPropertyBoolean(name) }.getOrNull()
+    }
+
+    private fun sanitizeDiagnosticLine(prefix: String, text: String): String {
+        val cleanPrefix = prefix.replace(Regex("[^A-Za-z0-9_.-]"), "").take(32)
+        val cleanText = text
+            .replace(Regex("(?i)https?://\\S+"), "[remote-media]")
+            .replace(Regex("(?i)(?:file|content)://\\S+"), "[local-media]")
+            .replace(Regex("(?i)(?<![A-Za-z0-9])/(?:storage|sdcard|data|mnt)/\\S+"), "[local-media]")
+            .replace(Regex("(?i)(authorization|cookie|api[_-]?key|token|x-emby-token)\\s*[:=]\\s*\\S+"), "$1=[redacted]")
+            .replace(Regex("(?i)([?&](?:api[_-]?key|token|auth|signature|sig)=)[^&\\s]+"), "$1[redacted]")
+            .replace(Regex("[\\r\\n\\t]+"), " ")
+            .trim()
+            .take(360)
+        return if (cleanPrefix.isBlank()) cleanText else "$cleanPrefix: $cleanText"
+    }
+
+    private fun shouldFallbackVideoOutput(level: Int, line: String): Boolean {
+        if (level > 20 || playbackState != "loading" || fileLoaded || videoOutputFallbackUsed)
+            return false
+        val normalized = line.lowercase()
+        return activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+            && (normalized.contains("gpu") || normalized.contains("vo"))
+            && (normalized.contains("fail") || normalized.contains("error") || normalized.contains("not supported"))
+    }
+
+    private fun registerMpvObservers() {
+        MPVLib.addObserver(this)
+        MPVLib.addLogObserver(this)
+    }
+
+    private fun unregisterMpvObservers() {
+        MPVLib.removeObserver(this)
+        MPVLib.removeLogObserver(this)
+    }
+
     private fun requireInitialized() {
         check(isReady()) { "Android 播放器表面尚未准备完成。" }
     }
@@ -182,18 +369,21 @@ internal object MpvSurfaceHost {
             if (!initialized) {
                 val caFile = installCaCertificate(context)
                 MPVLib.create(context.applicationContext)
+                MpvSurfaceHost.registerMpvObservers()
                 MPVLib.setOptionString("config", "no")
                 MPVLib.setOptionString("profile", "fast")
-                MPVLib.setOptionString("vo", "gpu-next")
+                MPVLib.setOptionString("vo", PRIMARY_ANDROID_VIDEO_OUTPUT)
                 MPVLib.setOptionString("gpu-context", "android")
                 MPVLib.setOptionString("opengl-es", "yes")
                 MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy")
                 MPVLib.setOptionString("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
                 MPVLib.setOptionString("ao", "audiotrack,opensles")
+                MPVLib.setOptionString("audio-set-media-role", "yes")
                 MPVLib.setOptionString("osc", "no")
                 MPVLib.setOptionString("keep-open", "yes")
                 MPVLib.setOptionString("idle", "yes")
                 MPVLib.setOptionString("force-window", "no")
+                MPVLib.setOptionString("input-default-bindings", "no")
                 MPVLib.setOptionString("demuxer-max-bytes", (64 * 1024 * 1024).toString())
                 MPVLib.setOptionString("demuxer-max-back-bytes", (32 * 1024 * 1024).toString())
                 MPVLib.setOptionString("gpu-shader-cache-dir", context.cacheDir.path)
@@ -201,7 +391,12 @@ internal object MpvSurfaceHost {
                 MPVLib.setOptionString("tls-verify", "yes")
                 MPVLib.setOptionString("tls-ca-file", caFile.path)
                 MPVLib.init()
+                MPVLib.observeProperty("video-format", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("audio-codec-name", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("vo-configured", MPVLib.MpvFormat.FLAG)
+                MPVLib.observeProperty("hwdec-current", MPVLib.MpvFormat.STRING)
                 initialized = true
+                lastPlaybackEvent = "mpv-initialized"
             }
             setZOrderMediaOverlay(false)
             holder.setFormat(PixelFormat.OPAQUE)
@@ -218,15 +413,19 @@ internal object MpvSurfaceHost {
                 MPVLib.detachSurface()
                 surfaceAttached = false
             }
-            if (initialized)
+            if (initialized) {
+                MpvSurfaceHost.unregisterMpvObservers()
                 MPVLib.destroy()
+                initialized = false
+            }
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
             MPVLib.attachSurface(holder.surface)
             MPVLib.setOptionString("force-window", "yes")
-            MPVLib.setPropertyString("vo", "gpu-next")
+            MPVLib.setPropertyString("vo", activeVideoOutput)
             surfaceAttached = true
+            lastPlaybackEvent = "surface-attached"
             pendingLoad?.let { play(it) }
         }
 
@@ -238,9 +437,10 @@ internal object MpvSurfaceHost {
             if (!surfaceAttached)
                 return
             MPVLib.setPropertyString("vo", "null")
-            MPVLib.setOptionString("force-window", "no")
+            MPVLib.setPropertyString("force-window", "no")
             MPVLib.detachSurface()
             surfaceAttached = false
+            lastPlaybackEvent = "surface-detached"
         }
     }
 
@@ -274,4 +474,17 @@ internal data class MpvTrackState(
     val tracks: List<MpvTrack>,
     val currentSubtitle: Long?,
     val currentAudio: Long?,
+)
+internal data class MpvPlaybackDiagnostics(
+    val state: String,
+    val lastEvent: String,
+    val lastError: String?,
+    val fileLoaded: Boolean,
+    val videoFormat: String?,
+    val audioCodec: String?,
+    val voConfigured: Boolean,
+    val hardwareDecoder: String?,
+    val videoOutput: String,
+    val videoOutputFallbackUsed: Boolean,
+    val logs: List<String>,
 )

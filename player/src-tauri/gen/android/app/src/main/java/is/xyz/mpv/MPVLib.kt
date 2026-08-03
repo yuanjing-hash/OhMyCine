@@ -93,4 +93,21 @@ object MPVLib {
     interface LogObserver {
         fun logMessage(prefix: String, level: Int, text: String)
     }
+
+    object MpvFormat {
+        const val NONE = 0
+        const val STRING = 1
+        const val FLAG = 3
+        const val INT64 = 4
+        const val DOUBLE = 5
+    }
+
+    object MpvEvent {
+        const val START_FILE = 6
+        const val END_FILE = 7
+        const val FILE_LOADED = 8
+        const val VIDEO_RECONFIG = 17
+        const val AUDIO_RECONFIG = 18
+        const val PLAYBACK_RESTART = 21
+    }
 }

@@ -3,7 +3,7 @@ use tauri::State;
 
 use super::player_shared::{sanitize_http_headers, MpvHttpHeader, MpvOrientationState};
 use crate::mpv::{
-    mobile::{AndroidMpvState, AndroidSurfaceStatus},
+    mobile::{AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
     render::{MpvRenderState, RenderBackendKind, RenderStatus},
     surface::{RenderSurfaceBounds, ZOrderStrategy},
 };
@@ -155,6 +155,13 @@ pub async fn mpv_set_property(
 #[tauri::command]
 pub async fn mpv_track_state(state: State<'_, AndroidMpvState>) -> Result<MpvTrackState, String> {
     state.run("trackState", ()).await
+}
+
+#[tauri::command]
+pub async fn mpv_playback_diagnostics(
+    state: State<'_, AndroidMpvState>,
+) -> Result<AndroidPlaybackDiagnostics, String> {
+    state.run("playbackDiagnostics", ()).await
 }
 
 #[tauri::command]

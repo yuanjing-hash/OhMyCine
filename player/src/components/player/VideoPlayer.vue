@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MpvRenderDiagnostics, MpvRenderStatus, MpvZOrderStrategy, RenderSurfaceBounds } from '@/composables/useMpv'
+import type { MpvPlaybackDiagnostics, MpvRenderDiagnostics, MpvRenderStatus, MpvZOrderStrategy, RenderSurfaceBounds } from '@/composables/useMpv'
 import type { ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -11,6 +11,7 @@ const props = defineProps<{
   renderStatus: MpvRenderStatus
   renderError: string | null
   renderDiagnostics: MpvRenderDiagnostics | null
+  playbackDiagnostics: MpvPlaybackDiagnostics | null
   renderStrategy: MpvZOrderStrategy
   topOcclusion: number
   bottomOcclusion: number
@@ -63,7 +64,14 @@ const rootBackgroundClass = computed(() => {
   return 'player-surface-root--transparent'
 })
 
+const playbackFailure = computed(() => props.playbackDiagnostics?.state === 'error')
+const playbackLoading = computed(() => props.hasMedia && props.playbackDiagnostics?.state === 'loading')
+
 const renderStatusLabel = computed(() => {
+  if (playbackFailure.value)
+    return '播放错误'
+  if (playbackLoading.value)
+    return '正在载入'
   switch (props.renderStatus) {
     case 'initializing':
       return '准备中'
@@ -80,6 +88,10 @@ const renderStatusLabel = computed(() => {
 })
 
 const renderTitle = computed(() => {
+  if (playbackFailure.value)
+    return '视频加载失败'
+  if (playbackLoading.value)
+    return '正在连接媒体并准备解码'
   switch (props.renderStatus) {
     case 'initializing':
       return '正在准备视频画面'
@@ -96,6 +108,10 @@ const renderTitle = computed(() => {
 })
 
 const renderDescription = computed(() => {
+  if (playbackFailure.value)
+    return redactDiagnosticText(props.playbackDiagnostics?.lastError || '媒体文件未能完成加载，请展开诊断信息查看具体原因。')
+  if (playbackLoading.value)
+    return '播放器已经接管播放请求，正在等待媒体信息和首帧。'
   if (props.renderError)
     return redactDiagnosticText(props.renderError)
 
@@ -149,6 +165,23 @@ const providerSyncDiagnosticRows = computed(() => props.providerSyncDiagnostics.
   formatProviderSyncDiagnostic(item),
 ] as const))
 
+const nativePlaybackDiagnosticRows = computed(() => {
+  const diagnostics = props.playbackDiagnostics
+  if (!diagnostics)
+    return []
+  return [
+    ['playbackState', diagnostics.state],
+    ['lastEvent', diagnostics.lastEvent],
+    ['fileLoaded', diagnostics.fileLoaded ? 'yes' : 'no'],
+    ['voConfigured', diagnostics.voConfigured ? 'yes' : 'no'],
+    ['videoFormat', diagnostics.videoFormat ?? 'none'],
+    ['audioCodec', diagnostics.audioCodec ?? 'none'],
+    ['hardwareDecoder', diagnostics.hardwareDecoder ?? 'none'],
+    ['videoOutput', diagnostics.videoOutput],
+    ['videoOutputFallback', diagnostics.videoOutputFallbackUsed ? 'yes' : 'no'],
+  ] as const
+})
+
 const diagnosticText = computed(() => {
   const lines = [
     'Render diagnostics',
@@ -161,6 +194,16 @@ const diagnosticText = computed(() => {
 
   if (props.renderError)
     lines.push(`renderError=${redactDiagnosticText(props.renderError)}`)
+
+  if (nativePlaybackDiagnosticRows.value.length > 0) {
+    lines.push('', 'Android playback')
+    for (const [key, value] of nativePlaybackDiagnosticRows.value)
+      lines.push(`${key}=${redactDiagnosticText(value)}`)
+    if (props.playbackDiagnostics?.lastError)
+      lines.push(`lastError=${redactDiagnosticText(props.playbackDiagnostics.lastError)}`)
+    for (const line of props.playbackDiagnostics?.logs ?? [])
+      lines.push(`log=${redactDiagnosticText(line)}`)
+  }
 
   if (providerSyncDiagnosticRows.value.length > 0) {
     lines.push('', 'Provider sync')
@@ -306,7 +349,7 @@ function isTauriRuntime(): boolean {
       aria-hidden="true"
     />
     <div
-      v-if="renderStatus !== 'ready'"
+      v-if="renderStatus !== 'ready' || playbackFailure"
       class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(74,158,255,0.14),transparent_34%),linear-gradient(135deg,#050509,#090911_52%,#030305)]"
     />
     <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
@@ -315,7 +358,7 @@ function isTauriRuntime(): boolean {
           等待播放中
         </p>
       </div>
-      <div v-else-if="renderStatus !== 'ready'" class="glass-panel pointer-events-auto max-w-xl rounded-3xl p-8 text-center">
+      <div v-else-if="renderStatus !== 'ready' || playbackFailure || playbackLoading" class="playback-status-panel pointer-events-auto max-w-xl p-6 text-center">
         <p class="text-xs uppercase tracking-[0.24em] text-white/35">
           {{ renderStatusLabel }}
         </p>
@@ -328,6 +371,14 @@ function isTauriRuntime(): boolean {
         <p v-if="!isPlaying" class="mt-4 text-xs uppercase tracking-[0.22em] text-white/34">
           Paused
         </p>
+        <button
+          v-if="playbackFailure"
+          type="button"
+          class="mt-5 min-h-11 border border-white/16 bg-white/8 px-4 text-sm font-semibold text-white/86"
+          @click="toggleDiagnosticsClick"
+        >
+          查看播放诊断
+        </button>
       </div>
     </div>
   </div>
@@ -393,6 +444,29 @@ function isTauriRuntime(): boolean {
             </dd>
           </template>
         </dl>
+        <div v-if="nativePlaybackDiagnosticRows.length" class="mt-4 border-t border-white/10 pt-3">
+          <p class="text-[10px] uppercase tracking-[0.2em] text-white/44">
+            Android playback
+          </p>
+          <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[11px]">
+            <template v-for="[key, value] in nativePlaybackDiagnosticRows" :key="key">
+              <dt class="font-mono text-white/44">
+                {{ key }}
+              </dt>
+              <dd class="break-all font-mono text-white/76">
+                {{ redactDiagnosticText(value) }}
+              </dd>
+            </template>
+          </dl>
+          <p v-if="playbackDiagnostics?.lastError" class="mt-3 break-words text-red-100/82">
+            {{ redactDiagnosticText(playbackDiagnostics.lastError) }}
+          </p>
+          <div v-if="playbackDiagnostics?.logs.length" class="mt-3 space-y-1 border-t border-white/8 pt-3 font-mono text-[10px] text-white/54">
+            <p v-for="(line, index) in playbackDiagnostics.logs" :key="`${index}:${line}`" class="break-all">
+              {{ redactDiagnosticText(line) }}
+            </p>
+          </div>
+        </div>
         <div v-if="providerSyncDiagnosticRows.length" class="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
           <p class="text-[10px] uppercase tracking-[0.2em] text-white/44">
             Provider sync
@@ -433,5 +507,14 @@ function isTauriRuntime(): boolean {
      intentional dark placeholder surface. */
   background: transparent;
   background-color: transparent;
+}
+
+.playback-status-panel {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(8, 10, 15, 0.82);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
 }
 </style>

@@ -29,6 +29,7 @@ for (const command of [
   'getProperty',
   'setProperty',
   'trackState',
+  'playbackDiagnostics',
   'surfaceStatus',
   'orientationState',
   'setOrientation',
@@ -55,7 +56,9 @@ const surfaceHost = await source('src-tauri/gen/android/app/src/main/java/com/oh
 assert.match(surfaceHost, /SurfaceView/)
 assert.match(surfaceHost, /MPVLib\.attachSurface/)
 assert.match(surfaceHost, /MPVLib\.setOptionString\("gpu-context", "android"\)/)
-assert.match(surfaceHost, /MPVLib\.setOptionString\("vo", "gpu-next"\)/)
+assert.match(surfaceHost, /PRIMARY_ANDROID_VIDEO_OUTPUT = "gpu-next"/)
+assert.match(surfaceHost, /FALLBACK_ANDROID_VIDEO_OUTPUT = "gpu"/)
+assert.match(surfaceHost, /video-output-fallback/)
 assert.match(surfaceHost, /MPVLib\.setOptionString\("hwdec", "mediacodec,mediacodec-copy"\)/)
 assert.match(surfaceHost, /webView\.setBackgroundColor\(Color\.TRANSPARENT\)/)
 assert.match(surfaceHost, /parent\.addView\(container, index, layoutParams\)/)
@@ -63,6 +66,10 @@ assert.doesNotMatch(surfaceHost, /activity\.setContentView/)
 assert.match(surfaceHost, /PendingLoad/)
 assert.match(surfaceHost, /pendingLoad\?\.let \{ play\(it\) \}/)
 assert.match(surfaceHost, /initializationError/)
+assert.match(surfaceHost, /MPVLib\.MpvEvent\.FILE_LOADED/)
+assert.match(surfaceHost, /MPVLib\.MpvEvent\.END_FILE/)
+assert.match(surfaceHost, /sanitizeDiagnosticLine/)
+assert.match(surfaceHost, /MpvPlaybackDiagnostics/)
 
 const setup = await source('scripts/setup-libmpv-android.mjs')
 assert.match(setup, /releaseTag = '2026-04-25'/)
@@ -90,4 +97,6 @@ console.log(JSON.stringify({
   nativeLandscapePlaybackMode: true,
   nativeInitializationErrorsSurfaced: true,
   nativeOrientationModes: true,
+  gpuNextDefaultWithRuntimeFallback: true,
+  nativePlaybackDiagnostics: true,
 }, null, 2))

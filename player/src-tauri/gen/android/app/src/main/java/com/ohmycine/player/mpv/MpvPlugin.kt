@@ -115,6 +115,11 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     fun trackState(invoke: Invoke) = resolveObject(invoke) { MpvSurfaceHost.trackState() }
 
     @Command
+    fun playbackDiagnostics(invoke: Invoke) = resolveObject(invoke) {
+        MpvSurfaceHost.playbackDiagnostics()
+    }
+
+    @Command
     fun surfaceStatus(invoke: Invoke) = resolveObject(invoke) {
         mapOf(
             "ready" to MpvSurfaceHost.isReady(),
