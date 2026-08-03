@@ -143,6 +143,16 @@ pub fn local_file_watch_stop(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn local_file_pick_video() -> Result<(), String> {
+    Err("桌面端继续使用原生文件选择器。".to_string())
+}
+
+#[tauri::command]
+pub async fn local_file_pick_directory() -> Result<(), String> {
+    Err("桌面端继续使用原生目录选择器。".to_string())
+}
+
 fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
     validate_path_text(root_path, "本地文件根目录无效。")?;
     let root = Path::new(root_path);

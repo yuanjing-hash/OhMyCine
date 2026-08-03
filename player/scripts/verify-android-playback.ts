@@ -79,6 +79,25 @@ assert.match(kotlinPlugin, /fun setOrientation/)
 assert.match(kotlinPlugin, /fun applyEngineSettings/)
 assert.match(kotlinPlugin, /WindowInsetsCompat\.Type\.systemBars/)
 assert.match(kotlinPlugin, /FLAG_KEEP_SCREEN_ON/)
+assert.match(kotlinPlugin, /contentResolver\.openFileDescriptor/)
+assert.match(kotlinPlugin, /descriptor\.detachFd\(\)/)
+assert.match(kotlinPlugin, /fdclose:\/\//)
+assert.match(kotlinPlugin, /MpvSurfaceHost\.addSubtitle\(preparePlayablePath\(args\.url\)/)
+
+const localMediaPlugin = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/LocalMediaPlugin.kt')
+assert.match(localMediaPlugin, /Intent\.ACTION_OPEN_DOCUMENT/)
+assert.match(localMediaPlugin, /Intent\.ACTION_OPEN_DOCUMENT_TREE/)
+assert.match(localMediaPlugin, /takePersistableUriPermission/)
+assert.match(localMediaPlugin, /DocumentsContract\.buildChildDocumentsUriUsingTree/)
+assert.match(localMediaPlugin, /persistedUriPermissions/)
+assert.match(localMediaPlugin, /Android 本地媒体目录授权已失效/)
+
+const localMediaCommands = await source('src-tauri/src/commands/local_file_android.rs')
+assert.match(localMediaCommands, /com\.ohmycine\.player\.localmedia/)
+assert.match(localMediaCommands, /LocalMediaPlugin/)
+assert.match(localMediaCommands, /local_file_pick_video/)
+assert.match(localMediaCommands, /local_file_pick_directory/)
+assert.match(localMediaCommands, /\.run\(\s+"streamPath"/)
 
 const surfaceHost = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/mpv/MpvSurfaceHost.kt')
 assert.match(surfaceHost, /SurfaceView/)
@@ -127,6 +146,7 @@ const manifest = await source('src-tauri/gen/android/app/src/main/AndroidManifes
 assert.match(manifest, /android:icon="@mipmap\/ic_launcher"/)
 assert.match(manifest, /android:roundIcon="@mipmap\/ic_launcher_round"/)
 assert.match(manifest, /REQUEST_INSTALL_PACKAGES/)
+assert.doesNotMatch(manifest, /READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE/)
 const adaptiveIcon = await source('src-tauri/gen/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')
 assert.match(adaptiveIcon, /@mipmap\/ic_launcher_foreground/)
 
@@ -153,4 +173,6 @@ console.log(JSON.stringify({
   nativePlaybackDiagnostics: true,
   rustlsLoopbackMediaBridge: true,
   adaptiveAndroidLauncherIcon: true,
+  androidSafFileAndDirectoryAccess: true,
+  androidContentUriFileDescriptorPlayback: true,
 }, null, 2))

@@ -2301,6 +2301,8 @@ Android 响应式布局按实时可用窗口宽度划分，不依赖手机/平�
 
 当前已生成 Tauri Android Studio 工程，并可通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK。Activity 显式启用 `resizeableActivity` 且不全局锁定方向；开始播放时原生插件进入 sensor-landscape 沉浸模式、隐藏系统栏并保持亮屏，停止播放后恢复系统栏和默认方向策略。Android 不链接桌面 `libmpv-sys`，而是保持同名 `mpv_*` 命令并通过 Rust mobile plugin、Kotlin 与 mpv-android JNI runtime 完成加载、暂停、seek、属性、字幕和轨道操作；播放进度与暂停状态继续进入现有 Vue 事件流。构建命令会先清理旧 APK，并关闭 Rust debug info，避免预览包被调试符号膨胀。
 
+Android 本地媒体访问使用 Storage Access Framework，与桌面路径逻辑明确分离。快捷操作中的本地视频入口调用 `ACTION_OPEN_DOCUMENT`，所选 `content://` URI 只进入短生命周期 `PlaybackMediaContext`，路由仅保存 `contextId` 和媒体身份；Kotlin 播放桥通过 `ContentResolver.openFileDescriptor` 打开文件，并以 `fdclose://<fd>` 把描述符所有权交给 libmpv，不把大视频复制到缓存。设置页本地文件夹入口调用 `ACTION_OPEN_DOCUMENT_TREE` 并保存只读持久授权；`LocalMediaPlugin` 在授权树内查询子文档，继续向 DataSource 暴露 `/目录/文件` 逻辑路径，原始子文档 URI 不进入前端列表、扫描缓存或日志。授权被用户撤销时必须要求重新选择目录。Android 文档树无法复用桌面 `notify` watcher，因此 watcher 启动会安全降级，仍由现有短间隔增量扫描完成变化检测。桌面继续使用 Tauri dialog、绝对根路径和 Rust root-scoped 文件命令，不改变既有行为。
+
 Android Surface 初始化是整组播放命令的前置屏障。Kotlin 将 `SurfaceView + 透明 WebView` 容器插回 Tauri 原 WebView 父节点，不替换 Activity 根内容；Rust 在调用 load 前等待 surface ready，并把初始化错误或超时返回前端。前端对 `initializing` 状态持续轮询，避免只在固定两秒窗口内判断一次。这样 load 后紧接的 resume、倍速、画面和字幕偏移命令不会因 Surface 尚未 attach 而失败，也不会把播放目标清空后错误显示成空播放器。
 
 Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
@@ -2309,7 +2311,7 @@ Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等
 
 全局“播放与字幕”设置包含受控播放器引擎参数：视频输出仅允许 `gpu-next`（默认）或 `gpu`；解码策略仅允许自动安全、硬件优先或纯软件；缓存允许自动、开启、关闭和 64/128/256/512 MB 上限；同步允许以音频为准、显示重采样或显示丢帧。设置写入 Player SQLite app settings，Vue 在原生渲染初始化前和每次媒体加载前通过 `mpv_apply_engine_settings` 下发。Windows 映射到 libmpv `vo/hwdec/cache/demuxer-max-bytes/video-sync`，Android 映射到 `gpu-next/gpu`、MediaCodec/软件解码及相同缓存同步参数。不得从 UI 接受任意 mpv 参数名或自定义原始字符串。
 
-这些工作不代表 Android 已可正式发布。当前 ARM64 APK 已进入真机验证：包内包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；首轮日志确认 SurfaceView 与 `gpu-next` 已完成配置，同时暴露了原生 FFmpeg TLS 握手兼容问题，因此加入 Rust TLS 回环桥，仍需在同一远程媒体上复测画面、音频和 Range seek。远程 header、字幕、暂停/seek、MediaCodec 兼容性、横竖屏切换和 Activity 生命周期仍需继续真机覆盖。Android 启动图标使用与桌面相同的“影院之眼”母版，并生成 mdpi 至 xxxhdpi 的普通、圆形和 Android 8+ adaptive icon 资源。预览渠道已具备固定签名、Release APK 校验下载和系统安装确认；正式商店签名、媒体与目录权限、系统返回键、系统栏避让，以及 armeabi-v7a/x86_64 等额外 ABI 仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
+这些工作不代表 Android 已可正式发布。当前 ARM64 APK 已进入真机验证：包内包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；首轮日志确认 SurfaceView 与 `gpu-next` 已完成配置，同时暴露了原生 FFmpeg TLS 握手兼容问题，因此加入 Rust TLS 回环桥，仍需在同一远程媒体上复测画面、音频和 Range seek。远程 header、字幕、暂停/seek、MediaCodec 兼容性、SAF 文件/目录授权恢复、横竖屏切换和 Activity 生命周期仍需继续真机覆盖。Android 启动图标使用与桌面相同的“影院之眼”母版，并生成 mdpi 至 xxxhdpi 的普通、圆形和 Android 8+ adaptive icon 资源。预览渠道已具备固定签名、Release APK 校验下载和系统安装确认；正式商店签名、系统返回键、系统栏避让，以及 armeabi-v7a/x86_64 等额外 ABI 仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
 
 ### 9.9 GPL 合规说明
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/refs/heads/main/nicegui/static/tauri_conf_schema.json",
   "productName": "OhMyCine",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "identifier": "com.ohmycine.player",
   "build": {
     "beforeDevCommand": "npm run dev",

@@ -52,22 +52,24 @@ Add new composables only when logic is reused or complex enough to keep componen
 
 ### Local File Picker Playback Contract
 
-Use Tauri dialog APIs for Player local video selection because the libmpv backend needs a native filesystem path, not a browser-only `File` blob.
+Use a platform-native Tauri boundary for Player local video selection because libmpv needs a native path or readable Android document descriptor, not a browser-only `File` blob.
 
 #### 1. Scope / Trigger
 - Trigger: adding or changing local file open buttons, drag/drop playback routing, or Tauri dialog permissions in Player.
 - Applies to the floating play entry, Player route query handling, Tauri plugin registration, and capability files.
 
 #### 2. Signatures
-- Frontend file picker call: `open({ multiple: false, directory: false, filters: [{ name: 'Video', extensions: [...] }] })`.
-- Route contract: navigate to `/player` with query `{ path: string, title?: string }`.
-- Playback contract: `PlayerView` watches `route.query.path` with `immediate: true` and calls `useMpv().load(path)` when it changes.
+- Desktop file picker call: `open({ multiple: false, directory: false, filters: [{ name: 'Video', extensions: [...] }] })`.
+- Desktop route contract remains `/player` with query `{ path: string, title?: string }` for the current legacy loose-file flow.
+- Android picker contract uses `ACTION_OPEN_DOCUMENT`, persists read permission, stores the returned `content://` URI only in a short-lived `PlaybackMediaContext`, and routes only `contextId`, source/item identity, and title.
+- Android playback converts the content URI to an owned `fdclose://<fd>` libmpv input through `ContentResolver.openFileDescriptor`; do not copy large videos into app cache.
 - Tauri capability: grant `dialog:allow-open` only for file-open behavior.
 
 #### 3. Contracts
 - Supported loose video extensions: `mp4`, `mkv`, `avi`, `mov`, `webm`, `m4v`, `flv`, `wmv`, `ts`, `m2ts`, `rmvb`, `mpg`, `mpeg`, `3gp`, `ogv`, `divx`, `vob`, `iso`.
 - Cancelled selection returns without navigation, playback changes, or user-visible error.
 - Selected local paths stay inside Player playback flow; do not send local absolute paths to AI providers or Server by default.
+- Android document URIs must not enter route query/history, logs, diagnostics, or exported playback history.
 - Do not implement media-library import, cloud-drive selection, or Server file selection as part of local file picker playback.
 - Reuse `useMpv().load(path)` and existing `/player` route behavior instead of duplicating mpv IPC calls in UI controls.
 
@@ -76,6 +78,7 @@ Use Tauri dialog APIs for Player local video selection because the libmpv backen
 |-----------|-------------------|
 | Dialog returns `null` or no file | Stay on current route; do not call `router.push` or `load` |
 | Dialog returns a string path | Navigate to `/player?path=<path>&title=<basename>` |
+| Android picker returns a content URI | Save it in an in-memory playback context and route by `contextId`; Kotlin opens a descriptor for libmpv |
 | User selects another file while already on `/player` | `PlayerView` reacts to query change and loads the new path |
 | Dialog permission missing | Add the narrow `dialog:allow-open` capability, not broad unrelated dialog permissions |
 | File extension is not in the filter | Native dialog should hide/disallow it; mpv load errors remain backend/runtime errors |
@@ -88,6 +91,7 @@ Use Tauri dialog APIs for Player local video selection because the libmpv backen
 #### 6. Tests Required
 - Typecheck that the dialog result is narrowed before route navigation.
 - Manual or e2e check: cancel selection causes no route change.
+- Android Kotlin compilation and `npm run verify:android-playback` cover SAF picker registration and descriptor playback wiring.
 - Manual or e2e check: selecting file from a non-player route opens `/player` and starts load.
 - Manual or e2e check: selecting a second file while already on `/player` starts a new load.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, and `cargo check` when the dialog plugin/capability changes.

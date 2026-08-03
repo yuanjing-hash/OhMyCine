@@ -32,6 +32,28 @@ Use TypeScript strict mode. Shared interfaces define the contracts between views
 - `npm run verify:android-playback`, typecheck, lint, frontend build, Android ARM64 APK build, APK library inspection, and JNI symbol inspection must pass.
 - Desktop Cargo tests/checks and the Windows GNU package build must still pass because the shared command/header contract is cross-platform.
 
+### Android SAF Local Media Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Android loose-file playback, local-folder DataSource setup, document-tree browsing, or local-media permissions.
+
+#### 2. Signatures
+- Android native plugin identifier: `com.ohmycine.player.localmedia`; Kotlin class: `LocalMediaPlugin`.
+- Picker commands: `local_file_pick_video` and `local_file_pick_directory`.
+- Existing DataSource commands keep their desktop names and payload shape: `local_file_list({ rootPath, path })`, `local_file_metadata({ rootPath, path })`, and `local_file_stream_path({ rootPath, path })`.
+
+#### 3. Contracts
+- Desktop keeps the existing dialog + absolute-path + root-scoped Rust filesystem implementation. Android uses Storage Access Framework only; do not request broad storage permissions or attempt to synthesize desktop absolute paths.
+- Loose files use `ACTION_OPEN_DOCUMENT`; folders use `ACTION_OPEN_DOCUMENT_TREE`. Both retain read-only persistable URI permission when granted.
+- Android local DataSource config may persist the selected tree URI and a display-only root label as non-sensitive structural settings. All visible items still expose normalized `/...` provider paths; raw `content://` child URIs remain inside Kotlin/Rust commands.
+- Every Android document-tree command verifies a current persisted read grant, rejects empty/direct/encoded traversal segments, and resolves descendants only under the selected tree.
+- `local_file_stream_path` returns a temporary content URI to the playback boundary. `MpvPlugin` opens it with `ContentResolver`, transfers the descriptor to libmpv using `fdclose://`, and never copies the whole media file to cache.
+- Android document trees do not provide the desktop `notify` watcher contract. Watch-start must fail safely so the existing source scheduler continues short-interval incremental scans instead of claiming real-time native watch support.
+
+#### 4. Tests Required
+- Run local DataSource verification, mobile UI verification, Android playback verification, typecheck, lint, Cargo tests, Android Kotlin compilation, signed ARM64 APK build, and the Windows GNU package build.
+- Device validation must cover choosing/cancelling a loose video, relaunch persistence for an authorized directory, nested folder browsing, playback/seek of a large file without cache duplication, revoked permission recovery, and a desktop regression pass.
+
 ---
 
 ## Type Organization
