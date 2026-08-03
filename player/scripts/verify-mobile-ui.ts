@@ -61,12 +61,16 @@ assert.equal(isNearbyDoubleTap({ x: 10, y: 10, at: 100 }, { x: 20, y: 20, at: 35
 assert.equal(isNearbyDoubleTap({ x: 10, y: 10, at: 100 }, { x: 100, y: 100, at: 350 }), false)
 
 const playerView = await source('src/views/PlayerView.vue')
-assert.match(playerView, /event\.pointerType !== 'touch'/)
+assert.match(playerView, /event\.pointerType === 'mouse' && event\.altKey && event\.button === 0/)
+assert.match(playerView, /event\.pointerType !== 'touch' && !simulatedWithMouse/)
+assert.match(playerView, /function revealChromeFromPointer\(\) \{\s+if \(touchGestureSession\?\.simulatedWithMouse\)\s+return/)
 assert.match(playerView, /session\.leftSide \? 'brightness' : 'volume'/)
 assert.match(playerView, /isNearbyDoubleTap\(lastTouchTap, currentTap\)/)
 assert.match(playerView, /void handleTogglePause\(\)\.catch/)
 assert.match(playerView, /suppressPlayerClickUntil = Date\.now\(\) \+ TOUCH_CLICK_SUPPRESSION_MS/)
 assert.match(playerView, /@media \(any-pointer: coarse\) \{[\s\S]*?touch-action: none;/)
+assert.match(playerView, /触摸测试/)
+assert.match(playerView, /touchGestureSimulationActive\.value = simulatedWithMouse/)
 
 const mpvPlayer = await source('src-tauri/src/mpv/player.rs')
 assert.match(mpvPlayer, /"video-zoom"[\s\S]*?\| "brightness" =>/)
@@ -85,5 +89,6 @@ console.log(JSON.stringify({
   touchProgressSeeking: true,
   touchPlaybackGestures: true,
   touchDesktopInputIsolation: true,
+  desktopTouchGestureSimulation: true,
   browserResponsivePreviewSupported: true,
 }, null, 2))

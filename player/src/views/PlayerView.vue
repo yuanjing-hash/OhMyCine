@@ -55,6 +55,7 @@ type TouchGestureMode = 'pending' | 'seek' | 'brightness' | 'volume'
 
 interface TouchGestureSession {
   pointerId: number
+  simulatedWithMouse: boolean
   startX: number
   startY: number
   width: number
@@ -121,6 +122,7 @@ const subtitleDownloadingId = ref<string | null>(null)
 const localSubtitleImporting = ref(false)
 const subtitleSearchError = ref<string | null>(null)
 const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSettings().defaultLanguage)
+const touchGestureSimulationActive = ref(false)
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
@@ -288,6 +290,8 @@ function revealChrome() {
 }
 
 function revealChromeFromPointer() {
+  if (touchGestureSession?.simulatedWithMouse)
+    return
   chromeManuallyHidden.value = false
   chromeVisible.value = true
   scheduleChromeHide()
@@ -380,7 +384,8 @@ function isTouchGestureTarget(target: EventTarget | null): boolean {
 }
 
 function handlePlayerTouchPointerDown(event: PointerEvent) {
-  if (event.pointerType !== 'touch' || !hasMedia.value || touchGestureSession || !isTouchGestureTarget(event.target))
+  const simulatedWithMouse = event.pointerType === 'mouse' && event.altKey && event.button === 0
+  if ((event.pointerType !== 'touch' && !simulatedWithMouse) || !hasMedia.value || touchGestureSession || !isTouchGestureTarget(event.target))
     return
 
   const host = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
@@ -393,6 +398,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
   suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
   touchGestureSession = {
     pointerId: event.pointerId,
+    simulatedWithMouse,
     startX: event.clientX,
     startY: event.clientY,
     width: Math.max(1, bounds.width),
@@ -404,6 +410,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
     startBrightness: videoBrightness.value,
     leftSide: event.clientX < bounds.left + bounds.width / 2,
   }
+  touchGestureSimulationActive.value = simulatedWithMouse
 }
 
 function handlePlayerTouchPointerMove(event: PointerEvent) {
@@ -454,6 +461,7 @@ function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
   if (host?.hasPointerCapture(event.pointerId))
     host.releasePointerCapture(event.pointerId)
   touchGestureSession = null
+  touchGestureSimulationActive.value = false
   suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
 
   if (!cancelled && session.mode === 'pending') {
@@ -2354,6 +2362,7 @@ onBeforeUnmount(() => {
     window.clearTimeout(touchFeedbackTimer)
   touchFeedbackTimer = undefined
   touchGestureSession = null
+  touchGestureSimulationActive.value = false
   lastTouchTap = null
   pendingTouchLevelUpdate = null
   window.removeEventListener('blur', handleWindowBlur)
@@ -2461,6 +2470,14 @@ watch(
         </span>
       </div>
     </Transition>
+
+    <div
+      v-if="touchGestureSimulationActive"
+      class="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-md border border-white/12 bg-black/62 px-3 py-1.5 text-xs font-semibold text-white/64 shadow-lg backdrop-blur-lg"
+      role="status"
+    >
+      触摸测试
+    </div>
 
     <Transition name="player-chrome-top">
       <div
