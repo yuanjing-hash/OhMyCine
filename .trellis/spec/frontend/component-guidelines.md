@@ -63,6 +63,7 @@ Required principles:
 - Mobile navigation must be a deliberate phone shell rather than the desktop source rail compressed horizontally. On `<= 767px` or coarse-pointer layouts, use the fixed `Home / Libraries / Quick / Settings` bottom navigation, open library and quick actions as bottom sheets, include `safe-area-inset-bottom`, and keep the Player route immersive without the global bottom navigation.
 - Never leave a mobile action dependent on hover. Source scan/file controls, poster play actions, and desktop floating utilities must become persistent touch targets or explicit bottom-sheet actions. Native window minimize/maximize/close controls must disappear by narrow-screen width even when a responsive preview still reports a mouse pointer.
 - Mobile Player controls use three stable rows: time/progress, transport, then horizontally available tools. Track/speed/queue/picture panels use bounded bottom-sheet positioning on narrow screens. Progress seeking must use Pointer Events with pointer capture so mouse and touch share one implementation.
+- Playback-surface gestures are input-capability behavior, not an Android-only or narrow-screen switch. Only touch pointers may start horizontal seek, left-side brightness, right-side volume, single-tap chrome, and double-tap pause gestures, so wide Surface-style touch PCs remain supported while mouse and pen retain desktop click/hover behavior. Interactive controls must remain gesture boundaries, and synthesized touch clicks must not trigger the mouse pause path.
 
 ---
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '../src/services/playerTouchGestures'
 
 const root = new URL('../', import.meta.url)
 
@@ -48,6 +49,28 @@ assert.match(progressBar, /@pointerdown\.prevent="handlePointerDown"/)
 assert.match(progressBar, /setPointerCapture\(event\.pointerId\)/)
 assert.match(progressBar, /touch-action: none/)
 
+assert.equal(resolveTouchGestureAxis(8, 4), 'pending')
+assert.equal(resolveTouchGestureAxis(12, 12), 'horizontal')
+assert.equal(resolveTouchGestureAxis(13, 18), 'vertical')
+assert.equal(touchSeekTarget(50, -500, 500, 100), 0)
+assert.equal(touchSeekTarget(50, 500, 500, 100), 100)
+assert.equal(touchVerticalLevel(50, -500, 500), 100)
+assert.equal(touchVerticalLevel(50, 500, 500), 0)
+assert.equal(isNearbyDoubleTap(null, { x: 10, y: 10, at: 100 }), false)
+assert.equal(isNearbyDoubleTap({ x: 10, y: 10, at: 100 }, { x: 20, y: 20, at: 350 }), true)
+assert.equal(isNearbyDoubleTap({ x: 10, y: 10, at: 100 }, { x: 100, y: 100, at: 350 }), false)
+
+const playerView = await source('src/views/PlayerView.vue')
+assert.match(playerView, /event\.pointerType !== 'touch'/)
+assert.match(playerView, /session\.leftSide \? 'brightness' : 'volume'/)
+assert.match(playerView, /isNearbyDoubleTap\(lastTouchTap, currentTap\)/)
+assert.match(playerView, /void handleTogglePause\(\)\.catch/)
+assert.match(playerView, /suppressPlayerClickUntil = Date\.now\(\) \+ TOUCH_CLICK_SUPPRESSION_MS/)
+assert.match(playerView, /@media \(any-pointer: coarse\) \{[\s\S]*?touch-action: none;/)
+
+const mpvPlayer = await source('src-tauri/src/mpv/player.rs')
+assert.match(mpvPlayer, /"video-zoom"[\s\S]*?\| "brightness" =>/)
+
 const windowChrome = await source('src/components/layout/WindowChrome.vue')
 assert.match(windowChrome, /const appWindow = isTauriRuntime\(\) \? getCurrentWindow\(\) : null/)
 assert.match(windowChrome, /@media \(max-width: 767px\) \{[\s\S]*?\.desktop-window-controls/)
@@ -60,5 +83,7 @@ console.log(JSON.stringify({
   sourceQuickControlsPersistent: true,
   mobilePlayerControlLayout: true,
   touchProgressSeeking: true,
+  touchPlaybackGestures: true,
+  touchDesktopInputIsolation: true,
   browserResponsivePreviewSupported: true,
 }, null, 2))

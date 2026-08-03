@@ -248,6 +248,7 @@ export function useMpv() {
   const duration = ref(0)
   const volume = ref(100)
   const isMuted = ref(false)
+  const videoBrightness = ref(50)
   const playbackSpeed = ref(DEFAULT_PLAYBACK_SPEED)
   const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
@@ -499,6 +500,7 @@ export function useMpv() {
     trackRefreshScheduledForCurrentMedia = false
     isPlaying.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
+    videoBrightness.value = 50
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
     videoAspectMode.value = 'default'
     videoFitMode.value = 'fit'
@@ -512,6 +514,7 @@ export function useMpv() {
     await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
     await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
     await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
+    await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
     await refreshVideoDynamicRange()
     scheduleTrackRefresh(2500)
   }
@@ -536,6 +539,13 @@ export function useMpv() {
     await invoke<void>('mpv_set_property', { prop: 'volume', value: next.toString() })
     volume.value = next
     isMuted.value = next === 0
+  }
+
+  async function setVideoBrightness(level: number) {
+    const next = Math.max(0, Math.min(100, level))
+    const mpvBrightness = Math.round((next - 50) * 2)
+    await invoke<void>('mpv_set_property', { prop: 'brightness', value: mpvBrightness.toString() })
+    videoBrightness.value = next
   }
 
   async function applyPlaybackSpeed(rate: number) {
@@ -681,6 +691,7 @@ export function useMpv() {
     duration,
     volume,
     isMuted,
+    videoBrightness,
     playbackSpeed,
     subtitleDelay,
     subtitleTracks,
@@ -705,6 +716,7 @@ export function useMpv() {
     seek,
     seekRelative,
     setVolume,
+    setVideoBrightness,
     applyPlaybackSpeed,
     setPlaybackSpeed,
     applySubtitleDelay,

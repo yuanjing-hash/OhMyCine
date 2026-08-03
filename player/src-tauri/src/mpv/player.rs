@@ -456,7 +456,8 @@ impl MpvPlayer {
                     )
                 })
             }
-            "volume" | "time-pos" | "duration" | "speed" | "panscan" | "video-zoom" => {
+            "volume" | "time-pos" | "duration" | "speed" | "panscan" | "video-zoom"
+            | "brightness" => {
                 let mut value = value
                     .parse::<f64>()
                     .map_err(|_| "Invalid numeric mpv value".to_string())?;

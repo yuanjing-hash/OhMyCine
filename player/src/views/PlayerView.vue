@@ -21,6 +21,7 @@ import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
+import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
 import { downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -37,6 +38,8 @@ const ARROW_TAP_SEEK_SECONDS = 5
 const ARROW_HOLD_DELAY = 350
 const REWIND_HOLD_INTERVAL = 220
 const MEDIA_PREFERENCE_SAVE_DELAY = 180
+const TOUCH_FEEDBACK_HIDE_DELAY = 850
+const TOUCH_CLICK_SUPPRESSION_MS = 650
 
 interface ContextMenuPosition {
   x: number
@@ -46,6 +49,29 @@ interface ContextMenuPosition {
 interface PlaybackContextMenuDetail {
   label: string
   value: string
+}
+
+type TouchGestureMode = 'pending' | 'seek' | 'brightness' | 'volume'
+
+interface TouchGestureSession {
+  pointerId: number
+  startX: number
+  startY: number
+  width: number
+  height: number
+  mode: TouchGestureMode
+  startPosition: number
+  targetPosition: number
+  startVolume: number
+  startBrightness: number
+  leftSide: boolean
+}
+
+interface TouchGestureFeedback {
+  kind: 'seek' | 'brightness' | 'volume' | 'action'
+  title: string
+  value: string
+  percent?: number
 }
 
 const route = useRoute()
@@ -77,6 +103,7 @@ const playerControlsRef = ref<{
 } | null>(null)
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 const keyboardOsdMessage = ref('')
+const touchGestureFeedback = ref<TouchGestureFeedback | null>(null)
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -135,12 +162,20 @@ let keyboardVolumeCommand: Promise<void> = Promise.resolve()
 let keyboardChromeSuppression = 0
 let keyboardOsdTimer: number | undefined
 let keyboardPreviousVolume = 100
+let touchGestureSession: TouchGestureSession | null = null
+let lastTouchTap: { x: number, y: number, at: number } | null = null
+let touchSingleTapTimer: number | undefined
+let touchFeedbackTimer: number | undefined
+let suppressPlayerClickUntil = 0
+let pendingTouchLevelUpdate: { kind: 'brightness' | 'volume', value: number } | null = null
+let touchLevelUpdateInFlight = false
 
 const {
   isPlaying,
   currentTime,
   duration,
   volume,
+  videoBrightness,
   playbackSpeed,
   subtitleDelay,
   subtitleTracks,
@@ -164,6 +199,7 @@ const {
   seek,
   seekRelative,
   setVolume,
+  setVideoBrightness,
   applyPlaybackSpeed,
   setPlaybackSpeed,
   applySubtitleDelay,
@@ -291,6 +327,183 @@ function showKeyboardOsd(message: string) {
     keyboardOsdTimer = undefined
     keyboardOsdMessage.value = ''
   }, 1800)
+}
+
+function showTouchFeedback(feedback: TouchGestureFeedback, autoHide = false) {
+  if (touchFeedbackTimer)
+    window.clearTimeout(touchFeedbackTimer)
+  touchFeedbackTimer = undefined
+  touchGestureFeedback.value = feedback
+  if (autoHide)
+    scheduleTouchFeedbackHide()
+}
+
+function scheduleTouchFeedbackHide() {
+  if (touchFeedbackTimer)
+    window.clearTimeout(touchFeedbackTimer)
+  touchFeedbackTimer = window.setTimeout(() => {
+    touchFeedbackTimer = undefined
+    touchGestureFeedback.value = null
+  }, TOUCH_FEEDBACK_HIDE_DELAY)
+}
+
+function queueTouchLevelUpdate(kind: 'brightness' | 'volume', value: number) {
+  pendingTouchLevelUpdate = { kind, value }
+  if (!touchLevelUpdateInFlight)
+    void flushTouchLevelUpdates()
+}
+
+async function flushTouchLevelUpdates() {
+  touchLevelUpdateInFlight = true
+  try {
+    while (pendingTouchLevelUpdate) {
+      const update = pendingTouchLevelUpdate
+      pendingTouchLevelUpdate = null
+      try {
+        if (update.kind === 'volume')
+          await setVolume(update.value)
+        else
+          await setVideoBrightness(update.value)
+      }
+      catch {
+        // A failed frame update must not leave the gesture state locked.
+      }
+    }
+  }
+  finally {
+    touchLevelUpdateInFlight = false
+  }
+}
+
+function isTouchGestureTarget(target: EventTarget | null): boolean {
+  return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
+}
+
+function handlePlayerTouchPointerDown(event: PointerEvent) {
+  if (event.pointerType !== 'touch' || !hasMedia.value || touchGestureSession || !isTouchGestureTarget(event.target))
+    return
+
+  const host = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (!host)
+    return
+
+  event.preventDefault()
+  const bounds = host.getBoundingClientRect()
+  host.setPointerCapture(event.pointerId)
+  suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+  touchGestureSession = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+    mode: 'pending',
+    startPosition: currentTime.value,
+    targetPosition: currentTime.value,
+    startVolume: volume.value,
+    startBrightness: videoBrightness.value,
+    leftSide: event.clientX < bounds.left + bounds.width / 2,
+  }
+}
+
+function handlePlayerTouchPointerMove(event: PointerEvent) {
+  const session = touchGestureSession
+  if (!session || session.pointerId !== event.pointerId)
+    return
+
+  event.preventDefault()
+  const deltaX = event.clientX - session.startX
+  const deltaY = event.clientY - session.startY
+  if (session.mode === 'pending') {
+    const axis = resolveTouchGestureAxis(deltaX, deltaY)
+    if (axis === 'pending')
+      return
+    session.mode = axis === 'horizontal' ? 'seek' : session.leftSide ? 'brightness' : 'volume'
+    clearHideTimer()
+  }
+
+  if (session.mode === 'seek') {
+    session.targetPosition = touchSeekTarget(session.startPosition, deltaX, session.width, duration.value)
+    const offset = Math.round(session.targetPosition - session.startPosition)
+    showTouchFeedback({
+      kind: 'seek',
+      title: offset >= 0 ? '快进' : '后退',
+      value: `${offset >= 0 ? '+' : ''}${offset} 秒 · ${formatPlaybackTime(session.targetPosition)}`,
+    })
+    return
+  }
+
+  if (session.mode === 'brightness') {
+    const level = touchVerticalLevel(session.startBrightness, deltaY, session.height)
+    queueTouchLevelUpdate('brightness', level)
+    showTouchFeedback({ kind: 'brightness', title: '亮度', value: `${Math.round(level)}%`, percent: level })
+    return
+  }
+
+  const level = touchVerticalLevel(session.startVolume, deltaY, session.height)
+  queueTouchLevelUpdate('volume', level)
+  showTouchFeedback({ kind: 'volume', title: '音量', value: `${Math.round(level)}%`, percent: level })
+}
+
+function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
+  const session = touchGestureSession
+  if (!session || session.pointerId !== event.pointerId)
+    return
+
+  const host = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (host?.hasPointerCapture(event.pointerId))
+    host.releasePointerCapture(event.pointerId)
+  touchGestureSession = null
+  suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+
+  if (!cancelled && session.mode === 'pending') {
+    handleTouchTap(event.clientX, event.clientY)
+    return
+  }
+
+  if (!cancelled && session.mode === 'seek')
+    void seek(session.targetPosition).catch(() => undefined)
+  scheduleTouchFeedbackHide()
+}
+
+function handleTouchTap(x: number, y: number) {
+  const currentTap = { x, y, at: Date.now() }
+  if (isNearbyDoubleTap(lastTouchTap, currentTap)) {
+    if (touchSingleTapTimer)
+      window.clearTimeout(touchSingleTapTimer)
+    touchSingleTapTimer = undefined
+    lastTouchTap = null
+    const willPause = isPlaying.value
+    showTouchFeedback({
+      kind: 'action',
+      title: willPause ? '已暂停' : '继续播放',
+      value: '双击画面',
+    }, true)
+    void handleTogglePause().catch(() => undefined)
+    return
+  }
+
+  lastTouchTap = currentTap
+  if (touchSingleTapTimer)
+    window.clearTimeout(touchSingleTapTimer)
+  touchSingleTapTimer = window.setTimeout(() => {
+    touchSingleTapTimer = undefined
+    lastTouchTap = null
+    toggleChromeFromTouch()
+  }, 320)
+}
+
+function toggleChromeFromTouch() {
+  chromeManuallyHidden.value = false
+  if (chromeVisible.value) {
+    clearHideTimer()
+    playerControlsRef.value?.dismissTransientUi()
+    controlsInteracting.value = false
+    chromeVisible.value = false
+    return
+  }
+  chromeVisible.value = true
+  scheduleChromeHide()
 }
 
 async function runKeyboardAction(action: () => Promise<void> | void) {
@@ -2061,6 +2274,8 @@ async function releaseHeldArrow(triggerTap: boolean) {
 }
 
 function handlePlayerAreaClick(event: MouseEvent) {
+  if (Date.now() < suppressPlayerClickUntil)
+    return
   if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
     return
   const target = event.target
@@ -2132,6 +2347,15 @@ onBeforeUnmount(() => {
   if (keyboardOsdTimer)
     window.clearTimeout(keyboardOsdTimer)
   keyboardOsdTimer = undefined
+  if (touchSingleTapTimer)
+    window.clearTimeout(touchSingleTapTimer)
+  touchSingleTapTimer = undefined
+  if (touchFeedbackTimer)
+    window.clearTimeout(touchFeedbackTimer)
+  touchFeedbackTimer = undefined
+  touchGestureSession = null
+  lastTouchTap = null
+  pendingTouchLevelUpdate = null
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
   window.removeEventListener('resize', handleWindowResize)
@@ -2167,7 +2391,10 @@ watch(
     ]"
     @mousemove="revealChromeFromPointer"
     @mouseleave="scheduleChromeHide"
-    @touchstart.passive="revealChromeFromPointer"
+    @pointerdown="handlePlayerTouchPointerDown"
+    @pointermove="handlePlayerTouchPointerMove"
+    @pointerup="handlePlayerTouchPointerEnd"
+    @pointercancel="handlePlayerTouchPointerEnd($event, true)"
     @click="handlePlayerAreaClick"
     @contextmenu="openPlaybackContextMenu"
   >
@@ -2211,6 +2438,27 @@ watch(
         aria-live="polite"
       >
         {{ keyboardOsdMessage }}
+      </div>
+    </Transition>
+
+    <Transition name="touch-gesture-osd">
+      <div
+        v-if="touchGestureFeedback"
+        class="touch-gesture-osd pointer-events-none absolute left-1/2 top-1/2 z-30 flex min-w-36 -translate-x-1/2 -translate-y-1/2 flex-col items-center border border-white/14 bg-black/72 px-5 py-4 text-center text-white shadow-2xl backdrop-blur-xl"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="touch-gesture-icon" aria-hidden="true">
+          <svg v-if="touchGestureFeedback.kind === 'seek'" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Zm-4 2v10" /></svg>
+          <svg v-else-if="touchGestureFeedback.kind === 'brightness'" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4m0-12.8L17 7M7 17l-1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" /></svg>
+          <svg v-else-if="touchGestureFeedback.kind === 'volume'" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4V9Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10" /></svg>
+          <svg v-else viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z" /></svg>
+        </span>
+        <strong>{{ touchGestureFeedback.title }}</strong>
+        <span>{{ touchGestureFeedback.value }}</span>
+        <span v-if="touchGestureFeedback.percent != null" class="touch-gesture-meter">
+          <i :style="{ width: `${touchGestureFeedback.percent}%` }" />
+        </span>
       </div>
     </Transition>
 
@@ -2470,6 +2718,69 @@ watch(
   transform: translateY(-6px);
 }
 
+.touch-gesture-osd {
+  border-radius: 8px;
+}
+
+.touch-gesture-icon {
+  display: flex;
+  width: 2.35rem;
+  height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.touch-gesture-icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.touch-gesture-osd strong {
+  margin-top: 0.6rem;
+  font-size: 0.86rem;
+}
+
+.touch-gesture-osd > span:not(.touch-gesture-icon, .touch-gesture-meter) {
+  margin-top: 0.18rem;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.72rem;
+}
+
+.touch-gesture-meter {
+  width: 7rem;
+  height: 0.3rem;
+  margin-top: 0.65rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.touch-gesture-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.touch-gesture-osd-enter-active,
+.touch-gesture-osd-leave-active {
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.touch-gesture-osd-enter-from,
+.touch-gesture-osd-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -46%) scale(0.96);
+}
+
 .player-view--transparent {
   background: transparent;
   background-color: transparent;
@@ -2635,6 +2946,12 @@ watch(
     max-height: 78svh;
     overflow-y: auto;
     border-radius: 8px;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .player-view {
+    touch-action: none;
   }
 }
 </style>
