@@ -54,6 +54,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private var videoSync = "audio"
     @Volatile
     private var videoOutputFallbackUsed = false
+    @Volatile
+    private var playbackTransport = "none"
     private val diagnosticLogs = ArrayDeque<String>()
 
     fun install(activity: Activity, webView: WebView) {
@@ -113,6 +115,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         demuxerMaxBytes = 64L * 1024L * 1024L
         videoSync = "audio"
         videoOutputFallbackUsed = false
+        playbackTransport = "none"
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
     }
 
@@ -142,6 +145,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             activeVideoOutput = preferredVideoOutput
         }
         videoOutputFallbackUsed = false
+        playbackTransport = if (request.path.startsWith("http://127.0.0.1:")) "rust-loopback" else "direct"
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
         val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
@@ -275,6 +279,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             hardwareDecoder = safePropertyString("hwdec-current"),
             videoOutput = activeVideoOutput,
             videoOutputFallbackUsed = videoOutputFallbackUsed,
+            playbackTransport = playbackTransport,
             logs = logs,
         )
     }
@@ -544,5 +549,6 @@ internal data class MpvPlaybackDiagnostics(
     val hardwareDecoder: String?,
     val videoOutput: String,
     val videoOutputFallbackUsed: Boolean,
+    val playbackTransport: String,
     val logs: List<String>,
 )

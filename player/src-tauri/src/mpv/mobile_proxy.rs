@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(dead_code))]
+
 use std::{sync::Arc, time::Duration};
 
 use axum::{
@@ -5,9 +7,9 @@ use axum::{
     extract::{Path, State},
     http::{
         header::{
-            ACCEPT, ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH,
-            CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-            LAST_MODIFIED, RANGE,
+            ACCEPT, ACCEPT_ENCODING, ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION,
+            CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH,
+            IF_RANGE, LAST_MODIFIED, LOCATION, RANGE,
         },
         HeaderMap, Method, Request, StatusCode,
     },
@@ -17,11 +19,13 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
+use reqwest::Url;
 use tokio::{net::TcpListener, sync::RwLock};
 
 use crate::commands::player_shared::MpvHttpHeader;
 
-const LOOPBACK_PATH: &str = "/media/{token}";
+const LOOPBACK_PATH: &str = "/media/:token";
+const MAX_UPSTREAM_REDIRECTS: usize = 10;
 
 #[derive(Default)]
 pub struct AndroidStreamProxyState {
@@ -84,7 +88,7 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
     let target = Arc::new(RwLock::new(None));
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Android 安全媒体客户端初始化失败。".to_string())?;
     let app = Router::new()
@@ -119,19 +123,18 @@ async fn proxy_media(
         return plain_response(StatusCode::NOT_FOUND, "not found");
     }
 
-    let mut upstream = state.client.request(request.method().clone(), &target.url);
-    for header in &target.headers {
-        upstream = upstream.header(&header.name, &header.value);
-    }
-    upstream = forward_request_headers(upstream, request.headers());
-
-    let response = match upstream.send().await {
+    let response = match send_upstream(
+        &state.client,
+        request.method(),
+        &target.url,
+        &target.headers,
+        request.headers(),
+    )
+    .await
+    {
         Ok(response) => response,
-        Err(error) => {
-            log::warn!(
-                "Android secure media bridge upstream request failed: {}",
-                safe_error(&error)
-            );
+        Err(reason) => {
+            log::warn!("Android secure media bridge upstream request failed: {reason}");
             return plain_response(StatusCode::BAD_GATEWAY, "upstream media connection failed");
         }
     };
@@ -162,6 +165,63 @@ async fn proxy_media(
     builder
         .body(body)
         .unwrap_or_else(|_| plain_response(StatusCode::BAD_GATEWAY, "invalid upstream response"))
+}
+
+async fn send_upstream(
+    client: &reqwest::Client,
+    method: &Method,
+    url: &str,
+    target_headers: &[MpvHttpHeader],
+    playback_headers: &HeaderMap,
+) -> Result<reqwest::Response, &'static str> {
+    let mut current_url = Url::parse(url).map_err(|_| "invalid-url")?;
+    if !matches!(current_url.scheme(), "http" | "https") {
+        return Err("invalid-scheme");
+    }
+    let mut forward_target_headers = true;
+
+    for redirect_count in 0..=MAX_UPSTREAM_REDIRECTS {
+        let mut upstream = client.request(method.clone(), current_url.clone());
+        if forward_target_headers {
+            for header in target_headers {
+                upstream = upstream.header(&header.name, &header.value);
+            }
+        }
+        upstream =
+            forward_request_headers(upstream, playback_headers).header(ACCEPT_ENCODING, "identity");
+
+        let response = upstream.send().await.map_err(|error| safe_error(&error))?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        if redirect_count == MAX_UPSTREAM_REDIRECTS {
+            return Err("redirect-limit");
+        }
+
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or("redirect-location")?;
+        let next_url = current_url
+            .join(location)
+            .map_err(|_| "redirect-location")?;
+        if !matches!(next_url.scheme(), "http" | "https") {
+            return Err("redirect-scheme");
+        }
+        if !same_origin(&current_url, &next_url) {
+            forward_target_headers = false;
+        }
+        current_url = next_url;
+    }
+
+    Err("redirect-limit")
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 fn forward_request_headers(
@@ -216,7 +276,18 @@ fn safe_error(error: &reqwest::Error) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, random_token};
+    use axum::{
+        http::{header::RANGE, HeaderMap, StatusCode},
+        response::Response,
+        routing::get,
+        Router,
+    };
+    use reqwest::Url;
+    use tokio::net::TcpListener;
+
+    use crate::commands::player_shared::MpvHttpHeader;
+
+    use super::{constant_time_eq, random_token, same_origin, AndroidStreamProxyState};
 
     #[test]
     fn loopback_tokens_are_random_and_url_safe() {
@@ -234,5 +305,87 @@ mod tests {
         assert!(constant_time_eq(b"same-token", b"same-token"));
         assert!(!constant_time_eq(b"same-token", b"other-token"));
         assert!(!constant_time_eq(b"short", b"longer"));
+    }
+
+    #[test]
+    fn redirect_origin_check_drops_provider_headers_before_cdn_hop() {
+        let emby_http = Url::parse("http://emby.local/Videos/1/stream").unwrap();
+        let emby_https = Url::parse("https://emby.local/Videos/1/stream").unwrap();
+        let emby_same_origin = Url::parse("http://emby.local/Videos/2/stream").unwrap();
+        let cdn = Url::parse("https://cdn.example/media.mkv?token=signed").unwrap();
+
+        assert!(same_origin(&emby_http, &emby_same_origin));
+        assert!(!same_origin(&emby_http, &emby_https));
+        assert!(!same_origin(&emby_http, &cdn));
+    }
+
+    #[test]
+    fn loopback_bridge_follows_http_redirect_and_preserves_range_without_private_headers() {
+        tauri::async_runtime::block_on(async {
+            let cdn_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let cdn_address = cdn_listener.local_addr().unwrap();
+            let cdn = Router::new().route(
+                "/media",
+                get(|headers: HeaderMap| async move {
+                    let range_matches = headers.get(RANGE).and_then(|value| value.to_str().ok())
+                        == Some("bytes=0-3");
+                    let private_header_removed = !headers.contains_key("x-emby-token");
+                    let status = if range_matches && private_header_removed {
+                        StatusCode::PARTIAL_CONTENT
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    };
+                    Response::builder()
+                        .status(status)
+                        .header("content-range", "bytes 0-3/4")
+                        .body(axum::body::Body::from("test"))
+                        .unwrap()
+                }),
+            );
+            tauri::async_runtime::spawn(async move {
+                axum::serve(cdn_listener, cdn).await.unwrap();
+            });
+
+            let emby_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let emby_address = emby_listener.local_addr().unwrap();
+            let redirect_location = format!("http://{cdn_address}/media");
+            let emby = Router::new().route(
+                "/stream",
+                get(move || {
+                    let location = redirect_location.clone();
+                    async move {
+                        Response::builder()
+                            .status(StatusCode::FOUND)
+                            .header("location", location)
+                            .body(axum::body::Body::empty())
+                            .unwrap()
+                    }
+                }),
+            );
+            tauri::async_runtime::spawn(async move {
+                axum::serve(emby_listener, emby).await.unwrap();
+            });
+
+            let proxy = AndroidStreamProxyState::default();
+            let loopback_url = proxy
+                .prepare(
+                    format!("http://{emby_address}/stream"),
+                    vec![MpvHttpHeader {
+                        name: "X-Emby-Token".to_string(),
+                        value: "private-token".to_string(),
+                    }],
+                )
+                .await
+                .unwrap();
+            let response = reqwest::Client::new()
+                .get(loopback_url)
+                .header(RANGE, "bytes=0-3")
+                .send()
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.bytes().await.unwrap().as_ref(), b"test");
+        });
     }
 }

@@ -82,6 +82,11 @@ After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
+- [ ] For protocol bridges, executed one real end-to-end request through every layer instead of relying only on static assertions. Verify framework-specific route syntax, redirect behavior, security-header stripping, status codes, and streaming headers such as Range/Content-Range.
+
+### Native Playback Bridge Example
+
+Android remote playback crosses `DataSource → Vue invoke → Rust command → loopback HTTP router → upstream redirect/CDN → libmpv`. A successful compile proves only the types. The regression test must start local upstream endpoints and send an actual loopback request so an incorrect router pattern, an HTTP-to-HTTPS redirect bypass, or a lost Range header fails before an APK reaches a device.
 
 ---
 
