@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::player_shared::{sanitize_http_headers, MpvHttpHeader, MpvOrientationState};
+use super::player_shared::{
+    sanitize_http_headers, MpvEngineSettings, MpvHttpHeader, MpvOrientationState,
+};
 use crate::mpv::{
     mobile::{AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
+    mobile_proxy::AndroidStreamProxyState,
     render::{MpvRenderState, RenderBackendKind, RenderStatus},
     surface::{RenderSurfaceBounds, ZOrderStrategy},
 };
@@ -68,16 +71,33 @@ pub async fn mpv_load(
     path: String,
     headers: Option<Vec<MpvHttpHeader>>,
     state: State<'_, AndroidMpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("播放地址为空。".to_string());
     }
-    let payload = LoadPayload {
-        path,
-        headers: sanitize_http_headers(headers.unwrap_or_default())?,
+    let headers = sanitize_http_headers(headers.unwrap_or_default())?;
+    let (path, headers) = if path
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("https://")
+    {
+        (stream_proxy.prepare(path, headers).await?, Vec::new())
+    } else {
+        (path, headers)
     };
+    let payload = LoadPayload { path, headers };
     wait_for_android_surface(state.inner()).await?;
     state.run("load", payload).await
+}
+
+#[tauri::command]
+pub async fn mpv_apply_engine_settings(
+    settings: MpvEngineSettings,
+    state: State<'_, AndroidMpvState>,
+) -> Result<(), String> {
+    let settings = settings.validated()?;
+    state.run("applyEngineSettings", settings).await
 }
 
 #[tauri::command]
@@ -113,8 +133,13 @@ pub async fn mpv_resume(state: State<'_, AndroidMpvState>) -> Result<(), String>
 }
 
 #[tauri::command]
-pub async fn mpv_stop(state: State<'_, AndroidMpvState>) -> Result<(), String> {
-    state.run("stop", ()).await
+pub async fn mpv_stop(
+    state: State<'_, AndroidMpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
+) -> Result<(), String> {
+    let result = state.run("stop", ()).await;
+    stream_proxy.clear().await;
+    result
 }
 
 #[tauri::command]

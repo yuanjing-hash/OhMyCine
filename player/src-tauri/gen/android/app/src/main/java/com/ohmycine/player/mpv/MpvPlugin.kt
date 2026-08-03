@@ -48,6 +48,15 @@ class OrientationArgs {
     lateinit var mode: String
 }
 
+@InvokeArg
+class EngineSettingsArgs {
+    lateinit var videoOutput: String
+    lateinit var hardwareDecoder: String
+    lateinit var cacheMode: String
+    var demuxerMaxBytesMb: Int = 64
+    lateinit var videoSync: String
+}
+
 @TauriPlugin
 class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     private var playbackActive = false
@@ -72,6 +81,18 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
             exitPlaybackMode()
             throw error
         }
+    }
+
+    @Command
+    fun applyEngineSettings(invoke: Invoke) = resolve(invoke) {
+        val args = invoke.parseArgs(EngineSettingsArgs::class.java)
+        MpvSurfaceHost.applyEngineSettings(MpvEngineSettings(
+            videoOutput = args.videoOutput,
+            hardwareDecoder = args.hardwareDecoder,
+            cacheMode = args.cacheMode,
+            demuxerMaxBytesMb = args.demuxerMaxBytesMb,
+            videoSync = args.videoSync,
+        ))
     }
 
     @Command

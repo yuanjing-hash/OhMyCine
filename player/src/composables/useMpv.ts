@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onUnmounted, ref } from 'vue'
+import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 
 export interface Track {
   id: number
@@ -192,6 +193,19 @@ async function savePlaybackSpeedPreference(speed: number): Promise<void> {
   catch {
     // Avoid noisy UI for non-sensitive preference persistence failures.
   }
+}
+
+async function applyEngineSettings(): Promise<void> {
+  const settings = loadPlayerInteractionSettings()
+  await invoke<void>('mpv_apply_engine_settings', {
+    settings: {
+      videoOutput: settings.videoOutput,
+      hardwareDecoder: settings.hardwareDecoder,
+      cacheMode: settings.cacheMode,
+      demuxerMaxBytesMb: settings.demuxerMaxBytesMb,
+      videoSync: settings.videoSync,
+    },
+  })
 }
 
 function safeErrorMessage(error: unknown, fallback: string): string {
@@ -400,6 +414,7 @@ export function useMpv() {
     renderError.value = null
 
     try {
+      await applyEngineSettings()
       const state = await invoke<MpvRenderState>('mpv_init_render_surface')
       applyRenderState(state)
       if (state.backend === 'androidSurface')
@@ -562,6 +577,7 @@ export function useMpv() {
     videoFitMode.value = 'fit'
     await subtitleDelayCommand.catch(() => undefined)
     await ensurePlaybackSpeedPreferenceLoaded()
+    await applyEngineSettings()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     await invoke<void>('mpv_resume')
     if (renderBackend.value === 'androidSurface')

@@ -8,7 +8,7 @@ pub mod player;
 #[cfg(mobile)]
 #[path = "player_mobile.rs"]
 pub mod player;
-mod player_shared;
+pub(crate) mod player_shared;
 pub mod preference;
 pub mod raw_scan_cache;
 pub mod settings;

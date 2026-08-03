@@ -69,6 +69,7 @@ interface TouchGestureSession {
   targetPosition: number
   startVolume: number
   startBrightness: number
+  startedAt: number
   leftSide: boolean
 }
 
@@ -419,6 +420,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
     targetPosition: currentTime.value,
     startVolume: volume.value,
     startBrightness: videoBrightness.value,
+    startedAt: Date.now(),
     leftSide: event.clientX < bounds.left + bounds.width / 2,
   }
   touchGestureSession.holdArrowStarted = beginHeldArrow(touchGestureSession.holdArrowKey, 'touch')
@@ -491,7 +493,9 @@ function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
     return
   }
 
-  if (!cancelled && session.mode === 'pending') {
+  const pendingTap = session.mode === 'pending'
+    && (!cancelled || Date.now() - session.startedAt <= 700)
+  if (pendingTap) {
     handleTouchTap(event.clientX, event.clientY)
     return
   }
@@ -562,7 +566,16 @@ function handleControlsInteraction(next: boolean) {
 
 function handleWindowBlur() {
   controlsInteracting.value = false
+  playerControlsRef.value?.dismissTransientUi()
   void releaseHeldArrow(false)
+  scheduleChromeHide()
+}
+
+function handleApplicationPointerLeave() {
+  if (!hasMedia.value)
+    return
+  controlsInteracting.value = false
+  playerControlsRef.value?.dismissTransientUi()
   scheduleChromeHide()
 }
 
@@ -2385,6 +2398,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('keyup', handleGlobalKeyup)
   window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  document.documentElement.addEventListener('mouseleave', handleApplicationPointerLeave)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
@@ -2422,6 +2436,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('keyup', handleGlobalKeyup)
   window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  document.documentElement.removeEventListener('mouseleave', handleApplicationPointerLeave)
 })
 
 watch(
@@ -2474,6 +2489,12 @@ watch(
       @render-bounds="handleRenderBounds"
       @toggle-diagnostics="toggleDiagnosticsPanel"
       @set-strategy="handleSetStrategy"
+    />
+
+    <div
+      v-if="hasMedia && isNativeAndroidPlayer && playbackDiagnostics?.state !== 'error'"
+      class="pointer-events-auto absolute inset-0 z-[6]"
+      aria-hidden="true"
     />
 
     <div

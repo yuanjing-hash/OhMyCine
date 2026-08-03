@@ -117,7 +117,7 @@ Phase 4: 生态系统           ████████████████
 
 #### libmpv 嵌入集成
 
-- [~] 下载 libmpv 二进制库 (Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`，WSL Windows GNU cross-build 与 Windows 宿主播放已验证；Android ARM64 预览固定校验并提取官方 mpv-android `2026-04-25` runtime，APK 包内库/JNI 契约已验证；Linux/macOS 与 Android 正式 CI/release 后续接入)
+- [~] 下载 libmpv 二进制库 (Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`，WSL Windows GNU cross-build 与 Windows 宿主播放已验证；Android ARM64 预览固定校验并提取官方 mpv-android `2026-04-25` runtime，APK 包内库/JNI 契约已验证并接入标签触发的 GitHub Release 自动构建；Linux/macOS 与 Android 正式签名后续接入)
 - [x] 创建 `src-tauri/src/mpv/` 模块
 - [x] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
 - [x] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
@@ -127,7 +127,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
 - [x] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
 - [x] 配置 Cargo 依赖: 直接使用 `libmpv-sys = "3.1"` 绑定 libmpv C API
-- [~] 编写构建脚本: Windows GNU 已能下载运行时 DLL 并准备 import library；Android ARM64 已能校验固定 mpv-android release、提取运行库并构建 debug APK；Linux/macOS 与 Android 正式签名发布后续完成
+- [~] 编写构建脚本: Windows GNU 已能下载运行时 DLL 并准备 import library；Android ARM64 已能校验固定 mpv-android release、提取运行库、构建 debug APK，并由版本标签自动追加到 GitHub Release；Linux/macOS 与 Android 正式签名发布后续完成
 
 #### Vue 侧播放器 Composable
 

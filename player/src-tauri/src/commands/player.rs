@@ -3,7 +3,9 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path, time::Duration};
 use tauri::{AppHandle, State};
 
-use super::player_shared::{sanitize_http_headers, MpvHttpHeader, MpvOrientationState};
+use super::player_shared::{
+    sanitize_http_headers, MpvEngineSettings, MpvHttpHeader, MpvOrientationState,
+};
 use crate::mpv::{
     player::{MpvState, MpvTrackState},
     render::MpvRenderState,
@@ -58,6 +60,17 @@ pub async fn mpv_load(
         .map(|header| (header.name, header.value))
         .collect::<Vec<_>>();
     player.load_file_with_headers(&path, &headers)
+}
+
+#[tauri::command]
+pub async fn mpv_apply_engine_settings(
+    settings: MpvEngineSettings,
+    state: State<'_, MpvState>,
+) -> Result<(), String> {
+    let mut player = state
+        .lock()
+        .map_err(|_| "播放器设置暂不可用，请稍后重试".to_string())?;
+    player.apply_engine_settings(settings)
 }
 
 #[tauri::command]

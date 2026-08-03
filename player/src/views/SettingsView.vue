@@ -3,6 +3,7 @@ import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
+import type { PlayerCacheMode, PlayerDemuxerCacheSize, PlayerHardwareDecoder, PlayerVideoOutput, PlayerVideoSync } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
@@ -102,6 +103,11 @@ interface SubtitleSettingsFormState {
   username: string
   password: string
   longPressPlaybackSpeed: number
+  videoOutput: PlayerVideoOutput
+  hardwareDecoder: PlayerHardwareDecoder
+  cacheMode: PlayerCacheMode
+  demuxerMaxBytesMb: PlayerDemuxerCacheSize
+  videoSync: PlayerVideoSync
 }
 
 interface UpdaterSettingsFormState {
@@ -262,6 +268,11 @@ const subtitleForm = reactive<SubtitleSettingsFormState>({
   username: '',
   password: '',
   longPressPlaybackSpeed: playerInteractionSettings.longPressPlaybackSpeed,
+  videoOutput: playerInteractionSettings.videoOutput,
+  hardwareDecoder: playerInteractionSettings.hardwareDecoder,
+  cacheMode: playerInteractionSettings.cacheMode,
+  demuxerMaxBytesMb: playerInteractionSettings.demuxerMaxBytesMb,
+  videoSync: playerInteractionSettings.videoSync,
 })
 const openSubtitlesConfigured = ref(false)
 const openSubtitlesConfiguredAuthMode = ref<OpenSubtitlesAuthMode | null>(null)
@@ -324,14 +335,7 @@ const tmdbCredentialStatusLabel = computed(() => {
 })
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
-const playbackEntryMeta = computed(() => {
-  const enabled = [
-    subtitleForm.openSubtitlesEnabled && openSubtitlesConfigured.value ? 'OpenSubtitles' : null,
-    subtitleForm.shooterEnabled ? '射手网' : null,
-    subtitleForm.xunleiEnabled ? '迅雷' : null,
-  ].filter(Boolean)
-  return enabled.length > 0 ? `${enabled.length} 个本地提供器` : '可配置字幕搜索'
-})
+const playbackEntryMeta = computed(() => `${subtitleForm.videoOutput} · ${subtitleForm.hardwareDecoder}`)
 const shortcutEntries = computed(() => [
   { target: 'home' as const, label: '首页', description: '返回海报墙首页。' },
   { target: 'settings' as const, label: '设置', description: '打开设置总览。' },
@@ -939,12 +943,17 @@ async function savePlaybackSubtitleSettings() {
     subtitleForm.longPressPlaybackSpeed = normalizeLongPressPlaybackSpeed(subtitleForm.longPressPlaybackSpeed)
     await savePlayerInteractionSettings({
       longPressPlaybackSpeed: subtitleForm.longPressPlaybackSpeed,
+      videoOutput: subtitleForm.videoOutput,
+      hardwareDecoder: subtitleForm.hardwareDecoder,
+      cacheMode: subtitleForm.cacheMode,
+      demuxerMaxBytesMb: subtitleForm.demuxerMaxBytesMb,
+      videoSync: subtitleForm.videoSync,
     })
     await flushAppSettings()
     await refreshOpenSubtitlesCredentialState()
     subtitleFeedback.value = {
       type: accountAuthenticated === false ? 'info' : 'success',
-      message: subtitleSettingsSavedMessage(accountAuthenticated),
+      message: `${subtitleSettingsSavedMessage(accountAuthenticated)} 播放器引擎参数将在下一次播放时生效。`,
     }
   }
   catch (error) {
@@ -2278,6 +2287,83 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             }"
           >
             {{ subtitleFeedback.message }}
+          </div>
+
+          <div class="mt-5 border-b border-white/8 pb-5">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
+                播放器引擎
+              </p>
+              <p class="mt-2 text-xs leading-5 text-white/38">
+                参数在下一次播放媒体时生效。默认组合兼顾画质和兼容性，遇到黑屏、花屏或硬解异常时再切换。
+              </p>
+            </div>
+
+            <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <label class="rounded-2xl bg-black/16 p-4">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">视频输出</span>
+                <select
+                  v-model="subtitleForm.videoOutput"
+                  class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                >
+                  <option value="gpu-next">gpu-next（推荐）</option>
+                  <option value="gpu">gpu（兼容模式）</option>
+                </select>
+                <span class="mt-2 block text-xs leading-5 text-white/38">gpu-next 是默认现代渲染器；旧设备或驱动异常时可尝试 gpu。</span>
+              </label>
+
+              <label class="rounded-2xl bg-black/16 p-4">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">解码器</span>
+                <select
+                  v-model="subtitleForm.hardwareDecoder"
+                  class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                >
+                  <option value="auto-safe">自动安全（推荐）</option>
+                  <option value="auto">硬件优先</option>
+                  <option value="software">纯软件解码</option>
+                </select>
+                <span class="mt-2 block text-xs leading-5 text-white/38">Android 使用 MediaCodec，Windows 使用 mpv 自动硬解策略。</span>
+              </label>
+
+              <label class="rounded-2xl bg-black/16 p-4">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">媒体缓存</span>
+                <select
+                  v-model="subtitleForm.cacheMode"
+                  class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                >
+                  <option value="auto">自动（推荐）</option>
+                  <option value="enabled">始终启用</option>
+                  <option value="disabled">关闭</option>
+                </select>
+                <span class="mt-2 block text-xs leading-5 text-white/38">远程媒体建议保持自动；关闭缓存可能影响网络播放稳定性。</span>
+              </label>
+
+              <label class="rounded-2xl bg-black/16 p-4">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">缓存上限</span>
+                <select
+                  v-model.number="subtitleForm.demuxerMaxBytesMb"
+                  class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                >
+                  <option v-for="size in [64, 128, 256, 512]" :key="size" :value="size">
+                    {{ size }} MB
+                  </option>
+                </select>
+                <span class="mt-2 block text-xs leading-5 text-white/38">更大的缓存可缓冲网络抖动，也会占用更多内存。</span>
+              </label>
+
+              <label class="rounded-2xl bg-black/16 p-4 md:col-span-2 xl:col-span-2">
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">音画同步</span>
+                <select
+                  v-model="subtitleForm.videoSync"
+                  class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+                >
+                  <option value="audio">以音频为准（推荐）</option>
+                  <option value="display-resample">显示刷新率重采样</option>
+                  <option value="display-vdrop">显示刷新率丢帧同步</option>
+                </select>
+                <span class="mt-2 block text-xs leading-5 text-white/38">显示同步适合固定刷新率屏幕；出现音调或流畅度异常时恢复“以音频为准”。</span>
+              </label>
+            </div>
           </div>
 
           <div class="mt-5 grid gap-4 lg:grid-cols-3">

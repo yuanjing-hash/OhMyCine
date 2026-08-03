@@ -43,6 +43,16 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Volatile
     private var activeVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
     @Volatile
+    private var preferredVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+    @Volatile
+    private var hardwareDecoder = "mediacodec,mediacodec-copy"
+    @Volatile
+    private var cacheMode = "auto"
+    @Volatile
+    private var demuxerMaxBytes = 64L * 1024L * 1024L
+    @Volatile
+    private var videoSync = "audio"
+    @Volatile
     private var videoOutputFallbackUsed = false
     private val diagnosticLogs = ArrayDeque<String>()
 
@@ -97,6 +107,11 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fileLoaded = false
         stopRequested = false
         activeVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+        preferredVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+        hardwareDecoder = "mediacodec,mediacodec-copy"
+        cacheMode = "auto"
+        demuxerMaxBytes = 64L * 1024L * 1024L
+        videoSync = "audio"
         videoOutputFallbackUsed = false
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
     }
@@ -122,9 +137,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         lastPlaybackError = null
         fileLoaded = false
         stopRequested = false
-        if (activeVideoOutput != PRIMARY_ANDROID_VIDEO_OUTPUT) {
-            MPVLib.setPropertyString("vo", PRIMARY_ANDROID_VIDEO_OUTPUT)
-            activeVideoOutput = PRIMARY_ANDROID_VIDEO_OUTPUT
+        if (activeVideoOutput != preferredVideoOutput) {
+            MPVLib.setPropertyString("vo", preferredVideoOutput)
+            activeVideoOutput = preferredVideoOutput
         }
         videoOutputFallbackUsed = false
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
@@ -132,6 +147,39 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
         MPVLib.command(arrayOf("loadfile", request.path, "replace"))
+    }
+
+    @Synchronized
+    fun applyEngineSettings(settings: MpvEngineSettings) {
+        require(settings.videoOutput == "gpu-next" || settings.videoOutput == "gpu")
+        require(settings.hardwareDecoder == "auto-safe" || settings.hardwareDecoder == "auto" || settings.hardwareDecoder == "software")
+        require(settings.cacheMode == "auto" || settings.cacheMode == "enabled" || settings.cacheMode == "disabled")
+        require(settings.demuxerMaxBytesMb == 64 || settings.demuxerMaxBytesMb == 128 || settings.demuxerMaxBytesMb == 256 || settings.demuxerMaxBytesMb == 512)
+        require(settings.videoSync == "audio" || settings.videoSync == "display-resample" || settings.videoSync == "display-vdrop")
+
+        preferredVideoOutput = settings.videoOutput
+        activeVideoOutput = settings.videoOutput
+        hardwareDecoder = when (settings.hardwareDecoder) {
+            "auto" -> "mediacodec-copy,mediacodec"
+            "software" -> "no"
+            else -> "mediacodec,mediacodec-copy"
+        }
+        cacheMode = when (settings.cacheMode) {
+            "enabled" -> "yes"
+            "disabled" -> "no"
+            else -> "auto"
+        }
+        demuxerMaxBytes = settings.demuxerMaxBytesMb.toLong() * 1024L * 1024L
+        videoSync = settings.videoSync
+        videoOutputFallbackUsed = false
+
+        if (initialized) {
+            MPVLib.setPropertyString("vo", activeVideoOutput)
+            MPVLib.setPropertyString("hwdec", hardwareDecoder)
+            MPVLib.setPropertyString("cache", cacheMode)
+            MPVLib.setPropertyString("demuxer-max-bytes", demuxerMaxBytes.toString())
+            MPVLib.setPropertyString("video-sync", videoSync)
+        }
     }
 
     fun addSubtitle(url: String, title: String?, language: String?) {
@@ -343,7 +391,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         if (level > 20 || playbackState != "loading" || fileLoaded || videoOutputFallbackUsed)
             return false
         val normalized = line.lowercase()
-        return activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+        return preferredVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+            && activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
             && (normalized.contains("gpu") || normalized.contains("vo"))
             && (normalized.contains("fail") || normalized.contains("error") || normalized.contains("not supported"))
     }
@@ -372,10 +421,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MpvSurfaceHost.registerMpvObservers()
                 MPVLib.setOptionString("config", "no")
                 MPVLib.setOptionString("profile", "fast")
-                MPVLib.setOptionString("vo", PRIMARY_ANDROID_VIDEO_OUTPUT)
+                MPVLib.setOptionString("vo", preferredVideoOutput)
                 MPVLib.setOptionString("gpu-context", "android")
                 MPVLib.setOptionString("opengl-es", "yes")
-                MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy")
+                MPVLib.setOptionString("hwdec", hardwareDecoder)
                 MPVLib.setOptionString("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
                 MPVLib.setOptionString("ao", "audiotrack,opensles")
                 MPVLib.setOptionString("audio-set-media-role", "yes")
@@ -384,8 +433,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.setOptionString("idle", "yes")
                 MPVLib.setOptionString("force-window", "no")
                 MPVLib.setOptionString("input-default-bindings", "no")
-                MPVLib.setOptionString("demuxer-max-bytes", (64 * 1024 * 1024).toString())
+                MPVLib.setOptionString("cache", cacheMode)
+                MPVLib.setOptionString("demuxer-max-bytes", demuxerMaxBytes.toString())
                 MPVLib.setOptionString("demuxer-max-back-bytes", (32 * 1024 * 1024).toString())
+                MPVLib.setOptionString("video-sync", videoSync)
                 MPVLib.setOptionString("gpu-shader-cache-dir", context.cacheDir.path)
                 MPVLib.setOptionString("icc-cache-dir", context.cacheDir.path)
                 MPVLib.setOptionString("tls-verify", "yes")
@@ -458,6 +509,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 }
 
 internal data class MpvHeader(val name: String, val value: String)
+internal data class MpvEngineSettings(
+    val videoOutput: String,
+    val hardwareDecoder: String,
+    val cacheMode: String,
+    val demuxerMaxBytesMb: Int,
+    val videoSync: String,
+)
 internal data class PendingLoad(val path: String, val headers: List<MpvHeader>)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
 internal data class MpvTrack(

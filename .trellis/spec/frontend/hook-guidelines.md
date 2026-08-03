@@ -127,7 +127,7 @@ watch(
 
 #### 3. Contracts
 - Response fields: `state`, `lastEvent`, `lastError`, `fileLoaded`, `videoFormat`, `audioCodec`, `voConfigured`, `hardwareDecoder`, `videoOutput`, `videoOutputFallbackUsed`, and `logs`.
-- `videoOutput` starts as `gpu-next`; `videoOutputFallbackUsed` becomes true only when native error logs caused a per-playback fallback to `gpu`.
+- `videoOutput` starts from the validated global setting (`gpu-next` by default); `videoOutputFallbackUsed` becomes true only when native error logs caused a per-playback fallback from configured `gpu-next` to `gpu`.
 - Observe at least `START_FILE`, `FILE_LOADED`, `END_FILE`, `VIDEO_RECONFIG`, `AUDIO_RECONFIG`, and `PLAYBACK_RESTART`.
 - Diagnostic text must redact remote URLs, authorization values, cookies, API keys, tokens, signatures, and query credentials before crossing IPC.
 - Diagnostics must never include the media path, request headers, provider credentials, signed playback URL, or cookies.
@@ -139,7 +139,7 @@ watch(
 | `FILE_LOADED` received | Set `state=playing`, `fileLoaded=true`, and clear stale load errors |
 | `END_FILE` before file load | Set `state=error` and expose a safe diagnostic reason |
 | User or route requests stop | Report idle/stopped; do not misclassify the resulting `END_FILE` as a load error |
-| `gpu-next` log explicitly reports GPU/VO failure during loading | Retry this playback with `gpu`, mark fallback used, and retain `gpu-next` as the next playback/default |
+| Configured `gpu-next` log explicitly reports GPU/VO failure during loading | Retry this playback with `gpu`, mark fallback used, and retain the configured `gpu-next` preference for the next playback |
 | Log contains URL/token/header material | Replace sensitive values before retaining or returning the line |
 
 #### 5. Good/Base/Bad Cases
@@ -167,6 +167,56 @@ if (nativeLogConfirmsGpuOutputFailure()) {
     MPVLib.setPropertyString("vo", "gpu")
     videoOutputFallbackUsed = true
 }
+```
+
+### Android HTTPS Playback Bridge Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Android remote playback URL handling, provider playback headers, libmpv network transport, or the loopback media bridge.
+- Applies across DataSource playback resolution, Rust `mpv_load`, `AndroidStreamProxyState`, reqwest, axum, and native libmpv.
+
+#### 2. Signatures
+- `AndroidStreamProxyState::prepare(url, headers) -> Result<loopback_url, String>` creates or replaces the active in-memory playback target.
+- Android `mpv_load` routes HTTPS media through the bridge and passes no upstream credential headers to native libmpv.
+- `mpv_stop` clears the active target so an old loopback URL cannot be reused for later media.
+
+#### 3. Contracts
+- The listener binds only to `127.0.0.1` on an ephemeral port and exposes one active media target at a time.
+- Every playback target receives a new cryptographically random URL-safe token, compared without early byte exit.
+- Upstream TLS uses rustls with certificate validation enabled; do not solve device TLS incompatibility by disabling verification.
+- Preserve GET/HEAD and media seek semantics by forwarding Range and conditional request headers and returning content range, length, type, cache, ETag, and modification headers.
+- Upstream URL, signed query, authorization headers, cookies, and provider credentials stay in memory and never enter ordinary logs or diagnostics.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Native libmpv cannot negotiate an HTTPS stream | Rust fetches it through validated rustls and gives libmpv a tokenized loopback HTTP URL |
+| Invalid or expired token | Return 404/410 without revealing the target URL or credentials |
+| Non-GET/HEAD request | Return 405 |
+| Upstream timeout/connect/redirect failure | Return a generic 502 and log only a safe error category |
+| Seek request includes `Range` / `If-Range` | Forward the header and preserve the upstream partial-content response |
+
+#### 5. Good/Base/Bad Cases
+- Good: an Emby signed HTTPS stream with auth headers is fetched by Rust and remains seekable through a private loopback URL.
+- Base: plain HTTP and local paths continue through the existing native load path without an unnecessary proxy hop.
+- Bad: disabling TLS verification, binding to `0.0.0.0`, logging the upstream URL, or placing credentials in the loopback URL.
+
+#### 6. Tests Required
+- Rust tests cover random URL-safe tokens and exact token comparison.
+- Static Android verification asserts HTTPS routing, target cleanup, loopback-only binding, and header forwarding.
+- Run `npm run verify:android-playback`, `cargo test`, and the Android APK build.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```rust
+reqwest::Client::builder().danger_accept_invalid_certs(true)
+```
+
+Correct:
+```rust
+let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+let client = reqwest::Client::builder().redirect(Policy::limited(10)).build()?;
 ```
 
 ---
