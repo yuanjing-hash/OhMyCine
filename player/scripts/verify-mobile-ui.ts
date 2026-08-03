@@ -32,6 +32,9 @@ const homeView = await source('src/views/HomeView.vue')
 assert.match(homeView, /recent-play-overlay/)
 assert.match(homeView, /\.recent-play-overlay \{[\s\S]*?opacity: 1;/)
 
+const globalStyles = await source('src/styles/global.css')
+assert.doesNotMatch(globalStyles, /\.cinema-scrollbar \{\s+overscroll-behavior-y: contain;/)
+
 const mediaCard = await source('src/components/media/MediaCard.vue')
 assert.match(mediaCard, /media-card-play/)
 assert.match(mediaCard, /\.media-card-play \{[\s\S]*?opacity: 1;/)
@@ -43,6 +46,13 @@ assert.match(sourceLibrary, /bottom: calc\(5\.25rem \+ env\(safe-area-inset-bott
 const playerControls = await source('src/components/player/PlayerControls.vue')
 assert.match(playerControls, /grid-template-columns: auto minmax\(0, 1fr\) auto/)
 assert.match(playerControls, /\.control-popover \{[\s\S]*?position: fixed;/)
+assert.match(playerControls, /mobileLayout: boolean/)
+assert.match(playerControls, /'mobile-layout': mobileLayout/)
+assert.match(playerControls, /\.player-controls-glass\.mobile-layout/)
+assert.match(playerControls, /orientationSupported: boolean/)
+assert.match(playerControls, /自动横屏/)
+assert.match(playerControls, /锁定横屏/)
+assert.match(playerControls, /锁定竖屏/)
 
 const progressBar = await source('src/components/player/ProgressBar.vue')
 assert.match(progressBar, /@pointerdown\.prevent="handlePointerDown"/)
@@ -74,6 +84,15 @@ assert.match(playerView, /beginHeldArrow\(touchGestureSession\.holdArrowKey, 'to
 assert.match(playerView, /heldArrowOwner === 'touch' && arrowHoldActivated/)
 assert.match(playerView, /releaseHeldArrow\(false, 'touch'\)/)
 assert.match(playerView, /loadPlayerInteractionSettings\(\)\.longPressPlaybackSpeed/)
+assert.match(playerView, /const isNativeAndroidPlayer = \/Android\/i\.test/)
+assert.match(playerView, /player-view--native-mobile/)
+assert.match(playerView, /:mobile-layout="isNativeAndroidPlayer"/)
+assert.match(playerView, /if \(isNativeAndroidPlayer\) \{\s+toggleChromeFromTouch\(\)/)
+assert.match(playerView, /showKeyboardOsd\(`屏幕方向 · \$\{label\}`\)/)
+
+const videoPlayer = await source('src/components/player/VideoPlayer.vue')
+assert.match(videoPlayer, /等待播放中/)
+assert.doesNotMatch(videoPlayer, /拖拽文件到此处播放/)
 
 const mpvPlayer = await source('src-tauri/src/mpv/player.rs')
 assert.match(mpvPlayer, /"video-zoom"[\s\S]*?\| "brightness" =>/)
@@ -94,4 +113,9 @@ console.log(JSON.stringify({
   touchDesktopInputIsolation: true,
   desktopTouchGestureSimulation: true,
   browserResponsivePreviewSupported: true,
+  verticalScrollThroughHomeMediaRows: true,
+  nativeAndroidPlayerLayout: true,
+  nativeAndroidTapChromeFallback: true,
+  conciseWaitingPlaybackState: true,
+  nativeOrientationLockControl: true,
 }, null, 2))

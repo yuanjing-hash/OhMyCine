@@ -18,9 +18,9 @@ use commands::local_file::{
     local_file_watch_stop, LocalFileWatcherState,
 };
 use commands::player::{
-    mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
-    mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy, mpv_stop,
-    mpv_track_state, mpv_update_render_surface_bounds,
+    mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_orientation_state,
+    mpv_pause, mpv_render_status, mpv_resume, mpv_seek, mpv_set_orientation, mpv_set_property,
+    mpv_set_render_strategy, mpv_stop, mpv_track_state, mpv_update_render_surface_bounds,
 };
 use commands::preference::{
     player_clear_media_cache, player_delete_media_playback_preferences_for_source,
@@ -108,6 +108,8 @@ pub fn run() {
             mpv_get_property,
             mpv_set_property,
             mpv_track_state,
+            mpv_orientation_state,
+            mpv_set_orientation,
             mpv_init_render_surface,
             mpv_update_render_surface_bounds,
             mpv_render_status,

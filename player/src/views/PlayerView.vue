@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
@@ -81,6 +81,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null
+const isNativeAndroidPlayer = /Android/i.test(globalThis.navigator?.userAgent ?? '')
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const mediaHeaders = ref<Record<string, string>>({})
@@ -192,11 +193,14 @@ const {
   renderError,
   renderBackend,
   renderDiagnostics,
+  orientationSupported,
+  orientationMode,
   videoDynamicRange,
   trackError,
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
+  setOrientationMode,
   setKnownSubtitleTracks,
   load,
   togglePause,
@@ -2162,6 +2166,12 @@ async function handleSetVideoFit(mode: VideoFitMode) {
   scheduleMediaPreferenceSave()
 }
 
+async function handleSetOrientationMode(mode: MpvOrientationMode) {
+  await setOrientationMode(mode)
+  const label = mode === 'landscape' ? '锁定横屏' : mode === 'portrait' ? '锁定竖屏' : '自动横屏'
+  showKeyboardOsd(`屏幕方向 · ${label}`)
+}
+
 async function stopPlaybackSilently() {
   try {
     await stop()
@@ -2316,6 +2326,10 @@ function handlePlayerAreaClick(event: MouseEvent) {
   const target = event.target
   if (target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
     return
+  if (isNativeAndroidPlayer) {
+    toggleChromeFromTouch()
+    return
+  }
   void handleTogglePause()
 }
 
@@ -2422,6 +2436,7 @@ watch(
     class="player-view relative h-screen w-full overflow-hidden text-white"
     :class="[
       { 'is-chrome-hidden': !shouldShowChrome },
+      { 'player-view--native-mobile': isNativeAndroidPlayer },
       isTransparentRootActive ? 'player-view--transparent' : 'bg-black',
     ]"
     @mousemove="revealChromeFromPointer"
@@ -2568,6 +2583,9 @@ watch(
         :video-fit-mode="videoFitMode"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
+        :mobile-layout="isNativeAndroidPlayer"
+        :orientation-supported="orientationSupported"
+        :orientation-mode="orientationMode"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
         @play-next="handlePlayNext"
@@ -2583,6 +2601,7 @@ watch(
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
+        @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
       />
@@ -2988,5 +3007,28 @@ watch(
   .player-view {
     touch-action: none;
   }
+}
+
+.player-view--native-mobile {
+  cursor: default !important;
+  touch-action: none;
+}
+
+.player-view--native-mobile .player-top-chrome {
+  padding: max(2.5rem, calc(env(safe-area-inset-top) + 1.25rem)) 1rem 1.5rem;
+}
+
+.player-view--native-mobile .player-top-chrome h1 {
+  max-width: calc(100vw - 5rem);
+  font-size: 1rem;
+}
+
+.player-view--native-mobile .player-top-chrome p:first-child,
+.player-view--native-mobile .player-top-chrome p:nth-of-type(2) {
+  display: none;
+}
+
+.player-view--native-mobile .player-bottom-chrome {
+  padding: 2rem 0.65rem max(0.65rem, env(safe-area-inset-bottom));
 }
 </style>

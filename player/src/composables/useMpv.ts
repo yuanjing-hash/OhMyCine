@@ -65,6 +65,12 @@ export type VideoFitMode = 'fit' | 'crop' | 'cinemaCrop'
 export type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
 
 export type MpvZOrderStrategy = 'transparentOverlay' | 'ownedTopLevel' | 'bottomTransparentHole' | 'topDisabledFallback'
+export type MpvOrientationMode = 'auto' | 'landscape' | 'portrait'
+
+interface MpvOrientationState {
+  supported: boolean
+  mode: MpvOrientationMode
+}
 
 export interface MpvRenderDiagnostics {
   ownerHwndAttached: boolean
@@ -264,6 +270,8 @@ export function useMpv() {
   const renderError = ref<string | null>(null)
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
+  const orientationSupported = ref(false)
+  const orientationMode = ref<MpvOrientationMode>('auto')
   const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
@@ -354,7 +362,7 @@ export function useMpv() {
       return
 
     renderDiagnosticsTimer = window.setInterval(() => {
-      if (renderStatus.value === 'ready')
+      if (renderStatus.value === 'initializing' || renderStatus.value === 'ready')
         void refreshRenderStatus()
     }, 1000)
   }
@@ -366,7 +374,7 @@ export function useMpv() {
     try {
       const state = await invoke<MpvRenderState>('mpv_init_render_surface')
       applyRenderState(state)
-      if (state.status === 'ready')
+      if (state.status === 'initializing' || state.status === 'ready')
         startRenderDiagnosticsPolling()
     }
     catch (error: unknown) {
@@ -412,6 +420,24 @@ export function useMpv() {
       currentSubtitle.value = selectedKnownSubtitle.value
       currentAudio.value = null
     }
+  }
+
+  async function refreshOrientationState() {
+    try {
+      const state = await invoke<MpvOrientationState>('mpv_orientation_state')
+      orientationSupported.value = state.supported
+      orientationMode.value = state.mode
+    }
+    catch {
+      orientationSupported.value = false
+      orientationMode.value = 'auto'
+    }
+  }
+
+  async function setOrientationMode(mode: MpvOrientationMode) {
+    const state = await invoke<MpvOrientationState>('mpv_set_orientation', { mode })
+    orientationSupported.value = state.supported
+    orientationMode.value = state.mode
   }
 
   function scheduleTrackRefresh(delay: number) {
@@ -508,6 +534,7 @@ export function useMpv() {
     await ensurePlaybackSpeedPreferenceLoaded()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     await invoke<void>('mpv_resume')
+    await refreshOrientationState()
     currentTime.value = 0
     isPlaying.value = true
     await applyPlaybackSpeed(playbackSpeed.value)
@@ -704,12 +731,16 @@ export function useMpv() {
     renderError,
     renderBackend,
     renderDiagnostics,
+    orientationSupported,
+    orientationMode,
     videoDynamicRange,
     trackError,
     initializeRender,
     updateRenderSurfaceBounds,
     setRenderStrategy,
     refreshTrackState,
+    refreshOrientationState,
+    setOrientationMode,
     setKnownSubtitleTracks,
     load,
     togglePause,

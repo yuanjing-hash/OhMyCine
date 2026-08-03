@@ -39,6 +39,7 @@ pub struct AndroidMpvSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct AndroidSurfaceStatus {
     pub ready: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

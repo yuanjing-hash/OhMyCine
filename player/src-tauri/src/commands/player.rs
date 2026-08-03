@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path, time::Duration};
 use tauri::{AppHandle, State};
 
-use super::player_shared::{sanitize_http_headers, MpvHttpHeader};
+use super::player_shared::{sanitize_http_headers, MpvHttpHeader, MpvOrientationState};
 use crate::mpv::{
     player::{MpvState, MpvTrackState},
     render::MpvRenderState,
@@ -90,6 +90,20 @@ pub async fn mpv_track_state(state: State<'_, MpvState>) -> Result<MpvTrackState
         .lock()
         .map_err(|_| "播放器轨道信息暂不可用，请稍后重试".to_string())?;
     player.track_state()
+}
+
+#[tauri::command]
+pub async fn mpv_orientation_state() -> Result<MpvOrientationState, String> {
+    Ok(MpvOrientationState {
+        supported: false,
+        mode: "auto".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn mpv_set_orientation(mode: String) -> Result<MpvOrientationState, String> {
+    let _ = mode;
+    mpv_orientation_state().await
 }
 
 #[tauri::command]

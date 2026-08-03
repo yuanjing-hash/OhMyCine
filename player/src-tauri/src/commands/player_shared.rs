@@ -5,6 +5,13 @@ pub struct MpvHttpHeader {
     pub value: String,
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvOrientationState {
+    pub supported: bool,
+    pub mode: String,
+}
+
 pub fn sanitize_http_headers(headers: Vec<MpvHttpHeader>) -> Result<Vec<MpvHttpHeader>, String> {
     if headers.len() > 16 {
         return Err("播放请求 header 数量过多。".to_string());

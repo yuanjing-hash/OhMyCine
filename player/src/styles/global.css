@@ -28,7 +28,6 @@ select {
   }
 
   .cinema-scrollbar {
-    overscroll-behavior-y: contain;
     scrollbar-width: none;
   }
 

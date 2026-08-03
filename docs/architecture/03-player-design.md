@@ -2287,7 +2287,11 @@ Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳
 
 Android 响应式布局按实时可用窗口宽度划分，不依赖手机/平板型号判断：`compact` 用于手机竖屏和窄分屏，`medium` 用于平板分屏与小尺寸平板，`expanded` 用于平板全屏、桌面模式和大窗口。CSS media/container queries 负责内容重排，窗口尺寸变化必须即时生效；触摸/鼠标/键盘能力继续由 Pointer Events 与输入媒体查询独立判断。Android Activity 必须允许 resize，不全局锁定方向，并处理安全区、系统栏、横竖屏、多窗口和折叠屏窗口变化。播放器可由用户进入横屏或全屏，但返回浏览界面后仍恢复当前多窗口尺寸。
 
-当前已生成 Tauri Android Studio 工程，并可通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK。Activity 显式启用 `resizeableActivity` 且不锁定方向。Android 不链接桌面 `libmpv-sys`，而是保持同名 `mpv_*` 命令并通过 Rust mobile plugin、Kotlin 与 mpv-android JNI runtime 完成加载、暂停、seek、属性、字幕和轨道操作；播放进度与暂停状态继续进入现有 Vue 事件流。构建命令会先清理旧 APK，并关闭 Rust debug info，避免预览包被调试符号膨胀。
+当前已生成 Tauri Android Studio 工程，并可通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK。Activity 显式启用 `resizeableActivity` 且不全局锁定方向；开始播放时原生插件进入 sensor-landscape 沉浸模式、隐藏系统栏并保持亮屏，停止播放后恢复系统栏和默认方向策略。Android 不链接桌面 `libmpv-sys`，而是保持同名 `mpv_*` 命令并通过 Rust mobile plugin、Kotlin 与 mpv-android JNI runtime 完成加载、暂停、seek、属性、字幕和轨道操作；播放进度与暂停状态继续进入现有 Vue 事件流。构建命令会先清理旧 APK，并关闭 Rust debug info，避免预览包被调试符号膨胀。
+
+Android Surface 初始化是整组播放命令的前置屏障。Kotlin 将 `SurfaceView + 透明 WebView` 容器插回 Tauri 原 WebView 父节点，不替换 Activity 根内容；Rust 在调用 load 前等待 surface ready，并把初始化错误或超时返回前端。前端对 `initializing` 状态持续轮询，避免只在固定两秒窗口内判断一次。这样 load 后紧接的 resume、倍速、画面和字幕偏移命令不会因 Surface 尚未 attach 而失败，也不会把播放目标清空后错误显示成空播放器。
+
+Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等竖屏断点作为唯一判断，因为手机横屏宽度经常超过该值。单击画面切换控制 UI，并保留 Pointer Events 手势与 Android 合成 click 的兜底路径。移动控制栏提供独立方向锁图标，打开后可选择“自动横屏 / 锁定横屏 / 锁定竖屏”，锁图标反映自动或锁定状态，切换结果通过右上角短提示反馈；该状态不复用桌面全屏按钮。首页“继续观看”和“最新影片”横向媒体条只处理横向滚动，不得用纵向 overscroll containment 阻断页面上下滑动。空播放面统一只显示“等待播放中”，不展示桌面拖拽文件说明。
 
 这些工作不代表 Android 已可发布。当前完成的是 ARM64 构建和静态产物验证：APK 已确认包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；由于没有连接 Android 设备，实际画面、音频、MediaCodec 兼容性、远程 header、字幕、暂停/seek、横竖屏切换和 Activity 生命周期仍需真机验证。媒体与目录权限、系统返回键、系统栏避让、移动端更新策略、发布签名，以及 armeabi-v7a/x86_64 等额外 ABI 也仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
 

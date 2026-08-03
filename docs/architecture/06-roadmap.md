@@ -870,7 +870,7 @@ Phase 4: 生态系统           ████████████████
 ### Sprint 4.3: Android + 持续优化 (Week 29+)
 
 - [x] Tauri Android 构建配置（已生成 Android Studio 工程并通过 ARM64 debug APK 预览构建）
-- [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待验证，其他 ABI 与可复现自建 runtime 后续完成）
+- [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令；已补 Surface 延迟就绪屏障、待播请求、初始化错误回传、自动横屏沉浸模式和触摸优先控制布局，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待复验，其他 ABI 与可复现自建 runtime 后续完成）
 - [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、竖屏播放器控制重排和 Android 原生视频底层；真机系统交互仍待完成）
   - [~] 触摸手势（已完成横向快退/快进、左侧亮度、右侧音量、单击控制 UI、双击暂停、左右半屏静止长按复用方向键连续后退/临时倍速，并按触摸输入兼容 Surface 等触控 PC；捏合手势和 Android 原生屏幕亮度仍待完成）
   - [x] 底部导航栏与媒体库/快捷抽屉

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::player_shared::{sanitize_http_headers, MpvHttpHeader};
+use super::player_shared::{sanitize_http_headers, MpvHttpHeader, MpvOrientationState};
 use crate::mpv::{
     mobile::{AndroidMpvState, AndroidSurfaceStatus},
     render::{MpvRenderState, RenderBackendKind, RenderStatus},
@@ -34,6 +34,12 @@ struct SeekPayload {
 struct PropertyPayload {
     prop: String,
     value: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrientationPayload {
+    mode: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -70,6 +76,7 @@ pub async fn mpv_load(
         path,
         headers: sanitize_http_headers(headers.unwrap_or_default())?,
     };
+    wait_for_android_surface(state.inner()).await?;
     state.run("load", payload).await
 }
 
@@ -151,6 +158,26 @@ pub async fn mpv_track_state(state: State<'_, AndroidMpvState>) -> Result<MpvTra
 }
 
 #[tauri::command]
+pub async fn mpv_orientation_state(
+    state: State<'_, AndroidMpvState>,
+) -> Result<MpvOrientationState, String> {
+    state.run("orientationState", ()).await
+}
+
+#[tauri::command]
+pub async fn mpv_set_orientation(
+    mode: String,
+    state: State<'_, AndroidMpvState>,
+) -> Result<MpvOrientationState, String> {
+    if !matches!(mode.as_str(), "auto" | "landscape" | "portrait") {
+        return Err("不支持的屏幕方向模式。".to_string());
+    }
+    state
+        .run("setOrientation", OrientationPayload { mode })
+        .await
+}
+
+#[tauri::command]
 pub async fn mpv_init_render_surface(
     state: State<'_, AndroidMpvState>,
 ) -> Result<MpvRenderState, String> {
@@ -158,6 +185,9 @@ pub async fn mpv_init_render_surface(
         let status = state
             .run::<AndroidSurfaceStatus>("surfaceStatus", ())
             .await?;
+        if let Some(error) = status.error {
+            return Ok(android_render_error(error));
+        }
         if status.ready {
             return Ok(android_render_state(true));
         }
@@ -182,6 +212,9 @@ pub async fn mpv_render_status(
     let status = state
         .run::<AndroidSurfaceStatus>("surfaceStatus", ())
         .await?;
+    if let Some(error) = status.error {
+        return Ok(android_render_error(error));
+    }
     Ok(android_render_state(status.ready))
 }
 
@@ -209,4 +242,29 @@ fn android_render_state(ready: bool) -> MpvRenderState {
         }),
         diagnostics: None,
     }
+}
+
+fn android_render_error(message: String) -> MpvRenderState {
+    MpvRenderState {
+        status: RenderStatus::Error,
+        backend: RenderBackendKind::AndroidSurface,
+        message: Some(message),
+        diagnostics: None,
+    }
+}
+
+async fn wait_for_android_surface(state: &AndroidMpvState) -> Result<(), String> {
+    for _ in 0..100 {
+        let status = state
+            .run::<AndroidSurfaceStatus>("surfaceStatus", ())
+            .await?;
+        if let Some(error) = status.error {
+            return Err(error);
+        }
+        if status.ready {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err("Android 播放器表面准备超时，请重新进入播放页。".to_string())
 }

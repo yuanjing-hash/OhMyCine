@@ -3,6 +3,7 @@ package com.ohmycine.player.mpv
 import android.app.Activity
 import android.content.Context
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
@@ -18,47 +19,81 @@ internal object MpvSurfaceHost {
     @Volatile
     private var surfaceAttached = false
 
+    @Volatile
+    private var initializationError: String? = null
+
     private var surfaceView: OhMyCineMpvSurfaceView? = null
+    private var surfaceContainer: FrameLayout? = null
+    @Volatile
+    private var pendingLoad: PendingLoad? = null
 
     fun install(activity: Activity, webView: WebView) {
         webView.post {
             if (surfaceView != null)
                 return@post
 
-            val surface = OhMyCineMpvSurfaceView(activity)
-            surface.initialize()
-            val container = FrameLayout(activity).apply {
-                setBackgroundColor(Color.BLACK)
+            try {
+                val parent = webView.parent as? ViewGroup
+                    ?: error("Android WebView 容器尚未准备完成。")
+                val index = parent.indexOfChild(webView)
+                val layoutParams = webView.layoutParams
+                val surface = OhMyCineMpvSurfaceView(activity)
+                val container = FrameLayout(activity).apply {
+                    setBackgroundColor(Color.BLACK)
+                }
+
+                parent.removeView(webView)
+                webView.setBackgroundColor(Color.TRANSPARENT)
+                webView.background?.alpha = 0
+                container.addView(surface, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ))
+                container.addView(webView, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ))
+                parent.addView(container, index, layoutParams)
+                surfaceContainer = container
+                surfaceView = surface
+                surface.initialize()
+                initializationError = null
+            } catch (error: Exception) {
+                initializationError = error.message ?: "Android 播放器初始化失败。"
             }
-            (webView.parent as? ViewGroup)?.removeView(webView)
-            webView.setBackgroundColor(Color.TRANSPARENT)
-            container.addView(surface, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ))
-            container.addView(webView, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ))
-            activity.setContentView(container)
-            surfaceView = surface
         }
     }
 
     fun destroy() {
         surfaceView?.destroy()
         surfaceView = null
+        surfaceContainer = null
+        pendingLoad = null
         surfaceAttached = false
         initialized = false
+        initializationError = null
     }
 
     fun isReady(): Boolean = initialized && surfaceAttached
+    fun initializationError(): String? = initializationError
 
+    @Synchronized
     fun load(path: String, headers: List<MpvHeader>) {
-        requireInitialized()
+        initializationError?.let { error(it) }
+        val request = PendingLoad(path, headers)
+        pendingLoad = request
+        if (!isReady())
+            return
+        play(request)
+    }
+
+    @Synchronized
+    private fun play(request: PendingLoad) {
+        pendingLoad = null
+        val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
-        MPVLib.command(arrayOf("loadfile", path, "replace"))
+        MPVLib.command(arrayOf("loadfile", request.path, "replace"))
     }
 
     fun addSubtitle(url: String, title: String?, language: String?) {
@@ -72,6 +107,7 @@ internal object MpvSurfaceHost {
     }
 
     fun stop() {
+        pendingLoad = null
         if (initialized)
             MPVLib.command(arrayOf("stop"))
     }
@@ -167,6 +203,8 @@ internal object MpvSurfaceHost {
                 MPVLib.init()
                 initialized = true
             }
+            setZOrderMediaOverlay(false)
+            holder.setFormat(PixelFormat.OPAQUE)
             holder.addCallback(this)
         }
 
@@ -189,6 +227,7 @@ internal object MpvSurfaceHost {
             MPVLib.setOptionString("force-window", "yes")
             MPVLib.setPropertyString("vo", "gpu-next")
             surfaceAttached = true
+            pendingLoad?.let { play(it) }
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -219,6 +258,7 @@ internal object MpvSurfaceHost {
 }
 
 internal data class MpvHeader(val name: String, val value: String)
+internal data class PendingLoad(val path: String, val headers: List<MpvHeader>)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
 internal data class MpvTrack(
     val id: Long,

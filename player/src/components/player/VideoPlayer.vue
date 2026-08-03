@@ -310,12 +310,9 @@ function isTauriRuntime(): boolean {
       class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(74,158,255,0.14),transparent_34%),linear-gradient(135deg,#050509,#090911_52%,#030305)]"
     />
     <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
-      <div v-if="!hasMedia" class="glass-panel pointer-events-auto max-w-md rounded-3xl p-8 text-center">
-        <p class="text-lg font-semibold text-white">
-          拖拽文件到此处播放
-        </p>
-        <p class="mt-3 text-sm leading-6 text-white/50">
-          支持常见本地视频文件。加载后可使用底部控制条播放、暂停、拖动进度和调节音量。
+      <div v-if="!hasMedia" class="pointer-events-none text-center">
+        <p class="text-sm font-semibold tracking-[0.12em] text-white/48">
+          等待播放中
         </p>
       </div>
       <div v-else-if="renderStatus !== 'ready'" class="glass-panel pointer-events-auto max-w-xl rounded-3xl p-8 text-center">
