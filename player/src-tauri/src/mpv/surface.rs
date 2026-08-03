@@ -121,6 +121,10 @@ impl NativeRenderSurface {
         self.inner.set_bounds(bounds.sanitized())
     }
 
+    pub fn set_playback_active(&mut self, active: bool) {
+        self.inner.set_playback_active(active);
+    }
+
     #[allow(dead_code)]
     pub fn set_strategy(&mut self, strategy: ZOrderStrategy) -> Result<(), String> {
         self.inner.set_strategy(strategy)
@@ -249,6 +253,8 @@ mod platform {
         pub fn set_bounds(&mut self, _bounds: RenderSurfaceBounds) -> Result<(), String> {
             Err(unsupported_message().to_string())
         }
+
+        pub fn set_playback_active(&mut self, _active: bool) {}
 
         pub fn set_strategy(&mut self, _strategy: ZOrderStrategy) -> Result<(), String> {
             Err(unsupported_message().to_string())

@@ -851,6 +851,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 - Local/OpenList/Alist/CloudDrive2/WebDAV sibling subtitle discovery accepts `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sub`, requires an exact video basename or delimiter-led suffix match, and treats listing/URL failures as best-effort so media detail remains playable. Re-read the owning directory when detail is requested instead of keeping a permanent sibling list cache, so newly added subtitle files appear without restarting Player.
 - Apply known `sid`, `aid`, and user-triggered `sub-add` changes with synchronous libmpv commands so Vue receives the actual execution result. Do not follow those commands with an immediate full `track-list` query. The historical freeze was caused by synchronous metadata refresh during track switching; replacing short known commands with a cross-call asynchronous C-string queue caused subtitle failure and video-render regressions.
 - Player-downloaded Windows subtitle cache paths may exceed `MAX_PATH` and be canonicalized as `\\?\C:\...`. Do not strip that prefix and pass the now-invalid long path to libmpv. Before `sub-add`, copy local subtitles or bounded-download provider HTTP(S) subtitles into `cache/mpv-subtitles/<opaque-hash>.<ext>` and pass only that short local runtime path to mpv. Never persist the original signed URL, token, or headers in the runtime-cache filename or playback preference.
+- Manual local subtitle loading uses the native file dialog and accepts only `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sub`. Rust canonicalizes the explicitly selected file, rejects empty/files over 12 MiB, copies it into the current media-owned `cache/subtitles` directory through the same hashed cache boundary as downloaded subtitles, and returns only the controlled cached path for `sub-add` and preference persistence.
 - A manual subtitle/audio selection or subtitle download cancels any pending deferred track-preference restore. Already queued restore commands complete before the new ordered command, but no stale restore may be retried afterward.
 - Restored/user-selected `sid` and `aid` changes and external `sub-add` commands run only after duration/track metadata is available and return their synchronous libmpv result. The event forwarder may drain ordinary events, but track interaction must not introduce an async command-reply queue. Per-media track restoration retries from reactive track updates instead of issuing track commands during the initial remote stream load.
 - Player bindings cover immediate chrome hide plus stable playback actions. Defaults are `H` and `QWERTYUIOP`; settings/fullscreen remain customizable without extra defaults. Keyboard actions must not reveal the full Player chrome: direct actions use a compact top-right OSD, speed/subtitle/audio bindings cycle available values, queue/settings bindings report current state, and only pointer movement restores the complete controls after keyboard hiding.
@@ -868,6 +869,7 @@ router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: it
 | shortcut duplicates another shortcut in the same Player/navigation context | Reject save with a user-visible conflict message |
 | shortcut is bare Space, any arrow key, or Escape | Reject because the Player owns it |
 | Player chrome is hidden and any keyboard playback action runs | Keep full chrome hidden and show only the bounded top-right OSD |
+| user selects a local subtitle file | Import it into the controlled source/media subtitle cache, load it without leaving playback, and persist only the cached path |
 | source is deleted | Clear exact source-owned state only; keep every other source intact |
 | user clears playback cache | Preserve credentials, data-source config, playback history, updater/theme, interaction speed, and navigation shortcuts |
 
@@ -979,6 +981,7 @@ interface RenderSurfaceBounds {
 - The Tauri window and WebView native background must both be transparent (`transparent: true`, transparent `backgroundColor`, and runtime `set_background_color` where supported); CSS-only transparency is not sufficient on WebView2.
 - UI must treat `ready` as the only state that can imply visible render readiness.
 - `ready` means the native video underlay and mpv `wid` initialization succeeded. It still does not prove Windows host runtime video presentation until a real desktop playback check is performed.
+- The native render surface has a separate playback-active state. Successful media load activates and reveals the underlay; `mpv_stop` deactivates/hides it and unloads the current file. Route leave must always call `mpv_stop`, including paused/no-duration/error states, and owner resize/focus/restore events must never reveal an inactive underlay.
 - `idle` means scaffold/backend exists but visible video is not active yet.
 - `unsupported` means the current platform backend is planned/future, not removed from product scope.
 - `error` messages must be user-safe and must not include tokenized media URLs, local absolute paths unless user-selected, raw pointers, HWND/HDC/HGLRC values, or GL/window handles.
@@ -999,6 +1002,7 @@ interface RenderSurfaceBounds {
 | status is `idle` | UI says render backend is being prepared/scaffolded; do not claim video is embedded |
 | status is `ready` with no loaded media | Keep idle/no-media UI truthful; do not show a fake video placeholder |
 | status is `ready` with loaded media | Keep the video area transparent/full-bleed except hover-revealed controls; playback controls still use existing mpv commands |
+| Player route leaves for Home/Settings/source view | Save a progress snapshot, call `mpv_stop`, hide/unload the native underlay, then allow navigation; later window resize must not resurrect the old frame |
 
 #### 5. Good/Base/Bad Cases
 - Good: `useMpv` exposes `renderStatus`, `renderBackend`, `renderStrategy`, `renderDiagnostics`, `renderError`, `initializeRender`, and `updateRenderSurfaceBounds` while keeping existing `load`, pause, seek, and volume APIs stable.

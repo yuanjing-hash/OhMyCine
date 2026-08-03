@@ -650,8 +650,16 @@ export function useMpv() {
   }
 
   async function stop() {
-    await invoke<void>('mpv_pause')
+    await invoke<void>('mpv_stop')
     isPlaying.value = false
+    currentTime.value = 0
+    duration.value = 0
+    embeddedSubtitleTracks.value = []
+    knownSubtitleTracks.value = []
+    audioTracks.value = []
+    currentSubtitle.value = null
+    selectedKnownSubtitle.value = null
+    currentAudio.value = null
   }
 
   onUnmounted(() => {

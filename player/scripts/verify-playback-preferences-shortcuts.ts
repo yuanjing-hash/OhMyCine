@@ -24,6 +24,9 @@ assert.match(preferenceCommand, /DELETE FROM raw_scan_cache/)
 const subtitleCommand = await source('../src-tauri/src/commands/subtitle.rs')
 assert.match(subtitleCommand, /scoped_cache_key\(\s*"subtitle-source"/)
 assert.match(subtitleCommand, /scoped_cache_key\(\s*"subtitle-media"/)
+assert.match(subtitleCommand, /pub fn subtitle_import_local/)
+assert.match(subtitleCommand, /fs::canonicalize\(request\.path\.trim\(\)\)/)
+assert.match(subtitleCommand, /"manual-local"/)
 
 const playerView = await source('../src/views/PlayerView.vue')
 assert.match(playerView, /restoreMediaPlaybackPreference/)
@@ -46,6 +49,10 @@ assert.match(playerView, /addExternalSubtitle\(track\.url, track\.title \?\? res
 assert.match(playerView, /addExternalSubtitle\(downloaded\.path, downloaded\.title, downloaded\.language, 'downloaded'\)/)
 assert.match(playerView, /function cancelPendingTrackPreferenceRestore\(\)/)
 assert.match(playerView, /async function handleSetSubtitle[\s\S]*cancelPendingTrackPreferenceRestore\(\)/)
+assert.match(playerView, /async function loadLocalSubtitleFile\(\)/)
+assert.match(playerView, /importLocalSubtitle\(selected, cacheOwner\)/)
+assert.match(playerView, /@load-local-subtitle="loadLocalSubtitleFile"/)
+assert.match(playerView, /const progressSave = saveCurrentProgress\(true, 'stopped'\)[\s\S]*await stopPlaybackSilently\(\)[\s\S]*await progressSave/)
 
 const playerControls = await source('../src/components/player/PlayerControls.vue')
 const toggleMenuBody = playerControls.match(/function toggleMenu\(menu: ControlMenu\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
@@ -53,6 +60,8 @@ assert.doesNotMatch(toggleMenuBody, /refreshTracks/, 'opening subtitle/audio men
 assert.match(playerControls, /downloadedSubtitleTracks/)
 assert.match(playerControls, /mediaSubtitleTracks/)
 assert.match(playerControls, /subtitle-group-divider/)
+assert.match(playerControls, /loadLocalSubtitle/)
+assert.match(playerControls, /载入本地字幕/)
 assert.match(playerControls, /defineExpose\(\{ dismissTransientUi, toggleFullscreenFromShortcut \}\)/)
 assert.match(playerControls, /async function toggleFullscreenFromShortcut/)
 
@@ -79,6 +88,14 @@ assert.match(nativePlayer, /"sid" \| "aid" => self\.command\(&\["set", property_
 assert.match(nativePlayer, /self\.command\(&\["sub-add", path, "select", title, language\]\)/)
 assert.doesNotMatch(nativePlayer, /mpv_set_property_async/)
 assert.match(nativePlayer, /pub fn drain_events/)
+assert.match(nativePlayer, /pub fn stop\(&mut self\)/)
+assert.match(nativePlayer, /surface\.set_playback_active\(false\)/)
+
+const windowsSurface = await source('../src-tauri/src/mpv/platform/windows.rs')
+assert.match(windowsSurface, /playback_active: bool/)
+assert.match(windowsSurface, /if !self\.mpv_ready \|\| !self\.playback_active/)
+
+assert.match(mpvComposable, /invoke<void>\('mpv_stop'\)/)
 
 const playerCommands = await source('../src-tauri/src/commands/player.rs')
 assert.match(playerCommands, /prepare_external_subtitle/)
@@ -168,4 +185,6 @@ console.log(JSON.stringify({
   fixedVolumeArrowShortcuts: true,
   keyboardActionsUseCompactOsd: true,
   keyboardActionsDoNotRevealChrome: true,
+  manualLocalSubtitleImport: true,
+  routeLeaveStopsAndHidesNativeVideo: true,
 }, null, 2))

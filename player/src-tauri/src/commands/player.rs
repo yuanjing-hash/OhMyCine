@@ -58,6 +58,12 @@ pub async fn mpv_resume(state: State<'_, MpvState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn mpv_stop(state: State<'_, MpvState>) -> Result<(), String> {
+    let mut player = state.lock().map_err(|err| err.to_string())?;
+    player.stop()
+}
+
+#[tauri::command]
 pub async fn mpv_seek(position: f64, state: State<'_, MpvState>) -> Result<(), String> {
     let mut player = state.lock().map_err(|err| err.to_string())?;
     player.seek(position)

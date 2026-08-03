@@ -22,7 +22,7 @@ use commands::local_file::{
 };
 use commands::player::{
     mpv_add_subtitle, mpv_get_property, mpv_init_render_surface, mpv_load, mpv_pause,
-    mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy,
+    mpv_render_status, mpv_resume, mpv_seek, mpv_set_property, mpv_set_render_strategy, mpv_stop,
     mpv_track_state, mpv_update_render_surface_bounds,
 };
 use commands::preference::{
@@ -35,9 +35,9 @@ use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
 };
 use commands::subtitle::{
-    subtitle_download_hash_provider, subtitle_download_opensubtitles, subtitle_login_opensubtitles,
-    subtitle_search_hash_provider, subtitle_search_opensubtitles, OpenSubtitlesSessionState,
-    SubtitleDownloadState,
+    subtitle_download_hash_provider, subtitle_download_opensubtitles, subtitle_import_local,
+    subtitle_login_opensubtitles, subtitle_search_hash_provider, subtitle_search_opensubtitles,
+    OpenSubtitlesSessionState, SubtitleDownloadState,
 };
 use commands::updater::{player_check_for_updates, player_install_update, PendingUpdate};
 use mpv::surface::OwnerWindowEvent;
@@ -86,6 +86,7 @@ fn main() {
             subtitle_login_opensubtitles,
             subtitle_search_hash_provider,
             subtitle_download_hash_provider,
+            subtitle_import_local,
             player_check_for_updates,
             player_install_update,
             local_file_list,
@@ -98,6 +99,7 @@ fn main() {
             mpv_add_subtitle,
             mpv_pause,
             mpv_resume,
+            mpv_stop,
             mpv_seek,
             mpv_get_property,
             mpv_set_property,
