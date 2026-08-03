@@ -2303,9 +2303,9 @@ Android 响应式布局按实时可用窗口宽度划分，不依赖手机/平�
 
 Android Surface 初始化是整组播放命令的前置屏障。Kotlin 将 `SurfaceView + 透明 WebView` 容器插回 Tauri 原 WebView 父节点，不替换 Activity 根内容；Rust 在调用 load 前等待 surface ready，并把初始化错误或超时返回前端。前端对 `initializing` 状态持续轮询，避免只在固定两秒窗口内判断一次。这样 load 后紧接的 resume、倍速、画面和字幕偏移命令不会因 Surface 尚未 attach 而失败，也不会把播放目标清空后错误显示成空播放器。
 
-Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。若原生日志显示 TLS 握手失败但 `SurfaceView`、`gpu-next` 和视频输出均已就绪，HTTPS 媒体由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
+Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
 
-Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等竖屏断点作为唯一判断，因为手机横屏宽度经常超过该值。透明 WebView 中保留覆盖整个视频面的触摸捕获层；单击画面切换控制 UI，并对 Android 在短点击后产生的 `pointercancel` 保留受限兜底，不能让 SurfaceView 层吞掉控制唤出。移动控制栏提供独立方向锁图标，打开后可选择“自动横屏 / 锁定横屏 / 锁定竖屏”，锁图标反映自动或锁定状态，切换结果通过右上角短提示反馈；该状态不复用桌面全屏按钮。首页“继续观看”和“最新影片”横向媒体条只处理横向滚动，不得用纵向 overscroll containment 阻断页面上下滑动。空播放面统一只显示“等待播放中”，不展示桌面拖拽文件说明。
+Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等竖屏断点作为唯一判断，因为手机横屏宽度经常超过该值。透明 WebView 中只要存在当前媒体，就必须保留覆盖整个视频面的独立触摸捕获层；该层不能因播放诊断进入 `error` 而移除。单击画面切换控制 UI，并对 Android 在短点击后产生的 `pointercancel` 保留受限兜底，不能让 SurfaceView 层吞掉控制唤出；播放加载失败或自然结束时前端必须同步退出“正在播放”状态，避免错误页继续自动隐藏控制 UI。移动控制栏提供独立方向锁图标，打开后可选择“自动横屏 / 锁定横屏 / 锁定竖屏”，锁图标反映自动或锁定状态，切换结果通过右上角短提示反馈；该状态不复用桌面全屏按钮。首页“继续观看”和“最新影片”横向媒体条只处理横向滚动，不得用纵向 overscroll containment 阻断页面上下滑动。空播放面统一只显示“等待播放中”，不展示桌面拖拽文件说明。
 
 全局“播放与字幕”设置包含受控播放器引擎参数：视频输出仅允许 `gpu-next`（默认）或 `gpu`；解码策略仅允许自动安全、硬件优先或纯软件；缓存允许自动、开启、关闭和 64/128/256/512 MB 上限；同步允许以音频为准、显示重采样或显示丢帧。设置写入 Player SQLite app settings，Vue 在原生渲染初始化前和每次媒体加载前通过 `mpv_apply_engine_settings` 下发。Windows 映射到 libmpv `vo/hwdec/cache/demuxer-max-bytes/video-sync`，Android 映射到 `gpu-next/gpu`、MediaCodec/软件解码及相同缓存同步参数。不得从 UI 接受任意 mpv 参数名或自定义原始字符串。
 

@@ -110,6 +110,7 @@ export interface MpvPlaybackDiagnostics {
   hardwareDecoder?: string | null
   videoOutput: string
   videoOutputFallbackUsed: boolean
+  playbackTransport: string
   logs: string[]
 }
 
@@ -396,6 +397,11 @@ export function useMpv() {
       playbackDiagnostics.value = diagnostics.state === 'desktop' ? null : diagnostics
       if (diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
+      if (diagnostics.state === 'error' || diagnostics.state === 'ended') {
+        isPlaying.value = false
+        if (diagnostics.state === 'error')
+          videoReady.value = false
+      }
     }
     catch {
       playbackDiagnostics.value = null

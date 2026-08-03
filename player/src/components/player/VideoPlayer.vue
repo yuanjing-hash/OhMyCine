@@ -181,6 +181,7 @@ const nativePlaybackDiagnosticRows = computed(() => {
     ['hardwareDecoder', diagnostics.hardwareDecoder ?? 'none'],
     ['videoOutput', diagnostics.videoOutput],
     ['videoOutputFallback', diagnostics.videoOutputFallbackUsed ? 'yes' : 'no'],
+    ['playbackTransport', diagnostics.playbackTransport],
   ] as const
 })
 

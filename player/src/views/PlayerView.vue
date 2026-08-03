@@ -2495,9 +2495,14 @@ watch(
     />
 
     <div
-      v-if="hasMedia && isNativeAndroidPlayer && playbackDiagnostics?.state !== 'error'"
-      class="pointer-events-auto absolute inset-0 z-[6]"
+      v-if="hasMedia && isNativeAndroidPlayer"
+      class="android-touch-capture pointer-events-auto absolute inset-0 z-[6]"
       aria-hidden="true"
+      @pointerdown.stop="handlePlayerTouchPointerDown"
+      @pointermove.stop="handlePlayerTouchPointerMove"
+      @pointerup.stop="handlePlayerTouchPointerEnd"
+      @pointercancel.stop="handlePlayerTouchPointerEnd($event, true)"
+      @click.stop="handlePlayerAreaClick"
     />
 
     <div
@@ -2927,6 +2932,11 @@ watch(
 .player-view--transparent {
   background: transparent;
   background-color: transparent;
+}
+
+.android-touch-capture {
+  background: rgba(0, 0, 0, 0.002);
+  touch-action: none;
 }
 
 .player-context-menu,
