@@ -8,6 +8,27 @@
 
 Use TypeScript strict mode. Shared interfaces define the contracts between views, components, DataSources, scraper services, AI services, and Tauri commands.
 
+### Android Native Playback Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Android playback, Tauri mobile plugins, mpv commands/events, Android native libraries, `SurfaceView`, playback headers, or Android packaging.
+
+#### 2. Signatures
+- Vue continues to call the existing `mpv_load`, `mpv_add_subtitle`, `mpv_pause`, `mpv_resume`, `mpv_stop`, `mpv_seek`, `mpv_get_property`, `mpv_set_property`, `mpv_track_state`, and render-state commands.
+- The Android native plugin identifier is `com.ohmycine.player.mpv`, its Kotlin class is `MpvPlugin`, and the active render backend serializes as `androidSurface`.
+- Android emits the same `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, and `mpv:resumed` events as desktop.
+
+#### 3. Contracts
+- Android must not link the desktop `libmpv-sys` path. Rust commands forward through the Tauri mobile plugin to Kotlin, the mpv-android JNI bridge, and a native `SurfaceView` below the transparent WebView.
+- Playback URLs and request headers stay inside the existing command/native boundary. Reuse the shared Rust header validator; do not log or persist URL signatures, tokens, cookies, or headers.
+- The ARM64 preview runtime is pinned to an exact official mpv-android tag and SHA-256. Extracted `.so` files and CA assets remain gitignored build inputs; source and license provenance must remain documented.
+- `mpv_init_render_surface` must wait briefly for the native surface and return `initializing` rather than a false unsupported result while Android creates the view.
+- Build success and APK/JNI inspection are not equivalent to device playback validation. Do not mark Android runtime complete until picture, audio, MediaCodec, headers, subtitles, seek, rotation, multi-window, and activity lifecycle pass on a connected device.
+
+#### 4. Tests Required
+- `npm run verify:android-playback`, typecheck, lint, frontend build, Android ARM64 APK build, APK library inspection, and JNI symbol inspection must pass.
+- Desktop Cargo tests/checks and the Windows GNU package build must still pass because the shared command/header contract is cross-platform.
+
 ---
 
 ## Type Organization

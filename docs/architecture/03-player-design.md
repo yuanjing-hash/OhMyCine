@@ -2193,14 +2193,14 @@ impl MpvPlayer {
 
 ### 9.4 平台渲染后端
 
-下表描述目标平台方案。当前已验证的是 Windows MVP 渲染路径；macOS、Linux 和 Android 渲染后端及 Player 打包 CI 尚未完成，不作为当前 CI/release 阻塞项。
+下表描述目标平台方案。Windows MVP 渲染路径已完成宿主实机验证；Android ARM64 已完成 `SurfaceView` + 官方 mpv-android runtime 的构建与 APK 包内契约验证，但尚无连接设备完成真机画面、硬解与生命周期验证。macOS、Linux 渲染后端仍未完成，不作为当前 CI/release 阻塞项。
 
 | 平台 | 渲染后端 | 窗口嵌入方式 |
 |------|----------|-------------|
 | Windows | ANGLE (OpenGL ES → D3D11) | `HWND` 子窗口 |
 | macOS | Metal (via ANGLE) | `NSView` 子视图 |
 | Linux | Vulkan / OpenGL | `X11 Window` / `Wayland Surface` |
-| Android | OpenGL ES 2.0 | `SurfaceView` / `TextureView` |
+| Android | OpenGL ES + `gpu-next` | 原生 `SurfaceView` 位于透明 Tauri WebView 下方 |
 
 ### 9.5 Tauri Plugin 封装
 
@@ -2251,7 +2251,7 @@ libmpv-sys = "3.1"      # libmpv C FFI 绑定
 
 ### 9.7 构建时libmpv处理
 
-当前打包配置只声明 Windows 运行期资源，配合 `x86_64-pc-windows-gnu` 构建。Linux/macOS runtime resources 和 Tauri 平台配置等对应渲染与打包链路完成后再接入。
+桌面打包配置当前声明 Windows 运行期资源，配合 `x86_64-pc-windows-gnu` 构建。Android ARM64 预览构建通过独立脚本准备官方 mpv-android runtime；Linux/macOS runtime resources 和 Tauri 平台配置等对应渲染与打包链路完成后再接入。
 
 ```
 src-tauri/
@@ -2262,17 +2262,18 @@ src-tauri/
     LICENSE               # 第三方许可文本
 ```
 
-构建脚本当前只在 Player CI、manual build 和 beta release 中准备 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。后续平台完成渲染器和打包链路时，再补充 macOS/Linux 下载、资源声明和 CI。
+Windows Player CI、manual build 和 beta release 使用 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。Android 预览通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK，构建前固定下载并校验 mpv-android `2026-04-25` 的 SHA-256，再提取 `libmpv.so`、FFmpeg、JNI bridge、`libc++_shared.so` 与 CA 证书；运行库不提交到 Git。后续再补充 Android CI/release 签名与 macOS/Linux 资源链路。
 
 Windows 透明 WebView 叠层与 mpv HWND 底层窗口必须使用单一几何时序：移动、缩放和 DPI 变化先由 WebView 在下一布局帧读取实际 surface rect，再把逻辑坐标传给 Rust 转换为物理像素。原生 owner resize 事件只负责最小化/恢复可见性和层级，不得抢先按 Win32 客户区尺寸拉伸视频，否则视频画面会领先控制遮罩层缩放。窗口最大化/还原与 Player 全屏也是独立状态；从最大化进入全屏时临时还原窗口，退出全屏后恢复最大化。
 
 ### 9.8 Android 策略
 
-Android 使用相同方案的移动端版本：
-1. **libmpv Android** — 交叉编译libmpv为 `.so` 库 (arm64-v8a / armeabi-v7a)
-2. 通过 Tauri Android Plugin 调用
-3. 渲染到 `SurfaceView`，Vue UI 覆盖在上方
-4. 参考项目：[mpv-android](https://github.com/mpv-android/mpv-android)
+Android 使用相同命令协议的移动端实现：
+1. **libmpv Android runtime** — 当前 ARM64 预览固定使用官方 [mpv-android](https://github.com/mpv-android/mpv-android) `2026-04-25` release；后续发布流水线可切换为可复现的自建 `.so`
+2. Rust 注册 `com.ohmycine.player.mpv.MpvPlugin`，现有 Vue `mpv_*` 命令通过 Tauri mobile plugin 转发到 Kotlin/JNI
+3. Kotlin 创建原生 `SurfaceView`，调用 `MPVLib.attachSurface`，以 `gpu-context=android`、`vo=gpu-next` 和 `mediacodec` 硬解候选渲染
+4. Tauri WebView 透明叠放在视频层上方，继续复用现有播放控制、字幕/音轨、手势、快捷键和播放偏好 UI
+5. Rust 每 250ms 读取原生 snapshot，并继续发出 `mpv:time-update`、`mpv:duration-change`、`mpv:paused`、`mpv:resumed`
 
 Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳简单压缩到窄屏。宽度不超过 `767px` 或粗指针环境使用固定的 `首页 / 媒体库 / 快捷 / 设置` 底部导航；媒体库选择和全局快捷操作通过底部抽屉展开，承接桌面数据源 hover 侧栏、打开本地视频、添加/管理数据源和主题切换。手机首页改为全宽英雄区与横向内容流，海报播放入口常驻；设置总览改为紧凑列表；媒体源扫描/文件入口在手机上常驻于底部导航上方，不依赖 hover。
 
@@ -2286,9 +2287,9 @@ Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳
 
 Android 响应式布局按实时可用窗口宽度划分，不依赖手机/平板型号判断：`compact` 用于手机竖屏和窄分屏，`medium` 用于平板分屏与小尺寸平板，`expanded` 用于平板全屏、桌面模式和大窗口。CSS media/container queries 负责内容重排，窗口尺寸变化必须即时生效；触摸/鼠标/键盘能力继续由 Pointer Events 与输入媒体查询独立判断。Android Activity 必须允许 resize，不全局锁定方向，并处理安全区、系统栏、横竖屏、多窗口和折叠屏窗口变化。播放器可由用户进入横屏或全屏，但返回浏览界面后仍恢复当前多窗口尺寸。
 
-当前已生成 Tauri Android Studio 工程，并可通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK。Activity 显式启用 `resizeableActivity` 且不锁定方向，可用于真机评审手机/平板 UI、横竖屏和左右分屏。移动端 Rust target 暂时使用同名播放器命令返回明确 unsupported 状态，不链接桌面 `libmpv-sys`，因此该 APK 是 UI、数据源和窗口适配预览，不是可播放版本。
+当前已生成 Tauri Android Studio 工程，并可通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK。Activity 显式启用 `resizeableActivity` 且不锁定方向。Android 不链接桌面 `libmpv-sys`，而是保持同名 `mpv_*` 命令并通过 Rust mobile plugin、Kotlin 与 mpv-android JNI runtime 完成加载、暂停、seek、属性、字幕和轨道操作；播放进度与暂停状态继续进入现有 Vue 事件流。构建命令会先清理旧 APK，并关闭 Rust debug info，避免预览包被调试符号膨胀。
 
-这些工作不代表 Android 已可发布。Android 版本仍需独立完成 ARM64 libmpv `.so`、`SurfaceView` / `TextureView` 原生渲染、媒体与目录权限、系统返回键、系统栏避让和移动端更新策略；完成原生播放器后再移除 mobile player stub。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
+这些工作不代表 Android 已可发布。当前完成的是 ARM64 构建和静态产物验证：APK 已确认包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；由于没有连接 Android 设备，实际画面、音频、MediaCodec 兼容性、远程 header、字幕、暂停/seek、横竖屏切换和 Activity 生命周期仍需真机验证。媒体与目录权限、系统返回键、系统栏避让、移动端更新策略、发布签名，以及 armeabi-v7a/x86_64 等额外 ABI 也仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
 
 ### 9.9 GPL 合规说明
 
@@ -2693,9 +2694,9 @@ player — 播放器扩展 — 弹幕、歌词、特效
 
 | 功能 | Windows | macOS | Linux | Android |
 |------|---------|-------|-------|---------|
-| 播放引擎 | 已完成 Windows MVP libmpv 嵌入 | 后续 libmpv 嵌入 | 后续 libmpv 嵌入 | 后续 libmpv Android |
+| 播放引擎 | 已完成 Windows MVP libmpv 嵌入 | 后续 libmpv 嵌入 | 后续 libmpv 嵌入 | ARM64 SurfaceView + mpv-android 已构建，待真机验证 |
 | HDR | Windows HDR 目标/验证继续推进 | 后续 HDR10/DV | 后续部分支持 | 后续设备相关 |
 | 窗口风格 | 无边框 + 自定义标题栏 | 后续原生标题栏 | 后续 GTK/Qt 适配 | 后续全屏 |
 | 通知 | Windows 通知 | 后续 macOS 通知 | 后续 libnotify | 后续 Android 通知 |
-| 快捷键 | 全局快捷键 | 后续全局快捷键 | 后续全局快捷键 | 后续手势 |
+| 快捷键 | 全局快捷键 | 后续全局快捷键 | 后续全局快捷键 | 触摸手势已接入，待真机验证 |
 | 文件关联 | .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 Intent Filter |

@@ -16,6 +16,7 @@ static WEBVIEW_BACKGROUND_TRANSPARENT_APPLIED: AtomicBool = AtomicBool::new(fals
 #[serde(rename_all = "camelCase")]
 pub enum RenderBackendKind {
     WindowsTransparentOverlay,
+    AndroidSurface,
     LinuxFuture,
     MacosFuture,
     MobileFuture,
@@ -190,19 +191,34 @@ fn current_backend_message() -> &'static str {
     "macOS native render backend is planned but not implemented in this slice; visible video remains safely suppressed."
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "android")]
+fn current_backend_kind() -> RenderBackendKind {
+    RenderBackendKind::AndroidSurface
+}
+
+#[cfg(target_os = "android")]
+fn current_backend_initial_status() -> RenderStatus {
+    RenderStatus::Initializing
+}
+
+#[cfg(target_os = "android")]
+fn current_backend_message() -> &'static str {
+    "Android SurfaceView backend is compiled and waiting for the native libmpv surface."
+}
+
+#[cfg(target_os = "ios")]
 fn current_backend_kind() -> RenderBackendKind {
     RenderBackendKind::MobileFuture
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 fn current_backend_initial_status() -> RenderStatus {
     RenderStatus::Unsupported
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 fn current_backend_message() -> &'static str {
-    "Mobile native render backends are planned after desktop rendering matures."
+    "iOS native rendering is planned but not implemented."
 }
 
 #[cfg(not(any(

@@ -87,7 +87,7 @@ export interface MpvRenderDiagnostics {
 
 export interface MpvRenderState {
   status: MpvRenderStatus
-  backend: 'windowsTransparentOverlay' | 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+  backend: 'windowsTransparentOverlay' | 'windowsOpenGl' | 'androidSurface' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
   message: string | null
   diagnostics?: MpvRenderDiagnostics | null
 }

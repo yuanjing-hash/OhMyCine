@@ -54,6 +54,9 @@ pub fn run() {
         .manage(OpenSubtitlesSessionState::default())
         .manage(SubtitleDownloadState::default());
 
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(mpv::mobile::init());
+
     #[cfg(not(mobile))]
     let builder = builder.manage(mpv::player::create_state().expect("failed to initialize libmpv"));
 
@@ -153,6 +156,8 @@ pub fn run() {
 
             #[cfg(not(mobile))]
             mpv::events::start_event_forwarder(app.handle().clone());
+            #[cfg(target_os = "android")]
+            mpv::mobile::start_event_forwarder(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

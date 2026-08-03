@@ -117,17 +117,17 @@ Phase 4: 生态系统           ████████████████
 
 #### libmpv 嵌入集成
 
-- [~] 下载 libmpv 二进制库 (当前打包/CI 只启用 Windows GNU；Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`；WSL Windows GNU cross-build 已通过，Windows 宿主透明叠层 + mpv 视频底层窗口播放已验证；Linux/macOS 渲染器、runtime resources 与打包 CI 后续完成后再接入)
+- [~] 下载 libmpv 二进制库 (Windows setup 已补充 GNU import library `libmpv.dll.a` 与运行时 `libmpv-2.dll`，WSL Windows GNU cross-build 与 Windows 宿主播放已验证；Android ARM64 预览固定校验并提取官方 mpv-android `2026-04-25` runtime，APK 包内库/JNI 契约已验证；Linux/macOS 与 Android 正式 CI/release 后续接入)
 - [x] 创建 `src-tauri/src/mpv/` 模块
 - [x] 实现 `libmpv-sys` FFI 绑定 (C API 调用)
 - [x] 实现 `MpvPlayer` 结构体 (封装所有 MPV 操作)
 - [x] 实现 Windows 内嵌视频渲染后端（透明 Tauri/WebView 叠层 + mpv `wid` 视频底层 HWND；True render API / `MpvRenderContext` 深度整合保留为后续阶段）
-- [ ] 创建 Tauri Plugin: `mpv_plugin.rs`（当前 MVP 继续使用直接 Tauri Commands，不引入第三方 libmpv 插件）
+- [~] 创建 Tauri Plugin（桌面继续使用直接 Tauri Commands；Android 已注册原生 Kotlin `MpvPlugin` 并由同名 Rust commands 转发）
 - [x] 实现 Tauri Commands: `mpv_load`, `mpv_pause`, `mpv_resume`, `mpv_seek`
 - [x] 实现 Tauri Commands: `mpv_get_property`, `mpv_set_property`
 - [x] 实现事件转发: `mpv:time-update`, `mpv:duration-change`, `mpv:paused`, `mpv:resumed`
 - [x] 配置 Cargo 依赖: 直接使用 `libmpv-sys = "3.1"` 绑定 libmpv C API
-- [~] 编写构建脚本: 当前 Windows GNU 路径已能下载运行时 DLL 并准备 import library；Linux/macOS 下载与打包接入后置到对应渲染器完成后
+- [~] 编写构建脚本: Windows GNU 已能下载运行时 DLL 并准备 import library；Android ARM64 已能校验固定 mpv-android release、提取运行库并构建 debug APK；Linux/macOS 与 Android 正式签名发布后续完成
 
 #### Vue 侧播放器 Composable
 
@@ -161,7 +161,7 @@ Phase 4: 生态系统           ████████████████
 
 - [~] 桌面应用能启动，无边框窗口 (WSL 下 `tauri dev` 已可编译并启动进程；图形渲染受 EGL/WSLg 环境限制仍需 Windows 原生或完整桌面环境复验)
 - [x] 能拖拽文件到播放页视频区域或通过右下角悬浮播放按钮选择本地视频并交给 libmpv 后端加载；Windows 宿主已验证可透过透明 Tauri/WebView 叠层看到 mpv 视频底层窗口画面
-- [x] libmpv 渲染在窗口内部，沉浸式体验（Windows MVP 已通过 `wid` + `vo=gpu-next` + 透明 Tauri/WebView 叠层完成；Linux/macOS/mobile 后端仍为后续计划且当前显示 unsupported）
+- [x] libmpv 渲染在窗口内部，沉浸式体验（Windows MVP 已通过 `wid` + `vo=gpu-next` + 透明 Tauri/WebView 叠层完成；Android ARM64 已接入 `SurfaceView` + `gpu-next` 并通过构建/产物验证，待真机播放确认；Linux/macOS 仍显示 unsupported）
 - [x] 基础播放控制 (播放/暂停/进度/音量；控制层已改为 Cinema OS/liquid-glass 并支持静止自动隐藏，Windows 宿主已验证叠层控件可见且可点击)
 
 ### Sprint 1.2: DataSource 抽象层 (Week 5-6)
@@ -870,8 +870,8 @@ Phase 4: 生态系统           ████████████████
 ### Sprint 4.3: Android + 持续优化 (Week 29+)
 
 - [x] Tauri Android 构建配置（已生成 Android Studio 工程并通过 ARM64 debug APK 预览构建）
-- [ ] libmpv Android 集成 (交叉编译 .so)
-- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表和竖屏播放器控制重排；Android 原生交互仍待完成）
+- [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待验证，其他 ABI 与可复现自建 runtime 后续完成）
+- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、竖屏播放器控制重排和 Android 原生视频底层；真机系统交互仍待完成）
   - [~] 触摸手势（已完成横向快退/快进、左侧亮度、右侧音量、单击控制 UI、双击暂停、左右半屏静止长按复用方向键连续后退/临时倍速，并按触摸输入兼容 Surface 等触控 PC；捏合手势和 Android 原生屏幕亮度仍待完成）
   - [x] 底部导航栏与媒体库/快捷抽屉
   - [x] 替换手机端 hover-only 全局与媒体操作

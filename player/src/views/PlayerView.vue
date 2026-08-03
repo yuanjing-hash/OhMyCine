@@ -685,6 +685,8 @@ function renderBackendLabel(backend: MpvRenderState['backend']): string {
       return 'Windows 透明叠层'
     case 'windowsOpenGl':
       return 'Windows OpenGL'
+    case 'androidSurface':
+      return 'Android SurfaceView'
     case 'linuxFuture':
       return 'Linux 预留 backend'
     case 'macosFuture':
