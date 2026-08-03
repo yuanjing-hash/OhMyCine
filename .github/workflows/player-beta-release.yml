@@ -31,6 +31,13 @@ on:
       - "player/src-tauri/tauri.updater.conf.json"
       - "player/src-tauri/Cargo.toml"
       - "player/src-tauri/src/commands/updater.rs"
+      - "player/src-tauri/gen/android/app/build.gradle.kts"
+      - "player/src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+      - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/**"
+      - "player/src-tauri/gen/android/app/src/main/res/xml/file_paths.xml"
+      - "player/src/services/updater.ts"
+      - "player/src/stores/updater.ts"
+      - "player/src/components/layout/UpdateDialog.vue"
   pull_request:
     branches: [main]
     paths:
@@ -41,6 +48,13 @@ on:
       - "player/src-tauri/tauri.updater.conf.json"
       - "player/src-tauri/Cargo.toml"
       - "player/src-tauri/src/commands/updater.rs"
+      - "player/src-tauri/gen/android/app/build.gradle.kts"
+      - "player/src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+      - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/**"
+      - "player/src-tauri/gen/android/app/src/main/res/xml/file_paths.xml"
+      - "player/src/services/updater.ts"
+      - "player/src/stores/updater.ts"
+      - "player/src/components/layout/UpdateDialog.vue"
 
 permissions:
   contents: read
@@ -93,6 +107,8 @@ jobs:
               'Android ARM64 release job is present': 'release-android-arm64:' in text and 'tauri:build:android:preview' in text,
               'Android clean-runner build avoids pre-generated Gradle bridge': 'gradlew -p src-tauri/gen/android clean' not in Path('player/package.json').read_text(),
               'Android APK is uploaded to the same release': 'gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber' in text,
+              'Android preview uses a stable signing keystore': 'ANDROID_PREVIEW_KEYSTORE_BASE64' in text and 'OHMYCINE_ANDROID_KEYSTORE' in text,
+              'Android updater install permission is declared': 'REQUEST_INSTALL_PACKAGES' in Path('player/src-tauri/gen/android/app/src/main/AndroidManifest.xml').read_text(),
               'manual extra notes reach generator through env': 'EXTRA_RELEASE_NOTES: $' + '{{ github.event_name == ' + "'workflow_dispatch'" + ' && inputs.release_notes || ' + "''" + ' }}' in text,
           }
 
@@ -373,9 +389,37 @@ jobs:
           fs.writeFileSync(cargoPath, cargo.replace(/^version = "[^"]+"/m, `version = "${version}"`))
           NODE
 
+      - name: Configure stable Android preview signing
+        env:
+          ANDROID_PREVIEW_KEYSTORE_BASE64: ${{ secrets.ANDROID_PREVIEW_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${ANDROID_PREVIEW_KEYSTORE_BASE64:-}" ]]; then
+            echo "::error::ANDROID_PREVIEW_KEYSTORE_BASE64 GitHub Secret is required for upgrade-compatible Android APKs."
+            exit 1
+          fi
+          keystore_path="${RUNNER_TEMP}/ohmycine-preview.jks"
+          printf '%s' "$ANDROID_PREVIEW_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          test -s "$keystore_path"
+          echo "OHMYCINE_ANDROID_KEYSTORE=${keystore_path}" >> "$GITHUB_ENV"
+
       - name: Build Android ARM64 APK
+        env:
+          OHMYCINE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_PREVIEW_KEYSTORE_PASSWORD }}
+          OHMYCINE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_PREVIEW_KEY_ALIAS }}
+          OHMYCINE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_PREVIEW_KEY_PASSWORD }}
         working-directory: player
-        run: npm run tauri:build:android:preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          for value in OHMYCINE_ANDROID_KEYSTORE_PASSWORD OHMYCINE_ANDROID_KEY_ALIAS OHMYCINE_ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!value:-}" ]]; then
+              echo "::error::${value} GitHub Secret is required for Android preview signing."
+              exit 1
+            fi
+          done
+          npm run tauri:build:android:preview
 
       - name: Package Android asset
         shell: bash

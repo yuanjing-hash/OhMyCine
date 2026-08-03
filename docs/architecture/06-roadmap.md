@@ -187,7 +187,7 @@ Phase 4: 生态系统           ████████████████
 - [x] `getAllSources()` / `getSource(id)`
 - [x] `getOrderedSources()` — 按绑定配置顺序返回侧栏数据源
 - [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据（已接 Emby，更多源待扩展）
-- [ ] `searchAll()` — 跨数据源并发搜索
+- [x] `searchAll()` — 跨数据源并发搜索（首页 Hero 顶部沉浸式入口，按源并发、故障隔离、`sourceId + itemId` 去重和结果上限）
 - [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出（已能导出已实例化安全配置，完整文件导入导出待后续）
 - [x] `createDataSource(type)` — 工厂方法（当前实现 Emby、OpenList/Alist、CloudDrive2、本地文件；其他类型保留扩展）
 
@@ -287,7 +287,7 @@ Phase 4: 生态系统           ████████████████
 
 #### DataSourceManager 完善
 
-- [ ] 跨数据源搜索结果合并与去重
+- [x] 跨数据源搜索结果合并与去重（单源失败不影响其他来源，保留数据源顺序并支持详情/直接播放）
 - [ ] 统一媒体浏览 (合并所有 DataSource 的内容)
 - [~] 云盘/本地文件刮削结果接入聚合首页 Hero / 最新影片（已接入 OpenList/Alist、CloudDrive2、WebDAV 与本地文件 raw scan cache 中的 `matched` + metadata 条目；未匹配/失败/跳过/未配置条目不进入 Home，缓存读取失败按源隔离）
 - [ ] 配置导入/导出 (JSON 文件)
@@ -306,7 +306,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
 - [~] 播放中字幕搜索（已实现 Emby 搜索/Player 本机搜索显式二选一、所有 DataSource 可进入本机搜索、媒体名称/原始文件名/无媒体 ID 限制的自定义关键词三选一、Emby 远程字幕 API、OpenSubtitles REST API Key 与 XML-RPC 账号/匿名兼容模式、现代邮箱账号 401 自动回退、射手网四段 MD5、迅雷 CID、本地文件直接哈希、远程播放流受限 Range 哈希、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；待真实账号、远程媒体和字幕结果实机验证）
 - [x] 播放中字幕偏移（字幕菜单内即时控制 mpv `sub-delay`，支持提前/延后 30 秒、0.1 秒滑动、0.5 秒步进和重置，并按 source/media 保存恢复）
-- [~] 签名自动更新（已实现启动自动检测、设置页手动检测、Beta/正式渠道、全局更新确认、下载进度、Tauri minisign 验证、标准/便携 NSIS 安装目录处理和 GitHub Release 签名清单发布；待配置 GitHub Secret 并发布首个 updater 版本实机验证）
+- [~] 签名自动更新（Windows 已实现启动/手动检测、Beta/正式渠道、minisign、标准/便携 NSIS；Android 已实现固定 preview 签名、Release APK + SHA-256 受控下载、FileProvider 和系统安装确认；待 Android 从固定签名版本开始验证连续覆盖升级）
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
 - [x] 播放队列面板（已内联在播放控制条并支持上一集/下一集；后续如需复用再拆独立 `PlaylistPanel.vue`）
 - [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）

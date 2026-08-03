@@ -148,6 +148,7 @@ pub enum OwnerWindowEvent {
     Resized,
     ScaleFactorChanged,
     FocusChanged(bool),
+    WindowStateChanged { fullscreen: bool, maximized: bool },
     Minimized,
     Restored,
     Destroyed,

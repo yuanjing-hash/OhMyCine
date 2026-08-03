@@ -102,8 +102,9 @@ export const useUpdaterStore = defineStore('updater', () => {
       status.value = 'installing'
     }
     catch (cause) {
-      error.value = toSafeErrorMessage(cause, '更新安装失败。')
-      status.value = 'error'
+      const message = toSafeErrorMessage(cause, '更新安装失败。')
+      error.value = message
+      status.value = message.includes('允许 OhMyCine 安装未知应用') ? 'available' : 'error'
       throw cause
     }
   }

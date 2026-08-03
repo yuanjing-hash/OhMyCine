@@ -19,6 +19,16 @@ assert.match(rust, /UpdateChannel::Beta => !release\.draft/)
 assert.match(rust, /UpdateChannel::Stable => !release\.draft && !release\.prerelease/)
 assert.match(rust, /installer_arg\(format!\("\/D=/)
 assert.match(rust, /download_and_install/)
+assert.match(rust, /OhMyCine-Player-\{\}-android-arm64\.apk/)
+assert.match(rust, /SHA-256 校验失败/)
+assert.match(rust, /release-assets\.githubusercontent\.com/)
+assert.match(rust, /app_cache_dir\(\)/)
+
+const androidUpdater = await readPlayer('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/UpdaterPlugin.kt')
+assert.match(androidUpdater, /canRequestPackageInstalls/)
+assert.match(androidUpdater, /ACTION_MANAGE_UNKNOWN_APP_SOURCES/)
+assert.match(androidUpdater, /FileProvider\.getUriForFile/)
+assert.match(androidUpdater, /application\/vnd\.android\.package-archive/)
 
 const store = await readPlayer('src/stores/updater.ts')
 assert.match(store, /let activeCheck: Promise<UpdateCheckResult> \| null = null/)
@@ -40,6 +50,8 @@ assert.match(workflow, /release_flags=\(\)/)
 assert.match(workflow, /release-android-arm64:/)
 assert.match(workflow, /npm run tauri:build:android:preview/)
 assert.match(workflow, /OhMyCine-Player-v\$\{app_version\}-android-arm64\.apk/)
+assert.match(workflow, /ANDROID_PREVIEW_KEYSTORE_BASE64/)
+assert.match(workflow, /OHMYCINE_ANDROID_KEYSTORE/)
 assert.doesNotMatch(workflow, /ohmycine-updater\.key/)
 
 console.log(JSON.stringify({
@@ -49,4 +61,6 @@ console.log(JSON.stringify({
   startupAndManualChecksShareStore: true,
   portableInstallDirectoryPreserved: true,
   androidReleaseArtifactAutomated: true,
+  androidApkChecksumVerified: true,
+  androidStableSigningRequired: true,
 }, null, 2))

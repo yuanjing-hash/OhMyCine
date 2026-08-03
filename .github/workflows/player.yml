@@ -49,6 +49,9 @@ jobs:
       - name: Verify home fault isolation
         run: npm run verify:home-fault-isolation
 
+      - name: Verify aggregate search fault isolation
+        run: npm run verify:home-aggregate-search
+
       - name: Verify raw source index scheduler
         run: npm run verify:raw-source-index-scheduler
 

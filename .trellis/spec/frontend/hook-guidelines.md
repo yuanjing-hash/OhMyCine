@@ -114,6 +114,35 @@ watch(
 )
 ```
 
+### Desktop mpv Event Pump Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing desktop libmpv event polling, audio-device behavior, playback readiness, or the shared `MpvState` mutex.
+- Applies across Rust `mpv/events.rs`, `MpvPlayer::drain_events`, `useMpv`, and playback transparency.
+
+#### 2. Contracts
+- A poll tick consumes at most 64 non-blocking mpv events while holding the player mutex. Reaching the limit leaves remaining events for the next tick.
+- Audio-device hotplug must not monopolize the player mutex or block pause, seek, subtitle, track, and window commands.
+- `MPV_EVENT_VIDEO_RECONFIG` emits `mpv:video-ready`. Render initialization alone must not reveal the native video underlay through a transparent WebView.
+
+#### 3. Tests Required
+- Run Rust tests, Windows target check, `npm run verify:window-fullscreen-resize`, typecheck, and the Windows release build.
+
+### Android Verified APK Update Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Android update checks, release assets, FileProvider paths, package-install permission, signing, or Android release workflow.
+- Applies across Rust updater commands, Kotlin `UpdaterPlugin`, Android manifest/resources, frontend updater store/dialog, and GitHub Actions.
+
+#### 2. Contracts
+- Only accept APK and checksum assets from the fixed OhMyCine GitHub repository and exact release tag/name.
+- Restrict redirect hosts, redirect count, response sizes, cache location, and SHA-256 format before launching the installer.
+- FileProvider exposes only `cache/updates`; installation remains an Android system-confirmed action.
+- GitHub preview APKs use one stable keystore from Actions Secrets. Never commit or print signing secrets.
+
+#### 3. Tests Required
+- Run `npm run verify:auto-update`, `npm run verify:android-playback`, Rust tests, Android Kotlin compilation, and a signed ARM64 APK build.
+
 ### Android Native Playback Diagnostics Contract
 
 #### 1. Scope / Trigger

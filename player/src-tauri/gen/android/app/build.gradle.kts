@@ -13,6 +13,17 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val previewKeystorePath = System.getenv("OHMYCINE_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+val previewKeystorePassword = System.getenv("OHMYCINE_ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+val previewKeyAlias = System.getenv("OHMYCINE_ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+val previewKeyPassword = System.getenv("OHMYCINE_ANDROID_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val previewSigningAvailable = listOf(
+    previewKeystorePath,
+    previewKeystorePassword,
+    previewKeyAlias,
+    previewKeyPassword,
+).all { it != null }
+
 android {
     compileSdk = 36
     namespace = "com.ohmycine.player"
@@ -24,12 +35,24 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        if (previewSigningAvailable) {
+            create("preview") {
+                storeFile = file(previewKeystorePath!!)
+                storePassword = previewKeystorePassword
+                keyAlias = previewKeyAlias
+                keyPassword = previewKeyPassword
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
+            if (previewSigningAvailable)
+                signingConfig = signingConfigs.getByName("preview")
         }
         getByName("release") {
             isMinifyEnabled = true

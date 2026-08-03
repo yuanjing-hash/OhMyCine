@@ -30,9 +30,17 @@ async function syncWindowState() {
     ])
     isMaximized.value = maximized
     isFullscreen.value = fullscreen
+    syncNativeWindowClasses(maximized, fullscreen)
   }
   catch {
     // Browser development mode has no native window state.
+  }
+}
+
+function syncNativeWindowClasses(maximized: boolean, fullscreen: boolean) {
+  for (const target of [document.documentElement, document.body]) {
+    target.classList.toggle('native-window-maximized', maximized && !fullscreen)
+    target.classList.toggle('native-window-fullscreen', fullscreen)
   }
 }
 
@@ -124,6 +132,7 @@ onBeforeUnmount(() => {
   for (const unlisten of windowEventUnlisteners)
     unlisten()
   windowEventUnlisteners.length = 0
+  syncNativeWindowClasses(false, false)
 })
 </script>
 

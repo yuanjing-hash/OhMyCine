@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useUpdaterStore } from '@/stores/updater'
 
 const updater = useUpdaterStore()
+const isAndroid = isNativeAndroidRuntime()
 
 const updateTitle = computed(() => updater.availableUpdate?.version
   ? `发现 OhMyCine ${updater.availableUpdate.version}`
@@ -10,7 +12,7 @@ const updateTitle = computed(() => updater.availableUpdate?.version
 const channelLabel = computed(() => updater.settings.channel === 'beta' ? 'Beta' : '正式版')
 const progressLabel = computed(() => {
   if (updater.status === 'installing')
-    return '正在启动签名安装程序…'
+    return isAndroid ? '正在启动 Android 系统安装器…' : '正在启动签名安装程序…'
   if (updater.progressPercent != null)
     return `已下载 ${Math.round(updater.progressPercent)}%`
   if (updater.status === 'downloading')
@@ -33,7 +35,7 @@ async function install() {
         <header class="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.2em] text-white/36">
-              Signed Update · {{ channelLabel }}
+              {{ isAndroid ? 'Verified APK' : 'Signed Update' }} · {{ channelLabel }}
             </p>
             <h2 class="mt-1 text-xl font-bold text-white">
               {{ updateTitle }}
@@ -53,7 +55,7 @@ async function install() {
             {{ updater.availableUpdate.body }}
           </div>
           <p v-else class="text-sm leading-6 text-white/48">
-            该版本未提供额外发布说明。更新包将使用内置公钥验证签名后安装。
+            {{ isAndroid ? '该版本未提供额外发布说明。APK 会通过 SHA-256 校验后交给系统安装器。' : '该版本未提供额外发布说明。更新包将使用内置公钥验证签名后安装。' }}
           </p>
 
           <div v-if="updater.status === 'downloading' || updater.status === 'installing'" class="rounded-2xl border border-primary/20 bg-primary/10 p-4">
@@ -71,7 +73,7 @@ async function install() {
           </p>
 
           <p class="text-xs leading-5 text-white/36">
-            Windows 安装开始后应用会自动退出。便携版会更新到当前程序目录并保留便携数据。
+            {{ isAndroid ? 'Android 会在校验完成后打开系统安装确认。首次使用需要允许 OhMyCine 安装未知应用。' : 'Windows 安装开始后应用会自动退出。便携版会更新到当前程序目录并保留便携数据。' }}
           </p>
         </div>
 

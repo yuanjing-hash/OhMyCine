@@ -519,12 +519,11 @@ export class DataSourceManager {
   }
 
   // 跨数据源搜索
-  async searchAll(keyword: string): Promise<{ source: DataSource; results: MediaItem[] }[]> {
-    const tasks = Array.from(this.sources.values()).map(async source => ({
-      source,
-      results: await source.search(keyword).catch(() => []),
-    }))
-    return Promise.all(tasks)
+  async searchAll(keyword: string): Promise<MediaItem[]> {
+    return searchAcrossDataSources(this.getOrderedSources(), keyword, {
+      limitPerSource: 18,
+      limit: 60,
+    })
   }
 
   // 导出所有配置（用于同步给Server）
@@ -559,6 +558,8 @@ export class DataSourceManager {
   }
 }
 ```
+
+首页 Hero 顶部提供沉浸式聚合搜索，不增加独立入口卡片。输入至少两个字符后并行查询所有已启用 DataSource，按数据源顺序合并，以 `sourceId + itemId` 去重并限制单源/总结果数。单个数据源超时或失败只丢弃该源结果，不能让整次搜索报错；结果显示海报、标题、年份、媒体类型和来源，可进入详情或直接播放。
 
 ### 4.6 配置存储
 
@@ -632,7 +633,7 @@ export class ConfigSync {
 
 ### 4.8 签名自动更新
 
-Player 使用 Tauri updater 的 minisign 信任根，不直接下载 GitHub EXE 覆盖自身：
+Windows 使用 Tauri updater 的 minisign 信任根，不直接下载 GitHub EXE 覆盖自身；Android 使用同一 Release 选择逻辑但采用受控 APK 安装链：
 
 ```text
 GitHub Releases API
@@ -642,6 +643,13 @@ GitHub Releases API
   → 用户确认
   → 下载进度
   → Windows NSIS 安装并重启
+
+Android:
+GitHub Releases API
+  → 固定仓库 ARM64 APK + SHA-256 asset
+  → 限制 HTTPS 重定向域名、响应大小和缓存目录
+  → Rust 校验 SHA-256
+  → Android FileProvider + 系统安装确认
 ```
 
 - Beta 渠道选择最新非草稿发布，包括 prerelease 和正式发布；Stable 只选择非草稿且非 prerelease。
@@ -651,6 +659,8 @@ GitHub Releases API
 - 普通设置只保存 `autoCheck` 和 `channel`，不保存私钥、签名或临时下载 URL。
 - 标准模式使用默认 NSIS 安装；便携模式向安装器传入当前 EXE 目录，保留 `portable.flag` 和便携数据目录。
 - 普通本地构建不要求签名私钥。GitHub Release 构建额外启用 `tauri.updater.conf.json`，生成 `.sig` 和 `latest.json`。
+- Android 不静默安装。首次更新需要用户在系统页面允许 OhMyCine 安装未知应用；APK 只写入应用 cache 的 `updates/`，FileProvider 不暴露外部存储或整个 cache。
+- GitHub Android 预览包从首个 updater 版本起使用固定 preview keystore。keystore 与密码只存本机受限备份和 GitHub Actions Secrets，不进入仓库；历史随机 debug 签名包需要一次卸载重装，之后同一签名可覆盖升级。
 
 ## 5. 网盘自动刮削系统
 
@@ -2262,9 +2272,11 @@ src-tauri/
     LICENSE               # 第三方许可文本
 ```
 
-Windows Player CI、manual build 和 beta release 使用 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。Android 预览通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK；脚本先删除旧 APK，再固定下载并校验 mpv-android `2026-04-25` 的 SHA-256，提取 `libmpv.so`、FFmpeg、JNI bridge、`libc++_shared.so` 与 CA 证书，并直接进入 `tauri android build`。不得在 Tauri 命令前单独调用 `gradlew clean`，因为 GitHub 干净 Runner 中被 `.gitignore` 排除的 `tauri.settings.gradle`、`tauri.build.gradle.kts` 和运行配置需要由 Tauri build 内部先生成。运行库和 Tauri 平台桥接生成物不提交到 Git。Player 版本标签从远程 `main` 触发 GitHub Actions 后，Windows release job 先发布安装包、标准 ZIP、便携 ZIP和 updater 清单，Android job 再自动构建并向同一 Release 追加 ARM64 预览 APK 与 SHA-256。Android 当前仍是 debug/预览签名，正式商店或稳定发布签名以及 macOS/Linux 资源链路后续接入。
+Windows Player CI、manual build 和 beta release 使用 Windows libmpv 资源。每个 Windows Beta 发布三个程序包：NSIS 安装包、没有 `portable.flag` 且使用 LocalAppData 的标准免安装 ZIP、带 `portable.flag` 且使用 EXE 同目录独立数据的便携 ZIP；两种 ZIP 都只收集必需运行文件和许可证，不包含 target 构建中间产物。Android 预览通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK；脚本先删除旧 APK，再固定下载并校验 mpv-android `2026-04-25` 的 SHA-256，提取 `libmpv.so`、FFmpeg、JNI bridge、`libc++_shared.so` 与 CA 证书，并直接进入 `tauri android build`。不得在 Tauri 命令前单独调用 `gradlew clean`，因为 GitHub 干净 Runner 中被 `.gitignore` 排除的 `tauri.settings.gradle`、`tauri.build.gradle.kts` 和运行配置需要由 Tauri build 内部先生成。运行库和 Tauri 平台桥接生成物不提交到 Git。Player 版本标签从远程 `main` 触发 GitHub Actions 后，Windows release job 先发布安装包、标准 ZIP、便携 ZIP和 updater 清单，Android job 再使用 GitHub Secrets 中的固定 preview keystore 构建可连续覆盖升级的 APK，并向同一 Release 追加 ARM64 APK 与 SHA-256。正式商店签名以及 macOS/Linux 资源链路后续接入。
 
-Windows 透明 WebView 叠层与 mpv HWND 底层窗口必须使用单一几何时序：移动、缩放和 DPI 变化先由 WebView 在下一布局帧读取实际 surface rect，再把逻辑坐标传给 Rust 转换为物理像素。原生 owner resize 事件只负责最小化/恢复可见性和层级，不得抢先按 Win32 客户区尺寸拉伸视频，否则视频画面会领先控制遮罩层缩放。窗口最大化/还原与 Player 全屏也是独立状态；从最大化进入全屏时临时还原窗口，退出全屏后恢复最大化。
+Windows 透明 WebView 叠层与 mpv HWND 底层窗口必须使用单一几何时序：移动、缩放和 DPI 变化先由 WebView 在下一布局帧读取实际 surface rect，再把逻辑坐标传给 Rust 转换为物理像素。原生 owner resize 事件只负责最小化/恢复可见性和层级，不得抢先按 Win32 客户区尺寸拉伸视频，否则视频画面会领先控制遮罩层缩放。窗口最大化/还原与 Player 全屏也是独立状态；从最大化进入全屏时临时还原窗口，退出全屏后恢复最大化。普通窗口的 WebView 根与 mpv 底层 HWND 使用相同 12px 圆角，最大化/全屏同时取消圆角；全屏底层窗口向四边额外覆盖 1 个物理像素，避免透明边缘漏出桌面。
+
+桌面 mpv 事件轮询每 250ms 最多消费 64 个事件，不能在持有全局播放器锁时无限清空事件队列。耳机/音频设备热插拔可能产生密集音频重配置事件，剩余事件必须留到下一 tick，确保暂停、轨道、字幕和窗口命令仍能及时获得锁。播放页进入时保持海报/背景的高斯模糊占位；只有收到桌面 `VIDEO_RECONFIG` 或 Android `fileLoaded + videoFormat/playing` 后，才把 WebView 根链切成透明并显示原生视频层。
 
 ### 9.8 Android 策略
 
@@ -2297,7 +2309,7 @@ Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等
 
 全局“播放与字幕”设置包含受控播放器引擎参数：视频输出仅允许 `gpu-next`（默认）或 `gpu`；解码策略仅允许自动安全、硬件优先或纯软件；缓存允许自动、开启、关闭和 64/128/256/512 MB 上限；同步允许以音频为准、显示重采样或显示丢帧。设置写入 Player SQLite app settings，Vue 在原生渲染初始化前和每次媒体加载前通过 `mpv_apply_engine_settings` 下发。Windows 映射到 libmpv `vo/hwdec/cache/demuxer-max-bytes/video-sync`，Android 映射到 `gpu-next/gpu`、MediaCodec/软件解码及相同缓存同步参数。不得从 UI 接受任意 mpv 参数名或自定义原始字符串。
 
-这些工作不代表 Android 已可发布。当前 ARM64 APK 已进入真机验证：包内包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；首轮日志确认 SurfaceView 与 `gpu-next` 已完成配置，同时暴露了原生 FFmpeg TLS 握手兼容问题，因此加入 Rust TLS 回环桥，仍需在同一远程媒体上复测画面、音频和 Range seek。远程 header、字幕、暂停/seek、MediaCodec 兼容性、横竖屏切换和 Activity 生命周期仍需继续真机覆盖。Android 启动图标使用与桌面相同的“影院之眼”母版，并生成 mdpi 至 xxxhdpi 的普通、圆形和 Android 8+ adaptive icon 资源。媒体与目录权限、系统返回键、系统栏避让、移动端更新策略、发布签名，以及 armeabi-v7a/x86_64 等额外 ABI 也仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
+这些工作不代表 Android 已可正式发布。当前 ARM64 APK 已进入真机验证：包内包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；首轮日志确认 SurfaceView 与 `gpu-next` 已完成配置，同时暴露了原生 FFmpeg TLS 握手兼容问题，因此加入 Rust TLS 回环桥，仍需在同一远程媒体上复测画面、音频和 Range seek。远程 header、字幕、暂停/seek、MediaCodec 兼容性、横竖屏切换和 Activity 生命周期仍需继续真机覆盖。Android 启动图标使用与桌面相同的“影院之眼”母版，并生成 mdpi 至 xxxhdpi 的普通、圆形和 Android 8+ adaptive icon 资源。预览渠道已具备固定签名、Release APK 校验下载和系统安装确认；正式商店签名、媒体与目录权限、系统返回键、系统栏避让，以及 armeabi-v7a/x86_64 等额外 ABI 仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
 
 ### 9.9 GPL 合规说明
 

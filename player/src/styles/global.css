@@ -1,7 +1,7 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--color-bg);
+  background: transparent;
   color: var(--color-text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   overflow: hidden;
@@ -12,7 +12,7 @@ html, body {
 #app {
   width: 100vw;
   height: 100vh;
-  background: var(--color-bg);
+  background: transparent;
   transition: background-color var(--duration-slow) var(--ease-in-out);
 }
 
