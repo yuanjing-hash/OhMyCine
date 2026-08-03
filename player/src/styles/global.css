@@ -9,6 +9,14 @@ html, body {
   transition: background-color var(--duration-slow) var(--ease-in-out), color var(--duration-slow) var(--ease-in-out);
 }
 
+html {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
 #app {
   width: 100vw;
   height: 100vh;
@@ -18,8 +26,191 @@ html, body {
 
 button,
 input,
-select {
+select,
+textarea {
   touch-action: manipulation;
+}
+
+select {
+  min-height: 2.75rem;
+  appearance: none;
+  border-color: var(--control-border) !important;
+  background-color: var(--control-bg) !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23A0A0B0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") !important;
+  background-position: right 0.85rem center !important;
+  background-repeat: no-repeat !important;
+  background-size: 1rem !important;
+  padding-right: 2.75rem !important;
+  color: var(--control-text) !important;
+  box-shadow: var(--control-shadow);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) ease, background-color var(--duration-fast) ease, box-shadow var(--duration-fast) ease;
+}
+
+[data-theme="light"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%235A5A6E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") !important;
+}
+
+select:hover:not(:disabled) {
+  border-color: var(--control-border-hover) !important;
+  background-color: var(--control-bg-hover) !important;
+}
+
+select:focus,
+select:focus-visible {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 3px var(--control-focus-ring), var(--control-shadow) !important;
+  outline: none;
+}
+
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+select option,
+select optgroup {
+  background: var(--control-option-bg);
+  color: var(--control-text);
+}
+
+.theme-adaptive {
+  color: var(--color-text);
+}
+
+.theme-adaptive input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.theme-adaptive textarea {
+  border-color: var(--control-border) !important;
+  background: var(--control-bg) !important;
+  color: var(--control-text) !important;
+  box-shadow: var(--control-shadow);
+}
+
+.theme-adaptive input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):hover:not(:disabled),
+.theme-adaptive textarea:hover:not(:disabled) {
+  border-color: var(--control-border-hover) !important;
+  background: var(--control-bg-hover) !important;
+}
+
+.theme-adaptive input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+.theme-adaptive textarea:focus {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 3px var(--control-focus-ring), var(--control-shadow) !important;
+  outline: none;
+}
+
+.theme-adaptive input::placeholder,
+.theme-adaptive textarea::placeholder {
+  color: var(--control-placeholder) !important;
+}
+
+.theme-adaptive input[type="checkbox"],
+.theme-adaptive input[type="radio"] {
+  accent-color: var(--color-primary);
+}
+
+.theme-adaptive .text-white,
+.theme-adaptive .text-white\/82,
+.theme-adaptive .text-white\/78,
+.theme-adaptive .text-white\/76,
+.theme-adaptive .text-white\/74,
+.theme-adaptive .text-white\/72,
+.theme-adaptive .text-white\/70 {
+  color: var(--color-text) !important;
+}
+
+.theme-adaptive .text-white\/66,
+.theme-adaptive .text-white\/62,
+.theme-adaptive .text-white\/60,
+.theme-adaptive .text-white\/58,
+.theme-adaptive .text-white\/52,
+.theme-adaptive .text-white\/50,
+.theme-adaptive .text-white\/48,
+.theme-adaptive .text-white\/46 {
+  color: var(--color-text-secondary) !important;
+}
+
+.theme-adaptive .text-white\/42,
+.theme-adaptive .text-white\/40,
+.theme-adaptive .text-white\/38,
+.theme-adaptive .text-white\/36,
+.theme-adaptive .text-white\/34 {
+  color: var(--color-text-tertiary) !important;
+}
+
+.theme-adaptive .bg-white\/5,
+.theme-adaptive .bg-white\/6,
+.theme-adaptive .bg-white\/8,
+.theme-adaptive .bg-white\/10,
+.theme-adaptive .bg-white\/14,
+.theme-adaptive .bg-white\/16,
+.theme-adaptive .bg-black\/12,
+.theme-adaptive .bg-black\/14,
+.theme-adaptive .bg-black\/16,
+.theme-adaptive .bg-black\/18,
+.theme-adaptive .bg-black\/50 {
+  background-color: var(--surface-soft) !important;
+}
+
+.theme-adaptive .border-white\/8,
+.theme-adaptive .border-white\/10,
+.theme-adaptive .border-white\/12,
+.theme-adaptive .border-white\/14,
+.theme-adaptive .border-white\/18,
+.theme-adaptive .border-white\/20 {
+  border-color: var(--color-border) !important;
+}
+
+.theme-adaptive .divide-white\/8 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--color-divider) !important;
+}
+
+.theme-adaptive .hover\:bg-white\/8:hover,
+.theme-adaptive .hover\:bg-white\/10:hover,
+.theme-adaptive .hover\:bg-white\/14:hover,
+.theme-adaptive .hover\:bg-white\/16:hover {
+  background-color: var(--surface-soft-hover) !important;
+}
+
+.theme-adaptive .hover\:border-white\/18:hover,
+.theme-adaptive .hover\:border-white\/20:hover {
+  border-color: var(--control-border-hover) !important;
+}
+
+.theme-adaptive .hover\:text-white:hover,
+.theme-adaptive .hover\:text-white\/72:hover,
+.theme-adaptive .hover\:text-white\/76:hover {
+  color: var(--color-text) !important;
+}
+
+.theme-adaptive .bg-primary\/80.text-white,
+.theme-adaptive .bg-primary\/82.text-white {
+  color: #FFFFFF !important;
+}
+
+.theme-immersive-dark {
+  --control-bg: rgba(255, 255, 255, 0.085);
+  --control-bg-hover: rgba(255, 255, 255, 0.13);
+  --control-option-bg: #171720;
+  --control-border: rgba(255, 255, 255, 0.14);
+  --control-border-hover: rgba(255, 255, 255, 0.24);
+  --control-text: #F0F0F5;
+  --control-placeholder: rgba(240, 240, 245, 0.38);
+  --control-focus-ring: rgba(74, 158, 255, 0.22);
+  --control-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="light"] .theme-adaptive .text-emerald-100 {
+  color: #13713B !important;
+}
+
+[data-theme="light"] .theme-adaptive .text-red-100 {
+  color: #B42318 !important;
+}
+
+[data-theme="light"] .theme-adaptive .text-amber-100,
+[data-theme="light"] .theme-adaptive .text-amber-100\/80 {
+  color: #8A4B08 !important;
 }
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {

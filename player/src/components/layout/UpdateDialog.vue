@@ -31,7 +31,7 @@ async function install() {
 <template>
   <Teleport to="body">
     <div v-if="updater.promptOpen && updater.availableUpdate" class="fixed inset-0 z-[1400] flex items-center justify-center bg-black/62 p-5 backdrop-blur-md" @pointerdown.self="updater.dismissPrompt()">
-      <section class="glass-panel w-full max-w-xl overflow-hidden rounded-3xl border border-white/14 bg-black/78 shadow-2xl" role="dialog" aria-modal="true" aria-label="软件更新">
+      <section class="theme-adaptive glass-panel w-full max-w-xl overflow-hidden rounded-3xl border border-white/14 shadow-2xl" role="dialog" aria-modal="true" aria-label="软件更新">
         <header class="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.2em] text-white/36">

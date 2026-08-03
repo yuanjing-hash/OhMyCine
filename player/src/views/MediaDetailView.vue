@@ -618,7 +618,7 @@ function markTitleLogoFailed(url: string) {
 </script>
 
 <template>
-  <div class="detail-view min-h-screen bg-[var(--color-bg)] text-white">
+  <div class="detail-view theme-immersive-dark min-h-screen bg-[var(--color-bg)] text-white">
     <div v-if="isLoading && !detail" class="pointer-events-none flex min-h-screen items-center justify-center text-white/45" aria-live="polite">
       正在加载媒体详情…
     </div>
