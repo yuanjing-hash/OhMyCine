@@ -58,6 +58,8 @@ Required principles:
 - Use liquid-glass classes for elevated chrome and cards.
 - Do not rely on Iconify/UnoCSS icon preset classes unless the required icon collection is installed and configured; use explicit inline SVG for critical controls when availability is uncertain.
 - Preserve artwork visibility: controls may be hover-revealed/auto-hidden in immersive contexts.
+- Desktop global utilities use a right-edge hover trigger and a vertically revealed panel, mirroring the left data-source rail. Do not anchor this panel over the player's bottom-right fullscreen/control area.
+- Home aggregate search is embedded over the Hero top area instead of a standalone card or route gate. It starts after two characters, debounces requests, isolates per-source failures, labels every result with its source, and remains fully usable by touch without hover.
 - Avoid hard-coded color values when a token exists.
 - Keep desktop-first behavior explicit; mobile adaptations must be separately designed.
 - Mobile navigation must be a deliberate phone shell rather than the desktop source rail compressed horizontally. On `<= 767px` or coarse-pointer layouts, use the fixed `Home / Libraries / Quick / Settings` bottom navigation, open library and quick actions as bottom sheets, include `safe-area-inset-bottom`, and keep the Player route immersive without the global bottom navigation.
@@ -74,6 +76,7 @@ Required principles:
 - The Android mobile control row includes an orientation-lock icon. It opens explicit `自动横屏 / 锁定横屏 / 锁定竖屏` choices, visually distinguishes unlocked and locked states, and reports changes through the compact top-right playback OSD. Do not overload the desktop fullscreen button with orientation state.
 - Horizontal poster/media rows must allow the page's vertical pan gesture to reach the parent scroller. Do not apply `overscroll-behavior-y: contain`, `touch-action: pan-x`, or pointer capture to generic horizontal rows unless the row implements a deliberate drag interaction and releases vertical gestures.
 - The empty playback surface uses a concise neutral status such as `等待播放中`. Local drag-and-drop instructions belong in the desktop file-open entry point, not as the universal Android/player empty state.
+- A ready render backend is not equivalent to visible media. Keep the playback surface opaque with a blurred artwork background until desktop emits video-ready or Android diagnostics confirm a loaded video; only then make the WebView chain transparent to reveal the native video layer.
 
 ---
 

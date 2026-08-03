@@ -223,6 +223,11 @@ export const useDataSourceStore = defineStore('datasource', () => {
     }
   }
 
+  async function searchAllSources(keyword: string, limit = 60): Promise<MediaItem[]> {
+    await syncManager()
+    return dataSourceManager.searchAcrossSources(orderedConfigs.value, keyword, { limit })
+  }
+
   async function enrichLocalContinueWatchingItems(items: readonly MediaItem[]): Promise<MediaItem[]> {
     return Promise.all(items.map(enrichLocalContinueWatchingItem))
   }
@@ -274,6 +279,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     clearAllMediaCaches,
     reorderConfigs,
     loadHomeSections,
+    searchAllSources,
     getSource,
     syncManager,
   }

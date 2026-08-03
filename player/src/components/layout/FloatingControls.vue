@@ -73,16 +73,18 @@ async function openLocalVideo() {
 
 <template>
   <div
-    class="floating-controls fixed bottom-4 right-4 z-50"
+    class="floating-controls fixed bottom-24 right-0 top-24 z-50 w-2"
     @mouseenter="isHovered = true"
     @mouseleave="isHovered = false"
   >
-    <div class="absolute -inset-6" />
+    <div class="absolute -left-4 inset-y-0 w-6" />
 
-    <Transition name="fade-up">
+    <Transition name="edge-reveal">
       <div
         v-show="isHovered"
-        class="floating-controls-panel glass-panel relative flex items-center gap-1 rounded-2xl p-1.5"
+        class="floating-controls-panel glass-panel fixed right-6 top-1/2 flex -translate-y-1/2 flex-col items-center gap-1 rounded-2xl p-1.5"
+        @mouseenter="isHovered = true"
+        @mouseleave="isHovered = false"
       >
         <!-- Navigation buttons — only on player page (top bar/sidebar hidden there) -->
         <template v-if="isPlayerRoute">
@@ -109,7 +111,7 @@ async function openLocalVideo() {
             </svg>
           </button>
 
-          <div class="gp-divider h-5 w-px" />
+          <div class="gp-divider my-1 h-px w-6" />
         </template>
 
         <!-- Player -->
@@ -125,7 +127,7 @@ async function openLocalVideo() {
           </svg>
         </button>
 
-        <div class="gp-divider h-5 w-px" />
+        <div class="gp-divider my-1 h-px w-6" />
 
         <!-- Theme toggle -->
         <button
@@ -179,15 +181,21 @@ async function openLocalVideo() {
   background: var(--gp-divider);
 }
 
-.fade-up-enter-active,
-.fade-up-leave-active {
+.edge-reveal-enter-active,
+.edge-reveal-leave-active {
   transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.fade-up-enter-from,
-.fade-up-leave-to {
+.edge-reveal-enter-from,
+.edge-reveal-leave-to {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateX(12px) translateY(-50%) scale(0.96);
+}
+
+.edge-reveal-enter-to,
+.edge-reveal-leave-from {
+  opacity: 1;
+  transform: translateX(0) translateY(-50%) scale(1);
 }
 
 .icon-sun,

@@ -1,6 +1,6 @@
 [package]
 name = "ohmycine-player"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 
 [lib]
@@ -43,6 +43,7 @@ libmpv-sys = "3.1"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Security_Cryptography",
   "Win32_System_LibraryLoader",

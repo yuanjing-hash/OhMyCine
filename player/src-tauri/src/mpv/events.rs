@@ -4,6 +4,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::player::MpvState;
 
+const MAX_EVENTS_PER_TICK: usize = 64;
+
 #[derive(Clone, serde::Serialize)]
 struct TimeUpdatePayload {
     time: f64,
@@ -26,11 +28,25 @@ pub fn start_event_forwarder(app_handle: AppHandle) {
             };
 
             let snapshot = state.lock().ok().map(|player| {
-                player.drain_events();
-                (player.time_pos(), player.duration(), player.paused())
+                let events = player.drain_events(MAX_EVENTS_PER_TICK);
+                (
+                    player.time_pos(),
+                    player.duration(),
+                    player.paused(),
+                    events,
+                )
             });
 
-            if let Some((time, duration, paused)) = snapshot {
+            if let Some((time, duration, paused, events)) = snapshot {
+                if events.file_loaded {
+                    let _ = app_handle.emit("mpv:file-loaded", ());
+                }
+                if events.video_ready {
+                    let _ = app_handle.emit("mpv:video-ready", ());
+                }
+                if events.reached_limit {
+                    log::debug!("mpv event batch reached the per-tick limit; remaining events will be handled next tick");
+                }
                 if (time - last_time).abs() >= 0.25 {
                     last_time = time;
                     let _ = app_handle.emit("mpv:time-update", TimeUpdatePayload { time });

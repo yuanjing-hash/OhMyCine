@@ -299,6 +299,7 @@ export function useMpv() {
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
   const playbackDiagnostics = ref<MpvPlaybackDiagnostics | null>(null)
+  const videoReady = ref(false)
   const orientationSupported = ref(false)
   const orientationMode = ref<MpvOrientationMode>('auto')
   const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
@@ -351,6 +352,9 @@ export function useMpv() {
     listen('mpv:resumed', () => {
       isPlaying.value = true
     }),
+    listen('mpv:video-ready', () => {
+      videoReady.value = true
+    }),
   ]
 
   function applyRenderState(state: MpvRenderState) {
@@ -390,6 +394,8 @@ export function useMpv() {
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
       playbackDiagnostics.value = diagnostics.state === 'desktop' ? null : diagnostics
+      if (diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
+        videoReady.value = true
     }
     catch {
       playbackDiagnostics.value = null
@@ -570,6 +576,7 @@ export function useMpv() {
     duration.value = 0
     trackRefreshScheduledForCurrentMedia = false
     isPlaying.value = false
+    videoReady.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     videoBrightness.value = 50
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
@@ -745,6 +752,7 @@ export function useMpv() {
     currentSubtitle.value = null
     selectedKnownSubtitle.value = null
     currentAudio.value = null
+    videoReady.value = false
   }
 
   onUnmounted(() => {
@@ -780,6 +788,7 @@ export function useMpv() {
     renderBackend,
     renderDiagnostics,
     playbackDiagnostics,
+    videoReady,
     orientationSupported,
     orientationMode,
     videoDynamicRange,

@@ -21,7 +21,10 @@ use std::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::ClientToScreen,
+    Graphics::{
+        Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE},
+        Gdi::{ClientToScreen, CreateRoundRectRgn, DeleteObject, SetWindowRgn},
+    },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IsIconic, IsZoomed,
@@ -40,6 +43,9 @@ use crate::mpv::{
 };
 
 const CLASS_NAME: &str = "OhMyCineMpvSurface";
+const WINDOW_CORNER_RADIUS_LOGICAL: f64 = 12.0;
+const DWMWCP_DONOTROUND: i32 = 1;
+const DWMWCP_ROUND: i32 = 2;
 
 // ---------------------------------------------------------------------------
 // Diagnostics
@@ -74,6 +80,8 @@ pub struct WindowsRenderSurface {
     mpv_ready: bool,
     /// Whether a media item is currently loaded and allowed to reveal the video underlay.
     playback_active: bool,
+    owner_fullscreen: bool,
+    owner_maximized: bool,
     /// Shared diagnostic state.
     diagnostics: Arc<Mutex<RenderDiagnostics>>,
     /// Path to the log file, if resolved.
@@ -120,6 +128,10 @@ impl WindowsRenderSurface {
             &format!("mpv video underlay hwnd created: {mpv_hwnd:?}"),
         );
 
+        let owner_fullscreen = window.is_fullscreen().unwrap_or(false);
+        let owner_maximized = window.is_maximized().unwrap_or(false);
+        schedule_owner_corner_preference(window, owner, owner_fullscreen || owner_maximized);
+
         Ok(Self {
             window: window.clone(),
             owner,
@@ -127,6 +139,8 @@ impl WindowsRenderSurface {
             bounds: None,
             mpv_ready: false,
             playback_active: false,
+            owner_fullscreen,
+            owner_maximized,
             diagnostics,
             log_path,
         })
@@ -180,6 +194,8 @@ impl WindowsRenderSurface {
         let hwnd = self.mpv_hwnd as isize;
         let diagnostics = Arc::clone(&self.diagnostics);
         let log_path = self.log_path.clone();
+        let fullscreen = self.owner_fullscreen;
+        let rounded = !fullscreen && !self.owner_maximized;
 
         // Transparent-overlay model: keep video full-bleed behind the Vue/WebView overlay. Legacy
         // top/bottom occlusion values are intentionally ignored so controls are not protected by
@@ -216,10 +232,11 @@ impl WindowsRenderSurface {
                 }
 
                 // ClientToScreen on a point (0,0) gives the client-area origin in screen coords.
-                let screen_x = client_origin.left + scaled_i32(bounds.x, scale);
-                let screen_y = client_origin.top + scaled_i32(bounds.y, scale);
-                let width = scaled_i32(bounds.width, scale).max(1);
-                let height = scaled_i32(bounds.height, scale).max(1);
+                let overscan = if fullscreen { 1 } else { 0 };
+                let screen_x = client_origin.left + scaled_i32(bounds.x, scale) - overscan;
+                let screen_y = client_origin.top + scaled_i32(bounds.y, scale) - overscan;
+                let width = scaled_i32(bounds.width, scale).max(1) + overscan * 2;
+                let height = scaled_i32(bounds.height, scale).max(1) + overscan * 2;
 
                 let ok = unsafe {
                     SetWindowPos(
@@ -241,6 +258,7 @@ impl WindowsRenderSurface {
                     log_diagnostics(&log_path, "set_bounds: SetWindowPos failed");
                     return;
                 }
+                apply_window_region(hwnd, width, height, rounded, scale);
 
                 update_diagnostics(&diagnostics, |d| {
                     d.geometry_following = true;
@@ -312,6 +330,16 @@ impl WindowsRenderSurface {
             }
             OwnerWindowEvent::FocusChanged(focused) => {
                 log_diagnostics(&self.log_path, &format!("owner focus changed: {focused}"));
+            }
+            OwnerWindowEvent::WindowStateChanged {
+                fullscreen,
+                maximized,
+            } => {
+                self.owner_fullscreen = fullscreen;
+                self.owner_maximized = maximized;
+                schedule_owner_corner_preference(&self.window, self.owner, fullscreen || maximized);
+                self.sync_geometry_from_owner();
+                return;
             }
         }
 
@@ -397,6 +425,8 @@ impl WindowsRenderSurface {
         let diagnostics = Arc::clone(&self.diagnostics);
         let log_path = self.log_path.clone();
         let current_bounds = self.bounds;
+        let fullscreen = self.owner_fullscreen;
+        let rounded = !fullscreen && !self.owner_maximized;
 
         if let Err(err) = self.window.run_on_main_thread(move || {
             let owner = owner as HWND;
@@ -448,7 +478,7 @@ impl WindowsRenderSurface {
 
             // If we have bounds from the frontend, use them full-bleed; otherwise fill the client
             // area. The previous top/bottom occlusion model is intentionally not applied here.
-            let (x, y, w, h, scale) = if let Some(b) = current_bounds {
+            let (mut x, mut y, mut w, mut h, scale) = if let Some(b) = current_bounds {
                 let screen_x = client_origin.left + b.x;
                 let screen_y = client_origin.top + b.y;
                 let w = b.width.max(1);
@@ -464,8 +494,18 @@ impl WindowsRenderSurface {
                 )
             };
 
+            if fullscreen {
+                x -= 1;
+                y -= 1;
+                w += 2;
+                h += 2;
+            }
+
             let ok =
                 unsafe { SetWindowPos(hwnd, owner, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW) };
+            if ok != 0 {
+                apply_window_region(hwnd, w, h, rounded, scale);
+            }
 
             let state_str = if is_maximized { "maximized" } else { "normal" };
 
@@ -707,6 +747,45 @@ fn scaled_i32(value: f64, scale_factor: f64) -> i32 {
     (value * scale_factor)
         .round()
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
+fn schedule_owner_corner_preference(window: &tauri::Window, owner: HWND, square: bool) {
+    let owner = owner as isize;
+    if let Err(error) = window.run_on_main_thread(move || {
+        let preference = if square {
+            DWMWCP_DONOTROUND
+        } else {
+            DWMWCP_ROUND
+        };
+        unsafe {
+            DwmSetWindowAttribute(
+                owner as HWND,
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                (&preference as *const i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+    }) {
+        log::warn!("failed to schedule owner corner preference update: {error}");
+    }
+}
+
+fn apply_window_region(hwnd: HWND, width: i32, height: i32, rounded: bool, scale: f64) {
+    unsafe {
+        if !rounded {
+            SetWindowRgn(hwnd, ptr::null_mut(), 1);
+            return;
+        }
+
+        let diameter = scaled_i32(WINDOW_CORNER_RADIUS_LOGICAL * 2.0, scale).max(2);
+        let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+        if region.is_null() {
+            return;
+        }
+        if SetWindowRgn(hwnd, region, 1) == 0 {
+            DeleteObject(region);
+        }
+    }
 }
 
 fn wide_null(value: &str) -> Vec<u16> {

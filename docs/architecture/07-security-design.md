@@ -198,6 +198,8 @@ CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类�
 - `webdav` 保存独立 WebDAV 用户名和密码，通过 Basic Auth 瞬时使用；账号密码禁止嵌入 URL。
 - 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
 - Android 为绕过原生 libmpv/FFmpeg 的设备 TLS 兼容问题，可由 Rust reqwest/rustls 建立临时媒体桥，但只能绑定 `127.0.0.1` 随机端口。每次播放必须使用新的高熵 URL-safe 令牌并以精确比较验证，只允许 GET/HEAD，停止播放后清除内存目标；原始直链、签名参数和认证 Header 不得写入回环 URL、持久化或普通日志，TLS 证书校验不得关闭。
+- Android 应用更新只允许读取固定 `yuanjing-hash/OhMyCine` GitHub Release 中与标签精确匹配的 ARM64 APK 和 `.sha256`。重定向只允许 GitHub release asset 域名，限制响应大小和跳转次数，Rust 完成 SHA-256 校验后只写入应用 cache 的 `updates/`；FileProvider 只暴露该子目录，禁止外部存储和任意 cache 路径。安装必须由 Android 系统界面确认，`REQUEST_INSTALL_PACKAGES` 不得用于静默安装。
+- Android preview keystore 和密码不得进入 Git、构建日志、Release asset 或普通 app data。CI 只从 GitHub Actions Secrets 注入；本机备份必须位于用户配置目录并限制文件权限。更换签名会破坏覆盖升级能力，应视为显式密钥轮换事件。
 - Vue Router 只保存 `sourceId`、`itemId`、可选媒体版本 ID 和短生命周期上下文 ID；远程播放 URL、签名参数、播放 header 与本地绝对路径不得进入 route query/history。PlayerView 只在调用 mpv 前即时解析播放请求。
 - 删除媒体源时，必须按精确 `sourceId` 删除该来源的本机播放历史、单视频播放偏好和来源拥有的字幕缓存，并按 source/root 清理原始文件扫描缓存；禁止使用空来源或不受约束的批量删除。
 - OpenSubtitles API Key 或账号密码以互斥认证模式进入独立 credential envelope，不得进入普通设置、localStorage、日志或导出配置。普通设置只保存默认字幕语言和提供器启用状态；旧组合凭据迁移时不得同时保留两套秘密。
