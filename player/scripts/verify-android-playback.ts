@@ -105,8 +105,16 @@ assert.doesNotMatch(gradle, /keepDebugSymbols/)
 const manifest = await source('src-tauri/gen/android/app/src/main/AndroidManifest.xml')
 assert.match(manifest, /android:icon="@mipmap\/ic_launcher"/)
 assert.match(manifest, /android:roundIcon="@mipmap\/ic_launcher_round"/)
+assert.match(manifest, /REQUEST_INSTALL_PACKAGES/)
 const adaptiveIcon = await source('src-tauri/gen/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')
 assert.match(adaptiveIcon, /@mipmap\/ic_launcher_foreground/)
+
+const updaterPlugin = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/UpdaterPlugin.kt')
+assert.match(updaterPlugin, /FileProvider\.getUriForFile/)
+assert.match(updaterPlugin, /canRequestPackageInstalls/)
+
+assert.match(gradle, /OHMYCINE_ANDROID_KEYSTORE/)
+assert.match(gradle, /signingConfigs\.getByName\("preview"\)/)
 
 console.log(JSON.stringify({
   androidSurfaceViewBackend: true,

@@ -197,6 +197,7 @@ const {
   renderBackend,
   renderDiagnostics,
   playbackDiagnostics,
+  videoReady,
   orientationSupported,
   orientationMode,
   videoDynamicRange,
@@ -237,7 +238,7 @@ const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length 
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
 const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value))
-const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready')
+const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready' && videoReady.value)
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
 const playbackProgressPercent = computed(() => duration.value > 0 ? Math.min(100, Math.max(0, (currentTime.value / duration.value) * 100)) : 0)
@@ -2476,6 +2477,8 @@ watch(
     <VideoPlayer
       :is-playing="isPlaying"
       :has-media="hasMedia"
+      :video-ready="videoReady"
+      :backdrop-url="activeBackdropUrl || currentQueueItem?.backdropUrl || ''"
       :render-status="renderStatus"
       :render-error="renderError"
       :render-diagnostics="renderDiagnostics"
@@ -2808,9 +2811,12 @@ watch(
 :global(html.player-render-surface-active),
 :global(body.player-render-surface-active),
 :global(body.player-render-surface-active #app),
-:global(body.player-render-surface-active .app-window),
-:global(body.player-render-surface-active main) {
+:global(body.player-render-surface-active .app-window) {
   background: #030305;
+}
+
+:global(body.player-render-surface-active main) {
+  background: transparent;
 }
 
 :global(body.player-render-surface-active main.cinema-scrollbar) {

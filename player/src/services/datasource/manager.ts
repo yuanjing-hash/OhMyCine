@@ -1,10 +1,11 @@
-import type { DataSource, DataSourceConfig, DataSourceType, HomeSection } from './types'
+import type { DataSource, DataSourceConfig, DataSourceType, HomeSection, MediaItem } from './types'
 import { AlistDataSource } from './alist'
 import { CloudDrive2DataSource } from './clouddrive2'
 import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
 import { LocalFileDataSource } from './local'
+import { searchAcrossDataSources } from './searchAggregation'
 import { WebDavDataSource } from './webdav'
 
 export class DataSourceManager {
@@ -89,6 +90,14 @@ export class DataSourceManager {
 
   async getAggregatedHome(configs: readonly DataSourceConfig[]): Promise<HomeSection[]> {
     return collectHomeSectionsFromSources(this.getOrderedSources(configs))
+  }
+
+  async searchAcrossSources(
+    configs: readonly DataSourceConfig[],
+    keyword: string,
+    options: { limitPerSource?: number, limit?: number } = {},
+  ): Promise<MediaItem[]> {
+    return searchAcrossDataSources(this.getOrderedSources(configs), keyword, options)
   }
 
   exportAllConfigs(): DataSourceConfig[] {

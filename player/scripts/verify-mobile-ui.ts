@@ -110,6 +110,8 @@ assert.match(playerView, /showKeyboardOsd\(`屏幕方向 · \$\{label\}`\)/)
 const videoPlayer = await source('src/components/player/VideoPlayer.vue')
 assert.match(videoPlayer, /等待播放中/)
 assert.doesNotMatch(videoPlayer, /拖拽文件到此处播放/)
+assert.match(videoPlayer, /playback-backdrop/)
+assert.match(videoPlayer, /!props\.videoReady/)
 
 const mpvPlayer = await source('src-tauri/src/mpv/player.rs')
 assert.match(mpvPlayer, /"video-zoom"[\s\S]*?\| "brightness" =>/)

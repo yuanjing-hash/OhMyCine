@@ -57,6 +57,7 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     let builder = builder
+        .plugin(commands::updater::init_android())
         .plugin(mpv::mobile::init())
         .manage(mpv::mobile_proxy::AndroidStreamProxyState::default());
 
@@ -141,11 +142,17 @@ pub fn run() {
                     _ => None,
                 };
 
-                if let Some(event) = owner_event {
+                if owner_event.is_some() {
                     // Never block the main thread on the player mutex while a render callback may
                     // itself be waiting for that thread.
                     if let Ok(mut player) = window.state::<mpv::player::MpvState>().try_lock() {
-                        player.on_owner_window_event(event);
+                        player.on_owner_window_event(OwnerWindowEvent::WindowStateChanged {
+                            fullscreen: window.is_fullscreen().unwrap_or(false),
+                            maximized: window.is_maximized().unwrap_or(false),
+                        });
+                        if let Some(event) = owner_event {
+                            player.on_owner_window_event(event);
+                        }
                     }
                 }
             }

@@ -19,6 +19,7 @@ export interface UpdateCheckResult {
   date?: string
   body?: string
   channel: UpdateChannel
+  platform: 'desktop' | 'android'
 }
 
 export type UpdateProgressEvent

@@ -8,6 +8,8 @@ import { redactSensitiveText } from '@/services/datasource/errors'
 const props = defineProps<{
   isPlaying: boolean
   hasMedia: boolean
+  videoReady: boolean
+  backdropUrl: string
   renderStatus: MpvRenderStatus
   renderError: string | null
   renderDiagnostics: MpvRenderDiagnostics | null
@@ -59,13 +61,13 @@ const surfaceStyle = computed(() => {
 })
 
 const rootBackgroundClass = computed(() => {
-  if (!props.hasMedia || props.renderStatus !== 'ready')
+  if (!props.hasMedia || props.renderStatus !== 'ready' || !props.videoReady)
     return 'bg-black'
   return 'player-surface-root--transparent'
 })
 
 const playbackFailure = computed(() => props.playbackDiagnostics?.state === 'error')
-const playbackLoading = computed(() => props.hasMedia && props.playbackDiagnostics?.state === 'loading')
+const playbackLoading = computed(() => props.hasMedia && (!props.videoReady || props.playbackDiagnostics?.state === 'loading'))
 
 const renderStatusLabel = computed(() => {
   if (playbackFailure.value)
@@ -348,8 +350,14 @@ function isTauriRuntime(): boolean {
       :style="surfaceStyle"
       aria-hidden="true"
     />
+    <Transition name="playback-backdrop">
+      <div v-if="hasMedia && !videoReady" class="playback-backdrop absolute inset-0 overflow-hidden">
+        <img v-if="backdropUrl" :src="backdropUrl" alt="" class="absolute -inset-6 h-[calc(100%+3rem)] w-[calc(100%+3rem)] scale-105 object-cover" aria-hidden="true">
+        <div class="absolute inset-0 bg-black/48" />
+      </div>
+    </Transition>
     <div
-      v-if="renderStatus !== 'ready' || playbackFailure"
+      v-if="!hasMedia || renderStatus === 'error' || renderStatus === 'unsupported' || playbackFailure"
       class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(74,158,255,0.14),transparent_34%),linear-gradient(135deg,#050509,#090911_52%,#030305)]"
     />
     <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
@@ -507,6 +515,24 @@ function isTauriRuntime(): boolean {
      intentional dark placeholder surface. */
   background: transparent;
   background-color: transparent;
+}
+
+.playback-backdrop {
+  background: linear-gradient(135deg, #050509, #10131b 52%, #030305);
+}
+
+.playback-backdrop img {
+  filter: blur(28px) saturate(0.78);
+}
+
+.playback-backdrop-enter-active,
+.playback-backdrop-leave-active {
+  transition: opacity 260ms ease;
+}
+
+.playback-backdrop-enter-from,
+.playback-backdrop-leave-to {
+  opacity: 0;
 }
 
 .playback-status-panel {

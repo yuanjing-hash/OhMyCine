@@ -6,7 +6,8 @@ use std::{
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_NONE,
+    mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_FILE_LOADED,
+    mpv_event_id_MPV_EVENT_NONE, mpv_event_id_MPV_EVENT_VIDEO_RECONFIG,
     mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
     mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
     mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
@@ -22,6 +23,13 @@ use super::{
 use crate::commands::player_shared::MpvEngineSettings;
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
+
+#[derive(Debug, Default)]
+pub struct MpvEventBatch {
+    pub file_loaded: bool,
+    pub video_ready: bool,
+    pub reached_limit: bool,
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -593,13 +601,19 @@ impl MpvPlayer {
         self.check_error(unsafe { mpv_command(self.ctx, raw_args.as_mut_ptr()) })
     }
 
-    pub fn drain_events(&self) {
-        loop {
+    pub fn drain_events(&self, max_events: usize) -> MpvEventBatch {
+        let mut batch = MpvEventBatch::default();
+        for index in 0..max_events {
             let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
             if event.is_null() || unsafe { (*event).event_id } == mpv_event_id_MPV_EVENT_NONE {
                 break;
             }
+            let event_id = unsafe { (*event).event_id };
+            batch.file_loaded |= event_id == mpv_event_id_MPV_EVENT_FILE_LOADED;
+            batch.video_ready |= event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG;
+            batch.reached_limit = index + 1 == max_events;
         }
+        batch
     }
 
     fn get_property_string(&self, prop: &str) -> Result<Option<String>, String> {

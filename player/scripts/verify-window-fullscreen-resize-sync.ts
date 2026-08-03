@@ -83,10 +83,26 @@ assert.match(playerView, /document\.documentElement\.addEventListener\('mouselea
 const windowsBackend = await readFile(fileURLToPath(new URL('src-tauri/src/mpv/platform/windows.rs', root)), 'utf8')
 assert.match(windowsBackend, /OwnerWindowEvent::Resized => \{[\s\S]*?waiting for WebView ResizeObserver bounds/)
 assert.match(windowsBackend, /SWP_NOMOVE \| SWP_NOSIZE \| SWP_NOACTIVATE \| SWP_SHOWWINDOW/)
+assert.match(windowsBackend, /MAX_EVENTS_PER_TICK|WINDOW_CORNER_RADIUS_LOGICAL/)
+assert.match(windowsBackend, /DwmSetWindowAttribute/)
+assert.match(windowsBackend, /CreateRoundRectRgn/)
+assert.match(windowsBackend, /if fullscreen \{ 1 \} else \{ 0 \}/)
+
+const mpvEvents = await readFile(fileURLToPath(new URL('src-tauri/src/mpv/events.rs', root)), 'utf8')
+assert.match(mpvEvents, /const MAX_EVENTS_PER_TICK: usize = 64/)
+assert.match(mpvEvents, /drain_events\(MAX_EVENTS_PER_TICK\)/)
+assert.match(mpvEvents, /mpv:video-ready/)
+
+const glass = await readFile(fileURLToPath(new URL('src/styles/glass.css', root)), 'utf8')
+assert.match(glass, /border-radius: 12px/)
+assert.match(glass, /native-window-fullscreen[\s\S]*border-radius: 0/)
 
 console.log(JSON.stringify({
   maximizedFullscreenRoundTrip: true,
   maximizeRestoreIcon: true,
   webviewBoundsOwnResizeTiming: true,
   chromeHidesAfterWindowExit: true,
+  boundedMpvEventDrain: true,
+  nativeRoundedWindowShape: true,
+  fullscreenEdgeOverscan: true,
 }, null, 2))
