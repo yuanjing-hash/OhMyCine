@@ -93,9 +93,10 @@ assert.match(setup, /libmpv\.so/)
 assert.match(setup, /libplayer\.so/)
 
 const packageJson = await source('package.json')
+assert.match(packageJson, /rm -f src-tauri\/gen\/android\/app\/build\/outputs\/apk\/universal\/debug\/app-universal-debug\.apk/)
 assert.match(packageJson, /CARGO_PROFILE_DEV_DEBUG=0/)
 assert.match(packageJson, /CARGO_PROFILE_DEV_STRIP=debuginfo/)
-assert.match(packageJson, /gradlew -p src-tauri\/gen\/android clean/)
+assert.doesNotMatch(packageJson, /gradlew -p src-tauri\/gen\/android clean/)
 assert.doesNotMatch(packageJson, /assembleDebug --rerun-tasks/)
 
 const gradle = await source('src-tauri/gen/android/app/build.gradle.kts')
