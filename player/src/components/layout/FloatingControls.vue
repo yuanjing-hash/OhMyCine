@@ -217,12 +217,7 @@ async function openLocalVideo() {
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   .floating-controls {
-    right: 0.75rem;
-    bottom: calc(max(0.75rem, env(safe-area-inset-bottom)) + 3.75rem);
-  }
-
-  .floating-controls-panel {
-    display: flex !important;
+    display: none;
   }
 }
 </style>

@@ -333,4 +333,28 @@ watch(
   opacity: 0;
   transform: translateY(10px) scale(0.98);
 }
+
+@media (max-width: 820px), (hover: none) and (pointer: coarse) {
+  .player-settings-panel {
+    position: fixed;
+    z-index: 1250;
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem;
+    width: auto;
+    max-height: min(78svh, 42rem);
+    overflow-y: auto;
+    border-radius: 8px;
+    padding: 0.9rem;
+  }
+
+  .settings-section,
+  .setting-option {
+    border-radius: 8px;
+  }
+
+  .setting-option {
+    min-height: 2.75rem;
+  }
+}
 </style>

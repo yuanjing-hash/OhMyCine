@@ -37,6 +37,9 @@ assert.match(workflow, /tauri\.updater\.conf\.json/)
 assert.match(workflow, /setup_signature_asset/)
 assert.match(workflow, /dist\/player-beta\/latest\.json/)
 assert.match(workflow, /release_flags=\(\)/)
+assert.match(workflow, /release-android-arm64:/)
+assert.match(workflow, /npm run tauri:build:android:preview/)
+assert.match(workflow, /OhMyCine-Player-v\$\{app_version\}-android-arm64\.apk/)
 assert.doesNotMatch(workflow, /ohmycine-updater\.key/)
 
 console.log(JSON.stringify({
@@ -45,4 +48,5 @@ console.log(JSON.stringify({
   betaStableChannelsSeparated: true,
   startupAndManualChecksShareStore: true,
   portableInstallDirectoryPreserved: true,
+  androidReleaseArtifactAutomated: true,
 }, null, 2))

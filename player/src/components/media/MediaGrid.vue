@@ -61,4 +61,16 @@ function handleContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
 .media-grid-libraries {
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
 }
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .media-grid-posters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .media-grid-libraries {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+}
 </style>

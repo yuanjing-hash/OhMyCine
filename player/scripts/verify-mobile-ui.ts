@@ -1,0 +1,140 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '../src/services/playerTouchGestures'
+
+const root = new URL('../', import.meta.url)
+
+async function source(path: string): Promise<string> {
+  return readFile(fileURLToPath(new URL(path, root)), 'utf8')
+}
+
+const appLayout = await source('src/components/layout/AppLayout.vue')
+assert.match(appLayout, /import MobileNavigation from '\.\/MobileNavigation\.vue'/)
+assert.match(appLayout, /<MobileNavigation v-if="!isPlayerRoute"/)
+assert.match(appLayout, /isNativeAndroidRuntime/)
+assert.match(appLayout, /<WindowChrome v-if="!isNativeAndroid"/)
+assert.match(appLayout, /<FloatingControls v-if="!isNativeAndroid"/)
+
+const mobileNavigation = await source('src/components/layout/MobileNavigation.vue')
+assert.match(mobileNavigation, /首页/)
+assert.match(mobileNavigation, /媒体库/)
+assert.match(mobileNavigation, /快捷操作/)
+assert.match(mobileNavigation, /设置/)
+assert.match(mobileNavigation, /activeSheet = ref<MobileSheet \| null>/)
+assert.match(mobileNavigation, /mobile-sheet-layer/)
+assert.match(mobileNavigation, /env\(safe-area-inset-bottom\)/)
+
+const sidebar = await source('src/components/layout/DataSourceSidebar.vue')
+assert.doesNotMatch(sidebar, /mobile-source-nav/)
+
+const floatingControls = await source('src/components/layout/FloatingControls.vue')
+assert.match(floatingControls, /@media \(max-width: 767px\), \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.floating-controls \{\s+display: none;/)
+
+const homeView = await source('src/views/HomeView.vue')
+assert.match(homeView, /recent-play-overlay/)
+assert.match(homeView, /\.recent-play-overlay \{[\s\S]*?opacity: 1;/)
+
+const globalStyles = await source('src/styles/global.css')
+assert.doesNotMatch(globalStyles, /\.cinema-scrollbar \{\s+overscroll-behavior-y: contain;/)
+
+const mediaCard = await source('src/components/media/MediaCard.vue')
+assert.match(mediaCard, /media-card-play/)
+assert.match(mediaCard, /\.media-card-play \{[\s\S]*?opacity: 1;/)
+
+const sourceLibrary = await source('src/views/SourceLibraryView.vue')
+assert.match(sourceLibrary, /\.source-bottom-controls \{[\s\S]*?opacity: 1;/)
+assert.match(sourceLibrary, /bottom: calc\(5\.25rem \+ env\(safe-area-inset-bottom\)\)/)
+
+const playerControls = await source('src/components/player/PlayerControls.vue')
+assert.match(playerControls, /grid-template-columns: auto minmax\(0, 1fr\) auto/)
+assert.match(playerControls, /\.control-popover \{[\s\S]*?position: fixed;/)
+assert.match(playerControls, /orientationSupported: boolean/)
+assert.match(playerControls, /自动横屏/)
+assert.match(playerControls, /锁定横屏/)
+assert.match(playerControls, /锁定竖屏/)
+
+const mobilePlayerControls = await source('src/components/player/MobilePlayerControls.vue')
+assert.match(mobilePlayerControls, /mobile-control-layer/)
+assert.match(mobilePlayerControls, /mobile-player-top/)
+assert.match(mobilePlayerControls, /mobile-transport/)
+assert.match(mobilePlayerControls, /mobile-player-bottom/)
+assert.match(mobilePlayerControls, /mobile-player-sheet/)
+assert.match(mobilePlayerControls, /自动横屏/)
+assert.match(mobilePlayerControls, /锁定横屏/)
+assert.match(mobilePlayerControls, /锁定竖屏/)
+assert.match(mobilePlayerControls, /搜索字幕/)
+assert.match(mobilePlayerControls, /载入本地字幕/)
+assert.match(mobilePlayerControls, /@media \(orientation: portrait\)/)
+
+const progressBar = await source('src/components/player/ProgressBar.vue')
+assert.match(progressBar, /@pointerdown\.prevent="handlePointerDown"/)
+assert.match(progressBar, /setPointerCapture\(event\.pointerId\)/)
+assert.match(progressBar, /touch-action: none/)
+
+assert.equal(resolveTouchGestureAxis(8, 4), 'pending')
+assert.equal(resolveTouchGestureAxis(12, 12), 'horizontal')
+assert.equal(resolveTouchGestureAxis(13, 18), 'vertical')
+assert.equal(touchSeekTarget(50, -500, 500, 100), 0)
+assert.equal(touchSeekTarget(50, 500, 500, 100), 100)
+assert.equal(touchVerticalLevel(50, -500, 500), 100)
+assert.equal(touchVerticalLevel(50, 500, 500), 0)
+assert.equal(isNearbyDoubleTap(null, { x: 10, y: 10, at: 100 }), false)
+assert.equal(isNearbyDoubleTap({ x: 10, y: 10, at: 100 }, { x: 20, y: 20, at: 350 }), true)
+assert.equal(isNearbyDoubleTap({ x: 10, y: 10, at: 100 }, { x: 100, y: 100, at: 350 }), false)
+
+const playerView = await source('src/views/PlayerView.vue')
+assert.match(playerView, /event\.pointerType === 'mouse' && event\.altKey && event\.button === 0/)
+assert.match(playerView, /event\.pointerType !== 'touch' && !simulatedWithMouse/)
+assert.match(playerView, /function revealChromeFromPointer\(\) \{\s+if \(touchGestureSession\?\.simulatedWithMouse\)\s+return/)
+assert.match(playerView, /session\.leftSide \? 'brightness' : 'volume'/)
+assert.match(playerView, /isNearbyDoubleTap\(lastTouchTap, currentTap\)/)
+assert.match(playerView, /void handleTogglePause\(\)\.catch/)
+assert.match(playerView, /suppressPlayerClickUntil = Date\.now\(\) \+ TOUCH_CLICK_SUPPRESSION_MS/)
+assert.match(playerView, /@media \(any-pointer: coarse\) \{[\s\S]*?touch-action: none;/)
+assert.doesNotMatch(playerView, /触摸测试/)
+assert.match(playerView, /beginHeldArrow\(touchGestureSession\.holdArrowKey, 'touch'\)/)
+assert.match(playerView, /heldArrowOwner === 'touch' && arrowHoldActivated/)
+assert.match(playerView, /releaseHeldArrow\(false, 'touch'\)/)
+assert.match(playerView, /Date\.now\(\) - session\.startedAt <= 700/)
+assert.match(playerView, /playbackDiagnostics\?\.state !== 'error'/)
+assert.match(playerView, /loadPlayerInteractionSettings\(\)\.longPressPlaybackSpeed/)
+assert.match(playerView, /const isNativeAndroidPlayer = isNativeAndroidRuntime\(\)/)
+assert.match(playerView, /player-view--native-mobile/)
+assert.match(playerView, /<MobilePlayerControls/)
+assert.match(playerView, /v-if="hasMedia && isNativeAndroidPlayer"/)
+assert.match(playerView, /:mobile-layout="false"/)
+assert.match(playerView, /if \(isNativeAndroidPlayer\) \{\s+toggleChromeFromTouch\(\)/)
+assert.match(playerView, /showKeyboardOsd\(`屏幕方向 · \$\{label\}`\)/)
+
+const videoPlayer = await source('src/components/player/VideoPlayer.vue')
+assert.match(videoPlayer, /等待播放中/)
+assert.doesNotMatch(videoPlayer, /拖拽文件到此处播放/)
+
+const mpvPlayer = await source('src-tauri/src/mpv/player.rs')
+assert.match(mpvPlayer, /"video-zoom"[\s\S]*?\| "brightness" =>/)
+
+const windowChrome = await source('src/components/layout/WindowChrome.vue')
+assert.match(windowChrome, /const appWindow = isTauriRuntime\(\) \? getCurrentWindow\(\) : null/)
+assert.match(windowChrome, /@media \(max-width: 767px\) \{[\s\S]*?\.desktop-window-controls/)
+
+console.log(JSON.stringify({
+  mobileBottomNavigation: true,
+  libraryAndQuickSheets: true,
+  hoverOnlyGlobalControlsRemoved: true,
+  touchMediaActionsVisible: true,
+  sourceQuickControlsPersistent: true,
+  mobilePlayerControlLayout: true,
+  touchProgressSeeking: true,
+  touchPlaybackGestures: true,
+  touchDesktopInputIsolation: true,
+  desktopTouchGestureSimulation: true,
+  browserResponsivePreviewSupported: true,
+  verticalScrollThroughHomeMediaRows: true,
+  nativeAndroidPlayerLayout: true,
+  nativeAndroidDesktopChromeRemoved: true,
+  nativeAndroidDedicatedControls: true,
+  nativeAndroidTapChromeFallback: true,
+  conciseWaitingPlaybackState: true,
+  nativeOrientationLockControl: true,
+}, null, 2))

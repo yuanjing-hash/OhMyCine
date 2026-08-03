@@ -8,7 +8,7 @@ defineProps<{
   hideNav?: boolean
 }>()
 
-const appWindow = getCurrentWindow()
+const appWindow = isTauriRuntime() ? getCurrentWindow() : null
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -21,6 +21,8 @@ const isMaximized = ref(false)
 const isFullscreen = ref(false)
 
 async function syncWindowState() {
+  if (!appWindow)
+    return
   try {
     const [maximized, fullscreen] = await Promise.all([
       appWindow.isMaximized(),
@@ -44,10 +46,12 @@ function trackWindowListener(listener: Promise<() => void>) {
 }
 
 async function minimize() {
-  await appWindow.minimize()
+  await appWindow?.minimize()
 }
 
 async function toggleMaximize() {
+  if (!appWindow)
+    return
   if (await appWindow.isFullscreen())
     return
   if (await appWindow.isMaximized())
@@ -58,7 +62,7 @@ async function toggleMaximize() {
 }
 
 async function close() {
-  await appWindow.close()
+  await appWindow?.close()
 }
 
 function goBack() {
@@ -75,7 +79,7 @@ function beginDrag(event: MouseEvent) {
 }
 
 async function dragIfMoved(event: MouseEvent) {
-  if (!dragStart || isDragStarting)
+  if (!appWindow || !dragStart || isDragStarting)
     return
 
   const deltaX = Math.abs(event.screenX - dragStart.x)
@@ -99,10 +103,20 @@ function endDrag() {
   dragStart = null
 }
 
+function isTauriRuntime(): boolean {
+  const root = globalThis as {
+    readonly __TAURI_INTERNALS__?: unknown
+    readonly window?: { readonly __TAURI_INTERNALS__?: unknown }
+  }
+  return root.__TAURI_INTERNALS__ != null || root.window?.__TAURI_INTERNALS__ != null
+}
+
 onMounted(() => {
   void syncWindowState()
-  trackWindowListener(appWindow.onResized(syncWindowState))
-  trackWindowListener(appWindow.onFocusChanged(syncWindowState))
+  if (appWindow) {
+    trackWindowListener(appWindow.onResized(syncWindowState))
+    trackWindowListener(appWindow.onFocusChanged(syncWindowState))
+  }
 })
 
 onBeforeUnmount(() => {
@@ -140,7 +154,7 @@ onBeforeUnmount(() => {
       <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
         <path d="M12.5 4.5L7 10l5.5 5.5M8 10h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
-      返回
+      <span class="player-window-back-label">返回</span>
     </button>
 
     <!-- Center navigation glass panel -->
@@ -264,7 +278,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 767px) and (hover: none) and (pointer: coarse) {
+@media (max-width: 767px) {
   .desktop-window-drag,
   .desktop-window-controls {
     display: none !important;
@@ -273,6 +287,16 @@ onBeforeUnmount(() => {
   .player-window-back {
     left: 1rem;
     top: max(0.75rem, env(safe-area-inset-top));
+    width: 2.75rem;
+    height: 2.75rem;
+    justify-content: center;
+    border-radius: 50%;
+    padding: 0;
+    background: rgba(9, 11, 17, 0.72);
+  }
+
+  .player-window-back-label {
+    display: none;
   }
 }
 </style>

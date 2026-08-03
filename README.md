@@ -53,6 +53,7 @@ OhMyCine
 - **TMDB 元数据增强**：可选 TMDB token/key，支持电影/剧集匹配、海报/背景/标题 Logo、剧集分季分集图文和受控分类规则。
 - **统一存储与便携模式**：Windows 默认把配置、历史、扫描索引和凭据数据库放在 `%LOCALAPPDATA%/com.ohmycine.player/data`；portable ZIP 通过 `portable.flag` 把 Player 自有 data/cache/logs 放在 EXE 同目录。非敏感配置进入 SQLite，标准模式凭据主密钥由 Windows DPAPI 保护。
 - **Windows 桌面打包链路**：每个 Beta 同时发布 NSIS 安装包、使用普通用户数据目录的标准免安装 ZIP，以及数据跟随程序目录的 portable ZIP；已接入 libmpv 依赖准备和 Windows GNU 交叉构建，Windows 实机播放/签名仍需在 Windows 宿主验证。
+- **Android ARM64 可播放预览**：手机/平板 UI、触摸手势与原生 `SurfaceView` libmpv 播放链路已接通，复用现有数据源播放地址、header、字幕/音轨和播放状态事件；debug APK 已通过构建、包内库和 JNI 符号验证，仍需 Android 真机确认画面、硬解、横竖屏与生命周期兼容性。
 
 ## Player 运行截图
 

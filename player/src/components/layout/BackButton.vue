@@ -39,7 +39,7 @@ function goBack() {
         stroke-linejoin="round"
       />
     </svg>
-    返回
+    <span class="gp-back-label">返回</span>
   </button>
 </template>
 
@@ -63,7 +63,18 @@ function goBack() {
   .gp-back-btn {
     left: 1rem;
     top: max(0.75rem, env(safe-area-inset-top));
-    padding-inline: 0.75rem;
+    width: 2.75rem;
+    height: 2.75rem;
+    justify-content: center;
+    border-radius: 50%;
+    padding: 0;
+    background: rgba(9, 11, 17, 0.72);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+
+  .gp-back-label {
+    display: none;
   }
 }
 </style>

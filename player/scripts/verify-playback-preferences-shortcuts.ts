@@ -40,6 +40,9 @@ assert.match(playerView, /runKeyboardAction/)
 assert.match(playerView, /cycleSubtitleFromKeyboard/)
 assert.match(playerView, /cycleAudioFromKeyboard/)
 assert.match(playerView, /revealChromeFromPointer/)
+assert.match(playerView, /function handleApplicationPointerLeave\(\)/)
+assert.match(playerView, /document\.documentElement\.addEventListener\('mouseleave', handleApplicationPointerLeave\)/)
+assert.match(playerView, /playerControlsRef\.value\?\.dismissTransientUi\(\)/)
 assert.match(playerView, /<Transition name="keyboard-osd">/)
 assert.match(playerView, /ARROW_HOLD_DELAY/)
 assert.match(playerView, /releaseHeldArrow\(false\)/)
@@ -72,6 +75,9 @@ const appLayout = await source('../src/components/layout/AppLayout.vue')
 assert.match(appLayout, /isPlayerRoute\.value && playerShortcutTargetForEvent/)
 
 const mpvComposable = await source('../src/composables/useMpv.ts')
+assert.match(mpvComposable, /invoke<void>\('mpv_apply_engine_settings'/)
+assert.match(mpvComposable, /await applyEngineSettings\(\)[\s\S]*mpv_init_render_surface/)
+assert.match(mpvComposable, /await applyEngineSettings\(\)[\s\S]*invoke<void>\('mpv_load'/)
 for (const functionName of ['setSubtitle', 'setAudio']) {
   const functionBody = mpvComposable.match(new RegExp(`async function ${functionName}\\([^)]*\\) \\{([\\s\\S]*?)\\n  \\}`))?.[1] ?? ''
   assert.doesNotMatch(functionBody, /await refreshTrackState\(\)/, `${functionName} must not immediately re-read track-list during a track switch`)
@@ -90,6 +96,8 @@ assert.doesNotMatch(nativePlayer, /mpv_set_property_async/)
 assert.match(nativePlayer, /pub fn drain_events/)
 assert.match(nativePlayer, /pub fn stop\(&mut self\)/)
 assert.match(nativePlayer, /surface\.set_playback_active\(false\)/)
+assert.match(nativePlayer, /pub fn apply_engine_settings/)
+assert.match(nativePlayer, /self\.set_property\("vo", &settings\.video_output\)/)
 
 const windowsSurface = await source('../src-tauri/src/mpv/platform/windows.rs')
 assert.match(windowsSurface, /playback_active: bool/)
@@ -113,6 +121,13 @@ assert.match(settingsView, /saveNavigationShortcutBindings/)
 assert.match(settingsView, /savePlayerShortcutBindings/)
 assert.match(settingsView, /playerShortcutEntries/)
 assert.match(settingsView, /longPressPlaybackSpeed/)
+for (const setting of ['videoOutput', 'hardwareDecoder', 'cacheMode', 'demuxerMaxBytesMb', 'videoSync'])
+  assert.match(settingsView, new RegExp(setting))
+
+const interactionSettings = await source('../src/services/playerInteractionSettings.ts')
+assert.match(interactionSettings, /videoOutput: 'gpu-next'/)
+assert.match(interactionSettings, /hardwareDecoder: 'auto-safe'/)
+assert.match(interactionSettings, /demuxerMaxBytesMb: 64/)
 
 const shortcut = shortcutFromKeyboardEvent({
   code: 'KeyH',
@@ -187,4 +202,5 @@ console.log(JSON.stringify({
   keyboardActionsDoNotRevealChrome: true,
   manualLocalSubtitleImport: true,
   routeLeaveStopsAndHidesNativeVideo: true,
+  configurablePlayerEngine: true,
 }, null, 2))
