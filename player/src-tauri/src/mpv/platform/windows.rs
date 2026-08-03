@@ -72,6 +72,8 @@ pub struct WindowsRenderSurface {
     bounds: Option<RenderSurfaceBoundsSnapshot>,
     /// Whether `mark_mpv_ready` has been called (mpv initialized with wid successfully).
     mpv_ready: bool,
+    /// Whether a media item is currently loaded and allowed to reveal the video underlay.
+    playback_active: bool,
     /// Shared diagnostic state.
     diagnostics: Arc<Mutex<RenderDiagnostics>>,
     /// Path to the log file, if resolved.
@@ -124,6 +126,7 @@ impl WindowsRenderSurface {
             mpv_hwnd,
             bounds: None,
             mpv_ready: false,
+            playback_active: false,
             diagnostics,
             log_path,
         })
@@ -134,49 +137,32 @@ impl WindowsRenderSurface {
         (self.mpv_hwnd as isize).to_string()
     }
 
-    /// Called by `MpvPlayer` after `mpv_initialize` succeeds with the `wid` option. Reveals the
-    /// video underlay and places it immediately behind the transparent Tauri/WebView overlay.
+    /// Called by `MpvPlayer` after `mpv_initialize` succeeds with the `wid` option. The underlay
+    /// remains hidden until a media load succeeds and `set_playback_active(true)` is called.
     pub fn mark_mpv_ready(&mut self) {
         self.mpv_ready = true;
-        let owner = self.owner as isize;
-        let hwnd = self.mpv_hwnd as isize;
-        let diagnostics = Arc::clone(&self.diagnostics);
-        let log_path = self.log_path.clone();
+        let webview_transparency_applied = webview_background_transparency_applied();
+        update_diagnostics(&self.diagnostics, |d| {
+            d.mpv_hwnd_shown = false;
+            d.overlay_window_transparent = webview_transparency_applied;
+            d.webview_background_transparent_applied = webview_transparency_applied;
+            d.mpv_wid_accepted = true;
+            d.mpv_initialized = true;
+            d.last_sync_result = "ready-hidden-until-playback".to_string();
+        });
+        log_diagnostics(
+            &self.log_path,
+            "mpv HWND initialized through wid and kept hidden until playback becomes active",
+        );
+    }
 
-        if let Err(err) = self.window.run_on_main_thread(move || {
-            let owner = owner as HWND;
-            let hwnd = hwnd as HWND;
-            unsafe {
-                ShowWindow(hwnd, SW_SHOW);
-                // `hWndInsertAfter = owner` places the underlay directly below the Tauri overlay
-                // in the regular top-level z-order. This is the key difference from the previous
-                // HWND_TOPMOST/owned-window model, which necessarily covered the WebView controls.
-                SetWindowPos(
-                    hwnd,
-                    owner,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
-                );
-            }
-            let webview_transparency_applied = webview_background_transparency_applied();
-            update_diagnostics(&diagnostics, |d| {
-                d.mpv_hwnd_shown = true;
-                d.overlay_window_transparent = webview_transparency_applied;
-                d.webview_background_transparent_applied = webview_transparency_applied;
-                d.z_order_underlay_applied = true;
-                d.mpv_wid_accepted = true;
-                d.mpv_initialized = true;
-                d.last_sync_result = "shown-underlay".to_string();
-            });
-            log_diagnostics(
-                &log_path,
-                "mpv HWND shown and placed directly behind transparent Tauri overlay",
-            );
-        }) {
-            log::warn!("failed to schedule mark_mpv_ready on main thread: {err}");
+    pub fn set_playback_active(&mut self, active: bool) {
+        self.playback_active = active;
+        if active {
+            self.show_mpv_hwnd();
+            self.sync_geometry_from_owner();
+        } else {
+            self.hide_mpv_hwnd();
         }
     }
 
@@ -189,10 +175,6 @@ impl WindowsRenderSurface {
     /// deadlocked when `on_window_event` (main thread) tried to acquire the `MpvState` mutex
     /// that the async thread already held.
     pub fn set_bounds(&mut self, bounds: RenderSurfaceBounds) -> Result<(), String> {
-        if !self.mpv_ready {
-            return Ok(());
-        }
-
         let scale = bounds.scale_factor;
         let owner = self.owner as isize;
         let hwnd = self.mpv_hwnd as isize;
@@ -212,6 +194,10 @@ impl WindowsRenderSurface {
             height: scaled_i32(bounds.height, scale),
             scale_factor: scale,
         });
+
+        if !self.mpv_ready || !self.playback_active {
+            return Ok(());
+        }
 
         // Fire-and-forget: schedule Win32 positioning on the main thread without blocking.
         self.window
@@ -345,7 +331,7 @@ impl WindowsRenderSurface {
     }
 
     fn sync_visibility_from_owner(&self) {
-        if !self.mpv_ready {
+        if !self.mpv_ready || !self.playback_active {
             return;
         }
 
@@ -359,6 +345,7 @@ impl WindowsRenderSurface {
             if unsafe { IsIconic(owner) } != 0 {
                 unsafe { ShowWindow(hwnd, SW_HIDE) };
                 update_diagnostics(&diagnostics, |d| {
+                    d.mpv_hwnd_shown = false;
                     d.fullscreen_state = "minimized".to_string();
                     d.geometry_following = true;
                     d.last_sync_result = "hidden-minimized".to_string();
@@ -401,7 +388,7 @@ impl WindowsRenderSurface {
     /// Re-read the Tauri owner's live state (iconic, zoomed, rect, DPI) and reposition the mpv
     /// HWND accordingly. This is the core of the geometry-following loop.
     fn sync_geometry_from_owner(&mut self) {
-        if !self.mpv_ready {
+        if !self.mpv_ready || !self.playback_active {
             return;
         }
 
@@ -513,6 +500,7 @@ impl WindowsRenderSurface {
             let hwnd = hwnd as HWND;
             unsafe { ShowWindow(hwnd, SW_HIDE) };
             update_diagnostics(&diagnostics, |d| {
+                d.mpv_hwnd_shown = false;
                 d.last_sync_result = "hidden".to_string();
             });
             log_diagnostics(&log_path, "mpv HWND hidden");
@@ -522,7 +510,7 @@ impl WindowsRenderSurface {
     }
 
     fn show_mpv_hwnd(&mut self) {
-        if !self.mpv_ready {
+        if !self.mpv_ready || !self.playback_active {
             return;
         }
         let owner = self.owner as isize;

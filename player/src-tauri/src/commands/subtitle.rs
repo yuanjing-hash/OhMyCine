@@ -190,6 +190,13 @@ pub struct HashSubtitleDownloadRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalSubtitleImportRequest {
+    path: String,
+    cache_owner: Option<SubtitleCacheOwner>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SubtitleCacheOwner {
     source_id: String,
     media_identity: String,
@@ -480,6 +487,44 @@ pub async fn subtitle_download_hash_provider(
         request.provider.id(),
         &request.download_ref,
         &pending.extension,
+        content,
+        request.cache_owner.as_ref(),
+    )
+}
+
+#[tauri::command]
+pub fn subtitle_import_local(
+    app: AppHandle,
+    request: LocalSubtitleImportRequest,
+) -> Result<DownloadedSubtitle, String> {
+    let source = fs::canonicalize(request.path.trim())
+        .map_err(|_| "选择的本地字幕文件不存在。".to_string())?;
+    if !source.is_file() {
+        return Err("选择的本地字幕路径不是文件。".to_string());
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .and_then(normalized_subtitle_extension)
+        .ok_or_else(|| "选择的本地字幕格式不受支持。".to_string())?;
+    let size = source
+        .metadata()
+        .map_err(|_| "无法读取本地字幕文件信息。".to_string())?
+        .len();
+    if size == 0 || size > MAX_DOWNLOAD_RESPONSE_BYTES as u64 {
+        return Err("本地字幕文件为空或超过 12 MiB。".to_string());
+    }
+    let mut content = Vec::with_capacity(size as usize);
+    File::open(&source)
+        .map_err(|_| "无法读取本地字幕文件。".to_string())?
+        .take(MAX_DOWNLOAD_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut content)
+        .map_err(|_| "无法读取本地字幕文件。".to_string())?;
+    write_subtitle_cache(
+        &app,
+        "manual-local",
+        &source.to_string_lossy(),
+        extension,
         content,
         request.cache_owner.as_ref(),
     )

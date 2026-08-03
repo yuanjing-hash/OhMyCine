@@ -45,6 +45,7 @@ const emit = defineEmits<{
   setPlaybackSpeed: [speed: number]
   setSubtitleDelay: [delay: number]
   setSubtitle: [trackId: SubtitleSelectionId | null]
+  loadLocalSubtitle: []
   searchSubtitles: []
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
@@ -185,6 +186,11 @@ function formatSubtitleDelay(delay: number): string {
 function openSubtitleSearch() {
   closeMenus()
   emit('searchSubtitles')
+}
+
+function openLocalSubtitle() {
+  closeMenus()
+  emit('loadLocalSubtitle')
 }
 
 function chooseAudio(trackId: number) {
@@ -535,6 +541,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
             <button type="button" class="menu-option menu-option--search" role="menuitem" @click="openSubtitleSearch">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 20.2-4.35-4.35m1.4-5.1a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
               搜索字幕
+            </button>
+            <button type="button" class="menu-option menu-option--search" role="menuitem" @click="openLocalSubtitle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6.5h5l1.6 2h8.4v9A2.5 2.5 0 0 1 17 20H7a2.5 2.5 0 0 1-2.5-2.5v-11Zm7.5 5v5m0-5-2 2m2-2 2 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              载入本地字幕
             </button>
           </div>
         </Transition>

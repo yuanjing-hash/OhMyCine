@@ -8,6 +8,7 @@ import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/pl
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { open } from '@tauri-apps/plugin-dialog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import PlayerControls from '@/components/player/PlayerControls.vue'
@@ -20,7 +21,7 @@ import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
-import { downloadLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
+import { downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const AUTO_HIDE_DELAY = 3000
@@ -90,6 +91,7 @@ const subtitleSearchOrigin = ref<SubtitleSearchOrigin | null>(null)
 const subtitleSearchResults = ref<SubtitleSearchResult[]>([])
 const subtitleSearchLoading = ref(false)
 const subtitleDownloadingId = ref<string | null>(null)
+const localSubtitleImporting = ref(false)
 const subtitleSearchError = ref<string | null>(null)
 const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSettings().defaultLanguage)
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
@@ -1183,6 +1185,39 @@ function openSubtitleSearch() {
   revealChrome()
 }
 
+async function loadLocalSubtitleFile() {
+  if (localSubtitleImporting.value)
+    return
+
+  localSubtitleImporting.value = true
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title: '载入本地字幕',
+      filters: [{ name: '字幕文件', extensions: ['srt', 'ass', 'ssa', 'vtt', 'sub'] }],
+    })
+    if (typeof selected !== 'string' || !selected.trim())
+      return
+
+    cancelPendingTrackPreferenceRestore()
+    const cacheOwner = currentMediaPreferenceIdentity() ?? undefined
+    const imported = await importLocalSubtitle(selected, cacheOwner)
+    const title = subtitleFileNameFromPath(selected) || '本地字幕'
+    await addExternalSubtitle(imported.path, title, undefined, 'downloaded')
+    activeCachedSubtitlePath = imported.path
+    scheduleMediaPreferenceSave()
+    showTransientPlayerMessage(`已载入本地字幕：${title}`)
+    scheduleChromeHide()
+  }
+  catch (error) {
+    showTransientPlayerMessage(toSafeErrorMessage(error, '本地字幕载入失败。'))
+  }
+  finally {
+    localSubtitleImporting.value = false
+  }
+}
+
 function closeSubtitleSearch() {
   if (subtitleSearchLoading.value || subtitleDownloadingId.value)
     return
@@ -1887,12 +1922,15 @@ async function stopPlaybackSilently() {
 
 async function stopPlaybackForRouteExit() {
   playbackCleanupStarted = true
-  await saveCurrentProgress(true, 'stopped')
+  const progressSave = saveCurrentProgress(true, 'stopped')
   clearHistorySaveTimer()
-  if (!hasMedia.value && !isPlaying.value)
-    return
-
   await stopPlaybackSilently()
+  try {
+    await progressSave
+  }
+  catch {
+    // A local progress write failure must not keep the native video surface alive or block routing.
+  }
 }
 
 function handleBeforeUnload() {
@@ -2249,6 +2287,7 @@ watch(
         @set-playback-speed="handleSetPlaybackSpeed"
         @set-subtitle-delay="handleSetSubtitleDelay"
         @set-subtitle="handleSetSubtitle"
+        @load-local-subtitle="loadLocalSubtitleFile"
         @search-subtitles="openSubtitleSearch"
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"

@@ -118,7 +118,16 @@ impl MpvPlayer {
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.apply_http_headers(headers)?;
-        self.command(&["loadfile", path, "replace"])
+        if let Some(surface) = self.render_surface.as_mut() {
+            surface.set_playback_active(false);
+        }
+        let result = self.command(&["loadfile", path, "replace"]);
+        if result.is_ok() {
+            if let Some(surface) = self.render_surface.as_mut() {
+                surface.set_playback_active(true);
+            }
+        }
+        result
     }
 
     pub fn add_subtitle(
@@ -365,6 +374,16 @@ impl MpvPlayer {
     pub fn resume(&mut self) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.set_property("pause", "false")
+    }
+
+    pub fn stop(&mut self) -> Result<(), String> {
+        if let Some(surface) = self.render_surface.as_mut() {
+            surface.set_playback_active(false);
+        }
+        if !self.initialized {
+            return Ok(());
+        }
+        self.command(&["stop"])
     }
 
     pub fn seek(&mut self, position: f64) -> Result<(), String> {

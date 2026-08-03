@@ -1,5 +1,6 @@
 import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
+import { invoke } from '@tauri-apps/api/core'
 import { HashSubtitleProvider } from './hashProviders'
 import { OpenSubtitlesProvider } from './opensubtitles'
 import { loadSubtitleSearchSettings, readOpenSubtitlesCredentials } from './settings'
@@ -59,6 +60,15 @@ export async function downloadLocalSubtitle(result: SubtitleSearchResult, cacheO
   if (!provider)
     throw new Error('找不到该字幕结果对应的 Player 提供器。')
   return provider.download(result, cacheOwner)
+}
+
+export async function importLocalSubtitle(path: string, cacheOwner?: SubtitleCacheOwner): Promise<LocalSubtitleDownloadResult> {
+  return invoke<LocalSubtitleDownloadResult>('subtitle_import_local', {
+    request: {
+      path,
+      cacheOwner: cacheOwner ?? null,
+    },
+  })
 }
 
 export * from './settings'
