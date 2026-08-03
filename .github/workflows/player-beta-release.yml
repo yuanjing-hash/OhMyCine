@@ -91,6 +91,7 @@ jobs:
               'release notes generator is used': 'python3 .github/scripts/generate-player-beta-release-notes.py' in text,
               'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
               'Android ARM64 release job is present': 'release-android-arm64:' in text and 'tauri:build:android:preview' in text,
+              'Android clean-runner build avoids pre-generated Gradle bridge': 'gradlew -p src-tauri/gen/android clean' not in Path('player/package.json').read_text(),
               'Android APK is uploaded to the same release': 'gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber' in text,
               'manual extra notes reach generator through env': 'EXTRA_RELEASE_NOTES: $' + '{{ github.event_name == ' + "'workflow_dispatch'" + ' && inputs.release_notes || ' + "''" + ' }}' in text,
           }
