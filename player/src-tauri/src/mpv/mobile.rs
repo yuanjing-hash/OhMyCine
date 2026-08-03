@@ -55,6 +55,7 @@ pub struct AndroidPlaybackDiagnostics {
     pub hardware_decoder: Option<String>,
     pub video_output: String,
     pub video_output_fallback_used: bool,
+    pub playback_transport: String,
     pub logs: Vec<String>,
 }
 

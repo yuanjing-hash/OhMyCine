@@ -77,11 +77,7 @@ pub async fn mpv_load(
         return Err("播放地址为空。".to_string());
     }
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
-    let (path, headers) = if path
-        .trim_start()
-        .to_ascii_lowercase()
-        .starts_with("https://")
-    {
+    let (path, headers) = if is_remote_http_stream(&path) {
         (stream_proxy.prepare(path, headers).await?, Vec::new())
     } else {
         (path, headers)
@@ -89,6 +85,12 @@ pub async fn mpv_load(
     let payload = LoadPayload { path, headers };
     wait_for_android_surface(state.inner()).await?;
     state.run("load", payload).await
+}
+
+fn is_remote_http_stream(path: &str) -> bool {
+    reqwest::Url::parse(path.trim())
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -299,4 +301,19 @@ async fn wait_for_android_surface(state: &AndroidMpvState) -> Result<(), String>
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     Err("Android 播放器表面准备超时，请重新进入播放页。".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_remote_http_stream;
+
+    #[test]
+    fn proxies_http_and_https_streams_before_android_mpv_load() {
+        assert!(is_remote_http_stream("http://emby.local/Videos/1/stream"));
+        assert!(is_remote_http_stream(" https://cdn.example/media.mkv "));
+        assert!(!is_remote_http_stream("/storage/emulated/0/movie.mkv"));
+        assert!(!is_remote_http_stream(
+            "file:///storage/emulated/0/movie.mkv"
+        ));
+    }
 }
