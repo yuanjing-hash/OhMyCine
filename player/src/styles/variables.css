@@ -45,6 +45,19 @@
   --color-interactive-hover: rgba(255, 255, 255, 0.08);
   --color-divider: rgba(255, 255, 255, 0.1);
 
+  /* === Adaptive Controls === */
+  --control-bg: rgba(255, 255, 255, 0.075);
+  --control-bg-hover: rgba(255, 255, 255, 0.11);
+  --control-option-bg: #1E1E2A;
+  --control-border: rgba(255, 255, 255, 0.13);
+  --control-border-hover: rgba(255, 255, 255, 0.22);
+  --control-text: #F0F0F5;
+  --control-placeholder: rgba(240, 240, 245, 0.38);
+  --control-focus-ring: rgba(74, 158, 255, 0.2);
+  --control-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 8px 24px rgba(0, 0, 0, 0.12);
+  --surface-soft: rgba(255, 255, 255, 0.06);
+  --surface-soft-hover: rgba(255, 255, 255, 0.105);
+
   /* === Border Radius === */
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -105,4 +118,16 @@
 
   --color-interactive-hover: rgba(0, 0, 0, 0.06);
   --color-divider: rgba(0, 0, 0, 0.1);
+
+  --control-bg: rgba(255, 255, 255, 0.9);
+  --control-bg-hover: #FFFFFF;
+  --control-option-bg: #FFFFFF;
+  --control-border: rgba(27, 31, 46, 0.14);
+  --control-border-hover: rgba(27, 31, 46, 0.24);
+  --control-text: #1A1A2E;
+  --control-placeholder: rgba(26, 26, 46, 0.42);
+  --control-focus-ring: rgba(74, 158, 255, 0.18);
+  --control-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 24px rgba(37, 41, 56, 0.08);
+  --surface-soft: rgba(255, 255, 255, 0.72);
+  --surface-soft-hover: rgba(255, 255, 255, 0.96);
 }
