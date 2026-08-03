@@ -14,8 +14,8 @@ use commands::history::{
     player_list_continue_watching, player_upsert_playback_progress,
 };
 use commands::local_file::{
-    local_file_list, local_file_metadata, local_file_stream_path, local_file_watch_start,
-    local_file_watch_stop, LocalFileWatcherState,
+    local_file_list, local_file_metadata, local_file_pick_directory, local_file_pick_video,
+    local_file_stream_path, local_file_watch_start, local_file_watch_stop, LocalFileWatcherState,
 };
 use commands::player::{
     mpv_add_subtitle, mpv_apply_engine_settings, mpv_get_property, mpv_init_render_surface,
@@ -58,6 +58,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder
         .plugin(commands::updater::init_android())
+        .plugin(commands::local_file::init_android())
         .plugin(mpv::mobile::init())
         .manage(mpv::mobile_proxy::AndroidStreamProxyState::default());
 
@@ -99,6 +100,8 @@ pub fn run() {
             player_install_update,
             local_file_list,
             local_file_metadata,
+            local_file_pick_video,
+            local_file_pick_directory,
             local_file_stream_path,
             local_file_watch_start,
             local_file_watch_stop,

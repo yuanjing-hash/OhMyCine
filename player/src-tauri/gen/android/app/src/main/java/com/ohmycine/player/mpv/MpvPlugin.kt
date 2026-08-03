@@ -2,6 +2,7 @@ package com.ohmycine.player.mpv
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.net.Uri
 import android.view.WindowManager
 import android.webkit.WebView
 import androidx.core.view.WindowCompat
@@ -76,7 +77,8 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(LoadArgs::class.java)
         enterPlaybackMode()
         try {
-            MpvSurfaceHost.load(args.path, args.headers.orEmpty().map { MpvHeader(it.name, it.value) })
+            val playablePath = preparePlayablePath(args.path)
+            MpvSurfaceHost.load(playablePath, args.headers.orEmpty().map { MpvHeader(it.name, it.value) })
         } catch (error: Exception) {
             exitPlaybackMode()
             throw error
@@ -98,7 +100,7 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun addSubtitle(invoke: Invoke) = resolve(invoke) {
         val args = invoke.parseArgs(SubtitleArgs::class.java)
-        MpvSurfaceHost.addSubtitle(args.url, args.title, args.language)
+        MpvSurfaceHost.addSubtitle(preparePlayablePath(args.url), args.title, args.language)
     }
 
     @Command
@@ -204,6 +206,16 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         "supported" to true,
         "mode" to orientationMode,
     )
+
+    private fun preparePlayablePath(path: String): String {
+        if (!path.startsWith("content://", ignoreCase = true))
+            return path
+
+        val descriptor = activity.contentResolver.openFileDescriptor(Uri.parse(path), "r")
+            ?: error("Android 无法读取所选媒体文件。")
+        val fd = descriptor.detachFd()
+        return "fdclose://$fd"
+    }
 
     private fun resolve(invoke: Invoke, action: () -> Unit) {
         try {

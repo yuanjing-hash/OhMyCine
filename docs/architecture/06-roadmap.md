@@ -223,12 +223,12 @@ Phase 4: 生态系统           ████████████████
 
 #### 设置页面 UI
 
-- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、刮削与分类入口；Emby/OpenList 使用账号密码、CloudDrive2 使用 gRPC 服务地址 + API Token、WebDAV 使用独立 URL + 账号密码；OpenList/CloudDrive2/WebDAV 均可连接后浏览并选择根目录，本地文件夹使用目录选择式添加/编辑）
+- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、刮削与分类入口；Emby/OpenList 使用账号密码、CloudDrive2 使用 gRPC 服务地址 + API Token、WebDAV 使用独立 URL + 账号密码；OpenList/CloudDrive2/WebDAV 均可连接后浏览并选择根目录；本地文件夹在桌面使用目录选择器，在 Android 使用 SAF 文档树持久只读授权）
 - [x] 数据源列表管理 (添加/编辑/删除)
 - [~] 刮削与分类设置页（已提供电影/剧集分组、TMDB 官方 genre 受控选项、默认分类实例、包含/排除条件、年份范围、兜底分类和本地结构化规则持久化；TMDB 凭据是可选增强，未配置时扫描保留本地候选和兜底分类；扫描任务与实际规则执行待后续完善）
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
 - [~] 数据源显示配置 (名称/图标/是否在侧栏显示；当前支持显示名称，图标/侧栏开关待后续)
-- [~] 添加数据源表单 (管理入口→可见类型卡片选择→Emby/OpenList 账号登录、CloudDrive2 API Token、WebDAV Basic Auth；OpenList/CloudDrive2/WebDAV 连接后可从 `/` 浏览并选择根目录，根目录以 `extra.rootPath` 保存为非敏感配置；本地文件夹通过 Tauri 目录选择器保存只读 root；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
+- [~] 添加数据源表单 (管理入口→可见类型卡片选择→Emby/OpenList 账号登录、CloudDrive2 API Token、WebDAV Basic Auth；OpenList/CloudDrive2/WebDAV 连接后可从 `/` 浏览并选择根目录，根目录以 `extra.rootPath` 保存为非敏感配置；本地文件夹在桌面保存只读绝对 root，在 Android 保存 SAF tree URI + 展示标签并验证持久读取授权；账号、密码、token 通过 `credentialRef` 持久化到 Tauri SQLite 凭证库，未写入 localStorage/DataSource 配置)
 - [x] 连接测试按钮 (显示成功/失败)
 - [~] 数据源状态显示 (在线/离线；当前在测试/浏览错误态中呈现，持久状态徽标待后续)
 
@@ -272,9 +272,9 @@ Phase 4: 生态系统           ████████████████
 
 #### LocalFileDataSource 实现
 
-- [x] 本地文件系统浏览（已通过 Tauri `local_file_list` / `local_file_metadata` 在用户选择 root 内只读列目录与文件；前端只暴露 `/` 开头的逻辑路径，真实绝对路径只在 root-scoped Tauri 命令内解析）
+- [x] 本地文件系统浏览（桌面通过 Tauri `local_file_list` / `local_file_metadata` 在用户选择 root 内只读列目录与文件；Android 通过 SAF 文档树和 Kotlin `LocalMediaPlugin` 在持久授权 root 内查询；前端统一只暴露 `/` 开头的逻辑路径，绝对路径或 `content://` 子文档 URI 只在平台命令内解析）
 - [x] 文件类型过滤（本地源可浏览文件夹和普通文件，播放入口仅允许支持的视频扩展；扫描继续复用原始文件源视频过滤）
-- [x] 播放页视频区域拖拽播放、右下角悬浮播放按钮打开本地视频文件选择器，以及 LocalFileDataSource 文件夹浏览播放均已接入现有 libmpv 加载流程；Windows 内嵌视频渲染已验证
+- [x] 播放页视频区域拖拽播放、桌面悬浮播放按钮和 Android 快捷操作本地视频选择，以及 LocalFileDataSource 文件夹浏览播放均已接入现有 libmpv 加载流程；Android 使用 SAF `content://` + `fdclose://` 描述符播放且不复制大文件，Windows 内嵌视频渲染已验证
 - [ ] 文件关联 (双击打开)
 - [x] 实现 `LocalFileDataSource` (implements DataSource；支持设置页添加/编辑本地文件夹、目录浏览、有限搜索、详情、播放路径、raw scan cache Home sections)
 
@@ -321,7 +321,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 能连接 OpenList/Alist 浏览和播放云盘文件（已通过本地 OpenList/Alist 服务 live test）
 - [~] 能连接 CloudDrive2 浏览和播放（原生 gRPC API Token DataSource、Tauri 命令、设置页和播放直链/header 已完成；待真实 CloudDrive2 服务实机验证）
 - [~] 能连接通用 WebDAV 浏览和播放（独立 `webdav` DataSource、Basic Auth、设置页、扫描调度和播放 header 已完成；待更多真实 WebDAV 服务兼容性验证）
-- [x] 能通过文件选择器打开本地视频并进入播放页，播放页视频区域支持拖拽播放；也能把本地文件夹添加为数据源，像 OpenList/Alist 一样浏览、扫描、生成媒体库并播放 root 内视频；文件关联仍待后续
+- [x] 桌面与 Android 都能通过平台文件选择器打开本地视频并进入播放页；桌面播放页支持拖拽；两端都能把本地文件夹添加为数据源，像 OpenList/Alist 一样浏览、扫描、生成媒体库并播放 root 内视频；文件关联仍待后续
 - [ ] 115/123/夸克在 UI 中有占位
 
 ---
@@ -871,7 +871,7 @@ Phase 4: 生态系统           ████████████████
 
 - [x] Tauri Android 构建配置（已生成 Android Studio 工程并通过 ARM64 debug APK 预览构建）
 - [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令；已补 Surface 延迟就绪屏障、待播请求、初始化错误回传、自动横屏沉浸模式和触摸优先控制布局，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待复验，其他 ABI 与可复现自建 runtime 后续完成）
-- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、竖屏播放器控制重排和 Android 原生视频底层；真机系统交互仍待完成）
+- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、竖屏播放器控制重排、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；真机系统交互与授权撤销恢复仍待复验）
   - [~] 触摸手势（已完成横向快退/快进、左侧亮度、右侧音量、单击控制 UI、双击暂停、左右半屏静止长按复用方向键连续后退/临时倍速，并按触摸输入兼容 Surface 等触控 PC；捏合手势和 Android 原生屏幕亮度仍待完成）
   - [x] 底部导航栏与媒体库/快捷抽屉
   - [x] 替换手机端 hover-only 全局与媒体操作

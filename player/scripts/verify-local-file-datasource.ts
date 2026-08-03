@@ -49,6 +49,7 @@ const config = createLocalFileDataSourceConfig({
   id: 'local-main',
   displayName: '',
   rootPath,
+  rootLabel: '家庭媒体',
   order: 2,
 })
 
@@ -56,6 +57,7 @@ assert.equal(config.type, 'local')
 assert.equal(config.url, 'local://filesystem')
 assert.equal(config.name, 'ohmycine-media')
 assert.equal(config.extra?.rootPath, rootPath)
+assert.equal(config.extra?.rootLabel, '家庭媒体')
 assert.equal(JSON.stringify(config).includes('username'), false)
 
 const libraries = await validateLocalFileDataSourceConfig(config, {
@@ -76,9 +78,17 @@ assert.deepEqual(libraries.map(library => ({
 })), [{
   id: '/',
   sourceId: 'local-main',
-  name: 'ohmycine-media',
+  name: '家庭媒体',
   type: 'folders',
 }])
+
+const androidTreeConfig = createLocalFileDataSourceConfig({
+  id: 'local-android',
+  rootPath: 'content://com.android.externalstorage.documents/tree/primary%3AMovies',
+  rootLabel: 'Movies',
+})
+assert.equal(androidTreeConfig.extra?.rootPath, 'content://com.android.externalstorage.documents/tree/primary%3AMovies')
+assert.equal(androidTreeConfig.extra?.rootLabel, 'Movies')
 
 await source.init(config)
 assert.equal(await source.test(), true)

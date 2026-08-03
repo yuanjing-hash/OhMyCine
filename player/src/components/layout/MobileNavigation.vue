@@ -3,6 +3,9 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
+import { pickAndroidLocalVideo } from '@/services/androidLocalMedia'
+import { savePlaybackMediaContext } from '@/services/playbackContext'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
 
 type MobileSheet = 'libraries' | 'quick'
@@ -34,6 +37,8 @@ const store = useDataSourceStore()
 const { theme, toggle: toggleTheme } = useTheme()
 const activeSheet = ref<MobileSheet | null>(null)
 const isOpeningFile = ref(false)
+const openFileError = ref<string | null>(null)
+const isNativeAndroid = isNativeAndroidRuntime()
 
 const isHomeActive = computed(() => route.name === 'home')
 const isLibraryActive = computed(() => route.name === 'source' || route.name === 'media-detail' || activeSheet.value === 'libraries')
@@ -100,7 +105,41 @@ async function openLocalVideo() {
     return
 
   isOpeningFile.value = true
+  openFileError.value = null
   try {
+    if (isNativeAndroid) {
+      const selected = await pickAndroidLocalVideo()
+      if (selected.cancelled)
+        return
+      if (!selected.uri)
+        throw new Error('Android 文件选择未返回可播放媒体。')
+      if (selected.name && !isSupportedVideoName(selected.name))
+        throw new Error('请选择受支持的视频文件。')
+
+      const title = selected.name?.trim() || '本地视频'
+      const itemId = `android-local-${Date.now()}`
+      const contextId = savePlaybackMediaContext({
+        sourceId: 'local-file',
+        itemId,
+        title,
+        locator: {
+          kind: 'localPath',
+          path: selected.uri,
+        },
+      })
+      closeSheet()
+      await router.push({
+        name: 'player',
+        query: {
+          contextId,
+          sourceId: 'local-file',
+          itemId,
+          title,
+        },
+      })
+      return
+    }
+
     const selected = await open({
       multiple: false,
       directory: false,
@@ -119,9 +158,17 @@ async function openLocalVideo() {
       },
     })
   }
+  catch (error) {
+    openFileError.value = error instanceof Error ? error.message : '选择本地视频失败。'
+  }
   finally {
     isOpeningFile.value = false
   }
+}
+
+function isSupportedVideoName(name: string): boolean {
+  const extension = name.trim().split('.').at(-1)?.toLowerCase()
+  return Boolean(extension && VIDEO_EXTENSIONS.includes(extension))
 }
 
 function handleThemeToggle() {
@@ -228,6 +275,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
                 <small>切换界面显示主题</small>
               </button>
             </div>
+            <p v-if="openFileError" class="mobile-sheet-error">
+              {{ openFileError }}
+            </p>
           </template>
         </section>
       </div>
@@ -263,6 +313,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
 .mobile-bottom-nav,
 .mobile-sheet-layer {
   display: none;
+}
+
+.mobile-sheet-error {
+  margin: 12px 2px 0;
+  color: var(--color-error, #ff8f8f);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {

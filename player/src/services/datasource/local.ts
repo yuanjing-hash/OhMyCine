@@ -24,18 +24,21 @@ export interface LocalFileDataSourceOptions {
 
 interface LocalConfigExtra {
   readonly rootPath: string
+  readonly rootLabel?: string
 }
 
 export interface LocalFileConfigInput {
   readonly id: string
   readonly displayName?: string
   readonly rootPath: string
+  readonly rootLabel?: string
   readonly order?: number
 }
 
 export class LocalFileDataSource implements DataSource {
   private config: DataSourceConfig | null = null
   private rootPath = ''
+  private rootLabel = ''
   private readonly providerRootPath = '/'
   private connected = false
   private readonly cache = new SourceMetadataCache()
@@ -67,6 +70,7 @@ export class LocalFileDataSource implements DataSource {
     this.config = sanitizeExportConfig(config)
     const extra = readLocalExtra(config)
     this.rootPath = extra.rootPath
+    this.rootLabel = extra.rootLabel ?? ''
     this.connected = Boolean(this.rootPath)
   }
 
@@ -105,7 +109,7 @@ export class LocalFileDataSource implements DataSource {
       {
         id: this.providerRootPath,
         sourceId: this.id,
-        name: localBasename(this.rootPath) || '本地文件夹',
+        name: this.rootLabel || localBasename(this.rootPath) || '本地文件夹',
         type: 'folders',
       },
     ]
@@ -281,6 +285,7 @@ export function createLocalFileDataSourceConfig(input: LocalFileConfigInput): Da
     enabled: true,
     extra: {
       rootPath,
+      ...(input.rootLabel?.trim() ? { rootLabel: input.rootLabel.trim() } : {}),
     },
   }
 }
@@ -311,6 +316,17 @@ export function readLocalRootPath(config: DataSourceConfig | null | undefined): 
   }
 }
 
+export function readLocalRootLabel(config: DataSourceConfig | null | undefined): string {
+  if (!config || config.type !== 'local')
+    return ''
+  try {
+    return readLocalExtra(config).rootLabel ?? ''
+  }
+  catch {
+    return ''
+  }
+}
+
 export function readLocalProviderRootPath(_config: DataSourceConfig | null | undefined): string {
   return '/'
 }
@@ -333,7 +349,10 @@ function readLocalExtra(config: DataSourceConfig): LocalConfigExtra {
   if (!rootPath)
     throw new Error('本地文件数据源缺少根目录。')
 
-  return { rootPath }
+  const rootLabel = typeof config.extra?.rootLabel === 'string'
+    ? config.extra.rootLabel.trim() || undefined
+    : undefined
+  return { rootPath, rootLabel }
 }
 
 async function defaultListEntries(rootPath: string, path?: string): Promise<LocalFileEntry[]> {
