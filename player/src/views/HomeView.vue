@@ -369,7 +369,7 @@ function isContainerItem(item: MediaItem): boolean {
     </div>
 
     <div v-else class="mobile-nav-safe flex min-h-screen flex-col gap-6 px-4 pb-6 sm:gap-8 sm:px-6 lg:px-8">
-      <section class="relative -mx-4 overflow-hidden rounded-b-[2rem] sm:-mx-6 lg:-mx-8">
+      <section class="home-hero-shell relative -mx-4 overflow-hidden rounded-b-[2rem] sm:-mx-6 lg:-mx-8">
         <HeroCarousel
           v-if="heroItems.length"
           :items="heroItems"
@@ -411,7 +411,7 @@ function isContainerItem(item: MediaItem): boolean {
       </div>
 
       <div class="grid grid-cols-1 gap-6 pb-8 xl:grid-cols-2">
-        <section class="glass-panel rounded-[1.75rem] p-6">
+        <section class="home-feed-section glass-panel rounded-[1.75rem] p-6">
           <div class="mb-5 flex items-center justify-between">
             <div>
               <p class="text-xs uppercase tracking-[0.24em]" style="color: var(--gp-text-dim)">
@@ -430,7 +430,7 @@ function isContainerItem(item: MediaItem): boolean {
             <article
               v-for="item in continueWatchingSection.items"
               :key="`${item.sourceId}:${item.id}`"
-              class="group w-48 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.03]"
+              class="continue-card group w-48 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.03]"
               @click="handlePlay(item)"
             >
               <div class="relative h-28 media-placeholder overflow-hidden">
@@ -463,7 +463,7 @@ function isContainerItem(item: MediaItem): boolean {
           </div>
         </section>
 
-        <section class="glass-panel rounded-[1.75rem] p-6">
+        <section class="home-feed-section glass-panel rounded-[1.75rem] p-6">
           <div class="mb-5 flex items-center justify-between">
             <div>
               <p class="text-xs uppercase tracking-[0.24em]" style="color: var(--gp-text-dim)">
@@ -487,7 +487,7 @@ function isContainerItem(item: MediaItem): boolean {
             <article
               v-for="item in recentlyAddedItems"
               :key="`${item.sourceId}:${item.id}`"
-              class="group w-28 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.04]"
+              class="recent-card group w-28 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.04]"
               @click="handleDetail(item)"
             >
               <div class="relative aspect-[2/3] media-placeholder">
@@ -497,9 +497,9 @@ function isContainerItem(item: MediaItem): boolean {
                     <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5" />
                   </svg>
                 </div>
-                <div class="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
+                <div class="recent-play-overlay absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
-                    class="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform hover:scale-110"
+                    class="recent-play-button flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform hover:scale-110"
                     :aria-label="`${heroActionLabel(item)} ${continueItemTitle(item)}`"
                     @click.stop="handlePlay(item)"
                   >
@@ -720,6 +720,79 @@ function isContainerItem(item: MediaItem): boolean {
 
   .first-run-shelf {
     display: none;
+  }
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .home-view > .mobile-nav-safe {
+    gap: 1.4rem;
+  }
+
+  .home-hero-shell {
+    border-radius: 0 0 8px 8px;
+  }
+
+  .home-feed-section {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .home-feed-section > div:first-child {
+    margin-bottom: 0.8rem;
+  }
+
+  .home-feed-section h2 {
+    font-size: 1.05rem;
+  }
+
+  .continue-card {
+    width: min(78vw, 19rem);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .continue-card > div:first-child {
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+
+  .recent-card {
+    width: min(38vw, 9.5rem);
+    border-radius: 8px;
+  }
+
+  .recent-play-overlay {
+    align-items: flex-end;
+    justify-content: flex-end;
+    padding: 0.55rem;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.68), transparent 55%);
+    opacity: 1;
+  }
+
+  .recent-play-button {
+    width: 2.55rem;
+    height: 2.55rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+
+  .first-run-home section {
+    align-items: flex-end;
+    padding-bottom: 5rem;
+  }
+
+  .first-run-home h1 {
+    font-size: 2rem;
+  }
+
+  .first-run-primary-action,
+  .first-run-secondary-action {
+    min-height: 3rem;
+    border-radius: 8px;
   }
 }
 </style>

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onUnmounted, ref } from 'vue'
+import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 
 export interface Track {
   id: number
@@ -65,6 +66,12 @@ export type VideoFitMode = 'fit' | 'crop' | 'cinemaCrop'
 export type MpvRenderStatus = 'idle' | 'initializing' | 'ready' | 'unsupported' | 'error'
 
 export type MpvZOrderStrategy = 'transparentOverlay' | 'ownedTopLevel' | 'bottomTransparentHole' | 'topDisabledFallback'
+export type MpvOrientationMode = 'auto' | 'landscape' | 'portrait'
+
+interface MpvOrientationState {
+  supported: boolean
+  mode: MpvOrientationMode
+}
 
 export interface MpvRenderDiagnostics {
   ownerHwndAttached: boolean
@@ -87,9 +94,23 @@ export interface MpvRenderDiagnostics {
 
 export interface MpvRenderState {
   status: MpvRenderStatus
-  backend: 'windowsTransparentOverlay' | 'windowsOpenGl' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
+  backend: 'windowsTransparentOverlay' | 'windowsOpenGl' | 'androidSurface' | 'linuxFuture' | 'macosFuture' | 'mobileFuture' | 'unsupported'
   message: string | null
   diagnostics?: MpvRenderDiagnostics | null
+}
+
+export interface MpvPlaybackDiagnostics {
+  state: 'idle' | 'loading' | 'playing' | 'ended' | 'error' | 'desktop' | string
+  lastEvent: string
+  lastError?: string | null
+  fileLoaded: boolean
+  videoFormat?: string | null
+  audioCodec?: string | null
+  voConfigured: boolean
+  hardwareDecoder?: string | null
+  videoOutput: string
+  videoOutputFallbackUsed: boolean
+  logs: string[]
 }
 
 export interface VideoDynamicRangeState {
@@ -174,6 +195,19 @@ async function savePlaybackSpeedPreference(speed: number): Promise<void> {
   }
 }
 
+async function applyEngineSettings(): Promise<void> {
+  const settings = loadPlayerInteractionSettings()
+  await invoke<void>('mpv_apply_engine_settings', {
+    settings: {
+      videoOutput: settings.videoOutput,
+      hardwareDecoder: settings.hardwareDecoder,
+      cacheMode: settings.cacheMode,
+      demuxerMaxBytesMb: settings.demuxerMaxBytesMb,
+      videoSync: settings.videoSync,
+    },
+  })
+}
+
 function safeErrorMessage(error: unknown, fallback: string): string {
   if (typeof error === 'string' && error.trim())
     return error
@@ -248,6 +282,7 @@ export function useMpv() {
   const duration = ref(0)
   const volume = ref(100)
   const isMuted = ref(false)
+  const videoBrightness = ref(50)
   const playbackSpeed = ref(DEFAULT_PLAYBACK_SPEED)
   const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
@@ -263,6 +298,9 @@ export function useMpv() {
   const renderError = ref<string | null>(null)
   const renderBackend = ref<MpvRenderState['backend']>('unsupported')
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
+  const playbackDiagnostics = ref<MpvPlaybackDiagnostics | null>(null)
+  const orientationSupported = ref(false)
+  const orientationMode = ref<MpvOrientationMode>('auto')
   const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
@@ -348,13 +386,26 @@ export function useMpv() {
     }
   }
 
+  async function refreshPlaybackDiagnostics() {
+    try {
+      const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
+      playbackDiagnostics.value = diagnostics.state === 'desktop' ? null : diagnostics
+    }
+    catch {
+      playbackDiagnostics.value = null
+    }
+  }
+
   function startRenderDiagnosticsPolling() {
     if (renderDiagnosticsTimer)
       return
 
     renderDiagnosticsTimer = window.setInterval(() => {
-      if (renderStatus.value === 'ready')
+      if (renderStatus.value === 'initializing' || renderStatus.value === 'ready') {
         void refreshRenderStatus()
+        if (renderBackend.value === 'androidSurface')
+          void refreshPlaybackDiagnostics()
+      }
     }, 1000)
   }
 
@@ -363,9 +414,12 @@ export function useMpv() {
     renderError.value = null
 
     try {
+      await applyEngineSettings()
       const state = await invoke<MpvRenderState>('mpv_init_render_surface')
       applyRenderState(state)
-      if (state.status === 'ready')
+      if (state.backend === 'androidSurface')
+        await refreshPlaybackDiagnostics()
+      if (state.status === 'initializing' || state.status === 'ready')
         startRenderDiagnosticsPolling()
     }
     catch (error: unknown) {
@@ -411,6 +465,24 @@ export function useMpv() {
       currentSubtitle.value = selectedKnownSubtitle.value
       currentAudio.value = null
     }
+  }
+
+  async function refreshOrientationState() {
+    try {
+      const state = await invoke<MpvOrientationState>('mpv_orientation_state')
+      orientationSupported.value = state.supported
+      orientationMode.value = state.mode
+    }
+    catch {
+      orientationSupported.value = false
+      orientationMode.value = 'auto'
+    }
+  }
+
+  async function setOrientationMode(mode: MpvOrientationMode) {
+    const state = await invoke<MpvOrientationState>('mpv_set_orientation', { mode })
+    orientationSupported.value = state.supported
+    orientationMode.value = state.mode
   }
 
   function scheduleTrackRefresh(delay: number) {
@@ -499,19 +571,25 @@ export function useMpv() {
     trackRefreshScheduledForCurrentMedia = false
     isPlaying.value = false
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
+    videoBrightness.value = 50
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
     videoAspectMode.value = 'default'
     videoFitMode.value = 'fit'
     await subtitleDelayCommand.catch(() => undefined)
     await ensurePlaybackSpeedPreferenceLoaded()
+    await applyEngineSettings()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     await invoke<void>('mpv_resume')
+    if (renderBackend.value === 'androidSurface')
+      await refreshPlaybackDiagnostics()
+    await refreshOrientationState()
     currentTime.value = 0
     isPlaying.value = true
     await applyPlaybackSpeed(playbackSpeed.value)
     await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
     await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
     await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
+    await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
     await refreshVideoDynamicRange()
     scheduleTrackRefresh(2500)
   }
@@ -536,6 +614,13 @@ export function useMpv() {
     await invoke<void>('mpv_set_property', { prop: 'volume', value: next.toString() })
     volume.value = next
     isMuted.value = next === 0
+  }
+
+  async function setVideoBrightness(level: number) {
+    const next = Math.max(0, Math.min(100, level))
+    const mpvBrightness = Math.round((next - 50) * 2)
+    await invoke<void>('mpv_set_property', { prop: 'brightness', value: mpvBrightness.toString() })
+    videoBrightness.value = next
   }
 
   async function applyPlaybackSpeed(rate: number) {
@@ -681,6 +766,7 @@ export function useMpv() {
     duration,
     volume,
     isMuted,
+    videoBrightness,
     playbackSpeed,
     subtitleDelay,
     subtitleTracks,
@@ -693,18 +779,24 @@ export function useMpv() {
     renderError,
     renderBackend,
     renderDiagnostics,
+    playbackDiagnostics,
+    orientationSupported,
+    orientationMode,
     videoDynamicRange,
     trackError,
     initializeRender,
     updateRenderSurfaceBounds,
     setRenderStrategy,
     refreshTrackState,
+    refreshOrientationState,
+    setOrientationMode,
     setKnownSubtitleTracks,
     load,
     togglePause,
     seek,
     seekRelative,
     setVolume,
+    setVideoBrightness,
     applyPlaybackSpeed,
     setPlaybackSpeed,
     applySubtitleDelay,

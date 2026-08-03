@@ -24,7 +24,15 @@ select {
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   .mobile-nav-safe {
-    padding-bottom: calc(6rem + env(safe-area-inset-bottom)) !important;
+    padding-bottom: calc(6.25rem + env(safe-area-inset-bottom)) !important;
+  }
+
+  .cinema-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .cinema-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 }
 
@@ -69,4 +77,16 @@ select {
   background:
     linear-gradient(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.08)) padding-box,
     linear-gradient(180deg, rgba(74, 158, 255, 0.2), rgba(168, 85, 247, 0.15)) border-box;
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .cinema-scrollbar {
+    scrollbar-width: none !important;
+  }
+
+  .cinema-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
 }

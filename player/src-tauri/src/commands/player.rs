@@ -3,6 +3,9 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path, time::Duration};
 use tauri::{AppHandle, State};
 
+use super::player_shared::{
+    sanitize_http_headers, MpvEngineSettings, MpvHttpHeader, MpvOrientationState,
+};
 use crate::mpv::{
     player::{MpvState, MpvTrackState},
     render::MpvRenderState,
@@ -12,11 +15,37 @@ use crate::storage;
 
 const MAX_PREPARED_SUBTITLE_BYTES: usize = 12 * 1024 * 1024;
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MpvHttpHeader {
-    name: String,
-    value: String,
+pub struct DesktopPlaybackDiagnostics {
+    state: &'static str,
+    last_event: &'static str,
+    last_error: Option<String>,
+    file_loaded: bool,
+    video_format: Option<String>,
+    audio_codec: Option<String>,
+    vo_configured: bool,
+    hardware_decoder: Option<String>,
+    video_output: &'static str,
+    video_output_fallback_used: bool,
+    logs: Vec<String>,
+}
+
+#[tauri::command]
+pub fn mpv_playback_diagnostics() -> DesktopPlaybackDiagnostics {
+    DesktopPlaybackDiagnostics {
+        state: "desktop",
+        last_event: "desktop-backend",
+        last_error: None,
+        file_loaded: false,
+        video_format: None,
+        audio_codec: None,
+        vo_configured: false,
+        hardware_decoder: None,
+        video_output: "desktop",
+        video_output_fallback_used: false,
+        logs: Vec::new(),
+    }
 }
 
 #[tauri::command]
@@ -26,8 +55,22 @@ pub async fn mpv_load(
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
     let mut player = state.lock().map_err(|err| err.to_string())?;
-    let headers = sanitize_http_headers(headers.unwrap_or_default())?;
+    let headers = sanitize_http_headers(headers.unwrap_or_default())?
+        .into_iter()
+        .map(|header| (header.name, header.value))
+        .collect::<Vec<_>>();
     player.load_file_with_headers(&path, &headers)
+}
+
+#[tauri::command]
+pub async fn mpv_apply_engine_settings(
+    settings: MpvEngineSettings,
+    state: State<'_, MpvState>,
+) -> Result<(), String> {
+    let mut player = state
+        .lock()
+        .map_err(|_| "播放器设置暂不可用，请稍后重试".to_string())?;
+    player.apply_engine_settings(settings)
 }
 
 #[tauri::command]
@@ -96,6 +139,20 @@ pub async fn mpv_track_state(state: State<'_, MpvState>) -> Result<MpvTrackState
 }
 
 #[tauri::command]
+pub async fn mpv_orientation_state() -> Result<MpvOrientationState, String> {
+    Ok(MpvOrientationState {
+        supported: false,
+        mode: "auto".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn mpv_set_orientation(mode: String) -> Result<MpvOrientationState, String> {
+    let _ = mode;
+    mpv_orientation_state().await
+}
+
+#[tauri::command]
 pub async fn mpv_init_render_surface(
     window: tauri::Window,
     state: State<'_, MpvState>,
@@ -126,50 +183,6 @@ pub async fn mpv_set_render_strategy(
 ) -> Result<MpvRenderState, String> {
     let mut player = state.lock().map_err(|err| err.to_string())?;
     Ok(player.set_render_strategy(strategy))
-}
-
-fn sanitize_http_headers(headers: Vec<MpvHttpHeader>) -> Result<Vec<(String, String)>, String> {
-    if headers.len() > 16 {
-        return Err("播放请求 header 数量过多。".to_string());
-    }
-
-    headers
-        .into_iter()
-        .map(|header| {
-            let name = header.name.trim().to_string();
-            let value = header.value.trim().to_string();
-            if name.is_empty() || value.is_empty() {
-                return Err("播放请求 header 格式无效。".to_string());
-            }
-            if !is_valid_header_name(&name) || value.chars().any(|ch| ch == '\r' || ch == '\n') {
-                return Err("播放请求 header 格式无效。".to_string());
-            }
-            Ok((name, value))
-        })
-        .collect()
-}
-
-fn is_valid_header_name(value: &str) -> bool {
-    value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric()
-            || matches!(
-                byte,
-                b'!' | b'#'
-                    | b'$'
-                    | b'%'
-                    | b'&'
-                    | b'\''
-                    | b'*'
-                    | b'+'
-                    | b'-'
-                    | b'.'
-                    | b'^'
-                    | b'_'
-                    | b'`'
-                    | b'|'
-                    | b'~'
-            )
-    })
 }
 
 async fn prepare_external_subtitle(

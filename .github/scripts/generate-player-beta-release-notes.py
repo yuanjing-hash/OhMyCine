@@ -169,12 +169,14 @@ def build_markdown(
             f"- Tauri updater signature: `{asset_prefix}-setup.exe.sig`",
             f"- Windows x64 standard zip (uses the normal LocalAppData profile): `{asset_prefix}-standard.zip`",
             f"- Windows x64 portable zip (stores Player data beside the executable): `{asset_prefix}-portable.zip`",
+            f"- Android ARM64 preview APK: `OhMyCine-Player-{tag_name}-android-arm64.apk`",
+            f"- Android ARM64 SHA-256: `OhMyCine-Player-{tag_name}-android-arm64.sha256`",
             "- Signed updater manifest: `latest.json`",
             f"- SHA-256 checksums: `{asset_prefix}.sha256`",
             "",
             "## Checksums",
             "",
-            "The `.sha256` file is generated with `sha256sum` and contains checksums for the installer, updater signature, standard zip, and portable zip. The application updater verifies the minisign signature from `latest.json`; SHA-256 is an additional manual check.",
+            "The Windows and Android `.sha256` files are generated with `sha256sum`. The Windows checksum list covers the installer, updater signature, standard zip, and portable zip; the Android checksum covers the preview APK. The application updater verifies the minisign signature from `latest.json`; SHA-256 is an additional manual check.",
         ]
     )
 

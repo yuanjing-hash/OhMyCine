@@ -19,6 +19,7 @@ use super::{
     render::{current_render_state, MpvRenderState, RenderStatus},
     surface::{NativeRenderSurface, OwnerWindowEvent, RenderSurfaceBounds, ZOrderStrategy},
 };
+use crate::commands::player_shared::MpvEngineSettings;
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
 
@@ -49,6 +50,7 @@ pub struct MpvPlayer {
     initialized: bool,
     render_surface: Option<NativeRenderSurface>,
     render_state: MpvRenderState,
+    engine_settings: MpvEngineSettings,
 }
 
 // MpvPlayer is only accessed through Arc<Mutex<_>> in Tauri state. libmpv handles are designed
@@ -89,6 +91,7 @@ impl MpvPlayer {
             initialized: false,
             render_surface: None,
             render_state: current_render_state(),
+            engine_settings: MpvEngineSettings::default(),
         };
 
         // Non-Windows: initialize immediately in the no-visible-video safety mode. Visible video
@@ -128,6 +131,22 @@ impl MpvPlayer {
             }
         }
         result
+    }
+
+    pub fn apply_engine_settings(&mut self, settings: MpvEngineSettings) -> Result<(), String> {
+        let settings = settings.validated()?;
+        if self.initialized {
+            self.set_property("vo", &settings.video_output)?;
+            self.set_property("hwdec", settings.desktop_hwdec())?;
+            self.set_property("cache", settings.cache_value())?;
+            self.set_property(
+                "demuxer-max-bytes",
+                &settings.demuxer_max_bytes().to_string(),
+            )?;
+            self.set_property("video-sync", &settings.video_sync)?;
+        }
+        self.engine_settings = settings;
+        Ok(())
     }
 
     pub fn add_subtitle(
@@ -201,10 +220,11 @@ impl MpvPlayer {
             }
 
             self.render_state.status = RenderStatus::Initializing;
-            self.render_state.message = Some(
-                "正在创建 Windows mpv 视频底层窗口，并通过 wid + vo=gpu-next + hwdec=auto-safe 调用 mpv_initialize；Tauri/WebView 透明叠层保持在其上方。"
-                    .to_string(),
-            );
+            self.render_state.message = Some(format!(
+                "正在创建 Windows mpv 视频底层窗口，并通过 wid + vo={} + hwdec={} 调用 mpv_initialize；Tauri/WebView 透明叠层保持在其上方。",
+                self.engine_settings.video_output,
+                self.engine_settings.desktop_hwdec(),
+            ));
 
             let mut surface = match NativeRenderSurface::create(window) {
                 Ok(surface) => surface,
@@ -226,10 +246,18 @@ impl MpvPlayer {
             // Configure the Windows VO pipeline and attach the video underlay HWND via `wid`
             // before calling `mpv_initialize`. Order is load-bearing: mpv locks the `wid` option
             // at initialize time.
+            let video_output = self.engine_settings.video_output.clone();
+            let hardware_decoder = self.engine_settings.desktop_hwdec().to_string();
+            let cache = self.engine_settings.cache_value().to_string();
+            let demuxer_max_bytes = self.engine_settings.demuxer_max_bytes().to_string();
+            let video_sync = self.engine_settings.video_sync.clone();
             let configure_result = (|| -> Result<(), String> {
                 self.set_option("force-window", "no")?;
-                self.set_option("vo", "gpu-next")?;
-                self.set_option("hwdec", "auto-safe")?;
+                self.set_option("vo", &video_output)?;
+                self.set_option("hwdec", &hardware_decoder)?;
+                self.set_option("cache", &cache)?;
+                self.set_option("demuxer-max-bytes", &demuxer_max_bytes)?;
+                self.set_option("video-sync", &video_sync)?;
                 self.set_option("keep-open", "yes")?;
                 self.set_option("osc", "no")?;
                 let wid = surface.mpv_wid();
@@ -257,7 +285,7 @@ impl MpvPlayer {
                         .unwrap_or_else(|| "Diagnostics unavailable.".to_string());
                     self.render_state.diagnostics = diagnostics;
                     self.render_state.message = Some(format!(
-                        "Windows mpv video underlay is attached via wid + vo=gpu-next + hwdec=auto-safe; transparent Tauri/WebView overlay remains above it for Vue controls. {diagnostics_summary}"
+                        "Windows mpv video underlay is attached via wid + vo={video_output} + hwdec={hardware_decoder}; transparent Tauri/WebView overlay remains above it for Vue controls. {diagnostics_summary}"
                     ));
                 }
                 Err(err) => {
@@ -456,7 +484,8 @@ impl MpvPlayer {
                     )
                 })
             }
-            "volume" | "time-pos" | "duration" | "speed" | "panscan" | "video-zoom" => {
+            "volume" | "time-pos" | "duration" | "speed" | "panscan" | "video-zoom"
+            | "brightness" => {
                 let mut value = value
                     .parse::<f64>()
                     .map_err(|_| "Invalid numeric mpv value".to_string())?;

@@ -90,6 +90,8 @@ jobs:
               'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
               'release notes generator is used': 'python3 .github/scripts/generate-player-beta-release-notes.py' in text,
               'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
+              'Android ARM64 release job is present': 'release-android-arm64:' in text and 'tauri:build:android:preview' in text,
+              'Android APK is uploaded to the same release': 'gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber' in text,
               'manual extra notes reach generator through env': 'EXTRA_RELEASE_NOTES: $' + '{{ github.event_name == ' + "'workflow_dispatch'" + ' && inputs.release_notes || ' + "''" + ' }}' in text,
           }
 
@@ -208,6 +210,8 @@ jobs:
             grep -Fq '手动补充说明' notes.md
             grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64-standard.zip' notes.md
             grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64-portable.zip' notes.md
+            grep -Fq 'OhMyCine-Player-v0.0.2-android-arm64.apk' notes.md
+            grep -Fq 'OhMyCine-Player-v0.0.2-android-arm64.sha256' notes.md
             grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64.sha256' notes.md
             if grep -Eiq 'GITHUB_TOKEN|GH_TOKEN|GITHUB_ENV|SECRET|AUTHORIZATION|COOKIE|PASSKEY' notes.md; then
               echo "::error::Release notes must not contain sensitive environment variable names."
@@ -258,6 +262,146 @@ jobs:
             echo "::error::Invalid version unexpectedly passed validation."
             exit 1
           fi
+
+  release-android-arm64:
+    name: Build and publish Android ARM64 preview
+    needs:
+      - validate
+      - release-windows-gnu
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Android release version
+        env:
+          WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
+            raw_version="${WORKFLOW_INPUT_VERSION:-}"
+          else
+            raw_version="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like v0.0.1 or 0.0.1."
+            exit 1
+          fi
+          app_version="${raw_version#v}"
+          {
+            echo "APP_VERSION=${app_version}"
+            echo "TAG_NAME=v${app_version}"
+            echo "ANDROID_APK=dist/android/OhMyCine-Player-v${app_version}-android-arm64.apk"
+            echo "ANDROID_CHECKSUM=dist/android/OhMyCine-Player-v${app_version}-android-arm64.sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify release commit is main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --no-tags
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: player/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: player/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: player
+        run: npm ci
+
+      - name: Sync Player version
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const version = process.env.APP_VERSION
+
+          function writeJson(path, update) {
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'))
+            update(data)
+            fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`)
+          }
+
+          writeJson('player/package.json', data => { data.version = version })
+          writeJson('player/package-lock.json', data => {
+            data.version = version
+            if (data.packages?.['']) data.packages[''].version = version
+          })
+          writeJson('player/src-tauri/tauri.conf.json', data => { data.version = version })
+          const cargoPath = 'player/src-tauri/Cargo.toml'
+          const cargo = fs.readFileSync(cargoPath, 'utf8')
+          fs.writeFileSync(cargoPath, cargo.replace(/^version = "[^"]+"/m, `version = "${version}"`))
+          NODE
+
+      - name: Build Android ARM64 APK
+        working-directory: player
+        run: npm run tauri:build:android:preview
+
+      - name: Package Android asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_apk="player/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
+          test -f "$source_apk"
+          mkdir -p dist/android
+          cp "$source_apk" "$ANDROID_APK"
+          sha256sum "$ANDROID_APK" > "$ANDROID_CHECKSUM"
+
+      - name: Upload Android workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyCine-Player-${{ env.TAG_NAME }}-android-arm64
+          path: |
+            ${{ env.ANDROID_APK }}
+            ${{ env.ANDROID_CHECKSUM }}
+          retention-days: 30
+
+      - name: Upload Android assets to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber
 
   release-windows-gnu:
     name: Build and publish Windows release

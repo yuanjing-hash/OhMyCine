@@ -5,16 +5,19 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { loadNavigationShortcutBindings, NAVIGATION_SHORTCUTS_CHANGED_EVENT, navigationShortcutTargetForEvent, shouldIgnoreNavigationShortcut } from '@/services/navigationShortcuts'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
 import BackButton from './BackButton.vue'
 import DataSourceSidebar from './DataSourceSidebar.vue'
 import FloatingControls from './FloatingControls.vue'
+import MobileNavigation from './MobileNavigation.vue'
 import WindowChrome from './WindowChrome.vue'
 
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const isPlayerRoute = computed(() => route.name === 'player')
+const isNativeAndroid = isNativeAndroidRuntime()
 const navigationShortcuts = ref<NavigationShortcutBindings>(loadNavigationShortcutBindings())
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 
@@ -84,15 +87,17 @@ onBeforeUnmount(() => {
     <!-- Floating glass sidebar — hidden on player page for immersive layout -->
     <DataSourceSidebar v-if="!isPlayerRoute" />
 
+    <MobileNavigation v-if="!isPlayerRoute" />
+
     <!-- Floating back navigation for non-home pages — hidden on player page -->
     <BackButton v-if="!isPlayerRoute" />
 
     <!-- Floating glass top bar: always visible (drag region + window controls).
          On player page, hide center nav buttons only. -->
-    <WindowChrome :hide-nav="isPlayerRoute" />
+    <WindowChrome v-if="!isNativeAndroid" :hide-nav="isPlayerRoute" />
 
     <!-- Bottom-right floating controls (player + theme) -->
-    <FloatingControls />
+    <FloatingControls v-if="!isNativeAndroid" />
   </div>
 </template>
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { KnownSubtitleTrackInput, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
@@ -11,6 +11,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import MobilePlayerControls from '@/components/player/MobilePlayerControls.vue'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
@@ -21,6 +22,8 @@ import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
+import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -37,6 +40,8 @@ const ARROW_TAP_SEEK_SECONDS = 5
 const ARROW_HOLD_DELAY = 350
 const REWIND_HOLD_INTERVAL = 220
 const MEDIA_PREFERENCE_SAVE_DELAY = 180
+const TOUCH_FEEDBACK_HIDE_DELAY = 850
+const TOUCH_CLICK_SUPPRESSION_MS = 650
 
 interface ContextMenuPosition {
   x: number
@@ -48,10 +53,38 @@ interface PlaybackContextMenuDetail {
   value: string
 }
 
+type TouchGestureMode = 'pending' | 'seek' | 'brightness' | 'volume'
+
+interface TouchGestureSession {
+  pointerId: number
+  simulatedWithMouse: boolean
+  holdArrowKey: 'ArrowLeft' | 'ArrowRight'
+  holdArrowStarted: boolean
+  startX: number
+  startY: number
+  width: number
+  height: number
+  mode: TouchGestureMode
+  startPosition: number
+  targetPosition: number
+  startVolume: number
+  startBrightness: number
+  startedAt: number
+  leftSide: boolean
+}
+
+interface TouchGestureFeedback {
+  kind: 'seek' | 'brightness' | 'volume' | 'action'
+  title: string
+  value: string
+  percent?: number
+}
+
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
-const appWindow = getCurrentWindow()
+const appWindow = isTauriRuntime() ? getCurrentWindow() : null
+const isNativeAndroidPlayer = isNativeAndroidRuntime()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const mediaHeaders = ref<Record<string, string>>({})
@@ -77,6 +110,7 @@ const playerControlsRef = ref<{
 } | null>(null)
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 const keyboardOsdMessage = ref('')
+const touchGestureFeedback = ref<TouchGestureFeedback | null>(null)
 const lastRenderBounds = ref<RenderSurfaceBounds | null>(null)
 const topChromeRef = ref<HTMLElement | null>(null)
 const bottomChromeRef = ref<HTMLElement | null>(null)
@@ -126,6 +160,7 @@ let pendingTrackPreference: {
 } | null = null
 let trackPreferenceRestoreInFlight = false
 let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
+let heldArrowOwner: 'keyboard' | 'touch' | null = null
 let heldArrowTimer: number | undefined
 let rewindHoldTimer: number | undefined
 let arrowHoldActivated = false
@@ -135,12 +170,20 @@ let keyboardVolumeCommand: Promise<void> = Promise.resolve()
 let keyboardChromeSuppression = 0
 let keyboardOsdTimer: number | undefined
 let keyboardPreviousVolume = 100
+let touchGestureSession: TouchGestureSession | null = null
+let lastTouchTap: { x: number, y: number, at: number } | null = null
+let touchSingleTapTimer: number | undefined
+let touchFeedbackTimer: number | undefined
+let suppressPlayerClickUntil = 0
+let pendingTouchLevelUpdate: { kind: 'brightness' | 'volume', value: number } | null = null
+let touchLevelUpdateInFlight = false
 
 const {
   isPlaying,
   currentTime,
   duration,
   volume,
+  videoBrightness,
   playbackSpeed,
   subtitleDelay,
   subtitleTracks,
@@ -153,17 +196,22 @@ const {
   renderError,
   renderBackend,
   renderDiagnostics,
+  playbackDiagnostics,
+  orientationSupported,
+  orientationMode,
   videoDynamicRange,
   trackError,
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
+  setOrientationMode,
   setKnownSubtitleTracks,
   load,
   togglePause,
   seek,
   seekRelative,
   setVolume,
+  setVideoBrightness,
   applyPlaybackSpeed,
   setPlaybackSpeed,
   applySubtitleDelay,
@@ -252,6 +300,8 @@ function revealChrome() {
 }
 
 function revealChromeFromPointer() {
+  if (touchGestureSession?.simulatedWithMouse)
+    return
   chromeManuallyHidden.value = false
   chromeVisible.value = true
   scheduleChromeHide()
@@ -293,6 +343,208 @@ function showKeyboardOsd(message: string) {
   }, 1800)
 }
 
+function showTouchFeedback(feedback: TouchGestureFeedback, autoHide = false) {
+  if (touchFeedbackTimer)
+    window.clearTimeout(touchFeedbackTimer)
+  touchFeedbackTimer = undefined
+  touchGestureFeedback.value = feedback
+  if (autoHide)
+    scheduleTouchFeedbackHide()
+}
+
+function scheduleTouchFeedbackHide() {
+  if (touchFeedbackTimer)
+    window.clearTimeout(touchFeedbackTimer)
+  touchFeedbackTimer = window.setTimeout(() => {
+    touchFeedbackTimer = undefined
+    touchGestureFeedback.value = null
+  }, TOUCH_FEEDBACK_HIDE_DELAY)
+}
+
+function queueTouchLevelUpdate(kind: 'brightness' | 'volume', value: number) {
+  pendingTouchLevelUpdate = { kind, value }
+  if (!touchLevelUpdateInFlight)
+    void flushTouchLevelUpdates()
+}
+
+async function flushTouchLevelUpdates() {
+  touchLevelUpdateInFlight = true
+  try {
+    while (pendingTouchLevelUpdate) {
+      const update = pendingTouchLevelUpdate
+      pendingTouchLevelUpdate = null
+      try {
+        if (update.kind === 'volume')
+          await setVolume(update.value)
+        else
+          await setVideoBrightness(update.value)
+      }
+      catch {
+        // A failed frame update must not leave the gesture state locked.
+      }
+    }
+  }
+  finally {
+    touchLevelUpdateInFlight = false
+  }
+}
+
+function isTouchGestureTarget(target: EventTarget | null): boolean {
+  return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
+}
+
+function handlePlayerTouchPointerDown(event: PointerEvent) {
+  const simulatedWithMouse = event.pointerType === 'mouse' && event.altKey && event.button === 0
+  if ((event.pointerType !== 'touch' && !simulatedWithMouse) || !hasMedia.value || touchGestureSession || !isTouchGestureTarget(event.target))
+    return
+
+  const host = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (!host)
+    return
+
+  event.preventDefault()
+  const bounds = host.getBoundingClientRect()
+  host.setPointerCapture(event.pointerId)
+  suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+  touchGestureSession = {
+    pointerId: event.pointerId,
+    simulatedWithMouse,
+    holdArrowKey: event.clientX < bounds.left + bounds.width / 2 ? 'ArrowLeft' : 'ArrowRight',
+    holdArrowStarted: false,
+    startX: event.clientX,
+    startY: event.clientY,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+    mode: 'pending',
+    startPosition: currentTime.value,
+    targetPosition: currentTime.value,
+    startVolume: volume.value,
+    startBrightness: videoBrightness.value,
+    startedAt: Date.now(),
+    leftSide: event.clientX < bounds.left + bounds.width / 2,
+  }
+  touchGestureSession.holdArrowStarted = beginHeldArrow(touchGestureSession.holdArrowKey, 'touch')
+}
+
+function handlePlayerTouchPointerMove(event: PointerEvent) {
+  const session = touchGestureSession
+  if (!session || session.pointerId !== event.pointerId)
+    return
+
+  event.preventDefault()
+  const deltaX = event.clientX - session.startX
+  const deltaY = event.clientY - session.startY
+  if (session.mode === 'pending') {
+    if (session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated)
+      return
+    const axis = resolveTouchGestureAxis(deltaX, deltaY)
+    if (axis === 'pending')
+      return
+    if (session.holdArrowStarted) {
+      session.holdArrowStarted = false
+      void releaseHeldArrow(false, 'touch')
+    }
+    session.mode = axis === 'horizontal' ? 'seek' : session.leftSide ? 'brightness' : 'volume'
+    clearHideTimer()
+  }
+
+  if (session.mode === 'seek') {
+    session.targetPosition = touchSeekTarget(session.startPosition, deltaX, session.width, duration.value)
+    const offset = Math.round(session.targetPosition - session.startPosition)
+    showTouchFeedback({
+      kind: 'seek',
+      title: offset >= 0 ? '快进' : '后退',
+      value: `${offset >= 0 ? '+' : ''}${offset} 秒 · ${formatPlaybackTime(session.targetPosition)}`,
+    })
+    return
+  }
+
+  if (session.mode === 'brightness') {
+    const level = touchVerticalLevel(session.startBrightness, deltaY, session.height)
+    queueTouchLevelUpdate('brightness', level)
+    showTouchFeedback({ kind: 'brightness', title: '亮度', value: `${Math.round(level)}%`, percent: level })
+    return
+  }
+
+  const level = touchVerticalLevel(session.startVolume, deltaY, session.height)
+  queueTouchLevelUpdate('volume', level)
+  showTouchFeedback({ kind: 'volume', title: '音量', value: `${Math.round(level)}%`, percent: level })
+}
+
+function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
+  const session = touchGestureSession
+  if (!session || session.pointerId !== event.pointerId)
+    return
+
+  const host = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (host?.hasPointerCapture(event.pointerId))
+    host.releasePointerCapture(event.pointerId)
+  touchGestureSession = null
+  suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+
+  const completedArrowHold = session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated
+  if (session.holdArrowStarted) {
+    session.holdArrowStarted = false
+    void releaseHeldArrow(false, 'touch')
+  }
+
+  if (completedArrowHold) {
+    scheduleTouchFeedbackHide()
+    return
+  }
+
+  const pendingTap = session.mode === 'pending'
+    && (!cancelled || Date.now() - session.startedAt <= 700)
+  if (pendingTap) {
+    handleTouchTap(event.clientX, event.clientY)
+    return
+  }
+
+  if (!cancelled && session.mode === 'seek')
+    void seek(session.targetPosition).catch(() => undefined)
+  scheduleTouchFeedbackHide()
+}
+
+function handleTouchTap(x: number, y: number) {
+  const currentTap = { x, y, at: Date.now() }
+  if (isNearbyDoubleTap(lastTouchTap, currentTap)) {
+    if (touchSingleTapTimer)
+      window.clearTimeout(touchSingleTapTimer)
+    touchSingleTapTimer = undefined
+    lastTouchTap = null
+    const willPause = isPlaying.value
+    showTouchFeedback({
+      kind: 'action',
+      title: willPause ? '已暂停' : '继续播放',
+      value: '双击画面',
+    }, true)
+    void handleTogglePause().catch(() => undefined)
+    return
+  }
+
+  lastTouchTap = currentTap
+  if (touchSingleTapTimer)
+    window.clearTimeout(touchSingleTapTimer)
+  touchSingleTapTimer = window.setTimeout(() => {
+    touchSingleTapTimer = undefined
+    lastTouchTap = null
+    toggleChromeFromTouch()
+  }, 320)
+}
+
+function toggleChromeFromTouch() {
+  chromeManuallyHidden.value = false
+  if (chromeVisible.value) {
+    clearHideTimer()
+    playerControlsRef.value?.dismissTransientUi()
+    controlsInteracting.value = false
+    chromeVisible.value = false
+    return
+  }
+  chromeVisible.value = true
+  scheduleChromeHide()
+}
+
 async function runKeyboardAction(action: () => Promise<void> | void) {
   keyboardChromeSuppression += 1
   try {
@@ -314,12 +566,28 @@ function handleControlsInteraction(next: boolean) {
 
 function handleWindowBlur() {
   controlsInteracting.value = false
+  playerControlsRef.value?.dismissTransientUi()
   void releaseHeldArrow(false)
+  scheduleChromeHide()
+}
+
+function handleApplicationPointerLeave() {
+  if (!hasMedia.value)
+    return
+  controlsInteracting.value = false
+  playerControlsRef.value?.dismissTransientUi()
   scheduleChromeHide()
 }
 
 function handleWindowResize() {
   void updateChromeOcclusion()
+}
+
+function handlePlayerBack() {
+  if (window.history.state?.back)
+    router.back()
+  else
+    void router.push('/')
 }
 
 function markTitleLogoFailed(url: string) {
@@ -444,6 +712,8 @@ function renderBackendLabel(backend: MpvRenderState['backend']): string {
       return 'Windows 透明叠层'
     case 'windowsOpenGl':
       return 'Windows OpenGL'
+    case 'androidSurface':
+      return 'Android SurfaceView'
     case 'linuxFuture':
       return 'Linux 预留 backend'
     case 'macosFuture':
@@ -1416,7 +1686,7 @@ function showTransientPlayerMessage(message: string) {
 
 async function resizeWindowForAspect(mode: VideoAspectMode) {
   const ratio = aspectRatioValue(mode)
-  if (!ratio)
+  if (!ratio || !appWindow)
     return
 
   try {
@@ -1445,6 +1715,14 @@ async function resizeWindowForAspect(mode: VideoAspectMode) {
   catch (error) {
     pictureSettingsError.value = toSafeErrorMessage(error, '窗口尺寸调整失败，已保留当前画面比例设置。')
   }
+}
+
+function isTauriRuntime(): boolean {
+  const root = globalThis as {
+    readonly __TAURI_INTERNALS__?: unknown
+    readonly window?: { readonly __TAURI_INTERNALS__?: unknown }
+  }
+  return root.__TAURI_INTERNALS__ != null || root.window?.__TAURI_INTERNALS__ != null
 }
 
 watch(
@@ -1911,6 +2189,12 @@ async function handleSetVideoFit(mode: VideoFitMode) {
   scheduleMediaPreferenceSave()
 }
 
+async function handleSetOrientationMode(mode: MpvOrientationMode) {
+  await setOrientationMode(mode)
+  const label = mode === 'landscape' ? '锁定横屏' : mode === 'portrait' ? '锁定竖屏' : '自动横屏'
+  showKeyboardOsd(`屏幕方向 · ${label}`)
+}
+
 async function stopPlaybackSilently() {
   try {
     await stop()
@@ -1971,7 +2255,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (!hasModifier && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
     event.preventDefault()
     if (!event.repeat)
-      beginHeldArrow(event.code)
+      beginHeldArrow(event.code, 'keyboard')
     return
   }
   if (!hasModifier && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) {
@@ -1990,10 +2274,10 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 }
 
 function handleGlobalKeyup(event: KeyboardEvent) {
-  if (event.code !== heldArrowKey)
+  if (heldArrowOwner !== 'keyboard' || event.code !== heldArrowKey)
     return
   event.preventDefault()
-  void releaseHeldArrow(true)
+  void releaseHeldArrow(true, 'keyboard')
 }
 
 function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
@@ -2005,10 +2289,11 @@ function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
   return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
 }
 
-function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
+function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight', owner: 'keyboard' | 'touch'): boolean {
   if (heldArrowKey)
-    return
+    return false
   heldArrowKey = key
+  heldArrowOwner = owner
   arrowHoldActivated = false
   arrowBasePlaybackSpeed = playbackSpeed.value
   heldArrowTimer = window.setTimeout(() => {
@@ -2026,9 +2311,12 @@ function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
       void seekRelative(-ARROW_TAP_SEEK_SECONDS)
     }, REWIND_HOLD_INTERVAL)
   }, ARROW_HOLD_DELAY)
+  return true
 }
 
-async function releaseHeldArrow(triggerTap: boolean) {
+async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch') {
+  if (owner && heldArrowOwner !== owner)
+    return
   const key = heldArrowKey
   const wasHold = arrowHoldActivated
   if (heldArrowTimer)
@@ -2038,6 +2326,7 @@ async function releaseHeldArrow(triggerTap: boolean) {
   heldArrowTimer = undefined
   rewindHoldTimer = undefined
   heldArrowKey = null
+  heldArrowOwner = null
   arrowHoldActivated = false
   if (!key)
     return
@@ -2053,11 +2342,17 @@ async function releaseHeldArrow(triggerTap: boolean) {
 }
 
 function handlePlayerAreaClick(event: MouseEvent) {
+  if (Date.now() < suppressPlayerClickUntil)
+    return
   if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
     return
   const target = event.target
   if (target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
     return
+  if (isNativeAndroidPlayer) {
+    toggleChromeFromTouch()
+    return
+  }
   void handleTogglePause()
 }
 
@@ -2103,6 +2398,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('keyup', handleGlobalKeyup)
   window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  document.documentElement.addEventListener('mouseleave', handleApplicationPointerLeave)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
@@ -2124,6 +2420,15 @@ onBeforeUnmount(() => {
   if (keyboardOsdTimer)
     window.clearTimeout(keyboardOsdTimer)
   keyboardOsdTimer = undefined
+  if (touchSingleTapTimer)
+    window.clearTimeout(touchSingleTapTimer)
+  touchSingleTapTimer = undefined
+  if (touchFeedbackTimer)
+    window.clearTimeout(touchFeedbackTimer)
+  touchFeedbackTimer = undefined
+  touchGestureSession = null
+  lastTouchTap = null
+  pendingTouchLevelUpdate = null
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('focus', handleWindowFocus)
   window.removeEventListener('resize', handleWindowResize)
@@ -2131,6 +2436,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('keyup', handleGlobalKeyup)
   window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  document.documentElement.removeEventListener('mouseleave', handleApplicationPointerLeave)
 })
 
 watch(
@@ -2155,11 +2461,15 @@ watch(
     class="player-view relative h-screen w-full overflow-hidden text-white"
     :class="[
       { 'is-chrome-hidden': !shouldShowChrome },
+      { 'player-view--native-mobile': isNativeAndroidPlayer },
       isTransparentRootActive ? 'player-view--transparent' : 'bg-black',
     ]"
     @mousemove="revealChromeFromPointer"
     @mouseleave="scheduleChromeHide"
-    @touchstart.passive="revealChromeFromPointer"
+    @pointerdown="handlePlayerTouchPointerDown"
+    @pointermove="handlePlayerTouchPointerMove"
+    @pointerup="handlePlayerTouchPointerEnd"
+    @pointercancel="handlePlayerTouchPointerEnd($event, true)"
     @click="handlePlayerAreaClick"
     @contextmenu="openPlaybackContextMenu"
   >
@@ -2169,6 +2479,7 @@ watch(
       :render-status="renderStatus"
       :render-error="renderError"
       :render-diagnostics="renderDiagnostics"
+      :playback-diagnostics="playbackDiagnostics"
       :render-strategy="renderStrategy"
       :top-occlusion="topOcclusion"
       :bottom-occlusion="bottomOcclusion"
@@ -2181,14 +2492,20 @@ watch(
     />
 
     <div
-      v-if="hasMedia"
+      v-if="hasMedia && isNativeAndroidPlayer && playbackDiagnostics?.state !== 'error'"
+      class="pointer-events-auto absolute inset-0 z-[6]"
+      aria-hidden="true"
+    />
+
+    <div
+      v-if="hasMedia && !isNativeAndroidPlayer"
       class="pointer-events-auto absolute inset-x-0 top-0 z-5 h-24"
       aria-hidden="true"
       @mouseenter="revealChromeFromPointer"
       @mousemove="revealChromeFromPointer"
     />
     <div
-      v-if="hasMedia"
+      v-if="hasMedia && !isNativeAndroidPlayer"
       class="pointer-events-auto absolute inset-x-0 bottom-0 z-5 h-32"
       aria-hidden="true"
       @mouseenter="revealChromeFromPointer"
@@ -2206,11 +2523,33 @@ watch(
       </div>
     </Transition>
 
+    <Transition name="touch-gesture-osd">
+      <div
+        v-if="touchGestureFeedback"
+        class="touch-gesture-osd pointer-events-none absolute left-1/2 top-1/2 z-30 flex min-w-36 -translate-x-1/2 -translate-y-1/2 flex-col items-center border border-white/14 bg-black/72 px-5 py-4 text-center text-white shadow-2xl backdrop-blur-xl"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="touch-gesture-icon" aria-hidden="true">
+          <svg v-if="touchGestureFeedback.kind === 'seek'" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Zm-4 2v10" /></svg>
+          <svg v-else-if="touchGestureFeedback.kind === 'brightness'" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4m0-12.8L17 7M7 17l-1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" /></svg>
+          <svg v-else-if="touchGestureFeedback.kind === 'volume'" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4V9Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10" /></svg>
+          <svg v-else viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z" /></svg>
+        </span>
+        <strong>{{ touchGestureFeedback.title }}</strong>
+        <span>{{ touchGestureFeedback.value }}</span>
+        <span v-if="touchGestureFeedback.percent != null" class="touch-gesture-meter">
+          <i :style="{ width: `${touchGestureFeedback.percent}%` }" />
+        </span>
+      </div>
+    </Transition>
+
     <Transition name="player-chrome-top">
       <div
+        v-if="!isNativeAndroidPlayer"
         v-show="shouldShowChrome"
         ref="topChromeRef"
-        class="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black via-black/82 to-transparent px-6 pb-8 pt-16"
+        class="player-top-chrome pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black via-black/82 to-transparent px-6 pb-8 pt-16"
       >
         <div class="max-w-4xl">
           <p class="text-xs uppercase tracking-[0.24em] text-white/38">
@@ -2247,10 +2586,10 @@ watch(
     <!-- Bottom chrome: always in DOM when media loaded so occlusion stays valid.
          Controls fade via opacity transition; the gradient div itself never disappears. -->
     <div
-      v-if="hasMedia"
+      v-if="hasMedia && !isNativeAndroidPlayer"
       ref="bottomChromeRef"
       data-player-click-ignore
-      class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
+      class="player-bottom-chrome absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
       :class="shouldShowChrome ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'"
       @mouseenter="revealChromeFromPointer"
       @mousemove="revealChromeFromPointer"
@@ -2277,6 +2616,9 @@ watch(
         :video-fit-mode="videoFitMode"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
+        :mobile-layout="false"
+        :orientation-supported="orientationSupported"
+        :orientation-mode="orientationMode"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
         @play-next="handlePlayNext"
@@ -2292,10 +2634,61 @@ watch(
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
+        @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
       />
     </div>
+
+    <Transition name="player-chrome-top">
+      <MobilePlayerControls
+        v-if="hasMedia && isNativeAndroidPlayer"
+        v-show="shouldShowChrome"
+        ref="playerControlsRef"
+        :title="mediaTitle"
+        :title-logo-url="currentTitleLogoUrl"
+        :is-playing="isPlaying"
+        :current-time="currentTime"
+        :duration="duration"
+        :volume="volume"
+        :playback-speed="playbackSpeed"
+        :subtitle-delay="subtitleDelay"
+        :subtitle-tracks="subtitleTracks"
+        :audio-tracks="audioTracks"
+        :queue-item-count="playbackQueueItemCount"
+        :queue-items="playbackQueue?.items ?? []"
+        :current-queue-index="playbackQueue?.currentIndex ?? 0"
+        :is-queue-switching="isQueueSwitching"
+        :can-play-previous="canPlayPrevious"
+        :can-play-next="canPlayNext"
+        :current-subtitle="currentSubtitle"
+        :current-audio="currentAudio"
+        :video-aspect-mode="videoAspectMode"
+        :video-fit-mode="videoFitMode"
+        :track-error="trackError"
+        :picture-settings-error="pictureSettingsError"
+        :orientation-supported="orientationSupported"
+        :orientation-mode="orientationMode"
+        @back="handlePlayerBack"
+        @play-previous="handlePlayPrevious"
+        @toggle-pause="handleTogglePause"
+        @play-next="handlePlayNext"
+        @select-queue-item="playQueueItemAt"
+        @seek="seek"
+        @seek-relative="seekRelative"
+        @set-volume="setVolume"
+        @set-playback-speed="handleSetPlaybackSpeed"
+        @set-subtitle-delay="handleSetSubtitleDelay"
+        @set-subtitle="handleSetSubtitle"
+        @load-local-subtitle="loadLocalSubtitleFile"
+        @search-subtitles="openSubtitleSearch"
+        @set-audio="handleSetAudio"
+        @set-video-aspect="handleSetVideoAspect"
+        @set-video-fit="handleSetVideoFit"
+        @set-orientation-mode="handleSetOrientationMode"
+        @interaction-change="handleControlsInteraction"
+      />
+    </Transition>
 
     <Teleport to="body">
       <SubtitleSearchDialog
@@ -2462,6 +2855,69 @@ watch(
   transform: translateY(-6px);
 }
 
+.touch-gesture-osd {
+  border-radius: 8px;
+}
+
+.touch-gesture-icon {
+  display: flex;
+  width: 2.35rem;
+  height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.touch-gesture-icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.touch-gesture-osd strong {
+  margin-top: 0.6rem;
+  font-size: 0.86rem;
+}
+
+.touch-gesture-osd > span:not(.touch-gesture-icon, .touch-gesture-meter) {
+  margin-top: 0.18rem;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.72rem;
+}
+
+.touch-gesture-meter {
+  width: 7rem;
+  height: 0.3rem;
+  margin-top: 0.65rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.touch-gesture-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.touch-gesture-osd-enter-active,
+.touch-gesture-osd-leave-active {
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.touch-gesture-osd-enter-from,
+.touch-gesture-osd-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -46%) scale(0.96);
+}
+
 .player-view--transparent {
   background: transparent;
   background-color: transparent;
@@ -2572,5 +3028,90 @@ watch(
 .player-chrome-bottom-leave-to {
   opacity: 0;
   transform: translateY(24px);
+}
+
+@media (max-width: 820px), (hover: none) and (pointer: coarse) {
+  .player-view {
+    cursor: default !important;
+  }
+
+  .player-top-chrome {
+    padding: max(4.5rem, calc(env(safe-area-inset-top) + 3.5rem)) 1rem 2rem;
+  }
+
+  .player-top-chrome h1 {
+    max-width: calc(100vw - 5rem);
+    font-size: 1rem;
+  }
+
+  .player-top-chrome p:first-child,
+  .player-top-chrome p:nth-of-type(2) {
+    display: none;
+  }
+
+  .player-bottom-chrome {
+    padding: 2.5rem 0.65rem max(0.65rem, env(safe-area-inset-bottom));
+  }
+
+  .keyboard-osd {
+    top: max(4rem, calc(env(safe-area-inset-top) + 3.25rem));
+    right: 0.75rem;
+    max-width: calc(100vw - 1.5rem);
+  }
+
+  .player-context-menu {
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem !important;
+    top: auto !important;
+    width: auto;
+    max-width: none;
+    border-radius: 8px;
+  }
+
+  .context-menu-action {
+    min-height: 3rem;
+    border-radius: 8px;
+  }
+
+  .player-detail-panel {
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem;
+    top: auto;
+    width: auto;
+    max-height: 78svh;
+    overflow-y: auto;
+    border-radius: 8px;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .player-view {
+    touch-action: none;
+  }
+}
+
+.player-view--native-mobile {
+  cursor: default !important;
+  touch-action: none;
+}
+
+.player-view--native-mobile .player-top-chrome {
+  padding: max(2.5rem, calc(env(safe-area-inset-top) + 1.25rem)) 1rem 1.5rem;
+}
+
+.player-view--native-mobile .player-top-chrome h1 {
+  max-width: calc(100vw - 5rem);
+  font-size: 1rem;
+}
+
+.player-view--native-mobile .player-top-chrome p:first-child,
+.player-view--native-mobile .player-top-chrome p:nth-of-type(2) {
+  display: none;
+}
+
+.player-view--native-mobile .player-bottom-chrome {
+  padding: 2rem 0.65rem max(0.65rem, env(safe-area-inset-bottom));
 }
 </style>

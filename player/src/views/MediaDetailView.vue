@@ -636,10 +636,10 @@ function markTitleLogoFailed(url: string) {
     </div>
 
     <template v-else-if="detail">
-      <section class="relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
+      <section class="detail-hero relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
-        <div class="relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
+        <div class="detail-hero-content relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
           <div class="hidden w-56 flex-shrink-0 overflow-hidden rounded-[1.8rem] border border-white/12 bg-white/6 shadow-2xl md:block">
             <img v-if="detail.posterUrl" :src="detail.posterUrl" :alt="detail.name" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async">
             <div v-else class="flex aspect-[2/3] items-center justify-center p-6 text-center text-sm text-white/45">
@@ -685,7 +685,7 @@ function markTitleLogoFailed(url: string) {
         </div>
       </section>
 
-      <main class="mobile-nav-safe space-y-10 px-4 pb-14 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
+      <main class="detail-content mobile-nav-safe space-y-10 px-4 pb-14 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
         <div v-if="errorMessage" class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100">
           {{ errorMessage }}
         </div>
@@ -999,5 +999,72 @@ function markTitleLogoFailed(url: string) {
 .episode-nav-button:disabled {
   cursor: default;
   opacity: 0.26;
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .detail-hero,
+  .detail-hero-content {
+    min-height: min(68svh, 38rem);
+  }
+
+  .detail-hero-content {
+    padding-top: max(5rem, calc(env(safe-area-inset-top) + 4rem));
+    padding-bottom: 2rem;
+  }
+
+  .detail-hero-content h1 {
+    font-size: 2rem;
+  }
+
+  .detail-hero-content p.line-clamp-5 {
+    -webkit-line-clamp: 3;
+    font-size: 0.88rem;
+    line-height: 1.65;
+  }
+
+  .detail-hero-content button,
+  .detail-hero-content span.rounded-full {
+    min-height: 2.9rem;
+    border-radius: 8px;
+  }
+
+  .detail-content {
+    row-gap: 1.8rem;
+  }
+
+  .episode-rail-shell,
+  .episode-card,
+  .detail-content :deep(.glass-panel) {
+    border-radius: 8px;
+  }
+
+  .episode-rail-shell {
+    margin-inline: -0.25rem;
+    padding: 0.85rem;
+  }
+
+  .episode-nav-button {
+    display: none;
+  }
+
+  .episode-card-strip {
+    gap: 0.75rem;
+    padding-right: 0;
+  }
+
+  .episode-card {
+    min-width: calc(100vw - 3.2rem);
+    max-width: calc(100vw - 3.2rem);
+    transform: none !important;
+  }
+
+  .episode-card > div:last-child {
+    gap: 1rem;
+    padding: 0.9rem;
+  }
+
+  .episode-card h3 {
+    font-size: 1rem;
+  }
 }
 </style>

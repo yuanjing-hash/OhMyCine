@@ -1738,7 +1738,7 @@ function labelForSourceType(type: string): string {
 
 <template>
   <div class="source-view relative min-h-full">
-    <div class="mobile-nav-safe space-y-8 px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
+    <div class="source-page-content mobile-nav-safe space-y-8 px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
       <div v-if="!sourceConfig" class="flex flex-col items-center justify-center py-24">
         <p class="text-lg text-white/40">
           Data source not found
@@ -1776,7 +1776,7 @@ function labelForSourceType(type: string): string {
             </div>
           </div>
 
-          <form class="flex min-w-72 gap-2" @submit.prevent="runSearch">
+          <form class="source-mobile-search flex min-w-72 gap-2" @submit.prevent="runSearch">
             <input
               v-model="searchKeyword"
               class="min-w-0 flex-1 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none placeholder:text-white/25 focus:border-primary/60"
@@ -2681,6 +2681,54 @@ function labelForSourceType(type: string): string {
 
   100% {
     transform: translateX(250%);
+  }
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .source-page-content {
+    padding-top: max(4.4rem, calc(env(safe-area-inset-top) + 3.4rem));
+  }
+
+  .source-page-content > template + *,
+  .source-page-content {
+    row-gap: 1.35rem;
+  }
+
+  .source-mobile-search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .source-mobile-search input,
+  .source-mobile-search button {
+    min-height: 2.9rem;
+    border-radius: 8px;
+  }
+
+  .source-bottom-controls {
+    bottom: calc(5.25rem + env(safe-area-inset-bottom));
+    width: calc(100vw - 1.5rem);
+    padding: 0;
+    opacity: 1;
+  }
+
+  .source-bottom-control-bar {
+    border-radius: 8px;
+    padding: 0.35rem;
+    transform: none;
+    background: rgba(11, 14, 20, 0.92);
+  }
+
+  .source-bottom-control-button {
+    height: 3rem;
+    border-radius: 6px;
+    font-size: 0.72rem;
+  }
+
+  .scan-management-panel,
+  .first-index-panel,
+  .scan-stat {
+    border-radius: 8px;
   }
 }
 </style>

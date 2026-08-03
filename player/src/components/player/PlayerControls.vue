@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -9,7 +9,7 @@ import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
 
-type ControlMenu = 'speed' | 'subtitle' | 'audio' | 'queue'
+type ControlMenu = 'speed' | 'subtitle' | 'audio' | 'queue' | 'orientation'
 
 const props = defineProps<{
   isPlaying: boolean
@@ -32,6 +32,9 @@ const props = defineProps<{
   videoFitMode: VideoFitMode
   trackError: string | null
   pictureSettingsError: string | null
+  mobileLayout: boolean
+  orientationSupported: boolean
+  orientationMode: MpvOrientationMode
 }>()
 
 const emit = defineEmits<{
@@ -50,11 +53,12 @@ const emit = defineEmits<{
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
+  setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
 }>()
 
-const appWindow = getCurrentWindow()
+const appWindow = isTauriRuntime() ? getCurrentWindow() : null
 const settingsButton = ref<HTMLButtonElement | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
@@ -89,6 +93,13 @@ const audioLabel = computed(() => {
 const showAudioControl = computed(() => props.audioTracks.length > 1)
 const showQueueControl = computed(() => props.queueItemCount > 1)
 const queueLabel = computed(() => `${Math.max(0, props.currentQueueIndex + 1)}/${props.queueItemCount}`)
+const orientationLabel = computed(() => {
+  if (props.orientationMode === 'landscape')
+    return '锁定横屏'
+  if (props.orientationMode === 'portrait')
+    return '锁定竖屏'
+  return '自动横屏'
+})
 const downloadedSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source === 'downloaded'))
 const mediaSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source !== 'downloaded'))
 
@@ -162,6 +173,11 @@ async function closeSettingsPanel() {
 function chooseSpeed(speed: number) {
   emit('setPlaybackSpeed', speed)
   closeMenus()
+}
+
+function chooseOrientation(mode: MpvOrientationMode) {
+  emit('setOrientationMode', mode)
+  activeMenu.value = null
 }
 
 function chooseSubtitle(trackId: SubtitleSelectionId | null) {
@@ -269,6 +285,14 @@ function subtitleSourceLabel(track: SubtitleTrackOption): string {
 }
 
 async function syncFullscreenState() {
+  if (!appWindow) {
+    const nextFullscreen = document.fullscreenElement !== null
+    const previousFullscreen = isFullscreen.value
+    isFullscreen.value = nextFullscreen
+    if (previousFullscreen !== nextFullscreen)
+      emit('fullscreenChanged', nextFullscreen)
+    return
+  }
   try {
     const nextFullscreen = await appWindow.isFullscreen()
     const previousFullscreen = isFullscreen.value
@@ -329,6 +353,14 @@ async function toggleFullscreen(silent = false) {
   if (!silent)
     emitInteractionState()
   try {
+    if (!appWindow) {
+      const nextFullscreen = document.fullscreenElement === null
+      await toggleBrowserFullscreen(nextFullscreen)
+      isFullscreen.value = nextFullscreen
+      fullscreenError.value = null
+      emit('fullscreenChanged', nextFullscreen)
+      return
+    }
     const nextFullscreen = !(await appWindow.isFullscreen())
     const result = await transitionWindowFullscreen(
       appWindow,
@@ -397,8 +429,10 @@ watch(showQueueControl, (visible) => {
 
 onMounted(() => {
   void syncFullscreenState()
-  trackWindowListener(appWindow.onResized(syncFullscreenState))
-  trackWindowListener(appWindow.onFocusChanged(syncFullscreenState))
+  if (appWindow) {
+    trackWindowListener(appWindow.onResized(syncFullscreenState))
+    trackWindowListener(appWindow.onFocusChanged(syncFullscreenState))
+  }
   document.addEventListener('fullscreenchange', syncFullscreenState)
 })
 
@@ -417,6 +451,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   <div
     data-player-click-ignore
     class="player-controls-glass pointer-events-auto relative mx-auto flex w-full max-w-7xl min-w-0 items-center gap-3 overflow-visible rounded-[28px] px-5 py-3"
+    :class="{ 'mobile-layout': mobileLayout }"
     @mouseenter="setPointerInside(true)"
     @mouseleave="setPointerInside(false)"
     @focusin="setFocusInside(true)"
@@ -452,11 +487,11 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
       </button>
     </div>
 
-    <span class="time-label w-16 shrink-0 text-left">{{ formatTime(currentTime) }}</span>
+    <span class="time-label current-time-label w-16 shrink-0 text-left">{{ formatTime(currentTime) }}</span>
 
-    <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="(pos) => emit('seek', pos)" @interaction-change="setChildInteracting" />
+    <ProgressBar class="player-progress-bar min-w-0 flex-1" :current="currentTime" :total="duration" @seek="(pos) => emit('seek', pos)" @interaction-change="setChildInteracting" />
 
-    <span class="time-label w-16 shrink-0 text-right">{{ formatTime(duration) }}</span>
+    <span class="time-label duration-time-label w-16 shrink-0 text-right">{{ formatTime(duration) }}</span>
 
     <div class="right-controls flex shrink-0 items-center gap-2">
       <VolumeControl class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
@@ -605,6 +640,30 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
         <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.34 7.34 0 0 0-1.69-.98L14.5 2.42A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.5.42L9.12 5.07c-.61.23-1.18.56-1.69.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.07.65-.07.98s.02.66.07.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.13.22.39.31.62.22l2.47-1a7.34 7.34 0 0 0 1.69.98l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.61-.23 1.18-.56 1.69-.98l2.47 1c.23.09.49 0 .62-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" /></svg>
         <span class="settings-entry-label">设置</span>
       </button>
+
+      <div v-if="mobileLayout && orientationSupported" class="control-menu-anchor">
+        <button class="control-button secondary" :class="{ 'is-active': activeMenu === 'orientation' || orientationMode !== 'auto' }" type="button" :title="orientationLabel" :aria-label="orientationLabel" aria-haspopup="menu" :aria-expanded="activeMenu === 'orientation'" @click="toggleMenu('orientation')">
+          <svg v-if="orientationMode === 'auto'" class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7.5 10V8a4.5 4.5 0 0 1 8.7-1.65 1 1 0 1 1-1.86.73A2.5 2.5 0 0 0 9.5 8v2H17a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h.5Zm-.5 2v6h10v-6H7Z" />
+          </svg>
+          <svg v-else class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 10V8a4 4 0 1 1 8 0v2h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h1Zm2 0h4V8a2 2 0 1 0-4 0v2Zm-3 2v6h10v-6H7Z" />
+          </svg>
+        </button>
+        <Transition name="control-menu">
+          <div v-if="activeMenu === 'orientation'" class="control-popover orientation-popover" role="menu" aria-label="屏幕方向">
+            <button type="button" class="menu-option" :class="{ 'is-selected': orientationMode === 'auto' }" role="menuitemradio" :aria-checked="orientationMode === 'auto'" @click="chooseOrientation('auto')">
+              自动横屏
+            </button>
+            <button type="button" class="menu-option" :class="{ 'is-selected': orientationMode === 'landscape' }" role="menuitemradio" :aria-checked="orientationMode === 'landscape'" @click="chooseOrientation('landscape')">
+              锁定横屏
+            </button>
+            <button type="button" class="menu-option" :class="{ 'is-selected': orientationMode === 'portrait' }" role="menuitemradio" :aria-checked="orientationMode === 'portrait'" @click="chooseOrientation('portrait')">
+              锁定竖屏
+            </button>
+          </div>
+        </Transition>
+      </div>
 
       <button class="control-button fullscreen-button secondary" :class="{ 'is-active': isFullscreen }" type="button" :title="fullscreenTitle" :aria-label="fullscreenTitle" :aria-pressed="isFullscreen" :disabled="fullscreenBusy" @click="handleFullscreenButtonClick">
         <svg v-if="isFullscreen" class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a1 1 0 0 1 1 1v3.25A1.75 1.75 0 0 1 8.25 10H5a1 1 0 0 1 0-2h3V5a1 1 0 0 1 1-1Zm6 0a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2h-3.25A1.75 1.75 0 0 1 14 8.25V5a1 1 0 0 1 1-1ZM4 15a1 1 0 0 1 1-1h3.25A1.75 1.75 0 0 1 10 15.75V19a1 1 0 1 1-2 0v-3H5a1 1 0 0 1-1-1Zm10 0.75A1.75 1.75 0 0 1 15.75 14H19a1 1 0 1 1 0 2h-3v3a1 1 0 1 1-2 0v-3.25Z" /></svg>
@@ -892,6 +951,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   gap: 0.35rem;
 }
 
+.orientation-popover {
+  min-width: 10rem;
+}
+
 .menu-option {
   width: 100%;
   border: 1px solid transparent;
@@ -1062,11 +1125,215 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 @media (max-width: 820px) {
-  .transport-controls .control-button.disabled,
-  .time-label,
-  .action-chip[aria-label^="音轨"],
-  .action-chip[aria-label^="播放队列"] {
+  .player-controls-glass {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.35rem 0.65rem;
+    border-radius: 8px;
+    padding: 0.6rem;
+  }
+
+  .current-time-label {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .player-progress-bar {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .duration-time-label {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .time-label {
+    display: block;
+    width: auto;
+    font-size: 0.65rem;
+  }
+
+  .transport-controls {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: center;
+    gap: clamp(0.35rem, 3vw, 0.8rem);
+  }
+
+  .transport-controls .control-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .transport-controls .control-button.primary {
+    width: 50px;
+    height: 50px;
+  }
+
+  .right-controls {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding-top: 0.45rem;
+    scrollbar-width: none;
+  }
+
+  .right-controls::-webkit-scrollbar {
     display: none;
   }
+
+  .right-controls .control-button,
+  .right-controls .action-chip,
+  .right-controls .settings-entry-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .control-popover {
+    position: fixed;
+    z-index: 1250;
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    max-height: min(70svh, 38rem);
+    border-radius: 8px;
+    padding: 0.65rem;
+  }
+
+  .track-popover,
+  .queue-popover {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .menu-option,
+  .queue-option {
+    min-height: 3rem;
+    border-radius: 8px;
+  }
+
+  .speed-popover {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.player-controls-glass.mobile-layout {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.3rem 0.55rem;
+  border-radius: 8px;
+  padding: 0.55rem;
+}
+
+.mobile-layout .current-time-label {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.mobile-layout .player-progress-bar {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.mobile-layout .duration-time-label {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.mobile-layout .time-label {
+  display: block;
+  width: auto;
+  font-size: 0.65rem;
+}
+
+.mobile-layout .transport-controls {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  justify-content: center;
+  gap: clamp(0.35rem, 3vw, 0.8rem);
+}
+
+.mobile-layout .transport-controls .control-button {
+  width: 44px;
+  height: 44px;
+}
+
+.mobile-layout .transport-controls .control-button.primary {
+  width: 52px;
+  height: 52px;
+}
+
+.mobile-layout .right-controls {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  width: 100%;
+  justify-content: center;
+  overflow-x: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 0.4rem;
+  scrollbar-width: none;
+}
+
+.mobile-layout .right-controls::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-layout .right-controls .control-button,
+.mobile-layout .right-controls .action-chip,
+.mobile-layout .right-controls .settings-entry-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.mobile-layout .control-text,
+.mobile-layout .settings-entry-label {
+  display: none;
+}
+
+.mobile-layout :deep(.volume-slider) {
+  display: none;
+}
+
+.mobile-layout .control-popover {
+  position: fixed;
+  z-index: 1250;
+  right: 0.75rem;
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  left: 0.75rem;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  max-height: min(70svh, 38rem);
+  border-radius: 8px;
+  padding: 0.65rem;
+}
+
+.mobile-layout .track-popover,
+.mobile-layout .queue-popover {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.mobile-layout .menu-option,
+.mobile-layout .queue-option {
+  min-height: 3rem;
+  border-radius: 8px;
+}
+
+.mobile-layout .speed-popover {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 </style>

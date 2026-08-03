@@ -1,7 +1,11 @@
 [package]
 name = "ohmycine-player"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
+
+[lib]
+name = "ohmycine_player_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -9,13 +13,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
-libmpv-sys = "3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
-tokio = { version = "1", features = ["sync", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["net", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+axum = "0.7"
 tonic = { version = "0.12", features = ["tls-native-roots"] }
 prost = "0.13"
 prost-types = "0.13"
@@ -32,6 +36,9 @@ rand = "0.8"
 raw-window-handle = "0.6"
 notify = "6.1"
 tauri-plugin-updater = "2.10.1"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+libmpv-sys = "3.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
