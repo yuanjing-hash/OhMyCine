@@ -51,7 +51,7 @@ interface PlaybackContextMenuDetail {
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
-const appWindow = getCurrentWindow()
+const appWindow = isTauriRuntime() ? getCurrentWindow() : null
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const mediaHeaders = ref<Record<string, string>>({})
@@ -1416,7 +1416,7 @@ function showTransientPlayerMessage(message: string) {
 
 async function resizeWindowForAspect(mode: VideoAspectMode) {
   const ratio = aspectRatioValue(mode)
-  if (!ratio)
+  if (!ratio || !appWindow)
     return
 
   try {
@@ -1445,6 +1445,14 @@ async function resizeWindowForAspect(mode: VideoAspectMode) {
   catch (error) {
     pictureSettingsError.value = toSafeErrorMessage(error, '窗口尺寸调整失败，已保留当前画面比例设置。')
   }
+}
+
+function isTauriRuntime(): boolean {
+  const root = globalThis as {
+    readonly __TAURI_INTERNALS__?: unknown
+    readonly window?: { readonly __TAURI_INTERNALS__?: unknown }
+  }
+  return root.__TAURI_INTERNALS__ != null || root.window?.__TAURI_INTERNALS__ != null
 }
 
 watch(
@@ -2210,7 +2218,7 @@ watch(
       <div
         v-show="shouldShowChrome"
         ref="topChromeRef"
-        class="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black via-black/82 to-transparent px-6 pb-8 pt-16"
+        class="player-top-chrome pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black via-black/82 to-transparent px-6 pb-8 pt-16"
       >
         <div class="max-w-4xl">
           <p class="text-xs uppercase tracking-[0.24em] text-white/38">
@@ -2250,7 +2258,7 @@ watch(
       v-if="hasMedia"
       ref="bottomChromeRef"
       data-player-click-ignore
-      class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
+      class="player-bottom-chrome absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black via-black/86 to-transparent px-6 pb-6 pt-10 transition-opacity duration-300"
       :class="shouldShowChrome ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'"
       @mouseenter="revealChromeFromPointer"
       @mousemove="revealChromeFromPointer"
@@ -2572,5 +2580,61 @@ watch(
 .player-chrome-bottom-leave-to {
   opacity: 0;
   transform: translateY(24px);
+}
+
+@media (max-width: 820px), (hover: none) and (pointer: coarse) {
+  .player-view {
+    cursor: default !important;
+  }
+
+  .player-top-chrome {
+    padding: max(4.5rem, calc(env(safe-area-inset-top) + 3.5rem)) 1rem 2rem;
+  }
+
+  .player-top-chrome h1 {
+    max-width: calc(100vw - 5rem);
+    font-size: 1rem;
+  }
+
+  .player-top-chrome p:first-child,
+  .player-top-chrome p:nth-of-type(2) {
+    display: none;
+  }
+
+  .player-bottom-chrome {
+    padding: 2.5rem 0.65rem max(0.65rem, env(safe-area-inset-bottom));
+  }
+
+  .keyboard-osd {
+    top: max(4rem, calc(env(safe-area-inset-top) + 3.25rem));
+    right: 0.75rem;
+    max-width: calc(100vw - 1.5rem);
+  }
+
+  .player-context-menu {
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem !important;
+    top: auto !important;
+    width: auto;
+    max-width: none;
+    border-radius: 8px;
+  }
+
+  .context-menu-action {
+    min-height: 3rem;
+    border-radius: 8px;
+  }
+
+  .player-detail-panel {
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem;
+    top: auto;
+    width: auto;
+    max-height: 78svh;
+    overflow-y: auto;
+    border-radius: 8px;
+  }
 }
 </style>

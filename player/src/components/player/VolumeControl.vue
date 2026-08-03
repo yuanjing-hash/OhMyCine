@@ -136,4 +136,19 @@ watch(() => props.volume, (volume) => {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.16), 0 6px 14px rgba(0, 0, 0, 0.35);
 }
+
+@media (max-width: 820px), (hover: none) and (pointer: coarse) {
+  .volume-control {
+    gap: 0;
+  }
+
+  .volume-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .volume-slider {
+    display: none;
+  }
+}
 </style>

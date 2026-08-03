@@ -9,6 +9,7 @@ import { useDataSourceStore } from '@/stores/datasource'
 import BackButton from './BackButton.vue'
 import DataSourceSidebar from './DataSourceSidebar.vue'
 import FloatingControls from './FloatingControls.vue'
+import MobileNavigation from './MobileNavigation.vue'
 import WindowChrome from './WindowChrome.vue'
 
 const route = useRoute()
@@ -83,6 +84,8 @@ onBeforeUnmount(() => {
 
     <!-- Floating glass sidebar — hidden on player page for immersive layout -->
     <DataSourceSidebar v-if="!isPlayerRoute" />
+
+    <MobileNavigation v-if="!isPlayerRoute" />
 
     <!-- Floating back navigation for non-home pages — hidden on player page -->
     <BackButton v-if="!isPlayerRoute" />

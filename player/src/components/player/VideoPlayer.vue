@@ -262,10 +262,12 @@ onMounted(() => {
     resizeObserver.observe(surfaceHost.value)
   }
   window.addEventListener('resize', reportBounds)
-  const appWindow = getCurrentWindow()
-  trackWindowListener(appWindow.onResized(reportBounds))
-  trackWindowListener(appWindow.onMoved(reportBounds))
-  trackWindowListener(appWindow.onScaleChanged(reportBounds))
+  if (isTauriRuntime()) {
+    const appWindow = getCurrentWindow()
+    trackWindowListener(appWindow.onResized(reportBounds))
+    trackWindowListener(appWindow.onMoved(reportBounds))
+    trackWindowListener(appWindow.onScaleChanged(reportBounds))
+  }
   reportBounds()
 })
 
@@ -279,6 +281,14 @@ onBeforeUnmount(() => {
   if (pendingFrame)
     window.cancelAnimationFrame(pendingFrame)
 })
+
+function isTauriRuntime(): boolean {
+  const root = globalThis as {
+    readonly __TAURI_INTERNALS__?: unknown
+    readonly window?: { readonly __TAURI_INTERNALS__?: unknown }
+  }
+  return root.__TAURI_INTERNALS__ != null || root.window?.__TAURI_INTERNALS__ != null
+}
 </script>
 
 <template>

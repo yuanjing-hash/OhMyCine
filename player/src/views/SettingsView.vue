@@ -1908,12 +1908,12 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
         </button>
       </div>
 
-      <section v-if="mode === 'overview'" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <section v-if="mode === 'overview'" class="settings-overview-grid grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <button
           v-for="entry in settingsEntries"
           :key="entry.id"
           type="button"
-          class="glass-panel flex min-h-0 flex-col rounded-[1.5rem] p-5 text-left transition-all duration-200 disabled:cursor-not-allowed sm:min-h-56"
+          class="settings-entry-card glass-panel flex min-h-0 flex-col rounded-[1.5rem] p-5 text-left transition-all duration-200 disabled:cursor-not-allowed sm:min-h-56"
           :class="entry.disabled ? 'opacity-58' : 'hover:-translate-y-0.5 hover:bg-white/10'"
           :disabled="entry.disabled"
           @click="openSettingsEntry(entry)"
@@ -3192,5 +3192,90 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 <style scoped>
 .settings-view {
   background: var(--color-bg);
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .settings-view {
+    padding-top: max(4.4rem, calc(env(safe-area-inset-top) + 3.4rem));
+  }
+
+  .settings-view > div {
+    row-gap: 1.35rem;
+  }
+
+  .settings-view header h1 {
+    font-size: 1.8rem;
+  }
+
+  .settings-view header p:last-child {
+    margin-top: 0.55rem;
+    line-height: 1.55;
+  }
+
+  .settings-overview-grid {
+    gap: 0.55rem;
+  }
+
+  .settings-entry-card {
+    display: grid;
+    min-height: 0;
+    grid-template-columns: 3rem minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 0.2rem 0.75rem;
+    align-items: center;
+    border-radius: 8px;
+    padding: 0.75rem;
+  }
+
+  .settings-entry-card > span:first-child {
+    display: contents;
+  }
+
+  .settings-entry-card > span:first-child > span:first-child {
+    grid-row: 1 / 3;
+    width: 3rem;
+    min-width: 3rem;
+    height: 3rem;
+    margin: 0;
+    border-radius: 8px;
+    padding: 0.35rem;
+    font-size: 0.66rem;
+  }
+
+  .settings-entry-card > span:first-child > span:last-child {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.6rem;
+  }
+
+  .settings-entry-card > span:nth-child(2) {
+    grid-column: 2;
+    font-size: 0.9rem;
+  }
+
+  .settings-entry-card > span:nth-child(3) {
+    grid-column: 2;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.68rem;
+    line-height: 1.3;
+  }
+
+  .settings-entry-card > span:last-child {
+    display: none;
+  }
+
+  .settings-view :deep(.glass-panel) {
+    border-radius: 8px;
+  }
+
+  .settings-view :deep(input),
+  .settings-view :deep(select),
+  .settings-view :deep(textarea) {
+    font-size: 16px;
+  }
 }
 </style>

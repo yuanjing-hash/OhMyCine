@@ -76,7 +76,7 @@ assert.match(videoPlayer, /appWindow\.onScaleChanged\(reportBounds\)/)
 const playerView = await readFile(fileURLToPath(new URL('src/views/PlayerView.vue', root)), 'utf8')
 assert.match(playerView, /const AUTO_HIDE_DELAY = 3000/)
 assert.doesNotMatch(playerView, /canAutoHideChrome\(\)[\s\S]{0,300}isWindowFocused/)
-assert.match(playerView, /function handleWindowBlur\(\) \{\s+controlsInteracting\.value = false\s+scheduleChromeHide\(\)/)
+assert.match(playerView, /function handleWindowBlur\(\) \{\s+controlsInteracting\.value = false\s+void releaseHeldArrow\(false\)\s+scheduleChromeHide\(\)/)
 
 const windowsBackend = await readFile(fileURLToPath(new URL('src-tauri/src/mpv/platform/windows.rs', root)), 'utf8')
 assert.match(windowsBackend, /OwnerWindowEvent::Resized => \{[\s\S]*?waiting for WebView ResizeObserver bounds/)

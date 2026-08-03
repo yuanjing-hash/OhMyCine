@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps<{
   current: number
@@ -20,39 +20,34 @@ const progress = computed(() => {
   return Math.max(0, Math.min(100, (props.current / props.total) * 100))
 })
 
-function handleClick(e: MouseEvent) {
+function updatePosition(event: PointerEvent) {
   if (!barRef.value || !props.total)
     return
   const rect = barRef.value.getBoundingClientRect()
-  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+  const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
   emit('seek', ratio * props.total)
 }
 
-function handleMouseDown(e: MouseEvent) {
+function handlePointerDown(event: PointerEvent) {
   isDragging.value = true
+  barRef.value?.setPointerCapture(event.pointerId)
   emit('interactionChange', true)
-  handleClick(e)
-  window.addEventListener('mousemove', handleMouseMove)
-  window.addEventListener('mouseup', handleMouseUp)
+  updatePosition(event)
 }
 
-function handleMouseMove(e: MouseEvent) {
-  if (isDragging.value) {
-    handleClick(e)
-  }
+function handlePointerMove(event: PointerEvent) {
+  if (isDragging.value)
+    updatePosition(event)
 }
 
-function handleMouseUp() {
+function handlePointerEnd(event: PointerEvent) {
+  if (!isDragging.value)
+    return
+  if (barRef.value?.hasPointerCapture(event.pointerId))
+    barRef.value.releasePointerCapture(event.pointerId)
   isDragging.value = false
   emit('interactionChange', false)
-  window.removeEventListener('mousemove', handleMouseMove)
-  window.removeEventListener('mouseup', handleMouseUp)
 }
-
-onBeforeUnmount(() => {
-  window.removeEventListener('mousemove', handleMouseMove)
-  window.removeEventListener('mouseup', handleMouseUp)
-})
 </script>
 
 <template>
@@ -61,7 +56,10 @@ onBeforeUnmount(() => {
     class="progress-hit-area group flex h-7 cursor-pointer items-center"
     @mouseenter="emit('interactionChange', true)"
     @mouseleave="!isDragging && emit('interactionChange', false)"
-    @mousedown="handleMouseDown"
+    @pointerdown.prevent="handlePointerDown"
+    @pointermove.prevent="handlePointerMove"
+    @pointerup="handlePointerEnd"
+    @pointercancel="handlePointerEnd"
   >
     <div class="progress-track relative h-1.5 w-full overflow-visible rounded-full transition-all group-hover:h-2">
       <div
@@ -90,5 +88,21 @@ onBeforeUnmount(() => {
 .progress-thumb {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.18), 0 8px 18px rgba(0, 0, 0, 0.4);
+}
+
+.progress-hit-area {
+  touch-action: none;
+}
+
+@media (max-width: 820px), (hover: none) and (pointer: coarse) {
+  .progress-track {
+    height: 0.38rem;
+  }
+
+  .progress-thumb {
+    width: 1rem;
+    height: 1rem;
+    opacity: 1;
+  }
 }
 </style>

@@ -94,7 +94,7 @@ function handleContextMenu(event: MouseEvent) {
 
       <button
         v-if="canPlay"
-        class="absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-2xl transition-all duration-200 hover:scale-110 group-hover:opacity-100"
+        class="media-card-play absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-2xl transition-all duration-200 hover:scale-110 group-hover:opacity-100"
         aria-label="Play media"
         title="Play media"
         @click.stop="handlePlay"
@@ -126,5 +126,35 @@ function handleContextMenu(event: MouseEvent) {
 .library-card {
   border-radius: 1.8rem;
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 62%, transparent), color-mix(in srgb, var(--color-surface-hover) 34%, transparent));
+}
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .media-card,
+  .library-card {
+    border-radius: 8px;
+  }
+
+  .media-card:hover {
+    transform: none;
+  }
+
+  .media-card :deep(img) {
+    transform: none !important;
+  }
+
+  .media-card-play {
+    top: auto;
+    right: 0.55rem;
+    bottom: 0.55rem;
+    left: auto;
+    width: 2.65rem;
+    height: 2.65rem;
+    transform: none;
+    opacity: 1;
+  }
+
+  .media-card-play:hover {
+    transform: none;
+  }
 }
 </style>

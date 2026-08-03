@@ -54,7 +54,7 @@ const emit = defineEmits<{
   interactionChange: [active: boolean]
 }>()
 
-const appWindow = getCurrentWindow()
+const appWindow = isTauriRuntime() ? getCurrentWindow() : null
 const settingsButton = ref<HTMLButtonElement | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
@@ -269,6 +269,14 @@ function subtitleSourceLabel(track: SubtitleTrackOption): string {
 }
 
 async function syncFullscreenState() {
+  if (!appWindow) {
+    const nextFullscreen = document.fullscreenElement !== null
+    const previousFullscreen = isFullscreen.value
+    isFullscreen.value = nextFullscreen
+    if (previousFullscreen !== nextFullscreen)
+      emit('fullscreenChanged', nextFullscreen)
+    return
+  }
   try {
     const nextFullscreen = await appWindow.isFullscreen()
     const previousFullscreen = isFullscreen.value
@@ -329,6 +337,14 @@ async function toggleFullscreen(silent = false) {
   if (!silent)
     emitInteractionState()
   try {
+    if (!appWindow) {
+      const nextFullscreen = document.fullscreenElement === null
+      await toggleBrowserFullscreen(nextFullscreen)
+      isFullscreen.value = nextFullscreen
+      fullscreenError.value = null
+      emit('fullscreenChanged', nextFullscreen)
+      return
+    }
     const nextFullscreen = !(await appWindow.isFullscreen())
     const result = await transitionWindowFullscreen(
       appWindow,
@@ -397,8 +413,10 @@ watch(showQueueControl, (visible) => {
 
 onMounted(() => {
   void syncFullscreenState()
-  trackWindowListener(appWindow.onResized(syncFullscreenState))
-  trackWindowListener(appWindow.onFocusChanged(syncFullscreenState))
+  if (appWindow) {
+    trackWindowListener(appWindow.onResized(syncFullscreenState))
+    trackWindowListener(appWindow.onFocusChanged(syncFullscreenState))
+  }
   document.addEventListener('fullscreenchange', syncFullscreenState)
 })
 
@@ -452,11 +470,11 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
       </button>
     </div>
 
-    <span class="time-label w-16 shrink-0 text-left">{{ formatTime(currentTime) }}</span>
+    <span class="time-label current-time-label w-16 shrink-0 text-left">{{ formatTime(currentTime) }}</span>
 
-    <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="(pos) => emit('seek', pos)" @interaction-change="setChildInteracting" />
+    <ProgressBar class="player-progress-bar min-w-0 flex-1" :current="currentTime" :total="duration" @seek="(pos) => emit('seek', pos)" @interaction-change="setChildInteracting" />
 
-    <span class="time-label w-16 shrink-0 text-right">{{ formatTime(duration) }}</span>
+    <span class="time-label duration-time-label w-16 shrink-0 text-right">{{ formatTime(duration) }}</span>
 
     <div class="right-controls flex shrink-0 items-center gap-2">
       <VolumeControl class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
@@ -1062,11 +1080,105 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 @media (max-width: 820px) {
-  .transport-controls .control-button.disabled,
-  .time-label,
-  .action-chip[aria-label^="音轨"],
-  .action-chip[aria-label^="播放队列"] {
+  .player-controls-glass {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.35rem 0.65rem;
+    border-radius: 8px;
+    padding: 0.6rem;
+  }
+
+  .current-time-label {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .player-progress-bar {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .duration-time-label {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .time-label {
+    display: block;
+    width: auto;
+    font-size: 0.65rem;
+  }
+
+  .transport-controls {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: center;
+    gap: clamp(0.35rem, 3vw, 0.8rem);
+  }
+
+  .transport-controls .control-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .transport-controls .control-button.primary {
+    width: 50px;
+    height: 50px;
+  }
+
+  .right-controls {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding-top: 0.45rem;
+    scrollbar-width: none;
+  }
+
+  .right-controls::-webkit-scrollbar {
     display: none;
+  }
+
+  .right-controls .control-button,
+  .right-controls .action-chip,
+  .right-controls .settings-entry-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .control-popover {
+    position: fixed;
+    z-index: 1250;
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    max-height: min(70svh, 38rem);
+    border-radius: 8px;
+    padding: 0.65rem;
+  }
+
+  .track-popover,
+  .queue-popover {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .menu-option,
+  .queue-option {
+    min-height: 3rem;
+    border-radius: 8px;
+  }
+
+  .speed-popover {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 </style>

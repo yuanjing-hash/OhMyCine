@@ -92,7 +92,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]">
+  <div class="hero-carousel relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]">
     <!-- Background -->
     <div
       v-if="currentItem()"
@@ -113,7 +113,7 @@ onUnmounted(() => {
     <div class="absolute inset-0 bg-gradient-to-t from-black/72 via-black/12 to-black/32" />
 
     <!-- Content -->
-    <div v-if="currentItem()" class="relative flex min-h-[30rem] items-end p-5 pb-16 sm:min-h-[35rem] sm:p-8 sm:pb-16 lg:p-10">
+    <div v-if="currentItem()" class="hero-carousel-content relative flex min-h-[30rem] items-end p-5 pb-16 sm:min-h-[35rem] sm:p-8 sm:pb-16 lg:p-10">
       <div class="max-w-2xl">
         <!-- Tagline -->
         <p v-if="currentItem()!.tagline" class="mb-3 text-sm font-medium uppercase tracking-widest text-primary-light/80">
@@ -143,7 +143,7 @@ onUnmounted(() => {
         <!-- Actions -->
         <div class="mt-6 flex flex-wrap items-center gap-3">
           <button
-            class="flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-black shadow-lg transition-transform hover:scale-105"
+            class="hero-primary-action flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-black shadow-lg transition-transform hover:scale-105"
             :aria-label="currentItem() ? `${currentActionLabel} ${currentItem()!.name}` : currentActionLabel"
             @click="handlePrimaryAction"
           >
@@ -157,7 +157,7 @@ onUnmounted(() => {
             {{ currentActionLabel }}
           </button>
           <button
-            class="glass flex items-center gap-2 rounded-full px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
+            class="hero-secondary-action glass flex items-center gap-2 rounded-full px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-white/10"
             :aria-label="currentItem() ? `查看 ${currentItem()!.name} 详情` : '查看详情'"
             @click="currentItem() && emit('detail', currentItem()!)"
           >
@@ -200,3 +200,35 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .hero-carousel,
+  .hero-carousel-content {
+    min-height: min(68svh, 36rem);
+  }
+
+  .hero-carousel-content {
+    padding: max(4.5rem, env(safe-area-inset-top)) 1rem 3.75rem;
+  }
+
+  .hero-carousel h2 {
+    max-width: 92vw;
+    font-size: clamp(2rem, 9vw, 2.65rem);
+  }
+
+  .hero-carousel p.line-clamp-3 {
+    max-width: 88vw;
+    -webkit-line-clamp: 2;
+    font-size: 0.88rem;
+    line-height: 1.55;
+  }
+
+  .hero-primary-action,
+  .hero-secondary-action {
+    min-height: 3rem;
+    border-radius: 8px;
+    padding-inline: 1.15rem;
+  }
+}
+</style>
