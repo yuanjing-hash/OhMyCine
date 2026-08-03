@@ -1877,7 +1877,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 </script>
 
 <template>
-  <div class="settings-view mobile-nav-safe min-h-full px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
+  <div class="settings-view theme-adaptive mobile-nav-safe min-h-full px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
     <div
       v-if="feedback && mode === 'manage'"
       class="fixed inset-x-4 top-20 z-50 max-w-md rounded-2xl border px-4 py-3 text-sm shadow-2xl backdrop-blur-xl sm:left-auto sm:right-6"

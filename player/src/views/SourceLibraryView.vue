@@ -2188,7 +2188,7 @@ function labelForSourceType(type: string): string {
       aria-label="识别"
       @click.self="closeIdentificationDialog"
     >
-      <section class="identification-dialog max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
+      <section class="identification-dialog theme-immersive-dark max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
         <div class="flex items-center gap-3 border-b border-white/8 p-4">
           <button
             class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-white/8 text-white/70 transition-colors hover:bg-white/14 hover:text-white"

@@ -82,7 +82,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
     @pointerdown.self="emit('close')"
   >
     <section
-      class="glass-panel flex max-h-[min(46rem,calc(100vh-2.5rem))] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/14 bg-black/76 shadow-2xl"
+      class="theme-immersive-dark glass-panel flex max-h-[min(46rem,calc(100vh-2.5rem))] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/14 bg-black/76 shadow-2xl"
       role="dialog"
       aria-modal="true"
       aria-label="搜索字幕"

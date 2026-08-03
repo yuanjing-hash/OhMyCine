@@ -192,6 +192,14 @@ Required principles:
 - Maintain sufficient contrast on glass surfaces.
 - Use semantic roles for dialogs/menus where custom components are used.
 
+### Theme And Form Control Contract
+
+- Native selects, text inputs, password inputs, number inputs, and textareas must use shared adaptive control tokens for background, foreground, border, placeholder, focus ring, option surface, and disabled state. Do not rely on the operating system's unstyled light select inside a dark surface.
+- Settings and other non-immersive utility surfaces must use the semantic theme foreground/background tokens in both dark and light modes. Unconditional `text-white`, `bg-black/*`, and `border-white/*` utilities require an adaptive surface boundary or an explicit semantic replacement.
+- Light mode must never render white or near-white text on white controls, cards, menus, or dialogs. Success, warning, and error feedback colors need light-theme foreground variants with readable contrast.
+- Artwork-first media details and playback overlays may stay intentionally dark under every app theme. Mark those regions as immersive-dark control scopes so selects and inputs remain consistent with the video or backdrop surface instead of inheriting light controls.
+- Custom menus, popovers, and dialogs should use the same theme tokens as native form controls unless they belong to an immersive playback surface.
+
 ---
 
 ## Common Mistakes
