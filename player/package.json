@@ -27,6 +27,7 @@
     "setup:libmpv": "node scripts/setup-libmpv.mjs",
     "tauri:build:linux": "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig tauri build --bundles appimage",
     "tauri:build:windows": "PATH=/home/linuxbrew/.linuxbrew/opt/rustup/bin:/home/linuxbrew/.linuxbrew/bin:$PATH tauri build --target x86_64-pc-windows-gnu --bundles nsis",
+    "tauri:build:android:preview": "env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY ANDROID_HOME=\"${ANDROID_HOME:-$HOME/Android/Sdk}\" ANDROID_SDK_ROOT=\"${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}\" NDK_HOME=\"${NDK_HOME:-$HOME/Android/Sdk/ndk/27.2.12479018}\" JAVA_HOME=\"${JAVA_HOME:-$HOME/.sdkman/candidates/java/current}\" PATH=\"/home/develop/.cargo/bin:/home/linuxbrew/.linuxbrew/bin:$PATH\" RUSTC=\"$(/home/develop/.cargo/bin/rustup which rustc)\" tauri android build --debug --apk --target aarch64 --ci",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint src --ext .ts,.vue",
     "lint:fix": "eslint src --ext .ts,.vue --fix"

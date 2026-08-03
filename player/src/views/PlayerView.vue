@@ -56,6 +56,8 @@ type TouchGestureMode = 'pending' | 'seek' | 'brightness' | 'volume'
 interface TouchGestureSession {
   pointerId: number
   simulatedWithMouse: boolean
+  holdArrowKey: 'ArrowLeft' | 'ArrowRight'
+  holdArrowStarted: boolean
   startX: number
   startY: number
   width: number
@@ -122,7 +124,6 @@ const subtitleDownloadingId = ref<string | null>(null)
 const localSubtitleImporting = ref(false)
 const subtitleSearchError = ref<string | null>(null)
 const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSettings().defaultLanguage)
-const touchGestureSimulationActive = ref(false)
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
@@ -155,6 +156,7 @@ let pendingTrackPreference: {
 } | null = null
 let trackPreferenceRestoreInFlight = false
 let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
+let heldArrowOwner: 'keyboard' | 'touch' | null = null
 let heldArrowTimer: number | undefined
 let rewindHoldTimer: number | undefined
 let arrowHoldActivated = false
@@ -399,6 +401,8 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
   touchGestureSession = {
     pointerId: event.pointerId,
     simulatedWithMouse,
+    holdArrowKey: event.clientX < bounds.left + bounds.width / 2 ? 'ArrowLeft' : 'ArrowRight',
+    holdArrowStarted: false,
     startX: event.clientX,
     startY: event.clientY,
     width: Math.max(1, bounds.width),
@@ -410,7 +414,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
     startBrightness: videoBrightness.value,
     leftSide: event.clientX < bounds.left + bounds.width / 2,
   }
-  touchGestureSimulationActive.value = simulatedWithMouse
+  touchGestureSession.holdArrowStarted = beginHeldArrow(touchGestureSession.holdArrowKey, 'touch')
 }
 
 function handlePlayerTouchPointerMove(event: PointerEvent) {
@@ -422,9 +426,15 @@ function handlePlayerTouchPointerMove(event: PointerEvent) {
   const deltaX = event.clientX - session.startX
   const deltaY = event.clientY - session.startY
   if (session.mode === 'pending') {
+    if (session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated)
+      return
     const axis = resolveTouchGestureAxis(deltaX, deltaY)
     if (axis === 'pending')
       return
+    if (session.holdArrowStarted) {
+      session.holdArrowStarted = false
+      void releaseHeldArrow(false, 'touch')
+    }
     session.mode = axis === 'horizontal' ? 'seek' : session.leftSide ? 'brightness' : 'volume'
     clearHideTimer()
   }
@@ -461,8 +471,18 @@ function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
   if (host?.hasPointerCapture(event.pointerId))
     host.releasePointerCapture(event.pointerId)
   touchGestureSession = null
-  touchGestureSimulationActive.value = false
   suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+
+  const completedArrowHold = session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated
+  if (session.holdArrowStarted) {
+    session.holdArrowStarted = false
+    void releaseHeldArrow(false, 'touch')
+  }
+
+  if (completedArrowHold) {
+    scheduleTouchFeedbackHide()
+    return
+  }
 
   if (!cancelled && session.mode === 'pending') {
     handleTouchTap(event.clientX, event.clientY)
@@ -2200,7 +2220,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (!hasModifier && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
     event.preventDefault()
     if (!event.repeat)
-      beginHeldArrow(event.code)
+      beginHeldArrow(event.code, 'keyboard')
     return
   }
   if (!hasModifier && (event.code === 'ArrowUp' || event.code === 'ArrowDown')) {
@@ -2219,10 +2239,10 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 }
 
 function handleGlobalKeyup(event: KeyboardEvent) {
-  if (event.code !== heldArrowKey)
+  if (heldArrowOwner !== 'keyboard' || event.code !== heldArrowKey)
     return
   event.preventDefault()
-  void releaseHeldArrow(true)
+  void releaseHeldArrow(true, 'keyboard')
 }
 
 function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
@@ -2234,10 +2254,11 @@ function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
   return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
 }
 
-function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
+function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight', owner: 'keyboard' | 'touch'): boolean {
   if (heldArrowKey)
-    return
+    return false
   heldArrowKey = key
+  heldArrowOwner = owner
   arrowHoldActivated = false
   arrowBasePlaybackSpeed = playbackSpeed.value
   heldArrowTimer = window.setTimeout(() => {
@@ -2255,9 +2276,12 @@ function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight') {
       void seekRelative(-ARROW_TAP_SEEK_SECONDS)
     }, REWIND_HOLD_INTERVAL)
   }, ARROW_HOLD_DELAY)
+  return true
 }
 
-async function releaseHeldArrow(triggerTap: boolean) {
+async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch') {
+  if (owner && heldArrowOwner !== owner)
+    return
   const key = heldArrowKey
   const wasHold = arrowHoldActivated
   if (heldArrowTimer)
@@ -2267,6 +2291,7 @@ async function releaseHeldArrow(triggerTap: boolean) {
   heldArrowTimer = undefined
   rewindHoldTimer = undefined
   heldArrowKey = null
+  heldArrowOwner = null
   arrowHoldActivated = false
   if (!key)
     return
@@ -2362,7 +2387,6 @@ onBeforeUnmount(() => {
     window.clearTimeout(touchFeedbackTimer)
   touchFeedbackTimer = undefined
   touchGestureSession = null
-  touchGestureSimulationActive.value = false
   lastTouchTap = null
   pendingTouchLevelUpdate = null
   window.removeEventListener('blur', handleWindowBlur)
@@ -2470,14 +2494,6 @@ watch(
         </span>
       </div>
     </Transition>
-
-    <div
-      v-if="touchGestureSimulationActive"
-      class="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-md border border-white/12 bg-black/62 px-3 py-1.5 text-xs font-semibold text-white/64 shadow-lg backdrop-blur-lg"
-      role="status"
-    >
-      触摸测试
-    </div>
 
     <Transition name="player-chrome-top">
       <div

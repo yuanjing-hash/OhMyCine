@@ -3,13 +3,16 @@ name = "ohmycine-player"
 version = "0.1.8"
 edition = "2021"
 
+[lib]
+name = "ohmycine_player_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
-libmpv-sys = "3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -32,6 +35,9 @@ rand = "0.8"
 raw-window-handle = "0.6"
 notify = "6.1"
 tauri-plugin-updater = "2.10.1"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+libmpv-sys = "3.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
