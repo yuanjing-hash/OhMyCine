@@ -24,6 +24,15 @@ assert.match(mobileNavigation, /设置/)
 assert.match(mobileNavigation, /activeSheet = ref<MobileSheet \| null>/)
 assert.match(mobileNavigation, /mobile-sheet-layer/)
 assert.match(mobileNavigation, /env\(safe-area-inset-bottom\)/)
+assert.match(mobileNavigation, /pickAndroidLocalVideo/)
+assert.match(mobileNavigation, /savePlaybackMediaContext/)
+assert.match(mobileNavigation, /locator: \{\s+kind: 'localPath',\s+path: selected\.uri,/)
+assert.doesNotMatch(mobileNavigation, /query: \{\s+path: selected\.uri/)
+
+const settingsView = await source('src/views/SettingsView.vue')
+assert.match(settingsView, /pickAndroidLocalDirectory/)
+assert.match(settingsView, /已授权本地媒体目录/)
+assert.match(settingsView, /form\.rootLabel = selected\.name/)
 
 const sidebar = await source('src/components/layout/DataSourceSidebar.vue')
 assert.doesNotMatch(sidebar, /mobile-source-nav/)
@@ -140,4 +149,6 @@ console.log(JSON.stringify({
   nativeAndroidTapChromeFallback: true,
   conciseWaitingPlaybackState: true,
   nativeOrientationLockControl: true,
+  androidSystemMediaPicker: true,
+  androidDocumentTreePicker: true,
 }, null, 2))

@@ -2,6 +2,10 @@ pub mod clouddrive2;
 pub mod credential;
 pub mod emby;
 pub mod history;
+#[cfg(target_os = "android")]
+#[path = "local_file_android.rs"]
+pub mod local_file;
+#[cfg(not(target_os = "android"))]
 pub mod local_file;
 #[cfg(not(mobile))]
 pub mod player;

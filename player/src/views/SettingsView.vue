@@ -13,13 +13,14 @@ import type { UpdateChannel } from '@/services/updater'
 import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
 import { readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
-import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
+import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import {
   loadNavigationShortcutBindings,
@@ -36,6 +37,7 @@ import {
   savePlayerShortcutBindings,
   validateUniquePlayerShortcuts,
 } from '@/services/playerShortcuts'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import {
   createEmptyScrapeCategoryRule,
   loadScrapeClassificationRules,
@@ -84,6 +86,7 @@ interface DataSourceFormState {
   password: string
   apiToken: string
   rootPath: string
+  rootLabel: string
 }
 
 interface TmdbFormState {
@@ -232,6 +235,7 @@ const form = reactive<DataSourceFormState>({
   password: '',
   apiToken: '',
   rootPath: '/',
+  rootLabel: '',
 })
 const mode = ref<SettingsMode>('overview')
 const isSaving = ref(false)
@@ -290,6 +294,7 @@ const updateForm = reactive<UpdaterSettingsFormState>({
 const isSavingUpdaterSettings = ref(false)
 const updateFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const storageInfo = ref<PlayerStorageInfo | null>(null)
+const isNativeAndroid = isNativeAndroidRuntime()
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
@@ -301,7 +306,7 @@ const isLocalForm = computed(() => form.type === 'local')
 const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value)
 const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value)
 const selectedRootPathLabel = computed(() => isLocalForm.value
-  ? localRootPathLabel(form.rootPath)
+  ? localRootPathLabel(form.rootPath, form.rootLabel)
   : normalizeRemoteRootPath(form.rootPath))
 const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
 const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
@@ -511,6 +516,7 @@ watch(() => form.type, (type) => {
     form.password = ''
     form.apiToken = ''
     form.rootPath = ''
+    form.rootLabel = ''
   }
   else if (type === 'emby') {
     form.rootPath = '/'
@@ -1032,6 +1038,7 @@ function resetForm() {
   form.password = ''
   form.apiToken = ''
   form.rootPath = '/'
+  form.rootLabel = ''
   feedback.value = null
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -1068,6 +1075,7 @@ function populateEditForm(config: EditableDataSourceConfig) {
     form.rootPath = readLocalRootPath(config)
   else
     form.rootPath = '/'
+  form.rootLabel = config.type === 'local' ? readLocalRootLabel(config) : ''
   feedback.value = {
     type: 'info',
     message: config.type === 'local'
@@ -1125,6 +1133,7 @@ async function saveSource() {
         id,
         displayName: form.displayName,
         rootPath: form.rootPath,
+        rootLabel: form.rootLabel,
         order: store.configs.length,
       })
       await store.replaceConfig(result.config)
@@ -1185,6 +1194,7 @@ async function saveEditedSource(id: string) {
       id,
       displayName: form.displayName,
       rootPath: form.rootPath,
+      rootLabel: form.rootLabel,
       order: existing.order,
     })
     await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
@@ -1284,6 +1294,7 @@ async function createAndValidateLocalConfig(input: {
   id: string
   displayName: string
   rootPath: string
+  rootLabel?: string
   order: number
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
   const config = createLocalFileDataSourceConfig(input)
@@ -1352,7 +1363,7 @@ function sourceStatusLine(source: DataSourceConfig): string {
   const rootState = isRootSelectableRemoteSourceType(source.type)
     ? ` · 根目录：${readRemoteRootPath(source)}`
     : source.type === 'local'
-      ? ` · 根目录：${readLocalRootPath(source)}`
+      ? ` · 根目录：${localRootPathLabel(readLocalRootPath(source), readLocalRootLabel(source))}`
       : ''
   return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}${rootState}`
 }
@@ -1484,6 +1495,24 @@ async function chooseLocalRootPath() {
 
   feedback.value = null
   try {
+    if (isNativeAndroid) {
+      const selected = await pickAndroidLocalDirectory()
+      if (selected.cancelled)
+        return
+      if (!selected.uri)
+        throw new Error('Android 目录选择未返回可用授权。')
+
+      form.rootPath = normalizeLocalRootPath(selected.uri)
+      form.rootLabel = selected.name?.trim() || 'Android 媒体目录'
+      if (!isEditing.value && form.displayName === defaultDisplayName('local'))
+        form.displayName = form.rootLabel
+      feedback.value = {
+        type: 'info',
+        message: `已授权本地媒体目录：${form.rootLabel}`,
+      }
+      return
+    }
+
     const selected = await open({
       multiple: false,
       directory: true,
@@ -1493,6 +1522,7 @@ async function chooseLocalRootPath() {
       return
 
     form.rootPath = normalizeLocalRootPath(selected)
+    form.rootLabel = ''
     if (!form.displayName.trim())
       form.displayName = localRootDisplayName(form.rootPath)
     feedback.value = {
@@ -1645,9 +1675,11 @@ function parentDirectoryPath(path: string): string {
   return index <= 0 ? '/' : normalized.slice(0, index)
 }
 
-function localRootPathLabel(path: string): string {
+function localRootPathLabel(path: string, label = ''): string {
   if (!path.trim())
     return '未选择'
+  if (path.trim().startsWith('content://'))
+    return label.trim() || 'Android 已授权媒体目录'
   try {
     return normalizeLocalRootPath(path)
   }
