@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "ohmycine-player"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "aes-gcm",
  "axum",

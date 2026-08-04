@@ -52,12 +52,17 @@ assert.match(embySource, /RunTimeTicks: secondsToTicks\(progress\.duration\)/)
 assert.match(embySource, /PlaySessionId: session\.playSessionId/)
 assert.match(embySource, /PlaybackRate: normalizePlaybackRate\(progress\.playbackRate\)/)
 assert.match(embySource, /await this\.markPlayed\(itemId\)/)
+assert.match(embySource, /if \(progress\.event === 'stopped' \|\| progress\.event === 'completed'\) \{\s+this\.cache\.clear\(\)\s+this\.playbackSessions\.delete\(itemId\)/)
 
 const playerView = await readFile(fileURLToPath(new URL('../src/views/PlayerView.vue', import.meta.url)), 'utf8')
 assert.match(playerView, /syncProviderPlaybackStarted\(\)/)
 assert.match(playerView, /window\.setInterval\(\(\) => \{\s+void saveCurrentProgress\(false\)/)
 assert.match(playerView, /if \(!shouldSaveLocalProgress\(payload, force, event\)\) \{[\s\S]*event !== 'progress'[\s\S]*syncProviderProgress\(payload, providerEvent\)/)
 assert.match(playerView, /saveCurrentProgress\(true, 'stopped'\)/)
+assert.match(playerView, /let playbackStopPromise: Promise<void> \| null = null/)
+assert.match(playerView, /if \(playbackStopPromise\)\s+return playbackStopPromise/)
+assert.match(playerView, /watch\(isPlaying, \(playing\) => \{\s+if \(playbackCleanupStarted\)\s+return/)
+assert.match(playerView, /if \(shouldRefreshHomeAfterProgressEvent\(event, providerEvent\)\) \{\s+await providerSync\s+scheduleHomeSectionsRefreshAfterPlayback\(\)/)
 assert.match(playerView, /pendingResumeSeek = \{ path: mediaPath\.value, position \}/)
 assert.match(playerView, /watch\(\[videoReady, duration\],[\s\S]*applyPendingResumeSeekWhenReady\(\)/)
 assert.match(playerView, /function effectivePlaybackPosition\(\)[\s\S]*pendingResumeSeek[\s\S]*pending\.position/)
@@ -91,6 +96,10 @@ console.log(JSON.stringify({
   embyMediaSourceId: embyContext?.mediaSourceId,
   embyPlaybackSessionLifecycle: true,
   embyShortPlaybackStopReported: true,
+  embyStopIsIdempotent: true,
+  embyTerminalSyncAwaitedBeforeRouteExit: true,
+  cleanupPauseCannotOverwriteRemoteProgress: true,
+  embyDetailCacheClearedAfterTerminalSync: true,
   startupProgressWaitsForResumeResolution: true,
   providerResumePrecedesLocalFallback: true,
   delayedResumeWaitsForMediaReady: true,

@@ -79,11 +79,14 @@ Required principles:
 - Android libmpv defaults to `vo=gpu-next`. A playback may fall back to `vo=gpu` only after native mpv error logs explicitly show that the configured `gpu-next` output failed; selecting `gpu` explicitly disables that automatic fallback path. Global Player settings expose only validated renderer, hardware decoding, cache size/mode, and synchronization values, persist them in app settings, and apply them before render initialization and every media load. Do not accept arbitrary mpv option names or weaken the default based on device assumptions.
 - Android must route every initial HTTP and HTTPS remote media URL through the Rust loopback stream bridge. This includes an HTTP Emby endpoint that redirects to an HTTPS CDN; cross-origin redirects must drop provider-private headers while preserving Range semantics through the loopback response.
 - Provider playback reporting is independent from the local resume-history threshold. A short playback that is intentionally paused or stopped may be omitted from local continue-watching history, but Emby still receives its terminal session event so the remote active-session state is closed correctly.
+- Provider playback route cleanup is idempotent. Capture the final position before native stop resets player refs, suppress pause/resume watchers once cleanup begins, await the terminal provider request before allowing route leave to finish, and never send a second zero-position `Stopped`/`Progress` event during unmount. After an Emby terminal event, invalidate provider detail metadata so the next detail/resume read uses current `UserData` instead of an in-memory pre-playback snapshot.
 - The Android mobile control row includes an orientation-lock icon. It opens explicit `自动横屏 / 锁定横屏 / 锁定竖屏` choices, visually distinguishes unlocked and locked states, and reports changes through the compact top-right playback OSD. Do not overload the desktop fullscreen button with orientation state.
 - Android playback-surface touches that begin inside protected top/bottom system-gesture bands must remain unclaimed so notification-shade and navigation gestures do not alter playback. Real touch gestures use a larger movement threshold and directional-dominance requirement than Alt mouse simulation; ambiguous diagonal movement remains pending instead of changing volume/brightness or seeking.
 - The left-side vertical gesture changes display brightness on Android and Windows, including Alt mouse simulation on Windows. Android uses the current Activity window override and restores the prior window/system-managed value when playback exits. Windows targets the monitor containing the Player window, preferring DDC/CI for capable physical displays and WMI for built-in laptop/Surface panels; unsupported displays show an explicit unavailable OSD and must not silently fall back to mpv brightness. The mpv `brightness` property remains a separate per-media picture adjustment exposed inside the Player picture/settings panel on desktop and mobile.
 - Android background playback is an explicit global setting. When enabled, playback survives normal Activity backgrounding and a foreground media service publishes title, duration, position, seek, rewind, play, and pause through `MediaSessionCompat`; when disabled, Activity backgrounding pauses libmpv and no playback service remains. Stopping playback, leaving the route, natural end, load error, or plugin destruction must remove the foreground notification/service.
 - Horizontal poster/media rows must allow the page's vertical pan gesture to reach the parent scroller. Do not apply `overscroll-behavior-y: contain`, `touch-action: pan-x`, or pointer capture to generic horizontal rows unless the row implements a deliberate drag interaction and releases vertical gestures.
+- Android document/video picking must use an Activity-owned `registerForActivityResult` launcher registered during `MainActivity.onCreate`. A plugin command may delegate to that launcher, but must not assume Tauri's process-global plugin launcher remains initialized across Activity recreation or process restoration. Reject concurrent picker requests explicitly and preserve URI read permissions after a successful result.
+- Runtime theme switching must be atomic on Android WebView: non-player roots stay opaque with `var(--color-bg)`, the theme attribute changes while CSS transitions are temporarily disabled, and immersive Player transparency remains controlled only by the existing player-render classes. Do not animate the entire transparent root between light and dark palettes.
 - The empty playback surface uses a concise neutral status such as `等待播放中`. Local drag-and-drop instructions belong in the desktop file-open entry point, not as the universal Android/player empty state.
 - Artwork shown by Home, global search, Hero, and media cards should use the controlled image cache component. Binary files belong under the active storage profile's `cache/images`, not `data`; standard desktop, portable desktop, and Android therefore remain isolated automatically. Cache keys use stable source/item/role identity, remote URLs are never written to filenames or metadata, and image loading remains lazy through viewport observation. The cache has a user-configurable LRU capacity with a 500 MB default; lowering the limit trims existing least-recently-used entries immediately.
 - A ready render backend is not equivalent to visible media. Keep the playback surface opaque with a blurred artwork background until desktop emits video-ready or Android diagnostics confirm a loaded video; only then make the WebView chain transparent to reveal the native video layer.
@@ -144,6 +147,7 @@ Required principles:
 ## Media Components
 
 - `HeroCarousel` should prefer items with backdrop/title logo/overview and can be used at data-source roots to provide an artwork-first source landing page; hero backdrops must fill the full hero surface with cover behavior rather than leaving non-artwork gutters.
+- `HeroCarousel` treats a non-control single click/tap as opening the current media detail. Touch/pen horizontal drags switch items only after a directional threshold, use `touch-action: pan-y` so vertical page scrolling remains native, and suppress the synthetic click after a recognized swipe. Buttons, links, and navigation dots remain interaction boundaries.
 - `MediaCard` and poster components must handle missing posters gracefully, request/lazy-load appropriately sized images, and avoid showing raw provider type identifiers such as lowercase `folder` as user-facing subtitles.
 - Data-source root pages should favor a hero/backdrop section followed by media libraries, continue-watching/latest/recommended rows where the DataSource exposes them. Hero/aggregate cards for series should use the primary action for play/continue playback: resume the historical episode when available, otherwise start from episode 1; keep a separate detail action for opening the series detail page.
 - Raw file source media-library pages such as OpenList/Alist, CloudDrive2, and local files should default to the user-facing library shape: hero/backdrop first, then category/library cover cards, then category drill-in with poster-wall media items. Do not insert a large source summary, scan summary, statistics, or management panel between the hero and the media libraries. Scan status, structure diagnostics, logs, folder browsing, and rescan controls belong behind explicit lightweight affordances, preferably hover/focus-revealed bottom chrome, and must not dominate the default post-scan page.
@@ -152,6 +156,62 @@ Required principles:
 - Detail layouts must differ by media type: movie/episode pages may show version/audio/subtitle controls when data exists, while series pages should show seasons and episode selection instead of movie-only playback selectors. Hide empty audio/subtitle/version panels when provider metadata is absent.
 - Desktop series detail pages with many episodes should use an artwork-first horizontal episode rail/carousel with season switching, previous/next episode selection controls, and lazy/windowed card rendering instead of vertically listing every episode card. Episode cards should preserve thumbnail, title, brief overview, duration, resume/progress state, play, and detail actions. Rail arrows and keyboard left/right should move the selected episode by one; Enter or clicking the selected card opens detail, and the rail indicator reflects the selected episode's position in the season. When the native card scrollbar is hidden, the custom indicator should act as the single position/scrollbar control for quick click-or-drag episode selection. The series hero primary action should play the currently selected episode; when loading a season, select the first resumable episode if history exists, otherwise select episode 1.
 - Mobile series detail removes desktop edge fades and outer gutters, renders the complete current-season episode set, and follows the user's global `horizontal` or `vertical` episode-layout preference. Horizontal mode uses native inertial `pan-x` scrolling with near-full-width snap cards; vertical mode uses compact full-width list cards and preserves ordinary page `pan-y`. Hide the desktop quick-position slider on the mobile surface because it conflicts with system/page gestures; native scrolling is the mobile locator. This setting must not alter the desktop episode rail or the in-player queue panel.
+
+## Scenario: Android Picker And Provider Terminal Lifecycle
+
+### 1. Scope / Trigger
+
+- Applies when a Player route closes native playback, reports Emby progress, opens Android's document/video picker, or switches the app theme at runtime.
+
+### 2. Signatures
+
+- Frontend provider terminal call: `syncPlaybackProgress({ itemId, position, duration, startPosition, isPaused, completed, event: 'stopped' | 'completed' })`.
+- Android host bridge: `MainActivity.launchLocalMediaPicker(intent, callback)`; only one callback may be pending.
+
+### 3. Contracts
+
+- The terminal provider payload uses the last pre-stop position and completes before route leave resolves.
+- Native stop may update reactive `isPlaying/currentTime`, but cleanup watchers must not generate another provider event.
+- Picker callbacks resolve cancelled, selected URI metadata, or a sanitized startup/permission error.
+- Non-player theme roots are opaque; Player transparency is opt-in through player-render classes.
+
+### 4. Validation & Error Matrix
+
+- Repeated route/unmount cleanup -> return the same in-flight stop promise.
+- Stop-generated pause watcher -> skip while cleanup is active.
+- Picker launcher not initialized or Activity closing -> reject without crashing.
+- Picker already open -> reject the second request.
+- Vertical Hero gesture -> leave unclaimed for page scroll; horizontal threshold -> switch once.
+
+### 5. Good/Base/Bad Cases
+
+- Good: exit at 3,600 seconds -> one Emby `Stopped` at 3,600 seconds, fresh remote resume on the next device.
+- Base: cancel Android folder picker -> command resolves cancellation and keeps the form unchanged.
+- Bad: `Stopped(3600)` followed by `Paused(0)` or `Stopped(0)` -> remote resume disappears.
+
+### 6. Tests Required
+
+- Static lifecycle regression asserts one shared stop promise, cleanup watcher suppression, awaited terminal sync, and Emby cache invalidation.
+- Android Kotlin compilation asserts the Activity-owned launcher and plugin delegation compile together.
+- Mobile UI regression asserts Hero direction dominance, `pan-y`, detail tap, and absence of plugin `startActivityForResult` usage.
+- Theme regression asserts opaque roots and temporary transition suppression.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+onBeforeRouteLeave(stopPlayback)
+onBeforeUnmount(stopPlayback) // sends a second terminal event after currentTime reset
+```
+
+#### Correct
+
+```ts
+if (!playbackStopPromise)
+  playbackStopPromise = stopPlaybackOnceWithCapturedProgress()
+return playbackStopPromise
+```
 - Cloud/local data sources may lack metadata; components should use scraped metadata when available and clean file/folder fallback otherwise.
 - Continue-watching components should be presented as aggregated continue watching, not as local-only sections. Merge local playback history with provider continue-watching items when both exist, prefer local resume/progress for duplicates, and preserve provider artwork as fallback when local history lacks images. If a remote-provider local history row has no safe persisted artwork, the aggregate home loader may temporarily enrich it from provider detail metadata for rendering, without persisting tokenized artwork URLs. Cards should render `backdropUrl ?? posterUrl` and show a titled placeholder instead of an empty dark block when artwork is missing. Server state is enhancement only.
 

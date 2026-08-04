@@ -19,6 +19,15 @@ const currentIndex = ref(0)
 const isPaused = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 let resumeTimer: ReturnType<typeof setTimeout> | null = null
+let pointerSession: {
+  pointerId: number
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+  axis: 'pending' | 'horizontal' | 'vertical'
+} | null = null
+let suppressDetailClickUntil = 0
 
 const currentItem = () => props.items[currentIndex.value] ?? null
 const currentActionLabel = computed(() => {
@@ -79,6 +88,87 @@ function handlePrimaryAction() {
     emit('detail', item)
 }
 
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('button, a, input, select, textarea, [role="button"]') != null
+}
+
+function handlePointerDown(event: PointerEvent) {
+  if (!event.isPrimary || isInteractiveTarget(event.target))
+    return
+  if (event.pointerType === 'mouse' && event.button !== 0)
+    return
+
+  pointerSession = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    currentX: event.clientX,
+    currentY: event.clientY,
+    axis: 'pending',
+  }
+}
+
+function handlePointerMove(event: PointerEvent) {
+  const session = pointerSession
+  if (!session || session.pointerId !== event.pointerId)
+    return
+
+  session.currentX = event.clientX
+  session.currentY = event.clientY
+  const deltaX = session.currentX - session.startX
+  const deltaY = session.currentY - session.startY
+  const threshold = event.pointerType === 'mouse' ? 8 : 18
+
+  if (session.axis === 'pending' && Math.max(Math.abs(deltaX), Math.abs(deltaY)) >= threshold) {
+    if (Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
+      session.axis = 'horizontal'
+      if (event.currentTarget instanceof HTMLElement)
+        event.currentTarget.setPointerCapture(event.pointerId)
+    }
+    else if (Math.abs(deltaY) > Math.abs(deltaX) * 1.2) {
+      session.axis = 'vertical'
+    }
+  }
+
+  if (session.axis === 'horizontal')
+    event.preventDefault()
+}
+
+function handlePointerUp(event: PointerEvent) {
+  const session = pointerSession
+  if (!session || session.pointerId !== event.pointerId)
+    return
+
+  pointerSession = null
+  const deltaX = event.clientX - session.startX
+  if (session.axis !== 'horizontal')
+    return
+
+  suppressDetailClickUntil = Date.now() + 450
+  const switchThreshold = Math.min(96, Math.max(48, window.innerWidth * 0.12))
+  if (Math.abs(deltaX) < switchThreshold)
+    return
+
+  if (deltaX < 0)
+    next()
+  else
+    prev()
+  onUserNav()
+}
+
+function handlePointerCancel(event: PointerEvent) {
+  if (pointerSession?.pointerId === event.pointerId)
+    pointerSession = null
+}
+
+function handleHeroClick(event: MouseEvent) {
+  if (Date.now() < suppressDetailClickUntil || isInteractiveTarget(event.target))
+    return
+  const item = currentItem()
+  if (item)
+    emit('detail', item)
+}
+
 watch(() => props.items.length, () => {
   currentIndex.value = 0
   resetTimer()
@@ -94,7 +184,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="hero-carousel relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]">
+  <div
+    class="hero-carousel relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]"
+    @click="handleHeroClick"
+    @pointerdown="handlePointerDown"
+    @pointermove="handlePointerMove"
+    @pointerup="handlePointerUp"
+    @pointercancel="handlePointerCancel"
+  >
     <!-- Background -->
     <div
       v-if="currentItem()"
@@ -108,6 +205,7 @@ onUnmounted(() => {
         class="h-full w-full object-cover object-center"
         loading="eager"
         decoding="async"
+        draggable="false"
       >
         <template #fallback>
           <div class="h-full w-full bg-[linear-gradient(135deg,#0c1a2e,#1a3a5c,#0a0a1a)]" />
@@ -211,6 +309,10 @@ onUnmounted(() => {
   .hero-carousel,
   .hero-carousel-content {
     min-height: min(68svh, 36rem);
+  }
+
+  .hero-carousel {
+    touch-action: pan-y;
   }
 
   .hero-carousel-content {
