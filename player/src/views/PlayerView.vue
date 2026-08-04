@@ -146,6 +146,7 @@ let renderInitPromise: Promise<void> | null = null
 let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
 let playbackCleanupStarted = false
+let playbackStopPromise: Promise<void> | null = null
 let historySaveTimer: number | undefined
 let resumeMessageTimer: number | undefined
 let homeRefreshTimer: number | undefined
@@ -1345,10 +1346,13 @@ async function saveCurrentProgress(force = false, event: ProviderPlaybackProgres
   if (!shouldSaveLocalProgress(payload, force, event)) {
     if (event !== 'progress') {
       const providerSync = syncProviderProgress(payload, providerEvent)
-      if (shouldRefreshHomeAfterProgressEvent(event, providerEvent))
-        void providerSync.finally(scheduleHomeSectionsRefreshAfterPlayback)
-      else
+      if (shouldRefreshHomeAfterProgressEvent(event, providerEvent)) {
+        await providerSync
+        scheduleHomeSectionsRefreshAfterPlayback()
+      }
+      else {
         void providerSync
+      }
     }
     return
   }
@@ -1358,10 +1362,13 @@ async function saveCurrentProgress(force = false, event: ProviderPlaybackProgres
     lastSavedPosition = saved.position
 
   const providerSync = syncProviderProgress(payload, providerEvent)
-  if (shouldRefreshHomeAfterProgressEvent(event, providerEvent))
-    void providerSync.finally(scheduleHomeSectionsRefreshAfterPlayback)
-  else
+  if (shouldRefreshHomeAfterProgressEvent(event, providerEvent)) {
+    await providerSync
+    scheduleHomeSectionsRefreshAfterPlayback()
+  }
+  else {
     void providerSync
+  }
 }
 
 function syncProviderPlaybackStarted() {
@@ -1967,6 +1974,9 @@ watch(
 )
 
 watch(isPlaying, (playing) => {
+  if (playbackCleanupStarted)
+    return
+
   revealChrome()
   if (playing) {
     startHistorySaveTimer()
@@ -2407,18 +2417,24 @@ async function stopPlaybackSilently() {
   }
 }
 
-async function stopPlaybackForRouteExit() {
+function stopPlaybackForRouteExit(): Promise<void> {
+  if (playbackStopPromise)
+    return playbackStopPromise
+
   playbackCleanupStarted = true
-  await saveMediaPreferenceNow()
-  const progressSave = saveCurrentProgress(true, 'stopped')
-  clearHistorySaveTimer()
-  await stopPlaybackSilently()
-  try {
-    await progressSave
-  }
-  catch {
-    // A local progress write failure must not keep the native video surface alive or block routing.
-  }
+  playbackStopPromise = (async () => {
+    await saveMediaPreferenceNow()
+    const progressSave = saveCurrentProgress(true, 'stopped')
+    clearHistorySaveTimer()
+    await stopPlaybackSilently()
+    try {
+      await progressSave
+    }
+    catch {
+      // A local or provider progress failure must not keep the native video surface alive or block routing.
+    }
+  })()
+  return playbackStopPromise
 }
 
 function handleBeforeUnload() {

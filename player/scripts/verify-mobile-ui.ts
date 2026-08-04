@@ -50,6 +50,14 @@ const homeView = await source('src/views/HomeView.vue')
 assert.match(homeView, /recent-play-overlay/)
 assert.match(homeView, /\.recent-play-overlay \{[\s\S]*?opacity: 1;/)
 
+const heroCarousel = await source('src/components/media/HeroCarousel.vue')
+assert.match(heroCarousel, /@pointerdown="handlePointerDown"/)
+assert.match(heroCarousel, /@pointermove="handlePointerMove"/)
+assert.match(heroCarousel, /Math\.abs\(deltaX\) > Math\.abs\(deltaY\) \* 1\.2/)
+assert.match(heroCarousel, /touch-action: pan-y;/)
+assert.match(heroCarousel, /emit\('detail', item\)/)
+assert.match(heroCarousel, /isInteractiveTarget\(event\.target\)/)
+
 const globalStyles = await source('src/styles/global.css')
 assert.doesNotMatch(globalStyles, /\.cinema-scrollbar \{\s+overscroll-behavior-y: contain;/)
 
@@ -196,6 +204,13 @@ assert.match(windowChrome, /@media \(max-width: 767px\) \{[\s\S]*?\.desktop-wind
 
 const mainActivity = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/MainActivity.kt')
 assert.match(mainActivity, /SystemBarStyle\.dark\(Color\.TRANSPARENT\)/)
+assert.match(mainActivity, /registerForActivityResult\(/)
+assert.match(mainActivity, /fun launchLocalMediaPicker\(/)
+assert.match(mainActivity, /localMediaPickerCallback == null/)
+
+const localMediaPlugin = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/LocalMediaPlugin.kt')
+assert.match(localMediaPlugin, /host\.launchLocalMediaPicker\(intent\)/)
+assert.doesNotMatch(localMediaPlugin, /startActivityForResult\(/)
 
 console.log(JSON.stringify({
   mobileBottomNavigation: true,
@@ -215,11 +230,14 @@ console.log(JSON.stringify({
   nativeAndroidDedicatedControls: true,
   nativeAndroidTapChromeFallback: true,
   mobilePullToSearch: true,
+  mobileHeroSwipeNavigation: true,
+  heroSingleTapOpensDetail: true,
   mobileFullscreenSubtitleSearch: true,
   conciseWaitingPlaybackState: true,
   nativeOrientationLockControl: true,
   androidSystemMediaPicker: true,
   androidDocumentTreePicker: true,
+  androidPickerLifecycleOwnedByActivity: true,
   darkSystemBarForeground: true,
   configurableMobileEpisodeLayout: true,
   touchGestureEdgeProtection: true,

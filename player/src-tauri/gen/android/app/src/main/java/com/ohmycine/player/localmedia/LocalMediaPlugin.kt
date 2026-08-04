@@ -7,12 +7,12 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.result.ActivityResult
-import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
+import com.ohmycine.player.MainActivity
 
 @InvokeArg
 class LocalEntryArgs {
@@ -35,12 +35,7 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
-        startActivityForResult(invoke, intent, "pickVideoResult")
-    }
-
-    @ActivityCallback
-    fun pickVideoResult(invoke: Invoke, result: ActivityResult) {
-        resolvePickerResult(invoke, result, false)
+        launchPicker(invoke, intent, false)
     }
 
     @Command
@@ -50,12 +45,7 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
         }
-        startActivityForResult(invoke, intent, "pickDirectoryResult")
-    }
-
-    @ActivityCallback
-    fun pickDirectoryResult(invoke: Invoke, result: ActivityResult) {
-        resolvePickerResult(invoke, result, true)
+        launchPicker(invoke, intent, true)
     }
 
     @Command
@@ -82,6 +72,24 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
         val document = resolveDocument(root, args.path)
         require(!isDirectory(document)) { "本地文件夹不能直接播放。" }
         document.toString()
+    }
+
+    private fun launchPicker(invoke: Invoke, intent: Intent, directory: Boolean) {
+        val host = activity as? MainActivity
+        if (host == null) {
+            invoke.reject("Android 文件选择器宿主不可用。")
+            return
+        }
+
+        activity.runOnUiThread {
+            try {
+                host.launchLocalMediaPicker(intent) { result ->
+                    resolvePickerResult(invoke, result, directory)
+                }
+            } catch (error: Exception) {
+                invoke.reject(error.message ?: "Android 文件选择器启动失败。")
+            }
+        }
     }
 
     private fun resolvePickerResult(invoke: Invoke, result: ActivityResult, directory: Boolean) {
