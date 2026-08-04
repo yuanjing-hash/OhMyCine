@@ -31,6 +31,12 @@ assert.match(playerView, /loadHomeSections\(\{ force: true, background: true \}\
 const datasourceStore = await source('src/stores/datasource.ts')
 assert.match(datasourceStore, /HOME_CACHE_TTL_MS = 5 \* 60 \* 1000/)
 assert.match(datasourceStore, /SOURCE_ROOT_CACHE_TTL_MS = 5 \* 60 \* 1000/)
+assert.match(datasourceStore, /DISPLAY_CACHE_KEY = 'ohmycine-media-display-cache-v1'/)
+assert.match(datasourceStore, /hydrateDisplayCache\(\)/)
+assert.match(datasourceStore, /persistDisplayCache\(\)/)
+assert.match(datasourceStore, /path: ''/)
+assert.match(datasourceStore, /isSensitiveUrlKey/)
+assert.match(datasourceStore, /await removeAppSetting\(DISPLAY_CACHE_KEY\)/)
 assert.match(datasourceStore, /sourceRootSnapshots/)
 assert.match(datasourceStore, /isSourceRootSnapshotFresh/)
 assert.match(datasourceStore, /setSourceRootSnapshot/)
@@ -64,6 +70,8 @@ console.log(JSON.stringify({
   androidBufferProperties: true,
   homeSessionCache: true,
   sourceRootSessionCache: true,
+  androidPersistentDisplayCache: true,
+  sensitiveDisplayUrlsExcluded: true,
   staleWhileRevalidate: true,
   customScrollContainerReset: true,
 }, null, 2))

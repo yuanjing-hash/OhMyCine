@@ -34,6 +34,11 @@ const selectedKeyword = computed(() => {
 })
 const effectiveKeyword = computed(() => props.origin === 'local' ? selectedKeyword.value : props.mediaTitle.trim())
 const effectiveKeywordMode = computed<SubtitleKeywordMode>(() => props.origin === 'local' ? keywordMode.value : 'mediaTitle')
+const resultSummary = computed(() => props.loading
+  ? '正在搜索字幕'
+  : props.results.length > 0
+    ? `找到 ${props.results.length} 条字幕`
+    : '等待搜索')
 
 const languages: Array<{ value: SubtitleLanguage, label: string }> = [
   { value: 'zh-CN', label: '简体中文' },
@@ -77,18 +82,18 @@ function resultFlags(result: SubtitleSearchResult): string[] {
 <template>
   <div
     v-if="open"
-    class="fixed inset-0 z-[1200] flex items-center justify-center bg-black/60 p-5 backdrop-blur-md"
+    class="subtitle-search-overlay fixed inset-0 z-[1200] flex items-center justify-center bg-black/60 p-5 backdrop-blur-md"
     role="presentation"
     @pointerdown.self="emit('close')"
   >
     <section
-      class="theme-immersive-dark glass-panel flex max-h-[min(46rem,calc(100vh-2.5rem))] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/14 bg-black/76 shadow-2xl"
+      class="subtitle-search-sheet theme-immersive-dark glass-panel flex max-h-[min(46rem,calc(100vh-2.5rem))] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/14 bg-black/76 shadow-2xl"
       role="dialog"
       aria-modal="true"
       aria-label="搜索字幕"
       @pointerdown.stop
     >
-      <header class="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
+      <header class="subtitle-search-header flex shrink-0 items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.2em] text-white/36">
             Subtitle Search
@@ -100,8 +105,8 @@ function resultFlags(result: SubtitleSearchResult): string[] {
             {{ origin === 'emby' ? '使用 Emby 服务器已配置的字幕提供器。' : origin === 'local' ? '使用 Player 本地字幕提供器，字幕只下载到应用缓存。' : '选择本次搜索使用的字幕来源。' }}
           </p>
         </div>
-        <button type="button" class="flex h-9 w-9 items-center justify-center rounded-full bg-white/8 text-xl text-white/58 transition-colors hover:bg-white/14 hover:text-white" aria-label="关闭字幕搜索" @click="emit('close')">
-          ×
+        <button type="button" class="flex h-9 w-9 items-center justify-center rounded-full bg-white/8 text-white/58 transition-colors hover:bg-white/14 hover:text-white" aria-label="关闭字幕搜索" @click="emit('close')">
+          <svg width="17" height="17" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" /></svg>
         </button>
       </header>
 
@@ -117,7 +122,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
       </div>
 
       <template v-else>
-        <div class="border-b border-white/8 px-6 py-4">
+        <div class="subtitle-search-controls shrink-0 border-b border-white/8 px-6 py-4">
           <div v-if="origin === 'local'" class="mb-4">
             <span class="text-xs font-semibold uppercase tracking-[0.16em] text-white/38">搜索关键词</span>
             <div class="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-white/5 p-1" role="group" aria-label="字幕搜索关键词来源">
@@ -145,7 +150,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
             </div>
           </div>
 
-          <div class="flex flex-wrap items-end gap-3">
+          <div class="subtitle-search-actions flex flex-wrap items-end gap-3">
             <button v-if="requiresSourceChoice" type="button" class="rounded-xl bg-white/8 px-3 py-2 text-sm font-semibold text-white/68 transition-colors hover:bg-white/14 hover:text-white" @click="emit('back')">
               返回选择来源
             </button>
@@ -163,13 +168,25 @@ function resultFlags(result: SubtitleSearchResult): string[] {
           </div>
         </div>
 
-        <div class="min-h-48 flex-1 overflow-y-auto p-4">
+        <div class="subtitle-search-results min-h-48 flex-1 overflow-y-auto p-4">
+          <div class="mb-3 flex items-center justify-between gap-3 px-1">
+            <span class="text-xs font-semibold text-white/48">{{ resultSummary }}</span>
+            <span v-if="downloadingId" class="text-xs text-white/36">正在下载并载入</span>
+          </div>
           <p v-if="error" class="rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm leading-6 text-red-100">
             {{ error }}
           </p>
-          <p v-else-if="loading" class="px-3 py-8 text-center text-sm text-white/46">
-            正在搜索可用字幕…
-          </p>
+          <div v-else-if="loading" class="subtitle-search-loading flex min-h-52 flex-col items-center justify-center gap-4 px-3 py-8 text-center">
+            <span class="subtitle-search-spinner h-7 w-7 rounded-full border-2 border-white/16 border-t-white/78" />
+            <div>
+              <p class="text-sm font-semibold text-white/76">
+                正在搜索可用字幕
+              </p>
+              <p class="mt-2 text-xs text-white/36">
+                结果会在这里直接出现
+              </p>
+            </div>
+          </div>
           <div v-else-if="results.length" class="space-y-2">
             <button
               v-for="result in results"
@@ -202,3 +219,29 @@ function resultFlags(result: SubtitleSearchResult): string[] {
     </section>
   </div>
 </template>
+
+<style scoped>
+.subtitle-search-spinner { animation: subtitle-search-spin 720ms linear infinite; }
+@keyframes subtitle-search-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .subtitle-search-overlay { align-items: stretch; padding: 0; background: rgba(5,7,11,.96); backdrop-filter: none; }
+  .subtitle-search-sheet { width: 100%; max-width: none; max-height: none; height: 100%; border: 0; border-radius: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); background: rgba(7,9,14,.97); box-shadow: none; backdrop-filter: blur(28px) saturate(1.25); }
+  .subtitle-search-header { padding: .85rem 1rem .75rem; background: rgba(7,9,14,.88); }
+  .subtitle-search-header p:first-child { display: none; }
+  .subtitle-search-header h2 { margin-top: 0; font-size: 1.05rem; }
+  .subtitle-search-header h2 + p { margin-top: .3rem; max-width: calc(100vw - 5rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; line-height: 1.2rem; }
+  .subtitle-search-controls { padding: .8rem 1rem; background: rgba(7,9,14,.78); }
+  .subtitle-search-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: .65rem; }
+  .subtitle-search-actions > button:first-child { grid-column: 1 / -1; justify-self: start; }
+  .subtitle-search-actions label { min-width: 0; }
+  .subtitle-search-actions > button:last-child { min-width: 7.2rem; min-height: 2.7rem; padding-right: 1rem; padding-left: 1rem; }
+  .subtitle-search-results { min-height: 0; padding: .8rem 1rem calc(1rem + env(safe-area-inset-bottom)); }
+  .subtitle-search-results button { border-radius: 8px; padding: .85rem; }
+  .subtitle-search-results button > span { gap: .65rem; }
+  .subtitle-search-results button > span > span:last-child { border-radius: 7px; padding: .55rem .7rem; white-space: nowrap; }
+  .subtitle-search-sheet > .grid { grid-template-columns: 1fr; overflow-y: auto; padding: 1rem; }
+  .subtitle-search-sheet > .grid button { border-radius: 8px; padding: 1rem; }
+  select,input { border-radius: 8px !important; }
+}
+</style>
