@@ -618,8 +618,10 @@ export class EmbyDataSource implements DataSource {
     if (progress.completed)
       await this.markPlayed(itemId)
 
-    if (progress.event === 'stopped' || progress.event === 'completed')
+    if (progress.event === 'stopped' || progress.event === 'completed') {
+      this.cache.clear()
       this.playbackSessions.delete(itemId)
+    }
 
     throwPlaybackSyncDiagnostic(progress.event, startError ?? sessionError)
   }
