@@ -210,18 +210,18 @@ async function resolveSeriesPlaybackTarget(item: MediaItem): Promise<SeriesPlayb
     if (episodes.length === 0)
       return null
 
+    const providerResumeIndex = episodes.findIndex(episode => isResumePosition(episode.resumePosition, episode.duration))
     const progressEntries = await Promise.all(episodes.map(episode => getPlaybackProgress({ sourceId: episode.sourceId, mediaIdentity: episode.id })))
-    const localResume = newestLocalResume(progressEntries)
-    const providerResumeIndex = localResume ? -1 : episodes.findIndex(episode => isResumePosition(episode.resumePosition, episode.duration))
-    const index = localResume?.index ?? (providerResumeIndex >= 0 ? providerResumeIndex : 0)
+    const localResume = providerResumeIndex >= 0 ? null : newestLocalResume(progressEntries)
+    const index = providerResumeIndex >= 0 ? providerResumeIndex : (localResume?.index ?? 0)
     const episode = episodes[index]
     const providerResumePosition = isResumePosition(episode.resumePosition, episode.duration) ? episode.resumePosition : undefined
 
     return {
       item: episode,
       episodes,
-      resumePosition: localResume?.entry.position ?? providerResumePosition,
-      canResume: Boolean(localResume) || providerResumeIndex >= 0,
+      resumePosition: providerResumePosition ?? localResume?.entry.position,
+      canResume: providerResumeIndex >= 0 || Boolean(localResume),
     }
   }
   catch {

@@ -475,11 +475,14 @@ function hasResumeProgress(item: MediaItem, entry = localResumeEntry(item)): boo
 }
 
 function resumePositionForItem(item: MediaItem): number | undefined {
+  if (isResumePosition(item.resumePosition, item.duration))
+    return item.resumePosition
+
   const entry = localResumeEntry(item)
   if (shouldResumePlayback(entry))
     return entry.position
 
-  return isResumePosition(item.resumePosition, item.duration) ? item.resumePosition : undefined
+  return undefined
 }
 
 function isResumePosition(position: number | undefined, duration: number | undefined): position is number {
@@ -496,9 +499,11 @@ function episodeActionLabel(item: MediaItem): string {
 
 function episodeProgressStyle(item: MediaItem): Record<string, string> {
   const entry = localResumeEntry(item)
-  const progress = shouldResumePlayback(entry)
-    ? entry.progress
-    : item.progress
+  const progress = isResumePosition(item.resumePosition, item.duration)
+    ? item.progress
+    : shouldResumePlayback(entry)
+      ? entry.progress
+      : item.progress
   const percent = typeof progress === 'number' && Number.isFinite(progress)
     ? Math.max(0, Math.min(100, progress * 100))
     : 0

@@ -2274,6 +2274,10 @@ Android 本地媒体访问使用 Storage Access Framework，与桌面路径逻�
 
 Android Surface 初始化是整组播放命令的前置屏障。Kotlin 将 `SurfaceView + 透明 WebView` 容器插回 Tauri 原 WebView 父节点，不替换 Activity 根内容；Rust 在调用 load 前等待 surface ready，并把初始化错误或超时返回前端。前端对 `initializing` 状态持续轮询，避免只在固定两秒窗口内判断一次。这样 load 后紧接的 resume、倍速、画面和字幕偏移命令不会因 Surface 尚未 attach 而失败，也不会把播放目标清空后错误显示成空播放器。
 
+跨设备继续观看的 resume seek 不能只依赖起播后的固定短延时。媒体完成 load、但本机或路由续播位置尚未解析前，暂停所有历史与 provider 进度写入，避免起播事件抢先向 Emby 上报 `0`。Android 302/远程流可能在数秒后才进入 `video-ready`，Player 必须把目标位置保持为 pending，并在视频 ready 或 duration 可用时再次 seek；观察到当前时间抵达目标后才完成恢复。pending 期间写入本机历史和 Emby Sessions 的位置使用目标值，禁止用启动期临时 `0` 覆盖服务器上的有效进度；用户手动 seek 时立即取消旧恢复任务。
+
+Emby/Jellyfin 等 provider 返回有效续播位置时，以 provider 位置作为跨设备权威值，本机 SQLite 仅在 provider 没有有效位置时兜底。首页聚合、剧集选择、详情页按钮与播放器起播使用同一优先级，避免手机或电脑的旧本地缓存反向覆盖较新的云端进度；本机记录仍保留明确来源标识，不能伪装成服务器记录。
+
 Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
 
 Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等竖屏断点作为唯一判断，因为手机横屏宽度经常超过该值。透明 WebView 中只要存在当前媒体，就必须保留覆盖整个视频面的独立触摸捕获层；该层不能因播放诊断进入 `error` 而移除。单击画面切换控制 UI，并对 Android 在短点击后产生的 `pointercancel` 保留受限兜底，不能让 SurfaceView 层吞掉控制唤出；播放加载失败或自然结束时前端必须同步退出“正在播放”状态，避免错误页继续自动隐藏控制 UI。移动控制栏提供独立方向锁图标，打开后可选择“自动横屏 / 锁定横屏 / 锁定竖屏”，锁图标反映自动或锁定状态，切换结果通过右上角短提示反馈；该状态不复用桌面全屏按钮。首页“继续观看”和“最新影片”横向媒体条只处理横向滚动，不得用纵向 overscroll containment 阻断页面上下滑动。空播放面统一只显示“等待播放中”，不展示桌面拖拽文件说明。

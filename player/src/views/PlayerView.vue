@@ -149,7 +149,9 @@ let resumeMessageTimer: number | undefined
 let homeRefreshTimer: number | undefined
 let lastSavedPosition = -1
 let playbackStartPosition = 0
+let playbackProgressReady = false
 const resumeSeekTimers = new Set<number>()
+let pendingResumeSeek: { path: string, position: number } | null = null
 let activeCachedSubtitlePath: string | null = null
 let mediaPreferenceSaveTimer: number | undefined
 let mediaPreferenceRestoreGeneration = 0
@@ -216,8 +218,8 @@ const {
   setKnownSubtitleTracks,
   load,
   togglePause,
-  seek,
-  seekRelative,
+  seek: seekMpv,
+  seekRelative: seekRelativeMpv,
   setVolume,
   setVideoBrightness,
   applyPlaybackSpeed,
@@ -1122,7 +1124,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
   const itemId = activeItemId.value || context?.itemId || queueItem?.id || undefined
   const libraryId = activeLibraryId.value || queueItem?.libraryId
   const mediaType = activeMediaType.value ?? queueItem?.type
-  const position = Math.max(0, currentTime.value)
+  const position = effectivePlaybackPosition()
   const mediaDuration = duration.value > 0 ? duration.value : queueItem?.duration
 
   return {
@@ -1139,6 +1141,13 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
     duration: mediaDuration,
     completed: isCompletedPosition(position, mediaDuration),
   }
+}
+
+function effectivePlaybackPosition(): number {
+  const pending = pendingResumeSeek
+  if (pending && pending.path === mediaPath.value)
+    return Math.max(0, pending.position)
+  return Math.max(0, currentTime.value)
 }
 
 function currentMediaSourceId(): string | undefined {
@@ -1282,6 +1291,9 @@ function isMediaType(value: string): value is MediaItem['type'] {
 }
 
 async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress') {
+  if (!playbackProgressReady)
+    return
+
   const payload = currentHistoryPayload()
   if (!payload)
     return
@@ -1333,26 +1345,25 @@ async function resumeSavedProgressIfAvailable() {
   const saved = await readSavedProgress()
   const fallbackPosition = routeResumePosition()
   const fallbackDuration = duration.value > 0 ? duration.value : currentQueueItem.value?.duration
-  const position = shouldResumePlayback(saved)
-    ? saved.position
-    : shouldResumePosition(fallbackPosition, fallbackDuration)
-      ? fallbackPosition
+  const position = shouldResumePosition(fallbackPosition, fallbackDuration)
+    ? fallbackPosition
+    : shouldResumePlayback(saved)
+      ? saved.position
       : undefined
 
   if (position == null) {
+    cancelPendingResumeSeek()
     playbackStartPosition = 0
+    playbackProgressReady = true
     resumeMessage.value = null
     return
   }
 
   playbackStartPosition = position
+  pendingResumeSeek = { path: mediaPath.value, position }
+  resumeMessage.value = `正在恢复到 ${formatPlaybackTime(position)}`
   await seekResumePosition(position)
-  resumeMessage.value = `已从 ${formatPlaybackTime(position)} 继续播放`
-  clearResumeMessageTimer()
-  resumeMessageTimer = window.setTimeout(() => {
-    resumeMessageTimer = undefined
-    resumeMessage.value = null
-  }, 3600)
+  playbackProgressReady = true
 }
 
 async function seekResumePosition(position: number) {
@@ -1365,7 +1376,7 @@ async function seekResumePosition(position: number) {
 
 async function seekResumePositionSilently(position: number) {
   try {
-    await seek(position)
+    await seekMpv(position)
   }
   catch {
     // Resume seek is retried after media metadata settles; failures must not break playback startup.
@@ -1376,12 +1387,58 @@ function scheduleResumeSeek(position: number, delay: number, force: boolean) {
   const path = mediaPath.value
   const timer = window.setTimeout(() => {
     resumeSeekTimers.delete(timer)
-    if (playbackCleanupStarted || !mediaPath.value || mediaPath.value !== path)
+    if (playbackCleanupStarted || !mediaPath.value || mediaPath.value !== path || pendingResumeSeek?.path !== path)
       return
+    if (Math.abs(currentTime.value - position) <= 5) {
+      completePendingResumeSeek(path, position)
+      return
+    }
     if (force || Math.abs(currentTime.value - position) > 5)
       void seekResumePositionSilently(position)
   }, delay)
   resumeSeekTimers.add(timer)
+}
+
+async function applyPendingResumeSeekWhenReady() {
+  const pending = pendingResumeSeek
+  if (!pending || pending.path !== mediaPath.value || playbackCleanupStarted)
+    return
+  if (!videoReady.value && duration.value <= 0)
+    return
+  await seekResumePositionSilently(pending.position)
+}
+
+function completePendingResumeSeek(path: string, position: number) {
+  if (pendingResumeSeek?.path !== path || Math.abs(pendingResumeSeek.position - position) > 0.01)
+    return
+  pendingResumeSeek = null
+  clearResumeSeekTimers()
+  resumeMessage.value = `已从 ${formatPlaybackTime(position)} 继续播放`
+  clearResumeMessageTimer()
+  resumeMessageTimer = window.setTimeout(() => {
+    resumeMessageTimer = undefined
+    resumeMessage.value = null
+  }, 3600)
+}
+
+function cancelPendingResumeSeek() {
+  const hadPendingResume = pendingResumeSeek != null
+  pendingResumeSeek = null
+  clearResumeSeekTimers()
+  if (hadPendingResume) {
+    clearResumeMessageTimer()
+    resumeMessage.value = null
+  }
+}
+
+async function seek(position: number) {
+  cancelPendingResumeSeek()
+  await seekMpv(position)
+}
+
+async function seekRelative(offset: number) {
+  cancelPendingResumeSeek()
+  await seekRelativeMpv(offset)
 }
 
 function clearResumeSeekTimers() {
@@ -1399,10 +1456,11 @@ function clearResumeMessageTimer() {
 }
 
 function resetHistorySaveState() {
-  clearResumeSeekTimers()
+  cancelPendingResumeSeek()
   clearResumeMessageTimer()
   lastSavedPosition = -1
   playbackStartPosition = 0
+  playbackProgressReady = false
   resumeMessage.value = null
 }
 
@@ -1888,6 +1946,16 @@ watch([shouldShowChrome, hasMedia], () => {
 
 watch([audioTracks, subtitleTracks, videoReady], () => {
   void restorePendingTrackPreference()
+})
+
+watch([videoReady, duration], () => {
+  void applyPendingResumeSeekWhenReady()
+})
+
+watch(currentTime, (time) => {
+  const pending = pendingResumeSeek
+  if (pending && pending.path === mediaPath.value && Math.abs(time - pending.position) <= 5)
+    completePendingResumeSeek(pending.path, pending.position)
 })
 
 async function handleFileDrop(path: string) {

@@ -205,7 +205,7 @@ Phase 4: 生态系统           ████████████████
 - [x] `getImageUrl(itemId, type)` — 构建图片URL
 - [x] 实现 `EmbyDataSource` (implements DataSource)
 - [x] `mapEmbyItem()` — Emby 数据映射到 MediaItem
-- [x] Emby 播放进度同步 — 通过 PlaybackInfo + Sessions/Playing/Progress/Stopped 将 active session、继续观看和播放历史同步回 Emby；本机 SQLite 历史保持 primary，provider sync best-effort
+- [x] Emby 播放进度同步 — 通过 PlaybackInfo + Sessions/Playing/Progress/Stopped 将 active session、继续观看和播放历史同步回 Emby；本机 SQLite 保留离线兜底，provider sync best-effort；有效 provider 位置优先于设备本地缓存，续播位置解析前暂停进度写入，Android/302 慢加载在 `video-ready` 前保持待恢复位置，避免起播 `0` 秒覆盖跨设备云端记录
 - [x] Emby 多版本播放 — 详情页选择的 `mediaSourceId` 参与即时播放请求解析，并沿用到对应播放进度会话；失效版本不再静默回退到首个版本
 
 #### JellyfinDataSource 实现
