@@ -156,17 +156,18 @@ pub async fn mpv_set_orientation(mode: String) -> Result<MpvOrientationState, St
 }
 
 #[tauri::command]
-pub async fn mpv_display_brightness_state() -> Result<MpvDisplayBrightnessState, String> {
-    Ok(MpvDisplayBrightnessState {
-        supported: false,
-        level: 50.0,
-    })
+pub async fn mpv_display_brightness_state(
+    window: tauri::Window,
+) -> Result<MpvDisplayBrightnessState, String> {
+    super::display_brightness::state(window).await
 }
 
 #[tauri::command]
-pub async fn mpv_set_display_brightness(level: f64) -> Result<MpvDisplayBrightnessState, String> {
-    let _ = level;
-    mpv_display_brightness_state().await
+pub async fn mpv_set_display_brightness(
+    window: tauri::Window,
+    level: f64,
+) -> Result<MpvDisplayBrightnessState, String> {
+    super::display_brightness::set(window, level).await
 }
 
 #[tauri::command]

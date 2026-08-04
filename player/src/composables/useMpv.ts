@@ -265,6 +265,7 @@ export function useMpv() {
   const isMuted = ref(false)
   const videoBrightness = ref(50)
   const displayBrightness = ref(50)
+  const displayBrightnessSupported = ref(false)
   const playbackSpeed = ref(DEFAULT_PLAYBACK_SPEED)
   const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
@@ -467,19 +468,22 @@ export function useMpv() {
   async function refreshDisplayBrightness() {
     try {
       const state = await invoke<MpvDisplayBrightnessState>('mpv_display_brightness_state')
+      displayBrightnessSupported.value = state.supported
       if (state.supported)
         displayBrightness.value = Math.max(0, Math.min(100, state.level))
     }
     catch {
-      // Desktop and unsupported Android windows keep the neutral fallback value.
+      displayBrightnessSupported.value = false
     }
   }
 
   async function setDisplayBrightness(level: number) {
     const next = Math.max(0, Math.min(100, level))
     const state = await invoke<MpvDisplayBrightnessState>('mpv_set_display_brightness', { level: next })
-    if (state.supported)
-      displayBrightness.value = Math.max(0, Math.min(100, state.level))
+    displayBrightnessSupported.value = state.supported
+    if (!state.supported)
+      throw new Error('当前显示器不支持系统亮度调节。')
+    displayBrightness.value = Math.max(0, Math.min(100, state.level))
   }
 
   function scheduleTrackRefresh(delay: number) {
@@ -850,6 +854,7 @@ export function useMpv() {
     isMuted,
     videoBrightness,
     displayBrightness,
+    displayBrightnessSupported,
     playbackSpeed,
     subtitleDelay,
     subtitleTracks,

@@ -1,5 +1,7 @@
 pub mod clouddrive2;
 pub mod credential;
+#[cfg(not(mobile))]
+pub(crate) mod display_brightness;
 pub mod emby;
 pub mod history;
 pub mod image_cache;
