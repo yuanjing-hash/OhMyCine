@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DataSource, MediaItem } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import HomeAggregateSearch from '@/components/media/HomeAggregateSearch.vue'
@@ -26,7 +26,6 @@ const seriesPlaybackTargets = ref<Record<string, SeriesPlaybackTarget>>({})
 const errorMessage = ref<string | null>(null)
 const hasLoadedInitialHomeState = ref(false)
 let seriesTargetRefreshId = 0
-let settledRefreshTimer: number | undefined
 
 const hasConfiguredSources = computed(() => store.configs.length > 0)
 const hasHomeContent = computed(() => store.homeSections.some(section =>
@@ -88,13 +87,7 @@ onMounted(async () => {
   finally {
     hasLoadedInitialHomeState.value = true
   }
-  scheduleSettledContinueWatchingRefresh()
   await refreshHeroSeriesPlaybackTargets()
-})
-
-onBeforeUnmount(() => {
-  if (settledRefreshTimer)
-    window.clearTimeout(settledRefreshTimer)
 })
 
 watch(heroItems, () => {
@@ -107,16 +100,6 @@ function goToSettings() {
 
 function goAddDataSource() {
   void router.push({ name: 'settings', query: { section: 'datasources', action: 'add' } })
-}
-
-function scheduleSettledContinueWatchingRefresh() {
-  if (settledRefreshTimer)
-    window.clearTimeout(settledRefreshTimer)
-
-  settledRefreshTimer = window.setTimeout(() => {
-    settledRefreshTimer = undefined
-    void store.loadHomeSections()
-  }, 1800)
 }
 
 function heroActionLabel(item: MediaItem): string {

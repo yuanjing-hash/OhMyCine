@@ -135,6 +135,8 @@ const MAX_PLAYBACK_SPEED = 4
 const DEFAULT_SUBTITLE_DELAY = 0
 const MIN_SUBTITLE_DELAY = -30
 const MAX_SUBTITLE_DELAY = 30
+const BUFFER_POLL_INTERVAL_MS = 400
+const BUFFER_DISPLAY_DELAY_MS = 500
 
 interface PlaybackSpeedPreference {
   playbackSpeed: number
@@ -301,11 +303,18 @@ export function useMpv() {
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
   const playbackDiagnostics = ref<MpvPlaybackDiagnostics | null>(null)
   const videoReady = ref(false)
+  const isBuffering = ref(false)
+  const bufferSpeedBytesPerSecond = ref(0)
   const orientationSupported = ref(false)
   const orientationMode = ref<MpvOrientationMode>('auto')
   const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
+  let bufferPollingTimer: number | undefined
+  let bufferDisplayTimer: number | undefined
+  let bufferPollInFlight = false
+  let bufferPollingGeneration = 0
+  let engineReportsBuffering = false
   const trackRefreshTimers = new Set<number>()
   let playbackSpeedPreferenceLoaded = false
   let playbackSpeedPreferenceLoading: Promise<void> | null = null
@@ -515,6 +524,78 @@ export function useMpv() {
     }
   }
 
+  function parseMpvBoolean(value: string): boolean {
+    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+  }
+
+  function clearBufferDisplayTimer() {
+    if (!bufferDisplayTimer)
+      return
+    window.clearTimeout(bufferDisplayTimer)
+    bufferDisplayTimer = undefined
+  }
+
+  function resetBufferingState() {
+    engineReportsBuffering = false
+    clearBufferDisplayTimer()
+    isBuffering.value = false
+    bufferSpeedBytesPerSecond.value = 0
+  }
+
+  async function refreshBufferingState(generation: number) {
+    if (bufferPollInFlight)
+      return
+
+    bufferPollInFlight = true
+    try {
+      const [pausedForCache, cacheSpeed] = await Promise.all([
+        readMpvProperty('paused-for-cache'),
+        readMpvProperty('cache-speed'),
+      ])
+      if (generation !== bufferPollingGeneration)
+        return
+
+      const buffering = parseMpvBoolean(pausedForCache)
+      const speed = Number.parseFloat(cacheSpeed)
+      bufferSpeedBytesPerSecond.value = Number.isFinite(speed) && speed > 0 ? speed : 0
+      engineReportsBuffering = buffering
+
+      if (!buffering) {
+        resetBufferingState()
+        return
+      }
+
+      if (!isBuffering.value && !bufferDisplayTimer) {
+        bufferDisplayTimer = window.setTimeout(() => {
+          bufferDisplayTimer = undefined
+          if (generation === bufferPollingGeneration && engineReportsBuffering)
+            isBuffering.value = true
+        }, BUFFER_DISPLAY_DELAY_MS)
+      }
+    }
+    finally {
+      bufferPollInFlight = false
+    }
+  }
+
+  function startBufferingPolling() {
+    stopBufferingPolling()
+    const generation = ++bufferPollingGeneration
+    void refreshBufferingState(generation)
+    bufferPollingTimer = window.setInterval(() => {
+      void refreshBufferingState(generation)
+    }, BUFFER_POLL_INTERVAL_MS)
+  }
+
+  function stopBufferingPolling() {
+    bufferPollingGeneration += 1
+    if (bufferPollingTimer) {
+      window.clearInterval(bufferPollingTimer)
+      bufferPollingTimer = undefined
+    }
+    resetBufferingState()
+  }
+
   function cleanVideoMetadataValue(value: string): string {
     return value.trim().replace(/^unknown$/i, '')
   }
@@ -576,6 +657,7 @@ export function useMpv() {
   }
 
   async function load(path: string, options: MpvLoadOptions = {}) {
+    stopBufferingPolling()
     subtitleDelayGeneration += 1
     selectedKnownSubtitle.value = null
     currentTime.value = 0
@@ -592,19 +674,26 @@ export function useMpv() {
     await ensurePlaybackSpeedPreferenceLoaded()
     await applyEngineSettings()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
-    await invoke<void>('mpv_resume')
-    if (renderBackend.value === 'androidSurface')
-      await refreshPlaybackDiagnostics()
-    await refreshOrientationState()
-    currentTime.value = 0
-    isPlaying.value = true
-    await applyPlaybackSpeed(playbackSpeed.value)
-    await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
-    await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
-    await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
-    await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
-    await refreshVideoDynamicRange()
-    scheduleTrackRefresh(2500)
+    startBufferingPolling()
+    try {
+      await invoke<void>('mpv_resume')
+      if (renderBackend.value === 'androidSurface')
+        await refreshPlaybackDiagnostics()
+      await refreshOrientationState()
+      currentTime.value = 0
+      isPlaying.value = true
+      await applyPlaybackSpeed(playbackSpeed.value)
+      await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
+      await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
+      await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
+      await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
+      await refreshVideoDynamicRange()
+      scheduleTrackRefresh(2500)
+    }
+    catch (error) {
+      stopBufferingPolling()
+      throw error
+    }
   }
 
   async function togglePause() {
@@ -748,6 +837,7 @@ export function useMpv() {
   }
 
   async function stop() {
+    stopBufferingPolling()
     await invoke<void>('mpv_stop')
     isPlaying.value = false
     currentTime.value = 0
@@ -762,6 +852,7 @@ export function useMpv() {
   }
 
   onUnmounted(() => {
+    stopBufferingPolling()
     if (renderDiagnosticsTimer)
       window.clearInterval(renderDiagnosticsTimer)
 
@@ -795,6 +886,8 @@ export function useMpv() {
     renderDiagnostics,
     playbackDiagnostics,
     videoReady,
+    isBuffering,
+    bufferSpeedBytesPerSecond,
     orientationSupported,
     orientationMode,
     videoDynamicRange,

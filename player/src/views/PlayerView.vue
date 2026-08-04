@@ -11,6 +11,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import BufferingIndicator from '@/components/player/BufferingIndicator.vue'
 import MobilePlayerControls from '@/components/player/MobilePlayerControls.vue'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
@@ -198,6 +199,8 @@ const {
   renderDiagnostics,
   playbackDiagnostics,
   videoReady,
+  isBuffering,
+  bufferSpeedBytesPerSecond,
   orientationSupported,
   orientationMode,
   videoDynamicRange,
@@ -1194,7 +1197,7 @@ function scheduleHomeSectionsRefreshAfterPlayback() {
 
   homeRefreshTimer = window.setTimeout(() => {
     homeRefreshTimer = undefined
-    void store.loadHomeSections()
+    void store.loadHomeSections({ force: true, background: true })
   }, HOME_REFRESH_AFTER_PLAYBACK_DELAY)
 }
 
@@ -2552,6 +2555,13 @@ watch(
       </div>
     </Transition>
 
+    <Transition name="buffering-indicator">
+      <BufferingIndicator
+        v-if="hasMedia && isBuffering"
+        :speed-bytes-per-second="bufferSpeedBytesPerSecond"
+      />
+    </Transition>
+
     <Transition name="player-chrome-top">
       <div
         v-if="!isNativeAndroidPlayer"
@@ -2656,6 +2666,7 @@ watch(
         :title="mediaTitle"
         :title-logo-url="currentTitleLogoUrl"
         :is-playing="isPlaying"
+        :is-buffering="isBuffering"
         :current-time="currentTime"
         :duration="duration"
         :volume="volume"

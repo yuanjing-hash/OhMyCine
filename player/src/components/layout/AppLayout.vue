@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
 import type { PlayerShortcutBindings } from '@/services/playerShortcuts'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { APP_SCROLL_TO_TOP_EVENT } from '@/services/appScroll'
 import { loadNavigationShortcutBindings, NAVIGATION_SHORTCUTS_CHANGED_EVENT, navigationShortcutTargetForEvent, shouldIgnoreNavigationShortcut } from '@/services/navigationShortcuts'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
@@ -20,6 +21,14 @@ const isPlayerRoute = computed(() => route.name === 'player')
 const isNativeAndroid = isNativeAndroidRuntime()
 const navigationShortcuts = ref<NavigationShortcutBindings>(loadNavigationShortcutBindings())
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
+const mainScrollRef = ref<HTMLElement | null>(null)
+
+async function scrollContentToTop() {
+  await nextTick()
+  window.requestAnimationFrame(() => {
+    mainScrollRef.value?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  })
+}
 
 function reloadNavigationShortcuts() {
   navigationShortcuts.value = loadNavigationShortcutBindings()
@@ -65,13 +74,17 @@ onMounted(() => {
   window.addEventListener('keydown', handleNavigationShortcut)
   window.addEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
   window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  window.addEventListener(APP_SCROLL_TO_TOP_EVENT, scrollContentToTop)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleNavigationShortcut)
   window.removeEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
   window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  window.removeEventListener(APP_SCROLL_TO_TOP_EVENT, scrollContentToTop)
 })
+
+watch(() => route.fullPath, scrollContentToTop, { flush: 'post' })
 </script>
 
 <template>
@@ -80,7 +93,7 @@ onBeforeUnmount(() => {
     :class="isPlayerRoute ? 'app-window--player' : 'app-window--cinema'"
   >
     <!-- Content fills the full area -->
-    <main class="cinema-scrollbar absolute inset-0 z-0 overflow-auto">
+    <main ref="mainScrollRef" class="cinema-scrollbar absolute inset-0 z-0 overflow-auto">
       <slot />
     </main>
 

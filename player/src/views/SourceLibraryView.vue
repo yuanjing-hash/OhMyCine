@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
+import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
@@ -133,6 +134,7 @@ const isArtworkApplying = ref(false)
 let unsubscribeRawIndexStatus: (() => void) | undefined
 let identificationSearchRequestId = 0
 let rawIndexGeneration = 0
+let sourceRootLoadGeneration = 0
 
 const rawSourceType = computed<RawFileSourceType | null>(() => {
   const type = sourceConfig.value?.type
@@ -411,6 +413,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   rawIndexGeneration += 1
+  sourceRootLoadGeneration += 1
   window.removeEventListener('click', closeWorkContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus?.()
@@ -419,6 +422,8 @@ onBeforeUnmount(() => {
 
 watch(sourceId, async () => {
   rawIndexGeneration += 1
+  sourceRootLoadGeneration += 1
+  isLoading.value = false
   selectedLibrary.value = null
   navigationStack.value = []
   items.value = []
@@ -459,30 +464,48 @@ async function ensureSource() {
   errorMessage.value = null
 }
 
-async function loadSourceRoot() {
+async function loadSourceRoot(options: { force?: boolean } = {}) {
   if (!source.value)
     return
 
-  isLoading.value = true
+  const loadGeneration = ++sourceRootLoadGeneration
+  const loadingSourceId = sourceId.value
+  const cachedSnapshot = store.getSourceRootSnapshot(loadingSourceId)
+  if (cachedSnapshot)
+    applySourceRootSnapshot(cachedSnapshot)
+  if (cachedSnapshot && !options.force && store.isSourceRootSnapshotFresh(loadingSourceId))
+    return
+
+  const showLoading = cachedSnapshot == null
+  if (showLoading)
+    isLoading.value = true
   errorMessage.value = null
   const [librariesResult, homeResult] = await Promise.allSettled([
     source.value.listLibraries ? source.value.listLibraries() : Promise.resolve([]),
     source.value.getHomeSections ? source.value.getHomeSections() : Promise.resolve([]),
   ] as const)
+  if (loadGeneration !== sourceRootLoadGeneration || loadingSourceId !== sourceId.value)
+    return
 
-  if (librariesResult.status === 'fulfilled') {
-    libraries.value = librariesResult.value
-  }
-  else {
-    libraries.value = []
+  if (librariesResult.status === 'rejected')
     errorMessage.value = toSafeErrorMessage(librariesResult.reason, '媒体库加载失败。')
-  }
 
-  const homeSections = homeResult.status === 'fulfilled' ? homeResult.value : []
-  heroItems.value = findVisibleHomeSection(homeSections, 'hero')?.items ?? []
-  latestItems.value = findVisibleHomeSection(homeSections, 'recentlyAdded')?.items ?? []
-  continueItems.value = findVisibleHomeSection(homeSections, 'continueWatching')?.items ?? []
-  isLoading.value = false
+  const nextSnapshot = {
+    libraries: librariesResult.status === 'fulfilled' ? librariesResult.value : (cachedSnapshot?.libraries ?? []),
+    homeSections: homeResult.status === 'fulfilled' ? homeResult.value : (cachedSnapshot?.homeSections ?? []),
+  }
+  applySourceRootSnapshot(nextSnapshot)
+  if (librariesResult.status === 'fulfilled' || homeResult.status === 'fulfilled')
+    store.setSourceRootSnapshot(loadingSourceId, nextSnapshot)
+  if (showLoading)
+    isLoading.value = false
+}
+
+function applySourceRootSnapshot(snapshot: { libraries: MediaLibrary[], homeSections: HomeSection[] }) {
+  libraries.value = snapshot.libraries
+  heroItems.value = findVisibleHomeSection(snapshot.homeSections, 'hero')?.items ?? []
+  latestItems.value = findVisibleHomeSection(snapshot.homeSections, 'recentlyAdded')?.items ?? []
+  continueItems.value = findVisibleHomeSection(snapshot.homeSections, 'continueWatching')?.items ?? []
 }
 
 async function switchViewMode(mode: SourceViewMode) {
@@ -490,6 +513,7 @@ async function switchViewMode(mode: SourceViewMode) {
     return
 
   viewMode.value = mode
+  requestAppScrollTop()
   errorMessage.value = null
   if (mode === 'media-library') {
     backToLibraries()
@@ -509,6 +533,7 @@ async function loadLibrary(library: MediaLibrary) {
     return
 
   selectedLibrary.value = library
+  requestAppScrollTop()
   navigationStack.value = [{ id: library.id, name: library.name, type: library.type }]
   searchKeyword.value = ''
   isLoading.value = true
@@ -551,6 +576,7 @@ async function runSearch() {
       type: 'mixed',
     }
     navigationStack.value = [{ id: 'search', name: `搜索：${keyword}`, type: 'mixed', isSearch: true }]
+    requestAppScrollTop()
   }
   catch (error) {
     items.value = []
@@ -566,6 +592,7 @@ function backToLibraries() {
   navigationStack.value = []
   items.value = []
   searchKeyword.value = ''
+  requestAppScrollTop()
 }
 
 async function navigateToCrumb(index: number) {
@@ -655,6 +682,7 @@ async function loadNestedItems(parentId: string) {
   if (!source.value)
     return
 
+  requestAppScrollTop()
   isLoading.value = true
   errorMessage.value = null
   try {
@@ -903,10 +931,12 @@ function currentQueueItems(): MediaItem[] {
 
 function selectScannedCategory(category: ScannedCategory) {
   selectedScannedCategoryId.value = category.id
+  requestAppScrollTop()
 }
 
 function backToScannedCategories() {
   selectedScannedCategoryId.value = null
+  requestAppScrollTop()
 }
 
 function openScannedWorkContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
