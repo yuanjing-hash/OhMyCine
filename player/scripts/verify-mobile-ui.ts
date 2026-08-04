@@ -15,6 +15,10 @@ assert.match(appLayout, /<MobileNavigation v-if="!isPlayerRoute"/)
 assert.match(appLayout, /isNativeAndroidRuntime/)
 assert.match(appLayout, /<WindowChrome v-if="!isNativeAndroid"/)
 assert.match(appLayout, /<FloatingControls v-if="!isNativeAndroid"/)
+assert.match(appLayout, /handleMainTouchStart/)
+assert.match(appLayout, /distance < 72/)
+assert.match(appLayout, /searchWorkspace\.show\(\)/)
+assert.match(appLayout, /<GlobalSearchWorkspace v-if="!isPlayerRoute"/)
 
 const mobileNavigation = await source('src/components/layout/MobileNavigation.vue')
 assert.match(mobileNavigation, /首页/)
@@ -28,6 +32,8 @@ assert.match(mobileNavigation, /pickAndroidLocalVideo/)
 assert.match(mobileNavigation, /savePlaybackMediaContext/)
 assert.match(mobileNavigation, /locator: \{\s+kind: 'localPath',\s+path: selected\.uri,/)
 assert.doesNotMatch(mobileNavigation, /query: \{\s+path: selected\.uri/)
+assert.doesNotMatch(mobileNavigation, /mobile-nav-quick/)
+assert.match(mobileNavigation, /class="mobile-nav-item" :class="\{ 'is-active': activeSheet === 'quick' \}"/)
 
 const settingsView = await source('src/views/SettingsView.vue')
 assert.match(settingsView, /pickAndroidLocalDirectory/)
@@ -68,6 +74,10 @@ assert.match(mobilePlayerControls, /mobile-control-layer/)
 assert.match(mobilePlayerControls, /mobile-player-top/)
 assert.match(mobilePlayerControls, /mobile-transport/)
 assert.match(mobilePlayerControls, /mobile-player-bottom/)
+assert.match(mobilePlayerControls, /mobile-bottom-row/)
+assert.match(mobilePlayerControls, /grid-template-columns: auto 3\.2rem minmax\(6rem, 1fr\) 3\.2rem auto/)
+assert.doesNotMatch(mobilePlayerControls, /class="mobile-timeline"/)
+assert.doesNotMatch(mobilePlayerControls, /class="mobile-bottom-tools"/)
 assert.match(mobilePlayerControls, /mobile-player-sheet/)
 assert.match(mobilePlayerControls, /自动横屏/)
 assert.match(mobilePlayerControls, /锁定横屏/)
@@ -75,6 +85,18 @@ assert.match(mobilePlayerControls, /锁定竖屏/)
 assert.match(mobilePlayerControls, /搜索字幕/)
 assert.match(mobilePlayerControls, /载入本地字幕/)
 assert.match(mobilePlayerControls, /@media \(orientation: portrait\)/)
+assert.equal((mobilePlayerControls.match(/aria-label="字幕"/g) ?? []).length, 1)
+assert.match(mobilePlayerControls, /\.transport-skip \{[\s\S]*?width: 3\.25rem;/)
+assert.match(mobilePlayerControls, /\.transport-primary \{[\s\S]*?width: 3\.9rem;/)
+assert.match(mobilePlayerControls, /linear-gradient\(145deg, rgba\(35, 38, 45, 0\.7\)/)
+
+const subtitleSearch = await source('src/components/player/SubtitleSearchDialog.vue')
+assert.match(subtitleSearch, /resultSummary/)
+assert.match(subtitleSearch, /找到 \$\{props\.results\.length\} 条字幕/)
+assert.match(subtitleSearch, /subtitle-search-loading/)
+assert.match(subtitleSearch, /mobileLayout\?: boolean/)
+assert.match(subtitleSearch, /'is-mobile': mobileLayout/)
+assert.match(subtitleSearch, /grid-template-columns: minmax\(18rem, 34vw\) minmax\(0, 1fr\)/)
 
 const progressBar = await source('src/components/player/ProgressBar.vue')
 assert.match(progressBar, /@pointerdown\.prevent="handlePointerDown"/)
@@ -112,8 +134,10 @@ assert.match(playerView, /loadPlayerInteractionSettings\(\)\.longPressPlaybackSp
 assert.match(playerView, /const isNativeAndroidPlayer = isNativeAndroidRuntime\(\)/)
 assert.match(playerView, /player-view--native-mobile/)
 assert.match(playerView, /<MobilePlayerControls/)
+assert.match(playerView, /<BufferingIndicator/)
 assert.match(playerView, /v-if="hasMedia && isNativeAndroidPlayer"/)
 assert.match(playerView, /:mobile-layout="false"/)
+assert.match(playerView, /:mobile-layout="isNativeAndroidPlayer"/)
 assert.match(playerView, /if \(isNativeAndroidPlayer\) \{\s+toggleChromeFromTouch\(\)/)
 assert.match(playerView, /showKeyboardOsd\(`屏幕方向 · \$\{label\}`\)/)
 
@@ -129,6 +153,9 @@ assert.match(mpvPlayer, /"video-zoom"[\s\S]*?\| "brightness" =>/)
 const windowChrome = await source('src/components/layout/WindowChrome.vue')
 assert.match(windowChrome, /const appWindow = isTauriRuntime\(\) \? getCurrentWindow\(\) : null/)
 assert.match(windowChrome, /@media \(max-width: 767px\) \{[\s\S]*?\.desktop-window-controls/)
+
+const mainActivity = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/MainActivity.kt')
+assert.match(mainActivity, /SystemBarStyle\.dark\(Color\.TRANSPARENT\)/)
 
 console.log(JSON.stringify({
   mobileBottomNavigation: true,
@@ -147,8 +174,11 @@ console.log(JSON.stringify({
   nativeAndroidDesktopChromeRemoved: true,
   nativeAndroidDedicatedControls: true,
   nativeAndroidTapChromeFallback: true,
+  mobilePullToSearch: true,
+  mobileFullscreenSubtitleSearch: true,
   conciseWaitingPlaybackState: true,
   nativeOrientationLockControl: true,
   androidSystemMediaPicker: true,
   androidDocumentTreePicker: true,
+  darkSystemBarForeground: true,
 }, null, 2))

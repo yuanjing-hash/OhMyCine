@@ -41,6 +41,8 @@ Use services and stores to cache external data, but source-of-truth remains the 
 
 Home aggregation must isolate external failures at the source/section level. A failed, disabled, misconfigured, or metadata-unavailable source must not replace or hide hero, continue-watching, recently-added, or library rows from other working sources; empty/error placeholders should not be inserted as normal `HomeSection` candidates.
 
+Home and source-root navigation use process-memory session snapshots with a short TTL. A route revisit must render the last successful snapshot immediately instead of clearing refs and showing first-load UI again; expired snapshots stay visible while refresh runs in the background. These snapshots may contain display metadata only and must never persist credentials, authorization headers, raw stream URLs, signed URLs, or local absolute paths. Config changes, source removal, manual cache clearing, and explicit progress refreshes must invalidate the relevant snapshot.
+
 ### Raw Source Auto Indexing Contract
 
 #### 1. Scope / Trigger
@@ -229,3 +231,4 @@ addConfig({
 - Treating Server API results as required for the home page.
 - Reordering data sources without persisting the order.
 - Automatically overwriting local credentials during sync.
+- Clearing already rendered Home/source-root content before a routine background refresh completes.

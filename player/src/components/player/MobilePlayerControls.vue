@@ -11,6 +11,7 @@ const props = defineProps<{
   title: string
   titleLogoUrl?: string
   isPlaying: boolean
+  isBuffering: boolean
   currentTime: number
   duration: number
   volume: number
@@ -216,7 +217,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
       </nav>
     </header>
 
-    <div class="mobile-transport pointer-events-auto" aria-label="播放控制">
+    <div class="mobile-transport pointer-events-auto" :class="{ 'is-buffering': isBuffering }" aria-label="播放控制">
       <button type="button" class="transport-skip" aria-label="后退 10 秒" @click="emit('seekRelative', -10)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 8.5H14a6 6 0 1 1-5.2 9M7.5 8.5 10 6M7.5 8.5 10 11" /><text x="9" y="17">10</text></svg>
       </button>
@@ -230,12 +231,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
     </div>
 
     <footer class="mobile-player-bottom pointer-events-auto">
-      <div class="mobile-timeline">
-        <time>{{ formatTime(currentTime) }}</time>
-        <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="position => emit('seek', position)" @interaction-change="setProgressInteracting" />
-        <time>{{ formatTime(duration) }}</time>
-      </div>
-      <div class="mobile-bottom-tools">
+      <div class="mobile-bottom-row">
         <div class="mobile-episode-tools">
           <button type="button" class="mobile-icon-button" :disabled="!canPlayPrevious" aria-label="上一集" @click="emit('playPrevious')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14m10-13-8 6 8 6V6Z" /></svg>
@@ -244,7 +240,13 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14M7 6l8 6-8 6V6Z" /></svg>
           </button>
         </div>
+        <time>{{ formatTime(currentTime) }}</time>
+        <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="position => emit('seek', position)" @interaction-change="setProgressInteracting" />
+        <time>{{ formatTime(duration) }}</time>
         <div class="mobile-media-tools">
+          <button type="button" class="mobile-icon-button" aria-label="音量" @click="openPanel('more')">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10" /></svg>
+          </button>
           <button type="button" class="mobile-text-button" aria-label="播放速度" @click="openPanel('speed')">
             {{ formatSpeed(playbackSpeed) }}
           </button>
@@ -253,9 +255,6 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
           </button>
           <button v-if="showQueueControl" type="button" class="mobile-icon-button" aria-label="播放队列" @click="openPanel('queue')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h8m5-4 4 3-4 3v-6Z" /></svg>
-          </button>
-          <button type="button" class="mobile-icon-button" :class="{ 'is-active': currentSubtitle !== null }" aria-label="字幕" @click="openPanel('subtitle')">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Zm2 5h5m3 0h4M6 14h3m3 0h6" /></svg>
           </button>
         </div>
       </div>
@@ -430,7 +429,6 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-title-group,
 .mobile-top-tools,
-.mobile-bottom-tools,
 .mobile-episode-tools,
 .mobile-media-tools {
   display: flex;
@@ -461,16 +459,30 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-top-tools,
 .mobile-player-bottom {
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
-  background: rgba(8, 10, 14, 0.62);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(22px) saturate(1.25);
-  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  background: linear-gradient(145deg, rgba(35, 38, 45, 0.7), rgba(10, 12, 17, 0.76));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.13), 0 16px 44px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+}
+
+.mobile-top-tools::before,
+.mobile-player-bottom::before,
+.mobile-player-sheet::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(110deg, rgba(255, 255, 255, 0.08), transparent 34%, transparent 72%, rgba(121, 168, 255, 0.05));
+  content: '';
+  pointer-events: none;
 }
 
 .mobile-top-tools {
-  padding: 0.3rem;
+  position: relative;
+  gap: 0.18rem;
+  padding: 0.24rem;
 }
 
 .mobile-icon-button,
@@ -487,14 +499,14 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-icon-button {
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 2.4rem;
+  height: 2.4rem;
   border-radius: 50%;
 }
 
 .mobile-icon-button svg {
-  width: 1.35rem;
-  height: 1.35rem;
+  width: 1.15rem;
+  height: 1.15rem;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -523,11 +535,12 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-back-button {
-  width: 3.1rem;
-  height: 3.1rem;
-  background: rgba(8, 10, 14, 0.68);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(18px);
+  width: 2.75rem;
+  height: 2.75rem;
+  border-color: rgba(255, 255, 255, 0.13);
+  background: linear-gradient(145deg, rgba(38, 41, 48, 0.72), rgba(10, 12, 17, 0.78));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 12px 30px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(20px) saturate(1.3);
 }
 
 .mobile-transport {
@@ -536,34 +549,45 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   left: 50%;
   display: flex;
   align-items: center;
-  gap: clamp(1.4rem, 5vw, 4.5rem);
+  gap: clamp(0.9rem, 3.4vw, 2.5rem);
   transform: translate(-50%, -50%);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.mobile-transport.is-buffering {
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.94);
 }
 
 .transport-skip,
 .transport-primary {
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 50%;
-  background: rgba(10, 12, 17, 0.62);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(18px);
+  background: linear-gradient(145deg, rgba(38, 41, 48, 0.72), rgba(10, 12, 17, 0.78));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 12px 32px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
 }
 
 .transport-skip {
-  width: 4.6rem;
-  height: 4.6rem;
+  width: 3.25rem;
+  height: 3.25rem;
 }
 
 .transport-primary {
-  width: 5.5rem;
-  height: 5.5rem;
+  width: 3.9rem;
+  height: 3.9rem;
+  border-color: rgba(255, 255, 255, 0.5);
   color: rgba(10, 12, 17, 0.95);
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 1px 0 white, 0 12px 34px rgba(0, 0, 0, 0.28);
 }
 
 .transport-skip svg,
 .transport-primary svg {
-  width: 2.2rem;
-  height: 2.2rem;
+  width: 1.55rem;
+  height: 1.55rem;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -580,47 +604,43 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-player-bottom {
   bottom: max(0.8rem, env(safe-area-inset-bottom));
-  flex-direction: column;
-  gap: 0.55rem;
-  padding: 0.7rem 0.9rem;
+  padding: 0.42rem 0.65rem;
 }
 
-.mobile-timeline {
+.mobile-bottom-row {
   display: grid;
   width: 100%;
-  grid-template-columns: 4rem minmax(0, 1fr) 4rem;
+  grid-template-columns: auto 3.2rem minmax(6rem, 1fr) 3.2rem auto;
   align-items: center;
-  gap: 0.7rem;
+  gap: clamp(0.35rem, 1vw, 0.7rem);
 }
 
-.mobile-timeline time {
+.mobile-bottom-row time {
   color: rgba(255, 255, 255, 0.74);
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-variant-numeric: tabular-nums;
 }
 
-.mobile-timeline time:last-child {
+.mobile-bottom-row time:nth-of-type(2) {
   text-align: right;
 }
 
-.mobile-bottom-tools {
-  width: 100%;
-  justify-content: space-between;
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
-  padding-top: 0.45rem;
+.mobile-bottom-row .mobile-icon-button {
+  width: 2.15rem;
+  height: 2.15rem;
 }
 
-.mobile-bottom-tools .mobile-icon-button {
-  width: 2.35rem;
-  height: 2.35rem;
+.mobile-episode-tools,
+.mobile-media-tools {
+  flex-wrap: nowrap;
 }
 
 .mobile-text-button {
-  min-width: 3.25rem;
-  height: 2.35rem;
+  min-width: 3rem;
+  height: 2.15rem;
   border-radius: 999px;
-  padding: 0 0.7rem;
-  font-size: 0.72rem;
+  padding: 0 0.6rem;
+  font-size: 0.68rem;
   font-weight: 800;
 }
 
@@ -634,18 +654,24 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-player-sheet {
+  position: relative;
+  overflow: hidden;
   display: flex;
   width: min(23rem, 86vw);
   height: 100%;
   flex-direction: column;
   border-left: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px 0 0 8px;
-  background: rgba(24, 26, 31, 0.96);
-  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.42);
+  background: linear-gradient(145deg, rgba(38, 41, 48, 0.9), rgba(11, 13, 18, 0.94));
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.08), -18px 0 48px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
   padding: max(0.8rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right)) max(0.8rem, env(safe-area-inset-bottom)) 0.8rem;
 }
 
 .mobile-sheet-header {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -658,6 +684,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-sheet-content {
+  position: relative;
+  z-index: 1;
   min-height: 0;
   flex: 1;
   overflow-y: auto;
@@ -852,17 +880,40 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   }
 
   .mobile-transport {
-    gap: 1.1rem;
+    gap: 0.85rem;
   }
 
-  .transport-skip {
-    width: 4rem;
-    height: 4rem;
+  .mobile-player-bottom {
+    right: max(0.45rem, env(safe-area-inset-right));
+    left: max(0.45rem, env(safe-area-inset-left));
+    padding-right: 0.4rem;
+    padding-left: 0.4rem;
   }
 
-  .transport-primary {
-    width: 4.8rem;
-    height: 4.8rem;
+  .mobile-bottom-row {
+    grid-template-columns: auto 2.65rem minmax(3rem, 1fr) 2.65rem auto;
+    gap: 0.18rem;
+  }
+
+  .mobile-bottom-row time {
+    font-size: 0.58rem;
+  }
+
+  .mobile-bottom-row .mobile-icon-button {
+    width: 1.85rem;
+    height: 1.85rem;
+  }
+
+  .mobile-bottom-row .mobile-text-button {
+    min-width: 2.5rem;
+    height: 1.85rem;
+    padding: 0 0.4rem;
+    font-size: 0.62rem;
+  }
+
+  .mobile-episode-tools,
+  .mobile-media-tools {
+    gap: 0.15rem;
   }
 
   .mobile-player-sheet {

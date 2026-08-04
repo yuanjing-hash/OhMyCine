@@ -559,7 +559,7 @@ export class DataSourceManager {
 }
 ```
 
-首页 Hero 顶部提供沉浸式聚合搜索，不增加独立入口卡片。输入至少两个字符后并行查询所有已启用 DataSource，按数据源顺序合并，以 `sourceId + itemId` 去重并限制单源/总结果数。单个数据源超时或失败只丢弃该源结果，不能让整次搜索报错；结果显示海报、标题、年份、媒体类型和来源，可进入详情或直接播放。
+聚合搜索由 `AppLayout` 提供全局搜索工作台，不再嵌入首页 Hero。桌面顶部中央导航固定为 `首页 / 搜索 / 设置`，点击搜索后在窗口标题栏下方展开大尺寸液态玻璃区域；手机在首页真实滚动容器位于顶部时下拉打开全屏搜索。未输入关键词时使用当前安全媒体快照展示海报推荐和可点击建议词，输入后并行查询所有已启用 DataSource，按数据源顺序合并，以 `sourceId + itemId` 去重并限制单源/总结果数。单个数据源超时或失败只丢弃该源结果，不能让整次搜索报错；用户可按数据源、该来源的媒体库和媒体类型筛选，结果显示海报、标题、年份、媒体类型和来源，可进入详情或直接播放。
 
 ### 4.6 配置存储
 
@@ -1193,43 +1193,9 @@ export class ScrapingEngine {
 
 ### 5.7 海报缓存
 
-```typescript
-// src/services/scraper/poster-cache.ts
+Player 的受控图片缓存由 Rust `player_get_cached_image` / `player_cache_image` 和 Vue `CachedImage` 共同实现。图片二进制写入当前存储档案的 `cache/images`：Windows 标准模式位于本机应用缓存目录，便携模式位于 EXE 同目录 `cache/images`，Android 位于应用私有 `cache/images`。`data` 目录只保存 SQLite、密钥和需要长期一致性的结构数据，不混放可重建图片。
 
-export class PosterCache {
-  private cacheDir: string
-
-  constructor(cacheDir: string) {
-    this.cacheDir = cacheDir
-  }
-
-  async cache(url: string, tmdbId: number): Promise<string> {
-    const localPath = `${this.cacheDir}/${tmdbId}.jpg`
-
-    // 检查缓存是否存在
-    try {
-      await invoke('fs_exists', { path: localPath })
-      return localPath
-    } catch {
-      // 不存在，下载
-    }
-
-    const res = await fetch(url)
-    const buffer = await res.arrayBuffer()
-    await invoke('fs_write', { path: localPath, data: Array.from(new Uint8Array(buffer)) })
-
-    return localPath
-  }
-
-  // 获取海报 (优先本地缓存，否则返回TMDB URL)
-  getPosterUrl(record: MediaRecord): string {
-    if (record.posterPath) {
-      return `asset://localhost/${record.posterPath}`
-    }
-    return '/assets/default-poster.jpg'
-  }
-}
-```
+缓存键使用 `sourceId + itemId + artwork role` 后再 SHA-256，文件名和 sidecar 只保存不可逆 key/source hash、MIME、字节数和最近访问时间，不写原始 URL、API Key、签名参数或 Header。下载仅接受 HTTP(S)、同源且最多三次重定向、单图 8 MiB 上限及 JPEG/PNG/WebP/GIF/AVIF 魔数。图片缓存总容量默认 500 MB，用户可在“存储 / 诊断”中设置 100-4096 MB；写入和降低上限时按 LRU 清理最久未使用图片。前端以 IntersectionObserver 在接近视口时读取/填充缓存，Rust 通过临时 `data:` URL 把应用私有图片交给 WebView；这些临时内容不写入 `settings.sqlite` 展示快照。清除播放缓存会连同 `cache/images` 一并清理，但不会删除数据源、凭据、播放记录或全局设置。
 
 ### 5.8 刮削调度
 
@@ -1812,6 +1778,8 @@ OhMyCine 使用“影院之眼”作为应用主标识：深黑圆角银幕底�
 - 每个媒体库使用海报墙/横向行展示，支持进入库详情、筛选、搜索和播放。
 - 云盘类数据源可以同时展示“媒体库视图”和“文件夹视图”，但默认优先展示已刮削/已识别的媒体内容。
 - 不同数据源的页面结构统一，具体能力由 DataSource 接口返回值决定。
+- 聚合首页和单数据源根页同时使用进程内会话快照与 `settings.sqlite` 安全展示快照：首次成功加载后，返回页面立即显示最近一次内容，5 分钟内不重复请求；Android Activity/进程重建后先恢复持久化展示内容，再在后台刷新。持久化快照清空媒体 `path`，丢弃带 token、key、auth、signature、sig、expires/exp 等敏感查询参数的图片 URL，不保存凭据、认证 Header、原始播放 URL、签名 URL或本地绝对路径。海报和背景由稳定的来源/媒体身份从 `cache/images` 单独恢复，因此不需要把敏感图片 URL 写入 SQLite。修改/删除数据源、手动清理缓存和明确播放进度刷新会精确失效对应快照。
+- 应用内容实际滚动容器是 `AppLayout` 的主 `<main>`。路由切换以及媒体库内部的分类、文件夹、搜索和返回根页操作都必须复位该容器到顶部，不能只调用对当前布局无效的 `window.scrollTo()`。
 
 #### 播放器页面 (PlayerView)
 
@@ -1852,6 +1820,7 @@ PlayerView 是播放 URL 与 header 的唯一解析边界：路由先提供媒�
 - 画中画：P键
 - 全屏：F键
 - HDR/DV信息面板：I键
+- 缓冲提示：libmpv 连续报告 `paused-for-cache` 约 500ms 后，在画面中央显示“正在缓冲”和 `cache-speed` 实时速率；普通暂停不得被误判为缓冲，恢复播放后立即隐藏。
 
 #### 电影库 (MoviesView)
 
@@ -2289,7 +2258,7 @@ Android 使用相同命令协议的移动端实现：
 
 Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳简单压缩到窄屏。宽度不超过 `767px` 或粗指针环境使用固定的 `首页 / 媒体库 / 快捷 / 设置` 底部导航；媒体库选择和全局快捷操作通过底部抽屉展开，承接桌面数据源 hover 侧栏、打开本地视频、添加/管理数据源和主题切换。手机首页改为全宽英雄区与横向内容流，海报播放入口常驻；设置总览改为紧凑列表；媒体源扫描/文件入口在手机上常驻于底部导航上方，不依赖 hover。
 
-手机播放器使用独立触摸覆盖层：顶部只保留返回、标题和必要工具，画面中央放置三个主播放操作，底部使用一条紧凑时间轴与工具坞。轨道、倍速、队列和画面设置在横屏中使用受限宽度的右侧面板，在竖屏中使用底部面板；进度条使用 Pointer Events 和 pointer capture，同一实现兼容鼠标与触摸拖动。普通浏览器预览不得因无 Tauri 窗口对象而中断 Vue 挂载，以便固定使用 `390×844` 等设备尺寸进行响应式截图回归。
+手机播放器使用独立触摸覆盖层：顶部只保留返回、标题和必要工具，字幕只在右上工具区保留一个入口；画面中央常驻三个尺寸克制的主播放操作，底部使用一条低高度时间轴与工具坞，不重复放置字幕入口。轨道、倍速、队列和画面设置在横屏中使用受限宽度的右侧面板，在竖屏中使用底部面板；进度条使用 Pointer Events 和 pointer capture，同一实现兼容鼠标与触摸拖动。移动控制台继续使用 OhMyCine 液态玻璃语言，但 Android `SurfaceView` 与 WebView 分层时不能只依赖 `backdrop-filter`，还要用半透明中性色、内高光、细边缘和层叠阴影维持玻璃层次。普通浏览器预览不得因无 Tauri 窗口对象而中断 Vue 挂载，以便固定使用横屏/竖屏设备尺寸进行响应式截图回归。
 
 播放画面手势按输入类型启用，而不是按平台或窗口宽度启用：只有 `PointerEvent.pointerType === 'touch'` 会进入手势状态机，因此 Android、手机浏览器和 Surface 等触控 PC 在桌面宽度下都可使用；鼠标与触控笔继续沿用桌面点击、悬停显隐和快捷键逻辑。触摸横向滑动预览并提交快退/快进，左半屏纵向滑动调整 mpv 视频亮度，右半屏纵向滑动调整音量，单击切换控制 UI，双击切换播放/暂停。手势开始于按钮、菜单、输入框或底部控制栏时不得抢占控件操作，触摸产生的合成 click 也不得再次触发鼠标单击暂停。当前亮度是视频画面亮度，不是系统屏幕亮度；Android 原生窗口亮度接入后可替换其后端而保持相同手势协议。
 
@@ -2308,6 +2277,8 @@ Android Surface 初始化是整组播放命令的前置屏障。Kotlin 将 `Surf
 Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
 
 Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等竖屏断点作为唯一判断，因为手机横屏宽度经常超过该值。透明 WebView 中只要存在当前媒体，就必须保留覆盖整个视频面的独立触摸捕获层；该层不能因播放诊断进入 `error` 而移除。单击画面切换控制 UI，并对 Android 在短点击后产生的 `pointercancel` 保留受限兜底，不能让 SurfaceView 层吞掉控制唤出；播放加载失败或自然结束时前端必须同步退出“正在播放”状态，避免错误页继续自动隐藏控制 UI。移动控制栏提供独立方向锁图标，打开后可选择“自动横屏 / 锁定横屏 / 锁定竖屏”，锁图标反映自动或锁定状态，切换结果通过右上角短提示反馈；该状态不复用桌面全屏按钮。首页“继续观看”和“最新影片”横向媒体条只处理横向滚动，不得用纵向 overscroll containment 阻断页面上下滑动。空播放面统一只显示“等待播放中”，不展示桌面拖拽文件说明。
+
+桌面和 Android 使用同一缓冲状态协议。Vue 在媒体加载后短间隔读取 `paused-for-cache` 与 `cache-speed`；Android Kotlin 属性桥必须分别以 Boolean 和 Double 读取这两个属性。缓冲提示独立于播放控制 chrome，即使控制栏已自动隐藏也能显示；移动端显示缓冲提示时暂时淡出中央三键，避免两个中央浮层重叠。
 
 全局“播放与字幕”设置包含受控播放器引擎参数：视频输出仅允许 `gpu-next`（默认）或 `gpu`；解码策略仅允许自动安全、硬件优先或纯软件；缓存允许自动、开启、关闭和 64/128/256/512 MB 上限；同步允许以音频为准、显示重采样或显示丢帧。设置写入 Player SQLite app settings，Vue 在原生渲染初始化前和每次媒体加载前通过 `mpv_apply_engine_settings` 下发。Windows 映射到 libmpv `vo/hwdec/cache/demuxer-max-bytes/video-sync`，Android 映射到 `gpu-next/gpu`、MediaCodec/软件解码及相同缓存同步参数。不得从 UI 接受任意 mpv 参数名或自定义原始字符串。
 
@@ -2332,7 +2303,7 @@ libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由
 
 首页、设置、数据源管理和每个动态媒体源入口使用独立的导航快捷键映射。两组映射保存到 `settings.sqlite`，可在设置页捕获组合键、检测同组重复占用、清空或恢复默认；它们不得覆盖 `Space`、任一方向键和 `Escape` 等播放器固定按键。删除媒体源时同步删除该动态入口的快捷键映射。
 
-每个视频按 `sourceId + mediaIdentity` 在 `player_preferences.sqlite` 保存字幕选择、音轨、字幕偏移、播放速度、画面比例和填充模式。字幕/音轨优先使用语言、标题、编码、声道等稳定指纹恢复，数字轨道 ID 仅作兜底；本地下载字幕只保存 Player `cache/subtitles` 内的受控缓存路径，禁止保存远程字幕 URL、签名播放 URL 或 Header。删除媒体源时同步删除来源播放记录、单视频偏好和来源拥有的字幕缓存。设置页“清除播放缓存”清除媒体/扫描/字幕缓存和全部单视频偏好，但保留数据源、凭据、播放记录与全局软件设置。
+每个视频按 `sourceId + mediaIdentity` 在 `player_preferences.sqlite` 保存字幕选择、音轨、字幕偏移、播放速度、画面比例和填充模式。播放速度只属于单视频偏好，新媒体先回到 1.0x，再恢复该媒体自己的记录，不使用第二套全局倍速覆盖。字幕/音轨优先按同一媒体内的数字轨道 ID 精确恢复，ID 不可用时再使用语言、标题、编码和声道指纹；保存过程持有已加载或用户明确选择的稳定草稿，不能被启动期尚未完成的轨道快照覆盖成“字幕关闭/音轨为空”。本地下载字幕只保存 Player `cache/subtitles` 内的受控缓存路径，禁止保存远程字幕 URL、签名播放 URL 或 Header。删除媒体源时同步删除来源播放记录、单视频偏好和来源拥有的字幕缓存。设置页“清除播放缓存”清除媒体/扫描/字幕缓存和全部单视频偏好，但保留数据源、凭据、播放记录与全局软件设置。
 
 字幕/音轨菜单使用加载阶段已经缓存的轨道列表，打开菜单或选择已知轨道时只做乐观 UI 更新，不立即同步读取 libmpv 完整 `track-list`。完整轨道刷新只允许在媒体加载稳定阶段或受控后台刷新中执行，避免轨道切换期间的同步属性查询占住共享 mpv 锁，导致视频继续播放但全部控制命令失去响应。
 
@@ -2340,7 +2311,11 @@ libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由
 
 本地文件、OpenList/Alist、CloudDrive2 与 WebDAV 的 `getDetail` 在数据源边界内按需重新检查视频同目录字幕，不使用跨播放永久缓存，支持 `.srt`、`.ass`、`.ssa`、`.vtt`、`.sub`。只接受与视频文件同名，或在完整视频主文件名后追加点号、横线、下划线、空格、方括号及语言/版本后缀的字幕；例如 `Movie.zh-CN.srt` 匹配 `Movie.mkv`，`Movie2.srt` 不得误匹配。远程字幕地址按当前 DataSource 的受控流地址流程临时生成，不持久化签名 URL、Header 或凭据；单个字幕解析失败不得阻断视频详情和播放。
 
-单视频偏好恢复分为两段：倍速、字幕偏移和画面模式可立即恢复；字幕、音轨和缓存外部字幕必须等待时长/轨道元数据出现后再匹配。已知 `sid`、`aid` 切换和用户触发的 `sub-add` 使用 libmpv 同步命令并直接返回真实执行结果，但不得在这些交互后同步读取完整 `track-list`；之前的控制冻结来自轨道切换期间立即刷新完整轨道元数据，而不是这些轻量已知命令本身。禁止为短生命周期 C 字符串建立跨调用异步命令队列。用户手动选择字幕/音轨或下载字幕时取消尚未完成的旧轨道偏好恢复，避免旧选择覆盖新操作。
+单视频偏好恢复分为两段：倍速、字幕偏移和画面模式可立即恢复；字幕、音轨和缓存外部字幕必须等待播放/轨道元数据稳定后再匹配。Android 缓存外部字幕还必须明确等待当前媒体进入 `video-ready`，不能在远程流仍执行 `loadfile` 时提前调用同步 `sub-add`，否则会阻塞 Android UI 命令线程并触发输入 ANR。Android 恢复只消费 `useMpv` 在 duration/load 稳定阶段产生的轨道数组、`video-ready` 和后续响应式更新，禁止在 `PlayerView` 用短间隔循环调用原生 `mpv_track_state`；该同步调用会逐条读取完整 `track-list`，并可能与播放命令串行后卡住 Android Rust → Kotlin → libmpv 控制通道。用户选择字幕/音轨、载入或下载字幕后立即写入偏好；倍速、偏移和画面连续设置仍可短延迟合并写入，切换媒体、离开路由和卸载前必须 flush。已知 `sid`、`aid` 切换和用户触发的 `sub-add` 使用 libmpv 同步命令并直接返回真实执行结果，但不得在这些交互后同步读取完整 `track-list`。禁止为短生命周期 C 字符串建立跨调用异步命令队列。用户手动选择字幕/音轨或下载字幕时取消尚未完成的旧轨道偏好恢复，避免旧选择覆盖新操作。
+
+手机字幕搜索使用独立全屏工具页，不复用桌面居中弹窗的尺寸约束。原生 Android 通过显式 mobile layout 状态进入该页面，不依赖横屏宽度或 hover/pointer 查询；竖屏上下排列，横屏使用左侧条件栏和右侧独立结果区。页面显示本次实际参与的 OpenSubtitles、迅雷关键词和射手哈希提供器；新档案默认开启无需凭据的迅雷关键词搜索，避免 Android 没有桌面 OpenSubtitles 凭据时退化为仅哈希搜索。来源、关键词模式、语言和搜索按钮位于稳定控制区，并明确显示搜索中、结果数量、无结果、下载中和错误状态。
+
+Android Activity 使用 edge-to-edge 布局时，状态栏和导航栏前景固定使用适合深色 Cinema OS 表面的浅色图标，不跟随系统日间主题切换为黑色；普通浏览页、全屏搜索页和播放器退出后的页面都必须保持顶部时间、网络与电量信息可读。
 
 所有交给 `sub-add` 的外部字幕先由 Tauri 准备到 `cache/mpv-subtitles/<URL或路径哈希>.<ext>` 短路径运行缓存：本地字幕通过 Rust 文件 API 从受控原路径复制，兼容超过 Windows `MAX_PATH` 的 `\\?\` 规范化路径；Emby 和其他媒体源的 HTTP(S) 字幕由 Tauri 限时下载，限制重定向、响应大小和字幕扩展名。mpv 只读取短本地路径，不直接处理长路径、签名 URL 或 API Token；运行缓存文件名只保存不可逆哈希，不持久化原 URL 或凭据。
 

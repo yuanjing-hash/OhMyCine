@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
 import type { PlayerShortcutBindings } from '@/services/playerShortcuts'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import GlobalSearchWorkspace from '@/components/media/GlobalSearchWorkspace.vue'
+import { APP_SCROLL_TO_TOP_EVENT } from '@/services/appScroll'
 import { loadNavigationShortcutBindings, NAVIGATION_SHORTCUTS_CHANGED_EVENT, navigationShortcutTargetForEvent, shouldIgnoreNavigationShortcut } from '@/services/navigationShortcuts'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
+import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 import BackButton from './BackButton.vue'
 import DataSourceSidebar from './DataSourceSidebar.vue'
 import FloatingControls from './FloatingControls.vue'
@@ -20,6 +23,17 @@ const isPlayerRoute = computed(() => route.name === 'player')
 const isNativeAndroid = isNativeAndroidRuntime()
 const navigationShortcuts = ref<NavigationShortcutBindings>(loadNavigationShortcutBindings())
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
+const mainScrollRef = ref<HTMLElement | null>(null)
+const searchWorkspace = useSearchWorkspaceStore()
+let pullStartY: number | null = null
+let pullTriggered = false
+
+async function scrollContentToTop() {
+  await nextTick()
+  window.requestAnimationFrame(() => {
+    mainScrollRef.value?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  })
+}
 
 function reloadNavigationShortcuts() {
   navigationShortcuts.value = loadNavigationShortcutBindings()
@@ -27,6 +41,30 @@ function reloadNavigationShortcuts() {
 
 function reloadPlayerShortcuts() {
   playerShortcuts.value = loadPlayerShortcutBindings()
+}
+
+function handleMainTouchStart(event: TouchEvent) {
+  if (route.name !== 'home' || (mainScrollRef.value?.scrollTop ?? 0) > 1 || event.touches.length !== 1) {
+    pullStartY = null
+    return
+  }
+  pullStartY = event.touches[0]?.clientY ?? null
+  pullTriggered = false
+}
+
+function handleMainTouchMove(event: TouchEvent) {
+  if (pullStartY == null || pullTriggered || event.touches.length !== 1)
+    return
+  const distance = (event.touches[0]?.clientY ?? pullStartY) - pullStartY
+  if (distance < 72)
+    return
+  pullTriggered = true
+  searchWorkspace.show()
+}
+
+function handleMainTouchEnd() {
+  pullStartY = null
+  pullTriggered = false
 }
 
 function handleNavigationShortcut(event: KeyboardEvent) {
@@ -65,13 +103,17 @@ onMounted(() => {
   window.addEventListener('keydown', handleNavigationShortcut)
   window.addEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
   window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  window.addEventListener(APP_SCROLL_TO_TOP_EVENT, scrollContentToTop)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleNavigationShortcut)
   window.removeEventListener(NAVIGATION_SHORTCUTS_CHANGED_EVENT, reloadNavigationShortcuts)
   window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
+  window.removeEventListener(APP_SCROLL_TO_TOP_EVENT, scrollContentToTop)
 })
+
+watch(() => route.fullPath, scrollContentToTop, { flush: 'post' })
 </script>
 
 <template>
@@ -80,7 +122,14 @@ onBeforeUnmount(() => {
     :class="isPlayerRoute ? 'app-window--player' : 'app-window--cinema'"
   >
     <!-- Content fills the full area -->
-    <main class="cinema-scrollbar absolute inset-0 z-0 overflow-auto">
+    <main
+      ref="mainScrollRef"
+      class="cinema-scrollbar absolute inset-0 z-0 overflow-auto"
+      @touchstart.passive="handleMainTouchStart"
+      @touchmove.passive="handleMainTouchMove"
+      @touchend.passive="handleMainTouchEnd"
+      @touchcancel.passive="handleMainTouchEnd"
+    >
       <slot />
     </main>
 
@@ -98,6 +147,8 @@ onBeforeUnmount(() => {
 
     <!-- Bottom-right floating controls (player + theme) -->
     <FloatingControls v-if="!isNativeAndroid" />
+
+    <GlobalSearchWorkspace v-if="!isPlayerRoute" />
   </div>
 </template>
 

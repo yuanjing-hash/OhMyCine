@@ -163,6 +163,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 能拖拽文件到播放页视频区域或通过右下角悬浮播放按钮选择本地视频并交给 libmpv 后端加载；Windows 宿主已验证可透过透明 Tauri/WebView 叠层看到 mpv 视频底层窗口画面
 - [x] libmpv 渲染在窗口内部，沉浸式体验（Windows MVP 已通过 `wid` + `vo=gpu-next` + 透明 Tauri/WebView 叠层完成；Android ARM64 已接入 `SurfaceView` + `gpu-next` 并通过构建/产物验证，待真机播放确认；Linux/macOS 仍显示 unsupported）
 - [x] 基础播放控制 (播放/暂停/进度/音量；控制层已改为 Cinema OS/liquid-glass 并支持静止自动隐藏，Windows 宿主已验证叠层控件可见且可点击)
+- [x] 播放缓冲状态 (桌面与 Android 统一读取 libmpv `paused-for-cache` / `cache-speed`，延迟显示中央缓冲提示与实时速率)
 
 ### Sprint 1.2: DataSource 抽象层 (Week 5-6)
 
@@ -187,7 +188,7 @@ Phase 4: 生态系统           ████████████████
 - [x] `getAllSources()` / `getSource(id)`
 - [x] `getOrderedSources()` — 按绑定配置顺序返回侧栏数据源
 - [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据（已接 Emby，更多源待扩展）
-- [x] `searchAll()` — 跨数据源并发搜索（首页 Hero 顶部沉浸式入口，按源并发、故障隔离、`sourceId + itemId` 去重和结果上限）
+- [x] `searchAll()` — 跨数据源并发搜索（桌面 `首页 / 搜索 / 设置` 顶部入口展开液态玻璃工作台，手机首页顶部下拉打开全屏工作台；支持搜索前馆藏建议、按来源/媒体库/类型筛选、按源并发、故障隔离、`sourceId + itemId` 去重和结果上限）
 - [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出（已能导出已实例化安全配置，完整文件导入导出待后续）
 - [x] `createDataSource(type)` — 工厂方法（当前实现 Emby、OpenList/Alist、CloudDrive2、本地文件；其他类型保留扩展）
 
@@ -295,7 +296,7 @@ Phase 4: 生态系统           ████████████████
 #### 原始文件源本地刮削与海报墙
 
 - [~] 通用刮削分类规则配置（默认实例来自 MP 风格思路，但用户通过受控设置页编辑；分类只作为本地逻辑分组，不要求固定 `movie` / `tv` / `Movies` / `TV` 顶层目录，不写回 OpenList/Alist）
-- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；WebDAV 已纳入 Tauri SQLite raw scan cache 白名单；Emby/Jellyfin 不进入 Player 原始文件扫描调度；图片二进制缓存待后续）
+- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；WebDAV 已纳入 Tauri SQLite raw scan cache 白名单；Emby/Jellyfin 不进入 Player 原始文件扫描调度；首页/搜索/Hero/海报卡片已接入受控 `cache/images` 二进制缓存）
 - [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具并接入递归扫描；首次进入无缓存媒体库时显示索引进度/状态，不再用空媒体库误导）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
 - [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；无年份自动匹配优先精确标题，避免基础片名被包含匹配/热度误导到续集；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
@@ -304,14 +305,14 @@ Phase 4: 生态系统           ████████████████
 #### 播放器增强
 
 - [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
-- [~] 播放中字幕搜索（已实现 Emby 搜索/Player 本机搜索显式二选一、所有 DataSource 可进入本机搜索、媒体名称/原始文件名/无媒体 ID 限制的自定义关键词三选一、Emby 远程字幕 API、OpenSubtitles REST API Key 与 XML-RPC 账号/匿名兼容模式、现代邮箱账号 401 自动回退、射手网四段 MD5、迅雷 CID、本地文件直接哈希、远程播放流受限 Range 哈希、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；待真实账号、远程媒体和字幕结果实机验证）
+- [~] 播放中字幕搜索（已实现 Emby 搜索/Player 本机搜索显式二选一、所有 DataSource 可进入本机搜索、媒体名称/原始文件名/无媒体 ID 限制的自定义关键词三选一、Emby 远程字幕 API、OpenSubtitles REST API Key 与 XML-RPC 账号/匿名兼容模式、现代邮箱账号 401 自动回退、射手网四段 MD5、默认启用的迅雷名称搜索与可选 CID、本地文件直接哈希、远程播放流受限 Range 哈希、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；原生手机使用显式全屏布局，横屏左右分栏并展示本次实际参与的提供器；待真实账号、远程媒体和字幕结果继续实机验证）
 - [x] 播放中字幕偏移（字幕菜单内即时控制 mpv `sub-delay`，支持提前/延后 30 秒、0.1 秒滑动、0.5 秒步进和重置，并按 source/media 保存恢复）
 - [~] 签名自动更新（Windows 已实现启动/手动检测、Beta/正式渠道、minisign、标准/便携 NSIS；Android 已实现固定 preview 签名、Release APK + SHA-256 受控下载、FileProvider 和系统安装确认；待 Android 从固定签名版本开始验证连续覆盖升级）
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
 - [x] 播放队列面板（已内联在播放控制条并支持上一集/下一集；后续如需复用再拆独立 `PlaylistPanel.vue`）
 - [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）
 - [x] 媒体源删除生命周期（删除配置后按 `sourceId` 清理本机播放历史、单视频播放偏好、来源字幕缓存、动态导航快捷键，并按 source/root 清理原始文件扫描缓存，不影响其他来源）
-- [x] 单视频播放偏好与缓存管理（按 `sourceId + mediaIdentity` 保存字幕/音轨指纹、字幕偏移、倍速、画面比例和填充模式；设置页可清除媒体/扫描/字幕缓存和全部单视频偏好，同时保留数据源、凭据、播放记录和全局软件设置）
+- [x] 单视频播放偏好与缓存管理（按 `sourceId + mediaIdentity` 保存字幕/音轨稳定草稿、字幕偏移、单视频倍速、画面比例和填充模式；同媒体优先精确轨道 ID，启动期临时轨道状态不能覆盖用户选择；设置页可清除媒体/扫描/字幕缓存和全部单视频偏好，同时保留数据源、凭据、播放记录和全局软件设置）
 - [x] 安全播放上下文（Home、详情页、数据源页和队列只把媒体身份写入路由，播放 URL/header 与本地绝对路径仅在 PlayerView 即时解析或短生命周期内存中使用）
 - [x] 继续观看功能（本机历史 + provider 原生继续观看聚合，Emby 进度同步后首页刷新）
 - [x] 右键播放菜单 + 播放详情 stats 浮层（紧凑用户菜单、播放详情浮层、HDR/SDR/杜比视界动态范围展示；诊断入口不暴露给普通用户）
@@ -818,7 +819,7 @@ Phase 4: 生态系统           ████████████████
 
 #### 整体优化
 
-- [ ] 性能优化 (虚拟滚动/懒加载/缓存)
+- [~] 性能优化 (首页/数据源根页已接入 5 分钟会话快照与保留旧内容的后台刷新；海报/背景使用应用私有 `cache/images`、IntersectionObserver 懒加载和默认 500 MB 可配置 LRU 上限；虚拟滚动和更细粒度列表分页待后续)
 - [ ] 错误处理完善 (统一错误边界)
 - [ ] 日志系统增强 (结构化日志/日志轮转)
 - [ ] 国际化完善 (中英文完整翻译)
@@ -871,11 +872,11 @@ Phase 4: 生态系统           ████████████████
 
 - [x] Tauri Android 构建配置（已生成 Android Studio 工程并通过 ARM64 debug APK 预览构建）
 - [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令；已补 Surface 延迟就绪屏障、待播请求、初始化错误回传、自动横屏沉浸模式和触摸优先控制布局，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待复验，其他 ABI 与可复现自建 runtime 后续完成）
-- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、竖屏播放器控制重排、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；真机系统交互与授权撤销恢复仍待复验）
+- [~] 移动端 UI 适配（已完成独立手机外壳、统一规格底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、紧凑液态玻璃播放控制、首页下拉全屏聚合搜索、全屏字幕搜索、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；首页/来源展示快照进入 SQLite 并在进程重建后先恢复再后台刷新，海报写入应用私有 `cache/images`；单视频音轨/字幕偏好只通过现有稳定阶段轨道刷新恢复，缓存外部字幕等待 `video-ready` 后加载，禁止 PlayerView 高频原生轨道轮询；真机系统交互与授权撤销恢复仍待复验）
   - [~] 触摸手势（已完成横向快退/快进、左侧亮度、右侧音量、单击控制 UI、双击暂停、左右半屏静止长按复用方向键连续后退/临时倍速，并按触摸输入兼容 Surface 等触控 PC；捏合手势和 Android 原生屏幕亮度仍待完成）
   - [x] 底部导航栏与媒体库/快捷抽屉
   - [x] 替换手机端 hover-only 全局与媒体操作
-  - [~] 横屏播放（控制条具备窄屏重排，Android 横屏原生渲染与系统栏避让待完成）
+  - [~] 横屏播放（已完成顶部工具、中央小型三键、低高度底部时间轴/工具坞和横竖屏面板重排；Android 原生渲染与系统栏避让仍待真机复验）
   - [~] 安全区域适配（应用外壳底部已接入 `safe-area`，播放器横屏和系统栏避让待 Android 实机完成）
   - [ ] 平板与多窗口适配（按 compact / medium / expanded 实时窗口宽度切换，覆盖横竖屏、左右分屏、桌面模式与折叠屏窗口变化）
 - [ ] 性能优化 (启动时间/内存/渲染)

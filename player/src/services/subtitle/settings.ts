@@ -18,7 +18,7 @@ const DEFAULT_SETTINGS: SubtitleSearchSettings = {
   defaultLanguage: 'zh-CN',
   openSubtitlesEnabled: true,
   shooterEnabled: true,
-  xunleiEnabled: false,
+  xunleiEnabled: true,
 }
 
 export function loadSubtitleSearchSettings(): SubtitleSearchSettings {
@@ -31,7 +31,7 @@ export function loadSubtitleSearchSettings(): SubtitleSearchSettings {
       defaultLanguage: isSubtitleLanguage(value.defaultLanguage) ? value.defaultLanguage : DEFAULT_SETTINGS.defaultLanguage,
       openSubtitlesEnabled: value.openSubtitlesEnabled !== false,
       shooterEnabled: value.shooterEnabled !== false,
-      xunleiEnabled: value.xunleiEnabled === true,
+      xunleiEnabled: value.xunleiEnabled !== false,
     }
   }
   catch {

@@ -1,9 +1,9 @@
-import type { DataSource, DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { RawFileSourceType } from '@/services/scraper/types'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { getAppSetting, setAppSetting } from '@/services/appSettings'
+import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSettings'
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
@@ -12,14 +12,37 @@ import { deletePlaybackHistoryForSource, listLocalContinueWatching, toContinueWa
 import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 
 const STORAGE_KEY = 'ohmycine-datasources'
+const DISPLAY_CACHE_KEY = 'ohmycine-media-display-cache-v1'
+const HOME_CACHE_TTL_MS = 5 * 60 * 1000
+const SOURCE_ROOT_CACHE_TTL_MS = 5 * 60 * 1000
+
+export interface SourceRootSnapshot {
+  libraries: MediaLibrary[]
+  homeSections: HomeSection[]
+  updatedAt: number
+}
+
+export interface LoadHomeSectionsOptions {
+  force?: boolean
+  background?: boolean
+}
+
+interface PersistedDisplayCache {
+  homeSections: HomeSection[]
+  homeLoadedAt: number
+  sourceRootSnapshots: Record<string, SourceRootSnapshot>
+}
 
 export const useDataSourceStore = defineStore('datasource', () => {
   const configs = ref<DataSourceConfig[]>([])
   const activeSourceId = ref<string | null>(null)
   const homeSections = ref<HomeSection[]>([])
+  const homeLoadedAt = ref(0)
+  const sourceRootSnapshots = ref<Record<string, SourceRootSnapshot>>({})
   const isLoading = ref(false)
   const lastError = ref<string | null>(null)
   let homeLoadId = 0
+  let displayCacheHydrated = false
 
   const orderedConfigs = computed(() =>
     [...configs.value].sort((a, b) => a.order - b.order),
@@ -30,6 +53,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   )
 
   function loadConfigs() {
+    hydrateDisplayCache()
     try {
       const raw = getAppSetting(STORAGE_KEY)
       if (raw)
@@ -63,6 +87,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       }
       await saveConfigs()
       await syncManager()
+      invalidateSourceRootSnapshot(safeConfig.id)
+      invalidateHomeCache()
     }
     catch (error) {
       configs.value = previousConfigs
@@ -89,6 +115,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       configs.value.push(sanitizePersistedConfig({ ...config, id, order }))
       await saveConfigs()
       await syncManager()
+      invalidateSourceRootSnapshot(id)
+      invalidateHomeCache()
     }
     catch (error) {
       configs.value = previousConfigs
@@ -107,6 +135,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       configs.value[idx] = sanitizePersistedConfig({ ...configs.value[idx], ...patch })
       await saveConfigs()
       await syncManager()
+      invalidateSourceRootSnapshot(id)
+      invalidateHomeCache()
     }
     catch (error) {
       configs.value = previousConfigs
@@ -129,6 +159,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       throw error
     }
     dataSourceManager.removeSource(id)
+    invalidateSourceRootSnapshot(id)
+    invalidateHomeCache()
     homeLoadId++
     isLoading.value = false
     if (activeSourceId.value === id)
@@ -140,6 +172,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
         items: section.items.filter(item => item.sourceId !== id),
       }))
       .filter(section => section.items.length > 0)
+    void persistDisplayCache()
 
     const cleanupTasks: Promise<unknown>[] = [
       deletePlaybackHistoryForSource(id),
@@ -162,6 +195,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   async function clearSourceCache(id: string) {
     await syncManager()
     dataSourceManager.clearSourceCache(id)
+    invalidateSourceRootSnapshot(id)
+    invalidateHomeCache()
     homeSections.value = homeSections.value.filter(section => section.sourceId !== id)
   }
 
@@ -170,6 +205,9 @@ export const useDataSourceStore = defineStore('datasource', () => {
     dataSourceManager.clearAllSourceCaches()
     homeLoadId++
     homeSections.value = []
+    homeLoadedAt.value = 0
+    sourceRootSnapshots.value = {}
+    await removeAppSetting(DISPLAY_CACHE_KEY)
     return clearPlayerMediaCache()
   }
 
@@ -184,11 +222,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
       })
       .filter((c): c is DataSourceConfig => c != null)
     await saveConfigs()
+    invalidateHomeCache()
   }
 
-  async function loadHomeSections() {
+  async function loadHomeSections(options: LoadHomeSectionsOptions = {}) {
+    const hasCachedContent = homeSections.value.length > 0
+    const cacheIsFresh = homeLoadedAt.value > 0 && hasCachedContent && Date.now() - homeLoadedAt.value < HOME_CACHE_TTL_MS
+    if (!options.force && cacheIsFresh)
+      return
+
     const loadId = ++homeLoadId
-    isLoading.value = true
+    const showLoading = !options.background && !hasCachedContent
+    if (showLoading)
+      isLoading.value = true
     try {
       await syncManager().catch(() => undefined)
       const [sections, localContinueEntries] = await Promise.all([
@@ -216,6 +262,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
             },
             continueSection,
           ]
+      homeLoadedAt.value = Date.now()
+      void persistDisplayCache()
     }
     finally {
       if (loadId === homeLoadId)
@@ -223,9 +271,79 @@ export const useDataSourceStore = defineStore('datasource', () => {
     }
   }
 
-  async function searchAllSources(keyword: string, limit = 60): Promise<MediaItem[]> {
+  function getSourceRootSnapshot(id: string): SourceRootSnapshot | null {
+    return sourceRootSnapshots.value[id] ?? null
+  }
+
+  function isSourceRootSnapshotFresh(id: string): boolean {
+    const snapshot = getSourceRootSnapshot(id)
+    return snapshot != null && Date.now() - snapshot.updatedAt < SOURCE_ROOT_CACHE_TTL_MS
+  }
+
+  function setSourceRootSnapshot(id: string, snapshot: Omit<SourceRootSnapshot, 'updatedAt'>) {
+    sourceRootSnapshots.value = {
+      ...sourceRootSnapshots.value,
+      [id]: {
+        libraries: snapshot.libraries,
+        homeSections: snapshot.homeSections,
+        updatedAt: Date.now(),
+      },
+    }
+    void persistDisplayCache()
+  }
+
+  function invalidateSourceRootSnapshot(id: string) {
+    if (!sourceRootSnapshots.value[id])
+      return
+    const next = { ...sourceRootSnapshots.value }
+    delete next[id]
+    sourceRootSnapshots.value = next
+    void persistDisplayCache()
+  }
+
+  function invalidateHomeCache() {
+    homeLoadedAt.value = 0
+    void persistDisplayCache()
+  }
+
+  async function searchAllSources(keyword: string, limit = 60, sourceIds?: readonly string[]): Promise<MediaItem[]> {
     await syncManager()
-    return dataSourceManager.searchAcrossSources(orderedConfigs.value, keyword, { limit })
+    return dataSourceManager.searchAcrossSources(orderedConfigs.value, keyword, { limit, sourceIds })
+  }
+
+  function hydrateDisplayCache() {
+    if (displayCacheHydrated)
+      return
+    displayCacheHydrated = true
+    const raw = getAppSetting(DISPLAY_CACHE_KEY)
+    if (!raw)
+      return
+    try {
+      const cache = sanitizePersistedDisplayCache(JSON.parse(raw) as unknown)
+      homeSections.value = cache.homeSections
+      homeLoadedAt.value = cache.homeLoadedAt
+      sourceRootSnapshots.value = cache.sourceRootSnapshots
+    }
+    catch {
+      homeSections.value = []
+      homeLoadedAt.value = 0
+      sourceRootSnapshots.value = {}
+    }
+  }
+
+  async function persistDisplayCache() {
+    const cache: PersistedDisplayCache = {
+      homeSections: homeSections.value.map(sanitizeDisplayHomeSection),
+      homeLoadedAt: homeLoadedAt.value,
+      sourceRootSnapshots: Object.fromEntries(
+        Object.entries(sourceRootSnapshots.value).map(([sourceId, snapshot]) => [sourceId, {
+          libraries: snapshot.libraries.map(sanitizeDisplayLibrary),
+          homeSections: snapshot.homeSections.map(sanitizeDisplayHomeSection),
+          updatedAt: snapshot.updatedAt,
+        }]),
+      ),
+    }
+    await setAppSetting(DISPLAY_CACHE_KEY, JSON.stringify(cache))
   }
 
   async function enrichLocalContinueWatchingItems(items: readonly MediaItem[]): Promise<MediaItem[]> {
@@ -268,6 +386,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     activeSourceId,
     activeSource,
     homeSections,
+    homeLoadedAt,
     isLoading,
     lastError,
     loadConfigs,
@@ -279,11 +398,158 @@ export const useDataSourceStore = defineStore('datasource', () => {
     clearAllMediaCaches,
     reorderConfigs,
     loadHomeSections,
+    getSourceRootSnapshot,
+    isSourceRootSnapshotFresh,
+    setSourceRootSnapshot,
+    invalidateSourceRootSnapshot,
+    invalidateHomeCache,
     searchAllSources,
     getSource,
     syncManager,
   }
 })
+
+function sanitizePersistedDisplayCache(value: unknown): PersistedDisplayCache {
+  if (!isRecord(value))
+    return { homeSections: [], homeLoadedAt: 0, sourceRootSnapshots: {} }
+
+  const homeSections = Array.isArray(value.homeSections)
+    ? value.homeSections.map(sanitizeDisplayHomeSection).filter(section => section.items.length > 0)
+    : []
+  const sourceRootSnapshots = isRecord(value.sourceRootSnapshots)
+    ? Object.fromEntries(
+        Object.entries(value.sourceRootSnapshots).flatMap(([sourceId, snapshot]) => {
+          if (!isRecord(snapshot))
+            return []
+          return [[sourceId, {
+            libraries: Array.isArray(snapshot.libraries) ? snapshot.libraries.map(sanitizeDisplayLibrary) : [],
+            homeSections: Array.isArray(snapshot.homeSections)
+              ? snapshot.homeSections.map(sanitizeDisplayHomeSection).filter(section => section.items.length > 0)
+              : [],
+            updatedAt: 0,
+          }] as const]
+        }),
+      )
+    : {}
+
+  return {
+    homeSections,
+    homeLoadedAt: homeSections.length > 0 ? 0 : safeTimestamp(value.homeLoadedAt),
+    sourceRootSnapshots,
+  }
+}
+
+function sanitizeDisplayHomeSection(value: unknown): HomeSection {
+  const section = isRecord(value) ? value : {}
+  const type = ['hero', 'continueWatching', 'recentlyAdded', 'recommended', 'libraryRow'].includes(String(section.type))
+    ? section.type as HomeSection['type']
+    : 'libraryRow'
+  return {
+    id: safeText(section.id, `cached-${type}`),
+    sourceId: optionalText(section.sourceId),
+    title: safeText(section.title, '媒体'),
+    type,
+    items: Array.isArray(section.items) ? section.items.map(sanitizeDisplayMediaItem) : [],
+  }
+}
+
+function sanitizeDisplayMediaItem(value: unknown): MediaItem {
+  const item = isRecord(value) ? value : {}
+  const type = ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(String(item.type))
+    ? item.type as MediaItem['type']
+    : 'file'
+  return {
+    id: safeText(item.id, 'cached-item'),
+    sourceId: safeText(item.sourceId, 'unknown'),
+    libraryId: optionalText(item.libraryId),
+    name: safeText(item.name, '未命名媒体'),
+    originalTitle: optionalText(item.originalTitle),
+    titleLogoUrl: sanitizeDisplayUrl(item.titleLogoUrl),
+    type,
+    posterUrl: sanitizeDisplayUrl(item.posterUrl),
+    backdropUrl: sanitizeDisplayUrl(item.backdropUrl),
+    year: optionalNumber(item.year),
+    rating: optionalNumber(item.rating),
+    overview: optionalText(item.overview),
+    tagline: optionalText(item.tagline),
+    duration: optionalNumber(item.duration),
+    size: optionalNumber(item.size),
+    modified: optionalText(item.modified),
+    path: '',
+    resumePosition: optionalNumber(item.resumePosition),
+    progress: optionalNumber(item.progress),
+    progressSource: item.progressSource === 'local' ? 'local' : undefined,
+    seriesName: optionalText(item.seriesName),
+    seasonNumber: optionalNumber(item.seasonNumber),
+    episodeNumber: optionalNumber(item.episodeNumber),
+  }
+}
+
+function sanitizeDisplayLibrary(value: unknown): MediaLibrary {
+  const library = isRecord(value) ? value : {}
+  const type = ['movies', 'series', 'anime', 'music', 'mixed', 'folders'].includes(String(library.type))
+    ? library.type as MediaLibrary['type']
+    : 'mixed'
+  return {
+    id: safeText(library.id, 'cached-library'),
+    sourceId: safeText(library.sourceId, 'unknown'),
+    name: safeText(library.name, '媒体库'),
+    type,
+    posterUrl: sanitizeDisplayUrl(library.posterUrl),
+    backdropUrl: sanitizeDisplayUrl(library.backdropUrl),
+    itemCount: optionalNumber(library.itemCount),
+  }
+}
+
+function sanitizeDisplayUrl(value: unknown): string | undefined {
+  const text = optionalText(value)
+  if (!text)
+    return undefined
+  try {
+    const url = new URL(text)
+    if (!['http:', 'https:'].includes(url.protocol))
+      return undefined
+    for (const key of url.searchParams.keys()) {
+      if (isSensitiveUrlKey(key))
+        return undefined
+    }
+    return url.toString()
+  }
+  catch {
+    return undefined
+  }
+}
+
+function isSensitiveUrlKey(key: string): boolean {
+  const normalized = key.toLowerCase()
+  return normalized.includes('token')
+    || normalized.includes('key')
+    || normalized.includes('auth')
+    || normalized.includes('signature')
+    || normalized === 'sig'
+    || normalized === 'expires'
+    || normalized === 'exp'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function safeText(value: unknown, fallback: string): string {
+  return optionalText(value) ?? fallback
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function safeTimestamp(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
 
 const RAW_FILE_SOURCE_TYPES = new Set<RawFileSourceType>(['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'])
 

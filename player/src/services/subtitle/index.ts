@@ -11,6 +11,25 @@ const providers: Record<'opensubtitles' | 'shooter' | 'xunlei', SubtitleProvider
   xunlei: new HashSubtitleProvider('xunlei', '迅雷字幕'),
 }
 
+export async function describeLocalSubtitleSearchProviders(input: Pick<LocalSubtitleSearchInput, 'localFilePath' | 'remoteMediaUrl'>): Promise<string> {
+  const settings = loadSubtitleSearchSettings()
+  const credential = await readOpenSubtitlesCredentials()
+  const canUseHashProviders = Boolean(input.localFilePath || input.remoteMediaUrl)
+  const active = [
+    settings.openSubtitlesEnabled && credential ? 'OpenSubtitles 关键词' : null,
+    settings.xunleiEnabled ? '迅雷关键词' : null,
+    settings.shooterEnabled && canUseHashProviders ? '射手哈希' : null,
+  ].filter((name): name is string => Boolean(name))
+  const unavailable = [
+    settings.openSubtitlesEnabled && !credential ? 'OpenSubtitles 未配置' : null,
+    settings.shooterEnabled && !canUseHashProviders ? '当前媒体无法进行射手哈希' : null,
+  ].filter((name): name is string => Boolean(name))
+
+  if (active.length === 0)
+    return unavailable.join(' · ') || '没有启用可用的本地字幕提供器'
+  return `本次查询：${active.join('、')}${unavailable.length ? ` · ${unavailable.join(' · ')}` : ''}`
+}
+
 export async function searchLocalSubtitles(input: LocalSubtitleSearchInput): Promise<SubtitleSearchResult[]> {
   const settings = loadSubtitleSearchSettings()
   const openSubtitlesCredential = await readOpenSubtitlesCredentials()

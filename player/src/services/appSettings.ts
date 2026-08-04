@@ -30,6 +30,8 @@ const MIGRATABLE_EXACT_KEYS = new Set([
   'ohmycine-navigation-shortcuts-v1',
   'ohmycine-player-shortcuts-v1',
   'ohmycine-updater-settings-v1',
+  'ohmycine-media-display-cache-v1',
+  'ohmycine-image-cache-settings-v1',
   'ohmycine-scrape-classification-rules',
   'ohmycine:persistent-credentials-unavailable',
 ])

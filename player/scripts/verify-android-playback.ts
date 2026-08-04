@@ -121,6 +121,8 @@ assert.match(surfaceHost, /MPVLib\.MpvEvent\.END_FILE/)
 assert.match(surfaceHost, /sanitizeDiagnosticLine/)
 assert.match(surfaceHost, /MpvPlaybackDiagnostics/)
 assert.match(surfaceHost, /playbackTransport = if \(request\.path\.startsWith\("http:\/\/127\.0\.0\.1:"\)\) "rust-loopback" else "direct"/)
+assert.match(surfaceHost, /"pause", "paused-for-cache"/)
+assert.match(surfaceHost, /"brightness", "sub-delay", "cache-speed"/)
 
 assert.match(rustPlugin, /playback_transport: String/)
 assert.match(useMpv, /playbackTransport: string/)

@@ -51,6 +51,19 @@ assert.match(playerView, /ref="bottomChromeRef"[\s\S]*data-player-click-ignore/)
 assert.match(playerView, /addExternalSubtitle\(track\.url, track\.title \?\? result\.title, track\.language, 'provider'\)/)
 assert.match(playerView, /addExternalSubtitle\(downloaded\.path, downloaded\.title, downloaded\.language, 'downloaded'\)/)
 assert.match(playerView, /function cancelPendingTrackPreferenceRestore\(\)/)
+assert.doesNotMatch(playerView, /TRACK_PREFERENCE_RETRY_LIMIT/)
+assert.doesNotMatch(playerView, /scheduleTrackPreferenceRestoreRetry/)
+assert.doesNotMatch(playerView, /refreshTrackState/)
+assert.match(playerView, /subtitle\.kind === 'cachedExternal'[\s\S]*isNativeAndroidPlayer && !videoReady\.value/)
+assert.match(playerView, /watch\(\[audioTracks, subtitleTracks, videoReady\],[\s\S]*restorePendingTrackPreference\(\)/)
+assert.match(playerView, /async function saveMediaPreferenceNow/)
+assert.match(playerView, /persistedSubtitlePreference/)
+assert.match(playerView, /persistedAudioPreference/)
+assert.match(playerView, /trackStateReady\.value/)
+assert.match(playerView, /preference\.trackId != null[\s\S]*numericTrackId\(track\) === preference\.trackId/)
+assert.match(playerView, /async function handleSetSubtitle[\s\S]*await saveMediaPreferenceNow\(undefined, true\)/)
+assert.match(playerView, /async function handleSetAudio[\s\S]*await saveMediaPreferenceNow\(undefined, true\)/)
+assert.match(playerView, /async function handleSetPlaybackSpeed[\s\S]*await saveMediaPreferenceNow\(undefined, true\)/)
 assert.match(playerView, /async function handleSetSubtitle[\s\S]*cancelPendingTrackPreferenceRestore\(\)/)
 assert.match(playerView, /async function loadLocalSubtitleFile\(\)/)
 assert.match(playerView, /importLocalSubtitle\(selected, cacheOwner\)/)
@@ -87,6 +100,10 @@ assert.doesNotMatch(
   /await refreshTrackState\(\)/,
   'media load must not synchronously query track-list before duration metadata is ready',
 )
+assert.match(mpvComposable, /const trackStateReady = ref\(false\)/)
+assert.match(mpvComposable, /playbackSpeed\.value = DEFAULT_PLAYBACK_SPEED/)
+assert.doesNotMatch(mpvComposable, /player_get_playback_speed_preference/)
+assert.doesNotMatch(mpvComposable, /player_set_playback_speed_preference/)
 
 const nativePlayer = await source('../src-tauri/src/mpv/player.rs')
 assert.doesNotMatch(nativePlayer, /mpv_command_async/)
@@ -194,6 +211,12 @@ console.log(JSON.stringify({
   externalSubtitlesUseShortRuntimeCache: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
   trackRestoreWaitsForMetadata: true,
+  androidExternalSubtitleRestoreWaitsForVideoReady: true,
+  trackRestoreUsesExistingMetadataEvents: true,
+  noRepeatedNativeTrackPolling: true,
+  immediateTrackPreferencePersistence: true,
+  stableTrackPreferenceDrafts: true,
+  playbackSpeedIsPerMedia: true,
   cacheClearPreservesGlobalState: true,
   customizableNavigationShortcuts: true,
   customizablePlayerShortcuts: true,
