@@ -371,6 +371,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     background: rgba(255, 255, 255, 0.075);
   }
 
+  :global(html[data-theme="light"]) .mobile-bottom-nav {
+    border-color: rgba(26, 26, 46, 0.12);
+    background: rgba(248, 249, 253, 0.94);
+    box-shadow: 0 18px 44px rgba(35, 39, 61, 0.18), inset 0 1px rgba(255, 255, 255, 0.9);
+  }
+
+  :global(html[data-theme="light"]) .mobile-nav-item {
+    color: var(--color-text-tertiary);
+  }
+
+  :global(html[data-theme="light"]) .mobile-nav-item.is-active {
+    color: var(--color-text);
+    background: rgba(26, 26, 46, 0.07);
+  }
+
   .mobile-nav-item.is-active::before {
     background: var(--color-primary);
   }

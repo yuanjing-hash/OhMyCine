@@ -2,6 +2,8 @@ import { getAppSetting, setAppSetting } from '@/services/appSettings'
 
 export interface PlayerInteractionSettings {
   longPressPlaybackSpeed: number
+  mobileEpisodeLayout: MobileEpisodeLayout
+  androidBackgroundPlaybackEnabled: boolean
   videoOutput: PlayerVideoOutput
   hardwareDecoder: PlayerHardwareDecoder
   cacheMode: PlayerCacheMode
@@ -14,12 +16,15 @@ export type PlayerHardwareDecoder = 'auto-safe' | 'auto' | 'software'
 export type PlayerCacheMode = 'auto' | 'enabled' | 'disabled'
 export type PlayerDemuxerCacheSize = 64 | 128 | 256 | 512
 export type PlayerVideoSync = 'audio' | 'display-resample' | 'display-vdrop'
+export type MobileEpisodeLayout = 'vertical' | 'horizontal'
 
 export const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
 
 const STORAGE_KEY = 'ohmycine-player-interaction-settings-v1'
 const DEFAULT_SETTINGS: PlayerInteractionSettings = {
   longPressPlaybackSpeed: 2,
+  mobileEpisodeLayout: 'horizontal',
+  androidBackgroundPlaybackEnabled: true,
   videoOutput: 'gpu-next',
   hardwareDecoder: 'auto-safe',
   cacheMode: 'auto',
@@ -45,9 +50,11 @@ export async function savePlayerInteractionSettings(settings: PlayerInteractionS
   await setAppSetting(STORAGE_KEY, JSON.stringify(normalizePlayerInteractionSettings(settings)))
 }
 
-export function normalizePlayerInteractionSettings(settings: Partial<PlayerInteractionSettings>): PlayerInteractionSettings {
+export function normalizePlayerInteractionSettings(settings: Partial<PlayerInteractionSettings> & { mobileQueueLayout?: MobileEpisodeLayout }): PlayerInteractionSettings {
   return {
     longPressPlaybackSpeed: normalizeLongPressPlaybackSpeed(settings.longPressPlaybackSpeed),
+    mobileEpisodeLayout: settings.mobileEpisodeLayout === 'vertical' || settings.mobileQueueLayout === 'vertical' ? 'vertical' : 'horizontal',
+    androidBackgroundPlaybackEnabled: settings.androidBackgroundPlaybackEnabled !== false,
     videoOutput: settings.videoOutput === 'gpu' ? 'gpu' : 'gpu-next',
     hardwareDecoder: settings.hardwareDecoder === 'auto' || settings.hardwareDecoder === 'software'
       ? settings.hardwareDecoder

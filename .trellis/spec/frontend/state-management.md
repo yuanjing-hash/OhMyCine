@@ -33,6 +33,8 @@ Use component refs for transient UI state such as hover state, menu open state, 
 
 Use Pinia for state needed across routes/components: configured data sources, playback status, settings, Server connection, theme.
 
+Non-sensitive Player interaction settings persist through the shared app-settings boundary. They include long-press speed, validated mpv engine choices, the mobile series episode layout, and Android background-playback enablement. Mobile episode layout affects only the series detail surface; Android background playback affects the native service/lifecycle bridge. Neither belongs in per-media playback preferences.
+
 Updater startup checks and Settings manual checks must share one Pinia store and one in-flight promise. Persist only `autoCheck` and `channel`; pending update handles, signatures, download URLs, bytes, and transient errors remain in process memory. Startup checks are best-effort and must not open an error dialog when GitHub is unavailable; a discovered signed update may open the global confirmation dialog.
 
 ### Server/external state

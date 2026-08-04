@@ -2,18 +2,22 @@
 import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, SubtitleTrack } from '@/services/datasource/types'
 import type { PlaybackQueueInput } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { getContextFlatEpisodes, getContextSeriesSeasons, getPlayableSeasonChildren } from '@/services/scraper/rawSeriesGrouping'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
+const isNativeAndroid = isNativeAndroidRuntime()
+const mobileEpisodeLayout = loadPlayerInteractionSettings().mobileEpisodeLayout
 
 const sourceId = computed(() => route.params.sourceId as string)
 const itemId = computed(() => route.params.itemId as string)
@@ -67,9 +71,12 @@ const episodeWindowStart = ref(0)
 const selectedEpisodeIndex = ref(0)
 const isEpisodeIndicatorDragging = ref(false)
 const episodeStripRef = ref<HTMLElement | null>(null)
+const isMobileEpisodeViewport = ref(isNativeAndroid)
+let mobileEpisodeMediaQuery: MediaQueryList | null = null
 const selectedSeason = computed(() => seasons.value.find(season => season.id === selectedSeasonId.value))
 const maxEpisodeWindowStart = computed(() => Math.max(0, episodes.value.length - EPISODE_WINDOW_SIZE))
 const visibleEpisodes = computed(() => episodes.value.slice(episodeWindowStart.value, episodeWindowStart.value + EPISODE_WINDOW_SIZE))
+const renderedEpisodes = computed(() => isMobileEpisodeViewport.value ? episodes.value : visibleEpisodes.value)
 const selectedEpisode = computed(() => episodes.value[selectedEpisodeIndex.value])
 const detailResumeEntry = computed(() => detail.value ? playbackProgressByItemId.value[detail.value.id] : undefined)
 const detailCanResume = computed(() => Boolean(detail.value && hasResumeProgress(detail.value, detailResumeEntry.value)))
@@ -94,7 +101,14 @@ const episodeIndicatorStyle = computed(() => {
   return { width: `${percent.toFixed(2)}%` }
 })
 
-onMounted(loadDetail)
+onMounted(() => {
+  mobileEpisodeMediaQuery = window.matchMedia('(max-width: 767px)')
+  updateMobileEpisodeViewport()
+  mobileEpisodeMediaQuery.addEventListener('change', updateMobileEpisodeViewport)
+  void loadDetail()
+})
+
+onBeforeUnmount(() => mobileEpisodeMediaQuery?.removeEventListener('change', updateMobileEpisodeViewport))
 
 watch([sourceId, itemId], loadDetail)
 
@@ -263,6 +277,11 @@ function ensureSelectedEpisodeVisible(behavior: ScrollBehavior) {
   if (episodes.value.length === 0)
     return
 
+  if (isMobileEpisodeViewport.value) {
+    scrollSelectedEpisodeIntoView(behavior)
+    return
+  }
+
   const selected = selectedEpisodeIndex.value
   if (selected < episodeWindowStart.value)
     episodeWindowStart.value = selected
@@ -272,6 +291,20 @@ function ensureSelectedEpisodeVisible(behavior: ScrollBehavior) {
     episodeWindowStart.value = maxEpisodeWindowStart.value
 
   scrollSelectedEpisodeIntoView(behavior)
+}
+
+function updateMobileEpisodeViewport() {
+  const nextMobile = isNativeAndroid || mobileEpisodeMediaQuery?.matches === true
+  const wasMobile = isMobileEpisodeViewport.value
+  isMobileEpisodeViewport.value = nextMobile
+  if (wasMobile && !nextMobile)
+    ensureSelectedEpisodeVisible('auto')
+  else
+    scrollSelectedEpisodeIntoView('auto')
+}
+
+function renderedEpisodeIndex(index: number): number {
+  return isMobileEpisodeViewport.value ? index : episodeWindowStart.value + index
 }
 
 function scrollSelectedEpisodeIntoView(behavior: ScrollBehavior) {
@@ -695,9 +728,13 @@ function markTitleLogoFailed(url: string) {
           {{ errorMessage }}
         </div>
 
-        <section v-if="isSeriesDetail" class="episode-rail-shell relative overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.045] p-4 shadow-2xl sm:p-6">
-          <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.13),transparent_36%),linear-gradient(135deg,rgba(255,255,255,0.08),transparent_42%)]" />
-          <div class="relative flex flex-wrap items-end justify-between gap-4">
+        <section
+          v-if="isSeriesDetail"
+          class="episode-rail-shell relative overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.045] p-4 shadow-2xl sm:p-6"
+          :class="[{ 'is-mobile-episode-surface': isMobileEpisodeViewport }, `is-${mobileEpisodeLayout}`]"
+        >
+          <div class="episode-shell-decoration pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.13),transparent_36%),linear-gradient(135deg,rgba(255,255,255,0.08),transparent_42%)]" />
+          <div class="episode-rail-heading relative flex flex-wrap items-end justify-between gap-4">
             <div>
               <p class="text-xs uppercase tracking-[0.24em] text-white/36">
                 Seasons & Episodes
@@ -716,7 +753,7 @@ function markTitleLogoFailed(url: string) {
             {{ seriesErrorMessage }}
           </div>
 
-          <div v-if="seasons.length" class="relative mt-6 flex gap-3 overflow-x-auto cinema-scrollbar pb-2">
+          <div v-if="seasons.length" class="episode-season-strip relative mt-6 flex gap-3 overflow-x-auto cinema-scrollbar pb-2">
             <button
               v-for="season in seasons"
               :key="season.id"
@@ -730,13 +767,13 @@ function markTitleLogoFailed(url: string) {
             </button>
           </div>
 
-          <div v-if="isSeriesContentLoading" class="relative mt-7 flex gap-4 overflow-hidden" aria-hidden="true">
+          <div v-if="isSeriesContentLoading" class="episode-loading-strip relative mt-7 flex gap-4 overflow-hidden" aria-hidden="true">
             <div v-for="i in 4" :key="i" class="h-72 min-w-[min(20rem,calc(100vw-4rem))] animate-pulse rounded-[1.7rem] bg-white/6 md:min-w-[23rem]" />
           </div>
 
           <div v-else-if="episodes.length" class="episode-rail group relative mt-7">
-            <div class="pointer-events-none absolute inset-y-0 left-0 z-10 w-16 bg-gradient-to-r from-[var(--color-bg)] to-transparent" />
-            <div class="pointer-events-none absolute inset-y-0 right-0 z-10 w-20 bg-gradient-to-l from-[var(--color-bg)] to-transparent" />
+            <div class="episode-edge-fade pointer-events-none absolute inset-y-0 left-0 z-10 w-16 bg-gradient-to-r from-[var(--color-bg)] to-transparent" />
+            <div class="episode-edge-fade pointer-events-none absolute inset-y-0 right-0 z-10 w-20 bg-gradient-to-l from-[var(--color-bg)] to-transparent" />
             <button
               class="episode-nav-button left-2"
               type="button"
@@ -768,18 +805,18 @@ function markTitleLogoFailed(url: string) {
               @keydown="handleEpisodeRailKeydown"
             >
               <article
-                v-for="(episode, visibleIndex) in visibleEpisodes"
-                :id="`episode-card-${episodeWindowStart + visibleIndex}`"
+                v-for="(episode, visibleIndex) in renderedEpisodes"
+                :id="`episode-card-${renderedEpisodeIndex(visibleIndex)}`"
                 :key="episode.id"
                 class="episode-card group/card flex min-w-[min(20rem,calc(100vw-4rem))] max-w-[min(20rem,calc(100vw-4rem))] cursor-pointer flex-col overflow-hidden rounded-[1.7rem] border shadow-xl shadow-black/24 outline-none transition-all duration-300 hover:-translate-y-1 hover:border-white/24 hover:bg-white/[0.075] focus-visible:-translate-y-1 focus-visible:border-white/42 focus-visible:ring-2 focus-visible:ring-white/22 md:min-w-[23rem] md:max-w-[23rem]"
-                :class="selectedEpisodeIndex === episodeWindowStart + visibleIndex ? '-translate-y-1 border-white/46 bg-white/[0.105] ring-2 ring-white/18' : 'border-white/10 bg-black/22'"
-                :data-episode-index="episodeWindowStart + visibleIndex"
+                :class="selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex) ? '-translate-y-1 border-white/46 bg-white/[0.105] ring-2 ring-white/18' : 'border-white/10 bg-black/22'"
+                :data-episode-index="renderedEpisodeIndex(visibleIndex)"
                 role="option"
                 tabindex="0"
-                :aria-selected="selectedEpisodeIndex === episodeWindowStart + visibleIndex"
-                :aria-label="`${selectedEpisodeIndex === episodeWindowStart + visibleIndex ? '当前选中' : '选择'} ${episodeTitle(episode)}`"
-                @click="handleEpisodeCardClick(episode, episodeWindowStart + visibleIndex)"
-                @keydown.enter.self.prevent="handleEpisodeCardClick(episode, episodeWindowStart + visibleIndex)"
+                :aria-selected="selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex)"
+                :aria-label="`${selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex) ? '当前选中' : '选择'} ${episodeTitle(episode)}`"
+                @click="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
+                @keydown.enter.self.prevent="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
               >
                 <div class="relative block overflow-hidden text-left">
                   <img v-if="episode.backdropUrl || episode.posterUrl" :src="episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async">
@@ -790,7 +827,7 @@ function markTitleLogoFailed(url: string) {
                   <span class="absolute left-4 top-4 rounded-full border border-white/12 bg-black/42 px-3 py-1 text-xs font-semibold text-white/76 backdrop-blur-xl">
                     {{ episode.episodeNumber == null ? 'Episode' : `第 ${episode.episodeNumber} 集` }}
                   </span>
-                  <span v-if="selectedEpisodeIndex === episodeWindowStart + visibleIndex" class="absolute right-4 top-4 rounded-full border border-white/18 bg-white/18 px-3 py-1 text-xs font-semibold text-white shadow-lg backdrop-blur-xl">
+                  <span v-if="selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex)" class="absolute right-4 top-4 rounded-full border border-white/18 bg-white/18 px-3 py-1 text-xs font-semibold text-white shadow-lg backdrop-blur-xl">
                     已选中
                   </span>
                   <div v-if="hasResumeProgress(episode)" class="absolute inset-x-4 bottom-4 h-1 overflow-hidden rounded-full bg-white/18">
@@ -826,7 +863,7 @@ function markTitleLogoFailed(url: string) {
               </article>
             </div>
 
-            <div class="mt-3 flex items-center gap-3 text-xs text-white/42" aria-live="polite">
+            <div class="episode-position-row mt-3 flex items-center gap-3 text-xs text-white/42" aria-live="polite">
               <div
                 class="episode-position-slider h-3 flex-1 cursor-pointer touch-none rounded-full px-0 py-1 outline-none focus-visible:ring-2 focus-visible:ring-white/28"
                 role="slider"
@@ -1006,6 +1043,104 @@ function markTitleLogoFailed(url: string) {
   opacity: 0.26;
 }
 
+.episode-rail-shell.is-mobile-episode-surface {
+  margin-inline: -1rem;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  padding: 0.9rem 0 1.1rem;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: none;
+}
+
+.is-mobile-episode-surface .episode-shell-decoration,
+.is-mobile-episode-surface .episode-edge-fade,
+.is-mobile-episode-surface .episode-nav-button,
+.is-mobile-episode-surface .episode-position-row {
+  display: none;
+}
+
+.is-mobile-episode-surface .episode-rail-heading,
+.is-mobile-episode-surface .episode-season-strip,
+.is-mobile-episode-surface .episode-loading-strip {
+  margin-right: 1rem;
+  margin-left: 1rem;
+}
+
+.is-mobile-episode-surface .episode-rail {
+  margin-top: 1rem;
+}
+
+.is-mobile-episode-surface .episode-card-strip {
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-inline: 1rem;
+}
+
+.is-mobile-episode-surface.is-horizontal .episode-card-strip {
+  gap: 0.75rem;
+  padding: 0.15rem 1rem 0.8rem;
+  scroll-snap-type: x proximity;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+}
+
+.is-mobile-episode-surface.is-horizontal .episode-card {
+  min-width: calc(100vw - 2rem);
+  max-width: calc(100vw - 2rem);
+  scroll-snap-align: center;
+  transform: none !important;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card-strip {
+  display: grid;
+  overflow: visible;
+  gap: 0.75rem;
+  padding: 0 1rem;
+  scroll-snap-type: none;
+  touch-action: pan-y;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card {
+  display: grid;
+  min-width: 0;
+  max-width: none;
+  grid-template-columns: minmax(8.5rem, 38vw) minmax(0, 1fr);
+  transform: none !important;
+  content-visibility: auto;
+  contain-intrinsic-size: 10rem;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card > div:first-child {
+  min-height: 10rem;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card > div:first-child > img,
+.is-mobile-episode-surface.is-vertical .episode-card > div:first-child > div:first-child {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  object-fit: cover;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card > div:last-child {
+  gap: 0.75rem;
+  padding: 0.85rem;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card h3 {
+  margin-top: 0.45rem;
+  font-size: 0.92rem;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card p {
+  display: none;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-card button {
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+}
+
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   .detail-hero,
   .detail-hero-content {
@@ -1037,38 +1172,16 @@ function markTitleLogoFailed(url: string) {
     row-gap: 1.8rem;
   }
 
-  .episode-rail-shell,
-  .episode-card,
   .detail-content :deep(.glass-panel) {
     border-radius: 8px;
   }
 
-  .episode-rail-shell {
-    margin-inline: -0.25rem;
-    padding: 0.85rem;
-  }
-
-  .episode-nav-button {
-    display: none;
-  }
-
-  .episode-card-strip {
-    gap: 0.75rem;
-    padding-right: 0;
-  }
-
-  .episode-card {
-    min-width: calc(100vw - 3.2rem);
-    max-width: calc(100vw - 3.2rem);
-    transform: none !important;
-  }
-
-  .episode-card > div:last-child {
+  .is-mobile-episode-surface.is-horizontal .episode-card > div:last-child {
     gap: 1rem;
     padding: 0.9rem;
   }
 
-  .episode-card h3 {
+  .is-mobile-episode-surface.is-horizontal .episode-card h3 {
     font-size: 1rem;
   }
 }

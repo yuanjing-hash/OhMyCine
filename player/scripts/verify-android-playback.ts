@@ -34,6 +34,8 @@ for (const command of [
   'surfaceStatus',
   'orientationState',
   'setOrientation',
+  'displayBrightnessState',
+  'setDisplayBrightness',
 ]) {
   assert.match(mobileCommands, new RegExp(`"${command}"`))
 }
@@ -77,6 +79,16 @@ assert.match(kotlinPlugin, /SCREEN_ORIENTATION_LANDSCAPE/)
 assert.match(kotlinPlugin, /SCREEN_ORIENTATION_PORTRAIT/)
 assert.match(kotlinPlugin, /fun setOrientation/)
 assert.match(kotlinPlugin, /fun applyEngineSettings/)
+assert.match(kotlinPlugin, /backgroundPlaybackEnabled/)
+assert.match(kotlinPlugin, /override fun onPause\(\)/)
+assert.match(kotlinPlugin, /!backgroundPlaybackEnabled[\s\S]*?MpvSurfaceHost\.pause\(true\)/)
+assert.match(kotlinPlugin, /Manifest\.permission\.POST_NOTIFICATIONS/)
+assert.match(kotlinPlugin, /fun displayBrightnessState/)
+assert.match(kotlinPlugin, /fun setDisplayBrightness/)
+assert.match(kotlinPlugin, /attributes\.screenBrightness = \(level \/ 100\.0\)/)
+assert.match(kotlinPlugin, /originalWindowBrightness\?\.let/)
+assert.match(kotlinPlugin, /PlaybackService\.start/)
+assert.match(kotlinPlugin, /PlaybackService\.stop/)
 assert.match(kotlinPlugin, /WindowInsetsCompat\.Type\.systemBars/)
 assert.match(kotlinPlugin, /FLAG_KEEP_SCREEN_ON/)
 assert.match(kotlinPlugin, /contentResolver\.openFileDescriptor/)
@@ -123,6 +135,18 @@ assert.match(surfaceHost, /MpvPlaybackDiagnostics/)
 assert.match(surfaceHost, /playbackTransport = if \(request\.path\.startsWith\("http:\/\/127\.0\.0\.1:"\)\) "rust-loopback" else "direct"/)
 assert.match(surfaceHost, /"pause", "paused-for-cache"/)
 assert.match(surfaceHost, /"brightness", "sub-delay", "cache-speed"/)
+assert.match(surfaceHost, /fun hasActivePlayback\(\): Boolean/)
+
+const playbackService = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/mpv/PlaybackService.kt')
+assert.match(playbackService, /class PlaybackService : Service\(\)/)
+assert.match(playbackService, /MediaSessionCompat/)
+assert.match(playbackService, /startForeground\(NOTIFICATION_ID, notification\)/)
+assert.match(playbackService, /PlaybackStateCompat\.ACTION_SEEK_TO/)
+assert.match(playbackService, /ACTION_FAST_FORWARD/)
+assert.match(playbackService, /ACTION_REWIND/)
+assert.match(playbackService, /MpvSurfaceHost\.hasActivePlayback\(\)/)
+assert.match(playbackService, /stopSelf\(\)/)
+assert.match(playbackService, /START_NOT_STICKY/)
 
 assert.match(rustPlugin, /playback_transport: String/)
 assert.match(useMpv, /playbackTransport: string/)
@@ -148,6 +172,10 @@ const manifest = await source('src-tauri/gen/android/app/src/main/AndroidManifes
 assert.match(manifest, /android:icon="@mipmap\/ic_launcher"/)
 assert.match(manifest, /android:roundIcon="@mipmap\/ic_launcher_round"/)
 assert.match(manifest, /REQUEST_INSTALL_PACKAGES/)
+assert.match(manifest, /POST_NOTIFICATIONS/)
+assert.match(manifest, /FOREGROUND_SERVICE_MEDIA_PLAYBACK/)
+assert.match(manifest, /android:name="\.mpv\.PlaybackService"/)
+assert.match(manifest, /android:foregroundServiceType="mediaPlayback"/)
 assert.doesNotMatch(manifest, /READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE/)
 const adaptiveIcon = await source('src-tauri/gen/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')
 assert.match(adaptiveIcon, /@mipmap\/ic_launcher_foreground/)
@@ -158,6 +186,7 @@ assert.match(updaterPlugin, /canRequestPackageInstalls/)
 
 assert.match(gradle, /OHMYCINE_ANDROID_KEYSTORE/)
 assert.match(gradle, /signingConfigs\.getByName\("preview"\)/)
+assert.match(gradle, /androidx\.media:media:1\.7\.0/)
 
 console.log(JSON.stringify({
   androidSurfaceViewBackend: true,
@@ -177,4 +206,7 @@ console.log(JSON.stringify({
   adaptiveAndroidLauncherIcon: true,
   androidSafFileAndDirectoryAccess: true,
   androidContentUriFileDescriptorPlayback: true,
+  androidWindowBrightnessGesture: true,
+  androidBackgroundPlaybackSetting: true,
+  androidMediaSessionNotification: true,
 }, null, 2))

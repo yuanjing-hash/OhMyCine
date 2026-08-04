@@ -9,12 +9,17 @@ export function resolveTouchGestureAxis(
   deltaX: number,
   deltaY: number,
   movementThreshold = DEFAULT_MOVEMENT_THRESHOLD,
+  dominanceRatio = 1,
 ): TouchGestureAxis {
   const horizontal = Math.abs(deltaX)
   const vertical = Math.abs(deltaY)
   if (Math.max(horizontal, vertical) < movementThreshold)
     return 'pending'
-  return horizontal >= vertical ? 'horizontal' : 'vertical'
+  if (horizontal >= vertical * dominanceRatio)
+    return 'horizontal'
+  if (vertical >= horizontal * dominanceRatio)
+    return 'vertical'
+  return 'pending'
 }
 
 export function touchSeekTarget(

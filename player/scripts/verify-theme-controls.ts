@@ -46,10 +46,15 @@ const immersiveSurfaces = await Promise.all([
 for (const surface of immersiveSurfaces)
   assert.match(surface, /theme-immersive-dark/)
 
+const mobileNavigation = await source('src/components/layout/MobileNavigation.vue')
+assert.match(mobileNavigation, /html\[data-theme="light"\][\s\S]*?\.mobile-bottom-nav/)
+assert.match(mobileNavigation, /html\[data-theme="light"\][\s\S]*?\.mobile-nav-item\.is-active/)
+
 console.log(JSON.stringify({
   adaptiveControlTokens: true,
   themedNativeSelects: true,
   readableLightSettings: true,
   themedUpdateDialog: true,
   immersiveDarkControlExceptions: true,
+  readableLightMobileNavigation: true,
 }, null, 2))
