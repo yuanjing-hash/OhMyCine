@@ -95,9 +95,13 @@ export class DataSourceManager {
   async searchAcrossSources(
     configs: readonly DataSourceConfig[],
     keyword: string,
-    options: { limitPerSource?: number, limit?: number } = {},
+    options: { limitPerSource?: number, limit?: number, sourceIds?: readonly string[] } = {},
   ): Promise<MediaItem[]> {
-    return searchAcrossDataSources(this.getOrderedSources(configs), keyword, options)
+    const allowedSourceIds = options.sourceIds?.length ? new Set(options.sourceIds) : null
+    const sources = allowedSourceIds
+      ? this.getOrderedSources(configs).filter(source => allowedSourceIds.has(source.id))
+      : this.getOrderedSources(configs)
+    return searchAcrossDataSources(sources, keyword, options)
   }
 
   exportAllConfigs(): DataSourceConfig[] {

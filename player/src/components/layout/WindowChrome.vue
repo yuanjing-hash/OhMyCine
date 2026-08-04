@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 
 defineProps<{
   hideNav?: boolean
@@ -12,6 +13,7 @@ const appWindow = isTauriRuntime() ? getCurrentWindow() : null
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const searchWorkspace = useSearchWorkspaceStore()
 
 let dragStart: { x: number, y: number } | null = null
 let isDragStarting = false
@@ -177,6 +179,20 @@ onBeforeUnmount(() => {
           <path d="M3 10l7-7 7 7M5 8v8h3v-4h4v4h3V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         {{ t('nav.home') }}
+      </button>
+
+      <div class="gp-divider h-6 w-px" />
+
+      <button
+        class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200"
+        :class="searchWorkspace.open ? 'is-active' : ''"
+        @click="searchWorkspace.toggle"
+      >
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <circle cx="8.5" cy="8.5" r="5" stroke="currentColor" stroke-width="1.5" />
+          <path d="m12.3 12.3 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+        搜索
       </button>
 
       <div class="gp-divider h-6 w-px" />

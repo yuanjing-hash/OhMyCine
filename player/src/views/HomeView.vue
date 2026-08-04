@@ -4,7 +4,6 @@ import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
-import HomeAggregateSearch from '@/components/media/HomeAggregateSearch.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
@@ -354,11 +353,6 @@ function isContainerItem(item: MediaItem): boolean {
 
     <div v-else class="mobile-nav-safe flex min-h-screen flex-col gap-6 px-4 pb-6 sm:gap-8 sm:px-6 lg:px-8">
       <section class="home-hero-shell relative -mx-4 overflow-hidden rounded-b-[2rem] sm:-mx-6 lg:-mx-8">
-        <HomeAggregateSearch
-          v-if="hasConfiguredSources"
-          @select="handleDetail"
-          @play="handlePlay"
-        />
         <HeroCarousel
           v-if="heroItems.length"
           :items="heroItems"

@@ -188,7 +188,7 @@ Phase 4: 生态系统           ████████████████
 - [x] `getAllSources()` / `getSource(id)`
 - [x] `getOrderedSources()` — 按绑定配置顺序返回侧栏数据源
 - [~] `getAggregatedHome()` — 聚合 Hero / 继续观看 / 最新影片首页数据（已接 Emby，更多源待扩展）
-- [x] `searchAll()` — 跨数据源并发搜索（首页 Hero 顶部沉浸式入口，按源并发、故障隔离、`sourceId + itemId` 去重和结果上限）
+- [x] `searchAll()` — 跨数据源并发搜索（桌面 `首页 / 搜索 / 设置` 顶部入口展开液态玻璃工作台，手机首页顶部下拉打开全屏工作台；支持搜索前馆藏建议、按来源/媒体库/类型筛选、按源并发、故障隔离、`sourceId + itemId` 去重和结果上限）
 - [~] `exportAllConfigs()` / `importConfigs()` — 配置导入导出（已能导出已实例化安全配置，完整文件导入导出待后续）
 - [x] `createDataSource(type)` — 工厂方法（当前实现 Emby、OpenList/Alist、CloudDrive2、本地文件；其他类型保留扩展）
 
@@ -305,7 +305,7 @@ Phase 4: 生态系统           ████████████████
 #### 播放器增强
 
 - [x] 字幕菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `SubtitleMenu.vue`）
-- [~] 播放中字幕搜索（已实现 Emby 搜索/Player 本机搜索显式二选一、所有 DataSource 可进入本机搜索、媒体名称/原始文件名/无媒体 ID 限制的自定义关键词三选一、Emby 远程字幕 API、OpenSubtitles REST API Key 与 XML-RPC 账号/匿名兼容模式、现代邮箱账号 401 自动回退、射手网四段 MD5、迅雷 CID、本地文件直接哈希、远程播放流受限 Range 哈希、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；待真实账号、远程媒体和字幕结果实机验证）
+- [~] 播放中字幕搜索（已实现 Emby 搜索/Player 本机搜索显式二选一、所有 DataSource 可进入本机搜索、媒体名称/原始文件名/无媒体 ID 限制的自定义关键词三选一、Emby 远程字幕 API、OpenSubtitles REST API Key 与 XML-RPC 账号/匿名兼容模式、现代邮箱账号 401 自动回退、射手网四段 MD5、迅雷 CID、本地文件直接哈希、远程播放流受限 Range 哈希、提供器独立容错、Rust 短期下载引用与 Tauri cache 即时加载；手机已改为独立全屏搜索页并显示搜索进度、结果数、空态和下载状态；待真实账号、远程媒体和字幕结果实机验证）
 - [x] 播放中字幕偏移（字幕菜单内即时控制 mpv `sub-delay`，支持提前/延后 30 秒、0.1 秒滑动、0.5 秒步进和重置，并按 source/media 保存恢复）
 - [~] 签名自动更新（Windows 已实现启动/手动检测、Beta/正式渠道、minisign、标准/便携 NSIS；Android 已实现固定 preview 签名、Release APK + SHA-256 受控下载、FileProvider 和系统安装确认；待 Android 从固定签名版本开始验证连续覆盖升级）
 - [x] 音轨菜单（已内联在 `PlayerControls.vue`；后续如需复用再拆独立 `AudioMenu.vue`）
@@ -872,7 +872,7 @@ Phase 4: 生态系统           ████████████████
 
 - [x] Tauri Android 构建配置（已生成 Android Studio 工程并通过 ARM64 debug APK 预览构建）
 - [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令；已补 Surface 延迟就绪屏障、待播请求、初始化错误回传、自动横屏沉浸模式和触摸优先控制布局，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待复验，其他 ABI 与可复现自建 runtime 后续完成）
-- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、紧凑液态玻璃播放控制、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；真机系统交互与授权撤销恢复仍待复验）
+- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、紧凑液态玻璃播放控制、首页下拉全屏聚合搜索、全屏字幕搜索、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；首页/来源展示快照进入 SQLite 并在进程重建后先恢复再后台刷新，单视频音轨/字幕偏好支持 Android 延迟轨道有界恢复；真机系统交互与授权撤销恢复仍待复验）
   - [~] 触摸手势（已完成横向快退/快进、左侧亮度、右侧音量、单击控制 UI、双击暂停、左右半屏静止长按复用方向键连续后退/临时倍速，并按触摸输入兼容 Surface 等触控 PC；捏合手势和 Android 原生屏幕亮度仍待完成）
   - [x] 底部导航栏与媒体库/快捷抽屉
   - [x] 替换手机端 hover-only 全局与媒体操作
