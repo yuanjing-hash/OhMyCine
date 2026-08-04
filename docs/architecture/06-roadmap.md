@@ -296,7 +296,7 @@ Phase 4: 生态系统           ████████████████
 #### 原始文件源本地刮削与海报墙
 
 - [~] 通用刮削分类规则配置（默认实例来自 MP 风格思路，但用户通过受控设置页编辑；分类只作为本地逻辑分组，不要求固定 `movie` / `tv` / `Movies` / `TV` 顶层目录，不写回 OpenList/Alist）
-- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；WebDAV 已纳入 Tauri SQLite raw scan cache 白名单；Emby/Jellyfin 不进入 Player 原始文件扫描调度；图片二进制缓存待后续）
+- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；WebDAV 已纳入 Tauri SQLite raw scan cache 白名单；Emby/Jellyfin 不进入 Player 原始文件扫描调度；首页/搜索/Hero/海报卡片已接入受控 `cache/images` 二进制缓存）
 - [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具并接入递归扫描；首次进入无缓存媒体库时显示索引进度/状态，不再用空媒体库误导）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
 - [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；无年份自动匹配优先精确标题，避免基础片名被包含匹配/热度误导到续集；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
@@ -819,7 +819,7 @@ Phase 4: 生态系统           ████████████████
 
 #### 整体优化
 
-- [~] 性能优化 (首页/数据源根页已接入 5 分钟会话快照与保留旧内容的后台刷新；虚拟滚动、图片缓存和更细粒度懒加载待后续)
+- [~] 性能优化 (首页/数据源根页已接入 5 分钟会话快照与保留旧内容的后台刷新；海报/背景使用应用私有 `cache/images` 与 IntersectionObserver 懒加载；虚拟滚动和更细粒度列表分页待后续)
 - [ ] 错误处理完善 (统一错误边界)
 - [ ] 日志系统增强 (结构化日志/日志轮转)
 - [ ] 国际化完善 (中英文完整翻译)
@@ -872,7 +872,7 @@ Phase 4: 生态系统           ████████████████
 
 - [x] Tauri Android 构建配置（已生成 Android Studio 工程并通过 ARM64 debug APK 预览构建）
 - [~] libmpv Android 集成（ARM64 已通过官方 mpv-android runtime + Kotlin Tauri Plugin + 原生 `SurfaceView` 接入同名播放命令；已补 Surface 延迟就绪屏障、待播请求、初始化错误回传、自动横屏沉浸模式和触摸优先控制布局，APK/JNI 静态验证通过；真机画面、硬解、远程 header、字幕、seek 与生命周期待复验，其他 ABI 与可复现自建 runtime 后续完成）
-- [~] 移动端 UI 适配（已完成独立手机外壳、底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、紧凑液态玻璃播放控制、首页下拉全屏聚合搜索、全屏字幕搜索、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；首页/来源展示快照进入 SQLite 并在进程重建后先恢复再后台刷新，单视频音轨/字幕偏好支持 Android 延迟轨道有界恢复；真机系统交互与授权撤销恢复仍待复验）
+- [~] 移动端 UI 适配（已完成独立手机外壳、统一规格底部导航、媒体库/快捷底部抽屉、触屏海报操作、手机设置列表、紧凑液态玻璃播放控制、首页下拉全屏聚合搜索、全屏字幕搜索、Android 原生视频底层，以及 SAF 本地文件/媒体目录选择；首页/来源展示快照进入 SQLite 并在进程重建后先恢复再后台刷新，海报写入应用私有 `cache/images`；单视频音轨/字幕偏好只通过现有稳定阶段轨道刷新恢复，缓存外部字幕等待 `video-ready` 后加载，禁止 PlayerView 高频原生轨道轮询；真机系统交互与授权撤销恢复仍待复验）
   - [~] 触摸手势（已完成横向快退/快进、左侧亮度、右侧音量、单击控制 UI、双击暂停、左右半屏静止长按复用方向键连续后退/临时倍速，并按触摸输入兼容 Surface 等触控 PC；捏合手势和 Android 原生屏幕亮度仍待完成）
   - [x] 底部导航栏与媒体库/快捷抽屉
   - [x] 替换手机端 hover-only 全局与媒体操作

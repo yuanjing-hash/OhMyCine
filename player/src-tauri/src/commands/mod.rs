@@ -2,6 +2,7 @@ pub mod clouddrive2;
 pub mod credential;
 pub mod emby;
 pub mod history;
+pub mod image_cache;
 #[cfg(target_os = "android")]
 #[path = "local_file_android.rs"]
 pub mod local_file;

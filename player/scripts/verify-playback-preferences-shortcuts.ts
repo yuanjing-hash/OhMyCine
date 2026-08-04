@@ -51,9 +51,11 @@ assert.match(playerView, /ref="bottomChromeRef"[\s\S]*data-player-click-ignore/)
 assert.match(playerView, /addExternalSubtitle\(track\.url, track\.title \?\? result\.title, track\.language, 'provider'\)/)
 assert.match(playerView, /addExternalSubtitle\(downloaded\.path, downloaded\.title, downloaded\.language, 'downloaded'\)/)
 assert.match(playerView, /function cancelPendingTrackPreferenceRestore\(\)/)
-assert.match(playerView, /TRACK_PREFERENCE_RETRY_LIMIT/)
-assert.match(playerView, /scheduleTrackPreferenceRestoreRetry/)
-assert.match(playerView, /refreshTrackState\(\)\.finally\(\(\) => restorePendingTrackPreference\(\)\)/)
+assert.doesNotMatch(playerView, /TRACK_PREFERENCE_RETRY_LIMIT/)
+assert.doesNotMatch(playerView, /scheduleTrackPreferenceRestoreRetry/)
+assert.doesNotMatch(playerView, /refreshTrackState/)
+assert.match(playerView, /subtitle\.kind === 'cachedExternal'[\s\S]*isNativeAndroidPlayer && !videoReady\.value/)
+assert.match(playerView, /watch\(\[audioTracks, subtitleTracks, videoReady\],[\s\S]*restorePendingTrackPreference\(\)/)
 assert.match(playerView, /async function saveMediaPreferenceNow/)
 assert.match(playerView, /async function handleSetSubtitle[\s\S]*await saveMediaPreferenceNow\(\)/)
 assert.match(playerView, /async function handleSetAudio[\s\S]*await saveMediaPreferenceNow\(\)/)
@@ -200,7 +202,9 @@ console.log(JSON.stringify({
   externalSubtitlesUseShortRuntimeCache: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
   trackRestoreWaitsForMetadata: true,
-  delayedAndroidTrackRestoreRetries: true,
+  androidExternalSubtitleRestoreWaitsForVideoReady: true,
+  trackRestoreUsesExistingMetadataEvents: true,
+  noRepeatedNativeTrackPolling: true,
   immediateTrackPreferencePersistence: true,
   cacheClearPreservesGlobalState: true,
   customizableNavigationShortcuts: true,

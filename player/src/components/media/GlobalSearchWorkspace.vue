@@ -2,9 +2,11 @@
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { artworkCacheKey } from '@/services/imageCache'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
+import CachedImage from './CachedImage.vue'
 
 const SEARCH_DEBOUNCE_MS = 260
 const ALL_FILTER = 'all'
@@ -343,10 +345,13 @@ onBeforeUnmount(() => {
               <div class="poster-grid">
                 <article v-for="item in suggestionItems" :key="`${item.sourceId}:${item.id}`" class="result-card group" @click="openItem(item)">
                   <div class="result-poster relative overflow-hidden">
-                    <img v-if="item.posterUrl || item.backdropUrl" :src="item.posterUrl ?? item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
-                    <div v-else class="flex h-full items-center justify-center px-3 text-center text-sm font-bold text-white/42">
-                      {{ item.name }}
-                    </div>
+                    <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl ?? item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                      <template #fallback>
+                        <div class="flex h-full items-center justify-center px-3 text-center text-sm font-bold text-white/42">
+                          {{ item.name }}
+                        </div>
+                      </template>
+                    </CachedImage>
                     <button v-if="canPlay(item)" class="result-play absolute bottom-2 right-2 flex h-9 w-9 items-center justify-center" type="button" :aria-label="`播放 ${item.name}`" @click.stop="playItem(item)">
                       <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5 13 8l-9 5.5v-11Z" /></svg>
                     </button>
@@ -365,10 +370,13 @@ onBeforeUnmount(() => {
               <div v-if="filteredResults.length" class="result-grid">
                 <article v-for="item in filteredResults" :key="`${item.sourceId}:${item.id}`" class="search-result-row flex min-w-0 items-center gap-3" @click="openItem(item)">
                   <div class="h-20 w-14 shrink-0 overflow-hidden bg-white/6">
-                    <img v-if="item.posterUrl || item.backdropUrl" :src="item.posterUrl ?? item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
-                    <div v-else class="flex h-full items-center justify-center px-2 text-center text-xs font-bold text-white/36">
-                      {{ item.name.slice(0, 2) }}
-                    </div>
+                    <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl ?? item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                      <template #fallback>
+                        <div class="flex h-full items-center justify-center px-2 text-center text-xs font-bold text-white/36">
+                          {{ item.name.slice(0, 2) }}
+                        </div>
+                      </template>
+                    </CachedImage>
                   </div>
                   <div class="min-w-0 flex-1">
                     <h3 class="truncate text-sm font-bold text-white/90">

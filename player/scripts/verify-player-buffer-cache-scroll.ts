@@ -37,6 +37,23 @@ assert.match(datasourceStore, /persistDisplayCache\(\)/)
 assert.match(datasourceStore, /path: ''/)
 assert.match(datasourceStore, /isSensitiveUrlKey/)
 assert.match(datasourceStore, /await removeAppSetting\(DISPLAY_CACHE_KEY\)/)
+
+const imageCacheService = await source('src/services/imageCache.ts')
+assert.match(imageCacheService, /player_get_cached_image/)
+assert.match(imageCacheService, /player_cache_image/)
+assert.match(imageCacheService, /artworkCacheKey/)
+
+const cachedImage = await source('src/components/media/CachedImage.vue')
+assert.match(cachedImage, /IntersectionObserver/)
+assert.match(cachedImage, /getCachedImage/)
+assert.match(cachedImage, /cacheImage/)
+
+const nativeImageCache = await source('src-tauri/src/commands/image_cache.rs')
+assert.match(nativeImageCache, /layout\.cache_dir\.join\("images"\)/)
+assert.match(nativeImageCache, /MAX_IMAGE_BYTES/)
+assert.match(nativeImageCache, /same_origin/)
+assert.match(nativeImageCache, /source_hash/)
+assert.doesNotMatch(nativeImageCache, /fs::write\([^,]+,\s*request\.url/)
 assert.match(datasourceStore, /sourceRootSnapshots/)
 assert.match(datasourceStore, /isSourceRootSnapshotFresh/)
 assert.match(datasourceStore, /setSourceRootSnapshot/)
@@ -72,6 +89,8 @@ console.log(JSON.stringify({
   sourceRootSessionCache: true,
   androidPersistentDisplayCache: true,
   sensitiveDisplayUrlsExcluded: true,
+  controlledArtworkDiskCache: true,
+  cachedArtworkLoadsAfterRestart: true,
   staleWhileRevalidate: true,
   customScrollContainerReset: true,
 }, null, 2))

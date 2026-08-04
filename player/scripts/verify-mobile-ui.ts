@@ -32,6 +32,8 @@ assert.match(mobileNavigation, /pickAndroidLocalVideo/)
 assert.match(mobileNavigation, /savePlaybackMediaContext/)
 assert.match(mobileNavigation, /locator: \{\s+kind: 'localPath',\s+path: selected\.uri,/)
 assert.doesNotMatch(mobileNavigation, /query: \{\s+path: selected\.uri/)
+assert.doesNotMatch(mobileNavigation, /mobile-nav-quick/)
+assert.match(mobileNavigation, /class="mobile-nav-item" :class="\{ 'is-active': activeSheet === 'quick' \}"/)
 
 const settingsView = await source('src/views/SettingsView.vue')
 assert.match(settingsView, /pickAndroidLocalDirectory/)
