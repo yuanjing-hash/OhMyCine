@@ -225,9 +225,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     fun getProperty(name: String): String {
         requireInitialized()
         return when (name) {
-            "pause" -> (MPVLib.getPropertyBoolean(name) ?: true).toString()
+            "pause", "paused-for-cache" -> (MPVLib.getPropertyBoolean(name) ?: false).toString()
             "volume", "time-pos", "duration", "speed", "panscan", "video-zoom",
-            "brightness", "sub-delay" -> (MPVLib.getPropertyDouble(name) ?: 0.0).toString()
+            "brightness", "sub-delay", "cache-speed" -> (MPVLib.getPropertyDouble(name) ?: 0.0).toString()
             else -> MPVLib.getPropertyString(name) ?: ""
         }
     }

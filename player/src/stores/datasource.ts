@@ -1,4 +1,4 @@
-import type { DataSource, DataSourceConfig, HomeSection, MediaItem } from '@/services/datasource/types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { RawFileSourceType } from '@/services/scraper/types'
 import { defineStore } from 'pinia'
@@ -12,11 +12,26 @@ import { deletePlaybackHistoryForSource, listLocalContinueWatching, toContinueWa
 import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 
 const STORAGE_KEY = 'ohmycine-datasources'
+const HOME_CACHE_TTL_MS = 5 * 60 * 1000
+const SOURCE_ROOT_CACHE_TTL_MS = 5 * 60 * 1000
+
+export interface SourceRootSnapshot {
+  libraries: MediaLibrary[]
+  homeSections: HomeSection[]
+  updatedAt: number
+}
+
+export interface LoadHomeSectionsOptions {
+  force?: boolean
+  background?: boolean
+}
 
 export const useDataSourceStore = defineStore('datasource', () => {
   const configs = ref<DataSourceConfig[]>([])
   const activeSourceId = ref<string | null>(null)
   const homeSections = ref<HomeSection[]>([])
+  const homeLoadedAt = ref(0)
+  const sourceRootSnapshots = ref<Record<string, SourceRootSnapshot>>({})
   const isLoading = ref(false)
   const lastError = ref<string | null>(null)
   let homeLoadId = 0
@@ -63,6 +78,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       }
       await saveConfigs()
       await syncManager()
+      invalidateSourceRootSnapshot(safeConfig.id)
+      invalidateHomeCache()
     }
     catch (error) {
       configs.value = previousConfigs
@@ -89,6 +106,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       configs.value.push(sanitizePersistedConfig({ ...config, id, order }))
       await saveConfigs()
       await syncManager()
+      invalidateSourceRootSnapshot(id)
+      invalidateHomeCache()
     }
     catch (error) {
       configs.value = previousConfigs
@@ -107,6 +126,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       configs.value[idx] = sanitizePersistedConfig({ ...configs.value[idx], ...patch })
       await saveConfigs()
       await syncManager()
+      invalidateSourceRootSnapshot(id)
+      invalidateHomeCache()
     }
     catch (error) {
       configs.value = previousConfigs
@@ -129,6 +150,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       throw error
     }
     dataSourceManager.removeSource(id)
+    invalidateSourceRootSnapshot(id)
+    invalidateHomeCache()
     homeLoadId++
     isLoading.value = false
     if (activeSourceId.value === id)
@@ -162,6 +185,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   async function clearSourceCache(id: string) {
     await syncManager()
     dataSourceManager.clearSourceCache(id)
+    invalidateSourceRootSnapshot(id)
+    invalidateHomeCache()
     homeSections.value = homeSections.value.filter(section => section.sourceId !== id)
   }
 
@@ -170,6 +195,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     dataSourceManager.clearAllSourceCaches()
     homeLoadId++
     homeSections.value = []
+    homeLoadedAt.value = 0
+    sourceRootSnapshots.value = {}
     return clearPlayerMediaCache()
   }
 
@@ -184,11 +211,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
       })
       .filter((c): c is DataSourceConfig => c != null)
     await saveConfigs()
+    invalidateHomeCache()
   }
 
-  async function loadHomeSections() {
+  async function loadHomeSections(options: LoadHomeSectionsOptions = {}) {
+    const hasCachedContent = homeLoadedAt.value > 0 && homeSections.value.length > 0
+    const cacheIsFresh = hasCachedContent && Date.now() - homeLoadedAt.value < HOME_CACHE_TTL_MS
+    if (!options.force && cacheIsFresh)
+      return
+
     const loadId = ++homeLoadId
-    isLoading.value = true
+    const showLoading = !options.background && !hasCachedContent
+    if (showLoading)
+      isLoading.value = true
     try {
       await syncManager().catch(() => undefined)
       const [sections, localContinueEntries] = await Promise.all([
@@ -216,11 +251,44 @@ export const useDataSourceStore = defineStore('datasource', () => {
             },
             continueSection,
           ]
+      homeLoadedAt.value = Date.now()
     }
     finally {
       if (loadId === homeLoadId)
         isLoading.value = false
     }
+  }
+
+  function getSourceRootSnapshot(id: string): SourceRootSnapshot | null {
+    return sourceRootSnapshots.value[id] ?? null
+  }
+
+  function isSourceRootSnapshotFresh(id: string): boolean {
+    const snapshot = getSourceRootSnapshot(id)
+    return snapshot != null && Date.now() - snapshot.updatedAt < SOURCE_ROOT_CACHE_TTL_MS
+  }
+
+  function setSourceRootSnapshot(id: string, snapshot: Omit<SourceRootSnapshot, 'updatedAt'>) {
+    sourceRootSnapshots.value = {
+      ...sourceRootSnapshots.value,
+      [id]: {
+        libraries: snapshot.libraries,
+        homeSections: snapshot.homeSections,
+        updatedAt: Date.now(),
+      },
+    }
+  }
+
+  function invalidateSourceRootSnapshot(id: string) {
+    if (!sourceRootSnapshots.value[id])
+      return
+    const next = { ...sourceRootSnapshots.value }
+    delete next[id]
+    sourceRootSnapshots.value = next
+  }
+
+  function invalidateHomeCache() {
+    homeLoadedAt.value = 0
   }
 
   async function searchAllSources(keyword: string, limit = 60): Promise<MediaItem[]> {
@@ -268,6 +336,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     activeSourceId,
     activeSource,
     homeSections,
+    homeLoadedAt,
     isLoading,
     lastError,
     loadConfigs,
@@ -279,6 +348,11 @@ export const useDataSourceStore = defineStore('datasource', () => {
     clearAllMediaCaches,
     reorderConfigs,
     loadHomeSections,
+    getSourceRootSnapshot,
+    isSourceRootSnapshotFresh,
+    setSourceRootSnapshot,
+    invalidateSourceRootSnapshot,
+    invalidateHomeCache,
     searchAllSources,
     getSource,
     syncManager,

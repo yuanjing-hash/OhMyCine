@@ -31,6 +31,13 @@ textarea {
   touch-action: manipulation;
 }
 
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 72%, white 28%);
+  outline-offset: 3px;
+}
+
 select {
   min-height: 2.75rem;
   appearance: none;
