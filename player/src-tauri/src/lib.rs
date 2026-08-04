@@ -13,6 +13,7 @@ use commands::history::{
     player_delete_playback_history_for_source, player_get_playback_progress,
     player_list_continue_watching, player_upsert_playback_progress,
 };
+use commands::image_cache::{player_cache_image, player_get_cached_image};
 use commands::local_file::{
     local_file_list, local_file_metadata, local_file_pick_directory, local_file_pick_video,
     local_file_stream_path, local_file_watch_start, local_file_watch_stop, LocalFileWatcherState,
@@ -83,6 +84,8 @@ pub fn run() {
             player_get_playback_progress,
             player_list_continue_watching,
             player_delete_playback_history_for_source,
+            player_get_cached_image,
+            player_cache_image,
             raw_scan_cache_get,
             raw_scan_cache_set,
             raw_scan_cache_delete,

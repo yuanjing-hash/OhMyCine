@@ -1193,43 +1193,9 @@ export class ScrapingEngine {
 
 ### 5.7 海报缓存
 
-```typescript
-// src/services/scraper/poster-cache.ts
+Player 的受控图片缓存由 Rust `player_get_cached_image` / `player_cache_image` 和 Vue `CachedImage` 共同实现。图片二进制写入当前存储档案的 `cache/images`：Windows 标准模式位于本机应用缓存目录，便携模式位于 EXE 同目录 `cache/images`，Android 位于应用私有 `cache/images`。`data` 目录只保存 SQLite、密钥和需要长期一致性的结构数据，不混放可重建图片。
 
-export class PosterCache {
-  private cacheDir: string
-
-  constructor(cacheDir: string) {
-    this.cacheDir = cacheDir
-  }
-
-  async cache(url: string, tmdbId: number): Promise<string> {
-    const localPath = `${this.cacheDir}/${tmdbId}.jpg`
-
-    // 检查缓存是否存在
-    try {
-      await invoke('fs_exists', { path: localPath })
-      return localPath
-    } catch {
-      // 不存在，下载
-    }
-
-    const res = await fetch(url)
-    const buffer = await res.arrayBuffer()
-    await invoke('fs_write', { path: localPath, data: Array.from(new Uint8Array(buffer)) })
-
-    return localPath
-  }
-
-  // 获取海报 (优先本地缓存，否则返回TMDB URL)
-  getPosterUrl(record: MediaRecord): string {
-    if (record.posterPath) {
-      return `asset://localhost/${record.posterPath}`
-    }
-    return '/assets/default-poster.jpg'
-  }
-}
-```
+缓存键使用 `sourceId + itemId + artwork role` 后再 SHA-256，文件名和 sidecar 只保存不可逆 key/source hash 与 MIME，不写原始 URL、API Key、签名参数或 Header。下载仅接受 HTTP(S)、同源且最多三次重定向、8 MiB 上限及 JPEG/PNG/WebP/GIF/AVIF 魔数。前端以 IntersectionObserver 在接近视口时读取/填充缓存，Rust 通过临时 `data:` URL 把应用私有图片交给 WebView；这些临时内容不写入 `settings.sqlite` 展示快照。清除播放缓存会连同 `cache/images` 一并清理，但不会删除数据源、凭据、播放记录或全局设置。
 
 ### 5.8 刮削调度
 
@@ -1812,7 +1778,7 @@ OhMyCine 使用“影院之眼”作为应用主标识：深黑圆角银幕底�
 - 每个媒体库使用海报墙/横向行展示，支持进入库详情、筛选、搜索和播放。
 - 云盘类数据源可以同时展示“媒体库视图”和“文件夹视图”，但默认优先展示已刮削/已识别的媒体内容。
 - 不同数据源的页面结构统一，具体能力由 DataSource 接口返回值决定。
-- 聚合首页和单数据源根页同时使用进程内会话快照与 `settings.sqlite` 安全展示快照：首次成功加载后，返回页面立即显示最近一次内容，5 分钟内不重复请求；Android Activity/进程重建后先恢复持久化展示内容，再在后台刷新。持久化快照清空媒体 `path`，丢弃带 token、key、auth、signature、sig、expires/exp 等敏感查询参数的图片 URL，不保存凭据、认证 Header、原始播放 URL、签名 URL或本地绝对路径。修改/删除数据源、手动清理缓存和明确播放进度刷新会精确失效对应快照。
+- 聚合首页和单数据源根页同时使用进程内会话快照与 `settings.sqlite` 安全展示快照：首次成功加载后，返回页面立即显示最近一次内容，5 分钟内不重复请求；Android Activity/进程重建后先恢复持久化展示内容，再在后台刷新。持久化快照清空媒体 `path`，丢弃带 token、key、auth、signature、sig、expires/exp 等敏感查询参数的图片 URL，不保存凭据、认证 Header、原始播放 URL、签名 URL或本地绝对路径。海报和背景由稳定的来源/媒体身份从 `cache/images` 单独恢复，因此不需要把敏感图片 URL 写入 SQLite。修改/删除数据源、手动清理缓存和明确播放进度刷新会精确失效对应快照。
 - 应用内容实际滚动容器是 `AppLayout` 的主 `<main>`。路由切换以及媒体库内部的分类、文件夹、搜索和返回根页操作都必须复位该容器到顶部，不能只调用对当前布局无效的 `window.scrollTo()`。
 
 #### 播放器页面 (PlayerView)
@@ -2345,7 +2311,7 @@ libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由
 
 本地文件、OpenList/Alist、CloudDrive2 与 WebDAV 的 `getDetail` 在数据源边界内按需重新检查视频同目录字幕，不使用跨播放永久缓存，支持 `.srt`、`.ass`、`.ssa`、`.vtt`、`.sub`。只接受与视频文件同名，或在完整视频主文件名后追加点号、横线、下划线、空格、方括号及语言/版本后缀的字幕；例如 `Movie.zh-CN.srt` 匹配 `Movie.mkv`，`Movie2.srt` 不得误匹配。远程字幕地址按当前 DataSource 的受控流地址流程临时生成，不持久化签名 URL、Header 或凭据；单个字幕解析失败不得阻断视频详情和播放。
 
-单视频偏好恢复分为两段：倍速、字幕偏移和画面模式可立即恢复；字幕、音轨和缓存外部字幕必须等待时长/轨道元数据出现后再匹配。Android 的轨道元数据可能明显晚于 file-loaded，因此未匹配完成时按固定间隔有界刷新轨道状态并继续恢复，直到成功、切换媒体或达到重试上限。用户选择字幕/音轨、载入或下载字幕后立即写入偏好；倍速、偏移和画面连续设置仍可短延迟合并写入，切换媒体、离开路由和卸载前必须 flush。已知 `sid`、`aid` 切换和用户触发的 `sub-add` 使用 libmpv 同步命令并直接返回真实执行结果，但不得在这些交互后同步读取完整 `track-list`；之前的控制冻结来自轨道切换期间立即刷新完整轨道元数据，而不是这些轻量已知命令本身。禁止为短生命周期 C 字符串建立跨调用异步命令队列。用户手动选择字幕/音轨或下载字幕时取消尚未完成的旧轨道偏好恢复，避免旧选择覆盖新操作。
+单视频偏好恢复分为两段：倍速、字幕偏移和画面模式可立即恢复；字幕、音轨和缓存外部字幕必须等待播放/轨道元数据稳定后再匹配。Android 缓存外部字幕还必须明确等待当前媒体进入 `video-ready`，不能在远程流仍执行 `loadfile` 时提前调用同步 `sub-add`，否则会阻塞 Android UI 命令线程并触发输入 ANR。Android 恢复只消费 `useMpv` 在 duration/load 稳定阶段产生的轨道数组、`video-ready` 和后续响应式更新，禁止在 `PlayerView` 用短间隔循环调用原生 `mpv_track_state`；该同步调用会逐条读取完整 `track-list`，并可能与播放命令串行后卡住 Android Rust → Kotlin → libmpv 控制通道。用户选择字幕/音轨、载入或下载字幕后立即写入偏好；倍速、偏移和画面连续设置仍可短延迟合并写入，切换媒体、离开路由和卸载前必须 flush。已知 `sid`、`aid` 切换和用户触发的 `sub-add` 使用 libmpv 同步命令并直接返回真实执行结果，但不得在这些交互后同步读取完整 `track-list`。禁止为短生命周期 C 字符串建立跨调用异步命令队列。用户手动选择字幕/音轨或下载字幕时取消尚未完成的旧轨道偏好恢复，避免旧选择覆盖新操作。
 
 手机字幕搜索使用独立全屏工具页，不复用桌面居中弹窗的尺寸约束。来源、关键词模式、语言和搜索按钮位于稳定控制区，结果列表独立滚动，并明确显示搜索中、结果数量、无结果、下载中和错误状态；横屏与竖屏都必须保留安全区和可触达的关闭入口。
 

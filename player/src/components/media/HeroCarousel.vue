@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { MediaItem } from '@/services/datasource/types'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { artworkCacheKey } from '@/services/imageCache'
+import CachedImage from './CachedImage.vue'
 
 const props = defineProps<{
   items: MediaItem[]
@@ -99,15 +101,18 @@ onUnmounted(() => {
       :key="currentItem()!.id"
       class="absolute inset-0 h-full w-full transition-all duration-700 ease-out"
     >
-      <img
-        v-if="currentItem()!.backdropUrl || currentItem()!.posterUrl"
+      <CachedImage
+        :cache-key="artworkCacheKey(currentItem()!.sourceId, currentItem()!.id, 'backdrop')"
         :src="currentItem()!.backdropUrl || currentItem()!.posterUrl"
         :alt="currentItem()!.name"
         class="h-full w-full object-cover object-center"
         loading="eager"
         decoding="async"
       >
-      <div v-else class="h-full w-full bg-[linear-gradient(135deg,#0c1a2e,#1a3a5c,#0a0a1a)]" />
+        <template #fallback>
+          <div class="h-full w-full bg-[linear-gradient(135deg,#0c1a2e,#1a3a5c,#0a0a1a)]" />
+        </template>
+      </CachedImage>
     </div>
     <div class="absolute inset-0 bg-gradient-to-r from-black/88 via-black/42 to-black/18" />
     <div class="absolute inset-0 bg-gradient-to-t from-black/72 via-black/12 to-black/32" />

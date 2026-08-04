@@ -41,8 +41,6 @@ const ARROW_TAP_SEEK_SECONDS = 5
 const ARROW_HOLD_DELAY = 350
 const REWIND_HOLD_INTERVAL = 220
 const MEDIA_PREFERENCE_SAVE_DELAY = 180
-const TRACK_PREFERENCE_RETRY_DELAY = 650
-const TRACK_PREFERENCE_RETRY_LIMIT = 18
 const TOUCH_FEEDBACK_HIDE_DELAY = 850
 const TOUCH_CLICK_SUPPRESSION_MS = 650
 
@@ -153,8 +151,6 @@ let playbackStartPosition = 0
 const resumeSeekTimers = new Set<number>()
 let activeCachedSubtitlePath: string | null = null
 let mediaPreferenceSaveTimer: number | undefined
-let trackPreferenceRestoreTimer: number | undefined
-let trackPreferenceRestoreAttempts = 0
 let mediaPreferenceRestoreGeneration = 0
 let restoringMediaPreference = false
 let pendingTrackPreference: {
@@ -212,7 +208,6 @@ const {
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
-  refreshTrackState,
   setOrientationMode,
   setKnownSubtitleTracks,
   load,
@@ -955,7 +950,6 @@ async function restoreMediaPlaybackPreference() {
       audioRestored: preference.audio == null,
       subtitleRestored: preference.subtitle == null,
     }
-    trackPreferenceRestoreAttempts = 0
     await restorePendingTrackPreference()
     scheduleRenderBoundsSync()
   }
@@ -976,13 +970,8 @@ async function restorePendingTrackPreference() {
       pending.audioRestored = await restoreAudioPreference(pending.preference)
     if (!pending.subtitleRestored)
       pending.subtitleRestored = await restoreSubtitlePreference(pending.preference)
-    if (pending === pendingTrackPreference && pending.audioRestored && pending.subtitleRestored) {
+    if (pending === pendingTrackPreference && pending.audioRestored && pending.subtitleRestored)
       pendingTrackPreference = null
-      clearTrackPreferenceRestoreTimer()
-    }
-    else if (pending === pendingTrackPreference) {
-      scheduleTrackPreferenceRestoreRetry(pending.generation)
-    }
   }
   finally {
     restoringMediaPreference = false
@@ -993,26 +982,6 @@ async function restorePendingTrackPreference() {
 function cancelPendingTrackPreferenceRestore() {
   mediaPreferenceRestoreGeneration += 1
   pendingTrackPreference = null
-  clearTrackPreferenceRestoreTimer()
-}
-
-function clearTrackPreferenceRestoreTimer() {
-  if (!trackPreferenceRestoreTimer)
-    return
-  window.clearTimeout(trackPreferenceRestoreTimer)
-  trackPreferenceRestoreTimer = undefined
-}
-
-function scheduleTrackPreferenceRestoreRetry(generation: number) {
-  if (trackPreferenceRestoreTimer || trackPreferenceRestoreAttempts >= TRACK_PREFERENCE_RETRY_LIMIT)
-    return
-  trackPreferenceRestoreTimer = window.setTimeout(() => {
-    trackPreferenceRestoreTimer = undefined
-    if (!pendingTrackPreference || pendingTrackPreference.generation !== generation || playbackCleanupStarted)
-      return
-    trackPreferenceRestoreAttempts += 1
-    void refreshTrackState().finally(() => restorePendingTrackPreference())
-  }, TRACK_PREFERENCE_RETRY_DELAY)
 }
 
 async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
@@ -1043,6 +1012,8 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
     }
   }
   if (subtitle.kind === 'cachedExternal' && subtitle.cachedPath) {
+    if (isNativeAndroidPlayer && !videoReady.value)
+      return false
     try {
       await addExternalSubtitle(
         subtitle.cachedPath,
@@ -1860,7 +1831,7 @@ watch([shouldShowChrome, hasMedia], () => {
   void updateChromeOcclusion()
 })
 
-watch([audioTracks, subtitleTracks], () => {
+watch([audioTracks, subtitleTracks, videoReady], () => {
   void restorePendingTrackPreference()
 })
 
@@ -2479,7 +2450,6 @@ onBeforeUnmount(() => {
   document.body.classList.remove('player-chrome-hidden')
   clearHideTimer()
   clearMediaPreferenceSaveTimer()
-  clearTrackPreferenceRestoreTimer()
   void releaseHeldArrow(false)
   clearResumeSeekTimers()
   clearResumeMessageTimer()

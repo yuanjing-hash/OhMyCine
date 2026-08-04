@@ -295,11 +295,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
       <span>媒体库</span>
     </button>
 
-    <button type="button" class="mobile-nav-quick" aria-label="快捷操作" :aria-expanded="activeSheet === 'quick'" @click="toggleSheet('quick')">
-      <span>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12" /></svg>
-      </span>
-      <small>快捷</small>
+    <button type="button" class="mobile-nav-item" :class="{ 'is-active': activeSheet === 'quick' }" aria-label="快捷操作" :aria-expanded="activeSheet === 'quick'" @click="toggleSheet('quick')">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+      <span>快捷</span>
     </button>
 
     <button type="button" class="mobile-nav-item" :class="{ 'is-active': isSettingsActive }" aria-label="设置" @click="navigateSettings">
@@ -342,8 +340,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     -webkit-backdrop-filter: blur(28px) saturate(1.6);
   }
 
-  .mobile-nav-item,
-  .mobile-nav-quick {
+  .mobile-nav-item {
     position: relative;
     display: flex;
     min-width: 0;
@@ -388,40 +385,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     stroke-linejoin: round;
   }
 
-  .mobile-nav-item span,
-  .mobile-nav-quick small {
+  .mobile-nav-item span {
     font-size: 0.62rem;
     font-weight: 700;
-  }
-
-  .mobile-nav-quick {
-    flex-direction: column;
-    transform: translateY(-0.15rem);
-  }
-
-  .mobile-nav-quick > span {
-    display: flex;
-    width: 2.75rem;
-    height: 2.75rem;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    color: #0a0c11;
-    background: rgba(255, 255, 255, 0.94);
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38);
-  }
-
-  .mobile-nav-quick svg {
-    width: 1.4rem;
-    height: 1.4rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-  }
-
-  .mobile-nav-quick small {
-    color: rgba(255, 255, 255, 0.66);
   }
 
   .mobile-sheet-layer {

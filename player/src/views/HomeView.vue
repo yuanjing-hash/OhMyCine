@@ -3,8 +3,10 @@ import type { DataSource, MediaItem } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import CachedImage from '@/components/media/CachedImage.vue'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { artworkCacheKey } from '@/services/imageCache'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -417,10 +419,13 @@ function isContainerItem(item: MediaItem): boolean {
               @click="handlePlay(item)"
             >
               <div class="relative h-28 media-placeholder overflow-hidden">
-                <img v-if="itemArtworkUrl(item)" :src="itemArtworkUrl(item)" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
-                <div v-else class="flex h-full w-full items-center justify-center bg-white/6 p-4 text-center text-xs font-semibold text-white/48">
-                  {{ continueItemTitle(item) }}
-                </div>
+                <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'backdrop')" :src="itemArtworkUrl(item)" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                  <template #fallback>
+                    <div class="flex h-full w-full items-center justify-center bg-white/6 p-4 text-center text-xs font-semibold text-white/48">
+                      {{ continueItemTitle(item) }}
+                    </div>
+                  </template>
+                </CachedImage>
                 <div class="progress-track absolute bottom-0 left-0 right-0 h-1">
                   <div class="progress-value h-full rounded-full" :style="{ width: progressPercent(item) }" />
                 </div>
@@ -474,12 +479,15 @@ function isContainerItem(item: MediaItem): boolean {
               @click="handleDetail(item)"
             >
               <div class="relative aspect-[2/3] media-placeholder">
-                <img v-if="item.posterUrl" :src="item.posterUrl" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
-                <div v-else class="poster-placeholder flex h-full items-center justify-center">
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                    <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5" />
-                  </svg>
-                </div>
+                <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                  <template #fallback>
+                    <div class="poster-placeholder flex h-full items-center justify-center">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                        <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5" />
+                      </svg>
+                    </div>
+                  </template>
+                </CachedImage>
                 <div class="recent-play-overlay absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     class="recent-play-button flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform hover:scale-110"
