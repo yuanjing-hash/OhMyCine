@@ -29,6 +29,7 @@ const props = defineProps<{
   currentAudio: number | null
   videoAspectMode: VideoAspectMode
   videoFitMode: VideoFitMode
+  videoBrightness: number
   trackError: string | null
   pictureSettingsError: string | null
   orientationSupported: boolean
@@ -52,6 +53,7 @@ const emit = defineEmits<{
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
+  setVideoBrightness: [level: number]
   setOrientationMode: [mode: MpvOrientationMode]
   interactionChange: [active: boolean]
 }>()
@@ -368,6 +370,11 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
             </template>
 
             <template v-else-if="activePanel === 'picture'">
+              <label class="mobile-range-row">
+                <span>播放器亮度</span>
+                <strong>{{ Math.round(videoBrightness) }}%</strong>
+                <input type="range" min="0" max="100" step="1" :value="videoBrightness" @input="emit('setVideoBrightness', Number(($event.target as HTMLInputElement).value))">
+              </label>
               <p class="mobile-section-label">
                 画面比例
               </p>

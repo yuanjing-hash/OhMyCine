@@ -2260,7 +2260,7 @@ Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳
 
 手机播放器使用独立触摸覆盖层：顶部只保留返回、标题和必要工具，字幕只在右上工具区保留一个入口；画面中央常驻三个尺寸克制的主播放操作，底部使用一条低高度时间轴与工具坞，不重复放置字幕入口。轨道、倍速、队列和画面设置在横屏中使用受限宽度的右侧面板，在竖屏中使用底部面板；进度条使用 Pointer Events 和 pointer capture，同一实现兼容鼠标与触摸拖动。移动控制台继续使用 OhMyCine 液态玻璃语言，但 Android `SurfaceView` 与 WebView 分层时不能只依赖 `backdrop-filter`，还要用半透明中性色、内高光、细边缘和层叠阴影维持玻璃层次。普通浏览器预览不得因无 Tauri 窗口对象而中断 Vue 挂载，以便固定使用横屏/竖屏设备尺寸进行响应式截图回归。
 
-播放画面手势按输入类型启用，而不是按平台或窗口宽度启用：只有 `PointerEvent.pointerType === 'touch'` 会进入手势状态机，因此 Android、手机浏览器和 Surface 等触控 PC 在桌面宽度下都可使用；鼠标与触控笔继续沿用桌面点击、悬停显隐和快捷键逻辑。触摸横向滑动预览并提交快退/快进，左半屏纵向滑动调整 mpv 视频亮度，右半屏纵向滑动调整音量，单击切换控制 UI，双击切换播放/暂停。手势开始于按钮、菜单、输入框或底部控制栏时不得抢占控件操作，触摸产生的合成 click 也不得再次触发鼠标单击暂停。当前亮度是视频画面亮度，不是系统屏幕亮度；Android 原生窗口亮度接入后可替换其后端而保持相同手势协议。
+播放画面手势按输入类型启用，而不是按平台或窗口宽度启用：只有 `PointerEvent.pointerType === 'touch'` 会进入手势状态机，因此 Android、手机浏览器和 Surface 等触控 PC 在桌面宽度下都可使用；鼠标与触控笔继续沿用桌面点击、悬停显隐和快捷键逻辑。触摸横向滑动预览并提交快退/快进，右半屏纵向滑动调整音量，单击切换控制 UI，双击切换播放/暂停。Android 左半屏纵向滑动通过 Activity `WindowManager.LayoutParams.screenBrightness` 调整当前设备播放窗口亮度，停止播放时恢复进入前的窗口/系统管理值；桌面触摸和 Alt 模拟仍调整 mpv 视频亮度。mpv 视频亮度作为独立的单视频画面设置保留在播放控制的画面面板中，不与设备屏幕亮度混用。手势开始于按钮、菜单、输入框或底部控制栏时不得抢占控件操作，顶部/底部系统手势保护区也不接管指针；真实触摸使用更高位移阈值和轴向优势判断，避免下拉通知栏或斜向滚动误调音量/亮度。触摸产生的合成 click 不得再次触发鼠标单击暂停。
 
 没有触摸硬件时，按住 `Alt` 再使用播放画面的鼠标主键，可把当前操作映射到同一手势状态机。Alt 模拟只接管无控件遮挡的播放画面，并在实际操作期间暂停鼠标移动自动唤出控制 UI，以便验证触摸单击显隐；控制栏、菜单、输入框、链接和右键菜单始终使用桌面鼠标逻辑。松开并结束当前手势后立即恢复普通鼠标行为，不额外显示测试提示。
 
@@ -2268,7 +2268,11 @@ Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳
 
 Android 响应式布局按实时可用窗口宽度划分，不依赖手机/平板型号判断：`compact` 用于手机竖屏和窄分屏，`medium` 用于平板分屏与小尺寸平板，`expanded` 用于平板全屏、桌面模式和大窗口。CSS media/container queries 负责内容重排，窗口尺寸变化必须即时生效；触摸/鼠标/键盘能力继续由 Pointer Events 与输入媒体查询独立判断。Android Activity 必须允许 resize，不全局锁定方向，并处理安全区、系统栏、横竖屏、多窗口和折叠屏窗口变化。播放器可由用户进入横屏或全屏，但返回浏览界面后仍恢复当前多窗口尺寸。
 
+手机剧集详情的选集区域不复用桌面两侧渐隐和外层留白。全局设置可选择默认“横向卡片”或“竖向列表”：横向模式渲染当前季完整分集并使用原生惯性横滑、接近满宽的吸附卡片；竖向模式使用紧凑全宽列表和普通页面纵向滚动。手机隐藏桌面专用的底部快速定位滑条，避免与页面/系统手势冲突；桌面继续使用窗口化横向轨道、箭头、键盘和定位滑条，播放中的队列面板不受该设置影响。
+
 当前已生成 Tauri Android Studio 工程，并可通过 `npm run tauri:build:android:preview` 构建 ARM64 debug APK。Activity 显式启用 `resizeableActivity` 且不全局锁定方向；开始播放时原生插件进入 sensor-landscape 沉浸模式、隐藏系统栏并保持亮屏，停止播放后恢复系统栏和默认方向策略。Android 不链接桌面 `libmpv-sys`，而是保持同名 `mpv_*` 命令并通过 Rust mobile plugin、Kotlin 与 mpv-android JNI runtime 完成加载、暂停、seek、属性、字幕和轨道操作；播放进度与暂停状态继续进入现有 Vue 事件流。构建命令会先清理旧 APK，并关闭 Rust debug info，避免预览包被调试符号膨胀。
+
+Android 后台播放由全局开关控制。开启时 Kotlin 启动 `foregroundServiceType=mediaPlayback` 的非粘性前台服务，并通过 `MediaSessionCompat` 向系统通知/锁屏发布标题、时长、进度、播放/暂停、前后 10 秒和 seek；关闭时 Activity 进入后台立即暂停，且不保留播放服务。播放停止、离开播放页、自然结束、加载错误或插件销毁都会停止服务并移除通知。通知只包含安全展示元数据，不携带播放 URL、认证 Header 或 provider Token。
 
 Android 本地媒体访问使用 Storage Access Framework，与桌面路径逻辑明确分离。快捷操作中的本地视频入口调用 `ACTION_OPEN_DOCUMENT`，所选 `content://` URI 只进入短生命周期 `PlaybackMediaContext`，路由仅保存 `contextId` 和媒体身份；Kotlin 播放桥通过 `ContentResolver.openFileDescriptor` 打开文件，并以 `fdclose://<fd>` 把描述符所有权交给 libmpv，不把大视频复制到缓存。设置页本地文件夹入口调用 `ACTION_OPEN_DOCUMENT_TREE` 并保存只读持久授权；`LocalMediaPlugin` 在授权树内查询子文档，继续向 DataSource 暴露 `/目录/文件` 逻辑路径，原始子文档 URI 不进入前端列表、扫描缓存或日志。授权被用户撤销时必须要求重新选择目录。Android 文档树无法复用桌面 `notify` watcher，因此 watcher 启动会安全降级，仍由现有短间隔增量扫描完成变化检测。桌面继续使用 Tauri dialog、绝对根路径和 Rust root-scoped 文件命令，不改变既有行为。
 
@@ -2700,6 +2704,6 @@ player — 播放器扩展 — 弹幕、歌词、特效
 | 播放引擎 | 已完成 Windows MVP libmpv 嵌入 | 后续 libmpv 嵌入 | 后续 libmpv 嵌入 | ARM64 SurfaceView + mpv-android 已构建，待真机验证 |
 | HDR | Windows HDR 目标/验证继续推进 | 后续 HDR10/DV | 后续部分支持 | 后续设备相关 |
 | 窗口风格 | 无边框 + 自定义标题栏 | 后续原生标题栏 | 后续 GTK/Qt 适配 | 后续全屏 |
-| 通知 | Windows 通知 | 后续 macOS 通知 | 后续 libnotify | 后续 Android 通知 |
+| 通知 | Windows 通知 | 后续 macOS 通知 | 后续 libnotify | 后台播放媒体通知与系统控制已接入，待真机复验 |
 | 快捷键 | 全局快捷键 | 后续全局快捷键 | 后续全局快捷键 | 触摸手势已接入，待真机验证 |
 | 文件关联 | .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 Intent Filter |

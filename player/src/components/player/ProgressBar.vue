@@ -13,6 +13,7 @@ const emit = defineEmits<{
 
 const barRef = ref<HTMLDivElement>()
 const isDragging = ref(false)
+let pendingTouch: { pointerId: number, x: number, y: number } | null = null
 
 const progress = computed(() => {
   if (!props.total)
@@ -29,6 +30,11 @@ function updatePosition(event: PointerEvent) {
 }
 
 function handlePointerDown(event: PointerEvent) {
+  if (event.pointerType === 'touch') {
+    pendingTouch = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+    barRef.value?.setPointerCapture(event.pointerId)
+    return
+  }
   isDragging.value = true
   barRef.value?.setPointerCapture(event.pointerId)
   emit('interactionChange', true)
@@ -36,17 +42,42 @@ function handlePointerDown(event: PointerEvent) {
 }
 
 function handlePointerMove(event: PointerEvent) {
+  if (pendingTouch?.pointerId === event.pointerId) {
+    const deltaX = event.clientX - pendingTouch.x
+    const deltaY = event.clientY - pendingTouch.y
+    if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) >= 12) {
+      cancelTouchIntent(event.pointerId)
+      return
+    }
+    if (Math.abs(deltaX) >= 12 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
+      pendingTouch = null
+      isDragging.value = true
+      emit('interactionChange', true)
+      updatePosition(event)
+    }
+    return
+  }
   if (isDragging.value)
     updatePosition(event)
 }
 
 function handlePointerEnd(event: PointerEvent) {
+  if (pendingTouch?.pointerId === event.pointerId) {
+    cancelTouchIntent(event.pointerId)
+    return
+  }
   if (!isDragging.value)
     return
   if (barRef.value?.hasPointerCapture(event.pointerId))
     barRef.value.releasePointerCapture(event.pointerId)
   isDragging.value = false
   emit('interactionChange', false)
+}
+
+function cancelTouchIntent(pointerId: number) {
+  pendingTouch = null
+  if (barRef.value?.hasPointerCapture(pointerId))
+    barRef.value.releasePointerCapture(pointerId)
 }
 </script>
 

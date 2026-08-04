@@ -238,6 +238,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         paused = if (initialized) MPVLib.getPropertyBoolean("pause") ?: true else true,
     )
 
+    fun hasActivePlayback(): Boolean = pendingLoad != null || playbackState == "loading" || playbackState == "playing"
+
     fun trackState(): MpvTrackState {
         requireInitialized()
         val tracks = mutableListOf<MpvTrack>()

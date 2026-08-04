@@ -4,7 +4,8 @@ use std::{fs, path::Path, time::Duration};
 use tauri::{AppHandle, State};
 
 use super::player_shared::{
-    sanitize_http_headers, MpvEngineSettings, MpvHttpHeader, MpvOrientationState,
+    sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings, MpvHttpHeader,
+    MpvOrientationState,
 };
 use crate::mpv::{
     player::{MpvState, MpvTrackState},
@@ -52,8 +53,10 @@ pub fn mpv_playback_diagnostics() -> DesktopPlaybackDiagnostics {
 pub async fn mpv_load(
     path: String,
     headers: Option<Vec<MpvHttpHeader>>,
+    title: Option<String>,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
+    let _ = title;
     let mut player = state.lock().map_err(|err| err.to_string())?;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?
         .into_iter()
@@ -150,6 +153,20 @@ pub async fn mpv_orientation_state() -> Result<MpvOrientationState, String> {
 pub async fn mpv_set_orientation(mode: String) -> Result<MpvOrientationState, String> {
     let _ = mode;
     mpv_orientation_state().await
+}
+
+#[tauri::command]
+pub async fn mpv_display_brightness_state() -> Result<MpvDisplayBrightnessState, String> {
+    Ok(MpvDisplayBrightnessState {
+        supported: false,
+        level: 50.0,
+    })
+}
+
+#[tauri::command]
+pub async fn mpv_set_display_brightness(level: f64) -> Result<MpvDisplayBrightnessState, String> {
+    let _ = level;
+    mpv_display_brightness_state().await
 }
 
 #[tauri::command]

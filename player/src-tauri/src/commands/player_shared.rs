@@ -14,12 +14,20 @@ pub struct MpvOrientationState {
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MpvDisplayBrightnessState {
+    pub supported: bool,
+    pub level: f64,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MpvEngineSettings {
     pub video_output: String,
     pub hardware_decoder: String,
     pub cache_mode: String,
     pub demuxer_max_bytes_mb: u16,
     pub video_sync: String,
+    pub background_playback_enabled: bool,
 }
 
 impl Default for MpvEngineSettings {
@@ -30,6 +38,7 @@ impl Default for MpvEngineSettings {
             cache_mode: "auto".to_string(),
             demuxer_max_bytes_mb: 64,
             video_sync: "audio".to_string(),
+            background_playback_enabled: true,
         }
     }
 }

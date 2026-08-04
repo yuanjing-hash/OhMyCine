@@ -4,7 +4,7 @@ import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/serv
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ImageCacheStats } from '@/services/imageCache'
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
-import type { PlayerCacheMode, PlayerDemuxerCacheSize, PlayerHardwareDecoder, PlayerVideoOutput, PlayerVideoSync } from '@/services/playerInteractionSettings'
+import type { MobileEpisodeLayout, PlayerCacheMode, PlayerDemuxerCacheSize, PlayerHardwareDecoder, PlayerVideoOutput, PlayerVideoSync } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
@@ -108,6 +108,8 @@ interface SubtitleSettingsFormState {
   username: string
   password: string
   longPressPlaybackSpeed: number
+  mobileEpisodeLayout: MobileEpisodeLayout
+  androidBackgroundPlaybackEnabled: boolean
   videoOutput: PlayerVideoOutput
   hardwareDecoder: PlayerHardwareDecoder
   cacheMode: PlayerCacheMode
@@ -274,6 +276,8 @@ const subtitleForm = reactive<SubtitleSettingsFormState>({
   username: '',
   password: '',
   longPressPlaybackSpeed: playerInteractionSettings.longPressPlaybackSpeed,
+  mobileEpisodeLayout: playerInteractionSettings.mobileEpisodeLayout,
+  androidBackgroundPlaybackEnabled: playerInteractionSettings.androidBackgroundPlaybackEnabled,
   videoOutput: playerInteractionSettings.videoOutput,
   hardwareDecoder: playerInteractionSettings.hardwareDecoder,
   cacheMode: playerInteractionSettings.cacheMode,
@@ -985,6 +989,8 @@ async function savePlaybackSubtitleSettings() {
     subtitleForm.longPressPlaybackSpeed = normalizeLongPressPlaybackSpeed(subtitleForm.longPressPlaybackSpeed)
     await savePlayerInteractionSettings({
       longPressPlaybackSpeed: subtitleForm.longPressPlaybackSpeed,
+      mobileEpisodeLayout: subtitleForm.mobileEpisodeLayout,
+      androidBackgroundPlaybackEnabled: subtitleForm.androidBackgroundPlaybackEnabled,
       videoOutput: subtitleForm.videoOutput,
       hardwareDecoder: subtitleForm.hardwareDecoder,
       cacheMode: subtitleForm.cacheMode,
@@ -2495,6 +2501,28 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               </select>
               <span class="mt-2 block text-xs leading-5 text-white/38">长按右方向键临时使用该倍速，松开后恢复当前视频原来的速度；长按左方向键持续后退。</span>
             </label>
+
+            <label class="rounded-2xl bg-black/16 p-4 lg:col-span-1">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">手机选集排布</span>
+              <select
+                v-model="subtitleForm.mobileEpisodeLayout"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
+              >
+                <option value="horizontal">横向卡片</option>
+                <option value="vertical">竖向列表</option>
+              </select>
+              <span class="mt-2 block text-xs leading-5 text-white/38">控制手机剧集详情页的默认选集方式，不影响电脑端选集轨道。</span>
+            </label>
+
+            <div class="rounded-2xl bg-black/16 p-4 lg:col-span-1">
+              <label class="flex items-center justify-between gap-4">
+                <span>
+                  <span class="block text-sm font-semibold text-white">Android 后台播放</span>
+                  <span class="mt-1 block text-xs leading-5 text-white/42">开启后切到后台继续播放，并显示系统媒体通知；关闭后进入后台会自动暂停。</span>
+                </span>
+                <input v-model="subtitleForm.androidBackgroundPlaybackEnabled" type="checkbox" class="h-5 w-5 accent-primary">
+              </label>
+            </div>
 
             <label class="rounded-2xl bg-black/16 p-4 lg:col-span-1">
               <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">默认搜索语言</span>

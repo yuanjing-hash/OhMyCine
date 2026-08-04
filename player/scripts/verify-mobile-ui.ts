@@ -89,6 +89,18 @@ assert.equal((mobilePlayerControls.match(/aria-label="字幕"/g) ?? []).length, 
 assert.match(mobilePlayerControls, /\.transport-skip \{[\s\S]*?width: 3\.25rem;/)
 assert.match(mobilePlayerControls, /\.transport-primary \{[\s\S]*?width: 3\.9rem;/)
 assert.match(mobilePlayerControls, /linear-gradient\(145deg, rgba\(35, 38, 45, 0\.7\)/)
+assert.match(mobilePlayerControls, /播放器亮度/)
+assert.match(mobilePlayerControls, /setVideoBrightness/)
+
+const mediaDetail = await source('src/views/MediaDetailView.vue')
+assert.match(mediaDetail, /loadPlayerInteractionSettings\(\)\.mobileEpisodeLayout/)
+assert.match(mediaDetail, /is-mobile-episode-surface/)
+assert.match(mediaDetail, /renderedEpisodes = computed\(\(\) => isMobileEpisodeViewport\.value \? episodes\.value : visibleEpisodes\.value\)/)
+assert.match(mediaDetail, /is-mobile-episode-surface\.is-horizontal \.episode-card-strip \{[\s\S]*?touch-action: pan-x;/)
+assert.match(mediaDetail, /is-mobile-episode-surface\.is-vertical \.episode-card-strip \{[\s\S]*?touch-action: pan-y;/)
+assert.match(mediaDetail, /is-mobile-episode-surface \.episode-position-row \{[\s\S]*?display: none;/)
+assert.match(mediaDetail, /is-mobile-episode-surface \.episode-edge-fade/)
+assert.match(mediaDetail, /min-width: calc\(100vw - 2rem\)/)
 
 const subtitleSearch = await source('src/components/player/SubtitleSearchDialog.vue')
 assert.match(subtitleSearch, /resultSummary/)
@@ -102,10 +114,16 @@ const progressBar = await source('src/components/player/ProgressBar.vue')
 assert.match(progressBar, /@pointerdown\.prevent="handlePointerDown"/)
 assert.match(progressBar, /setPointerCapture\(event\.pointerId\)/)
 assert.match(progressBar, /touch-action: none/)
+assert.match(progressBar, /pendingTouch/)
+assert.match(progressBar, /Math\.abs\(deltaX\) >= 12/)
+assert.match(progressBar, /Math\.abs\(deltaY\) > Math\.abs\(deltaX\)/)
 
 assert.equal(resolveTouchGestureAxis(8, 4), 'pending')
 assert.equal(resolveTouchGestureAxis(12, 12), 'horizontal')
 assert.equal(resolveTouchGestureAxis(13, 18), 'vertical')
+assert.equal(resolveTouchGestureAxis(30, 28, 24, 1.25), 'pending')
+assert.equal(resolveTouchGestureAxis(36, 20, 24, 1.25), 'horizontal')
+assert.equal(resolveTouchGestureAxis(20, 36, 24, 1.25), 'vertical')
 assert.equal(touchSeekTarget(50, -500, 500, 100), 0)
 assert.equal(touchSeekTarget(50, 500, 500, 100), 100)
 assert.equal(touchVerticalLevel(50, -500, 500), 100)
@@ -140,6 +158,13 @@ assert.match(playerView, /:mobile-layout="false"/)
 assert.match(playerView, /:mobile-layout="isNativeAndroidPlayer"/)
 assert.match(playerView, /if \(isNativeAndroidPlayer\) \{\s+toggleChromeFromTouch\(\)/)
 assert.match(playerView, /showKeyboardOsd\(`屏幕方向 · \$\{label\}`\)/)
+assert.match(playerView, /const TOUCH_MOVEMENT_THRESHOLD = 24/)
+assert.match(playerView, /const TOUCH_AXIS_DOMINANCE = 1\.25/)
+assert.match(playerView, /isProtectedSystemGestureStart/)
+assert.match(playerView, /topGuard = Math\.max\(48/)
+assert.match(playerView, /setDisplayBrightness\(update\.value\)/)
+assert.match(playerView, /屏幕亮度/)
+assert.match(playerView, /document\.addEventListener\('visibilitychange', handleVisibilityChange\)/)
 
 const videoPlayer = await source('src/components/player/VideoPlayer.vue')
 assert.match(videoPlayer, /等待播放中/)
@@ -181,4 +206,8 @@ console.log(JSON.stringify({
   androidSystemMediaPicker: true,
   androidDocumentTreePicker: true,
   darkSystemBarForeground: true,
+  configurableMobileEpisodeLayout: true,
+  touchGestureEdgeProtection: true,
+  intentionalTouchProgressSeeking: true,
+  separateDisplayAndVideoBrightness: true,
 }, null, 2))

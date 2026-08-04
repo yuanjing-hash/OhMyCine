@@ -20,6 +20,9 @@ assert.match(preferenceCommand, /CREATE TABLE IF NOT EXISTS media_playback_prefe
 assert.match(preferenceCommand, /DELETE FROM media_playback_preferences WHERE source_id = \?1/)
 assert.match(preferenceCommand, /canonical_path\.starts_with\(&canonical_root\)/)
 assert.match(preferenceCommand, /DELETE FROM raw_scan_cache/)
+assert.match(preferenceCommand, /video_brightness REAL NOT NULL DEFAULT 50/)
+assert.match(preferenceCommand, /ALTER TABLE media_playback_preferences ADD COLUMN \{column\} \{definition\}/)
+assert.match(preferenceCommand, /ensure_media_preference_column\(&conn, "video_brightness", "REAL NOT NULL DEFAULT 50"\)/)
 
 const subtitleCommand = await source('../src-tauri/src/commands/subtitle.rs')
 assert.match(subtitleCommand, /scoped_cache_key\(\s*"subtitle-source"/)
@@ -57,6 +60,8 @@ assert.doesNotMatch(playerView, /refreshTrackState/)
 assert.match(playerView, /subtitle\.kind === 'cachedExternal'[\s\S]*isNativeAndroidPlayer && !videoReady\.value/)
 assert.match(playerView, /watch\(\[audioTracks, subtitleTracks, videoReady\],[\s\S]*restorePendingTrackPreference\(\)/)
 assert.match(playerView, /async function saveMediaPreferenceNow/)
+assert.match(playerView, /videoBrightness: videoBrightness\.value/)
+assert.match(playerView, /await setVideoBrightness\(preference\.videoBrightness\)/)
 assert.match(playerView, /persistedSubtitlePreference/)
 assert.match(playerView, /persistedAudioPreference/)
 assert.match(playerView, /trackStateReady\.value/)
@@ -138,6 +143,8 @@ assert.match(settingsView, /saveNavigationShortcutBindings/)
 assert.match(settingsView, /savePlayerShortcutBindings/)
 assert.match(settingsView, /playerShortcutEntries/)
 assert.match(settingsView, /longPressPlaybackSpeed/)
+assert.match(settingsView, /mobileEpisodeLayout/)
+assert.match(settingsView, /androidBackgroundPlaybackEnabled/)
 for (const setting of ['videoOutput', 'hardwareDecoder', 'cacheMode', 'demuxerMaxBytesMb', 'videoSync'])
   assert.match(settingsView, new RegExp(setting))
 
@@ -145,6 +152,8 @@ const interactionSettings = await source('../src/services/playerInteractionSetti
 assert.match(interactionSettings, /videoOutput: 'gpu-next'/)
 assert.match(interactionSettings, /hardwareDecoder: 'auto-safe'/)
 assert.match(interactionSettings, /demuxerMaxBytesMb: 64/)
+assert.match(interactionSettings, /mobileEpisodeLayout: 'horizontal'/)
+assert.match(interactionSettings, /androidBackgroundPlaybackEnabled: true/)
 
 const shortcut = shortcutFromKeyboardEvent({
   code: 'KeyH',
@@ -226,4 +235,7 @@ console.log(JSON.stringify({
   manualLocalSubtitleImport: true,
   routeLeaveStopsAndHidesNativeVideo: true,
   configurablePlayerEngine: true,
+  perMediaVideoBrightness: true,
+  configurableMobileEpisodeLayout: true,
+  configurableAndroidBackgroundPlayback: true,
 }, null, 2))
