@@ -8,7 +8,7 @@ import { removeCredential } from '@/services/datasource/credentialStore'
 import { dataSourceManager } from '@/services/datasource/manager'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
-import { deletePlaybackHistoryForSource, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 
 const STORAGE_KEY = 'ohmycine-datasources'
@@ -587,6 +587,11 @@ function mergeContinueWatchingSections(sections: readonly HomeSection[], localIt
 }
 
 function mergeContinueWatchingItem(localItem: MediaItem, providerItem: MediaItem): MediaItem {
+  const providerResumePosition = usableResumePosition(providerItem)
+  const providerProgress = providerResumePosition == null
+    ? undefined
+    : providerItem.progress ?? progressRatio(providerResumePosition, providerItem.duration)
+
   return {
     ...localItem,
     ...providerItem,
@@ -596,11 +601,24 @@ function mergeContinueWatchingItem(localItem: MediaItem, providerItem: MediaItem
     titleLogoUrl: firstNonEmpty(providerItem.titleLogoUrl, localItem.titleLogoUrl),
     duration: providerItem.duration ?? localItem.duration,
     path: providerItem.path || localItem.path,
-    resumePosition: localItem.resumePosition ?? providerItem.resumePosition,
-    progress: localItem.progress ?? providerItem.progress,
-    progressSource: providerItem.progressSource,
+    resumePosition: providerResumePosition ?? localItem.resumePosition,
+    progress: providerProgress ?? localItem.progress,
+    progressSource: providerResumePosition != null ? providerItem.progressSource : localItem.progressSource,
     seriesName: firstNonEmpty(providerItem.seriesName, localItem.seriesName),
   }
+}
+
+function usableResumePosition(item: MediaItem): number | undefined {
+  const position = item.resumePosition
+  if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
+    return undefined
+  return isCompletedPosition(position, item.duration) ? undefined : position
+}
+
+function progressRatio(position: number, duration: number | undefined): number | undefined {
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0)
+    return undefined
+  return Math.max(0, Math.min(1, position / duration))
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {

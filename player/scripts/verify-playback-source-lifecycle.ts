@@ -58,6 +58,21 @@ assert.match(playerView, /syncProviderPlaybackStarted\(\)/)
 assert.match(playerView, /window\.setInterval\(\(\) => \{\s+void saveCurrentProgress\(false\)/)
 assert.match(playerView, /if \(!shouldSaveLocalProgress\(payload, force, event\)\) \{[\s\S]*event !== 'progress'[\s\S]*syncProviderProgress\(payload, providerEvent\)/)
 assert.match(playerView, /saveCurrentProgress\(true, 'stopped'\)/)
+assert.match(playerView, /pendingResumeSeek = \{ path: mediaPath\.value, position \}/)
+assert.match(playerView, /watch\(\[videoReady, duration\],[\s\S]*applyPendingResumeSeekWhenReady\(\)/)
+assert.match(playerView, /function effectivePlaybackPosition\(\)[\s\S]*pendingResumeSeek[\s\S]*pending\.position/)
+assert.match(playerView, /if \(!playbackProgressReady\)\s+return[\s\S]*const payload = currentHistoryPayload\(\)/)
+assert.match(playerView, /playbackProgressReady = true[\s\S]*syncProviderPlaybackStarted\(\)/)
+assert.match(playerView, /const position = shouldResumePosition\(fallbackPosition, fallbackDuration\)[\s\S]*fallbackPosition[\s\S]*shouldResumePlayback\(saved\)/)
+assert.match(playerView, /seek: seekMpv/)
+assert.match(playerView, /async function seek\(position: number\)[\s\S]*cancelPendingResumeSeek\(\)[\s\S]*seekMpv\(position\)/)
+
+const homeView = await readFile(fileURLToPath(new URL('../src/views/HomeView.vue', import.meta.url)), 'utf8')
+assert.match(homeView, /本机记录 ·/)
+assert.match(homeView, /const localResume = providerResumeIndex >= 0 \? null : newestLocalResume\(progressEntries\)/)
+
+const mediaDetailView = await readFile(fileURLToPath(new URL('../src/views/MediaDetailView.vue', import.meta.url)), 'utf8')
+assert.match(mediaDetailView, /function resumePositionForItem\(item: MediaItem\)[\s\S]*isResumePosition\(item\.resumePosition, item\.duration\)[\s\S]*return item\.resumePosition[\s\S]*shouldResumePlayback\(entry\)/)
 
 const historyCommand = await readFile(fileURLToPath(new URL('../src-tauri/src/commands/history.rs', import.meta.url)), 'utf8')
 assert.match(historyCommand, /DELETE FROM playback_history WHERE source_id = \?1/)
@@ -67,6 +82,8 @@ assert.match(preferenceCommand, /DELETE FROM media_playback_preferences WHERE so
 
 const dataSourceStore = await readFile(fileURLToPath(new URL('../src/stores/datasource.ts', import.meta.url)), 'utf8')
 assert.match(dataSourceStore, /deleteMediaPlaybackPreferencesForSource\(id\)/)
+assert.match(dataSourceStore, /const providerResumePosition = usableResumePosition\(providerItem\)/)
+assert.match(dataSourceStore, /resumePosition: providerResumePosition \?\? localItem\.resumePosition/)
 
 console.log(JSON.stringify({
   checkedViews: viewFiles.length,
@@ -74,6 +91,10 @@ console.log(JSON.stringify({
   embyMediaSourceId: embyContext?.mediaSourceId,
   embyPlaybackSessionLifecycle: true,
   embyShortPlaybackStopReported: true,
+  startupProgressWaitsForResumeResolution: true,
+  providerResumePrecedesLocalFallback: true,
+  delayedResumeWaitsForMediaReady: true,
+  pendingResumeProtectsProviderProgress: true,
   sourceScopedHistoryDelete: true,
   sourceScopedPlaybackPreferenceDelete: true,
 }, null, 2))
