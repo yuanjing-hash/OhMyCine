@@ -13,6 +13,8 @@ const MIN_PLAYBACK_SPEED: f64 = 0.25;
 const MAX_PLAYBACK_SPEED: f64 = 4.0;
 const MIN_SUBTITLE_DELAY: f64 = -30.0;
 const MAX_SUBTITLE_DELAY: f64 = 30.0;
+const MIN_VIDEO_BRIGHTNESS: f64 = 0.0;
+const MAX_VIDEO_BRIGHTNESS: f64 = 100.0;
 const MAX_ID_LENGTH: usize = 512;
 const MAX_IDENTITY_LENGTH: usize = 2048;
 const MAX_TRACK_TEXT_LENGTH: usize = 256;
@@ -58,6 +60,7 @@ pub struct MediaPlaybackPreferenceUpsert {
     audio: Option<MediaTrackPreference>,
     subtitle_delay: f64,
     playback_speed: f64,
+    video_brightness: f64,
     aspect_mode: String,
     fit_mode: String,
 }
@@ -71,6 +74,7 @@ pub struct MediaPlaybackPreference {
     audio: Option<MediaTrackPreference>,
     subtitle_delay: f64,
     playback_speed: f64,
+    video_brightness: f64,
     aspect_mode: String,
     fit_mode: String,
     updated_at: i64,
@@ -151,6 +155,30 @@ struct PreferenceStorage {
     conn: Connection,
 }
 
+fn ensure_media_preference_column(
+    conn: &Connection,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(media_playback_preferences)")
+        .map_err(|_| "Failed to inspect player preferences.".to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| "Failed to inspect player preferences.".to_string())?;
+    for existing in columns {
+        if existing.map_err(|_| "Failed to inspect player preferences.".to_string())? == column {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("ALTER TABLE media_playback_preferences ADD COLUMN {column} {definition}"),
+        [],
+    )
+    .map_err(|_| "Failed to upgrade player preferences.".to_string())?;
+    Ok(())
+}
+
 impl PreferenceStorage {
     fn open(app: &AppHandle) -> Result<Self, String> {
         let db_path = storage::data_file(app, DATABASE_FILE)?;
@@ -170,6 +198,7 @@ impl PreferenceStorage {
                 audio_json TEXT,
                 subtitle_delay REAL NOT NULL DEFAULT 0,
                 playback_speed REAL NOT NULL DEFAULT 1,
+                video_brightness REAL NOT NULL DEFAULT 50,
                 aspect_mode TEXT NOT NULL DEFAULT 'default',
                 fit_mode TEXT NOT NULL DEFAULT 'fit',
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -179,6 +208,7 @@ impl PreferenceStorage {
                 ON media_playback_preferences (source_id);",
         )
         .map_err(|_| "Failed to initialize player preferences.".to_string())?;
+        ensure_media_preference_column(&conn, "video_brightness", "REAL NOT NULL DEFAULT 50")?;
 
         Ok(Self { conn })
     }
@@ -226,7 +256,7 @@ impl PreferenceStorage {
             .conn
             .query_row(
                 "SELECT source_id, media_identity, subtitle_json, audio_json, subtitle_delay,
-                    playback_speed, aspect_mode, fit_mode, updated_at
+                    playback_speed, video_brightness, aspect_mode, fit_mode, updated_at
                  FROM media_playback_preferences WHERE identity_key = ?1",
                 params![media_identity_key(
                     &identity.source_id,
@@ -240,9 +270,10 @@ impl PreferenceStorage {
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, f64>(4)?,
                         row.get::<_, f64>(5)?,
-                        row.get::<_, String>(6)?,
+                        row.get::<_, f64>(6)?,
                         row.get::<_, String>(7)?,
-                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, i64>(9)?,
                     ))
                 },
             )
@@ -256,6 +287,7 @@ impl PreferenceStorage {
             audio_json,
             subtitle_delay,
             playback_speed,
+            video_brightness,
             aspect_mode,
             fit_mode,
             updated_at,
@@ -271,6 +303,7 @@ impl PreferenceStorage {
             .and_then(|value| normalize_track_preference(value).ok());
         validate_subtitle_delay(subtitle_delay)?;
         validate_playback_speed(playback_speed)?;
+        validate_video_brightness(video_brightness)?;
         validate_aspect_mode(&aspect_mode)?;
         validate_fit_mode(&fit_mode)?;
 
@@ -281,6 +314,7 @@ impl PreferenceStorage {
             audio,
             subtitle_delay,
             playback_speed,
+            video_brightness,
             aspect_mode,
             fit_mode,
             updated_at,
@@ -307,8 +341,8 @@ impl PreferenceStorage {
             .execute(
                 "INSERT INTO media_playback_preferences (
                     identity_key, source_id, media_identity, subtitle_json, audio_json,
-                    subtitle_delay, playback_speed, aspect_mode, fit_mode, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch(), unixepoch())
+                    subtitle_delay, playback_speed, video_brightness, aspect_mode, fit_mode, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch(), unixepoch())
                 ON CONFLICT(identity_key) DO UPDATE SET
                     source_id = excluded.source_id,
                     media_identity = excluded.media_identity,
@@ -316,6 +350,7 @@ impl PreferenceStorage {
                     audio_json = excluded.audio_json,
                     subtitle_delay = excluded.subtitle_delay,
                     playback_speed = excluded.playback_speed,
+                    video_brightness = excluded.video_brightness,
                     aspect_mode = excluded.aspect_mode,
                     fit_mode = excluded.fit_mode,
                     updated_at = unixepoch()",
@@ -327,6 +362,7 @@ impl PreferenceStorage {
                     audio_json,
                     preference.subtitle_delay,
                     preference.playback_speed,
+                    preference.video_brightness,
                     preference.aspect_mode,
                     preference.fit_mode,
                 ],
@@ -363,6 +399,14 @@ fn validate_playback_speed(speed: f64) -> Result<(), String> {
     }
 }
 
+fn validate_video_brightness(value: f64) -> Result<(), String> {
+    if value.is_finite() && (MIN_VIDEO_BRIGHTNESS..=MAX_VIDEO_BRIGHTNESS).contains(&value) {
+        Ok(())
+    } else {
+        Err("Invalid video brightness.".to_string())
+    }
+}
+
 fn normalize_media_preference(
     app: &AppHandle,
     preference: MediaPlaybackPreferenceUpsert,
@@ -373,6 +417,7 @@ fn normalize_media_preference(
     })?;
     validate_subtitle_delay(preference.subtitle_delay)?;
     validate_playback_speed(preference.playback_speed)?;
+    validate_video_brightness(preference.video_brightness)?;
     validate_aspect_mode(&preference.aspect_mode)?;
     validate_fit_mode(&preference.fit_mode)?;
     Ok(MediaPlaybackPreferenceUpsert {
@@ -388,6 +433,7 @@ fn normalize_media_preference(
             .transpose()?,
         subtitle_delay: preference.subtitle_delay,
         playback_speed: preference.playback_speed,
+        video_brightness: preference.video_brightness,
         aspect_mode: preference.aspect_mode,
         fit_mode: preference.fit_mode,
     })
@@ -618,6 +664,7 @@ mod tests {
                 audio_json TEXT,
                 subtitle_delay REAL NOT NULL,
                 playback_speed REAL NOT NULL,
+                video_brightness REAL NOT NULL DEFAULT 50,
                 aspect_mode TEXT NOT NULL,
                 fit_mode TEXT NOT NULL,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),

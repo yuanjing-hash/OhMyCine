@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use super::player_shared::{
-    sanitize_http_headers, MpvEngineSettings, MpvHttpHeader, MpvOrientationState,
+    sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings, MpvHttpHeader,
+    MpvOrientationState,
 };
 use crate::mpv::{
     mobile::{AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
@@ -16,6 +17,7 @@ use crate::mpv::{
 struct LoadPayload {
     path: String,
     headers: Vec<MpvHttpHeader>,
+    title: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -45,6 +47,12 @@ struct OrientationPayload {
     mode: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrightnessPayload {
+    level: f64,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MpvTrack {
@@ -70,6 +78,7 @@ pub struct MpvTrackState {
 pub async fn mpv_load(
     path: String,
     headers: Option<Vec<MpvHttpHeader>>,
+    title: Option<String>,
     state: State<'_, AndroidMpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
@@ -82,7 +91,14 @@ pub async fn mpv_load(
     } else {
         (path, headers)
     };
-    let payload = LoadPayload { path, headers };
+    let payload = LoadPayload {
+        path,
+        headers,
+        title: title.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.chars().take(160).collect())
+        }),
+    };
     wait_for_android_surface(state.inner()).await?;
     state.run("load", payload).await
 }
@@ -208,6 +224,26 @@ pub async fn mpv_set_orientation(
     }
     state
         .run("setOrientation", OrientationPayload { mode })
+        .await
+}
+
+#[tauri::command]
+pub async fn mpv_display_brightness_state(
+    state: State<'_, AndroidMpvState>,
+) -> Result<MpvDisplayBrightnessState, String> {
+    state.run("displayBrightnessState", ()).await
+}
+
+#[tauri::command]
+pub async fn mpv_set_display_brightness(
+    level: f64,
+    state: State<'_, AndroidMpvState>,
+) -> Result<MpvDisplayBrightnessState, String> {
+    if !level.is_finite() || !(0.0..=100.0).contains(&level) {
+        return Err("屏幕亮度无效。".to_string());
+    }
+    state
+        .run("setDisplayBrightness", BrightnessPayload { level })
         .await
 }
 

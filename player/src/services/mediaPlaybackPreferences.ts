@@ -25,6 +25,7 @@ export interface MediaPlaybackPreference extends MediaPlaybackPreferenceIdentity
   audio?: MediaTrackPreference | null
   subtitleDelay: number
   playbackSpeed: number
+  videoBrightness: number
   aspectMode: VideoAspectMode
   fitMode: VideoFitMode
   updatedAt: number

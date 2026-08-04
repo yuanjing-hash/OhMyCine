@@ -13,6 +13,7 @@ const props = defineProps<{
   open: boolean
   aspectMode: VideoAspectMode
   fitMode: VideoFitMode
+  videoBrightness: number
   errorMessage: string | null
 }>()
 
@@ -21,6 +22,7 @@ const emit = defineEmits<{
   interactionChange: [active: boolean]
   setAspectMode: [mode: VideoAspectMode]
   setFitMode: [mode: VideoFitMode]
+  setVideoBrightness: [level: number]
 }>()
 
 const panelRef = ref<HTMLElement | null>(null)
@@ -155,6 +157,33 @@ watch(
       </p>
 
       <div class="mt-4 space-y-3">
+        <article class="settings-section rounded-3xl p-3">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-semibold tracking-[0.18em] text-white/35">
+                播放器亮度
+              </p>
+              <h3 class="mt-1 text-sm font-semibold text-white/88">
+                画面亮度
+              </h3>
+            </div>
+            <span class="status-pill">{{ Math.round(videoBrightness) }}%</span>
+          </div>
+          <input
+            class="mt-3 w-full"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            :value="videoBrightness"
+            aria-label="播放器画面亮度"
+            @input="emit('setVideoBrightness', Number(($event.target as HTMLInputElement).value))"
+          >
+          <p class="mt-2 text-xs leading-5 text-white/48">
+            只调整 mpv 视频画面，不改变设备或显示器亮度。
+          </p>
+        </article>
+
         <article class="settings-section rounded-3xl p-3">
           <div class="flex items-start justify-between gap-3">
             <div>

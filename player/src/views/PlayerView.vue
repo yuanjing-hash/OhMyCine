@@ -43,6 +43,8 @@ const REWIND_HOLD_INTERVAL = 220
 const MEDIA_PREFERENCE_SAVE_DELAY = 180
 const TOUCH_FEEDBACK_HIDE_DELAY = 850
 const TOUCH_CLICK_SUPPRESSION_MS = 650
+const TOUCH_MOVEMENT_THRESHOLD = 24
+const TOUCH_AXIS_DOMINANCE = 1.25
 
 interface ContextMenuPosition {
   x: number
@@ -190,6 +192,7 @@ const {
   duration,
   volume,
   videoBrightness,
+  displayBrightness,
   playbackSpeed,
   subtitleDelay,
   subtitleTracks,
@@ -222,6 +225,7 @@ const {
   seekRelative: seekRelativeMpv,
   setVolume,
   setVideoBrightness,
+  setDisplayBrightness,
   applyPlaybackSpeed,
   setPlaybackSpeed,
   applySubtitleDelay,
@@ -386,6 +390,8 @@ async function flushTouchLevelUpdates() {
       try {
         if (update.kind === 'volume')
           await setVolume(update.value)
+        else if (isNativeAndroidPlayer)
+          await setDisplayBrightness(update.value)
         else
           await setVideoBrightness(update.value)
       }
@@ -403,6 +409,14 @@ function isTouchGestureTarget(target: EventTarget | null): boolean {
   return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
 }
 
+function isProtectedSystemGestureStart(event: PointerEvent, bounds: DOMRect): boolean {
+  if (!isNativeAndroidPlayer || event.pointerType !== 'touch')
+    return false
+  const topGuard = Math.max(48, Math.min(88, bounds.height * 0.08))
+  const bottomGuard = Math.max(24, Math.min(48, bounds.height * 0.04))
+  return event.clientY - bounds.top <= topGuard || bounds.bottom - event.clientY <= bottomGuard
+}
+
 function handlePlayerTouchPointerDown(event: PointerEvent) {
   const simulatedWithMouse = event.pointerType === 'mouse' && event.altKey && event.button === 0
   if ((event.pointerType !== 'touch' && !simulatedWithMouse) || !hasMedia.value || touchGestureSession || !isTouchGestureTarget(event.target))
@@ -412,8 +426,10 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
   if (!host)
     return
 
-  event.preventDefault()
   const bounds = host.getBoundingClientRect()
+  if (isProtectedSystemGestureStart(event, bounds))
+    return
+  event.preventDefault()
   host.setPointerCapture(event.pointerId)
   suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
   touchGestureSession = {
@@ -429,7 +445,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
     startPosition: currentTime.value,
     targetPosition: currentTime.value,
     startVolume: volume.value,
-    startBrightness: videoBrightness.value,
+    startBrightness: isNativeAndroidPlayer ? displayBrightness.value : videoBrightness.value,
     startedAt: Date.now(),
     leftSide: event.clientX < bounds.left + bounds.width / 2,
   }
@@ -447,7 +463,12 @@ function handlePlayerTouchPointerMove(event: PointerEvent) {
   if (session.mode === 'pending') {
     if (session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated)
       return
-    const axis = resolveTouchGestureAxis(deltaX, deltaY)
+    const axis = resolveTouchGestureAxis(
+      deltaX,
+      deltaY,
+      session.simulatedWithMouse ? 12 : TOUCH_MOVEMENT_THRESHOLD,
+      session.simulatedWithMouse ? 1 : TOUCH_AXIS_DOMINANCE,
+    )
     if (axis === 'pending')
       return
     if (session.holdArrowStarted) {
@@ -472,7 +493,7 @@ function handlePlayerTouchPointerMove(event: PointerEvent) {
   if (session.mode === 'brightness') {
     const level = touchVerticalLevel(session.startBrightness, deltaY, session.height)
     queueTouchLevelUpdate('brightness', level)
-    showTouchFeedback({ kind: 'brightness', title: '亮度', value: `${Math.round(level)}%`, percent: level })
+    showTouchFeedback({ kind: 'brightness', title: isNativeAndroidPlayer ? '屏幕亮度' : '播放器亮度', value: `${Math.round(level)}%`, percent: level })
     return
   }
 
@@ -540,6 +561,17 @@ function handleTouchTap(x: number, y: number) {
     lastTouchTap = null
     toggleChromeFromTouch()
   }, 320)
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden)
+    return
+  const session = touchGestureSession
+  touchGestureSession = null
+  pendingTouchLevelUpdate = null
+  lastTouchTap = null
+  if (session?.holdArrowStarted)
+    void releaseHeldArrow(false, 'touch')
 }
 
 function toggleChromeFromTouch() {
@@ -940,6 +972,7 @@ async function saveMediaPreferenceNow(identity = currentMediaPreferenceIdentity(
     audio: audioPreference,
     subtitleDelay: subtitleDelay.value,
     playbackSpeed: playbackSpeed.value,
+    videoBrightness: videoBrightness.value,
     aspectMode: videoAspectMode.value,
     fitMode: videoFitMode.value,
   })
@@ -965,6 +998,7 @@ async function restoreMediaPlaybackPreference() {
   try {
     await applyPlaybackSpeed(preference.playbackSpeed)
     await applySubtitleDelay(preference.subtitleDelay)
+    await setVideoBrightness(preference.videoBrightness)
     await setVideoAspect(preference.aspectMode)
     await setVideoFit(preference.fitMode)
     pendingTrackPreference = {
@@ -1908,7 +1942,7 @@ watch(
         const request = await resolvePlaybackLoadRequest()
         mediaPath.value = request.url
         mediaHeaders.value = { ...(request.headers ?? {}) }
-        await load(request.url, { headers: request.headers })
+        await load(request.url, { headers: request.headers, title: mediaTitle.value })
         await restoreMediaPlaybackPreference()
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
@@ -1986,7 +2020,7 @@ async function handleFileDrop(path: string) {
   await ensureRenderInitialized()
   if (playbackCleanupStarted)
     return
-  await load(path)
+  await load(path, { title: mediaTitle.value })
   await restoreMediaPlaybackPreference()
   startHistorySaveTimer()
   await resumeSavedProgressIfAvailable()
@@ -2350,6 +2384,11 @@ async function handleSetVideoFit(mode: VideoFitMode) {
   await saveMediaPreferenceNow(undefined, true)
 }
 
+async function handleSetVideoBrightness(level: number) {
+  await setVideoBrightness(level)
+  await saveMediaPreferenceNow(undefined, true)
+}
+
 async function handleSetOrientationMode(mode: MpvOrientationMode) {
   await setOrientationMode(mode)
   const label = mode === 'landscape' ? '锁定横屏' : mode === 'portrait' ? '锁定竖屏' : '自动横屏'
@@ -2562,6 +2601,7 @@ onMounted(() => {
   window.addEventListener('keyup', handleGlobalKeyup)
   window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
   document.documentElement.addEventListener('mouseleave', handleApplicationPointerLeave)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
@@ -2600,6 +2640,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keyup', handleGlobalKeyup)
   window.removeEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
   document.documentElement.removeEventListener('mouseleave', handleApplicationPointerLeave)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
 watch(
@@ -2791,6 +2832,7 @@ watch(
         :current-audio="currentAudio"
         :video-aspect-mode="videoAspectMode"
         :video-fit-mode="videoFitMode"
+        :video-brightness="videoBrightness"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
         :mobile-layout="false"
@@ -2811,6 +2853,7 @@ watch(
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
+        @set-video-brightness="handleSetVideoBrightness"
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
@@ -2843,6 +2886,7 @@ watch(
         :current-audio="currentAudio"
         :video-aspect-mode="videoAspectMode"
         :video-fit-mode="videoFitMode"
+        :video-brightness="videoBrightness"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
         :orientation-supported="orientationSupported"
@@ -2863,6 +2907,7 @@ watch(
         @set-audio="handleSetAudio"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
+        @set-video-brightness="handleSetVideoBrightness"
         @set-orientation-mode="handleSetOrientationMode"
         @interaction-change="handleControlsInteraction"
       />

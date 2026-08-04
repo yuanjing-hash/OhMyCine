@@ -47,6 +47,7 @@ export interface KnownSubtitleTrackInput {
 
 export interface MpvLoadOptions {
   readonly headers?: Record<string, string>
+  readonly title?: string
 }
 
 interface MpvHttpHeaderPayload {
@@ -71,6 +72,11 @@ export type MpvOrientationMode = 'auto' | 'landscape' | 'portrait'
 interface MpvOrientationState {
   supported: boolean
   mode: MpvOrientationMode
+}
+
+interface MpvDisplayBrightnessState {
+  supported: boolean
+  level: number
 }
 
 export interface MpvRenderDiagnostics {
@@ -178,6 +184,7 @@ async function applyEngineSettings(): Promise<void> {
       cacheMode: settings.cacheMode,
       demuxerMaxBytesMb: settings.demuxerMaxBytesMb,
       videoSync: settings.videoSync,
+      backgroundPlaybackEnabled: settings.androidBackgroundPlaybackEnabled,
     },
   })
 }
@@ -257,6 +264,7 @@ export function useMpv() {
   const volume = ref(100)
   const isMuted = ref(false)
   const videoBrightness = ref(50)
+  const displayBrightness = ref(50)
   const playbackSpeed = ref(DEFAULT_PLAYBACK_SPEED)
   const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
@@ -456,6 +464,24 @@ export function useMpv() {
     orientationMode.value = state.mode
   }
 
+  async function refreshDisplayBrightness() {
+    try {
+      const state = await invoke<MpvDisplayBrightnessState>('mpv_display_brightness_state')
+      if (state.supported)
+        displayBrightness.value = Math.max(0, Math.min(100, state.level))
+    }
+    catch {
+      // Desktop and unsupported Android windows keep the neutral fallback value.
+    }
+  }
+
+  async function setDisplayBrightness(level: number) {
+    const next = Math.max(0, Math.min(100, level))
+    const state = await invoke<MpvDisplayBrightnessState>('mpv_set_display_brightness', { level: next })
+    if (state.supported)
+      displayBrightness.value = Math.max(0, Math.min(100, state.level))
+  }
+
   function scheduleTrackRefresh(delay: number) {
     const timer = window.setTimeout(() => {
       trackRefreshTimers.delete(timer)
@@ -624,13 +650,14 @@ export function useMpv() {
     videoFitMode.value = 'fit'
     await subtitleDelayCommand.catch(() => undefined)
     await applyEngineSettings()
-    await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
+    await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers), title: options.title })
     startBufferingPolling()
     try {
       await invoke<void>('mpv_resume')
       if (renderBackend.value === 'androidSurface')
         await refreshPlaybackDiagnostics()
       await refreshOrientationState()
+      await refreshDisplayBrightness()
       currentTime.value = 0
       isPlaying.value = true
       await applyPlaybackSpeed(playbackSpeed.value)
@@ -822,6 +849,7 @@ export function useMpv() {
     volume,
     isMuted,
     videoBrightness,
+    displayBrightness,
     playbackSpeed,
     subtitleDelay,
     subtitleTracks,
@@ -849,6 +877,8 @@ export function useMpv() {
     refreshTrackState,
     refreshOrientationState,
     setOrientationMode,
+    refreshDisplayBrightness,
+    setDisplayBrightness,
     setKnownSubtitleTracks,
     load,
     togglePause,

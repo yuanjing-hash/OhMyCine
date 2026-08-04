@@ -30,6 +30,7 @@ const props = defineProps<{
   currentAudio: number | null
   videoAspectMode: VideoAspectMode
   videoFitMode: VideoFitMode
+  videoBrightness: number
   trackError: string | null
   pictureSettingsError: string | null
   mobileLayout: boolean
@@ -53,6 +54,7 @@ const emit = defineEmits<{
   setAudio: [trackId: number]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
+  setVideoBrightness: [level: number]
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
@@ -671,7 +673,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
       </button>
     </div>
 
-    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :error-message="pictureSettingsError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" />
+    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" />
   </div>
 </template>
 

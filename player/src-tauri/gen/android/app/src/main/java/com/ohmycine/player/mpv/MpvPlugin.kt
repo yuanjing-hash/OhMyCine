@@ -1,10 +1,16 @@
 package com.ohmycine.player.mpv
 
+import android.Manifest
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.view.WindowManager
 import android.webkit.WebView
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -18,6 +24,7 @@ import app.tauri.plugin.Plugin
 class LoadArgs {
     lateinit var path: String
     var headers: List<HeaderArgs>? = null
+    var title: String? = null
 }
 
 @InvokeArg
@@ -56,20 +63,36 @@ class EngineSettingsArgs {
     lateinit var cacheMode: String
     var demuxerMaxBytesMb: Int = 64
     lateinit var videoSync: String
+    var backgroundPlaybackEnabled: Boolean = true
+}
+
+@InvokeArg
+class BrightnessArgs {
+    var level: Double = 50.0
 }
 
 @TauriPlugin
 class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     private var playbackActive = false
     private var orientationMode = "auto"
+    private var backgroundPlaybackEnabled = true
+    private var currentMediaTitle = "正在播放"
+    private var displayBrightnessLevel: Double? = null
+    private var originalWindowBrightness: Float? = null
 
     override fun load(webView: WebView) {
         MpvSurfaceHost.install(activity, webView)
     }
 
     override fun onDestroy(activity: androidx.appcompat.app.AppCompatActivity) {
+        PlaybackService.stop(activity)
         exitPlaybackMode()
         MpvSurfaceHost.destroy()
+    }
+
+    override fun onPause() {
+        if (playbackActive && !backgroundPlaybackEnabled)
+            runCatching { MpvSurfaceHost.pause(true) }
     }
 
     @Command
@@ -79,6 +102,8 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         try {
             val playablePath = preparePlayablePath(args.path)
             MpvSurfaceHost.load(playablePath, args.headers.orEmpty().map { MpvHeader(it.name, it.value) })
+            currentMediaTitle = args.title?.trim()?.take(160).takeUnless { it.isNullOrEmpty() } ?: "正在播放"
+            syncBackgroundPlaybackService()
         } catch (error: Exception) {
             exitPlaybackMode()
             throw error
@@ -95,6 +120,10 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
             demuxerMaxBytesMb = args.demuxerMaxBytesMb,
             videoSync = args.videoSync,
         ))
+        backgroundPlaybackEnabled = args.backgroundPlaybackEnabled
+        if (backgroundPlaybackEnabled)
+            requestNotificationPermission()
+        syncBackgroundPlaybackService()
     }
 
     @Command
@@ -112,6 +141,7 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun stop(invoke: Invoke) = resolve(invoke) {
         MpvSurfaceHost.stop()
+        PlaybackService.stop(activity)
         exitPlaybackMode()
     }
 
@@ -167,6 +197,26 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         orientationState()
     }
 
+    @Command
+    fun displayBrightnessState(invoke: Invoke) = resolveObject(invoke) {
+        displayBrightnessState()
+    }
+
+    @Command
+    fun setDisplayBrightness(invoke: Invoke) = resolveObject(invoke) {
+        val level = invoke.parseArgs(BrightnessArgs::class.java).level
+        require(level.isFinite() && level in 0.0..100.0) { "屏幕亮度无效。" }
+        if (originalWindowBrightness == null)
+            originalWindowBrightness = activity.window.attributes.screenBrightness
+        displayBrightnessLevel = level
+        activity.runOnUiThread {
+            val attributes = activity.window.attributes
+            attributes.screenBrightness = (level / 100.0).toFloat().coerceIn(0.01f, 1f)
+            activity.window.attributes = attributes
+        }
+        displayBrightnessState()
+    }
+
     private fun enterPlaybackMode() {
         if (!playbackActive)
             orientationMode = "auto"
@@ -185,13 +235,21 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     private fun exitPlaybackMode() {
         playbackActive = false
         orientationMode = "auto"
+        PlaybackService.stop(activity)
         activity.runOnUiThread {
             WindowInsetsControllerCompat(activity.window, activity.window.decorView)
                 .show(WindowInsetsCompat.Type.systemBars())
             WindowCompat.setDecorFitsSystemWindows(activity.window, true)
             activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            originalWindowBrightness?.let { brightness ->
+                val attributes = activity.window.attributes
+                attributes.screenBrightness = brightness
+                activity.window.attributes = attributes
+            }
         }
+        originalWindowBrightness = null
+        displayBrightnessLevel = null
     }
 
     private fun applyOrientationMode() {
@@ -206,6 +264,33 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         "supported" to true,
         "mode" to orientationMode,
     )
+
+    private fun displayBrightnessState(): Map<String, Any> = mapOf(
+        "supported" to true,
+        "level" to (displayBrightnessLevel ?: systemBrightnessLevel()),
+    )
+
+    private fun systemBrightnessLevel(): Double {
+        val value = runCatching {
+            Settings.System.getInt(activity.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+        }.getOrDefault(128)
+        return (value / 255.0 * 100.0).coerceIn(0.0, 100.0)
+    }
+
+    private fun syncBackgroundPlaybackService() {
+        if (playbackActive && backgroundPlaybackEnabled)
+            PlaybackService.start(activity, currentMediaTitle)
+        else
+            PlaybackService.stop(activity)
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU)
+            return
+        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
+            return
+        ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9415)
+    }
 
     private fun preparePlayablePath(path: String): String {
         if (!path.startsWith("content://", ignoreCase = true))
