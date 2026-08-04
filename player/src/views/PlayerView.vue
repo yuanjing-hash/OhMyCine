@@ -193,6 +193,7 @@ const {
   volume,
   videoBrightness,
   displayBrightness,
+  displayBrightnessSupported,
   playbackSpeed,
   subtitleDelay,
   subtitleTracks,
@@ -390,10 +391,8 @@ async function flushTouchLevelUpdates() {
       try {
         if (update.kind === 'volume')
           await setVolume(update.value)
-        else if (isNativeAndroidPlayer)
-          await setDisplayBrightness(update.value)
         else
-          await setVideoBrightness(update.value)
+          await setDisplayBrightness(update.value)
       }
       catch {
         // A failed frame update must not leave the gesture state locked.
@@ -445,7 +444,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
     startPosition: currentTime.value,
     targetPosition: currentTime.value,
     startVolume: volume.value,
-    startBrightness: isNativeAndroidPlayer ? displayBrightness.value : videoBrightness.value,
+    startBrightness: displayBrightness.value,
     startedAt: Date.now(),
     leftSide: event.clientX < bounds.left + bounds.width / 2,
   }
@@ -491,9 +490,13 @@ function handlePlayerTouchPointerMove(event: PointerEvent) {
   }
 
   if (session.mode === 'brightness') {
+    if (!displayBrightnessSupported.value) {
+      showTouchFeedback({ kind: 'brightness', title: '屏幕亮度', value: '当前显示器不支持' })
+      return
+    }
     const level = touchVerticalLevel(session.startBrightness, deltaY, session.height)
     queueTouchLevelUpdate('brightness', level)
-    showTouchFeedback({ kind: 'brightness', title: isNativeAndroidPlayer ? '屏幕亮度' : '播放器亮度', value: `${Math.round(level)}%`, percent: level })
+    showTouchFeedback({ kind: 'brightness', title: '屏幕亮度', value: `${Math.round(level)}%`, percent: level })
     return
   }
 

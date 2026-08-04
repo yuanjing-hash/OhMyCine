@@ -164,7 +164,22 @@ assert.match(playerView, /isProtectedSystemGestureStart/)
 assert.match(playerView, /topGuard = Math\.max\(48/)
 assert.match(playerView, /setDisplayBrightness\(update\.value\)/)
 assert.match(playerView, /屏幕亮度/)
+assert.match(playerView, /displayBrightnessSupported/)
+assert.doesNotMatch(playerView, /else\s+await setVideoBrightness\(update\.value\)/)
 assert.match(playerView, /document\.addEventListener\('visibilitychange', handleVisibilityChange\)/)
+
+const desktopBrightness = await source('src-tauri/src/commands/display_brightness.rs')
+assert.match(desktopBrightness, /GetPhysicalMonitorsFromHMONITOR/)
+assert.match(desktopBrightness, /GetMonitorBrightness/)
+assert.match(desktopBrightness, /SetMonitorBrightness/)
+assert.match(desktopBrightness, /WmiMonitorBrightness/)
+assert.match(desktopBrightness, /WmiMonitorBrightnessMethods/)
+assert.match(desktopBrightness, /WmiSetBrightness/)
+assert.match(desktopBrightness, /desktop_window_handle/)
+
+const cargoToml = await source('src-tauri/Cargo.toml')
+assert.match(cargoToml, /wmi = \{ version = "0\.17\.2"/)
+assert.match(cargoToml, /"Win32_Devices_Display"/)
 
 const videoPlayer = await source('src/components/player/VideoPlayer.vue')
 assert.match(videoPlayer, /等待播放中/)
@@ -210,4 +225,5 @@ console.log(JSON.stringify({
   touchGestureEdgeProtection: true,
   intentionalTouchProgressSeeking: true,
   separateDisplayAndVideoBrightness: true,
+  windowsSystemDisplayBrightness: true,
 }, null, 2))
