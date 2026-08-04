@@ -25,7 +25,7 @@ import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/service
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
-import { downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
+import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const AUTO_HIDE_DELAY = 3000
@@ -128,6 +128,7 @@ const subtitleSearchLoading = ref(false)
 const subtitleDownloadingId = ref<string | null>(null)
 const localSubtitleImporting = ref(false)
 const subtitleSearchError = ref<string | null>(null)
+const subtitleSearchProviderSummary = ref('')
 const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSettings().defaultLanguage)
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
@@ -153,6 +154,8 @@ let activeCachedSubtitlePath: string | null = null
 let mediaPreferenceSaveTimer: number | undefined
 let mediaPreferenceRestoreGeneration = 0
 let restoringMediaPreference = false
+let persistedSubtitlePreference: MediaSubtitlePreference | null | undefined
+let persistedAudioPreference: MediaTrackPreference | null | undefined
 let pendingTrackPreference: {
   preference: MediaPlaybackPreference
   generation: number
@@ -191,6 +194,7 @@ const {
   audioTracks,
   currentSubtitle,
   currentAudio,
+  trackStateReady,
   videoAspectMode,
   videoFitMode,
   renderStatus,
@@ -914,19 +918,34 @@ function scheduleMediaPreferenceSave() {
   }, MEDIA_PREFERENCE_SAVE_DELAY)
 }
 
-async function saveMediaPreferenceNow(identity = currentMediaPreferenceIdentity()): Promise<boolean> {
+async function saveMediaPreferenceNow(identity = currentMediaPreferenceIdentity(), force = false): Promise<boolean> {
   clearMediaPreferenceSaveTimer()
-  if (!identity || restoringMediaPreference)
+  if (!identity || (restoringMediaPreference && !force))
     return false
-  return saveMediaPlaybackPreference({
+  const subtitlePreference = persistedSubtitlePreference !== undefined
+    ? persistedSubtitlePreference
+    : trackStateReady.value
+      ? currentSubtitlePreference()
+      : null
+  const audioPreference = persistedAudioPreference !== undefined
+    ? persistedAudioPreference
+    : trackStateReady.value
+      ? currentAudioPreference()
+      : null
+  const saved = await saveMediaPlaybackPreference({
     ...identity,
-    subtitle: currentSubtitlePreference(),
-    audio: currentAudioPreference(),
+    subtitle: subtitlePreference,
+    audio: audioPreference,
     subtitleDelay: subtitleDelay.value,
     playbackSpeed: playbackSpeed.value,
     aspectMode: videoAspectMode.value,
     fitMode: videoFitMode.value,
   })
+  if (saved) {
+    persistedSubtitlePreference = subtitlePreference
+    persistedAudioPreference = audioPreference
+  }
+  return saved
 }
 
 async function restoreMediaPlaybackPreference() {
@@ -938,6 +957,8 @@ async function restoreMediaPlaybackPreference() {
   if (!preference || generation !== mediaPreferenceRestoreGeneration || playbackCleanupStarted)
     return
 
+  persistedSubtitlePreference = preference.subtitle ?? null
+  persistedAudioPreference = preference.audio ?? null
   restoringMediaPreference = true
   try {
     await applyPlaybackSpeed(preference.playbackSpeed)
@@ -968,8 +989,12 @@ async function restorePendingTrackPreference() {
   try {
     if (!pending.audioRestored)
       pending.audioRestored = await restoreAudioPreference(pending.preference)
+    if (pending !== pendingTrackPreference || pending.generation !== mediaPreferenceRestoreGeneration)
+      return
     if (!pending.subtitleRestored)
       pending.subtitleRestored = await restoreSubtitlePreference(pending.preference)
+    if (pending !== pendingTrackPreference || pending.generation !== mediaPreferenceRestoreGeneration)
+      return
     if (pending === pendingTrackPreference && pending.audioRestored && pending.subtitleRestored)
       pendingTrackPreference = null
   }
@@ -982,6 +1007,11 @@ async function restorePendingTrackPreference() {
 function cancelPendingTrackPreferenceRestore() {
   mediaPreferenceRestoreGeneration += 1
   pendingTrackPreference = null
+}
+
+function resetPersistedTrackPreferences() {
+  persistedSubtitlePreference = undefined
+  persistedAudioPreference = undefined
 }
 
 async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
@@ -1043,6 +1073,11 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
 function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: readonly T[], preference: MediaTrackPreference | null | undefined): T | null {
   if (!preference)
     return null
+  if (preference.trackId != null) {
+    const exactTrack = tracks.find(track => numericTrackId(track) === preference.trackId)
+    if (exactTrack)
+      return exactTrack
+  }
   let best: { track: T, score: number } | null = null
   for (const track of tracks) {
     let score = 0
@@ -1054,9 +1089,6 @@ function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: rea
       score += 2
     if (preference.channels != null && track.channels === preference.channels)
       score += 2
-    const trackId = numericTrackId(track)
-    if (preference.trackId != null && trackId === preference.trackId)
-      score += 1
     if (!best || score > best.score)
       best = { track, score }
   }
@@ -1064,7 +1096,7 @@ function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: rea
     ? 4
     : preference.codec || preference.channels != null
       ? 2
-      : 1
+      : Number.POSITIVE_INFINITY
   return best && best.score >= minimumScore ? best.track : null
 }
 
@@ -1261,8 +1293,16 @@ async function saveCurrentProgress(force = false, event: ProviderPlaybackProgres
     return
   }
 
-  if (!shouldSaveLocalProgress(payload, force, event))
+  if (!shouldSaveLocalProgress(payload, force, event)) {
+    if (event !== 'progress') {
+      const providerSync = syncProviderProgress(payload, providerEvent)
+      if (shouldRefreshHomeAfterProgressEvent(event, providerEvent))
+        void providerSync.finally(scheduleHomeSectionsRefreshAfterPlayback)
+      else
+        void providerSync
+    }
     return
+  }
 
   const saved = await savePlaybackProgress(payload)
   if (saved)
@@ -1479,13 +1519,21 @@ function openSubtitleSearch() {
   subtitleSearchError.value = null
   subtitleSearchLoading.value = false
   subtitleDownloadingId.value = null
+  subtitleSearchProviderSummary.value = ''
 
   const sourceId = currentDisplaySourceId()
   const sourceType = store.configs.find(config => config.id === sourceId)?.type
   subtitleSearchRequiresSourceChoice.value = sourceType === 'emby'
   subtitleSearchOrigin.value = sourceType === 'emby' ? null : 'local'
   subtitleSearchOpen.value = true
+  if (subtitleSearchOrigin.value === 'local')
+    void refreshLocalSubtitleProviderSummary()
   revealChrome()
+}
+
+async function refreshLocalSubtitleProviderSummary() {
+  const context = currentSubtitleSearchContext()
+  subtitleSearchProviderSummary.value = await describeLocalSubtitleSearchProviders(context)
 }
 
 async function loadLocalSubtitleFile() {
@@ -1509,7 +1557,8 @@ async function loadLocalSubtitleFile() {
     const title = subtitleFileNameFromPath(selected) || '本地字幕'
     await addExternalSubtitle(imported.path, title, undefined, 'downloaded')
     activeCachedSubtitlePath = imported.path
-    await saveMediaPreferenceNow()
+    persistedSubtitlePreference = currentSubtitlePreference()
+    await saveMediaPreferenceNow(undefined, true)
     showTransientPlayerMessage(`已载入本地字幕：${title}`)
     scheduleChromeHide()
   }
@@ -1534,6 +1583,9 @@ function selectSubtitleSearchOrigin(origin: SubtitleSearchOrigin) {
   subtitleSearchOrigin.value = origin
   subtitleSearchResults.value = []
   subtitleSearchError.value = null
+  subtitleSearchProviderSummary.value = origin === 'emby' ? '本次查询：当前 Emby 服务器字幕提供器' : ''
+  if (origin === 'local')
+    void refreshLocalSubtitleProviderSummary()
 }
 
 function resetSubtitleSearchOrigin() {
@@ -1563,11 +1615,12 @@ async function searchSubtitles(language: SubtitleLanguage, keyword: string, keyw
       subtitleSearchResults.value = await source.searchSubtitles({ ...context, language })
     }
     else {
+      subtitleSearchProviderSummary.value = await describeLocalSubtitleSearchProviders(context)
       subtitleSearchResults.value = await searchLocalSubtitles({ ...context, language })
     }
 
     if (subtitleSearchResults.value.length === 0)
-      subtitleSearchError.value = '没有找到符合当前媒体和语言的字幕，可以切换语言或更换搜索来源。'
+      subtitleSearchError.value = `${subtitleSearchProviderSummary.value || '已启用的字幕提供器'}没有返回符合当前媒体和语言的字幕，可以切换语言或关键词后重试。`
   }
   catch (error) {
     subtitleSearchError.value = toSafeErrorMessage(error, '字幕搜索失败。')
@@ -1604,7 +1657,8 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
       activeCachedSubtitlePath = downloaded.path
     }
 
-    await saveMediaPreferenceNow()
+    persistedSubtitlePreference = currentSubtitlePreference()
+    await saveMediaPreferenceNow(undefined, true)
 
     showTransientPlayerMessage(`已加载字幕：${result.title}`)
     subtitleSearchOpen.value = false
@@ -1764,6 +1818,7 @@ watch(
     await saveCurrentProgress(true, 'stopped')
     await saveMediaPreferenceNow()
     cancelPendingTrackPreferenceRestore()
+    resetPersistedTrackPreferences()
     clearMediaPreferenceSaveTimer()
     activeCachedSubtitlePath = null
     await releaseHeldArrow(false)
@@ -1839,6 +1894,7 @@ async function handleFileDrop(path: string) {
   await saveCurrentProgress(true, 'stopped')
   await saveMediaPreferenceNow()
   cancelPendingTrackPreferenceRestore()
+  resetPersistedTrackPreferences()
   clearMediaPreferenceSaveTimer()
   activeCachedSubtitlePath = null
   await releaseHeldArrow(false)
@@ -1946,7 +2002,7 @@ async function handleTogglePause() {
 
 async function handleSetPlaybackSpeed(speed: number) {
   await setPlaybackSpeed(speed)
-  scheduleMediaPreferenceSave()
+  await saveMediaPreferenceNow(undefined, true)
 }
 
 async function handleSetSubtitleDelay(delay: number) {
@@ -1956,15 +2012,18 @@ async function handleSetSubtitleDelay(delay: number) {
 
 async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0]) {
   cancelPendingTrackPreferenceRestore()
-  activeCachedSubtitlePath = null
+  const selected = subtitleTracks.value.find(track => track.id === trackId)
+  activeCachedSubtitlePath = selected?.source === 'downloaded' && selected.url ? selected.url : null
   await setSubtitle(trackId)
-  await saveMediaPreferenceNow()
+  persistedSubtitlePreference = currentSubtitlePreference()
+  await saveMediaPreferenceNow(undefined, true)
 }
 
 async function handleSetAudio(trackId: number) {
   cancelPendingTrackPreferenceRestore()
   await setAudio(trackId)
-  await saveMediaPreferenceNow()
+  persistedAudioPreference = currentAudioPreference()
+  await saveMediaPreferenceNow(undefined, true)
 }
 
 function nextPlaybackSpeed(): number {
@@ -2214,13 +2273,13 @@ async function handleSetVideoAspect(mode: VideoAspectMode) {
   await setVideoAspect(mode)
   await resizeWindowForAspect(mode)
   scheduleRenderBoundsSync()
-  scheduleMediaPreferenceSave()
+  await saveMediaPreferenceNow(undefined, true)
 }
 
 async function handleSetVideoFit(mode: VideoFitMode) {
   await setVideoFit(mode)
   scheduleRenderBoundsSync()
-  scheduleMediaPreferenceSave()
+  await saveMediaPreferenceNow(undefined, true)
 }
 
 async function handleSetOrientationMode(mode: MpvOrientationMode) {
@@ -2753,6 +2812,8 @@ watch(
         :loading="subtitleSearchLoading"
         :downloading-id="subtitleDownloadingId"
         :error="subtitleSearchError"
+        :provider-summary="subtitleSearchProviderSummary"
+        :mobile-layout="isNativeAndroidPlayer"
         @close="closeSubtitleSearch"
         @select-origin="selectSubtitleSearchOrigin"
         @back="resetSubtitleSearchOrigin"

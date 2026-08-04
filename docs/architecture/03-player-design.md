@@ -1195,7 +1195,7 @@ export class ScrapingEngine {
 
 Player 的受控图片缓存由 Rust `player_get_cached_image` / `player_cache_image` 和 Vue `CachedImage` 共同实现。图片二进制写入当前存储档案的 `cache/images`：Windows 标准模式位于本机应用缓存目录，便携模式位于 EXE 同目录 `cache/images`，Android 位于应用私有 `cache/images`。`data` 目录只保存 SQLite、密钥和需要长期一致性的结构数据，不混放可重建图片。
 
-缓存键使用 `sourceId + itemId + artwork role` 后再 SHA-256，文件名和 sidecar 只保存不可逆 key/source hash 与 MIME，不写原始 URL、API Key、签名参数或 Header。下载仅接受 HTTP(S)、同源且最多三次重定向、8 MiB 上限及 JPEG/PNG/WebP/GIF/AVIF 魔数。前端以 IntersectionObserver 在接近视口时读取/填充缓存，Rust 通过临时 `data:` URL 把应用私有图片交给 WebView；这些临时内容不写入 `settings.sqlite` 展示快照。清除播放缓存会连同 `cache/images` 一并清理，但不会删除数据源、凭据、播放记录或全局设置。
+缓存键使用 `sourceId + itemId + artwork role` 后再 SHA-256，文件名和 sidecar 只保存不可逆 key/source hash、MIME、字节数和最近访问时间，不写原始 URL、API Key、签名参数或 Header。下载仅接受 HTTP(S)、同源且最多三次重定向、单图 8 MiB 上限及 JPEG/PNG/WebP/GIF/AVIF 魔数。图片缓存总容量默认 500 MB，用户可在“存储 / 诊断”中设置 100-4096 MB；写入和降低上限时按 LRU 清理最久未使用图片。前端以 IntersectionObserver 在接近视口时读取/填充缓存，Rust 通过临时 `data:` URL 把应用私有图片交给 WebView；这些临时内容不写入 `settings.sqlite` 展示快照。清除播放缓存会连同 `cache/images` 一并清理，但不会删除数据源、凭据、播放记录或全局设置。
 
 ### 5.8 刮削调度
 
@@ -2303,7 +2303,7 @@ libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由
 
 首页、设置、数据源管理和每个动态媒体源入口使用独立的导航快捷键映射。两组映射保存到 `settings.sqlite`，可在设置页捕获组合键、检测同组重复占用、清空或恢复默认；它们不得覆盖 `Space`、任一方向键和 `Escape` 等播放器固定按键。删除媒体源时同步删除该动态入口的快捷键映射。
 
-每个视频按 `sourceId + mediaIdentity` 在 `player_preferences.sqlite` 保存字幕选择、音轨、字幕偏移、播放速度、画面比例和填充模式。字幕/音轨优先使用语言、标题、编码、声道等稳定指纹恢复，数字轨道 ID 仅作兜底；本地下载字幕只保存 Player `cache/subtitles` 内的受控缓存路径，禁止保存远程字幕 URL、签名播放 URL 或 Header。删除媒体源时同步删除来源播放记录、单视频偏好和来源拥有的字幕缓存。设置页“清除播放缓存”清除媒体/扫描/字幕缓存和全部单视频偏好，但保留数据源、凭据、播放记录与全局软件设置。
+每个视频按 `sourceId + mediaIdentity` 在 `player_preferences.sqlite` 保存字幕选择、音轨、字幕偏移、播放速度、画面比例和填充模式。播放速度只属于单视频偏好，新媒体先回到 1.0x，再恢复该媒体自己的记录，不使用第二套全局倍速覆盖。字幕/音轨优先按同一媒体内的数字轨道 ID 精确恢复，ID 不可用时再使用语言、标题、编码和声道指纹；保存过程持有已加载或用户明确选择的稳定草稿，不能被启动期尚未完成的轨道快照覆盖成“字幕关闭/音轨为空”。本地下载字幕只保存 Player `cache/subtitles` 内的受控缓存路径，禁止保存远程字幕 URL、签名播放 URL 或 Header。删除媒体源时同步删除来源播放记录、单视频偏好和来源拥有的字幕缓存。设置页“清除播放缓存”清除媒体/扫描/字幕缓存和全部单视频偏好，但保留数据源、凭据、播放记录与全局软件设置。
 
 字幕/音轨菜单使用加载阶段已经缓存的轨道列表，打开菜单或选择已知轨道时只做乐观 UI 更新，不立即同步读取 libmpv 完整 `track-list`。完整轨道刷新只允许在媒体加载稳定阶段或受控后台刷新中执行，避免轨道切换期间的同步属性查询占住共享 mpv 锁，导致视频继续播放但全部控制命令失去响应。
 
@@ -2313,7 +2313,7 @@ libmpv 是 GPL-2.0 协议，嵌入使用时**需要你的项目也开源**。由
 
 单视频偏好恢复分为两段：倍速、字幕偏移和画面模式可立即恢复；字幕、音轨和缓存外部字幕必须等待播放/轨道元数据稳定后再匹配。Android 缓存外部字幕还必须明确等待当前媒体进入 `video-ready`，不能在远程流仍执行 `loadfile` 时提前调用同步 `sub-add`，否则会阻塞 Android UI 命令线程并触发输入 ANR。Android 恢复只消费 `useMpv` 在 duration/load 稳定阶段产生的轨道数组、`video-ready` 和后续响应式更新，禁止在 `PlayerView` 用短间隔循环调用原生 `mpv_track_state`；该同步调用会逐条读取完整 `track-list`，并可能与播放命令串行后卡住 Android Rust → Kotlin → libmpv 控制通道。用户选择字幕/音轨、载入或下载字幕后立即写入偏好；倍速、偏移和画面连续设置仍可短延迟合并写入，切换媒体、离开路由和卸载前必须 flush。已知 `sid`、`aid` 切换和用户触发的 `sub-add` 使用 libmpv 同步命令并直接返回真实执行结果，但不得在这些交互后同步读取完整 `track-list`。禁止为短生命周期 C 字符串建立跨调用异步命令队列。用户手动选择字幕/音轨或下载字幕时取消尚未完成的旧轨道偏好恢复，避免旧选择覆盖新操作。
 
-手机字幕搜索使用独立全屏工具页，不复用桌面居中弹窗的尺寸约束。来源、关键词模式、语言和搜索按钮位于稳定控制区，结果列表独立滚动，并明确显示搜索中、结果数量、无结果、下载中和错误状态；横屏与竖屏都必须保留安全区和可触达的关闭入口。
+手机字幕搜索使用独立全屏工具页，不复用桌面居中弹窗的尺寸约束。原生 Android 通过显式 mobile layout 状态进入该页面，不依赖横屏宽度或 hover/pointer 查询；竖屏上下排列，横屏使用左侧条件栏和右侧独立结果区。页面显示本次实际参与的 OpenSubtitles、迅雷关键词和射手哈希提供器；新档案默认开启无需凭据的迅雷关键词搜索，避免 Android 没有桌面 OpenSubtitles 凭据时退化为仅哈希搜索。来源、关键词模式、语言和搜索按钮位于稳定控制区，并明确显示搜索中、结果数量、无结果、下载中和错误状态。
 
 Android Activity 使用 edge-to-edge 布局时，状态栏和导航栏前景固定使用适合深色 Cinema OS 表面的浅色图标，不跟随系统日间主题切换为黑色；普通浏览页、全屏搜索页和播放器退出后的页面都必须保持顶部时间、网络与电量信息可读。
 

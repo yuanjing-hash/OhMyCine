@@ -14,6 +14,8 @@ const props = defineProps<{
   loading: boolean
   downloadingId: string | null
   error: string | null
+  providerSummary?: string
+  mobileLayout?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -83,6 +85,7 @@ function resultFlags(result: SubtitleSearchResult): string[] {
   <div
     v-if="open"
     class="subtitle-search-overlay fixed inset-0 z-[1200] flex items-center justify-center bg-black/60 p-5 backdrop-blur-md"
+    :class="{ 'is-mobile': mobileLayout }"
     role="presentation"
     @pointerdown.self="emit('close')"
   >
@@ -149,6 +152,10 @@ function resultFlags(result: SubtitleSearchResult): string[] {
               {{ selectedKeyword || '当前没有可用关键词' }}
             </div>
           </div>
+
+          <p v-if="providerSummary" class="subtitle-provider-summary mb-3 border-l-2 border-primary/55 bg-primary/8 px-3 py-2 text-xs leading-5 text-white/58">
+            {{ providerSummary }}
+          </p>
 
           <div class="subtitle-search-actions flex flex-wrap items-end gap-3">
             <button v-if="requiresSourceChoice" type="button" class="rounded-xl bg-white/8 px-3 py-2 text-sm font-semibold text-white/68 transition-colors hover:bg-white/14 hover:text-white" @click="emit('back')">
@@ -224,24 +231,153 @@ function resultFlags(result: SubtitleSearchResult): string[] {
 .subtitle-search-spinner { animation: subtitle-search-spin 720ms linear infinite; }
 @keyframes subtitle-search-spin { to { transform: rotate(360deg); } }
 
+.subtitle-search-overlay.is-mobile {
+  align-items: stretch;
+  padding: 0;
+  background: rgba(5, 7, 11, 0.98);
+  backdrop-filter: none;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-sheet {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  background: rgba(7, 9, 14, 0.98);
+  box-shadow: none;
+  backdrop-filter: blur(28px) saturate(1.25);
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-header {
+  padding: 0.8rem max(1rem, env(safe-area-inset-right)) 0.7rem max(1rem, env(safe-area-inset-left));
+  background: rgba(7, 9, 14, 0.92);
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-header p:first-child {
+  display: none;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-header h2 {
+  margin-top: 0;
+  font-size: 1.05rem;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-header h2 + p {
+  margin-top: 0.2rem;
+  max-width: calc(100vw - 5rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  line-height: 1.2rem;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-header button {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-controls {
+  overflow-y: auto;
+  padding: 0.8rem max(1rem, env(safe-area-inset-right)) 0.8rem max(1rem, env(safe-area-inset-left));
+  background: rgba(7, 9, 14, 0.82);
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-actions > button:first-child {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-actions label {
+  min-width: 0;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-actions > button:last-child {
+  min-width: 7.2rem;
+  min-height: 2.7rem;
+  padding-right: 1rem;
+  padding-left: 1rem;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-results {
+  min-height: 0;
+  padding: 0.8rem max(1rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-results button {
+  border-radius: 8px;
+  padding: 0.85rem;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-results button > span {
+  gap: 0.65rem;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-results button > span > span:last-child {
+  border-radius: 7px;
+  padding: 0.55rem 0.7rem;
+  white-space: nowrap;
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-sheet > .grid {
+  grid-template-columns: 1fr;
+  overflow-y: auto;
+  padding: 1rem max(1rem, env(safe-area-inset-right)) 1rem max(1rem, env(safe-area-inset-left));
+}
+
+.subtitle-search-overlay.is-mobile .subtitle-search-sheet > .grid button,
+.subtitle-search-overlay.is-mobile select,
+.subtitle-search-overlay.is-mobile input {
+  border-radius: 8px !important;
+}
+
+@media (orientation: landscape) {
+  .subtitle-search-overlay.is-mobile .subtitle-search-sheet {
+    display: grid;
+    grid-template-columns: minmax(18rem, 34vw) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .subtitle-search-overlay.is-mobile .subtitle-search-header {
+    grid-column: 1 / -1;
+  }
+
+  .subtitle-search-overlay.is-mobile .subtitle-search-controls {
+    grid-column: 1;
+    grid-row: 2;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 0;
+  }
+
+  .subtitle-search-overlay.is-mobile .subtitle-search-results {
+    grid-column: 2;
+    grid-row: 2;
+    overflow-y: auto;
+  }
+
+  .subtitle-search-overlay.is-mobile .subtitle-search-sheet > .grid {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: center;
+  }
+}
+
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
-  .subtitle-search-overlay { align-items: stretch; padding: 0; background: rgba(5,7,11,.96); backdrop-filter: none; }
-  .subtitle-search-sheet { width: 100%; max-width: none; max-height: none; height: 100%; border: 0; border-radius: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); background: rgba(7,9,14,.97); box-shadow: none; backdrop-filter: blur(28px) saturate(1.25); }
-  .subtitle-search-header { padding: .85rem 1rem .75rem; background: rgba(7,9,14,.88); }
-  .subtitle-search-header p:first-child { display: none; }
-  .subtitle-search-header h2 { margin-top: 0; font-size: 1.05rem; }
-  .subtitle-search-header h2 + p { margin-top: .3rem; max-width: calc(100vw - 5rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; line-height: 1.2rem; }
-  .subtitle-search-controls { padding: .8rem 1rem; background: rgba(7,9,14,.78); }
-  .subtitle-search-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: .65rem; }
-  .subtitle-search-actions > button:first-child { grid-column: 1 / -1; justify-self: start; }
-  .subtitle-search-actions label { min-width: 0; }
-  .subtitle-search-actions > button:last-child { min-width: 7.2rem; min-height: 2.7rem; padding-right: 1rem; padding-left: 1rem; }
-  .subtitle-search-results { min-height: 0; padding: .8rem 1rem calc(1rem + env(safe-area-inset-bottom)); }
-  .subtitle-search-results button { border-radius: 8px; padding: .85rem; }
-  .subtitle-search-results button > span { gap: .65rem; }
-  .subtitle-search-results button > span > span:last-child { border-radius: 7px; padding: .55rem .7rem; white-space: nowrap; }
-  .subtitle-search-sheet > .grid { grid-template-columns: 1fr; overflow-y: auto; padding: 1rem; }
-  .subtitle-search-sheet > .grid button { border-radius: 8px; padding: 1rem; }
-  select,input { border-radius: 8px !important; }
+  .subtitle-search-overlay:not(.is-mobile) { align-items: stretch; padding: 0; }
+  .subtitle-search-overlay:not(.is-mobile) .subtitle-search-sheet { width: 100%; max-width: none; max-height: none; height: 100%; border: 0; border-radius: 0; }
 }
 </style>

@@ -205,7 +205,7 @@ CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类�
 - OpenSubtitles API Key 或账号密码以互斥认证模式进入独立 credential envelope，不得进入普通设置、localStorage、日志或导出配置。普通设置只保存默认字幕语言和提供器启用状态；旧组合凭据迁移时不得同时保留两套秘密。
 - Player 本地字幕下载只允许 Tauri 受控客户端访问固定 OpenSubtitles HTTPS REST/XML-RPC 端点和受信任下载域名，限制超时、重定向、搜索响应、Base64/gzip 解码后大小和字幕文件大小。XML 响应拒绝 DTD/Entity，远端文件名不得直接成为本地路径；只读取允许的字幕扩展名并使用哈希文件名写入当前存储模式的 `cache/subtitles/<source-hash>/<media-hash>`，以便按媒体源安全清理。
 - 单视频播放偏好只允许保存稳定媒体身份、字幕/音轨指纹、字幕偏移、倍速和画面模式。缓存字幕路径读取时必须 canonicalize 并确认仍位于当前 Player `cache/subtitles` 根目录内；不得保存远程字幕 URL、播放直链、签名参数、请求 Header 或凭据。全局清缓存只能清媒体缓存、扫描缓存和单视频偏好，不得删除凭据、数据源配置、播放记录或全局软件设置。
-- Player 海报/背景缓存只写入当前存储档案的 `cache/images`。文件名使用稳定 artwork key 的 SHA-256，sidecar 只保存原 URL 的不可逆 hash 与受控 MIME，禁止保存原 URL、API Key、签名参数、Cookie 或 Authorization。下载仅允许 HTTP(S)、同源有限重定向、固定大小上限和图片魔数；前端接收的 `data:` URL 只存在于当前 WebView 内存，不进入 `settings.sqlite`、播放记录或日志。
+- Player 海报/背景缓存只写入当前存储档案的 `cache/images`。文件名使用稳定 artwork key 的 SHA-256，sidecar 只保存原 URL 的不可逆 hash、受控 MIME、字节数和最近访问时间，禁止保存原 URL、API Key、签名参数、Cookie 或 Authorization。下载仅允许 HTTP(S)、同源有限重定向、固定单图大小上限和图片魔数；总容量使用 100-4096 MB 受控设置、默认 500 MB，并按 LRU 删除完整 `.bin/.json` 文件对。前端接收的 `data:` URL 只存在于当前 WebView 内存，不进入 `settings.sqlite`、播放记录或日志。
 - 字幕搜索只向提供器发送作品 ID、用户当前选择的媒体标题/文件 basename/自定义关键词、年份、媒体类型和季集号，不发送目录、本地绝对路径、数据源凭据、签名播放 URL、查询参数或播放 Header。
 
 示例：

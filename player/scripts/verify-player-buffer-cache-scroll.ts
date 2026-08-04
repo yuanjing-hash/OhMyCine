@@ -42,6 +42,9 @@ const imageCacheService = await source('src/services/imageCache.ts')
 assert.match(imageCacheService, /player_get_cached_image/)
 assert.match(imageCacheService, /player_cache_image/)
 assert.match(imageCacheService, /artworkCacheKey/)
+assert.match(imageCacheService, /DEFAULT_IMAGE_CACHE_LIMIT_MB = 500/)
+assert.match(imageCacheService, /player_trim_image_cache/)
+assert.match(imageCacheService, /player_image_cache_stats/)
 
 const cachedImage = await source('src/components/media/CachedImage.vue')
 assert.match(cachedImage, /IntersectionObserver/)
@@ -53,7 +56,14 @@ assert.match(nativeImageCache, /layout\.cache_dir\.join\("images"\)/)
 assert.match(nativeImageCache, /MAX_IMAGE_BYTES/)
 assert.match(nativeImageCache, /same_origin/)
 assert.match(nativeImageCache, /source_hash/)
+assert.match(nativeImageCache, /DEFAULT_CACHE_LIMIT_BYTES: u64 = 500 \* 1024 \* 1024/)
+assert.match(nativeImageCache, /trim_image_cache/)
+assert.match(nativeImageCache, /last_accessed/)
 assert.doesNotMatch(nativeImageCache, /fs::write\([^,]+,\s*request\.url/)
+
+const settingsView = await source('src/views/SettingsView.vue')
+assert.match(settingsView, /图片缓存上限/)
+assert.match(settingsView, /saveImageCacheLimit/)
 assert.match(datasourceStore, /sourceRootSnapshots/)
 assert.match(datasourceStore, /isSourceRootSnapshotFresh/)
 assert.match(datasourceStore, /setSourceRootSnapshot/)
@@ -91,6 +101,8 @@ console.log(JSON.stringify({
   sensitiveDisplayUrlsExcluded: true,
   controlledArtworkDiskCache: true,
   cachedArtworkLoadsAfterRestart: true,
+  configurableArtworkCacheLimit: true,
+  artworkCacheUsesLruEviction: true,
   staleWhileRevalidate: true,
   customScrollContainerReset: true,
 }, null, 2))

@@ -2,6 +2,7 @@
 import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
 import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { ImageCacheStats } from '@/services/imageCache'
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
 import type { PlayerCacheMode, PlayerDemuxerCacheSize, PlayerHardwareDecoder, PlayerVideoOutput, PlayerVideoSync } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
@@ -22,6 +23,7 @@ import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
+import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
 import {
   loadNavigationShortcutBindings,
   resetNavigationShortcutBindings,
@@ -294,6 +296,10 @@ const updateForm = reactive<UpdaterSettingsFormState>({
 const isSavingUpdaterSettings = ref(false)
 const updateFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const storageInfo = ref<PlayerStorageInfo | null>(null)
+const imageCacheForm = reactive(loadImageCacheSettings())
+const imageCacheStats = ref<ImageCacheStats | null>(null)
+const imageCacheFeedback = ref<{ type: 'success' | 'error', message: string } | null>(null)
+const isSavingImageCache = ref(false)
 const isNativeAndroid = isNativeAndroidRuntime()
 
 const configuredSources = computed(() => store.orderedConfigs)
@@ -692,6 +698,36 @@ function goStorageDiagnostics() {
 
 async function refreshStorageInfo() {
   storageInfo.value = await getPlayerStorageInfo()
+  imageCacheStats.value = await getImageCacheStats()
+}
+
+function formatStorageBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0)
+    return '0 MB'
+  if (bytes >= 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+async function saveImageCacheLimit() {
+  isSavingImageCache.value = true
+  imageCacheFeedback.value = null
+  try {
+    const saved = await saveImageCacheSettings(imageCacheForm)
+    imageCacheForm.maxSizeMb = saved.maxSizeMb
+    await flushAppSettings()
+    imageCacheStats.value = await getImageCacheStats()
+    imageCacheFeedback.value = {
+      type: 'success',
+      message: `图片缓存上限已保存为 ${saved.maxSizeMb} MB，超出部分已按最近最少使用顺序清理。`,
+    }
+  }
+  catch (error) {
+    imageCacheFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '图片缓存上限保存失败。') }
+  }
+  finally {
+    isSavingImageCache.value = false
+  }
 }
 
 function goOverview() {
@@ -2135,6 +2171,54 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
           <div v-if="!storageInfo" class="mt-5 rounded-xl bg-white/6 px-4 py-3 text-sm leading-6 text-white/48">
             当前是浏览器开发模式，没有可查询的 Tauri 桌面存储路径。
           </div>
+        </div>
+
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] md:items-end">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+                Artwork Cache
+              </p>
+              <h3 class="mt-2 text-lg font-bold text-white">
+                图片缓存上限
+              </h3>
+              <p class="mt-2 max-w-2xl text-sm leading-6 text-white/48">
+                海报、背景和缩略图使用最近最少使用淘汰策略。默认上限为 500 MB，降低上限后会立即清理最久未使用的图片。
+              </p>
+              <p class="mt-3 text-sm text-white/58">
+                当前占用 {{ imageCacheStats ? formatStorageBytes(imageCacheStats.totalBytes) : '正在统计…' }}<span v-if="imageCacheStats"> · {{ imageCacheStats.fileCount }} 张</span>
+              </p>
+            </div>
+
+            <div class="flex items-end gap-3">
+              <label class="min-w-0 flex-1">
+                <span class="text-xs font-semibold text-white/46">最大容量（MB）</span>
+                <input
+                  v-model.number="imageCacheForm.maxSizeMb"
+                  type="number"
+                  min="100"
+                  max="4096"
+                  step="100"
+                  class="mt-2 w-full rounded-lg border border-white/10 bg-white/6 px-3 py-2.5 text-sm text-white outline-none focus:border-primary/60"
+                >
+              </label>
+              <button
+                type="button"
+                class="h-[2.7rem] shrink-0 rounded-lg bg-primary/80 px-4 text-sm font-bold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+                :disabled="isSavingImageCache"
+                @click="saveImageCacheLimit"
+              >
+                {{ isSavingImageCache ? '保存中…' : '保存' }}
+              </button>
+            </div>
+          </div>
+          <p
+            v-if="imageCacheFeedback"
+            class="mt-4 border-l-2 px-3 py-2 text-sm leading-6"
+            :class="imageCacheFeedback.type === 'success' ? 'border-emerald-400/70 bg-emerald-400/8 text-emerald-100/82' : 'border-red-400/70 bg-red-400/8 text-red-100/82'"
+          >
+            {{ imageCacheFeedback.message }}
+          </p>
         </div>
 
         <div class="border-l-2 border-primary/36 px-5 py-1 text-sm leading-7 text-white/50">
