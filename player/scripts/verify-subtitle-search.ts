@@ -28,12 +28,15 @@ assert.match(playerView, /remoteMediaUrl: currentRemoteSubtitleMediaUrl\(\)/)
 assert.match(playerView, /remoteMediaHeaders: currentRemoteSubtitleMediaUrl\(\) \? \{ \.\.\.mediaHeaders\.value \}/)
 assert.match(playerView, /:media-title="currentSubtitleMediaTitle\(\)"/)
 assert.match(playerView, /:file-name="currentSubtitleFileName\(\)"/)
+assert.match(playerView, /describeLocalSubtitleSearchProviders/)
+assert.match(playerView, /:provider-summary="subtitleSearchProviderSummary"/)
 
 const searchDialog = await read('src/components/player/SubtitleSearchDialog.vue')
 assert.match(searchDialog, /媒体名称/)
 assert.match(searchDialog, /原始文件名/)
 assert.match(searchDialog, /自定义/)
 assert.match(searchDialog, /search: \[language: SubtitleLanguage, keyword: string, keywordMode: SubtitleKeywordMode\]/)
+assert.match(searchDialog, /providerSummary/)
 
 const emby = await read('src/services/datasource/emby.ts')
 assert.match(emby, /'OriginalTitle'/)
@@ -47,6 +50,8 @@ assert.match(settings, /saveOpenSubtitlesCredential/)
 assert.match(settings, /subtitle_login_opensubtitles/)
 assert.match(settings, /shooterEnabled/)
 assert.match(settings, /xunleiEnabled/)
+assert.match(settings, /xunleiEnabled: true/)
+assert.match(settings, /xunleiEnabled: value\.xunleiEnabled !== false/)
 assert.doesNotMatch(settings, /setAppSetting\([^)]*apiKey/)
 
 const subtitleIndex = await read('src/services/subtitle/index.ts')
@@ -59,6 +64,8 @@ assert.match(subtitleIndex, /Promise\.allSettled/)
 assert.match(subtitleIndex, /openSubtitlesActive/)
 assert.match(subtitleIndex, /OpenSubtitles 已配置但当前处于关闭状态/)
 assert.match(subtitleIndex, /输入的关键词没有被查询/)
+assert.match(subtitleIndex, /describeLocalSubtitleSearchProviders/)
+assert.match(subtitleIndex, /迅雷关键词/)
 
 const settingsView = await read('src/views/SettingsView.vue')
 assert.match(settingsView, /await saveOpenSubtitlesCredentials\(nextCredential\)[\s\S]*subtitleForm\.openSubtitlesEnabled = true/)
@@ -145,4 +152,6 @@ console.log(JSON.stringify({
   customKeywordOmitsCurrentMediaConstraints: true,
   savingOpenSubtitlesCredentialsEnablesProvider: true,
   disabledKeywordProviderIsReportedClearly: true,
+  xunleiKeywordSearchEnabledByDefault: true,
+  activeProvidersShownInSearchUi: true,
 }, null, 2))

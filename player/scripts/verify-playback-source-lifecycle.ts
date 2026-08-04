@@ -44,6 +44,20 @@ assert.deepEqual(embyContext?.locator, {
 const embySource = await readFile(fileURLToPath(new URL('../src/services/datasource/emby.ts', import.meta.url)), 'utf8')
 assert.match(embySource, /mediaSources\.filter\(source => source\.Id === requestedMediaSourceId\)/)
 assert.match(embySource, /所选 Emby 媒体版本已不可用/)
+assert.match(embySource, /return '\/Sessions\/Playing'/)
+assert.match(embySource, /return '\/Sessions\/Playing\/Stopped'/)
+assert.match(embySource, /return '\/Sessions\/Playing\/Progress'/)
+assert.match(embySource, /PositionTicks: secondsToTicks\(reportPosition\)/)
+assert.match(embySource, /RunTimeTicks: secondsToTicks\(progress\.duration\)/)
+assert.match(embySource, /PlaySessionId: session\.playSessionId/)
+assert.match(embySource, /PlaybackRate: normalizePlaybackRate\(progress\.playbackRate\)/)
+assert.match(embySource, /await this\.markPlayed\(itemId\)/)
+
+const playerView = await readFile(fileURLToPath(new URL('../src/views/PlayerView.vue', import.meta.url)), 'utf8')
+assert.match(playerView, /syncProviderPlaybackStarted\(\)/)
+assert.match(playerView, /window\.setInterval\(\(\) => \{\s+void saveCurrentProgress\(false\)/)
+assert.match(playerView, /if \(!shouldSaveLocalProgress\(payload, force, event\)\) \{[\s\S]*event !== 'progress'[\s\S]*syncProviderProgress\(payload, providerEvent\)/)
+assert.match(playerView, /saveCurrentProgress\(true, 'stopped'\)/)
 
 const historyCommand = await readFile(fileURLToPath(new URL('../src-tauri/src/commands/history.rs', import.meta.url)), 'utf8')
 assert.match(historyCommand, /DELETE FROM playback_history WHERE source_id = \?1/)
@@ -58,6 +72,8 @@ console.log(JSON.stringify({
   checkedViews: viewFiles.length,
   localPathStoredOnlyInMemory: true,
   embyMediaSourceId: embyContext?.mediaSourceId,
+  embyPlaybackSessionLifecycle: true,
+  embyShortPlaybackStopReported: true,
   sourceScopedHistoryDelete: true,
   sourceScopedPlaybackPreferenceDelete: true,
 }, null, 2))

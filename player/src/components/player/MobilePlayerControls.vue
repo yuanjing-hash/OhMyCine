@@ -231,12 +231,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
     </div>
 
     <footer class="mobile-player-bottom pointer-events-auto">
-      <div class="mobile-timeline">
-        <time>{{ formatTime(currentTime) }}</time>
-        <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="position => emit('seek', position)" @interaction-change="setProgressInteracting" />
-        <time>{{ formatTime(duration) }}</time>
-      </div>
-      <div class="mobile-bottom-tools">
+      <div class="mobile-bottom-row">
         <div class="mobile-episode-tools">
           <button type="button" class="mobile-icon-button" :disabled="!canPlayPrevious" aria-label="上一集" @click="emit('playPrevious')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14m10-13-8 6 8 6V6Z" /></svg>
@@ -245,6 +240,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14M7 6l8 6-8 6V6Z" /></svg>
           </button>
         </div>
+        <time>{{ formatTime(currentTime) }}</time>
+        <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="position => emit('seek', position)" @interaction-change="setProgressInteracting" />
+        <time>{{ formatTime(duration) }}</time>
         <div class="mobile-media-tools">
           <button type="button" class="mobile-icon-button" aria-label="音量" @click="openPanel('more')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10" /></svg>
@@ -431,7 +429,6 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-title-group,
 .mobile-top-tools,
-.mobile-bottom-tools,
 .mobile-episode-tools,
 .mobile-media-tools {
   display: flex;
@@ -607,39 +604,35 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-player-bottom {
   bottom: max(0.8rem, env(safe-area-inset-bottom));
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.5rem 0.75rem 0.45rem;
+  padding: 0.42rem 0.65rem;
 }
 
-.mobile-timeline {
+.mobile-bottom-row {
   display: grid;
   width: 100%;
-  grid-template-columns: 3.35rem minmax(0, 1fr) 3.35rem;
+  grid-template-columns: auto 3.2rem minmax(6rem, 1fr) 3.2rem auto;
   align-items: center;
-  gap: 0.55rem;
+  gap: clamp(0.35rem, 1vw, 0.7rem);
 }
 
-.mobile-timeline time {
+.mobile-bottom-row time {
   color: rgba(255, 255, 255, 0.74);
   font-size: 0.66rem;
   font-variant-numeric: tabular-nums;
 }
 
-.mobile-timeline time:last-child {
+.mobile-bottom-row time:nth-of-type(2) {
   text-align: right;
 }
 
-.mobile-bottom-tools {
-  width: 100%;
-  justify-content: space-between;
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
-  padding-top: 0.32rem;
-}
-
-.mobile-bottom-tools .mobile-icon-button {
+.mobile-bottom-row .mobile-icon-button {
   width: 2.15rem;
   height: 2.15rem;
+}
+
+.mobile-episode-tools,
+.mobile-media-tools {
+  flex-wrap: nowrap;
 }
 
 .mobile-text-button {
@@ -888,6 +881,39 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
   .mobile-transport {
     gap: 0.85rem;
+  }
+
+  .mobile-player-bottom {
+    right: max(0.45rem, env(safe-area-inset-right));
+    left: max(0.45rem, env(safe-area-inset-left));
+    padding-right: 0.4rem;
+    padding-left: 0.4rem;
+  }
+
+  .mobile-bottom-row {
+    grid-template-columns: auto 2.65rem minmax(3rem, 1fr) 2.65rem auto;
+    gap: 0.18rem;
+  }
+
+  .mobile-bottom-row time {
+    font-size: 0.58rem;
+  }
+
+  .mobile-bottom-row .mobile-icon-button {
+    width: 1.85rem;
+    height: 1.85rem;
+  }
+
+  .mobile-bottom-row .mobile-text-button {
+    min-width: 2.5rem;
+    height: 1.85rem;
+    padding: 0 0.4rem;
+    font-size: 0.62rem;
+  }
+
+  .mobile-episode-tools,
+  .mobile-media-tools {
+    gap: 0.15rem;
   }
 
   .mobile-player-sheet {

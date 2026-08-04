@@ -138,14 +138,6 @@ const MAX_SUBTITLE_DELAY = 30
 const BUFFER_POLL_INTERVAL_MS = 400
 const BUFFER_DISPLAY_DELAY_MS = 500
 
-interface PlaybackSpeedPreference {
-  playbackSpeed: number
-}
-
-interface SetPlaybackSpeedPreferencePayload extends Record<string, unknown> {
-  speed: number
-}
-
 const ASPECT_PROPERTY_VALUE: Record<VideoAspectMode, string> = {
   'default': '-1',
   '16:9': '16:9',
@@ -175,27 +167,6 @@ function normalizeSubtitleDelay(delay: number): number {
     return DEFAULT_SUBTITLE_DELAY
   const bounded = Math.max(MIN_SUBTITLE_DELAY, Math.min(MAX_SUBTITLE_DELAY, delay))
   return Math.round(bounded * 10) / 10
-}
-
-async function readSavedPlaybackSpeed(): Promise<number> {
-  try {
-    const preference = await invoke<PlaybackSpeedPreference>('player_get_playback_speed_preference')
-    return normalizePlaybackSpeed(preference.playbackSpeed)
-  }
-  catch {
-    // Preference persistence is a convenience only; keep playback usable with session defaults.
-    return DEFAULT_PLAYBACK_SPEED
-  }
-}
-
-async function savePlaybackSpeedPreference(speed: number): Promise<void> {
-  try {
-    const payload: SetPlaybackSpeedPreferencePayload = { speed }
-    await invoke<void>('player_set_playback_speed_preference', payload)
-  }
-  catch {
-    // Avoid noisy UI for non-sensitive preference persistence failures.
-  }
 }
 
 async function applyEngineSettings(): Promise<void> {
@@ -295,6 +266,7 @@ export function useMpv() {
   const currentSubtitle = ref<SubtitleSelectionId | null>(null)
   const selectedKnownSubtitle = ref<SubtitleSelectionId | null>(null)
   const currentAudio = ref<number | null>(null)
+  const trackStateReady = ref(false)
   const videoAspectMode = ref<VideoAspectMode>('default')
   const videoFitMode = ref<VideoFitMode>('fit')
   const renderStatus = ref<MpvRenderStatus>('idle')
@@ -316,34 +288,10 @@ export function useMpv() {
   let bufferPollingGeneration = 0
   let engineReportsBuffering = false
   const trackRefreshTimers = new Set<number>()
-  let playbackSpeedPreferenceLoaded = false
-  let playbackSpeedPreferenceLoading: Promise<void> | null = null
-  let playbackSpeedChangedLocally = false
   let subtitleDelayCommand = Promise.resolve()
   let subtitleDelayGeneration = 0
   let loadedExternalSubtitleSequence = 0
   let trackRefreshScheduledForCurrentMedia = false
-
-  function ensurePlaybackSpeedPreferenceLoaded(): Promise<void> {
-    if (playbackSpeedPreferenceLoaded)
-      return Promise.resolve()
-    if (playbackSpeedPreferenceLoading)
-      return playbackSpeedPreferenceLoading
-
-    playbackSpeedPreferenceLoading = readSavedPlaybackSpeed()
-      .then((savedSpeed) => {
-        if (!playbackSpeedChangedLocally)
-          playbackSpeed.value = savedSpeed
-        playbackSpeedPreferenceLoaded = true
-      })
-      .finally(() => {
-        playbackSpeedPreferenceLoading = null
-      })
-
-    return playbackSpeedPreferenceLoading
-  }
-
-  void ensurePlaybackSpeedPreferenceLoaded()
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -385,6 +333,7 @@ export function useMpv() {
     const selectedEmbedded = embeddedTracks.find(track => track.mpvId === state.currentSubtitle)
     currentSubtitle.value = selectedKnownSubtitle.value ?? selectedEmbedded?.id ?? null
     currentAudio.value = state.currentAudio ?? null
+    trackStateReady.value = true
     trackError.value = null
   }
 
@@ -481,6 +430,7 @@ export function useMpv() {
     }
     catch (error: unknown) {
       trackError.value = safeErrorMessage(error, '轨道信息暂不可用')
+      trackStateReady.value = false
       embeddedSubtitleTracks.value = []
       audioTracks.value = []
       currentSubtitle.value = selectedKnownSubtitle.value
@@ -663,15 +613,16 @@ export function useMpv() {
     currentTime.value = 0
     duration.value = 0
     trackRefreshScheduledForCurrentMedia = false
+    trackStateReady.value = false
     isPlaying.value = false
     videoReady.value = false
+    playbackSpeed.value = DEFAULT_PLAYBACK_SPEED
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     videoBrightness.value = 50
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
     videoAspectMode.value = 'default'
     videoFitMode.value = 'fit'
     await subtitleDelayCommand.catch(() => undefined)
-    await ensurePlaybackSpeedPreferenceLoaded()
     await applyEngineSettings()
     await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers) })
     startBufferingPolling()
@@ -732,9 +683,7 @@ export function useMpv() {
   }
 
   async function setPlaybackSpeed(rate: number) {
-    playbackSpeedChangedLocally = true
     await applyPlaybackSpeed(rate)
-    void savePlaybackSpeedPreference(playbackSpeed.value)
   }
 
   async function applySubtitleDelay(delay: number) {
@@ -848,6 +797,7 @@ export function useMpv() {
     currentSubtitle.value = null
     selectedKnownSubtitle.value = null
     currentAudio.value = null
+    trackStateReady.value = false
     videoReady.value = false
   }
 
@@ -878,6 +828,7 @@ export function useMpv() {
     audioTracks,
     currentSubtitle,
     currentAudio,
+    trackStateReady,
     videoAspectMode,
     videoFitMode,
     renderStatus,
