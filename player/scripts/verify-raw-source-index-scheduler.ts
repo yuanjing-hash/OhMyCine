@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { createRawSourceAutoIndexTargets, createRawSourceIndexScheduler, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS, DEFAULT_RAW_SOURCE_INDEX_INTERVAL_MS } from '../src/services/scraper/rawSourceIndexScheduler.ts'
 import { readRawSourceScanScheduleConfig } from '../src/services/scraper/rawSourceScanSchedule.ts'
 import type { DataSource, DataSourceConfig } from '../src/services/datasource/types.ts'
@@ -212,6 +213,12 @@ const dirtyStatus = await dirtyScheduler.getStatus({
 })
 assert.equal(dirtyStatus.state, 'completed')
 assert.deepEqual(dirtyScans, ['incremental:alist-target'])
+
+const sourceLibraryView = await readFile(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
+assert.match(sourceLibraryView, /async function startFullRescrape\(\)/)
+assert.match(sourceLibraryView, /重新刮削/)
+assert.match(sourceLibraryView, /扫描管理/)
+assert.doesNotMatch(sourceLibraryView, /source-bottom-controls/)
 
 console.log(JSON.stringify({
   firstState: first[0]?.state,

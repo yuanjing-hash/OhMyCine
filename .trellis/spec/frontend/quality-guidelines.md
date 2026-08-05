@@ -162,6 +162,7 @@ For Emby/Jellyfin/OpenList/Alist/CloudDrive2 source work, also review:
 - Emby setup uses account/password authentication and automatic token capture, not manual access-token entry as the primary UX.
 - Source sidebar rendering from ordered configs, including bottom plus navigation to data-source management and disabled-source affordance.
 - SourceLibrary loading, empty, disabled, error, auth-required, library, and item states.
+- Raw-source media-library headings keep rescrape, scan-management, and folder actions visibly reachable; essential maintenance actions must not depend on hover-only screen-edge controls.
 - Missing poster/backdrop fallbacks.
 - Generic DataSource playback flow: UI obtains stream URLs through `DataSource.getStreamURL()`, not provider-specific route code.
 - Token/API-key redaction in errors, logs, player labels, and exported config.
