@@ -140,7 +140,7 @@ let sourceRootLoadGeneration = 0
 
 const rawSourceType = computed<RawFileSourceType | null>(() => {
   const type = sourceConfig.value?.type
-  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'quark' || type === 'local' ? type : null
+  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark' || type === 'local' ? type : null
 })
 const isRawFileSource = computed(() => rawSourceType.value != null)
 const rawSourceRootPath = computed(() => sourceConfig.value && isRawFileSource.value ? readRawSourceRootPath(sourceConfig.value) : '/')
@@ -1799,6 +1799,10 @@ function labelForSourceType(type: string): string {
       return 'CloudDrive2'
     case 'webdav':
       return 'WebDAV'
+    case 'quark':
+      return '夸克网盘'
+    case '123':
+      return '123 云盘'
     case 'local':
       return '本地文件'
     case 'server':

@@ -90,6 +90,14 @@ Keep all media sources behind a common interface with these concepts:
 - Native list/search responses are parsed from `unknown`, require stable `fid`, rooted provider `path`, `name`, and `isDir`, and are scoped to the selected root. Browse/detail/play requests outside `rootPath` must fail before provider access.
 - Native playback returns a short-lived HTTP(S) URL plus Cookie/Referer/User-Agent and optional `x-urlp`. Rotated `__puus`/`__pus` values are persisted immediately through the credential boundary; stream URL and headers are never persisted.
 
+### 123 Pan DataSource Contract
+
+- `123` is a read-only raw-file DataSource with fixed official HTTPS login/API identities. Ordinary config stores only `credentialRef`, `rootPath`, scan settings, display metadata, and cached library descriptors.
+- Account login and advanced access-token import converge on `Pan123CredentialValue { accessToken, username?, password? }`. Username and password must either both be present for native token refresh or both be absent for token-only mode; the envelope stays inside the Tauri SQLite credential boundary.
+- Rust owns the current web API CRC32 query signing, account login, pagination, path-to-`FileId` traversal, bounded recursive search, `download_info`, Base64 URL decoding, and limited redirect resolution. TypeScript never constructs signed API or download URLs.
+- Native list/search responses require decimal-string `fileId`, rooted provider `path`, `name`, `isDir`, `etag`, and `s3KeyFlag`. Browse/detail/play requests outside the selected `rootPath` fail before provider access.
+- Native playback returns only a validated short-lived HTTP(S) URL and required Referer header. Access token, account credentials, dynamic signatures, download URLs, and playback headers are never persisted or logged. A refreshed account token is saved immediately through the credential boundary.
+
 ### Xunlei Subtitle Identity Ranking Contract
 
 #### 1. Scope / Trigger

@@ -148,10 +148,13 @@ const targetConfigs: DataSourceConfig[] = [
   createConfig('quark-target', 'quark', {
     rootPath: '/夸克影视',
   }),
+  createConfig('pan123-target', '123', {
+    rootPath: '/123影视',
+  }),
   createConfig('emby-target', 'emby'),
 ]
 const autoTargets = createRawSourceAutoIndexTargets(targetConfigs, () => source)
-assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target', 'clouddrive2-target', 'webdav-target', 'quark-target'])
+assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target', 'clouddrive2-target', 'webdav-target', 'quark-target', 'pan123-target'])
 assert.equal(readRawSourceScanScheduleConfig(targetConfigs[0]).incremental.intervalMs, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS)
 
 const dualScans: string[] = []

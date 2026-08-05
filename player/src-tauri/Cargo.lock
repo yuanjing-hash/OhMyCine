@@ -2716,6 +2716,8 @@ dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.22.1",
+ "chrono",
+ "crc32fast",
  "env_logger",
  "flate2",
  "libmpv-sys",
