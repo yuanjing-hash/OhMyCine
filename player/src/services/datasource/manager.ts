@@ -5,6 +5,7 @@ import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
 import { LocalFileDataSource } from './local'
+import { Pan123DataSource } from './pan123'
 import { QuarkDataSource } from './quark'
 import { searchAcrossDataSources } from './searchAggregation'
 import { WebDavDataSource } from './webdav'
@@ -122,6 +123,8 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new WebDavDataSource()
     case 'quark':
       return new QuarkDataSource()
+    case '123':
+      return new Pan123DataSource()
     case 'local':
       return new LocalFileDataSource()
     default:

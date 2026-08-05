@@ -10,6 +10,7 @@ pub mod image_cache;
 pub mod local_file;
 #[cfg(not(target_os = "android"))]
 pub mod local_file;
+pub mod pan123;
 #[cfg(not(mobile))]
 pub mod player;
 #[cfg(mobile)]

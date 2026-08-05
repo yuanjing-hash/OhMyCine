@@ -55,6 +55,9 @@ jobs:
       - name: Verify raw source index scheduler
         run: npm run verify:raw-source-index-scheduler
 
+      - name: Verify 123 Pan datasource
+        run: npm run verify:pan123-datasource
+
       - name: Verify TMDB auth routing
         run: npm run verify:tmdb-auth
 

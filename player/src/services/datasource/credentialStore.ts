@@ -29,6 +29,12 @@ export interface QuarkCredentialValue {
   readonly cookie: string
 }
 
+export interface Pan123CredentialValue {
+  readonly accessToken: string
+  readonly username?: string
+  readonly password?: string
+}
+
 export interface TmdbCredentialValue {
   readonly authType: 'apiKey' | 'readAccessToken'
   readonly value: string
@@ -43,7 +49,7 @@ export interface OpenSubtitlesCredentialValue {
   readonly password?: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | 'tmdb' | 'opensubtitles'
+type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | '123' | 'tmdb' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -78,6 +84,14 @@ interface StoredQuarkCredentialEnvelope {
   readonly version: 1
   readonly provider: 'quark'
   readonly cookie: string
+}
+
+interface StoredPan123CredentialEnvelope {
+  readonly version: 1
+  readonly provider: '123'
+  readonly accessToken: string
+  readonly username?: string
+  readonly password?: string
 }
 
 interface StoredTmdbCredentialEnvelope {
@@ -197,6 +211,26 @@ export async function saveQuarkCredential(ref: string, value: QuarkCredentialVal
 
 export async function readQuarkCredential(ref: string): Promise<QuarkCredentialValue | null> {
   return parseQuarkCredential(await readRawCredential(ref))
+}
+
+export async function savePan123Credential(ref: string, value: Pan123CredentialValue): Promise<void> {
+  const accessToken = value.accessToken.trim()
+  const username = value.username?.trim() || undefined
+  const password = value.password || undefined
+  if (!accessToken || Boolean(username) !== Boolean(password))
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: '123',
+    accessToken,
+    username,
+    password,
+  } satisfies StoredPan123CredentialEnvelope))
+}
+
+export async function readPan123Credential(ref: string): Promise<Pan123CredentialValue | null> {
+  return parsePan123Credential(await readRawCredential(ref))
 }
 
 export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
@@ -434,6 +468,31 @@ function parseQuarkCredential(raw: string | null): QuarkCredentialValue | null {
     if (typeof value.cookie !== 'string' || !value.cookie.trim())
       return null
     return { cookie: value.cookie.trim() }
+  }
+  catch {
+    return null
+  }
+}
+
+function parsePan123Credential(raw: string | null): Pan123CredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value) || value.provider !== '123' || value.version !== 1)
+      return null
+    if (typeof value.accessToken !== 'string' || !value.accessToken.trim())
+      return null
+    const username = typeof value.username === 'string' ? value.username.trim() : ''
+    const password = typeof value.password === 'string' ? value.password : ''
+    if (Boolean(username) !== Boolean(password))
+      return null
+    return {
+      accessToken: value.accessToken.trim(),
+      username: username || undefined,
+      password: password || undefined,
+    }
   }
   catch {
     return null

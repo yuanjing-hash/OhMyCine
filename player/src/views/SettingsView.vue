@@ -23,6 +23,7 @@ import { readRawCredentialBackup, removeCredential, saveRawCredentialBackup } fr
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
+import { createAuthenticatedPan123SetupSource, loginPan123AndCreateConfig, normalizePan123RootPath, PAN123_PROVIDER_URL, Pan123DataSource, readPan123RootPath } from '@/services/datasource/pan123'
 import { cancelQuarkLogin, createAuthenticatedQuarkSetupSource, normalizeQuarkRootPath, pollQuarkAccountLogin, pollQuarkQrLogin, QUARK_PROVIDER_URL, QuarkDataSource, readQuarkRootPath, saveQuarkCookieAndCreateConfig, startQuarkAccountLogin, startQuarkQrLogin } from '@/services/datasource/quark'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
@@ -74,7 +75,7 @@ import {
 import { useDataSourceStore } from '@/stores/datasource'
 import { useUpdaterStore } from '@/stores/updater'
 
-type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'quark'>
+type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav' | '123' | 'quark'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'shortcuts' | 'updates' | 'diagnostics'
@@ -82,6 +83,7 @@ type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'shortcuts' | '
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
 type QuarkLoginMode = 'qr' | 'account' | 'cookie'
+type Pan123LoginMode = 'account' | 'token'
 
 interface DataSourceFormState {
   id: string | null
@@ -192,6 +194,15 @@ const sourceTypeOptions: Array<{
     usernamePlaceholder: '',
   },
   {
+    type: '123',
+    label: '123 云盘',
+    shortLabel: '2',
+    description: '账号或访问令牌登录，只读浏览与播放',
+    defaultName: '123 云盘',
+    urlPlaceholder: '',
+    usernamePlaceholder: '123 云盘手机号或邮箱',
+  },
+  {
     type: 'local',
     label: '本地文件夹',
     shortLabel: 'L',
@@ -261,12 +272,13 @@ const isSaving = ref(false)
 const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
-const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | QuarkDataSource | null>(null)
+const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | Pan123DataSource | QuarkDataSource | null>(null)
 const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
 const alistBrowserLoading = ref(false)
 const alistBrowserError = ref<string | null>(null)
 const quarkLoginMode = ref<QuarkLoginMode>('qr')
+const pan123LoginMode = ref<Pan123LoginMode>('account')
 const quarkQrSessionId = ref('')
 const quarkQrImageUrl = ref('')
 const quarkAccountSessionId = ref('')
@@ -336,10 +348,12 @@ const selectedProvider = computed(() => sourceTypeOptions.find(option => option.
 const isAlistForm = computed(() => form.type === 'alist')
 const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
 const isWebDavForm = computed(() => form.type === 'webdav')
+const isPan123Form = computed(() => form.type === '123')
 const isQuarkForm = computed(() => form.type === 'quark')
 const isLocalForm = computed(() => form.type === 'local')
-const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value || isQuarkForm.value)
-const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value && !isQuarkForm.value)
+const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value || isPan123Form.value || isQuarkForm.value)
+const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value && !isQuarkForm.value && (!isPan123Form.value || pan123LoginMode.value === 'account'))
+const isApiTokenForm = computed(() => isCloudDrive2Form.value || (isPan123Form.value && pan123LoginMode.value === 'token'))
 const selectedRootPathLabel = computed(() => isLocalForm.value
   ? localRootPathLabel(form.rootPath, form.rootLabel)
   : normalizeRemoteRootPath(form.rootPath))
@@ -464,7 +478,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '添加和管理 Emby、OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件夹。',
+    description: '添加和管理 Emby、OpenList/Alist、CloudDrive2、夸克网盘、123 云盘、WebDAV 与本地文件夹。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -582,11 +596,17 @@ watch(() => form.type, (type) => {
     form.password = ''
     form.apiToken = ''
   }
+  else if (type === '123') {
+    form.url = PAN123_PROVIDER_URL
+    form.cookie = ''
+  }
   else {
     form.apiToken = ''
     form.cookie = ''
   }
   resetAlistBrowser()
+  if (type !== '123')
+    pan123LoginMode.value = 'account'
 })
 
 watch(() => [form.url, form.username, form.password, form.apiToken, form.cookie] as const, () => {
@@ -1128,6 +1148,7 @@ function resetForm() {
   form.cookie = ''
   form.rootPath = '/'
   form.rootLabel = ''
+  pan123LoginMode.value = 'account'
   feedback.value = null
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -1155,6 +1176,7 @@ function populateEditForm(config: EditableDataSourceConfig) {
   form.password = ''
   form.apiToken = ''
   form.cookie = ''
+  pan123LoginMode.value = 'account'
   if (config.type === 'alist')
     form.rootPath = readAlistRootPath(config)
   else if (config.type === 'clouddrive2')
@@ -1163,6 +1185,8 @@ function populateEditForm(config: EditableDataSourceConfig) {
     form.rootPath = readWebDavRootPath(config)
   else if (config.type === 'quark')
     form.rootPath = readQuarkRootPath(config)
+  else if (config.type === '123')
+    form.rootPath = readPan123RootPath(config)
   else if (config.type === 'local')
     form.rootPath = readLocalRootPath(config)
   else
@@ -1176,7 +1200,9 @@ function populateEditForm(config: EditableDataSourceConfig) {
         ? '可修改显示名称、根目录与启用状态；API Token 留空表示保留，修改服务地址时必须重新输入 Token。'
         : config.type === 'quark'
           ? '可修改显示名称与根目录；Cookie 留空表示保留当前登录，失效后重新粘贴即可。'
-          : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+          : config.type === '123'
+            ? '可修改显示名称与根目录；登录信息留空表示保留当前凭据，失效后可用账号或访问令牌重新登录。'
+            : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   resetAlistBrowser()
@@ -1272,7 +1298,9 @@ async function saveSource() {
           ? '添加 CloudDrive2 失败，请检查 gRPC 服务地址、API Token 权限和服务状态。'
           : form.type === 'quark'
             ? '添加夸克网盘失败，请检查 Cookie 是否完整且仍然有效。'
-            : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
+            : form.type === '123'
+              ? '添加 123 云盘失败，请检查账号密码或访问令牌是否有效。'
+              : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
     }
   }
   finally {
@@ -1303,7 +1331,11 @@ async function saveEditedSource(id: string) {
   }
 
   const username = form.username.trim()
-  const nextUrl = existing.type === 'quark' ? QUARK_PROVIDER_URL : form.url.trim()
+  const nextUrl = existing.type === 'quark'
+    ? QUARK_PROVIDER_URL
+    : existing.type === '123'
+      ? PAN123_PROVIDER_URL
+      : form.url.trim()
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
   const nextRootPath = isRootSelectableRemoteSourceType(existing.type) ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
@@ -1312,7 +1344,9 @@ async function saveEditedSource(id: string) {
     throw new Error('更新 CloudDrive2 服务地址或 Token 时必须填写 API Token。')
   if (shouldRelogin && existing.type === 'quark' && !form.cookie.trim())
     throw new Error('更新夸克网盘登录信息时必须填写 Cookie。')
-  if (shouldRelogin && existing.type !== 'clouddrive2' && existing.type !== 'quark' && (!username || !form.password))
+  if (shouldRelogin && existing.type === '123' && !form.apiToken.trim() && (!username || !form.password))
+    throw new Error('更新 123 云盘登录信息时，请填写账号密码或访问令牌。')
+  if (shouldRelogin && existing.type !== 'clouddrive2' && existing.type !== 'quark' && existing.type !== '123' && (!username || !form.password))
     throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
 
   if (shouldRelogin) {
@@ -1372,7 +1406,9 @@ async function saveEditedSource(id: string) {
     ? '数据源已更新。若 API Token 已撤销或权限变化，请再次编辑并输入新的 Token。'
     : existing.type === 'quark'
       ? '夸克网盘数据源已更新。Cookie 失效后可再次编辑并重新粘贴。'
-      : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
+      : existing.type === '123'
+        ? '123 云盘数据源已更新。登录失效后可再次编辑并重新登录。'
+        : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
   goManage({ preserveFeedback: true })
 }
 
@@ -1395,6 +1431,8 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
     return loginWebDavAndCreateConfig(input)
   if (type === 'quark')
     return saveQuarkCookieAndCreateConfig(input)
+  if (type === '123')
+    return loginPan123AndCreateConfig(input)
   return loginEmbyAndCreateConfig(input)
 }
 
@@ -1424,7 +1462,7 @@ async function createAndValidateLocalConfig(input: {
 }
 
 function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'quark'
+  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark'
 }
 
 function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
@@ -1435,8 +1473,8 @@ function isEditableDataSourceConfig(config: DataSourceConfig): config is Editabl
   return isEditableDataSourceType(config.type)
 }
 
-function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav' | 'quark'> {
-  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'quark'
+function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav' | '123' | 'quark'> {
+  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark'
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -1453,6 +1491,8 @@ function sourceTypeLabel(type: DataSourceType): string {
       return 'WebDAV'
     case 'quark':
       return '夸克网盘'
+    case '123':
+      return '123 云盘'
     case 'local':
       return '本地文件'
     case 'server':
@@ -1479,7 +1519,7 @@ function sourceStatusLine(source: DataSourceConfig): string {
 }
 
 function isRawScanScheduleSource(source: DataSourceConfig): boolean {
-  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === 'quark' || source.type === 'local'
+  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === '123' || source.type === 'quark' || source.type === 'local'
 }
 
 function readRemoteRootPath(config: DataSourceConfig): string {
@@ -1489,6 +1529,8 @@ function readRemoteRootPath(config: DataSourceConfig): string {
     return readWebDavRootPath(config)
   if (config.type === 'quark')
     return readQuarkRootPath(config)
+  if (config.type === '123')
+    return readPan123RootPath(config)
   return readAlistRootPath(config)
 }
 
@@ -1499,6 +1541,8 @@ function normalizeRemoteRootPath(path: string | undefined): string {
     return normalizeWebDavRootPath(path)
   if (form.type === 'quark')
     return normalizeQuarkRootPath(path)
+  if (form.type === '123')
+    return normalizePan123RootPath(path)
   return normalizeAlistRootPath(path)
 }
 
@@ -1599,7 +1643,11 @@ function selectSourceType(type: EditableDataSourceType) {
 
   form.type = type
   form.displayName = defaultDisplayName(type)
-  form.url = type === 'quark' ? QUARK_PROVIDER_URL : ''
+  form.url = type === 'quark'
+    ? QUARK_PROVIDER_URL
+    : type === '123'
+      ? PAN123_PROVIDER_URL
+      : ''
   form.username = ''
   form.password = ''
   form.apiToken = ''
@@ -1608,6 +1656,17 @@ function selectSourceType(type: EditableDataSourceType) {
   resetAlistBrowser()
   feedback.value = null
   lastFetchedLibraries.value = []
+}
+
+function selectPan123LoginMode(mode: Pan123LoginMode) {
+  if (pan123LoginMode.value === mode)
+    return
+  pan123LoginMode.value = mode
+  form.username = ''
+  form.password = ''
+  form.apiToken = ''
+  resetAlistBrowser()
+  feedback.value = null
 }
 
 async function chooseLocalRootPath() {
@@ -1687,7 +1746,7 @@ async function loadAlistDirectory(path: string) {
   }
 }
 
-async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | QuarkDataSource> {
+async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | Pan123DataSource | QuarkDataSource> {
   if (alistBrowserSource.value)
     return alistBrowserSource.value
 
@@ -1706,7 +1765,9 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2
         ? new WebDavDataSource()
         : existing.type === 'quark'
           ? new QuarkDataSource()
-          : new AlistDataSource()
+          : existing.type === '123'
+            ? new Pan123DataSource()
+            : new AlistDataSource()
     await source.init({
       ...existing,
       name: displayName,
@@ -1738,7 +1799,9 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2
       ? await createAuthenticatedWebDavSetupSource(setupInput)
       : form.type === 'quark'
         ? await createAuthenticatedQuarkSetupSource(setupInput)
-        : await createAuthenticatedAlistSetupSource(setupInput)
+        : form.type === '123'
+          ? await createAuthenticatedPan123SetupSource(setupInput)
+          : await createAuthenticatedAlistSetupSource(setupInput)
   alistBrowserSource.value = source
   return source
 }
@@ -1874,7 +1937,9 @@ function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username
     ? Boolean(apiToken.trim())
     : config.type === 'quark'
       ? Boolean(cookie.trim())
-      : Boolean(username || password)
+      : config.type === '123'
+        ? Boolean(apiToken.trim() || username || password)
+        : Boolean(username || password)
   return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || credentialChanged
 }
 
@@ -1888,7 +1953,9 @@ async function validateExistingRemoteRoot(config: DataSourceConfig, url: string,
       ? new WebDavDataSource()
       : config.type === 'quark'
         ? new QuarkDataSource()
-        : new AlistDataSource()
+        : config.type === '123'
+          ? new Pan123DataSource()
+          : new AlistDataSource()
   try {
     await source.init({
       ...config,
@@ -3366,7 +3433,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             还没有数据源
           </p>
           <p class="mt-2 text-sm leading-6 text-white/42">
-            添加 Emby、OpenList/Alist、CloudDrive2、夸克网盘或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
+            添加 Emby、OpenList/Alist、CloudDrive2、夸克网盘、123 云盘或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
           </p>
           <button class="mt-5 rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
             添加数据源
@@ -3433,7 +3500,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label v-if="!isLocalForm && !isQuarkForm" class="block">
+          <label v-if="!isLocalForm && !isQuarkForm && !isPan123Form" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
             <input
               v-model="form.url"
@@ -3442,6 +3509,30 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               autocomplete="off"
             >
           </label>
+
+          <div v-if="isPan123Form" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div>
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">登录方式</span>
+              <p class="mt-1 text-xs leading-5 text-white/42">
+                账号登录可在令牌过期后自动续期；访问令牌导入适合高级用户。
+              </p>
+            </div>
+            <div class="mt-4 grid grid-cols-2 gap-1 rounded-2xl bg-black/18 p-1">
+              <button
+                v-for="option in ([
+                  { value: 'account', label: '账号登录' },
+                  { value: 'token', label: '访问令牌' },
+                ] as const)"
+                :key="option.value"
+                type="button"
+                class="min-h-10 rounded-xl px-3 text-xs font-semibold transition-colors"
+                :class="pan123LoginMode === option.value ? 'bg-primary/22 text-primary' : 'text-white/48 hover:bg-white/8 hover:text-white/76'"
+                @click="selectPan123LoginMode(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
 
           <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
@@ -3453,17 +3544,20 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label v-if="isCloudDrive2Form" class="block">
-            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">API Token</span>
+          <label v-if="isApiTokenForm" class="block">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ isCloudDrive2Form ? 'API Token' : '访问令牌' }}</span>
             <input
               v-model="form.apiToken"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-              :placeholder="isEditing ? '留空则保留当前 API Token' : '粘贴 CloudDrive2 中创建的只读 API Token'"
+              :placeholder="isEditing ? '留空则保留当前登录凭据' : isCloudDrive2Form ? '粘贴 CloudDrive2 中创建的只读 API Token' : '粘贴 123 云盘访问令牌'"
               type="password"
               autocomplete="off"
             >
-            <span class="mt-2 block text-xs leading-5 text-white/42">
+            <span v-if="isCloudDrive2Form" class="mt-2 block text-xs leading-5 text-white/42">
               请先在 CloudDrive2 中创建应用 API Token。
+            </span>
+            <span v-else class="mt-2 block text-xs leading-5 text-white/42">
+              访问令牌只保存在 Tauri SQLite 凭据边界中；令牌过期后需要重新导入。
             </span>
           </label>
 

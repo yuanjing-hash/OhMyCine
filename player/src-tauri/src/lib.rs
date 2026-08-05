@@ -20,6 +20,7 @@ use commands::local_file::{
     local_file_list, local_file_metadata, local_file_pick_directory, local_file_pick_video,
     local_file_stream_path, local_file_watch_start, local_file_watch_stop, LocalFileWatcherState,
 };
+use commands::pan123::{pan123_get_stream, pan123_list, pan123_login, pan123_search};
 use commands::player::{
     mpv_add_subtitle, mpv_apply_engine_settings, mpv_display_brightness_state, mpv_get_property,
     mpv_init_render_surface, mpv_load, mpv_orientation_state, mpv_pause, mpv_playback_diagnostics,
@@ -90,6 +91,10 @@ pub fn run() {
             quark_auth_start_account,
             quark_auth_poll_account,
             quark_auth_cancel,
+            pan123_login,
+            pan123_list,
+            pan123_search,
+            pan123_get_stream,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
             player_get_media_playback_preference,
