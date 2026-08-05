@@ -83,6 +83,13 @@ Keep all media sources behind a common interface with these concepts:
 
 `DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `webdav`, `server`, `115`, `123`, and `quark` as planned types.
 
+### Quark DataSource Contract
+
+- `quark` is a read-only raw-file DataSource with a fixed official HTTPS provider identity. User config may contain `credentialRef`, `rootPath`, scan settings, display metadata, and cached library descriptors; it must never contain Cookie, account/password, service ticket, download URL, or playback headers.
+- QR login, official account-window login, and advanced manual Cookie import converge on `QuarkCredentialValue { cookie }`. QR token/service ticket are short-lived Rust memory state; account credentials remain inside the official Quark WebView.
+- Native list/search responses are parsed from `unknown`, require stable `fid`, rooted provider `path`, `name`, and `isDir`, and are scoped to the selected root. Browse/detail/play requests outside `rootPath` must fail before provider access.
+- Native playback returns a short-lived HTTP(S) URL plus Cookie/Referer/User-Agent and optional `x-urlp`. Rotated `__puus`/`__pus` values are persisted immediately through the credential boundary; stream URL and headers are never persisted.
+
 ### Xunlei Subtitle Identity Ranking Contract
 
 #### 1. Scope / Trigger

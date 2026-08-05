@@ -143,10 +143,13 @@ const targetConfigs: DataSourceConfig[] = [
   createConfig('webdav-target', 'webdav', {
     rootPath: '/共享影视',
   }),
+  createConfig('quark-target', 'quark', {
+    rootPath: '/夸克影视',
+  }),
   createConfig('emby-target', 'emby'),
 ]
 const autoTargets = createRawSourceAutoIndexTargets(targetConfigs, () => source)
-assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target', 'clouddrive2-target', 'webdav-target'])
+assert.deepEqual(autoTargets.map(target => target.sourceId), ['alist-target', 'local-target', 'clouddrive2-target', 'webdav-target', 'quark-target'])
 assert.equal(readRawSourceScanScheduleConfig(targetConfigs[0]).incremental.intervalMs, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS)
 
 const dualScans: string[] = []

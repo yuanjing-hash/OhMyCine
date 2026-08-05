@@ -283,24 +283,24 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] 115网盘 — UI 中显示"即将推出"标签
 - [ ] 123盘 — UI 中显示"即将推出"标签
-- [ ] 夸克网盘 — UI 中显示"即将推出"标签
-- [ ] 接口定义预留 (`throw new Error('即将推出')`)
+- [~] 夸克网盘 — Cookie 凭据、官方扫码登录、官方账号登录窗口、目录/搜索/直链播放、根目录选择与 raw scan 已实现；待真实账号跨 Windows/Android 实机验证
+- [ ] 115/123 接口定义继续保留占位
 
 #### DataSourceManager 完善
 
 - [x] 跨数据源搜索结果合并与去重（单源失败不影响其他来源，保留数据源顺序并支持详情/直接播放）
 - [ ] 统一媒体浏览 (合并所有 DataSource 的内容)
-- [~] 云盘/本地文件刮削结果接入聚合首页 Hero / 最新影片（已接入 OpenList/Alist、CloudDrive2、WebDAV 与本地文件 raw scan cache 中的 `matched` + metadata 条目；未匹配/失败/跳过/未配置条目不进入 Home，缓存读取失败按源隔离）
+- [~] 云盘/本地文件刮削结果接入聚合首页 Hero / 最新影片（已接入 OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件 raw scan cache 中的 `matched` + metadata 条目；未匹配/失败/跳过/未配置条目不进入 Home，缓存读取失败按源隔离）
 - [ ] 配置导入/导出 (JSON 文件)
 
 #### 原始文件源本地刮削与海报墙
 
 - [~] 通用刮削分类规则配置（默认实例来自 MP 风格思路，但用户通过受控设置页编辑；分类只作为本地逻辑分组，不要求固定 `movie` / `tv` / `Movies` / `TV` 顶层目录，不写回 OpenList/Alist）
-- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；OpenList/Alist、CloudDrive2 与 WebDAV 使用短间隔 polling/diff；WebDAV 已纳入 Tauri SQLite raw scan cache 白名单；Emby/Jellyfin 不进入 Player 原始文件扫描调度；首页/搜索/Hero/海报卡片已接入受控 `cache/images` 二进制缓存）
+- [~] OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；远程原始文件源使用短间隔 polling/diff；Emby/Jellyfin 不进入 Player 原始文件扫描调度；首页/搜索/Hero/海报卡片已接入受控 `cache/images` 二进制缓存）
 - [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具并接入递归扫描；首次进入无缓存媒体库时显示索引进度/状态，不再用空媒体库误导）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
 - [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；无年份自动匹配优先精确标题，避免基础片名被包含匹配/热度误导到续集；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
-- [~] OpenList/Alist、CloudDrive2、WebDAV 与本地文件 Emby-like 媒体库首页与文件夹兜底视图（已提供 `alist` / `clouddrive2` / `webdav` / `local` 可见 MVP：默认进入大海报轮播 + 逻辑媒体库卡片，分类内电影/剧集/未识别按作品聚合成海报墙；无缓存首次进入会显示自动索引进度/状态并在完成后加载分类；文件夹浏览通过按钮作为兜底入口；扫描状态、结构判断和日志已收进扫描管理面板；标准目录优先使用路径分类，非标准或无路径分类时再使用 TMDB 分类规则兜底）
+- [~] OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件 Emby-like 媒体库首页与文件夹兜底视图（已提供 `alist` / `clouddrive2` / `quark` / `webdav` / `local` 可见 MVP：默认进入大海报轮播 + 逻辑媒体库卡片，分类内电影/剧集/未识别按作品聚合成海报墙；无缓存首次进入会显示自动索引进度/状态并在完成后加载分类；文件夹浏览通过按钮作为兜底入口；扫描状态、结构判断和日志已收进扫描管理面板；标准目录优先使用路径分类，非标准或无路径分类时再使用 TMDB 分类规则兜底）
 
 #### 播放器增强
 
@@ -322,8 +322,9 @@ Phase 4: 生态系统           ████████████████
 - [x] 能连接 OpenList/Alist 浏览和播放云盘文件（已通过本地 OpenList/Alist 服务 live test）
 - [~] 能连接 CloudDrive2 浏览和播放（原生 gRPC API Token DataSource、Tauri 命令、设置页和播放直链/header 已完成；待真实 CloudDrive2 服务实机验证）
 - [~] 能连接通用 WebDAV 浏览和播放（独立 `webdav` DataSource、Basic Auth、设置页、扫描调度和播放 header 已完成；待更多真实 WebDAV 服务兼容性验证）
+- [~] 能连接夸克网盘浏览和播放（官方扫码/账号登录、Cookie 凭据、根目录、搜索、扫描和原始直链/header 已完成；待真实账号实机验证）
 - [x] 桌面与 Android 都能通过平台文件选择器打开本地视频并进入播放页；桌面播放页支持拖拽；两端都能把本地文件夹添加为数据源，像 OpenList/Alist 一样浏览、扫描、生成媒体库并播放 root 内视频；文件关联仍待后续
-- [ ] 115/123/夸克在 UI 中有占位
+- [~] 夸克网盘已进入可用 DataSource；115/123 仍保留占位
 
 ---
 
