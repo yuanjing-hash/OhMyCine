@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, RawSourceIndexStatus, RawSourceIndexTarget, RawSourceScanKind, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
+import { clearLayoutContextActions, setLayoutContextActions } from '@/services/layoutContextActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, enrichRawScrapedItemsEpisodeMetadata, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, readRawSourceRootPath, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -15,6 +16,7 @@ import { useDataSourceStore } from '@/stores/datasource'
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
+const layoutContextOwner = Symbol('source-library-layout-actions')
 
 const sourceId = computed(() => route.params.sourceId as string)
 const sourceConfig = computed(() =>
@@ -418,6 +420,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus?.()
   unsubscribeRawIndexStatus = undefined
+  clearLayoutContextActions(layoutContextOwner)
 })
 
 watch(sourceId, async () => {
@@ -869,6 +872,41 @@ async function startFullRescrape() {
   isScanManagementOpen.value = true
   await startLocalScan('full')
 }
+
+watchEffect(() => {
+  if (!isRawFileSource.value || !isMediaLibraryView.value || !scanCache.value) {
+    clearLayoutContextActions(layoutContextOwner)
+    return
+  }
+
+  setLayoutContextActions(layoutContextOwner, [
+    {
+      id: 'raw-source-rescrape',
+      label: isScanning.value ? '重新刮削中…' : '重新刮削',
+      description: '全量扫描目录并重新匹配媒体信息',
+      icon: 'rescrape',
+      disabled: isScanning.value || !source.value,
+      execute: startFullRescrape,
+    },
+    {
+      id: 'raw-source-scan-management',
+      label: isScanManagementOpen.value ? '收起扫描管理' : '扫描管理',
+      description: '查看扫描状态、结构判断和日志',
+      icon: 'scan',
+      active: isScanManagementOpen.value,
+      execute: () => {
+        isScanManagementOpen.value = !isScanManagementOpen.value
+      },
+    },
+    {
+      id: 'raw-source-folder-view',
+      label: '文件夹',
+      description: '按数据源原始目录浏览媒体文件',
+      icon: 'folder',
+      execute: () => switchViewMode('folders'),
+    },
+  ])
+})
 
 async function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } = {}) {
   scanErrorMessage.value = null
@@ -2047,38 +2085,10 @@ function labelForSourceType(type: string): string {
 
           <template v-else-if="!selectedScannedCategory">
             <section class="space-y-4">
-              <div class="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h2 class="text-xl font-bold text-white">
-                    媒体库
-                  </h2>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    class="rounded-2xl bg-primary/88 px-4 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
-                    :disabled="isScanning || !source"
-                    @click="startFullRescrape"
-                  >
-                    {{ isScanning ? '重新刮削中…' : '重新刮削' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-2xl border border-white/10 bg-white/7 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-                    :aria-expanded="isScanManagementOpen"
-                    aria-controls="source-scan-management"
-                    @click="isScanManagementOpen = !isScanManagementOpen"
-                  >
-                    {{ isScanManagementOpen ? '收起扫描管理' : '扫描管理' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-2xl border border-white/10 bg-white/7 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
-                    @click="switchViewMode('folders')"
-                  >
-                    文件夹
-                  </button>
-                </div>
+              <div>
+                <h2 class="text-xl font-bold text-white">
+                  媒体库
+                </h2>
               </div>
 
               <MediaGrid
