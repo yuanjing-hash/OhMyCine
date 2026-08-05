@@ -27,7 +27,7 @@ export async function enrichRawMediaCandidates(
 ): Promise<RawScrapedMediaItem[]> {
   const tmdb = options.tmdbClient ?? await createConfiguredTmdbClient()
   if (!tmdb) {
-    options.onLog?.(createLog('warning', '未配置 TMDB token/key，本次扫描仅保留可播放候选并统一归入未识别分类。'))
+    options.onLog?.(createLog('warning', '当前构建未提供 TMDB 内置凭据，且用户未配置自定义凭据；本次扫描仅保留可播放候选并统一归入未识别分类。'))
     return candidates.map(candidate => fallbackScrapedItem(candidate, 'notConfigured'))
   }
 

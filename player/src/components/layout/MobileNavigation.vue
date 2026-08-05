@@ -4,9 +4,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 import { pickAndroidLocalVideo } from '@/services/androidLocalMedia'
+import { useLayoutContextActions } from '@/services/layoutContextActions'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
+import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
 
 type MobileSheet = 'libraries' | 'quick'
 
@@ -35,6 +37,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const { theme, toggle: toggleTheme } = useTheme()
+const { actions: contextActions } = useLayoutContextActions()
 const activeSheet = ref<MobileSheet | null>(null)
 const isOpeningFile = ref(false)
 const openFileError = ref<string | null>(null)
@@ -176,6 +179,13 @@ function handleThemeToggle() {
   closeSheet()
 }
 
+function runContextAction(action: (typeof contextActions.value)[number]) {
+  if (action.disabled)
+    return
+  closeSheet()
+  void action.execute()
+}
+
 function handleEscape(event: KeyboardEvent) {
   if (event.key === 'Escape' && activeSheet.value) {
     event.preventDefault()
@@ -193,7 +203,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
   <Teleport to="body">
     <Transition name="mobile-sheet-fade">
       <div v-if="activeSheet" class="mobile-sheet-layer" @pointerdown.self="closeSheet">
-        <section class="mobile-sheet" role="dialog" aria-modal="true" :aria-label="activeSheet === 'libraries' ? '选择媒体库' : '快捷操作'">
+        <section class="mobile-sheet theme-adaptive" role="dialog" aria-modal="true" :aria-label="activeSheet === 'libraries' ? '选择媒体库' : '快捷操作'">
           <div class="mobile-sheet-handle" aria-hidden="true" />
 
           <template v-if="activeSheet === 'libraries'">
@@ -241,6 +251,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
               </button>
             </header>
 
+            <section v-if="contextActions.length" class="mobile-context-section">
+              <p class="mobile-context-eyebrow">
+                当前媒体库
+              </p>
+              <div class="mobile-context-list">
+                <button
+                  v-for="action in contextActions"
+                  :key="action.id"
+                  type="button"
+                  class="mobile-context-action"
+                  :class="{ 'is-active': action.active }"
+                  :disabled="action.disabled"
+                  @click="runContextAction(action)"
+                >
+                  <span class="mobile-context-icon">
+                    <LayoutContextActionIcon :name="action.icon" />
+                  </span>
+                  <span class="mobile-context-copy">
+                    <strong>{{ action.label }}</strong>
+                    <small>{{ action.description }}</small>
+                  </span>
+                  <span v-if="action.active" class="mobile-context-state">已展开</span>
+                  <svg v-else class="mobile-row-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+                </button>
+              </div>
+            </section>
+
             <div class="mobile-quick-grid">
               <button type="button" class="mobile-quick-action" :disabled="isOpeningFile" @click="openLocalVideo">
                 <span class="mobile-quick-icon">
@@ -284,7 +321,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     </Transition>
   </Teleport>
 
-  <nav class="mobile-bottom-nav" aria-label="手机主导航">
+  <nav class="mobile-bottom-nav theme-adaptive" aria-label="手机主导航">
     <button type="button" class="mobile-nav-item" :class="{ 'is-active': isHomeActive }" aria-label="首页" @click="navigateHome">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 10 8-7 8 7v10h-5v-6H9v6H4V10Z" /></svg>
       <span>首页</span>
@@ -331,11 +368,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     min-height: 4.5rem;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     align-items: end;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid var(--chrome-border);
     border-radius: 8px;
     padding: 0.42rem 0.35rem;
-    background: rgba(9, 11, 17, 0.9);
-    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.44), inset 0 1px rgba(255, 255, 255, 0.1);
+    background: var(--navigation-surface);
+    box-shadow: var(--navigation-shadow);
     backdrop-filter: blur(28px) saturate(1.6);
     -webkit-backdrop-filter: blur(28px) saturate(1.6);
   }
@@ -348,7 +385,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     align-items: center;
     justify-content: center;
     gap: 0.2rem;
-    color: rgba(255, 255, 255, 0.46);
+    color: var(--color-text-tertiary);
   }
 
   .mobile-nav-item {
@@ -367,23 +404,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
   }
 
   .mobile-nav-item.is-active {
-    color: rgba(255, 255, 255, 0.96);
-    background: rgba(255, 255, 255, 0.075);
-  }
-
-  :global(html[data-theme="light"]) .mobile-bottom-nav {
-    border-color: rgba(26, 26, 46, 0.12);
-    background: rgba(248, 249, 253, 0.94);
-    box-shadow: 0 18px 44px rgba(35, 39, 61, 0.18), inset 0 1px rgba(255, 255, 255, 0.9);
-  }
-
-  :global(html[data-theme="light"]) .mobile-nav-item {
-    color: var(--color-text-tertiary);
-  }
-
-  :global(html[data-theme="light"]) .mobile-nav-item.is-active {
     color: var(--color-text);
-    background: rgba(26, 26, 46, 0.07);
+    background: var(--color-interactive-hover);
   }
 
   .mobile-nav-item.is-active::before {
@@ -414,7 +436,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     justify-content: center;
     padding: 0.75rem;
     padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
-    background: rgba(0, 0, 0, 0.58);
+    background: var(--chrome-scrim);
     backdrop-filter: blur(7px);
     -webkit-backdrop-filter: blur(7px);
   }
@@ -423,12 +445,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     width: min(100%, 32rem);
     max-height: min(80svh, 42rem);
     overflow-y: auto;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid var(--chrome-border);
     border-radius: 8px;
     padding: 0.55rem 0.85rem 1rem;
-    color: white;
-    background: rgba(14, 17, 24, 0.97);
-    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+    color: var(--color-text);
+    background: var(--chrome-surface);
+    box-shadow: var(--chrome-shadow);
   }
 
   .mobile-sheet-handle {
@@ -436,7 +458,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     height: 0.22rem;
     margin: 0 auto 0.55rem;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.2);
+    background: var(--chrome-handle);
   }
 
   .mobile-sheet-header {
@@ -448,7 +470,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
   }
 
   .mobile-sheet-header p {
-    color: rgba(255, 255, 255, 0.36);
+    color: var(--color-text-tertiary);
     font-size: 0.6rem;
     font-weight: 800;
   }
@@ -466,8 +488,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    color: rgba(255, 255, 255, 0.72);
-    background: rgba(255, 255, 255, 0.08);
+    color: var(--color-text-secondary);
+    background: var(--surface-soft);
   }
 
   .mobile-sheet-close svg,
@@ -498,17 +520,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     grid-template-columns: 2.75rem minmax(0, 1fr) 1.25rem;
     align-items: center;
     gap: 0.75rem;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 0.5rem 0.65rem;
-    color: rgba(255, 255, 255, 0.78);
-    background: rgba(255, 255, 255, 0.045);
+    color: var(--color-text);
+    background: var(--surface-soft);
     text-align: left;
   }
 
   .mobile-library-row.is-current {
     border-color: color-mix(in srgb, var(--color-primary) 52%, transparent);
-    background: color-mix(in srgb, var(--color-primary) 14%, rgba(255, 255, 255, 0.045));
+    background: color-mix(in srgb, var(--color-primary) 14%, var(--surface-soft));
   }
 
   .mobile-library-icon {
@@ -519,8 +541,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     justify-content: center;
     overflow: hidden;
     border-radius: 8px;
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
+    color: var(--color-text);
+    background: var(--surface-soft-hover);
     font-size: 0.9rem;
     font-weight: 800;
   }
@@ -549,19 +571,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
 
   .mobile-library-copy small {
     margin-top: 0.18rem;
-    color: rgba(255, 255, 255, 0.38);
+    color: var(--color-text-tertiary);
     font-size: 0.66rem;
   }
 
   .mobile-row-chevron {
     width: 1rem;
     height: 1rem;
-    color: rgba(255, 255, 255, 0.32);
+    color: var(--color-text-tertiary);
   }
 
   .mobile-sheet-empty {
     padding: 2rem 1rem;
-    color: rgba(255, 255, 255, 0.42);
+    color: var(--color-text-tertiary);
     text-align: center;
   }
 
@@ -574,8 +596,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     gap: 0.5rem;
     margin-top: 0.7rem;
     border-radius: 8px;
-    color: #0a0c11;
-    background: rgba(255, 255, 255, 0.94);
+    color: var(--color-text-inverse);
+    background: var(--color-text);
     font-size: 0.85rem;
     font-weight: 800;
   }
@@ -591,16 +613,97 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     gap: 0.55rem;
   }
 
+  .mobile-context-section {
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid var(--color-divider);
+  }
+
+  .mobile-context-eyebrow {
+    margin: 0 0 0.5rem 0.1rem;
+    color: var(--color-text-tertiary);
+    font-size: 0.62rem;
+    font-weight: 800;
+  }
+
+  .mobile-context-list {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .mobile-context-action {
+    display: grid;
+    width: 100%;
+    min-height: 3.65rem;
+    grid-template-columns: 2.3rem minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.7rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 0.5rem 0.65rem;
+    color: var(--color-text);
+    background: var(--surface-soft);
+    text-align: left;
+  }
+
+  .mobile-context-action.is-active {
+    border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+    background: color-mix(in srgb, var(--color-primary) 12%, var(--surface-soft));
+  }
+
+  .mobile-context-action:disabled {
+    opacity: 0.45;
+  }
+
+  .mobile-context-icon {
+    display: flex;
+    width: 2.3rem;
+    height: 2.3rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  }
+
+  .mobile-context-copy {
+    min-width: 0;
+  }
+
+  .mobile-context-copy strong,
+  .mobile-context-copy small {
+    display: block;
+  }
+
+  .mobile-context-copy strong {
+    font-size: 0.82rem;
+  }
+
+  .mobile-context-copy small {
+    margin-top: 0.16rem;
+    overflow: hidden;
+    color: var(--color-text-tertiary);
+    font-size: 0.65rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-context-state {
+    color: var(--color-primary);
+    font-size: 0.64rem;
+    font-weight: 700;
+  }
+
   .mobile-quick-action {
     display: flex;
     min-height: 8.2rem;
     flex-direction: column;
     align-items: flex-start;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 0.85rem;
-    color: rgba(255, 255, 255, 0.82);
-    background: rgba(255, 255, 255, 0.05);
+    color: var(--color-text);
+    background: var(--surface-soft);
     text-align: left;
   }
 
@@ -631,7 +734,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
 
   .mobile-quick-action small {
     margin-top: 0.25rem;
-    color: rgba(255, 255, 255, 0.38);
+    color: var(--color-text-tertiary);
     font-size: 0.66rem;
     line-height: 1.4;
   }

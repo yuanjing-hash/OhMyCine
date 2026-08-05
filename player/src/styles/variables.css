@@ -58,6 +58,16 @@
   --surface-soft: rgba(255, 255, 255, 0.06);
   --surface-soft-hover: rgba(255, 255, 255, 0.105);
 
+  /* === Adaptive Chrome Surfaces === */
+  --chrome-scrim: rgba(0, 0, 0, 0.58);
+  --chrome-surface: rgba(14, 17, 24, 0.97);
+  --chrome-surface-translucent: rgba(8, 11, 17, 0.88);
+  --chrome-border: rgba(255, 255, 255, 0.14);
+  --chrome-handle: rgba(255, 255, 255, 0.2);
+  --chrome-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+  --navigation-surface: rgba(9, 11, 17, 0.9);
+  --navigation-shadow: 0 20px 48px rgba(0, 0, 0, 0.44), inset 0 1px rgba(255, 255, 255, 0.1);
+
   /* === Border Radius === */
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -130,4 +140,13 @@
   --control-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 24px rgba(37, 41, 56, 0.08);
   --surface-soft: rgba(255, 255, 255, 0.72);
   --surface-soft-hover: rgba(255, 255, 255, 0.96);
+
+  --chrome-scrim: rgba(31, 35, 50, 0.3);
+  --chrome-surface: rgba(250, 250, 253, 0.98);
+  --chrome-surface-translucent: rgba(248, 249, 253, 0.94);
+  --chrome-border: rgba(26, 26, 46, 0.12);
+  --chrome-handle: rgba(26, 26, 46, 0.18);
+  --chrome-shadow: 0 28px 80px rgba(35, 39, 61, 0.2);
+  --navigation-surface: rgba(248, 249, 253, 0.94);
+  --navigation-shadow: 0 18px 44px rgba(35, 39, 61, 0.18), inset 0 1px rgba(255, 255, 255, 0.9);
 }

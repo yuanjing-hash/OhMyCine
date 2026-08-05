@@ -25,6 +25,10 @@ export interface WebDavCredentialValue {
   readonly password: string
 }
 
+export interface QuarkCredentialValue {
+  readonly cookie: string
+}
+
 export interface TmdbCredentialValue {
   readonly authType: 'apiKey' | 'readAccessToken'
   readonly value: string
@@ -39,7 +43,7 @@ export interface OpenSubtitlesCredentialValue {
   readonly password?: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'tmdb' | 'opensubtitles'
+type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | 'tmdb' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -68,6 +72,12 @@ interface StoredWebDavCredentialEnvelope {
   readonly provider: 'webdav'
   readonly username: string
   readonly password: string
+}
+
+interface StoredQuarkCredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'quark'
+  readonly cookie: string
 }
 
 interface StoredTmdbCredentialEnvelope {
@@ -171,6 +181,22 @@ export async function saveWebDavCredential(ref: string, value: WebDavCredentialV
 
 export async function readWebDavCredential(ref: string): Promise<WebDavCredentialValue | null> {
   return parseWebDavCredential(await readRawCredential(ref))
+}
+
+export async function saveQuarkCredential(ref: string, value: QuarkCredentialValue): Promise<void> {
+  const cookie = value.cookie.trim()
+  if (!cookie)
+    throw new Error('Credential value is incomplete.')
+
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'quark',
+    cookie,
+  } satisfies StoredQuarkCredentialEnvelope))
+}
+
+export async function readQuarkCredential(ref: string): Promise<QuarkCredentialValue | null> {
+  return parseQuarkCredential(await readRawCredential(ref))
 }
 
 export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
@@ -391,6 +417,23 @@ function parseWebDavCredential(raw: string | null): WebDavCredentialValue | null
       username: value.username,
       password: value.password,
     }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseQuarkCredential(raw: string | null): QuarkCredentialValue | null {
+  if (!raw)
+    return null
+
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value) || value.provider !== 'quark' || value.version !== 1)
+      return null
+    if (typeof value.cookie !== 'string' || !value.cookie.trim())
+      return null
+    return { cookie: value.cookie.trim() }
   }
   catch {
     return null

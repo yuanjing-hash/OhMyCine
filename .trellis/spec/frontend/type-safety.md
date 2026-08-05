@@ -83,6 +83,13 @@ Keep all media sources behind a common interface with these concepts:
 
 `DataSourceType` should include `emby`, `jellyfin`, `alist` (code identifier for OpenList/Alist compatibility), `clouddrive2`, `webdav`, `server`, `115`, `123`, and `quark` as planned types.
 
+### Quark DataSource Contract
+
+- `quark` is a read-only raw-file DataSource with a fixed official HTTPS provider identity. User config may contain `credentialRef`, `rootPath`, scan settings, display metadata, and cached library descriptors; it must never contain Cookie, account/password, service ticket, download URL, or playback headers.
+- QR login, official account-window login, and advanced manual Cookie import converge on `QuarkCredentialValue { cookie }`. QR token/service ticket are short-lived Rust memory state; account credentials remain inside the official Quark WebView.
+- Native list/search responses are parsed from `unknown`, require stable `fid`, rooted provider `path`, `name`, and `isDir`, and are scoped to the selected root. Browse/detail/play requests outside `rootPath` must fail before provider access.
+- Native playback returns a short-lived HTTP(S) URL plus Cookie/Referer/User-Agent and optional `x-urlp`. Rotated `__puus`/`__pus` values are persisted immediately through the credential boundary; stream URL and headers are never persisted.
+
 ### Xunlei Subtitle Identity Ranking Contract
 
 #### 1. Scope / Trigger
@@ -349,7 +356,7 @@ class WebDavDataSource {
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
 |-----------|-------------------|
-| TMDB credential is missing | Show a user-safe configuration prompt; keep local scan candidates playable |
+| effective TMDB credential is missing because neither a build credential nor a matching user credential is available | Show a user-safe build/configuration prompt; keep local scan candidates playable |
 | title and TMDB ID are both empty | Block search with a clear validation message |
 | TMDB ID/year has non-digit characters | Reject it instead of partially parsing a misleading ID |
 | exact TMDB ID lookup fails | Show a safe TMDB error and do not change local cache |

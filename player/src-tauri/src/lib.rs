@@ -32,6 +32,10 @@ use commands::preference::{
     player_get_media_playback_preference, player_get_playback_speed_preference,
     player_set_playback_speed_preference, player_upsert_media_playback_preference,
 };
+use commands::quark::{
+    quark_auth_cancel, quark_auth_poll_account, quark_auth_poll_qr, quark_auth_start_account,
+    quark_auth_start_qr, quark_get_stream, quark_list, quark_search, QuarkAuthState,
+};
 use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
 use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
@@ -54,6 +58,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(CloudDrive2GrpcState::default())
+        .manage(QuarkAuthState::default())
         .manage(LocalFileWatcherState::default())
         .manage(PendingUpdate::default())
         .manage(OpenSubtitlesSessionState::default())
@@ -77,6 +82,14 @@ pub fn run() {
             clouddrive2_list,
             clouddrive2_search,
             clouddrive2_get_stream,
+            quark_list,
+            quark_search,
+            quark_get_stream,
+            quark_auth_start_qr,
+            quark_auth_poll_qr,
+            quark_auth_start_account,
+            quark_auth_poll_account,
+            quark_auth_cancel,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
             player_get_media_playback_preference,

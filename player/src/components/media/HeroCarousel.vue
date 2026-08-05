@@ -185,7 +185,7 @@ onUnmounted(() => {
 
 <template>
   <div
-    class="hero-carousel relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]"
+    class="hero-carousel theme-immersive-dark relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]"
     @click="handleHeroClick"
     @pointerdown="handlePointerDown"
     @pointermove="handlePointerMove"

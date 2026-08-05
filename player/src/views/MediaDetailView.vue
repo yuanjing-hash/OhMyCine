@@ -656,7 +656,7 @@ function markTitleLogoFailed(url: string) {
 </script>
 
 <template>
-  <div class="detail-view theme-immersive-dark min-h-screen bg-[var(--color-bg)] text-white">
+  <div class="detail-view theme-adaptive min-h-screen bg-[var(--color-bg)]">
     <div v-if="isLoading && !detail" class="pointer-events-none flex min-h-screen items-center justify-center text-white/45" aria-live="polite">
       正在加载媒体详情…
     </div>
@@ -674,7 +674,7 @@ function markTitleLogoFailed(url: string) {
     </div>
 
     <template v-else-if="detail">
-      <section class="detail-hero relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
+      <section class="detail-hero theme-immersive-dark relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
         <div class="detail-hero-content relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
@@ -759,7 +759,7 @@ function markTitleLogoFailed(url: string) {
               :key="season.id"
               type="button"
               class="flex-shrink-0 rounded-full border px-5 py-3 text-sm transition-colors"
-              :class="selectedSeasonId === season.id ? 'border-white/36 bg-white/16 text-white shadow-lg shadow-black/20' : 'border-white/10 bg-white/6 text-white/58 hover:bg-white/10'"
+              :class="{ 'is-selected': selectedSeasonId === season.id }"
               :aria-pressed="selectedSeasonId === season.id"
               @click="selectSeason(season)"
             >
@@ -809,7 +809,7 @@ function markTitleLogoFailed(url: string) {
                 :id="`episode-card-${renderedEpisodeIndex(visibleIndex)}`"
                 :key="episode.id"
                 class="episode-card group/card flex min-w-[min(20rem,calc(100vw-4rem))] max-w-[min(20rem,calc(100vw-4rem))] cursor-pointer flex-col overflow-hidden rounded-[1.7rem] border shadow-xl shadow-black/24 outline-none transition-all duration-300 hover:-translate-y-1 hover:border-white/24 hover:bg-white/[0.075] focus-visible:-translate-y-1 focus-visible:border-white/42 focus-visible:ring-2 focus-visible:ring-white/22 md:min-w-[23rem] md:max-w-[23rem]"
-                :class="selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex) ? '-translate-y-1 border-white/46 bg-white/[0.105] ring-2 ring-white/18' : 'border-white/10 bg-black/22'"
+                :class="{ 'is-selected': selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex) }"
                 :data-episode-index="renderedEpisodeIndex(visibleIndex)"
                 role="option"
                 tabindex="0"
@@ -818,9 +818,9 @@ function markTitleLogoFailed(url: string) {
                 @click="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
                 @keydown.enter.self.prevent="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
               >
-                <div class="relative block overflow-hidden text-left">
+                <div class="episode-artwork theme-immersive-dark relative block overflow-hidden text-left">
                   <img v-if="episode.backdropUrl || episode.posterUrl" :src="episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async">
-                  <div v-else class="flex aspect-video w-full items-center justify-center bg-white/6 p-5 text-center text-sm text-white/42">
+                  <div v-else class="episode-artwork-fallback flex aspect-video w-full items-center justify-center p-5 text-center text-sm text-white/42">
                     {{ episodeTitle(episode) }}
                   </div>
                   <div class="absolute inset-0 bg-gradient-to-t from-black/88 via-black/8 to-transparent" />
@@ -990,8 +990,27 @@ function markTitleLogoFailed(url: string) {
 
 <style scoped>
 .episode-rail-shell {
+  border-color: var(--color-border);
+  background: var(--surface-soft);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
+}
+
+.episode-season-strip button {
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
+}
+
+.episode-season-strip button:hover,
+.episode-season-strip button.is-selected {
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
+}
+
+.episode-season-strip button.is-selected {
+  border-color: var(--control-border-hover);
+  box-shadow: var(--glass-shadow);
 }
 
 .episode-rail {
@@ -1009,7 +1028,25 @@ function markTitleLogoFailed(url: string) {
 }
 
 .episode-card {
+  border-color: var(--color-border);
+  background: var(--surface-soft);
   scroll-snap-align: start;
+}
+
+.episode-card:hover,
+.episode-card:focus-visible,
+.episode-card.is-selected {
+  border-color: var(--control-border-hover);
+  background: var(--surface-soft-hover);
+}
+
+.episode-card.is-selected {
+  transform: translateY(-0.25rem);
+  box-shadow: var(--glass-shadow-elevated);
+}
+
+.episode-artwork-fallback {
+  background: #171720;
 }
 
 .episode-nav-button {
@@ -1049,7 +1086,7 @@ function markTitleLogoFailed(url: string) {
   border-left: 0;
   border-radius: 0;
   padding: 0.9rem 0 1.1rem;
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--surface-soft);
   box-shadow: none;
 }
 

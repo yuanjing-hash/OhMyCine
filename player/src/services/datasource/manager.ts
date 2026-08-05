@@ -5,6 +5,7 @@ import { EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
 import { LocalFileDataSource } from './local'
+import { QuarkDataSource } from './quark'
 import { searchAcrossDataSources } from './searchAggregation'
 import { WebDavDataSource } from './webdav'
 
@@ -119,6 +120,8 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new CloudDrive2DataSource()
     case 'webdav':
       return new WebDavDataSource()
+    case 'quark':
+      return new QuarkDataSource()
     case 'local':
       return new LocalFileDataSource()
     default:

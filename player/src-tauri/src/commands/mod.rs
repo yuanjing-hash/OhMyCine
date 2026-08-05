@@ -17,6 +17,7 @@ pub mod player;
 pub mod player;
 pub(crate) mod player_shared;
 pub mod preference;
+pub mod quark;
 pub mod raw_scan_cache;
 pub mod settings;
 pub mod subtitle;

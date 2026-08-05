@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScannedMediaDomain, RawScrapedMediaItem, RawSeriesEntryGroup, RawSourceIndexStatus, RawSourceIndexTarget, RawSourceScanKind, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
+import { clearLayoutContextActions, setLayoutContextActions } from '@/services/layoutContextActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, createRawSeriesSeasonChildren, enrichRawScrapedItemsEpisodeMetadata, groupRawSeriesEntries, loadRawSourceScanCache, loadTmdbLocalSettings, metadataForRawCandidate, RAW_MOVIE_CATEGORY_NAME, RAW_TV_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, readRawSourceRootPath, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -15,6 +16,7 @@ import { useDataSourceStore } from '@/stores/datasource'
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
+const layoutContextOwner = Symbol('source-library-layout-actions')
 
 const sourceId = computed(() => route.params.sourceId as string)
 const sourceConfig = computed(() =>
@@ -138,7 +140,7 @@ let sourceRootLoadGeneration = 0
 
 const rawSourceType = computed<RawFileSourceType | null>(() => {
   const type = sourceConfig.value?.type
-  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'local' ? type : null
+  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'quark' || type === 'local' ? type : null
 })
 const isRawFileSource = computed(() => rawSourceType.value != null)
 const rawSourceRootPath = computed(() => sourceConfig.value && isRawFileSource.value ? readRawSourceRootPath(sourceConfig.value) : '/')
@@ -418,6 +420,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus?.()
   unsubscribeRawIndexStatus = undefined
+  clearLayoutContextActions(layoutContextOwner)
 })
 
 watch(sourceId, async () => {
@@ -865,6 +868,46 @@ async function startLocalScan(scanKind: RawSourceScanKind = 'full') {
   }
 }
 
+async function startFullRescrape() {
+  isScanManagementOpen.value = true
+  await startLocalScan('full')
+}
+
+watchEffect(() => {
+  if (!isRawFileSource.value || !isMediaLibraryView.value || !scanCache.value) {
+    clearLayoutContextActions(layoutContextOwner)
+    return
+  }
+
+  setLayoutContextActions(layoutContextOwner, [
+    {
+      id: 'raw-source-rescrape',
+      label: isScanning.value ? '重新刮削中…' : '重新刮削',
+      description: '全量扫描目录并重新匹配媒体信息',
+      icon: 'rescrape',
+      disabled: isScanning.value || !source.value,
+      execute: startFullRescrape,
+    },
+    {
+      id: 'raw-source-scan-management',
+      label: isScanManagementOpen.value ? '收起扫描管理' : '扫描管理',
+      description: '查看扫描状态、结构判断和日志',
+      icon: 'scan',
+      active: isScanManagementOpen.value,
+      execute: () => {
+        isScanManagementOpen.value = !isScanManagementOpen.value
+      },
+    },
+    {
+      id: 'raw-source-folder-view',
+      label: '文件夹',
+      description: '按数据源原始目录浏览媒体文件',
+      icon: 'folder',
+      execute: () => switchViewMode('folders'),
+    },
+  ])
+})
+
 async function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } = {}) {
   scanErrorMessage.value = null
   if (!options.preserveLiveLogs)
@@ -1039,7 +1082,7 @@ async function searchIdentificationResults() {
       return
 
     if (!credential) {
-      identificationErrorMessage.value = '需要先在刮削与分类设置中配置 TMDB token/key。'
+      identificationErrorMessage.value = '当前构建未提供 TMDB 内置凭据，请在刮削与分类设置中填写自定义凭据。'
       return
     }
 
@@ -1130,7 +1173,7 @@ async function searchArtworkCandidates(kind: EditableArtworkKind) {
       return
 
     if (!credential) {
-      identificationErrorMessage.value = '需要先在刮削与分类设置中配置 TMDB token/key。'
+      identificationErrorMessage.value = '当前构建未提供 TMDB 内置凭据，请在刮削与分类设置中填写自定义凭据。'
       return
     }
 
@@ -1767,7 +1810,7 @@ function labelForSourceType(type: string): string {
 </script>
 
 <template>
-  <div class="source-view relative min-h-full">
+  <div class="source-view theme-adaptive relative min-h-full">
     <div class="source-page-content mobile-nav-safe space-y-8 px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
       <div v-if="!sourceConfig" class="flex flex-col items-center justify-center py-24">
         <p class="text-lg text-white/40">
@@ -1884,9 +1927,9 @@ function labelForSourceType(type: string): string {
                 <button
                   class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
                   :disabled="isScanning || !source"
-                  @click="startLocalScan('full')"
+                  @click="startFullRescrape"
                 >
-                  {{ isScanning ? '索引中…' : scanCache ? '全量重扫' : '立即索引' }}
+                  {{ isScanning ? '重新刮削中…' : scanCache ? '重新刮削' : '立即索引' }}
                 </button>
                 <button
                   class="rounded-2xl border border-white/10 bg-white/8 px-5 py-3 text-sm font-semibold text-white/74 transition-colors hover:bg-white/14 hover:text-white disabled:cursor-wait disabled:opacity-45"
@@ -2042,12 +2085,10 @@ function labelForSourceType(type: string): string {
 
           <template v-else-if="!selectedScannedCategory">
             <section class="space-y-4">
-              <div class="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h2 class="text-xl font-bold text-white">
-                    媒体库
-                  </h2>
-                </div>
+              <div>
+                <h2 class="text-xl font-bold text-white">
+                  媒体库
+                </h2>
               </div>
 
               <MediaGrid
@@ -2162,43 +2203,8 @@ function labelForSourceType(type: string): string {
     </div>
 
     <div
-      v-if="isMediaLibraryView"
-      class="source-bottom-controls"
-    >
-      <div class="source-bottom-control-bar" role="toolbar" :aria-label="`${sourceTypeLabel} 媒体库操作`">
-        <button
-          type="button"
-          class="source-bottom-control-button"
-          :class="{ 'is-active': isScanManagementOpen }"
-          :aria-expanded="isScanManagementOpen"
-          aria-controls="source-scan-management"
-          :aria-label="isScanManagementOpen ? '收起扫描管理' : '打开扫描管理'"
-          :title="isScanManagementOpen ? '收起扫描管理' : '扫描管理'"
-          @click="isScanManagementOpen = !isScanManagementOpen"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4.75 5.5h7.5a1 1 0 1 1 0 2h-7.5a1 1 0 0 1 0-2Zm0 5.5h14.5a1 1 0 1 1 0 2H4.75a1 1 0 1 1 0-2Zm0 5.5h5.5a1 1 0 1 1 0 2h-5.5a1 1 0 1 1 0-2Zm12.75-.75a2.75 2.75 0 1 1-2.57 1.75h-1.18a1 1 0 1 1 0-2h1.18a2.75 2.75 0 0 1 2.57-1.75Zm0 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm-2-13.5a2.75 2.75 0 0 1 2.57 1.75h1.18a1 1 0 1 1 0 2h-1.18a2.75 2.75 0 1 1-2.57-3.75Zm0 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
-          </svg>
-          <span>{{ isScanManagementOpen ? '收起管理' : '扫描管理' }}</span>
-        </button>
-        <button
-          type="button"
-          class="source-bottom-control-button"
-          aria-label="打开文件夹视图"
-          title="文件夹"
-          @click="switchViewMode('folders')"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3.5 6.75A2.75 2.75 0 0 1 6.25 4h3.1c.73 0 1.43.29 1.94.8l1.2 1.2h5.26a2.75 2.75 0 0 1 2.75 2.75v8.5A2.75 2.75 0 0 1 17.75 20H6.25a2.75 2.75 0 0 1-2.75-2.75V6.75Zm2.75-.75a.75.75 0 0 0-.75.75v10.5c0 .41.34.75.75.75h11.5c.41 0 .75-.34.75-.75v-8.5a.75.75 0 0 0-.75-.75h-5.67a1.5 1.5 0 0 1-1.06-.44L9.88 6.44A1.5 1.5 0 0 0 8.82 6H6.25Z" />
-          </svg>
-          <span>文件夹</span>
-        </button>
-      </div>
-    </div>
-
-    <div
       v-if="workContextMenu.open"
-      class="work-context-menu fixed z-50 min-w-48 rounded-2xl border border-white/10 bg-black/88 p-1.5 shadow-2xl backdrop-blur-xl"
+      class="work-context-menu theme-adaptive fixed z-50 min-w-48 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-xl"
       :style="{ left: `${workContextMenu.x}px`, top: `${workContextMenu.y}px` }"
       @click.stop
     >
@@ -2218,7 +2224,7 @@ function labelForSourceType(type: string): string {
       aria-label="识别"
       @click.self="closeIdentificationDialog"
     >
-      <section class="identification-dialog theme-immersive-dark max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
+      <section class="identification-dialog theme-adaptive max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 shadow-2xl">
         <div class="flex items-center gap-3 border-b border-white/8 p-4">
           <button
             class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-white/8 text-white/70 transition-colors hover:bg-white/14 hover:text-white"
@@ -2522,93 +2528,10 @@ function labelForSourceType(type: string): string {
   background: var(--color-bg);
 }
 
-.source-bottom-controls {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  z-index: 45;
-  width: min(32rem, calc(100vw - 2rem));
-  padding: 1.5rem 1rem 0.75rem;
-  opacity: 0;
-  transform: translateX(-50%);
-  transition: opacity var(--duration-normal) var(--ease-out);
-}
-
-.source-bottom-controls:hover,
-.source-bottom-controls:focus-within {
-  opacity: 1;
-}
-
-.source-bottom-control-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: var(--radius-2xl);
-  background: rgba(18, 22, 30, 0.58);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    0 12px 34px rgba(0, 0, 0, 0.3);
-  padding: 0.45rem;
-  transform: translateY(calc(100% + 0.85rem)) scale(0.98);
-  transition:
-    transform var(--duration-normal) var(--ease-out),
-    border-color var(--duration-normal) var(--ease-out),
-    background var(--duration-normal) var(--ease-out);
-  backdrop-filter: blur(28px) saturate(1.45);
-  -webkit-backdrop-filter: blur(28px) saturate(1.45);
-}
-
-.source-bottom-controls:hover .source-bottom-control-bar,
-.source-bottom-controls:focus-within .source-bottom-control-bar {
-  border-color: rgba(255, 255, 255, 0.24);
-  transform: translateY(0) scale(1);
-}
-
-.source-bottom-control-button {
-  display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-  height: 2.75rem;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  border: 1px solid transparent;
-  border-radius: 1.35rem;
-  color: rgba(255, 255, 255, 0.76);
-  background: rgba(255, 255, 255, 0.035);
-  font-size: 0.82rem;
-  font-weight: 700;
-  transition:
-    transform var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-}
-
-.source-bottom-control-button svg {
-  width: 1.05rem;
-  height: 1.05rem;
-  flex: 0 0 auto;
-  fill: currentColor;
-}
-
-.source-bottom-control-button:hover,
-.source-bottom-control-button:focus-visible,
-.source-bottom-control-button.is-active {
-  border-color: rgba(255, 255, 255, 0.18);
-  color: white;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.source-bottom-control-button:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.26);
-  outline-offset: 2px;
-}
-
-.source-bottom-control-button:active {
-  transform: scale(0.98);
+.work-context-menu,
+.identification-dialog {
+  background: var(--chrome-surface);
+  box-shadow: var(--chrome-shadow);
 }
 
 .first-index-panel {
@@ -2626,15 +2549,15 @@ function labelForSourceType(type: string): string {
   height: 3rem;
   flex: 0 0 auto;
   border-radius: 999px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  background: rgb(255 255 255 / 6%);
+  border: 1px solid var(--color-border);
+  background: var(--surface-soft);
 }
 
 .first-index-spinner span {
   position: absolute;
   inset: 0.45rem;
   border-radius: 999px;
-  border: 2px solid rgb(255 255 255 / 16%);
+  border: 2px solid var(--color-border-hover);
   border-top-color: var(--color-primary);
 }
 
@@ -2647,7 +2570,7 @@ function labelForSourceType(type: string): string {
   height: 0.35rem;
   overflow: hidden;
   border-radius: 999px;
-  background: rgb(255 255 255 / 8%);
+  background: var(--surface-soft);
 }
 
 .raw-index-progress span {
@@ -2656,7 +2579,7 @@ function labelForSourceType(type: string): string {
   left: 0;
   width: 42%;
   border-radius: inherit;
-  background: linear-gradient(90deg, transparent, var(--color-primary), rgb(255 255 255 / 82%));
+  background: linear-gradient(90deg, transparent, var(--color-primary), color-mix(in srgb, var(--color-text) 82%, transparent));
   opacity: 0.45;
 }
 
@@ -2674,19 +2597,19 @@ function labelForSourceType(type: string): string {
 .scan-stat {
   border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
   border-radius: 1rem;
-  background: rgb(0 0 0 / 16%);
+  background: var(--surface-soft);
   padding: 0.8rem 1rem;
 }
 
 .scan-stat p {
-  color: rgb(255 255 255 / 34%);
+  color: var(--color-text-tertiary);
   font-size: 0.75rem;
 }
 
 .scan-stat strong {
   display: block;
   margin-top: 0.25rem;
-  color: white;
+  color: var(--color-text);
   font-size: 1rem;
   font-weight: 700;
 }
@@ -2694,7 +2617,7 @@ function labelForSourceType(type: string): string {
 .scan-stat span {
   display: block;
   margin-top: 0.15rem;
-  color: rgb(255 255 255 / 34%);
+  color: var(--color-text-tertiary);
   font-size: 0.72rem;
 }
 
@@ -2733,26 +2656,6 @@ function labelForSourceType(type: string): string {
   .source-mobile-search button {
     min-height: 2.9rem;
     border-radius: 8px;
-  }
-
-  .source-bottom-controls {
-    bottom: calc(5.25rem + env(safe-area-inset-bottom));
-    width: calc(100vw - 1.5rem);
-    padding: 0;
-    opacity: 1;
-  }
-
-  .source-bottom-control-bar {
-    border-radius: 8px;
-    padding: 0.35rem;
-    transform: none;
-    background: rgba(11, 14, 20, 0.92);
-  }
-
-  .source-bottom-control-button {
-    height: 3rem;
-    border-radius: 6px;
-    font-size: 0.72rem;
   }
 
   .scan-management-panel,

@@ -17,6 +17,10 @@ for (const token of [
   '--control-text',
   '--control-placeholder',
   '--control-focus-ring',
+  '--chrome-scrim',
+  '--chrome-surface',
+  '--chrome-surface-translucent',
+  '--navigation-surface',
 ]) {
   assert.match(variables, new RegExp(`${token}:`))
   assert.match(variables, new RegExp(`\\[data-theme="light"\\][\\s\\S]*?${token}:`))
@@ -41,17 +45,35 @@ const updateDialog = await source('src/components/layout/UpdateDialog.vue')
 assert.match(updateDialog, /class="theme-adaptive glass-panel/)
 assert.doesNotMatch(updateDialog, /theme-adaptive[^>]*bg-black\/78/)
 
-const immersiveSurfaces = await Promise.all([
-  source('src/views/MediaDetailView.vue'),
-  source('src/views/SourceLibraryView.vue'),
-  source('src/components/player/SubtitleSearchDialog.vue'),
-])
-for (const surface of immersiveSurfaces)
-  assert.match(surface, /theme-immersive-dark/)
+const mediaDetail = await source('src/views/MediaDetailView.vue')
+assert.match(mediaDetail, /class="detail-view theme-adaptive/)
+assert.match(mediaDetail, /class="detail-hero theme-immersive-dark/)
+
+const sourceLibrary = await source('src/views/SourceLibraryView.vue')
+assert.match(sourceLibrary, /class="source-view theme-adaptive/)
+assert.match(sourceLibrary, /identification-dialog theme-adaptive/)
+assert.doesNotMatch(sourceLibrary, /identification-dialog theme-immersive-dark/)
+
+const heroCarousel = await source('src/components/media/HeroCarousel.vue')
+assert.match(heroCarousel, /class="hero-carousel theme-immersive-dark/)
+
+const subtitleSearch = await source('src/components/player/SubtitleSearchDialog.vue')
+assert.match(subtitleSearch, /theme-immersive-dark/)
 
 const mobileNavigation = await source('src/components/layout/MobileNavigation.vue')
-assert.match(mobileNavigation, /html\[data-theme="light"\][\s\S]*?\.mobile-bottom-nav/)
-assert.match(mobileNavigation, /html\[data-theme="light"\][\s\S]*?\.mobile-nav-item\.is-active/)
+assert.match(mobileNavigation, /class="mobile-sheet theme-adaptive"/)
+assert.match(mobileNavigation, /class="mobile-bottom-nav theme-adaptive"/)
+assert.match(mobileNavigation, /background: var\(--chrome-surface\);/)
+assert.match(mobileNavigation, /background: var\(--navigation-surface\);/)
+
+const globalSearch = await source('src/components/media/GlobalSearchWorkspace.vue')
+assert.match(globalSearch, /class="search-workspace theme-adaptive/)
+assert.doesNotMatch(globalSearch, /search-workspace theme-immersive-dark/)
+assert.match(globalSearch, /background: var\(--chrome-surface-translucent\);/)
+
+const home = await source('src/views/HomeView.vue')
+assert.match(home, /first-run-home theme-adaptive/)
+assert.match(home, /theme-adaptive grid grid-cols-1/)
 
 const themeComposable = await source('src/composables/useTheme.ts')
 assert.match(themeComposable, /root\.classList\.add\('theme-switching'\)/)
@@ -65,7 +87,8 @@ console.log(JSON.stringify({
   themedNativeSelects: true,
   readableLightSettings: true,
   themedUpdateDialog: true,
-  immersiveDarkControlExceptions: true,
+  adaptiveSearchAndLibrarySurfaces: true,
+  immersiveArtworkAndPlaybackExceptions: true,
   readableLightMobileNavigation: true,
   atomicAndroidThemeSwitch: true,
   opaqueNonPlayerRoot: true,
