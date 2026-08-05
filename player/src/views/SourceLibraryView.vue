@@ -865,6 +865,11 @@ async function startLocalScan(scanKind: RawSourceScanKind = 'full') {
   }
 }
 
+async function startFullRescrape() {
+  isScanManagementOpen.value = true
+  await startLocalScan('full')
+}
+
 async function loadScanCacheForCurrentSource(options: { preserveLiveLogs?: boolean } = {}) {
   scanErrorMessage.value = null
   if (!options.preserveLiveLogs)
@@ -1884,9 +1889,9 @@ function labelForSourceType(type: string): string {
                 <button
                   class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
                   :disabled="isScanning || !source"
-                  @click="startLocalScan('full')"
+                  @click="startFullRescrape"
                 >
-                  {{ isScanning ? '索引中…' : scanCache ? '全量重扫' : '立即索引' }}
+                  {{ isScanning ? '重新刮削中…' : scanCache ? '重新刮削' : '立即索引' }}
                 </button>
                 <button
                   class="rounded-2xl border border-white/10 bg-white/8 px-5 py-3 text-sm font-semibold text-white/74 transition-colors hover:bg-white/14 hover:text-white disabled:cursor-wait disabled:opacity-45"
@@ -2048,6 +2053,32 @@ function labelForSourceType(type: string): string {
                     媒体库
                   </h2>
                 </div>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="rounded-2xl bg-primary/88 px-4 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+                    :disabled="isScanning || !source"
+                    @click="startFullRescrape"
+                  >
+                    {{ isScanning ? '重新刮削中…' : '重新刮削' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-2xl border border-white/10 bg-white/7 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+                    :aria-expanded="isScanManagementOpen"
+                    aria-controls="source-scan-management"
+                    @click="isScanManagementOpen = !isScanManagementOpen"
+                  >
+                    {{ isScanManagementOpen ? '收起扫描管理' : '扫描管理' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-2xl border border-white/10 bg-white/7 px-4 py-2.5 text-sm font-semibold text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+                    @click="switchViewMode('folders')"
+                  >
+                    文件夹
+                  </button>
+                </div>
               </div>
 
               <MediaGrid
@@ -2159,41 +2190,6 @@ function labelForSourceType(type: string): string {
           />
         </section>
       </template>
-    </div>
-
-    <div
-      v-if="isMediaLibraryView"
-      class="source-bottom-controls"
-    >
-      <div class="source-bottom-control-bar" role="toolbar" :aria-label="`${sourceTypeLabel} 媒体库操作`">
-        <button
-          type="button"
-          class="source-bottom-control-button"
-          :class="{ 'is-active': isScanManagementOpen }"
-          :aria-expanded="isScanManagementOpen"
-          aria-controls="source-scan-management"
-          :aria-label="isScanManagementOpen ? '收起扫描管理' : '打开扫描管理'"
-          :title="isScanManagementOpen ? '收起扫描管理' : '扫描管理'"
-          @click="isScanManagementOpen = !isScanManagementOpen"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4.75 5.5h7.5a1 1 0 1 1 0 2h-7.5a1 1 0 0 1 0-2Zm0 5.5h14.5a1 1 0 1 1 0 2H4.75a1 1 0 1 1 0-2Zm0 5.5h5.5a1 1 0 1 1 0 2h-5.5a1 1 0 1 1 0-2Zm12.75-.75a2.75 2.75 0 1 1-2.57 1.75h-1.18a1 1 0 1 1 0-2h1.18a2.75 2.75 0 0 1 2.57-1.75Zm0 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm-2-13.5a2.75 2.75 0 0 1 2.57 1.75h1.18a1 1 0 1 1 0 2h-1.18a2.75 2.75 0 1 1-2.57-3.75Zm0 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
-          </svg>
-          <span>{{ isScanManagementOpen ? '收起管理' : '扫描管理' }}</span>
-        </button>
-        <button
-          type="button"
-          class="source-bottom-control-button"
-          aria-label="打开文件夹视图"
-          title="文件夹"
-          @click="switchViewMode('folders')"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3.5 6.75A2.75 2.75 0 0 1 6.25 4h3.1c.73 0 1.43.29 1.94.8l1.2 1.2h5.26a2.75 2.75 0 0 1 2.75 2.75v8.5A2.75 2.75 0 0 1 17.75 20H6.25a2.75 2.75 0 0 1-2.75-2.75V6.75Zm2.75-.75a.75.75 0 0 0-.75.75v10.5c0 .41.34.75.75.75h11.5c.41 0 .75-.34.75-.75v-8.5a.75.75 0 0 0-.75-.75h-5.67a1.5 1.5 0 0 1-1.06-.44L9.88 6.44A1.5 1.5 0 0 0 8.82 6H6.25Z" />
-          </svg>
-          <span>文件夹</span>
-        </button>
-      </div>
     </div>
 
     <div
@@ -2522,95 +2518,6 @@ function labelForSourceType(type: string): string {
   background: var(--color-bg);
 }
 
-.source-bottom-controls {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  z-index: 45;
-  width: min(32rem, calc(100vw - 2rem));
-  padding: 1.5rem 1rem 0.75rem;
-  opacity: 0;
-  transform: translateX(-50%);
-  transition: opacity var(--duration-normal) var(--ease-out);
-}
-
-.source-bottom-controls:hover,
-.source-bottom-controls:focus-within {
-  opacity: 1;
-}
-
-.source-bottom-control-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: var(--radius-2xl);
-  background: rgba(18, 22, 30, 0.58);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    0 12px 34px rgba(0, 0, 0, 0.3);
-  padding: 0.45rem;
-  transform: translateY(calc(100% + 0.85rem)) scale(0.98);
-  transition:
-    transform var(--duration-normal) var(--ease-out),
-    border-color var(--duration-normal) var(--ease-out),
-    background var(--duration-normal) var(--ease-out);
-  backdrop-filter: blur(28px) saturate(1.45);
-  -webkit-backdrop-filter: blur(28px) saturate(1.45);
-}
-
-.source-bottom-controls:hover .source-bottom-control-bar,
-.source-bottom-controls:focus-within .source-bottom-control-bar {
-  border-color: rgba(255, 255, 255, 0.24);
-  transform: translateY(0) scale(1);
-}
-
-.source-bottom-control-button {
-  display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-  height: 2.75rem;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  border: 1px solid transparent;
-  border-radius: 1.35rem;
-  color: rgba(255, 255, 255, 0.76);
-  background: rgba(255, 255, 255, 0.035);
-  font-size: 0.82rem;
-  font-weight: 700;
-  transition:
-    transform var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-}
-
-.source-bottom-control-button svg {
-  width: 1.05rem;
-  height: 1.05rem;
-  flex: 0 0 auto;
-  fill: currentColor;
-}
-
-.source-bottom-control-button:hover,
-.source-bottom-control-button:focus-visible,
-.source-bottom-control-button.is-active {
-  border-color: rgba(255, 255, 255, 0.18);
-  color: white;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.source-bottom-control-button:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.26);
-  outline-offset: 2px;
-}
-
-.source-bottom-control-button:active {
-  transform: scale(0.98);
-}
-
 .first-index-panel {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), transparent 48%),
@@ -2733,26 +2640,6 @@ function labelForSourceType(type: string): string {
   .source-mobile-search button {
     min-height: 2.9rem;
     border-radius: 8px;
-  }
-
-  .source-bottom-controls {
-    bottom: calc(5.25rem + env(safe-area-inset-bottom));
-    width: calc(100vw - 1.5rem);
-    padding: 0;
-    opacity: 1;
-  }
-
-  .source-bottom-control-bar {
-    border-radius: 8px;
-    padding: 0.35rem;
-    transform: none;
-    background: rgba(11, 14, 20, 0.92);
-  }
-
-  .source-bottom-control-button {
-    height: 3rem;
-    border-radius: 6px;
-    font-size: 0.72rem;
   }
 
   .scan-management-panel,
