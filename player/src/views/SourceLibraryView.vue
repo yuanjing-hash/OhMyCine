@@ -1082,7 +1082,7 @@ async function searchIdentificationResults() {
       return
 
     if (!credential) {
-      identificationErrorMessage.value = '需要先在刮削与分类设置中配置 TMDB token/key。'
+      identificationErrorMessage.value = '当前构建未提供 TMDB 内置凭据，请在刮削与分类设置中填写自定义凭据。'
       return
     }
 
@@ -1173,7 +1173,7 @@ async function searchArtworkCandidates(kind: EditableArtworkKind) {
       return
 
     if (!credential) {
-      identificationErrorMessage.value = '需要先在刮削与分类设置中配置 TMDB token/key。'
+      identificationErrorMessage.value = '当前构建未提供 TMDB 内置凭据，请在刮削与分类设置中填写自定义凭据。'
       return
     }
 

@@ -97,6 +97,7 @@ jobs:
               'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
               'Windows GNU updater build uses rustup rustc': 'npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json' in text,
               'updater signing secret is required': 'TAURI_SIGNING_PRIVATE_KEY: $' + '{{ secrets.TAURI_SIGNING_PRIVATE_KEY }}' in text,
+              'TMDB application credential is injected into release builds': text.count('OHMYCINE_TMDB_READ_ACCESS_TOKEN: $' + '{{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}') >= 2,
               'signed updater manifest is published': 'latest.json' in text and 'setup_signature_asset' in text,
               'release channel controls prerelease': 'RELEASE_CHANNEL' in text and 'release_flags' in text,
               'standard zip asset is published': 'standard_asset="${ASSET_PREFIX}-standard.zip"' in text and 'steps.package.outputs.standard_asset' in text,
@@ -406,6 +407,7 @@ jobs:
 
       - name: Build Android ARM64 APK
         env:
+          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
           OHMYCINE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_PREVIEW_KEYSTORE_PASSWORD }}
           OHMYCINE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_PREVIEW_KEY_ALIAS }}
           OHMYCINE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_PREVIEW_KEY_PASSWORD }}
@@ -413,9 +415,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for value in OHMYCINE_ANDROID_KEYSTORE_PASSWORD OHMYCINE_ANDROID_KEY_ALIAS OHMYCINE_ANDROID_KEY_PASSWORD; do
+          for value in OHMYCINE_TMDB_READ_ACCESS_TOKEN OHMYCINE_ANDROID_KEYSTORE_PASSWORD OHMYCINE_ANDROID_KEY_ALIAS OHMYCINE_ANDROID_KEY_PASSWORD; do
             if [[ -z "${!value:-}" ]]; then
-              echo "::error::${value} GitHub Secret is required for Android preview signing."
+              echo "::error::${value} GitHub Secret is required for the Android release build."
               exit 1
             fi
           done
@@ -599,6 +601,7 @@ jobs:
 
       - name: Build Windows GNU installer
         env:
+          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         working-directory: player
@@ -607,6 +610,10 @@ jobs:
           set -euo pipefail
           if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
             echo "::error::TAURI_SIGNING_PRIVATE_KEY GitHub Secret is required for signed updater artifacts."
+            exit 1
+          fi
+          if [[ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]]; then
+            echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN GitHub Secret is required for the default TMDB metadata channel."
             exit 1
           fi
           RUSTC="$(rustup which rustc)" npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json

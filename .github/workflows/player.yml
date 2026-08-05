@@ -107,6 +107,8 @@ jobs:
         run: npm run setup:libmpv -- windows
 
       - name: Build Windows GNU installer
+        env:
+          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
         run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows
 
       - name: Upload artifacts

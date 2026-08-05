@@ -163,6 +163,7 @@ For Emby/Jellyfin/OpenList/Alist/CloudDrive2 source work, also review:
 - Source sidebar rendering from ordered configs, including bottom plus navigation to data-source management and disabled-source affordance.
 - SourceLibrary loading, empty, disabled, error, auth-required, library, and item states.
 - Raw-source maintenance actions stay out of the media-library heading: desktop exposes rescrape, scan management, and folder browsing through the existing right-edge floating utilities, while mobile exposes the same context actions in the explicit Quick bottom sheet and never depends on hover.
+- Official release builds may inject the read-only OhMyCine TMDB application credential only through CI secrets. User TMDB credentials override it through secure storage; neither value may appear in Git, ordinary settings, logs, diagnostics, or exports.
 - Missing poster/backdrop fallbacks.
 - Generic DataSource playback flow: UI obtains stream URLs through `DataSource.getStreamURL()`, not provider-specific route code.
 - Token/API-key redaction in errors, logs, player labels, and exported config.

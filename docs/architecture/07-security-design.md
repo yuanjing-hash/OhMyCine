@@ -192,6 +192,8 @@ Player 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data` 保存应用数据
 
 数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划进入 `settings.sqlite`。WebView localStorage 只作为标准模式的旧版本迁移输入或浏览器开发 fallback，不得继续作为 Tauri 桌面版配置源。迁移只处理固定 namespaced key 和固定 SQLite 文件白名单，不接受任意路径或敏感明文。便携模式是独立配置档案，不得自动读取、复制或删除标准目录、旧 Roaming 目录以及共享 WebView localStorage 中的数据；跨模式导入只能由用户显式触发。
 
+OhMyCine 正式发布包可通过 GitHub Actions Secret 在构建期注入应用级 TMDB Read Access Token，以提供默认元数据通道。该值不得进入 Git、普通配置、构建日志、诊断或导出；用户自己的 TMDB 凭据继续存入 Player 安全凭证边界并优先使用。由于应用级凭据会进入最终二进制，它必须被视为可提取的发布凭据，只能用于受限的只读元数据访问，并具备独立撤销、轮换和限流能力；不得复用用户账号级秘密或具有写权限的令牌。
+
 CloudDrive2、夸克网盘与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
 
 - `clouddrive2` 保存用户在 CloudDrive2 中创建的应用 API Token，通过 Tauri Rust gRPC 客户端以 Bearer metadata 瞬时使用；不保存 CloudDrive2 主账号密码。

@@ -356,7 +356,7 @@ class WebDavDataSource {
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
 |-----------|-------------------|
-| TMDB credential is missing | Show a user-safe configuration prompt; keep local scan candidates playable |
+| effective TMDB credential is missing because neither a build credential nor a matching user credential is available | Show a user-safe build/configuration prompt; keep local scan candidates playable |
 | title and TMDB ID are both empty | Block search with a clear validation message |
 | TMDB ID/year has non-digit characters | Reject it instead of partially parsing a misleading ID |
 | exact TMDB ID lookup fails | Show a safe TMDB error and do not change local cache |

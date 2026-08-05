@@ -12,6 +12,23 @@ export interface BuildTmdbRequestInput {
   readonly credential: TmdbCredentialValue
 }
 
+export function resolveEffectiveTmdbCredential(
+  userCredential: TmdbCredentialValue | null,
+  builtInReadAccessToken: string,
+): TmdbCredentialValue | null {
+  if (userCredential)
+    return userCredential
+
+  const token = builtInReadAccessToken.trim()
+  if (!token || token.length > 4096 || /\s/.test(token))
+    return null
+
+  return {
+    authType: 'readAccessToken',
+    value: token,
+  }
+}
+
 export function buildTmdbRequestDescriptor(input: BuildTmdbRequestInput): TmdbRequestDescriptor {
   const url = new URL(`${input.baseUrl}${input.path}`)
   for (const [key, value] of Object.entries(input.params)) {

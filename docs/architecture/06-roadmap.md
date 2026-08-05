@@ -299,7 +299,7 @@ Phase 4: 生态系统           ████████████████
 - [~] OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件递归只读扫描、扫描日志与双通道调度（已接入 SourceLibraryView 手动全量/增量扫描、app 启动后台全量/增量调度、数据源页首次无缓存时的当前源/root 前台索引提示；设置页可按原始文件源配置全量/增量启用状态和分钟间隔；本地文件源接入 Tauri root-scoped watcher 并只用逻辑 provider path `/...` 标记增量 dirty；远程原始文件源使用短间隔 polling/diff；Emby/Jellyfin 不进入 Player 原始文件扫描调度；首页/搜索/Hero/海报卡片已接入受控 `cache/images` 二进制缓存）
 - [~] 标准目录 / 非标准目录自动识别（已建立 Player 侧纯 TypeScript 评分工具并接入递归扫描；首次进入无缓存媒体库时显示索引进度/状态，不再用空媒体库误导）
 - [~] 文件名解析、电影/剧集候选聚合与未识别兜底（已建立基础路径/文件名候选解析，并补充 release/source/subtitle 噪声清洗与中英文搜索标题提取；完整修正工作台待后续）
-- [~] TMDB 搜索、详情补全、海报/背景缓存（已接入可选 TMDB token/key 设置、搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行；无年份自动匹配优先精确标题，避免基础片名被包含匹配/热度误导到续集；未配置凭据时不阻塞本地扫描；内置/公共元数据通道、SQLite 图片落盘缓存与手动匹配修正待后续）
+- [~] TMDB 搜索、详情补全、海报/背景缓存（已接入构建期 CI Secret 注入的 OhMyCine 应用级 Read Access Token，正式包默认可用；用户可用安全凭证中的自定义 token/key 覆盖内置通道；已实现搜索/详情补全、poster/backdrop URL 与基于 TMDB metadata 的分类规则执行，无年份自动匹配优先精确标题；豆瓣/Bangumi 等并列元数据提供器与完整多源字段合并待后续）
 - [~] OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件 Emby-like 媒体库首页与文件夹兜底视图（已提供 `alist` / `clouddrive2` / `quark` / `webdav` / `local` 可见 MVP：默认进入大海报轮播 + 逻辑媒体库卡片，分类内电影/剧集/未识别按作品聚合成海报墙；无缓存首次进入会显示自动索引进度/状态并在完成后加载分类；文件夹浏览通过按钮作为兜底入口；扫描状态、结构判断和日志已收进扫描管理面板；标准目录优先使用路径分类，非标准或无路径分类时再使用 TMDB 分类规则兜底）
 
 #### 播放器增强
