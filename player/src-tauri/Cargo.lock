@@ -2711,11 +2711,13 @@ dependencies = [
 
 [[package]]
 name = "ohmycine-player"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.22.1",
+ "chrono",
+ "crc32fast",
  "env_logger",
  "flate2",
  "libmpv-sys",

@@ -1,6 +1,6 @@
 {
   "name": "@ohmycine/player",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,6 +16,7 @@
     "verify:local-file-datasource": "TMPDIR=/tmp tsx scripts/verify-local-file-datasource.ts",
     "verify:clouddrive2-datasource": "TMPDIR=/tmp tsx scripts/verify-clouddrive2-datasource.ts",
     "verify:quark-datasource": "TMPDIR=/tmp tsx scripts/verify-quark-datasource.ts",
+    "verify:pan123-datasource": "TMPDIR=/tmp tsx scripts/verify-pan123-datasource.ts",
     "verify:webdav-datasource": "TMPDIR=/tmp tsx scripts/verify-webdav-datasource.ts",
     "verify:playback-source-lifecycle": "TMPDIR=/tmp tsx scripts/verify-playback-source-lifecycle.ts",
     "verify:playback-preferences-shortcuts": "TMPDIR=/tmp tsx scripts/verify-playback-preferences-shortcuts.ts",

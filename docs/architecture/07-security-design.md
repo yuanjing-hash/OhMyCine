@@ -194,11 +194,13 @@ Player 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data` 保存应用数据
 
 OhMyCine 正式发布包可通过 GitHub Actions Secret 在构建期注入应用级 TMDB Read Access Token，以提供默认元数据通道。该值不得进入 Git、普通配置、构建日志、诊断或导出；用户自己的 TMDB 凭据继续存入 Player 安全凭证边界并优先使用。由于应用级凭据会进入最终二进制，它必须被视为可提取的发布凭据，只能用于受限的只读元数据访问，并具备独立撤销、轮换和限流能力；不得复用用户账号级秘密或具有写权限的令牌。
 
-CloudDrive2、夸克网盘与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
+CloudDrive2、夸克网盘、123 云盘与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
 
 - `clouddrive2` 保存用户在 CloudDrive2 中创建的应用 API Token，通过 Tauri Rust gRPC 客户端以 Bearer metadata 瞬时使用；不保存 CloudDrive2 主账号密码。
 - `quark` 只保存最终夸克 Cookie。扫码登录 token、service ticket 和账号登录窗口状态只在内存中短期存在；二维码必须在本机生成，不得把 token 发送给第三方二维码服务。账号密码、验证码和设备验证仅在固定夸克官方 HTTPS WebView 内处理，Player 不读取、不保存账号密码。
 - 夸克 API Base URL、扫码和账号登录地址均为固定官方 HTTPS 地址。普通配置只保存 `credentialRef`、固定 provider identity 和 `rootPath`；Cookie、`__puus`/`__pus` 轮换值、下载直链及播放 Header 不得进入普通配置、localStorage、扫描缓存、路由、日志或诊断文本。
+- `123` 保存官方 API Access Token；账号登录模式还会把手机号/邮箱与密码保存在同一个独立 AES-GCM credential envelope 中，仅用于 token 过期后的原生重登录。高级令牌模式不得伪造空账号凭据，且 token 失效后必须要求用户重新导入。
+- 123 云盘 API Base URL 和登录地址固定为官方 HTTPS 地址。动态 CRC32 查询签名只在 Rust 请求前生成；Access Token、账号密码、签名参数、`FileId` 下载请求字段、临时下载直链与 Referer 不得进入普通配置、localStorage、扫描缓存、路由、日志或诊断文本。下载地址只允许 HTTP(S)，限制响应体与重定向，禁止携带 URL userinfo。
 - `webdav` 保存独立 WebDAV 用户名和密码，通过 Basic Auth 瞬时使用；账号密码禁止嵌入 URL。
 - 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
 - Android 为绕过原生 libmpv/FFmpeg 的设备 TLS 兼容问题，可由 Rust reqwest/rustls 建立临时媒体桥，但只能绑定 `127.0.0.1` 随机端口。每次播放必须使用新的高熵 URL-safe 令牌并以精确比较验证，只允许 GET/HEAD，停止播放后清除内存目标；原始直链、签名参数和认证 Header 不得写入回环 URL、持久化或普通日志，TLS 证书校验不得关闭。
