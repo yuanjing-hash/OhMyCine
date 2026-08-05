@@ -14,6 +14,7 @@ import type { UpdateChannel } from '@/services/updater'
 import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import tmdbLogoUrl from '@/assets/brands/tmdb-blue-short.svg'
 import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
@@ -56,6 +57,7 @@ import {
 import { intervalMinutesToMs, intervalMsToMinutes, readRawSourceScanScheduleConfig, updateRawSourceScanScheduleExtra } from '@/services/scraper/rawSourceScanSchedule'
 import {
   clearConfiguredTmdbCredential,
+  hasBuiltInTmdbCredential,
   loadTmdbLocalSettings,
   readStoredTmdbCredential,
   saveConfiguredTmdbCredential,
@@ -284,6 +286,7 @@ const tmdbForm = reactive<TmdbFormState>({
 })
 const tmdbCredentialConfigured = ref(false)
 const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
+const tmdbBuiltInCredentialAvailable = hasBuiltInTmdbCredential()
 const isSavingTmdbSettings = ref(false)
 const subtitleSettings = loadSubtitleSearchSettings()
 const playerInteractionSettings = loadPlayerInteractionSettings()
@@ -352,8 +355,10 @@ const scrapingEntryMeta = computed(() => {
   if (scrapeRulesDirty.value)
     return '规则未保存'
   if (tmdbCredentialConfigured.value)
-    return 'TMDB 已配置'
-  return tmdbStoredAuthType.value ? '类型待确认' : 'TMDB 可选'
+    return 'TMDB 自定义凭据'
+  if (tmdbBuiltInCredentialAvailable)
+    return 'TMDB 内置通道'
+  return tmdbStoredAuthType.value ? '类型待确认' : 'TMDB 不可用'
 })
 const tmdbCredentialInputLabel = computed(() =>
   tmdbForm.authType === 'readAccessToken' ? 'API 读访问令牌 / Read Access Token' : 'API Key',
@@ -361,14 +366,17 @@ const tmdbCredentialInputLabel = computed(() =>
 const tmdbCredentialPlaceholder = computed(() =>
   tmdbCredentialConfigured.value
     ? `留空表示保留当前 ${tmdbCredentialInputLabel.value}`
-    : `可选：粘贴 TMDB ${tmdbCredentialInputLabel.value}`,
+    : `可选：使用你自己的 ${tmdbCredentialInputLabel.value}`,
 )
+const tmdbCredentialAvailable = computed(() => tmdbCredentialConfigured.value || tmdbBuiltInCredentialAvailable)
 const tmdbCredentialStatusLabel = computed(() => {
   if (tmdbCredentialConfigured.value)
-    return '已配置'
+    return '使用自定义凭据'
+  if (tmdbBuiltInCredentialAvailable)
+    return '内置通道可用'
   if (tmdbStoredAuthType.value)
     return `已保存 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)}，当前类型未配置`
-  return '未配置，可继续扫描'
+  return '当前构建未提供凭据'
 })
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
@@ -2083,14 +2091,16 @@ async function saveTmdbSettings() {
 
     await refreshTmdbCredentialState()
     scrapeFeedback.value = {
-      type: tmdbCredentialConfigured.value ? 'success' : 'info',
+      type: tmdbCredentialAvailable.value ? 'success' : 'info',
       message: tmdbCredentialConfigured.value
-        ? `TMDB 设置已保存。后续 OpenList/Alist、CloudDrive2 和本地文件扫描会按 ${tmdbCredentialInputLabel.value} 路由请求并用 TMDB 元数据执行分类规则。`
-        : savedCredential
-          ? `已保存 TMDB 设置，但当前 ${tmdbCredentialInputLabel.value} 不可用。扫描会保留本地可播放候选并使用兜底分类。`
-          : tmdbStoredAuthType.value
-            ? `已保存 TMDB 类型、语言和地区。当前 ${tmdbCredentialInputLabel.value} 未配置；已保存的 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)} 不会用于当前类型。扫描会保留本地可播放候选并使用兜底分类。`
-            : `已保存 TMDB 类型、语言和地区。未填写当前类型的 ${tmdbCredentialInputLabel.value} 时，扫描会保留本地可播放候选并使用兜底分类。`,
+        ? `TMDB 设置已保存。后续扫描会优先使用你的 ${tmdbCredentialInputLabel.value}。`
+        : tmdbBuiltInCredentialAvailable
+          ? 'TMDB 设置已保存。当前继续使用 OhMyCine 内置元数据通道；填写自定义凭据后会优先使用你的凭据。'
+          : savedCredential
+            ? `已保存 TMDB 设置，但当前 ${tmdbCredentialInputLabel.value} 不可用。扫描会保留本地可播放候选并使用兜底分类。`
+            : tmdbStoredAuthType.value
+              ? `已保存 TMDB 类型、语言和地区。当前 ${tmdbCredentialInputLabel.value} 未配置；已保存的 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)} 不会用于当前类型。扫描会保留本地可播放候选并使用兜底分类。`
+              : `已保存 TMDB 类型、语言和地区。未填写当前类型的 ${tmdbCredentialInputLabel.value} 时，扫描会保留本地可播放候选并使用兜底分类。`,
     }
   }
   catch (error) {
@@ -2111,7 +2121,12 @@ async function clearTmdbSettingsCredential() {
     await clearConfiguredTmdbCredential()
     tmdbForm.credential = ''
     await refreshTmdbCredentialState()
-    scrapeFeedback.value = { type: 'success', message: '已清除 TMDB 凭据。分类规则仍保留，扫描会回到本地兜底分类。' }
+    scrapeFeedback.value = {
+      type: 'success',
+      message: tmdbBuiltInCredentialAvailable
+        ? '已清除自定义 TMDB 凭据，扫描已恢复使用 OhMyCine 内置元数据通道。'
+        : '已清除 TMDB 凭据。分类规则仍保留，扫描会回到本地兜底分类。',
+    }
   }
   catch (error) {
     scrapeFeedback.value = {
@@ -2912,15 +2927,15 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 TMDB
               </p>
               <h3 class="mt-1 text-xl font-bold text-white">
-                元数据匹配（可选增强）
+                元数据匹配
               </h3>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                TMDB 用于匹配海报、简介和分类。未配置时仍可扫描和播放媒体。
+                OhMyCine 正式构建默认提供 TMDB 元数据通道；你可以填写自己的凭据并优先使用。
               </p>
             </div>
             <span
               class="rounded-full px-3 py-1 text-xs font-semibold"
-              :class="tmdbCredentialConfigured ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
+              :class="tmdbCredentialAvailable ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
             >
               {{ tmdbCredentialStatusLabel }}
             </span>
@@ -2956,7 +2971,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 :placeholder="tmdbCredentialPlaceholder"
               >
               <p class="mt-2 text-xs leading-5 text-white/38">
-                已保存的内容不会显示，留空表示保留当前值。
+                自定义凭据保存在安全凭证边界中且不会显示；未填写时使用内置通道。
               </p>
             </label>
 
@@ -3000,8 +3015,17 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               :disabled="isSavingTmdbSettings || !tmdbStoredAuthType"
               @click="clearTmdbSettingsCredential"
             >
-              清除 TMDB 凭据
+              清除自定义凭据
             </button>
+          </div>
+
+          <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-white/8 pt-5">
+            <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" aria-label="访问 TMDB">
+              <img :src="tmdbLogoUrl" alt="TMDB" class="h-6 w-auto">
+            </a>
+            <p class="max-w-3xl text-xs leading-5 text-white/38">
+              This product uses the TMDB API but is not endorsed or certified by TMDB.
+            </p>
           </div>
         </section>
 

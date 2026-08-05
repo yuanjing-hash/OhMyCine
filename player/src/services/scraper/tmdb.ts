@@ -5,7 +5,7 @@ import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { readTmdbCredential, removeCredential, saveTmdbCredential } from '@/services/datasource/credentialStore'
 import { extractMediaSearchTitles, normalizeTitleKey } from './parser'
 import { stripFileExtension } from './pathUtils'
-import { buildTmdbRequestDescriptor, tmdbHttpFailureMessage } from './tmdbAuth'
+import { buildTmdbRequestDescriptor, resolveEffectiveTmdbCredential, tmdbHttpFailureMessage } from './tmdbAuth'
 
 export type TmdbAuthType = TmdbCredentialValue['authType']
 
@@ -110,6 +110,9 @@ const DEFAULT_TMDB_SETTINGS: TmdbLocalSettings = {
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 const TMDB_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p'
 const DEFAULT_TMDB_TIMEOUT_MS = 10_000
+const BUILT_IN_TMDB_READ_ACCESS_TOKEN = typeof __OHMYCINE_BUILTIN_TMDB_READ_ACCESS_TOKEN__ === 'string'
+  ? __OHMYCINE_BUILTIN_TMDB_READ_ACCESS_TOKEN__
+  : ''
 
 export function loadTmdbLocalSettings(): TmdbLocalSettings {
   try {
@@ -145,9 +148,12 @@ export async function saveConfiguredTmdbCredential(
 export async function readConfiguredTmdbCredential(): Promise<TmdbCredentialValue | null> {
   const settings = loadTmdbLocalSettings()
   const credential = await readTmdbCredential(settings.credentialRef)
-  if (!credential || credential.authType !== settings.authType)
-    return null
-  return credential
+  const matchingUserCredential = credential?.authType === settings.authType ? credential : null
+  return resolveEffectiveTmdbCredential(matchingUserCredential, BUILT_IN_TMDB_READ_ACCESS_TOKEN)
+}
+
+export function hasBuiltInTmdbCredential(): boolean {
+  return resolveEffectiveTmdbCredential(null, BUILT_IN_TMDB_READ_ACCESS_TOKEN) != null
 }
 
 export async function readStoredTmdbCredential(): Promise<TmdbCredentialValue | null> {
