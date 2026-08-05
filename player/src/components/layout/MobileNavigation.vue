@@ -4,9 +4,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 import { pickAndroidLocalVideo } from '@/services/androidLocalMedia'
+import { useLayoutContextActions } from '@/services/layoutContextActions'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
+import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
 
 type MobileSheet = 'libraries' | 'quick'
 
@@ -35,6 +37,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const { theme, toggle: toggleTheme } = useTheme()
+const { actions: contextActions } = useLayoutContextActions()
 const activeSheet = ref<MobileSheet | null>(null)
 const isOpeningFile = ref(false)
 const openFileError = ref<string | null>(null)
@@ -176,6 +179,13 @@ function handleThemeToggle() {
   closeSheet()
 }
 
+function runContextAction(action: (typeof contextActions.value)[number]) {
+  if (action.disabled)
+    return
+  closeSheet()
+  void action.execute()
+}
+
 function handleEscape(event: KeyboardEvent) {
   if (event.key === 'Escape' && activeSheet.value) {
     event.preventDefault()
@@ -240,6 +250,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
               </button>
             </header>
+
+            <section v-if="contextActions.length" class="mobile-context-section">
+              <p class="mobile-context-eyebrow">
+                当前媒体库
+              </p>
+              <div class="mobile-context-list">
+                <button
+                  v-for="action in contextActions"
+                  :key="action.id"
+                  type="button"
+                  class="mobile-context-action"
+                  :class="{ 'is-active': action.active }"
+                  :disabled="action.disabled"
+                  @click="runContextAction(action)"
+                >
+                  <span class="mobile-context-icon">
+                    <LayoutContextActionIcon :name="action.icon" />
+                  </span>
+                  <span class="mobile-context-copy">
+                    <strong>{{ action.label }}</strong>
+                    <small>{{ action.description }}</small>
+                  </span>
+                  <span v-if="action.active" class="mobile-context-state">已展开</span>
+                  <svg v-else class="mobile-row-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+                </button>
+              </div>
+            </section>
 
             <div class="mobile-quick-grid">
               <button type="button" class="mobile-quick-action" :disabled="isOpeningFile" @click="openLocalVideo">
@@ -589,6 +626,87 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.55rem;
+  }
+
+  .mobile-context-section {
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .mobile-context-eyebrow {
+    margin: 0 0 0.5rem 0.1rem;
+    color: rgba(255, 255, 255, 0.38);
+    font-size: 0.62rem;
+    font-weight: 800;
+  }
+
+  .mobile-context-list {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .mobile-context-action {
+    display: grid;
+    width: 100%;
+    min-height: 3.65rem;
+    grid-template-columns: 2.3rem minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.7rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 0.5rem 0.65rem;
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.045);
+    text-align: left;
+  }
+
+  .mobile-context-action.is-active {
+    border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+    background: color-mix(in srgb, var(--color-primary) 12%, rgba(255, 255, 255, 0.045));
+  }
+
+  .mobile-context-action:disabled {
+    opacity: 0.45;
+  }
+
+  .mobile-context-icon {
+    display: flex;
+    width: 2.3rem;
+    height: 2.3rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  }
+
+  .mobile-context-copy {
+    min-width: 0;
+  }
+
+  .mobile-context-copy strong,
+  .mobile-context-copy small {
+    display: block;
+  }
+
+  .mobile-context-copy strong {
+    font-size: 0.82rem;
+  }
+
+  .mobile-context-copy small {
+    margin-top: 0.16rem;
+    overflow: hidden;
+    color: rgba(255, 255, 255, 0.38);
+    font-size: 0.65rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-context-state {
+    color: var(--color-primary);
+    font-size: 0.64rem;
+    font-weight: 700;
   }
 
   .mobile-quick-action {

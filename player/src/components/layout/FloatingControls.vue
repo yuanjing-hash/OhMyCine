@@ -3,6 +3,8 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
+import { useLayoutContextActions } from '@/services/layoutContextActions'
+import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
 
 const VIDEO_EXTENSIONS = [
   'mp4',
@@ -28,6 +30,7 @@ const VIDEO_EXTENSIONS = [
 const router = useRouter()
 const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
+const { actions: contextActions } = useLayoutContextActions()
 const isTouchUi = window.matchMedia('(hover: none) and (pointer: coarse)').matches
 const isHovered = ref(isTouchUi)
 const isOpeningFile = ref(false)
@@ -69,6 +72,12 @@ async function openLocalVideo() {
     isOpeningFile.value = false
   }
 }
+
+function runContextAction(action: (typeof contextActions.value)[number]) {
+  if (action.disabled)
+    return
+  void action.execute()
+}
 </script>
 
 <template>
@@ -86,6 +95,24 @@ async function openLocalVideo() {
         @mouseenter="isHovered = true"
         @mouseleave="isHovered = false"
       >
+        <template v-if="contextActions.length">
+          <button
+            v-for="action in contextActions"
+            :key="action.id"
+            type="button"
+            class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 disabled:cursor-wait disabled:opacity-45"
+            :class="{ 'is-active': action.active }"
+            :disabled="action.disabled"
+            :title="action.label"
+            :aria-label="action.label"
+            @click="runContextAction(action)"
+          >
+            <LayoutContextActionIcon :name="action.icon" />
+          </button>
+
+          <div class="gp-divider my-1 h-px w-6" />
+        </template>
+
         <!-- Navigation buttons — only on player page (top bar/sidebar hidden there) -->
         <template v-if="isPlayerRoute">
           <button
@@ -174,6 +201,10 @@ async function openLocalVideo() {
   color: var(--gp-text);
 }
 .gp-btn:hover {
+  color: var(--gp-text-full);
+  background: var(--gp-hover);
+}
+.gp-btn.is-active {
   color: var(--gp-text-full);
   background: var(--gp-hover);
 }

@@ -45,6 +45,7 @@ assert.doesNotMatch(sidebar, /mobile-source-nav/)
 
 const floatingControls = await source('src/components/layout/FloatingControls.vue')
 assert.match(floatingControls, /@media \(max-width: 767px\), \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.floating-controls \{\s+display: none;/)
+assert.match(floatingControls, /v-for="action in contextActions"/)
 
 const homeView = await source('src/views/HomeView.vue')
 assert.match(homeView, /recent-play-overlay/)
@@ -66,8 +67,10 @@ assert.match(mediaCard, /media-card-play/)
 assert.match(mediaCard, /\.media-card-play \{[\s\S]*?opacity: 1;/)
 
 const sourceLibrary = await source('src/views/SourceLibraryView.vue')
-assert.match(sourceLibrary, /\.source-bottom-controls \{[\s\S]*?opacity: 1;/)
-assert.match(sourceLibrary, /bottom: calc\(5\.25rem \+ env\(safe-area-inset-bottom\)\)/)
+assert.match(sourceLibrary, /setLayoutContextActions\(layoutContextOwner/)
+assert.doesNotMatch(sourceLibrary, /source-bottom-controls/)
+assert.match(mobileNavigation, /class="mobile-context-section"/)
+assert.match(mobileNavigation, /当前媒体库/)
 
 const playerControls = await source('src/components/player/PlayerControls.vue')
 assert.match(playerControls, /grid-template-columns: auto minmax\(0, 1fr\) auto/)
@@ -217,7 +220,7 @@ console.log(JSON.stringify({
   libraryAndQuickSheets: true,
   hoverOnlyGlobalControlsRemoved: true,
   touchMediaActionsVisible: true,
-  sourceQuickControlsPersistent: true,
+  sourceQuickControlsInSheet: true,
   mobilePlayerControlLayout: true,
   touchProgressSeeking: true,
   touchPlaybackGestures: true,

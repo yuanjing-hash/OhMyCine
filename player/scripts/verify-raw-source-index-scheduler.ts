@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createRawSourceAutoIndexTargets, createRawSourceIndexScheduler, DEFAULT_RAW_SOURCE_INCREMENTAL_INDEX_INTERVAL_MS, DEFAULT_RAW_SOURCE_INDEX_INTERVAL_MS } from '../src/services/scraper/rawSourceIndexScheduler.ts'
+import { clearLayoutContextActions, setLayoutContextActions, useLayoutContextActions } from '../src/services/layoutContextActions.ts'
 import { readRawSourceScanScheduleConfig } from '../src/services/scraper/rawSourceScanSchedule.ts'
 import type { DataSource, DataSourceConfig } from '../src/services/datasource/types.ts'
 import type { RawFileSourceType, RawScanPreview } from '../src/services/scraper/types.ts'
@@ -215,10 +216,37 @@ assert.equal(dirtyStatus.state, 'completed')
 assert.deepEqual(dirtyScans, ['incremental:alist-target'])
 
 const sourceLibraryView = await readFile(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
+const floatingControls = await readFile(new URL('../src/components/layout/FloatingControls.vue', import.meta.url), 'utf8')
+const mobileNavigation = await readFile(new URL('../src/components/layout/MobileNavigation.vue', import.meta.url), 'utf8')
 assert.match(sourceLibraryView, /async function startFullRescrape\(\)/)
-assert.match(sourceLibraryView, /重新刮削/)
-assert.match(sourceLibraryView, /扫描管理/)
+assert.match(sourceLibraryView, /setLayoutContextActions\(layoutContextOwner/)
+assert.match(sourceLibraryView, /id: 'raw-source-rescrape'/)
 assert.doesNotMatch(sourceLibraryView, /source-bottom-controls/)
+assert.match(floatingControls, /v-for="action in contextActions"/)
+assert.match(mobileNavigation, /class="mobile-context-section"/)
+
+const firstContextOwner = Symbol('first-context-owner')
+const secondContextOwner = Symbol('second-context-owner')
+const contextActionState = useLayoutContextActions().actions
+setLayoutContextActions(firstContextOwner, [{
+  id: 'first',
+  label: 'First',
+  description: 'First action',
+  icon: 'scan',
+  execute: () => {},
+}])
+assert.equal(contextActionState.value[0]?.id, 'first')
+setLayoutContextActions(secondContextOwner, [{
+  id: 'second',
+  label: 'Second',
+  description: 'Second action',
+  icon: 'folder',
+  execute: () => {},
+}])
+clearLayoutContextActions(firstContextOwner)
+assert.equal(contextActionState.value[0]?.id, 'second')
+clearLayoutContextActions(secondContextOwner)
+assert.equal(contextActionState.value.length, 0)
 
 console.log(JSON.stringify({
   firstState: first[0]?.state,
