@@ -114,8 +114,14 @@ pub async fn quark_auth_start_qr(
 ) -> Result<QuarkQrStartResponse, String> {
     let jar = Arc::new(Jar::default());
     let client = create_auth_client(jar.clone())?;
+    let request_id = create_request_id();
     let response = client
         .get("https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin")
+        .query(&[
+            ("client_id", "532"),
+            ("v", "1.2"),
+            ("request_id", request_id.as_str()),
+        ])
         .header(ACCEPT, "application/json, text/plain, */*")
         .header(REFERER, REFERER_VALUE)
         .header(USER_AGENT, USER_AGENT_VALUE)
@@ -171,10 +177,16 @@ pub async fn quark_auth_poll_qr(
     if session.created_at.elapsed() > QR_SESSION_TTL {
         return Ok(auth_poll_response("expired", None));
     }
+    let request_id = create_request_id();
     let response = session
         .client
         .get("https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken")
-        .query(&[("token", session.token.as_str())])
+        .query(&[
+            ("token", session.token.as_str()),
+            ("client_id", "532"),
+            ("v", "1.2"),
+            ("request_id", request_id.as_str()),
+        ])
         .header(ACCEPT, "application/json, text/plain, */*")
         .header(REFERER, REFERER_VALUE)
         .header(USER_AGENT, USER_AGENT_VALUE)
@@ -465,6 +477,31 @@ async fn validate_login_cookie(cookie: &str) -> Result<String, String> {
 
 fn create_auth_session_id(prefix: &str) -> String {
     format!("{prefix}-{:x}-{:x}", unix_time_ms(), rand::random::<u64>())
+}
+
+fn create_request_id() -> String {
+    let mut bytes = rand::random::<[u8; 16]>();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
 }
 
 fn normalize_session_id(value: &str) -> Result<String, String> {
@@ -951,6 +988,10 @@ mod tests {
         assert!(!is_allowed_account_login_navigation(
             &Url::parse("https://example.test/login").unwrap()
         ));
+        let request_id = create_request_id();
+        assert_eq!(request_id.len(), 36);
+        assert_eq!(&request_id[14..15], "4");
+        assert!(matches!(&request_id[19..20], "8" | "9" | "a" | "b"));
     }
 }
 use base64::Engine;
