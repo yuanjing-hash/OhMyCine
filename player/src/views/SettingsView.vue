@@ -12,7 +12,7 @@ import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import type { SubtitleLanguage } from '@/services/subtitle'
 import type { UpdateChannel } from '@/services/updater'
 import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
-import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
@@ -22,6 +22,7 @@ import { readRawCredentialBackup, removeCredential, saveRawCredentialBackup } fr
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
+import { cancelQuarkLogin, createAuthenticatedQuarkSetupSource, normalizeQuarkRootPath, pollQuarkAccountLogin, pollQuarkQrLogin, QUARK_PROVIDER_URL, QuarkDataSource, readQuarkRootPath, saveQuarkCookieAndCreateConfig, startQuarkAccountLogin, startQuarkQrLogin } from '@/services/datasource/quark'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
 import {
@@ -71,13 +72,14 @@ import {
 import { useDataSourceStore } from '@/stores/datasource'
 import { useUpdaterStore } from '@/stores/updater'
 
-type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav'>
+type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'quark'>
 type EditableDataSourceType = LoginDataSourceType | 'local'
 type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'shortcuts' | 'updates' | 'diagnostics'
 type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'shortcuts' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
 type ConditionValueState = 'none' | 'include' | 'exclude'
+type QuarkLoginMode = 'qr' | 'account' | 'cookie'
 
 interface DataSourceFormState {
   id: string | null
@@ -87,6 +89,7 @@ interface DataSourceFormState {
   username: string
   password: string
   apiToken: string
+  cookie: string
   rootPath: string
   rootLabel: string
 }
@@ -178,6 +181,15 @@ const sourceTypeOptions: Array<{
     usernamePlaceholder: 'WebDAV 用户名',
   },
   {
+    type: 'quark',
+    label: '夸克网盘',
+    shortLabel: 'Q',
+    description: 'Cookie 登录，只读浏览与播放',
+    defaultName: '夸克网盘',
+    urlPlaceholder: '',
+    usernamePlaceholder: '',
+  },
+  {
     type: 'local',
     label: '本地文件夹',
     shortLabel: 'L',
@@ -238,6 +250,7 @@ const form = reactive<DataSourceFormState>({
   username: '',
   password: '',
   apiToken: '',
+  cookie: '',
   rootPath: '/',
   rootLabel: '',
 })
@@ -246,11 +259,19 @@ const isSaving = ref(false)
 const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const lastFetchedLibraries = ref<MediaLibrary[]>([])
-const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | null>(null)
+const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | QuarkDataSource | null>(null)
 const alistBrowserPath = ref('/')
 const alistBrowserDirectories = ref<MediaItem[]>([])
 const alistBrowserLoading = ref(false)
 const alistBrowserError = ref<string | null>(null)
+const quarkLoginMode = ref<QuarkLoginMode>('qr')
+const quarkQrSessionId = ref('')
+const quarkQrImageUrl = ref('')
+const quarkAccountSessionId = ref('')
+const quarkLoginFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
+const isStartingQuarkLogin = ref(false)
+const isPollingQuarkLogin = ref(false)
+let quarkLoginPollTimer: ReturnType<typeof setInterval> | null = null
 const scrapeRules = ref(loadScrapeClassificationRules())
 const scrapeRulesDirty = ref(false)
 const scrapeFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
@@ -312,9 +333,10 @@ const selectedProvider = computed(() => sourceTypeOptions.find(option => option.
 const isAlistForm = computed(() => form.type === 'alist')
 const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
 const isWebDavForm = computed(() => form.type === 'webdav')
+const isQuarkForm = computed(() => form.type === 'quark')
 const isLocalForm = computed(() => form.type === 'local')
-const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value)
-const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value)
+const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value || isQuarkForm.value)
+const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value && !isQuarkForm.value)
 const selectedRootPathLabel = computed(() => isLocalForm.value
   ? localRootPathLabel(form.rootPath, form.rootLabel)
   : normalizeRemoteRootPath(form.rootPath))
@@ -434,7 +456,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'datasources',
     label: 'DS',
     title: '管理数据源',
-    description: '添加和管理 Emby、OpenList/Alist、CloudDrive2、WebDAV 与本地文件夹。',
+    description: '添加和管理 Emby、OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 与本地文件夹。',
     meta: dataSourceEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -513,11 +535,17 @@ onMounted(() => {
   syncModeFromRoute()
 })
 
+onBeforeUnmount(() => {
+  stopQuarkLoginPolling()
+})
+
 watch(() => route.query, () => {
   syncModeFromRoute()
 })
 
 watch(() => form.type, (type) => {
+  if (type !== 'quark')
+    resetQuarkLoginSession()
   if (!isEditing.value)
     form.displayName = defaultDisplayName(type)
   if (type === 'local') {
@@ -525,6 +553,7 @@ watch(() => form.type, (type) => {
     form.username = ''
     form.password = ''
     form.apiToken = ''
+    form.cookie = ''
     form.rootPath = ''
     form.rootLabel = ''
   }
@@ -537,14 +566,22 @@ watch(() => form.type, (type) => {
   if (type === 'clouddrive2') {
     form.username = ''
     form.password = ''
+    form.cookie = ''
+  }
+  else if (type === 'quark') {
+    form.url = QUARK_PROVIDER_URL
+    form.username = ''
+    form.password = ''
+    form.apiToken = ''
   }
   else {
     form.apiToken = ''
+    form.cookie = ''
   }
   resetAlistBrowser()
 })
 
-watch(() => [form.url, form.username, form.password, form.apiToken] as const, () => {
+watch(() => [form.url, form.username, form.password, form.apiToken, form.cookie] as const, () => {
   if (isRootSelectableRemoteSourceType(form.type))
     resetAlistBrowser()
 })
@@ -739,6 +776,7 @@ function goOverview() {
   feedback.value = null
   lastFetchedLibraries.value = []
   resetAlistBrowser()
+  resetQuarkLoginSession()
   void router.replace({ name: 'settings' })
 }
 
@@ -1079,6 +1117,7 @@ function resetForm() {
   form.username = ''
   form.password = ''
   form.apiToken = ''
+  form.cookie = ''
   form.rootPath = '/'
   form.rootLabel = ''
   feedback.value = null
@@ -1107,12 +1146,15 @@ function populateEditForm(config: EditableDataSourceConfig) {
   form.username = ''
   form.password = ''
   form.apiToken = ''
+  form.cookie = ''
   if (config.type === 'alist')
     form.rootPath = readAlistRootPath(config)
   else if (config.type === 'clouddrive2')
     form.rootPath = readCloudDrive2RootPath(config)
   else if (config.type === 'webdav')
     form.rootPath = readWebDavRootPath(config)
+  else if (config.type === 'quark')
+    form.rootPath = readQuarkRootPath(config)
   else if (config.type === 'local')
     form.rootPath = readLocalRootPath(config)
   else
@@ -1124,10 +1166,13 @@ function populateEditForm(config: EditableDataSourceConfig) {
       ? '可修改显示名称或重新选择本地根目录；本地文件源不会保存账号、密码或 token。'
       : config.type === 'clouddrive2'
         ? '可修改显示名称、根目录与启用状态；API Token 留空表示保留，修改服务地址时必须重新输入 Token。'
-        : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+        : config.type === 'quark'
+          ? '可修改显示名称与根目录；Cookie 留空表示保留当前登录，失效后重新粘贴即可。'
+          : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
   }
   lastFetchedLibraries.value = []
   resetAlistBrowser()
+  resetQuarkLoginSession()
   mode.value = 'edit'
 }
 
@@ -1193,6 +1238,7 @@ async function saveSource() {
       username: form.username,
       password: form.password,
       apiToken: form.apiToken,
+      cookie: form.cookie,
       rootPath: isRootSelectableRemoteSourceType(form.type) ? selectedRootPathLabel.value : undefined,
       order: store.configs.length,
     })
@@ -1216,7 +1262,9 @@ async function saveSource() {
         ? '添加本地文件夹失败，请确认目录存在且有读取权限。'
         : form.type === 'clouddrive2'
           ? '添加 CloudDrive2 失败，请检查 gRPC 服务地址、API Token 权限和服务状态。'
-          : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
+          : form.type === 'quark'
+            ? '添加夸克网盘失败，请检查 Cookie 是否完整且仍然有效。'
+            : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
     }
   }
   finally {
@@ -1247,14 +1295,16 @@ async function saveEditedSource(id: string) {
   }
 
   const username = form.username.trim()
-  const nextUrl = form.url.trim()
+  const nextUrl = existing.type === 'quark' ? QUARK_PROVIDER_URL : form.url.trim()
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
   const nextRootPath = isRootSelectableRemoteSourceType(existing.type) ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
-  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password, form.apiToken)
+  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password, form.apiToken, form.cookie)
   if (shouldRelogin && existing.type === 'clouddrive2' && !form.apiToken.trim())
     throw new Error('更新 CloudDrive2 服务地址或 Token 时必须填写 API Token。')
-  if (shouldRelogin && existing.type !== 'clouddrive2' && (!username || !form.password))
+  if (shouldRelogin && existing.type === 'quark' && !form.cookie.trim())
+    throw new Error('更新夸克网盘登录信息时必须填写 Cookie。')
+  if (shouldRelogin && existing.type !== 'clouddrive2' && existing.type !== 'quark' && (!username || !form.password))
     throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
 
   if (shouldRelogin) {
@@ -1266,6 +1316,7 @@ async function saveEditedSource(id: string) {
       username,
       password: form.password,
       apiToken: form.apiToken,
+      cookie: form.cookie,
       rootPath: nextRootPath,
       order: existing.order,
     })
@@ -1279,6 +1330,7 @@ async function saveEditedSource(id: string) {
     feedback.value = { type: 'success', message: `${label} 已重新连接，并验证 ${result.libraries.length} 个入口。` }
     form.password = ''
     form.apiToken = ''
+    form.cookie = ''
     goManage({ preserveFeedback: true })
     return
   }
@@ -1307,9 +1359,12 @@ async function saveEditedSource(id: string) {
   })
   form.password = ''
   form.apiToken = ''
+  form.cookie = ''
   feedback.value = { type: 'success', message: existing.type === 'clouddrive2'
     ? '数据源已更新。若 API Token 已撤销或权限变化，请再次编辑并输入新的 Token。'
-    : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
+    : existing.type === 'quark'
+      ? '夸克网盘数据源已更新。Cookie 失效后可再次编辑并重新粘贴。'
+      : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
   goManage({ preserveFeedback: true })
 }
 
@@ -1320,6 +1375,7 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   username: string
   password: string
   apiToken: string
+  cookie: string
   rootPath?: string
   order: number
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
@@ -1329,6 +1385,8 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
     return saveCloudDrive2TokenAndCreateConfig(input)
   if (type === 'webdav')
     return loginWebDavAndCreateConfig(input)
+  if (type === 'quark')
+    return saveQuarkCookieAndCreateConfig(input)
   return loginEmbyAndCreateConfig(input)
 }
 
@@ -1358,7 +1416,7 @@ async function createAndValidateLocalConfig(input: {
 }
 
 function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav'
+  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'quark'
 }
 
 function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
@@ -1369,8 +1427,8 @@ function isEditableDataSourceConfig(config: DataSourceConfig): config is Editabl
   return isEditableDataSourceType(config.type)
 }
 
-function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav'> {
-  return type === 'alist' || type === 'clouddrive2' || type === 'webdav'
+function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav' | 'quark'> {
+  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === 'quark'
 }
 
 function sourceTypeLabel(type: DataSourceType): string {
@@ -1385,6 +1443,8 @@ function sourceTypeLabel(type: DataSourceType): string {
       return 'CloudDrive2'
     case 'webdav':
       return 'WebDAV'
+    case 'quark':
+      return '夸克网盘'
     case 'local':
       return '本地文件'
     case 'server':
@@ -1411,7 +1471,7 @@ function sourceStatusLine(source: DataSourceConfig): string {
 }
 
 function isRawScanScheduleSource(source: DataSourceConfig): boolean {
-  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === 'local'
+  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === 'quark' || source.type === 'local'
 }
 
 function readRemoteRootPath(config: DataSourceConfig): string {
@@ -1419,6 +1479,8 @@ function readRemoteRootPath(config: DataSourceConfig): string {
     return readCloudDrive2RootPath(config)
   if (config.type === 'webdav')
     return readWebDavRootPath(config)
+  if (config.type === 'quark')
+    return readQuarkRootPath(config)
   return readAlistRootPath(config)
 }
 
@@ -1427,6 +1489,8 @@ function normalizeRemoteRootPath(path: string | undefined): string {
     return normalizeCloudDrive2RootPath(path)
   if (form.type === 'webdav')
     return normalizeWebDavRootPath(path)
+  if (form.type === 'quark')
+    return normalizeQuarkRootPath(path)
   return normalizeAlistRootPath(path)
 }
 
@@ -1527,6 +1591,13 @@ function selectSourceType(type: EditableDataSourceType) {
 
   form.type = type
   form.displayName = defaultDisplayName(type)
+  form.url = type === 'quark' ? QUARK_PROVIDER_URL : ''
+  form.username = ''
+  form.password = ''
+  form.apiToken = ''
+  form.cookie = ''
+  form.rootPath = '/'
+  resetAlistBrowser()
   feedback.value = null
   lastFetchedLibraries.value = []
 }
@@ -1608,7 +1679,7 @@ async function loadAlistDirectory(path: string) {
   }
 }
 
-async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource> {
+async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | QuarkDataSource> {
   if (alistBrowserSource.value)
     return alistBrowserSource.value
 
@@ -1618,14 +1689,16 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2
   const username = form.username.trim()
   const shouldUseExistingCredential = existing?.type === form.type
     && isRootSelectableRemoteSourceType(existing.type)
-    && !shouldReloginSource(existing, form.url, username, form.password, form.apiToken)
+    && !shouldReloginSource(existing, form.url, username, form.password, form.apiToken, form.cookie)
 
   if (shouldUseExistingCredential) {
     const source = existing.type === 'clouddrive2'
       ? new CloudDrive2DataSource()
       : existing.type === 'webdav'
         ? new WebDavDataSource()
-        : new AlistDataSource()
+        : existing.type === 'quark'
+          ? new QuarkDataSource()
+          : new AlistDataSource()
     await source.init({
       ...existing,
       name: displayName,
@@ -1648,13 +1721,16 @@ async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2
     username,
     password: form.password,
     apiToken: form.apiToken,
+    cookie: form.cookie,
     order: existing?.order ?? store.configs.length,
   }
   const source = form.type === 'clouddrive2'
     ? await createAuthenticatedCloudDrive2SetupSource(setupInput)
     : form.type === 'webdav'
       ? await createAuthenticatedWebDavSetupSource(setupInput)
-      : await createAuthenticatedAlistSetupSource(setupInput)
+      : form.type === 'quark'
+        ? await createAuthenticatedQuarkSetupSource(setupInput)
+        : await createAuthenticatedAlistSetupSource(setupInput)
   alistBrowserSource.value = source
   return source
 }
@@ -1676,8 +1752,121 @@ function resetAlistBrowser() {
   alistBrowserError.value = null
 }
 
-function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string, apiToken: string): boolean {
-  const credentialChanged = config.type === 'clouddrive2' ? Boolean(apiToken.trim()) : Boolean(username || password)
+async function beginQuarkQrLogin() {
+  resetQuarkLoginSession({ preserveMode: true })
+  quarkLoginMode.value = 'qr'
+  isStartingQuarkLogin.value = true
+  quarkLoginFeedback.value = { type: 'info', message: '正在生成夸克登录二维码…' }
+  try {
+    const session = await startQuarkQrLogin()
+    quarkQrSessionId.value = session.sessionId
+    quarkQrImageUrl.value = session.qrImageUrl
+    quarkLoginFeedback.value = { type: 'info', message: '请使用夸克 App 扫码并确认登录。' }
+    startQuarkLoginPolling('qr')
+  }
+  catch (error) {
+    quarkLoginFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '夸克登录二维码生成失败。') }
+  }
+  finally {
+    isStartingQuarkLogin.value = false
+  }
+}
+
+function selectQuarkLoginMode(mode: QuarkLoginMode) {
+  if (quarkLoginMode.value === mode)
+    return
+  resetQuarkLoginSession({ preserveMode: true })
+  quarkLoginMode.value = mode
+}
+
+async function beginQuarkAccountLogin() {
+  resetQuarkLoginSession({ preserveMode: true })
+  quarkLoginMode.value = 'account'
+  isStartingQuarkLogin.value = true
+  quarkLoginFeedback.value = { type: 'info', message: '正在打开夸克官方账号登录页面…' }
+  try {
+    const session = await startQuarkAccountLogin()
+    quarkAccountSessionId.value = session.sessionId
+    quarkLoginFeedback.value = { type: 'info', message: '请在夸克官方窗口完成账号、密码及可能出现的安全验证。' }
+    startQuarkLoginPolling('account')
+  }
+  catch (error) {
+    quarkLoginFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '夸克账号登录页面打开失败。') }
+  }
+  finally {
+    isStartingQuarkLogin.value = false
+  }
+}
+
+function startQuarkLoginPolling(mode: Extract<QuarkLoginMode, 'qr' | 'account'>) {
+  stopQuarkLoginPolling()
+  quarkLoginPollTimer = setInterval(() => {
+    void pollActiveQuarkLogin(mode)
+  }, 2_000)
+  void pollActiveQuarkLogin(mode)
+}
+
+async function pollActiveQuarkLogin(mode: Extract<QuarkLoginMode, 'qr' | 'account'>) {
+  if (isPollingQuarkLogin.value)
+    return
+  const sessionId = mode === 'qr' ? quarkQrSessionId.value : quarkAccountSessionId.value
+  if (!sessionId)
+    return
+  isPollingQuarkLogin.value = true
+  try {
+    const result = mode === 'qr'
+      ? await pollQuarkQrLogin(sessionId)
+      : await pollQuarkAccountLogin(sessionId)
+    if (result.status === 'pending')
+      return
+    stopQuarkLoginPolling()
+    if (result.status === 'success' && result.cookie) {
+      form.cookie = result.cookie
+      quarkLoginFeedback.value = { type: 'success', message: '夸克网盘登录成功，可以继续选择根目录并保存数据源。' }
+      return
+    }
+    quarkLoginFeedback.value = {
+      type: 'error',
+      message: result.status === 'expired' ? '登录二维码已过期，请刷新后重试。' : '夸克账号登录窗口已关闭，登录未完成。',
+    }
+  }
+  catch (error) {
+    stopQuarkLoginPolling()
+    quarkLoginFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '夸克登录状态检查失败。') }
+  }
+  finally {
+    isPollingQuarkLogin.value = false
+  }
+}
+
+function stopQuarkLoginPolling() {
+  if (quarkLoginPollTimer != null) {
+    clearInterval(quarkLoginPollTimer)
+    quarkLoginPollTimer = null
+  }
+}
+
+function resetQuarkLoginSession(options: { preserveMode?: boolean } = {}) {
+  stopQuarkLoginPolling()
+  const sessions = [quarkQrSessionId.value, quarkAccountSessionId.value].filter(Boolean)
+  for (const sessionId of sessions)
+    void cancelQuarkLogin(sessionId).catch(() => undefined)
+  quarkQrSessionId.value = ''
+  quarkQrImageUrl.value = ''
+  quarkAccountSessionId.value = ''
+  quarkLoginFeedback.value = null
+  isStartingQuarkLogin.value = false
+  isPollingQuarkLogin.value = false
+  if (!options.preserveMode)
+    quarkLoginMode.value = 'qr'
+}
+
+function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string, apiToken: string, cookie: string): boolean {
+  const credentialChanged = config.type === 'clouddrive2'
+    ? Boolean(apiToken.trim())
+    : config.type === 'quark'
+      ? Boolean(cookie.trim())
+      : Boolean(username || password)
   return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || credentialChanged
 }
 
@@ -1689,7 +1878,9 @@ async function validateExistingRemoteRoot(config: DataSourceConfig, url: string,
     ? new CloudDrive2DataSource()
     : config.type === 'webdav'
       ? new WebDavDataSource()
-      : new AlistDataSource()
+      : config.type === 'quark'
+        ? new QuarkDataSource()
+        : new AlistDataSource()
   try {
     await source.init({
       ...config,
@@ -3151,7 +3342,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             还没有数据源
           </p>
           <p class="mt-2 text-sm leading-6 text-white/42">
-            添加 Emby、OpenList/Alist、CloudDrive2 或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
+            添加 Emby、OpenList/Alist、CloudDrive2、夸克网盘或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
           </p>
           <button class="mt-5 rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
             添加数据源
@@ -3218,7 +3409,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             >
           </label>
 
-          <label v-if="!isLocalForm" class="block">
+          <label v-if="!isLocalForm && !isQuarkForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
             <input
               v-model="form.url"
@@ -3251,6 +3442,89 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               请先在 CloudDrive2 中创建应用 API Token。
             </span>
           </label>
+
+          <div v-if="isQuarkForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">登录方式</span>
+                <p class="mt-1 text-xs leading-5 text-white/42">
+                  登录完成后只保存夸克 Cookie，不保存账号或密码。
+                </p>
+              </div>
+              <span v-if="form.cookie" class="rounded-full bg-emerald-400/14 px-3 py-1.5 text-xs font-semibold text-emerald-100">
+                登录凭据已就绪
+              </span>
+            </div>
+
+            <div class="mt-4 grid grid-cols-3 gap-1 rounded-2xl bg-black/18 p-1">
+              <button
+                v-for="option in ([
+                  { value: 'qr', label: '扫码登录' },
+                  { value: 'account', label: '账号登录' },
+                  { value: 'cookie', label: '高级方式' },
+                ] as const)"
+                :key="option.value"
+                type="button"
+                class="min-h-10 rounded-xl px-3 text-xs font-semibold transition-colors"
+                :class="quarkLoginMode === option.value ? 'bg-primary/22 text-primary' : 'text-white/48 hover:bg-white/8 hover:text-white/76'"
+                @click="selectQuarkLoginMode(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+
+            <div v-if="quarkLoginMode === 'qr'" class="mt-4 flex flex-col items-center py-2 text-center">
+              <div class="flex aspect-square w-52 items-center justify-center overflow-hidden rounded-2xl bg-white p-3">
+                <img v-if="quarkQrImageUrl" :src="quarkQrImageUrl" alt="夸克网盘登录二维码" class="h-full w-full object-contain">
+                <span v-else class="text-sm font-semibold text-black/38">等待生成二维码</span>
+              </div>
+              <button
+                type="button"
+                class="mt-4 rounded-2xl bg-primary/80 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+                :disabled="isStartingQuarkLogin"
+                @click="beginQuarkQrLogin"
+              >
+                {{ isStartingQuarkLogin ? '生成中…' : quarkQrImageUrl ? '刷新二维码' : '生成登录二维码' }}
+              </button>
+            </div>
+
+            <div v-else-if="quarkLoginMode === 'account'" class="mt-4 py-3 text-center">
+              <p class="text-sm leading-6 text-white/58">
+                在夸克官方窗口输入账号和密码，并完成验证码或设备验证。
+              </p>
+              <button
+                type="button"
+                class="mt-4 rounded-2xl bg-primary/80 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+                :disabled="isStartingQuarkLogin"
+                @click="beginQuarkAccountLogin"
+              >
+                {{ isStartingQuarkLogin ? '打开中…' : quarkAccountSessionId ? '重新打开账号登录' : '打开夸克账号登录' }}
+              </button>
+            </div>
+
+            <label v-else class="mt-4 block">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">手动导入 Cookie</span>
+              <textarea
+                v-model="form.cookie"
+                class="mt-2 min-h-28 w-full resize-y rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                :placeholder="isEditing ? '留空则保留当前 Cookie' : '粘贴已登录 pan.quark.cn 后的完整 Cookie'"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+
+            <div
+              v-if="quarkLoginFeedback"
+              class="mt-4 rounded-2xl border px-4 py-3 text-sm"
+              :class="{
+                'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': quarkLoginFeedback.type === 'success',
+                'border-red-400/20 bg-red-400/10 text-red-100': quarkLoginFeedback.type === 'error',
+                'border-white/12 bg-white/6 text-white/58': quarkLoginFeedback.type === 'info',
+              }"
+            >
+              {{ quarkLoginFeedback.message }}
+            </div>
+          </div>
 
           <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>

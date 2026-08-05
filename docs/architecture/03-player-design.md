@@ -159,7 +159,7 @@ ohmycine-player/
 
 ### 4.1 架构设计
 
-Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist、CloudDrive2、WebDAV、本地文件夹等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
+Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、Jellyfin、OpenList/Alist、CloudDrive2、夸克网盘、WebDAV、本地文件夹等）都是一个 DataSource 实现，通过统一接口访问。Server 也只是其中一个可选的 DataSource。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -184,7 +184,7 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 │  │  CloudDriveDataSource (占位)                          │  │
 │  │  ├─ 115网盘  (待实现)                                │  │
 │  │  ├─ 123盘    (待实现)                                │  │
-│  │  └─ 夸克网盘 (待实现)                                │  │
+│  │  └─ 夸克网盘 (Cookie / 扫码 / 官方账号登录)          │  │
 │  └─────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
@@ -478,11 +478,14 @@ export class AlistDataSource implements DataSource {
 }
 ```
 
-#### CloudDrive2 与通用 WebDAV 协议边界
+#### CloudDrive2、夸克网盘与通用 WebDAV 协议边界
 
 - `CloudDrive2DataSource` 使用 CloudDrive2 官方 gRPC API，只接受服务地址和用户创建的应用 API Token。Tauri Rust 负责 `GetSubFiles`、`GetSearchResults` 和 `GetDownloadUrlPath`，Bearer Token 只存在于凭据边界和瞬时原生请求中。
+- `QuarkDataSource` 固定访问夸克官方 HTTPS Web API，不提供用户可编辑 API Base URL。设置页默认提供夸克 App 扫码登录，也可打开夸克官方账号登录窗口处理账号密码、验证码和设备风控；手动 Cookie 仅作为高级兜底。三种入口最终都只保存 Cookie credential envelope，Player 不保存夸克账号密码。
+- 夸克扫码登录由 Rust 向官方 `uop.quark.cn` 获取 token、在本机生成二维码、轮询 service ticket，再向 `pan.quark.cn/account/info` 换取 Cookie；二维码 token 不发送给第三方二维码服务。账号登录使用独立官方 WebView，并在登录完成后读取 `quark.cn` Cookie，再通过固定 `/config` 请求验证。
+- 夸克目录浏览使用 provider path `/...` 与内部 `fid` 映射，播放时才通过 `/file/download` 获取临时原始直链，并附带 Cookie、Referer、User-Agent 和受控 `x-urlp`。服务端轮换的 `__puus` / `__pus` 必须立即合并回凭据边界，直链和 Header 不持久化。
 - `WebDavDataSource` 是独立通用数据源，使用 WebDAV URL、用户名、密码、`PROPFIND` 与 Basic Auth。它不冒充 CloudDrive2，也不复用 CloudDrive2 API Token。
-- 两类数据源都只读，支持用户选择 `extra.rootPath`、本地 raw scan cache、海报墙、Home 聚合和全量/增量扫描。
+- 三类数据源都只读，支持用户选择 `extra.rootPath`、本地 raw scan cache、海报墙、Home 聚合和全量/增量扫描。
 
 ### 4.5 DataSourceManager
 
@@ -552,7 +555,7 @@ export class DataSourceManager {
       // 占位
       case '115': throw new Error('115网盘支持即将推出')
       case '123': throw new Error('123盘支持即将推出')
-      case 'quark': throw new Error('夸克网盘支持即将推出')
+      case 'quark': return new QuarkDataSource()
       default: throw new Error(`Unknown data source type: ${type}`)
     }
   }
@@ -666,13 +669,13 @@ GitHub Releases API
 
 ### 5.1 设计背景
 
-Emby/Jellyfin 自带刮削功能，但 OpenList/Alist/CloudDrive2/WebDAV 这类原始文件数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
+Emby/Jellyfin 自带刮削功能，但 OpenList/Alist/CloudDrive2/夸克网盘/WebDAV 这类原始文件数据源**没有元数据**——只有原始文件名。Player 需要自己实现刮削，为网盘文件生成海报墙。
 
-本系统只面向“原始文件源”：OpenList/Alist、CloudDrive2、WebDAV、本地文件以及未来类似的自定义文件源。Emby/Jellyfin 已经由服务端维护媒体库和元数据，默认不套用 Player 本地刮削分类规则。
+本系统只面向“原始文件源”：OpenList/Alist、CloudDrive2、夸克网盘、WebDAV、本地文件以及未来类似的自定义文件源。Emby/Jellyfin 已经由服务端维护媒体库和元数据，默认不套用 Player 本地刮削分类规则。
 
 刮削系统必须遵守三条边界：
 
-1. **只读远端**：Player 不对 OpenList/Alist、CloudDrive2、WebDAV 或本地源执行上传、重命名、移动、删除、创建目录等写操作。
+1. **只读远端**：Player 不对 OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 或本地源执行上传、重命名、移动、删除、创建目录等写操作。
 2. **本地缓存**：扫描日志、匹配结果、海报、背景图、用户修正和分类结果都保存在 Player 本地 app data；后续右键识别、手动选择 TMDB 结果、海报/剧照上传和元信息编辑都属于本地覆盖层，只写本地 app data/cache，不写回 OpenList/Alist。
 3. **任意根目录**：从用户选择的根目录开始自动识别结构，不要求物理目录顶层必须叫 `movie`、`tv`、`Movies` 或 `TV`。
 
@@ -759,7 +762,7 @@ OpenList/Alist、CloudDrive2、WebDAV、本地文件等原始文件源在完成�
 
 扫描管理是辅助功能。扫描状态、结构判断、日志、全量扫描和增量扫描按钮放在显式“扫描管理”入口内；默认页面优先展示可浏览内容。首次进入原始文件源且本地 scan cache 尚未生成时，媒体库区域应显示当前源/root 的自动索引进度、状态和可进入文件夹视图的兜底入口，而不是空媒体库。文件夹视图保留为兜底入口，继续通过 DataSource `list()` 只读浏览和播放，但不替代默认媒体库视图。
 
-原始文件源使用双通道扫描：`full` 全量扫描默认 6 小时一次，负责完整递归扫描和一致性校准；`incremental` 增量扫描默认 1 分钟一次，先对比 provider path、大小和修改时间，有新增、删除或修改时再刷新本地索引。设置页按数据源保存 `extra.rawSourceScanSchedule`，可分别启停全量/增量并调整间隔。当前覆盖 OpenList/Alist、CloudDrive2、WebDAV 和本地文件夹；本地文件夹通过 Tauri root-scoped watcher 监听变更，事件只用于标记 source/root 需要增量扫描，前端和缓存仍只使用 `/...` provider path，不展示或持久化本地绝对路径。OpenList/Alist、CloudDrive2 与 WebDAV 暂以短间隔 polling/diff 实现近实时增量；Emby/Jellyfin 使用服务端媒体库和元数据，不进入 Player 原始文件扫描调度。
+原始文件源使用双通道扫描：`full` 全量扫描默认 6 小时一次，负责完整递归扫描和一致性校准；`incremental` 增量扫描默认 1 分钟一次，先对比 provider path、大小和修改时间，有新增、删除或修改时再刷新本地索引。设置页按数据源保存 `extra.rawSourceScanSchedule`，可分别启停全量/增量并调整间隔。当前覆盖 OpenList/Alist、CloudDrive2、夸克网盘、WebDAV 和本地文件夹；本地文件夹通过 Tauri root-scoped watcher 监听变更，事件只用于标记 source/root 需要增量扫描，前端和缓存仍只使用 `/...` provider path，不展示或持久化本地绝对路径。OpenList/Alist、CloudDrive2、夸克网盘与 WebDAV 暂以短间隔 polling/diff 实现近实时增量；Emby/Jellyfin 使用服务端媒体库和元数据，不进入 Player 原始文件扫描调度。
 
 ### 5.2.3 非标准目录模式
 

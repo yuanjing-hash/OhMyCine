@@ -17,7 +17,7 @@ OhMyCine 是自托管家庭影院生态系统，安全设计的核心目标是�
 | 资产 | 示例 | 风险 |
 |------|------|------|
 | 媒体服务器凭据 | Emby/Jellyfin API Key | 被盗后可读取媒体库、刷新媒体库、访问播放地址 |
-| 网盘凭据 | 115 Cookie、OpenList Token、CloudDrive2 API Token、WebDAV 密码 | 被盗后可访问或操作网盘文件 |
+| 网盘凭据 | 115/夸克 Cookie、OpenList Token、CloudDrive2 API Token、WebDAV 密码 | 被盗后可访问或操作网盘文件 |
 | PT 站点凭据 | Cookie、Passkey、User ID | 被盗后可能导致账号风险 |
 | 下载器凭据 | qBittorrent/Transmission 用户名密码 | 被盗后可添加、删除、控制下载任务 |
 | AI API Key | OpenAI/Claude/自定义 Provider Key | 被盗后产生费用或泄露请求内容 |
@@ -192,9 +192,11 @@ Player 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data` 保存应用数据
 
 数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划进入 `settings.sqlite`。WebView localStorage 只作为标准模式的旧版本迁移输入或浏览器开发 fallback，不得继续作为 Tauri 桌面版配置源。迁移只处理固定 namespaced key 和固定 SQLite 文件白名单，不接受任意路径或敏感明文。便携模式是独立配置档案，不得自动读取、复制或删除标准目录、旧 Roaming 目录以及共享 WebView localStorage 中的数据；跨模式导入只能由用户显式触发。
 
-CloudDrive2 与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
+CloudDrive2、夸克网盘与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
 
 - `clouddrive2` 保存用户在 CloudDrive2 中创建的应用 API Token，通过 Tauri Rust gRPC 客户端以 Bearer metadata 瞬时使用；不保存 CloudDrive2 主账号密码。
+- `quark` 只保存最终夸克 Cookie。扫码登录 token、service ticket 和账号登录窗口状态只在内存中短期存在；二维码必须在本机生成，不得把 token 发送给第三方二维码服务。账号密码、验证码和设备验证仅在固定夸克官方 HTTPS WebView 内处理，Player 不读取、不保存账号密码。
+- 夸克 API Base URL、扫码和账号登录地址均为固定官方 HTTPS 地址。普通配置只保存 `credentialRef`、固定 provider identity 和 `rootPath`；Cookie、`__puus`/`__pus` 轮换值、下载直链及播放 Header 不得进入普通配置、localStorage、扫描缓存、路由、日志或诊断文本。
 - `webdav` 保存独立 WebDAV 用户名和密码，通过 Basic Auth 瞬时使用；账号密码禁止嵌入 URL。
 - 两者的 token、Authorization header、直链和附加播放 header 均不得进入普通配置、localStorage、扫描缓存、播放历史、日志或诊断文本。
 - Android 为绕过原生 libmpv/FFmpeg 的设备 TLS 兼容问题，可由 Rust reqwest/rustls 建立临时媒体桥，但只能绑定 `127.0.0.1` 随机端口。每次播放必须使用新的高熵 URL-safe 令牌并以精确比较验证，只允许 GET/HEAD，停止播放后清除内存目标；原始直链、签名参数和认证 Header 不得写入回环 URL、持久化或普通日志，TLS 证书校验不得关闭。
