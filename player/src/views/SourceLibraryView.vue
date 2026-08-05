@@ -1810,7 +1810,7 @@ function labelForSourceType(type: string): string {
 </script>
 
 <template>
-  <div class="source-view relative min-h-full">
+  <div class="source-view theme-adaptive relative min-h-full">
     <div class="source-page-content mobile-nav-safe space-y-8 px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
       <div v-if="!sourceConfig" class="flex flex-col items-center justify-center py-24">
         <p class="text-lg text-white/40">
@@ -2204,7 +2204,7 @@ function labelForSourceType(type: string): string {
 
     <div
       v-if="workContextMenu.open"
-      class="work-context-menu fixed z-50 min-w-48 rounded-2xl border border-white/10 bg-black/88 p-1.5 shadow-2xl backdrop-blur-xl"
+      class="work-context-menu theme-adaptive fixed z-50 min-w-48 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-xl"
       :style="{ left: `${workContextMenu.x}px`, top: `${workContextMenu.y}px` }"
       @click.stop
     >
@@ -2224,7 +2224,7 @@ function labelForSourceType(type: string): string {
       aria-label="识别"
       @click.self="closeIdentificationDialog"
     >
-      <section class="identification-dialog theme-immersive-dark max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-[#12161d] shadow-2xl">
+      <section class="identification-dialog theme-adaptive max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 shadow-2xl">
         <div class="flex items-center gap-3 border-b border-white/8 p-4">
           <button
             class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-white/8 text-white/70 transition-colors hover:bg-white/14 hover:text-white"
@@ -2528,6 +2528,12 @@ function labelForSourceType(type: string): string {
   background: var(--color-bg);
 }
 
+.work-context-menu,
+.identification-dialog {
+  background: var(--chrome-surface);
+  box-shadow: var(--chrome-shadow);
+}
+
 .first-index-panel {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), transparent 48%),
@@ -2543,15 +2549,15 @@ function labelForSourceType(type: string): string {
   height: 3rem;
   flex: 0 0 auto;
   border-radius: 999px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  background: rgb(255 255 255 / 6%);
+  border: 1px solid var(--color-border);
+  background: var(--surface-soft);
 }
 
 .first-index-spinner span {
   position: absolute;
   inset: 0.45rem;
   border-radius: 999px;
-  border: 2px solid rgb(255 255 255 / 16%);
+  border: 2px solid var(--color-border-hover);
   border-top-color: var(--color-primary);
 }
 
@@ -2564,7 +2570,7 @@ function labelForSourceType(type: string): string {
   height: 0.35rem;
   overflow: hidden;
   border-radius: 999px;
-  background: rgb(255 255 255 / 8%);
+  background: var(--surface-soft);
 }
 
 .raw-index-progress span {
@@ -2573,7 +2579,7 @@ function labelForSourceType(type: string): string {
   left: 0;
   width: 42%;
   border-radius: inherit;
-  background: linear-gradient(90deg, transparent, var(--color-primary), rgb(255 255 255 / 82%));
+  background: linear-gradient(90deg, transparent, var(--color-primary), color-mix(in srgb, var(--color-text) 82%, transparent));
   opacity: 0.45;
 }
 
@@ -2591,19 +2597,19 @@ function labelForSourceType(type: string): string {
 .scan-stat {
   border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
   border-radius: 1rem;
-  background: rgb(0 0 0 / 16%);
+  background: var(--surface-soft);
   padding: 0.8rem 1rem;
 }
 
 .scan-stat p {
-  color: rgb(255 255 255 / 34%);
+  color: var(--color-text-tertiary);
   font-size: 0.75rem;
 }
 
 .scan-stat strong {
   display: block;
   margin-top: 0.25rem;
-  color: white;
+  color: var(--color-text);
   font-size: 1rem;
   font-weight: 700;
 }
@@ -2611,7 +2617,7 @@ function labelForSourceType(type: string): string {
 .scan-stat span {
   display: block;
   margin-top: 0.15rem;
-  color: rgb(255 255 255 / 34%);
+  color: var(--color-text-tertiary);
   font-size: 0.72rem;
 }
 

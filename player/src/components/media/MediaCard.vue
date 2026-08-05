@@ -114,7 +114,7 @@ function handleContextMenu(event: MouseEvent) {
         </svg>
       </button>
 
-      <div class="absolute inset-x-0 bottom-0 p-4">
+      <div class="theme-immersive-dark absolute inset-x-0 bottom-0 p-4">
         <p class="line-clamp-2 text-sm font-semibold text-white drop-shadow">
           {{ title }}
         </p>

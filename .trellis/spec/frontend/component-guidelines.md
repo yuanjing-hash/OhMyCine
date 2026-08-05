@@ -274,6 +274,7 @@ return playbackStopPromise
 - Light mode must never render white or near-white text on white controls, cards, menus, or dialogs. Success, warning, and error feedback colors need light-theme foreground variants with readable contrast.
 - Artwork-first media details and playback overlays may stay intentionally dark under every app theme. Mark those regions as immersive-dark control scopes so selects and inputs remain consistent with the video or backdrop surface instead of inheriting light controls.
 - Custom menus, popovers, and dialogs should use the same theme tokens as native form controls unless they belong to an immersive playback surface.
+- Non-player mobile bottom sheets, aggregate search, media-library management surfaces, metadata dialogs, and detail-page content must use adaptive semantic chrome tokens in both themes. Keep artwork heroes, poster overlays, and playback UI inside explicit `theme-immersive-dark` boundaries so a light parent cannot reduce their contrast.
 
 ---
 

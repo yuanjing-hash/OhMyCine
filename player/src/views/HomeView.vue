@@ -301,7 +301,7 @@ function isContainerItem(item: MediaItem): boolean {
 
 <template>
   <div class="home-view relative min-h-full transition-colors duration-500">
-    <div v-if="isFirstRunHome" class="first-run-home mobile-nav-safe relative min-h-screen overflow-hidden px-4 pb-8 pt-20 sm:px-8 sm:pt-32 lg:px-12">
+    <div v-if="isFirstRunHome" class="first-run-home theme-adaptive mobile-nav-safe relative min-h-screen overflow-hidden px-4 pb-8 pt-20 sm:px-8 sm:pt-32 lg:px-12">
       <div class="first-run-scene" aria-hidden="true">
         <div class="first-run-screen" />
         <div class="first-run-shelf">
@@ -390,12 +390,12 @@ function isContainerItem(item: MediaItem): boolean {
 
       <div
         v-if="errorMessage"
-        class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100"
+        class="theme-adaptive rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100"
       >
         {{ errorMessage }}
       </div>
 
-      <div class="grid grid-cols-1 gap-6 pb-8 xl:grid-cols-2">
+      <div class="theme-adaptive grid grid-cols-1 gap-6 pb-8 xl:grid-cols-2">
         <section class="home-feed-section glass-panel rounded-[1.75rem] p-6">
           <div class="mb-5 flex items-center justify-between">
             <div>
@@ -535,9 +535,9 @@ function isContainerItem(item: MediaItem): boolean {
 }
 
 .first-run-home {
-  --gp-text: rgba(255, 255, 255, 0.68);
-  --gp-text-full: rgba(255, 255, 255, 0.96);
-  --gp-text-dim: rgba(255, 255, 255, 0.42);
+  --gp-text: var(--color-text-secondary);
+  --gp-text-full: var(--color-text);
+  --gp-text-dim: var(--color-text-tertiary);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 24%),
     linear-gradient(118deg, rgba(74, 158, 255, 0.14), transparent 42%),
@@ -744,7 +744,7 @@ function isContainerItem(item: MediaItem): boolean {
   .continue-card {
     width: min(78vw, 19rem);
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.035);
+    background: var(--surface-soft);
   }
 
   .continue-card > div:first-child {

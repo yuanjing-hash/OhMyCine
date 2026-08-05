@@ -124,6 +124,8 @@ select optgroup {
 }
 
 .theme-adaptive .text-white,
+.theme-adaptive .text-white\/90,
+.theme-adaptive .text-white\/88,
 .theme-adaptive .text-white\/82,
 .theme-adaptive .text-white\/78,
 .theme-adaptive .text-white\/76,
@@ -133,10 +135,13 @@ select optgroup {
   color: var(--color-text) !important;
 }
 
+.theme-adaptive .text-white\/68,
 .theme-adaptive .text-white\/66,
 .theme-adaptive .text-white\/62,
 .theme-adaptive .text-white\/60,
 .theme-adaptive .text-white\/58,
+.theme-adaptive .text-white\/56,
+.theme-adaptive .text-white\/54,
 .theme-adaptive .text-white\/52,
 .theme-adaptive .text-white\/50,
 .theme-adaptive .text-white\/48,
@@ -148,7 +153,11 @@ select optgroup {
 .theme-adaptive .text-white\/40,
 .theme-adaptive .text-white\/38,
 .theme-adaptive .text-white\/36,
-.theme-adaptive .text-white\/34 {
+.theme-adaptive .text-white\/34,
+.theme-adaptive .text-white\/32,
+.theme-adaptive .text-white\/28,
+.theme-adaptive .text-white\/25,
+.theme-adaptive .text-white\/20 {
   color: var(--color-text-tertiary) !important;
 }
 
@@ -162,6 +171,9 @@ select optgroup {
 .theme-adaptive .bg-black\/14,
 .theme-adaptive .bg-black\/16,
 .theme-adaptive .bg-black\/18,
+.theme-adaptive .bg-black\/20,
+.theme-adaptive .bg-black\/22,
+.theme-adaptive .bg-black\/28,
 .theme-adaptive .bg-black\/50 {
   background-color: var(--surface-soft) !important;
 }
@@ -171,7 +183,12 @@ select optgroup {
 .theme-adaptive .border-white\/12,
 .theme-adaptive .border-white\/14,
 .theme-adaptive .border-white\/18,
-.theme-adaptive .border-white\/20 {
+.theme-adaptive .border-white\/20,
+.theme-adaptive .border-white\/24,
+.theme-adaptive .border-white\/34,
+.theme-adaptive .border-white\/36,
+.theme-adaptive .border-white\/42,
+.theme-adaptive .border-white\/46 {
   border-color: var(--color-border) !important;
 }
 
@@ -203,6 +220,13 @@ select optgroup {
 }
 
 .theme-immersive-dark {
+  --color-text: #F0F0F5;
+  --color-text-secondary: rgba(240, 240, 245, 0.62);
+  --color-text-tertiary: rgba(240, 240, 245, 0.38);
+  --color-border: rgba(255, 255, 255, 0.13);
+  --color-divider: rgba(255, 255, 255, 0.1);
+  --surface-soft: rgba(255, 255, 255, 0.06);
+  --surface-soft-hover: rgba(255, 255, 255, 0.105);
   --control-bg: rgba(255, 255, 255, 0.085);
   --control-bg-hover: rgba(255, 255, 255, 0.13);
   --control-option-bg: #171720;
