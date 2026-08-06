@@ -15,7 +15,7 @@ import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/e
 import { enrichRawMediaCandidates } from './metadataEnrichment'
 import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath, relativeProviderPath } from './pathUtils'
 import { createRawScanPreview } from './scanner'
-import { isMatchingTmdbEpisodeMetadata } from './tmdb'
+import { isMatchingTmdbEpisodeMetadata, tmdbArtworkUrl } from './tmdb'
 
 export type RawLocalScanStatus = 'completed' | 'partialFailed'
 export type RawLocalScanLogLevel = 'info' | 'warning' | 'error'
@@ -648,9 +648,9 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     posterPath: metadata.posterPath,
     backdropPath: metadata.backdropPath,
     titleLogoPath: metadata.titleLogoPath,
-    posterUrl: sanitizeMetadataUrl(metadata.posterUrl),
-    backdropUrl: sanitizeMetadataUrl(metadata.backdropUrl),
-    titleLogoUrl: sanitizeMetadataUrl(metadata.titleLogoUrl),
+    posterUrl: metadata.posterPath ? tmdbArtworkUrl(metadata.posterPath, 'w500') : sanitizeMetadataUrl(metadata.posterUrl),
+    backdropUrl: metadata.backdropPath ? tmdbArtworkUrl(metadata.backdropPath, 'w1280') : sanitizeMetadataUrl(metadata.backdropUrl),
+    titleLogoUrl: metadata.titleLogoPath ? tmdbArtworkUrl(metadata.titleLogoPath, 'w500') : sanitizeMetadataUrl(metadata.titleLogoUrl),
     scrapedAt: metadata.scrapedAt,
   }
 }
@@ -670,7 +670,7 @@ function sanitizeTmdbEpisodeMetadata(metadata: TmdbEpisodeMetadata | undefined):
     runtime: metadata.runtime,
     rating: metadata.rating,
     stillPath: metadata.stillPath,
-    stillUrl: sanitizeMetadataUrl(metadata.stillUrl),
+    stillUrl: metadata.stillPath ? tmdbArtworkUrl(metadata.stillPath, 'w780') : sanitizeMetadataUrl(metadata.stillUrl),
     scrapedAt: metadata.scrapedAt,
   }
 }

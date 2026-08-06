@@ -139,6 +139,7 @@ Required principles:
 - Split rule editing into movie and TV groups. Each group can add categories with a clear `+` action, edit category names, adjust ordering, and keep a non-deletable fallback category.
 - The built-in fallback category for both movie and TV groups is `未分类`; `外语电影` may appear only as an explicit editable movie category/example, never as a fallback default.
 - Genre/type choices must come from provider-supported metadata enumerations, preferably TMDB official movie genre list for movie categories and TMDB official TV genre list for TV categories. Do not mix movie-only genre choices into TV rules or TV-only genre choices into movie rules.
+- TMDB routing settings expose separate API and image HTTPS base URL inputs, each with its own connection-test action. Keep unverified drafts local to the form; only that route's successful test may activate and persist it, while the other route remains untouched. Failure feedback must tell the user that the previous verified value remains in use.
 - Category condition controls should use multi-selects, toggles, and range inputs for genre IDs, original language, production/origin countries, release year ranges, include/exclude behavior, and future supported TMDB fields.
 - The UI may internally persist structured JSON rule data, but user-facing editing must remain form-based and validated. Free-form import/export can be added later as an advanced flow, not as the primary rule editor.
 

@@ -1,6 +1,7 @@
 import type { ScrapeMediaType } from './classificationRules'
 import type { RawMediaCandidate } from './types'
 import type { TmdbCredentialValue } from '@/services/datasource/credentialStore'
+import { invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { readTmdbCredential, removeCredential, saveTmdbCredential } from '@/services/datasource/credentialStore'
 import { extractMediaSearchTitles, normalizeTitleKey } from './parser'
@@ -14,6 +15,8 @@ export interface TmdbLocalSettings {
   readonly authType: TmdbAuthType
   readonly language: string
   readonly region: string
+  readonly apiBaseUrl: string
+  readonly imageBaseUrl: string
 }
 
 export interface TmdbMetadata {
@@ -105,13 +108,16 @@ const DEFAULT_TMDB_SETTINGS: TmdbLocalSettings = {
   authType: 'readAccessToken',
   language: 'zh-CN',
   region: 'CN',
+  apiBaseUrl: 'https://api.tmdb.org/3',
+  imageBaseUrl: 'https://image.tmdb.org/t/p',
 }
 
 export const TMDB_API_BASE_URLS = [
   'https://api.tmdb.org/3',
   'https://api.themoviedb.org/3',
 ] as const
-const TMDB_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p'
+export const DEFAULT_TMDB_API_BASE_URL = DEFAULT_TMDB_SETTINGS.apiBaseUrl
+export const DEFAULT_TMDB_IMAGE_BASE_URL = DEFAULT_TMDB_SETTINGS.imageBaseUrl
 const DEFAULT_TMDB_TIMEOUT_MS = 10_000
 const BUILT_IN_TMDB_READ_ACCESS_TOKEN = typeof __OHMYCINE_BUILTIN_TMDB_READ_ACCESS_TOKEN__ === 'string'
   ? __OHMYCINE_BUILTIN_TMDB_READ_ACCESS_TOKEN__
@@ -150,8 +156,12 @@ export async function saveConfiguredTmdbCredential(
 
 export async function readConfiguredTmdbCredential(): Promise<TmdbCredentialValue | null> {
   const settings = loadTmdbLocalSettings()
-  const credential = await readTmdbCredential(settings.credentialRef)
-  const matchingUserCredential = credential?.authType === settings.authType ? credential : null
+  return readEffectiveTmdbCredentialFor(settings.authType)
+}
+
+export async function readEffectiveTmdbCredentialFor(authType: TmdbAuthType): Promise<TmdbCredentialValue | null> {
+  const credential = await readTmdbCredential(TMDB_CREDENTIAL_REF)
+  const matchingUserCredential = credential?.authType === authType ? credential : null
   return resolveEffectiveTmdbCredential(matchingUserCredential, BUILT_IN_TMDB_READ_ACCESS_TOKEN)
 }
 
@@ -241,14 +251,14 @@ export class TmdbScraper {
       append_to_response: 'external_ids,images',
       include_image_language: preferredImageLanguageParam(this.settings.language),
     })
-    return mapTmdbDetail(data, mediaType, this.settings.language)
+    return mapTmdbDetail(data, mediaType, this.settings.language, this.settings.imageBaseUrl)
   }
 
   async getImageCandidates(mediaType: ScrapeMediaType, tmdbId: number, kind: TmdbImageKind): Promise<TmdbImageCandidate[]> {
     const data = await this.requestJson(`/${mediaType}/${tmdbId}/images`, {
       include_image_language: preferredImageLanguageParam(this.settings.language),
     })
-    return mapTmdbImageCandidates(data, kind, this.settings.language)
+    return mapTmdbImageCandidates(data, kind, this.settings.language, this.settings.imageBaseUrl)
   }
 
   async getEpisodeDetail(tvTmdbId: number, seasonNumber: number, episodeNumber: number): Promise<TmdbEpisodeMetadata> {
@@ -258,7 +268,7 @@ export class TmdbScraper {
     const data = await this.requestJson(`/tv/${tvTmdbId}/season/${seasonNumber}/episode/${episodeNumber}`, {
       language: this.settings.language,
     })
-    return mapTmdbEpisodeDetail(data, tvTmdbId, seasonNumber, episodeNumber)
+    return mapTmdbEpisodeDetail(data, tvTmdbId, seasonNumber, episodeNumber, this.settings.imageBaseUrl)
   }
 
   private async searchResults(mediaType: ScrapeMediaType, title: string, year?: number): Promise<TmdbSearchResult[]> {
@@ -287,6 +297,7 @@ export class TmdbScraper {
       params,
       credential: this.credential,
       timeoutMs: this.timeoutMs,
+      baseUrls: tmdbApiBaseUrlsForSettings(this.settings),
     })
   }
 }
@@ -302,8 +313,38 @@ interface TmdbJsonRequestInput {
   readonly fetcher?: typeof fetch
 }
 
+interface TmdbNativeRequestResult {
+  readonly ok: boolean
+  readonly networkError: boolean
+  readonly status?: number
+  readonly data?: unknown
+  readonly responseText?: string
+}
+
+export interface TmdbApiRouteTestInput {
+  readonly apiBaseUrl: string
+  readonly credential: TmdbCredentialValue
+  readonly timeoutMs?: number
+}
+
+export interface TmdbImageRouteTestInput {
+  readonly imageBaseUrl: string
+  readonly timeoutMs?: number
+}
+
+export interface TmdbApiRouteTestResult {
+  readonly apiBaseUrl: string
+}
+
+export interface TmdbImageRouteTestResult {
+  readonly imageBaseUrl: string
+}
+
 export async function requestTmdbJsonWithFallback(input: TmdbJsonRequestInput): Promise<unknown> {
   const baseUrls = input.baseUrls?.length ? input.baseUrls : TMDB_API_BASE_URLS
+  if (!input.fetcher && isTauriRuntime())
+    return requestTmdbJsonWithNativeFallback(input, baseUrls)
+
   const fetcher = input.fetcher ?? fetch
   let lastNetworkError: Error | null = null
 
@@ -335,6 +376,112 @@ export async function requestTmdbJsonWithFallback(input: TmdbJsonRequestInput): 
   }
 
   throw lastNetworkError ?? new Error('TMDB 请求失败。')
+}
+
+export async function testTmdbApiRoute(input: TmdbApiRouteTestInput): Promise<TmdbApiRouteTestResult> {
+  const apiBaseUrl = normalizeTmdbBaseUrl(input.apiBaseUrl, 'api')
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TMDB_TIMEOUT_MS
+  const detail = await requestTmdbJsonWithFallback({
+    path: '/movie/550',
+    params: { language: 'zh-CN' },
+    credential: input.credential,
+    timeoutMs,
+    baseUrls: [apiBaseUrl],
+  })
+  if (!isRecord(detail) || numberValue(detail.id) !== 550)
+    throw new Error('TMDB API 地址返回的数据不符合预期。')
+  return { apiBaseUrl }
+}
+
+export async function testTmdbImageRoute(input: TmdbImageRouteTestInput): Promise<TmdbImageRouteTestResult> {
+  const imageBaseUrl = normalizeTmdbBaseUrl(input.imageBaseUrl, 'image')
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TMDB_TIMEOUT_MS
+  const imageUrl = tmdbArtworkUrl('/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg', 'w92', imageBaseUrl)
+  await testTmdbImageUrl(imageUrl, timeoutMs)
+  return { imageBaseUrl }
+}
+
+export function normalizeTmdbBaseUrl(value: string, kind: 'api' | 'image'): string {
+  const label = kind === 'api' ? 'TMDB API 地址' : 'TMDB 图片地址'
+  let url: URL
+  try {
+    url = new URL(value.trim())
+  }
+  catch {
+    throw new Error(`${label}无效。`)
+  }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.search || url.hash)
+    throw new Error(`${label}必须是 HTTPS 地址，且不能包含账号、密码、查询参数或片段。`)
+
+  const normalizedPath = url.pathname.replace(/\/+$/, '')
+  url.pathname = normalizedPath || '/'
+  return url.toString().replace(/\/$/, '')
+}
+
+function tmdbApiBaseUrlsForSettings(settings: TmdbLocalSettings): readonly string[] {
+  return settings.apiBaseUrl === DEFAULT_TMDB_API_BASE_URL
+    ? TMDB_API_BASE_URLS
+    : [settings.apiBaseUrl]
+}
+
+async function requestTmdbJsonWithNativeFallback(
+  input: TmdbJsonRequestInput,
+  baseUrls: readonly string[],
+): Promise<unknown> {
+  let lastNetworkError: Error | null = null
+  for (const baseUrl of baseUrls) {
+    const result = await invoke<TmdbNativeRequestResult>('tmdb_request_json', {
+      request: {
+        baseUrl,
+        path: input.path,
+        params: Object.entries(input.params).map(([key, value]) => ({ key, value })),
+        authType: input.credential.authType,
+        credential: input.credential.value,
+        timeoutMs: input.timeoutMs,
+      },
+    })
+    if (result.ok)
+      return result.data
+    if (!result.networkError) {
+      throw new TmdbHttpError(tmdbHttpFailureMessage(
+        input.credential.authType,
+        result.status ?? 0,
+        result.responseText ?? '',
+      ))
+    }
+    lastNetworkError = new Error('TMDB 请求失败。')
+  }
+  throw lastNetworkError ?? new Error('TMDB 请求失败。')
+}
+
+async function testTmdbImageUrl(url: string, timeoutMs: number): Promise<void> {
+  if (isTauriRuntime()) {
+    await invoke('tmdb_test_image', { request: { url, timeoutMs } })
+    return
+  }
+
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, { headers: { Accept: 'image/avif,image/webp,image/png,image/jpeg' }, signal: controller.signal })
+    if (!response.ok)
+      throw new Error(`TMDB 图片地址测试失败（HTTP ${response.status}）。`)
+    if (!response.headers.get('content-type')?.toLocaleLowerCase().startsWith('image/'))
+      throw new Error('TMDB 图片地址返回的不是图片。')
+  }
+  catch (error) {
+    if (error instanceof Error && error.message.startsWith('TMDB 图片'))
+      throw error
+    throw new Error(isAbortError(error) ? 'TMDB 图片地址测试超时。' : 'TMDB 图片地址连接失败。')
+  }
+  finally {
+    globalThis.clearTimeout(timeout)
+  }
+}
+
+function isTauriRuntime(): boolean {
+  const root = globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }
+  return root.__TAURI_INTERNALS__ != null
 }
 
 function isAbortError(error: unknown): boolean {
@@ -474,7 +621,7 @@ function mapTmdbSearchResult(value: unknown, mediaType: ScrapeMediaType): TmdbSe
   }
 }
 
-function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: string): TmdbMetadata {
+function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: string, imageBaseUrl: string): TmdbMetadata {
   if (!isRecord(value))
     throw new Error('TMDB detail response is invalid.')
 
@@ -508,9 +655,9 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: str
     posterPath,
     backdropPath,
     titleLogoPath,
-    posterUrl: posterPath ? tmdbImageUrl(posterPath, 'w500') : undefined,
-    backdropUrl: backdropPath ? tmdbImageUrl(backdropPath, 'w1280') : undefined,
-    titleLogoUrl: titleLogoPath ? tmdbImageUrl(titleLogoPath, 'w500') : undefined,
+    posterUrl: posterPath ? tmdbArtworkUrl(posterPath, 'w500', imageBaseUrl) : undefined,
+    backdropUrl: backdropPath ? tmdbArtworkUrl(backdropPath, 'w1280', imageBaseUrl) : undefined,
+    titleLogoUrl: titleLogoPath ? tmdbArtworkUrl(titleLogoPath, 'w500', imageBaseUrl) : undefined,
     scrapedAt: new Date().toISOString(),
   }
 }
@@ -520,6 +667,7 @@ function mapTmdbEpisodeDetail(
   tvTmdbId: number,
   requestedSeasonNumber: number,
   requestedEpisodeNumber: number,
+  imageBaseUrl: string,
 ): TmdbEpisodeMetadata {
   if (!isRecord(value))
     throw new Error('TMDB episode response is invalid.')
@@ -540,7 +688,7 @@ function mapTmdbEpisodeDetail(
     runtime: nonNegativeNumberValue(value.runtime),
     rating: numberValue(value.vote_average),
     stillPath,
-    stillUrl: stillPath ? tmdbImageUrl(stillPath, 'w780') : undefined,
+    stillUrl: stillPath ? tmdbArtworkUrl(stillPath, 'w780', imageBaseUrl) : undefined,
     scrapedAt: new Date().toISOString(),
   }
 }
@@ -553,7 +701,7 @@ function selectPreferredLogoPath(images: unknown, language: string): string | un
   return rankImageRecords(logos, preferredLogoLanguages(language))[0]?.filePath
 }
 
-function mapTmdbImageCandidates(value: unknown, kind: TmdbImageKind, language: string): TmdbImageCandidate[] {
+function mapTmdbImageCandidates(value: unknown, kind: TmdbImageKind, language: string, imageBaseUrl: string): TmdbImageCandidate[] {
   if (!isRecord(value))
     return []
 
@@ -564,7 +712,7 @@ function mapTmdbImageCandidates(value: unknown, kind: TmdbImageKind, language: s
     .map(record => ({
       kind,
       filePath: record.filePath,
-      imageUrl: tmdbImageUrl(record.filePath, kind === 'backdrop' ? 'w780' : 'w500'),
+      imageUrl: tmdbArtworkUrl(record.filePath, kind === 'backdrop' ? 'w780' : 'w500', imageBaseUrl),
       language: record.language,
       width: record.width,
       height: record.height,
@@ -652,8 +800,12 @@ function normalizeImageLanguage(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim().toLocaleLowerCase() : undefined
 }
 
-function tmdbImageUrl(path: string, size: 'w500' | 'w780' | 'w1280'): string {
-  return `${TMDB_IMAGE_BASE_URL}/${size}${path.startsWith('/') ? path : `/${path}`}`
+export function tmdbArtworkUrl(
+  path: string,
+  size: 'w92' | 'w500' | 'w780' | 'w1280',
+  imageBaseUrl = loadTmdbLocalSettings().imageBaseUrl,
+): string {
+  return `${imageBaseUrl}/${size}${path.startsWith('/') ? path : `/${path}`}`
 }
 
 function genreIdsFromDetail(value: unknown): number[] {
@@ -700,6 +852,17 @@ function sanitizeTmdbLocalSettings(value: unknown): TmdbLocalSettings {
     authType: value.authType === 'apiKey' ? 'apiKey' : 'readAccessToken',
     language: sanitizeLocale(stringValue(value.language), DEFAULT_TMDB_SETTINGS.language),
     region: sanitizeRegion(stringValue(value.region), DEFAULT_TMDB_SETTINGS.region),
+    apiBaseUrl: sanitizeStoredTmdbBaseUrl(stringValue(value.apiBaseUrl), 'api'),
+    imageBaseUrl: sanitizeStoredTmdbBaseUrl(stringValue(value.imageBaseUrl), 'image'),
+  }
+}
+
+function sanitizeStoredTmdbBaseUrl(value: string | undefined, kind: 'api' | 'image'): string {
+  try {
+    return normalizeTmdbBaseUrl(value ?? (kind === 'api' ? DEFAULT_TMDB_API_BASE_URL : DEFAULT_TMDB_IMAGE_BASE_URL), kind)
+  }
+  catch {
+    return kind === 'api' ? DEFAULT_TMDB_API_BASE_URL : DEFAULT_TMDB_IMAGE_BASE_URL
   }
 }
 
