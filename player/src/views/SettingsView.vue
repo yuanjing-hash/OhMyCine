@@ -60,9 +60,13 @@ import {
   clearConfiguredTmdbCredential,
   hasBuiltInTmdbCredential,
   loadTmdbLocalSettings,
+  readConfiguredTmdbCredential,
+  readEffectiveTmdbCredentialFor,
   readStoredTmdbCredential,
   saveConfiguredTmdbCredential,
   saveTmdbLocalSettings,
+  testTmdbApiRoute,
+  testTmdbImageRoute,
 } from '@/services/scraper/tmdb'
 import {
   clearOpenSubtitlesCredentials,
@@ -103,6 +107,8 @@ interface TmdbFormState {
   credential: string
   language: string
   region: string
+  apiBaseUrl: string
+  imageBaseUrl: string
 }
 
 interface SubtitleSettingsFormState {
@@ -295,11 +301,15 @@ const tmdbForm = reactive<TmdbFormState>({
   credential: '',
   language: tmdbSettings.language,
   region: tmdbSettings.region,
+  apiBaseUrl: tmdbSettings.apiBaseUrl,
+  imageBaseUrl: tmdbSettings.imageBaseUrl,
 })
 const tmdbCredentialConfigured = ref(false)
 const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
 const tmdbBuiltInCredentialAvailable = hasBuiltInTmdbCredential()
 const isSavingTmdbSettings = ref(false)
+const isTestingTmdbApiRoute = ref(false)
+const isTestingTmdbImageRoute = ref(false)
 const subtitleSettings = loadSubtitleSearchSettings()
 const playerInteractionSettings = loadPlayerInteractionSettings()
 const subtitleForm = reactive<SubtitleSettingsFormState>({
@@ -383,6 +393,14 @@ const tmdbCredentialPlaceholder = computed(() =>
     : `可选：使用你自己的 ${tmdbCredentialInputLabel.value}`,
 )
 const tmdbCredentialAvailable = computed(() => tmdbCredentialConfigured.value || tmdbBuiltInCredentialAvailable)
+const tmdbApiRouteDraftChanged = computed(() => {
+  const active = loadTmdbLocalSettings()
+  return tmdbForm.apiBaseUrl.trim().replace(/\/+$/, '') !== active.apiBaseUrl
+})
+const tmdbImageRouteDraftChanged = computed(() => {
+  const active = loadTmdbLocalSettings()
+  return tmdbForm.imageBaseUrl.trim().replace(/\/+$/, '') !== active.imageBaseUrl
+})
 const tmdbCredentialStatusLabel = computed(() => {
   if (tmdbCredentialConfigured.value)
     return '使用自定义凭据'
@@ -2142,19 +2160,40 @@ async function saveTmdbSettings() {
   isSavingTmdbSettings.value = true
   scrapeFeedback.value = null
   try {
+    const credential = tmdbForm.credential.trim()
+    const savedCredential = Boolean(credential)
+    let testedApiRoute: { apiBaseUrl: string } | null = null
+    let testedImageRoute: { imageBaseUrl: string } | null = null
+    if (tmdbApiRouteDraftChanged.value) {
+      const effectiveCredential = credential
+        ? { authType: tmdbForm.authType, value: credential } as const
+        : await readEffectiveTmdbCredentialFor(tmdbForm.authType)
+      if (!effectiveCredential)
+        throw new Error('当前没有可用于测试 API 地址的 TMDB 凭据，请先填写凭据或使用包含内置通道的正式版本。')
+      testedApiRoute = await testTmdbApiRoute({
+        apiBaseUrl: tmdbForm.apiBaseUrl,
+        credential: effectiveCredential,
+      })
+    }
+    if (tmdbImageRouteDraftChanged.value)
+      testedImageRoute = await testTmdbImageRoute({ imageBaseUrl: tmdbForm.imageBaseUrl })
+
     saveTmdbLocalSettings({
       authType: tmdbForm.authType,
       language: tmdbForm.language,
       region: tmdbForm.region,
+      ...(testedApiRoute ?? {}),
+      ...(testedImageRoute ?? {}),
     })
-
-    const credential = tmdbForm.credential.trim()
-    const savedCredential = Boolean(credential)
     if (credential) {
       await saveConfiguredTmdbCredential(tmdbForm.authType, credential)
       tmdbForm.credential = ''
     }
     await flushAppSettings()
+    if (testedApiRoute)
+      tmdbForm.apiBaseUrl = testedApiRoute.apiBaseUrl
+    if (testedImageRoute)
+      tmdbForm.imageBaseUrl = testedImageRoute.imageBaseUrl
 
     await refreshTmdbCredentialState()
     scrapeFeedback.value = {
@@ -2178,6 +2217,60 @@ async function saveTmdbSettings() {
   }
   finally {
     isSavingTmdbSettings.value = false
+  }
+}
+
+async function testAndActivateTmdbApiRoute() {
+  isTestingTmdbApiRoute.value = true
+  scrapeFeedback.value = null
+  try {
+    const credential = await readConfiguredTmdbCredential()
+    if (!credential)
+      throw new Error('当前没有可用的 TMDB 凭据，请先保存凭据或使用包含内置通道的正式版本。')
+    const testedRoute = await testTmdbApiRoute({
+      apiBaseUrl: tmdbForm.apiBaseUrl,
+      credential,
+    })
+    saveTmdbLocalSettings(testedRoute)
+    await flushAppSettings()
+    tmdbForm.apiBaseUrl = testedRoute.apiBaseUrl
+    scrapeFeedback.value = {
+      type: 'success',
+      message: 'TMDB API 地址测试通过，已保存并立即启用；图片地址保持不变。',
+    }
+  }
+  catch (error) {
+    scrapeFeedback.value = {
+      type: 'error',
+      message: `${toSafeErrorMessage(error, 'TMDB API 地址测试失败。')} 已继续使用上一次测试通过的 API 地址。`,
+    }
+  }
+  finally {
+    isTestingTmdbApiRoute.value = false
+  }
+}
+
+async function testAndActivateTmdbImageRoute() {
+  isTestingTmdbImageRoute.value = true
+  scrapeFeedback.value = null
+  try {
+    const testedRoute = await testTmdbImageRoute({ imageBaseUrl: tmdbForm.imageBaseUrl })
+    saveTmdbLocalSettings(testedRoute)
+    await flushAppSettings()
+    tmdbForm.imageBaseUrl = testedRoute.imageBaseUrl
+    scrapeFeedback.value = {
+      type: 'success',
+      message: 'TMDB 图片地址测试通过，已保存并立即启用；API 地址保持不变。',
+    }
+  }
+  catch (error) {
+    scrapeFeedback.value = {
+      type: 'error',
+      message: `${toSafeErrorMessage(error, 'TMDB 图片地址测试失败。')} 已继续使用上一次测试通过的图片地址。`,
+    }
+  }
+  finally {
+    isTestingTmdbImageRoute.value = false
   }
 }
 
@@ -2997,7 +3090,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 元数据匹配
               </h3>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                OhMyCine 正式构建默认提供 TMDB 元数据通道；你可以填写自己的凭据并优先使用。
+                OhMyCine 正式构建默认提供 TMDB 元数据通道；API 与图片代理可以分别测试、单独启用。
               </p>
             </div>
             <span
@@ -3067,11 +3160,61 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             </label>
           </div>
 
+          <div class="mt-4 grid gap-4 rounded-2xl border border-white/8 bg-black/16 p-4 lg:grid-cols-2">
+            <label>
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">API 地址</span>
+              <input
+                v-model="tmdbForm.apiBaseUrl"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                type="url"
+                inputmode="url"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="https://api.tmdb.org/3"
+              >
+              <p class="mt-2 text-xs leading-5 text-white/38">
+                可填写自建 HTTPS 代理前缀，例如 https://proxy.example.com/tmdb/3。
+              </p>
+              <button
+                type="button"
+                class="mt-3 rounded-2xl border border-primary/35 bg-primary/12 px-4 py-2 text-sm font-semibold text-primary-100 transition-colors hover:bg-primary/20 disabled:cursor-wait disabled:opacity-55"
+                :disabled="isTestingTmdbApiRoute || isTestingTmdbImageRoute || isSavingTmdbSettings"
+                @click="testAndActivateTmdbApiRoute"
+              >
+                {{ isTestingTmdbApiRoute ? '测试中…' : '测试并启用 API 地址' }}
+              </button>
+            </label>
+
+            <label>
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">图片地址</span>
+              <input
+                v-model="tmdbForm.imageBaseUrl"
+                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                type="url"
+                inputmode="url"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="https://image.tmdb.org/t/p"
+              >
+              <p class="mt-2 text-xs leading-5 text-white/38">
+                图片代理需保留 TMDB 尺寸与文件路径的转发能力，例如 /w500/xxx.jpg。
+              </p>
+              <button
+                type="button"
+                class="mt-3 rounded-2xl border border-primary/35 bg-primary/12 px-4 py-2 text-sm font-semibold text-primary-100 transition-colors hover:bg-primary/20 disabled:cursor-wait disabled:opacity-55"
+                :disabled="isTestingTmdbApiRoute || isTestingTmdbImageRoute || isSavingTmdbSettings"
+                @click="testAndActivateTmdbImageRoute"
+              >
+                {{ isTestingTmdbImageRoute ? '测试中…' : '测试并启用图片地址' }}
+              </button>
+            </label>
+          </div>
+
           <div class="mt-5 flex flex-wrap gap-3">
             <button
               type="button"
               class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
-              :disabled="isSavingTmdbSettings"
+              :disabled="isSavingTmdbSettings || isTestingTmdbApiRoute || isTestingTmdbImageRoute"
               @click="saveTmdbSettings"
             >
               {{ isSavingTmdbSettings ? '保存中…' : '保存 TMDB 设置' }}
@@ -3079,7 +3222,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             <button
               type="button"
               class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="isSavingTmdbSettings || !tmdbStoredAuthType"
+              :disabled="isSavingTmdbSettings || isTestingTmdbApiRoute || isTestingTmdbImageRoute || !tmdbStoredAuthType"
               @click="clearTmdbSettingsCredential"
             >
               清除自定义凭据

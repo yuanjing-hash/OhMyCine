@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { requestTmdbJsonWithFallback, TMDB_API_BASE_URLS } from '../src/services/scraper/tmdb.ts'
+import { normalizeTmdbBaseUrl, requestTmdbJsonWithFallback, TMDB_API_BASE_URLS } from '../src/services/scraper/tmdb.ts'
 import { buildTmdbRequestDescriptor, resolveEffectiveTmdbCredential } from '../src/services/scraper/tmdbAuth.ts'
 
 const apiKeyRequest = buildTmdbRequestDescriptor({
@@ -78,9 +78,31 @@ await assert.rejects(() => requestTmdbJsonWithFallback({
 }), /当前按 API 密钥验证失败/)
 assert.equal(authFailureRequests, 1)
 
+assert.equal(normalizeTmdbBaseUrl('https://proxy.example.test/tmdb/3/', 'api'), 'https://proxy.example.test/tmdb/3')
+assert.equal(normalizeTmdbBaseUrl('https://proxy.example.test/t/p///', 'image'), 'https://proxy.example.test/t/p')
+assert.throws(() => normalizeTmdbBaseUrl('http://proxy.example.test/tmdb/3', 'api'), /必须是 HTTPS 地址/)
+assert.throws(() => normalizeTmdbBaseUrl('https://user:pass@proxy.example.test/tmdb/3', 'api'), /不能包含账号、密码/)
+assert.throws(() => normalizeTmdbBaseUrl('https://proxy.example.test/tmdb/3?token=secret', 'api'), /不能包含账号、密码/)
+
+const customProxyRequests: string[] = []
+await assert.rejects(() => requestTmdbJsonWithFallback({
+  path: '/movie/550',
+  params: {},
+  credential: { authType: 'readAccessToken', value: 'custom-proxy-routing-test' },
+  timeoutMs: 1_000,
+  baseUrls: ['https://proxy.example.test/tmdb/3'],
+  fetcher: (async (input) => {
+    customProxyRequests.push(String(input))
+    throw new TypeError('simulated custom proxy network failure')
+  }) as typeof fetch,
+}), /TMDB 请求失败/)
+assert.equal(customProxyRequests.length, 1)
+assert.equal(customProxyRequests[0]?.startsWith('https://proxy.example.test/tmdb/3/movie/550'), true)
+
 const viteConfig = await readFile(new URL('../vite.config.ts', import.meta.url), 'utf8')
 const tmdbService = await readFile(new URL('../src/services/scraper/tmdb.ts', import.meta.url), 'utf8')
 const settingsView = await readFile(new URL('../src/views/SettingsView.vue', import.meta.url), 'utf8')
+const nativeTmdbCommand = await readFile(new URL('../src-tauri/src/commands/tmdb.rs', import.meta.url), 'utf8')
 const playerWorkflow = await readFile(new URL('../../.github/workflows/player.yml', import.meta.url), 'utf8')
 const manualWorkflow = await readFile(new URL('../../.github/workflows/manual-build.yml', import.meta.url), 'utf8')
 const releaseWorkflow = await readFile(new URL('../../.github/workflows/player-beta-release.yml', import.meta.url), 'utf8')
@@ -89,6 +111,12 @@ assert.match(tmdbService, /resolveEffectiveTmdbCredential\(matchingUserCredentia
 assert.match(tmdbService, /https:\/\/api\.tmdb\.org\/3/)
 assert.match(tmdbService, /https:\/\/api\.themoviedb\.org\/3/)
 assert.match(settingsView, /内置通道可用/)
+assert.match(settingsView, /测试并启用 API 地址/)
+assert.match(settingsView, /测试并启用图片地址/)
+assert.match(settingsView, /已继续使用上一次测试通过的 API 地址/)
+assert.match(settingsView, /已继续使用上一次测试通过的图片地址/)
+assert.match(nativeTmdbCommand, /redirect\(Policy::none\(\)\)/)
+assert.match(nativeTmdbCommand, /url\.scheme\(\) != "https"/)
 assert.match(settingsView, /This product uses the TMDB API but is not endorsed or certified by TMDB\./)
 assert.match(playerWorkflow, /OHMYCINE_TMDB_READ_ACCESS_TOKEN: \$\{\{ secrets\.OHMYCINE_TMDB_READ_ACCESS_TOKEN \}\}/)
 assert.match(manualWorkflow, /OHMYCINE_TMDB_READ_ACCESS_TOKEN: \$\{\{ secrets\.OHMYCINE_TMDB_READ_ACCESS_TOKEN \}\}/)
@@ -105,5 +133,7 @@ console.log(JSON.stringify({
   shortDomainPreferred: TMDB_API_BASE_URLS[0] === 'https://api.tmdb.org/3',
   legacyDomainNetworkFallback: fallbackRequests.length === 2,
   authFailureDoesNotFallback: authFailureRequests === 1,
+  customProxyDoesNotFallback: customProxyRequests.length === 1,
+  customProxyHttpsOnly: true,
   releaseBuildSecretInjection: true,
 }, null, 2))

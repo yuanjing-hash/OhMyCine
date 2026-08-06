@@ -194,6 +194,8 @@ Player 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data` 保存应用数据
 
 OhMyCine 正式发布包可通过 GitHub Actions Secret 在构建期注入应用级 TMDB Read Access Token，以提供默认元数据通道。该值不得进入 Git、普通配置、构建日志、诊断或导出；用户自己的 TMDB 凭据继续存入 Player 安全凭证边界并优先使用。由于应用级凭据会进入最终二进制，它必须被视为可提取的发布凭据，只能用于受限的只读元数据访问，并具备独立撤销、轮换和限流能力；不得复用用户账号级秘密或具有写权限的令牌。
 
+用户自定义 TMDB API/图片代理属于显式外部信任边界：仅接受不含 userinfo、query、fragment 的 HTTPS Base URL，使用有限超时和响应体大小，禁止原生客户端自动重定向。API 与图片地址是独立设置，每项必须单独通过真实请求后才持久化；失败不得覆盖该项上一次验证通过的路由，也不得改变另一项。官方默认 API 可在纯网络故障时回退到官方旧域名，自定义 API 代理不得跨域回退，避免把内置或用户 TMDB 凭据静默转发给其它主机。日志、错误和诊断不得输出凭据或含 `api_key` 的完整 URL。
+
 CloudDrive2、夸克网盘、123 云盘与 WebDAV 必须使用不同的凭据 envelope 和 DataSource 类型：
 
 - `clouddrive2` 保存用户在 CloudDrive2 中创建的应用 API Token，通过 Tauri Rust gRPC 客户端以 Bearer metadata 瞬时使用；不保存 CloudDrive2 主账号密码。
