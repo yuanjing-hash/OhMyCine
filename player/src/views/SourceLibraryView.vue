@@ -1918,8 +1918,8 @@ function labelForSourceType(type: string): string {
             id="source-scan-management"
             class="scan-management-panel rounded-2xl border border-white/10 bg-white/6 p-5"
           >
-            <div class="flex flex-wrap items-start justify-between gap-4">
-              <div>
+            <div class="scan-management-header flex flex-wrap items-start justify-between gap-4">
+              <div class="scan-management-copy min-w-0">
                 <h3 class="text-base font-semibold text-white">
                   扫描管理
                 </h3>
@@ -1927,7 +1927,7 @@ function labelForSourceType(type: string): string {
                   根目录 {{ rawSourceRootLabel }}。扫描只读取目录和文件名，结果保存在本机缓存，不写回数据源目录。
                 </p>
               </div>
-              <div class="flex flex-wrap gap-2">
+              <div class="scan-management-actions flex flex-wrap gap-2">
                 <button
                   class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
                   :disabled="isScanning || !source"
@@ -1945,7 +1945,7 @@ function labelForSourceType(type: string): string {
               </div>
             </div>
 
-            <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+            <div class="scan-management-stats mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <div class="scan-stat">
                 <p>全量</p>
                 <strong>{{ fullScanStatusLabel }}</strong>
@@ -1974,7 +1974,7 @@ function labelForSourceType(type: string): string {
               </div>
             </div>
 
-            <div v-if="scanCache || scanLogEntries.length" class="mt-5 grid gap-4 lg:grid-cols-2">
+            <div v-if="scanCache || scanLogEntries.length" class="scan-management-details mt-5 grid gap-4 lg:grid-cols-2">
               <div v-if="scanCache" class="rounded-2xl border border-white/8 bg-black/14 p-4">
                 <h4 class="text-sm font-semibold text-white">
                   结构判断
@@ -2016,12 +2016,12 @@ function labelForSourceType(type: string): string {
               </div>
 
               <div class="first-index-panel rounded-[1.75rem] border border-white/10 p-5">
-                <div class="flex flex-wrap items-start justify-between gap-5">
-                  <div class="flex min-w-0 flex-1 gap-4">
+                <div class="first-index-header flex flex-wrap items-start justify-between gap-5">
+                  <div class="first-index-summary flex min-w-0 flex-1 gap-4">
                     <div class="first-index-spinner" :class="{ 'is-active': isRawIndexBusy }" aria-hidden="true">
                       <span />
                     </div>
-                    <div class="min-w-0">
+                    <div class="first-index-copy min-w-0">
                       <p class="text-xs font-semibold uppercase tracking-[0.2em] text-primary/80">
                         {{ firstIndexStatusLabel }}
                       </p>
@@ -2033,7 +2033,7 @@ function labelForSourceType(type: string): string {
                       </p>
                     </div>
                   </div>
-                  <div class="flex flex-wrap gap-2">
+                  <div class="first-index-actions flex flex-wrap gap-2">
                     <button
                       class="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-black transition-opacity disabled:cursor-wait disabled:opacity-60"
                       :disabled="isRawIndexBusy || !source"
@@ -2054,7 +2054,7 @@ function labelForSourceType(type: string): string {
                   <span />
                 </div>
 
-                <div class="mt-5 grid gap-3 sm:grid-cols-3">
+                <div class="first-index-stats mt-5 grid gap-3 sm:grid-cols-3">
                   <div class="scan-stat">
                     <p>根目录</p>
                     <strong class="truncate">{{ rawSourceRootLabel }}</strong>
@@ -2069,7 +2069,7 @@ function labelForSourceType(type: string): string {
                   </div>
                 </div>
 
-                <div v-if="scanLogEntries.length" class="mt-5 rounded-2xl border border-white/8 bg-black/14 p-4">
+                <div v-if="scanLogEntries.length" class="first-index-log mt-5 rounded-2xl border border-white/8 bg-black/14 p-4">
                   <h4 class="text-sm font-semibold text-white">
                     最近扫描
                   </h4>
@@ -2666,6 +2666,99 @@ function labelForSourceType(type: string): string {
   .first-index-panel,
   .scan-stat {
     border-radius: 8px;
+  }
+
+  .scan-management-panel,
+  .first-index-panel {
+    padding: 1rem;
+  }
+
+  .scan-management-header,
+  .first-index-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .scan-management-copy,
+  .first-index-copy {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .scan-management-copy p,
+  .first-index-copy h3,
+  .first-index-copy p {
+    max-width: none;
+    word-break: normal;
+    overflow-wrap: break-word;
+  }
+
+  .first-index-summary {
+    display: grid;
+    grid-template-columns: 2.65rem minmax(0, 1fr);
+    width: 100%;
+    gap: 0.8rem;
+  }
+
+  .first-index-spinner {
+    width: 2.65rem;
+    height: 2.65rem;
+  }
+
+  .scan-management-actions,
+  .first-index-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 0.65rem;
+  }
+
+  .scan-management-actions button,
+  .first-index-actions button {
+    width: 100%;
+    min-width: 0;
+    min-height: 2.8rem;
+    border-radius: 8px;
+    padding: 0.7rem 0.75rem;
+    white-space: normal;
+  }
+
+  .scan-management-stats,
+  .first-index-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .first-index-stats .scan-stat:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .scan-stat {
+    min-width: 0;
+    padding: 0.72rem 0.8rem;
+  }
+
+  .scan-stat strong,
+  .scan-stat span {
+    overflow-wrap: anywhere;
+  }
+
+  .scan-management-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scan-management-details > div,
+  .first-index-log {
+    border-radius: 8px;
+    padding: 0.85rem;
+  }
+
+  .scan-management-details > div > div,
+  .first-index-log > div {
+    max-height: 15rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.2rem;
   }
 }
 </style>
