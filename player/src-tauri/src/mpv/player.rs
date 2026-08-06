@@ -115,7 +115,7 @@ impl MpvPlayer {
             let mut player = player;
             player.apply_safe_fallback_options()?;
             player.finish_initialize()?;
-            return Ok(player);
+            Ok(player)
         }
 
         #[cfg(target_os = "windows")]
@@ -214,7 +214,7 @@ impl MpvPlayer {
                     self.render_state = failed_surface_state(err);
                 }
             }
-            return self.render_state.clone();
+            self.render_state.clone()
         }
 
         #[cfg(target_os = "windows")]

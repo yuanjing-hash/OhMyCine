@@ -45,9 +45,27 @@ try {
   assert.match(workflow, /portable_dir}\/portable\.flag/)
 
   const rustStorage = await readFile(fileURLToPath(new URL('../src-tauri/src/storage.rs', import.meta.url)), 'utf8')
+  const rustCredential = await readFile(fileURLToPath(new URL('../src-tauri/src/commands/credential.rs', import.meta.url)), 'utf8')
+  const androidCredential = await readFile(fileURLToPath(new URL('../src-tauri/gen/android/app/src/main/java/com/ohmycine/player/credentials/CredentialPlugin.kt', import.meta.url)), 'utf8')
+  const cargoManifest = await readFile(fileURLToPath(new URL('../src-tauri/Cargo.toml', import.meta.url)), 'utf8')
+  const settingsView = await readFile(fileURLToPath(new URL('../src/views/SettingsView.vue', import.meta.url)), 'utf8')
   assert.match(rustStorage, /portable\.flag/)
   assert.match(rustStorage, /app_local_data_dir/)
   assert.match(rustStorage, /MIGRATION_FILES/)
+  assert.match(rustStorage, /androidKeystore/)
+  assert.match(rustStorage, /appleKeychain/)
+  assert.match(rustStorage, /linuxSecretService/)
+  assert.match(rustCredential, /ANDROID_KEYSTORE_MARKER/)
+  assert.match(rustCredential, /APPLE_KEYCHAIN_MARKER/)
+  assert.match(rustCredential, /LINUX_SECRET_SERVICE_MARKER/)
+  assert.match(rustCredential, /Credential master key is missing; existing credentials were preserved/)
+  assert.match(cargoManifest, /apple-native/)
+  assert.match(cargoManifest, /sync-secret-service/)
+  assert.match(androidCredential, /AndroidKeyStore/)
+  assert.match(androidCredential, /AES\/GCM\/NoPadding/)
+  assert.match(androidCredential, /setRandomizedEncryptionRequired\(true\)/)
+  assert.match(settingsView, /便携模式为了整目录迁移而使用文件主密钥/)
+  assert.match(settingsView, /当前系统安全存储不可用/)
 
   console.log(JSON.stringify({
     migratedKeys: 3,
@@ -56,6 +74,10 @@ try {
     portableReleaseMarker: true,
     standardReleaseAsset: true,
     portableLegacyImportDisabled: true,
+    androidKeystoreProtection: true,
+    appleKeychainProtection: true,
+    linuxSecretServiceProtection: true,
+    explicitFallbackWarnings: true,
   }, null, 2))
 }
 finally {

@@ -9,7 +9,24 @@ const MAX_BASE_URL_LENGTH: usize = 2048;
 const MAX_PATH_LENGTH: usize = 2048;
 const MAX_HEADER_VALUE_LENGTH: usize = 4096;
 const MAX_ERROR_BODY_CHARS: usize = 700;
-const MAX_RESPONSE_BODY_BYTES: u64 = 256 * 1024;
+const MAX_QUERY_PARAMETERS: usize = 96;
+const MAX_REQUEST_BODY_BYTES: usize = 512 * 1024;
+const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
+const EMBY_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbyJsonRequest {
+    method: String,
+    base_url: String,
+    path: String,
+    query: Option<Map<String, Value>>,
+    body: Option<Value>,
+    token: Option<String>,
+    user_id: Option<String>,
+    device_id: String,
+    auth_mode: Option<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +41,7 @@ pub struct EmbyPlaybackJsonRequest {
     auth_mode: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbyPlaybackJsonResponse {
     status: u16,
@@ -32,75 +49,132 @@ pub struct EmbyPlaybackJsonResponse {
 }
 
 #[tauri::command]
+pub async fn emby_request_json(
+    request: EmbyJsonRequest,
+) -> Result<EmbyPlaybackJsonResponse, String> {
+    execute_json_request(request).await
+}
+
+#[tauri::command]
 pub async fn emby_post_playback_json(
     request: EmbyPlaybackJsonRequest,
 ) -> Result<EmbyPlaybackJsonResponse, String> {
+    execute_json_request(EmbyJsonRequest {
+        method: "POST".to_string(),
+        base_url: request.base_url,
+        path: request.path,
+        query: request.query,
+        body: request.body,
+        token: Some(request.token),
+        user_id: Some(request.user_id),
+        device_id: request.device_id,
+        auth_mode: request.auth_mode,
+    })
+    .await
+}
+
+async fn execute_json_request(
+    request: EmbyJsonRequest,
+) -> Result<EmbyPlaybackJsonResponse, String> {
     let url = build_url(&request.base_url, &request.path, request.query.as_ref())?;
-    let headers = build_headers(&request)?;
+    let headers = build_headers(
+        request.token.as_deref(),
+        request.user_id.as_deref(),
+        &request.device_id,
+        request.auth_mode.as_deref(),
+    )?;
+    let method = normalize_method(&request.method)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Failed to initialize Emby native HTTP client.".to_string())?;
 
-    let mut builder = client.post(url).headers(headers);
+    let mut builder = client.request(method.clone(), url).headers(headers);
     builder = if let Some(body) = request.body.as_ref() {
+        let encoded =
+            serde_json::to_vec(body).map_err(|_| "Invalid Emby request body.".to_string())?;
+        if encoded.len() > MAX_REQUEST_BODY_BYTES {
+            return Err("Emby request body is too large.".to_string());
+        }
         builder.json(body)
-    } else {
+    } else if method == reqwest::Method::POST {
         builder
             .header(CONTENT_TYPE, "application/json")
             .body(Vec::new())
+    } else {
+        builder
     };
 
     let response = builder.send().await.map_err(|error| {
         if error.is_timeout() {
-            "Network error while contacting Emby playback endpoint (timeout).".to_string()
+            "Network error while contacting Emby endpoint (timeout).".to_string()
         } else if error.is_connect() {
-            "Network error while contacting Emby playback endpoint (connect failed).".to_string()
+            "Network error while contacting Emby endpoint (connect failed).".to_string()
         } else {
-            "Network error while contacting Emby playback endpoint.".to_string()
+            "Network error while contacting Emby endpoint.".to_string()
         }
     })?;
 
     let status = response.status();
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_RESPONSE_BODY_BYTES)
+        .is_some_and(|length| length > MAX_RESPONSE_BODY_BYTES as u64)
     {
         if !status.is_success() {
             return Err(format!(
-                "HTTP {} from Emby playback endpoint. Body: [response too large]",
+                "HTTP {} from Emby endpoint. Body: [response too large]",
                 status.as_u16()
             ));
         }
-        return Err("Emby playback response was too large.".to_string());
+        return Err("Emby response was too large.".to_string());
     }
 
-    let text = response
-        .text()
-        .await
-        .map_err(|_| "Failed to read Emby playback response.".to_string())?;
+    let text = read_limited_response_body(response).await?;
 
     if !status.is_success() {
         return Err(http_error_message(
             status,
             &text,
             &request.base_url,
-            &request.token,
-            &request.user_id,
+            request.token.as_deref().unwrap_or_default(),
+            request.user_id.as_deref().unwrap_or_default(),
         ));
     }
 
     let body = if text.trim().is_empty() {
         Value::Null
     } else {
-        serde_json::from_str::<Value>(&text).unwrap_or_else(|_| Value::String(text))
+        serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text))
     };
 
     Ok(EmbyPlaybackJsonResponse {
         status: status.as_u16(),
         body,
     })
+}
+
+async fn read_limited_response_body(mut response: reqwest::Response) -> Result<String, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "Failed to read Emby response.".to_string())?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+            return Err("Emby response was too large.".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| "Emby response was not valid UTF-8.".to_string())
+}
+
+fn normalize_method(method: &str) -> Result<reqwest::Method, String> {
+    match method.trim().to_ascii_uppercase().as_str() {
+        "GET" => Ok(reqwest::Method::GET),
+        "POST" => Ok(reqwest::Method::POST),
+        _ => Err("Invalid Emby request method.".to_string()),
+    }
 }
 
 fn build_url(
@@ -111,15 +185,24 @@ fn build_url(
     let normalized_base = normalize_base_url(base_url)?;
     let normalized_path = normalize_path(path)?;
     let mut url = Url::parse(&format!("{normalized_base}{normalized_path}"))
-        .map_err(|_| "Invalid Emby playback endpoint.".to_string())?;
+        .map_err(|_| "Invalid Emby endpoint.".to_string())?;
 
     if let Some(query) = query {
+        if query.len() > MAX_QUERY_PARAMETERS {
+            return Err("Invalid Emby query.".to_string());
+        }
         let mut pairs = url.query_pairs_mut();
         for (key, value) in query {
-            if key.trim().is_empty() || contains_control_character(key) {
-                return Err("Invalid Emby playback query.".to_string());
+            if key.trim().is_empty()
+                || key.len() > MAX_HEADER_VALUE_LENGTH
+                || contains_control_character(key)
+            {
+                return Err("Invalid Emby query.".to_string());
             }
             if let Some(value) = query_value_to_string(value) {
+                if value.len() > MAX_HEADER_VALUE_LENGTH || contains_control_character(&value) {
+                    return Err("Invalid Emby query.".to_string());
+                }
                 pairs.append_pair(key, &value);
             }
         }
@@ -163,31 +246,41 @@ fn normalize_path(path: &str) -> Result<String, String> {
         || trimmed.contains("://")
         || trimmed.contains('?')
         || trimmed.contains('#')
+        || trimmed
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
     {
-        return Err("Invalid Emby playback path.".to_string());
+        return Err("Invalid Emby path.".to_string());
     }
 
     Ok(trimmed.to_string())
 }
 
-fn build_headers(request: &EmbyPlaybackJsonRequest) -> Result<HeaderMap, String> {
-    let token = normalize_header_value(&request.token, "Invalid Emby token.")?;
-    let user_id = normalize_header_value(&request.user_id, "Invalid Emby user.")?;
-    let device_id = normalize_header_value(&request.device_id, "Invalid Emby device.")?;
-    let auth_mode = request.auth_mode.as_deref().unwrap_or("default");
-    let default_auth = authorization_header(&device_id, Some(&token), None);
-    let official_auth = authorization_header(&device_id, Some(&token), Some(&user_id));
+fn build_headers(
+    token: Option<&str>,
+    user_id: Option<&str>,
+    device_id: &str,
+    auth_mode: Option<&str>,
+) -> Result<HeaderMap, String> {
+    let token = normalize_optional_header_value(token, "Invalid Emby token.")?;
+    let user_id = normalize_optional_header_value(user_id, "Invalid Emby user.")?;
+    let device_id = normalize_header_value(device_id, "Invalid Emby device.")?;
+    let auth_mode = auth_mode.unwrap_or("default");
+    let default_auth = authorization_header(&device_id, token.as_deref(), None);
+    let official_auth = authorization_header(&device_id, token.as_deref(), user_id.as_deref());
 
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("OhMyCine Player/0.1.0"),
+        HeaderValue::from_static(concat!("OhMyCine Player/", env!("CARGO_PKG_VERSION"))),
     );
-    headers.insert(
-        "x-emby-token",
-        HeaderValue::from_str(&token).map_err(|_| "Invalid Emby token.".to_string())?,
-    );
+    if let Some(token) = token.as_deref() {
+        headers.insert(
+            "x-emby-token",
+            HeaderValue::from_str(token).map_err(|_| "Invalid Emby token.".to_string())?,
+        );
+    }
 
     match auth_mode {
         "default" => {
@@ -198,6 +291,12 @@ fn build_headers(request: &EmbyPlaybackJsonRequest) -> Result<HeaderMap, String>
             );
         }
         "official-compatible" => {
+            let token = token
+                .as_deref()
+                .ok_or_else(|| "Invalid Emby token.".to_string())?;
+            if user_id.is_none() {
+                return Err("Invalid Emby user.".to_string());
+            }
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&official_auth)
@@ -205,7 +304,7 @@ fn build_headers(request: &EmbyPlaybackJsonRequest) -> Result<HeaderMap, String>
             );
             headers.insert(
                 "x-mediabrowser-token",
-                HeaderValue::from_str(&token).map_err(|_| "Invalid Emby token.".to_string())?,
+                HeaderValue::from_str(token).map_err(|_| "Invalid Emby token.".to_string())?,
             );
             headers.insert(
                 "x-emby-authorization",
@@ -213,10 +312,20 @@ fn build_headers(request: &EmbyPlaybackJsonRequest) -> Result<HeaderMap, String>
                     .map_err(|_| "Invalid Emby authorization.".to_string())?,
             );
         }
-        _ => return Err("Invalid Emby playback auth mode.".to_string()),
+        _ => return Err("Invalid Emby auth mode.".to_string()),
     }
 
     Ok(headers)
+}
+
+fn normalize_optional_header_value(
+    value: Option<&str>,
+    message: &str,
+) -> Result<Option<String>, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => normalize_header_value(value, message).map(Some),
+        None => Ok(None),
+    }
 }
 
 fn normalize_header_value(value: &str, message: &str) -> Result<String, String> {
@@ -239,7 +348,7 @@ fn authorization_header(device_id: &str, token: Option<&str>, user_id: Option<&s
         .map(|value| format!(", Token=\"{value}\""))
         .unwrap_or_default();
     format!(
-        "MediaBrowser Client=\"OhMyCine Player\", Device=\"Desktop\", DeviceId=\"{device_id}\", Version=\"0.1.0\"{user_segment}{token_segment}"
+        "MediaBrowser Client=\"OhMyCine Player\", Device=\"Desktop\", DeviceId=\"{device_id}\", Version=\"{EMBY_CLIENT_VERSION}\"{user_segment}{token_segment}"
     )
 }
 
@@ -266,7 +375,7 @@ fn http_error_message(
     token: &str,
     user_id: &str,
 ) -> String {
-    let mut message = format!("HTTP {} from Emby playback endpoint.", status.as_u16());
+    let mut message = format!("HTTP {} from Emby endpoint.", status.as_u16());
     let snippet = safe_body_snippet(body, base_url, token, user_id);
     if !snippet.is_empty() {
         message.push_str(" Body: ");
@@ -348,7 +457,7 @@ fn redact_url_hosts(value: &str) -> String {
         output.push_str("[redacted-host]");
         let host_start = start + scheme_len;
         let host_end = value[host_start..]
-            .find(|ch: char| matches!(ch, '/' | '?' | '#' | ' ' | '"' | '\'' | ')' | ','))
+            .find(['/', '?', '#', ' ', '"', '\'', ')', ','])
             .map(|relative| host_start + relative)
             .unwrap_or(value.len());
         index = host_end;
@@ -383,7 +492,7 @@ fn redact_after_pattern(value: &str, pattern: &str) -> String {
         let start = index + relative_start;
         let value_start = start + pattern.len();
         let value_end = value[value_start..]
-            .find(|ch: char| matches!(ch, '&' | ',' | ';' | ' ' | '"' | '\'' | '}' | ']'))
+            .find(['&', ',', ';', ' ', '"', '\'', '}', ']'])
             .map(|relative| value_start + relative)
             .unwrap_or(value.len());
         output.push_str(&value[index..value_start]);
@@ -397,4 +506,145 @@ fn redact_after_pattern(value: &str, pattern: &str) -> String {
 
 fn contains_control_character(value: &str) -> bool {
     value.chars().any(|ch| ch.is_control())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{execute_json_request, EmbyJsonRequest, MAX_RESPONSE_BODY_BYTES};
+    use axum::{
+        body::Body,
+        extract::Query,
+        http::{HeaderMap, StatusCode},
+        response::{IntoResponse, Redirect, Response},
+        routing::get,
+        Json, Router,
+    };
+    use serde_json::{json, Map, Value};
+    use std::collections::HashMap;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn generic_get_uses_bounded_native_client_and_auth_headers() {
+        let router = Router::new().route(
+            "/System/Info",
+            get(
+                |headers: HeaderMap, Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(
+                        headers
+                            .get("x-emby-token")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("test-token")
+                    );
+                    assert_eq!(query.get("Fields").map(String::as_str), Some("Overview"));
+                    Json(json!({ "ServerName": "Test" }))
+                },
+            ),
+        );
+        let base_url = serve(router).await;
+        let response = execute_json_request(request(
+            "GET",
+            &base_url,
+            "/System/Info",
+            Some(Map::from_iter([(
+                "Fields".to_string(),
+                Value::String("Overview".to_string()),
+            )])),
+        ))
+        .await
+        .expect("native Emby GET should succeed");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body["ServerName"], "Test");
+    }
+
+    #[tokio::test]
+    async fn redirects_are_rejected_instead_of_followed() {
+        let router = Router::new()
+            .route(
+                "/redirect",
+                get(|| async { Redirect::temporary("/target") }),
+            )
+            .route(
+                "/target",
+                get(|| async { Json(json!({ "followed": true })) }),
+            );
+        let base_url = serve(router).await;
+
+        let error = execute_json_request(request("GET", &base_url, "/redirect", None))
+            .await
+            .expect_err("redirect must not be followed");
+        assert!(error.contains("HTTP 307"));
+        assert!(!error.contains("followed"));
+    }
+
+    #[tokio::test]
+    async fn oversized_json_responses_are_rejected() {
+        let router = Router::new().route(
+            "/large",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::from(vec![b'a'; MAX_RESPONSE_BODY_BYTES + 1]))
+                    .expect("large response")
+                    .into_response()
+            }),
+        );
+        let base_url = serve(router).await;
+
+        let error = execute_json_request(request("GET", &base_url, "/large", None))
+            .await
+            .expect_err("large response must fail");
+        assert!(error.contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn unsafe_paths_and_methods_are_rejected_before_network_access() {
+        let invalid_path = execute_json_request(request(
+            "GET",
+            "http://127.0.0.1:1",
+            "/Items/../secret",
+            None,
+        ))
+        .await
+        .expect_err("path traversal must fail");
+        assert_eq!(invalid_path, "Invalid Emby path.");
+
+        let invalid_method =
+            execute_json_request(request("DELETE", "http://127.0.0.1:1", "/Items", None))
+                .await
+                .expect_err("unsupported method must fail");
+        assert_eq!(invalid_method, "Invalid Emby request method.");
+    }
+
+    fn request(
+        method: &str,
+        base_url: &str,
+        path: &str,
+        query: Option<Map<String, Value>>,
+    ) -> EmbyJsonRequest {
+        EmbyJsonRequest {
+            method: method.to_string(),
+            base_url: base_url.to_string(),
+            path: path.to_string(),
+            query,
+            body: None,
+            token: Some("test-token".to_string()),
+            user_id: Some("test-user".to_string()),
+            device_id: "test-device".to_string(),
+            auth_mode: Some("default".to_string()),
+        }
+    }
+
+    async fn serve(router: Router) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve Emby test endpoint");
+        });
+        format!("http://{address}")
+    }
 }

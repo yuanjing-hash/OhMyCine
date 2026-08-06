@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { artworkCacheKey } from '@/services/imageCache'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
+import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 import CachedImage from './CachedImage.vue'
@@ -231,23 +232,17 @@ async function playItem(item: MediaItem) {
     sourceId: item.sourceId,
     itemId: item.id,
     title: item.name,
+    currentItem: item,
     queue: createPlaybackQueue(filteredResults.value.filter(canPlay), item.id),
   })
   workspace.hide()
   await router.push({
     name: 'player',
-    query: {
-      title: item.name,
+    query: createPlaybackRouteQuery({
       sourceId: item.sourceId,
       itemId: item.id,
-      libraryId: item.libraryId,
-      mediaType: item.type,
-      posterUrl: item.posterUrl,
-      backdropUrl: item.backdropUrl,
-      titleLogoUrl: item.titleLogoUrl,
       contextId,
-      resumePosition: item.resumePosition,
-    },
+    }),
   })
 }
 

@@ -94,13 +94,13 @@ watch(() => props.volume, (volume) => {
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-full);
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-secondary);
   transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
 
 .volume-button:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.96);
+  background: var(--surface-soft-hover);
+  color: var(--color-text);
   transform: translateY(-1px);
 }
 
@@ -124,7 +124,7 @@ watch(() => props.volume, (volume) => {
   height: 12px;
   appearance: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--color-text);
   box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.16), 0 6px 14px rgba(0, 0, 0, 0.35);
 }
 
@@ -133,7 +133,7 @@ watch(() => props.volume, (volume) => {
   height: 12px;
   border: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--color-text);
   box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.16), 0 6px 14px rgba(0, 0, 0, 0.35);
 }
 

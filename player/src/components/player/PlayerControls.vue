@@ -679,15 +679,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 <style scoped>
 .player-controls-glass {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background:
-    radial-gradient(120% 160% at 14% 0%, rgba(255, 255, 255, 0.2), transparent 42%),
-    radial-gradient(80% 140% at 100% 100%, rgba(74, 158, 255, 0.16), transparent 46%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.055));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
-    0 22px 70px rgba(0, 0, 0, 0.48);
+  border: 1px solid var(--control-border);
+  background: var(--player-chrome-surface);
+  box-shadow: var(--player-chrome-shadow);
   backdrop-filter: blur(52px) saturate(1.9) contrast(1.05);
   -webkit-backdrop-filter: blur(52px) saturate(1.9) contrast(1.05);
 }
@@ -710,8 +704,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   justify-content: center;
   border: 1px solid transparent;
   border-radius: var(--radius-full);
-  color: rgba(255, 255, 255, 0.8);
-  background: rgba(255, 255, 255, 0.035);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
   transition: transform var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 
@@ -730,8 +724,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .fullscreen-button {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--control-border);
+  background: var(--control-bg);
 }
 
 .settings-entry-label,
@@ -758,9 +752,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .control-button:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.98);
+  border-color: var(--control-border-hover);
+  background: var(--control-bg-hover);
+  color: var(--color-text);
   transform: translateY(-1px);
 }
 
@@ -769,35 +763,35 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .control-button.is-active:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.24);
-  background: rgba(255, 255, 255, 0.16);
-  color: rgba(255, 255, 255, 0.98);
+  border-color: var(--control-border-hover);
+  background: var(--surface-soft-hover);
+  color: var(--color-text);
   box-shadow: 0 10px 26px rgba(74, 158, 255, 0.18);
 }
 
 .control-button[aria-disabled="true"] {
   cursor: default;
-  color: rgba(255, 255, 255, 0.52);
+  color: var(--color-text-tertiary);
 }
 
 .control-button:disabled {
   cursor: not-allowed;
-  border-color: rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.035);
-  color: rgba(255, 255, 255, 0.28);
+  border-color: var(--color-border);
+  background: var(--surface-soft);
+  color: var(--color-text-tertiary);
   opacity: 0.72;
   box-shadow: none;
 }
 
 .control-button.primary {
-  background: rgba(255, 255, 255, 0.92);
-  color: rgba(8, 10, 16, 0.96);
-  box-shadow: 0 12px 28px rgba(255, 255, 255, 0.12);
+  background: var(--player-primary-bg);
+  color: var(--player-primary-text);
+  box-shadow: var(--player-chrome-shadow);
 }
 
 .control-button.primary:hover:not(:disabled) {
-  background: #fff;
-  color: rgba(8, 10, 16, 1);
+  background: var(--color-text);
+  color: var(--color-text-inverse);
 }
 
 .control-popover {
@@ -807,12 +801,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   z-index: 45;
   min-width: 9rem;
   max-width: min(18rem, calc(100vw - 3rem));
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--control-border);
   border-radius: 22px;
-  background:
-    radial-gradient(120% 120% at 20% 0%, rgba(255, 255, 255, 0.18), transparent 44%),
-    linear-gradient(135deg, rgba(12, 15, 24, 0.82), rgba(8, 10, 16, 0.66));
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  background: var(--player-chrome-surface-strong);
+  box-shadow: var(--chrome-shadow);
   padding: 0.45rem;
   backdrop-filter: blur(42px) saturate(1.8);
   -webkit-backdrop-filter: blur(42px) saturate(1.8);
@@ -835,14 +827,14 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   align-items: center;
   justify-content: space-between;
   padding: 0.2rem 0.35rem 0.55rem;
-  color: rgba(255, 255, 255, 0.88);
+  color: var(--color-text);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.08em;
 }
 
 .queue-popover-header small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--color-text-tertiary);
   font-size: 0.66rem;
   font-weight: 700;
 }
@@ -865,8 +857,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   border: 1px solid transparent;
   border-radius: 18px;
   padding: 0.5rem;
-  color: rgba(255, 255, 255, 0.72);
-  background: rgba(255, 255, 255, 0.045);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
   text-align: left;
   transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
@@ -874,9 +866,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .queue-option:hover:not(:disabled),
 .queue-option:focus-visible,
 .queue-option.is-current {
-  border-color: rgba(255, 255, 255, 0.16);
-  color: rgba(255, 255, 255, 0.96);
-  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
 }
 
 .queue-option:hover:not(:disabled) {
@@ -895,8 +887,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   justify-content: center;
   overflow: hidden;
   border-radius: 14px;
-  color: rgba(255, 255, 255, 0.36);
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-tertiary);
+  background: var(--surface-soft);
 }
 
 .queue-thumb img {
@@ -931,7 +923,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--color-text-tertiary);
   font-size: 0.66rem;
   font-weight: 600;
   line-height: 1.35;
@@ -940,8 +932,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .queue-current-badge {
   border-radius: var(--radius-full);
   padding: 0.24rem 0.44rem;
-  color: rgba(9, 12, 18, 0.92);
-  background: rgba(255, 255, 255, 0.86);
+  color: var(--player-primary-text);
+  background: var(--player-primary-bg);
   font-size: 0.62rem;
   font-weight: 800;
   white-space: nowrap;
@@ -962,7 +954,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   border: 1px solid transparent;
   border-radius: 16px;
   padding: 0.56rem 0.7rem;
-  color: rgba(255, 255, 255, 0.68);
+  color: var(--color-text-secondary);
   background: transparent;
   text-align: left;
   font-size: 0.76rem;
@@ -974,9 +966,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .menu-option:hover,
 .menu-option:focus-visible,
 .menu-option.is-selected {
-  border-color: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.96);
-  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
 }
 
 .menu-option:disabled {
@@ -1090,13 +1082,13 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .menu-empty {
   margin: 0;
   padding: 0.7rem;
-  color: rgba(255, 255, 255, 0.44);
+  color: var(--color-text-tertiary);
   font-size: 0.72rem;
   line-height: 1.45;
 }
 
 .time-label {
-  color: rgba(255, 255, 255, 0.56);
+  color: var(--color-text-secondary);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;

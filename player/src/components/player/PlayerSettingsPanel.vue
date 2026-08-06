@@ -260,15 +260,9 @@ watch(
 
 <style scoped>
 .player-settings-panel {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background:
-    radial-gradient(120% 120% at 18% 0%, rgba(255, 255, 255, 0.2), transparent 44%),
-    radial-gradient(110% 120% at 100% 100%, rgba(74, 158, 255, 0.18), transparent 48%),
-    linear-gradient(135deg, rgba(12, 15, 24, 0.78), rgba(8, 10, 16, 0.58));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
-    0 28px 90px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--control-border);
+  background: var(--player-chrome-surface-strong);
+  box-shadow: var(--chrome-shadow);
   backdrop-filter: blur(56px) saturate(1.85) contrast(1.04);
   -webkit-backdrop-filter: blur(56px) saturate(1.85) contrast(1.04);
 }
@@ -280,10 +274,10 @@ watch(
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-full);
-  color: rgba(255, 255, 255, 0.64);
-  background: rgba(255, 255, 255, 0.055);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
   transition: transform var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
 }
 
@@ -295,23 +289,23 @@ watch(
 
 .panel-icon-button:hover,
 .panel-icon-button:focus-visible {
-  border-color: rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.96);
-  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
   transform: translateY(-1px);
 }
 
 .settings-section {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--color-border);
+  background: var(--surface-soft);
 }
 
 .status-pill {
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-soft);
   padding: 0.25rem 0.5rem;
-  color: rgba(255, 255, 255, 0.36);
+  color: var(--color-text-tertiary);
   font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -320,11 +314,11 @@ watch(
 
 .setting-option {
   min-height: 34px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-full);
   padding: 0 0.75rem;
-  color: rgba(255, 255, 255, 0.66);
-  background: rgba(255, 255, 255, 0.055);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -333,22 +327,22 @@ watch(
 
 .setting-option:hover:not(:disabled),
 .setting-option:focus-visible:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.92);
-  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--control-bg-hover);
 }
 
 .setting-option.is-active {
-  border-color: rgba(255, 255, 255, 0.24);
-  color: rgba(255, 255, 255, 0.92);
-  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
 }
 
 .setting-option:disabled,
 .setting-option.is-disabled {
   cursor: not-allowed;
-  color: rgba(255, 255, 255, 0.3);
-  background: rgba(255, 255, 255, 0.035);
+  color: var(--color-text-tertiary);
+  background: var(--surface-soft);
   opacity: 0.72;
 }
 

@@ -1491,8 +1491,7 @@ fn validate_remote_media_file_name(value: &str) -> Option<String> {
 
 fn remote_media_file_name(url: &Url) -> Option<String> {
     url.path_segments()?
-        .filter(|segment| !segment.is_empty())
-        .next_back()
+        .rfind(|segment| !segment.is_empty())
         .and_then(validate_remote_media_file_name)
 }
 

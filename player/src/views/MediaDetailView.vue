@@ -8,6 +8,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { getContextFlatEpisodes, getContextSeriesSeasons, getPlayableSeasonChildren } from '@/services/scraper/rawSeriesGrouping'
@@ -563,6 +564,7 @@ async function playItem(item?: MediaItem) {
       sourceId: sourceId.value,
       itemId: target.id,
       title: target.name,
+      currentItem: { ...target, resumePosition: resumePositionForItem(target) },
       mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
       locator: {
         kind: 'dataSource',
@@ -576,21 +578,12 @@ async function playItem(item?: MediaItem) {
     })
     await router.push({
       name: 'player',
-      query: {
-        title: target.name,
+      query: createPlaybackRouteQuery({
         sourceId: sourceId.value,
         itemId: target.id,
-        libraryId: target.libraryId,
-        mediaType: target.type,
-        posterUrl: target.posterUrl,
-        backdropUrl: target.backdropUrl,
-        titleLogoUrl: target.titleLogoUrl,
         contextId: playbackContextId,
         mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
-        resumePosition: resumePositionForItem(target),
-        audioIndex: item ? undefined : (selectedAudioIndex.value ?? undefined),
-        subtitleIndex: item ? undefined : (selectedSubtitleIndex.value ?? undefined),
-      },
+      }),
     })
   }
   catch (error) {

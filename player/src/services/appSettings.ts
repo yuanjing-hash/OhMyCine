@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
 export type PlayerStorageMode = 'standard' | 'portable'
-export type PlayerCredentialProtection = 'windowsDpapi' | 'portableFileKey' | 'localFileKey'
+export type PlayerCredentialProtection = 'windowsDpapi' | 'androidKeystore' | 'appleKeychain' | 'linuxSecretService' | 'portableFileKey' | 'localFileKey'
 export type PlayerStoragePerformance = 'local' | 'networkLike'
 
 export interface PlayerStorageInfo {

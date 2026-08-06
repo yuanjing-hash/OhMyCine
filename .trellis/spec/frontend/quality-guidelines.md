@@ -22,6 +22,7 @@ Frontend quality is measured by Player independence, type safety, immersive UI c
 - libmpv integration through Rust/Tauri modules, keeping platform rendering explicit.
 - Secure storage for credentials when available.
 - Disabled/placeholder states for Server-dependent UI when Server is disconnected.
+- Route views should retain orchestration and template composition; reusable pure business logic belongs in typed services or composables.
 
 ---
 
@@ -53,6 +54,16 @@ npm run build
 
 For Tauri/Rust changes, also run the relevant Cargo command when configured, such as `cargo check` from `player/src-tauri`.
 
+Before completing Player dependency-security work, run `npm audit` against the official npm registry when the configured mirror does not provide an advisory endpoint. Known vulnerabilities with available fixes must be resolved; a mirror audit `404` is not evidence that the dependency graph is clean.
+
+For Rust/Tauri quality-gate work, the required zero-warning command is:
+
+```bash
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+Do not weaken or skip the all-target Clippy gate to make a task appear complete.
+
 When cross-compiling Windows GNU targets from WSL, prefer the rustup toolchain explicitly if PATH contains another Rust distribution. Homebrew/system `cargo` can see project config but not rustup-installed target stdlibs, causing false `can't find crate for core/std` failures. Use `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path player/src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` for the target check, and pass the same `RUSTC` override to Windows package builds.
 
 Runtime verification must be non-destructive by default. Preserve the owner's existing standard and portable Player profiles, including data sources, credentials, settings, playback history, scrape caches, and WebView state. Tests that need a clean profile should use an isolated temporary/portable directory. Never clear the real profile unless the owner explicitly requests it or approves the exact destructive test scope in advance.
@@ -78,33 +89,33 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 - Ordinary Player CI, manual Player builds, and beta release guardrails should validate/publish only Windows GNU packages through `ubuntu-latest` + `x86_64-pc-windows-gnu`.
 - Do not add Linux/macOS Player package jobs, Linux/macOS runtime resource configs, or blocking CI checks for those packages before the corresponding Player renderers and packaging chains are complete. Future Linux/macOS work should return explicit unsupported/future runtime states until implemented, then add CI in the same task that finishes the renderer/package path.
 
-## Scenario: Player Beta Release Packaging
+## Scenario: Player Release Packaging
 
 ### 1. Scope / Trigger
 
-- Trigger: Any GitHub Actions or packaging change that publishes OhMyCine Player beta assets.
-- Scope: Windows GNU target beta releases that produce a GitHub prerelease, release notes, a Windows installer, a standard zip, and a portable zip.
+- Trigger: Any GitHub Actions or packaging change that publishes OhMyCine Player beta or stable assets.
+- Scope: Windows GNU target releases that produce release notes, a Windows installer, a standard zip, and a portable zip; the selected channel controls whether GitHub marks the release as prerelease or latest stable.
 
 ### 2. Signatures
 
-- Version input/tag: `vMAJOR.MINOR.BETA`, for example `v0.0.1`.
-- App version written into Player files: `MAJOR.MINOR.BETA` without the leading `v`.
+- Version input/tag: `vMAJOR.MINOR.PATCH`, for example `v1.0.0`.
+- App version written into Player files: `MAJOR.MINOR.PATCH` without the leading `v`.
 - Build command: `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`.
 - Target output root: `player/src-tauri/target/x86_64-pc-windows-gnu/release`.
 
 ### 3. Contracts
 
-- Release workflow must mark GitHub Releases as prerelease/beta.
+- `beta` channel must publish with `--prerelease --latest=false`; `stable` channel must publish with `--prerelease=false --latest` and must not include Beta in the title.
 - Release notes must be generated from git history for the current beta tag. Prefer version-sorted semver-like tags; if no previous `v*.*.*` tag exists, include commits from the repository initial commit through the current release commit.
 - Release notes must group commit subjects by Conventional Commit type: `feat`, `fix`, `docs`, `ci`, `chore`, `refactor`, `test`, and `other`. Keep the original subject so scopes such as `feat(player): ...` remain visible.
 - Manual `workflow_dispatch.inputs.release_notes` may be appended only as an `Extra Notes` section; do not include it for tag-push releases.
-- Release notes must include the beta version rule, asset descriptions, and the SHA-256 checksum file description.
+- Release notes must include the selected channel's semantic-version rule, asset descriptions, and the SHA-256 checksum file description.
 - Release notes generation must not print secrets, tokens, signed URLs, or GitHub Actions environment dumps. It may use commit subjects and the explicit manual notes input only.
 - Release assets must include:
-  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-setup.exe`
-  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-standard.zip`
-  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64-portable.zip`
-  - `OhMyCine-Player-vMAJOR.MINOR.BETA-windows-x64.sha256`
+  - `OhMyCine-Player-vMAJOR.MINOR.PATCH-windows-x64-setup.exe`
+  - `OhMyCine-Player-vMAJOR.MINOR.PATCH-windows-x64-standard.zip`
+  - `OhMyCine-Player-vMAJOR.MINOR.PATCH-windows-x64-portable.zip`
+  - `OhMyCine-Player-vMAJOR.MINOR.PATCH-windows-x64.sha256`
 - Standard and portable zips must be curated from the release directory. Include only Windows runtime files such as `ohmycine-player.exe`, `WebView2Loader.dll`, `libmpv-wrapper.dll`, `libmpv-2.dll`, and license text.
 - Standard zip must not contain `portable.flag`, `data`, `cache`, or `logs`; it uses the normal LocalAppData profile.
 - Portable zip must contain `portable.flag` but must not ship pre-created `data`, `cache`, or `logs`; its first launch creates an empty EXE-adjacent profile.
@@ -122,7 +133,8 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `v0.0.1` creates a prerelease with installer, standard zip, portable zip, and checksum using the Windows GNU release directory.
+- Good: `v0.0.1` with channel `beta` creates a prerelease with installer, standard zip, portable zip, and checksum using the Windows GNU release directory.
+- Good: `v1.0.0` with channel `stable` creates the latest non-prerelease release with the same signed asset set and no Beta label.
 - Good: `v0.0.2` release notes use `v0.0.1..v0.0.2`, group commit subjects by type, preserve scopes, and append manual notes only for `workflow_dispatch`.
 - Base: manual `workflow_dispatch` with `version=v0.0.2` creates the tag/release at the workflow commit.
 - Bad: zip contains `deps/`, `.fingerprint/`, `incremental/`, Linux `.so`, or macOS `.dylib` files.
@@ -178,9 +190,13 @@ Do not treat Docker as a local development prerequisite.
 
 - Components use `<script setup lang="ts">` and explicit props/events.
 - Views do not bypass DataSource abstractions.
+- Large route views keep reusable domain, formatting, grouping, and option-building logic in typed services/composables instead of accumulating it in the view module.
 - Server disconnected state is handled.
+- Planned provider cards such as 115 remain visibly disabled and non-callable until their DataSource is implemented.
 - Credentials are stored securely and not exposed in logs/config/export.
 - External requests have error handling and timeouts where service code controls them.
+- Dependency security checks use a functioning advisory source and have no known fixable vulnerabilities.
+- Rust/Tauri changes pass `cargo clippy --all-targets -- -D warnings` with zero warnings.
 - Player-side AI only uses allowed metadata by default.
 - Cinema OS tokens/classes are used instead of arbitrary styling.
 - Keyboard shortcuts avoid input focus conflicts.

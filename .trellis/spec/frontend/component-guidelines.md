@@ -274,9 +274,9 @@ return playbackStopPromise
 - Native selects, text inputs, password inputs, number inputs, and textareas must use shared adaptive control tokens for background, foreground, border, placeholder, focus ring, option surface, and disabled state. Do not rely on the operating system's unstyled light select inside a dark surface.
 - Settings and other non-immersive utility surfaces must use the semantic theme foreground/background tokens in both dark and light modes. Unconditional `text-white`, `bg-black/*`, and `border-white/*` utilities require an adaptive surface boundary or an explicit semantic replacement.
 - Light mode must never render white or near-white text on white controls, cards, menus, or dialogs. Success, warning, and error feedback colors need light-theme foreground variants with readable contrast.
-- Artwork-first media details and playback overlays may stay intentionally dark under every app theme. Mark those regions as immersive-dark control scopes so selects and inputs remain consistent with the video or backdrop surface instead of inheriting light controls.
+- Artwork-first media details may stay intentionally dark under every app theme. The Player's native video surface remains transparent/immersive, but its routine chrome (top and bottom gradients, transport controls, progress/volume controls, menus, sheets, buffering state, and picture settings) must use adaptive Player tokens in both light and dark modes.
 - Custom menus, popovers, and dialogs should use the same theme tokens as native form controls unless they belong to an immersive playback surface.
-- Non-player mobile bottom sheets, aggregate search, media-library management surfaces, metadata dialogs, and detail-page content must use adaptive semantic chrome tokens in both themes. Keep artwork heroes, poster overlays, and playback UI inside explicit `theme-immersive-dark` boundaries so a light parent cannot reduce their contrast.
+- Non-player mobile bottom sheets, aggregate search, media-library management surfaces, metadata dialogs, detail-page content, and Player chrome must use adaptive semantic tokens in both themes. Keep only artwork heroes, poster overlays, diagnostics, and explicitly exceptional media surfaces inside `theme-immersive-dark` boundaries.
 
 ---
 

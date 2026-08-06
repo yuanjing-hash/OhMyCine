@@ -683,9 +683,10 @@ export function useMpv() {
     isPlaying.value = !isPlaying.value
   }
 
-  async function seek(position: number) {
+  async function seek(position: number, options: { optimistic?: boolean } = {}) {
     await invoke<void>('mpv_seek', { position })
-    currentTime.value = position
+    if (options.optimistic !== false)
+      currentTime.value = position
   }
 
   async function seekRelative(offset: number) {

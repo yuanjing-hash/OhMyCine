@@ -368,22 +368,22 @@ function isTauriRuntime(): boolean {
         </p>
       </div>
       <div v-else-if="renderStatus !== 'ready' || playbackFailure || playbackLoading" class="playback-status-panel pointer-events-auto max-w-xl p-6 text-center">
-        <p class="text-xs uppercase tracking-[0.24em] text-white/35">
+        <p class="playback-status-label text-xs uppercase tracking-[0.24em]">
           {{ renderStatusLabel }}
         </p>
-        <p class="mt-3 text-base font-semibold text-white">
+        <p class="playback-status-title mt-3 text-base font-semibold">
           {{ renderTitle }}
         </p>
-        <p class="mt-3 text-sm leading-6 text-white/54">
+        <p class="playback-status-description mt-3 text-sm leading-6">
           {{ renderDescription }}
         </p>
-        <p v-if="!isPlaying" class="mt-4 text-xs uppercase tracking-[0.22em] text-white/34">
+        <p v-if="!isPlaying" class="playback-status-paused mt-4 text-xs uppercase tracking-[0.22em]">
           Paused
         </p>
         <button
           v-if="playbackFailure"
           type="button"
-          class="mt-5 min-h-11 border border-white/16 bg-white/8 px-4 text-sm font-semibold text-white/86"
+          class="playback-status-action mt-5 min-h-11 px-4 text-sm font-semibold"
           @click="toggleDiagnosticsClick"
         >
           查看播放诊断
@@ -537,11 +537,39 @@ function isTauriRuntime(): boolean {
 }
 
 .playback-status-panel {
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
-  background: rgba(8, 10, 15, 0.82);
-  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.48);
+  background: var(--player-chrome-surface-strong);
+  box-shadow: var(--player-chrome-shadow);
+  color: var(--color-text);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+}
+
+.playback-status-label,
+.playback-status-paused {
+  color: var(--color-text-tertiary);
+}
+
+.playback-status-title {
+  color: var(--color-text);
+}
+
+.playback-status-description {
+  color: var(--color-text-secondary);
+}
+
+.playback-status-action {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--color-text);
+  box-shadow: var(--control-shadow);
+  transition: border-color var(--duration-fast) ease, background var(--duration-fast) ease;
+}
+
+.playback-status-action:hover {
+  border-color: var(--control-border-hover);
+  background: var(--control-bg-hover);
 }
 </style>

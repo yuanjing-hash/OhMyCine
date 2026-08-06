@@ -111,7 +111,7 @@ pub fn storage_info(app: &AppHandle) -> Result<StorageInfo, String> {
         cache_dir: display_path(&layout.cache_dir),
         log_dir: display_path(&layout.log_dir),
         portable_marker_path: display_path(&layout.portable_marker_path),
-        credential_protection: credential_protection_label(layout.mode).to_string(),
+        credential_protection: credential_protection_label(&layout).to_string(),
         storage_performance: storage_performance(&layout),
     })
 }
@@ -235,10 +235,21 @@ fn remove_empty_legacy_dirs(legacy_root: &Path) {
     let _ = fs::remove_dir(legacy_root);
 }
 
-fn credential_protection_label(mode: StorageMode) -> &'static str {
-    match mode {
+fn credential_protection_label(layout: &StorageLayout) -> &'static str {
+    match layout.mode {
         StorageMode::Portable => "portableFileKey",
         StorageMode::Standard if cfg!(windows) => "windowsDpapi",
+        StorageMode::Standard if cfg!(target_os = "android") => "androidKeystore",
+        StorageMode::Standard if cfg!(target_os = "macos") => "appleKeychain",
+        StorageMode::Standard if cfg!(target_os = "ios") => "appleKeychain",
+        StorageMode::Standard if cfg!(target_os = "linux") => {
+            let marker = fs::read_to_string(layout.data_dir.join("master.key")).unwrap_or_default();
+            if marker.trim().is_empty() || marker.trim() == "linux-secret-service:v1" {
+                "linuxSecretService"
+            } else {
+                "localFileKey"
+            }
+        }
         StorageMode::Standard => "localFileKey",
     }
 }

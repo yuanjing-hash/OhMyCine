@@ -6,6 +6,7 @@ import { useTheme } from '@/composables/useTheme'
 import { pickAndroidLocalVideo } from '@/services/androidLocalMedia'
 import { useLayoutContextActions } from '@/services/layoutContextActions'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
+import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
 import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
@@ -133,12 +134,11 @@ async function openLocalVideo() {
       closeSheet()
       await router.push({
         name: 'player',
-        query: {
+        query: createPlaybackRouteQuery({
           contextId,
           sourceId: 'local-file',
           itemId,
-          title,
-        },
+        }),
       })
       return
     }
@@ -152,13 +152,19 @@ async function openLocalVideo() {
     if (typeof selected !== 'string')
       return
 
+    const title = fileName(selected)
+    const itemId = `local-file-${Date.now()}`
+    const contextId = savePlaybackMediaContext({
+      sourceId: 'local-file',
+      itemId,
+      title,
+      locator: { kind: 'localPath', path: selected },
+    })
+
     closeSheet()
     await router.push({
       name: 'player',
-      query: {
-        path: selected,
-        title: fileName(selected),
-      },
+      query: createPlaybackRouteQuery({ sourceId: 'local-file', itemId, contextId }),
     })
   }
   catch (error) {

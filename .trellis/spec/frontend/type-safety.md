@@ -606,6 +606,115 @@ console.error('Failed to load', redactSensitiveUrl(posterUrl))
 - Frontend command calls must define explicit payload/return types near the composable/service that owns the behavior. Per-video speed, subtitle, audio, delay, aspect, and fit belong to the typed `mediaPlaybackPreferences` service keyed by stable source/media identity; do not add a second global playback-speed persistence path that can override a newly loaded video's default before its per-media preference is restored.
 - Preference persistence failures should not expose internal database paths or native details; for convenience-only preferences, composables may fall back to in-memory session defaults without noisy user-facing errors.
 
+### Player Credential Master-Key Protection Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing `credential_set/get/delete`, `credentials.sqlite`, `master.key`, storage mode reporting, Android credential plugins, or platform keychain dependencies.
+- Applies to standard/portable storage, AES-GCM credential envelopes, Windows DPAPI, Android Keystore, Apple Keychain, Linux Secret Service, migration, and settings warnings.
+
+#### 2. Signatures
+```rust
+async fn credential_set(app: AppHandle, ref_name: String, token: String) -> Result<(), String>
+async fn credential_get(app: AppHandle, ref_name: String) -> Result<Option<String>, String>
+async fn credential_delete(app: AppHandle, ref_name: String) -> Result<(), String>
+```
+- Standard marker values: `dpapi:<wrapped>`, `android-keystore:v1`, `apple-keychain:v1`, `linux-secret-service:v1`, or `local-file:<base64>` only for explicit Linux fallback.
+- Portable marker: `portable:<base64>`.
+- Android plugin commands: `getMasterKey`, `createMasterKey`, and `storeMasterKey`; only the Keystore-wrapped SharedPreferences blob persists on Android.
+- Frontend `PlayerCredentialProtection`: `windowsDpapi | androidKeystore | appleKeychain | linuxSecretService | portableFileKey | localFileKey`.
+
+#### 3. Contracts
+- Credential values remain AES-256-GCM ciphertext in `credentials.sqlite`; this contract changes only how the 32-byte database master key is protected.
+- Standard mode uses Windows current-user DPAPI, Android Keystore AES/GCM, Apple Keychain on macOS/iOS, and Linux Secret Service/libsecret. Linux may fall back to a mode-0600 local file only when Secret Service is unavailable, and settings must show the lower protection level.
+- Portable mode intentionally keeps a directory-local file key so the profile can move. Settings must warn users to protect the whole directory and avoid shared/synced/public storage.
+- Legacy raw Base64, `portable:`, or `local-file:` keys migrate in place to the available standard system store without rotating the plaintext master key.
+- If `credentials.sqlite` exists but the required master key is missing/locked/corrupt, preserve the database and return a safe error. Never generate a replacement key that silently makes existing ciphertext undecryptable.
+- Android Keystore uses a non-exportable app alias to wrap the random 32-byte master key with randomized AES/GCM and fixed AAD. Keystore/SharedPreferences corruption is an error, not a reason to recreate credentials.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| first standard launch, no credential DB/key | Generate one 32-byte key, store it in the platform system boundary, then create/use the DB |
+| legacy Base64 file key exists | Decode, store the same key in the platform boundary, replace file contents with a non-secret marker |
+| Linux Secret Service unavailable on first launch | Use mode-0600 `local-file:` fallback and report `localFileKey` with a visible warning |
+| Linux fallback exists and Secret Service later becomes available | Migrate the same key to Secret Service and replace the file with `linux-secret-service:v1` |
+| marker exists but system entry is missing/locked | Fail safely; do not create a new key |
+| credential DB exists but `master.key` and system entry are missing | Preserve the DB and return `existing credentials were preserved`-style error |
+| portable profile | Always use `portable:` file key; never import standard/system secrets automatically |
+
+#### 5. Good/Base/Bad Cases
+- Good: Android stores only an AES-GCM-wrapped master-key blob backed by `AndroidKeyStore`; Rust receives plaintext only in process memory while encrypting/decrypting SQLite rows.
+- Base: Headless Linux has no Secret Service, uses mode-0600 fallback, and settings clearly show the reduced protection.
+- Bad: Writing `portable:<base64>` in every non-Windows standard profile or silently generating a new key after the old system entry disappears.
+
+#### 6. Tests Required
+- Rust unit tests cover portable creation, legacy Base64 migration without rotation, local fallback decoding, and refusal to rotate when a DB already exists.
+- `npm run verify:storage-portable` asserts Android/Apple/Linux markers, platform dependencies, Keystore AES/GCM, and settings warnings.
+- Android checks require `cargo check --target aarch64-linux-android` with the NDK compiler plus `:app:compileUniversalDebugKotlin`.
+- macOS/Keychain code must be checked on an Apple toolchain before release; a Linux host without Objective-C cross tools is not sufficient runtime verification.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```rust
+if !master_key_path.exists() {
+    write_new_base64_key(master_key_path)?;
+}
+```
+
+Correct:
+```rust
+if credential_database_exists && system_master_key_is_missing {
+    return Err("Credential master key is missing; existing credentials were preserved.".into());
+}
+let key = migrate_or_create_platform_protected_master_key()?;
+```
+
+### Tauri Content Security Policy Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing `tauri.conf.json`, remote image/API loading, scripts/workers, external Webviews, or development HMR behavior.
+
+#### 2. Signatures
+- Production `app.security.csp`: string, never `null`.
+- Development `app.security.devCsp`: production policy plus `ws:`/`wss:` only for Vite HMR.
+
+#### 3. Contracts
+- Production requires `default-src 'self'`, `script-src 'self'`, `object-src 'none'`, `frame-src 'none'`, `base-uri 'self'`, `form-action 'self'`, and `frame-ancestors 'none'`.
+- `connect-src` allows app self, Tauri `ipc:` / `http://ipc.localhost`, and HTTP(S) DataSource APIs. It must not allow arbitrary remote scripts or `*`.
+- `img-src` may allow self, Tauri asset URLs, `data:`, `blob:`, and HTTP(S) because provider artwork is displayed/cached. Inline styles remain allowed for Vue dynamic layout; `unsafe-eval` is forbidden.
+- External Quark login uses its separate fixed official Webview and does not weaken the main application CSP.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| CSP is `null`, contains `*`, or includes `unsafe-eval` | Verification fails |
+| production needs provider API/artwork | Allow only the required connect/image schemes, not remote script origins |
+| development HMR needs WebSocket | Add `ws:`/`wss:` to `devCsp` only |
+| new iframe/object/embed is introduced | Redesign or add a narrowly reviewed exception; default remains blocked |
+
+#### 5. Good/Base/Bad Cases
+- Good: Tauri IPC, Emby HTTP API, and cached/data artwork work while injected remote scripts and frames remain blocked.
+- Base: Browser/Vite development gets HMR WebSocket without changing production CSP.
+- Bad: Set `csp: null` because no current `v-html` usage was found.
+
+#### 6. Tests Required
+- `npm run verify:tauri-csp` parses both policies, checks required directives/schemes, rejects eval/wildcards, and scans core views for `v-html`, `eval`, and `new Function`.
+- `tauri info` or a Tauri build must parse and report the production CSP.
+- Run frontend build after policy changes; runtime source/artwork checks remain required on a packaged app.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```json
+{ "app": { "security": { "csp": null } } }
+```
+
+Correct:
+```json
+{ "app": { "security": { "csp": "default-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http: https:; object-src 'none'; frame-src 'none'" } } }
+```
+
 ### Provider Playback Progress Sync Contract
 
 #### 1. Scope / Trigger
@@ -643,7 +752,22 @@ interface DataSource {
 ```rust
 emby_post_playback_json(request: EmbyPlaybackJsonRequest) -> Result<EmbyPlaybackJsonResponse, String>
 ```
+- Tauri native ordinary/playback JSON command:
+```rust
+emby_request_json(request: EmbyJsonRequest) -> Result<EmbyPlaybackJsonResponse, String>
+```
 ```ts
+interface EmbyNativeJsonRequest {
+  method: 'GET' | 'POST'
+  baseUrl: string
+  path: string
+  query?: Record<string, string | number | boolean | null>
+  body?: EmbyNativeJsonValue
+  token?: string
+  userId?: string
+  deviceId: string
+  authMode: 'default' | 'official-compatible'
+}
 interface EmbyNativePlaybackJsonRequest {
   baseUrl: string
   path: string
@@ -668,14 +792,15 @@ interface EmbyNativePlaybackJsonResponse {
 
 #### 3. Contracts
 - Provider sync is optional. Player code must call `source.syncPlaybackProgress?.(...)` or equivalent optional checks; non-provider/local sources must not implement no-op shims solely to satisfy typing.
-- Local Tauri SQLite playback history remains the primary persistence path. Provider sync is best-effort and must never block playback startup, route leave, queue switching, pause/resume, close cleanup, or local history save completion.
+- Local Tauri SQLite playback history remains the primary persistence path. Periodic, pause, and resume provider sync is best-effort and must not block playback or local history saves. Terminal route/queue cleanup starts the final provider request before native stop, hides/stops the native surface promptly, then may await the idempotent final request under the controlled 15-second HTTP timeout so Emby receives `Stopped` without leaving video resources alive indefinitely.
 - Player payload positions, durations, and optional playback start/resume positions are seconds. Provider implementations convert to provider-native units internally; Emby uses ticks (`seconds * 10_000_000`).
 - Local/provider progress writes remain disabled until the saved or route-provided resume position has been resolved. A resolved resume target then remains pending until the current media reports `video-ready` or usable duration and the observed playback time reaches the target. While pending, local history and provider progress payloads must use the resume target instead of transient startup time `0`; otherwise load-time play events or a slow Android/302 seek can erase a valid cross-device Emby position. User-initiated seek cancels the pending resume so a late retry cannot override explicit input.
 - When a provider item or playback route carries a valid resume position, that position is authoritative for cross-device resume. Local SQLite progress is the fallback only when the provider has no usable position. Home aggregation, series episode selection, detail-page actions, progress rendering, and Player startup must preserve this priority so one device's stale local cache cannot overwrite newer Emby progress.
 - Remote-provider progress identity must use stable provider item/session fields (`itemId`, optional `mediaSourceId`, optional `playSessionId`) rather than tokenized playback URLs.
 - Provider implementations must reuse their existing authenticated request helper and redaction path. Tokenized stream URLs, image URLs, credentials, filesystem paths, and provider redirect targets must not be used as progress identity, displayed in errors, logged, or persisted.
-- Emby playback-sync POST traffic (`/Items/{Id}/PlaybackInfo` and `/Sessions/Playing*`) must go through the Tauri native HTTP command, not WebView `fetch`, because `POST + JSON + Emby auth headers` can be blocked by browser CORS/OPTIONS preflight before Emby returns an HTTP status. Generic browsing/home/detail requests can stay on the existing DataSource request path unless they hit the same boundary.
-- The native Emby playback command must accept only `http`/`https` base URLs, reject base URL query/fragment/userinfo, reject unsafe playback paths/query-in-path, disable redirects, bound timeouts/body sizes, and return only short redacted error details.
+- Every Emby JSON request in the Tauri app—authentication, system info, browse/home/detail/search, watched marking, PlaybackInfo, and `/Sessions/Playing*`—must go through the native HTTP boundary. Playback POSTs keep `emby_post_playback_json`; ordinary GET/POST uses `emby_request_json`. Browser-only development fallback must use `redirect: 'error'`, AbortController timeout, and bounded streaming reads rather than raw `ofetch`.
+- The native Emby commands accept only GET/POST, `http`/`https` base URLs without userinfo/query/fragment, and rooted paths without query/fragment/traversal. They use a 15-second timeout, disable redirects, cap query count/value length and request bodies, enforce a 4 MiB limit on both declared and actually streamed response bytes, and return only short redacted error details.
+- Successful Emby JSON endpoints may return `204 No Content` or another response with no readable body, especially `/Sessions/Playing*`. Both native and browser fallback clients must treat a missing/empty response body as `null` success when the HTTP status is successful; body-size enforcement still applies whenever bytes are present.
 - Emby sync should preserve or re-obtain `MediaSourceId` and `PlaySessionId` from `/Items/{id}/PlaybackInfo` when practical. Start with the provider's default Emby auth headers and safe request shapes; only try official-compatible `Authorization` / `X-MediaBrowser-*` headers after default-auth requests return media sources but still lack `PlaySessionId`.
 - Emby `/Sessions/Playing*` reports require both `MediaSourceId` and `PlaySessionId` for current server compatibility. If `PlaySessionId` is missing, skip the session report and record a safe diagnostic instead of sending a known-bad payload that returns 400.
 - Do not use legacy `/Users/{UserId}/PlayingItems*` routes as online playback-state fallback for Emby session reporting; source research showed similar clients use `/Sessions/Playing*`, and legacy routes can return 400 without updating active/cloud history.
@@ -688,22 +813,27 @@ interface EmbyNativePlaybackJsonResponse {
 | position/duration is NaN, infinite, or negative | Skip provider sync; do not send malformed provider payloads |
 | provider request fails/offline/401 | Swallow or convert to user-safe non-blocking state; do not interrupt playback |
 | WebView `fetch` reports `<no response> Failed to fetch` for Emby playback POST | Route playback-sync POST through the Tauri native command instead of changing payloads blindly |
+| ordinary Emby login/browse request is slow, redirects, or streams an oversized body | Native client times out, rejects the redirect, or stops reading at 4 MiB; do not follow to a second origin or allocate an unbounded body |
 | native playback command receives non-http(s), userinfo, query/fragment base URL, or query/fragment embedded in path | Reject before sending the request; return a generic invalid endpoint error |
 | native Emby response is huge or non-success | Bound response reads and return only status plus a short redacted body snippet; never expose tokens/UserId/hostnames |
+| successful Emby response is `204` or has `response.body === null` | Return `null` and keep the session report successful; do not convert an empty successful response into `Failed to read Emby response` |
 | Emby `MediaSourceId` or `PlaySessionId` is missing | Reuse cached playback metadata or refetch playback info when practical; if `PlaySessionId` is still missing, skip `/Sessions/Playing*` and store a safe diagnostic instead of sending a 400-prone report |
 | event is `paused` / `resumed` | Map to provider progress endpoint with an appropriate pause/unpause event where supported |
-| event is `stopped` during route leave or queue switch | Fire provider sync without awaiting it in blocking cleanup paths |
+| event is `stopped` during route leave or queue switch | Capture the final position, start one idempotent provider sync, stop/hide native playback promptly, then await the bounded request before route completion; failures remain non-fatal |
 | event is `completed` | Mark local history completed and optionally send provider watched/completed marker best-effort |
 | tokenized URL appears in stream/artwork/provider error | Redact/drop before display, logging, storage, or provider progress identity construction |
 
 #### 5. Good/Base/Bad Cases
-- Good: Player saves local SQLite progress, then fire-and-forgets `source.syncPlaybackProgress({ itemId, mediaSourceId, playSessionId, position, duration, startPosition, isPaused, completed, event })`; Emby converts seconds to ticks and reports through native HTTP `/Sessions/Playing/Progress` only when `PlaySessionId` is available.
+- Good: Player saves local SQLite progress and fire-and-forgets periodic provider updates; terminal cleanup captures one final payload, starts its provider sync, stops native playback, then awaits the bounded result before route completion. Emby converts seconds to ticks and reports only when `PlaySessionId` is available.
 - Good: Emby `PlaybackInfo` fails in WebView with CORS-like `<no response> Failed to fetch`; the provider uses `invoke('emby_post_playback_json')` for playback POSTs and diagnostics show native HTTP status/network outcomes instead.
+- Good: `authenticate`, `/System/Info`, `/Users/{UserId}/Items`, detail/search, and watched marking use `invoke('emby_request_json')`; a local regression server proves auth headers/query arrive, 307 is not followed, and a body over 4 MiB is rejected.
 - Base: A local file or unsupported DataSource has no `syncPlaybackProgress`; local resume still works and no provider call is attempted.
 - Base: Emby `PlaybackInfo` returns media sources but no `PlaySessionId`; playback continues from a stable Emby/static stream URL, provider sync records a redacted diagnostic, and known-bad session reports are skipped.
-- Bad: Player awaits an Emby network progress request before route leave or queue switch, causing the UI to hang when Emby is slow or offline.
+- Base: `/Sessions/Playing/Progress` returns `204 No Content`; browser fallback and native HTTP both record a successful progress diagnostic.
+- Bad: Player awaits an unbounded provider request before stopping the native surface, sends duplicate zero-position `Stopped` events during unmount, or lets a provider failure prevent route completion.
 - Bad: Sending legacy `/Users/{UserId}/PlayingItems*` fallback reports after `/Sessions/Playing*` cannot obtain a `PlaySessionId`.
 - Bad: Retrying WebView `fetch` payload variations after repeated `<no response> Failed to fetch` for playback POSTs instead of moving that boundary to native HTTP.
+- Bad: Leaving GET/login on `ofetch` with no response limit while only playback progress uses native HTTP.
 - Bad: Using `streamUrl` or a signed redirect URL as `itemId` / `mediaIdentity` / provider progress identity.
 
 #### 6. Tests Required
@@ -711,6 +841,9 @@ interface EmbyNativePlaybackJsonResponse {
 - `npm run lint` must pass without broad provider-progress `any` payloads or unused queue/progress state.
 - `npm run build` must pass after Player route/control integration.
 - If native playback sync commands change, run `cargo check --manifest-path player/src-tauri/Cargo.toml` in addition to frontend checks.
+- `npm run verify:emby-http-boundary` must assert ordinary requests no longer import `ofetch`, both native commands stay registered, and browser fallback has redirect/timeout/body bounds.
+- `npm run verify:emby-playback-progress` must execute a real local Emby-compatible HTTP flow through `EmbyDataSource`: system probe, PlaybackInfo, Range stream read, Playing, Pause, Unpause, TimeUpdate, and Stopped. It must assert `MediaSourceId`, `PlaySessionId`, tick conversion, release-version authentication headers, and successful `204 No Content` handling.
+- Rust tests must cover a successful authenticated GET, rejected redirect, oversized body, unsafe path, and unsupported method.
 - DataSource/provider work should run `npm run tauri:build:windows --prefix player` when Player packaging is in scope; Rust checks are required only if Rust/Tauri files changed.
 - Manual Windows-host checks should verify Emby pause/resume/stop/completed progress appears on the Emby server when Provider sync diagnostics show `playSession=yes`; if `playSession=no`, diagnostics should explain the skipped session report without breaking playback or local continue-watching.
 
@@ -743,17 +876,15 @@ void source.syncPlaybackProgress?.({
 
 Wrong:
 ```ts
-try {
-  await embyProgressSync()
-} finally {
-  await router.replace(nextEpisodeRoute)
-}
+await embyProgressSync()
+await stopNativePlayback()
 ```
 
 Correct:
 ```ts
-void embyProgressSync().catch(() => undefined)
-await router.replace(nextEpisodeRoute)
+const terminalSync = embyProgressSync()
+await stopNativePlayback()
+await terminalSync.catch(() => undefined)
 ```
 
 Wrong:
@@ -769,6 +900,30 @@ Correct:
 ```ts
 await invoke('emby_post_playback_json', {
   request: { baseUrl, path: `/Items/${itemId}/PlaybackInfo`, query, body, token, userId, deviceId, authMode },
+})
+```
+
+Wrong:
+```ts
+if (!response.body)
+  throw new Error('Failed to read Emby response.')
+```
+
+Correct:
+```ts
+if (!response.body)
+  return ''
+```
+
+Wrong:
+```ts
+await ofetch(`${baseUrl}/Users/${userId}/Items`, { headers: authHeaders })
+```
+
+Correct:
+```ts
+await invoke('emby_request_json', {
+  request: { method: 'GET', baseUrl, path: `/Users/${userId}/Items`, query, token, userId, deviceId, authMode: 'default' },
 })
 ```
 
@@ -831,7 +986,8 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 - Resume should ignore trivial positions and completed/near-end media. Completed rows should be excluded from local continue-watching noise.
 - Media detail pages should read local `player_get_playback_progress` for playable detail items and visible episode lists so the primary play action and episode actions can show `继续播放` when a resumable local row exists.
 - Home continue-watching is an aggregate section. Local history rows should keep `progressSource: 'local'` for card subtitles/source labels, but the section title must not imply local-only content. If a local remote-provider row lacks safe persisted artwork, the home aggregation layer may temporarily enrich it from provider detail metadata without writing tokenized image URLs back to SQLite.
-- Local history and route/context payloads should persist safe `posterUrl`, `backdropUrl`, and `titleLogoUrl` together so continue-watching, detail recovery, queue switching, and Player chrome render consistent artwork. Tokenized artwork URLs still follow the same redaction/drop rules.
+- Local history may persist only artwork URLs that pass token/signature redaction. Runtime `PlaybackMediaContext` may carry artwork/title/resume metadata in process memory, but Vue Router query/history must contain only `sourceId`, `itemId`, optional `mediaSourceId`, and short-lived `contextId`; route guards replace-clean every other field, including local `path` and artwork URLs.
+- `PlayerView` resolves remote playback only through `getStreamRequest({ itemId, mediaSourceId })` immediately before mpv load. Local file paths live only in `PlaybackMediaContext.locator` or the active drag/drop session. Route sanitization must not pre-resolve URLs or alter the Android 302 loopback bridge.
 - Per-media playback preferences use the same `sourceId + mediaIdentity` identity boundary as playback history but live in `player_preferences.sqlite`. They may store subtitle/audio fingerprints, subtitle delay, playback speed, mpv video brightness, aspect mode, fit mode, and a canonical local path only when that path remains inside the current Player `cache/subtitles` root. Android Activity display brightness is device/session state and must not be persisted here. Remote subtitle URLs, signed stream URLs, headers, and credentials are forbidden.
 - Restoring subtitle/audio choices must prefer stable language/title/codec/channel fingerprints and use numeric mpv track IDs only as fallback. A missing cached subtitle file or changed track list must degrade to the available/default track without blocking playback startup.
 - Space and left/right arrow playback controls are fixed Player interactions and must ignore editable controls. Navigation shortcuts are global non-sensitive settings, must reject duplicate bindings and fixed Player keys, and must remove source-specific bindings when the source is deleted.
@@ -848,17 +1004,20 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 | position is below resume threshold | Do not resume and do not surface as meaningful continue-watching progress |
 | position is near the end by remaining seconds or ratio | Mark completed and exclude from continue-watching |
 | stream/artwork/title-logo URL contains tokens or signed URL params | Redact or drop before storing/displaying; never show raw tokenized values in UI/logs |
+| Player route contains legacy `path`, title, artwork, resume, or arbitrary query fields | Route guard replaces the URL with the four-field identity allowlist; Player does not load the legacy path |
 | continue-watching source is unavailable | Do not pass stable identity strings such as `source:<id>:<item>` as playable URLs |
 
 #### 5. Good/Base/Bad Cases
 - Good: Player saves `sourceId='emby-main'`, `mediaIdentity='<episodeId>'`, `streamIdentity='source:emby-main:<episodeId>'`, safe poster/backdrop/title-logo artwork, position/duration, and local source marker; reopening that episode seeks to the saved position if it is not completed.
 - Base: Local file playback saves the file path as identity, resumes after restart, and hides previous/next controls when no queue exists.
+- Good: Local file picker stores the absolute path in an in-memory context, then navigates with only `sourceId`, `itemId`, and `contextId`; Emby artwork containing `api_key` never reaches history URL.
 - Bad: Persisting `https://server/Videos/.../stream?api_key=...&X-Amz-Signature=...` as the history identity or displaying it on the home continue-watching card.
 
 #### 6. Tests Required
 - `npm run typecheck` verifies frontend command payload/response shapes and `MediaItem` progress/artwork fields.
 - `npm run lint` verifies no unused progress state or broad `any` wrappers are introduced.
 - `npm run build` verifies Home/Player route integration compiles.
+- `npm run verify:secure-playback-routing` must assert every Player navigation uses `createPlaybackRouteQuery`, forbidden query fields are stripped, `legacyPath` is absent, `getStreamRequest` remains the playback boundary, and the Android 302 bridge contract remains present.
 - `cargo check --manifest-path player/src-tauri/Cargo.toml` verifies Rust command registration/schema code compiles.
 - Windows package builds should run with `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player` when Player packaging is in scope.
 - Manual Windows runtime checks should cover pause save, close save, queue switch save, automatic resume, completed exclusion, and token redaction with a real remote source.
@@ -895,9 +1054,16 @@ router.push({ name: 'player', query: { path } })
 
 Correct:
 ```ts
-const source = store.getSource(item.sourceId)
-const path = source ? await source.getStreamURL(item.id) : item.path
-router.push({ name: 'player', query: { path, sourceId: item.sourceId, itemId: item.id } })
+const contextId = savePlaybackMediaContext({
+  sourceId: item.sourceId,
+  itemId: item.id,
+  currentItem: item,
+  locator: item.sourceId === 'local-file' ? { kind: 'localPath', path: item.path } : undefined,
+})
+router.push({
+  name: 'player',
+  query: createPlaybackRouteQuery({ sourceId: item.sourceId, itemId: item.id, contextId }),
+})
 ```
 
 ### Player Per-Media Preferences, Cache, and Shortcut Contract

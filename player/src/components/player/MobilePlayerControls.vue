@@ -416,7 +416,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 <style scoped>
 .mobile-control-layer {
-  color: white;
+  color: var(--color-text);
 }
 
 .mobile-player-top,
@@ -467,10 +467,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .mobile-top-tools,
 .mobile-player-bottom {
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
-  background: linear-gradient(145deg, rgba(35, 38, 45, 0.7), rgba(10, 12, 17, 0.76));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.13), 0 16px 44px rgba(0, 0, 0, 0.3);
+  background: var(--player-chrome-surface);
+  box-shadow: var(--player-chrome-shadow);
   backdrop-filter: blur(24px) saturate(1.35);
   -webkit-backdrop-filter: blur(24px) saturate(1.35);
 }
@@ -481,7 +481,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: linear-gradient(110deg, rgba(255, 255, 255, 0.08), transparent 34%, transparent 72%, rgba(121, 168, 255, 0.05));
+  background: var(--player-chrome-highlight);
   content: '';
   pointer-events: none;
 }
@@ -501,8 +501,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  color: rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.055);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
 }
 
 .mobile-icon-button {
@@ -532,9 +532,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .mobile-sheet-action.is-selected,
 .mobile-track-row.is-selected,
 .mobile-queue-row.is-selected {
-  border-color: rgba(255, 255, 255, 0.28);
-  color: white;
-  background: rgba(255, 255, 255, 0.16);
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
 }
 
 .mobile-icon-button:disabled {
@@ -544,9 +544,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .mobile-back-button {
   width: 2.75rem;
   height: 2.75rem;
-  border-color: rgba(255, 255, 255, 0.13);
-  background: linear-gradient(145deg, rgba(38, 41, 48, 0.72), rgba(10, 12, 17, 0.78));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 12px 30px rgba(0, 0, 0, 0.3);
+  border-color: var(--control-border);
+  background: var(--player-chrome-surface);
+  box-shadow: var(--player-chrome-shadow);
   backdrop-filter: blur(20px) saturate(1.3);
 }
 
@@ -569,10 +569,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .transport-skip,
 .transport-primary {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--control-border);
   border-radius: 50%;
-  background: linear-gradient(145deg, rgba(38, 41, 48, 0.72), rgba(10, 12, 17, 0.78));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 12px 32px rgba(0, 0, 0, 0.3);
+  background: var(--player-chrome-surface);
+  box-shadow: var(--player-chrome-shadow);
   backdrop-filter: blur(20px) saturate(1.3);
   -webkit-backdrop-filter: blur(20px) saturate(1.3);
 }
@@ -585,10 +585,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 .transport-primary {
   width: 3.9rem;
   height: 3.9rem;
-  border-color: rgba(255, 255, 255, 0.5);
-  color: rgba(10, 12, 17, 0.95);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: inset 0 1px 0 white, 0 12px 34px rgba(0, 0, 0, 0.28);
+  border-color: var(--control-border-hover);
+  color: var(--player-primary-text);
+  background: var(--player-primary-bg);
+  box-shadow: var(--player-chrome-shadow);
 }
 
 .transport-skip svg,
@@ -623,7 +623,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-bottom-row time {
-  color: rgba(255, 255, 255, 0.74);
+  color: var(--color-text-secondary);
   font-size: 0.66rem;
   font-variant-numeric: tabular-nums;
 }
@@ -657,7 +657,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   z-index: 1200;
   display: flex;
   justify-content: flex-end;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--chrome-scrim);
 }
 
 .mobile-player-sheet {
@@ -667,10 +667,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   width: min(23rem, 86vw);
   height: 100%;
   flex-direction: column;
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 1px solid var(--control-border);
   border-radius: 8px 0 0 8px;
-  background: linear-gradient(145deg, rgba(38, 41, 48, 0.9), rgba(11, 13, 18, 0.94));
-  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.08), -18px 0 48px rgba(0, 0, 0, 0.42);
+  background: var(--player-chrome-surface-strong);
+  box-shadow: var(--chrome-shadow);
   backdrop-filter: blur(28px) saturate(1.25);
   -webkit-backdrop-filter: blur(28px) saturate(1.25);
   padding: max(0.8rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right)) max(0.8rem, env(safe-area-inset-bottom)) 0.8rem;
@@ -682,7 +682,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--color-divider);
   padding: 0 0 0.65rem 0.3rem;
 }
 
@@ -706,8 +706,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   width: 100%;
   border: 1px solid transparent;
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.78);
-  background: rgba(255, 255, 255, 0.045);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
 }
 
 .mobile-sheet-action {
@@ -721,7 +721,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-sheet-action b {
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--color-text-tertiary);
   font-size: 1.25rem;
 }
 
@@ -730,9 +730,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   grid-template-columns: 1fr auto;
   gap: 0.65rem;
   margin-bottom: 0.8rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--color-divider);
   padding: 0.35rem 0.4rem 0.85rem;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--color-text-secondary);
   font-size: 0.8rem;
 }
 
@@ -756,7 +756,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-section-label {
   margin: 0.85rem 0 0.45rem;
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--color-text-tertiary);
   font-size: 0.68rem;
   font-weight: 800;
 }
@@ -774,7 +774,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-track-row small,
 .mobile-queue-row small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--color-text-tertiary);
   font-size: 0.66rem;
 }
 
@@ -784,7 +784,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-subtitle-delay {
   margin-top: 0.8rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--color-divider);
   padding-top: 0.8rem;
 }
 
@@ -797,10 +797,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 
 .mobile-delay-actions button {
   min-height: 2.7rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.76);
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
 }
 
 .mobile-queue-row {
@@ -848,8 +848,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
 }
 
 .mobile-sheet-empty {
-  color: rgba(255, 255, 255, 0.46);
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text-tertiary);
+  background: var(--surface-soft);
 }
 
 .mobile-player-sheet-enter-active,
@@ -927,7 +927,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
     align-self: flex-end;
     width: 100%;
     height: min(70svh, 36rem);
-    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    border-top: 1px solid var(--control-border);
     border-left: 0;
     border-radius: 8px 8px 0 0;
     padding: 0.8rem max(0.8rem, env(safe-area-inset-right)) max(0.8rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));

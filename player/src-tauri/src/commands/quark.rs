@@ -1,3 +1,7 @@
+use base64::Engine;
+use qrcode::render::svg;
+use qrcode::QrCode;
+use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, COOKIE, REFERER, SET_COOKIE, USER_AGENT,
 };
@@ -212,7 +216,7 @@ pub async fn quark_auth_poll_qr(
         let cookie = exchange_service_ticket(&session.client, &session.jar, service_ticket).await?;
         return Ok(auth_poll_response("success", Some(cookie)));
     }
-    if status == 5_000_4002 {
+    if status == 50_004_002 {
         return Ok(auth_poll_response("expired", None));
     }
     state.qr_sessions.lock().await.insert(session_id, session);
@@ -319,7 +323,7 @@ pub async fn quark_search(request: QuarkSearchRequest) -> Result<QuarkListRespon
             None,
         )
         .await?;
-        let page_entries = parse_file_list(&response.body, &root_path, true);
+        let page_entries = parse_file_list(&response.body, &root_path);
         let count = page_entries.len();
         entries.extend(
             page_entries
@@ -606,7 +610,7 @@ async fn list_directory(
             None,
         )
         .await?;
-        let page_entries = parse_file_list(&response.body, parent_path, false);
+        let page_entries = parse_file_list(&response.body, parent_path);
         let count = page_entries.len();
         entries.extend(page_entries);
         let total = response_total(&response.body);
@@ -681,18 +685,18 @@ fn validate_api_response(http_status: u16, value: &Value) -> Result<(), String> 
     Err(format!("夸克网盘请求失败（代码 {code}）。"))
 }
 
-fn parse_file_list(value: &Value, parent_path: &str, search: bool) -> Vec<QuarkFileEntry> {
+fn parse_file_list(value: &Value, parent_path: &str) -> Vec<QuarkFileEntry> {
     value
         .get("data")
         .and_then(|data| data.get("list"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|item| parse_file_entry(item, parent_path, search))
+        .filter_map(|item| parse_file_entry(item, parent_path))
         .collect()
 }
 
-fn parse_file_entry(value: &Value, parent_path: &str, search: bool) -> Option<QuarkFileEntry> {
+fn parse_file_entry(value: &Value, parent_path: &str) -> Option<QuarkFileEntry> {
     let fid = value.get("fid")?.as_str()?.trim();
     let name = value.get("file_name")?.as_str()?.trim();
     if fid.is_empty() || name.is_empty() || contains_control_character(name) {
@@ -708,8 +712,7 @@ fn parse_file_entry(value: &Value, parent_path: &str, search: bool) -> Option<Qu
         .and_then(Value::as_str)
         .or_else(|| value.get("full_path").and_then(Value::as_str))
         .and_then(|path| normalize_search_result_path(path, name));
-    let fallback_parent = if search { parent_path } else { parent_path };
-    let path = candidate_path.unwrap_or_else(|| join_provider_path(fallback_parent, name));
+    let path = candidate_path.unwrap_or_else(|| join_provider_path(parent_path, name));
     Some(QuarkFileEntry {
         fid: fid.to_string(),
         name: name.to_string(),
@@ -956,7 +959,7 @@ mod tests {
                 "updated_at": 1_700_000_000_000_i64
             }] }
         });
-        let entries = parse_file_list(&value, "/媒体", false);
+        let entries = parse_file_list(&value, "/媒体");
         assert_eq!(entries[0].path, "/媒体/电影.mkv");
         assert_eq!(entries[0].size, Some(42));
     }
@@ -994,7 +997,3 @@ mod tests {
         assert!(matches!(&request_id[19..20], "8" | "9" | "a" | "b"));
     }
 }
-use base64::Engine;
-use qrcode::render::svg;
-use qrcode::QrCode;
-use reqwest::cookie::{CookieStore, Jar};

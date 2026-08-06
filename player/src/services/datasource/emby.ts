@@ -17,7 +17,8 @@ import type {
   SubtitleTrack,
 } from './types'
 import { invoke } from '@tauri-apps/api/core'
-import { ofetch } from 'ofetch'
+import { isTauriRuntime } from '@/services/runtimePlatform'
+import playerPackage from '../../../package.json'
 import { SourceMetadataCache } from './cache'
 import { createCredentialRef, readCredential, readEmbyCredential, readRawCredentialBackup, removeCredential, saveEmbyCredential, saveRawCredentialBackup } from './credentialStore'
 import { redactSensitiveText } from './errors'
@@ -70,7 +71,10 @@ const LOGO_IMAGE_HEIGHT = '260'
 const EMBY_TICKS_PER_SECOND = 10_000_000
 const EMBY_UNIX_EPOCH_TICKS = 621_355_968_000_000_000
 const EMBY_MAX_STREAMING_BITRATE = 120_000_000
+const EMBY_CLIENT_VERSION = playerPackage.version
 const PLAYBACK_INFO_FAILURE_COOLDOWN_MS = 60_000
+const EMBY_HTTP_TIMEOUT_MS = 15_000
+const EMBY_MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
 
 type EmbyPlaybackAuthMode = 'default' | 'official-compatible'
 type EmbyPlaybackInfoShape = 'simple-body' | 'query-body-lite' | 'query-only' | 'query-device-profile' | 'device-profile-body' | 'auto-open-live-stream' | 'official-simple-body'
@@ -83,13 +87,14 @@ type EmbyRequestBody = EmbyRequestBodyObject
 
 type EmbyNativeJsonValue = EmbyRequestBodyValue
 
-interface EmbyNativePlaybackJsonRequest {
+interface EmbyNativeJsonRequest {
+  readonly method: 'GET' | 'POST'
   readonly baseUrl: string
   readonly path: string
   readonly query?: Record<string, string | number | boolean | null>
   readonly body?: EmbyNativeJsonValue
-  readonly token: string
-  readonly userId: string
+  readonly token?: string
+  readonly userId?: string
   readonly deviceId: string
   readonly authMode: EmbyPlaybackAuthMode
 }
@@ -326,15 +331,16 @@ export class EmbyDataSource implements DataSource {
       throw new Error('请输入 Emby 账号和密码。')
 
     try {
-      const response = await ofetch<unknown>(`${this.baseUrl}/Users/AuthenticateByName`, {
+      const response = await this.sendJsonRequest({
         method: 'POST',
+        baseUrl: this.baseUrl,
+        path: '/Users/AuthenticateByName',
         body: {
           Username: trimmedUsername,
           Pw: password,
         },
-        headers: {
-          'X-Emby-Authorization': authorizationHeader(this.deviceId),
-        },
+        deviceId: this.deviceId,
+        authMode: 'default',
       })
       const auth = parseAuthResponse(response)
       this.token = auth.accessToken
@@ -1179,37 +1185,41 @@ export class EmbyDataSource implements DataSource {
   private async request(path: string, query: EmbyRequestPayload = {}, method: 'GET' | 'POST' = 'GET'): Promise<unknown> {
     this.ensureConfigured()
     const resolvedPath = path.replace('{UserId}', encodeURIComponent(this.userId))
-    const url = `${this.baseUrl}${resolvedPath}`
 
-    try {
-      return await ofetch<unknown>(url, {
-        method,
-        query: method === 'GET' ? query : undefined,
-        body: method === 'POST' ? query : undefined,
-        headers: this.authHeaders(),
-      })
-    }
-    catch (error) {
-      throw new Error(redactSensitiveText(error))
-    }
+    return this.sendJsonRequest({
+      method,
+      baseUrl: this.baseUrl,
+      path: resolvedPath,
+      query: method === 'GET' ? toNativePlaybackQuery(query) : undefined,
+      body: method === 'POST' ? toNativeRequestBody(query) : undefined,
+      token: this.token,
+      userId: this.userId,
+      deviceId: this.deviceId,
+      authMode: 'default',
+    })
   }
 
   private async postPlaybackJson(path: string, body: EmbyRequestBody | undefined, authMode: EmbyPlaybackAuthMode = 'default', query: EmbyRequestPayload = {}): Promise<unknown> {
     this.ensureConfigured()
     const resolvedPath = path.replace('{UserId}', encodeURIComponent(this.userId))
+    const request = {
+      method: 'POST',
+      baseUrl: this.baseUrl,
+      path: resolvedPath,
+      query: toNativePlaybackQuery(query),
+      body,
+      token: this.token,
+      userId: this.userId,
+      deviceId: this.deviceId,
+      authMode,
+    } satisfies EmbyNativeJsonRequest
 
     try {
+      if (!isTauriRuntime())
+        return await controlledBrowserEmbyRequest(request)
+
       const response = await invoke<EmbyNativePlaybackJsonResponse>('emby_post_playback_json', {
-        request: {
-          baseUrl: this.baseUrl,
-          path: resolvedPath,
-          query: toNativePlaybackQuery(query),
-          body,
-          token: this.token,
-          userId: this.userId,
-          deviceId: this.deviceId,
-          authMode,
-        } satisfies EmbyNativePlaybackJsonRequest,
+        request,
       })
       return response.body
     }
@@ -1218,10 +1228,17 @@ export class EmbyDataSource implements DataSource {
     }
   }
 
-  private authHeaders(): Record<string, string> {
-    return {
-      'X-Emby-Token': this.token,
-      'X-Emby-Authorization': authorizationHeader(this.deviceId, this.token),
+  private async sendJsonRequest(request: EmbyNativeJsonRequest): Promise<unknown> {
+    try {
+      if (isTauriRuntime()) {
+        const response = await invoke<EmbyNativePlaybackJsonResponse>('emby_request_json', { request })
+        return response.body
+      }
+
+      return controlledBrowserEmbyRequest(request)
+    }
+    catch (error) {
+      throw new Error(redactSensitiveText(error))
     }
   }
 
@@ -1526,7 +1543,7 @@ function createDeviceId(sourceId: string): string {
 function authorizationHeader(deviceId: string, token?: string, userId?: string): string {
   const userSegment = userId ? `, UserId="${userId}"` : ''
   const tokenSegment = token ? `, Token="${token}"` : ''
-  return `MediaBrowser Client="OhMyCine Player", Device="Desktop", DeviceId="${deviceId}", Version="0.1.0"${userSegment}${tokenSegment}`
+  return `MediaBrowser Client="OhMyCine Player", Device="Desktop", DeviceId="${deviceId}", Version="${EMBY_CLIENT_VERSION}"${userSegment}${tokenSegment}`
 }
 
 function parseItemsResponse(value: unknown): EmbyItemRecord[] {
@@ -1813,6 +1830,100 @@ function compactPlaybackBody(body: EmbyRequestPayload): EmbyRequestPayload {
 function toNativePlaybackQuery(query: EmbyRequestPayload): Record<string, string | number | boolean | null> | undefined {
   const entries = Object.entries(query).filter(([, value]) => value !== undefined && value !== null && value !== '') as Array<[string, string | number | boolean | null]>
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+function toNativeRequestBody(query: EmbyRequestPayload): EmbyRequestBody {
+  return Object.fromEntries(
+    Object.entries(query).filter(([, value]) => value !== undefined),
+  ) as EmbyRequestBody
+}
+
+async function controlledBrowserEmbyRequest(request: EmbyNativeJsonRequest): Promise<unknown> {
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), EMBY_HTTP_TIMEOUT_MS)
+  try {
+    const url = new URL(`${request.baseUrl.replace(/\/+$/, '')}${request.path}`)
+    for (const [key, value] of Object.entries(request.query ?? {})) {
+      if (value != null)
+        url.searchParams.set(key, String(value))
+    }
+
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'X-Emby-Authorization': authorizationHeader(
+        request.deviceId,
+        request.token,
+        request.authMode === 'official-compatible' ? request.userId : undefined,
+      ),
+    }
+    if (request.token)
+      headers['X-Emby-Token'] = request.token
+    if (request.authMode === 'official-compatible' && request.token) {
+      headers.Authorization = authorizationHeader(request.deviceId, request.token, request.userId)
+      headers['X-MediaBrowser-Token'] = request.token
+    }
+
+    const body = request.body == null ? undefined : JSON.stringify(request.body)
+    if (body && new TextEncoder().encode(body).byteLength > 512 * 1024)
+      throw new Error('Emby request body is too large.')
+    if (body)
+      headers['Content-Type'] = 'application/json'
+
+    const response = await fetch(url, {
+      method: request.method,
+      headers,
+      body,
+      redirect: 'error',
+      signal: controller.signal,
+    })
+    const text = await readLimitedBrowserResponse(response)
+    if (!response.ok) {
+      const snippet = redactSensitiveText(text).replace(/\s+/g, ' ').trim().slice(0, 700)
+      throw new Error(`HTTP ${response.status} from Emby endpoint.${snippet ? ` Body: ${snippet}` : ''}`)
+    }
+    return text.trim() ? JSON.parse(text) as unknown : null
+  }
+  catch (error) {
+    if (controller.signal.aborted)
+      throw new Error('Network error while contacting Emby endpoint (timeout).')
+    throw error
+  }
+  finally {
+    globalThis.clearTimeout(timeout)
+  }
+}
+
+async function readLimitedBrowserResponse(response: Response): Promise<string> {
+  const contentLength = Number.parseInt(response.headers.get('content-length') ?? '', 10)
+  if (Number.isFinite(contentLength) && contentLength > EMBY_MAX_JSON_RESPONSE_BYTES)
+    throw new Error('Emby response was too large.')
+  if (!response.body)
+    return ''
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done)
+      break
+    if (!value)
+      continue
+    total += value.byteLength
+    if (total > EMBY_MAX_JSON_RESPONSE_BYTES) {
+      await reader.cancel()
+      throw new Error('Emby response was too large.')
+    }
+    chunks.push(value)
+  }
+
+  const body = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder('utf-8', { fatal: true }).decode(body)
 }
 
 function compactPlaybackRequestBody(body: EmbyRequestBody): EmbyRequestBody {

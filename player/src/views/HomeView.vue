@@ -9,6 +9,7 @@ import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { artworkCacheKey } from '@/services/imageCache'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const LOCAL_FILE_SOURCE_ID = 'local-file'
@@ -142,6 +143,7 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
       sourceId: item.sourceId,
       itemId: item.id,
       title: continueItemTitle(item),
+      currentItem: { ...item, resumePosition },
       locator: item.sourceId === LOCAL_FILE_SOURCE_ID || item.sourceId === 'placeholder'
         ? { kind: 'localPath', path: item.path }
         : undefined,
@@ -150,18 +152,11 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
 
     await router.push({
       name: 'player',
-      query: {
-        title: continueItemTitle(item),
+      query: createPlaybackRouteQuery({
         sourceId: item.sourceId,
         itemId: item.id,
-        libraryId: item.libraryId,
-        mediaType: item.type,
-        posterUrl: item.posterUrl,
-        backdropUrl: item.backdropUrl,
-        titleLogoUrl: item.titleLogoUrl,
         contextId,
-        resumePosition,
-      },
+      }),
     })
   }
   catch (error) {

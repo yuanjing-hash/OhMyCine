@@ -254,7 +254,7 @@ fn entry_from_metadata(
         name: display_name(canonical_path),
         path: provider_path_from_canonical(root, canonical_path),
         is_dir: metadata.is_dir(),
-        size: metadata.is_file().then(|| metadata.len()),
+        size: metadata.is_file().then_some(metadata.len()),
         modified_ms: metadata
             .modified()
             .ok()
