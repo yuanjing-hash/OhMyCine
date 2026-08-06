@@ -208,7 +208,7 @@ export class TmdbScraper {
 
   constructor(credential: TmdbCredentialValue, settings: TmdbLocalSettings = loadTmdbLocalSettings(), timeoutMs = DEFAULT_TMDB_TIMEOUT_MS) {
     this.credential = credential
-    this.settings = settings
+    this.settings = sanitizeTmdbLocalSettings(settings)
     this.timeoutMs = timeoutMs
   }
 
