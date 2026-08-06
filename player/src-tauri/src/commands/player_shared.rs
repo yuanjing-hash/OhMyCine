@@ -165,8 +165,10 @@ mod tests {
         assert_eq!(settings.desktop_hwdec(), "auto-safe");
         assert_eq!(settings.demuxer_max_bytes(), 64 * 1024 * 1024);
 
-        let mut invalid = MpvEngineSettings::default();
-        invalid.video_output = "custom-vo".to_string();
+        let invalid = MpvEngineSettings {
+            video_output: "custom-vo".to_string(),
+            ..MpvEngineSettings::default()
+        };
         assert!(invalid.validated().is_err());
     }
 }

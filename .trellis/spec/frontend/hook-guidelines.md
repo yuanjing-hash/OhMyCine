@@ -202,6 +202,57 @@ if (nativeLogConfirmsGpuOutputFailure()) {
 }
 ```
 
+### Android Resume Seek Confirmation Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing resume-position restoration, `useMpv.seek`, Android native time events, or provider playback progress startup.
+- Applies across route/local resume selection, `PlayerView`, `useMpv`, Rust/Kotlin seek commands, libmpv `time-pos`, local history, and Emby session reporting.
+
+#### 2. Signatures
+- `useMpv().seek(position: number, options?: { optimistic?: boolean }): Promise<void>`.
+- Interactive user seeks use the default optimistic UI update.
+- Desktop automatic resume keeps the existing optimistic seek behavior; Android automatic resume calls `seek(position, { optimistic: false })`.
+
+#### 3. Contracts
+- An accepted Android seek command is not proof that the opened media retained the target position; remote media may reset `time-pos` to zero when `FILE_LOADED` arrives.
+- Keep `pendingResumeSeek` active until both `videoReady === true` and a native `mpv:time-update` reports a position within five seconds of the target.
+- While resume is pending, local/provider history uses the pending target as the effective position so slow Android startup cannot overwrite an existing cloud resume point with zero.
+- `syncProviderPlaybackStarted` runs only after resume selection has completed, and Emby receives the selected start position even when the remote stream is still opening.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Seek command returns before `FILE_LOADED` | Do not clear pending resume and do not publish an optimistic confirmation |
+| Native time briefly equals target before video readiness | Keep pending resume active |
+| Video becomes ready and native time is within five seconds of target | Clear pending resume and resume normal progress reporting |
+| Slow load continues to report zero | Preserve the pending target for local/provider progress and retry when readiness changes |
+| User manually seeks | Cancel pending automatic resume and use the interactive optimistic path |
+
+#### 5. Good/Base/Bad Cases
+- Good: Android continue-watching opens a slow Emby stream, remains pending through initial zero samples, then starts from the cloud position and reports forward progress.
+- Base: desktop seek keeps its responsive optimistic UI and confirms through the normal mpv event path.
+- Bad: assigning `currentTime = resumePosition` immediately, treating that assignment as native confirmation, cancelling retries, and later accepting Android's zero reset.
+
+#### 6. Tests Required
+- Static verification asserts automatic resume passes `{ optimistic: false }` and completion checks `videoReady` plus native time proximity.
+- Typecheck verifies interactive seek callers remain compatible with the optional options argument.
+- Android real-device regression: use an Emby continue-watching item with a remote start position, confirm playback stays near that point after `FILE_LOADED`, then verify Emby `PlaybackPositionTicks` advances after progress/stop.
+- Run `npm run verify:playback-source-lifecycle`, `npm run typecheck`, `npm run lint`, `npm run build`, Android compilation, and an APK build.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```ts
+await seekMpv(resumePosition)
+// useMpv writes currentTime immediately, so PlayerView mistakes this for native confirmation.
+```
+
+Correct:
+```ts
+await seekMpv(resumePosition, { optimistic: false })
+// Clear pending resume only after videoReady and a native time update confirm the target.
+```
+
 ### Android HTTPS Playback Bridge Contract
 
 #### 1. Scope / Trigger

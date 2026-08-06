@@ -38,12 +38,12 @@ const formattedSpeed = computed(() => {
   flex-direction: column;
   align-items: center;
   gap: 0.4rem;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
-  background: rgba(8, 10, 14, 0.68);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
+  background: var(--player-chrome-surface-strong);
+  box-shadow: var(--player-chrome-shadow);
   padding: 0.9rem 1.15rem;
-  color: white;
+  color: var(--color-text);
   text-align: center;
   backdrop-filter: blur(20px) saturate(1.25);
   -webkit-backdrop-filter: blur(20px) saturate(1.25);
@@ -52,8 +52,8 @@ const formattedSpeed = computed(() => {
 .buffering-spinner {
   width: 1.7rem;
   height: 1.7rem;
-  border: 2px solid rgba(255, 255, 255, 0.22);
-  border-top-color: rgba(255, 255, 255, 0.94);
+  border: 2px solid var(--control-border-hover);
+  border-top-color: var(--color-text);
   border-radius: 50%;
   animation: buffering-spin 820ms linear infinite;
 }
@@ -64,7 +64,7 @@ const formattedSpeed = computed(() => {
 }
 
 .buffering-indicator > span:last-child {
-  color: rgba(255, 255, 255, 0.58);
+  color: var(--color-text-secondary);
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
 }

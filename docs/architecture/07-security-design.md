@@ -188,7 +188,7 @@ Player 本地需要保存：
 
 普通配置文件只保存非敏感字段，敏感字段保存引用 ID。
 
-Player 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data` 保存应用数据库。Windows 标准模式下，AES-GCM 凭据数据库的主密钥必须由当前 Windows 用户的 DPAPI 包装；旧裸 Base64 主密钥首次读取后原地升级。EXE 同目录存在 `portable.flag` 或使用 `--portable` 时，Player 改用 EXE 同目录 `data`、`cache`、`logs`。便携模式为了跨目录/设备移动使用文件主密钥，设置页必须明确提示保护等级低于 DPAPI，用户需要保护整个便携目录。
+Player 标准模式把 AES-GCM 凭据数据库的主密钥交给当前平台系统安全存储保护：Windows 使用当前用户 DPAPI，Android 使用 Keystore AES-GCM 包装，macOS/iOS 使用 Apple Keychain，Linux 优先使用 Secret Service/libsecret。Linux 桌面会话没有可用 Secret Service 时才允许降级为权限受限的本机文件密钥，并必须在设置页显示风险提示。旧裸 Base64/旧文件主密钥首次读取后原地迁移到目标系统存储，迁移不得轮换主密钥；已有 `credentials.sqlite` 但系统/文件主密钥缺失时必须保留数据库并报错，禁止静默生成新钥匙导致全部既有密文不可解。EXE 同目录存在 `portable.flag` 或使用 `--portable` 时，Player 改用 EXE 同目录 `data`、`cache`、`logs`，为了跨目录/设备移动继续使用文件主密钥；设置页必须明确提示便携模式保护等级低于系统安全存储，用户需要保护整个便携目录。
 
 数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划进入 `settings.sqlite`。WebView localStorage 只作为标准模式的旧版本迁移输入或浏览器开发 fallback，不得继续作为 Tauri 桌面版配置源。迁移只处理固定 namespaced key 和固定 SQLite 文件白名单，不接受任意路径或敏感明文。便携模式是独立配置档案，不得自动读取、复制或删除标准目录、旧 Roaming 目录以及共享 WebView localStorage 中的数据；跨模式导入只能由用户显式触发。
 
@@ -209,6 +209,8 @@ CloudDrive2、夸克网盘、123 云盘与 WebDAV 必须使用不同的凭据 en
 - Android 应用更新只允许读取固定 `yuanjing-hash/OhMyCine` GitHub Release 中与标签精确匹配的 ARM64 APK 和 `.sha256`。重定向只允许 GitHub release asset 域名，限制响应大小和跳转次数，Rust 完成 SHA-256 校验后只写入应用 cache 的 `updates/`；FileProvider 只暴露该子目录，禁止外部存储和任意 cache 路径。安装必须由 Android 系统界面确认，`REQUEST_INSTALL_PACKAGES` 不得用于静默安装。
 - Android preview keystore 和密码不得进入 Git、构建日志、Release asset 或普通 app data。CI 只从 GitHub Actions Secrets 注入；本机备份必须位于用户配置目录并限制文件权限。更换签名会破坏覆盖升级能力，应视为显式密钥轮换事件。
 - Vue Router 只保存 `sourceId`、`itemId`、可选媒体版本 ID 和短生命周期上下文 ID；远程播放 URL、签名参数、播放 header 与本地绝对路径不得进入 route query/history。PlayerView 只在调用 mpv 前即时解析播放请求。
+- Player 路由构造统一走 query allowlist，Player route guard 对旧链接执行 replace 清洗，移除 `path`、标题、海报/背景/Logo URL、续播位置和其它非身份字段；本地文件 locator、展示元数据和续播位置只存在于进程内 `PlaybackMediaContext`。该清洗不得把 Emby/云盘播放地址提前固化，也不得改动 Android Rust 回环 302 桥。
+- Tauri 生产 CSP 必须至少限制 `script-src 'self'`，禁止 `unsafe-eval`、frame 与 object；`connect-src` 只保留 Tauri IPC 和 DataSource 所需 HTTP(S)，图片只开放应用自身、asset/data/blob 与 HTTP(S)。开发 CSP 可额外开放 Vite HMR WebSocket，但不得把通配符或任意远程脚本带入生产策略。
 - 删除媒体源时，必须按精确 `sourceId` 删除该来源的本机播放历史、单视频播放偏好和来源拥有的字幕缓存，并按 source/root 清理原始文件扫描缓存；禁止使用空来源或不受约束的批量删除。
 - OpenSubtitles API Key 或账号密码以互斥认证模式进入独立 credential envelope，不得进入普通设置、localStorage、日志或导出配置。普通设置只保存默认字幕语言和提供器启用状态；旧组合凭据迁移时不得同时保留两套秘密。
 - Player 本地字幕下载只允许 Tauri 受控客户端访问固定 OpenSubtitles HTTPS REST/XML-RPC 端点和受信任下载域名，限制超时、重定向、搜索响应、Base64/gzip 解码后大小和字幕文件大小。XML 响应拒绝 DTD/Entity，远端文件名不得直接成为本地路径；只读取允许的字幕扩展名并使用哈希文件名写入当前存储模式的 `cache/subtitles/<source-hash>/<media-hash>`，以便按媒体源安全清理。
@@ -367,6 +369,7 @@ HMAC-SHA256(secret, method + path + exp + user_or_library_scope)
 - 管理员配置的 URL 默认可信，但测试连接时仍要限制危险 scheme
 - 普通用户输入的 URL 不允许访问内网管理地址
 - 插件/站点适配器发起请求需要走统一 HTTP Client
+- Emby 登录、系统信息、媒体库、搜索、详情、标记已观看、PlaybackInfo 和播放进度 JSON 请求统一走 Tauri Rust 受控客户端；只允许 GET/POST、HTTP(S) Base URL 和根路径，15 秒超时、禁用自动重定向、限制查询/请求体，并对声明长度与实际流式读取同时执行 4 MiB 响应上限。浏览器开发 fallback 也必须使用 `redirect: 'error'`、AbortController 和流式大小限制，不得退回无边界 `ofetch`。
 - 禁止访问 `file://`、`gopher://`、`ftp://` 等非预期协议
 
 ### 10.3 日志脱敏

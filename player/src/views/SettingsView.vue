@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
-import type { DataSourceConfig, DataSourceType, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { DataSourceConfig, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { ImageCacheStats } from '@/services/imageCache'
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
 import type { MobileEpisodeLayout, PlayerCacheMode, PlayerDemuxerCacheSize, PlayerHardwareDecoder, PlayerVideoOutput, PlayerVideoSync } from '@/services/playerInteractionSettings'
@@ -9,6 +9,7 @@ import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/pl
 import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
 import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
+import type { EditableDataSourceConfig, EditableDataSourceType, LoginDataSourceType, SourceTypeOption } from '@/services/settingsSourceOptions'
 import type { SubtitleLanguage } from '@/services/subtitle'
 import type { UpdateChannel } from '@/services/updater'
 import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
@@ -68,6 +69,7 @@ import {
   testTmdbApiRoute,
   testTmdbImageRoute,
 } from '@/services/scraper/tmdb'
+import { defaultDisplayName, isEditableDataSourceConfig, isEditableDataSourceType, isRootSelectableRemoteSourceType, sourceTypeLabel, SOURCE_TYPE_OPTIONS as sourceTypeOptions, SUBTITLE_LANGUAGE_OPTIONS as subtitleLanguageOptions, TMDB_AUTH_TYPE_OPTIONS as tmdbAuthTypeOptions, TMDB_LANGUAGE_OPTIONS as tmdbLanguageOptions, TMDB_REGION_OPTIONS as tmdbRegionOptions } from '@/services/settingsSourceOptions'
 import {
   clearOpenSubtitlesCredentials,
   loadSubtitleSearchSettings,
@@ -79,9 +81,6 @@ import {
 import { useDataSourceStore } from '@/stores/datasource'
 import { useUpdaterStore } from '@/stores/updater'
 
-type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav' | '123' | 'quark'>
-type EditableDataSourceType = LoginDataSourceType | 'local'
-type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'shortcuts' | 'updates' | 'diagnostics'
 type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'shortcuts' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
@@ -144,118 +143,6 @@ interface SettingsEntry {
   actionLabel: string
   disabled: boolean
 }
-
-const sourceTypeOptions: Array<{
-  type: EditableDataSourceType
-  label: string
-  shortLabel: string
-  description: string
-  defaultName: string
-  urlPlaceholder: string
-  usernamePlaceholder: string
-}> = [
-  {
-    type: 'emby',
-    label: 'Emby',
-    shortLabel: 'E',
-    description: '媒体服务器账号登录',
-    defaultName: 'Emby',
-    urlPlaceholder: 'http://emby.example.test:8096',
-    usernamePlaceholder: 'Emby 登录账号',
-  },
-  {
-    type: 'alist',
-    label: 'OpenList/Alist',
-    shortLabel: 'A',
-    description: 'OpenList/Alist API 账号登录',
-    defaultName: 'OpenList/Alist',
-    urlPlaceholder: 'http://openlist.example.test:5244',
-    usernamePlaceholder: 'OpenList/Alist 登录账号',
-  },
-  {
-    type: 'clouddrive2',
-    label: 'CloudDrive2',
-    shortLabel: 'C',
-    description: 'CloudDrive2 原生 gRPC API Token',
-    defaultName: 'CloudDrive2',
-    urlPlaceholder: 'http://clouddrive2.example.test:19798',
-    usernamePlaceholder: '',
-  },
-  {
-    type: 'webdav',
-    label: 'WebDAV',
-    shortLabel: 'W',
-    description: '通用 WebDAV 只读数据源',
-    defaultName: 'WebDAV',
-    urlPlaceholder: 'https://dav.example.test/media',
-    usernamePlaceholder: 'WebDAV 用户名',
-  },
-  {
-    type: 'quark',
-    label: '夸克网盘',
-    shortLabel: 'Q',
-    description: 'Cookie 登录，只读浏览与播放',
-    defaultName: '夸克网盘',
-    urlPlaceholder: '',
-    usernamePlaceholder: '',
-  },
-  {
-    type: '123',
-    label: '123 云盘',
-    shortLabel: '2',
-    description: '账号或访问令牌登录，只读浏览与播放',
-    defaultName: '123 云盘',
-    urlPlaceholder: '',
-    usernamePlaceholder: '123 云盘手机号或邮箱',
-  },
-  {
-    type: 'local',
-    label: '本地文件夹',
-    shortLabel: 'L',
-    description: '只读扫描本机媒体目录',
-    defaultName: '本地媒体库',
-    urlPlaceholder: '',
-    usernamePlaceholder: '',
-  },
-]
-
-const tmdbAuthTypeOptions: Array<{ value: TmdbAuthType, label: string, description: string }> = [
-  {
-    value: 'readAccessToken',
-    label: 'API 读访问令牌 / Read Access Token',
-    description: '推荐填写。粘贴 TMDB 设置页生成的 v4 只读访问令牌。',
-  },
-  {
-    value: 'apiKey',
-    label: 'API Key',
-    description: '兼容旧版 v3 或短 key；已有 API Key 时可继续使用。',
-  },
-]
-
-const tmdbLanguageOptions = [
-  { value: 'zh-CN', label: '简体中文' },
-  { value: 'zh-TW', label: '繁体中文' },
-  { value: 'en-US', label: 'English' },
-  { value: 'ja-JP', label: '日本語' },
-  { value: 'ko-KR', label: '한국어' },
-]
-
-const tmdbRegionOptions = [
-  { value: 'CN', label: '中国内地' },
-  { value: 'TW', label: '中国台湾' },
-  { value: 'HK', label: '中国香港' },
-  { value: 'US', label: '美国' },
-  { value: 'JP', label: '日本' },
-  { value: 'KR', label: '韩国' },
-]
-
-const subtitleLanguageOptions: Array<{ value: SubtitleLanguage, label: string }> = [
-  { value: 'zh-CN', label: '简体中文' },
-  { value: 'zh-TW', label: '繁体中文' },
-  { value: 'en', label: 'English' },
-  { value: 'ja', label: '日本語' },
-  { value: 'ko', label: '한국어' },
-]
 
 const store = useDataSourceStore()
 const updaterStore = useUpdaterStore()
@@ -411,7 +298,6 @@ const tmdbCredentialStatusLabel = computed(() => {
   return '当前构建未提供凭据'
 })
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
-const storageEntryMeta = computed(() => storageInfo.value ? storageModeLabel.value : '浏览器模式')
 const playbackEntryMeta = computed(() => `${subtitleForm.videoOutput} · ${subtitleForm.hardwareDecoder}`)
 const shortcutEntries = computed(() => [
   { target: 'home' as const, label: '首页', description: '返回海报墙首页。' },
@@ -458,6 +344,12 @@ const credentialProtectionLabel = computed(() => {
   switch (storageInfo.value?.credentialProtection) {
     case 'windowsDpapi':
       return 'Windows DPAPI'
+    case 'androidKeystore':
+      return 'Android Keystore'
+    case 'appleKeychain':
+      return 'Apple Keychain'
+    case 'linuxSecretService':
+      return 'Linux Secret Service'
     case 'portableFileKey':
       return '便携文件密钥'
     case 'localFileKey':
@@ -466,14 +358,22 @@ const credentialProtectionLabel = computed(() => {
       return '当前会话内存'
   }
 })
+const storageEntryMeta = computed(() => storageInfo.value ? `${storageModeLabel.value} · ${credentialProtectionLabel.value}` : '浏览器模式')
 const storageModeDescription = computed(() => {
   if (!storageInfo.value)
     return '当前是浏览器开发模式，桌面版存储信息不可用。'
   if (storageInfo.value.mode === 'portable')
-    return '配置、播放记录、日志和缓存跟随当前程序目录移动。'
-  if (storageInfo.value.credentialProtection === 'windowsDpapi')
-    return '配置和播放记录保存在 Windows 用户目录，升级程序不会清除数据。'
-  return '应用数据库使用当前系统的用户数据目录，升级或替换程序文件不会影响配置和播放历史。'
+    return '配置、播放记录、日志和缓存跟随当前程序目录移动；凭据主密钥也保存在该目录中。'
+  if (storageInfo.value.credentialProtection === 'localFileKey')
+    return '应用数据库使用当前系统的用户数据目录，但系统安全存储当前不可用，凭据主密钥已降级为本机文件保护。'
+  return `应用数据库使用当前系统的用户数据目录，凭据主密钥由 ${credentialProtectionLabel.value} 保护。`
+})
+const credentialProtectionWarning = computed(() => {
+  if (storageInfo.value?.mode === 'portable')
+    return '便携模式为了整目录迁移而使用文件主密钥，保护等级低于系统安全存储。请保护整个便携目录，不要将其放入共享盘、同步盘或公开备份。'
+  if (storageInfo.value?.credentialProtection === 'localFileKey')
+    return '当前系统安全存储不可用，凭据主密钥只能由用户数据目录权限保护。请先启用 Linux Secret Service/系统钥匙串后重新启动 Player。'
+  return null
 })
 const pageDescription = computed(() => mode.value === 'overview'
   ? '管理数据源、播放、字幕、刮削、更新和本地存储。'
@@ -1479,51 +1379,6 @@ async function createAndValidateLocalConfig(input: {
   }
 }
 
-function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark'
-}
-
-function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {
-  return isLoginDataSourceType(type) || type === 'local'
-}
-
-function isEditableDataSourceConfig(config: DataSourceConfig): config is EditableDataSourceConfig {
-  return isEditableDataSourceType(config.type)
-}
-
-function isRootSelectableRemoteSourceType(type: DataSourceType): type is Extract<LoginDataSourceType, 'alist' | 'clouddrive2' | 'webdav' | '123' | 'quark'> {
-  return type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark'
-}
-
-function sourceTypeLabel(type: DataSourceType): string {
-  switch (type) {
-    case 'emby':
-      return 'Emby'
-    case 'alist':
-      return 'OpenList/Alist'
-    case 'jellyfin':
-      return 'Jellyfin'
-    case 'clouddrive2':
-      return 'CloudDrive2'
-    case 'webdav':
-      return 'WebDAV'
-    case 'quark':
-      return '夸克网盘'
-    case '123':
-      return '123 云盘'
-    case 'local':
-      return '本地文件'
-    case 'server':
-      return 'OhMyCine Server'
-    default:
-      return type
-  }
-}
-
-function defaultDisplayName(type: EditableDataSourceType): string {
-  return sourceTypeOptions.find(option => option.type === type)?.defaultName ?? '数据源'
-}
-
 function sourceStatusLine(source: DataSourceConfig): string {
   const credentialState = source.type === 'local'
     ? '无需登录'
@@ -1674,6 +1529,11 @@ function selectSourceType(type: EditableDataSourceType) {
   resetAlistBrowser()
   feedback.value = null
   lastFetchedLibraries.value = []
+}
+
+function selectSourceTypeOption(option: SourceTypeOption) {
+  if (option.available)
+    selectSourceType(option.type)
 }
 
 function selectPan123LoginMode(mode: Pan123LoginMode) {
@@ -2538,6 +2398,13 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
             class="mt-4 border-l-2 border-amber-400/70 bg-amber-400/8 px-4 py-3 text-sm leading-6 text-amber-100/80"
           >
             当前便携目录位于 WSL 或网络映射路径，SQLite、日志和缓存读写会明显变慢。请把完整便携文件夹复制到 Windows 本地磁盘，例如 <code class="text-amber-100">C:\OhMyCine-Portable</code>，再从那里启动。
+          </div>
+
+          <div
+            v-if="credentialProtectionWarning"
+            class="mt-4 border-l-2 border-amber-400/70 bg-amber-400/8 px-4 py-3 text-sm leading-6 text-amber-100/80"
+          >
+            {{ credentialProtectionWarning }}
           </div>
 
           <div v-if="!storageInfo" class="mt-5 rounded-xl bg-white/6 px-4 py-3 text-sm leading-6 text-white/48">
@@ -3611,10 +3478,10 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 :key="option.type"
                 type="button"
                 class="flex min-h-24 items-center gap-4 rounded-2xl border p-4 text-left transition-colors disabled:cursor-not-allowed"
-                :class="form.type === option.type ? 'border-primary/60 bg-primary/14 text-white shadow-lg shadow-primary/10' : 'border-white/10 bg-white/5 text-white/70 hover:border-white/20 hover:bg-white/8'"
-                :disabled="isEditing"
+                :class="form.type === option.type ? 'border-primary/60 bg-primary/14 text-white shadow-lg shadow-primary/10' : option.available ? 'border-white/10 bg-white/5 text-white/70 hover:border-white/20 hover:bg-white/8' : 'border-white/8 bg-white/3 text-white/38 opacity-75'"
+                :disabled="isEditing || !option.available"
                 :aria-pressed="form.type === option.type"
-                @click="selectSourceType(option.type)"
+                @click="selectSourceTypeOption(option)"
               >
                 <span
                   class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold"
@@ -3628,6 +3495,9 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 </span>
                 <span v-if="form.type === option.type" class="ml-auto rounded-full bg-primary/20 px-3 py-1 text-xs font-semibold text-primary">
                   已选择
+                </span>
+                <span v-else-if="!option.available" class="ml-auto rounded-full bg-white/8 px-3 py-1 text-xs font-semibold text-white/46">
+                  即将推出
                 </span>
               </button>
             </div>

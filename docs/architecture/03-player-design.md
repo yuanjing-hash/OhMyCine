@@ -4,7 +4,7 @@
 
 OhMyCine Player 是一款**独立可用**的跨平台沉浸式家庭影院播放器，核心特点：
 - **独立运行** — 无需 Server，原生连接 Emby/Jellyfin/OpenList/Alist/CloudDrive2/WebDAV/本地文件夹
-- **Cinema OS 风格 UI** — 液态玻璃设计语言，深色主题，电影感排版
+- **Cinema OS 风格 UI** — 液态玻璃设计语言，深浅色主题，电影感排版
 - **libmpv 引擎** — 全格式支持，硬件解码，HDR/Dolby Vision，沉浸式嵌入渲染
 - **全平台目标** — 当前 Player MVP 先完成 Windows；macOS、Linux (桌面) 和 Android 渲染/打包链路作为后续平台目标保留
 - **Server 增强** — 可选连接 OhMyCine Server 获取 PT站点管理、自动下载、STRM生成等高级功能
@@ -601,7 +601,7 @@ OhMyCine/
 
 便携目录位于 UNC、WSL 映射或其他网络式路径时仍可运行，但 SQLite、日志和缓存的频繁小文件读写可能明显变慢。Player 应在设置诊断页提示用户把完整便携目录移动到 Windows 本地磁盘（例如 `C:\OhMyCine-Portable`）后运行。
 
-Windows 标准模式使用 DPAPI 包装 AES 主密钥；便携模式为了能随目录移动，使用目录内文件密钥，因此整个便携文件夹都应视为敏感数据。
+标准模式按平台保护 AES 主密钥：Windows 使用 DPAPI，Android 使用 Keystore，macOS/iOS 使用 Apple Keychain，Linux 优先使用 Secret Service/libsecret；Linux 系统存储不可用时才降级为权限受限文件密钥并在设置页提示。旧文件主密钥原地迁移且不轮换，已有凭据数据库缺失主密钥时禁止生成新钥匙。便携模式为了能随目录移动，继续使用目录内文件密钥，因此整个便携文件夹都应视为敏感数据，并在设置页明确显示低于系统安全存储的保护等级。
 
 ### 4.7 配置同步机制
 
@@ -2267,7 +2267,7 @@ Android 使用相同命令协议的移动端实现：
 
 Player Web UI 已进入独立的手机交互设计阶段，不再把桌面外壳简单压缩到窄屏。宽度不超过 `767px` 或粗指针环境使用固定的 `首页 / 媒体库 / 快捷 / 设置` 底部导航；媒体库选择和全局快捷操作通过底部抽屉展开，承接桌面数据源 hover 侧栏、打开本地视频、添加/管理数据源和主题切换。手机首页改为全宽英雄区与横向内容流，海报播放入口常驻；设置总览改为紧凑列表；媒体源扫描/文件入口在手机上常驻于底部导航上方，不依赖 hover。
 
-手机播放器使用独立触摸覆盖层：顶部只保留返回、标题和必要工具，字幕只在右上工具区保留一个入口；画面中央常驻三个尺寸克制的主播放操作，底部使用一条低高度时间轴与工具坞，不重复放置字幕入口。轨道、倍速、队列和画面设置在横屏中使用受限宽度的右侧面板，在竖屏中使用底部面板；进度条使用 Pointer Events 和 pointer capture，同一实现兼容鼠标与触摸拖动。移动控制台继续使用 OhMyCine 液态玻璃语言，但 Android `SurfaceView` 与 WebView 分层时不能只依赖 `backdrop-filter`，还要用半透明中性色、内高光、细边缘和层叠阴影维持玻璃层次。普通浏览器预览不得因无 Tauri 窗口对象而中断 Vue 挂载，以便固定使用横屏/竖屏设备尺寸进行响应式截图回归。
+手机播放器使用独立触摸覆盖层：顶部只保留返回、标题和必要工具，字幕只在右上工具区保留一个入口；画面中央常驻三个尺寸克制的主播放操作，底部使用一条低高度时间轴与工具坞，不重复放置字幕入口。轨道、倍速、队列和画面设置在横屏中使用受限宽度的右侧面板，在竖屏中使用底部面板；进度条使用 Pointer Events 和 pointer capture，同一实现兼容鼠标与触摸拖动。移动控制台继续使用 OhMyCine 液态玻璃语言，但 Android `SurfaceView` 与 WebView 分层时不能只依赖 `backdrop-filter`，还要用半透明中性色、内高光、细边缘和层叠阴影维持玻璃层次。桌面和 Android 播放画面本身始终保持透明、沉浸和不染色，顶部/底部渐变、控制条、传输按钮、菜单、抽屉、缓冲提示与画面设置面板则必须通过 Player 专用语义 token 跟随全局亮/暗主题，不能把播放页继续作为固定深色主题例外。普通浏览器预览不得因无 Tauri 窗口对象而中断 Vue 挂载，以便固定使用横屏/竖屏设备尺寸进行响应式截图回归。
 
 播放画面手势按输入类型启用，而不是按平台或窗口宽度启用：只有 `PointerEvent.pointerType === 'touch'` 会进入手势状态机，因此 Android、手机浏览器和 Surface 等触控 PC 在桌面宽度下都可使用；鼠标与触控笔继续沿用桌面点击、悬停显隐和快捷键逻辑。触摸横向滑动预览并提交快退/快进，右半屏纵向滑动调整音量，单击切换控制 UI，双击切换播放/暂停。左半屏纵向滑动在 Android 和 Windows 都调整实际显示亮度：Android 通过 Activity `WindowManager.LayoutParams.screenBrightness` 调整当前播放窗口并在退出时恢复；Windows 根据播放器 HWND 选择所在显示器，外接显示器优先使用 DXVA2 DDC/CI，Surface/笔记本内屏回退到 `ROOT\\WMI`。Windows 的 Alt 模拟同样走显示亮度；显示器不支持时右上角明确提示，不得退回 mpv 亮度制造语义混淆。mpv 视频亮度作为独立的单视频画面设置保留在播放控制的画面面板中，并按媒体保存，不与设备屏幕亮度混用。手势开始于按钮、菜单、输入框或底部控制栏时不得抢占控件操作，顶部/底部系统手势保护区也不接管指针；真实触摸使用更高位移阈值和轴向优势判断，避免下拉通知栏或斜向滚动误调音量/亮度。触摸产生的合成 click 不得再次触发鼠标单击暂停。
 
@@ -2290,6 +2290,8 @@ Android Surface 初始化是整组播放命令的前置屏障。Kotlin 将 `Surf
 跨设备继续观看的 resume seek 不能只依赖起播后的固定短延时。媒体完成 load、但本机或路由续播位置尚未解析前，暂停所有历史与 provider 进度写入，避免起播事件抢先向 Emby 上报 `0`。Android 302/远程流可能在数秒后才进入 `video-ready`，Player 必须把目标位置保持为 pending，并在视频 ready 或 duration 可用时再次 seek；观察到当前时间抵达目标后才完成恢复。pending 期间写入本机历史和 Emby Sessions 的位置使用目标值，禁止用启动期临时 `0` 覆盖服务器上的有效进度；用户手动 seek 时立即取消旧恢复任务。
 
 Emby/Jellyfin 等 provider 返回有效续播位置时，以 provider 位置作为跨设备权威值，本机 SQLite 仅在 provider 没有有效位置时兜底。首页聚合、剧集选择、详情页按钮与播放器起播使用同一优先级，避免手机或电脑的旧本地缓存反向覆盖较新的云端进度；本机记录仍保留明确来源标识，不能伪装成服务器记录。
+
+Android 远程媒体的续播 seek 不能以前端乐观时间作为成功依据。桌面端保留现有正常的 optimistic seek 时序；只有 Android 自动续播调用关闭 optimistic 更新，`PlayerView` 在 `videoReady` 且原生 `time-pos` 落在目标前后 5 秒内之前持续保留待恢复位置。慢加载期间本机历史与 Emby session 上报均使用该待恢复位置，避免 `FILE_LOADED` 把早期 seek 重置为 0 后覆盖跨设备云端记录。用户主动拖动或手势 seek 会取消待恢复状态并继续使用交互式即时反馈。
 
 Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
 

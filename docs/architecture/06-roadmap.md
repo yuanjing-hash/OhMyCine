@@ -73,7 +73,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] Docker 构建 CI: `docker build`
 - [ ] Docker 镜像推送: GHCR / Docker Hub
 - [~] Release CI: Player 已支持 tag/manual GitHub Release、Beta/Stable 渠道、签名 NSIS updater artifact、`latest.json`、安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；待配置 GitHub updater 私钥 Secret 并完成首个实机更新发布
-- [~] 自动生成 changelog/release notes: Player beta 已由 CI 从 tag/commit 生成；正式版汇总后置
+- [x] 自动生成 changelog/release notes：Player Release 工作流可从 tag/commit 生成分组说明，并按 `beta` / `stable` 通道分别发布 prerelease 或最新正式版
 - [ ] 自动上传正式安装包和二进制文件
 
 ### 0.3 开发环境
@@ -113,7 +113,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 配置 Vue I18n (国际化框架)
 - [x] 配置 `tsconfig.json` (严格模式)
 - [x] 配置 ESLint + Prettier (代码规范)
-- [x] 配置 `tauri.conf.json` (窗口配置、权限、打包)
+- [x] 配置 `tauri.conf.json` (窗口配置、权限、打包；生产 CSP 已限制脚本为应用自身并禁用 eval/frame/object，保留受控 DataSource HTTP/HTTPS、IPC 与图片协议；开发态仅额外开放 HMR WebSocket)
 
 #### libmpv 嵌入集成
 
@@ -205,6 +205,7 @@ Phase 4: 生态系统           ████████████████
 - [x] `getImageUrl(itemId, type)` — 构建图片URL
 - [x] 实现 `EmbyDataSource` (implements DataSource)
 - [x] `mapEmbyItem()` — Emby 数据映射到 MediaItem
+- [x] Emby 受控 HTTP 边界 — 登录、系统信息、媒体库/详情/搜索/标记已观看与 PlaybackInfo/进度上报统一走 Rust 原生 JSON 客户端；15 秒超时、禁用自动重定向、4 MiB 实际流式响应上限，并限制方法、路径、查询和请求体；浏览器开发 fallback 使用同等边界
 - [x] Emby 播放进度同步 — 通过 PlaybackInfo + Sessions/Playing/Progress/Stopped 将 active session、继续观看和播放历史同步回 Emby；本机 SQLite 保留离线兜底，provider sync best-effort；有效 provider 位置优先于设备本地缓存，续播位置解析前暂停进度写入，Android/302 慢加载在 `video-ready` 前保持待恢复位置，避免起播 `0` 秒覆盖跨设备云端记录
 - [x] Emby 多版本播放 — 详情页选择的 `mediaSourceId` 参与即时播放请求解析，并沿用到对应播放进度会话；失效版本不再静默回退到首个版本
 
@@ -219,12 +220,12 @@ Phase 4: 生态系统           ████████████████
 - [x] 建立统一 Tauri storage layout：Windows 默认使用 `%LOCALAPPDATA%/com.ohmycine.player/data`，数据库、缓存和日志不写入安装目录
 - [x] 使用 `settings.sqlite` 保存 datasources、主题、TMDB 非敏感设置、分类规则和扫描计划；标准模式首次启动自动迁移旧 WebView localStorage 并删除旧 key，便携模式保持独立空白配置
 - [x] 配置变更自动排队写入 SQLite，数据源和用户主动保存流程等待持久化完成后再提示成功
-- [~] Emby/OpenList 账号密码与令牌、CloudDrive2 API Token、WebDAV 账号密码通过 provider-specific envelope + `credentialRef` 进入 AES-GCM SQLite 凭证库；Windows 标准模式已使用 DPAPI 包装主密钥，便携模式使用目录内文件密钥；macOS Keychain、Linux libsecret 后续接入
+- [x] Emby/OpenList 账号密码与令牌、CloudDrive2 API Token、WebDAV 账号密码通过 provider-specific envelope + `credentialRef` 进入 AES-GCM SQLite 凭证库；标准模式主密钥由 Windows DPAPI、Android Keystore、Apple Keychain 或 Linux Secret Service 保护，Linux 服务不可用时明确降级为权限受限文件密钥；便携模式使用目录内文件密钥并显示较低保护等级警告；旧 Base64 密钥原地迁移且不轮换
 - [x] 支持 `portable.flag` / `--portable` 便携模式，portable ZIP 自动携带标记，应用自有 data/cache/logs 写入 EXE 同目录；禁止自动导入标准配置，并对 WSL/UNC 存储路径显示性能提示
 
 #### 设置页面 UI
 
-- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、刮削与分类入口；Emby/OpenList 使用账号密码、CloudDrive2 使用 gRPC 服务地址 + API Token、WebDAV 使用独立 URL + 账号密码；OpenList/CloudDrive2/WebDAV 均可连接后浏览并选择根目录；本地文件夹在桌面使用目录选择器，在 Android 使用 SAF 文档树持久只读授权）
+- [~] `SettingsView.vue` — 设置页面（已提供数据源管理入口、刮削与分类入口；Emby/OpenList 使用账号密码、CloudDrive2 使用 gRPC 服务地址 + API Token、WebDAV 使用独立 URL + 账号密码；OpenList/CloudDrive2/WebDAV 均可连接后浏览并选择根目录；本地文件夹在桌面使用目录选择器，在 Android 使用 SAF 文档树持久只读授权；115 以禁用的“即将推出”类型卡片保留入口；数据源定义已外提到 service，其他设置分区组件化继续推进）
 - [x] 数据源列表管理 (添加/编辑/删除)
 - [~] 刮削与分类设置页（已提供电影/剧集分组、TMDB 官方 genre 受控选项、默认分类实例、包含/排除条件、年份范围、兜底分类和本地结构化规则持久化；TMDB 凭据是可选增强，未配置时扫描保留本地候选和兜底分类；扫描任务与实际规则执行待后续完善）
 - [ ] 数据源排序设置 (决定动态侧栏展示顺序)
@@ -240,7 +241,7 @@ Phase 4: 生态系统           ████████████████
 - [~] 聚合首页能展示 Emby/Jellyfin 的 Hero 轮播、继续观看、最新影片（Emby 已接入，凭证会话有效时可加载；Jellyfin 待后续）
 - [~] 能进入单个数据源媒体库首页并浏览媒体库、搜索影片（Emby 已实现，并改为按媒体库/文件夹/剧集/季/集层级非递归浏览；搜索/首页区块仍可使用递归查询）
 - [~] 能直接播放 Emby/Jellyfin 上的视频（Emby 条目可生成 stream URL 并进入现有播放加载流程；Windows 宿主已验证可在透明叠层 + mpv 视频底层窗口中显示，Jellyfin 数据源仍待实现）
-- [x] 配置自动持久化（非敏感配置进入统一 settings.sqlite；凭据进入 AES-GCM SQLite；Windows 标准模式主密钥由 DPAPI 保护；便携模式明确使用目录内文件密钥）
+- [x] 配置自动持久化（非敏感配置进入统一 settings.sqlite；凭据进入 AES-GCM SQLite；Windows/Android/macOS/Linux 标准模式使用对应系统安全存储保护主密钥；便携模式明确使用目录内文件密钥并提示保护等级）
 
 ### Sprint 1.3: OpenList/Alist + CloudDrive2 + 本地文件 (Week 7-8)
 
@@ -281,7 +282,7 @@ Phase 4: 生态系统           ████████████████
 
 #### 云盘数据源
 
-- [ ] 115网盘 — UI 中显示"即将推出"标签
+- [x] 115网盘 — 设置页数据源类型选择中显示禁用的“即将推出”标签，不伪装成已可连接
 - [~] 123 云盘 — 账号/访问令牌登录、官方 API 动态签名、目录/递归搜索/直链播放、根目录选择、raw scan cache 与双通道扫描已实现；待真实账号跨 Windows/Android 实机验证
 - [~] 夸克网盘 — Cookie 凭据、官方扫码登录、官方账号登录窗口、目录/搜索/直链播放、根目录选择与 raw scan 已实现；待真实账号跨 Windows/Android 实机验证
 - [ ] 115 接口定义继续保留占位
@@ -313,9 +314,10 @@ Phase 4: 生态系统           ████████████████
 - [x] 播放历史记录（本机 Tauri SQLite 持久化，避免 localStorage 存播放状态）
 - [x] 媒体源删除生命周期（删除配置后按 `sourceId` 清理本机播放历史、单视频播放偏好、来源字幕缓存、动态导航快捷键，并按 source/root 清理原始文件扫描缓存，不影响其他来源）
 - [x] 单视频播放偏好与缓存管理（按 `sourceId + mediaIdentity` 保存字幕/音轨稳定草稿、字幕偏移、单视频倍速、画面比例和填充模式；同媒体优先精确轨道 ID，启动期临时轨道状态不能覆盖用户选择；设置页可清除媒体/扫描/字幕缓存和全部单视频偏好，同时保留数据源、凭据、播放记录和全局软件设置）
-- [x] 安全播放上下文（Home、详情页、数据源页和队列只把媒体身份写入路由，播放 URL/header 与本地绝对路径仅在 PlayerView 即时解析或短生命周期内存中使用）
+- [x] 安全播放上下文（Home、详情页、数据源页和队列统一通过 allowlist 只把 `sourceId`、`itemId`、可选 `mediaSourceId` 与短生命周期 `contextId` 写入路由；路由守卫会 replace 清除旧 `path`、标题和 artwork query；播放 URL/header 与本地绝对路径仅在 PlayerView 调用 `getStreamRequest()` 时即时解析或保存在短生命周期内存中；Android 302 回环桥链路保持不变）
 - [x] 继续观看功能（本机历史 + provider 原生继续观看聚合，Emby 进度同步后首页刷新）
 - [x] 右键播放菜单 + 播放详情 stats 浮层（紧凑用户菜单、播放详情浮层、HDR/SDR/杜比视界动态范围展示；诊断入口不暴露给普通用户）
+- [~] 大型视图逻辑拆分（设置数据源契约、播放器安全展示格式化、原始媒体库分类/剧集聚合已分别外提到 service；`SettingsView` 4046→3917 行、`PlayerView` 3369→3244 行、`SourceLibraryView` 2764→2399 行，后续继续按设置分区和播放状态机拆 composable/component）
 
 **产出**:
 
@@ -773,16 +775,16 @@ Phase 4: 生态系统           ████████████████
   - [x] 继续观看面板 (本机/Emby 聚合播放进度、剧集标题排布、下一集/续播入口已接入)
   - [~] 最新影片面板 (海报+名称)
 - [~] 单数据源媒体库页 (`SourceLibraryView.vue`)
-  - [ ] 数据源级 Hero Carousel (当前来源元数据)
+  - [x] 数据源级 Hero Carousel (当前来源元数据与 raw scan 聚合 Hero 已接入)
   - [~] 媒体库分组 (电影/剧集/文件夹)
-  - [ ] 库内海报墙与详情浏览
+  - [x] 库内海报墙与详情浏览
 - [~] 媒体展示组件
-  - [ ] `MediaCard.vue` — 媒体卡片 (海报+信息)
-  - [ ] `MediaGrid.vue` — 网格布局
+  - [x] `MediaCard.vue` — 媒体卡片 (海报+信息)
+  - [x] `MediaGrid.vue` — 网格布局
   - [ ] `MediaRow.vue` — 横向滚动行
   - [ ] `MediaDetail.vue` — 媒体详情面板
   - [ ] `PosterWall.vue` — 海报墙
-  - [~] `HeroCarousel.vue` — 首页/数据源页大图轮播
+  - [x] `HeroCarousel.vue` — 首页/数据源页大图轮播
   - [ ] `ContinueWatchingPanel.vue` — 继续观看面板
 
 #### 文件管理页面

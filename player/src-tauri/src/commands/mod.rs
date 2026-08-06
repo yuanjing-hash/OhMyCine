@@ -1,5 +1,7 @@
 pub mod clouddrive2;
 pub mod credential;
+#[cfg(target_os = "android")]
+pub mod credential_android;
 #[cfg(not(mobile))]
 pub(crate) mod display_brightness;
 pub mod emby;

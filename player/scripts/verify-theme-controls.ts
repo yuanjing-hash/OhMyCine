@@ -60,6 +60,28 @@ assert.match(heroCarousel, /class="hero-carousel theme-immersive-dark/)
 const subtitleSearch = await source('src/components/player/SubtitleSearchDialog.vue')
 assert.match(subtitleSearch, /theme-immersive-dark/)
 
+const playerView = await source('src/views/PlayerView.vue')
+assert.match(playerView, /class="player-view theme-adaptive/)
+assert.match(playerView, /background: var\(--player-chrome-top-gradient\);/)
+assert.match(playerView, /background: var\(--player-chrome-bottom-gradient\);/)
+
+const playerControls = await source('src/components/player/PlayerControls.vue')
+assert.match(playerControls, /background: var\(--player-chrome-surface\);/)
+assert.match(playerControls, /background: var\(--player-chrome-surface-strong\);/)
+
+const mobilePlayerControls = await source('src/components/player/MobilePlayerControls.vue')
+assert.match(mobilePlayerControls, /color: var\(--color-text\);/)
+assert.match(mobilePlayerControls, /background: var\(--player-chrome-surface\);/)
+assert.match(mobilePlayerControls, /background: var\(--player-chrome-surface-strong\);/)
+
+const videoPlayer = await source('src/components/player/VideoPlayer.vue')
+assert.match(videoPlayer, /\.playback-status-panel \{[\s\S]*?border: 1px solid var\(--control-border\);/)
+assert.match(videoPlayer, /\.playback-status-panel \{[\s\S]*?background: var\(--player-chrome-surface-strong\);/)
+assert.match(videoPlayer, /\.playback-status-panel \{[\s\S]*?box-shadow: var\(--player-chrome-shadow\);/)
+assert.match(videoPlayer, /\.playback-status-description \{[\s\S]*?color: var\(--color-text-secondary\);/)
+assert.match(videoPlayer, /\.playback-status-action \{[\s\S]*?background: var\(--control-bg\);/)
+assert.doesNotMatch(videoPlayer, /\.playback-status-panel \{[\s\S]*?background: rgba\(8, 10, 15, 0\.82\);/)
+
 const mobileNavigation = await source('src/components/layout/MobileNavigation.vue')
 assert.match(mobileNavigation, /class="mobile-sheet theme-adaptive"/)
 assert.match(mobileNavigation, /class="mobile-bottom-nav theme-adaptive"/)
@@ -88,7 +110,9 @@ console.log(JSON.stringify({
   readableLightSettings: true,
   themedUpdateDialog: true,
   adaptiveSearchAndLibrarySurfaces: true,
-  immersiveArtworkAndPlaybackExceptions: true,
+  immersiveArtworkExceptions: true,
+  adaptiveDesktopAndAndroidPlayerChrome: true,
+  adaptivePlaybackStartupStatus: true,
   readableLightMobileNavigation: true,
   atomicAndroidThemeSwitch: true,
   opaqueNonPlayerRoot: true,

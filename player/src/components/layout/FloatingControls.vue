@@ -4,6 +4,8 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 import { useLayoutContextActions } from '@/services/layoutContextActions'
+import { savePlaybackMediaContext } from '@/services/playbackContext'
+import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
 
 const VIDEO_EXTENSIONS = [
@@ -60,12 +62,18 @@ async function openLocalVideo() {
     if (typeof selected !== 'string')
       return
 
+    const title = getFileName(selected)
+    const itemId = `local-file-${Date.now()}`
+    const contextId = savePlaybackMediaContext({
+      sourceId: 'local-file',
+      itemId,
+      title,
+      locator: { kind: 'localPath', path: selected },
+    })
+
     await router.push({
-      path: '/player',
-      query: {
-        path: selected,
-        title: getFileName(selected),
-      },
+      name: 'player',
+      query: createPlaybackRouteQuery({ sourceId: 'local-file', itemId, contextId }),
     })
   }
   finally {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvRenderState, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
@@ -21,7 +21,9 @@ import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/e
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import { videoAspectRatioValue as aspectRatioValue, compactPlayerTrackLabel as compactTrackLabel, formatPlaybackTime, playerRenderBackendLabel as renderBackendLabel, playerRenderStatusLabel as renderStatusLabel, safePlayerMenuText as safeMenuText, playerVideoAspectLabel as videoAspectLabel, playerVideoFitLabel as videoFitLabel } from '@/services/playerPresentation'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
@@ -687,40 +689,20 @@ function syncPlaybackQueueFromRoute() {
 }
 
 function currentPlaybackContext() {
-  return playbackContextId.value ? getPlaybackMediaContext(playbackContextId.value) : null
+  const context = playbackContextId.value ? getPlaybackMediaContext(playbackContextId.value) : null
+  if (!context)
+    return null
+
+  const sourceId = queryStringValue(route.query.sourceId)
+  const itemId = queryStringValue(route.query.itemId)
+  if ((sourceId && context.sourceId !== sourceId) || (itemId && context.itemId !== itemId && !context.queue?.items.some(item => item.id === itemId)))
+    return null
+
+  return context
 }
 
-function looksLikeMediaFilename(value: string): boolean {
-  return /\.(?:3g2|3gp|avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|mts|ogm|ogv|rmvb|ts|webm|wmv)(?:$|[\s"')，。])/i.test(value)
-}
-
-function containsUnsafeDisplayToken(value: string): boolean {
-  const normalized = value.trim()
-  return /^https?:\/\//i.test(normalized)
-    || /^[a-z]:[\\/]/i.test(normalized)
-    || normalized.startsWith('\\\\')
-    || normalized.startsWith('/')
-    || normalized.startsWith('~/')
-    || /\b(?:[a-z]:[\\/]|file:\/\/|https?:\/\/)/i.test(normalized)
-    || /(?:^|[\s"'({])\/(?:[^/\s?#"')]+\/)+[^/\s?#"')]+/.test(normalized)
-    || /(?:^|[\s"'({])\\\\[^\\/\s]+[\\/][^\\/\s]+/.test(normalized)
-    || /\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(normalized)
-    || (!looksLikeMediaFilename(normalized) && /\b(?:localhost|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{2,5})?\b/i.test(normalized))
-}
-
-function truncateMenuText(value: string, maxLength: number): string {
-  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 1))}…` : value
-}
-
-function safeMenuText(value: unknown, fallback: string, maxLength = 120): string {
-  if (value == null)
-    return fallback
-
-  const text = redactSensitiveText(value).replace(/\s+/g, ' ').trim()
-  if (!text || containsUnsafeDisplayToken(text))
-    return fallback
-
-  return truncateMenuText(text, maxLength)
+function currentPlaybackItem() {
+  return currentQueueItem.value ?? currentPlaybackContext()?.currentItem
 }
 
 function currentDisplaySourceId(): string {
@@ -734,76 +716,6 @@ function currentSafeSourceLabel(): string {
 
   const config = store.configs.find(item => item.id === sourceId)
   return safeMenuText(config?.displayName || config?.name || sourceId, '媒体来源')
-}
-
-function renderStatusLabel(status: MpvRenderState['status']): string {
-  switch (status) {
-    case 'initializing':
-      return '准备中'
-    case 'ready':
-      return '已就绪'
-    case 'unsupported':
-      return '暂不可用'
-    case 'error':
-      return '需要重试'
-    case 'idle':
-    default:
-      return '待播放'
-  }
-}
-
-function renderBackendLabel(backend: MpvRenderState['backend']): string {
-  switch (backend) {
-    case 'windowsTransparentOverlay':
-      return 'Windows 透明叠层'
-    case 'windowsOpenGl':
-      return 'Windows OpenGL'
-    case 'androidSurface':
-      return 'Android SurfaceView'
-    case 'linuxFuture':
-      return 'Linux 预留 backend'
-    case 'macosFuture':
-      return 'macOS 预留 backend'
-    case 'mobileFuture':
-      return '移动端预留 backend'
-    case 'unsupported':
-    default:
-      return '暂不支持'
-  }
-}
-
-function videoAspectLabel(mode: VideoAspectMode): string {
-  switch (mode) {
-    case '16:9':
-      return '16:9'
-    case '4:3':
-      return '4:3'
-    case 'cinema':
-      return '2.35:1'
-    case 'default':
-    default:
-      return '原始比例'
-  }
-}
-
-function videoFitLabel(mode: VideoFitMode): string {
-  switch (mode) {
-    case 'crop':
-      return '填充裁切'
-    case 'cinemaCrop':
-      return '影院裁切'
-    case 'fit':
-    default:
-      return '适应窗口'
-  }
-}
-
-function compactTrackLabel(parts: Array<string | number | null | undefined>, fallback: string): string {
-  const label = parts
-    .filter(part => part != null && String(part).trim().length > 0)
-    .map(part => String(part).trim())
-    .join(' · ')
-  return safeMenuText(label, fallback, 72)
 }
 
 function selectedAudioTrackLabel(): string {
@@ -841,13 +753,16 @@ function playbackQueuePositionLabel(): string {
 }
 
 function syncActiveMediaMetadataFromRoute() {
-  activeSourceId.value = queryStringValue(route.query.sourceId)
-  activeItemId.value = queryStringValue(route.query.itemId)
-  activeLibraryId.value = queryStringValue(route.query.libraryId)
-  activeMediaType.value = queryMediaType()
-  activePosterUrl.value = queryStringValue(route.query.posterUrl)
-  activeBackdropUrl.value = queryStringValue(route.query.backdropUrl)
-  activeTitleLogoUrl.value = queryStringValue(route.query.titleLogoUrl)
+  const context = currentPlaybackContext()
+  const item = currentPlaybackItem()
+  activeSourceId.value = queryStringValue(route.query.sourceId) || item?.sourceId || context?.sourceId || ''
+  activeItemId.value = queryStringValue(route.query.itemId) || item?.id || context?.itemId || ''
+  activeLibraryId.value = item?.libraryId ?? ''
+  activeMediaType.value = item?.type
+  activePosterUrl.value = item?.posterUrl ?? ''
+  activeBackdropUrl.value = item?.backdropUrl ?? ''
+  activeTitleLogoUrl.value = item?.titleLogoUrl ?? ''
+  mediaTitle.value = item?.title || item?.name || context?.title || '未命名影片'
 }
 
 async function resolvePlaybackLoadRequest(): Promise<MediaStreamRequest> {
@@ -859,21 +774,14 @@ async function resolvePlaybackLoadRequest(): Promise<MediaStreamRequest> {
   if (locator?.kind === 'localPath' && context?.sourceId === sourceId && context.itemId === itemId)
     return { url: locator.path }
 
-  const legacyPath = queryStringValue(route.query.path)
-  if (!sourceId || !itemId) {
-    if (legacyPath)
-      return { url: legacyPath }
+  if (!sourceId || !itemId)
     throw new Error('缺少可解析的播放上下文。')
-  }
 
   store.loadConfigs()
   await store.syncManager()
   const source = store.getSource(sourceId)
-  if (!source) {
-    if (legacyPath)
-      return { url: legacyPath }
+  if (!source)
     throw new Error('数据源不可用，请检查设置或重新登录。')
-  }
 
   const request: PlaybackRequest = {
     itemId,
@@ -1205,13 +1113,8 @@ function currentMediaSourceId(): string | undefined {
   return context.mediaSourceId
 }
 
-function queryNumberValue(value: unknown): number | undefined {
-  const raw = typeof value === 'string' || typeof value === 'number' ? Number.parseFloat(String(value)) : undefined
-  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : undefined
-}
-
 function routeResumePosition(): number | undefined {
-  return queryNumberValue(route.query.resumePosition)
+  return currentPlaybackItem()?.resumePosition
 }
 
 function shouldResumePosition(position: number | undefined, mediaDuration: number | undefined): position is number {
@@ -1319,15 +1222,6 @@ function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean
   return payload.position >= HISTORY_MIN_SAVE_POSITION
 }
 
-function queryMediaType(): MediaItem['type'] | undefined {
-  const value = queryStringValue(route.query.mediaType)
-  return isMediaType(value) ? value : undefined
-}
-
-function isMediaType(value: string): value is MediaItem['type'] {
-  return ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(value)
-}
-
 async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress') {
   if (!playbackProgressReady)
     return
@@ -1420,7 +1314,13 @@ async function seekResumePosition(position: number) {
 
 async function seekResumePositionSilently(position: number) {
   try {
-    await seekMpv(position)
+    // Android may accept a seek while the remote stream is still opening, then reset time-pos to
+    // zero when FILE_LOADED arrives. Do not publish an optimistic frontend time for resume seeks:
+    // only a native time update after video readiness may confirm and clear the pending resume.
+    if (isNativeAndroidPlayer)
+      await seekMpv(position, { optimistic: false })
+    else
+      await seekMpv(position)
   }
   catch {
     // Resume seek is retried after media metadata settles; failures must not break playback startup.
@@ -1433,7 +1333,7 @@ function scheduleResumeSeek(position: number, delay: number, force: boolean) {
     resumeSeekTimers.delete(timer)
     if (playbackCleanupStarted || !mediaPath.value || mediaPath.value !== path || pendingResumeSeek?.path !== path)
       return
-    if (Math.abs(currentTime.value - position) <= 5) {
+    if ((!isNativeAndroidPlayer || videoReady.value) && Math.abs(currentTime.value - position) <= 5) {
       completePendingResumeSeek(path, position)
       return
     }
@@ -1523,31 +1423,6 @@ function clearHistorySaveTimer() {
 
   window.clearInterval(historySaveTimer)
   historySaveTimer = undefined
-}
-
-function formatPlaybackTime(totalSeconds: number): string {
-  const seconds = Math.max(0, Math.floor(totalSeconds))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const rest = seconds % 60
-
-  if (hours > 0)
-    return `${hours}:${minutes.toString().padStart(2, '0')}:${rest.toString().padStart(2, '0')}`
-
-  return `${minutes}:${rest.toString().padStart(2, '0')}`
-}
-
-function aspectRatioValue(mode: VideoAspectMode): number | null {
-  switch (mode) {
-    case '16:9':
-      return 16 / 9
-    case '4:3':
-      return 4 / 3
-    case 'cinema':
-      return 2.35
-    default:
-      return null
-  }
 }
 
 async function syncKnownSubtitleTracks() {
@@ -1915,7 +1790,7 @@ function isTauriRuntime(): boolean {
 }
 
 watch(
-  () => [route.query.path, route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
+  () => [route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
   async () => {
     await saveCurrentProgress(true, 'stopped')
     await saveMediaPreferenceNow()
@@ -1927,7 +1802,6 @@ watch(
     resetHistorySaveState()
     mediaPath.value = ''
     mediaHeaders.value = {}
-    mediaTitle.value = typeof route.query.title === 'string' ? route.query.title : '未命名影片'
     pictureSettingsError.value = null
     queueSwitchError.value = null
     syncPlaybackQueueFromRoute()
@@ -1938,8 +1812,7 @@ watch(
 
     const context = currentPlaybackContext()
     const hasPlaybackTarget = Boolean(
-      queryStringValue(route.query.path)
-      || (queryStringValue(route.query.sourceId) && queryStringValue(route.query.itemId))
+      (queryStringValue(route.query.sourceId) && queryStringValue(route.query.itemId))
       || context?.locator,
     )
 
@@ -2001,7 +1874,7 @@ watch([videoReady, duration], () => {
 
 watch(currentTime, (time) => {
   const pending = pendingResumeSeek
-  if (pending && pending.path === mediaPath.value && Math.abs(time - pending.position) <= 5)
+  if (pending && (!isNativeAndroidPlayer || videoReady.value) && pending.path === mediaPath.value && Math.abs(time - pending.position) <= 5)
     completePendingResumeSeek(pending.path, pending.position)
 })
 
@@ -2069,20 +1942,11 @@ async function playQueueItemAt(index: number) {
     }
     await router.replace({
       name: 'player',
-      query: {
-        title: target.title,
+      query: createPlaybackRouteQuery({
         sourceId: target.sourceId,
         itemId: target.id,
-        libraryId: target.libraryId,
-        mediaType: target.type,
-        posterUrl: target.posterUrl,
-        backdropUrl: target.backdropUrl,
-        titleLogoUrl: target.titleLogoUrl,
         contextId: playbackContextId.value || undefined,
-        mediaSourceId: undefined,
-        audioIndex: undefined,
-        subtitleIndex: undefined,
-      },
+      }),
     })
   }
   catch (error) {
@@ -2681,7 +2545,7 @@ watch(
 
 <template>
   <div
-    class="player-view relative h-screen w-full overflow-hidden text-white"
+    class="player-view theme-adaptive relative h-screen w-full overflow-hidden"
     :class="[
       { 'is-chrome-hidden': !shouldShowChrome },
       { 'player-view--native-mobile': isNativeAndroidPlayer },
@@ -2961,7 +2825,7 @@ watch(
         @contextmenu.prevent="openPlaybackContextMenu"
       >
         <div
-          class="player-context-menu pointer-events-auto fixed w-56 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-white/14 bg-black/76 p-1.5 text-sm text-white/82 shadow-2xl backdrop-blur-2xl"
+          class="player-context-menu theme-adaptive pointer-events-auto fixed w-56 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border p-1.5 text-sm shadow-2xl backdrop-blur-2xl"
           :style="{ left: `${contextMenuPosition.x}px`, top: `${contextMenuPosition.y}px`, maxHeight: `min(${CONTEXT_MENU_MAX_HEIGHT}px, calc(100vh - 1.5rem))` }"
           role="menu"
           aria-label="播放菜单"
@@ -3001,7 +2865,7 @@ watch(
 
       <div
         v-if="playbackDetailOpen"
-        class="player-detail-panel pointer-events-auto fixed left-6 top-24 z-[1070] w-[min(28rem,calc(100vw-3rem))] overflow-hidden rounded-3xl border border-white/14 bg-black/68 p-4 text-sm text-white/78 shadow-2xl backdrop-blur-2xl"
+        class="player-detail-panel theme-adaptive pointer-events-auto fixed left-6 top-24 z-[1070] w-[min(28rem,calc(100vw-3rem))] overflow-hidden rounded-3xl border p-4 text-sm shadow-2xl backdrop-blur-2xl"
         role="dialog"
         aria-label="播放详情"
         @pointerdown.stop
@@ -3085,6 +2949,14 @@ watch(
 
 .player-view {
   cursor: default;
+}
+
+.player-top-chrome {
+  background: var(--player-chrome-top-gradient);
+}
+
+.player-bottom-chrome {
+  background: var(--player-chrome-bottom-gradient);
 }
 
 .player-view.is-chrome-hidden {
@@ -3177,9 +3049,11 @@ watch(
 
 .player-context-menu,
 .player-detail-panel {
+  border-color: var(--control-border);
+  color: var(--color-text);
+  background: var(--player-chrome-surface-strong);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    0 24px 80px rgba(0, 0, 0, 0.52);
+    var(--player-chrome-shadow);
 }
 
 .context-menu-action {

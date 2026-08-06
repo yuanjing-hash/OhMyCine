@@ -17,6 +17,7 @@ export interface PlaybackQueueItem {
   duration?: number
   seasonNumber?: number
   episodeNumber?: number
+  resumePosition?: number
 }
 
 export interface PlaybackQueueState {
@@ -42,6 +43,7 @@ export interface PlaybackMediaContext {
   itemId: string
   locator: PlaybackLocator
   title?: string
+  currentItem?: PlaybackQueueItem
   mediaSourceId?: string
   subtitles: SubtitleTrack[]
   audioTracks: AudioTrack[]
@@ -55,6 +57,7 @@ export interface PlaybackMediaContextInput {
   itemId: string
   locator?: PlaybackLocator
   title?: string
+  currentItem?: PlaybackQueueItemInput
   mediaSourceId?: string
   subtitles?: readonly SubtitleTrack[]
   audioTracks?: readonly AudioTrack[]
@@ -85,6 +88,7 @@ export interface PlaybackQueueItemInput {
   duration?: number
   seasonNumber?: number
   episodeNumber?: number
+  resumePosition?: number
 }
 
 const MAX_CONTEXTS = 20
@@ -103,6 +107,7 @@ export function savePlaybackMediaContext(input: PlaybackMediaContextInput): stri
       mediaSourceId: input.mediaSourceId,
     }),
     title: input.title,
+    currentItem: input.currentItem ? normalizeQueueItem(input.currentItem) : undefined,
     mediaSourceId: input.mediaSourceId,
     subtitles: (input.subtitles ?? []).map(track => ({ ...track })),
     audioTracks: (input.audioTracks ?? []).map(track => ({ ...track })),
@@ -152,7 +157,7 @@ export function getPlaybackMediaContext(id: string): PlaybackMediaContext | null
 }
 
 export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
-  return {
+  return normalizeQueueItem({
     id: item.id,
     sourceId: item.sourceId,
     libraryId: item.libraryId,
@@ -169,7 +174,8 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
-  }
+    resumePosition: item.resumePosition,
+  })
 }
 
 export function createPlaybackQueue(items: readonly MediaItem[], currentItemId: string): PlaybackQueueInput | undefined {
@@ -191,7 +197,14 @@ function normalizeQueue(queue: PlaybackQueueInput | undefined): PlaybackQueueSta
   if (!queue || queue.items.length === 0)
     return undefined
 
-  const items = queue.items.map(item => ({
+  const items = queue.items.map(normalizeQueueItem)
+  const currentIndex = Math.min(Math.max(queue.currentIndex, 0), items.length - 1)
+
+  return { items, currentIndex }
+}
+
+function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
+  return {
     id: item.id,
     sourceId: item.sourceId,
     libraryId: item.libraryId,
@@ -208,10 +221,8 @@ function normalizeQueue(queue: PlaybackQueueInput | undefined): PlaybackQueueSta
     duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
-  }))
-  const currentIndex = Math.min(Math.max(queue.currentIndex, 0), items.length - 1)
-
-  return { items, currentIndex }
+    resumePosition: item.resumePosition,
+  }
 }
 
 function isPlayableQueueItem(item: MediaItem): boolean {

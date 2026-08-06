@@ -65,6 +65,9 @@ assert.match(playerView, /watch\(isPlaying, \(playing\) => \{\s+if \(playbackCle
 assert.match(playerView, /if \(shouldRefreshHomeAfterProgressEvent\(event, providerEvent\)\) \{\s+await providerSync\s+scheduleHomeSectionsRefreshAfterPlayback\(\)/)
 assert.match(playerView, /pendingResumeSeek = \{ path: mediaPath\.value, position \}/)
 assert.match(playerView, /watch\(\[videoReady, duration\],[\s\S]*applyPendingResumeSeekWhenReady\(\)/)
+assert.match(playerView, /if \(isNativeAndroidPlayer\)\s+await seekMpv\(position, \{ optimistic: false \}\)\s+else\s+await seekMpv\(position\)/)
+assert.match(playerView, /\(!isNativeAndroidPlayer \|\| videoReady\.value\) && Math\.abs\(currentTime\.value - position\) <= 5/)
+assert.match(playerView, /pending && \(!isNativeAndroidPlayer \|\| videoReady\.value\) && pending\.path === mediaPath\.value/)
 assert.match(playerView, /function effectivePlaybackPosition\(\)[\s\S]*pendingResumeSeek[\s\S]*pending\.position/)
 assert.match(playerView, /if \(!playbackProgressReady\)\s+return[\s\S]*const payload = currentHistoryPayload\(\)/)
 assert.match(playerView, /playbackProgressReady = true[\s\S]*syncProviderPlaybackStarted\(\)/)
@@ -103,6 +106,7 @@ console.log(JSON.stringify({
   startupProgressWaitsForResumeResolution: true,
   providerResumePrecedesLocalFallback: true,
   delayedResumeWaitsForMediaReady: true,
+  androidResumeRequiresNativeConfirmation: true,
   pendingResumeProtectsProviderProgress: true,
   sourceScopedHistoryDelete: true,
   sourceScopedPlaybackPreferenceDelete: true,

@@ -107,7 +107,7 @@ function cancelTouchIntent(pointerId: number) {
 
 <style scoped>
 .progress-track {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--color-divider);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.34);
 }
 
@@ -117,7 +117,7 @@ function cancelTouchIntent(pointerId: number) {
 }
 
 .progress-thumb {
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--color-text);
   box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.18), 0 8px 18px rgba(0, 0, 0, 0.4);
 }
 

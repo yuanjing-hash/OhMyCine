@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { playbackRouteQueryNeedsSanitization, sanitizePlaybackRouteQuery } from '@/services/playbackRoute'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -29,6 +30,17 @@ const router = createRouter({
       component: () => import('@/views/SettingsView.vue'),
     },
   ],
+})
+
+router.beforeEach((to) => {
+  if (to.name !== 'player' || !playbackRouteQueryNeedsSanitization(to.query))
+    return true
+
+  return {
+    name: 'player',
+    query: sanitizePlaybackRouteQuery(to.query),
+    replace: true,
+  }
 })
 
 export default router
