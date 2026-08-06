@@ -906,7 +906,7 @@ export function parseFilename(filename: string): ParsedFilename {
 
 export class TmdbScraper {
   private apiKey?: string
-  private baseURL = 'https://api.themoviedb.org/3'
+  private baseURLs = ['https://api.tmdb.org/3', 'https://api.themoviedb.org/3']
   private imageBase = 'https://image.tmdb.org/t/p'
 
   constructor(apiKey?: string) {
@@ -963,6 +963,8 @@ export class TmdbScraper {
   }
 }
 ```
+
+Player 默认优先访问 TMDB 的短域名 `https://api.tmdb.org/3`，网络失败或超时时才回退到 `https://api.themoviedb.org/3`；HTTP 401/403 等凭据错误不得通过切换域名掩盖或重复请求。图片继续使用 `https://image.tmdb.org/t/p` 并进入受控本地图片缓存。该双入口只能提高部分国内网络环境的直连成功率，不能承诺绕过所有地区网络限制；公共第三方镜像不得作为内置默认值。
 
 ### 5.5 本地元数据数据库
 

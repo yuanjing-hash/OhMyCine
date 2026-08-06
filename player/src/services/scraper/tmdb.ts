@@ -107,7 +107,10 @@ const DEFAULT_TMDB_SETTINGS: TmdbLocalSettings = {
   region: 'CN',
 }
 
-const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
+export const TMDB_API_BASE_URLS = [
+  'https://api.tmdb.org/3',
+  'https://api.themoviedb.org/3',
+] as const
 const TMDB_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p'
 const DEFAULT_TMDB_TIMEOUT_MS = 10_000
 const BUILT_IN_TMDB_READ_ACCESS_TOKEN = typeof __OHMYCINE_BUILTIN_TMDB_READ_ACCESS_TOKEN__ === 'string'
@@ -279,35 +282,64 @@ export class TmdbScraper {
   }
 
   private async requestJson(path: string, params: Record<string, string>): Promise<unknown> {
-    const request = buildTmdbRequestDescriptor({
-      baseUrl: TMDB_BASE_URL,
+    return requestTmdbJsonWithFallback({
       path,
       params,
       credential: this.credential,
+      timeoutMs: this.timeoutMs,
     })
-
-    const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), this.timeoutMs)
-    try {
-      const response = await fetch(request.url, { headers: request.headers, signal: controller.signal })
-      if (!response.ok)
-        throw new TmdbHttpError(tmdbHttpFailureMessage(this.credential.authType, response.status, await safeReadResponseText(response)))
-      return response.json()
-    }
-    catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError')
-        throw new Error('TMDB 请求超时。')
-      if (error instanceof TmdbHttpError)
-        throw error
-      throw new Error('TMDB 请求失败。')
-    }
-    finally {
-      window.clearTimeout(timeout)
-    }
   }
 }
 
 class TmdbHttpError extends Error {}
+
+interface TmdbJsonRequestInput {
+  readonly path: string
+  readonly params: Record<string, string>
+  readonly credential: TmdbCredentialValue
+  readonly timeoutMs: number
+  readonly baseUrls?: readonly string[]
+  readonly fetcher?: typeof fetch
+}
+
+export async function requestTmdbJsonWithFallback(input: TmdbJsonRequestInput): Promise<unknown> {
+  const baseUrls = input.baseUrls?.length ? input.baseUrls : TMDB_API_BASE_URLS
+  const fetcher = input.fetcher ?? fetch
+  let lastNetworkError: Error | null = null
+
+  for (const baseUrl of baseUrls) {
+    const request = buildTmdbRequestDescriptor({
+      baseUrl,
+      path: input.path,
+      params: input.params,
+      credential: input.credential,
+    })
+    const controller = new AbortController()
+    const timeout = globalThis.setTimeout(() => controller.abort(), input.timeoutMs)
+    try {
+      const response = await fetcher(request.url, { headers: request.headers, signal: controller.signal })
+      if (!response.ok)
+        throw new TmdbHttpError(tmdbHttpFailureMessage(input.credential.authType, response.status, await safeReadResponseText(response)))
+      return response.json()
+    }
+    catch (error) {
+      if (error instanceof TmdbHttpError)
+        throw error
+      lastNetworkError = isAbortError(error)
+        ? new Error('TMDB 请求超时。')
+        : new Error('TMDB 请求失败。')
+    }
+    finally {
+      globalThis.clearTimeout(timeout)
+    }
+  }
+
+  throw lastNetworkError ?? new Error('TMDB 请求失败。')
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
 
 async function safeReadResponseText(response: Response): Promise<string> {
   try {

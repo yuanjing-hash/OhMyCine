@@ -350,6 +350,7 @@ class WebDavDataSource {
 
 #### 3. Contracts
 - TMDB detail requests should request external IDs and images when scraping raw-file sources so title logos can be preserved with the same metadata round trip as poster/backdrop.
+- TMDB API routing prefers the official short endpoint `https://api.tmdb.org/3` and retries `https://api.themoviedb.org/3` only after network failure or timeout. HTTP/auth/provider failures must surface immediately without domain fallback. Artwork remains on `https://image.tmdb.org/t/p` and uses the controlled image cache.
 - Logo selection should prefer the configured language, then broadly useful fallbacks such as Chinese, English, no-language, and finally the best ranked available logo.
 - Manual identification uses title/year/media type or exact TheMovieDb ID. IMDb and TheTVDB fields may appear as user-facing identifying conditions only when reverse lookup is implemented honestly; do not pretend they were used.
 - Manual artwork search/select/delete writes only to Player local scan cache. It must not upload, rename, delete, or otherwise write to OpenList/Alist or another raw provider.
@@ -365,6 +366,8 @@ class WebDavDataSource {
 | Condition | Required behavior |
 |-----------|-------------------|
 | effective TMDB credential is missing because neither a build credential nor a matching user credential is available | Show a user-safe build/configuration prompt; keep local scan candidates playable |
+| `api.tmdb.org` has a network error or timeout | Retry the same request once through `api.themoviedb.org` with the same auth mode and sanitized parameters |
+| `api.tmdb.org` returns HTTP 401/403 | Show the credential/auth-mode error immediately; do not retry another domain |
 | title and TMDB ID are both empty | Block search with a clear validation message |
 | TMDB ID/year has non-digit characters | Reject it instead of partially parsing a misleading ID |
 | exact TMDB ID lookup fails | Show a safe TMDB error and do not change local cache |
