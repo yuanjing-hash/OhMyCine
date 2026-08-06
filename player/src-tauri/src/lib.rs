@@ -46,6 +46,7 @@ use commands::subtitle::{
     subtitle_login_opensubtitles, subtitle_search_hash_provider, subtitle_search_opensubtitles,
     OpenSubtitlesSessionState, SubtitleDownloadState,
 };
+use commands::tmdb::{tmdb_request_json, tmdb_test_image};
 use commands::updater::{player_check_for_updates, player_install_update, PendingUpdate};
 #[cfg(not(mobile))]
 use mpv::surface::OwnerWindowEvent;
@@ -122,6 +123,8 @@ pub fn run() {
             subtitle_search_hash_provider,
             subtitle_download_hash_provider,
             subtitle_import_local,
+            tmdb_request_json,
+            tmdb_test_image,
             player_check_for_updates,
             player_install_update,
             local_file_list,

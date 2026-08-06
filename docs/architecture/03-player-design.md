@@ -906,7 +906,7 @@ export function parseFilename(filename: string): ParsedFilename {
 
 export class TmdbScraper {
   private apiKey?: string
-  private baseURL = 'https://api.themoviedb.org/3'
+  private baseURLs = ['https://api.tmdb.org/3', 'https://api.themoviedb.org/3']
   private imageBase = 'https://image.tmdb.org/t/p'
 
   constructor(apiKey?: string) {
@@ -963,6 +963,10 @@ export class TmdbScraper {
   }
 }
 ```
+
+Player 默认优先访问 TMDB 的短域名 `https://api.tmdb.org/3`，网络失败或超时时才回退到 `https://api.themoviedb.org/3`；HTTP 401/403 等凭据错误不得通过切换域名掩盖或重复请求。图片继续使用 `https://image.tmdb.org/t/p` 并进入受控本地图片缓存。该双入口只能提高部分国内网络环境的直连成功率，不能承诺绕过所有地区网络限制；公共第三方镜像不得作为内置默认值。
+
+用户可在“刮削与分类”中分别配置 TMDB API 与图片 HTTPS 代理前缀，两项完全独立，可以只配置其中一个。地址不得包含账号密码、查询参数或片段；API 地址通过已知电影详情请求验证，图片地址通过固定 TMDB 海报路径验证，各自只有测试成功才保存并立即启用，失败只保留该项上一次验证通过的地址且不影响另一项。默认官方 API 仍保留短域名到旧域名的网络故障回退，自定义 API 代理只访问用户选择的单一地址且禁用重定向，避免凭据在故障时被静默发送到其它域名。Tauri 桌面和 Android 的测试与实际刮削统一走 Rust 原生请求，浏览器开发环境才使用 `fetch` fallback；已有扫描缓存根据保存的 TMDB 图片路径动态套用当前图片地址，无需清空媒体库缓存。
 
 ### 5.5 本地元数据数据库
 

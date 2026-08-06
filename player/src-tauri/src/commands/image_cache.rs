@@ -339,7 +339,7 @@ fn unix_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some("image/jpeg");
     }
