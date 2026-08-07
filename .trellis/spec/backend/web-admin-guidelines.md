@@ -116,3 +116,88 @@ import { Permissions } from '@/auth/generated-permissions'
 const canDelete = auth.can(Permissions.UsersDelete)
 // The DELETE API also requires users.delete and enforces owner/last-admin policy.
 ```
+
+---
+
+## Scenario: One-Command Local and Production Launcher
+
+### 1. Scope / Trigger
+
+- Trigger: changing `server/start.sh`, runtime directories, embedded Web UI startup, local production defaults, or startup documentation.
+- Applies to Bash dependency discovery, npm/Go builds, SQLite placement, environment overrides, process signals, and Git ignore rules.
+
+### 2. Signatures
+
+- Command: `server/start.sh [--skip-build|--help]`.
+- Default runtime root: `server/.runtime/`.
+- Default binary: `server/.runtime/bin/ohmycine-server`.
+- Default database: `server/.runtime/data/ohmycine.db`.
+- Runtime overrides: `OMC_RUNTIME_DIR`, `OMC_BINARY_PATH`, `OMC_DATABASE_PATH`, `OMC_ENV`, `OMC_SERVER_HOST`, `OMC_SERVER_PORT`, `OMC_PUBLIC_ORIGIN`, and `OMC_COOKIE_SECURE`.
+- Default build order: Web UI dependency check → `npm run build` → `go build -tags webui` → foreground `exec`.
+
+### 3. Contracts
+
+- Resolve every default/relative path against the physical `server/` directory, not the caller's current directory.
+- Default startup uses `OMC_ENV=production`, an embedded Web UI, loopback listening, and one foreground Go process. The launcher must use `exec` so Ctrl+C, systemd, and container signals reach the Server directly.
+- Runtime data is persistent. The launcher must never delete, reset, replace, or silently migrate an existing database outside normal Server migrations.
+- `server/.runtime/`, `webui/dist/`, `webui/node_modules/`, generated binaries, and SQLite journal/WAL/SHM files are Git-ignored.
+- Run `npm ci` only when `node_modules` is absent or the committed lockfile differs from the stored dependency stamp. Never use an untrusted Windows `node.exe`/`npm` from WSL.
+- `--skip-build` requires an existing executable binary and reuses it without modifying the binary or database.
+- User-provided `OMC_*` values take precedence. Wildcard listen addresses map to loopback only for the default browser origin; LAN/domain/reverse-proxy use requires an explicit exact `OMC_PUBLIC_ORIGIN`.
+- Missing Go/npm/Node dependencies fail before mutating runtime data and return a clear actionable message.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Launcher invoked outside `server/` | Resolve the same runtime, Web UI, binary, and database paths |
+| Path contains spaces | Quote paths and complete dependency/build/start steps normally |
+| `--help` | Print usage and create no `.runtime` files |
+| `--skip-build` without a binary | Fail clearly; do not create a database |
+| Lockfile unchanged | Reuse `node_modules`; do not run `npm ci` |
+| Lockfile changed | Run `npm ci`, then refresh the dependency stamp |
+| `OMC_SERVER_HOST=0.0.0.0` and no public origin | Listen on wildcard but default browser origin to `127.0.0.1` |
+| `OMC_SERVER_HOST=::` and no public origin | Use bracketed IPv6 listen syntax and default browser origin to `[::1]` |
+| Explicit external host/domain | Require the operator to set the exact browser `OMC_PUBLIC_ORIGIN` |
+| SIGINT/SIGTERM | Reach the Go process and allow graceful HTTP shutdown |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `./server/start.sh` from the repository root builds once, stores the binary/database under `server/.runtime`, serves the UI and API on one port, and stops cleanly with Ctrl+C.
+- Good: a later `./start.sh --skip-build` preserves the database inode and binary modification time.
+- Base: an operator overrides port/database paths through environment variables while retaining safe loopback defaults.
+- Bad: the script starts the Server in the background, writes a PID file, and leaves an orphan process after the shell exits.
+- Bad: each start deletes the SQLite database, unconditionally reinstalls npm dependencies, or writes generated binaries into tracked source paths.
+
+### 6. Tests Required
+
+- Run `bash -n server/start.sh` and `server/start.sh --help`; assert help creates no runtime directory.
+- Invoke from a different current directory and from a path containing spaces.
+- Perform a full startup on an isolated port, poll `/api/v1/health`, request `/`, and terminate the exact launcher/Server PID.
+- Repeat with `--skip-build`; assert binary modification time and database identity are unchanged.
+- Test IPv4 wildcard and IPv6 loopback startup plus generated public-origin output.
+- Verify `git status --ignored`/`git check-ignore` covers every runtime/build/database artifact.
+- Re-run the Server and Web UI Go/npm quality gates from the primary Web administration scenario.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```bash
+cd server
+rm -f data/ohmycine.db
+npm install
+go run ./cmd/server &
+```
+
+#### Correct
+
+```bash
+server_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+runtime_dir="${OMC_RUNTIME_DIR:-${server_dir}/.runtime}"
+database_path="${OMC_DATABASE_PATH:-${runtime_dir}/data/ohmycine.db}"
+
+# Build only when requested, never remove the database, and hand signal ownership
+# to the Go process.
+exec "${runtime_dir}/bin/ohmycine-server"
+```
