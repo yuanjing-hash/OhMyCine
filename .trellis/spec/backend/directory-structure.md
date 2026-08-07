@@ -44,10 +44,17 @@ server/
 │   └── strm/                # STRM generation and cleanup
 ├── api/
 ├── configs/
+├── webui/                   # Vue admin UI + nested Go module for SPA serving/embedding
+│   ├── src/
+│   ├── package.json
+│   ├── go.mod
+│   └── assets_{dev,prod}.go
 └── go.mod
 ```
 
 CLI code follows the same Go conventions and may reuse safe code from shared `pkg/` packages.
+
+`server/webui` is intentionally a nested Go module. The root Server module uses a local `require` + `replace` for its SPA serving package so root `go test ./...` and `go list ./...` do not traverse Go example sources shipped inside frontend `node_modules`. Do not remove this boundary without proving the root Go quality commands remain isolated from frontend dependencies.
 
 ---
 

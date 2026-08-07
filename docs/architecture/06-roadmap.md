@@ -333,34 +333,58 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 2: Server MVP (Week 9-14)
 
-> 后端最小可用版本 — 优先打通刚需存储与播放闭环：115网盘 / OpenList/Alist / CloudDrive2 / 本地文件 + 三层架构 + STRM + 302代理 + 配置同步；PT聚合、追更、AI、插件、多用户权限等功能保留在后续阶段逐步完整实现
+> 后端最小可用版本 — 先交付安全可用的独立 Web 管理与 RBAC 基础，再按 OpenList/Alist → STRM → signed 302 → Emby/Jellyfin refresh 纵向切片打通刚需存储与播放闭环。115、CloudDrive2、本地文件、PT、追更、AI、插件和更大权限范围仍保留并按依赖顺序接入。
 
-### Sprint 2.1: 基础框架 + 三层架构 (Week 9-10)
+### Sprint 2.1A: 管理端与权限基础（已完成首版）
+
+- [x] Go 1.22+ module、Gin、SQLite/GORM 与显式版本迁移
+- [x] Vue 3 + TypeScript + Vite + Pinia + Router + UnoCSS 独立管理端
+- [x] 首次 owner 设置；已有用户时永久关闭 setup；缺 owner 时进入安全恢复状态
+- [x] opaque server-side session + HttpOnly/SameSite Cookie、idle/absolute 过期和撤销
+- [x] session-bound CSRF、Origin/Referer、Fetch Metadata 与 JSON content-type 防护
+- [x] 登录 IP+username 组合限速
+- [x] permission catalog、系统/自定义角色、多角色权限并集
+- [x] route/nav/button/API 共享 permission code
+- [x] owner、最后管理员、自我降权和防权限提升事务不变量
+- [x] setup/login/dashboard/users/roles/audit 页面和对应真实 API
+- [x] Vite 开发代理；生产 `webui` build tag 嵌入 `dist`；默认 Go 测试不要求 `dist`
+
+### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）
+
+**目标**：沿 Connection → Storage Destination → STRM Run → signed 302 → Emby/Jellyfin refresh 交付第一个真实媒体闭环。只创建该闭环需要的表、接口和适配器，不横向铺设空 CRUD。
+
+- [ ] OpenList/Alist Connection：加密凭据、连接测试、根路径与最小驱动能力
+- [ ] Storage Destination：关联连接、远端路径、受控 STRM 根目录
+- [ ] 持久化 STRM Run：可重跑、幂等、逐项错误与原子写入
+- [ ] signed URL 续签/轮换策略与安全 302
+- [ ] Emby/Jellyfin 连接和库刷新
+- [ ] 可重复的本地端到端演示与真实播放验证
+
+### 原 Sprint 2.1 横向清单（按纵向切片逐步吸收）
 
 **目标**: Server 能启动，三层架构 (连接/存储目标/分类规则) 可用，用户管理可用
 
 #### Go 项目初始化
 
-- [ ] `go mod init ohmycine-server`
-- [ ] 目录结构创建 (`cmd/`, `internal/`, `pkg/`, `api/`, `configs/`, `docker/`)
-- [ ] 配置 `go.mod` 依赖
-- [ ] 编写 `cmd/server/main.go` 入口
+- [x] Go module 与当前切片需要的目录结构
+- [x] 配置 `go.mod` 依赖
+- [x] 编写 `cmd/server/main.go` 入口
 - [ ] 配置管理 (`internal/config/`) — Viper + YAML
 - [ ] 日志系统 (`internal/middleware/logger.go`) — zerolog 结构化日志
 
 #### Web 框架搭建
 
-- [ ] Gin 路由初始化
+- [x] Gin 路由初始化
 - [ ] 中间件: CORS, Logger, Recovery
-- [ ] JWT 认证中间件 (`internal/middleware/auth.go`)
-- [ ] 统一错误响应格式
+- [x] Cookie Session 认证、CSRF 与 permission 中间件
+- [x] 统一错误响应格式
 - [ ] 统一分页格式
 - [ ] API 版本路由 (`/api/v1/`)
 
 #### 数据库层
 
-- [ ] GORM 初始化 + SQLite 连接
-- [ ] 自动迁移 (`AutoMigrate`)
+- [x] GORM 初始化 + SQLite 连接
+- [x] 显式递增版本迁移（不以 AutoMigrate 代替长期 schema）
 - [ ] 数据模型定义 (`internal/models/`)
   - [ ] `Connection` 模型
   - [ ] `StorageDestination` 模型
@@ -401,20 +425,16 @@ Phase 4: 生态系统           ████████████████
 
 #### 用户管理
 
-- [ ] `User` 模型 + bcrypt 密码哈希
-- [ ] `POST /api/v1/auth/login` — 登录 (返回 JWT)
-- [ ] `POST /api/v1/auth/logout` — 登出
-- [ ] `GET /api/v1/auth/me` — 当前用户信息
-- [ ] `GET /api/v1/users` — 用户列表 (管理员)
-- [ ] `POST /api/v1/users` — 添加用户 (管理员)
-- [ ] `PUT /api/v1/users/{id}` — 更新用户
-- [ ] `DELETE /api/v1/users/{id}` — 删除用户 (管理员)
-- [ ] 权限检查中间件 (admin/user)
-- [ ] 首次启动自动创建管理员账号
+- [x] users/roles/permissions/user_roles/role_permissions/sessions 模型 + bcrypt
+- [x] setup/login/logout/me/csrf API
+- [x] 用户创建、资料、启停、角色分配、密码重置与删除 API
+- [x] 自定义角色与权限矩阵 API
+- [x] permission code 强制鉴权
+- [x] 首次网页创建唯一 owner，不创建默认账号或密码
 
 #### 本地运行与部署准备
 
-- [ ] Server 能本地二进制运行 (`go run ./cmd/server` / `go build`)
+- [x] Server 本地运行入口与单二进制 Web UI 嵌入方向
 - [ ] 基础配置文件可用 (`configs/config.example.yaml`)
 - [ ] 健康检查端点 (`GET /api/v1/health`)
 - [ ] 编写 `Dockerfile` (后续部署准备，可不作为本地开发前置)
@@ -422,9 +442,9 @@ Phase 4: 生态系统           ████████████████
 
 **产出**:
 
-- [ ] Server 能本地运行并通过健康检查
-- [ ] 三层架构 CRUD API 可用
-- [ ] 用户登录/权限控制可用
+- [x] 健康检查和管理基础代码完成
+- [ ] 三层架构业务 API 随 2.1B 纵向闭环实现
+- [x] 用户登录/权限控制可用
 - [ ] 连接信息加密存储
 
 ### Sprint 2.2: 网盘驱动 + 下载器 + 302代理 (Week 11-12)

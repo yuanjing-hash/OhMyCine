@@ -41,6 +41,7 @@ Before changing backend code or API documentation:
 | [API Guidelines](./api-guidelines.md) | REST, WebSocket, response envelopes, auth defaults | Active |
 | [Error Handling](./error-handling.md) | Error propagation and client-safe responses | Active |
 | [Security Guidelines](./security-guidelines.md) | Credentials, proxy, paths, sync, plugin, AI boundaries | Active |
+| [Server Web Administration](./web-admin-guidelines.md) | Embedded Web UI, sessions, users, roles, permission codes, and RBAC invariants | Active |
 | [Logging Guidelines](./logging-guidelines.md) | zerolog conventions and redaction rules | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Testing, linting, and forbidden patterns | Active |
 

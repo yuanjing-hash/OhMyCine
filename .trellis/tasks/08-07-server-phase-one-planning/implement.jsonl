@@ -1,0 +1,20 @@
+{"file":".trellis/spec/backend/index.md","reason":"Server backend pre-development checklist and core boundaries"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Go handler/service/model/client package ownership"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"REST envelopes, authentication defaults and permission enforcement"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"SQLite/GORM schema, migrations and transaction rules"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Safe domain error and HTTP status mapping"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"zerolog fields and secret redaction"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Authentication, credentials, sessions and audit security requirements"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Executable Server Web session, RBAC and module-boundary contract captured by this task"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend testing and lint completion gates"}
+{"file":".trellis/spec/frontend/index.md","reason":"Vue frontend pre-development checklist"}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Vue views/components/stores/services boundaries"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Cinema OS component, form and accessibility patterns"}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Composable and API client lifecycle rules"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Pinia state and secret persistence boundaries"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Strict TypeScript and untrusted API response validation"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend typecheck, lint and build gates"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"RBAC data flow crosses database, services, API, router and buttons"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Permission codes and guards require one source of truth"}
+{"file":".trellis/tasks/08-07-server-phase-one-planning/research/initial-vertical-slice.md","reason":"Connect management foundation to the next OpenList/Alist vertical slice"}
+{"file":".trellis/tasks/08-07-server-phase-one-planning/research/web-rbac-foundation.md","reason":"Selected web admin, session and RBAC architecture"}

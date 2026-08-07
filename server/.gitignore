@@ -1,0 +1,7 @@
+/data/
+/webui/dist/
+/webui/node_modules/
+/server
+*.db
+*.db-shm
+*.db-wal
