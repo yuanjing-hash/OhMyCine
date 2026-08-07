@@ -18,6 +18,8 @@ Server 已完成首个可运行基础版本：Go/Gin + SQLite/GORM、显式版�
 
 当前版本没有实现 Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API。管理端只以明确的“规划中”状态展示这些入口，不返回伪成功。下一纵向切片从 OpenList/Alist 连接开始，沿 `Connection → Destination → STRM Run → signed 302 → Emby/Jellyfin refresh` 形成真实播放闭环。
 
+Server 管理端的目标导航、顶栏、12 列仪表盘、用户管理内部层级、权限可见性和响应式规则见 [Server Web UI 设计](08-server-web-ui-design.md)。本文仍负责后端业务、API 与数据模型，不在此复制界面设计全文。
+
 ## 2. 技术栈
 
 | 组件 | 技术 | 说明 |

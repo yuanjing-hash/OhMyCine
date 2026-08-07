@@ -14,6 +14,7 @@
 | 05 | [CLI命令行设计](05-cli-design.md) | omc命令体系、Shell补全 |
 | 06 | [开发路线图](06-roadmap.md) | 4阶段开发计划、里程碑、风险评估 |
 | 07 | [安全设计](07-security-design.md) | 威胁模型、凭据存储、302代理、配置同步、插件与部署安全 |
+| 08 | [Server Web UI 设计](08-server-web-ui-design.md) | 管理端导航、顶栏、混合型仪表盘、权限可见性与响应式规则 |
 
 ## 快速开始
 

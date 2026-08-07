@@ -157,7 +157,7 @@ OhMyCine/
 ├── hub/                 — VitePress 插件市场
 ├── cli/                 — omc 命令行工具
 ├── docs/                — 架构文档
-│   └── architecture/    — 设计文档 (总览/Server/Player/Hub/CLI/路线图)
+│   └── architecture/    — 设计文档 (总览/Server/Player/Hub/CLI/安全/Web UI/路线图)
 └── .github/             — CI/CD Actions
 ```
 
@@ -181,6 +181,7 @@ OhMyCine/
 - [CLI 命令行设计](docs/architecture/05-cli-design.md)
 - [开发路线图](docs/architecture/06-roadmap.md)
 - [安全设计](docs/architecture/07-security-design.md)
+- [Server Web UI 设计](docs/architecture/08-server-web-ui-design.md)
 
 ## 开发规范
 

@@ -201,3 +201,91 @@ database_path="${OMC_DATABASE_PATH:-${runtime_dir}/data/ohmycine.db}"
 # to the Go process.
 exec "${runtime_dir}/bin/ohmycine-server"
 ```
+
+---
+
+## Scenario: Administration Navigation and Mixed Dashboard
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing Server administration navigation, dashboard cards, top-bar tools, user-management information architecture, or responsive shell behavior.
+- Applies across Vue routes/meta, permission catalog usage, dashboard summary APIs, job/storage/subscription read models, notification/log drawers, and personal-account actions.
+
+### 2. Signatures
+
+- Primary navigation groups:
+  - standalone `dashboard`;
+  - `discovery`: recommendations and exploration;
+  - `subscriptions`: subscriptions, workflows, calendar;
+  - `automation`: task center, downloads, organization, STRM/import, files;
+  - `system`: connections/storage, sites, plugins, user management, settings.
+- User-management subviews: accounts, roles/permissions, and sessions.
+- Top-bar tools: global search, logs, notifications, and authenticated-user menu.
+- Dashboard layout: responsive 12-column grid on desktop; ordered single-column sections on compact screens.
+- Canonical product design: `docs/architecture/08-server-web-ui-design.md`.
+
+### 3. Contracts
+
+- Do not flatten every route into one side-navigation level. A group is visible only when the actor can access at least one implemented child route; an empty group is omitted.
+- Account administration and self-service are separate. Admins manage other users under User Management; every authenticated user edits their own profile, password, and sessions from the avatar menu.
+- Runtime, task, and audit logs share the top-bar log center. Notifications contain actionable events such as connection expiry, job failure, subscription matches, and low storage; they are not duplicate navigation pages.
+- The dashboard is a mixed content/operations surface. Media, storage/connection health, active jobs, and pipeline state come before subscription/calendar and metadata discovery content. The discovery hero is always after operational cards.
+- Dashboard cards render only real backend data or an explicit unconfigured/planned state. Never fabricate successful connections, media counts, tasks, capacities, or recommendations.
+- Every card documents a future data owner/API boundary. Frontend views do not query providers, SQLite, filesystems, or job engines directly.
+- Navigation, route meta, action buttons, cards containing protected data, log tools, and APIs reuse stable permission codes. UI filtering is UX; API/service authorization remains the security boundary.
+- The design may learn grouped navigation and card density from comparable tools, but OhMyCine keeps its own Cinema OS palette, media-pipeline semantics, terminology, and layout proportions.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Actor has no permission for any group child | Hide the group and its heading |
+| Actor can read users but not roles | Show User Management with Accounts only; do not fail the page by loading roles |
+| Actor edits their own profile | Route through avatar self-service, not admin user mutation UI |
+| Card API is unavailable or feature is not configured | Show a truthful empty/error/configuration state; preserve the rest of the dashboard |
+| One dashboard data owner fails | Isolate that card failure; do not replace other successful cards |
+| Discovery metadata is available | Render it below status, pipeline, recent-import, and subscription sections |
+| Compact/mobile layout | Preserve all dashboard sections in desktop priority order; move navigation to a drawer/sheet and keep top tools accessible |
+| Protected log/audit data requested without permission | Hide the corresponding tool/tab and return 403 from the API |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an operator opens the dashboard and sees real destination health, active pipeline runs, recent imports, then subscription and TMDB/Douban discovery content below.
+- Good: a viewer sees only readable navigation children and no empty System group or destructive quick actions.
+- Base: no source is configured, so the media/storage cards explain what to configure and provide an authorized add-connection action instead of showing misleading zero values.
+- Bad: Users, Roles, Audit, Connections, STRM, and every planned capability appear as peer menu items in one flat list.
+- Bad: the dashboard is dominated by user/role counts or an artwork hero while failed storage and pipeline tasks are hidden below the fold.
+- Bad: the UI fills planned cards with static demo numbers in a real Server session.
+
+### 6. Tests Required
+
+- Route/navigation tests cover every permission combination needed to hide empty groups and show only allowed User Management tabs.
+- Component tests assert the desktop 12-column order and compact single-column order keep the discovery hero after operational sections.
+- Dashboard service/API tests return explicit configured/empty/error states and isolate partial failures by data owner.
+- Browser checks cover log, notification, and avatar drawers plus keyboard/focus behavior.
+- Visual checks compare desktop and compact layouts against the documented wireframes without requiring exact screenshot duplication.
+- Frontend typecheck, lint, build, permission-catalog drift check, and backend authorization tests must pass.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const navigation = [
+  'dashboard', 'users', 'roles', 'audit', 'connections', 'destinations', 'strm',
+]
+
+const dashboard = {
+  mediaCount: 337, // demo value shown even when no provider is configured
+}
+```
+
+#### Correct
+
+```ts
+const groups = buildVisibleNavigation(routeDefinitions, auth.permissions)
+
+const dashboard = await dashboardService.loadSummary()
+// Each card receives real data, configured=false, or an isolated safe error.
+// Discovery content remains after operational sections in every layout.
+```
