@@ -27,6 +27,7 @@
   - `GET /api/v1/auth/csrf`
 - Administration APIs use the standard response envelope and stable application error codes.
 - `server/webui` is a nested Go module referenced by the root Server module with a local `require` + `replace`; this prevents `go test ./...` from traversing frontend `node_modules`.
+- Production SPA fallback runs only for extensionless `GET`/`HEAD` browser navigations whose `Accept` header explicitly includes `text/html`; it serves `index.html` with `Cache-Control: no-cache`.
 
 ### 3. Contracts
 
@@ -38,7 +39,7 @@
 - Browser management uses a revocable server-side session in an HttpOnly, host-only, SameSite cookie. Do not store browser JWT/session tokens in localStorage, Pinia persistence, URLs, logs, or audit metadata.
 - State-changing cookie-authenticated requests require a session-bound CSRF header, allowed Origin/Referer validation, safe Fetch Metadata, and an exact JSON media type. Setup and login are also Origin-checked and rate-limited.
 - Authentication/setup responses use `Cache-Control: no-store`. Password reset requires the actor's current password; password changes and account disablement revoke affected sessions.
-- Production Web UI assets are built before `go build -tags webui`. Default Go builds/tests must not require `dist` to exist. SPA fallback applies only to HTML navigation; missing assets and API routes return real 404 responses.
+- Production Web UI assets are built before `go build -tags webui`. Default Go builds/tests must not require `dist` to exist. SPA fallback applies only to explicit HTML navigation. Exact or nested `/api`, `/ws`, `/proxy`, and `/assets` paths, file-like paths with extensions, non-HTML clients, and non-`GET`/`HEAD` requests return real 404 responses instead of `index.html`.
 - The root Server module and `server/webui` module must each keep a tidy `go.mod`/`go.sum`. The root module's Go directive must satisfy dependency minimums; currently this is Go 1.23+.
 
 ### 4. Validation & Error Matrix
@@ -57,15 +58,20 @@
 | Mutation has `application/jsonp` or another non-JSON media type | Return 415/400; do not accept prefix matches |
 | Origin contains credentials, paths, query, fragment, or unsupported scheme | Reject configuration/startup validation |
 | `go test ./...` discovers packages under `webui/node_modules` | Treat as a module-boundary regression; restore the nested Web UI module |
+| Browser refreshes `/system/users/accounts` with `Accept: text/html` | Return the SPA `index.html` shell with HTTP 200 and `no-cache` |
+| Generic/JSON client requests the same extensionless path | Return 404; `*/*`, omitted `Accept`, and `application/json` are not browser HTML navigation |
+| Missing `/assets/*`, file-like path, `/api*`, `/ws*`, or `/proxy*` is requested | Return 404 and never mask the missing route/resource with SPA HTML |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: a custom operator sees users but not role editing; the users page loads without requiring `roles.read`, role controls remain unavailable, and direct role API access returns 403.
 - Good: an administrator edits a custom role only within their own permission set; the transaction updates permissions, authorization revision/session state, and audit metadata atomically.
 - Base: planned media modules appear as clearly unavailable navigation states until their real APIs exist; no placeholder endpoint reports fake success.
+- Good: a browser refreshes a nested Vue route and receives `index.html`, while a missing JavaScript asset and an unknown API route still return 404.
 - Bad: a button is hidden with `v-if`, but the matching POST/DELETE route has no permission middleware or service policy.
 - Bad: last-admin or privilege-escalation checks run before the transaction, allowing concurrent requests to invalidate the decision.
 - Bad: the Web UI stores a JWT in localStorage or commits built `node_modules`/session material.
+- Bad: the NoRoute handler returns `index.html` for every missing `GET`, causing mistyped API paths, JSON clients, and missing assets to look successful.
 
 ### 6. Tests Required
 
@@ -75,6 +81,8 @@
 - `go list ./...` from the root Server module must list only OhMyCine Server packages and must not include packages from `node_modules`.
 - The permission generation check must fail on duplicate/invalid permission codes or generated TypeScript identifier collisions.
 - Review browser responses for cookie flags, `Cache-Control: no-store`, stable error codes, CSP/security headers, and no credential/session leakage.
+- Web UI Go tests must cover a real HTML deep link, exact and nested reserved prefixes, missing assets/files, `*/*` and JSON clients, non-safe methods, missing index, and immutable asset versus `no-cache` SPA caching.
+- An embedded-binary smoke must request `/`, one nested route with `Accept: text/html`, the generated JavaScript asset, a missing asset, and a missing API route; assert `200/200/200/404/404` respectively.
 
 ### 7. Wrong vs Correct
 
@@ -93,6 +101,13 @@ return db.Transaction(func(tx *gorm.DB) error {
 ```ts
 // UI-only string drifts from the backend contract.
 const canDelete = permissions.includes('button.deleteUser')
+```
+
+```go
+// Every unknown GET becomes HTML, masking missing APIs and static assets.
+if request.Method == http.MethodGet {
+    serveIndex()
+}
 ```
 
 #### Correct
@@ -115,6 +130,16 @@ import { Permissions } from '@/auth/generated-permissions'
 
 const canDelete = auth.can(Permissions.UsersDelete)
 // The DELETE API also requires users.delete and enforces owner/last-admin policy.
+```
+
+```go
+// Correct: an explicit HTML navigation may fall back, but generic clients,
+// reserved service prefixes, and file-like paths keep their real 404.
+if (request.Method == http.MethodGet || request.Method == http.MethodHead) &&
+    strings.Contains(request.Header.Get("Accept"), "text/html") &&
+    !isReservedPath(requestPath) && path.Ext(path.Base(requestPath)) == "" {
+    serveIndex()
+}
 ```
 
 ---

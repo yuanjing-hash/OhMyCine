@@ -7,6 +7,7 @@
     "dev": "vite",
     "permissions:generate": "node scripts/generate-permissions.mjs",
     "permissions:check": "node scripts/generate-permissions.mjs --check",
+    "test": "vitest run",
     "typecheck": "npm run permissions:check && vue-tsc --noEmit",
     "lint": "eslint .",
     "build": "npm run permissions:check && vue-tsc --noEmit && vite build"
@@ -29,6 +30,7 @@
     "typescript-eslint": "^8.35.1",
     "unocss": "^66.3.3",
     "vite": "^7.0.4",
+    "vitest": "^3.2.4",
     "vue-tsc": "^3.0.1"
   }
 }

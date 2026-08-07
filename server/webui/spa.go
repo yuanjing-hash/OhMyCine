@@ -17,7 +17,7 @@ func Register(router *gin.Engine, assets fs.FS) {
 			return
 		}
 		requestPath := strings.TrimPrefix(path.Clean(c.Request.URL.Path), "/")
-		if strings.HasPrefix(requestPath, "api/") || strings.HasPrefix(requestPath, "ws/") || strings.HasPrefix(requestPath, "proxy/") {
+		if hasPathPrefix(requestPath, "api") || hasPathPrefix(requestPath, "ws") || hasPathPrefix(requestPath, "proxy") {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -26,7 +26,7 @@ func Register(router *gin.Engine, assets fs.FS) {
 		}
 		content, err := fs.ReadFile(assets, requestPath)
 		if err != nil {
-			if strings.HasPrefix(requestPath, "assets/") || !strings.Contains(c.GetHeader("Accept"), "text/html") {
+			if !isSPANavigationRequest(c.Request, requestPath) {
 				c.Status(http.StatusNotFound)
 				return
 			}
@@ -48,4 +48,15 @@ func Register(router *gin.Engine, assets fs.FS) {
 		}
 		c.Data(http.StatusOK, contentType, content)
 	})
+}
+
+func hasPathPrefix(requestPath, prefix string) bool {
+	return requestPath == prefix || strings.HasPrefix(requestPath, prefix+"/")
+}
+
+func isSPANavigationRequest(request *http.Request, requestPath string) bool {
+	if hasPathPrefix(requestPath, "assets") || path.Ext(path.Base(requestPath)) != "" {
+		return false
+	}
+	return strings.Contains(request.Header.Get("Accept"), "text/html")
 }

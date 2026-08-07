@@ -335,7 +335,7 @@ Phase 4: 生态系统           ████████████████
 
 > 后端最小可用版本 — 先交付安全可用的独立 Web 管理与 RBAC 基础，再按 OpenList/Alist → STRM → signed 302 → Emby/Jellyfin refresh 纵向切片打通刚需存储与播放闭环。115、CloudDrive2、本地文件、PT、追更、AI、插件和更大权限范围仍保留并按依赖顺序接入。
 
-### Sprint 2.1A: 管理端与权限基础（已完成首版）
+### Sprint 2.1A: 管理端与权限基础（已完成 v0.2 壳层）
 
 - [x] Go 1.22+ module、Gin、SQLite/GORM 与显式版本迁移
 - [x] Vue 3 + TypeScript + Vite + Pinia + Router + UnoCSS 独立管理端
@@ -347,6 +347,8 @@ Phase 4: 生态系统           ████████████████
 - [x] route/nav/button/API 共享 permission code
 - [x] owner、最后管理员、自我降权和防权限提升事务不变量
 - [x] setup/login/dashboard/users/roles/audit 页面和对应真实 API
+- [x] 分组侧栏、统一顶栏、用户管理二级路由、日志中心入口与响应式移动抽屉
+- [x] 运维优先的 12 列混合仪表盘；未实现媒体域只显示明确规划/未配置状态
 - [x] Vite 开发代理；生产 `webui` build tag 嵌入 `dist`；默认 Go 测试不要求 `dist`
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）

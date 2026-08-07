@@ -14,7 +14,7 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 ### 1.1 当前实现状态（2026-08）
 
-Server 已完成首个可运行基础版本：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的 setup/login/dashboard/users/roles/audit 页面。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
+Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
 
 当前版本没有实现 Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API。管理端只以明确的“规划中”状态展示这些入口，不返回伪成功。下一纵向切片从 OpenList/Alist 连接开始，沿 `Connection → Destination → STRM Run → signed 302 → Emby/Jellyfin refresh` 形成真实播放闭环。
 

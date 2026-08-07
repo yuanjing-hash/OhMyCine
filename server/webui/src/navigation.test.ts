@@ -1,0 +1,64 @@
+import { describe, expect, it } from 'vitest'
+import { Permissions } from '@/auth/generated-permissions'
+import {
+  buildVisibleNavigation,
+  getFirstVisibleUserManagementPath,
+  getVisibleUserManagementTabs,
+  legacyRouteRedirects,
+} from '@/navigation'
+
+describe('grouped administration navigation', () => {
+  it('omits every empty group and keeps the dashboard standalone', () => {
+    expect(buildVisibleNavigation([Permissions.DashboardRead])).toEqual([])
+  })
+
+  it('shows only children allowed by generated permission codes', () => {
+    const groups = buildVisibleNavigation([Permissions.DiscoveryRead, Permissions.PluginsRead])
+
+    expect(groups.map(group => group.id)).toEqual(['discovery', 'system'])
+    expect(groups[0]?.items.map(item => item.id)).toEqual(['recommendations', 'explore'])
+    expect(groups[1]?.items.map(item => item.id)).toEqual(['plugins'])
+  })
+
+  it('shows User Management when either account or role reads are granted', () => {
+    const accounts = buildVisibleNavigation([Permissions.UsersRead])
+    const roles = buildVisibleNavigation([Permissions.RolesRead])
+
+    expect(accounts[0]?.items.map(item => item.id)).toEqual(['user-management'])
+    expect(roles[0]?.items.map(item => item.id)).toEqual(['user-management'])
+  })
+})
+
+describe('User Management hierarchy', () => {
+  it('hides the workspace tabs and has no redirect without either read permission', () => {
+    expect(getVisibleUserManagementTabs([])).toEqual([])
+    expect(getFirstVisibleUserManagementPath([])).toBeNull()
+  })
+
+  it('exposes only the accounts tab for users.read', () => {
+    expect(getVisibleUserManagementTabs([Permissions.UsersRead]).map(tab => tab.id)).toEqual(['accounts'])
+    expect(getFirstVisibleUserManagementPath([Permissions.UsersRead])).toBe('/system/users/accounts')
+  })
+
+  it('routes a roles-only actor directly to the roles tab', () => {
+    expect(getVisibleUserManagementTabs([Permissions.RolesRead]).map(tab => tab.id)).toEqual(['roles'])
+    expect(getFirstVisibleUserManagementPath([Permissions.RolesRead])).toBe('/system/users/roles')
+  })
+
+  it('exposes both tabs in canonical order and defaults to accounts when both reads are granted', () => {
+    const permissions = [Permissions.UsersRead, Permissions.RolesRead]
+
+    expect(getVisibleUserManagementTabs(permissions).map(tab => tab.id)).toEqual(['accounts', 'roles'])
+    expect(getFirstVisibleUserManagementPath(permissions)).toBe('/system/users/accounts')
+  })
+})
+
+describe('legacy deep links', () => {
+  it('keeps explicit compatibility redirects', () => {
+    expect(legacyRouteRedirects).toEqual({
+      '/users': '/system/users/accounts',
+      '/roles': '/system/users/roles',
+      '/audit': '/logs/audit',
+    })
+  })
+})

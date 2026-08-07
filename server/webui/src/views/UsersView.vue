@@ -45,7 +45,7 @@ onMounted(load)
 
 <template>
   <section>
-    <div class="flex flex-wrap items-end justify-between gap-4"><div><p class="mb-2 text-xs font-700 uppercase tracking-[.22em] text-cyan-300">Accounts</p><h1 class="m-0 text-3xl font-800">用户管理</h1><p class="mt-2 text-slate-400">多角色权限取并集；Owner、自我降权和最后管理员规则由服务端事务强制执行。</p></div><button v-if="auth.can(Permissions.UsersCreate)" class="btn-primary" @click="createOpen = !createOpen">{{ createOpen ? '取消创建' : '创建用户' }}</button></div>
+    <div class="flex flex-wrap items-end justify-between gap-4"><div><p class="mb-2 text-xs font-700 uppercase tracking-[.22em] text-cyan-300">Accounts</p><h2 class="m-0 text-2xl font-800">账户</h2><p class="mt-2 text-slate-400">多角色权限取并集；Owner、自我降权和最后管理员规则由服务端事务强制执行。</p></div><button v-if="auth.can(Permissions.UsersCreate)" class="btn-primary" @click="createOpen = !createOpen">{{ createOpen ? '取消创建' : '创建用户' }}</button></div>
     <p v-if="error" class="mt-5 rounded-3 bg-red-400/10 p-3 text-sm text-red-200">{{ error }}</p><p v-if="notice" class="mt-5 rounded-3 bg-emerald-400/10 p-3 text-sm text-emerald-200">{{ notice }}</p>
     <form v-if="createOpen" class="panel mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4" @submit.prevent="createUser">
       <div><label class="label">用户名</label><input v-model="createForm.username" class="input" required minlength="3" maxlength="64" /></div>

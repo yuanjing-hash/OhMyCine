@@ -25,7 +25,7 @@ onMounted(load)
 
 <template>
   <section>
-    <div class="flex flex-wrap items-end justify-between gap-4"><div><p class="mb-2 text-xs font-700 uppercase tracking-[.22em] text-cyan-300">Authorization</p><h1 class="m-0 text-3xl font-800">角色与权限</h1><p class="mt-2 text-slate-400">Permission code 是页面、导航、按钮和 API 的唯一共享契约。</p></div><button v-if="auth.can(Permissions.RolesCreate)" class="btn-primary" @click="createOpen = !createOpen">{{ createOpen ? '取消创建' : '创建角色' }}</button></div>
+    <div class="flex flex-wrap items-end justify-between gap-4"><div><p class="mb-2 text-xs font-700 uppercase tracking-[.22em] text-cyan-300">Authorization</p><h2 class="m-0 text-2xl font-800">角色与权限</h2><p class="mt-2 text-slate-400">Permission code 是页面、导航、按钮和 API 的唯一共享契约。</p></div><button v-if="auth.can(Permissions.RolesCreate)" class="btn-primary" @click="createOpen = !createOpen">{{ createOpen ? '取消创建' : '创建角色' }}</button></div>
     <p v-if="error" class="mt-5 rounded-3 bg-red-400/10 p-3 text-sm text-red-200">{{ error }}</p><p v-if="notice" class="mt-5 rounded-3 bg-emerald-400/10 p-3 text-sm text-emerald-200">{{ notice }}</p>
     <form v-if="createOpen" class="panel mt-6 grid gap-4 md:grid-cols-3" @submit.prevent="createRole"><div><label class="label">稳定 code</label><input v-model="createForm.code" class="input" required minlength="3" maxlength="64" placeholder="library_manager" /></div><div><label class="label">名称</label><input v-model="createForm.name" class="input" required maxlength="128" /></div><div><label class="label">说明</label><input v-model="createForm.description" class="input" maxlength="512" /></div><button class="btn-primary md:col-span-3" :disabled="saving">创建空角色</button></form>
     <div v-if="loading" class="mt-8 text-slate-500">正在加载权限目录…</div>

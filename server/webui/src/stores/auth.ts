@@ -13,7 +13,7 @@ export const useAuthStore = defineStore('auth', () => {
   const permissionSet = computed(() => new Set<PermissionCode>(user.value?.permissions ?? []))
 
   function can(code: PermissionCode) { return permissionSet.value.has(code) }
-  function canAny(codes: PermissionCode[]) { return codes.length === 0 || codes.some(can) }
+  function canAny(codes: readonly PermissionCode[]) { return codes.length === 0 || codes.some(can) }
 
   async function bootstrap(force = false) {
     if (initialized.value && !force) return
