@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { DanmakuMatch, DanmakuSettings } from '@/services/danmaku/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { transitionWindowFullscreen } from '@/services/windowFullscreen'
+import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
 
-type ControlMenu = 'speed' | 'subtitle' | 'audio' | 'queue' | 'orientation'
+type ControlMenu = 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'orientation'
 
 const props = defineProps<{
   isPlaying: boolean
@@ -36,6 +38,12 @@ const props = defineProps<{
   mobileLayout: boolean
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
+  danmakuSettings: DanmakuSettings
+  danmakuLoading: boolean
+  danmakuError: string | null
+  danmakuCommentCount: number
+  danmakuMatches: readonly DanmakuMatch[]
+  danmakuSelectedEpisodeId: number | null
 }>()
 
 const emit = defineEmits<{
@@ -58,6 +66,10 @@ const emit = defineEmits<{
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
+  toggleDanmaku: []
+  updateDanmakuSettings: [settings: DanmakuSettings]
+  reloadDanmaku: []
+  selectDanmakuMatch: [episodeId: number]
 }>()
 
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null
@@ -162,6 +174,10 @@ function toggleSettingsPanel() {
   activeMenu.value = null
   settingsPanelOpen.value = !settingsPanelOpen.value
   emitInteractionState()
+}
+
+function openDanmakuSettingsFromShortcut() {
+  toggleMenu('danmaku')
 }
 
 async function closeSettingsPanel() {
@@ -446,7 +462,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncFullscreenState)
 })
 
-defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
+defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSettingsFromShortcut })
 </script>
 
 <template>
@@ -587,6 +603,22 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
         </Transition>
       </div>
 
+      <div class="danmaku-control-pair">
+        <button class="control-button action-chip secondary" :class="{ 'is-active': danmakuSettings.enabled }" type="button" :title="danmakuSettings.enabled ? '关闭弹幕' : '开启弹幕'" :aria-label="danmakuSettings.enabled ? '关闭弹幕' : '开启弹幕'" :aria-pressed="danmakuSettings.enabled" @click="emit('toggleDanmaku')">
+          <span class="danmaku-glyph">弹</span>
+        </button>
+        <div class="control-menu-anchor">
+          <button class="control-button secondary" :class="{ 'is-active': activeMenu === 'danmaku' }" type="button" title="弹幕设置" aria-label="弹幕设置" aria-haspopup="dialog" :aria-expanded="activeMenu === 'danmaku'" @click="toggleMenu('danmaku')">
+            <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.5-2.5 1a8 8 0 0 0-1.7-1L15 3h-4l-.4 3a8 8 0 0 0-1.7 1L6.5 6l-2 3.5 2 1.5a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a8 8 0 0 0 1.7 1L11 21h4l.3-3a8 8 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5ZM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z" /></svg>
+          </button>
+          <Transition name="control-menu">
+            <div v-if="activeMenu === 'danmaku'" class="control-popover danmaku-popover" role="dialog" aria-label="弹幕设置">
+              <DanmakuSettingsContent :settings="danmakuSettings" :loading="danmakuLoading" :error="danmakuError" :comment-count="danmakuCommentCount" :matches="danmakuMatches" :selected-episode-id="danmakuSelectedEpisodeId" @update="emit('updateDanmakuSettings', $event)" @reload="emit('reloadDanmaku')" @select-match="emit('selectDanmakuMatch', $event)" />
+            </div>
+          </Transition>
+        </div>
+      </div>
+
       <div v-if="showAudioControl" class="control-menu-anchor">
         <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'audio' }" type="button" title="音轨" aria-label="音轨" aria-haspopup="menu" :aria-expanded="activeMenu === 'audio'" @click="toggleMenu('audio')">
           <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 4.2a1 1 0 0 1 .5.86v13.88a1 1 0 0 1-1.64.77L7.1 16.2H4.5A2.5 2.5 0 0 1 2 13.7v-3.4a2.5 2.5 0 0 1 2.5-2.5h2.6l4.26-3.5a1 1 0 0 1 1.14-.1Zm4.74 3.1a1 1 0 0 1 1.41 0A6.63 6.63 0 0 1 20.6 12c0 1.84-.75 3.5-1.95 4.7a1 1 0 1 1-1.41-1.42A4.63 4.63 0 0 0 18.6 12c0-1.28-.52-2.44-1.36-3.28a1 1 0 0 1 0-1.42Zm-2.46 2.45a1 1 0 0 1 1.41 0c.58.58.94 1.38.94 2.25s-.36 1.67-.94 2.25a1 1 0 0 1-1.41-1.41c.22-.22.35-.52.35-.84s-.13-.62-.35-.84a1 1 0 0 1 0-1.41Z" /></svg>
@@ -694,6 +726,10 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   position: relative;
   display: flex;
 }
+
+.danmaku-control-pair { display: flex; gap: .25rem; }
+.danmaku-glyph { font-size: .9rem; font-weight: 800; }
+.danmaku-popover { width: min(22rem, calc(100vw - 3rem)); padding: 1rem; }
 
 .control-button {
   display: flex;

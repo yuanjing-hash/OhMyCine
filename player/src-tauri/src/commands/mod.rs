@@ -2,6 +2,7 @@ pub mod clouddrive2;
 pub mod credential;
 #[cfg(target_os = "android")]
 pub mod credential_android;
+pub mod danmaku;
 #[cfg(not(mobile))]
 pub(crate) mod display_brightness;
 pub mod emby;

@@ -16,6 +16,7 @@ import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import tmdbLogoUrl from '@/assets/brands/tmdb-blue-short.svg'
+import DanmakuProviderSettings from '@/components/player/DanmakuProviderSettings.vue'
 import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
@@ -319,6 +320,8 @@ const playerShortcutEntries: Array<{ target: PlayerShortcutTarget, label: string
   { target: 'toggleMute', label: '静音 / 恢复音量', description: '对应控制栏音量按钮。' },
   { target: 'toggleSpeedMenu', label: '切换倍速', description: '循环切换可用倍速。' },
   { target: 'toggleSubtitleMenu', label: '切换字幕', description: '循环切换关闭和可用字幕。' },
+  { target: 'toggleDanmaku', label: '开启 / 关闭弹幕', description: '切换当前播放器的弹幕显示。' },
+  { target: 'toggleDanmakuSettings', label: '弹幕设置', description: '打开播放器弹幕设置面板。' },
   { target: 'toggleAudioMenu', label: '切换音轨', description: '循环切换可用音轨。' },
   { target: 'toggleQueueMenu', label: '播放队列状态', description: '显示当前队列位置和媒体标题。' },
   { target: 'toggleSettings', label: '画面设置状态', description: '显示当前画面比例和适配模式。' },
@@ -2631,6 +2634,8 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ openSubtitlesStatusLabel }}
             </span>
           </div>
+
+          <DanmakuProviderSettings />
 
           <div
             v-if="subtitleFeedback"

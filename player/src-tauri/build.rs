@@ -1,6 +1,8 @@
 use std::{env, path::PathBuf};
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=OHMYCINE_DANDANPLAY_APP_ID");
+    println!("cargo:rerun-if-env-changed=OHMYCINE_DANDANPLAY_APP_SECRET");
     let target = env::var("TARGET").unwrap_or_default();
 
     // The Windows GNU cross-build links libmpv-sys with `-lmpv`, which needs the

@@ -1,6 +1,6 @@
 {
   "name": "@ohmycine/player",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -34,6 +34,7 @@
     "verify:view-architecture": "TMPDIR=/tmp tsx scripts/verify-view-architecture.ts",
     "verify:tmdb-auth": "TMPDIR=/tmp tsx scripts/verify-tmdb-auth-routing.ts",
     "verify:theme-controls": "TMPDIR=/tmp tsx scripts/verify-theme-controls.ts",
+    "verify:danmaku": "TMPDIR=/tmp tsx scripts/verify-danmaku.ts",
     "tauri": "tauri",
     "setup:libmpv": "node scripts/setup-libmpv.mjs",
     "setup:libmpv:android": "node scripts/setup-libmpv-android.mjs",

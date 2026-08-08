@@ -83,7 +83,7 @@ assert.match(playerControls, /mediaSubtitleTracks/)
 assert.match(playerControls, /subtitle-group-divider/)
 assert.match(playerControls, /loadLocalSubtitle/)
 assert.match(playerControls, /载入本地字幕/)
-assert.match(playerControls, /defineExpose\(\{ dismissTransientUi, toggleFullscreenFromShortcut \}\)/)
+assert.match(playerControls, /defineExpose\(\{ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSettingsFromShortcut \}\)/)
 assert.match(playerControls, /async function toggleFullscreenFromShortcut/)
 
 const volumeControl = await source('../src/components/player/VolumeControl.vue')

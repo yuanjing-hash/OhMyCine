@@ -10,6 +10,8 @@ export type PlayerShortcutTarget = 'hideControls'
   | 'toggleMute'
   | 'toggleSpeedMenu'
   | 'toggleSubtitleMenu'
+  | 'toggleDanmaku'
+  | 'toggleDanmakuSettings'
   | 'toggleAudioMenu'
   | 'toggleQueueMenu'
   | 'toggleSettings'
@@ -30,6 +32,8 @@ const PLAYER_SHORTCUT_TARGETS = new Set<PlayerShortcutTarget>([
   'toggleMute',
   'toggleSpeedMenu',
   'toggleSubtitleMenu',
+  'toggleDanmaku',
+  'toggleDanmakuSettings',
   'toggleAudioMenu',
   'toggleQueueMenu',
   'toggleSettings',
@@ -45,6 +49,8 @@ const DEFAULT_BINDINGS: PlayerShortcutBindings = {
   toggleMute: 'KeyY',
   toggleSpeedMenu: 'KeyU',
   toggleSubtitleMenu: 'KeyI',
+  toggleDanmaku: 'KeyD',
+  toggleDanmakuSettings: 'Shift+KeyD',
   toggleAudioMenu: 'KeyO',
   toggleQueueMenu: 'KeyP',
 }

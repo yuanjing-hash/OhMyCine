@@ -2475,6 +2475,10 @@ Player 在浏览本地文件或 Emby/Jellyfin 媒体时，自动在同目录下�
 
 [弹弹Play](https://www.dandanplay.com/) 是国内主流的弹幕共享平台，提供丰富的弹幕 API。OhMyCine 兼容其 API 格式，支持用户自建弹幕服务器。
 
+当前实现使用弹弹play开放弹幕网络 v2：先调用 `POST /api/v2/match`，再调用 `GET /api/v2/comment/{episodeId}?withRelated=true&chConvert=1`，解析 `p="时间,模式,颜色,用户ID"` 标准字段。官方 API 凭据在构建时注入，由 Rust 生成时间戳签名；前端包、普通设置和日志不保存 AppSecret。获取弹幕时的 302 加速跳转由独立原生客户端限次跟随，不复用也不修改 Android 播放 302 桥接。
+
+匹配请求只包含逻辑媒体标题/文件名和时长，不包含本地绝对路径、`content://` URI、播放 URL、Emby API Key、请求头或签名地址。自定义 API 只允许配置不含 userinfo、query、fragment 的 HTTP(S) 根地址。
+
 **弹弹Play API 模式**：
 
 ```typescript
@@ -2637,6 +2641,8 @@ class TrackManager {
 ### 11.5 弹幕设置
 
 弹幕设置集成在 Player 设置页面中：
+
+当前桌面和 Android 播放控制层都提供相邻的“弹”开关与设置按钮；设置面板支持滚动/顶部/底部类型、不透明度、字号、速度、显示区域、密度、粗体描边和关键词屏蔽。全局设置页可在官方 API 与自定义兼容 API 之间切换。
 
 ```typescript
 interface DanmakuSettings {

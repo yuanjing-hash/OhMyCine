@@ -12,10 +12,12 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import BufferingIndicator from '@/components/player/BufferingIndicator.vue'
+import DanmakuOverlay from '@/components/player/DanmakuOverlay.vue'
 import MobilePlayerControls from '@/components/player/MobilePlayerControls.vue'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
+import { useDanmaku } from '@/composables/useDanmaku'
 import { useMpv } from '@/composables/useMpv'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
@@ -112,6 +114,7 @@ const controlsInteracting = ref(false)
 const playerControlsRef = ref<{
   dismissTransientUi: () => void
   toggleFullscreenFromShortcut: () => Promise<void>
+  openDanmakuSettingsFromShortcut: () => void
 } | null>(null)
 const playerShortcuts = ref<PlayerShortcutBindings>(loadPlayerShortcutBindings())
 const keyboardOsdMessage = ref('')
@@ -241,6 +244,20 @@ const {
   setVideoFit,
   stop,
 } = useMpv()
+
+const {
+  settings: danmakuSettings,
+  comments: danmakuComments,
+  matches: danmakuMatches,
+  selectedEpisodeId: danmakuSelectedEpisodeId,
+  loading: danmakuLoading,
+  error: danmakuError,
+  loadForMedia: loadDanmakuForMedia,
+  selectMatch: selectDanmakuMatch,
+  updateSettings: updateDanmakuSettings,
+  toggleEnabled: toggleDanmaku,
+} = useDanmaku()
+let danmakuLoadTimer: number | undefined
 
 const hasMedia = computed(() => mediaPath.value.length > 0)
 const currentQueueItem = computed(() => {
@@ -1872,6 +1889,16 @@ watch([videoReady, duration], () => {
   void applyPendingResumeSeekWhenReady()
 })
 
+watch([videoReady, duration, mediaTitle], ([ready, mediaDuration, title]) => {
+  if (danmakuLoadTimer)
+    window.clearTimeout(danmakuLoadTimer)
+  if (!ready || mediaDuration <= 0 || !hasMedia.value)
+    return
+  danmakuLoadTimer = window.setTimeout(() => {
+    void loadDanmakuForMedia(title, mediaDuration)
+  }, 250)
+})
+
 watch(currentTime, (time) => {
   const pending = pendingResumeSeek
   if (pending && (!isNativeAndroidPlayer || videoReady.value) && pending.path === mediaPath.value && Math.abs(time - pending.position) <= 5)
@@ -2112,6 +2139,14 @@ async function executePlayerShortcutFromKeyboard(target: PlayerShortcutTarget) {
         }
         case 'toggleSubtitleMenu':
           await cycleSubtitleFromKeyboard()
+          return
+        case 'toggleDanmaku':
+          await toggleDanmaku()
+          showKeyboardOsd(danmakuSettings.value.enabled ? '弹幕已开启' : '弹幕已关闭')
+          return
+        case 'toggleDanmakuSettings':
+          playerControlsRef.value?.openDanmakuSettingsFromShortcut()
+          showKeyboardOsd('弹幕设置')
           return
         case 'toggleAudioMenu':
           await cycleAudioFromKeyboard()
@@ -2491,6 +2526,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (danmakuLoadTimer)
+    window.clearTimeout(danmakuLoadTimer)
   void stopPlaybackForRouteExit()
   document.documentElement.classList.remove('player-render-surface-active')
   document.body.classList.remove('player-render-surface-active')
@@ -2579,6 +2616,8 @@ watch(
       @toggle-diagnostics="toggleDiagnosticsPanel"
       @set-strategy="handleSetStrategy"
     />
+
+    <DanmakuOverlay v-if="hasMedia" :comments="danmakuComments" :settings="danmakuSettings" :current-time="currentTime" :is-playing="isPlaying" />
 
     <div
       v-if="hasMedia && isNativeAndroidPlayer"
@@ -2721,6 +2760,7 @@ watch(
         :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
+        :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length" :danmaku-matches="danmakuMatches" :danmaku-selected-episode-id="danmakuSelectedEpisodeId"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
         @play-next="handlePlayNext"
@@ -2740,6 +2780,10 @@ watch(
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
+        @toggle-danmaku="toggleDanmaku"
+        @update-danmaku-settings="updateDanmakuSettings"
+        @reload-danmaku="loadDanmakuForMedia(mediaTitle, duration, true)"
+        @select-danmaku-match="selectDanmakuMatch"
       />
     </div>
 
@@ -2774,6 +2818,7 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
+        :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length" :danmaku-matches="danmakuMatches" :danmaku-selected-episode-id="danmakuSelectedEpisodeId"
         @back="handlePlayerBack"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
@@ -2793,6 +2838,10 @@ watch(
         @set-video-brightness="handleSetVideoBrightness"
         @set-orientation-mode="handleSetOrientationMode"
         @interaction-change="handleControlsInteraction"
+        @toggle-danmaku="toggleDanmaku"
+        @update-danmaku-settings="updateDanmakuSettings"
+        @reload-danmaku="loadDanmakuForMedia(mediaTitle, duration, true)"
+        @select-danmaku-match="selectDanmakuMatch"
       />
     </Transition>
 

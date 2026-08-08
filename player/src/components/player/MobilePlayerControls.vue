@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { DanmakuMatch, DanmakuSettings } from '@/services/danmaku/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { computed, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import ProgressBar from './ProgressBar.vue'
 
-type MobilePanel = 'more' | 'speed' | 'subtitle' | 'audio' | 'queue' | 'picture' | 'orientation'
+type MobilePanel = 'more' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'orientation'
 
 const props = defineProps<{
   title: string
@@ -34,6 +36,12 @@ const props = defineProps<{
   pictureSettingsError: string | null
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
+  danmakuSettings: DanmakuSettings
+  danmakuLoading: boolean
+  danmakuError: string | null
+  danmakuCommentCount: number
+  danmakuMatches: readonly DanmakuMatch[]
+  danmakuSelectedEpisodeId: number | null
 }>()
 
 const emit = defineEmits<{
@@ -56,6 +64,10 @@ const emit = defineEmits<{
   setVideoBrightness: [level: number]
   setOrientationMode: [mode: MpvOrientationMode]
   interactionChange: [active: boolean]
+  toggleDanmaku: []
+  updateDanmakuSettings: [settings: DanmakuSettings]
+  reloadDanmaku: []
+  selectDanmakuMatch: [episodeId: number]
 }>()
 
 const activePanel = ref<MobilePanel | null>(null)
@@ -69,6 +81,7 @@ const panelTitle = computed(() => {
   switch (activePanel.value) {
     case 'speed': return '播放速度'
     case 'subtitle': return '字幕'
+    case 'danmaku': return '弹幕设置'
     case 'audio': return '音轨'
     case 'queue': return '播放队列'
     case 'picture': return '画面'
@@ -146,6 +159,10 @@ async function toggleFullscreenFromShortcut() {
   // Android playback already owns an immersive full-screen activity surface.
 }
 
+function openDanmakuSettingsFromShortcut() {
+  openPanel('danmaku')
+}
+
 function chooseSpeed(speed: number) {
   emit('setPlaybackSpeed', speed)
   closePanel()
@@ -189,7 +206,7 @@ watch([activePanel, progressInteracting], () => {
   emit('interactionChange', activePanel.value !== null || progressInteracting.value)
 })
 
-defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
+defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSettingsFromShortcut })
 </script>
 
 <template>
@@ -246,6 +263,12 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
         <ProgressBar class="min-w-0 flex-1" :current="currentTime" :total="duration" @seek="position => emit('seek', position)" @interaction-change="setProgressInteracting" />
         <time>{{ formatTime(duration) }}</time>
         <div class="mobile-media-tools">
+          <button type="button" class="mobile-text-button danmaku-toggle" :class="{ 'is-active': danmakuSettings.enabled }" :aria-pressed="danmakuSettings.enabled" :aria-label="danmakuSettings.enabled ? '关闭弹幕' : '开启弹幕'" @click="emit('toggleDanmaku')">
+            弹
+          </button>
+          <button type="button" class="mobile-icon-button" aria-label="弹幕设置" @click="openPanel('danmaku')">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13a7 7 0 0 0 0-2l2-1.5-2-3-2.4 1a8 8 0 0 0-1.6-1L14.5 4h-4L10 6.5a8 8 0 0 0-1.6 1L6 6.5l-2 3L6 11a7 7 0 0 0 0 2l-2 1.5 2 3 2.4-1a8 8 0 0 0 1.6 1l.5 2.5h4l.5-2.5a8 8 0 0 0 1.6-1l2.4 1 2-3L19 13Zm-7 2a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z" /></svg>
+          </button>
           <button type="button" class="mobile-icon-button" aria-label="音量" @click="openPanel('more')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10" /></svg>
           </button>
@@ -284,6 +307,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
               </button>
               <button type="button" class="mobile-sheet-action" @click="openPanel('subtitle')">
                 <span>字幕与偏移</span><b>›</b>
+              </button>
+              <button type="button" class="mobile-sheet-action" @click="openPanel('danmaku')">
+                <span>弹幕设置</span><b>›</b>
               </button>
               <button v-if="showAudioControl" type="button" class="mobile-sheet-action" @click="openPanel('audio')">
                 <span>音轨</span><b>›</b>
@@ -352,6 +378,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
                 <span>载入本地字幕</span><b>›</b>
               </button>
             </template>
+
+            <DanmakuSettingsContent v-else-if="activePanel === 'danmaku'" :settings="danmakuSettings" :loading="danmakuLoading" :error="danmakuError" :comment-count="danmakuCommentCount" :matches="danmakuMatches" :selected-episode-id="danmakuSelectedEpisodeId" @update="emit('updateDanmakuSettings', $event)" @reload="emit('reloadDanmaku')" @select-match="emit('selectDanmakuMatch', $event)" />
 
             <template v-else-if="activePanel === 'audio'">
               <p v-if="trackError" class="mobile-sheet-error">
@@ -650,6 +678,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut })
   font-size: 0.68rem;
   font-weight: 800;
 }
+
+.danmaku-toggle { min-width: 2.15rem; padding: 0; }
 
 .mobile-sheet-layer {
   position: fixed;
