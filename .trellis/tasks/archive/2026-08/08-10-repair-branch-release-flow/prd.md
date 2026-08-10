@@ -22,17 +22,17 @@
 
 ## Acceptance Criteria
 
-- [ ] `codex/server-admin-v0-2-recovery` 精确指向 `ea5ecfe`，并包含 `09806e5`、`adba2d8`、`857cfe8`、`ea5ecfe`。
-- [ ] 集成分支保留 `develop` 当前的 `b22c77c`、`ba22a35`/v1.0.1 修复历史，同时包含全部 Server 提交。
-- [ ] `server/start.sh`、Server Go 模块和 Web UI v0.2 在集成结果中均存在。
-- [ ] `server/.runtime/` 和 `server/server` 内容/身份未被删除或提交，并由恢复后的 `server/.gitignore` 正确忽略。
-- [ ] Release workflow 对 Beta 校验 `origin/develop`，对 Stable 校验 `origin/main`，且 tag push 默认 Beta。
-- [ ] workflow 自检覆盖合法 Beta、合法 Stable、错误分支、历史提交和本地未推送提交。
-- [ ] `AGENTS.md`、`DEVELOPMENT.md`、Trellis spec 与 workflow 对分支/渠道规则表述一致。
-- [ ] Player workflow/脚本静态检查、Player typecheck/lint/build、Server Go/Web UI 检查和一键启动脚本检查通过。
-- [ ] 本地 `develop` 最终包含集成结果；本地 `main` 最终精确等于 `origin/main`。
-- [ ] `origin/develop`、`origin/main` 和远端 tags 未被本任务修改。
-- [ ] 工作区仅保留原有运行产物，Git tracked worktree 干净。
+- [x] `codex/server-admin-v0-2-recovery` 精确指向 `ea5ecfe`，并包含 `09806e5`、`adba2d8`、`857cfe8`、`ea5ecfe`。
+- [x] 集成分支保留 `develop` 当前的 `b22c77c`、`ba22a35`/v1.0.1 修复历史，同时包含全部 Server 提交。
+- [x] `server/start.sh`、Server Go 模块和 Web UI v0.2 在集成结果中均存在。
+- [x] `server/.runtime/` 和 `server/server` 内容/身份未被删除或提交，并由恢复后的 `server/.gitignore` 正确忽略。
+- [x] Release workflow 对 Beta 校验 `origin/develop`，对 Stable 校验 `origin/main`，且 tag push 默认 Beta。
+- [x] workflow 自检覆盖合法 Beta、合法 Stable、错误分支、历史提交和本地未推送提交。
+- [x] `AGENTS.md`、`DEVELOPMENT.md`、Trellis spec 与 workflow 对分支/渠道规则表述一致。
+- [x] Player workflow/脚本静态检查、Player typecheck/lint/build、Server Go/Web UI 检查和一键启动脚本检查通过。
+- [x] 本地 `develop` 最终包含集成结果；本地 `main` 最终精确等于 `origin/main`。
+- [x] `origin/develop`、`origin/main` 和远端 tags 未被本任务修改。
+- [x] 工作区仅保留原有运行产物，Git tracked worktree 干净。
 
 ## Definition of Done
 
