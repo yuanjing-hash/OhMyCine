@@ -77,16 +77,18 @@ OhMyCine 是自托管家庭影院生态系统，安全设计的核心目标是�
 
 ### 4.1 Server 登录
 
-Server 使用用户名密码登录，返回短期访问令牌。
+Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服务端 opaque session；浏览器只接收 HttpOnly Cookie，不把 JWT 或 session token 写入 localStorage。Player、CLI 和自动化客户端后续使用独立 device/API token 边界。
 
 建议：
 
 - 密码使用 `bcrypt` 或 `argon2id` 哈希保存
-- 首次启动必须强制修改默认管理员密码
-- JWT `access_token` 默认短有效期，例如 2 小时
-- 可选 `refresh_token`，默认 7 天有效期
-- JWT 签名密钥启动时检查强度，不允许默认值 `change-me` 在生产模式运行
+- 首次启动不创建默认管理员或默认密码；仅在数据库没有用户时允许事务化创建唯一 owner
+- Cookie 中只保存高熵随机 token，数据库只保存 SHA-256 哈希
+- session 默认 2 小时 idle、7 天 absolute 上限；登出、停用和密码重置可立即撤销
+- HTTPS 使用 `__Host-omc_session; Secure; HttpOnly; SameSite=Lax; Path=/`；显式局域网 HTTP 模式使用 host-only 普通 Cookie 并提示保护等级差异
 - 登录失败需要限速，避免暴力破解
+
+所有 Cookie 认证的状态变更请求还必须校验 session-bound `X-CSRF-Token`、精确 Origin（必要时 Referer fallback）、Fetch Metadata 和 `application/json`。CSRF token 只保存在前端内存，不进入 URL、日志或持久化存储。
 
 ### 4.2 API 鉴权
 
@@ -109,17 +111,28 @@ Player 连接 Server 时支持两种方式：
 
 ## 5. 权限模型
 
-### 5.1 角色
+### 5.1 角色与 permission catalog
 
 | 角色 | 权限 |
 |------|------|
-| admin | 管理所有连接、用户、下载器、站点、网盘、系统设置 |
-| user | 使用媒体库、发起下载、查看自己的追更和下载任务 |
-| readonly | 只浏览媒体库和播放，不允许修改配置或发起下载 |
+| administrator | 受保护系统角色，拥有 canonical permission catalog 全部能力 |
+| operator | 管理连接、存储目标、STRM 和刷新，不管理用户/角色/秘密导出 |
+| viewer | 只读状态和脱敏业务摘要 |
+| custom | 管理员从固定 permission code 中组合，支持多角色权限并集 |
 
 ### 5.2 权限粒度
 
-Server 设计中保留页面级权限，同时关键 API 需要服务端强制校验：
+页面、导航、按钮和 API 使用同一个 `<resource>.<action>` permission code。前端只改善体验，Gin middleware 和 service policy 才是安全边界。首版 allow-only，不实现 deny、继承、ABAC 或资源实例 scope。
+
+安全不变量：
+
+- 首次 owner 不能删除、停用或失去系统管理能力；所有权转移必须是未来独立流程。
+- 系统始终保留至少一个 active `system.admin` 有效用户。
+- 首版禁止用户停用、删除或通过角色变更降权自己。
+- 非系统管理员只能授予自己已经拥有的权限，不能通过角色创建/编辑/分配完成权限提升。
+- 系统角色不能删除；角色权限、用户角色和审计写入同一事务。
+
+业务权限继续按以下方向扩展：
 
 - 连接管理：仅 admin
 - 存储目标：仅 admin
@@ -558,7 +571,8 @@ ports:
 
 ### Server MVP
 
-- 登录认证和管理员账号初始化
+- 首次 owner 设置、opaque Cookie Session、CSRF 和登录限速
+- API 级 permission code、owner/最后管理员/防权限提升不变量与审计基础
 - 数据库敏感配置加密
 - 302 代理默认不匿名公开
 - STRM 签名 URL 或内网白名单至少实现一种

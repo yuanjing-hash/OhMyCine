@@ -1,0 +1,13 @@
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Verify envelopes, route security and permission behavior"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify schema, migrations and owner invariants"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Verify safe client errors"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify logs do not leak credentials or session tokens"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Security review of login, cookies, CSRF, sessions and RBAC"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Verify final implementation against the persisted Web administration contract"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend quality and test gates"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify page/button permission UX and accessibility"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Verify auth state does not persist secrets unsafely"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify strict API response typing and validation"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend typecheck, lint and build gates"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify permission behavior remains consistent across layers"}
+{"file":".trellis/tasks/08-07-server-phase-one-planning/research/web-rbac-foundation.md","reason":"Check implementation against selected RBAC/session approach"}

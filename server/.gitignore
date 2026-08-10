@@ -1,0 +1,10 @@
+/.runtime/
+/data/
+/webui/dist/
+/webui/node_modules/
+/server
+/ohmycine-server
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

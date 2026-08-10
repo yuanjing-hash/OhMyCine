@@ -1,0 +1,1 @@
+<template><section class="panel mx-auto mt-20 max-w-xl text-center"><div class="text-5xl">403</div><h1>没有访问权限</h1><p class="text-slate-400">当前账户缺少此页面使用的 permission code。后端 API 会执行同样的权限校验。</p><RouterLink class="btn-primary mt-3" to="/">返回仪表盘</RouterLink></section></template>

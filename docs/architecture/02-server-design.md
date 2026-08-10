@@ -12,6 +12,14 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 **核心设计理念**：设置好媒体分类 → 发现页选择视频下载/追更 → 程序自动下载 → 自动转移到指定目录 → 自动通知媒体服务器刷新 → Player客户端展示新媒体。
 
+### 1.1 当前实现状态（2026-08）
+
+Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
+
+当前版本没有实现 Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API。管理端只以明确的“规划中”状态展示这些入口，不返回伪成功。下一纵向切片从 OpenList/Alist 连接开始，沿 `Connection → Destination → STRM Run → signed 302 → Emby/Jellyfin refresh` 形成真实播放闭环。
+
+Server 管理端的目标导航、顶栏、12 列仪表盘、用户管理内部层级、权限可见性和响应式规则见 [Server Web UI 设计](08-server-web-ui-design.md)。本文仍负责后端业务、API 与数据模型，不在此复制界面设计全文。
+
 ## 2. 技术栈
 
 | 组件 | 技术 | 说明 |
@@ -66,7 +74,7 @@ ohmycine-server/
 │   │   ├── user.go          # 用户服务
 │   │   └── notify.go        # 通知服务 (Emby/Player)
 │   ├── middleware/           # HTTP中间件
-│   │   ├── auth.go          # JWT认证
+│   │   ├── auth.go          # Cookie Session 认证、CSRF 与权限中间件
 │   │   ├── cors.go          # CORS
 │   │   └── logger.go        # 请求日志
 │   └── scheduler/           # 定时任务调度
@@ -1152,43 +1160,31 @@ OhMyCine Server (302 Proxy)
 
 ## 13. 用户管理
 
-### 13.1 用户模型
+### 13.1 用户与 RBAC 模型
 
-```go
-type User struct {
-    ID           int64  `json:"id"`
-    Username     string `json:"username"`
-    PasswordHash string `json:"-"`              // bcrypt哈希
-    Role         string `json:"role"`           // "admin" / "user"
-    Permissions  string `json:"permissions"`    // JSON: 可访问的页面列表
-    CreatedAt    time.Time `json:"created_at"`
-}
+首版已经采用关系型 RBAC，不再使用 `users.role + permissions JSON 页面列表`：
+
+```text
+users ──< user_roles >── roles ──< role_permissions >── permissions
+  │
+  └──< sessions
 ```
+
+- `users` 保存规范化唯一用户名、bcrypt 密码哈希、状态、唯一 owner 标记和 `authz_version`。
+- `roles` 分为受保护的系统角色和可编辑/停用的自定义角色。
+- `permissions.code` 是稳定安全契约，格式为 `<resource>.<action>`；由代码内 canonical catalog 维护，管理员不能创建任意权限码。
+- 用户可分配多个角色，有效权限是所有 active 角色 allow 集合的并集；首版不支持 deny、继承、ABAC 或资源实例 ACL。
+- 浏览器 Cookie 中只保存高熵随机 session token，数据库只保存 SHA-256 哈希及 idle/absolute 过期、撤销状态。
 
 ### 13.2 权限设计
 
-- **管理员** — 可以看到所有页面、所有下载任务、所有追更任务
-- **普通用户** — 共享媒体库，但只能看到自己创建的下载/追更任务
-
-```go
-// 权限检查
-func (s *UserService) CanAccess(user *User, page string) bool {
-    if user.Role == "admin" {
-        return true
-    }
-    var perms []string
-    json.Unmarshal([]byte(user.Permissions), &perms)
-    return contains(perms, page)
-}
-
-// 任务可见性
-func (s *DownloadService) ListTasks(user *User) []*DownloadTask {
-    if user.Role == "admin" {
-        return s.getAllTasks()
-    }
-    return s.getTasksByUser(user.ID)
-}
-```
+- `administrator`：受保护系统角色，授权器把它解析为完整 permission catalog。
+- `operator`：面向后续连接、目标、STRM Run 和媒体服务器刷新，不含用户/角色/秘密导出权限。
+- `viewer`：只读状态与后续脱敏业务摘要。
+- 自定义角色：只能组合 canonical permission code；非系统管理员只能授予自己已经拥有的权限，阻止委派式权限提升。
+- Router route meta、导航、按钮和 Gin API 使用相同 permission code。例如用户页面和 `GET /api/v1/users` 都要求 `users.read`，创建按钮和 `POST /api/v1/users` 都要求 `users.create`。
+- owner 不能被删除、停用或失去 `administrator`；所有用户/角色写操作在事务内校验变更后仍存在有效管理员。
+- 首版禁止账户修改自己的角色、停用或删除自己，避免误锁死。普通用户任务的 own/all 数据范围在业务 API 实现时继续由 service policy 强制执行。
 
 ### 13.3 用户管理 UI
 
@@ -1273,9 +1269,12 @@ func (s *DownloadService) ListTasks(user *User) []*DownloadTask {
 
 ```yaml
 # ====== 认证 ======
-POST   /api/v1/auth/login                    # 登录 (返回JWT)
+GET    /api/v1/setup/status                  # 首次设置/安全恢复状态
+POST   /api/v1/setup/owner                   # 仅无用户时创建唯一 owner
+POST   /api/v1/auth/login                    # 登录并设置 opaque HttpOnly Cookie
 POST   /api/v1/auth/logout                   # 登出
 GET    /api/v1/auth/me                       # 当前用户信息
+GET    /api/v1/auth/csrf                     # 获取 session-bound CSRF token
 
 # ====== 连接管理 ======
 GET    /api/v1/connections                   # 连接列表
@@ -1368,10 +1367,23 @@ POST   /api/v1/files/{connection_id}/upload  # 上传文件
 DELETE /api/v1/files/{connection_id}/delete  # 删除文件
 
 # ====== 用户管理 ======
-GET    /api/v1/users                         # 用户列表 (管理员)
-POST   /api/v1/users                         # 添加用户 (管理员)
-PUT    /api/v1/users/{id}                    # 更新用户
-DELETE /api/v1/users/{id}                    # 删除用户 (管理员)
+GET    /api/v1/users                         # users.read
+POST   /api/v1/users                         # users.create
+PATCH  /api/v1/users/{id}                    # users.update
+POST   /api/v1/users/{id}/disable            # users.disable
+POST   /api/v1/users/{id}/enable             # users.update
+POST   /api/v1/users/{id}/reset-password     # users.update
+PUT    /api/v1/users/{id}/roles              # roles.assign
+DELETE /api/v1/users/{id}                    # users.delete
+
+# ====== 角色、权限与审计 ======
+GET    /api/v1/roles                         # roles.read
+POST   /api/v1/roles                         # roles.create
+PATCH  /api/v1/roles/{id}                    # roles.update
+PUT    /api/v1/roles/{id}/permissions        # roles.update
+DELETE /api/v1/roles/{id}                    # roles.delete
+GET    /api/v1/permissions                   # roles.read
+GET    /api/v1/audit                         # audit.read
 
 # ====== 系统设置 ======
 GET    /api/v1/settings                      # 获取设置
@@ -1609,15 +1621,10 @@ CREATE TABLE media (
 -- 用户
 -- ========================================
 
-CREATE TABLE users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role          TEXT DEFAULT 'user',            -- admin/user
-    permissions   TEXT,                           -- JSON: 可访问的页面列表
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+-- 实际实现使用显式 schema_migrations 维护以下认证/RBAC表：
+-- users, roles, permissions, user_roles, role_permissions, sessions, audit_logs。
+-- 完整约束以 server/internal/database/migrations.go 为准，包括唯一 owner 部分索引、
+-- 复合主键、外键、session 过期/撤销索引和审计索引。
 
 -- ========================================
 -- STRM定时任务配置
@@ -1666,10 +1673,10 @@ CREATE TABLE settings (
 # configs/config.example.yaml
 
 server:
-  host: 0.0.0.0
+  host: 127.0.0.1               # 默认仅本机；部署时显式修改
   port: 3000
   mode: release                 # debug/release
-  jwt_secret: "change-me"       # JWT签名密钥
+  public_origin: "https://server.example.test"
 
 database:
   driver: sqlite
@@ -1696,10 +1703,7 @@ log:
   max_size: 100                 # MB
   max_backups: 3
 
-# 首次启动自动创建的管理员账号
-admin:
-  username: admin
-  password: admin               # 首次登录后应修改
+# 不提供默认管理员密码。首次访问 /setup 通过事务创建唯一 owner。
 ```
 
 ## 19. Docker 部署
