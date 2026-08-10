@@ -22,6 +22,7 @@
     "verify:secure-playback-routing": "TMPDIR=/tmp tsx scripts/verify-secure-playback-routing.ts",
     "verify:playback-preferences-shortcuts": "TMPDIR=/tmp tsx scripts/verify-playback-preferences-shortcuts.ts",
     "verify:window-fullscreen-resize": "TMPDIR=/tmp tsx scripts/verify-window-fullscreen-resize-sync.ts",
+    "verify:player-controls-autohide": "TMPDIR=/tmp tsx scripts/verify-player-controls-autohide.ts",
     "verify:mobile-ui": "TMPDIR=/tmp tsx scripts/verify-mobile-ui.ts",
     "verify:android-playback": "TMPDIR=/tmp tsx scripts/verify-android-playback.ts",
     "verify:player-buffer-cache-scroll": "TMPDIR=/tmp tsx scripts/verify-player-buffer-cache-scroll.ts",

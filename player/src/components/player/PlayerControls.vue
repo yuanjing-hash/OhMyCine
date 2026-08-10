@@ -73,6 +73,7 @@ const emit = defineEmits<{
 }>()
 
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null
+const controlsRoot = ref<HTMLElement | null>(null)
 const settingsButton = ref<HTMLButtonElement | null>(null)
 const pointerInside = ref(false)
 const focusInside = ref(false)
@@ -85,6 +86,8 @@ const fullscreenBusy = ref(false)
 const fullscreenError = ref<string | null>(null)
 let restoreMaximizedOnExit = false
 let disposed = false
+let pointerLeaveTimer: number | undefined
+let pointerOwnsFocus = false
 const windowEventUnlisteners: Array<() => void> = []
 
 const fullscreenTitle = computed(() => {
@@ -136,6 +139,45 @@ function setPointerInside(next: boolean) {
   emitInteractionState()
 }
 
+function clearPointerLeaveTimer() {
+  if (!pointerLeaveTimer)
+    return
+  window.clearTimeout(pointerLeaveTimer)
+  pointerLeaveTimer = undefined
+}
+
+function handlePointerEnter() {
+  clearPointerLeaveTimer()
+  setPointerInside(true)
+}
+
+function handlePointerLeave() {
+  setPointerInside(false)
+  clearPointerLeaveTimer()
+  pointerLeaveTimer = window.setTimeout(() => {
+    pointerLeaveTimer = undefined
+    if (pointerInside.value)
+      return
+    if (childInteracting.value)
+      return
+    activeMenu.value = null
+    settingsPanelOpen.value = false
+    settingsPanelInteracting.value = false
+    if (pointerOwnsFocus) {
+      focusInside.value = false
+      const activeElement = document.activeElement
+      if (activeElement instanceof HTMLElement && controlsRoot.value?.contains(activeElement))
+        activeElement.blur()
+    }
+    pointerOwnsFocus = false
+    emitInteractionState()
+  }, 160)
+}
+
+function markPointerInteraction() {
+  pointerOwnsFocus = true
+}
+
 function setFocusInside(next: boolean) {
   focusInside.value = next
   emitInteractionState()
@@ -164,9 +206,17 @@ function closeMenus() {
 }
 
 function dismissTransientUi() {
+  clearPointerLeaveTimer()
+  pointerInside.value = false
+  focusInside.value = false
+  childInteracting.value = false
   activeMenu.value = null
   settingsPanelOpen.value = false
   settingsPanelInteracting.value = false
+  pointerOwnsFocus = false
+  const activeElement = document.activeElement
+  if (activeElement instanceof HTMLElement && controlsRoot.value?.contains(activeElement))
+    activeElement.blur()
   emitInteractionState()
 }
 
@@ -422,6 +472,7 @@ async function toggleFullscreenFromShortcut() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
+  pointerOwnsFocus = false
   if (event.key !== 'Escape')
     return
 
@@ -456,6 +507,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disposed = true
+  clearPointerLeaveTimer()
   for (const unlisten of windowEventUnlisteners)
     unlisten()
   windowEventUnlisteners.length = 0
@@ -467,11 +519,13 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
 
 <template>
   <div
+    ref="controlsRoot"
     data-player-click-ignore
     class="player-controls-glass pointer-events-auto relative mx-auto flex w-full max-w-7xl min-w-0 items-center gap-3 overflow-visible rounded-[28px] px-5 py-3"
     :class="{ 'mobile-layout': mobileLayout }"
-    @mouseenter="setPointerInside(true)"
-    @mouseleave="setPointerInside(false)"
+    @mouseenter="handlePointerEnter"
+    @mouseleave="handlePointerLeave"
+    @pointerdown.capture="markPointerInteraction"
     @focusin="setFocusInside(true)"
     @focusout="setFocusInside(false)"
     @keydown="handleKeydown"
