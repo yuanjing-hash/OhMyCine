@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Defines Player release packaging, quality gates, and the executable release contract that must become branch/channel aware."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Defines Server verification and documentation consistency required after reintegration."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Requires all duplicated beta/main branch rules to be searched and updated consistently."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Release source validation spans Git refs, GitHub event inputs, workflow shell, documentation, tags, and published artifacts."}

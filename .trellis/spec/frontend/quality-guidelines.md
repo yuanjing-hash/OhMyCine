@@ -105,6 +105,11 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 
 ### 3. Contracts
 
+- Feature and fix branches start from `develop` and merge back into `develop` after verification. Release branches may be used for preparation but are never release sources.
+- A tag push always selects `beta`, and the tag commit must exactly equal the latest fetched `origin/develop` commit.
+- Manual `workflow_dispatch channel=beta` must select the `develop` ref and run at the latest fetched `origin/develop` commit.
+- Manual `workflow_dispatch channel=stable` must select the `main` ref and run at the latest fetched `origin/main` commit. Merge `develop` into `main` only after the owner confirms a Stable release.
+- Reject feature/fix/release branch commits, historical commits, and local unpushed commits. Being an ancestor or descendant of the required remote tip is insufficient; the release SHA must be exactly equal to it.
 - `beta` channel must publish with `--prerelease --latest=false`; `stable` channel must publish with `--prerelease=false --latest` and must not include Beta in the title.
 - Release notes must be generated from git history for the current beta tag. Prefer version-sorted semver-like tags; if no previous `v*.*.*` tag exists, include commits from the repository initial commit through the current release commit.
 - Release notes must group commit subjects by Conventional Commit type: `feat`, `fix`, `docs`, `ci`, `chore`, `refactor`, `test`, and `other`. Keep the original subject so scopes such as `feat(player): ...` remain visible.
@@ -124,6 +129,11 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 ### 4. Validation & Error Matrix
 
 - Invalid version format -> fail before install/build steps.
+- Tag-push SHA differs from the latest fetched `origin/develop` -> fail before install/build steps.
+- Manual Beta SHA differs from the latest fetched `origin/develop` -> fail before install/build steps.
+- Manual Stable SHA differs from the latest fetched `origin/main` -> fail before install/build steps.
+- Manual Beta selects a ref other than `develop`, manual Stable selects a ref other than `main`, or a tag push attempts Stable -> fail before install/build steps.
+- Candidate SHA is from a feature/fix/release branch, is an older commit, or is a local unpushed successor -> fail even when it shares history with the required source branch.
 - Missing `bundle/nsis/*setup.exe` -> fail packaging.
 - Missing `ohmycine-player.exe` or required Windows DLL -> fail standard and portable packaging.
 - Existing GitHub prerelease for the same tag -> upload assets with clobber/update behavior rather than deleting the tag.
@@ -133,16 +143,20 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `v0.0.1` with channel `beta` creates a prerelease with installer, standard zip, portable zip, and checksum using the Windows GNU release directory.
-- Good: `v1.0.0` with channel `stable` creates the latest non-prerelease release with the same signed asset set and no Beta label.
+- Good: a `v0.0.1` tag at the latest remote `develop` commit selects `beta` and creates a prerelease with installer, standard zip, portable zip, and checksum using the Windows GNU release directory.
+- Good: manual `channel=beta` at the latest remote `develop` commit publishes the same Beta asset set.
+- Good: manual `channel=stable` at the latest remote `main` commit creates the latest non-prerelease release with the same signed asset set and no Beta label.
 - Good: `v0.0.2` release notes use `v0.0.1..v0.0.2`, group commit subjects by type, preserve scopes, and append manual notes only for `workflow_dispatch`.
-- Base: manual `workflow_dispatch` with `version=v0.0.2` creates the tag/release at the workflow commit.
+- Base: manual `workflow_dispatch` with `version=v0.0.2` creates the tag/release at the workflow commit only after that commit exactly matches the selected channel's remote source tip.
+- Bad: a tag on `main`, a feature/fix/release branch commit, an old `develop` commit, or a local commit ahead of `origin/develop` attempts to publish Beta.
+- Bad: a manual Stable run uses any commit other than the latest fetched `origin/main`.
 - Bad: zip contains `deps/`, `.fingerprint/`, `incremental/`, Linux `.so`, or macOS `.dylib` files.
 - Bad: release notes dump `$GITHUB_ENV`, `$GH_TOKEN`, full environment output, signed playback URLs, or credential-like values from build steps.
 
 ### 6. Tests Required
 
 - Parse workflow YAML and run bash syntax checks for embedded run blocks.
+- Exercise the same release-source guard used by build jobs against synthetic Git history. Cover valid latest-remote Beta and Stable commits plus rejected wrong-branch, release-branch, historical, and local-unpushed commits.
 - Dry-run the release-notes generator against synthetic git history covering previous-tag range selection, no-previous-tag fallback, Conventional Commit grouping, manual `Extra Notes`, and omission of environment secrets.
 - Rehearse the packaging script against an existing `target/x86_64-pc-windows-gnu/release` directory when available.
 - Run `cargo check --target x86_64-pc-windows-gnu`; run full `npm run tauri:build:windows` when local Node/npm and cross-build dependencies are available.

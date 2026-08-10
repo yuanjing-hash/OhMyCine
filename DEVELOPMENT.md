@@ -31,12 +31,14 @@ ohmycine/                    ← 一个 Git 仓库
 ### 2.1 分支策略
 
 ```
-main                    # 生产分支，始终可发布
-├── develop             # 开发分支，功能合入目标
-├── feature/xxx         # 功能分支，从 develop 拉出
-├── fix/xxx             # 修复分支，从 develop 拉出
-└── release/x.x.x      # 发布分支，从 develop 拉出
+main                    # 生产分支，正式版来源
+├── develop             # 开发分支，功能合入与 Beta 来源
+├── feature/xxx         # 功能分支，从 develop 拉出并合回 develop
+├── fix/xxx             # 修复分支，从 develop 拉出并合回 develop
+└── release/x.x.x       # 可选发布准备分支，不是可发布来源
 ```
+
+Player 与 Server 的功能、修复开发都必须从 `develop` 拉出分支，完成验证后合回 `develop`。`feature/*`、`fix/*`、`release/*`、历史提交和仅存在于本地的未推送提交都不能作为发布源。
 
 ### 2.2 Commit 规范
 
@@ -789,13 +791,12 @@ PATCH: 向后兼容的 Bug 修复
 
 ### 7.2 发布流程
 
-1. 功能分支完成验证后先合并到 `develop`
-2. 从 `develop` 创建 `release/x.x.x` 分支
-3. 在 release 分支上修复最后的 Bug，并同步回 `develop`
-4. 更新版本号和 CHANGELOG
-5. 将 release 分支合并到 `main`
-6. 仅在 `main` 最新提交上创建并推送 tag
-7. CI 自动构建并发布
+1. `feature/*`、`fix/*` 完成验证后合并到 `develop`，并先推送 `develop`
+2. 按发布计划更新版本号和 CHANGELOG，并确保相关变更已经合入、验证并推送到 `develop`
+3. Beta 只从远端 `develop` 最新提交发布：在该提交上推送 `v*.*.*` tag，或选择 `develop` 从该提交手动触发 `channel=beta`
+4. 确认要发布 Stable 后，才将 `develop` 合并到 `main`，完成验证并推送 `main`
+5. Stable 只选择 `main` 并从远端 `main` 最新提交显式手动触发 `channel=stable`
+6. CI 会拒绝功能/修复/发布分支提交、历史提交和仅本地未推送提交
 
 ### 7.3 Player 签名自动发版与更新
 
@@ -809,7 +810,7 @@ v0.1.1  # 0.1 阶段第 1 个 beta
 
 推送 `v*.*.*` tag 或手动触发 `Player Release` workflow 时，CI 会：
 
-1. 校验发版提交与远端 `main` 最新提交完全一致；功能分支或历史提交上的 tag 会被拒绝
+1. 按渠道校验发版 ref 与提交：tag push 固定为 Beta 并必须等于最新 `origin/develop`；手动 Beta 必须选择 `develop` 且等于最新 `origin/develop`；手动 Stable 必须选择 `main` 且等于最新 `origin/main`
 2. 将 Player 的 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 临时同步为 tag 版本号
 3. 使用 Windows GNU target 构建 NSIS 安装包，并用 Tauri updater 私钥生成 `.sig`
 4. 从 `player/src-tauri/target/x86_64-pc-windows-gnu/release` 整理 portable zip
@@ -843,13 +844,15 @@ Beta Release notes 规则：
 示例：
 
 ```bash
-git switch main
-git pull --ff-only origin main
+git switch develop
+git pull --ff-only origin develop
 git tag -a v0.0.1 -m "OhMyCine Player v0.0.1 Beta"
 git push origin v0.0.1
 ```
 
-不要直接在 `feature/*`、`fix/*`、`develop` 或 `release/*` 分支提交上创建发布 tag。手动触发 Release workflow 时也必须从 `main` 最新提交触发。
+tag push 始终发布 Beta，因此 tag 必须精确指向远端 `develop` 最新提交。手动 Beta 也必须从该提交触发。Stable 不使用 tag push 切换渠道：确认正式版后先把 `develop` 合入并推送 `main`，再在 GitHub Actions 中选择 `main` 的最新提交并显式使用 `channel=stable`。
+
+不要从 `feature/*`、`fix/*`、`release/*`、旧版 `develop`/`main` 提交或本地未推送提交发布。即使提交属于正确分支的历史，或是正确分支最新提交的本地后继提交，workflow 也会因其不等于对应远端分支 tip 而拒绝。
 
 当前普通 `Player CI`、`Manual Build` 和 beta release 中的 Player 包构建只验证/发布 Windows GNU。Linux/macOS Player 渲染器和打包链路完成前，不把 Linux/macOS Player 包加入 CI 阻塞项。
 

@@ -320,8 +320,10 @@ Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore
 Git push and release rules:
 
 - Do not push branches, commits, or tags to GitHub unless the project owner explicitly requests a GitHub push in the current task.
-- Normal development happens on `develop`; feature and fix branches start from `develop` and merge back into it after verification.
-- Player beta tags must be created only after the release content has been merged into `main`, and the tag must point to the latest remote `main` commit. Never publish a beta directly from a feature, fix, develop, or release branch commit.
+- Normal Player and Server development happens on `develop`; feature and fix branches start from `develop` and merge back into it after verification.
+- Player Beta releases use the latest remote `develop` commit. A `v*.*.*` tag push is always Beta, and manual `channel=beta` must select `develop` and run at the latest `origin/develop` commit.
+- Player Stable releases use the latest remote `main` commit and must select `main` when started explicitly with `workflow_dispatch channel=stable`. Merge `develop` into `main` only after the release is confirmed as Stable.
+- Never publish from a feature/fix/release branch commit, an older branch commit, or a local commit that has not been pushed to the required remote branch.
 
 Commit message language rule: keep the Conventional Commits `type` and optional `scope` in English, but write the short description and body in Chinese. Standard footer/trailer fields such as `Closes #123` and `Co-Authored-By: Codex Opus 4.7 <noreply@anthropic.com>` may remain in English.
 

@@ -20,12 +20,13 @@ on:
         required: false
         default: ""
   push:
-    branches: [main]
+    branches: [develop, main]
     tags:
       - "v*.*.*"
     paths:
       - ".github/workflows/player-beta-release.yml"
       - ".github/scripts/generate-player-beta-release-notes.py"
+      - ".github/scripts/verify-player-release-source.sh"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
       - "player/src-tauri/tauri.updater.conf.json"
@@ -39,10 +40,11 @@ on:
       - "player/src/stores/updater.ts"
       - "player/src/components/layout/UpdateDialog.vue"
   pull_request:
-    branches: [main]
+    branches: [develop, main]
     paths:
       - ".github/workflows/player-beta-release.yml"
       - ".github/scripts/generate-player-beta-release-notes.py"
+      - ".github/scripts/verify-player-release-source.sh"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
       - "player/src-tauri/tauri.updater.conf.json"
@@ -86,10 +88,12 @@ jobs:
           manual_version_env = 'WORKFLOW_INPUT_VERSION: ' + '$' + '{{ inputs.version }}'
           manual_channel_env = 'WORKFLOW_INPUT_CHANNEL: ' + '$' + '{{ inputs.channel }}'
           forbidden_direct_version = 'raw_version="' + '$' + '{{ inputs.version }}"'
+          release_guard_run = 'run: bash .github/scripts/verify-player-release-source.sh "$RELEASE_CHANNEL" HEAD "$GITHUB_EVENT_NAME" "$GITHUB_REF"'
 
           required = {
               'release job is gated to manual dispatch or tag push': "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')" in text,
-              'release commit is verified against origin/main': 'git fetch origin main --no-tags' in text and 'release_sha="$(git rev-parse HEAD)"' in text,
+              'release source helper is used by both release jobs': sum(line.strip() == release_guard_run for line in text.splitlines()) == 2,
+              'tag pushes force the beta channel': text.count('release_channel="beta"') >= 3,
               'manual version reaches bash through env': manual_version_env in text,
               'manual channel reaches bash through env': manual_channel_env in text,
               'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
@@ -179,6 +183,63 @@ jobs:
           test "$tag_name" = "v0.0.1"
           test "$asset_prefix" = "OhMyCine-Player-v0.0.1-windows-x64"
           test "$release_channel" = "beta"
+
+      - name: Dry-run release source guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          guard="${PWD}/.github/scripts/verify-player-release-source.sh"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          bare_repo="${tmp_dir}/origin.git"
+          work_repo="${tmp_dir}/work"
+
+          git init -q --bare "$bare_repo"
+          git init -q "$work_repo"
+          (
+            cd "$work_repo"
+            git remote add origin "$bare_repo"
+            git symbolic-ref HEAD refs/heads/main
+
+            empty_tree="$(git mktree </dev/null)"
+            stable_sha="$(printf '%s\n\n' 'chore(repo): 稳定版基线' | git commit-tree "$empty_tree")"
+            historical_develop_sha="$(printf '%s\n\n' 'feat(player): 历史开发提交' | git commit-tree "$empty_tree" -p "$stable_sha")"
+            beta_sha="$(printf '%s\n\n' 'fix(player): 最新开发提交' | git commit-tree "$empty_tree" -p "$historical_develop_sha")"
+            feature_sha="$(printf '%s\n\n' 'feat(player): 未合并功能提交' | git commit-tree "$empty_tree" -p "$beta_sha")"
+            release_sha="$(printf '%s\n\n' 'chore(player): 发布分支提交' | git commit-tree "$empty_tree" -p "$beta_sha")"
+            local_sha="$(printf '%s\n\n' 'fix(player): 本地未推送提交' | git commit-tree "$empty_tree" -p "$beta_sha")"
+
+            git update-ref refs/heads/main "$stable_sha"
+            git update-ref refs/heads/develop "$beta_sha"
+            git push -q origin main develop
+
+            bash "$guard" beta "$beta_sha" push refs/tags/v0.0.1
+            bash "$guard" beta "$beta_sha" workflow_dispatch refs/heads/develop
+            bash "$guard" stable "$stable_sha" workflow_dispatch refs/heads/main
+
+            expect_rejection() {
+              description="$1"
+              channel="$2"
+              candidate_sha="$3"
+              event_name="${4:-workflow_dispatch}"
+              event_ref="${5:-refs/heads/develop}"
+              if bash "$guard" "$channel" "$candidate_sha" "$event_name" "$event_ref"; then
+                echo "::error::${description} unexpectedly passed the release source guard."
+                exit 1
+              fi
+            }
+
+            expect_rejection "main commit used for beta" beta "$stable_sha"
+            expect_rejection "develop commit used for stable" stable "$beta_sha" workflow_dispatch refs/heads/main
+            expect_rejection "historical develop commit" beta "$historical_develop_sha"
+            expect_rejection "unmerged feature branch commit" beta "$feature_sha"
+            expect_rejection "release branch commit" beta "$release_sha"
+            expect_rejection "local unpushed commit" beta "$local_sha"
+            expect_rejection "manual beta from feature ref" beta "$beta_sha" workflow_dispatch refs/heads/feature/example
+            expect_rejection "manual stable from develop ref" stable "$stable_sha" workflow_dispatch refs/heads/develop
+            expect_rejection "stable tag push" stable "$stable_sha" push refs/tags/v1.0.0
+          )
 
       - name: Dry-run release notes generator
         shell: bash
@@ -302,32 +363,37 @@ jobs:
         env:
           WORKFLOW_EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+          WORKFLOW_INPUT_CHANNEL: ${{ inputs.channel }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
             raw_version="${WORKFLOW_INPUT_VERSION:-}"
+            release_channel="${WORKFLOW_INPUT_CHANNEL:-beta}"
           else
             raw_version="${GITHUB_REF_NAME}"
+            release_channel="beta"
           fi
           if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Version must look like v0.0.1 or 0.0.1."
             exit 1
           fi
           app_version="${raw_version#v}"
+          if [[ "$release_channel" != "beta" && "$release_channel" != "stable" ]]; then
+            echo "::error::Release channel must be beta or stable."
+            exit 1
+          fi
           {
             echo "APP_VERSION=${app_version}"
             echo "TAG_NAME=v${app_version}"
+            echo "RELEASE_CHANNEL=${release_channel}"
             echo "ANDROID_APK=dist/android/OhMyCine-Player-v${app_version}-android-arm64.apk"
             echo "ANDROID_CHECKSUM=dist/android/OhMyCine-Player-v${app_version}-android-arm64.sha256"
           } >> "$GITHUB_ENV"
 
-      - name: Verify release commit is main
+      - name: Verify release source
         shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin main --no-tags
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+        run: bash .github/scripts/verify-player-release-source.sh "$RELEASE_CHANNEL" HEAD "$GITHUB_EVENT_NAME" "$GITHUB_REF"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -515,19 +581,9 @@ jobs:
             echo "RELEASE_CHANNEL=${release_channel}"
           } >> "$GITHUB_ENV"
 
-      - name: Verify release commit is main
+      - name: Verify release source
         shell: bash
-        run: |
-          set -euo pipefail
-
-          git fetch origin main --no-tags
-          release_sha="$(git rev-parse HEAD)"
-          main_sha="$(git rev-parse origin/main)"
-
-          if [[ "$release_sha" != "$main_sha" ]]; then
-            echo "::error::Player releases must use the latest commit on main. Release ${release_sha}, main ${main_sha}."
-            exit 1
-          fi
+        run: bash .github/scripts/verify-player-release-source.sh "$RELEASE_CHANNEL" HEAD "$GITHUB_EVENT_NAME" "$GITHUB_REF"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

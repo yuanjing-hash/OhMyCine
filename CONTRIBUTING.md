@@ -382,9 +382,10 @@ docs/
 - **开发分支**：`develop`，日常开发
 - **功能分支**：`feature/xxx`，从 `develop` 拉出
 - **修复分支**：`fix/xxx`，从 `develop` 拉出
-- **发布分支**：`release/x.x.x`，从 `develop` 拉出
-- **生产分支**：`main`，始终可发布
-- **Beta 发布**：功能先合入 `develop`，发布内容再合入 `main`，tag 仅创建在远端 `main` 的最新提交上
+- **发布分支**：`release/x.x.x`，可从 `develop` 拉出用于发布准备，但不作为发布源
+- **生产分支**：`main`，Stable 发布源
+- **Beta 发布**：发布内容先合入并推送 `develop`，tag push 仅从最新远端 `develop` 提交发布
+- **Stable 发布**：确认正式版后才将 `develop` 合入并推送 `main`，从最新远端 `main` 提交显式手动发布
 
 版本号遵循 [Semantic Versioning](https://semver.org/)：
 

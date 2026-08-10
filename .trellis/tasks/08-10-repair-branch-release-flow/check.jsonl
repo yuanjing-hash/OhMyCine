@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify beta/stable source refs, packaging guards, tests, and documentation match the approved flow."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify recovered Server code and Web UI pass the required quality gates without runtime artifact loss."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Check every old main-only beta rule and duplicated workflow assertion was updated without drift."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check GitHub event/channel/ref data flows end-to-end and reject ambiguous or unpushed release sources."}
