@@ -144,6 +144,8 @@ const isPlayerFullscreen = ref(false)
 // video underlay. Legacy top/bottom occlusion strategies are neutralized in Rust.
 const renderStrategy = ref<MpvZOrderStrategy>('transparentOverlay')
 let hideTimer: number | undefined
+let nativeWindowFocusUnlisten: (() => void) | undefined
+let playerViewDisposed = false
 let renderInitPromise: Promise<void> | null = null
 let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
@@ -578,6 +580,9 @@ function handleVisibilityChange() {
   lastTouchTap = null
   if (session?.holdArrowStarted)
     void releaseHeldArrow(false, 'touch')
+  playerControlsRef.value?.dismissTransientUi()
+  controlsInteracting.value = false
+  scheduleChromeHide()
 }
 
 function toggleChromeFromTouch() {
@@ -613,8 +618,9 @@ function handleControlsInteraction(next: boolean) {
 }
 
 function handleWindowBlur() {
-  controlsInteracting.value = false
   playerControlsRef.value?.dismissTransientUi()
+  controlsInteracting.value = false
+  closePlaybackContextMenu(false)
   void releaseHeldArrow(false)
   scheduleChromeHide()
 }
@@ -622,8 +628,9 @@ function handleWindowBlur() {
 function handleApplicationPointerLeave() {
   if (!hasMedia.value)
     return
-  controlsInteracting.value = false
   playerControlsRef.value?.dismissTransientUi()
+  controlsInteracting.value = false
+  closePlaybackContextMenu(false)
   scheduleChromeHide()
 }
 
@@ -2485,12 +2492,28 @@ onMounted(() => {
   window.addEventListener(PLAYER_SHORTCUTS_CHANGED_EVENT, reloadPlayerShortcuts)
   document.documentElement.addEventListener('mouseleave', handleApplicationPointerLeave)
   document.addEventListener('visibilitychange', handleVisibilityChange)
+  if (appWindow) {
+    void appWindow.onFocusChanged(({ payload: focused }) => {
+      if (focused)
+        handleWindowFocus()
+      else
+        handleWindowBlur()
+    }).then((unlisten) => {
+      if (playerViewDisposed)
+        unlisten()
+      else
+        nativeWindowFocusUnlisten = unlisten
+    }).catch(() => undefined)
+  }
   void updateChromeOcclusion()
   void ensureRenderInitialized()
   scheduleChromeHide()
 })
 
 onBeforeUnmount(() => {
+  playerViewDisposed = true
+  nativeWindowFocusUnlisten?.()
+  nativeWindowFocusUnlisten = undefined
   void stopPlaybackForRouteExit()
   document.documentElement.classList.remove('player-render-surface-active')
   document.body.classList.remove('player-render-surface-active')
