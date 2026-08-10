@@ -91,6 +91,7 @@ player/src-tauri/lib/libmpv.dll.a
 *.dylib
 omc
 ohmycine-server
+server/server
 server/bin/
 cli/bin/
 
@@ -121,9 +122,12 @@ hub/.vitepress/cache/
 # ====================
 
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.log
 logs/
+server/.runtime/
 
 # ====================
 # Secrets / Credentials
