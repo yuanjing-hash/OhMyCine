@@ -2,12 +2,12 @@ name: Player CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "player/**"
       - ".github/workflows/player.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "player/**"
       - ".github/workflows/player.yml"

@@ -2,12 +2,12 @@ name: CLI CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "cli/**"
       - ".github/workflows/cli.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "cli/**"
       - ".github/workflows/cli.yml"
