@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/directory-structure.md","reason":"迁移时保留 develop 新增的 server/webui 目录与 Go module 规则"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"迁移时保留 develop 新增的 Beta/Stable 发布分支规则"}
+{"file":".trellis/tasks/08-11-migrate-uncommitted-to-develop/research/safe-git-migration.md","reason":"按可恢复的 stash 迁移方案执行并验证"}
