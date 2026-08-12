@@ -76,4 +76,4 @@ Reviewers and check agents should verify:
 - Use `OpenList/Alist` or `OpenList (Alist-compatible API)` in user-facing docs.
 - State that SQLite is the default database; PostgreSQL is future optional only.
 - Keep PT search, follow tasks, AI, plugins, and multi-user permissions documented as planned scope even if phased later.
-- Distinguish WSL/Linux development commands from Windows-native Tauri packaging/runtime concerns.
+- Use Windows-native PowerShell commands for local development; treat Linux/WSL commands as explicit compatibility, CI, or deployment paths rather than the default.

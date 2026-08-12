@@ -43,9 +43,9 @@ Frontend quality is measured by Player independence, type safety, immersive UI c
 
 ## Testing and Verification
 
-When `player/` exists, run from WSL/Linux unless the task explicitly targets Windows-native packaging/runtime:
+When `player/` exists, run local checks from Windows PowerShell:
 
-```bash
+```powershell
 cd player
 npm run typecheck
 npm run lint
@@ -64,7 +64,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 Do not weaken or skip the all-target Clippy gate to make a task appear complete.
 
-When cross-compiling Windows GNU targets from WSL, prefer the rustup toolchain explicitly if PATH contains another Rust distribution. Homebrew/system `cargo` can see project config but not rustup-installed target stdlibs, causing false `can't find crate for core/std` failures. Use `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path player/src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` for the target check, and pass the same `RUSTC` override to Windows package builds.
+For Windows-native development, use the installed Windows Rust toolchain directly and treat a successful native `cargo check` / `tauri dev` run as the authoritative desktop result. The Linux/WSL `x86_64-pc-windows-gnu` cross-build path remains a CI/release compatibility path; when running that path, prefer the rustup toolchain explicitly if `PATH` contains another Rust distribution and pass the same `RUSTC` override to package builds.
 
 Runtime verification must be non-destructive by default. Preserve the owner's existing standard and portable Player profiles, including data sources, credentials, settings, playback history, scrape caches, and WebView state. Tests that need a clean profile should use an isolated temporary/portable directory. Never clear the real profile unless the owner explicitly requests it or approves the exact destructive test scope in advance.
 
@@ -74,19 +74,20 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 |------|----------------|-----------------|
 | Web/UI-only Player change | `npm run typecheck`, `npm run lint`, `npm run build` | All pass |
 | Rust/Tauri backend change | Above plus `cargo check` for `player/src-tauri` | All pass |
-| Runtime/render/libmpv change | Above plus `npm run tauri dev` when the local graphics/runtime environment can launch it | Report full verification only after the desktop window/runtime is exercised |
-| WSL/WSLg graphics limitation | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as partial verification and require Windows-native or full Linux desktop recheck |
-| Windows GNU package change | `npm run setup:libmpv -- windows` plus `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player` when PATH may prefer Homebrew/system Rust | Cross-build passes only when the Windows `.exe` and installer are generated; runtime/signing/playback still need Windows-host verification |
+| Runtime/render/libmpv change | Above plus `npm run setup:libmpv -- windows` and Windows-native `npm run tauri:dev:windows` when the local graphics/runtime environment can launch it | Report full verification only after the Windows desktop window/runtime is exercised |
+| WSL/WSLg compatibility check | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as supplementary partial verification; require the Windows-native check for completion |
+| Windows-native package change | `npm run setup:libmpv -- windows` plus `npm run tauri:build:windows:native` | The Windows executable/installer is generated and then launch/install/playback is exercised on Windows when in scope |
+| Windows GNU CI/release package change | Run the existing `npm run tauri:build:windows` cross-build path in its Linux CI/release environment | Cross-build passes only when the Windows `.exe` and installer are generated; Windows-native runtime/signing/playback remain separate checks |
 | Android UI/data-source preview change | `npm run tauri:build:android:preview` with SDK 36, NDK `27.2.12479018`, and the ARM64 Rust target installed | An installable ARM64 debug APK is generated; report playback as unsupported until Android libmpv and native surface rendering are integrated |
-| Native file picker / dialog plugin change | Above plus `cargo check` and a `tauri dev` attempt when possible | Static checks prove integration; report partial verification if WSL graphics prevents native dialog/playback interaction |
-| DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows` when Player packaging is in scope | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
+| Native file picker / dialog plugin change | Above plus `cargo check` and a Windows-native `npm run tauri:dev:windows` attempt when possible | Static checks alone are insufficient; exercise the Windows dialog/playback interaction when it is in scope |
+| DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows:native` for local Windows packaging or the existing cross-build script in CI | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
 
 ### Tauri Windows-Only Packaging Contract
 
 - Keep platform-specific runtime resources out of the shared `player/src-tauri/tauri.conf.json` `bundle.resources`. Tauri validates every declared resource during packaging, so a Windows GNU CI job that only ran `npm run setup:libmpv -- windows` must not require Linux `.so` or macOS `.dylib` files.
 - Current-stage Player packaging is Windows-only. Keep `player/src-tauri/tauri.windows.conf.json` as the only platform resource override until Linux/macOS Player rendering and packaging are implemented.
 - Windows resources should include only Windows runtime files such as `lib/libmpv-2.dll`, `lib/libmpv-wrapper.dll`, and license text. Do not include `libmpv.dll.a`; it is a GNU link-time import library, not a runtime bundle resource.
-- Ordinary Player CI, manual Player builds, and beta release guardrails should validate/publish only Windows GNU packages through `ubuntu-latest` + `x86_64-pc-windows-gnu`.
+- Local Windows manual builds use the Windows-host `x86_64-pc-windows-gnu` scripts. Player CI and beta release guardrails continue to validate/publish Windows GNU packages through `ubuntu-latest` + `x86_64-pc-windows-gnu`.
 - Do not add Linux/macOS Player package jobs, Linux/macOS runtime resource configs, or blocking CI checks for those packages before the corresponding Player renderers and packaging chains are complete. Future Linux/macOS work should return explicit unsupported/future runtime states until implemented, then add CI in the same task that finishes the renderer/package path.
 
 ## Scenario: Player Release Packaging

@@ -4,13 +4,14 @@ import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rm
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { fileURLToPath } from 'node:url'
 import SevenZip from '7z-wasm'
 
 const releaseTag = '2026-04-25'
 const apkName = 'app-default-arm64-v8a-release.apk'
 const expectedSha256 = '4400bcba6be9cec1128e24d1eba153d8727384926b0639fa7fe44d4e36b04f81'
 const releaseUrl = `https://github.com/mpv-android/mpv-android/releases/download/${releaseTag}/${apkName}`
-const rootDir = new URL('..', import.meta.url).pathname
+const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const androidRoot = resolve(rootDir, 'src-tauri', 'gen', 'android', 'app', 'src', 'main')
 const nativeDir = join(androidRoot, 'jniLibs', 'arm64-v8a')
 const assetDir = join(androidRoot, 'assets', 'mpv')

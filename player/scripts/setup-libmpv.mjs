@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { fileURLToPath } from 'node:url'
 import SevenZip from '7z-wasm'
 
-const rootDir = new URL('..', import.meta.url).pathname
+const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const targetDir = resolve(rootDir, 'src-tauri', 'lib')
 const tempDir = join(targetDir, 'temp')
 const wrapperBaseUrl = 'https://github.com/nini22P/libmpv-wrapper/releases/latest/download'
@@ -60,7 +61,7 @@ async function extractArchive(archivePath, extractDir) {
   sevenZip.FS.mount(sevenZip.NODEFS, { root: extractDir }, '/archive_dest')
 
   try {
-    sevenZip.callMain(['x', `/archive_source/${archivePath.split('/').pop()}`, '-o/archive_dest', '-y'])
+    sevenZip.callMain(['x', `/archive_source/${basename(archivePath)}`, '-o/archive_dest', '-y'])
   }
   catch (error) {
     if (error?.status !== 0)

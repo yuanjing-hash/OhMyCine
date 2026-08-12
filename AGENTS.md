@@ -162,29 +162,27 @@ Consult `docs/architecture/07-security-design.md` before implementing credential
 
 ## Local development environment
 
-The project owner's local development environment is WSL/Linux-first, not Windows PowerShell/CMD-first. Prefer bash/Linux commands and assume Node, Rust, Go, Tauri CLI, linters, and test tools are installed inside WSL unless explicitly told otherwise.
+The project owner's local development environment is Windows-native and PowerShell-first. Prefer PowerShell commands and Windows paths, and assume Node.js, Python, Rust, Go, Tauri CLI, linters, and test tools are installed on the Windows `PATH` unless the current machine proves otherwise. Trellis hooks require `python.exe` to be resolvable as `python`. Do not route ordinary development commands through WSL by default.
+
+Codex is the only AI development platform enabled for this repository. Keep Trellis integration under `.codex/` and the shared Codex-readable `.agents/skills/` layer. Do not generate or restore Claude Code, Antigravity, GitHub Copilot, Cursor, or other platform adapters unless the project owner explicitly requests that platform in a future task. After a Trellis upgrade, `trellis update --dry-run --skip-all` must report the managed Codex/Trellis files as up to date; deleted non-Codex adapters should not remain registered as configured platforms in `.trellis/.template-hashes.json`.
 
 Docker is not available locally and must not be treated as a development prerequisite. Docker-related files and commands are for later deployment, CI integration testing, NAS/server environments, or release workflows.
 
-When working on Windows desktop packaging, WebView2, MSVC, Windows-specific libmpv binaries, or native Tauri desktop runtime issues, explicitly distinguish between:
-
-- WSL development/build commands
-- Windows-native desktop runtime or packaging requirements
-
-Do not silently assume a WSL-built artifact is equivalent to a Windows-native Tauri desktop build.
+Windows-native builds and runtime tests are authoritative for Windows desktop packaging, WebView2, MSVC, Windows-specific libmpv binaries, native dialogs, window composition, and Tauri desktop behavior. WSL/Linux cross-builds and Linux CI jobs may remain useful for supplementary compile/package verification, but they do not replace Windows-native runtime validation.
 
 Player runtime tests must preserve the owner's existing standard and portable profiles by default. Do not delete, reset, migrate, or overwrite configured data sources, credentials, settings, playback history, scrape caches, WebView data, or app-data directories merely to obtain a clean test state. Use an isolated temporary profile, a fresh portable test directory, or non-destructive inspection instead. Destructive profile cleanup is allowed only when the owner explicitly requests it or when a test genuinely cannot proceed otherwise; in the latter case, explain the exact paths and data scope and obtain confirmation before deletion.
 
 ## Development commands
 
-The repository currently may not have runnable component directories yet. Use the commands below only once the relevant component files exist. Prefer running them inside WSL unless the task specifically requires Windows-native desktop packaging or runtime testing.
+The repository currently may not have runnable component directories yet. Use the commands below only once the relevant component files exist. Run local development and verification from Windows PowerShell unless a task explicitly targets Linux, WSL compatibility, or a Linux CI/release path.
 
 Player target commands:
 
-```bash
+```powershell
 cd player
 npm install
-npm run tauri dev
+npm run setup:libmpv -- windows
+npm run tauri:dev:windows
 npm run build
 npm run typecheck
 npm run lint
@@ -192,7 +190,7 @@ npm run lint
 
 Server target commands:
 
-```bash
+```powershell
 cd server
 go mod download
 go run ./cmd/server
@@ -202,23 +200,23 @@ golangci-lint run
 
 Run a single Go test when Server exists:
 
-```bash
+```powershell
 cd server
 go test ./internal/services -run TestName
 ```
 
 CLI target commands:
 
-```bash
+```powershell
 cd cli
-go build -o omc ./cmd/omc
-./omc --help
+go build -o omc.exe ./cmd/omc
+.\omc.exe --help
 go test ./...
 ```
 
 Hub target commands:
 
-```bash
+```powershell
 cd hub
 npm install
 npm run dev
@@ -227,7 +225,7 @@ npm run build
 
 Docker target command when Server Docker files exist:
 
-```bash
+```powershell
 cd server
 docker compose up -d
 ```
@@ -320,9 +318,12 @@ Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore
 Git push and release rules:
 
 - Do not push branches, commits, or tags to GitHub unless the project owner explicitly requests a GitHub push in the current task.
-- Normal Player and Server development happens on `develop`; feature and fix branches start from `develop` and merge back into it after verification.
+- `develop` is the integration branch for normal development. Feature, fix, and Codex work branches start from the latest `origin/develop` and merge back into `develop` after verification.
+- Ordinary component CI runs for pushes and pull requests targeting both `develop` and `main`; release workflows remain `main`-only.
+- `main` is the release branch. Do not develop directly on `main`; merge verified release content from `develop` into `main` through the project's release flow.
 - Player Beta releases use the latest remote `develop` commit. A `v*.*.*` tag push is always Beta, and manual `channel=beta` must select `develop` and run at the latest `origin/develop` commit.
 - Player Stable releases use the latest remote `main` commit and must select `main` when started explicitly with `workflow_dispatch channel=stable`. Merge `develop` into `main` only after the release is confirmed as Stable.
+- A temporary remote work branch may be deleted only after `git merge-base --is-ancestor origin/<branch> origin/develop` succeeds against freshly fetched remote refs. A matching file tree, commit subject, or merge into `main` alone is not sufficient proof.
 - Never publish from a feature/fix/release branch commit, an older branch commit, or a local commit that has not been pushed to the required remote branch.
 
 Commit message language rule: keep the Conventional Commits `type` and optional `scope` in English, but write the short description and body in Chinese. Standard footer/trailer fields such as `Closes #123` and `Co-Authored-By: Codex Opus 4.7 <noreply@anthropic.com>` may remain in English.
@@ -332,5 +333,27 @@ Example:
 ```text
 docs: 更新 Codex 项目指导文档
 
-补充 WSL 本地开发环境、项目级 skills 和提交信息语言规范，确保后续 Codex 会话保持一致。
+补充 Windows 本地开发环境、项目级 skills 和提交信息语言规范，确保后续 Codex 会话保持一致。
 ```
+
+<!-- TRELLIS:START -->
+# Trellis Instructions
+
+These instructions are for AI assistants working in this project.
+
+This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+
+- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
+- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
+- `.trellis/workspace/` — per-developer journals and session traces
+- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+
+If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+
+If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
+- `.agents/skills/` — reusable Trellis skills
+- `.codex/agents/` — optional custom subagents
+
+Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+
+<!-- TRELLIS:END -->

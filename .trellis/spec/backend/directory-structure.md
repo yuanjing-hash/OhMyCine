@@ -122,6 +122,6 @@ Keep external API quirks inside the concrete driver/client. Services should depe
 
 - Putting business logic in Gin handlers instead of services.
 - Creating driver-specific branches throughout services instead of using common interfaces.
-- Treating Docker Compose as required for local WSL development.
+- Treating Docker Compose as required for local Windows development.
 - Using PostgreSQL-specific behavior in MVP code; SQLite is the default target.
 - Describing OpenList support as only `Alist` in user-facing docs.

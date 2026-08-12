@@ -6,7 +6,7 @@
 
 ## Overview
 
-Player uses Tauri v2 + Vue 3 + TypeScript + UnoCSS. The web UI lives under `player/src/`; Rust/Tauri integration lives under `player/src-tauri/`. Keep desktop runtime concerns explicit and do not assume WSL-built artifacts are Windows-native desktop packages.
+Player uses Tauri v2 + Vue 3 + TypeScript + UnoCSS. The web UI lives under `player/src/`; Rust/Tauri integration lives under `player/src-tauri/`. Windows-native development and runtime verification are the local default. Linux/WSL cross-built artifacts remain supplementary and must not be treated as Windows runtime proof.
 
 The repository is design-first. Use existing directories when present and do not create broad rewrites to match a planned tree unless the task explicitly asks for it.
 
@@ -311,7 +311,7 @@ When wrapping libmpv in `player/src-tauri/src/mpv/`, keep the FFI surface small 
 | libmpv command/property call returns non-zero | Convert to a safe error string for Tauri |
 | `vo=gpu` is set without `wid`/native surface/render context | Treat as a bug: either bind a real embedded render target or suppress video output so no external mpv window appears |
 | UI loads media but embedded render target is not implemented | Show an honest in-app placeholder; do not claim video is rendered in-window |
-| WSL/WSLg EGL/Mesa warnings during `tauri dev` | Record runtime verification as partial, not complete |
+| WSL/WSLg EGL/Mesa warnings during an optional compatibility check | Record the result as supplementary and partial; use Windows-native runtime verification for completion |
 
 #### 5. Good/Base/Bad Cases
 - Good: direct libmpv FFI wrapper owns the handle, frees returned strings, binds an explicit render target before enabling visible video, and is accessed through a mutex-backed Tauri state.
@@ -384,7 +384,7 @@ When implementing embedded video rendering through libmpv's render API, keep the
 | Render surface is missing or zero-sized | Skip frame rendering and keep state truthful; do not enable external mpv output |
 | mpv update callback fires | Wake the render loop only; no direct GL, Tauri UI, or blocking work inside callback |
 | Resize/fullscreen/DPI changes | Update native surface bounds and FBO width/height in physical pixels |
-| WSL/WSLg cannot visually verify GL/WebView2 | Mark runtime verification partial; require Windows-host visual verification |
+| WSL/WSLg cannot visually verify GL/WebView2 during an optional compatibility check | Mark the result partial; require Windows-native visual verification |
 
 #### 5. Good/Base/Bad Cases
 - Good: cross-platform `RenderBackend` boundary exists, Windows OpenGL backend owns the first native surface, unsupported platforms return explicit states, and Vue displays render status truthfully.
@@ -429,7 +429,7 @@ unsafe extern "C" fn update(ctx: *mut c_void) {
 
 ### Windows GNU libmpv Build Contract
 
-When cross-building Player for `x86_64-pc-windows-gnu` from WSL/Linux, treat libmpv as both a link-time and runtime dependency:
+When Windows-native development, CI, or an explicit Linux/WSL compatibility task builds Player for `x86_64-pc-windows-gnu`, treat libmpv as both a link-time and runtime dependency. Windows-host execution is the default local path; Linux/WSL cross-building remains supplementary:
 
 #### 1. Scope / Trigger
 - Trigger: `npm run tauri:build:windows`, `tauri build --target x86_64-pc-windows-gnu`, or any change to libmpv setup/bundling.
@@ -445,8 +445,9 @@ When cross-building Player for `x86_64-pc-windows-gnu` from WSL/Linux, treat lib
 - Install `libmpv.dll.a` for GNU link-time resolution of `-lmpv`.
 - Do not bundle `libmpv.dll.a`; it is an import library, not a runtime file.
 - Do not commit generated `libmpv.dll.a`, downloaded DLLs, installers, or `target/` outputs.
+- Node ESM setup scripts must convert `import.meta.url` with `fileURLToPath()` before using `node:path`; `.pathname` produces malformed drive-prefixed paths on Windows. Use `basename()` rather than splitting paths on `/` when passing archive names to extraction tools.
 - Keep native Linux builds using system libmpv/pkg-config; only add the explicit link-search path for `x86_64-pc-windows-gnu`.
-- WSL cross-build success proves executable/installer generation only; Windows installation, signing, launch, and playback require a Windows host.
+- Linux/WSL cross-build success proves executable/installer generation only; Windows installation, signing, launch, and playback require the Windows-native environment.
 - In the Windows transparent WebView + mpv underlay model, WebView-reported surface bounds are the sole geometry authority during move, resize, and DPI changes. Native owner events may synchronize visibility/z-order, but must not resize the mpv HWND ahead of the WebView layout frame; `ResizeObserver` plus Tauri moved/resized/scale events report the final logical bounds back to Rust.
 
 #### 4. Validation & Error Matrix
@@ -456,15 +457,16 @@ When cross-building Player for `x86_64-pc-windows-gnu` from WSL/Linux, treat lib
 | `libmpv-2.dll` missing from bundle | Add it as a Tauri resource at the Windows app root |
 | `libmpv.dll.a` appears in git status as tracked/addable | Ignore or remove it; regenerate via setup script instead of committing it |
 | Native Linux `cargo check` starts using vendored Windows lib path | Scope link-search by `TARGET`, not unconditionally |
-| WSL build produces NSIS installer | Mark cross-build as passed but keep Windows-native runtime/signing/playback unverified |
+| Linux/WSL build produces an NSIS installer | Mark cross-build as passed but keep Windows-native runtime/signing/playback unverified |
 
 #### 5. Good/Base/Bad Cases
 - Good: setup downloads `libmpv-2.dll` and `libmpv.dll.a`, build.rs exposes the lib directory only for Windows GNU, and Tauri bundles only runtime DLLs.
-- Base: WSL cross-build creates `.exe` and NSIS installer while signing/runtime playback remain unverified.
+- Base: a Linux/WSL cross-build creates `.exe` and an NSIS installer while signing/runtime playback remain unverified.
 - Bad: relying on Linux `libmpv.so` for a Windows GNU build, or committing generated import libraries/installer artifacts.
 
 #### 6. Tests Required
 - `npm run setup:libmpv -- windows` installs both `libmpv-2.dll` and `libmpv.dll.a`.
+- Setup-script path tests must confirm a Windows file URL resolves to one valid drive path and archive extraction receives only the basename.
 - `npm run tauri:build:windows` resolves `-lmpv` and produces the Windows executable/installer.
 - `cargo check` without a Windows target still passes on Linux.
 - Inspect git status to confirm generated DLL/import-library/target outputs are not staged.
