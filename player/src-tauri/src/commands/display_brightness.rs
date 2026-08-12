@@ -18,9 +18,9 @@ pub async fn state(window: tauri::Window) -> Result<MpvDisplayBrightnessState, S
     #[cfg(windows)]
     {
         let hwnd = desktop_window_handle(&window)?;
-        return tauri::async_runtime::spawn_blocking(move || windows_display_brightness(hwnd))
+        tauri::async_runtime::spawn_blocking(move || windows_display_brightness(hwnd))
             .await
-            .map_err(|_| "系统亮度读取任务异常结束。".to_string());
+            .map_err(|_| "系统亮度读取任务异常结束。".to_string())
     }
 
     #[cfg(not(windows))]
@@ -38,11 +38,9 @@ pub async fn set(window: tauri::Window, level: f64) -> Result<MpvDisplayBrightne
     #[cfg(windows)]
     {
         let hwnd = desktop_window_handle(&window)?;
-        return tauri::async_runtime::spawn_blocking(move || {
-            windows_set_display_brightness(hwnd, level)
-        })
-        .await
-        .map_err(|_| "系统亮度设置任务异常结束。".to_string());
+        tauri::async_runtime::spawn_blocking(move || windows_set_display_brightness(hwnd, level))
+            .await
+            .map_err(|_| "系统亮度设置任务异常结束。".to_string())
     }
 
     #[cfg(not(windows))]

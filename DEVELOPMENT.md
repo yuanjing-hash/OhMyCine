@@ -854,7 +854,25 @@ tag push 始终发布 Beta，因此 tag 必须精确指向远端 `develop` 最�
 
 不要从 `feature/*`、`fix/*`、`release/*`、旧版 `develop`/`main` 提交或本地未推送提交发布。即使提交属于正确分支的历史，或是正确分支最新提交的本地后继提交，workflow 也会因其不等于对应远端分支 tip 而拒绝。
 
-当前普通 `Player CI`、`Manual Build` 和 beta release 中的 Player 包构建只验证/发布 Windows GNU。Linux/macOS Player 渲染器和打包链路完成前，不把 Linux/macOS Player 包加入 CI 阻塞项。
+当前普通 `Player CI` 会先编译和测试 Linux 原生 Rust target 与 Windows MSVC 原生 Rust target，再通过 Windows GNU target 生成安装包。`Manual Build` 和 beta release 仍只发布 Windows GNU 包；Linux/macOS Player 渲染器和打包链路完成前，不发布 Linux/macOS Player 包。
+
+本地 Windows 原生开发使用 MSVC：
+
+```powershell
+cd player
+npm run setup:libmpv -- windows
+npm run tauri:dev:windows
+npm run tauri:build:windows:native
+```
+
+安装脚本同时提供 MSVC 使用的 `mpv.lib`、GNU 使用的 `libmpv.dll.a` 和共享运行时 `libmpv-2.dll`。Linux 原生 Rust 编译继续使用系统 `libmpv` 与 `pkg-config`，不会搜索 Windows vendored 库：
+
+```bash
+sudo apt-get install libmpv-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev pkg-config
+cd player/src-tauri
+cargo test --lib
+cargo check --all-targets
+```
 
 Windows GNU 构建使用同一条 cross-build 链路：
 

@@ -412,7 +412,12 @@ mod tests {
 
         let canonical_root = fs::canonicalize(&root).unwrap();
         let outside_like_provider_path = outside_file.to_string_lossy().replace('\\', "/");
-        assert!(resolve_target_path(&canonical_root, Some(&outside_like_provider_path)).is_err());
+        let result = resolve_target_path(&canonical_root, Some(&outside_like_provider_path))
+            .and_then(|target| {
+                ensure_within_root(&canonical_root, &target)?;
+                Ok(target)
+            });
+        assert!(result.is_err());
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();

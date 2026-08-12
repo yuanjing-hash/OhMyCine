@@ -363,7 +363,7 @@ mod tests {
     use super::{
         detect_image_mime, hash_text, image_cache_stats, trim_image_cache, CachedImageMeta,
     };
-    use std::{fs, time::SystemTime};
+    use std::{fs, time::UNIX_EPOCH};
 
     #[test]
     fn detects_supported_image_signatures() {
@@ -393,8 +393,8 @@ mod tests {
     #[test]
     fn trims_oldest_images_to_configured_limit() {
         let directory = std::env::temp_dir().join(format!(
-            "ohmycine-image-cache-test-{:?}-{}",
-            SystemTime::now(),
+            "ohmycine-image-cache-test-{}-{}",
+            UNIX_EPOCH.elapsed().expect("system clock").as_nanos(),
             std::process::id()
         ));
         fs::create_dir_all(&directory).expect("create cache test directory");

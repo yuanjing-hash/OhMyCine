@@ -74,6 +74,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 |------|----------------|-----------------|
 | Web/UI-only Player change | `npm run typecheck`, `npm run lint`, `npm run build` | All pass |
 | Rust/Tauri backend change | Above plus `cargo check` for `player/src-tauri` | All pass |
+| Native Rust portability | Ubuntu with system `libmpv` plus Windows with vendored libmpv run `cargo test --lib` and `cargo check --all-targets` | Both native targets pass before the Windows GNU package job |
 | Runtime/render/libmpv change | Above plus `npm run setup:libmpv -- windows` and Windows-native `npm run tauri:dev:windows` when the local graphics/runtime environment can launch it | Report full verification only after the Windows desktop window/runtime is exercised |
 | WSL/WSLg compatibility check | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as supplementary partial verification; require the Windows-native check for completion |
 | Windows-native package change | `npm run setup:libmpv -- windows` plus `npm run tauri:build:windows:native` | The Windows executable/installer is generated and then launch/install/playback is exercised on Windows when in scope |
@@ -86,8 +87,9 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 
 - Keep platform-specific runtime resources out of the shared `player/src-tauri/tauri.conf.json` `bundle.resources`. Tauri validates every declared resource during packaging, so a Windows GNU CI job that only ran `npm run setup:libmpv -- windows` must not require Linux `.so` or macOS `.dylib` files.
 - Current-stage Player packaging is Windows-only. Keep `player/src-tauri/tauri.windows.conf.json` as the only platform resource override until Linux/macOS Player rendering and packaging are implemented.
-- Windows resources should include only Windows runtime files such as `lib/libmpv-2.dll`, `lib/libmpv-wrapper.dll`, and license text. Do not include `libmpv.dll.a`; it is a GNU link-time import library, not a runtime bundle resource.
-- Local Windows manual builds use the Windows-host `x86_64-pc-windows-gnu` scripts. Player CI and beta release guardrails continue to validate/publish Windows GNU packages through `ubuntu-latest` + `x86_64-pc-windows-gnu`.
+- Windows resources should include only Windows runtime files such as `lib/libmpv-2.dll`, `lib/libmpv-wrapper.dll`, and license text. Do not include `libmpv.dll.a` or `mpv.lib`; they are link-time import libraries, not runtime bundle resources.
+- Local Windows development and manual builds use the native `x86_64-pc-windows-msvc` scripts. Player CI and beta release guardrails continue to validate/publish Windows GNU packages through `ubuntu-latest` + `x86_64-pc-windows-gnu`.
+- Player CI compiles and tests native Linux and native Windows MSVC Rust targets before the Windows GNU packaging job. A cross-built Windows GNU package does not replace either native compile gate.
 - Do not add Linux/macOS Player package jobs, Linux/macOS runtime resource configs, or blocking CI checks for those packages before the corresponding Player renderers and packaging chains are complete. Future Linux/macOS work should return explicit unsupported/future runtime states until implemented, then add CI in the same task that finishes the renderer/package path.
 
 ## Scenario: Player Release Packaging

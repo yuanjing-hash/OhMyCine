@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
@@ -108,6 +108,19 @@ function moveExtractedFile(searchDir, fileName, outputName = fileName) {
   console.log(`installed ${outputName}`)
 }
 
+function copyInstalledFile(fileName, outputName) {
+  const sourcePath = resolve(targetDir, fileName)
+  const destPath = resolve(targetDir, outputName)
+  const relativeDest = relative(targetDir, destPath)
+  if (!existsSync(sourcePath))
+    throw new Error(`${fileName} must be installed before creating ${outputName}`)
+  if (relativeDest === '' || relativeDest.startsWith('..') || relativeDest.includes(':'))
+    throw new Error(`Refusing to install ${outputName} outside ${targetDir}`)
+
+  copyFileSync(sourcePath, destPath)
+  console.log(`installed ${outputName}`)
+}
+
 async function installWrapper(target) {
   const sha = await fetch(`${wrapperBaseUrl}/sha256.txt`).then(res => res.text())
   const searchKey = `libmpv-wrapper-${target.osName}-${target.archName}`
@@ -140,10 +153,12 @@ async function installWindowsMpv(target) {
   await downloadFile(`${mpvBaseUrl}/${fileName}`, archivePath)
   await extractArchive(archivePath, extractDir)
 
-  // Runtime DLL is required by the packaged Windows app, while the GNU import
-  // library is required by x86_64-pc-windows-gnu during the link step (-lmpv).
+  // Runtime DLL is shared by both Windows toolchains. The upstream GNU import
+  // archive is COFF-compatible with MSVC link.exe, which resolves `-lmpv` as
+  // mpv.lib, so keep both conventional file names without requiring VS tools.
   moveExtractedFile(extractDir, 'libmpv-2.dll')
   moveExtractedFile(extractDir, 'libmpv.dll.a')
+  copyInstalledFile('libmpv.dll.a', 'mpv.lib')
 }
 
 async function setup(targetNames) {

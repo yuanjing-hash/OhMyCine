@@ -5,10 +5,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OHMYCINE_DANDANPLAY_APP_SECRET");
     let target = env::var("TARGET").unwrap_or_default();
 
-    // The Windows GNU cross-build links libmpv-sys with `-lmpv`, which needs the
-    // import library extracted by scripts/setup-libmpv.mjs. Keep this scoped to
-    // Windows so native Linux checks continue to use system libmpv/pkg-config.
-    if target == "x86_64-pc-windows-gnu" {
+    // Both Windows toolchains link libmpv-sys with `-lmpv`: GNU resolves
+    // libmpv.dll.a while MSVC resolves mpv.lib. Keep the vendored search path
+    // Windows-only so native Linux continues to use system libmpv/pkg-config.
+    if matches!(
+        target.as_str(),
+        "x86_64-pc-windows-gnu" | "x86_64-pc-windows-msvc"
+    ) {
         let manifest_dir =
             PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
         let lib_dir = manifest_dir.join("lib");

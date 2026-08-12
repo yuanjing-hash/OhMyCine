@@ -427,26 +427,27 @@ unsafe extern "C" fn update(ctx: *mut c_void) {
 }
 ```
 
-### Windows GNU libmpv Build Contract
+### Windows MSVC/GNU libmpv Build Contract
 
-When Windows-native development, CI, or an explicit Linux/WSL compatibility task builds Player for `x86_64-pc-windows-gnu`, treat libmpv as both a link-time and runtime dependency. Windows-host execution is the default local path; Linux/WSL cross-building remains supplementary:
+When Windows-native development builds Player for `x86_64-pc-windows-msvc`, or CI and explicit Linux/WSL compatibility work builds it for `x86_64-pc-windows-gnu`, treat libmpv as both a link-time and runtime dependency. Windows MSVC is the default local path; Linux/WSL cross-building remains supplementary:
 
 #### 1. Scope / Trigger
-- Trigger: `npm run tauri:build:windows`, `tauri build --target x86_64-pc-windows-gnu`, or any change to libmpv setup/bundling.
+- Trigger: `npm run tauri:build:windows:native`, `npm run tauri:build:windows`, either Windows Rust target, or any change to libmpv setup/bundling.
 - Applies to `player/scripts/setup-libmpv.mjs`, `player/src-tauri/build.rs`, `player/src-tauri/tauri.conf.json`, and `.gitignore`.
 
 #### 2. Signatures
 - Setup script command: `npm run setup:libmpv -- windows` installs Windows libmpv artifacts under `player/src-tauri/lib/`.
-- Build target: `TARGET=x86_64-pc-windows-gnu` adds `player/src-tauri/lib` as a native link-search path.
+- Build targets: `TARGET=x86_64-pc-windows-msvc` and `TARGET=x86_64-pc-windows-gnu` add `player/src-tauri/lib` as a native link-search path.
 - Bundle resource mapping: runtime DLLs are copied to the Windows app install root.
 
 #### 3. Contracts
 - Install `libmpv-2.dll` for Windows runtime loading.
 - Install `libmpv.dll.a` for GNU link-time resolution of `-lmpv`.
-- Do not bundle `libmpv.dll.a`; it is an import library, not a runtime file.
-- Do not commit generated `libmpv.dll.a`, downloaded DLLs, installers, or `target/` outputs.
+- Install the same COFF import archive as `mpv.lib` for MSVC link-time resolution of `-lmpv`; this keeps setup independent from Visual Studio command-line tools.
+- Do not bundle `libmpv.dll.a` or `mpv.lib`; they are import libraries, not runtime files.
+- Do not commit generated import libraries, downloaded DLLs, installers, or `target/` outputs.
 - Node ESM setup scripts must convert `import.meta.url` with `fileURLToPath()` before using `node:path`; `.pathname` produces malformed drive-prefixed paths on Windows. Use `basename()` rather than splitting paths on `/` when passing archive names to extraction tools.
-- Keep native Linux builds using system libmpv/pkg-config; only add the explicit link-search path for `x86_64-pc-windows-gnu`.
+- Keep native Linux builds using system libmpv/pkg-config; only add the explicit link-search path for the two Windows targets.
 - Linux/WSL cross-build success proves executable/installer generation only; Windows installation, signing, launch, and playback require the Windows-native environment.
 - In the Windows transparent WebView + mpv underlay model, WebView-reported surface bounds are the sole geometry authority during move, resize, and DPI changes. Native owner events may synchronize visibility/z-order, but must not resize the mpv HWND ahead of the WebView layout frame; `ResizeObserver` plus Tauri moved/resized/scale events report the final logical bounds back to Rust.
 
@@ -454,18 +455,20 @@ When Windows-native development, CI, or an explicit Linux/WSL compatibility task
 | Condition | Required behavior |
 |-----------|-------------------|
 | Linker says `cannot find -lmpv` | Ensure `libmpv.dll.a` exists in `player/src-tauri/lib/` and the Windows GNU target has that directory in `rustc-link-search` |
+| MSVC linker says it cannot open `mpv.lib` | Run `npm run setup:libmpv -- windows`; ensure `mpv.lib` exists and the Windows MSVC target has the vendored link-search path |
 | `libmpv-2.dll` missing from bundle | Add it as a Tauri resource at the Windows app root |
-| `libmpv.dll.a` appears in git status as tracked/addable | Ignore or remove it; regenerate via setup script instead of committing it |
+| `libmpv.dll.a` or `mpv.lib` appears in git status as tracked/addable | Ignore it; regenerate via the setup script instead of committing it |
 | Native Linux `cargo check` starts using vendored Windows lib path | Scope link-search by `TARGET`, not unconditionally |
 | Linux/WSL build produces an NSIS installer | Mark cross-build as passed but keep Windows-native runtime/signing/playback unverified |
 
 #### 5. Good/Base/Bad Cases
-- Good: setup downloads `libmpv-2.dll` and `libmpv.dll.a`, build.rs exposes the lib directory only for Windows GNU, and Tauri bundles only runtime DLLs.
+- Good: setup installs `libmpv-2.dll`, `libmpv.dll.a`, and `mpv.lib`; build.rs exposes the lib directory only for Windows MSVC/GNU, and Tauri bundles only runtime DLLs.
 - Base: a Linux/WSL cross-build creates `.exe` and an NSIS installer while signing/runtime playback remain unverified.
 - Bad: relying on Linux `libmpv.so` for a Windows GNU build, or committing generated import libraries/installer artifacts.
 
 #### 6. Tests Required
-- `npm run setup:libmpv -- windows` installs both `libmpv-2.dll` and `libmpv.dll.a`.
+- `npm run setup:libmpv -- windows` installs `libmpv-2.dll`, `libmpv.dll.a`, and `mpv.lib`.
+- Native Windows `cargo test`/`cargo check` resolves `mpv.lib` for `x86_64-pc-windows-msvc`.
 - Setup-script path tests must confirm a Windows file URL resolves to one valid drive path and archive extraction receives only the basename.
 - `npm run tauri:build:windows` resolves `-lmpv` and produces the Windows executable/installer.
 - `cargo check` without a Windows target still passes on Linux.
