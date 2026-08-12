@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Storage REST envelope, route and authentication contracts"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Explicit SQLite migration and canonical path persistence rules"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Local path, Reparse Point, audit and filesystem safety rules"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Permission catalog, RBAC and embedded Web UI contracts"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend validation and test requirements"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Vue administration component conventions"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Generated permission and API type safety"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Storage flow alignment across database, service, API and UI"}
