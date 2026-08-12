@@ -60,15 +60,12 @@ def _parse_marker(line: str) -> tuple[bool, list[str]] | None:
 
 
 def get_phase_index() -> str:
-    """Return Phase Index + Phase 1/2/3 step bodies from workflow.md.
+    """Return the compact Phase Index summary from workflow.md.
 
-    Matches what the SessionStart hook injects into the `<workflow>` block:
-    starts at `## Phase Index`, continues through `## Phase 1: Plan`,
-    `## Phase 2: Execute`, `## Phase 3: Finish`, stops at
-    `## Customizing Trellis (for forks)` (the docs-for-forks footer).
-    `[workflow-state:STATUS]` tag blocks (now embedded in Phase Index since
-    v0.5.0-rc.0) are consumed by the UserPromptSubmit hook so they're
-    stripped from this output.
+    SessionStart and no-step phase context use this small summary as their
+    orientation payload. Detailed Phase 1/2/3 instructions are loaded with
+    ``get_step`` on demand. ``[workflow-state:STATUS]`` tag blocks are
+    consumed by the per-turn hook, so they're stripped from this output.
     """
     text = _read_workflow()
     lines = text.splitlines()
@@ -80,7 +77,7 @@ def get_phase_index() -> str:
         if start is None and stripped == _PHASE_INDEX_HEADING:
             start = i
             continue
-        if start is not None and stripped == "## Customizing Trellis (for forks)":
+        if start is not None and stripped == "## Phase 1: Plan":
             end = i
             break
 
@@ -142,6 +139,40 @@ def _platform_matches(platform: str, block_names: list[str]) -> bool:
         if needle == hay:
             return True
     return False
+
+
+def resolve_effective_platform(platform: str, config: dict) -> str:
+    """Map ``codex`` to a dispatch-mode-namespaced virtual platform name.
+
+    When ``--platform codex`` is passed, return ``"codex-sub-agent"`` by
+    default or ``"codex-inline"`` when explicitly configured in
+    ``.trellis/config.yaml``. ``sub-agent`` remains an alias for ``auto``.
+    ``filter_platform`` then surfaces blocks whose marker lists include the
+    namespaced name (e.g. ``[codex-sub-agent, ...]`` or ``[codex-inline, Kilo,
+    Antigravity, Devin]``).
+
+    Native Codex context injection supports the ``auto`` default. Invalid
+    explicit values fall back to ``inline`` safely; this renderer deliberately
+    does not warn because it can run in normal CLI output flows.
+
+    Other platforms are returned unchanged.
+    """
+    if platform == "codex":
+        mode = "auto"
+        codex_cfg = config.get("codex") if isinstance(config, dict) else None
+        if codex_cfg is not None:
+            if not isinstance(codex_cfg, dict):
+                mode = "inline"
+            else:
+                cfg_mode = str(codex_cfg.get("dispatch_mode", mode)).strip().lower()
+                if cfg_mode == "inline":
+                    mode = "inline"
+                elif cfg_mode in ("auto", "sub-agent"):
+                    mode = "auto"
+                else:
+                    mode = "inline"
+        return "codex-sub-agent" if mode == "auto" else "codex-inline"
+    return platform
 
 
 def filter_platform(content: str, platform: str) -> str:
