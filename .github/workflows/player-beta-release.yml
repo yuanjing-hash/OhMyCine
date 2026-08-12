@@ -199,6 +199,8 @@ jobs:
           git init -q "$work_repo"
           (
             cd "$work_repo"
+            git config user.name "OhMyCine Release Dry Run"
+            git config user.email "release-dry-run@ohmycine.invalid"
             git remote add origin "$bare_repo"
             git symbolic-ref HEAD refs/heads/main
 
