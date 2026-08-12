@@ -333,7 +333,7 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 2: Server MVP (Week 9-14)
 
-> 后端最小可用版本 — 先交付安全可用的独立 Web 管理与 RBAC 基础，再按 OpenList/Alist → STRM → signed 302 → Emby/Jellyfin refresh 纵向切片打通刚需存储与播放闭环。115、CloudDrive2、本地文件、PT、追更、AI、插件和更大权限范围仍保留并按依赖顺序接入。
+> 后端最小可用版本 — 先交付安全可用的独立 Web 管理与 RBAC 基础，再从本地 Storage/path safety 开始，按 OpenList/Alist → STRM → signed 302 → Emby/Jellyfin refresh 纵向切片打通刚需存储与播放闭环。115、CloudDrive2、本地文件、PT、追更、AI、插件和更大权限范围仍保留并按依赖顺序接入。
 
 ### Sprint 2.1A: 管理端与权限基础（已完成 v0.2 壳层）
 
@@ -350,6 +350,15 @@ Phase 4: 生态系统           ████████████████
 - [x] 分组侧栏、统一顶栏、用户管理二级路由、日志中心入口与响应式移动抽屉
 - [x] 运维优先的 12 列混合仪表盘；未实现媒体域只显示明确规划/未配置状态
 - [x] Vite 开发代理；生产 `webui` build tag 嵌入 `dist`；默认 Go 测试不要求 `dist`
+
+### Sprint 2.1A.1: 本地 Storage 与路径安全基础（已完成）
+
+- [x] `storages` 显式版本迁移、`type=local` 模型、唯一规范化名称/根路径与未来 nullable Connection 引用
+- [x] `storages.read/create/update/delete/test` permission catalog、系统角色、API middleware 与管理端控制
+- [x] 本地根绝对目录校验、Windows/UNC 兼容、Reparse Point 拒绝、稳定安全错误码
+- [x] 只读目录探测、磁盘容量和明确能力快照；不创建探测文件、不递归扫描
+- [x] Storage 管理页及 CRUD/test API；删除只删配置，Connection/Destination 保留规划状态
+- [ ] MediaLibrary、扫描、分类、Destination、STRM、下载器和真实文件写入（由后续独立切片实现）
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）
 

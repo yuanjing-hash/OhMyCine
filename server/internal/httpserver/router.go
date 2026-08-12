@@ -48,6 +48,11 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	protected.PUT("/roles/:id/permissions", middleware.RequirePermission(authz.PermissionRolesUpdate), api.SetRolePermissions)
 	protected.DELETE("/roles/:id", middleware.RequirePermission(authz.PermissionRolesDelete), api.DeleteRole)
 	protected.GET("/audit", middleware.RequirePermission(authz.PermissionAuditRead), api.Audit)
+	protected.GET("/storages", middleware.RequirePermission(authz.PermissionStoragesRead), api.Storages)
+	protected.POST("/storages", middleware.RequirePermission(authz.PermissionStoragesCreate), api.CreateStorage)
+	protected.PATCH("/storages/:id", middleware.RequirePermission(authz.PermissionStoragesUpdate), api.UpdateStorage)
+	protected.DELETE("/storages/:id", middleware.RequirePermission(authz.PermissionStoragesDelete), api.DeleteStorage)
+	protected.POST("/storages/:id/test", middleware.RequirePermission(authz.PermissionStoragesTest), api.TestStorage)
 
 	if assets, ok := webui.Assets(); ok {
 		webui.Register(router, assets)

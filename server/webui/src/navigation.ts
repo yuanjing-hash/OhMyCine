@@ -34,6 +34,7 @@ const taskPermissions = [
 ] as const
 const connectionPermissions = [
   Permissions.ConnectionsRead,
+  Permissions.StoragesRead,
   Permissions.DestinationsRead,
   Permissions.CategoriesRead,
 ] as const
@@ -81,7 +82,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     id: 'system',
     label: '系统',
     items: [
-      { id: 'connections-storage', label: '连接与存储', to: '/system/connections', permissionsAny: connectionPermissions, planned: true, eyebrow: 'System', description: '承载 Connections → Storage Destinations → Category Rules 三层配置；当前 API 尚未实现。' },
+      { id: 'connections-storage', label: '连接与存储', to: '/system/connections', permissionsAny: connectionPermissions, eyebrow: 'System', description: '管理本地 Storage 根与连接；Storage Destination 和分类规则仍处于规划阶段。' },
       { id: 'sites', label: '站点管理', to: '/system/sites', permissionsAny: [Permissions.SystemAdmin], planned: true, eyebrow: 'System', description: 'PT 站点与脱敏配置将在独立权限和 API 落地后开放。' },
       { id: 'plugins', label: '插件', to: '/system/plugins', permissionsAny: [Permissions.PluginsRead], planned: true, eyebrow: 'System', description: '插件浏览、权限审阅与手动安装运行时仍在规划中。' },
       { id: 'user-management', label: '用户管理', to: '/system/users', permissionsAny: userManagementPermissions, eyebrow: 'Administration', description: '账户与角色权限的统一管理工作区。' },

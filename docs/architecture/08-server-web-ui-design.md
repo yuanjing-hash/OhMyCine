@@ -55,8 +55,9 @@ OhMyCine Server
 │  └─ 文件管理
 └─ 系统
    ├─ 连接与存储
-   │  ├─ 连接
-   │  ├─ 存储目标
+   │  ├─ Storage（本地根与只读能力，已实现）
+   │  ├─ 连接（规划中）
+   │  ├─ Storage Destination（规划中）
    │  └─ 分类规则
    ├─ 站点管理
    ├─ 插件
@@ -102,7 +103,7 @@ OhMyCine Server
 | 媒体整理 | 分类规则应用结果、元数据匹配、命名/转移记录、失败重试和待人工处理项 | 分类规则定义与存储目标配置归“连接与存储” |
 | STRM / 入库 | 增量/全量同步、无效 STRM 清理预览、NFO/海报生成结果、signed 302 状态、Emby/Jellyfin 刷新结果 | 不把 302 上游签名 URL 或本地绝对路径暴露给浏览器 |
 | 文件管理 | 在已配置连接和根目录内浏览、上传及受控的移动/重命名/删除 | 不绕过配置根、路径规范化、symlink 防逃逸、确认与审计 |
-| 连接与存储 | 115、OpenList/Alist、CloudDrive2、本地目录、Emby/Jellyfin、下载器等连接，以及 Storage Destinations 与 Category Rules | 连接只拥有接入能力与凭据；归档位置和分类决策仍分别归目标与规则 |
+| 连接与存储 | 已实现的本地 Storage 根/能力/只读探测，以及规划中的 115、OpenList/Alist、CloudDrive2、Emby/Jellyfin、下载器等 Connections、Storage Destinations 与 Category Rules | Storage 只声明 Server 可安全访问的提供方根；Connection 拥有接入能力与凭据；归档位置和分类决策仍分别归 Destination 与 Rule |
 | 站点管理 | PT 站点、分类映射、测试状态及脱敏配置 | Cookie/Passkey 不进入列表、日志或通知载荷 |
 | 插件 | 插件浏览、权限审阅、手动安装/启用/更新/卸载和运行状态 | Hub 是分发站点而非 Server 运行时；插件默认无全局凭据访问 |
 | 用户管理 | 管理员视角的账户、角色与权限、全局会话治理 | 当前账户自助操作归头像菜单 |
@@ -266,7 +267,7 @@ OhMyCine Server
 | 媒体整理 | 现有 `categories.read` 或未来 transfer/import read scope；只呈现获权子面板，组合操作再同时验证相关域权限 |
 | STRM / 入库 | 现有 `strm.runs.read`；刷新结果上线前新增稳定的 media-server read code，刷新动作仍独立要求 `media_servers.refresh` |
 | 文件管理 | 未来 `files.read`；移动/重命名/删除必须拆分高风险 write code |
-| 连接与存储 | 现有 `connections.read`、`destinations.read`、`categories.read` 按子页分别判定 |
+| 连接与存储 | 已实现 `storages.read`，以及现有规划权限 `connections.read`、`destinations.read`、`categories.read` 按子面板分别判定 |
 | 站点管理 | 未来 `sites.read`；Cookie/Passkey 不进入列表响应 |
 | 插件 | 现有 `plugins.read` |
 | 用户管理 | 现有 `users.read` 或 `roles.read`，以及未来 `sessions.read_all`；子页分别判定 |
@@ -279,6 +280,7 @@ OhMyCine Server
 | UI 动作 | permission code | API/service 额外约束 |
 |---------|-----------------|----------------------|
 | 添加/编辑/删除/测试连接 | 现有 `connections.create/update/delete/test` | 凭据写入继续加密；列表、错误和审计只返回脱敏值 |
+| 添加/编辑/删除/测试 Storage | 已实现 `storages.create/update/delete/test` | 根路径由 service 规范化并拒绝 Reparse Point；测试只读；审计 metadata 不含绝对路径；删除只删配置 |
 | 创建/编辑/删除存储目标 | 现有 `destinations.create/update/delete` | 路径和关联连接由 service 校验；删除前检查引用 |
 | 创建/编辑/删除分类规则 | 现有 `categories.create/update/delete` | 目标、模板与策略由 service 校验 |
 | 提交下载 | 现有 `downloads.create` | 创建者 ID 从 session 主体写入，不接受前端伪造 owner |

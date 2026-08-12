@@ -23,7 +23,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 	status := http.StatusInternalServerError
 	code := services.ErrorCode(err)
 	switch code {
-	case services.CodeInvalidRequest:
+	case services.CodeInvalidRequest, services.CodeStorageNameRequired, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported:
 		status = http.StatusBadRequest
 	case services.CodeNotAuthenticated, services.CodeInvalidCredentials:
 		status = http.StatusUnauthorized
@@ -31,7 +31,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusForbidden
 	case services.CodeNotFound:
 		status = http.StatusNotFound
-	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired:
+	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeStorageNameConflict, services.CodeStoragePathConflict:
 		status = http.StatusConflict
 	case services.CodeLoginRateLimited:
 		status = http.StatusTooManyRequests

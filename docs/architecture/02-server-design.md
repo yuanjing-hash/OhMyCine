@@ -16,7 +16,9 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
 
-当前版本没有实现 Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API。管理端只以明确的“规划中”状态展示这些入口，不返回伪成功。下一纵向切片从 OpenList/Alist 连接开始，沿 `Connection → Destination → STRM Run → signed 302 → Emby/Jellyfin refresh` 形成真实播放闭环。
+当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
+
+这里的 `Storage` 表示“Server 能安全访问的提供方根和能力快照”，而 `StorageDestination` 表示“媒体最终放在哪里、使用什么放置/STRM 策略”。二者不能合并：一个 Storage 可在后续被多个 Destination 引用，Storage 本身不做媒体分类、扫描或写入决策。
 
 Server 管理端的目标导航、顶栏、12 列仪表盘、用户管理内部层级、权限可见性和响应式规则见 [Server Web UI 设计](08-server-web-ui-design.md)。本文仍负责后端业务、API 与数据模型，不在此复制界面设计全文。
 

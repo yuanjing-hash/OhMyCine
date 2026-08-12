@@ -12,15 +12,16 @@ import (
 )
 
 type API struct {
-	config config.Config
-	auth   *services.AuthService
-	admin  *services.AdminService
-	audit  *services.AuditService
-	log    zerolog.Logger
+	config  config.Config
+	auth    *services.AuthService
+	admin   *services.AdminService
+	audit   *services.AuditService
+	storage *services.StorageService
+	log     zerolog.Logger
 }
 
-func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, log zerolog.Logger) *API {
-	return &API{config: cfg, auth: auth, admin: admin, audit: audit, log: log}
+func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, log zerolog.Logger) *API {
+	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, log: log}
 }
 
 func (a *API) CookieName() string {
@@ -326,6 +327,91 @@ func (a *API) Audit(c *gin.Context) {
 		return
 	}
 	success(c, http.StatusOK, gin.H{"list": data, "total": len(data)})
+}
+
+func (a *API) Storages(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	data, err := a.storage.List(actor)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": data, "total": len(data)})
+}
+
+func (a *API) CreateStorage(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	var input struct {
+		Name     string `json:"name" binding:"required"`
+		Type     string `json:"type"`
+		RootPath string `json:"root_path" binding:"required"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		writeError(c, a.log, invalid("存储信息不完整", err))
+		return
+	}
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	data, err := a.storage.Create(actor, services.StorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, Enabled: enabled}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusCreated, data)
+}
+
+func (a *API) UpdateStorage(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name     *string `json:"name"`
+		Type     *string `json:"type"`
+		RootPath *string `json:"root_path"`
+		Enabled  *bool   `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		writeError(c, a.log, invalid("存储信息无效", err))
+		return
+	}
+	data, err := a.storage.Update(actor, id, services.UpdateStorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, Enabled: input.Enabled}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func (a *API) TestStorage(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	data, err := a.storage.Test(actor, id, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func (a *API) DeleteStorage(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := a.storage.Delete(actor, id, middleware.RequestContextFrom(c)); err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"deleted": true})
 }
 
 func (a *API) setSessionCookie(c *gin.Context, token string) {

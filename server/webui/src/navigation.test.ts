@@ -20,6 +20,13 @@ describe('grouped administration navigation', () => {
     expect(groups[1]?.items.map(item => item.id)).toEqual(['plugins'])
   })
 
+  it('exposes the real storage workspace to storages.read', () => {
+    const groups = buildVisibleNavigation([Permissions.StoragesRead])
+    expect(groups.map(group => group.id)).toEqual(['system'])
+    expect(groups[0]?.items.map(item => item.id)).toEqual(['connections-storage'])
+    expect(groups[0]?.items[0]?.planned).toBeUndefined()
+  })
+
   it('shows User Management when either account or role reads are granted', () => {
     const accounts = buildVisibleNavigation([Permissions.UsersRead])
     const roles = buildVisibleNavigation([Permissions.RolesRead])

@@ -22,7 +22,7 @@ func Migrate(db *gorm.DB) error {
 	)`).Error; err != nil {
 		return fmt.Errorf("create schema migrations table: %w", err)
 	}
-	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}}
+	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}}
 	for _, item := range migrations {
 		var count int64
 		if err := db.Table("schema_migrations").Where("version = ?", item.Version).Count(&count).Error; err != nil {
@@ -41,6 +41,29 @@ func Migrate(db *gorm.DB) error {
 		}
 	}
 	return seedAuthorization(db)
+}
+
+func migrateStorageFoundation(db *gorm.DB) error {
+	return db.Exec(`CREATE TABLE storages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		name_normalized TEXT NOT NULL UNIQUE,
+		type TEXT NOT NULL CHECK(type IN ('local')),
+		root_path TEXT NOT NULL,
+		root_path_normalized TEXT NOT NULL UNIQUE,
+		connection_id INTEGER,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		capabilities TEXT NOT NULL,
+		last_probe_exists INTEGER NOT NULL DEFAULT 0,
+		last_probe_readable INTEGER NOT NULL DEFAULT 0,
+		last_probe_available INTEGER NOT NULL DEFAULT 0,
+		last_probe_free_bytes INTEGER,
+		last_probe_total_bytes INTEGER,
+		last_probe_error_code TEXT NOT NULL DEFAULT '',
+		last_probe_checked_at DATETIME,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`).Error
 }
 
 func migrateAuthFoundation(db *gorm.DB) error {
@@ -161,7 +184,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
+		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.create", "storages.update", "storages.delete", "storages.test", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

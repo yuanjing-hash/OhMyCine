@@ -11,6 +11,7 @@ import UsersView from '@/views/UsersView.vue'
 import RolesView from '@/views/RolesView.vue'
 import AuditView from '@/views/AuditView.vue'
 import PlannedView from '@/views/PlannedView.vue'
+import StorageView from '@/views/StorageView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 
 function navigationMeta(id: string) {
@@ -29,7 +30,6 @@ const plannedRoutes = [
   ['automation/organization', 'organization'],
   ['automation/strm-import', 'strm-import'],
   ['automation/files', 'files'],
-  ['system/connections', 'connections-storage'],
   ['system/sites', 'sites'],
   ['system/plugins', 'plugins'],
   ['system/settings', 'settings'],
@@ -47,6 +47,7 @@ export const router = createRouter({
       component: AppLayout,
       children: [
         { path: '', name: 'dashboard', component: DashboardView, meta: navigationMeta('dashboard') },
+        { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
         ...plannedRoutes.map(([path, id]) => ({ path, name: id, component: PlannedView, meta: navigationMeta(id) })),
         {
           path: 'system/users',

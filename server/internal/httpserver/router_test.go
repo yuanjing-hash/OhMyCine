@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,7 +50,8 @@ func newTestClient(t *testing.T) *testClient {
 		t.Fatal(err)
 	}
 	admin := services.NewAdminService(db, authorization, auth, audit)
-	api := handlers.NewAPI(cfg, auth, admin, audit, log)
+	storages := services.NewStorageService(db, audit)
+	api := handlers.NewAPI(cfg, auth, admin, audit, storages, log)
 	return &testClient{router: New(cfg, api, auth, log)}
 }
 
@@ -200,6 +202,110 @@ func TestDelegatedRoleCannotEscalatePrivileges(t *testing.T) {
 	status, _ = delegate.request(t, http.MethodPost, "/api/v1/roles", map[string]any{"code": "escalated", "name": "Escalated", "permissions": []string{"system.admin"}}, true)
 	if status != http.StatusForbidden {
 		t.Fatalf("privilege escalation status=%d", status)
+	}
+}
+
+func TestStorageCRUDRBACAndDeleteLeavesFilesUntouched(t *testing.T) {
+	owner := newTestClient(t)
+	owner.setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "nested", "movie.mp4")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, envelope := owner.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": " Local  Media ", "type": "local", "root_path": root, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create storage status=%d message=%s", status, envelope.Message)
+	}
+	var created struct {
+		ID       uint   `json:"id"`
+		RootPath string `json:"root_path"`
+		Probe    struct {
+			Readable  bool    `json:"readable"`
+			FreeBytes *uint64 `json:"free_bytes"`
+		} `json:"probe"`
+	}
+	if err := json.Unmarshal(envelope.Data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 0 || created.RootPath != filepath.Clean(root) || !created.Probe.Readable || created.Probe.FreeBytes == nil {
+		t.Fatalf("unexpected storage: %+v", created)
+	}
+
+	status, envelope = owner.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "local media", "type": "local", "root_path": t.TempDir(), "enabled": true}, true)
+	if status != http.StatusConflict {
+		t.Fatalf("duplicate name status=%d code=%s", status, envelope.Data)
+	}
+	status, envelope = owner.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "Relative", "type": "local", "root_path": "relative", "enabled": true}, true)
+	if status != http.StatusBadRequest || !bytes.Contains(envelope.Data, []byte("storage_path_not_absolute")) {
+		t.Fatalf("relative path status=%d data=%s", status, envelope.Data)
+	}
+
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/storages/"+uintString(created.ID)+"/test", map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("test storage status=%d", status)
+	}
+	status, _ = owner.request(t, http.MethodDelete, "/api/v1/storages/"+uintString(created.ID), map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("delete storage status=%d", status)
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "media" {
+		t.Fatalf("media changed after config deletion: %q %v", content, err)
+	}
+	status, auditEnvelope := owner.request(t, http.MethodGet, "/api/v1/audit?limit=20", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("audit status=%d", status)
+	}
+	if bytes.Contains(auditEnvelope.Data, []byte(root)) || bytes.Contains(auditEnvelope.Data, []byte("movie.mp4")) {
+		t.Fatalf("audit response leaked local path or child filename: %s", auditEnvelope.Data)
+	}
+
+	status, rolesEnvelope := owner.request(t, http.MethodGet, "/api/v1/roles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var rolesData struct {
+		List []struct {
+			ID   uint   `json:"id"`
+			Code string `json:"code"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rolesEnvelope.Data, &rolesData); err != nil {
+		t.Fatal(err)
+	}
+	var viewerID uint
+	for _, role := range rolesData.List {
+		if role.Code == "viewer" {
+			viewerID = role.ID
+		}
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "storageviewer", "password": "viewer-strong-password", "role_ids": []uint{viewerID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	viewer := newTestClientWithRouter(owner.router)
+	viewer.login(t, "storageviewer", "viewer-strong-password")
+	deniedRequests := []struct {
+		method string
+		path   string
+		body   any
+		csrf   bool
+	}{
+		{http.MethodGet, "/api/v1/storages", nil, false},
+		{http.MethodPost, "/api/v1/storages", map[string]any{"name": "Denied", "root_path": root}, true},
+		{http.MethodPatch, "/api/v1/storages/1", map[string]any{"enabled": false}, true},
+		{http.MethodDelete, "/api/v1/storages/1", map[string]any{}, true},
+		{http.MethodPost, "/api/v1/storages/1/test", map[string]any{}, true},
+	}
+	for _, request := range deniedRequests {
+		status, envelope = viewer.request(t, request.method, request.path, request.body, request.csrf)
+		if status != http.StatusForbidden || !bytes.Contains(envelope.Data, []byte(services.CodePermissionDenied)) {
+			t.Fatalf("viewer %s %s status=%d data=%s", request.method, request.path, status, envelope.Data)
+		}
 	}
 }
 

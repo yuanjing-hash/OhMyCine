@@ -43,3 +43,13 @@ export interface PermissionDefinition {
 }
 
 export interface ListResponse<T> { list: T[]; total: number }
+
+export interface StorageCapabilities {
+  network_drive: boolean; directory_list: boolean; watch: boolean
+  native_offline_download: boolean; temporary_direct_url: boolean; signed_proxy: boolean; change_cursor: boolean
+}
+export interface StorageProbe { exists: boolean; readable: boolean; available: boolean; free_bytes: number | null; total_bytes: number | null; last_checked_at: string; error_code: string }
+export interface StorageSummary {
+  id: number; name: string; type: 'local'; root_path: string; connection_id: number | null; enabled: boolean
+  capabilities: StorageCapabilities; probe: StorageProbe; created_at: string; updated_at: string
+}

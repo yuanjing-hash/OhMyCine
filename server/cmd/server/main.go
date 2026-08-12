@@ -36,7 +36,8 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize authentication")
 	}
 	admin := services.NewAdminService(db, authorization, auth, audit)
-	api := handlers.NewAPI(cfg, auth, admin, audit, log)
+	storages := services.NewStorageService(db, audit)
+	api := handlers.NewAPI(cfg, auth, admin, audit, storages, log)
 	server := &http.Server{
 		Addr: cfg.Address(), Handler: httpserver.New(cfg, api, auth, log),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
