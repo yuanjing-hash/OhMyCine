@@ -236,3 +236,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 8: 实现 Server 本地 Storage 与路径安全
+
+**Date**: 2026-08-12
+**Task**: 实现 Server 本地 Storage 与路径安全
+**Branch**: `develop`
+
+### Summary
+
+完成本地 Storage v2 迁移、Windows/UNC 路径与 Reparse Point 安全、只读容量探测、RBAC/审计/API/管理端，并通过完整 Windows 质量门和真实媒体根只读 API 验收。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `901a8ea` | (see git log) |
+| `7ac786a` | (see git log) |
+
+### Status
+
+[OK] **Completed**
