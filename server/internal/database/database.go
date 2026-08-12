@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	_ "modernc.org/sqlite"
 )
 
 // Open opens the SQLite database with foreign keys, WAL and a busy timeout enabled.
@@ -23,11 +24,11 @@ func Open(path string) (*gorm.DB, error) {
 	}
 	dsn := path
 	if path == ":memory:" {
-		dsn = "file:ohmycine-memory?mode=memory&cache=shared&_foreign_keys=on&_busy_timeout=5000"
+		dsn = "file:ohmycine-memory?mode=memory&cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	} else if !strings.Contains(path, "?") {
-		dsn = fmt.Sprintf("file:%s?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL", path)
+		dsn = fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", path)
 	}
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	db, err := gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}

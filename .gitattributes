@@ -7,3 +7,9 @@
 # picking either side (task state lives in task.json, not index.md). See
 # .trellis/spec/cli/backend/directory-structure.md for details.
 .trellis/workspace/*/journal-*.md merge=union
+
+# Keep generated and executable cross-platform sources deterministic.
+server/webui/src/auth/generated-permissions.ts text eol=lf
+server/internal/authz/catalog.json text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf

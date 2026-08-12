@@ -33,6 +33,11 @@ func newTestClient(t *testing.T) *testClient {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err := database.Migrate(db); err != nil {
 		t.Fatal(err)
 	}

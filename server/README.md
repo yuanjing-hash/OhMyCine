@@ -2,9 +2,44 @@
 
 首个可运行版本提供独立 Web 管理端、首次 owner 设置、Cookie Session、CSRF、用户/角色/权限管理和审计基础。媒体连接、STRM、302 与刷新业务从下一纵向切片开始接入；当前界面中的这些入口会明确显示为规划状态。
 
-## 推荐启动方式
+## 推荐启动方式（Windows PowerShell）
 
-在 WSL/Linux 中执行一条命令即可安装或复用 Web UI 依赖、构建管理端、构建带内嵌 Web UI 的 Server 二进制，并以前台正式模式启动：
+Windows 本地开发优先使用系统自带的 Windows PowerShell 5.1 或更高版本。可以从仓库根目录或 `server/` 目录调用：
+
+```powershell
+.\server\start.ps1
+# 或：cd server; .\start.ps1
+```
+
+脚本先检查 Node.js/npm，并优先复用 PATH 中满足 `go.mod` 的 Go。Go 缺失或版本过低时，它通过 Windows Package Manager 精确安装官方系统级 `GoLang.Go` 包；安装可能显示 UAC，失败会明确终止，不会下载便携 Go、写入仓库工具链或调用 Docker。安装完成后只刷新当前脚本进程的 PATH。
+
+首次运行按 lockfile 执行 `npm ci`，构建 Web UI 与带 `webui` tag 的 EXE，然后以前台方式启动；Ctrl+C 可停止。持久运行数据默认隔离在：
+
+```text
+server/.runtime/windows/bin/ohmycine-server.exe
+server/.runtime/windows/data/ohmycine.db
+```
+
+复用已有 EXE 快速启动以及查看帮助：
+
+```powershell
+.\start.ps1 -SkipBuild
+.\start.ps1 -Help
+```
+
+完整 Windows 质量门使用每次唯一的临时目录和非默认端口，不读取或覆盖持久数据库：
+
+```powershell
+.\test.ps1
+.\test.ps1 -CheckDependenciesOnly
+.\test.ps1 -SkipWebUi -SkipHealthCheck
+```
+
+测试依次执行权限生成校验、前端测试/typecheck/lint/build、`CGO_ENABLED=0` 的 Go test/vet/build，以及真实 EXE 的 `/api/v1/health`。成功时只删除本次位于 `.runtime/windows/tests/` 下的目录；失败时保留日志、数据库和 EXE 并打印诊断路径。
+
+## WSL/Linux 兼容启动
+
+现有 WSL/Linux 入口继续保留，可执行一条命令安装或复用 Web UI 依赖、构建管理端、构建带内嵌 Web UI 的 Server 二进制，并以前台正式模式启动：
 
 ```bash
 cd server
@@ -61,6 +96,13 @@ go build -tags webui -o ohmycine-server ./cmd/server
 `webui/` 是独立的 Go 模块边界：它让根 Server 模块只编译嵌入适配代码，不会把前端 `node_modules` 中偶然携带的 Go 源码纳入 `go test ./...`。该边界不改变 npm/Vite 的使用方式。
 
 ## 配置
+
+Windows 脚本使用 `.runtime/windows`，Linux 脚本使用 `.runtime`；两者都尊重下列显式环境变量。PowerShell 示例：
+
+```powershell
+$env:OMC_SERVER_PORT = '3300'
+.\start.ps1
+```
 
 `start.sh` 只在对应环境变量未设置时提供以下正式运行默认值。用户显式设置的值会保留；未加方括号的 IPv6 监听地址会规范为 Go 所需的方括号形式：
 

@@ -100,3 +100,71 @@ Do not hold database transactions while making slow external network calls. Pers
 - Performing network calls inside a DB transaction.
 - Auto-deleting STRM or media records without dry-run/confirmation where required.
 - Forgetting user scoping for download and follow tasks.
+
+## Scenario: Windows-native Server SQLite runtime
+
+### 1. Scope / Trigger
+
+- Trigger: Server database bootstrap, local Windows startup/test scripts, SQLite dependency upgrades, or tests that create file-backed SQLite databases.
+- The Windows-native Server must build and run without Docker, WSL, CGO, GCC, Clang, or MSVC C compilation.
+
+### 2. Signatures
+
+- Database entry point: `database.Open(path string) (*gorm.DB, error)`.
+- Windows launch: `server/start.ps1 [-SkipBuild]`.
+- Windows quality gate: `server/test.ps1 [-CheckDependenciesOnly] [-SkipWebUi] [-SkipGoQuality] [-SkipHealthCheck]`.
+- System Go bootstrap package: exact winget ID `GoLang.Go`.
+
+### 3. Contracts
+
+- Keep GORM as the ORM and `gorm.io/driver/sqlite` as the dialect layer, but register the pure-Go `modernc.org/sqlite` database/sql driver with `DriverName: "sqlite"`.
+- Build and test Server with `CGO_ENABLED=0`.
+- File-backed databases enable `foreign_keys(1)`, `busy_timeout(5000)`, and `journal_mode(WAL)` through modernc `_pragma` DSN parameters. In-memory tests enable foreign keys and busy timeout without WAL.
+- Windows persistent runtime state defaults to `server/.runtime/windows/{bin,data,logs}`. Test databases and process output use unique children of `server/.runtime/windows/tests/`.
+- If compatible Go is absent, `start.ps1` installs the official system package with `winget install --id GoLang.Go --exact`; it must not download a repository-local portable Go or install a C compiler.
+- Default Server binding remains `127.0.0.1`; tests use a dynamically allocated loopback port.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Empty database path | Return `database path is required`; do not create files. |
+| Parent directory missing | Create it with owner-restricted intent before opening SQLite. |
+| Go absent and winget present | Run the exact official `GoLang.Go` install flow, refresh the current process PATH, then revalidate the minimum `go.mod` version. |
+| Go absent and winget absent | Fail with an actionable installation message; do not silently download another toolchain. |
+| Test cleanup target equals the tests root or is a sibling | Reject cleanup and retain data. |
+| Health probe/build fails | Exit non-zero and print the unique retained diagnostics directory. |
+| SQLite connection remains open at test cleanup | Treat as a test bug; explicitly close the underlying `*sql.DB`. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `CGO_ENABLED=0 go test ./...` passes on Windows, the embedded EXE answers `/api/v1/health`, and its unique successful test directory is removed.
+- Base: an existing compatible system/PATH Go and unchanged `package-lock.json` are reused without reinstalling Go or frontend dependencies.
+- Bad: switching back to `go-sqlite3`, requiring a C compiler, sharing the persistent database with health tests, or deleting an unverified path after a failure.
+
+### 6. Tests Required
+
+- Database test asserts `PRAGMA foreign_keys = 1` and `PRAGMA journal_mode = wal` on a file-backed database.
+- HTTP integration tests close the GORM underlying `*sql.DB` so Windows can remove `t.TempDir()` files.
+- PowerShell contract test asserts the exact winget arguments and rejects cleanup of the tests root and sibling paths.
+- Full `server/test.ps1` runs frontend permission/test/typecheck/lint/build, `CGO_ENABLED=0` Go test/vet/build, and a real isolated health probe.
+- `git check-ignore` must cover Windows EXE, DB/WAL/SHM, logs, unique test data, `webui/node_modules`, and `webui/dist`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+db, err := gorm.Open(sqlite.Open(dsn), config) // default go-sqlite3 requires CGO
+```
+
+#### Correct
+
+```go
+import _ "modernc.org/sqlite"
+
+db, err := gorm.Open(sqlite.New(sqlite.Config{
+    DriverName: "sqlite",
+    DSN:        dsn,
+}), config)
+```
