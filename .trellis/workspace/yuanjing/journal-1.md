@@ -215,3 +215,24 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Windows 原生 Server 启动与测试
+
+**Date**: 2026-08-12
+**Task**: Windows 原生 Server 启动与测试
+**Branch**: `develop`
+
+### Summary
+
+新增 Windows PowerShell 启动与全量测试入口，缺少 Go 时通过 winget 安装官方系统包；切换纯 Go SQLite，隔离运行与测试目录，修复 CRLF 权限校验并验证真实健康检查。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `00f9400` | (see git log) |
+
+### Status
+
+[OK] **Completed**
