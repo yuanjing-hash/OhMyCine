@@ -7,6 +7,24 @@ const [playerView, playerControls] = await Promise.all([
   source('src/views/PlayerView.vue'),
   source('src/components/player/PlayerControls.vue'),
 ])
+const [windowChrome, playerChromeStore] = await Promise.all([
+  source('src/components/layout/WindowChrome.vue'),
+  source('src/stores/playerChrome.ts'),
+])
+
+assert.doesNotMatch(playerView, /player-chrome-hidden|is-chrome-hidden/)
+assert.doesNotMatch(windowChrome, /body\.player-chrome-hidden|html\.player-chrome-hidden/)
+assert.match(playerView, /playerChromeStore\.setVisible\(visible\)/)
+assert.match(windowChrome, /is-player-chrome-hidden/)
+assert.match(playerChromeStore, /const visible = ref\(true\)/)
+assert.match(playerView, /shouldShowChrome = computed\([^\n]+danmakuLoading\.value/)
+assert.match(functionBody(playerView, 'canAutoHideChrome'), /!danmakuLoading\.value/)
+const danmakuLoadingWatch = playerView.match(/watch\(danmakuLoading, \(loading\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+assert.ok(danmakuLoadingWatch, 'danmaku loading must own a chrome-visibility lifecycle')
+assert.match(danmakuLoadingWatch, /chromeManuallyHidden\.value = false/)
+assert.match(danmakuLoadingWatch, /chromeVisible\.value = true/)
+assert.match(danmakuLoadingWatch, /clearHideTimer\(\)/)
+assert.match(danmakuLoadingWatch, /scheduleChromeHide\(\)/)
 
 const dismissBody = functionBody(playerControls, 'dismissTransientUi')
 for (const state of [

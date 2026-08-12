@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { DanmakuSearchAnime, DanmakuSearchEpisode } from '@/services/danmaku/types'
 import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
@@ -13,12 +14,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import BufferingIndicator from '@/components/player/BufferingIndicator.vue'
 import DanmakuOverlay from '@/components/player/DanmakuOverlay.vue'
+import DanmakuSearchDialog from '@/components/player/DanmakuSearchDialog.vue'
 import MobilePlayerControls from '@/components/player/MobilePlayerControls.vue'
 import PlayerControls from '@/components/player/PlayerControls.vue'
 import SubtitleSearchDialog from '@/components/player/SubtitleSearchDialog.vue'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import { useDanmaku } from '@/composables/useDanmaku'
 import { useMpv } from '@/composables/useMpv'
+import { searchDanmaku } from '@/services/danmaku/client'
+import { resolveDanmakuMediaIdentity } from '@/services/danmaku/identity'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
@@ -29,8 +33,10 @@ import { videoAspectRatioValue as aspectRatioValue, compactPlayerTrackLabel as c
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
+import { isVideoFileName } from '@/services/scraper/pathUtils'
 import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
+import { usePlayerChromeStore } from '@/stores/playerChrome'
 
 const AUTO_HIDE_DELAY = 3000
 const HISTORY_SAVE_INTERVAL = 10000
@@ -90,6 +96,7 @@ interface TouchGestureFeedback {
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
+const playerChromeStore = usePlayerChromeStore()
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null
 const isNativeAndroidPlayer = isNativeAndroidRuntime()
 const mediaTitle = ref('未命名影片')
@@ -128,6 +135,12 @@ const diagnosticsOpen = ref(false)
 const contextMenuOpen = ref(false)
 const playbackDetailOpen = ref(false)
 const subtitleSearchOpen = ref(false)
+const danmakuSearchOpen = ref(false)
+const danmakuSearchResults = ref<DanmakuSearchAnime[]>([])
+const danmakuSearchHasMore = ref(false)
+const danmakuSearchLoading = ref(false)
+const danmakuSearchSelectingEpisodeId = ref<number | null>(null)
+const danmakuSearchError = ref<string | null>(null)
 const subtitleSearchRequiresSourceChoice = ref(false)
 const subtitleSearchOrigin = ref<SubtitleSearchOrigin | null>(null)
 const subtitleSearchResults = ref<SubtitleSearchResult[]>([])
@@ -250,16 +263,16 @@ const {
 const {
   settings: danmakuSettings,
   comments: danmakuComments,
-  matches: danmakuMatches,
-  selectedEpisodeId: danmakuSelectedEpisodeId,
   loading: danmakuLoading,
   error: danmakuError,
   loadForMedia: loadDanmakuForMedia,
-  selectMatch: selectDanmakuMatch,
+  selectSearchEpisode: selectDanmakuSearchEpisode,
+  resetForMediaChange: resetDanmakuForMediaChange,
   updateSettings: updateDanmakuSettings,
   toggleEnabled: toggleDanmaku,
 } = useDanmaku()
 let danmakuLoadTimer: number | undefined
+let danmakuSearchGeneration = 0
 
 const hasMedia = computed(() => mediaPath.value.length > 0)
 const currentQueueItem = computed(() => {
@@ -273,7 +286,7 @@ const currentTitleLogoUrl = computed(() => {
 const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length ?? (hasMedia.value ? 1 : 0))
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
-const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value))
+const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value || danmakuSearchOpen.value || danmakuLoading.value))
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready' && videoReady.value)
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
@@ -315,7 +328,7 @@ function clearHideTimer() {
 }
 
 function canAutoHideChrome() {
-  return hasMedia.value && isPlaying.value && !chromeManuallyHidden.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value
+  return hasMedia.value && isPlaying.value && !chromeManuallyHidden.value && !controlsInteracting.value && !contextMenuOpen.value && !playbackDetailOpen.value && !danmakuLoading.value
 }
 
 function scheduleChromeHide() {
@@ -651,10 +664,6 @@ function handleApplicationPointerLeave() {
   scheduleChromeHide()
 }
 
-function handleWindowResize() {
-  void updateChromeOcclusion()
-}
-
 function handlePlayerBack() {
   if (window.history.state?.back)
     router.back()
@@ -679,6 +688,10 @@ async function ensureRenderInitialized() {
 
 function handleWindowFocus() {
   revealChrome()
+}
+
+function handleWindowResize() {
+  void updateChromeOcclusion()
 }
 
 function queryStringValue(value: unknown): string {
@@ -1532,6 +1545,113 @@ function openSubtitleSearch() {
   revealChrome()
 }
 
+function openDanmakuSearch() {
+  danmakuSearchGeneration++
+  danmakuSearchResults.value = []
+  danmakuSearchHasMore.value = false
+  danmakuSearchError.value = null
+  danmakuSearchOpen.value = true
+}
+
+function currentDanmakuMediaIdentity() {
+  const context = currentPlaybackContext()
+  const detail = context?.detail
+  const playbackItem = currentPlaybackItem()
+  const seriesName = detail?.seriesName ?? playbackItem?.seriesName
+  return resolveDanmakuMediaIdentity({
+    mediaTitle: mediaTitle.value,
+    fileName: seriesName?.trim() ? '' : currentDanmakuFileName(),
+    seriesName,
+    seasonNumber: detail?.seasonNumber ?? playbackItem?.seasonNumber,
+    episodeNumber: detail?.episodeNumber ?? playbackItem?.episodeNumber,
+  })
+}
+
+function currentDanmakuFileName(): string {
+  const context = currentPlaybackContext()
+  const candidates = [
+    context?.locator.kind === 'localPath' ? context.locator.path : undefined,
+    currentPlaybackItem()?.path,
+    context?.detail?.path,
+  ]
+  for (const candidate of candidates) {
+    if (!candidate || /^[a-z][a-z0-9+.-]*:\/\//i.test(candidate) || candidate.includes('?') || candidate.includes('#'))
+      continue
+    const fileName = subtitleFileNameFromPath(candidate)
+    if (fileName && isVideoFileName(fileName))
+      return fileName
+  }
+  return ''
+}
+
+function closeDanmakuSearch() {
+  danmakuSearchGeneration++
+  danmakuSearchOpen.value = false
+  danmakuSearchLoading.value = false
+  danmakuSearchSelectingEpisodeId.value = null
+  danmakuSearchError.value = null
+  danmakuSearchResults.value = []
+}
+
+async function runDanmakuSearch(keyword: string, episode: string) {
+  const currentGeneration = ++danmakuSearchGeneration
+  danmakuSearchLoading.value = true
+  danmakuSearchError.value = null
+  danmakuSearchResults.value = []
+  danmakuSearchHasMore.value = false
+  try {
+    const result = await searchDanmaku(danmakuSettings.value, keyword, episode)
+    if (danmakuSearchGeneration !== currentGeneration)
+      return
+    danmakuSearchResults.value = result.animes
+    danmakuSearchHasMore.value = result.hasMore
+    if (!result.animes.length)
+      danmakuSearchError.value = '没有找到匹配的作品或剧集，请尝试更换关键词。'
+  }
+  catch (reason) {
+    if (danmakuSearchGeneration === currentGeneration)
+      danmakuSearchError.value = toSafeErrorMessage(reason, '弹幕搜索失败。')
+  }
+  finally {
+    if (danmakuSearchGeneration === currentGeneration)
+      danmakuSearchLoading.value = false
+  }
+}
+
+async function chooseDanmakuSearchEpisode(anime: DanmakuSearchAnime, episode: DanmakuSearchEpisode) {
+  const currentGeneration = ++danmakuSearchGeneration
+  danmakuSearchSelectingEpisodeId.value = episode.episodeId
+  danmakuSearchError.value = null
+  try {
+    await selectDanmakuSearchEpisode(anime.animeId, anime.animeTitle, episode)
+    if (danmakuSearchGeneration !== currentGeneration)
+      return
+    if (danmakuError.value) {
+      danmakuSearchError.value = danmakuError.value
+    }
+    else {
+      danmakuSearchOpen.value = false
+      danmakuSearchResults.value = []
+      showTransientPlayerMessage(`已加载弹幕：${anime.animeTitle} · ${episode.episodeTitle || episode.episodeId}`)
+    }
+  }
+  finally {
+    if (danmakuSearchGeneration === currentGeneration)
+      danmakuSearchSelectingEpisodeId.value = null
+  }
+}
+
+function resetDanmakuUiForMediaChange() {
+  danmakuSearchGeneration++
+  danmakuSearchOpen.value = false
+  danmakuSearchResults.value = []
+  danmakuSearchHasMore.value = false
+  danmakuSearchLoading.value = false
+  danmakuSearchSelectingEpisodeId.value = null
+  danmakuSearchError.value = null
+  resetDanmakuForMediaChange()
+}
+
 async function refreshLocalSubtitleProviderSummary() {
   const context = currentSubtitleSearchContext()
   subtitleSearchProviderSummary.value = await describeLocalSubtitleSearchProviders(context)
@@ -1816,6 +1936,7 @@ function isTauriRuntime(): boolean {
 watch(
   () => [route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
   async () => {
+    resetDanmakuUiForMediaChange()
     await saveCurrentProgress(true, 'stopped')
     await saveMediaPreferenceNow()
     cancelPendingTrackPreferenceRestore()
@@ -1884,6 +2005,16 @@ watch(isPlaying, (playing) => {
   }
 })
 
+watch(danmakuLoading, (loading) => {
+  if (loading) {
+    chromeManuallyHidden.value = false
+    chromeVisible.value = true
+    clearHideTimer()
+    return
+  }
+  scheduleChromeHide()
+})
+
 watch([shouldShowChrome, hasMedia], () => {
   void updateChromeOcclusion()
 })
@@ -1896,13 +2027,13 @@ watch([videoReady, duration], () => {
   void applyPendingResumeSeekWhenReady()
 })
 
-watch([videoReady, duration, mediaTitle], ([ready, mediaDuration, title]) => {
+watch([videoReady, duration, mediaTitle, currentQueueItem], ([ready, mediaDuration]) => {
   if (danmakuLoadTimer)
     window.clearTimeout(danmakuLoadTimer)
   if (!ready || mediaDuration <= 0 || !hasMedia.value)
     return
   danmakuLoadTimer = window.setTimeout(() => {
-    void loadDanmakuForMedia(title, mediaDuration)
+    void loadDanmakuForMedia(currentDanmakuMediaIdentity(), mediaDuration)
   }, 250)
 })
 
@@ -1913,6 +2044,7 @@ watch(currentTime, (time) => {
 })
 
 async function handleFileDrop(path: string) {
+  resetDanmakuUiForMediaChange()
   await saveCurrentProgress(true, 'stopped')
   await saveMediaPreferenceNow()
   cancelPendingTrackPreferenceRestore()
@@ -2349,6 +2481,11 @@ function handleBeforeUnload() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && danmakuSearchOpen.value) {
+    event.preventDefault()
+    closeDanmakuSearch()
+    return
+  }
   if (event.key === 'Escape' && subtitleSearchOpen.value) {
     event.preventDefault()
     closeSubtitleSearch()
@@ -2471,7 +2608,7 @@ async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch
 function handlePlayerAreaClick(event: MouseEvent) {
   if (Date.now() < suppressPlayerClickUntil)
     return
-  if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value)
+  if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value || danmakuSearchOpen.value)
     return
   const target = event.target
   if (target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
@@ -2497,18 +2634,6 @@ function syncTransparentRootClass(active: boolean) {
   }
 }
 
-function syncPlayerChromeClass(visible: boolean) {
-  const className = 'player-chrome-hidden'
-  if (visible) {
-    document.documentElement.classList.remove(className)
-    document.body.classList.remove(className)
-  }
-  else {
-    document.documentElement.classList.add(className)
-    document.body.classList.add(className)
-  }
-}
-
 onBeforeRouteLeave(async () => {
   await stopPlaybackForRouteExit()
 })
@@ -2517,7 +2642,7 @@ onMounted(() => {
   document.documentElement.classList.add('player-render-surface-active')
   document.body.classList.add('player-render-surface-active')
   syncTransparentRootClass(isTransparentRootActive.value)
-  syncPlayerChromeClass(shouldShowChrome.value)
+  playerChromeStore.setVisible(shouldShowChrome.value)
   window.addEventListener('blur', handleWindowBlur)
   window.addEventListener('focus', handleWindowFocus)
   window.addEventListener('resize', handleWindowResize)
@@ -2556,8 +2681,7 @@ onBeforeUnmount(() => {
   document.body.classList.remove('player-render-surface-active')
   document.documentElement.classList.remove('player-render-surface-transparent')
   document.body.classList.remove('player-render-surface-transparent')
-  document.documentElement.classList.remove('player-chrome-hidden')
-  document.body.classList.remove('player-chrome-hidden')
+  playerChromeStore.setVisible(true)
   clearHideTimer()
   clearMediaPreferenceSaveTimer()
   void releaseHeldArrow(false)
@@ -2597,7 +2721,7 @@ watch(
 watch(
   shouldShowChrome,
   (visible) => {
-    syncPlayerChromeClass(visible)
+    playerChromeStore.setVisible(visible)
   },
   { immediate: true },
 )
@@ -2607,7 +2731,7 @@ watch(
   <div
     class="player-view theme-adaptive relative h-screen w-full overflow-hidden"
     :class="[
-      { 'is-chrome-hidden': !shouldShowChrome },
+      { 'cursor-none': !shouldShowChrome },
       { 'player-view--native-mobile': isNativeAndroidPlayer },
       isTransparentRootActive ? 'player-view--transparent' : 'bg-black',
     ]"
@@ -2640,7 +2764,11 @@ watch(
       @set-strategy="handleSetStrategy"
     />
 
-    <DanmakuOverlay v-if="hasMedia" :comments="danmakuComments" :settings="danmakuSettings" :current-time="currentTime" :is-playing="isPlaying" />
+    <!-- Danmaku is media content, not Player chrome. Teleport it out of the PlayerView subtree so
+         no current or future chrome visibility class/transition can become one of its ancestors. -->
+    <Teleport to="body">
+      <DanmakuOverlay v-if="hasMedia" :comments="danmakuComments" :settings="danmakuSettings" :current-time="currentTime" :is-playing="isPlaying" :playback-speed="playbackSpeed" />
+    </Teleport>
 
     <div
       v-if="hasMedia && isNativeAndroidPlayer"
@@ -2783,7 +2911,7 @@ watch(
         :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
-        :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length" :danmaku-matches="danmakuMatches" :danmaku-selected-episode-id="danmakuSelectedEpisodeId"
+        :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
         @play-next="handlePlayNext"
@@ -2805,8 +2933,8 @@ watch(
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"
         @update-danmaku-settings="updateDanmakuSettings"
-        @reload-danmaku="loadDanmakuForMedia(mediaTitle, duration, true)"
-        @select-danmaku-match="selectDanmakuMatch"
+        @reload-danmaku="loadDanmakuForMedia(currentDanmakuMediaIdentity(), duration, true)"
+        @search-danmaku="openDanmakuSearch"
       />
     </div>
 
@@ -2841,7 +2969,7 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
-        :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length" :danmaku-matches="danmakuMatches" :danmaku-selected-episode-id="danmakuSelectedEpisodeId"
+        :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length"
         @back="handlePlayerBack"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
@@ -2863,12 +2991,28 @@ watch(
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"
         @update-danmaku-settings="updateDanmakuSettings"
-        @reload-danmaku="loadDanmakuForMedia(mediaTitle, duration, true)"
-        @select-danmaku-match="selectDanmakuMatch"
+        @reload-danmaku="loadDanmakuForMedia(currentDanmakuMediaIdentity(), duration, true)"
+        @search-danmaku="openDanmakuSearch"
       />
     </Transition>
 
     <Teleport to="body">
+      <DanmakuSearchDialog
+        :open="danmakuSearchOpen"
+        :media-title="currentDanmakuMediaIdentity().searchTitle"
+        :file-name="currentDanmakuMediaIdentity().matchName"
+        :initial-episode="currentDanmakuMediaIdentity().episode"
+        :results="danmakuSearchResults"
+        :has-more="danmakuSearchHasMore"
+        :loading="danmakuSearchLoading"
+        :selecting-episode-id="danmakuSearchSelectingEpisodeId"
+        :error="danmakuSearchError"
+        :mobile-layout="isNativeAndroidPlayer"
+        @close="closeDanmakuSearch"
+        @search="runDanmakuSearch"
+        @select="chooseDanmakuSearchEpisode"
+      />
+
       <SubtitleSearchDialog
         :open="subtitleSearchOpen"
         :requires-source-choice="subtitleSearchRequiresSourceChoice"
@@ -3029,10 +3173,6 @@ watch(
 
 .player-bottom-chrome {
   background: var(--player-chrome-bottom-gradient);
-}
-
-.player-view.is-chrome-hidden {
-  cursor: none;
 }
 
 .keyboard-osd-enter-active,

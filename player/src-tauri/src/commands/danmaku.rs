@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const OFFICIAL_BASE_URL: &str = "https://api.dandanplay.net";
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FILE_NAME_BYTES: usize = 512;
+const MAX_SEARCH_QUERY_BYTES: usize = 240;
 const MAX_COMMENTS: usize = 50_000;
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,16 @@ pub struct DanmakuCommentsRequest {
     official: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanmakuSearchRequest {
+    base_url: String,
+    anime: String,
+    episode: Option<String>,
+    #[serde(default)]
+    official: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DanmakuApiResult {
@@ -39,7 +50,7 @@ pub struct DanmakuApiResult {
 #[tauri::command]
 pub async fn danmaku_match(request: DanmakuMatchRequest) -> Result<DanmakuApiResult, String> {
     let base_url = validate_base_url(&request.base_url, request.official)?;
-    let file_name = validate_file_name(&request.file_name)?;
+    let file_name = validate_file_stem(&request.file_name)?;
     let url = endpoint_url(&base_url, "api/v2/match")?;
     let client = http_client()?;
     let builder = client
@@ -47,11 +58,27 @@ pub async fn danmaku_match(request: DanmakuMatchRequest) -> Result<DanmakuApiRes
         .header(header::ACCEPT, "application/json")
         .json(&json!({
             "fileName": file_name,
-            "fileHash": "",
-            "fileSize": 0,
             "videoDuration": request.video_duration.unwrap_or(0).min(86_400),
             "matchMode": "fileNameOnly"
         }));
+    send_json(with_official_auth(builder, request.official, url.path())?).await
+}
+
+#[tauri::command]
+pub async fn danmaku_search(request: DanmakuSearchRequest) -> Result<DanmakuApiResult, String> {
+    let base_url = validate_base_url(&request.base_url, request.official)?;
+    let anime = validate_search_query(&request.anime)?;
+    let episode = validate_episode_query(request.episode.as_deref())?;
+    let url = endpoint_url(&base_url, "api/v2/search/episodes")?;
+    let client = http_client()?;
+    let mut query = vec![("anime", anime), ("v2", "true")];
+    if let Some(episode) = episode {
+        query.push(("episode", episode));
+    }
+    let builder = client
+        .get(url.clone())
+        .query(&query)
+        .header(header::ACCEPT, "application/json");
     send_json(with_official_auth(builder, request.official, url.path())?).await
 }
 
@@ -236,7 +263,7 @@ fn endpoint_url(base: &Url, path: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn validate_file_name(value: &str) -> Result<&str, String> {
+fn validate_file_stem(value: &str) -> Result<&str, String> {
     let value = value.trim();
     if value.is_empty()
         || value.len() > MAX_FILE_NAME_BYTES
@@ -247,7 +274,58 @@ fn validate_file_name(value: &str) -> Result<&str, String> {
     {
         return Err("弹幕匹配名称无效。".to_string());
     }
+    let Some((stem, extension)) = value.rsplit_once('.') else {
+        return Ok(value);
+    };
+    const VIDEO_EXTENSIONS: &[&str] = &[
+        "3g2", "3gp", "asf", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg",
+        "mts", "ogm", "ogv", "rm", "rmvb", "ts", "vob", "webm", "wmv",
+    ];
+    if stem.trim().is_empty()
+        || !VIDEO_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+    {
+        return Ok(value);
+    }
+    Ok(stem.trim())
+}
+
+fn validate_search_query(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if value.chars().count() < 2
+        || value.len() > MAX_SEARCH_QUERY_BYTES
+        || value.contains('\\')
+        || value.contains("://")
+        || value.starts_with('/')
+        || (value.len() > 1 && value.as_bytes()[1] == b':')
+        || value
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+        || value.chars().any(char::is_control)
+    {
+        return Err("弹幕搜索关键词至少需要两个字符，且不能包含路径或网址。".to_string());
+    }
     Ok(value)
+}
+
+fn validate_episode_query(value: Option<&str>) -> Result<Option<&str>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let valid = value.chars().all(|character| character.is_ascii_digit())
+        || (value.len() > 1
+            && matches!(value.as_bytes()[0].to_ascii_uppercase(), b'C' | b'S' | b'O')
+            && value[1..]
+                .chars()
+                .all(|character| character.is_ascii_digit()));
+    let digits = if value.as_bytes()[0].is_ascii_alphabetic() {
+        &value[1..]
+    } else {
+        value
+    };
+    if !valid || value.len() > 12 || digits.parse::<u32>().ok().is_none_or(|number| number == 0) {
+        return Err("弹幕剧集编号应为正整数或 C1、S1、O1 格式。".to_string());
+    }
+    Ok(Some(value))
 }
 
 #[cfg(test)]
@@ -263,12 +341,32 @@ mod tests {
             "C:\\video\\show.mkv",
             "https://host/video",
         ] {
-            assert!(validate_file_name(value).is_err());
+            assert!(validate_file_stem(value).is_err());
         }
         assert_eq!(
-            validate_file_name("Show.S01E01.mkv").unwrap(),
-            "Show.S01E01.mkv"
+            validate_file_stem("Show.S01E01.mkv").unwrap(),
+            "Show.S01E01"
         );
+        assert_eq!(
+            validate_file_stem("Show.S01E01.1080p").unwrap(),
+            "Show.S01E01.1080p"
+        );
+    }
+
+    #[test]
+    fn validates_search_query_and_episode_filter() {
+        assert_eq!(validate_search_query("慢慢来").unwrap(), "慢慢来");
+        assert_eq!(
+            validate_search_query("Fate/stay night").unwrap(),
+            "Fate/stay night"
+        );
+        assert!(validate_search_query("A").is_err());
+        assert!(validate_search_query("C:\\media\\show").is_err());
+        assert!(validate_search_query("../media/show").is_err());
+        assert_eq!(validate_episode_query(Some("12")).unwrap(), Some("12"));
+        assert_eq!(validate_episode_query(Some("s2")).unwrap(), Some("s2"));
+        assert!(validate_episode_query(Some("E1")).is_err());
+        assert!(validate_episode_query(Some("1.5")).is_err());
     }
 
     #[test]

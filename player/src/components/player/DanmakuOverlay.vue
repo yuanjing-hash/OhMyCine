@@ -1,20 +1,32 @@
 <script setup lang="ts">
 import type { DanmakuComment, DanmakuSettings } from '@/services/danmaku/types'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { interpolatedDanmakuTime } from '@/services/danmaku/clock'
+import { findDanmakuTimelineWindow } from '@/services/danmaku/timeline'
 
 const props = defineProps<{
   comments: readonly DanmakuComment[]
   settings: DanmakuSettings
   currentTime: number
   isPlaying: boolean
+  playbackSpeed: number
 }>()
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 let frame = 0
 let observer: ResizeObserver | null = null
+let redrawRequested = true
+let clockAnchor = { mediaTime: props.currentTime, wallTime: performance.now() }
+const keywords = computed(() => props.settings.blockKeywords.map(item => item.toLocaleLowerCase()))
 
-function draw() {
+const MAX_COMMENTS_PER_FRAME = 300
+const MAX_CANDIDATES_PER_FRAME = 2_000
+
+function draw(wallTime: number) {
   frame = requestAnimationFrame(draw)
+  if (!props.isPlaying && !redrawRequested)
+    return
+  redrawRequested = false
   const element = canvas.value
   const context = element?.getContext('2d')
   if (!element || !context)
@@ -40,14 +52,18 @@ function draw() {
   context.lineJoin = 'round'
   context.globalAlpha = props.settings.opacity
 
-  const now = props.currentTime
+  const now = interpolatedDanmakuTime(clockAnchor, wallTime, props.playbackSpeed, props.isPlaying)
   const scrollLifetime = 8 / props.settings.speed
   const fixedLifetime = 4
-  const keywords = props.settings.blockKeywords.map(item => item.toLocaleLowerCase())
-  for (const comment of props.comments) {
+  const timelineWindow = findDanmakuTimelineWindow(props.comments, now, Math.max(scrollLifetime, fixedLifetime))
+  let rendered = 0
+  let inspected = 0
+  for (let index = timelineWindow.start; index < timelineWindow.end && rendered < MAX_COMMENTS_PER_FRAME && inspected < MAX_CANDIDATES_PER_FRAME; index++) {
+    const comment = props.comments[index]
+    inspected++
     const elapsed = now - comment.time
     const lifetime = comment.mode === 'scroll' ? scrollLifetime : fixedLifetime
-    if (elapsed < 0 || elapsed > lifetime || !modeVisible(comment) || blocked(comment.text, keywords))
+    if (elapsed < 0 || elapsed > lifetime || !modeVisible(comment) || blocked(comment.text, keywords.value))
       continue
     const lane = hash(comment.id) % densityLanes
     const y = comment.mode === 'bottom'
@@ -62,6 +78,7 @@ function draw() {
     context.strokeText(comment.text, x, y)
     context.fillStyle = comment.color
     context.fillText(comment.text, x, y)
+    rendered++
   }
   context.globalAlpha = 1
 }
@@ -87,18 +104,40 @@ function hash(value: string): number {
 }
 
 onMounted(() => {
-  observer = new ResizeObserver(() => undefined)
+  observer = new ResizeObserver(() => {
+    redrawRequested = true
+  })
   if (canvas.value)
     observer.observe(canvas.value)
-  draw()
+  frame = requestAnimationFrame(draw)
 })
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame)
   observer?.disconnect()
 })
-watch(() => props.comments, () => undefined)
+watch(() => props.comments, () => {
+  redrawRequested = true
+})
+watch(() => props.settings, () => {
+  redrawRequested = true
+}, { deep: true })
+watch(() => [props.currentTime, props.isPlaying, props.playbackSpeed], () => {
+  clockAnchor = { mediaTime: props.currentTime, wallTime: performance.now() }
+  redrawRequested = true
+})
 </script>
 
 <template>
-  <canvas ref="canvas" class="pointer-events-none absolute inset-0 z-[8] h-full w-full" aria-hidden="true" />
+  <div class="danmaku-render-layer pointer-events-none fixed inset-0 z-[8]" data-danmaku-render-layer aria-hidden="true">
+    <canvas ref="canvas" class="block h-full w-full" />
+  </div>
 </template>
+
+<style scoped>
+.danmaku-render-layer {
+  contain: strict;
+  isolation: isolate;
+  transform: translateZ(0);
+  will-change: transform;
+}
+</style>

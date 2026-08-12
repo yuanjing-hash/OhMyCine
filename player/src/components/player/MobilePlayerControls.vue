@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { DanmakuMatch, DanmakuSettings } from '@/services/danmaku/types'
+import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import { computed, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
+import DanmakuToggleIcon from './DanmakuToggleIcon.vue'
 import ProgressBar from './ProgressBar.vue'
 
 type MobilePanel = 'more' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'orientation'
@@ -40,8 +41,6 @@ const props = defineProps<{
   danmakuLoading: boolean
   danmakuError: string | null
   danmakuCommentCount: number
-  danmakuMatches: readonly DanmakuMatch[]
-  danmakuSelectedEpisodeId: number | null
 }>()
 
 const emit = defineEmits<{
@@ -67,7 +66,7 @@ const emit = defineEmits<{
   toggleDanmaku: []
   updateDanmakuSettings: [settings: DanmakuSettings]
   reloadDanmaku: []
-  selectDanmakuMatch: [episodeId: number]
+  searchDanmaku: []
 }>()
 
 const activePanel = ref<MobilePanel | null>(null)
@@ -264,7 +263,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
         <time>{{ formatTime(duration) }}</time>
         <div class="mobile-media-tools">
           <button type="button" class="mobile-text-button danmaku-toggle" :class="{ 'is-active': danmakuSettings.enabled }" :aria-pressed="danmakuSettings.enabled" :aria-label="danmakuSettings.enabled ? '关闭弹幕' : '开启弹幕'" @click="emit('toggleDanmaku')">
-            弹
+            <DanmakuToggleIcon :enabled="danmakuSettings.enabled" />
           </button>
           <button type="button" class="mobile-icon-button" aria-label="弹幕设置" @click="openPanel('danmaku')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13a7 7 0 0 0 0-2l2-1.5-2-3-2.4 1a8 8 0 0 0-1.6-1L14.5 4h-4L10 6.5a8 8 0 0 0-1.6 1L6 6.5l-2 3L6 11a7 7 0 0 0 0 2l-2 1.5 2 3 2.4-1a8 8 0 0 0 1.6 1l.5 2.5h4l.5-2.5a8 8 0 0 0 1.6-1l2.4 1 2-3L19 13Zm-7 2a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z" /></svg>
@@ -379,7 +378,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               </button>
             </template>
 
-            <DanmakuSettingsContent v-else-if="activePanel === 'danmaku'" :settings="danmakuSettings" :loading="danmakuLoading" :error="danmakuError" :comment-count="danmakuCommentCount" :matches="danmakuMatches" :selected-episode-id="danmakuSelectedEpisodeId" @update="emit('updateDanmakuSettings', $event)" @reload="emit('reloadDanmaku')" @select-match="emit('selectDanmakuMatch', $event)" />
+            <DanmakuSettingsContent v-else-if="activePanel === 'danmaku'" :settings="danmakuSettings" :loading="danmakuLoading" :error="danmakuError" :comment-count="danmakuCommentCount" @update="emit('updateDanmakuSettings', $event)" @reload="emit('reloadDanmaku')" @search="emit('searchDanmaku')" />
 
             <template v-else-if="activePanel === 'audio'">
               <p v-if="trackError" class="mobile-sheet-error">

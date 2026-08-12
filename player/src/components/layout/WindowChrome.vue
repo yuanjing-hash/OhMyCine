@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { usePlayerChromeStore } from '@/stores/playerChrome'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 
 defineProps<{
@@ -14,6 +15,7 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const searchWorkspace = useSearchWorkspaceStore()
+const playerChrome = usePlayerChromeStore()
 
 let dragStart: { x: number, y: number } | null = null
 let isDragStarting = false
@@ -139,7 +141,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="window-chrome pointer-events-none fixed inset-x-0 top-0 h-16">
+  <div
+    class="window-chrome pointer-events-none fixed inset-x-0 top-0 h-16"
+    :class="{ 'is-player-chrome-hidden': hideNav && !playerChrome.visible }"
+  >
     <!-- full-width invisible drag region so the top area still drags above route/loading content -->
     <div
       data-tauri-drag-region
@@ -265,7 +270,8 @@ onBeforeUnmount(() => {
   background: var(--gp-active);
   transform: translateX(-1px) scale(0.98);
 }
-:global(body.player-chrome-hidden) .player-window-back {
+.window-chrome.is-player-chrome-hidden .player-window-back,
+.window-chrome.is-player-chrome-hidden .desktop-window-controls {
   pointer-events: none;
   opacity: 0;
   transform: translateY(-6px);

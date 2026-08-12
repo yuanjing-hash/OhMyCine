@@ -1,20 +1,18 @@
 <script setup lang="ts">
-import type { DanmakuMatch, DanmakuSettings } from '@/services/danmaku/types'
+import type { DanmakuSettings } from '@/services/danmaku/types'
 
 const props = defineProps<{
   settings: DanmakuSettings
   loading: boolean
   error: string | null
   commentCount: number
-  matches: readonly DanmakuMatch[]
-  selectedEpisodeId: number | null
   showProvider?: boolean
 }>()
 
 const emit = defineEmits<{
   update: [settings: DanmakuSettings]
   reload: []
-  selectMatch: [episodeId: number]
+  search: []
 }>()
 
 function update<K extends keyof DanmakuSettings>(key: K, value: DanmakuSettings[K]) {
@@ -34,17 +32,10 @@ function updateKeywords(event: Event) {
   <div class="danmaku-settings-content">
     <div class="danmaku-status-row">
       <span>{{ loading ? '正在匹配…' : error || `已加载 ${commentCount} 条弹幕` }}</span>
-      <button type="button" :disabled="loading" @click="emit('reload')">
-        刷新
-      </button>
-    </div>
-    <div v-if="matches.length > 1" class="setting-row">
-      <label for="danmaku-match">弹幕库</label>
-      <select id="danmaku-match" :value="selectedEpisodeId ?? ''" @change="emit('selectMatch', Number(($event.target as HTMLSelectElement).value))">
-        <option v-for="match in matches" :key="match.episodeId" :value="match.episodeId">
-          {{ [match.animeTitle, match.episodeTitle].filter(Boolean).join(' · ') || `弹幕库 ${match.episodeId}` }}
-        </option>
-      </select>
+      <span class="status-actions">
+        <button type="button" @click="emit('search')">搜索</button>
+        <button type="button" :disabled="loading" @click="emit('reload')">刷新</button>
+      </span>
     </div>
     <div class="mode-pills" role="group" aria-label="弹幕类型">
       <button type="button" :class="{ active: settings.showScroll }" @click="update('showScroll', !settings.showScroll)">
@@ -96,5 +87,5 @@ function updateKeywords(event: Event) {
 </template>
 
 <style scoped>
-.danmaku-settings-content{display:grid;gap:.85rem;color:var(--color-text);font-size:.82rem}.danmaku-status-row,.setting-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem}.danmaku-status-row{color:var(--color-text-secondary)}button,select,input{font:inherit}.danmaku-status-row button,.mode-pills button{border:1px solid var(--control-border);border-radius:999px;background:var(--surface-soft);color:var(--color-text-secondary);padding:.42rem .72rem}.mode-pills{display:flex;gap:.4rem}.mode-pills button.active{background:var(--color-primary);color:white;border-color:transparent}.slider-row,.keyword-row{display:grid;gap:.42rem}.slider-row span{display:flex;justify-content:space-between}.slider-row output{color:var(--color-text-secondary)}input[type=range]{width:100%;accent-color:var(--color-primary)}select,.keyword-row input{min-width:0;border:1px solid var(--control-border);border-radius:.7rem;background:var(--surface-soft);color:var(--color-text);padding:.5rem .65rem}.check-row{display:flex;align-items:center;gap:.5rem}.provider-divider{height:1px;background:var(--control-border)}.privacy-note{margin:0;color:var(--color-text-tertiary);font-size:.75rem;line-height:1.55}
+.danmaku-settings-content{display:grid;gap:.85rem;color:var(--color-text);font-size:.82rem}.danmaku-status-row,.setting-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem}.danmaku-status-row{color:var(--color-text-secondary)}.status-actions{display:flex;gap:.35rem}button,select,input{font:inherit}.danmaku-status-row button,.mode-pills button{border:1px solid var(--control-border);border-radius:999px;background:var(--surface-soft);color:var(--color-text-secondary);padding:.42rem .72rem}.mode-pills{display:flex;gap:.4rem}.mode-pills button.active{background:var(--color-primary);color:white;border-color:transparent}.slider-row,.keyword-row{display:grid;gap:.42rem}.slider-row span{display:flex;justify-content:space-between}.slider-row output{color:var(--color-text-secondary)}input[type=range]{width:100%;accent-color:var(--color-primary)}select,.keyword-row input{min-width:0;border:1px solid var(--control-border);border-radius:.7rem;background:var(--surface-soft);color:var(--color-text);padding:.5rem .65rem}.check-row{display:flex;align-items:center;gap:.5rem}.provider-divider{height:1px;background:var(--control-border)}.privacy-note{margin:0;color:var(--color-text-tertiary);font-size:.75rem;line-height:1.55}
 </style>

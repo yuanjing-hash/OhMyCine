@@ -1,13 +1,13 @@
-import type { DanmakuComment, DanmakuMatch, DanmakuMode } from './types'
+import type { DanmakuComment, DanmakuMatchResponse, DanmakuMode, DanmakuSearchResponse } from './types'
 
-export function parseDanmakuMatches(value: unknown): DanmakuMatch[] {
+export function parseDanmakuMatches(value: unknown): DanmakuMatchResponse {
   if (!value || typeof value !== 'object')
-    return []
+    return { exact: false, matches: [] }
   const root = value as Record<string, unknown>
   if (root.success === false)
     throw new Error(safeMessage(root.errorMessage, '弹幕匹配失败。'))
   const matches = Array.isArray(root.matches) ? root.matches : []
-  return matches.slice(0, 100).flatMap((entry) => {
+  const parsed = matches.slice(0, 100).flatMap((entry) => {
     if (!entry || typeof entry !== 'object')
       return []
     const item = entry as Record<string, unknown>
@@ -22,6 +22,45 @@ export function parseDanmakuMatches(value: unknown): DanmakuMatch[] {
       shift: safeFinite(item.shift) ?? 0,
     }]
   })
+  return { exact: root.isMatched === true && parsed.length === 1, matches: parsed }
+}
+
+export function parseDanmakuSearch(value: unknown): DanmakuSearchResponse {
+  if (!value || typeof value !== 'object')
+    return { hasMore: false, animes: [] }
+  const root = value as Record<string, unknown>
+  if (root.success === false)
+    throw new Error(safeMessage(root.errorMessage, '弹幕搜索失败。'))
+  const animes = Array.isArray(root.animes) ? root.animes : []
+  return {
+    hasMore: root.hasMore === true,
+    animes: animes.slice(0, 100).flatMap((entry) => {
+      if (!entry || typeof entry !== 'object')
+        return []
+      const item = entry as Record<string, unknown>
+      const animeId = safePositiveInteger(item.animeId)
+      const animeTitle = safeText(item.animeTitle).trim()
+      if (!animeId || !animeTitle)
+        return []
+      const episodes = (Array.isArray(item.episodes) ? item.episodes : []).slice(0, 500).flatMap((episode) => {
+        if (!episode || typeof episode !== 'object')
+          return []
+        const details = episode as Record<string, unknown>
+        const episodeId = safePositiveInteger(details.episodeId)
+        if (!episodeId)
+          return []
+        return [{ episodeId, episodeTitle: safeText(details.episodeTitle).trim() }]
+      })
+      if (!episodes.length)
+        return []
+      return [{
+        animeId,
+        animeTitle,
+        typeDescription: safeText(item.typeDescription).trim(),
+        episodes,
+      }]
+    }),
+  }
 }
 
 export function parseDanmakuComments(value: unknown, shift = 0): DanmakuComment[] {

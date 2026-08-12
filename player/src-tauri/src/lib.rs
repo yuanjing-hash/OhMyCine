@@ -8,7 +8,7 @@ use commands::clouddrive2::{
     clouddrive2_get_stream, clouddrive2_list, clouddrive2_search, CloudDrive2GrpcState,
 };
 use commands::credential::{credential_delete, credential_get, credential_set};
-use commands::danmaku::{danmaku_comments, danmaku_match};
+use commands::danmaku::{danmaku_comments, danmaku_match, danmaku_search};
 use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
     player_delete_playback_history_for_source, player_get_playback_progress,
@@ -84,6 +84,7 @@ pub fn run() {
             credential_get,
             credential_delete,
             danmaku_match,
+            danmaku_search,
             danmaku_comments,
             clouddrive2_list,
             clouddrive2_search,

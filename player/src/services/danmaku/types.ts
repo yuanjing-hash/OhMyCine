@@ -17,6 +17,28 @@ export interface DanmakuMatch {
   shift: number
 }
 
+export interface DanmakuMatchResponse {
+  exact: boolean
+  matches: DanmakuMatch[]
+}
+
+export interface DanmakuSearchAnime {
+  animeId: number
+  animeTitle: string
+  typeDescription: string
+  episodes: DanmakuSearchEpisode[]
+}
+
+export interface DanmakuSearchEpisode {
+  episodeId: number
+  episodeTitle: string
+}
+
+export interface DanmakuSearchResponse {
+  hasMore: boolean
+  animes: DanmakuSearchAnime[]
+}
+
 export interface DanmakuSettings {
   enabled: boolean
   provider: DanmakuProvider
@@ -31,12 +53,4 @@ export interface DanmakuSettings {
   showBottom: boolean
   bold: boolean
   blockKeywords: string[]
-}
-
-export interface DanmakuStatus {
-  loading: boolean
-  error: string | null
-  commentCount: number
-  matches: readonly DanmakuMatch[]
-  selectedEpisodeId: number | null
 }
