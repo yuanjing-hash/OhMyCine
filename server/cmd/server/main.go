@@ -13,6 +13,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/database"
 	"github.com/yuanjing-hash/ohmycine/server/internal/handlers"
 	"github.com/yuanjing-hash/ohmycine/server/internal/httpserver"
+	"github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
 )
 
@@ -21,7 +22,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	log := httpserver.NewLogger(cfg.Environment)
+	logManager, err := logging.NewManager(cfg.LogDirectory, cfg.Environment, os.Stdout)
+	if err != nil {
+		panic(err)
+	}
+	defer logManager.Close()
+	log := logManager.Logger("server", "bootstrap")
 	db, err := database.Open(cfg.DatabasePath)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to open database")
@@ -30,6 +36,10 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to migrate database")
 	}
 	audit := services.NewAuditService(db)
+	runtimeLogs, err := services.NewRuntimeLogService(db, logManager, audit)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize runtime logging")
+	}
 	authorization := services.NewAuthorizationService(db)
 	auth, err := services.NewAuthService(db, cfg, authorization, audit)
 	if err != nil {
@@ -43,14 +53,15 @@ func main() {
 	}
 	profiles := services.NewMediaClassificationProfileService(db, audit, nil)
 	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
+	api.SetRuntimeLogService(runtimeLogs)
 	server := &http.Server{
-		Addr: cfg.Address(), Handler: httpserver.New(cfg, api, auth, log),
+		Addr: cfg.Address(), Handler: httpserver.New(cfg, api, auth, logManager.Logger("http", "request")),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 60 * time.Second, IdleTimeout: 2 * time.Minute,
 	}
 
 	go func() {
-		log.Info().Str("address", cfg.Address()).Str("database", cfg.DatabasePath).Msg("OhMyCine Server started")
+		log.Info().Str("address", cfg.Address()).Msg("OhMyCine Server started")
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal().Err(err).Msg("Server stopped unexpectedly")
 		}

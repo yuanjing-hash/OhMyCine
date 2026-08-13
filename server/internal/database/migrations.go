@@ -23,7 +23,7 @@ func Migrate(db *gorm.DB) error {
 	)`).Error; err != nil {
 		return fmt.Errorf("create schema migrations table: %w", err)
 	}
-	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}}
+	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}}
 	for _, item := range migrations {
 		var count int64
 		if err := db.Table("schema_migrations").Where("version = ?", item.Version).Count(&count).Error; err != nil {
@@ -45,6 +45,25 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return seedMediaClassificationProfiles(db)
+}
+
+func migrateRuntimeLogging(db *gorm.DB) error {
+	now := time.Now().UTC()
+	if err := db.Exec(`CREATE TABLE runtime_log_policies (
+		id INTEGER PRIMARY KEY CHECK(id = 1),
+		level TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),
+		max_file_mi_b INTEGER NOT NULL,
+		max_backups INTEGER NOT NULL,
+		retention_days INTEGER NOT NULL,
+		max_total_mi_b INTEGER NOT NULL,
+		revision INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`).Error; err != nil {
+		return err
+	}
+	return db.Exec(`INSERT INTO runtime_log_policies(id, level, max_file_mi_b, max_backups, retention_days, max_total_mi_b, revision, created_at, updated_at)
+		VALUES (1, 'info', 20, 10, 30, 500, 1, ?, ?)`, now, now).Error
 }
 
 func migrateMediaClassificationProfiles(db *gorm.DB) error {
@@ -238,7 +257,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
+		operatorCodes := []string{"dashboard.read", "logs.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

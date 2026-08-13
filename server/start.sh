@@ -28,6 +28,7 @@ OhMyCine Server 一键前台启动
   OMC_RUNTIME_DIR    脚本运行目录（默认 server/.runtime）
   OMC_BINARY_PATH    Server 二进制路径（默认在运行目录的 bin/ 下）
   OMC_DATABASE_PATH  SQLite 路径（默认在运行目录的 data/ 下）
+  OMC_LOG_DIR        结构化运行日志目录（默认在运行目录的 logs/ 下）
   OMC_ENV            运行环境（默认 production）
   OMC_SERVER_HOST    监听地址（默认 127.0.0.1）
   OMC_SERVER_PORT    监听端口（默认 3000）
@@ -168,6 +169,7 @@ case "${OMC_SERVER_HOST}" in
 esac
 export OMC_PUBLIC_ORIGIN="${OMC_PUBLIC_ORIGIN:-http://${origin_host}:${OMC_SERVER_PORT}}"
 export OMC_DATABASE_PATH="${OMC_DATABASE_PATH:-${RUNTIME_DIR}/data/ohmycine.db}"
+export OMC_LOG_DIR="${OMC_LOG_DIR:-${RUNTIME_DIR}/logs}"
 
 if [[ "${SKIP_BUILD}" == true ]]; then
   [[ -x "${BINARY_PATH}" ]] || fail "--skip-build 需要已有可执行二进制：${BINARY_PATH}"
@@ -215,10 +217,12 @@ else
 fi
 
 mkdir -p -- "$(dirname -- "${OMC_DATABASE_PATH}")"
+mkdir -p -- "${OMC_LOG_DIR}"
 
 info "启动 OhMyCine Server（前台运行，Ctrl+C 可安全停止）"
 printf '    地址：%s\n' "${OMC_PUBLIC_ORIGIN}"
 printf '    数据库：%s\n' "${OMC_DATABASE_PATH}"
+printf '    日志：%s\n' "${OMC_LOG_DIR}"
 printf '    二进制：%s\n' "${BINARY_PATH}"
 
 exec "${BINARY_PATH}"

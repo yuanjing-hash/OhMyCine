@@ -76,9 +76,10 @@ try {
             $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
             $listener.Start(); $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port; $listener.Stop()
             $old = @{}
-            foreach ($name in @('OMC_ENV','OMC_SERVER_HOST','OMC_SERVER_PORT','OMC_PUBLIC_ORIGIN','OMC_DATABASE_PATH')) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+            foreach ($name in @('OMC_ENV','OMC_SERVER_HOST','OMC_SERVER_PORT','OMC_PUBLIC_ORIGIN','OMC_DATABASE_PATH','OMC_LOG_DIR')) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
             $env:OMC_ENV = 'production'; $env:OMC_SERVER_HOST = '127.0.0.1'; $env:OMC_SERVER_PORT = "$port"
             $env:OMC_PUBLIC_ORIGIN = "http://127.0.0.1:$port"; $env:OMC_DATABASE_PATH = $database
+            $env:OMC_LOG_DIR = Join-Path $testDirectory 'logs'
             $process = Start-Process -FilePath $binary -WorkingDirectory $testDirectory -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
             $deadline = [DateTime]::UtcNow.AddSeconds(30)
             do {

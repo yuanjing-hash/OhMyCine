@@ -222,7 +222,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else-if="activePanel === 'logs'" class="tool-panel__body space-y-3">
-            <article class="tool-row tool-row--disabled"><div><strong>运行日志</strong><small>需要未来 logs.read permission 与脱敏日志 API</small></div><span class="status-chip status-chip--planned">规划中</span></article>
+            <RouterLink v-if="auth.can(Permissions.LogsRead)" to="/logs/runtime" class="tool-row" @click="closePanel()"><div><strong>运行日志</strong><small>按模块、组件、插件和业务关联筛选</small></div><span>打开</span></RouterLink>
             <RouterLink v-if="auth.can(Permissions.AuditRead)" to="/logs/audit" class="tool-row" @click="closePanel()"><div><strong>审计日志</strong><small>查看已实现的安全与配置变更记录</small></div><span>打开</span></RouterLink>
             <p v-else class="tool-empty">当前账户没有审计日志读取权限，不显示审计内容。</p>
           </div>

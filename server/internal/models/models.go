@@ -83,6 +83,20 @@ type AuditLog struct {
 	CreatedAt  time.Time `gorm:"index" json:"created_at"`
 }
 
+// RuntimeLogPolicy is the singleton, administrator-managed file retention policy.
+// The physical log directory is deployment configuration and is deliberately not persisted.
+type RuntimeLogPolicy struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	Level         string    `gorm:"size:16;not null" json:"level"`
+	MaxFileMiB    int       `gorm:"not null" json:"max_file_mib"`
+	MaxBackups    int       `gorm:"not null" json:"max_backups"`
+	RetentionDays int       `gorm:"not null" json:"retention_days"`
+	MaxTotalMiB   int       `gorm:"not null" json:"max_total_mib"`
+	Revision      uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 const StorageTypeLocal = "local"
 
 // Storage is a registered provider root. It does not classify media or choose a

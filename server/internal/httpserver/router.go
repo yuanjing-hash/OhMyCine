@@ -63,6 +63,14 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	protected.PATCH("/media-classification-profiles/:id", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesUpdate), api.UpdateMediaClassificationProfile)
 	protected.DELETE("/media-classification-profiles/:id", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesDelete), api.DeleteMediaClassificationProfile)
 
+	runtimeLogs := v1.Group("/runtime-logs")
+	runtimeLogs.Use(middleware.NoStore(), middleware.Auth(auth, api.CookieName()), middleware.CSRF(auth))
+	runtimeLogs.GET("", middleware.RequirePermission(authz.PermissionLogsRead), api.RuntimeLogs)
+	runtimeLogs.GET("/facets", middleware.RequirePermission(authz.PermissionLogsRead), api.RuntimeLogFacets)
+	runtimeLogs.GET("/settings", middleware.RequirePermission(authz.PermissionLogsRead), api.RuntimeLogSettings)
+	runtimeLogs.PATCH("/settings", middleware.RequirePermission(authz.PermissionLogsConfigure), api.UpdateRuntimeLogSettings)
+	runtimeLogs.POST("/export", middleware.RequirePermission(authz.PermissionLogsExport), api.ExportRuntimeLogs)
+
 	if assets, ok := webui.Assets(); ok {
 		webui.Register(router, assets)
 	} else {

@@ -96,3 +96,12 @@ export interface MediaClassificationProfileSummary {
   created_at: string; updated_at: string
 }
 export interface MediaClassificationProfileDetail extends MediaClassificationProfileSummary { rules: ClassificationRulesV1 }
+
+export interface RuntimeLogEntry {
+  timestamp: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; module: string; component: string
+  plugin_id?: string; fields: Record<string, unknown>
+}
+export interface RuntimeLogResult { list: RuntimeLogEntry[]; next_cursor?: string; scanned_bytes: number; malformed: number; partial: boolean }
+export interface RuntimeLogFacets { levels: string[]; modules: string[]; components: string[]; plugin_ids: string[] }
+export interface RuntimeLogPolicy { level: 'debug' | 'info' | 'warn' | 'error'; max_file_mib: number; max_backups: number; retention_days: number; max_total_mib: number }
+export interface RuntimeLogSettings extends RuntimeLogPolicy { revision: number; health: { degraded: boolean; reason?: string } }

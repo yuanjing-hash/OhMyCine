@@ -113,6 +113,7 @@ $env:OMC_SERVER_PORT = '3300'
 | `OMC_SERVER_HOST` | `127.0.0.1` | 监听地址 |
 | `OMC_SERVER_PORT` | `3000` | 监听端口 |
 | `OMC_DATABASE_PATH` | `.runtime/data/ohmycine.db` | SQLite 路径 |
+| `OMC_LOG_DIR` | `.runtime/logs` | 结构化运行日志目录；不通过 Web UI 暴露或修改绝对路径 |
 | `OMC_ENV` | `production` | `development` / `production` |
 | `OMC_PUBLIC_ORIGIN` | 按监听地址和端口生成 | 状态变更请求允许的精确浏览器来源 |
 | `OMC_COOKIE_SECURE` | 随 public origin 推导 | HTTPS 生产环境应为 `true` |
@@ -127,7 +128,9 @@ OMC_SERVER_PORT=3300 ./start.sh
 
 脚本默认只监听本机。IPv6 地址可以写成 `::1` 或 `[::1]`，脚本会使用 Go 监听所需的方括号形式。若显式监听 `0.0.0.0` 或 `::`，默认浏览器来源分别仍为 `http://127.0.0.1:<端口>` 和 `http://[::1]:<端口>`；从局域网主机名、域名或反向代理访问时，必须将 `OMC_PUBLIC_ORIGIN` 显式设为浏览器实际使用的精确来源。公网部署还必须使用 HTTPS 反向代理；不要把默认配置直接暴露到公网。
 
-`OMC_RUNTIME_DIR`、`OMC_BINARY_PATH` 和 `OMC_DATABASE_PATH` 的相对路径均以 `server/` 为基准，因此从任意当前目录调用脚本时行为一致。只有默认的 `server/.runtime/` 运行目录由仓库规则自动忽略；若覆盖到仓库内的其它路径，请自行确认不会误提交运行数据。
+`OMC_RUNTIME_DIR`、`OMC_BINARY_PATH`、`OMC_DATABASE_PATH` 和 `OMC_LOG_DIR` 的相对路径均以 `server/` 为基准，因此从任意当前目录调用脚本时行为一致。只有默认的 `server/.runtime/` 运行目录由仓库规则自动忽略；若覆盖到仓库内的其它路径，请自行确认不会误提交运行数据。
+
+运行日志默认同时写入 stdout 与 `runtime.jsonl`，单文件 20 MiB 后切割并 gzip 压缩；默认最多保留 10 个历史分片、30 天且总量不超过 500 MiB，任一条件先触发即清理最旧分片。管理员可以在日志中心调整安全范围内的策略，但物理目录始终由部署环境控制。运行日志与 SQLite 审计日志相互独立。
 
 ## 验证
 

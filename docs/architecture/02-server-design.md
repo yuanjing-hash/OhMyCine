@@ -20,6 +20,8 @@ Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显�
 
 Server 同时已实现独立的 `MediaClassificationProfile`：它保存版本化的 movie/tv 逻辑分类规则，提供受控管理页、严格校验、复制、乐观 revision 和纯 Go matcher，供后续 `MediaLibrary` 选择。内置 `default-v1` 与 Player v1 默认分类语义一致，但 Server 不读取或执行 Player 配置。该 Profile 不属于下载/转移流水线的 `categories.*` / `CategoryRule`，不选择 Storage Destination，也不执行扫描、移动、重命名或任何文件写入；本版本尚未创建 `MediaLibrary` 表或伪造引用关系。
 
+Server 运行日志已经形成独立基础设施：zerolog 事件在统一脱敏后同时写入 stdout 与本地 JSONL，默认按 20 MiB 切割、gzip 压缩，并以 10 个分片、30 天和 500 MiB 三项上限清理最旧历史。管理端顶栏日志中心通过 `logs.read` 查询并组合筛选模块、组件、插件和业务关联 ID；导出和策略修改分别由 `logs.export`、`logs.configure` 控制。运行日志与 SQLite 审计日志分域、分权、分开保留，日志文件故障时 Server 降级为 stdout 而不退出。
+
 管理端通过 Server 目录选择器注册本地 Storage，而不是使用浏览器原生文件选择器或自由文本路径。`storages.browse` 单独保护 Server 进程可见根与单层子目录枚举；Windows 显示当前服务账户可见盘符/映射盘，Linux/NAS/Docker 只显示进程命名空间中的 `/` 与实际挂载点。导航和选择使用短期、签名、用途隔离的令牌，UI 不拼接路径；保存时仍重新执行 `CanonicalizeRoot`、Reparse Point/symlink 拒绝、唯一性和只读探测。该浏览器不递归扫描、不返回普通文件，也不提供创建、改名、移动、删除、上传或预览。
 
 这里的 `Storage` 表示“Server 能安全访问的提供方根和能力快照”，而 `StorageDestination` 表示“媒体最终放在哪里、使用什么放置/STRM 策略”。二者不能合并：一个 Storage 可在后续被多个 Destination 引用，Storage 本身不做媒体分类、扫描或写入决策。

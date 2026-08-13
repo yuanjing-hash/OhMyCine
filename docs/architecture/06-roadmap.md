@@ -382,7 +382,7 @@ Phase 4: 生态系统           ████████████████
 - [x] 配置 `go.mod` 依赖
 - [x] 编写 `cmd/server/main.go` 入口
 - [ ] 配置管理 (`internal/config/`) — Viper + YAML
-- [ ] 日志系统 (`internal/middleware/logger.go`) — zerolog 结构化日志
+- [x] 日志系统 — zerolog 结构化双写、统一脱敏、JSONL 轮转/gzip/保留、细粒度查询/导出/配置 RBAC 与 Web 日志中心
 
 #### Web 框架搭建
 
@@ -857,7 +857,7 @@ Phase 4: 生态系统           ████████████████
 
 - [~] 性能优化 (首页/数据源根页已接入 5 分钟会话快照与保留旧内容的后台刷新；海报/背景使用应用私有 `cache/images`、IntersectionObserver 懒加载和默认 500 MB 可配置 LRU 上限；虚拟滚动和更细粒度列表分页待后续)
 - [ ] 错误处理完善 (统一错误边界)
-- [ ] 日志系统增强 (结构化日志/日志轮转)
+- [x] Server 日志系统增强（结构化日志、模块/组件/插件筛选、日志轮转压缩与容量保留）；Player 独立日志增强仍按 Player 任务推进
 - [ ] 国际化完善 (中英文完整翻译)
 
 **产出**:

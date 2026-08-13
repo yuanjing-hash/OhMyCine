@@ -30,6 +30,8 @@ $databaseOverride = [Environment]::GetEnvironmentVariable('OMC_DATABASE_PATH', '
 $runtime = if ($runtimeOverride) { Resolve-ServerPath $runtimeOverride } else { $script:WindowsRuntimeDirectory }
 $binary = if ($binaryOverride) { Resolve-ServerPath $binaryOverride } else { Join-Path $runtime 'bin\ohmycine-server.exe' }
 $database = if ($databaseOverride) { Resolve-ServerPath $databaseOverride } else { Join-Path $runtime 'data\ohmycine.db' }
+$logDirectoryOverride = [Environment]::GetEnvironmentVariable('OMC_LOG_DIR', 'Process')
+$logDirectory = if ($logDirectoryOverride) { Resolve-ServerPath $logDirectoryOverride } else { Join-Path $runtime 'logs' }
 
 if (-not $SkipBuild) {
     $go = Get-CompatibleGo -InstallIfMissing
@@ -71,9 +73,11 @@ if (-not [Environment]::GetEnvironmentVariable('OMC_PUBLIC_ORIGIN', 'Process')) 
     $env:OMC_PUBLIC_ORIGIN = "http://$originHost`:$($env:OMC_SERVER_PORT)"
 }
 $env:OMC_DATABASE_PATH = $database
+$env:OMC_LOG_DIR = $logDirectory
 
 Write-Step "Starting OhMyCine Server at $($env:OMC_PUBLIC_ORIGIN)"
 Write-Host "    Database: $database"
 Write-Host "    Executable: $binary"
+Write-Host "    Logs: $logDirectory"
 & $binary
 exit $LASTEXITCODE

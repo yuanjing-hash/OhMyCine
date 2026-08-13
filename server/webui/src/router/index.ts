@@ -10,6 +10,7 @@ import UserManagementView from '@/views/UserManagementView.vue'
 import UsersView from '@/views/UsersView.vue'
 import RolesView from '@/views/RolesView.vue'
 import AuditView from '@/views/AuditView.vue'
+import RuntimeLogsView from '@/views/RuntimeLogsView.vue'
 import PlannedView from '@/views/PlannedView.vue'
 import StorageView from '@/views/StorageView.vue'
 import MediaRulesView from '@/views/MediaRulesView.vue'
@@ -62,6 +63,7 @@ export const router = createRouter({
           ],
         },
         { path: 'logs/audit', name: 'audit-log', component: AuditView, meta: { title: '审计日志', permissionsAny: [Permissions.AuditRead] } },
+        { path: 'logs/runtime', name: 'runtime-logs', component: RuntimeLogsView, meta: { title: '运行日志', permissionsAny: [Permissions.LogsRead] } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

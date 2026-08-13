@@ -15,15 +15,18 @@ import (
 )
 
 type API struct {
-	config    config.Config
-	auth      *services.AuthService
-	admin     *services.AdminService
-	audit     *services.AuditService
-	storage   *services.StorageService
-	directory *services.DirectoryBrowserService
-	profiles  *services.MediaClassificationProfileService
-	log       zerolog.Logger
+	config      config.Config
+	auth        *services.AuthService
+	admin       *services.AdminService
+	audit       *services.AuditService
+	storage     *services.StorageService
+	directory   *services.DirectoryBrowserService
+	profiles    *services.MediaClassificationProfileService
+	runtimeLogs *services.RuntimeLogService
+	log         zerolog.Logger
 }
+
+func (a *API) SetRuntimeLogService(service *services.RuntimeLogService) { a.runtimeLogs = service }
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}

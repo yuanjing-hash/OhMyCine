@@ -13,6 +13,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/config"
 	"github.com/yuanjing-hash/ohmycine/server/internal/database"
 	"github.com/yuanjing-hash/ohmycine/server/internal/handlers"
+	"github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
 )
 
@@ -29,7 +30,8 @@ type testEnvelope struct {
 
 func newTestClient(t *testing.T) *testClient {
 	t.Helper()
-	cfg := config.Config{Host: "127.0.0.1", Port: 3000, DatabasePath: filepath.Join(t.TempDir(), "server.db"), Environment: "test", PublicOrigin: "http://localhost:3000", SessionIdleTTL: 2 * time.Hour, SessionMaxTTL: 7 * 24 * time.Hour}
+	testRoot := t.TempDir()
+	cfg := config.Config{Host: "127.0.0.1", Port: 3000, DatabasePath: filepath.Join(testRoot, "server.db"), LogDirectory: filepath.Join(testRoot, "logs"), Environment: "test", PublicOrigin: "http://localhost:3000", SessionIdleTTL: 2 * time.Hour, SessionMaxTTL: 7 * 24 * time.Hour}
 	db, err := database.Open(cfg.DatabasePath)
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +59,16 @@ func newTestClient(t *testing.T) *testClient {
 	}
 	profiles := services.NewMediaClassificationProfileService(db, audit, nil)
 	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
+	logManager, err := logging.NewManager(cfg.LogDirectory, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logManager.Close() })
+	runtimeLogs, err := services.NewRuntimeLogService(db, logManager, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.SetRuntimeLogService(runtimeLogs)
 	return &testClient{router: New(cfg, api, auth, log)}
 }
 
@@ -537,6 +549,80 @@ func TestMediaClassificationProfileRequestsRejectUnknownFields(t *testing.T) {
 	status, _ = client.request(t, http.MethodPost, "/api/v1/media-classification-profiles/"+uintString(listData.List[0].ID)+"/copy", map[string]any{"mystery": true}, true)
 	if status != http.StatusBadRequest {
 		t.Fatalf("copy status=%d", status)
+	}
+}
+
+func TestRuntimeLogsRBACNoStoreQuerySettingsAndExport(t *testing.T) {
+	owner := newTestClient(t)
+	owner.setup(t)
+	for _, path := range []string{"/api/v1/runtime-logs", "/api/v1/runtime-logs/facets", "/api/v1/runtime-logs/settings"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(owner.cookie)
+		response := httptest.NewRecorder()
+		owner.router.ServeHTTP(response, req)
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s status=%d cache=%q", path, response.Code, response.Header().Get("Cache-Control"))
+		}
+	}
+	status, settingsEnvelope := owner.request(t, http.MethodGet, "/api/v1/runtime-logs/settings", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var settings map[string]any
+	if json.Unmarshal(settingsEnvelope.Data, &settings) != nil {
+		t.Fatal("decode settings")
+	}
+	settings["max_file_mib"] = 21
+	status, _ = owner.request(t, http.MethodPatch, "/api/v1/runtime-logs/settings", settings, true)
+	if status != http.StatusOK {
+		t.Fatalf("update settings status=%d", status)
+	}
+	status, rolesEnvelope := owner.request(t, http.MethodGet, "/api/v1/roles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var roles struct {
+		List []struct {
+			ID   uint   `json:"id"`
+			Code string `json:"code"`
+		} `json:"list"`
+	}
+	_ = json.Unmarshal(rolesEnvelope.Data, &roles)
+	var operatorID, viewerID uint
+	for _, role := range roles.List {
+		if role.Code == "operator" {
+			operatorID = role.ID
+		}
+		if role.Code == "viewer" {
+			viewerID = role.ID
+		}
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "logoperator", "password": "operator-strong-password", "role_ids": []uint{operatorID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	operator := newTestClientWithRouter(owner.router)
+	operator.login(t, "logoperator", "operator-strong-password")
+	status, _ = operator.request(t, http.MethodGet, "/api/v1/runtime-logs", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("operator read=%d", status)
+	}
+	status, _ = operator.request(t, http.MethodPost, "/api/v1/runtime-logs/export", map[string]any{}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("operator export=%d", status)
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "logviewer", "password": "viewer-strong-password", "role_ids": []uint{viewerID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	viewer := newTestClientWithRouter(owner.router)
+	viewer.login(t, "logviewer", "viewer-strong-password")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime-logs", nil)
+	req.AddCookie(viewer.cookie)
+	response := httptest.NewRecorder()
+	viewer.router.ServeHTTP(response, req)
+	if response.Code != http.StatusForbidden || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("viewer status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
 	}
 }
 

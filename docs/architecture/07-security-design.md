@@ -412,6 +412,10 @@ api_key=sk-***redacted***
 Location=https://cdn.example.com/file?token=***redacted***
 ```
 
+Server 运行日志在 stdout 与文件分流前执行同一套结构化脱敏，查询 API、Web UI 和导出只读取已脱敏 JSONL，不能依赖前端遮盖。HTTP 请求日志只记录规范化路由，不记录 raw query 或正文；媒体/存储/扫描事件使用 provider-relative path 或资源 ID，不记录 Server 绝对路径。日志查询、导出和策略修改分别由 `logs.read`、`logs.export`、`logs.configure` 控制，并在 permission middleware 前设置 `Cache-Control: no-store`。导出会记录脱敏审计摘要；运行日志轮转不得操作 SQLite 审计记录。
+
+插件日志的 `plugin_id` 必须由宿主 Logger 绑定，插件提供的同名字段不能覆盖宿主身份。日志 reader 只识别配置目录内由应用生成的严格文件名，游标绑定规范化筛选，不允许客户端提供文件名或路径。文件 sink 故障只触发限频的 stdout 降级诊断，不得递归写入失败 sink 或导致 Server 退出。
+
 ### 10.4 Player 字幕提供器凭据与下载边界
 
 - OpenSubtitles API Key 模式使用 OpenSubtitles.com REST API；账号密码模式使用固定 HTTPS OpenSubtitles.org 旧 XML-RPC 接口，两种模式互斥。旧接口对现代邮箱账号返回 401 时只允许回退到官方匿名 XML-RPC 会话，并必须向用户显示未认证兼容状态；不得尝试网页抓取、复用第三方应用 API Key 或把 401 伪装成账号登录成功。API Key 或账号密码进入 Player 凭据库，认证/匿名 XML-RPC 会话只缓存于 Rust 进程内，不写入 SQLite 普通设置、日志或导出配置。

@@ -77,8 +77,8 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3}) {
-		t.Fatalf("migration versions=%v, want [1 2 3]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4}) {
+		t.Fatalf("migration versions=%v, want [1 2 3 4]", versions)
 	}
 }
 

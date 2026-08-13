@@ -28,6 +28,9 @@ const (
 	CodeProfileProtected        = "media_classification_profile_protected"
 	CodeProfileRevisionConflict = "media_classification_profile_revision_conflict"
 	CodeProfileInUse            = "media_classification_profile_in_use"
+	CodeRuntimeLogFilterInvalid = "runtime_log_filter_invalid"
+	CodeRuntimeLogPolicyInvalid = "runtime_log_policy_invalid"
+	CodeRuntimeLogUnavailable   = "runtime_log_unavailable"
 )
 
 // AppError is a stable, client-safe domain error.

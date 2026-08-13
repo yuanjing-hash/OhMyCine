@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ type Config struct {
 	Host           string
 	Port           int
 	DatabasePath   string
+	LogDirectory   string
 	Environment    string
 	PublicOrigin   string
 	DevOrigin      string
@@ -41,10 +43,16 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("parse OMC_COOKIE_SECURE: %w", err)
 		}
 	}
+	databasePath := env("OMC_DATABASE_PATH", "./data/ohmycine.db")
+	logDirectory := strings.TrimSpace(os.Getenv("OMC_LOG_DIR"))
+	if logDirectory == "" {
+		logDirectory = filepath.Join(filepath.Dir(databasePath), "logs")
+	}
 	config := Config{
 		Host:           env("OMC_SERVER_HOST", "127.0.0.1"),
 		Port:           port,
-		DatabasePath:   env("OMC_DATABASE_PATH", "./data/ohmycine.db"),
+		DatabasePath:   databasePath,
+		LogDirectory:   logDirectory,
 		Environment:    environment,
 		PublicOrigin:   publicOrigin,
 		DevOrigin:      devOrigin,
@@ -55,6 +63,11 @@ func Load() (Config, error) {
 	if config.Port < 1 || config.Port > 65535 {
 		return Config{}, fmt.Errorf("OMC_SERVER_PORT must be between 1 and 65535")
 	}
+	absLogDirectory, err := filepath.Abs(config.LogDirectory)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve OMC_LOG_DIR: %w", err)
+	}
+	config.LogDirectory = filepath.Clean(absLogDirectory)
 	if err := validateOrigin("OMC_PUBLIC_ORIGIN", config.PublicOrigin); err != nil {
 		return Config{}, err
 	}
