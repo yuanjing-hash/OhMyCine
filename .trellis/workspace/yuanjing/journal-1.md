@@ -368,3 +368,26 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 14: 实现 Server 持久化任务队列与任务中心
+
+**Date**: 2026-08-13
+**Task**: 实现 Server 持久化任务队列与任务中心
+**Branch**: `develop`
+
+### Summary
+
+实现 SQLite 持久化 Job 队列、typed worker 调度、lease/checkpoint/ActionRequest、lane 调序、权限过滤 WebSocket 与全局任务中心；补齐安全边界、并发恢复、公平性和 Windows/浏览器验收。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bb99538` | (see git log) |
+| `8ac2eec` | (see git log) |
+| `02ba79c` | (see git log) |
+
+### Status
+
+[OK] **Completed**

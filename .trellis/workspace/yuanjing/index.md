@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-08-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~370 | Active |
+| `journal-1.md` | ~393 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-08-13 | 实现 Server 持久化任务队列与任务中心 | `bb99538`, `8ac2eec`, `02ba79c` | `develop` |
 | 13 | 2026-08-13 | 完成 Server 媒体库自动扫描与监听基础 | `2fffbe5` | `develop` |
 | 12 | 2026-08-13 | Server 结构化运行日志与日志中心 | `37aab85` | `develop` |
 | 11 | 2026-08-13 | Server 媒体分类规则管理 | `8acb41c`, `92fc2e7`, `0af4d43` | `develop` |
