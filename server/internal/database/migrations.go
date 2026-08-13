@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"gorm.io/gorm"
 )
@@ -22,7 +23,7 @@ func Migrate(db *gorm.DB) error {
 	)`).Error; err != nil {
 		return fmt.Errorf("create schema migrations table: %w", err)
 	}
-	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}}
+	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}}
 	for _, item := range migrations {
 		var count int64
 		if err := db.Table("schema_migrations").Where("version = ?", item.Version).Count(&count).Error; err != nil {
@@ -40,7 +41,60 @@ func Migrate(db *gorm.DB) error {
 			return fmt.Errorf("apply migration %d: %w", item.Version, err)
 		}
 	}
-	return seedAuthorization(db)
+	if err := seedAuthorization(db); err != nil {
+		return err
+	}
+	return seedMediaClassificationProfiles(db)
+}
+
+func migrateMediaClassificationProfiles(db *gorm.DB) error {
+	return db.Exec(`CREATE TABLE media_classification_profiles (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		code TEXT UNIQUE,
+		name TEXT NOT NULL,
+		name_normalized TEXT NOT NULL UNIQUE,
+		kind TEXT NOT NULL CHECK(kind IN ('system','custom')),
+		protected INTEGER NOT NULL DEFAULT 0,
+		schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+		rules_json TEXT NOT NULL,
+		revision INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`).Error
+}
+
+func seedMediaClassificationProfiles(db *gorm.DB) error {
+	rulesJSON, err := classification.CanonicalJSON(classification.DefaultRules())
+	if err != nil {
+		return fmt.Errorf("validate default classification profile: %w", err)
+	}
+	code := "default-v1"
+	now := time.Now().UTC()
+	var existing models.MediaClassificationProfile
+	err = db.Where("code = ?", code).First(&existing).Error
+	if err == nil {
+		if existing.Kind != models.MediaClassificationProfileKindSystem || !existing.Protected || existing.SchemaVersion != classification.SchemaVersion {
+			return fmt.Errorf("default classification profile metadata is invalid")
+		}
+		if existing.Name == "默认分类规则" && existing.NameNormalized == "默认分类规则" && existing.RulesJSON == rulesJSON && existing.Revision == 1 {
+			return nil
+		}
+		// This stable code is application-owned. Refresh only the known built-in
+		// row so a release can keep its immutable contract exact; custom rows are
+		// never selected by display name and are never touched here.
+		return db.Model(&existing).Updates(map[string]any{
+			"name": "默认分类规则", "name_normalized": "默认分类规则",
+			"rules_json": rulesJSON, "revision": 1, "updated_at": now,
+		}).Error
+	}
+	if err != gorm.ErrRecordNotFound {
+		return err
+	}
+	record := models.MediaClassificationProfile{Code: &code, Name: "默认分类规则", NameNormalized: "默认分类规则", Kind: models.MediaClassificationProfileKindSystem, Protected: true, SchemaVersion: 1, RulesJSON: rulesJSON, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&record).Error; err != nil {
+		return fmt.Errorf("seed default classification profile: %w", err)
+	}
+	return nil
 }
 
 func migrateStorageFoundation(db *gorm.DB) error {
@@ -184,7 +238,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
+		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

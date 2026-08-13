@@ -12,6 +12,7 @@ import RolesView from '@/views/RolesView.vue'
 import AuditView from '@/views/AuditView.vue'
 import PlannedView from '@/views/PlannedView.vue'
 import StorageView from '@/views/StorageView.vue'
+import MediaRulesView from '@/views/MediaRulesView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 
 function navigationMeta(id: string) {
@@ -48,6 +49,7 @@ export const router = createRouter({
       children: [
         { path: '', name: 'dashboard', component: DashboardView, meta: navigationMeta('dashboard') },
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
+        { path: 'system/media-rules', name: 'media-rules', component: MediaRulesView, meta: navigationMeta('media-rules') },
         ...plannedRoutes.map(([path, id]) => ({ path, name: id, component: PlannedView, meta: navigationMeta(id) })),
         {
           path: 'system/users',

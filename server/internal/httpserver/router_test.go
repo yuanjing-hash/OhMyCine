@@ -55,7 +55,8 @@ func newTestClient(t *testing.T) *testClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, log)
+	profiles := services.NewMediaClassificationProfileService(db, audit, nil)
+	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
 	return &testClient{router: New(cfg, api, auth, log)}
 }
 
@@ -387,6 +388,155 @@ func TestDirectoryPickerRBACNoStoreAndStorageRoundTrip(t *testing.T) {
 	status, _ = viewer.request(t, http.MethodGet, "/api/v1/storages/1/directory", nil, false)
 	if status != http.StatusForbidden {
 		t.Fatalf("viewer storage directory status=%d", status)
+	}
+}
+
+func TestMediaClassificationProfileLifecycleAndPermissionBoundary(t *testing.T) {
+	owner := newTestClient(t)
+	owner.setup(t)
+	status, listEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-classification-profiles", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("list status=%d", status)
+	}
+	var listData struct {
+		List []struct {
+			ID   uint    `json:"id"`
+			Code *string `json:"code"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(listEnvelope.Data, &listData); err != nil || len(listData.List) != 1 {
+		t.Fatalf("list=%s err=%v", listEnvelope.Data, err)
+	}
+	builtinID := listData.List[0].ID
+	status, _ = owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(builtinID), map[string]any{"revision": 1, "name": "x", "rules": map[string]any{}}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("protected update status=%d", status)
+	}
+	status, createEnvelope := owner.request(t, http.MethodPost, "/api/v1/media-classification-profiles", map[string]any{"name": "API Custom"}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d message=%s", status, createEnvelope.Message)
+	}
+	var created struct {
+		ID       uint            `json:"id"`
+		Revision uint64          `json:"revision"`
+		Rules    json.RawMessage `json:"rules"`
+	}
+	if err := json.Unmarshal(createEnvelope.Data, &created); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(created.ID), map[string]any{"revision": created.Revision, "name": "API Custom", "rules": json.RawMessage(created.Rules)}, true)
+	if status != http.StatusOK {
+		t.Fatalf("update status=%d", status)
+	}
+	status, stale := owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(created.ID), map[string]any{"revision": created.Revision, "name": "API Custom", "rules": json.RawMessage(created.Rules)}, true)
+	if status != http.StatusConflict || !bytes.Contains(stale.Data, []byte(services.CodeProfileRevisionConflict)) {
+		t.Fatalf("stale status=%d data=%s", status, stale.Data)
+	}
+	status, copyEnvelope := owner.request(t, http.MethodPost, "/api/v1/media-classification-profiles/"+uintString(builtinID)+"/copy", map[string]any{}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("copy status=%d", status)
+	}
+	if bytes.Contains(copyEnvelope.Data, []byte("default-movie-animation")) {
+		t.Fatal("copy retained built-in category ids")
+	}
+	status, auditEnvelope := owner.request(t, http.MethodGet, "/api/v1/audit?limit=50", nil, false)
+	if status != http.StatusOK || bytes.Contains(auditEnvelope.Data, []byte("rules_json")) || bytes.Contains(auditEnvelope.Data, []byte("动画电影")) {
+		t.Fatalf("unsafe audit=%s", auditEnvelope.Data)
+	}
+
+	status, rolesEnvelope := owner.request(t, http.MethodGet, "/api/v1/roles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var roles struct {
+		List []struct {
+			ID   uint   `json:"id"`
+			Code string `json:"code"`
+		} `json:"list"`
+	}
+	_ = json.Unmarshal(rolesEnvelope.Data, &roles)
+	var operatorID, viewerID uint
+	for _, role := range roles.List {
+		if role.Code == "operator" {
+			operatorID = role.ID
+		}
+		if role.Code == "viewer" {
+			viewerID = role.ID
+		}
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "profileoperator", "password": "operator-strong-password", "role_ids": []uint{operatorID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	operator := newTestClientWithRouter(owner.router)
+	operator.login(t, "profileoperator", "operator-strong-password")
+	status, operatorCreate := operator.request(t, http.MethodPost, "/api/v1/media-classification-profiles", map[string]any{"name": "Operator Profile"}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("operator create=%d message=%s", status, operatorCreate.Message)
+	}
+	var operatorProfile struct {
+		ID       uint            `json:"id"`
+		Revision uint64          `json:"revision"`
+		Rules    json.RawMessage `json:"rules"`
+	}
+	if err := json.Unmarshal(operatorCreate.Data, &operatorProfile); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = operator.request(t, http.MethodGet, "/api/v1/media-classification-profiles", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("operator list=%d", status)
+	}
+	status, _ = operator.request(t, http.MethodPost, "/api/v1/media-classification-profiles/"+uintString(operatorProfile.ID)+"/copy", map[string]any{"name": "Operator Copy"}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("operator copy=%d", status)
+	}
+	status, _ = operator.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(operatorProfile.ID), map[string]any{"revision": operatorProfile.Revision, "name": "Operator Updated", "rules": operatorProfile.Rules}, true)
+	if status != http.StatusOK {
+		t.Fatalf("operator update=%d", status)
+	}
+	status, _ = operator.request(t, http.MethodDelete, "/api/v1/media-classification-profiles/"+uintString(operatorProfile.ID), map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("operator delete=%d", status)
+	}
+
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "profileviewer", "password": "viewer-strong-password", "role_ids": []uint{viewerID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	viewer := newTestClientWithRouter(owner.router)
+	viewer.login(t, "profileviewer", "viewer-strong-password")
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/media-classification-profiles", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer list=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodPost, "/api/v1/media-classification-profiles", map[string]any{"name": "Denied"}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer create=%d", status)
+	}
+}
+
+func TestMediaClassificationProfileRequestsRejectUnknownFields(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	status, _ := client.request(t, http.MethodPost, "/api/v1/media-classification-profiles", map[string]any{"name": "Unknown", "mystery": true}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("create status=%d", status)
+	}
+	status, listEnvelope := client.request(t, http.MethodGet, "/api/v1/media-classification-profiles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var listData struct {
+		List []struct {
+			ID uint `json:"id"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(listEnvelope.Data, &listData); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = client.request(t, http.MethodPost, "/api/v1/media-classification-profiles/"+uintString(listData.List[0].ID)+"/copy", map[string]any{"mystery": true}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("copy status=%d", status)
 	}
 }
 

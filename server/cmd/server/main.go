@@ -41,7 +41,8 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize directory browser")
 	}
-	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, log)
+	profiles := services.NewMediaClassificationProfileService(db, audit, nil)
+	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
 	server := &http.Server{
 		Addr: cfg.Address(), Handler: httpserver.New(cfg, api, auth, log),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,

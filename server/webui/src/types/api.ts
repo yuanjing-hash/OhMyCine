@@ -77,3 +77,22 @@ export interface DirectoryListing {
   items: DirectoryItem[]
   truncated: boolean
 }
+
+export type MediaType = 'movie' | 'tv'
+export interface RuleSetCondition<T> { include: T[]; exclude: T[] }
+export interface ClassificationConditions {
+  genre_ids: RuleSetCondition<number>
+  original_languages: RuleSetCondition<string>
+  production_countries?: RuleSetCondition<string>
+  origin_countries?: RuleSetCondition<string>
+  release_year: { from?: number; to?: number } | null
+}
+export interface ClassificationCategory { id: string; name: string; conditions: ClassificationConditions }
+export interface ClassificationGroup { media_type: MediaType; categories: ClassificationCategory[]; fallback_category_name: string }
+export interface ClassificationRulesV1 { version: 1; groups: ClassificationGroup[] }
+export interface MediaClassificationProfileSummary {
+  id: number; code: string | null; name: string; kind: 'system' | 'custom'; protected: boolean
+  schema_version: 1; revision: number; movie_category_count: number; tv_category_count: number
+  created_at: string; updated_at: string
+}
+export interface MediaClassificationProfileDetail extends MediaClassificationProfileSummary { rules: ClassificationRulesV1 }

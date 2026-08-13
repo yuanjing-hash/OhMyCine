@@ -56,6 +56,12 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	protected.PATCH("/storages/:id", middleware.RequirePermission(authz.PermissionStoragesUpdate), api.UpdateStorage)
 	protected.DELETE("/storages/:id", middleware.RequirePermission(authz.PermissionStoragesDelete), api.DeleteStorage)
 	protected.POST("/storages/:id/test", middleware.RequirePermission(authz.PermissionStoragesTest), api.TestStorage)
+	protected.GET("/media-classification-profiles", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesRead), api.MediaClassificationProfiles)
+	protected.GET("/media-classification-profiles/:id", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesRead), api.MediaClassificationProfile)
+	protected.POST("/media-classification-profiles", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesCreate), api.CreateMediaClassificationProfile)
+	protected.POST("/media-classification-profiles/:id/copy", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesCreate), api.CopyMediaClassificationProfile)
+	protected.PATCH("/media-classification-profiles/:id", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesUpdate), api.UpdateMediaClassificationProfile)
+	protected.DELETE("/media-classification-profiles/:id", middleware.RequirePermission(authz.PermissionMediaClassificationProfilesDelete), api.DeleteMediaClassificationProfile)
 
 	if assets, ok := webui.Assets(); ok {
 		webui.Register(router, assets)

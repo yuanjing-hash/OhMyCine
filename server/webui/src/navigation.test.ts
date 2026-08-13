@@ -27,6 +27,11 @@ describe('grouped administration navigation', () => {
     expect(groups[0]?.items[0]?.planned).toBeUndefined()
   })
 
+  it('exposes rule management only to the canonical profile read permission', () => {
+    expect(buildVisibleNavigation([Permissions.MediaClassificationProfilesRead])[0]?.items.map(item => item.id)).toEqual(['media-rules'])
+    expect(buildVisibleNavigation([Permissions.CategoriesRead])[0]?.items.map(item => item.id)).not.toContain('media-rules')
+  })
+
   it('shows User Management when either account or role reads are granted', () => {
     const accounts = buildVisibleNavigation([Permissions.UsersRead])
     const roles = buildVisibleNavigation([Permissions.RolesRead])

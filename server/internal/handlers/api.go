@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -18,11 +21,12 @@ type API struct {
 	audit     *services.AuditService
 	storage   *services.StorageService
 	directory *services.DirectoryBrowserService
+	profiles  *services.MediaClassificationProfileService
 	log       zerolog.Logger
 }
 
-func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, log zerolog.Logger) *API {
-	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, log: log}
+func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
+	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}
 }
 
 func (a *API) CookieName() string {
@@ -473,6 +477,120 @@ func (a *API) DeleteStorage(c *gin.Context) {
 		return
 	}
 	if err := a.storage.Delete(actor, id, middleware.RequestContextFrom(c)); err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"deleted": true})
+}
+
+func (a *API) MediaClassificationProfiles(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	data, err := a.profiles.List(actor)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": data, "total": len(data)})
+}
+
+func (a *API) MediaClassificationProfile(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	data, err := a.profiles.Get(actor, id)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func (a *API) CreateMediaClassificationProfile(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	var input struct {
+		Name  string          `json:"name" binding:"required"`
+		Rules json.RawMessage `json:"rules"`
+	}
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("媒体分类规则信息无效", err))
+		return
+	}
+	data, err := a.profiles.Create(actor, services.CreateMediaClassificationProfileInput{Name: input.Name, Rules: input.Rules}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusCreated, data)
+}
+
+func (a *API) CopyMediaClassificationProfile(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		Name *string `json:"name"`
+	}
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("副本信息无效", err))
+		return
+	}
+	data, err := a.profiles.Copy(actor, id, services.CopyMediaClassificationProfileInput{Name: input.Name}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusCreated, data)
+}
+
+func (a *API) UpdateMediaClassificationProfile(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		Revision uint64          `json:"revision" binding:"required"`
+		Name     string          `json:"name" binding:"required"`
+		Rules    json.RawMessage `json:"rules" binding:"required"`
+	}
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("媒体分类规则信息无效", err))
+		return
+	}
+	data, err := a.profiles.Update(actor, id, services.UpdateMediaClassificationProfileInput{Revision: input.Revision, Name: input.Name, Rules: input.Rules}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func strictJSON(c *gin.Context, target any) error {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("request body must contain exactly one JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *API) DeleteMediaClassificationProfile(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := a.profiles.Delete(actor, id, middleware.RequestContextFrom(c)); err != nil {
 		writeError(c, a.log, err)
 		return
 	}

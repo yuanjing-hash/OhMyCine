@@ -23,17 +23,17 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 	status := http.StatusInternalServerError
 	code := services.ErrorCode(err)
 	switch code {
-	case services.CodeInvalidRequest, services.CodeStorageNameRequired, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported:
+	case services.CodeInvalidRequest, services.CodeStorageNameRequired, services.CodeProfileValidation, services.CodeProfileNameRequired, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported:
 		status = http.StatusBadRequest
 	case services.CodeDirectoryTokenInvalid, services.CodeDirectoryTokenExpired, services.CodeDirectoryNotFound, services.CodeDirectoryUnreadable, services.CodeDirectoryUnavailable:
 		status = http.StatusBadRequest
 	case services.CodeNotAuthenticated, services.CodeInvalidCredentials:
 		status = http.StatusUnauthorized
-	case services.CodePermissionDenied, services.CodePrivilegeEscalation, services.CodeOwnerProtected, services.CodeLastAdminRequired, services.CodeSelfModification, services.CodeProtectedRole:
+	case services.CodePermissionDenied, services.CodePrivilegeEscalation, services.CodeOwnerProtected, services.CodeLastAdminRequired, services.CodeSelfModification, services.CodeProtectedRole, services.CodeProfileProtected:
 		status = http.StatusForbidden
 	case services.CodeNotFound:
 		status = http.StatusNotFound
-	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeStorageNameConflict, services.CodeStoragePathConflict:
+	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeStorageNameConflict, services.CodeStoragePathConflict, services.CodeProfileNameConflict, services.CodeProfileRevisionConflict, services.CodeProfileInUse:
 		status = http.StatusConflict
 	case services.CodeLoginRateLimited:
 		status = http.StatusTooManyRequests

@@ -107,3 +107,24 @@ type Storage struct {
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
+
+const (
+	MediaClassificationProfileKindSystem = "system"
+	MediaClassificationProfileKindCustom = "custom"
+)
+
+// MediaClassificationProfile stores logical post-identification grouping
+// rules. It is intentionally separate from download/import CategoryRule.
+type MediaClassificationProfile struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	Code           *string   `gorm:"size:64;uniqueIndex" json:"code"`
+	Name           string    `gorm:"size:128;not null" json:"name"`
+	NameNormalized string    `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	Kind           string    `gorm:"size:16;not null" json:"kind"`
+	Protected      bool      `gorm:"not null;default:false" json:"protected"`
+	SchemaVersion  int       `gorm:"not null" json:"schema_version"`
+	RulesJSON      string    `gorm:"type:text;not null" json:"-"`
+	Revision       uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
