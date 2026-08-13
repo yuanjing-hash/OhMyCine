@@ -280,3 +280,26 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 10: Server 管理端主题与目录根导航
+
+**Date**: 2026-08-13
+**Task**: Server 管理端主题与目录根导航
+**Branch**: `develop`
+
+### Summary
+
+将 Server 管理端统一为默认白色、可持久化深色切换的传统后台风格，修复 Windows 目录选择器返回盘符根层，并完成全量门禁与实机验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4034d2c` | (see git log) |
+| `a2c8a28` | (see git log) |
+| `773aeb0` | (see git log) |
+
+### Status
+
+[OK] **Completed**

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-08-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~282 | Active |
+| `journal-1.md` | ~305 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-08-13 | Server 管理端主题与目录根导航 | `4034d2c`, `a2c8a28`, `773aeb0` | `develop` |
 | 9 | 2026-08-13 | 实现 Server 跨平台目录选择器 | `21a061a`, `b3b0415` | `develop` |
 | 8 | 2026-08-12 | 实现 Server 本地 Storage 与路径安全 | `901a8ea`, `7ac786a` | `develop` |
 | 7 | 2026-08-12 | Windows 原生 Server 启动与测试 | `00f9400` | `develop` |
