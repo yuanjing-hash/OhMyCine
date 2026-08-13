@@ -1,0 +1,39 @@
+{
+  "id": "server-local-storage",
+  "name": "server-local-storage",
+  "title": "Server 存储、媒体库与自动入库基础",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "develop",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-12-server-local-storage-foundation",
+    "08-12-server-media-classification-profiles",
+    "08-12-server-persistent-task-queue",
+    "08-12-server-media-library-foundation",
+    "08-12-server-downloader-management",
+    "08-12-server-download-rules",
+    "08-12-server-transfer-import-pipeline",
+    "08-12-server-library-strm-proxy",
+    "08-12-server-directory-picker"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "execution_order": "[08-12-server-local-storage-foundation,08-12-server-media-classification-profiles,08-12-server-media-library-foundation,08-12-server-persistent-task-queue,08-12-server-downloader-management,08-12-server-download-rules,08-12-server-transfer-import-pipeline,08-12-server-library-strm-proxy]",
+    "real_acceptance_root": "runtime-only; never persist absolute path in Git"
+  }
+}

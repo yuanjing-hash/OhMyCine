@@ -1,0 +1,36 @@
+{
+  "id": "player-media-actions-played-state",
+  "name": "player-media-actions-played-state",
+  "title": "Player 媒体操作菜单与已播放状态",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-08-13",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "develop",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-13-player-action-input-menu",
+    "08-13-player-played-state-continue-watching",
+    "08-13-player-media-action-capabilities",
+    "08-13-player-media-collections",
+    "08-13-player-media-downloads",
+    "08-13-player-media-delete",
+    "08-13-player-media-maintenance-actions"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "description": "统一桌面右键、移动长按、媒体操作能力、已播放状态、集合、下载、删除与元数据管理"
+  }
+}
