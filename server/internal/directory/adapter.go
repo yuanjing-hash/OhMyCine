@@ -145,7 +145,7 @@ func validateDirectoryPath(path string) error {
 	if err := validateDirectoryComponent(current); err != nil {
 		return err
 	}
-	rest := strings.TrimLeft(strings.TrimPrefix(clean, volume), `/\\`)
+	rest := strings.TrimLeft(strings.TrimPrefix(clean, volume), `/\`)
 	for _, part := range strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' }) {
 		current = filepath.Join(current, part)
 		if err := validateDirectoryComponent(current); err != nil {

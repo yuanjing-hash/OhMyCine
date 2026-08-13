@@ -57,12 +57,11 @@ func TestQueueLaneOrderingClaimCapacityAndLeaseGuard(t *testing.T) {
 	first := enqueueFake(t, service, actor, "First", "provider-a")
 	second := enqueueFake(t, service, actor, "Second", "provider-b")
 	third := enqueueFake(t, service, actor, "Third", "provider-c")
-	lane, err := service.Lane(actor, "fake", 10)
-	if err != nil {
+	if _, err := service.Lane(actor, "fake", 10); err != nil {
 		t.Fatal(err)
 	}
 	ordered := []LaneRevision{{ID: third.ID, Revision: third.Revision}, {ID: first.ID, Revision: first.Revision}, {ID: second.ID, Revision: second.Revision}}
-	lane, err = service.Reorder(actor, "fake", 10, ordered, RequestContext{})
+	lane, err := service.Reorder(actor, "fake", 10, ordered, RequestContext{})
 	if err != nil {
 		t.Fatal(err)
 	}

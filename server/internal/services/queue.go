@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1071,12 +1070,4 @@ func queueNotFound(err error) error {
 		return appError(CodeNotFound, "任务不存在", err)
 	}
 	return err
-}
-func sortedKeys(values map[string]struct{}) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
