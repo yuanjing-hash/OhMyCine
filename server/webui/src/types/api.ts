@@ -50,7 +50,7 @@ export interface StorageCapabilities {
 }
 export interface StorageProbe { exists: boolean; readable: boolean; available: boolean; free_bytes: number | null; total_bytes: number | null; last_checked_at: string; error_code: string }
 export interface StorageSummary {
-  id: number; name: string; type: 'local'; root_path: string; connection_id: number | null; enabled: boolean
+  id: number; name: string; type: string; root_path: string; connection_id: number | null; enabled: boolean
   capabilities: StorageCapabilities; probe: StorageProbe; created_at: string; updated_at: string
 }
 
@@ -96,6 +96,36 @@ export interface MediaClassificationProfileSummary {
   created_at: string; updated_at: string
 }
 export interface MediaClassificationProfileDetail extends MediaClassificationProfileSummary { rules: ClassificationRulesV1 }
+
+export type MediaLibraryStatus = 'disabled' | 'initializing' | 'attaching_listener' | 'catch_up_reconciliation' | 'listening' | 'initialization_failed'
+export interface MediaLibraryDetail {
+  id: number; name: string; storage_id: number; storage_name: string; profile_id: number; profile_name: string
+  profile_revision: number; relative_root: string; enabled: boolean; recursive: boolean
+  full_scan_interval_hours: number; incremental_minutes: number; video_extensions: string[]; ignore_patterns: string[]
+  metadata_language: string; metadata_region: string; match_strategy: string
+  provider_rate_per_second: number; provider_concurrency: number; metadata_rate_per_second: number; metadata_concurrency: number
+  strm_enabled: boolean; status: MediaLibraryStatus; status_error_code: string; next_retry_at: string | null
+  last_scan_at: string | null; last_successful_scan_at: string | null; baseline_generation: number; dirty_generation: number
+  reclassification_due: boolean; entry_count: number; created_at: string; updated_at: string
+}
+export interface MediaLibraryScanRun {
+  id: number; library_id: number; kind: 'initial' | 'catch_up' | 'event' | 'incremental' | 'full' | 'manual' | string
+  status: 'running' | 'success' | 'failed'; generation: number; discovered: number; added: number; updated: number; removed: number
+  error_code: string; partial: boolean; started_at: string; finished_at: string | null
+}
+export interface MediaLibraryEntry {
+  id: number; library_id: number; relative_path: string; provider_id: string; size: number; modified_at: string
+  media_type: 'movie' | 'tv' | 'unknown'; title: string; season: number | null; episode: number | null
+  match_status: string; category_name: string; matched_rule_id: string | null; last_generation: number
+  created_at: string; updated_at: string
+}
+export interface MediaLibraryWritePayload {
+  name: string; storage_id: number; profile_id: number; relative_root_token?: string; relative_root?: string
+  enabled: boolean; recursive: boolean; full_scan_interval_hours: number; incremental_minutes: number
+  video_extensions: string[]; ignore_patterns: string[]; metadata_language: string; metadata_region: string; match_strategy: string
+  provider_rate_per_second: number; provider_concurrency: number; metadata_rate_per_second: number; metadata_concurrency: number
+  strm_enabled: boolean; strm_local_root_token?: string
+}
 
 export interface RuntimeLogEntry {
   timestamp: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; module: string; component: string

@@ -14,13 +14,21 @@ import (
 )
 
 type StorageService struct {
-	db     *gorm.DB
-	audit  *AuditService
-	driver storagefs.LocalDriver
+	db         *gorm.DB
+	audit      *AuditService
+	driver     storagefs.LocalDriver
+	references StorageReferenceChecker
+}
+
+type StorageReferenceChecker interface {
+	StorageReferences(storageID uint) ([]string, error)
 }
 
 func NewStorageService(db *gorm.DB, audit *AuditService) *StorageService {
 	return &StorageService{db: db, audit: audit, driver: storagefs.LocalDriver{}}
+}
+func (s *StorageService) SetReferenceChecker(references StorageReferenceChecker) {
+	s.references = references
 }
 
 type StorageInput struct {
@@ -213,6 +221,15 @@ func (s *StorageService) Delete(actor Actor, id uint, request RequestContext) er
 		var record models.Storage
 		if err := tx.First(&record, id).Error; err != nil {
 			return storageNotFound(err)
+		}
+		if s.references != nil {
+			references, err := s.references.StorageReferences(id)
+			if err != nil {
+				return err
+			}
+			if len(references) > 0 {
+				return appError(CodeConflict, "存储正在被媒体库使用", nil)
+			}
 		}
 		if err := tx.Delete(&record).Error; err != nil {
 			return err

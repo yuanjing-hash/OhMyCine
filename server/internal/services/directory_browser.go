@@ -17,6 +17,7 @@ import (
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/directory"
+	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
 	"gorm.io/gorm"
@@ -244,6 +245,31 @@ func (s *DirectoryBrowserService) ResolveSelection(ctx context.Context, actor Ac
 		return "", storagePathError(err)
 	}
 	return canonical, nil
+}
+
+// ResolveStorageRelativeSelection consumes a Server directory selection token,
+// proves it remains inside the selected Storage, and returns only a provider-relative root.
+func (s *DirectoryBrowserService) ResolveStorageRelativeSelection(ctx context.Context, actor Actor, storageID uint, token string) (string, error) {
+	selected, err := s.ResolveSelection(ctx, actor, token)
+	if err != nil {
+		return "", err
+	}
+	var record models.Storage
+	if err := s.db.First(&record, storageID).Error; err != nil {
+		return "", storageNotFound(err)
+	}
+	constrained, err := storagefs.Constrain(record.RootPath, selected)
+	if err != nil {
+		return "", appError(CodeMediaLibraryPathInvalid, "所选目录不在来源 Storage 范围内", nil)
+	}
+	relative, err := filepath.Rel(record.RootPath, constrained)
+	if err != nil {
+		return "", appError(CodeMediaLibraryPathInvalid, "无法解析媒体库相对目录", nil)
+	}
+	if relative == "." {
+		return "/", nil
+	}
+	return medialibrary.NormalizeRelativeRoot(filepath.ToSlash(relative))
 }
 
 func (s *DirectoryBrowserService) authorize(actor Actor) error {

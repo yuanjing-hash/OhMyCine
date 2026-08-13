@@ -77,8 +77,8 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4}) {
-		t.Fatalf("migration versions=%v, want [1 2 3 4]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5}) {
+		t.Fatalf("migration versions=%v, want [1 2 3 4 5]", versions)
 	}
 }
 
@@ -134,6 +134,72 @@ func TestMediaClassificationProfilePermissionSeeds(t *testing.T) {
 		}
 		if count != want {
 			t.Fatalf("role %s has %d profile permissions, want %d", roleCode, count, want)
+		}
+	}
+}
+
+func TestMediaLibraryMigrationTablesForeignKeysAndPermissionSeeds(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "libraries.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"media_libraries", "media_library_scan_runs", "media_library_entries"} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("missing table %s", table)
+		}
+	}
+	var storage models.Storage
+	if err := db.Create(&models.Storage{Name: "Library storage", NameNormalized: "library storage", Type: models.StorageTypeLocal, RootPath: `C:\Media`, RootPathNormalized: `c:\media`, Enabled: true, Capabilities: `{}`}).Scan(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	var profile models.MediaClassificationProfile
+	if err := db.Where("code = ?", "default-v1").First(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	library := models.MediaLibrary{Name: "Library", NameNormalized: "library", StorageID: storage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", Enabled: false, Recursive: true, FullScanIntervalHours: 24, IncrementalMinutes: 15, VideoExtensionsJSON: `[]`, IgnorePatternsJSON: `[]`, MetadataLanguage: "zh-CN", MetadataRegion: "CN", MatchStrategy: "balanced", Status: models.MediaLibraryStatusDisabled, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&storage).Error; err == nil {
+		t.Fatal("storage deletion unexpectedly bypassed media library foreign key")
+	}
+	if err := db.Create(&models.MediaLibraryScanRun{LibraryID: library.ID, Kind: "test", Status: "success", StartedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.MediaLibraryEntry{LibraryID: library.ID, RelativePath: "/x.mp4", ProviderID: "x", ModifiedAt: now, MediaType: "movie", Title: "x", MatchStatus: "unmatched", CategoryName: "Other", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []any{&models.MediaLibraryScanRun{}, &models.MediaLibraryEntry{}} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("cascade count=%d err=%v", count, err)
+		}
+	}
+	mediaCodes := []string{authz.PermissionMediaLibrariesRead, authz.PermissionMediaLibrariesCreate, authz.PermissionMediaLibrariesUpdate, authz.PermissionMediaLibrariesDelete, authz.PermissionMediaLibrariesScan}
+	for _, roleCode := range []string{authz.RoleOperator, authz.RoleViewer} {
+		var role models.Role
+		if err := db.Where("code = ?", roleCode).First(&role).Error; err != nil {
+			t.Fatal(err)
+		}
+		var count int64
+		if err := db.Model(&models.RolePermission{}).Where("role_id = ? AND permission_code IN ?", role.ID, mediaCodes).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		want := int64(5)
+		if roleCode == authz.RoleViewer {
+			want = 0
+		}
+		if count != want {
+			t.Fatalf("role %s has %d media library permissions, want %d", roleCode, count, want)
 		}
 	}
 }

@@ -142,3 +142,82 @@ type MediaClassificationProfile struct {
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
+
+const (
+	MediaLibraryStatusDisabled             = "disabled"
+	MediaLibraryStatusInitializing         = "initializing"
+	MediaLibraryStatusInitializationFailed = "initialization_failed"
+	MediaLibraryStatusAttachingListener    = "attaching_listener"
+	MediaLibraryStatusReconciling          = "catch_up_reconciliation"
+	MediaLibraryStatusListening            = "listening"
+)
+
+type MediaLibrary struct {
+	ID                    uint       `gorm:"primaryKey" json:"id"`
+	Name                  string     `gorm:"size:128;not null" json:"name"`
+	NameNormalized        string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	StorageID             uint       `gorm:"not null;index" json:"storage_id"`
+	ProfileID             uint       `gorm:"not null;index" json:"profile_id"`
+	ProfileRevision       uint64     `gorm:"not null" json:"profile_revision"`
+	RelativeRoot          string     `gorm:"size:1024;not null" json:"relative_root"`
+	Enabled               bool       `gorm:"not null" json:"enabled"`
+	Recursive             bool       `gorm:"not null" json:"recursive"`
+	FullScanIntervalHours int        `gorm:"not null;default:24" json:"full_scan_interval_hours"`
+	IncrementalMinutes    int        `gorm:"not null;default:15" json:"incremental_minutes"`
+	VideoExtensionsJSON   string     `gorm:"type:text;not null" json:"-"`
+	IgnorePatternsJSON    string     `gorm:"type:text;not null" json:"-"`
+	MetadataLanguage      string     `gorm:"size:16;not null;default:'zh-CN'" json:"metadata_language"`
+	MetadataRegion        string     `gorm:"size:8;not null;default:'CN'" json:"metadata_region"`
+	MatchStrategy         string     `gorm:"size:32;not null;default:'balanced'" json:"match_strategy"`
+	ProviderRatePerSecond int        `gorm:"not null;default:100" json:"provider_rate_per_second"`
+	ProviderConcurrency   int        `gorm:"not null;default:2" json:"provider_concurrency"`
+	MetadataRatePerSecond int        `gorm:"not null;default:5" json:"metadata_rate_per_second"`
+	MetadataConcurrency   int        `gorm:"not null;default:1" json:"metadata_concurrency"`
+	STRMEnabled           bool       `gorm:"not null;default:false" json:"strm_enabled"`
+	STRMLocalRoot         string     `gorm:"type:text;not null;default:''" json:"-"`
+	Status                string     `gorm:"size:32;not null;index" json:"status"`
+	StatusErrorCode       string     `gorm:"size:64;not null;default:''" json:"status_error_code"`
+	NextRetryAt           *time.Time `gorm:"index" json:"next_retry_at"`
+	LastScanAt            *time.Time `json:"last_scan_at"`
+	LastSuccessfulScanAt  *time.Time `json:"last_successful_scan_at"`
+	BaselineGeneration    uint64     `gorm:"not null;default:0" json:"baseline_generation"`
+	DirtyGeneration       uint64     `gorm:"not null;default:0" json:"dirty_generation"`
+	ReclassificationDue   bool       `gorm:"not null;default:false" json:"reclassification_due"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+type MediaLibraryScanRun struct {
+	ID         uint       `gorm:"primaryKey" json:"id"`
+	LibraryID  uint       `gorm:"not null;index" json:"library_id"`
+	Kind       string     `gorm:"size:24;not null;index" json:"kind"`
+	Status     string     `gorm:"size:24;not null;index" json:"status"`
+	Generation uint64     `gorm:"not null" json:"generation"`
+	Discovered int        `gorm:"not null;default:0" json:"discovered"`
+	Added      int        `gorm:"not null;default:0" json:"added"`
+	Updated    int        `gorm:"not null;default:0" json:"updated"`
+	Removed    int        `gorm:"not null;default:0" json:"removed"`
+	ErrorCode  string     `gorm:"size:64;not null;default:''" json:"error_code"`
+	Partial    bool       `gorm:"not null;default:false" json:"partial"`
+	StartedAt  time.Time  `gorm:"index" json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+}
+
+type MediaLibraryEntry struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	LibraryID      uint      `gorm:"not null;uniqueIndex:idx_library_path" json:"library_id"`
+	RelativePath   string    `gorm:"size:2048;not null;uniqueIndex:idx_library_path" json:"relative_path"`
+	ProviderID     string    `gorm:"size:128;not null" json:"provider_id"`
+	Size           int64     `gorm:"not null" json:"size"`
+	ModifiedAt     time.Time `json:"modified_at"`
+	MediaType      string    `gorm:"size:16;not null" json:"media_type"`
+	Title          string    `gorm:"size:512;not null" json:"title"`
+	Season         *int      `json:"season"`
+	Episode        *int      `json:"episode"`
+	MatchStatus    string    `gorm:"size:24;not null" json:"match_status"`
+	CategoryName   string    `gorm:"size:128;not null" json:"category_name"`
+	MatchedRuleID  *string   `gorm:"size:128" json:"matched_rule_id"`
+	LastGeneration uint64    `gorm:"not null;index" json:"last_generation"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}

@@ -117,6 +117,8 @@ Server 本地目录浏览使用独立敏感权限 `storages.browse`，不能由 
 
 媒体逻辑分类 Profile 使用独立的 `media_classification_profiles.read/create/update/delete`，不得复用流水线 `categories.*`。owner/administrator 和 operator 默认具备四项，viewer 默认不具备；路由 middleware 与 service policy 双重校验。内置 Profile 只能读取和复制，不能更新或删除。创建、复制、更新、删除的审计只记录 actor、Profile ID、动作、结果、revision、kind 和分类数量，不记录 `rules_json`、完整规则或未来媒体绝对路径。
 
+MediaLibrary 使用独立的 `media_libraries.read/create/update/delete/scan` 权限；管理端按钮可按生成的 permission constants 隐藏，但 API 路由与 service policy 仍是授权边界。来源目录必须由 Storage 范围内的短期选择令牌解析为 provider-relative root，客户端不得从展示路径手工拼接或提交绝对来源路径。扫描与清单 API 只返回相对路径、opaque provider identity、解析/分类状态和安全错误码，不把 Storage 绝对根、原始 OS 错误或媒体绝对路径送入展示、导出、日志或 AI 字段。删除媒体库只删除配置、索引与扫描记录；扫描、初始化、重试、监听和停用流程不得修改来源媒体文件。
+
 目录选择器仅逐层枚举 Server 进程可见目录，响应 `Cache-Control: no-store`，并使用短期、签名、用途隔离且绑定平台/adapter 版本的 opaque token 导航和选择。客户端不得拼接盘符、UNC 主机、分隔符或 `..`。symlink、junction、mount-point Reparse Point 等跳转项不可进入或选择；保存时仍重新执行 Storage 根规范化与只读探测。普通日志和审计不得记录被浏览/选择的绝对路径或子目录名，只能记录 actor、结果、稳定错误、平台和条目数等脱敏信息。
 
 | 角色 | 权限 |

@@ -73,9 +73,9 @@ func TestConstrainRejectsBoundaryEscape(t *testing.T) {
 	}
 }
 
-func TestLocalCapabilitiesDoNotAdvertiseUnsupportedFeatures(t *testing.T) {
+func TestLocalCapabilitiesAdvertiseDirectoryAndWatchOnly(t *testing.T) {
 	capabilities := (LocalDriver{}).Capabilities()
-	if !capabilities.DirectoryList || capabilities.NetworkDrive || capabilities.Watch || capabilities.NativeOfflineDownload || capabilities.TemporaryDirectURL || capabilities.SignedProxy || capabilities.ChangeCursor {
+	if !capabilities.DirectoryList || !capabilities.Watch || capabilities.NetworkDrive || capabilities.NativeOfflineDownload || capabilities.TemporaryDirectURL || capabilities.SignedProxy || capabilities.ChangeCursor {
 		t.Fatalf("unexpected capabilities: %+v", capabilities)
 	}
 }

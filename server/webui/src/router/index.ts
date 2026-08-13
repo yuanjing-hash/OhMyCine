@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vu
 import { useAuthStore } from '@/stores/auth'
 import { Permissions, type PermissionCode } from '@/auth/generated-permissions'
 import { findNavigationItem, getFirstVisibleUserManagementPath, legacyRouteRedirects, userManagementPermissions } from '@/navigation'
+import { mediaLibrariesRouteContract } from '@/router/contracts'
 import AppLayout from '@/layouts/AppLayout.vue'
 import SetupView from '@/views/SetupView.vue'
 import LoginView from '@/views/LoginView.vue'
@@ -14,6 +15,7 @@ import RuntimeLogsView from '@/views/RuntimeLogsView.vue'
 import PlannedView from '@/views/PlannedView.vue'
 import StorageView from '@/views/StorageView.vue'
 import MediaRulesView from '@/views/MediaRulesView.vue'
+import MediaLibrariesView from '@/views/MediaLibrariesView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 
 function navigationMeta(id: string) {
@@ -50,6 +52,7 @@ export const router = createRouter({
       children: [
         { path: '', name: 'dashboard', component: DashboardView, meta: navigationMeta('dashboard') },
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
+        { path: mediaLibrariesRouteContract.path, name: mediaLibrariesRouteContract.name, component: MediaLibrariesView, meta: navigationMeta(mediaLibrariesRouteContract.navigationID) },
         { path: 'system/media-rules', name: 'media-rules', component: MediaRulesView, meta: navigationMeta('media-rules') },
         ...plannedRoutes.map(([path, id]) => ({ path, name: id, component: PlannedView, meta: navigationMeta(id) })),
         {

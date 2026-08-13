@@ -23,7 +23,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 	status := http.StatusInternalServerError
 	code := services.ErrorCode(err)
 	switch code {
-	case services.CodeInvalidRequest, services.CodeStorageNameRequired, services.CodeProfileValidation, services.CodeProfileNameRequired, services.CodeRuntimeLogFilterInvalid, services.CodeRuntimeLogPolicyInvalid, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported:
+	case services.CodeInvalidRequest, services.CodeStorageNameRequired, services.CodeProfileValidation, services.CodeProfileNameRequired, services.CodeRuntimeLogFilterInvalid, services.CodeRuntimeLogPolicyInvalid, services.CodeMediaLibraryNameRequired, services.CodeMediaLibraryPathInvalid, services.CodeMediaLibraryStorageUnavailable, services.CodeMediaLibraryProfileUnavailable, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported:
 		status = http.StatusBadRequest
 	case services.CodeDirectoryTokenInvalid, services.CodeDirectoryTokenExpired, services.CodeDirectoryNotFound, services.CodeDirectoryUnreadable, services.CodeDirectoryUnavailable:
 		status = http.StatusBadRequest
@@ -33,7 +33,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusForbidden
 	case services.CodeNotFound:
 		status = http.StatusNotFound
-	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeStorageNameConflict, services.CodeStoragePathConflict, services.CodeProfileNameConflict, services.CodeProfileRevisionConflict, services.CodeProfileInUse:
+	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeStorageNameConflict, services.CodeStoragePathConflict, services.CodeProfileNameConflict, services.CodeProfileRevisionConflict, services.CodeProfileInUse, services.CodeMediaLibraryNameConflict, services.CodeMediaLibraryOverlap, services.CodeMediaLibraryBusy:
 		status = http.StatusConflict
 	case services.CodeLoginRateLimited:
 		status = http.StatusTooManyRequests
@@ -41,7 +41,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusTooManyRequests
 	case services.CodeDirectoryBusy:
 		status = http.StatusServiceUnavailable
-	case services.CodeRuntimeLogUnavailable:
+	case services.CodeRuntimeLogUnavailable, services.CodeMediaLibraryScanFailed:
 		status = http.StatusServiceUnavailable
 	}
 	if status == http.StatusInternalServerError {

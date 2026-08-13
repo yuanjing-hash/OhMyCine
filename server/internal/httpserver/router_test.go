@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +60,12 @@ func newTestClient(t *testing.T) *testClient {
 	}
 	profiles := services.NewMediaClassificationProfileService(db, audit, nil)
 	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
+	libraries := services.NewMediaLibraryService(db, audit, log)
+	profiles.SetReferences(libraries)
+	profiles.SetRevisionNotifier(libraries)
+	storages.SetReferenceChecker(libraries)
+	api.SetMediaLibraryService(libraries)
+	t.Cleanup(libraries.Close)
 	logManager, err := logging.NewManager(cfg.LogDirectory, "test", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -323,6 +330,96 @@ func TestStorageCRUDRBACAndDeleteLeavesFilesUntouched(t *testing.T) {
 		if status != http.StatusForbidden || !bytes.Contains(envelope.Data, []byte(services.CodePermissionDenied)) {
 			t.Fatalf("viewer %s %s status=%d data=%s", request.method, request.path, status, envelope.Data)
 		}
+	}
+}
+
+func TestMediaLibraryAPICRUDRBACAndAutomaticInitialization(t *testing.T) {
+	owner := newTestClient(t)
+	owner.setup(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "API.Movie.mp4"), []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, storageEnvelope := owner.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "Library source", "type": "local", "root_path": root, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create storage status=%d message=%s", status, storageEnvelope.Message)
+	}
+	var storage struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(storageEnvelope.Data, &storage); err != nil {
+		t.Fatal(err)
+	}
+	status, profilesEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-classification-profiles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var profiles struct {
+		List []struct {
+			ID uint `json:"id"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(profilesEnvelope.Data, &profiles); err != nil || len(profiles.List) == 0 {
+		t.Fatalf("profiles=%+v err=%v", profiles, err)
+	}
+	status, directoryEnvelope := owner.request(t, http.MethodGet, "/api/v1/storages/"+uintString(storage.ID)+"/directory", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("storage directory status=%d", status)
+	}
+	var directory struct {
+		CurrentSelectionToken string `json:"current_selection_token"`
+	}
+	if err := json.Unmarshal(directoryEnvelope.Data, &directory); err != nil || directory.CurrentSelectionToken == "" {
+		t.Fatalf("directory=%+v err=%v", directory, err)
+	}
+	payload := map[string]any{"name": "API library", "storage_id": storage.ID, "profile_id": profiles.List[0].ID, "relative_root_token": directory.CurrentSelectionToken, "enabled": true, "recursive": true}
+	status, rejected := owner.request(t, http.MethodPost, "/api/v1/media-libraries", map[string]any{"name": "Raw path", "storage_id": storage.ID, "profile_id": profiles.List[0].ID, "relative_root": "/", "enabled": false}, true)
+	if status != http.StatusBadRequest || !bytes.Contains(rejected.Data, []byte(services.CodeInvalidRequest)) {
+		t.Fatalf("raw relative root status=%d data=%s", status, rejected.Data)
+	}
+	status, libraryEnvelope := owner.request(t, http.MethodPost, "/api/v1/media-libraries", payload, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create library status=%d message=%s", status, libraryEnvelope.Message)
+	}
+	var library struct {
+		ID           uint   `json:"id"`
+		RelativeRoot string `json:"relative_root"`
+		Status       string `json:"status"`
+	}
+	if err := json.Unmarshal(libraryEnvelope.Data, &library); err != nil {
+		t.Fatal(err)
+	}
+	if library.RelativeRoot != "/" || strings.Contains(string(libraryEnvelope.Data), root) {
+		t.Fatalf("unsafe library response: %s", libraryEnvelope.Data)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		status, libraryEnvelope = owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID), nil, false)
+		if status != http.StatusOK {
+			t.Fatal(status)
+		}
+		if err := json.Unmarshal(libraryEnvelope.Data, &library); err != nil {
+			t.Fatal(err)
+		}
+		if library.Status == "listening" {
+			break
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	if library.Status != "listening" {
+		t.Fatalf("library status=%q", library.Status)
+	}
+	status, entriesEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID)+"/entries", nil, false)
+	if status != http.StatusOK || !strings.Contains(string(entriesEnvelope.Data), "/API.Movie.mp4") || strings.Contains(string(entriesEnvelope.Data), root) {
+		t.Fatalf("entries status=%d data=%s", status, entriesEnvelope.Data)
+	}
+	status, _ = owner.request(t, http.MethodDelete, "/api/v1/storages/"+uintString(storage.ID), map[string]any{}, true)
+	if status != http.StatusConflict {
+		t.Fatalf("referenced storage delete status=%d", status)
+	}
+	status, _ = owner.request(t, http.MethodDelete, "/api/v1/media-libraries/"+uintString(library.ID), map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("delete media library status=%d", status)
 	}
 }
 

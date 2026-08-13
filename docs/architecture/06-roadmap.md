@@ -359,7 +359,8 @@ Phase 4: 生态系统           ████████████████
 - [x] 只读目录探测、磁盘容量和明确能力快照；不创建探测文件、不递归扫描
 - [x] Storage 管理页及 CRUD/test API；删除只删配置，Connection/Destination 保留规划状态
 - [x] 独立 `MediaClassificationProfile` v1：内置 Player-v1 等价默认规则、严格结构校验、纯 Go matcher、CRUD/copy/revision、独立权限与管理页；它不是流水线 `CategoryRule`
-- [ ] MediaLibrary 真实引用、扫描、流水线分类、Destination、STRM、下载器和真实文件写入（由后续独立切片实现）
+- [x] MediaLibrary 本地只读索引基础：Storage 相对根 + Classification Profile 引用、自动首次全量、独立 watcher/catch-up、定时增量/全量、失败退避/立即重试、扫描记录与相对媒体清单，以及 `/system/media-libraries` 管理页
+- [ ] MediaLibrary 云 Storage driver/event/cursor、Destination、STRM/302、下载器、metadata 网络匹配和真实文件写入（由后续独立切片实现）
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）
 

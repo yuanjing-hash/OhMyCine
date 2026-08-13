@@ -52,8 +52,17 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize directory browser")
 	}
 	profiles := services.NewMediaClassificationProfileService(db, audit, nil)
+	libraries := services.NewMediaLibraryService(db, audit, logManager.Logger("media_library", "supervisor"))
+	profiles.SetReferences(libraries)
+	profiles.SetRevisionNotifier(libraries)
+	storages.SetReferenceChecker(libraries)
 	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
 	api.SetRuntimeLogService(runtimeLogs)
+	api.SetMediaLibraryService(libraries)
+	if err := libraries.Start(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to start media library supervisors")
+	}
+	defer libraries.Close()
 	server := &http.Server{
 		Addr: cfg.Address(), Handler: httpserver.New(cfg, api, auth, logManager.Logger("http", "request")),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,

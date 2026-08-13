@@ -145,6 +145,48 @@ func TestDirectoryBrowserSelectionRejectsStalePath(t *testing.T) {
 	}
 }
 
+func TestDirectoryBrowserResolvesOnlyStorageRelativeSelections(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "relative.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	root := t.TempDir()
+	inside := filepath.Join(root, "Media", "Movies")
+	outside := t.TempDir()
+	for _, path := range []string{inside, outside} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storage := models.Storage{Name: "Relative", NameNormalized: "relative", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`}
+	if err := db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewDirectoryBrowserService(db, directory.NativeAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := Actor{User: models.User{ID: 1}, Permissions: map[string]struct{}{authz.PermissionStoragesBrowse: {}}}
+	insideToken, _ := service.sign(inside, tokenPurposeSelect)
+	relative, err := service.ResolveStorageRelativeSelection(context.Background(), actor, storage.ID, insideToken)
+	if err != nil || relative != "/Media/Movies" {
+		t.Fatalf("relative=%q err=%v", relative, err)
+	}
+	rootToken, _ := service.sign(root, tokenPurposeSelect)
+	if relative, err := service.ResolveStorageRelativeSelection(context.Background(), actor, storage.ID, rootToken); err != nil || relative != "/" {
+		t.Fatalf("root relative=%q err=%v", relative, err)
+	}
+	outsideToken, _ := service.sign(outside, tokenPurposeSelect)
+	if _, err := service.ResolveStorageRelativeSelection(context.Background(), actor, storage.ID, outsideToken); ErrorCode(err) != CodeMediaLibraryPathInvalid {
+		t.Fatalf("outside code=%q err=%v", ErrorCode(err), err)
+	}
+}
+
 func TestDirectoryBrowserRepeatsServiceAuthorization(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

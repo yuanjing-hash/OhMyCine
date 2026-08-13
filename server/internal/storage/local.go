@@ -47,7 +47,7 @@ type Probe struct {
 type LocalDriver struct{}
 
 func (LocalDriver) Capabilities() Capabilities {
-	return Capabilities{DirectoryList: true, Watch: false}
+	return Capabilities{DirectoryList: true, Watch: true}
 }
 
 // CanonicalizeRoot validates only the configured root. It does not scan child media.

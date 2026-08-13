@@ -23,7 +23,7 @@ func Migrate(db *gorm.DB) error {
 	)`).Error; err != nil {
 		return fmt.Errorf("create schema migrations table: %w", err)
 	}
-	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}}
+	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}}
 	for _, item := range migrations {
 		var count int64
 		if err := db.Table("schema_migrations").Where("version = ?", item.Version).Count(&count).Error; err != nil {
@@ -45,6 +45,23 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return seedMediaClassificationProfiles(db)
+}
+
+func migrateMediaLibraries(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE media_libraries (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, name_normalized TEXT NOT NULL UNIQUE, storage_id INTEGER NOT NULL, profile_id INTEGER NOT NULL, profile_revision INTEGER NOT NULL, relative_root TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, recursive INTEGER NOT NULL DEFAULT 1, full_scan_interval_hours INTEGER NOT NULL DEFAULT 24, incremental_minutes INTEGER NOT NULL DEFAULT 15, video_extensions_json TEXT NOT NULL, ignore_patterns_json TEXT NOT NULL, metadata_language TEXT NOT NULL DEFAULT 'zh-CN', metadata_region TEXT NOT NULL DEFAULT 'CN', match_strategy TEXT NOT NULL DEFAULT 'balanced', provider_rate_per_second INTEGER NOT NULL DEFAULT 100, provider_concurrency INTEGER NOT NULL DEFAULT 2, metadata_rate_per_second INTEGER NOT NULL DEFAULT 5, metadata_concurrency INTEGER NOT NULL DEFAULT 1, strm_enabled INTEGER NOT NULL DEFAULT 0, strm_local_root TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, status_error_code TEXT NOT NULL DEFAULT '', next_retry_at DATETIME, last_scan_at DATETIME, last_successful_scan_at DATETIME, baseline_generation INTEGER NOT NULL DEFAULT 0, dirty_generation INTEGER NOT NULL DEFAULT 0, reclassification_due INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, FOREIGN KEY(storage_id) REFERENCES storages(id) ON DELETE RESTRICT, FOREIGN KEY(profile_id) REFERENCES media_classification_profiles(id) ON DELETE RESTRICT)`,
+		`CREATE INDEX idx_media_libraries_storage_id ON media_libraries(storage_id)`, `CREATE INDEX idx_media_libraries_profile_id ON media_libraries(profile_id)`, `CREATE INDEX idx_media_libraries_status ON media_libraries(status)`,
+		`CREATE TABLE media_library_scan_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, library_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, generation INTEGER NOT NULL, discovered INTEGER NOT NULL DEFAULT 0, added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0, error_code TEXT NOT NULL DEFAULT '', partial INTEGER NOT NULL DEFAULT 0, started_at DATETIME NOT NULL, finished_at DATETIME, FOREIGN KEY(library_id) REFERENCES media_libraries(id) ON DELETE CASCADE)`,
+		`CREATE INDEX idx_media_library_scan_runs_library ON media_library_scan_runs(library_id, id DESC)`,
+		`CREATE TABLE media_library_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, library_id INTEGER NOT NULL, relative_path TEXT NOT NULL, provider_id TEXT NOT NULL, size INTEGER NOT NULL, modified_at DATETIME NOT NULL, media_type TEXT NOT NULL, title TEXT NOT NULL, season INTEGER, episode INTEGER, match_status TEXT NOT NULL, category_name TEXT NOT NULL, matched_rule_id TEXT, last_generation INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(library_id, relative_path), FOREIGN KEY(library_id) REFERENCES media_libraries(id) ON DELETE CASCADE)`,
+		`CREATE INDEX idx_media_library_entries_library_generation ON media_library_entries(library_id, last_generation)`, `CREATE INDEX idx_media_library_entries_type ON media_library_entries(library_id, media_type)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateRuntimeLogging(db *gorm.DB) error {
@@ -257,7 +274,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "logs.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
+		operatorCodes := []string{"dashboard.read", "logs.read", "media_libraries.read", "media_libraries.create", "media_libraries.update", "media_libraries.delete", "media_libraries.scan", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

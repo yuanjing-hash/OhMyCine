@@ -4,7 +4,7 @@ import { api } from '@/api/client'
 import type { DirectoryItem, DirectoryListing } from '@/types/api'
 import { directoryRootLabel, FILESYSTEM_ROOTS_ENDPOINT } from '@/directory-navigation'
 
-const props = defineProps<{ open: boolean; storageId?: number | null }>()
+const props = defineProps<{ open: boolean; storageId?: number | null; restrictToStorage?: boolean }>()
 const emit = defineEmits<{ close: []; select: [value: { path: string; token: string }] }>()
 
 const dialog = ref<HTMLElement | null>(null)
@@ -14,6 +14,7 @@ const loading = ref(false)
 const error = ref('')
 let previousFocus: HTMLElement | null = null
 let activeRequest: AbortController | null = null
+const restrictedHistory: string[] = []
 
 watch(() => props.open, async open => {
 	if (!open) { cancelRequest(); await nextTick(); previousFocus?.focus(); return }
@@ -26,6 +27,7 @@ watch(() => props.open, async open => {
 onBeforeUnmount(() => { cancelRequest(); previousFocus?.focus() })
 
 async function loadInitial() {
+  restrictedHistory.length = 0
   if (!props.storageId) { await loadRoots(); return }
   loading.value = true; error.value = ''
   const controller = beginRequest()
@@ -40,8 +42,20 @@ async function loadInitial() {
 	} finally { if (activeRequest === controller) { activeRequest = null; loading.value = false } }
 }
 
+const withinStorage = () => Boolean(props.restrictToStorage && props.storageId)
+
 async function browse(token: string) {
   await load('/api/v1/filesystem/directories?token=' + encodeURIComponent(token))
+}
+
+async function enter(token: string) {
+  if (withinStorage() && listing.value?.current_token) restrictedHistory.push(listing.value.current_token)
+  await browse(token)
+}
+
+async function backWithinStorage() {
+  const token = restrictedHistory.pop()
+  if (token) await browse(token)
 }
 
 async function loadRoots() { await load(FILESYSTEM_ROOTS_ENDPOINT) }
@@ -106,14 +120,16 @@ function onKeydown(event: KeyboardEvent) {
         </header>
 
         <div class="semantic-divider mt-5 flex flex-wrap items-center gap-2 border-y py-3" aria-label="目录面包屑">
-          <button v-if="listing" type="button" class="root-navigation" :disabled="loading || !listing.breadcrumbs.length" @click="loadRoots">{{ directoryRootLabel(listing.platform) }}</button>
-          <span v-if="listing?.breadcrumbs.length" aria-hidden="true" class="text-subtle">/</span>
-          <button v-for="crumb in listing?.breadcrumbs ?? []" :key="crumb.token" type="button" class="breadcrumb-button" :disabled="loading" @click="browse(crumb.token)">{{ crumb.name }}</button>
+          <button v-if="listing && !withinStorage()" type="button" class="root-navigation" :disabled="loading || !listing.breadcrumbs.length" @click="loadRoots">{{ directoryRootLabel(listing.platform) }}</button>
+          <span v-else-if="listing" class="text-muted text-sm">来源 Storage</span>
+          <span v-if="listing?.breadcrumbs.length && !withinStorage()" aria-hidden="true" class="text-subtle">/</span>
+          <button v-for="crumb in withinStorage() ? [] : listing?.breadcrumbs ?? []" :key="crumb.token" type="button" class="breadcrumb-button" :disabled="loading" @click="browse(crumb.token)">{{ crumb.name }}</button>
           <span v-if="listing && !listing.breadcrumbs.length" class="text-muted text-sm">选择一个 Server 根位置开始浏览</span>
         </div>
 
         <div class="mt-4 flex flex-wrap gap-2">
-          <button v-if="listing?.parent_token" type="button" class="btn-secondary" :disabled="loading" @click="browse(listing.parent_token)">返回上级</button>
+          <button v-if="withinStorage() && restrictedHistory.length" type="button" class="btn-secondary" :disabled="loading" @click="backWithinStorage">返回上级</button>
+          <button v-else-if="listing?.parent_token && !withinStorage()" type="button" class="btn-secondary" :disabled="loading" @click="browse(listing.parent_token)">返回上级</button>
           <button type="button" class="btn-secondary" :disabled="loading" @click="listing?.current_token ? browse(listing.current_token) : loadRoots()">刷新</button>
         </div>
 
@@ -122,7 +138,7 @@ function onKeydown(event: KeyboardEvent) {
         <div v-else class="semantic-inset mt-4 min-h-48 flex-1 overflow-y-auto p-2">
           <div v-if="listing && listing.items.length === 0" class="text-subtle flex min-h-44 items-center justify-center text-sm">当前层没有可显示的子目录</div>
           <div v-for="(item, index) in listing?.items ?? []" :key="item.token || item.name" class="directory-item mb-1 flex items-center gap-2 p-2">
-            <button type="button" class="min-w-0 flex-1 rounded-2 px-2 py-2 text-left" :disabled="!item.enterable" :aria-describedby="item.unavailable_reason ? `directory-reason-${index}` : undefined" @click="item.token && browse(item.token)">
+            <button type="button" class="min-w-0 flex-1 rounded-2 px-2 py-2 text-left" :disabled="!item.enterable" :aria-describedby="item.unavailable_reason ? `directory-reason-${index}` : undefined" @click="item.token && enter(item.token)">
               <strong class="block truncate">{{ item.name }}</strong><span class="text-subtle text-xs">{{ item.kind || 'directory' }}</span>
             </button>
             <button v-if="item.selectable && item.selection_token" type="button" class="btn-secondary" @click="choose(item.location, item.selection_token)">选择</button>

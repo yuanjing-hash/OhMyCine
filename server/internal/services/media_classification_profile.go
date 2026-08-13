@@ -28,9 +28,14 @@ type NoMediaLibraryProfileReferences struct{}
 func (NoMediaLibraryProfileReferences) References(uint) ([]string, error) { return nil, nil }
 
 type MediaClassificationProfileService struct {
-	db         *gorm.DB
-	audit      *AuditService
-	references ProfileReferenceChecker
+	db               *gorm.DB
+	audit            *AuditService
+	references       ProfileReferenceChecker
+	revisionNotifier ProfileRevisionNotifier
+}
+
+type ProfileRevisionNotifier interface {
+	ProfileRevisionChanged(profileID uint, revision uint64) error
 }
 
 func NewMediaClassificationProfileService(db *gorm.DB, audit *AuditService, references ProfileReferenceChecker) *MediaClassificationProfileService {
@@ -38,6 +43,14 @@ func NewMediaClassificationProfileService(db *gorm.DB, audit *AuditService, refe
 		references = NoMediaLibraryProfileReferences{}
 	}
 	return &MediaClassificationProfileService{db: db, audit: audit, references: references}
+}
+func (s *MediaClassificationProfileService) SetReferences(references ProfileReferenceChecker) {
+	if references != nil {
+		s.references = references
+	}
+}
+func (s *MediaClassificationProfileService) SetRevisionNotifier(notifier ProfileRevisionNotifier) {
+	s.revisionNotifier = notifier
 }
 
 type MediaClassificationProfileSummary struct {
@@ -266,6 +279,11 @@ func (s *MediaClassificationProfileService) Update(actor Actor, id uint, input U
 	var updated models.MediaClassificationProfile
 	if err := s.db.First(&updated, id).Error; err != nil {
 		return MediaClassificationProfileDetail{}, profileNotFound(err)
+	}
+	if s.revisionNotifier != nil {
+		if err := s.revisionNotifier.ProfileRevisionChanged(id, updated.Revision); err != nil {
+			return MediaClassificationProfileDetail{}, err
+		}
 	}
 	return profileDetail(updated)
 }

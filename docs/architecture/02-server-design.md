@@ -16,9 +16,11 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
 
-当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。Connection、Storage Destination、流水线 `CategoryRule`、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
+当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。MediaLibrary 可显式引用已注册 Storage 后独立扫描，但 Connection、Storage Destination、流水线 `CategoryRule`、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
 
-Server 同时已实现独立的 `MediaClassificationProfile`：它保存版本化的 movie/tv 逻辑分类规则，提供受控管理页、严格校验、复制、乐观 revision 和纯 Go matcher，供后续 `MediaLibrary` 选择。内置 `default-v1` 与 Player v1 默认分类语义一致，但 Server 不读取或执行 Player 配置。该 Profile 不属于下载/转移流水线的 `categories.*` / `CategoryRule`，不选择 Storage Destination，也不执行扫描、移动、重命名或任何文件写入；本版本尚未创建 `MediaLibrary` 表或伪造引用关系。
+Server 同时已实现独立的 `MediaClassificationProfile`：它保存版本化的 movie/tv 逻辑分类规则，提供受控管理页、严格校验、复制、乐观 revision 和纯 Go matcher，供 `MediaLibrary` 选择。内置 `default-v1` 与 Player v1 默认分类语义一致，但 Server 不读取或执行 Player 配置。该 Profile 不属于下载/转移流水线的 `categories.*` / `CategoryRule`，不选择 Storage Destination，也不执行移动、重命名或任何文件写入；Profile revision 更新只把引用库标记为待重分类。
+
+`MediaLibrary` 基础现已落地为只读索引边界：每个库引用一个 Storage、一个经目录选择令牌校验并持久化为 provider-relative 的根、一个分类 Profile，以及独立的全量/增量计划、扩展名、忽略规则、metadata 匹配与 provider 限速配置。新建并启用后自动执行首次全量基线，成功后才挂接该库独立的 watcher，并立即执行一次 catch-up reconciliation 覆盖交接窗口；初始化失败时保留配置、显示安全错误码与下次指数退避时间，也可仅唤醒该库“立即重试”。管理端 `/system/media-libraries` 展示状态、扫描记录和只含相对路径的媒体条目，并提供显式手动跟进扫描。当前仅接入 local Storage，因此 UI 完全隐藏 STRM/302 字段；云来源与受控 STRM 输出目录仍由后续纵向切片接入。
 
 Server 运行日志已经形成独立基础设施：zerolog 事件在统一脱敏后同时写入 stdout 与本地 JSONL，默认按 20 MiB 切割、gzip 压缩，并以 10 个分片、30 天和 500 MiB 三项上限清理最旧历史。管理端顶栏日志中心通过 `logs.read` 查询并组合筛选模块、组件、插件和业务关联 ID；导出和策略修改分别由 `logs.export`、`logs.configure` 控制。运行日志与 SQLite 审计日志分域、分权、分开保留，日志文件故障时 Server 降级为 stdout 而不退出。
 
