@@ -1,4 +1,8 @@
+use crate::commands::settings;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use tauri::{
     plugin::{Builder, PluginHandle, TauriPlugin},
     AppHandle, Manager, State, Wry,
@@ -119,6 +123,66 @@ pub async fn local_file_stream_path(
             },
         )
         .await
+}
+
+#[derive(Deserialize)]
+struct PersistedDataSource {
+    id: String,
+    #[serde(rename = "type")]
+    source_type: String,
+    #[serde(default)]
+    extra: HashMap<String, Value>,
+}
+
+#[tauri::command]
+pub async fn local_file_delete_owned(
+    app: AppHandle,
+    source_id: String,
+    path: String,
+) -> Result<(), String> {
+    let root_path = local_root_for_source(&app, &source_id)?;
+    app.state::<AndroidLocalMediaState>()
+        .run::<Value>(
+            "delete",
+            LocalEntryPayload {
+                root_path,
+                path: Some(path),
+            },
+        )
+        .await
+        .map(|_| ())
+}
+
+fn local_root_for_source(app: &AppHandle, source_id: &str) -> Result<String, String> {
+    if source_id.trim().is_empty()
+        || source_id.len() > 256
+        || source_id.chars().any(char::is_control)
+    {
+        return Err("Invalid local data source identity.".to_string());
+    }
+    let raw = settings::read_player_setting(app, "ohmycine-datasources")?
+        .ok_or_else(|| "Local data source configuration is unavailable.".to_string())?;
+    let sources: Vec<PersistedDataSource> = serde_json::from_str(&raw)
+        .map_err(|_| "Local data source configuration is invalid.".to_string())?;
+    let source = sources
+        .into_iter()
+        .find(|source| source.id == source_id && source.source_type == "local")
+        .ok_or_else(|| "The local data source no longer exists.".to_string())?;
+    source
+        .extra
+        .get("rootPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with("content://") && !value.chars().any(char::is_control))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "The Android local media directory authorization is invalid.".to_string())
+}
+
+pub(crate) fn resolve_local_download_source(
+    _root_path: &str,
+    _provider_path: &str,
+) -> Result<PathBuf, String> {
+    Err("Android 文档树媒体不能通过桌面文件路径复制，请使用 SAF 下载实现。".to_string())
 }
 
 #[tauri::command]

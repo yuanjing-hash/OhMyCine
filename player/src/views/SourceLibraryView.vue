@@ -402,7 +402,7 @@ watch(sourceId, async () => {
 
 function registerCurrentMaintenanceHandler() {
   unregisterMaintenanceHandler = registerMaintenanceHandler(sourceId.value, {
-    canHandle: (target, action) => action === 'rescanLibrary' || (target.kind === 'media' && scannedWorkById.value.has(target.itemId)),
+    canHandle: (target, action) => action === 'rescanLibrary' || (action !== 'editSubtitles' && target.kind === 'media' && scannedWorkById.value.has(target.itemId)),
     execute: async (target, action) => {
       if (action === 'rescanLibrary') {
         await startLocalScan('full')

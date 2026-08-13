@@ -109,7 +109,7 @@ pub fn local_file_delete_owned(
 }
 
 fn delete_local_file(root_path: &str, path: &str) -> Result<(), String> {
-    let root = canonicalize_root(&root_path)?;
+    let root = canonicalize_root(root_path)?;
     let target = resolve_target_path(&root, Some(path))?;
     ensure_within_root(&root, &target)?;
     let metadata = fs::symlink_metadata(&target)

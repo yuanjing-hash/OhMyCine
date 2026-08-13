@@ -115,6 +115,12 @@ pub struct Pan123StreamResponse {
     updated_access_token: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct Pan123ResolvedStream {
+    pub(crate) url: String,
+    pub(crate) headers: HashMap<String, String>,
+}
+
 #[derive(Clone, Debug)]
 struct ProviderFile {
     file_id: String,
@@ -249,6 +255,129 @@ pub async fn pan123_get_stream(
         headers,
         updated_access_token: changed_token(&original_token, &credential.access_token),
     })
+}
+
+pub(crate) async fn resolve_download_stream(
+    access_token: String,
+    username: String,
+    password: String,
+    root_path: String,
+    path: String,
+) -> Result<Pan123ResolvedStream, String> {
+    let root_path = normalize_provider_path(&root_path)?;
+    let path = normalize_provider_path(&path)?;
+    if !path_within_root(&path, &root_path) || path == "/" {
+        return Err("123 Pan media path is outside the configured root.".to_string());
+    }
+    let (parent_path, file_name) = split_parent_name(&path)?;
+    let client = create_api_client()?;
+    let mut credential = credential_from_parts(access_token, username, password)?;
+    let parent_id = resolve_directory_id(&client, &mut credential, &parent_path).await?;
+    let file = list_directory(&client, &mut credential, &parent_id)
+        .await?
+        .into_iter()
+        .find(|entry| !entry.is_dir && entry.name == file_name)
+        .ok_or_else(|| {
+            "123 Pan media item is unavailable or the account cannot access it.".to_string()
+        })?;
+    let file_id = file
+        .file_id
+        .parse::<u64>()
+        .map_err(|_| "123 Pan returned an invalid media identity.".to_string())?;
+    let response = send_api_request(
+        &client,
+        &mut credential,
+        Method::POST,
+        "/file/download_info",
+        &[],
+        Some(json!({
+            "driveId": 0,
+            "etag": file.etag,
+            "fileId": file_id,
+            "fileName": file.name,
+            "s3keyFlag": file.s3_key_flag,
+            "size": file.size,
+            "type": 0,
+        })),
+    )
+    .await?;
+    let download_url = response
+        .get("data")
+        .and_then(|data| data.get("DownloadUrl"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "123 Pan did not return a usable media download address.".to_string())?;
+    let upstream_url = decode_download_url(download_url)?;
+    let referer = origin_for_url(&upstream_url).unwrap_or_else(|| PROVIDER_REFERER.to_string());
+    let url = resolve_download_redirect(&upstream_url).await?;
+    Ok(Pan123ResolvedStream {
+        url,
+        headers: HashMap::from([("Referer".to_string(), referer)]),
+    })
+}
+
+pub(crate) async fn delete_source_path(
+    access_token: String,
+    username: String,
+    password: String,
+    root_path: String,
+    path: String,
+) -> Result<(), String> {
+    let root_path = normalize_provider_path(&root_path)?;
+    let path = normalize_provider_path(&path)?;
+    if !path_within_root(&path, &root_path) || path == root_path || path == "/" {
+        return Err("123 Pan refuses to delete the configured root.".to_string());
+    }
+    let (parent_path, file_name) = split_parent_name(&path)?;
+    let client = create_api_client()?;
+    let mut credential = credential_from_parts(access_token, username, password)?;
+    let parent_id = resolve_directory_id(&client, &mut credential, &parent_path).await?;
+    let file = list_directory(&client, &mut credential, &parent_id)
+        .await?
+        .into_iter()
+        .find(|entry| entry.name == file_name)
+        .ok_or_else(|| {
+            "123 Pan source item is unavailable or the account cannot delete it.".to_string()
+        })?;
+    send_api_request(
+        &client,
+        &mut credential,
+        Method::POST,
+        "/file/trash",
+        &[],
+        Some(json!({
+            "driveId": 0,
+            "operation": true,
+            "fileTrashInfoList": [{
+                "FileId": file.file_id.parse::<u64>()
+                    .map_err(|_| "123 Pan returned an invalid source identity.".to_string())?,
+                "FileName": file.name,
+                "Type": if file.is_dir { 1 } else { 0 },
+                "Size": file.size,
+                "Etag": file.etag,
+                "S3KeyFlag": file.s3_key_flag,
+            }],
+        })),
+    )
+    .await
+    .map_err(|error| {
+        format!("123 Pan source delete failed or its private web API changed: {error}")
+    })?;
+    Ok(())
+}
+
+fn split_parent_name(path: &str) -> Result<(String, String), String> {
+    let (parent, name) = path
+        .rsplit_once('/')
+        .ok_or_else(|| "123 Pan media path is invalid.".to_string())?;
+    validate_file_name(name)?;
+    Ok((
+        if parent.is_empty() {
+            "/".to_string()
+        } else {
+            parent.to_string()
+        },
+        name.to_string(),
+    ))
 }
 
 fn create_api_client() -> Result<Client, String> {

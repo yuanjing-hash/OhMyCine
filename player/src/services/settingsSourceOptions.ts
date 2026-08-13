@@ -2,7 +2,7 @@ import type { DataSourceConfig, DataSourceType } from '@/services/datasource/typ
 import type { TmdbAuthType } from '@/services/scraper/tmdb'
 import type { SubtitleLanguage } from '@/services/subtitle'
 
-export type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'alist' | 'clouddrive2' | 'webdav' | '123' | 'quark'>
+export type LoginDataSourceType = Extract<DataSourceType, 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | '123' | 'quark'>
 export type EditableDataSourceType = LoginDataSourceType | 'local'
 export type EditableDataSourceConfig = DataSourceConfig & { type: EditableDataSourceType }
 
@@ -21,6 +21,7 @@ export type SourceTypeOption
 
 export const SOURCE_TYPE_OPTIONS: SourceTypeOption[] = [
   sourceOption('emby', 'Emby', 'E', '媒体服务器账号登录', 'Emby', 'http://emby.example.test:8096', 'Emby 登录账号'),
+  sourceOption('jellyfin', 'Jellyfin', 'J', 'Jellyfin 媒体服务器账号登录', 'Jellyfin', 'http://jellyfin.example.test:8096', 'Jellyfin 登录账号'),
   sourceOption('alist', 'OpenList/Alist', 'A', 'OpenList/Alist API 账号登录', 'OpenList/Alist', 'http://openlist.example.test:5244', 'OpenList/Alist 登录账号'),
   sourceOption('clouddrive2', 'CloudDrive2', 'C', 'CloudDrive2 原生 gRPC API Token', 'CloudDrive2', 'http://clouddrive2.example.test:19798', ''),
   sourceOption('webdav', 'WebDAV', 'W', '通用 WebDAV 只读数据源', 'WebDAV', 'https://dav.example.test/media', 'WebDAV 用户名'),
@@ -70,7 +71,7 @@ export const SUBTITLE_LANGUAGE_OPTIONS: Array<{ value: SubtitleLanguage, label: 
 ]
 
 export function isLoginDataSourceType(type: DataSourceType): type is LoginDataSourceType {
-  return type === 'emby' || type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark'
+  return type === 'emby' || type === 'jellyfin' || type === 'alist' || type === 'clouddrive2' || type === 'webdav' || type === '123' || type === 'quark'
 }
 
 export function isEditableDataSourceType(type: DataSourceType): type is EditableDataSourceType {

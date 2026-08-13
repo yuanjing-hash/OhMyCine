@@ -6,6 +6,7 @@ import UpdateDialog from '@/components/layout/UpdateDialog.vue'
 import DownloadQueue from '@/components/media/DownloadQueue.vue'
 import MediaActionHost from '@/components/media/MediaActionHost.vue'
 import MediaCollectionDialog from '@/components/media/MediaCollectionDialog.vue'
+import MediaEditorHost from '@/components/media/MediaEditorHost.vue'
 import { configureMediaActionController, createCollectionMediaActionAdapter, createDeleteMediaActionAdapter, createDownloadMediaActionAdapter, createMaintenanceMediaActionAdapter, createNavigationMediaActionAdapter, createPlayedStateMediaActionAdapter, MediaActionController, publishFeedback, requestMediaActionConfirmation } from '@/services/mediaActions'
 import { COLLECTIONS_CHANGED_EVENT } from '@/services/mediaCollections'
 import { PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
@@ -17,7 +18,7 @@ const store = useDataSourceStore()
 const updater = useUpdaterStore()
 const router = useRouter()
 configureMediaActionController(new MediaActionController({
-  adapters: [createDeleteMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), resolveConfig: sourceId => store.orderedConfigs.find(config => config.id === sourceId) }), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
+  adapters: [createDeleteMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), resolveConfig: sourceId => store.orderedConfigs.find(config => config.id === sourceId) }), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId)), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
   confirm: requestMediaActionConfirmation,
   invalidate: async (invalidation) => {
     store.getSource(invalidation.sourceId)?.clearCache?.()
@@ -75,5 +76,6 @@ function suppressNativeContextMenu(event: MouseEvent) {
   <UpdateDialog />
   <MediaActionHost />
   <MediaCollectionDialog />
+  <MediaEditorHost />
   <DownloadQueue />
 </template>

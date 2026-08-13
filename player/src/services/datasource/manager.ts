@@ -117,6 +117,8 @@ export function createDataSource(type: DataSourceType): DataSource {
   switch (type) {
     case 'emby':
       return new EmbyDataSource()
+    case 'jellyfin':
+      return new EmbyDataSource('jellyfin')
     case 'alist':
       return new AlistDataSource()
     case 'clouddrive2':

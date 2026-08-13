@@ -28,7 +28,7 @@ import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootL
 import { createAuthenticatedPan123SetupSource, loginPan123AndCreateConfig, normalizePan123RootPath, PAN123_PROVIDER_URL, Pan123DataSource, readPan123RootPath } from '@/services/datasource/pan123'
 import { cancelQuarkLogin, createAuthenticatedQuarkSetupSource, normalizeQuarkRootPath, pollQuarkAccountLogin, pollQuarkQrLogin, QUARK_PROVIDER_URL, QuarkDataSource, readQuarkRootPath, saveQuarkCookieAndCreateConfig, startQuarkAccountLogin, startQuarkQrLogin } from '@/services/datasource/quark'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
-import { getDefaultDownloadDirectory, setDefaultDownloadDirectory } from '@/services/downloads'
+import { getDefaultDownloadDirectory, pickAndroidDownloadDirectory, setDefaultDownloadDirectory } from '@/services/downloads'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
 import {
   loadNavigationShortcutBindings,
@@ -505,7 +505,7 @@ watch(() => form.type, (type) => {
     form.rootPath = ''
     form.rootLabel = ''
   }
-  else if (type === 'emby') {
+  else if (type === 'emby' || type === 'jellyfin') {
     form.rootPath = '/'
   }
   else if (isRootSelectableRemoteSourceType(type) && !form.rootPath) {
@@ -1359,7 +1359,7 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
     return saveQuarkCookieAndCreateConfig(input)
   if (type === '123')
     return loginPan123AndCreateConfig(input)
-  return loginEmbyAndCreateConfig(input)
+  return loginEmbyAndCreateConfig({ ...input, sourceType: type })
 }
 
 async function createAndValidateLocalConfig(input: {
@@ -1605,10 +1605,6 @@ async function chooseLocalRootPath() {
 }
 
 async function refreshDownloadDirectory() {
-  if (isNativeAndroid) {
-    downloadDirectory.value = ''
-    return
-  }
   try {
     downloadDirectory.value = await getDefaultDownloadDirectory()
   }
@@ -1620,11 +1616,13 @@ async function refreshDownloadDirectory() {
 async function chooseDefaultDownloadDirectory() {
   downloadDirectoryFeedback.value = null
   try {
-    const selected = await open({ directory: true, multiple: false, defaultPath: downloadDirectory.value || undefined })
+    const selected = isNativeAndroid
+      ? await pickAndroidDownloadDirectory(true)
+      : await open({ directory: true, multiple: false, defaultPath: downloadDirectory.value || undefined })
     if (typeof selected !== 'string')
       return
     isSavingDownloadDirectory.value = true
-    downloadDirectory.value = await setDefaultDownloadDirectory(selected)
+    downloadDirectory.value = isNativeAndroid ? selected : await setDefaultDownloadDirectory(selected)
     downloadDirectoryFeedback.value = { type: 'success', message: '默认下载目录已保存。' }
   }
   catch (error) {
@@ -2405,15 +2403,15 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
           <p class="mt-2 text-sm leading-6 text-white/48">
             “下载”使用此目录；“下载到…”只对当前任务生效，不会更改这里的默认值。
           </p>
-          <div v-if="isNativeAndroid" class="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/8 px-4 py-3 text-sm text-amber-100/80">
-            Android 需要持久可写的 SAF 目录授权和前台服务，当前版本暂不开放下载队列。
-          </div>
-          <div v-else class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <code class="min-w-0 flex-1 break-all rounded-2xl bg-black/18 px-4 py-3 text-sm text-white/58">{{ downloadDirectory || '系统 Downloads' }}</code>
+          <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <code class="min-w-0 flex-1 break-all rounded-2xl bg-black/18 px-4 py-3 text-sm text-white/58">{{ downloadDirectory || (isNativeAndroid ? '尚未选择 SAF 下载目录' : '系统 Downloads') }}</code>
             <button type="button" class="rounded-2xl bg-primary/80 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" :disabled="isSavingDownloadDirectory" @click="chooseDefaultDownloadDirectory()">
               {{ isSavingDownloadDirectory ? '保存中…' : '选择目录' }}
             </button>
           </div>
+          <p v-if="isNativeAndroid" class="mt-3 text-xs leading-5 text-white/42">
+            Android 会持久保存所选 SAF 文档树的读写授权；系统撤销授权或目录不可写时，下载会停止并要求重新选择。
+          </p>
           <p v-if="downloadDirectoryFeedback" class="mt-3 text-sm" :class="downloadDirectoryFeedback.type === 'success' ? 'text-emerald-200' : 'text-red-200'">
             {{ downloadDirectoryFeedback.message }}
           </p>

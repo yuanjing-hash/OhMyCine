@@ -1,4 +1,6 @@
-use crate::commands::{credential, local_file, settings};
+#[cfg(target_os = "android")]
+use crate::commands::download_android;
+use crate::commands::{credential, local_file, provider_file, settings};
 use crate::storage;
 use fs2::available_space;
 use futures_util::StreamExt;
@@ -43,6 +45,9 @@ pub struct DownloadEnqueueRequest {
     media_type: String,
     expected_bytes: Option<u64>,
     destination_directory: Option<String>,
+    parent_id: Option<String>,
+    group_name: Option<String>,
+    media_source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +66,9 @@ pub struct DownloadTask {
     total_bytes: Option<u64>,
     retry_count: u32,
     error_message: Option<String>,
+    parent_id: Option<String>,
+    group_name: Option<String>,
+    media_source_id: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -90,11 +98,18 @@ struct ResolvedRemote {
 
 #[tauri::command]
 pub fn player_download_default_directory(app: AppHandle) -> Result<String, String> {
-    #[cfg(mobile)]
-    return Err(
-        "Android downloads require a persistent writable SAF folder and foreground service."
-            .to_string(),
-    );
+    #[cfg(target_os = "android")]
+    {
+        let configured = settings::read_player_setting(&app, DEFAULT_DIRECTORY_SETTING)?
+            .ok_or_else(|| "尚未选择 Android 默认下载目录，请先通过 SAF 授权目录。".to_string())?;
+        if !is_android_tree_uri(&configured) {
+            return Err("Android 默认下载目录授权无效，请重新选择目录。".to_string());
+        }
+        return Ok(configured);
+    }
+
+    #[cfg(all(mobile, not(target_os = "android")))]
+    return Err("Downloads are not implemented for this mobile platform.".to_string());
 
     #[cfg(not(mobile))]
     {
@@ -111,15 +126,22 @@ pub fn player_download_default_directory(app: AppHandle) -> Result<String, Strin
 }
 
 #[tauri::command]
-pub fn player_download_set_default_directory(
+pub async fn player_download_set_default_directory(
     app: AppHandle,
     directory: String,
 ) -> Result<String, String> {
-    #[cfg(mobile)]
-    return Err(
-        "Android downloads require a persistent writable SAF folder and foreground service."
-            .to_string(),
-    );
+    #[cfg(target_os = "android")]
+    {
+        if !is_android_tree_uri(&directory) {
+            return Err("Android 默认下载目录必须来自 SAF 目录选择器。".to_string());
+        }
+        download_android::validate_directory(&app, &directory).await?;
+        settings::write_player_setting(&app, DEFAULT_DIRECTORY_SETTING, &directory)?;
+        return Ok(directory);
+    }
+
+    #[cfg(all(mobile, not(target_os = "android")))]
+    return Err("Downloads are not implemented for this mobile platform.".to_string());
 
     #[cfg(not(mobile))]
     {
@@ -135,17 +157,84 @@ pub fn player_download_list(app: AppHandle) -> Result<Vec<DownloadTask>, String>
     DownloadStorage::open(&app)?.list()
 }
 
+#[cfg(target_os = "android")]
 #[tauri::command]
-pub fn player_download_enqueue(
+pub async fn player_download_pick_directory(
     app: AppHandle,
-    queue: State<DownloadQueueState>,
+    persistent: bool,
+) -> Result<Option<String>, String> {
+    let picked = download_android::pick_directory(&app).await?;
+    if picked.cancelled {
+        return Ok(None);
+    }
+    let uri = picked
+        .uri
+        .filter(|value| is_android_tree_uri(value))
+        .ok_or_else(|| "Android 目录选择器返回了无效授权。".to_string())?;
+    download_android::validate_directory(&app, &uri).await?;
+    if persistent {
+        settings::write_player_setting(&app, DEFAULT_DIRECTORY_SETTING, &uri)?;
+    }
+    Ok(Some(uri))
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+pub async fn player_download_pick_directory(
+    _app: AppHandle,
+    _persistent: bool,
+) -> Result<Option<String>, String> {
+    Err("Desktop downloads use the native directory dialog.".to_string())
+}
+
+#[tauri::command]
+pub async fn player_download_enqueue(
+    app: AppHandle,
+    queue: State<'_, DownloadQueueState>,
     request: DownloadEnqueueRequest,
 ) -> Result<DownloadTask, String> {
-    #[cfg(mobile)]
-    return Err(
-        "Android downloads require a persistent writable SAF folder and foreground service."
-            .to_string(),
-    );
+    #[cfg(target_os = "android")]
+    {
+        validate_enqueue_request(&request)?;
+        let destination = match request.destination_directory.as_deref() {
+            Some(value) => value.to_string(),
+            None => player_download_default_directory(app.clone())?,
+        };
+        if !is_android_tree_uri(&destination) {
+            return Err("Android 下载目录授权无效，请重新选择目录。".to_string());
+        }
+        download_android::validate_directory(&app, &destination).await?;
+        let requested_name = download_file_name(&request.display_name, &request.item_id);
+        let destination_name =
+            download_android::available_name(&app, &destination, &requested_name).await?;
+        let now = unix_timestamp();
+        let task = DownloadTask {
+            id: random_id(),
+            source_id: request.source_id,
+            source_type: request.source_type,
+            item_id: request.item_id,
+            display_name: safe_display_name(&request.display_name),
+            media_type: request.media_type,
+            destination_directory: destination,
+            destination_name,
+            status: "queued".to_string(),
+            bytes_downloaded: 0,
+            total_bytes: request.expected_bytes,
+            retry_count: 0,
+            error_message: None,
+            parent_id: request.parent_id,
+            group_name: request.group_name,
+            media_source_id: request.media_source_id,
+            created_at: now,
+            updated_at: now,
+        };
+        DownloadStorage::open(&app)?.insert(&task)?;
+        start_task(app, queue.inner(), task.clone())?;
+        return Ok(task);
+    }
+
+    #[cfg(all(mobile, not(target_os = "android")))]
+    return Err("Downloads are not implemented for this mobile platform.".to_string());
 
     #[cfg(not(mobile))]
     {
@@ -177,6 +266,9 @@ pub fn player_download_enqueue(
             total_bytes: request.expected_bytes,
             retry_count: 0,
             error_message: None,
+            parent_id: request.parent_id,
+            group_name: request.group_name,
+            media_source_id: request.media_source_id,
             created_at: now,
             updated_at: now,
         };
@@ -262,6 +354,16 @@ fn start_task(
     drop(cancellations);
     let task_id = task.id.clone();
     tauri::async_runtime::spawn(async move {
+        #[cfg(target_os = "android")]
+        download_android::notify(
+            &app,
+            &task.id,
+            &task.display_name,
+            task.bytes_downloaded,
+            task.total_bytes,
+            "running",
+        )
+        .await;
         let result = execute_task(&app, &task, &cancellation).await;
         let storage = DownloadStorage::open(&app);
         if let Ok(storage) = storage {
@@ -278,6 +380,18 @@ fn start_task(
                 }
             }
             emit_task(&app, &storage, &task_id);
+            #[cfg(target_os = "android")]
+            if let Ok(Some(finished)) = storage.get(&task_id) {
+                download_android::notify(
+                    &app,
+                    &finished.id,
+                    &finished.display_name,
+                    finished.bytes_downloaded,
+                    finished.total_bytes,
+                    &finished.status,
+                )
+                .await;
+            }
         }
         if let Some(state) = app.try_state::<DownloadQueueState>() {
             if let Ok(mut cancellations) = state.cancellations.lock() {
@@ -297,16 +411,28 @@ async fn execute_task(
     storage.set_status(&task.id, "running", None)?;
     emit_task(app, &storage, &task.id);
 
+    #[cfg(target_os = "android")]
+    {
+        return execute_android_task(app, task, cancellation).await;
+    }
+
+    #[cfg(not(target_os = "android"))]
     let destination_dir = validate_destination_directory(&task.destination_directory)?;
+    #[cfg(not(target_os = "android"))]
     let final_path = safe_destination_path(&destination_dir, &task.destination_name)?;
+    #[cfg(not(target_os = "android"))]
     let partial_path = partial_path(&final_path)?;
+    #[cfg(not(target_os = "android"))]
     if final_path.exists() {
         return Err("The destination file already exists.".to_string());
     }
 
+    #[cfg(not(target_os = "android"))]
     match task.source_type.as_str() {
         "local" => execute_local_copy(app, task, &partial_path, cancellation).await?,
-        "alist" => execute_alist_download(app, task, &partial_path, cancellation).await?,
+        "alist" | "clouddrive2" | "webdav" | "123" | "quark" | "emby" | "jellyfin" => {
+            execute_remote_download(app, task, &partial_path, cancellation).await?
+        }
         _ => {
             return Err(
                 "This data source does not have a secure native download resolver.".to_string(),
@@ -314,11 +440,141 @@ async fn execute_task(
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     if cancellation.load(Ordering::Relaxed) {
         return Err("Download cancelled.".to_string());
     }
+    #[cfg(not(target_os = "android"))]
     fs::rename(&partial_path, &final_path)
         .map_err(|_| "Failed to finalize the downloaded file atomically.".to_string())?;
+    #[cfg(not(target_os = "android"))]
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+async fn execute_android_task(
+    app: &AppHandle,
+    task: &DownloadTask,
+    cancellation: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    if !is_android_tree_uri(&task.destination_directory) {
+        return Err("Android 下载目录授权无效，请重新选择目录后重试。".to_string());
+    }
+    download_android::validate_directory(app, &task.destination_directory).await?;
+    let document = download_android::prepare_document(
+        app,
+        &task.destination_directory,
+        &task.destination_name,
+    )
+    .await?;
+    let storage = DownloadStorage::open(app)?;
+    if document.destination_name != task.destination_name {
+        return Err("Android 下载目标文件名已发生变化，请重新创建任务。".to_string());
+    }
+    let mut offset = document.existing_bytes;
+    match task.source_type.as_str() {
+        "local" => {
+            let config = resolve_datasource(app, &task.source_id, "local")?;
+            let root = extra_string(&config, "rootPath")?;
+            let mut truncate = offset == 0;
+            loop {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Err("Download cancelled.".to_string());
+                }
+                let (chunk, total) = download_android::read_local_chunk(
+                    app,
+                    &root,
+                    &task.item_id,
+                    offset,
+                    COPY_BUFFER_BYTES,
+                )
+                .await?;
+                if offset > 0
+                    && (storage.entity_hash(&task.id)?.is_none()
+                        || task
+                            .total_bytes
+                            .is_some_and(|expected| Some(expected) != total))
+                {
+                    offset = 0;
+                    truncate = true;
+                    continue;
+                }
+                if chunk.is_empty() {
+                    break;
+                }
+                download_android::write_chunk(app, &document.partial_uri, &chunk, truncate).await?;
+                truncate = false;
+                offset = offset.saturating_add(chunk.len() as u64);
+                storage.set_entity_and_progress(
+                    &task.id,
+                    Some("android-saf-local-v1"),
+                    offset,
+                    total,
+                )?;
+                emit_task(app, &storage, &task.id);
+                download_android::notify(
+                    app,
+                    &task.id,
+                    &task.display_name,
+                    offset,
+                    total,
+                    "running",
+                )
+                .await;
+            }
+        }
+        "alist" | "clouddrive2" | "webdav" | "123" | "quark" | "emby" | "jellyfin" => {
+            let resolved = resolve_task_remote(app, task).await?;
+            let stored_entity = storage.entity_hash(&task.id)?;
+            let mut response = request_media(&resolved, offset).await?;
+            if offset > 0 {
+                let current_entity = response_entity_hash(&response);
+                let safe_resume = response.status() == StatusCode::PARTIAL_CONTENT
+                    && content_range_start(response.headers()) == Some(offset)
+                    && stored_entity.is_some()
+                    && stored_entity == current_entity;
+                if !safe_resume {
+                    offset = 0;
+                    response = request_media(&resolve_task_remote(app, task).await?, 0).await?;
+                }
+            }
+            validate_media_response(&response, offset)?;
+            let entity = response_entity_hash(&response);
+            let total = response_total_bytes(&response, offset).or(task.total_bytes);
+            storage.set_entity_and_progress(&task.id, entity.as_deref(), offset, total)?;
+            let mut stream = response.bytes_stream();
+            let mut truncate = offset == 0;
+            while let Some(next) = stream.next().await {
+                if cancellation.load(Ordering::Relaxed) {
+                    return Err("Download cancelled.".to_string());
+                }
+                let chunk = next.map_err(|_| "The media transfer was interrupted.".to_string())?;
+                download_android::write_chunk(app, &document.partial_uri, &chunk, truncate).await?;
+                truncate = false;
+                offset = offset.saturating_add(chunk.len() as u64);
+                storage.set_progress(&task.id, offset, total)?;
+                emit_task(app, &storage, &task.id);
+                download_android::notify(
+                    app,
+                    &task.id,
+                    &task.display_name,
+                    offset,
+                    total,
+                    "running",
+                )
+                .await;
+            }
+            if total.is_some_and(|expected| expected != offset) {
+                return Err("The media transfer ended before all bytes were received.".to_string());
+            }
+        }
+        _ => {
+            return Err(
+                "This data source does not have a secure native download resolver.".to_string(),
+            )
+        }
+    }
+    download_android::finalize_document(app, &document.partial_uri, &task.destination_name).await?;
     Ok(())
 }
 
@@ -422,13 +678,13 @@ fn copy_file_streaming(
     Ok(())
 }
 
-async fn execute_alist_download(
+async fn execute_remote_download(
     app: &AppHandle,
     task: &DownloadTask,
     partial_path: &Path,
     cancellation: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let resolved = resolve_alist(app, &task.source_id, &task.item_id).await?;
+    let resolved = resolve_task_remote(app, task).await?;
     let storage = DownloadStorage::open(app)?;
     let stored_entity = storage.entity_hash(&task.id)?;
     let mut offset = partial_len(partial_path);
@@ -444,7 +700,7 @@ async fn execute_alist_download(
             drop(response);
             remove_partial(partial_path)?;
             offset = 0;
-            let refreshed = resolve_alist(app, &task.source_id, &task.item_id).await?;
+            let refreshed = resolve_task_remote(app, task).await?;
             response = request_media(&refreshed, 0).await?;
         }
     }
@@ -493,6 +749,27 @@ async fn execute_alist_download(
     }
     persist_progress(app, &task.id, downloaded, total);
     Ok(())
+}
+
+async fn resolve_task_remote(
+    app: &AppHandle,
+    task: &DownloadTask,
+) -> Result<ResolvedRemote, String> {
+    if task.source_type == "alist" {
+        return resolve_alist(app, &task.source_id, &task.item_id).await;
+    }
+    let resolved = provider_file::resolve_source_download(
+        app,
+        &task.source_id,
+        &task.source_type,
+        &task.item_id,
+        task.media_source_id.as_deref(),
+    )
+    .await?;
+    Ok(ResolvedRemote {
+        url: resolved.url,
+        headers: resolved.headers,
+    })
 }
 
 async fn resolve_alist(
@@ -645,7 +922,10 @@ fn validate_media_response(response: &Response, offset: u64) -> Result<(), Strin
 fn validate_enqueue_request(request: &DownloadEnqueueRequest) -> Result<(), String> {
     validate_stable_id(&request.source_id, "Invalid data source identity.")?;
     validate_stable_id(&request.item_id, "Invalid media identity.")?;
-    if !matches!(request.source_type.as_str(), "local" | "alist") {
+    if !matches!(
+        request.source_type.as_str(),
+        "local" | "alist" | "clouddrive2" | "webdav" | "123" | "quark" | "emby" | "jellyfin"
+    ) {
         return Err(
             "This data source does not have a secure native download resolver.".to_string(),
         );
@@ -655,6 +935,21 @@ fn validate_enqueue_request(request: &DownloadEnqueueRequest) -> Result<(), Stri
     }
     if request.display_name.trim().is_empty() || request.display_name.len() > 512 {
         return Err("Invalid download display name.".to_string());
+    }
+    if let Some(parent_id) = request.parent_id.as_deref() {
+        validate_task_id(parent_id)?;
+        let group_name = request.group_name.as_deref().unwrap_or_default().trim();
+        if group_name.is_empty()
+            || group_name.len() > 512
+            || group_name.chars().any(char::is_control)
+        {
+            return Err("Invalid aggregate download name.".to_string());
+        }
+    } else if request.group_name.is_some() {
+        return Err("Aggregate download identity is missing.".to_string());
+    }
+    if let Some(media_source_id) = request.media_source_id.as_deref() {
+        validate_stable_id(media_source_id, "Invalid media source identity.")?;
     }
     Ok(())
 }
@@ -826,6 +1121,15 @@ fn validate_destination_directory(value: &str) -> Result<PathBuf, String> {
         fs::canonicalize(path).map_err(|_| "The download directory is unavailable.".to_string())?;
     validate_destination_directory_path(&canonical)?;
     Ok(canonical)
+}
+
+#[cfg(target_os = "android")]
+fn is_android_tree_uri(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("content://")
+        && trimmed.contains("/tree/")
+        && !trimmed.contains('\0')
+        && trimmed.len() <= 4096
 }
 
 fn validate_destination_directory_path(path: &Path) -> Result<(), String> {
@@ -1031,17 +1335,25 @@ impl DownloadStorage {
             entity_hash TEXT,
             error_message TEXT,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            parent_id TEXT,
+            group_name TEXT,
+            media_source_id TEXT
         ); CREATE INDEX IF NOT EXISTS idx_download_tasks_updated ON download_tasks(updated_at DESC);")
             .map_err(|_| "Failed to initialize the download task database.".to_string())?;
+        ensure_optional_column(&conn, "parent_id", "TEXT")?;
+        ensure_optional_column(&conn, "group_name", "TEXT")?;
+        ensure_optional_column(&conn, "media_source_id", "TEXT")?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_download_tasks_parent ON download_tasks(parent_id, created_at);")
+            .map_err(|_| "Failed to initialize aggregate download indexes.".to_string())?;
         Ok(Self { conn })
     }
     fn insert(&self, task: &DownloadTask) -> Result<(), String> {
-        self.conn.execute("INSERT INTO download_tasks (id, source_id, source_type, item_id, display_name, media_type, destination_directory, destination_name, status, bytes_downloaded, total_bytes, retry_count, error_message, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", params![task.id,task.source_id,task.source_type,task.item_id,task.display_name,task.media_type,task.destination_directory,task.destination_name,task.status,task.bytes_downloaded,task.total_bytes,task.retry_count,task.error_message,task.created_at,task.updated_at]).map_err(|_| "Failed to save the download task.".to_string())?;
+        self.conn.execute("INSERT INTO download_tasks (id, source_id, source_type, item_id, display_name, media_type, destination_directory, destination_name, status, bytes_downloaded, total_bytes, retry_count, error_message, created_at, updated_at, parent_id, group_name, media_source_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)", params![task.id,task.source_id,task.source_type,task.item_id,task.display_name,task.media_type,task.destination_directory,task.destination_name,task.status,task.bytes_downloaded,task.total_bytes,task.retry_count,task.error_message,task.created_at,task.updated_at,task.parent_id,task.group_name,task.media_source_id]).map_err(|_| "Failed to save the download task.".to_string())?;
         Ok(())
     }
     fn list(&self) -> Result<Vec<DownloadTask>, String> {
-        let mut statement = self.conn.prepare("SELECT id,source_id,source_type,item_id,display_name,media_type,destination_directory,destination_name,status,bytes_downloaded,total_bytes,retry_count,error_message,created_at,updated_at FROM download_tasks ORDER BY created_at DESC").map_err(|_| "Failed to read download tasks.".to_string())?;
+        let mut statement = self.conn.prepare("SELECT id,source_id,source_type,item_id,display_name,media_type,destination_directory,destination_name,status,bytes_downloaded,total_bytes,retry_count,error_message,created_at,updated_at,parent_id,group_name,media_source_id FROM download_tasks ORDER BY created_at DESC").map_err(|_| "Failed to read download tasks.".to_string())?;
         let rows = statement
             .query_map([], map_task)
             .map_err(|_| "Failed to read download tasks.".to_string())?
@@ -1050,7 +1362,7 @@ impl DownloadStorage {
         Ok(rows)
     }
     fn get(&self, id: &str) -> Result<Option<DownloadTask>, String> {
-        self.conn.query_row("SELECT id,source_id,source_type,item_id,display_name,media_type,destination_directory,destination_name,status,bytes_downloaded,total_bytes,retry_count,error_message,created_at,updated_at FROM download_tasks WHERE id=?1", [id], map_task).optional().map_err(|_| "Failed to read the download task.".to_string())
+        self.conn.query_row("SELECT id,source_id,source_type,item_id,display_name,media_type,destination_directory,destination_name,status,bytes_downloaded,total_bytes,retry_count,error_message,created_at,updated_at,parent_id,group_name,media_source_id FROM download_tasks WHERE id=?1", [id], map_task).optional().map_err(|_| "Failed to read the download task.".to_string())
     }
     fn set_status(&self, id: &str, status: &str, error: Option<&str>) -> Result<(), String> {
         self.conn.execute("UPDATE download_tasks SET status=?2,error_message=?3,updated_at=unixepoch() WHERE id=?1", params![id,status,error]).map_err(|_| "Failed to update the download task.".to_string())?;
@@ -1108,7 +1420,29 @@ fn map_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadTask> {
         error_message: row.get(12)?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        parent_id: row.get(15)?,
+        group_name: row.get(16)?,
+        media_source_id: row.get(17)?,
     })
+}
+
+fn ensure_optional_column(conn: &Connection, name: &str, definition: &str) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("PRAGMA table_info(download_tasks)")
+        .map_err(|_| "Failed to inspect the download task database.".to_string())?;
+    let exists = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| "Failed to inspect the download task database.".to_string())?
+        .filter_map(Result::ok)
+        .any(|column| column == name);
+    drop(statement);
+    if !exists {
+        conn.execute_batch(&format!(
+            "ALTER TABLE download_tasks ADD COLUMN {name} {definition}"
+        ))
+        .map_err(|_| "Failed to migrate the download task database.".to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1117,7 +1451,7 @@ mod tests {
     #[test]
     fn persisted_schema_excludes_sensitive_transport_fields() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE download_tasks (id TEXT, source_id TEXT, source_type TEXT, item_id TEXT, display_name TEXT, media_type TEXT, destination_directory TEXT, destination_name TEXT, status TEXT, bytes_downloaded INTEGER, total_bytes INTEGER, retry_count INTEGER, entity_hash TEXT, error_message TEXT, created_at INTEGER, updated_at INTEGER)").unwrap();
+        conn.execute_batch("CREATE TABLE download_tasks (id TEXT, source_id TEXT, source_type TEXT, item_id TEXT, display_name TEXT, media_type TEXT, destination_directory TEXT, destination_name TEXT, status TEXT, bytes_downloaded INTEGER, total_bytes INTEGER, retry_count INTEGER, entity_hash TEXT, error_message TEXT, created_at INTEGER, updated_at INTEGER, parent_id TEXT, group_name TEXT, media_source_id TEXT)").unwrap();
         let names: Vec<String> = conn
             .prepare("PRAGMA table_info(download_tasks)")
             .unwrap()

@@ -20,6 +20,16 @@ export interface RawManualArtworkOverrideInput {
   readonly filePath?: string
 }
 
+export interface RawManualMetadataOverrideInput {
+  readonly targetRecordId: string
+  readonly title: string
+  readonly originalTitle?: string
+  readonly overview?: string
+  readonly releaseYear?: number
+  readonly rating?: number
+  readonly genres?: readonly string[]
+}
+
 interface RawSeriesCandidateGroup {
   readonly key: string
   readonly candidates: RawMediaCandidate[]
@@ -160,6 +170,73 @@ export function applyRawManualArtworkOverride(
       createManualArtworkLog(target, input, targetCandidates.length),
     ],
   }
+}
+
+export function applyRawManualMetadataOverride(
+  cache: RawLocalScanCache,
+  input: RawManualMetadataOverrideInput,
+): RawLocalScanCache {
+  const target = cache.candidates.find(candidate => candidate.record.id === input.targetRecordId)
+  if (!target)
+    throw new Error('未找到需要编辑的本地候选。')
+  const title = input.title.trim()
+  if (!title)
+    throw new Error('标题不能为空。')
+
+  const targetGroupKey = createRawSeriesGroupingKey(target)
+  const targetCandidates = cache.candidates.filter(candidate => createRawSeriesGroupingKey(candidate) === targetGroupKey)
+  const existingItems = new Map((cache.scrapedItems ?? []).map(item => [item.recordId, item]))
+  const baseMetadata = findArtworkBaseMetadata(targetCandidates, existingItems)
+  if (!baseMetadata)
+    throw new Error('请先识别该媒体，再编辑元数据。')
+  const metadata: TmdbMetadata = {
+    ...baseMetadata,
+    title,
+    originalTitle: optionalOverrideText(input.originalTitle),
+    overview: optionalOverrideText(input.overview),
+    releaseYear: input.releaseYear,
+    rating: input.rating,
+    genres: sanitizeOverrideGenres(input.genres),
+    scrapedAt: new Date().toISOString(),
+  }
+
+  for (const candidate of targetCandidates) {
+    const existing = existingItems.get(candidate.record.id)
+    existingItems.set(candidate.record.id, existing?.matchStatus === 'matched'
+      ? { ...existing, metadata }
+      : createMatchedScrapedItem(candidate, metadata, {
+          matchedSearchTitle: existing?.matchedSearchTitle,
+          searchTitles: existing?.searchTitles,
+        }))
+  }
+
+  const scrapedItems = cache.candidates
+    .map(candidate => existingItems.get(candidate.record.id))
+    .filter((item): item is RawScrapedMediaItem => item != null)
+  const scrapedById = new Map(scrapedItems.map(item => [item.recordId, item]))
+  return {
+    ...cache,
+    candidates: cache.candidates.map(candidate => ({
+      ...candidate,
+      scrapeMetadata: scrapedById.get(candidate.record.id)?.metadata ?? candidate.scrapeMetadata,
+      categoryAssignment: scrapedById.get(candidate.record.id)?.categoryAssignment ?? candidate.categoryAssignment,
+    })),
+    scrapedItems,
+    logs: [...cache.logs, {
+      timestamp: new Date().toISOString(),
+      level: 'info',
+      message: `编辑元数据：${title}，已更新 ${targetCandidates.length} 个同作品候选。`,
+      path: target.record.providerPath,
+    }],
+  }
+}
+
+function optionalOverrideText(value: string | undefined): string | undefined {
+  return value?.trim() || undefined
+}
+
+function sanitizeOverrideGenres(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map(value => value.trim()).filter(Boolean))].slice(0, 30)
 }
 
 function createRawSeriesCandidateGroups(candidates: readonly RawMediaCandidate[]): RawSeriesCandidateGroup[] {

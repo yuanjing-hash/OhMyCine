@@ -190,6 +190,18 @@ export interface ProviderPlaybackSyncDiagnostic {
   message?: string
 }
 
+export interface EditableMediaMetadata {
+  name: string
+  originalTitle?: string
+  overview?: string
+  tagline?: string
+  year?: number
+  rating?: number
+  genres?: string[]
+}
+
+export type EditableArtworkKind = 'Primary' | 'Backdrop' | 'Logo'
+
 export type PlayedStateMutation = 'played' | 'unplayed' | 'removeContinueWatching'
 export interface ProviderCollectionOption { id: string, name: string, kind: 'playlist' | 'collection', itemCount?: number }
 
@@ -216,6 +228,10 @@ export interface DataSource {
   getStreamRequest?: (request: PlaybackRequest) => Promise<MediaStreamRequest>
   searchSubtitles?: (input: SubtitleSearchInput) => Promise<SubtitleSearchResult[]>
   downloadSubtitle?: (input: SubtitleDownloadInput) => Promise<SubtitleTrack>
+  updateMetadata?: (itemId: string, metadata: EditableMediaMetadata) => Promise<void>
+  updateArtworkFromUrl?: (itemId: string, kind: EditableArtworkKind, imageUrl: string) => Promise<void>
+  deleteArtwork?: (itemId: string, kind: EditableArtworkKind) => Promise<void>
+  deleteSubtitle?: (itemId: string, subtitleIndex: number) => Promise<void>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
   setPlayedState?: (itemId: string, mutation: PlayedStateMutation) => Promise<void>
   setFavorite?: (itemId: string, favorite: boolean) => Promise<void>

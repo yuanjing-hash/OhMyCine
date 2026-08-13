@@ -42,6 +42,7 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
     fun pickDirectory(invoke: Invoke) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
         }
@@ -74,6 +75,20 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
         document.toString()
     }
 
+    @Command
+    fun delete(invoke: Invoke) = resolve(invoke) {
+        val args = invoke.parseArgs(LocalEntryArgs::class.java)
+        val root = requireWritableTree(args.rootPath)
+        val normalizedPath = normalizeProviderPath(args.path)
+        require(normalizedPath != "/") { "不能删除已授权的媒体根目录。" }
+        val document = resolveDocument(root, normalizedPath)
+        require(!isDirectory(document)) { "只能删除媒体根目录内的普通文件。" }
+        require(DocumentsContract.deleteDocument(activity.contentResolver, document)) {
+            "Android 文档提供方拒绝删除该源文件。"
+        }
+        mapOf("deleted" to true)
+    }
+
     private fun launchPicker(invoke: Invoke, intent: Intent, directory: Boolean) {
         val host = activity as? MainActivity
         if (host == null) {
@@ -101,7 +116,7 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
             require(result.resultCode == Activity.RESULT_OK) { "Android 文件选择失败。" }
             val data = result.data ?: error("Android 文件选择未返回结果。")
             val uri = data.data ?: error("Android 文件选择未返回 URI。")
-            persistReadPermission(uri, data.flags)
+            persistPermission(uri, data.flags, directory)
             val document = if (directory) treeDocumentUri(uri) else uri
             val entry = queryDocument(document, "/")
             invoke.resolveObject(mapOf(
@@ -116,9 +131,12 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun persistReadPermission(uri: Uri, resultFlags: Int) {
-        val flags = resultFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION
-        require(flags != 0) { "Android 未授予媒体读取权限。" }
+    private fun persistPermission(uri: Uri, resultFlags: Int, writable: Boolean) {
+        val requested = Intent.FLAG_GRANT_READ_URI_PERMISSION or if (writable) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0
+        val flags = resultFlags and requested
+        require(flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0) { "Android 未授予媒体读取权限。" }
+        if (writable)
+            require(flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION != 0) { "所选媒体目录没有授予写入权限。" }
         activity.contentResolver.takePersistableUriPermission(uri, flags)
     }
 
@@ -131,6 +149,15 @@ class LocalMediaPlugin(private val activity: Activity) : Plugin(activity) {
             it.uri == root && it.isReadPermission
         }
         require(readable) { "Android 本地媒体目录授权已失效，请重新选择目录。" }
+        return root
+    }
+
+    private fun requireWritableTree(value: String): Uri {
+        val root = requireReadableTree(value)
+        val writable = activity.contentResolver.persistedUriPermissions.any {
+            it.uri == root && it.isReadPermission && it.isWritePermission
+        }
+        require(writable) { "Android 媒体目录没有持久写入授权，请重新选择该目录后再删除。" }
         return root
     }
 

@@ -60,6 +60,12 @@ pub struct CloudDrive2StreamResponse {
     headers: HashMap<String, String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct CloudDrive2ResolvedStream {
+    pub(crate) url: String,
+    pub(crate) headers: HashMap<String, String>,
+}
+
 #[derive(Clone, PartialEq, Message)]
 struct ListSubFileRequest {
     #[prost(string, tag = "1")]
@@ -223,6 +229,38 @@ pub async fn clouddrive2_get_stream(
     )
     .await?;
     build_stream_response(&endpoint, info)
+}
+
+pub(crate) async fn resolve_download_stream(
+    state: &CloudDrive2GrpcState,
+    base_url: &str,
+    api_token: &str,
+    path: &str,
+) -> Result<CloudDrive2ResolvedStream, String> {
+    let endpoint = normalize_endpoint(base_url)?;
+    let token = normalize_token(api_token)?;
+    let path = normalize_provider_path(path)?;
+    let channel = state.channel(&endpoint).await?;
+    let grpc_request = authorized_request(
+        GetDownloadUrlPathRequest {
+            path,
+            preview: false,
+            lazy_read: false,
+            get_direct_url: true,
+        },
+        &token,
+    )?;
+    let info = unary::<GetDownloadUrlPathRequest, DownloadUrlPathInfo>(
+        channel,
+        grpc_request,
+        "/clouddrive.CloudDriveFileSrv/GetDownloadUrlPath",
+    )
+    .await?;
+    let stream = build_stream_response(&endpoint, info)?;
+    Ok(CloudDrive2ResolvedStream {
+        url: stream.url,
+        headers: stream.headers,
+    })
 }
 
 impl CloudDrive2GrpcState {

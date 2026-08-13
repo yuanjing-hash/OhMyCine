@@ -23,7 +23,8 @@ export interface MediaDeleteOutcome {
 
 export async function resolveMediaDeletePlan(target: MediaItemActionTarget, config: DataSourceConfig | undefined): Promise<MediaDeletePlan> {
   const providerItemIds = await resolveProviderItemIds(target, config)
-  const sourceDeleteAvailable = target.sourceType === 'local' || target.sourceType === 'emby' || target.sourceType === 'jellyfin'
+  const sourceType = target.sourceType
+  const sourceDeleteAvailable = sourceType != null && ['local', 'emby', 'jellyfin', 'alist', 'webdav', '123', 'quark'].includes(sourceType)
   return {
     target,
     sourceDeleteAvailable,
@@ -43,10 +44,20 @@ export async function executeMediaDelete(plan: MediaDeletePlan, source: DataSour
 
   const succeeded: string[] = []
   const failed: Array<{ itemId: string, message: string }> = []
+  const sourceType = plan.target.sourceType
   for (const itemId of plan.providerItemIds) {
     try {
       if (plan.target.sourceType === 'local') {
         await invoke('local_file_delete_owned', { sourceId: plan.target.sourceId, path: itemId })
+      }
+      else if (sourceType != null && ['alist', 'webdav', '123', 'quark'].includes(sourceType)) {
+        await invoke('provider_source_file_delete', {
+          request: {
+            sourceId: plan.target.sourceId,
+            sourceType,
+            itemId,
+          },
+        })
       }
       else {
         if (!source?.deleteMedia)

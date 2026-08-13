@@ -49,11 +49,11 @@ export interface OpenSubtitlesCredentialValue {
   readonly password?: string
 }
 
-type CredentialProvider = 'emby' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | '123' | 'tmdb' | 'opensubtitles'
+type CredentialProvider = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | '123' | 'tmdb' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
-  readonly provider: 'emby'
+  readonly provider: 'emby' | 'jellyfin'
   readonly accessToken: string
   readonly username: string
   readonly password: string
@@ -132,13 +132,13 @@ export async function readCredential(ref: string): Promise<string | null> {
   return parsed?.accessToken ?? raw
 }
 
-export async function saveEmbyCredential(ref: string, value: EmbyCredentialValue): Promise<void> {
+export async function saveEmbyCredential(ref: string, value: EmbyCredentialValue, provider: 'emby' | 'jellyfin' = 'emby'): Promise<void> {
   if (!value.accessToken || !value.username || !value.password)
     throw new Error('Credential value is incomplete.')
 
   await saveRawCredential(ref, JSON.stringify({
     version: 1,
-    provider: 'emby',
+    provider,
     accessToken: value.accessToken,
     username: value.username,
     password: value.password,
@@ -335,7 +335,7 @@ function parseEmbyCredential(raw: string | null): EmbyCredentialValue | null {
     const value = JSON.parse(raw) as unknown
     if (!isObject(value))
       return null
-    if (value.provider !== 'emby' || value.version !== 1)
+    if ((value.provider !== 'emby' && value.provider !== 'jellyfin') || value.version !== 1)
       return null
     if (typeof value.accessToken !== 'string' || typeof value.username !== 'string' || typeof value.password !== 'string')
       return null

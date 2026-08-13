@@ -5,6 +5,8 @@ pub mod credential_android;
 pub mod danmaku;
 #[cfg(not(mobile))]
 pub(crate) mod display_brightness;
+#[cfg(target_os = "android")]
+pub mod download_android;
 pub mod downloads;
 pub mod emby;
 pub mod history;
@@ -23,6 +25,7 @@ pub mod player;
 pub mod player;
 pub(crate) mod player_shared;
 pub mod preference;
+pub mod provider_file;
 pub mod quark;
 pub mod raw_scan_cache;
 pub mod settings;

@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "android", allow(dead_code))]
+
 mod commands;
 mod mpv;
 mod storage;
@@ -11,8 +13,8 @@ use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::danmaku::{danmaku_comments, danmaku_match, danmaku_search};
 use commands::downloads::{
     player_download_cancel, player_download_default_directory, player_download_enqueue,
-    player_download_list, player_download_retry, player_download_set_default_directory,
-    DownloadQueueState,
+    player_download_list, player_download_pick_directory, player_download_retry,
+    player_download_set_default_directory, DownloadQueueState,
 };
 use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
@@ -46,6 +48,7 @@ use commands::preference::{
     player_get_media_playback_preference, player_get_playback_speed_preference,
     player_set_playback_speed_preference, player_upsert_media_playback_preference,
 };
+use commands::provider_file::provider_source_file_delete;
 use commands::quark::{
     quark_auth_cancel, quark_auth_poll_account, quark_auth_poll_qr, quark_auth_start_account,
     quark_auth_start_qr, quark_get_stream, quark_list, quark_search, QuarkAuthState,
@@ -83,6 +86,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder
         .plugin(commands::credential_android::init_android())
+        .plugin(commands::download_android::init_android())
         .plugin(commands::updater::init_android())
         .plugin(commands::local_file::init_android())
         .plugin(mpv::mobile::init())
@@ -102,6 +106,7 @@ pub fn run() {
             player_download_default_directory,
             player_download_set_default_directory,
             player_download_list,
+            player_download_pick_directory,
             player_download_enqueue,
             player_download_cancel,
             player_download_retry,
@@ -126,6 +131,7 @@ pub fn run() {
             player_upsert_media_playback_preference,
             player_delete_media_playback_preferences_for_source,
             player_clear_media_cache,
+            provider_source_file_delete,
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_get_playback_completion_batch,

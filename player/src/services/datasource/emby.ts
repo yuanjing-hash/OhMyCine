@@ -2,6 +2,8 @@ import type {
   AudioTrack,
   DataSource,
   DataSourceConfig,
+  EditableArtworkKind,
+  EditableMediaMetadata,
   HomeSection,
   MediaDetail,
   MediaItem,
@@ -285,6 +287,7 @@ export interface EmbyLoginConfigInput {
   readonly username: string
   readonly password: string
   readonly order?: number
+  readonly sourceType?: 'emby' | 'jellyfin'
 }
 
 export interface EmbyLoginConfigResult {
@@ -305,7 +308,7 @@ export class EmbyDataSource implements DataSource {
   private readonly playbackSyncDiagnostics: ProviderPlaybackSyncDiagnostic[] = []
   private readonly favoriteStateOverrides = new Map<string, FavoriteStateOverride>()
 
-  readonly type = 'emby' as const
+  constructor(readonly type: 'emby' | 'jellyfin' = 'emby') {}
 
   get id(): string {
     return this.config?.id ?? ''
@@ -645,6 +648,47 @@ export class EmbyDataSource implements DataSource {
     }
 
     throwPlaybackSyncDiagnostic(progress.event, startError ?? sessionError)
+  }
+
+  async updateMetadata(itemId: string, metadata: EditableMediaMetadata): Promise<void> {
+    const id = safeEmbyItemId(itemId, '缺少可编辑的媒体条目。')
+    const current = await this.getItem(id)
+    await this.postPlaybackJson(`/Items/${encodeURIComponent(id)}`, compactRequestBody({
+      Name: requiredText(metadata.name, '标题不能为空。'),
+      OriginalTitle: optionalText(metadata.originalTitle),
+      Overview: optionalText(metadata.overview),
+      Taglines: optionalText(metadata.tagline) ? [optionalText(metadata.tagline)!] : [],
+      ProductionYear: finiteInteger(metadata.year),
+      CommunityRating: finiteNumber(metadata.rating),
+      Genres: sanitizeTextList(metadata.genres),
+      ProviderIds: current.ProviderIds ?? {},
+      SortName: current.Name,
+    }))
+    this.cache.clear()
+  }
+
+  async updateArtworkFromUrl(itemId: string, kind: EditableArtworkKind, imageUrl: string): Promise<void> {
+    const id = safeEmbyItemId(itemId, '缺少可编辑图片的媒体条目。')
+    const url = validateEditableImageUrl(imageUrl)
+    await this.postPlaybackJson(`/Items/${encodeURIComponent(id)}/RemoteImages/Download`, undefined, 'default', {
+      Type: kind,
+      ImageUrl: url,
+    })
+    this.cache.clear()
+  }
+
+  async deleteArtwork(itemId: string, kind: EditableArtworkKind): Promise<void> {
+    const id = safeEmbyItemId(itemId, '缺少可编辑图片的媒体条目。')
+    await this.request(`/Items/${encodeURIComponent(id)}/Images/${encodeURIComponent(kind)}`, {}, 'DELETE')
+    this.cache.clear()
+  }
+
+  async deleteSubtitle(itemId: string, subtitleIndex: number): Promise<void> {
+    const id = safeEmbyItemId(itemId, '缺少可编辑字幕的媒体条目。')
+    if (!Number.isInteger(subtitleIndex) || subtitleIndex < 0)
+      throw new Error('字幕轨道无效。')
+    await this.request(`/Videos/${encodeURIComponent(id)}/Subtitles/${subtitleIndex}`, {}, 'DELETE')
+    this.cache.clear()
   }
 
   async setPlayedState(itemId: string, mutation: 'played' | 'unplayed' | 'removeContinueWatching'): Promise<void> {
@@ -1615,11 +1659,13 @@ export class EmbyDataSource implements DataSource {
 }
 
 export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Promise<EmbyLoginConfigResult> {
-  const credentialRef = createCredentialRef(input.id)
-  const displayName = input.displayName?.trim() || 'Emby'
+  const sourceType = input.sourceType ?? 'emby'
+  const providerName = sourceType === 'jellyfin' ? 'Jellyfin' : 'Emby'
+  const credentialRef = createCredentialRef(input.id, sourceType)
+  const displayName = input.displayName?.trim() || providerName
   const config: DataSourceConfig = {
     id: input.id,
-    type: 'emby',
+    type: sourceType,
     name: displayName,
     displayName,
     order: input.order ?? 0,
@@ -1632,7 +1678,7 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
     },
   }
 
-  const source = new EmbyDataSource()
+  const source = new EmbyDataSource(sourceType)
   await source.init(config)
   const previousCredential = await readRawCredentialBackup(credentialRef)
   const auth = await source.authenticate(input.username, input.password)
@@ -1641,7 +1687,7 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
       accessToken: auth.accessToken,
       username: input.username.trim(),
       password: input.password,
-    })
+    }, sourceType)
   }
   catch (error) {
     throw new Error(redactSensitiveText(error))
@@ -1649,8 +1695,8 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
 
   const safeConfig: DataSourceConfig = {
     ...config,
-    name: displayName === 'Emby' && auth.serverName ? auth.serverName : displayName,
-    displayName: displayName === 'Emby' && auth.serverName ? auth.serverName : displayName,
+    name: displayName === providerName && auth.serverName ? auth.serverName : displayName,
+    displayName: displayName === providerName && auth.serverName ? auth.serverName : displayName,
     extra: {
       ...config.extra,
       userId: auth.userId,
@@ -1797,6 +1843,44 @@ function finiteNumber(value: unknown): number | undefined {
 
 function finiteInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) ? value : undefined
+}
+
+function safeEmbyItemId(value: string, message: string): string {
+  const id = value.trim()
+  if (!id || id.includes('/') || id.includes('\\') || id.length > 256)
+    throw new Error(message)
+  return id
+}
+
+function requiredText(value: string, message: string): string {
+  const text = value.trim()
+  if (!text)
+    throw new Error(message)
+  return text.slice(0, 500)
+}
+
+function optionalText(value: string | undefined): string | undefined {
+  return value?.trim().slice(0, 20_000) || undefined
+}
+
+function sanitizeTextList(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map(value => value.trim()).filter(Boolean))].slice(0, 100)
+}
+
+function validateEditableImageUrl(value: string): string {
+  const trimmed = value.trim()
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  }
+  catch {
+    throw new Error('请输入有效的 HTTP(S) 图片地址。')
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+    throw new Error('图片地址只支持不含账号信息的 HTTP(S) URL。')
+  if (trimmed.length > 4096)
+    throw new Error('图片地址过长。')
+  return url.toString()
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -2016,6 +2100,10 @@ function compactPlaybackBody(body: EmbyRequestPayload): EmbyRequestPayload {
   return Object.fromEntries(
     Object.entries(body).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   ) as EmbyRequestPayload
+}
+
+function compactRequestBody(body: EmbyRequestBody): EmbyRequestBody {
+  return Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined)) as EmbyRequestBody
 }
 
 function toNativePlaybackQuery(query: EmbyRequestPayload): Record<string, string | number | boolean | null> | undefined {

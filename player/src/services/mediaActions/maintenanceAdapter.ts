@@ -3,6 +3,7 @@ import type { MediaActionAdapter, MediaActionCapability, MediaActionExecutionRes
 import type { DataSource, DataSourceConfig, DataSourceType } from '@/services/datasource/types'
 import { loadRawSourceScanCache } from '@/services/scraper/localScanCache'
 import { getRawScannedMediaDetail } from '@/services/scraper/rawHomeMapping'
+import { openMediaEditor } from './editorRuntime'
 import { getMaintenanceHandler, waitForMaintenanceHandler } from './maintenanceRuntime'
 
 const RAW_TYPES = new Set<DataSourceType>(['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'])
@@ -18,8 +19,20 @@ export function createMaintenanceMediaActionAdapter(router: Router, resolveSourc
 }
 
 async function capabilities(target: MediaActionTarget, source: DataSource | null, config: DataSourceConfig | undefined): Promise<MediaActionCapability[]> {
-  if (target.sourceType === 'emby' || target.sourceType === 'jellyfin')
-    return target.kind === 'media' && source?.refreshMetadata ? [{ action: 'refreshMetadata', availability: 'available' }] : []
+  if (target.sourceType === 'emby' || target.sourceType === 'jellyfin') {
+    if (target.kind !== 'media')
+      return []
+    const resolved: MediaActionCapability[] = []
+    if (source?.updateMetadata)
+      resolved.push({ action: 'editMetadata', availability: 'available' })
+    if (source?.updateArtworkFromUrl)
+      resolved.push({ action: 'editArtwork', availability: 'available' })
+    if (source?.searchSubtitles || source?.deleteSubtitle)
+      resolved.push({ action: 'editSubtitles', availability: 'available' })
+    if (source?.refreshMetadata)
+      resolved.push({ action: 'refreshMetadata', availability: 'available' })
+    return resolved
+  }
   if (!RAW_TYPES.has(target.sourceType as DataSourceType))
     return []
   if (target.kind === 'library')
@@ -28,14 +41,14 @@ async function capabilities(target: MediaActionTarget, source: DataSource | null
     return []
   const handler = getMaintenanceHandler(target.sourceId)
   if (handler?.canHandle) {
-    const supported = await Promise.all(['identify', 'editMetadata', 'editArtwork', 'refreshMetadata'].map(action => handler.canHandle!(target, action as MediaActionId)))
-    if (!supported.some(Boolean))
-      return []
+    const actions = ['identify', 'editMetadata', 'editArtwork', 'editSubtitles', 'refreshMetadata'] as const
+    const supported = await Promise.all(actions.map(action => handler.canHandle!(target, action)))
+    return actions.filter((_, index) => supported[index]).map(action => ({ action, availability: 'available' }))
   }
   else if (!await isScanOwnedTarget(target, config)) {
     return []
   }
-  return [{ action: 'identify', availability: 'available' }, { action: 'editMetadata', availability: 'available' }, { action: 'editArtwork', availability: 'available' }, { action: 'refreshMetadata', availability: 'available' }]
+  return [{ action: 'identify', availability: 'available' }, { action: 'editMetadata', availability: 'available' }, { action: 'editArtwork', availability: 'available' }, { action: 'editSubtitles', availability: 'available' }, { action: 'refreshMetadata', availability: 'available' }]
 }
 
 export async function isScanOwnedTarget(target: MediaActionTarget, config: DataSourceConfig | undefined): Promise<boolean> {
@@ -50,6 +63,10 @@ export async function isScanOwnedTarget(target: MediaActionTarget, config: DataS
 }
 
 async function execute(router: Router, resolveSource: (id: string) => DataSource | null, target: MediaActionTarget, action: MediaActionId): Promise<MediaActionExecutionResult> {
+  if (target.kind === 'media' && (action === 'editMetadata' || action === 'editArtwork' || action === 'editSubtitles')) {
+    openMediaEditor(target, action)
+    return { message: '已打开编辑器' }
+  }
   if (target.sourceType === 'emby' || target.sourceType === 'jellyfin') {
     const source = resolveSource(target.sourceId)
     if (target.kind !== 'media' || !source?.refreshMetadata)

@@ -87,6 +87,12 @@ pub struct QuarkStreamResponse {
     updated_cookie: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct QuarkResolvedStream {
+    pub(crate) url: String,
+    pub(crate) headers: HashMap<String, String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuarkQrStartResponse {
@@ -380,6 +386,80 @@ pub async fn quark_get_stream(request: QuarkStreamRequest) -> Result<QuarkStream
         headers,
         updated_cookie: changed_cookie(&original_cookie, &cookie),
     })
+}
+
+pub(crate) async fn resolve_download_stream(
+    cookie: String,
+    path: String,
+) -> Result<QuarkResolvedStream, String> {
+    let mut cookie = normalize_cookie(&cookie)?;
+    let path = normalize_provider_path(&path)?;
+    if path == "/" {
+        return Err("Quark folders cannot be downloaded as a file.".to_string());
+    }
+    let client = create_client()?;
+    let fid = resolve_path_fid(&client, &mut cookie, &path).await?;
+    let response = send_api_request(
+        &client,
+        &mut cookie,
+        Method::POST,
+        "/file/download",
+        &[],
+        Some(json!({ "fids": [fid] })),
+    )
+    .await?;
+    let download_url = response
+        .body
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("download_url"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Quark did not return a usable media download address.".to_string())?;
+    let url = validate_stream_url(download_url)?;
+    let parsed = Url::parse(&url)
+        .map_err(|_| "Quark returned an invalid media download address.".to_string())?;
+    let mut headers = HashMap::from([
+        ("Cookie".to_string(), cookie),
+        ("Referer".to_string(), REFERER_VALUE.to_string()),
+        ("User-Agent".to_string(), USER_AGENT_VALUE.to_string()),
+    ]);
+    if !parsed.path().is_empty() {
+        headers.insert("x-urlp".to_string(), parsed.path().to_string());
+    }
+    Ok(QuarkResolvedStream { url, headers })
+}
+
+pub(crate) async fn delete_source_path(
+    cookie: String,
+    root_path: String,
+    path: String,
+) -> Result<(), String> {
+    let mut cookie = normalize_cookie(&cookie)?;
+    let root_path = normalize_provider_path(&root_path)?;
+    let path = normalize_provider_path(&path)?;
+    if !path_within_root(&path, &root_path) || path == root_path || path == "/" {
+        return Err("Quark refuses to delete the configured root.".to_string());
+    }
+    let client = create_client()?;
+    let fid = resolve_path_fid(&client, &mut cookie, &path).await?;
+    send_api_request(
+        &client,
+        &mut cookie,
+        Method::POST,
+        "/file/delete",
+        &[],
+        Some(json!({
+            "action_type": 1,
+            "exclude_fids": [],
+            "filelist": [fid],
+        })),
+    )
+    .await
+    .map_err(|error| {
+        format!("Quark source delete failed or its private web API changed: {error}")
+    })?;
+    Ok(())
 }
 
 fn create_client() -> Result<Client, String> {

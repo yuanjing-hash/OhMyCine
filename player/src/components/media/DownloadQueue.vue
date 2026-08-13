@@ -7,8 +7,28 @@ import { cancelDownload, listDownloadTasks, listenDownloadProgress, retryDownloa
 const tasks = ref<DownloadTask[]>([])
 const open = ref(false)
 const error = ref('')
+const expandedGroups = ref(new Set<string>())
 let unlisten: (() => void) | undefined
-const activeCount = computed(() => tasks.value.filter(task => task.status === 'queued' || task.status === 'running' || task.status === 'cancelling').length)
+const topLevelEntries = computed(() => {
+  const grouped = new Map<string, DownloadTask[]>()
+  const singles: DownloadQueueEntry[] = []
+  for (const task of tasks.value) {
+    if (!task.parentId) {
+      singles.push({ ...task, children: [] })
+      continue
+    }
+    const children = grouped.get(task.parentId) ?? []
+    children.push(task)
+    grouped.set(task.parentId, children)
+  }
+  const groups = [...grouped.entries()].map(([id, children]) => aggregateGroup(id, children))
+  return [...groups, ...singles].sort((left, right) => right.createdAt - left.createdAt)
+})
+const activeCount = computed(() => topLevelEntries.value.filter(entry => entry.status === 'queued' || entry.status === 'running' || entry.status === 'cancelling').length)
+
+interface DownloadQueueEntry extends DownloadTask {
+  children: DownloadTask[]
+}
 
 onMounted(async () => {
   try {
@@ -33,6 +53,32 @@ function percent(task: DownloadTask): number {
   return task.totalBytes ? Math.min(100, (task.bytesDownloaded / task.totalBytes) * 100) : 0
 }
 
+function aggregateGroup(id: string, children: DownloadTask[]): DownloadQueueEntry {
+  const bytesDownloaded = children.reduce((sum, child) => sum + child.bytesDownloaded, 0)
+  const allTotalsKnown = children.every(child => child.totalBytes != null)
+  const totalBytes = allTotalsKnown ? children.reduce((sum, child) => sum + (child.totalBytes ?? 0), 0) : undefined
+  const statuses = new Set(children.map(child => child.status))
+  let status: DownloadTask['status'] = 'completed'
+  for (const candidate of ['running', 'queued', 'cancelling', 'failed', 'paused', 'cancelled'] as const) {
+    if (statuses.has(candidate)) {
+      status = candidate
+      break
+    }
+  }
+  const first = children[0]
+  return {
+    ...first,
+    id,
+    displayName: first.groupName ?? first.displayName,
+    destinationName: first.groupName ?? first.displayName,
+    status,
+    bytesDownloaded,
+    totalBytes,
+    errorMessage: statuses.has('failed') ? `${children.filter(child => child.status === 'failed').length} 个文件失败` : undefined,
+    children: [...children].sort((left, right) => left.createdAt - right.createdAt),
+  }
+}
+
 function bytes(value?: number): string {
   if (!value)
     return '0 B'
@@ -50,6 +96,12 @@ async function cancel(task: DownloadTask) {
   }
 }
 
+async function cancelEntry(entry: DownloadQueueEntry) {
+  if (!entry.children.length)
+    return cancel(entry)
+  await Promise.all(entry.children.filter(child => ['queued', 'running', 'cancelling'].includes(child.status)).map(cancel))
+}
+
 async function retry(task: DownloadTask) {
   try {
     upsert(await retryDownload(task.id))
@@ -57,6 +109,21 @@ async function retry(task: DownloadTask) {
   catch (reason) {
     error.value = toSafeErrorMessage(reason, '重试下载失败。')
   }
+}
+
+async function retryEntry(entry: DownloadQueueEntry) {
+  if (!entry.children.length)
+    return retry(entry)
+  await Promise.all(entry.children.filter(child => ['failed', 'cancelled', 'paused'].includes(child.status)).map(retry))
+}
+
+function toggleGroup(id: string) {
+  const next = new Set(expandedGroups.value)
+  if (next.has(id))
+    next.delete(id)
+  else
+    next.add(id)
+  expandedGroups.value = next
 }
 </script>
 
@@ -75,7 +142,7 @@ async function retry(task: DownloadTask) {
         {{ error }}
       </p>
       <div class="download-list">
-        <article v-for="task in tasks" :key="task.id" class="download-task">
+        <article v-for="task in topLevelEntries" :key="task.id" class="download-task">
           <div class="download-task-head">
             <strong>{{ task.destinationName }}</strong><span>{{ task.status }}</span>
           </div>
@@ -86,11 +153,19 @@ async function retry(task: DownloadTask) {
           <p v-if="task.errorMessage">
             {{ task.errorMessage }}
           </p>
+          <button v-if="task.children.length" class="download-group-toggle" type="button" @click="toggleGroup(task.id)">
+            {{ task.children.filter(child => child.status === 'completed').length }} / {{ task.children.length }} 个文件 · {{ expandedGroups.has(task.id) ? '收起' : '展开' }}
+          </button>
+          <div v-if="task.children.length && expandedGroups.has(task.id)" class="download-group-children">
+            <div v-for="child in task.children" :key="child.id">
+              <span>{{ child.destinationName }}</span><small>{{ child.status }} · {{ percent(child).toFixed(0) }}%</small>
+            </div>
+          </div>
           <div class="download-actions">
-            <button v-if="task.status === 'queued' || task.status === 'running'" type="button" @click="cancel(task)">
+            <button v-if="task.status === 'queued' || task.status === 'running'" type="button" @click="cancelEntry(task)">
               取消
             </button>
-            <button v-if="task.status === 'failed' || task.status === 'cancelled' || task.status === 'paused'" type="button" @click="retry(task)">
+            <button v-if="task.status === 'failed' || task.status === 'cancelled' || task.status === 'paused'" type="button" @click="retryEntry(task)">
               重试
             </button>
           </div>
@@ -119,4 +194,8 @@ async function retry(task: DownloadTask) {
 .download-error { padding:0 1rem; }
 .download-actions { display:flex; justify-content:flex-end; gap:.4rem; }
 .download-actions button { border-radius:8px; padding:.3rem .6rem; color:var(--color-text-secondary); background:var(--surface-soft-hover); font-size:.68rem; }
+.download-group-toggle { margin-top:.45rem; color:var(--color-primary); font-size:.68rem; }
+.download-group-children { margin-top:.45rem; padding:.45rem; border-radius:8px; background:rgb(0 0 0 / 12%); }
+.download-group-children div { display:flex; gap:.5rem; justify-content:space-between; padding:.24rem 0; font-size:.65rem; }
+.download-group-children span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
