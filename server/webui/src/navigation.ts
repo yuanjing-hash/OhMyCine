@@ -25,11 +25,8 @@ const discoveryPermissions = [Permissions.DiscoveryRead] as const
 const followPermissions = [Permissions.FollowsReadOwn, Permissions.FollowsReadAll] as const
 const downloadPermissions = [Permissions.DownloadsReadOwn, Permissions.DownloadsReadAll] as const
 const taskPermissions = [
-  Permissions.DownloadsReadOwn,
-  Permissions.DownloadsReadAll,
-  Permissions.FollowsReadOwn,
-  Permissions.FollowsReadAll,
-  Permissions.StrmRunsRead,
+	Permissions.JobsReadOwn,
+	Permissions.JobsReadAll,
 ] as const
 const connectionPermissions = [
   Permissions.ConnectionsRead,
@@ -69,7 +66,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     id: 'automation',
     label: '媒体自动化',
     items: [
-      { id: 'tasks', label: '任务中心', to: '/automation/tasks', permissionsAny: taskPermissions, planned: true, description: '聚合下载、转移、STRM、刷新与追更任务；不会成为新的任务写入 owner。' },
+      { id: 'tasks', label: '任务中心', to: '/automation/tasks', permissionsAny: taskPermissions, description: '查看、筛选和控制获权范围内的持久化自动化任务。' },
       { id: 'downloads', label: '下载管理', to: '/automation/downloads', permissionsAny: downloadPermissions, planned: true, description: '下载器健康、队列和速度需要真实 downloader service；当前不生成演示任务。' },
       { id: 'organization', label: '媒体整理', to: '/automation/organization', permissionsAny: [Permissions.CategoriesRead], planned: true, description: '分类、元数据匹配、命名与转移记录将在相应业务域完成后接入。' },
       { id: 'strm-import', label: 'STRM / 入库', to: '/automation/strm-import', permissionsAny: [Permissions.StrmRunsRead], planned: true, description: 'STRM Run、signed 302、入库和媒体服务器刷新 API 尚未实现。' },

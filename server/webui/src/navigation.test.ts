@@ -5,9 +5,15 @@ import {
   getFirstVisibleUserManagementPath,
   getVisibleUserManagementTabs,
   legacyRouteRedirects,
+  findNavigationItem,
 } from '@/navigation'
 
 describe('grouped administration navigation', () => {
+  it('uses canonical queue permissions for the real task center', () => {
+    const item = findNavigationItem('tasks')
+    expect(item.planned).toBeUndefined()
+    expect(item.permissionsAny).toEqual([Permissions.JobsReadOwn, Permissions.JobsReadAll])
+  })
   it('omits every empty group and keeps the dashboard standalone', () => {
     expect(buildVisibleNavigation([Permissions.DashboardRead])).toEqual([])
   })

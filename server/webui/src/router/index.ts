@@ -16,6 +16,7 @@ import PlannedView from '@/views/PlannedView.vue'
 import StorageView from '@/views/StorageView.vue'
 import MediaRulesView from '@/views/MediaRulesView.vue'
 import MediaLibrariesView from '@/views/MediaLibrariesView.vue'
+import TasksView from '@/views/TasksView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 
 function navigationMeta(id: string) {
@@ -29,7 +30,6 @@ const plannedRoutes = [
   ['subscriptions/manage', 'subscriptions'],
   ['subscriptions/workflows', 'workflows'],
   ['subscriptions/calendar', 'calendar'],
-  ['automation/tasks', 'tasks'],
   ['automation/downloads', 'downloads'],
   ['automation/organization', 'organization'],
   ['automation/strm-import', 'strm-import'],
@@ -54,6 +54,7 @@ export const router = createRouter({
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
         { path: mediaLibrariesRouteContract.path, name: mediaLibrariesRouteContract.name, component: MediaLibrariesView, meta: navigationMeta(mediaLibrariesRouteContract.navigationID) },
         { path: 'system/media-rules', name: 'media-rules', component: MediaRulesView, meta: navigationMeta('media-rules') },
+        { path: 'automation/tasks', name: 'tasks', component: TasksView, meta: navigationMeta('tasks') },
         ...plannedRoutes.map(([path, id]) => ({ path, name: id, component: PlannedView, meta: navigationMeta(id) })),
         {
           path: 'system/users',
