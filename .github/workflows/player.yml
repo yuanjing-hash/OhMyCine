@@ -67,6 +67,13 @@ jobs:
       - name: Verify subtitle search routing and security boundaries
         run: npm run verify:subtitle-search
 
+      - name: Verify media actions, deletion, and download planning
+        run: |
+          npm run verify:media-actions
+          npm run verify:media-delete
+          npm run verify:download-planning
+          npm run verify:provider-file-operations
+
       - name: Verify signed updater channels and release artifacts
         run: npm run verify:auto-update
 
@@ -204,7 +211,9 @@ jobs:
         run: npm ci
 
       - name: Verify Android playback integration
-        run: npm run verify:android-playback
+        run: |
+          npm run verify:android-playback
+          npm run verify:android-downloads
 
       - name: Build unsigned Android ARM64 debug APK
         run: npm run tauri:build:android:preview

@@ -477,11 +477,12 @@ async fn execute_android_task(
             let config = resolve_datasource(app, &task.source_id, "local")?;
             let root = extra_string(&config, "rootPath")?;
             let mut truncate = offset == 0;
+            let mut resume_pending = offset > 0;
             loop {
                 if cancellation.load(Ordering::Relaxed) {
                     return Err("Download cancelled.".to_string());
                 }
-                let (chunk, total) = download_android::read_local_chunk(
+                let (chunk, total, entity_hash) = download_android::read_local_chunk(
                     app,
                     &root,
                     &task.item_id,
@@ -489,28 +490,25 @@ async fn execute_android_task(
                     COPY_BUFFER_BYTES,
                 )
                 .await?;
-                if offset > 0
-                    && (storage.entity_hash(&task.id)?.is_none()
+                if resume_pending
+                    && (storage.entity_hash(&task.id)?.as_deref() != Some(&entity_hash)
                         || task
                             .total_bytes
                             .is_some_and(|expected| Some(expected) != total))
                 {
                     offset = 0;
                     truncate = true;
+                    resume_pending = false;
                     continue;
                 }
+                resume_pending = false;
                 if chunk.is_empty() {
                     break;
                 }
                 download_android::write_chunk(app, &document.partial_uri, &chunk, truncate).await?;
                 truncate = false;
                 offset = offset.saturating_add(chunk.len() as u64);
-                storage.set_entity_and_progress(
-                    &task.id,
-                    Some("android-saf-local-v1"),
-                    offset,
-                    total,
-                )?;
+                storage.set_entity_and_progress(&task.id, Some(&entity_hash), offset, total)?;
                 emit_task(app, &storage, &task.id);
                 download_android::notify(
                     app,

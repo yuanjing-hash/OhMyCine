@@ -78,6 +78,10 @@ class DownloadService : Service() {
                     .setAutoCancel(true)
                     .build()
                 activeNotifications.remove(id)
+                if (foregroundId == null) {
+                    startForeground(id, notification)
+                    foregroundId = id
+                }
                 if (foregroundId == id) {
                     val replacement = activeNotifications.entries.firstOrNull()
                     if (replacement == null)

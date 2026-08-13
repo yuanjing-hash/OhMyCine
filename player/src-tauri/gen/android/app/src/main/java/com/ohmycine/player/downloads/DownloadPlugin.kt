@@ -13,6 +13,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
 import com.ohmycine.player.MainActivity
 import java.io.FileNotFoundException
+import java.security.MessageDigest
 
 @InvokeArg class DirectoryArgs { lateinit var uri: String }
 @InvokeArg class PrepareArgs { lateinit var directoryUri: String; lateinit var destinationName: String }
@@ -103,6 +104,7 @@ class DownloadPlugin(private val activity: Activity) : Plugin(activity) {
             "data" to Base64.encodeToString(buffer.copyOf(count), Base64.NO_WRAP),
             "bytesRead" to count,
             "totalBytes" to total,
+            "entityHash" to documentEntityHash(document, total),
         )
     }
 
@@ -229,6 +231,13 @@ class DownloadPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun documentSize(uri: Uri): Long = queryLong(uri, DocumentsContract.Document.COLUMN_SIZE) ?: 0
+    private fun documentEntityHash(uri: Uri, size: Long): String {
+        val documentId = DocumentsContract.getDocumentId(uri)
+        val modified = queryLong(uri, DocumentsContract.Document.COLUMN_LAST_MODIFIED) ?: -1
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$documentId\u0000$size\u0000$modified".toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte) }
+    }
     private fun queryFlags(uri: Uri): Long = queryLong(uri, DocumentsContract.Document.COLUMN_FLAGS) ?: 0
     private fun queryLong(uri: Uri, column: String): Long? = activity.contentResolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
         if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null

@@ -64,6 +64,7 @@ pub struct ReadChunk {
     pub data: String,
     pub bytes_read: usize,
     pub total_bytes: Option<u64>,
+    pub entity_hash: String,
 }
 
 #[derive(Serialize)]
@@ -193,7 +194,7 @@ pub async fn read_local_chunk(
     path: &str,
     offset: u64,
     length: usize,
-) -> Result<(Vec<u8>, Option<u64>), String> {
+) -> Result<(Vec<u8>, Option<u64>, String), String> {
     let result: ReadChunk = state(app)?
         .run(
             "readLocalChunk",
@@ -211,7 +212,15 @@ pub async fn read_local_chunk(
     if bytes.len() != result.bytes_read || bytes.len() > length {
         return Err("Android 本地媒体返回了无效数据。".to_string());
     }
-    Ok((bytes, result.total_bytes))
+    if result.entity_hash.len() != 64
+        || !result
+            .entity_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Android 本地媒体返回了无效实体指纹。".to_string());
+    }
+    Ok((bytes, result.total_bytes, result.entity_hash))
 }
 
 pub async fn finalize_document(
