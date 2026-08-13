@@ -42,6 +42,7 @@ Before changing backend code or API documentation:
 | [Error Handling](./error-handling.md) | Error propagation and client-safe responses | Active |
 | [Security Guidelines](./security-guidelines.md) | Credentials, proxy, paths, sync, plugin, AI boundaries | Active |
 | [Server Web Administration](./web-admin-guidelines.md) | Embedded Web UI, sessions, users, roles, permission codes, and RBAC invariants | Active |
+| [Media Classification Profiles](./media-classification-profiles.md) | Versioned logical media classification, matcher, Profile API, RBAC, and audit contracts | Active |
 | [Logging Guidelines](./logging-guidelines.md) | zerolog conventions and redaction rules | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Testing, linting, and forbidden patterns | Active |
 

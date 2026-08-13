@@ -115,6 +115,8 @@ Player 连接 Server 时支持两种方式：
 
 Server 本地目录浏览使用独立敏感权限 `storages.browse`，不能由 `storages.read` 或创建/编辑按钮隐式获得。owner、administrator 和 operator 默认具备该权限，viewer 不具备；根列表和子目录 API 同时执行路由中间件与 service policy 校验。
 
+媒体逻辑分类 Profile 使用独立的 `media_classification_profiles.read/create/update/delete`，不得复用流水线 `categories.*`。owner/administrator 和 operator 默认具备四项，viewer 默认不具备；路由 middleware 与 service policy 双重校验。内置 Profile 只能读取和复制，不能更新或删除。创建、复制、更新、删除的审计只记录 actor、Profile ID、动作、结果、revision、kind 和分类数量，不记录 `rules_json`、完整规则或未来媒体绝对路径。
+
 目录选择器仅逐层枚举 Server 进程可见目录，响应 `Cache-Control: no-store`，并使用短期、签名、用途隔离且绑定平台/adapter 版本的 opaque token 导航和选择。客户端不得拼接盘符、UNC 主机、分隔符或 `..`。symlink、junction、mount-point Reparse Point 等跳转项不可进入或选择；保存时仍重新执行 Storage 根规范化与只读探测。普通日志和审计不得记录被浏览/选择的绝对路径或子目录名，只能记录 actor、结果、稳定错误、平台和条目数等脱敏信息。
 
 | 角色 | 权限 |

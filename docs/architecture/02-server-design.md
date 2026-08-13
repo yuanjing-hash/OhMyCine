@@ -16,7 +16,9 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
 
-当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
+当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。Connection、Storage Destination、流水线 `CategoryRule`、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
+
+Server 同时已实现独立的 `MediaClassificationProfile`：它保存版本化的 movie/tv 逻辑分类规则，提供受控管理页、严格校验、复制、乐观 revision 和纯 Go matcher，供后续 `MediaLibrary` 选择。内置 `default-v1` 与 Player v1 默认分类语义一致，但 Server 不读取或执行 Player 配置。该 Profile 不属于下载/转移流水线的 `categories.*` / `CategoryRule`，不选择 Storage Destination，也不执行扫描、移动、重命名或任何文件写入；本版本尚未创建 `MediaLibrary` 表或伪造引用关系。
 
 管理端通过 Server 目录选择器注册本地 Storage，而不是使用浏览器原生文件选择器或自由文本路径。`storages.browse` 单独保护 Server 进程可见根与单层子目录枚举；Windows 显示当前服务账户可见盘符/映射盘，Linux/NAS/Docker 只显示进程命名空间中的 `/` 与实际挂载点。导航和选择使用短期、签名、用途隔离的令牌，UI 不拼接路径；保存时仍重新执行 `CanonicalizeRoot`、Reparse Point/symlink 拒绝、唯一性和只读探测。该浏览器不递归扫描、不返回普通文件，也不提供创建、改名、移动、删除、上传或预览。
 
