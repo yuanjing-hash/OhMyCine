@@ -16,6 +16,8 @@ const androidRoot = resolve(rootDir, 'src-tauri', 'gen', 'android', 'app', 'src'
 const nativeDir = join(androidRoot, 'jniLibs', 'arm64-v8a')
 const assetDir = join(androidRoot, 'assets', 'mpv')
 const markerPath = join(nativeDir, '.ohmycine-mpv-runtime')
+const maxDownloadAttempts = 3
+const retryBaseDelayMs = 1500
 const requiredLibraries = [
   'libavcodec.so',
   'libavdevice.so',
@@ -41,11 +43,34 @@ function runtimeReady() {
     && requiredLibraries.every(name => existsSync(join(nativeDir, name)))
 }
 
+function wait(delayMs) {
+  return new Promise(resolve => setTimeout(resolve, delayMs))
+}
+
 async function downloadFile(url, destPath) {
-  const response = await fetch(url)
-  if (!response.ok)
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
-  await pipeline(response.body, createWriteStream(destPath))
+  let lastError
+  for (let attempt = 1; attempt <= maxDownloadAttempts; attempt += 1) {
+    rmSync(destPath, { force: true })
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+      if (!response.ok)
+        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
+      if (!response.body)
+        throw new Error(`Failed to fetch ${url}: response body is empty`)
+      await pipeline(response.body, createWriteStream(destPath))
+      return
+    }
+    catch (error) {
+      lastError = error
+      rmSync(destPath, { force: true })
+      if (attempt === maxDownloadAttempts)
+        break
+      const delayMs = retryBaseDelayMs * (2 ** (attempt - 1))
+      console.warn(`mpv-android download attempt ${attempt}/${maxDownloadAttempts} failed; retrying in ${delayMs}ms`)
+      await wait(delayMs)
+    }
+  }
+  throw new Error(`Failed to download mpv-android after ${maxDownloadAttempts} attempts`, { cause: lastError })
 }
 
 function sha256(path) {

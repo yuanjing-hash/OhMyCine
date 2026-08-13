@@ -160,8 +160,57 @@ jobs:
         working-directory: player/src-tauri
         run: cargo check --all-targets
 
+  android-arm64:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: player
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: player/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform and NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: player/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Verify Android playback integration
+        run: npm run verify:android-playback
+
+      - name: Build unsigned Android ARM64 debug APK
+        run: npm run tauri:build:android:preview
+
   build:
-    needs: [quality, rust-linux, rust-windows-msvc]
+    needs: [quality, rust-linux, rust-windows-msvc, android-arm64]
     runs-on: ubuntu-latest
     defaults:
       run:

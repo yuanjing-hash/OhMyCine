@@ -884,14 +884,14 @@ RUSTC="$(rustup which rustc)" npm run tauri:build:windows
 
 因此 CI 不再依赖 `windows-latest`/MSVC 来构建 Windows Player 包；Windows 桌面运行、签名和真实播放仍需要在 Windows 宿主环境最终验证。
 
-Android ARM64 可播放预览使用 Tauri Android 工程与官方 mpv-android runtime：
+Android ARM64 可播放预览使用 Tauri Android 工程与官方 mpv-android runtime。Windows 本地开发直接在 PowerShell 和 Windows 文件系统中构建，不需要 WSL：
 
-```bash
+```powershell
 cd player
-PATH=/home/linuxbrew/.linuxbrew/bin:$PATH npm run tauri:build:android:preview
+npm run tauri:build:android:preview
 ```
 
-该命令固定校验 mpv-android `2026-04-25` release 的 SHA-256，提取 ARM64 libmpv、FFmpeg、JNI bridge 和 CA 证书，清理旧 Gradle APK 后以无 Rust debug info 的 debug profile 构建，产物位于 `player/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`。原生运行库位于 gitignored 构建目录，不提交仓库；来源、版本和许可证入口记录在 `player/src-tauri/gen/android/MPV_ANDROID_NOTICE.md`。
+该跨平台 Node 入口会从环境变量或系统默认位置发现 Android Platform 36、Build Tools 35/36、NDK `27.2.12479018` 与兼容 JDK，并在 Windows、Linux CI 上使用同一条命令。本机约定把 Android 工具链和 Gradle 缓存放在 `D:\Software\Android`，复用 `D:\Software\DevelopEnv\Java\Java21`，不占用系统盘。它固定校验 mpv-android `2026-04-25` release 的 SHA-256，提取 ARM64 libmpv、FFmpeg、JNI bridge 和 CA 证书，清理旧 Gradle APK 后以无 Rust debug info 的 debug profile 构建，产物位于 `player/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`。原生运行库位于 gitignored 构建目录，不提交仓库；来源、版本和许可证入口记录在 `player/src-tauri/gen/android/MPV_ANDROID_NOTICE.md`。WSL 只用于 Linux 兼容性检查，不再作为 Windows 或 Android 本地构建前提。
 
 当前 Android 验证覆盖 Rust/Kotlin 编译、Tauri plugin 命令契约、APK 库清单和 JNI 导出符号。没有连接设备时不得声称真机播放已验证；画面、音频、MediaCodec、远程播放 header、字幕、seek、横竖屏与 Activity 生命周期需要通过 `adb` 真机测试后再更新状态。
 

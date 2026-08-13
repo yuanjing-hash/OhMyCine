@@ -27,36 +27,58 @@ on:
       - ".github/workflows/player-beta-release.yml"
       - ".github/scripts/generate-player-beta-release-notes.py"
       - ".github/scripts/verify-player-release-source.sh"
+      - "player/package.json"
+      - "player/scripts/build-android-preview.mjs"
+      - "player/scripts/setup-libmpv-android.mjs"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
       - "player/src-tauri/tauri.updater.conf.json"
       - "player/src-tauri/Cargo.toml"
       - "player/src-tauri/src/commands/updater.rs"
+      - "player/src-tauri/src/commands/downloads.rs"
+      - "player/src-tauri/src/commands/download_android.rs"
+      - "player/src-tauri/src/commands/provider_file.rs"
       - "player/src-tauri/gen/android/app/build.gradle.kts"
       - "player/src-tauri/gen/android/app/src/main/AndroidManifest.xml"
       - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/**"
+      - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/downloads/**"
+      - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/**"
       - "player/src-tauri/gen/android/app/src/main/res/xml/file_paths.xml"
       - "player/src/services/updater.ts"
       - "player/src/stores/updater.ts"
       - "player/src/components/layout/UpdateDialog.vue"
+      - "player/src/services/downloads.ts"
+      - "player/src/services/downloadPlanning.ts"
+      - "player/src/components/media/DownloadQueue.vue"
   pull_request:
     branches: [develop, main]
     paths:
       - ".github/workflows/player-beta-release.yml"
       - ".github/scripts/generate-player-beta-release-notes.py"
       - ".github/scripts/verify-player-release-source.sh"
+      - "player/package.json"
+      - "player/scripts/build-android-preview.mjs"
+      - "player/scripts/setup-libmpv-android.mjs"
       - "player/src-tauri/tauri.conf.json"
       - "player/src-tauri/tauri.windows.conf.json"
       - "player/src-tauri/tauri.updater.conf.json"
       - "player/src-tauri/Cargo.toml"
       - "player/src-tauri/src/commands/updater.rs"
+      - "player/src-tauri/src/commands/downloads.rs"
+      - "player/src-tauri/src/commands/download_android.rs"
+      - "player/src-tauri/src/commands/provider_file.rs"
       - "player/src-tauri/gen/android/app/build.gradle.kts"
       - "player/src-tauri/gen/android/app/src/main/AndroidManifest.xml"
       - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/**"
+      - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/downloads/**"
+      - "player/src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/**"
       - "player/src-tauri/gen/android/app/src/main/res/xml/file_paths.xml"
       - "player/src/services/updater.ts"
       - "player/src/stores/updater.ts"
       - "player/src/components/layout/UpdateDialog.vue"
+      - "player/src/services/downloads.ts"
+      - "player/src/services/downloadPlanning.ts"
+      - "player/src/components/media/DownloadQueue.vue"
 
 permissions:
   contents: read
@@ -417,7 +439,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
           echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Setup Rust

@@ -81,6 +81,63 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | Windows GNU CI/release package change | Run the existing `npm run tauri:build:windows` cross-build path in its Linux CI/release environment | Cross-build passes only when the Windows `.exe` and installer are generated; Windows-native runtime/signing/playback remain separate checks |
 | Android UI/data-source preview change | `npm run tauri:build:android:preview` with SDK 36, NDK `27.2.12479018`, and the ARM64 Rust target installed | An installable ARM64 debug APK is generated; report playback as unsupported until Android libmpv and native surface rendering are integrated |
 | Native file picker / dialog plugin change | Above plus `cargo check` and a Windows-native `npm run tauri:dev:windows` attempt when possible | Static checks alone are insufficient; exercise the Windows dialog/playback interaction when it is in scope |
+
+## Scenario: Windows-Native Desktop And Android Builds
+
+### 1. Scope / Trigger
+
+- Trigger: changing Player packaging, Android Gradle/Kotlin/Rust code, libmpv runtime setup, or local build instructions.
+- Windows is the authoritative local host for both Windows MSVC and Android ARM64 builds. WSL is supplementary for native Linux compatibility and must not be the default Android build path.
+
+### 2. Signatures
+
+- Windows desktop: `npm run setup:libmpv -- windows` then `npm run tauri:build:windows:native`.
+- Android ARM64: `npm run tauri:build:android:preview`.
+- Android entry point: `node scripts/build-android-preview.mjs`; npm scripts must not embed `rm`, `env -u`, `$HOME`, or WSL-only PATH expressions.
+
+### 3. Contracts
+
+- SDK discovery order: `ANDROID_SDK_ROOT` / `ANDROID_HOME`, the owner's `D:\Software\Android\Sdk` convention when present, then the Windows user default SDK directory.
+- Required Android packages: Platform 36, Build Tools 35.0.0 and 36.0.0 on Windows, NDK `27.2.12479018`, and Rust target `aarch64-linux-android`.
+- JDK discovery respects `JAVA_HOME`; a compatible JDK 17 or newer is accepted.
+- `GRADLE_USER_HOME` respects explicit configuration. The owner's Windows profile uses `D:\Software\Android\Gradle`; repository code must not force that location on other machines.
+- Local Maven mirror configuration belongs in the user's Gradle home, not repository Gradle files. CI and other developers retain official `google()` / `mavenCentral()` repositories.
+- Windows Kotlin compilation may receive Tauri/plugin sources from the C-drive Cargo registry while the project is on D. Disable Kotlin incremental/daemon execution through build-process environment options to avoid cross-root fallback exceptions.
+
+### 4. Validation & Error Matrix
+
+- SDK platform missing -> fail before Tauri starts and report the expected SDK root/version.
+- NDK or Build Tools missing -> fail before compilation with the exact missing version.
+- JDK missing -> fail with a `JAVA_HOME` instruction; do not install into the repository.
+- Google Maven TLS fails locally -> use a user-scoped Gradle mirror while keeping repository sources official.
+- C/D Kotlin incremental root mismatch -> compile in-process without incremental mode; do not move the project to WSL.
+
+### 5. Good/Base/Bad Cases
+
+- Good: PowerShell builds both MSVC NSIS and Android APK with SDK/NDK/Gradle caches on D and no WSL process.
+- Base: GitHub Linux runner uses the same Node Android entry point with environment-provided SDK/JDK and only Build Tools 36.
+- Bad: npm calls `rm -f`, `env -u`, `$HOME`, or invokes Android Cargo/Gradle under `/mnt/d`.
+
+### 6. Tests Required
+
+- `npm run verify:android-playback` asserts the Node build entry and rejects POSIX-only Android npm commands.
+- Run `npm run tauri:build:android:preview` from Windows PowerShell and assert `app-universal-debug.apk` exists.
+- Run `npm run tauri:build:windows:native` and assert the MSVC executable and NSIS installer exist.
+- `git diff --check` and CI release-contract tests must still pass.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```json
+"tauri:build:android:preview": "rm -f ... && env -u HTTP_PROXY ... tauri android build ..."
+```
+
+Correct:
+
+```json
+"tauri:build:android:preview": "node scripts/build-android-preview.mjs"
+```
 | DataSource / external media source UI change | `npm run typecheck`, `npm run lint`, `npm run build`, plus `npm run tauri:build:windows:native` for local Windows packaging or the existing cross-build script in CI | Static checks and package generation pass; live server/runtime browsing may remain user-verified when credentials or Windows host access are user-owned |
 
 ### Tauri Windows-Only Packaging Contract
