@@ -22,6 +22,7 @@ type testClient struct {
 	router http.Handler
 	cookie *http.Cookie
 	csrf   string
+	queue  *services.QueueService
 }
 type testEnvelope struct {
 	Code    int             `json:"code"`
@@ -76,7 +77,12 @@ func newTestClient(t *testing.T) *testClient {
 		t.Fatal(err)
 	}
 	api.SetRuntimeLogService(runtimeLogs)
-	return &testClient{router: New(cfg, api, auth, log)}
+	queue := services.NewQueueService(db, audit)
+	events := services.NewQueueEventHub()
+	queue.SetEventHub(events)
+	api.SetQueueService(queue)
+	api.SetQueueEventHub(events)
+	return &testClient{router: New(cfg, api, auth, log), queue: queue}
 }
 
 func (c *testClient) request(t *testing.T, method, path string, body any, csrf bool) (int, testEnvelope) {
@@ -720,6 +726,64 @@ func TestRuntimeLogsRBACNoStoreQuerySettingsAndExport(t *testing.T) {
 	viewer.router.ServeHTTP(response, req)
 	if response.Code != http.StatusForbidden || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("viewer status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestQueueAPIReadControlReorderStrictJSONAndViewerBoundary(t *testing.T) {
+	owner := newTestClient(t)
+	setup := owner.setup(t)
+	user := setup["user"].(map[string]any)
+	ownerID := uint(user["id"].(float64))
+	one, err := owner.queue.Enqueue(services.EnqueueJobInput{OwnerID: ownerID, JobType: "fake", Priority: 10, DisplayName: "First", Payload: map[string]any{"step": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := owner.queue.Enqueue(services.EnqueueJobInput{OwnerID: ownerID, JobType: "fake", Priority: 10, DisplayName: "Second", Payload: map[string]any{"step": 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, envelope := owner.request(t, http.MethodGet, "/api/v1/jobs?status=queued&job_type=fake&priority=10", nil, false)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(one.ID)) {
+		t.Fatalf("list=%d %s", status, envelope.Data)
+	}
+	status, _ = owner.request(t, http.MethodPut, "/api/v1/job-lanes/fake/10/order", map[string]any{"jobs": []map[string]any{{"id": two.ID, "revision": two.Revision}, {"id": one.ID, "revision": one.Revision}}}, true)
+	if status != http.StatusOK {
+		t.Fatalf("reorder=%d", status)
+	}
+	status, _ = owner.request(t, http.MethodPut, "/api/v1/job-lanes/fake/10/order", map[string]any{"jobs": []map[string]any{}, "unknown": true}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("strict json=%d", status)
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/jobs/"+one.ID+"/cancel", map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("cancel=%d", status)
+	}
+	status, rolesEnvelope := owner.request(t, http.MethodGet, "/api/v1/roles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var roles struct {
+		List []struct {
+			ID   uint   `json:"id"`
+			Code string `json:"code"`
+		} `json:"list"`
+	}
+	_ = json.Unmarshal(rolesEnvelope.Data, &roles)
+	var viewerID uint
+	for _, role := range roles.List {
+		if role.Code == "viewer" {
+			viewerID = role.ID
+		}
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "queueviewer", "password": "viewer-strong-password", "role_ids": []uint{viewerID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	viewer := newTestClientWithRouter(owner.router)
+	viewer.login(t, "queueviewer", "viewer-strong-password")
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/jobs", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer=%d", status)
 	}
 }
 

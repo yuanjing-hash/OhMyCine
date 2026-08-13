@@ -77,8 +77,8 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5}) {
-		t.Fatalf("migration versions=%v, want [1 2 3 4 5]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6}) {
+		t.Fatalf("migration versions=%v, want [1 2 3 4 5 6]", versions)
 	}
 }
 
@@ -201,6 +201,56 @@ func TestMediaLibraryMigrationTablesForeignKeysAndPermissionSeeds(t *testing.T) 
 		if count != want {
 			t.Fatalf("role %s has %d media library permissions, want %d", roleCode, count, want)
 		}
+	}
+}
+
+func TestPersistentQueueMigrationPoliciesRBACAndForeignKeys(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"jobs", "job_attempts", "job_status_events", "job_action_requests", "queue_policies"} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("missing table %s", table)
+		}
+	}
+	var policies int64
+	if err := db.Model(&models.QueuePolicy{}).Count(&policies).Error; err != nil || policies != 6 {
+		t.Fatalf("policies=%d err=%v", policies, err)
+	}
+	var operator models.Role
+	if err := db.Where("code = ?", authz.RoleOperator).First(&operator).Error; err != nil {
+		t.Fatal(err)
+	}
+	codes := []string{authz.PermissionJobsReadAll, authz.PermissionJobsControlAll, authz.PermissionJobsRespond, authz.PermissionJobsReorder}
+	var granted int64
+	if err := db.Model(&models.RolePermission{}).Where("role_id = ? AND permission_code IN ?", operator.ID, codes).Count(&granted).Error; err != nil || granted != int64(len(codes)) {
+		t.Fatalf("operator queue grants=%d err=%v", granted, err)
+	}
+	now := time.Now().UTC()
+	user := models.User{Username: "queue", UsernameNormalized: "queue", DisplayName: "Queue", PasswordHash: "x", Status: models.UserStatusActive, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.Job{ID: "queue-job", OwnerID: &user.ID, CreatedByKind: "user", JobType: "fake", Priority: 1, LanePosition: 1000, Revision: 1, Status: models.JobStatusQueued, DisplayName: "Job", Generation: 1, PayloadJSON: "{}", CheckpointJSON: "{}", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	attempt := models.JobAttempt{JobID: job.ID, AttemptNumber: 1, LeaseTokenHash: "hash", Status: models.JobStatusRunning, StartedAt: now}
+	if err := db.Create(&attempt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&models.JobAttempt{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("attempt cascade=%d err=%v", count, err)
 	}
 }
 

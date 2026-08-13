@@ -142,6 +142,21 @@ func RequirePermission(code string) gin.HandlerFunc {
 	}
 }
 
+func RequireAnyPermission(codes ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		actor, ok := ActorFrom(c)
+		if ok {
+			for _, code := range codes {
+				if actor.Can(code) {
+					c.Next()
+					return
+				}
+			}
+		}
+		abortJSON(c, http.StatusForbidden, services.CodePermissionDenied, "没有执行此操作的权限")
+	}
+}
+
 func NoStore() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

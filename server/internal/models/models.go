@@ -221,3 +221,102 @@ type MediaLibraryEntry struct {
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
+
+const (
+	JobStatusQueued            = "queued"
+	JobStatusRunning           = "running"
+	JobStatusWaitingUserAction = "waiting_user_action"
+	JobStatusRetryWait         = "retry_wait"
+	JobStatusPaused            = "paused"
+	JobStatusCompleted         = "completed"
+	JobStatusFailed            = "failed"
+	JobStatusCancelled         = "cancelled"
+)
+
+// Job is the durable scheduling fact. PayloadJSON and CheckpointJSON are private
+// worker state and must never be serialized directly by an HTTP handler or event.
+type Job struct {
+	ID                string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID           *uint      `gorm:"index" json:"owner_id"`
+	CreatedByKind     string     `gorm:"size:16;not null;default:'user'" json:"created_by_kind"`
+	JobType           string     `gorm:"size:32;not null;index:idx_jobs_lane,priority:1;index:idx_jobs_claim,priority:1" json:"job_type"`
+	Priority          int        `gorm:"not null;index:idx_jobs_lane,priority:2;index:idx_jobs_claim,priority:2" json:"priority"`
+	LanePosition      int64      `gorm:"not null;index:idx_jobs_lane,priority:3;index:idx_jobs_claim,priority:5" json:"lane_position"`
+	Revision          uint64     `gorm:"not null;default:1" json:"revision"`
+	Status            string     `gorm:"size:32;not null;index;index:idx_jobs_claim,priority:3" json:"status"`
+	DisplayName       string     `gorm:"size:256;not null" json:"display_name"`
+	Provider          string     `gorm:"size:64;not null;default:'';index" json:"provider"`
+	ResourceKey       string     `gorm:"size:256;not null;default:'';index" json:"resource_key"`
+	CoalescingKey     string     `gorm:"size:256;not null;default:''" json:"-"`
+	Generation        uint64     `gorm:"not null;default:1" json:"generation"`
+	StartedGeneration uint64     `gorm:"not null;default:0" json:"-"`
+	PayloadJSON       string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	CheckpointJSON    string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	Progress          *float64   `json:"progress"`
+	ProcessedItems    *int64     `json:"processed_items"`
+	TotalItems        *int64     `json:"total_items"`
+	Speed             *float64   `json:"speed"`
+	ETASeconds        *int64     `json:"eta_seconds"`
+	LastErrorCode     string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	LastErrorMessage  string     `gorm:"size:512;not null;default:''" json:"last_error_message"`
+	NextAttemptAt     *time.Time `gorm:"index;index:idx_jobs_claim,priority:4" json:"next_attempt_at"`
+	LeaseTokenHash    string     `gorm:"size:64;not null;default:''" json:"-"`
+	LeaseExpiresAt    *time.Time `gorm:"index" json:"-"`
+	HeartbeatAt       *time.Time `json:"-"`
+	CancellationAsked bool       `gorm:"not null;default:false" json:"cancellation_requested"`
+	InterruptStatus   string     `gorm:"size:16;not null;default:''" json:"-"`
+	AttemptCount      int        `gorm:"not null;default:0" json:"attempt_count"`
+	CreatedAt         time.Time  `gorm:"index" json:"created_at"`
+	UpdatedAt         time.Time  `gorm:"index" json:"updated_at"`
+	StartedAt         *time.Time `json:"started_at"`
+	FinishedAt        *time.Time `json:"finished_at"`
+}
+
+type JobAttempt struct {
+	ID               uint       `gorm:"primaryKey" json:"id"`
+	JobID            string     `gorm:"size:36;not null;index" json:"job_id"`
+	AttemptNumber    int        `gorm:"not null" json:"attempt_number"`
+	LeaseTokenHash   string     `gorm:"size:64;not null" json:"-"`
+	Status           string     `gorm:"size:32;not null" json:"status"`
+	SafeErrorCode    string     `gorm:"size:96;not null;default:''" json:"error_code"`
+	SafeErrorMessage string     `gorm:"size:512;not null;default:''" json:"error_message"`
+	StartedAt        time.Time  `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+}
+
+type JobStatusEvent struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	JobID      string    `gorm:"size:36;not null;index" json:"job_id"`
+	EventType  string    `gorm:"size:48;not null" json:"event_type"`
+	FromStatus string    `gorm:"size:32;not null;default:''" json:"from_status"`
+	ToStatus   string    `gorm:"size:32;not null;default:''" json:"to_status"`
+	ActorID    *uint     `json:"actor_id"`
+	SafeCode   string    `gorm:"size:96;not null;default:''" json:"code"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type JobActionRequest struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	JobID       string     `gorm:"size:36;not null;index" json:"job_id"`
+	Version     uint64     `gorm:"not null" json:"version"`
+	ActionType  string     `gorm:"size:64;not null" json:"action_type"`
+	Prompt      string     `gorm:"size:512;not null" json:"prompt"`
+	OptionsJSON string     `gorm:"type:text;not null" json:"-"`
+	PreviewJSON string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	ExpiresAt   *time.Time `json:"expires_at"`
+	Response    string     `gorm:"size:128;not null;default:''" json:"response"`
+	RespondedBy *uint      `json:"responded_by"`
+	RespondedAt *time.Time `json:"responded_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type QueuePolicy struct {
+	JobType             string    `gorm:"primaryKey;size:32" json:"job_type"`
+	Concurrency         int       `gorm:"not null" json:"concurrency"`
+	ResourceConcurrency int       `gorm:"not null;default:0" json:"resource_concurrency"`
+	MaxAttempts         int       `gorm:"not null;default:3" json:"max_attempts"`
+	LeaseSeconds        int       `gorm:"not null;default:30" json:"lease_seconds"`
+	Revision            uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}

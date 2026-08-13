@@ -24,11 +24,15 @@ type API struct {
 	profiles    *services.MediaClassificationProfileService
 	libraries   *services.MediaLibraryService
 	runtimeLogs *services.RuntimeLogService
+	queue       *services.QueueService
+	queueEvents *services.QueueEventHub
 	log         zerolog.Logger
 }
 
 func (a *API) SetRuntimeLogService(service *services.RuntimeLogService)     { a.runtimeLogs = service }
 func (a *API) SetMediaLibraryService(service *services.MediaLibraryService) { a.libraries = service }
+func (a *API) SetQueueService(service *services.QueueService)               { a.queue = service }
+func (a *API) SetQueueEventHub(hub *services.QueueEventHub)                 { a.queueEvents = hub }
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}

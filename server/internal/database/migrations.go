@@ -23,7 +23,7 @@ func Migrate(db *gorm.DB) error {
 	)`).Error; err != nil {
 		return fmt.Errorf("create schema migrations table: %w", err)
 	}
-	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}}
+	migrations := []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}}
 	for _, item := range migrations {
 		var count int64
 		if err := db.Table("schema_migrations").Where("version = ?", item.Version).Count(&count).Error; err != nil {
@@ -44,7 +44,53 @@ func Migrate(db *gorm.DB) error {
 	if err := seedAuthorization(db); err != nil {
 		return err
 	}
-	return seedMediaClassificationProfiles(db)
+	if err := seedMediaClassificationProfiles(db); err != nil {
+		return err
+	}
+	return seedQueuePolicies(db)
+}
+
+func migratePersistentQueue(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE jobs (id TEXT PRIMARY KEY, owner_id INTEGER, created_by_kind TEXT NOT NULL DEFAULT 'user' CHECK(created_by_kind IN ('user','system')), job_type TEXT NOT NULL, priority INTEGER NOT NULL, lane_position INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL CHECK(status IN ('queued','running','waiting_user_action','retry_wait','paused','completed','failed','cancelled')), display_name TEXT NOT NULL, provider TEXT NOT NULL DEFAULT '', resource_key TEXT NOT NULL DEFAULT '', coalescing_key TEXT NOT NULL DEFAULT '', generation INTEGER NOT NULL DEFAULT 1, started_generation INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL DEFAULT '{}', checkpoint_json TEXT NOT NULL DEFAULT '{}', progress REAL, processed_items INTEGER, total_items INTEGER, speed REAL, eta_seconds INTEGER, last_error_code TEXT NOT NULL DEFAULT '', last_error_message TEXT NOT NULL DEFAULT '', next_attempt_at DATETIME, lease_token_hash TEXT NOT NULL DEFAULT '', lease_expires_at DATETIME, heartbeat_at DATETIME, cancellation_asked INTEGER NOT NULL DEFAULT 0, interrupt_status TEXT NOT NULL DEFAULT '', attempt_count INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, started_at DATETIME, finished_at DATETIME, CHECK((created_by_kind = 'user' AND owner_id IS NOT NULL) OR (created_by_kind = 'system' AND owner_id IS NULL)), FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE RESTRICT)`,
+		`CREATE INDEX idx_jobs_lane ON jobs(job_type, priority, lane_position, created_at, id)`,
+		`CREATE INDEX idx_jobs_claim ON jobs(job_type, priority, status, next_attempt_at, lane_position)`,
+		`CREATE INDEX idx_jobs_owner_status ON jobs(owner_id, status)`,
+		`CREATE INDEX idx_jobs_resource ON jobs(resource_key, status)`,
+		`CREATE UNIQUE INDEX idx_jobs_active_coalescing ON jobs(job_type, resource_key, coalescing_key) WHERE coalescing_key <> '' AND status IN ('queued','running','waiting_user_action','retry_wait','paused')`,
+		`CREATE TABLE job_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, lease_token_hash TEXT NOT NULL, status TEXT NOT NULL, safe_error_code TEXT NOT NULL DEFAULT '', safe_error_message TEXT NOT NULL DEFAULT '', started_at DATETIME NOT NULL, finished_at DATETIME, FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE, UNIQUE(job_id, attempt_number))`,
+		`CREATE INDEX idx_job_attempts_job ON job_attempts(job_id, attempt_number DESC)`,
+		`CREATE TABLE job_status_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, event_type TEXT NOT NULL, from_status TEXT NOT NULL DEFAULT '', to_status TEXT NOT NULL DEFAULT '', actor_id INTEGER, safe_code TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE, FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE SET NULL)`,
+		`CREATE INDEX idx_job_status_events_job ON job_status_events(job_id, id)`,
+		`CREATE TABLE job_action_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, version INTEGER NOT NULL, action_type TEXT NOT NULL, prompt TEXT NOT NULL, options_json TEXT NOT NULL, preview_json TEXT NOT NULL DEFAULT '{}', expires_at DATETIME, response TEXT NOT NULL DEFAULT '', responded_by INTEGER, responded_at DATETIME, created_at DATETIME NOT NULL, FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE, FOREIGN KEY(responded_by) REFERENCES users(id) ON DELETE SET NULL, UNIQUE(job_id, version))`,
+		`CREATE INDEX idx_job_actions_job ON job_action_requests(job_id, version DESC)`,
+		`CREATE TABLE queue_policies (job_type TEXT PRIMARY KEY, concurrency INTEGER NOT NULL CHECK(concurrency > 0), resource_concurrency INTEGER NOT NULL DEFAULT 0 CHECK(resource_concurrency >= 0), max_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts > 0), lease_seconds INTEGER NOT NULL DEFAULT 30 CHECK(lease_seconds >= 5), revision INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedQueuePolicies(db *gorm.DB) error {
+	now := time.Now().UTC()
+	defaults := []models.QueuePolicy{
+		{JobType: "download", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 5, LeaseSeconds: 30},
+		{JobType: "transfer", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 30},
+		{JobType: "upload", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 30},
+		{JobType: "scrape", Concurrency: 4, ResourceConcurrency: 2, MaxAttempts: 4, LeaseSeconds: 30},
+		{JobType: "refresh", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 30},
+		{JobType: "fake", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 10},
+	}
+	for _, policy := range defaults {
+		policy.Revision, policy.CreatedAt, policy.UpdatedAt = 1, now, now
+		if err := db.Where("job_type = ?", policy.JobType).FirstOrCreate(&policy).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateMediaLibraries(db *gorm.DB) error {
@@ -274,7 +320,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "logs.read", "media_libraries.read", "media_libraries.create", "media_libraries.update", "media_libraries.delete", "media_libraries.scan", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
+		operatorCodes := []string{"dashboard.read", "logs.read", "media_libraries.read", "media_libraries.create", "media_libraries.update", "media_libraries.delete", "media_libraries.scan", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read", "jobs.read_all", "jobs.control_all", "jobs.respond", "jobs.reorder"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

@@ -59,6 +59,20 @@ func main() {
 	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
 	api.SetRuntimeLogService(runtimeLogs)
 	api.SetMediaLibraryService(libraries)
+	queue := services.NewQueueService(db, audit)
+	queueEvents := services.NewQueueEventHub()
+	queue.SetEventHub(queueEvents)
+	registry := services.NewWorkerRegistry()
+	if cfg.Environment != "production" {
+		services.RegisterFakeWorkers(registry)
+	}
+	scheduler := services.NewScheduler(queue, registry, logManager.Logger("queue", "scheduler"))
+	api.SetQueueService(queue)
+	api.SetQueueEventHub(queueEvents)
+	if err := scheduler.Start(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to start persistent task scheduler")
+	}
+	defer scheduler.Close()
 	if err := libraries.Start(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to start media library supervisors")
 	}
