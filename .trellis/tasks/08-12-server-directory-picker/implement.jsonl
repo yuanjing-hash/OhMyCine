@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Directory browser REST, authentication, no-store and stable safe error contracts"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Registered root, symlink/Reparse Point, path token and audit redaction contracts"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Permission catalog, system-role seeds, embedded Web UI and route/control RBAC"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Go validation, platform tests and full Server quality gates"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Accessible reusable Vue dialog and administration component patterns"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Strict directory picker DTO and generated permission types"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Web UI unit, typecheck, lint and build requirements"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace roots/tokens/errors from platform adapter through service, API and UI"}
