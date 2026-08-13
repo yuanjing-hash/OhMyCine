@@ -347,3 +347,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 13: 完成 Server 媒体库自动扫描与监听基础
+
+**Date**: 2026-08-13
+**Task**: 完成 Server 媒体库自动扫描与监听基础
+**Branch**: `develop`
+
+### Summary
+
+实现 Storage 相对根媒体库、自动首次全量扫描、独立 watcher 与文件级增量更新、扫描记录和管理端页面；完成 Windows 全量质量门、真实四文件只读验收与安全复核。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2fffbe5` | (see git log) |
+
+### Status
+
+[OK] **Completed**
