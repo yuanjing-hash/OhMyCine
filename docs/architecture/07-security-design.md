@@ -90,6 +90,8 @@ Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服�
 
 所有 Cookie 认证的状态变更请求还必须校验 session-bound `X-CSRF-Token`、精确 Origin（必要时 Referer fallback）、Fetch Metadata 和 `application/json`。CSRF token 只保存在前端内存，不进入 URL、日志或持久化存储。
 
+持久化任务队列的 worker payload/checkpoint 属于私有执行状态，不进入 REST、WebSocket、日志或审计。写入前限制为 64 KiB JSON 对象，并递归拒绝 Authorization、Cookie、password、secret、token、passkey、credential、签名 URL 与本地/绝对路径形态的字段。租约只持久化随机 token 的 SHA-256；所有 heartbeat、checkpoint 和完成操作都必须持有当前未过期 token。运行中暂停/取消先在短事务内持久化中断意图，事务提交后才通知 worker，且在 worker确认或租约过期前继续占用并发槽，避免非协作 worker 造成超卖。
+
 ### 4.2 API 鉴权
 
 | API 类型 | 默认策略 |

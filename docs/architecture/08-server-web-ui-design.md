@@ -362,6 +362,12 @@ OhMyCine Server
 
 ## 11. 相关文档
 
+### 任务中心已实现边界
+
+`/automation/tasks` 现已接入持久化队列的真实 REST read model。页面提供状态、类型、优先级与 provider 筛选，显示 lane 位置、进度/处理量、速度/ETA、重试和安全错误摘要；未知遥测保持“未知”。仅在 `queued + 单一 job_type + 单一 priority` 视图中启用鼠标拖放和键盘上移/下移，保存冲突后刷新服务端真实顺序。详情抽屉读取持久化状态事件与 attempt 时间线，并支持版本化 ActionRequest 响应、暂停、恢复、取消和失败重试。
+
+任务中心只是统一观察与控制面，不是跨类型串行执行器。MediaLibrary watcher、文件树 reconciliation、定时扫描和 STRM projection 继续由 LibrarySupervisor 独立并行运行，既不创建 Job 也不消耗队列槽。
+
 - [Server 后端设计](02-server-design.md)
 - [安全设计](07-security-design.md)
 - [开发路线图](06-roadmap.md)

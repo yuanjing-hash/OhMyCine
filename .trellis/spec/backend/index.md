@@ -44,6 +44,7 @@ Before changing backend code or API documentation:
 | [Server Web Administration](./web-admin-guidelines.md) | Embedded Web UI, sessions, users, roles, permission codes, and RBAC invariants | Active |
 | [Media Classification Profiles](./media-classification-profiles.md) | Versioned logical media classification, matcher, Profile API, RBAC, and audit contracts | Active |
 | [Media Library Foundation](./media-library-foundation.md) | Storage-relative configuration, automatic baseline, watchers, reconciliation, path safety, and MediaLibrary API contracts | Active |
+| [Persistent Task Queue](./persistent-task-queue.md) | SQLite jobs, lanes, leases, actions, recovery, safe DTOs, scheduler and task center | Active |
 | [Logging Guidelines](./logging-guidelines.md) | zerolog conventions and redaction rules | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Testing, linting, and forbidden patterns | Active |
 

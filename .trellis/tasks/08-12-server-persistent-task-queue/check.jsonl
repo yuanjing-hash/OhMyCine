@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify lease/order transactions, indexes, migration safety and restart behavior."}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Verify strict API contracts, actor scoping, pagination and WebSocket recovery."}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Review control authorization, action responses, payload exposure and cancellation safety."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Run complete Go, Web UI, embedded build and forbidden-pattern quality gates."}
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"Verify queue code does not absorb MediaLibrary supervisor work."}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"Check both themes, responsive lane controls, keyboard ordering and accessible task details."}

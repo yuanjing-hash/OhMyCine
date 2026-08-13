@@ -360,6 +360,7 @@ Phase 4: 生态系统           ████████████████
 - [x] Storage 管理页及 CRUD/test API；删除只删配置，Connection/Destination 保留规划状态
 - [x] 独立 `MediaClassificationProfile` v1：内置 Player-v1 等价默认规则、严格结构校验、纯 Go matcher、CRUD/copy/revision、独立权限与管理页；它不是流水线 `CategoryRule`
 - [x] MediaLibrary 本地只读索引基础：Storage 相对根 + Classification Profile 引用、自动首次全量、独立 watcher/catch-up、定时增量/全量、失败退避/立即重试、扫描记录与相对媒体清单，以及 `/system/media-libraries` 管理页
+- [x] Server 持久化任务队列基础：SQLite Job/Attempt/状态事件/ActionRequest/策略、type+priority lane 顺序、类型与资源并发、lease/heartbeat/checkpoint/recovery、控制与 RBAC API，以及真实 `/automation/tasks` 任务中心；当前 fake worker 仅用于非生产验收，不代表 downloader/cloud adapter 已实现
 - [ ] MediaLibrary 云 Storage driver/event/cursor、Destination、STRM/302、下载器、metadata 网络匹配和真实文件写入（由后续独立切片实现）
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）

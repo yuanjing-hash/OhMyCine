@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"SQLite migrations, short transactions, indexes and restart-safe persistence contracts."}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Authenticated REST envelopes, pagination, permissions and WebSocket event safety."}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"RBAC catalog, embedded administration UI and task-center navigation contracts."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Structured queue observability and redaction boundaries."}
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"Preserve the invariant that library supervisors and reconciliation never enter the persistent queue."}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"Conventional light/dark Server task-center UI, accessibility and browser verification."}
+{"file":"docs/architecture/08-server-web-ui-design.md","reason":"Canonical task-center information architecture and read-model ownership."}
