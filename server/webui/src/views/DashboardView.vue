@@ -44,9 +44,8 @@ onMounted(loadBaseline)
   <section>
     <header class="dashboard-heading">
       <div>
-        <p class="mb-2 text-xs font-700 uppercase tracking-[.22em] text-cyan-300">Operations first</p>
         <h1 class="m-0 text-3xl font-800">欢迎回来，{{ auth.user?.display_name }}</h1>
-        <p class="mt-2 text-slate-400">先确认状态与告警，再处理任务、流水线和订阅；发现内容始终后置。</p>
+        <p class="page-description mt-2">先确认状态与告警，再处理任务、流水线和订阅；发现内容始终后置。</p>
       </div>
       <div class="baseline-time"><span>管理基线</span><strong>更新于 {{ formatTime(updatedAt) }}</strong></div>
     </header>
@@ -63,7 +62,7 @@ onMounted(loadBaseline)
         <template v-if="card.id === 'server-status'">
           <div class="server-card__heading">
             <div>
-              <span class="card-kicker">Server baseline</span>
+              <span class="card-kicker">管理基线</span>
               <h2>{{ card.title }}</h2>
             </div>
             <span v-if="loading" class="status-chip">读取中</span>
@@ -106,37 +105,36 @@ onMounted(loadBaseline)
 
 <style scoped>
 .dashboard-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; }
-.baseline-time { flex: 0 0 auto; border: 1px solid rgb(255 255 255 / .08); border-radius: .8rem; background: rgb(255 255 255 / .035); padding: .65rem .8rem; text-align: right; }
+.baseline-time { flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-muted); padding: .65rem .8rem; text-align: right; }
 .baseline-time span, .baseline-time strong { display: block; }
-.baseline-time span { color: #64748b; font-size: .62rem; letter-spacing: .12em; text-transform: uppercase; }
-.baseline-time strong { margin-top: .15rem; color: #cbd5e1; font-size: .72rem; }
+.baseline-time span { color: var(--text-subtle); font-size: .68rem; }
+.baseline-time strong { margin-top: .15rem; color: var(--text); font-size: .72rem; }
 .dashboard-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1rem; }
-.dashboard-card { min-width: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / .09); border-radius: 1.1rem; background: linear-gradient(145deg, rgb(255 255 255 / .065), rgb(255 255 255 / .025)); padding: 1.2rem; box-shadow: inset 0 1px rgb(255 255 255 / .035), 0 .8rem 2.2rem rgb(0 0 0 / .13); }
+.dashboard-card { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 1rem; }
 .dashboard-card--span-3 { grid-column: span 3; }
 .dashboard-card--span-4 { grid-column: span 4; }
 .dashboard-card--span-5 { grid-column: span 5; }
 .dashboard-card--span-7 { grid-column: span 7; }
 .dashboard-card--span-12 { grid-column: span 12; }
 .dashboard-card h2 { margin: .65rem 0 0; font-size: 1.02rem; }
-.dashboard-card p { margin: .65rem 0 0; color: #94a3b8; font-size: .8rem; line-height: 1.65; }
-.dashboard-card footer { margin-top: 1.1rem; border-top: 1px solid rgb(255 255 255 / .065); padding-top: .75rem; color: #475569; font-size: .65rem; }
-.card-kicker { overflow: hidden; color: #64748b; font-size: .62rem; font-weight: 700; letter-spacing: .1em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.dashboard-card p { margin: .65rem 0 0; color: var(--text-muted); font-size: .8rem; line-height: 1.65; }
+.dashboard-card footer { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: .7rem; color: var(--text-subtle); font-size: .68rem; }
+.card-kicker { overflow: hidden; color: var(--text-subtle); font-size: .68rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .server-card__heading, .planned-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .server-card__heading h2 { margin: .35rem 0 0; font-size: 1.15rem; }
 .server-card__content { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(22rem, 1.4fr); align-items: center; gap: 1.25rem; margin-top: 1.2rem; }
 .server-state-mark { display: flex; align-items: center; gap: .8rem; }
-.server-state-mark > span { height: .8rem; width: .8rem; flex: 0 0 auto; border-radius: 99px; background: #34d399; box-shadow: 0 0 1rem rgb(52 211 153 / .6); }
-.server-state-mark--warning > span { background: #fbbf24; box-shadow: 0 0 1rem rgb(251 191 36 / .5); }
+.server-state-mark > span { height: .7rem; width: .7rem; flex: 0 0 auto; border-radius: 99px; background: var(--success); }
+.server-state-mark--warning > span { background: var(--warning); }
 .server-state-mark strong, .server-state-mark small { display: block; }
-.server-state-mark small { margin-top: .3rem; color: #64748b; font-size: .7rem; line-height: 1.5; }
+.server-state-mark small { margin-top: .3rem; color: var(--text-subtle); font-size: .7rem; line-height: 1.5; }
 .administration-baseline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem; margin: 0; }
-.administration-baseline div { border: 1px solid rgb(255 255 255 / .065); border-radius: .8rem; background: rgb(0 0 0 / .13); padding: .7rem .8rem; }
-.administration-baseline dt { color: #64748b; font-size: .65rem; }
-.administration-baseline dd { margin: .2rem 0 0; color: #e2e8f0; font-size: 1rem; font-weight: 750; }
-.baseline-state { margin-top: 1.2rem; border: 1px dashed rgb(255 255 255 / .1); border-radius: .8rem; padding: 1rem; color: #94a3b8; font-size: .8rem; }
-.baseline-state--error { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-color: rgb(248 113 113 / .28); background: rgb(248 113 113 / .06); }
-.baseline-state--error strong { color: #fecaca; }
-.baseline-state--error p { color: #fca5a5; }
+.administration-baseline div { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-muted); padding: .7rem .8rem; }
+.administration-baseline dt { color: var(--text-subtle); font-size: .65rem; }
+.administration-baseline dd { margin: .2rem 0 0; color: var(--text); font-size: 1rem; font-weight: 750; }
+.baseline-state { margin-top: 1.2rem; border: 1px dashed var(--border-strong); border-radius: var(--radius-md); padding: 1rem; color: var(--text-muted); font-size: .8rem; }
+.baseline-state--error { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-color: var(--danger-border); background: var(--danger-soft); }
+.baseline-state--error strong, .baseline-state--error p { color: var(--danger); }
 
 @media (min-width: 768px) and (max-width: 1279px) {
   .dashboard-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }

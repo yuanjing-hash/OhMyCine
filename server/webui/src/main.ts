@@ -6,7 +6,9 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import { router } from '@/router'
 import { permissionDirective } from '@/directives/permission'
+import { initializeTheme } from '@/theme'
 
+initializeTheme()
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
