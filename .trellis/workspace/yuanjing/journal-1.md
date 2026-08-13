@@ -258,3 +258,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 9: 实现 Server 跨平台目录选择器
+
+**Date**: 2026-08-13
+**Task**: 实现 Server 跨平台目录选择器
+**Branch**: `develop`
+
+### Summary
+
+完成 Server 进程可见盘符/挂载点的只读目录树、密封签名 token、storages.browse 双重授权、限流与路径重验，并将 Storage 创建/编辑替换为跨平台目录选择弹窗；通过完整 Windows 与跨平台质量门。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `21a061a` | (see git log) |
+| `b3b0415` | (see git log) |
+
+### Status
+
+[OK] **Completed**
