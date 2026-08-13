@@ -326,3 +326,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 12: Server 结构化运行日志与日志中心
+
+**Date**: 2026-08-13
+**Task**: Server 结构化运行日志与日志中心
+**Branch**: `develop`
+
+### Summary
+
+实现 Server 运行日志双写、统一脱敏、轮转压缩和保留策略，新增细粒度查询导出配置 RBAC 与 Web 日志中心，并通过完整 Windows 与浏览器验收。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `37aab85` | (see git log) |
+
+### Status
+
+[OK] **Completed**
