@@ -1,0 +1,11 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Review additive migration, idempotent seed, constraints and upgrade coverage."}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Review route/service authorization and response contracts."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Review stable validation/concurrency/uniqueness errors and no raw 500 leakage."}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Review permission catalog drift, role defaults, service policy and audit invariants."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review absence of full rules JSON in audit and logs."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Run Go tests, vet, builds and full Server gate."}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"Review responsive accessible white/dark rule editor UI."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review DTO unions, draft state and absence of unsafe casts."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run Web UI tests, typecheck, lint and build."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify Profile data and permission flow end to end."}
+{"file":".trellis/tasks/08-12-server-media-classification-profiles/research/player-v1-contract.md","reason":"Check Server defaults and matcher results against authoritative Player v1 evidence."}

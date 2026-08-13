@@ -1,0 +1,12 @@
+{"file":".trellis/spec/backend/index.md","reason":"Server backend package boundaries and pre-development requirements."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Explicit SQLite migration, seed, uniqueness and transaction contracts."}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"REST envelope, handler/service separation and authorization behavior."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Stable validation, conflict, not-found and protected-resource errors."}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Canonical permissions, RBAC double enforcement, audit and Web admin contracts."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Rules payload and audit/log redaction boundaries."}
+{"file":".trellis/spec/frontend/index.md","reason":"Vue/TypeScript Server Web UI development entry guidelines."}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"Default-light/dark semantic token and traditional admin UI contract."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Strict Profile DTO and controlled editor state requirements."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend test/typecheck/lint/build gates."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace schema through migration/service/API/UI and permission boundaries."}
+{"file":".trellis/tasks/08-12-server-media-classification-profiles/research/player-v1-contract.md","reason":"Exact Player v1 schema, defaults and matcher semantics to reproduce independently in Go."}
