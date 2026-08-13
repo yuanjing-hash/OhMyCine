@@ -37,6 +37,7 @@ Before changing frontend code or Player design:
 | [State Management](./state-management.md) | Pinia stores, config, playback and server state | Active |
 | [Type Safety](./type-safety.md) | TypeScript, DataSource types, runtime validation | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Lint/typecheck/build and forbidden patterns | Active |
+| [Server Admin Web UI](./server-admin-ui.md) | Server console theme, tokens, accessibility, and visual verification | Active |
 | [Danmaku Contract](./danmaku.md) | API, privacy, lifecycle, rendering, and cross-platform controls | Active |
 
 ---
