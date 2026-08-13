@@ -188,6 +188,13 @@ onBeforeUnmount(() => {
 
       <div class="gp-divider h-6 w-px" />
 
+      <button class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200" :class="route.path === '/favorites' ? 'is-active' : ''" @click="router.push('/favorites')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 16.5 4 11a4 4 0 0 1 5.7-5.6l.3.4.3-.4A4 4 0 0 1 16 11l-6 5.5Z" stroke="currentColor" stroke-width="1.5" /></svg>
+        收藏
+      </button>
+
+      <div class="gp-divider h-6 w-px" />
+
       <button
         class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200"
         :class="searchWorkspace.open ? 'is-active' : ''"

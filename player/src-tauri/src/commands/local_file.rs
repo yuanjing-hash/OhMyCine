@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::settings;
+
 const LOCAL_FILE_CHANGED_EVENT: &str = "local-file:changed";
 
 #[derive(Default)]
@@ -96,6 +98,53 @@ pub fn local_file_stream_path(root_path: String, path: String) -> Result<String,
 }
 
 #[tauri::command]
+pub fn local_file_delete_owned(
+    app: AppHandle,
+    source_id: String,
+    path: String,
+) -> Result<(), String> {
+    validate_source_id(&source_id)?;
+    let root_path = local_root_for_source(&app, &source_id)?;
+    delete_local_file(&root_path, &path)
+}
+
+fn delete_local_file(root_path: &str, path: &str) -> Result<(), String> {
+    let root = canonicalize_root(&root_path)?;
+    let target = resolve_target_path(&root, Some(path))?;
+    ensure_within_root(&root, &target)?;
+    let metadata = fs::symlink_metadata(&target)
+        .map_err(|_| "The local media file is unavailable.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(
+            "Only regular media files inside the configured root can be deleted.".to_string(),
+        );
+    }
+    fs::remove_file(&target).map_err(|_| "Failed to delete the local media file.".to_string())
+}
+
+fn local_root_for_source(app: &AppHandle, source_id: &str) -> Result<String, String> {
+    let raw = settings::read_player_setting(app, "ohmycine-datasources")?
+        .ok_or_else(|| "The local data source configuration is unavailable.".to_string())?;
+    let sources: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| "The local data source configuration is invalid.".to_string())?;
+    let source = sources
+        .as_array()
+        .and_then(|sources| {
+            sources.iter().find(|source| {
+                source.get("id").and_then(serde_json::Value::as_str) == Some(source_id)
+                    && source.get("type").and_then(serde_json::Value::as_str) == Some("local")
+            })
+        })
+        .ok_or_else(|| "The local data source no longer exists.".to_string())?;
+    source
+        .get("extra")
+        .and_then(|extra| extra.get("rootPath"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "The local data source root is unavailable.".to_string())
+}
+
+#[tauri::command]
 pub fn local_file_watch_start(
     app: AppHandle,
     state: State<LocalFileWatcherState>,
@@ -162,6 +211,21 @@ fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
     let canonical = fs::canonicalize(root).map_err(|_| "本地文件根目录不可用。".to_string())?;
     ensure_directory(&canonical, "本地文件根目录必须是文件夹。")?;
     Ok(canonical)
+}
+
+pub(crate) fn resolve_local_download_source(
+    root_path: &str,
+    provider_path: &str,
+) -> Result<PathBuf, String> {
+    let root = canonicalize_root(root_path)?;
+    let target = resolve_target_path(&root, Some(provider_path))?;
+    ensure_within_root(&root, &target)?;
+    let metadata =
+        fs::metadata(&target).map_err(|_| "The local source file is unavailable.".to_string())?;
+    if !metadata.is_file() {
+        return Err("Only local files can be copied.".to_string());
+    }
+    Ok(target)
 }
 
 fn validate_source_id(source_id: &str) -> Result<(), String> {
@@ -434,6 +498,22 @@ mod tests {
         );
 
         assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deletes_only_a_regular_file_inside_the_configured_root() {
+        let root = temp_root("delete-owned");
+        fs::create_dir_all(root.join("season")).unwrap();
+        let owned = root.join("season/episode.mkv");
+        File::create(&owned).unwrap();
+
+        delete_local_file(root.to_string_lossy().as_ref(), "/season/episode.mkv")
+            .expect("delete owned file");
+        assert!(!owned.exists());
+        assert!(delete_local_file(root.to_string_lossy().as_ref(), "/season").is_err());
+        assert!(delete_local_file(root.to_string_lossy().as_ref(), "../outside.mkv").is_err());
+
         fs::remove_dir_all(root).unwrap();
     }
 

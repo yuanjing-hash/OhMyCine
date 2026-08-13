@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText } from '@/services/datasource/errors'
 
 export type PlaybackProgressSource = 'local'
+export const PLAYED_STATE_CHANGED_EVENT = 'ohmycine:played-state-changed'
 
 export interface PlaybackProgressIdentity {
   sourceId: string
@@ -77,6 +78,47 @@ export async function listLocalContinueWatching(limit = 20): Promise<PlaybackHis
   catch {
     return []
   }
+}
+
+export async function setPlaybackCompleted(identity: PlaybackProgressIdentity, completed: boolean): Promise<boolean> {
+  if (!isValidIdentity(identity))
+    return false
+  return invoke<boolean>('player_set_playback_completed', { identity, completed })
+}
+
+export async function removeContinueWatching(identity: PlaybackProgressIdentity): Promise<boolean> {
+  if (!isValidIdentity(identity))
+    return false
+  return invoke<boolean>('player_remove_continue_watching', { identity })
+}
+
+export async function getPlaybackCompletionBatch(identities: readonly PlaybackProgressIdentity[]): Promise<PlaybackHistoryEntry[]> {
+  const valid = identities.filter(isValidIdentity).slice(0, 500)
+  if (!valid.length)
+    return []
+  try {
+    return await invoke<PlaybackHistoryEntry[]>('player_get_playback_completion_batch', { identities: valid })
+  }
+  catch {
+    return []
+  }
+}
+
+export function areAllKnownPlayableChildrenCompleted(items: readonly MediaItem[], completedKeys: ReadonlySet<string>): boolean {
+  const playable = flattenPlayableChildren(items)
+  return playable.length > 0 && playable.every(item => item.played === true || completedKeys.has(playbackCompletionKey(item.sourceId, item.id)))
+}
+
+export function playbackCompletionKey(sourceId: string, mediaIdentity: string): string {
+  return `${sourceId.trim()}:${mediaIdentity.trim()}`
+}
+
+function flattenPlayableChildren(items: readonly MediaItem[]): MediaItem[] {
+  return items.flatMap((item) => {
+    if (item.type === 'series' || item.type === 'season' || item.type === 'folder')
+      return flattenPlayableChildren(item.children ?? [])
+    return [item]
+  })
 }
 
 export async function deletePlaybackHistoryForSource(sourceId: string): Promise<boolean> {

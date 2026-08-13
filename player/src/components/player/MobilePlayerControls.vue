@@ -67,6 +67,9 @@ const emit = defineEmits<{
   updateDanmakuSettings: [settings: DanmakuSettings]
   reloadDanmaku: []
   searchDanmaku: []
+  openPlaybackDetail: []
+  navigateHome: []
+  navigateSettings: []
 }>()
 
 const activePanel = ref<MobilePanel | null>(null)
@@ -197,6 +200,19 @@ function openLocalSubtitle() {
   emit('loadLocalSubtitle')
 }
 
+function openPlaybackDetail() {
+  closePanel()
+  emit('openPlaybackDetail')
+}
+
+function navigateFromTools(destination: 'home' | 'settings') {
+  closePanel()
+  if (destination === 'home')
+    emit('navigateHome')
+  else
+    emit('navigateSettings')
+}
+
 function setProgressInteracting(active: boolean) {
   progressInteracting.value = active
 }
@@ -296,6 +312,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
 
           <div class="mobile-sheet-content cinema-scrollbar">
             <template v-if="activePanel === 'more'">
+              <button type="button" class="mobile-sheet-action" @click="openPlaybackDetail">
+                <span>播放详情</span><b>›</b>
+              </button>
               <label class="mobile-range-row">
                 <span>音量</span>
                 <strong>{{ Math.round(volume) }}%</strong>
@@ -324,6 +343,12 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               </button>
               <button type="button" class="mobile-sheet-action" @click="openLocalSubtitle">
                 <span>载入本地字幕</span><b>›</b>
+              </button>
+              <button type="button" class="mobile-sheet-action" @click="navigateFromTools('home')">
+                <span>返回主页</span><b>›</b>
+              </button>
+              <button type="button" class="mobile-sheet-action" @click="navigateFromTools('settings')">
+                <span>打开设置</span><b>›</b>
               </button>
             </template>
 

@@ -1,5 +1,5 @@
 use crate::storage;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use tauri::AppHandle;
 
@@ -31,6 +31,26 @@ pub fn player_settings_delete(app: AppHandle, key: String) -> Result<(), String>
 #[tauri::command]
 pub fn player_get_storage_info(app: AppHandle) -> Result<storage::StorageInfo, String> {
     storage::storage_info(&app)
+}
+
+pub(crate) fn read_player_setting(app: &AppHandle, key: &str) -> Result<Option<String>, String> {
+    validate_key(key)?;
+    let storage = SettingsStorage::open(app)?;
+    storage
+        .conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| "Failed to read Player setting.".to_string())
+}
+
+pub(crate) fn write_player_setting(app: &AppHandle, key: &str, value: &str) -> Result<(), String> {
+    validate_key(key)?;
+    validate_value(value)?;
+    SettingsStorage::open(app)?.set(key, value)
 }
 
 struct SettingsStorage {

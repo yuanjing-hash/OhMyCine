@@ -479,6 +479,8 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
     resumePosition: optionalNumber(item.resumePosition),
     progress: optionalNumber(item.progress),
     progressSource: item.progressSource === 'local' ? 'local' : undefined,
+    played: item.played === true,
+    favorite: item.favorite === true,
     seriesName: optionalText(item.seriesName),
     seasonNumber: optionalNumber(item.seasonNumber),
     episodeNumber: optionalNumber(item.episodeNumber),

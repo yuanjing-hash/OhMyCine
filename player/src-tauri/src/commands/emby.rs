@@ -173,6 +173,7 @@ fn normalize_method(method: &str) -> Result<reqwest::Method, String> {
     match method.trim().to_ascii_uppercase().as_str() {
         "GET" => Ok(reqwest::Method::GET),
         "POST" => Ok(reqwest::Method::POST),
+        "DELETE" => Ok(reqwest::Method::DELETE),
         _ => Err("Invalid Emby request method.".to_string()),
     }
 }
@@ -610,7 +611,7 @@ mod tests {
         assert_eq!(invalid_path, "Invalid Emby path.");
 
         let invalid_method =
-            execute_json_request(request("DELETE", "http://127.0.0.1:1", "/Items", None))
+            execute_json_request(request("PATCH", "http://127.0.0.1:1", "/Items", None))
                 .await
                 .expect_err("unsupported method must fail");
         assert_eq!(invalid_method, "Invalid Emby request method.");

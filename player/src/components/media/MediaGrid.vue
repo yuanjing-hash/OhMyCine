@@ -7,6 +7,7 @@ defineProps<{
   loading?: boolean
   emptyTitle?: string
   emptyDescription?: string
+  contextMenuMode?: 'shared' | 'custom'
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +37,7 @@ function handleContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
         :key="item.id"
         :item="item"
         :kind="hasMediaPath(item) ? 'poster' : 'library'"
+        :context-menu-mode="contextMenuMode"
         @select="emit('select', $event)"
         @play="emit('play', $event)"
         @contextmenu="handleContextMenu"

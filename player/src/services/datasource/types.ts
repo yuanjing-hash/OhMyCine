@@ -19,6 +19,8 @@ export interface MediaItem {
   resumePosition?: number
   progress?: number
   progressSource?: 'local'
+  played?: boolean
+  favorite?: boolean
   seriesName?: string
   seasonNumber?: number
   episodeNumber?: number
@@ -188,6 +190,9 @@ export interface ProviderPlaybackSyncDiagnostic {
   message?: string
 }
 
+export type PlayedStateMutation = 'played' | 'unplayed' | 'removeContinueWatching'
+export interface ProviderCollectionOption { id: string, name: string, kind: 'playlist' | 'collection', itemCount?: number }
+
 export interface DataSource {
   readonly id: string
   readonly name: string
@@ -212,6 +217,16 @@ export interface DataSource {
   searchSubtitles?: (input: SubtitleSearchInput) => Promise<SubtitleSearchResult[]>
   downloadSubtitle?: (input: SubtitleDownloadInput) => Promise<SubtitleTrack>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
+  setPlayedState?: (itemId: string, mutation: PlayedStateMutation) => Promise<void>
+  setFavorite?: (itemId: string, favorite: boolean) => Promise<void>
+  listFavorites?: () => Promise<MediaItem[]>
+  getFavoriteState?: (itemId: string) => Promise<boolean>
+  listProviderCollections?: (kind: 'playlist' | 'collection') => Promise<ProviderCollectionOption[]>
+  createProviderCollection?: (name: string, kind: 'playlist' | 'collection') => Promise<string>
+  addProviderCollectionMember?: (collectionId: string, itemId: string, kind: 'playlist' | 'collection') => Promise<void>
+  refreshMetadata?: (itemId: string) => Promise<void>
+  deleteMedia?: (itemId: string) => Promise<void>
+  canDeleteMedia?: (itemId: string) => Promise<boolean>
   getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 
   clearCache?: () => void

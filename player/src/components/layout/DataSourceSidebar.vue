@@ -54,6 +54,12 @@ function getSourceIcon(type: string) {
 
       <div class="gp-divider mx-auto h-px w-7" />
 
+      <button class="gp-btn flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200" :class="route.path === '/favorites' ? 'is-active' : ''" title="我的收藏" aria-label="我的收藏" @click="router.push('/favorites')">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 16.5 4 11a4 4 0 0 1 5.7-5.6l.3.4.3-.4A4 4 0 0 1 16 11l-6 5.5Z" stroke="currentColor" stroke-width="1.5" /></svg>
+      </button>
+
+      <div class="gp-divider mx-auto h-px w-7" />
+
       <button
         v-for="config in store.orderedConfigs"
         :key="config.id"

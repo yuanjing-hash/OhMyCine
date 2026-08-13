@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import type { DataSource, MediaItem } from '@/services/datasource/types'
+import type { LocalMediaCollection } from '@/services/mediaCollections'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CachedImage from '@/components/media/CachedImage.vue'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { artworkCacheKey } from '@/services/imageCache'
+import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
+import { annotateMissingCollectionSources, listLocalMediaCollections, removeLocalCollectionMember } from '@/services/mediaCollections'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { getPlaybackCompletionBatch, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -27,6 +30,8 @@ interface SeriesPlaybackTarget {
 const seriesPlaybackTargets = ref<Record<string, SeriesPlaybackTarget>>({})
 const errorMessage = ref<string | null>(null)
 const hasLoadedInitialHomeState = ref(false)
+const completedItemKeys = ref<Set<string>>(new Set())
+const localCollections = ref<LocalMediaCollection[]>([])
 let seriesTargetRefreshId = 0
 
 const hasConfiguredSources = computed(() => store.configs.length > 0)
@@ -81,7 +86,52 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
   return values.find(value => typeof value === 'string' && value.trim().length > 0)
 }
 
+function isHomeItemPlayed(item: MediaItem): boolean {
+  const sourceType = store.configs.find(config => config.id === item.sourceId)?.type
+  if (sourceType === 'emby' || sourceType === 'jellyfin')
+    return item.played === true
+  return item.played === true || completedItemKeys.value.has(playbackCompletionKey(item.sourceId, item.id))
+}
+
+function homeActionTarget(item: MediaItem, context?: 'continueWatching') {
+  const source = store.configs.find(config => config.id === item.sourceId)
+  return createMediaActionTarget({ ...item, played: isHomeItemPlayed(item) }, source?.type, source?.displayName ?? source?.name, context)
+}
+
+function beginHomeActionLongPress(item: MediaItem, event: PointerEvent, context?: 'continueWatching') {
+  beginMediaActionLongPress(homeActionTarget(item, context), event)
+}
+
+function openHomeActionMenu(item: MediaItem, event: MouseEvent, context?: 'continueWatching') {
+  openMediaActionContextMenu(homeActionTarget(item, context), event)
+}
+
+function handleHomeCardKey(item: MediaItem, event: KeyboardEvent, action: 'play' | 'detail', context?: 'continueWatching') {
+  handleMediaActionKeyboard(homeActionTarget(item, context), event, () => {
+    if (action === 'play')
+      void handlePlay(item)
+    else
+      handleDetail(item)
+  })
+}
+
+async function refreshHomePlayedStates() {
+  const items = store.homeSections.flatMap(section => section.items).filter(item => item.sourceId !== 'placeholder')
+  const entries = await getPlaybackCompletionBatch(items.map(item => ({ sourceId: item.sourceId, mediaIdentity: item.id })))
+  completedItemKeys.value = new Set(entries.filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
+}
+
+function handleHomeCardClick(item: MediaItem, event: MouseEvent, action: 'play' | 'detail') {
+  if (suppressMediaActionClick(event))
+    return
+  if (action === 'play')
+    void handlePlay(item)
+  else
+    handleDetail(item)
+}
+
 onMounted(async () => {
+  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshHomePlayedStates)
   store.loadConfigs()
   try {
     await store.loadHomeSections()
@@ -90,10 +140,15 @@ onMounted(async () => {
     hasLoadedInitialHomeState.value = true
   }
   await refreshHeroSeriesPlaybackTargets()
+  await refreshHomePlayedStates()
+  await refreshLocalCollections()
 })
+
+onBeforeUnmount(() => window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, refreshHomePlayedStates))
 
 watch(heroItems, () => {
   void refreshHeroSeriesPlaybackTargets()
+  void refreshHomePlayedStates()
 })
 
 function goToSettings() {
@@ -102,6 +157,16 @@ function goToSettings() {
 
 function goAddDataSource() {
   void router.push({ name: 'settings', query: { section: 'datasources', action: 'add' } })
+}
+
+async function refreshLocalCollections() {
+  const collections = await listLocalMediaCollections().catch(() => [])
+  localCollections.value = annotateMissingCollectionSources(collections, new Set(store.configs.map(config => config.id)))
+}
+
+async function removeManagedCollectionMember(collectionId: string, sourceId: string, itemId: string) {
+  await removeLocalCollectionMember(collectionId, sourceId, itemId)
+  await refreshLocalCollections()
 }
 
 function heroActionLabel(item: MediaItem): string {
@@ -411,7 +476,16 @@ function isContainerItem(item: MediaItem): boolean {
               v-for="item in continueWatchingSection.items"
               :key="`${item.sourceId}:${item.id}`"
               class="continue-card group w-48 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.03]"
-              @click="handlePlay(item)"
+              data-media-action-target
+              tabindex="0"
+              @pointerdown="beginHomeActionLongPress(item, $event, 'continueWatching')"
+              @pointermove="moveMediaActionLongPress"
+              @pointerup="endMediaActionLongPress"
+              @pointercancel="cancelMediaActionLongPress($event.pointerId)"
+              @pointerleave="cancelMediaActionLongPress($event.pointerId)"
+              @click="handleHomeCardClick(item, $event, 'play')"
+              @contextmenu="openHomeActionMenu(item, $event, 'continueWatching')"
+              @keydown="handleHomeCardKey(item, $event, 'play', 'continueWatching')"
             >
               <div class="relative h-28 media-placeholder overflow-hidden">
                 <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'backdrop')" :src="itemArtworkUrl(item)" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
@@ -424,6 +498,7 @@ function isContainerItem(item: MediaItem): boolean {
                 <div class="progress-track absolute bottom-0 left-0 right-0 h-1">
                   <div class="progress-value h-full rounded-full" :style="{ width: progressPercent(item) }" />
                 </div>
+                <span v-if="isHomeItemPlayed(item)" class="home-played-badge" aria-label="已播放">✓</span>
               </div>
               <div class="px-2 py-3">
                 <h3 class="truncate text-sm font-medium" style="color: var(--gp-text-full)">
@@ -471,7 +546,16 @@ function isContainerItem(item: MediaItem): boolean {
               v-for="item in recentlyAddedItems"
               :key="`${item.sourceId}:${item.id}`"
               class="recent-card group w-28 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl transition-transform hover:scale-[1.04]"
-              @click="handleDetail(item)"
+              data-media-action-target
+              tabindex="0"
+              @pointerdown="beginHomeActionLongPress(item, $event)"
+              @pointermove="moveMediaActionLongPress"
+              @pointerup="endMediaActionLongPress"
+              @pointercancel="cancelMediaActionLongPress($event.pointerId)"
+              @pointerleave="cancelMediaActionLongPress($event.pointerId)"
+              @click="handleHomeCardClick(item, $event, 'detail')"
+              @contextmenu="openHomeActionMenu(item, $event)"
+              @keydown="handleHomeCardKey(item, $event, 'detail')"
             >
               <div class="relative aspect-[2/3] media-placeholder">
                 <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl" :alt="continueItemTitle(item)" class="h-full w-full object-cover" loading="lazy" decoding="async">
@@ -494,6 +578,7 @@ function isContainerItem(item: MediaItem): boolean {
                     </svg>
                   </button>
                 </div>
+                <span v-if="isHomeItemPlayed(item)" class="home-played-badge" aria-label="已播放">✓</span>
               </div>
               <h3 class="truncate px-1 py-2 text-xs font-medium" style="color: var(--gp-text-full)">
                 {{ continueItemTitle(item) }}
@@ -519,6 +604,26 @@ function isContainerItem(item: MediaItem): boolean {
           </div>
         </section>
       </div>
+      <section v-if="localCollections.some(collection => collection.members.length)" class="glass-panel rounded-[1.75rem] p-6">
+        <h2 class="text-xl font-bold">
+          本地收藏与合集
+        </h2>
+        <p class="mt-1 text-sm text-white/40">
+          Player 本地 · 可跨来源
+        </p>
+        <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <article v-for="collection in localCollections.filter(item => item.members.length)" :key="collection.id" class="rounded-xl border border-white/10 bg-white/5 p-3">
+            <strong>{{ collection.name }}</strong><small class="ml-2 text-white/40">{{ collection.members.length }} 项</small>
+            <div class="mt-2 grid gap-1">
+              <div v-for="member in collection.members.slice(0, 8)" :key="`${member.sourceId}:${member.itemId}`" class="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1.5 text-xs">
+                <span class="min-w-0 flex-1 truncate">{{ member.title }}</span><em v-if="member.missing" class="not-italic text-amber-300">来源缺失</em><button aria-label="移除成员" class="text-white/45" @click="removeManagedCollectionMember(collection.id, member.sourceId, member.itemId)">
+                  ×
+                </button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -528,6 +633,8 @@ function isContainerItem(item: MediaItem): boolean {
   background: var(--color-bg);
   color: var(--color-text);
 }
+
+.home-played-badge { position: absolute; right: .45rem; bottom: .45rem; z-index: 2; display: grid; width: 1.55rem; height: 1.55rem; place-items: center; border-radius: 50%; color: #fff; background: rgba(34,197,94,.9); font-size: .72rem; font-weight: 900; box-shadow: 0 6px 16px rgba(0,0,0,.32); }
 
 .first-run-home {
   --gp-text: var(--color-text-secondary);

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { artworkCacheKey } from '@/services/imageCache'
+import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
+import { getPlaybackCompletionBatch, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
@@ -26,6 +28,7 @@ const selectedType = ref(ALL_FILTER)
 const loading = ref(false)
 const loadingLibraries = ref(false)
 const error = ref<string | null>(null)
+const completedItemKeys = ref<Set<string>>(new Set())
 let searchTimer: number | undefined
 let searchGeneration = 0
 
@@ -56,6 +59,7 @@ watch(() => workspace.open, async (open) => {
   store.loadConfigs()
   void store.loadHomeSections({ background: store.homeSections.length > 0 })
   void loadLibraries()
+  void refreshSearchPlayedStates()
   await nextTick()
   window.setTimeout(() => inputRef.value?.focus(), 80)
 })
@@ -143,6 +147,7 @@ async function runSearch(keyword: string, generation: number) {
     if (generation !== searchGeneration || keyword !== normalizedQuery.value)
       return
     results.value = uniqueItems(items)
+    void refreshSearchPlayedStates()
   }
   catch {
     if (generation !== searchGeneration)
@@ -189,6 +194,41 @@ function clearSearch() {
 function sourceLabel(item: MediaItem): string {
   const source = store.configs.find(config => config.id === item.sourceId)
   return source?.displayName ?? source?.name ?? item.sourceId
+}
+
+function searchActionTarget(item: MediaItem) {
+  const source = store.configs.find(config => config.id === item.sourceId)
+  return createMediaActionTarget({ ...item, played: isSearchItemPlayed(item) }, source?.type, source?.displayName ?? source?.name)
+}
+
+function isSearchItemPlayed(item: MediaItem): boolean {
+  const sourceType = store.configs.find(config => config.id === item.sourceId)?.type
+  if (sourceType === 'emby' || sourceType === 'jellyfin')
+    return item.played === true
+  return item.played === true || completedItemKeys.value.has(playbackCompletionKey(item.sourceId, item.id))
+}
+
+async function refreshSearchPlayedStates() {
+  const items = uniqueItems([...suggestionItems.value, ...filteredResults.value])
+  const entries = await getPlaybackCompletionBatch(items.map(item => ({ sourceId: item.sourceId, mediaIdentity: item.id })))
+  completedItemKeys.value = new Set(entries.filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
+}
+
+function beginSearchActionLongPress(item: MediaItem, event: PointerEvent) {
+  beginMediaActionLongPress(searchActionTarget(item), event)
+}
+
+function openSearchActionMenu(item: MediaItem, event: MouseEvent) {
+  openMediaActionContextMenu(searchActionTarget(item), event)
+}
+
+function handleSearchItemClick(item: MediaItem, event: MouseEvent) {
+  if (!suppressMediaActionClick(event))
+    openItem(item)
+}
+
+function handleSearchItemKey(item: MediaItem, event: KeyboardEvent) {
+  handleMediaActionKeyboard(searchActionTarget(item), event, () => openItem(item))
 }
 
 function mediaMeta(item: MediaItem): string {
@@ -251,7 +291,9 @@ function handleKeydown(event: KeyboardEvent) {
     workspace.hide()
 }
 
+onMounted(() => window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshSearchPlayedStates))
 onBeforeUnmount(() => {
+  window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, refreshSearchPlayedStates)
   if (searchTimer)
     window.clearTimeout(searchTimer)
 })
@@ -338,7 +380,21 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <div class="poster-grid">
-                <article v-for="item in suggestionItems" :key="`${item.sourceId}:${item.id}`" class="result-card group" @click="openItem(item)">
+                <article
+                  v-for="item in suggestionItems"
+                  :key="`${item.sourceId}:${item.id}`"
+                  class="result-card group"
+                  data-media-action-target
+                  tabindex="0"
+                  @pointerdown="beginSearchActionLongPress(item, $event)"
+                  @pointermove="moveMediaActionLongPress"
+                  @pointerup="endMediaActionLongPress"
+                  @pointercancel="cancelMediaActionLongPress($event.pointerId)"
+                  @pointerleave="cancelMediaActionLongPress($event.pointerId)"
+                  @click="handleSearchItemClick(item, $event)"
+                  @contextmenu="openSearchActionMenu(item, $event)"
+                  @keydown="handleSearchItemKey(item, $event)"
+                >
                   <div class="result-poster relative overflow-hidden">
                     <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl ?? item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
                       <template #fallback>
@@ -350,6 +406,7 @@ onBeforeUnmount(() => {
                     <button v-if="canPlay(item)" class="result-play absolute bottom-2 right-2 flex h-9 w-9 items-center justify-center" type="button" :aria-label="`播放 ${item.name}`" @click.stop="playItem(item)">
                       <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5 13 8l-9 5.5v-11Z" /></svg>
                     </button>
+                    <span v-if="isSearchItemPlayed(item)" class="search-played-badge" aria-label="已播放">✓</span>
                   </div>
                   <h3 class="mt-2 truncate text-sm font-semibold text-white/88">
                     {{ item.name }}
@@ -363,7 +420,21 @@ onBeforeUnmount(() => {
 
             <template v-else>
               <div v-if="filteredResults.length" class="result-grid">
-                <article v-for="item in filteredResults" :key="`${item.sourceId}:${item.id}`" class="search-result-row flex min-w-0 items-center gap-3" @click="openItem(item)">
+                <article
+                  v-for="item in filteredResults"
+                  :key="`${item.sourceId}:${item.id}`"
+                  class="search-result-row flex min-w-0 items-center gap-3"
+                  data-media-action-target
+                  tabindex="0"
+                  @pointerdown="beginSearchActionLongPress(item, $event)"
+                  @pointermove="moveMediaActionLongPress"
+                  @pointerup="endMediaActionLongPress"
+                  @pointercancel="cancelMediaActionLongPress($event.pointerId)"
+                  @pointerleave="cancelMediaActionLongPress($event.pointerId)"
+                  @click="handleSearchItemClick(item, $event)"
+                  @contextmenu="openSearchActionMenu(item, $event)"
+                  @keydown="handleSearchItemKey(item, $event)"
+                >
                   <div class="h-20 w-14 shrink-0 overflow-hidden bg-white/6">
                     <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl ?? item.backdropUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
                       <template #fallback>
@@ -387,6 +458,7 @@ onBeforeUnmount(() => {
                   <button v-if="canPlay(item)" class="result-play flex h-10 w-10 shrink-0 items-center justify-center" type="button" :aria-label="`播放 ${item.name}`" @click.stop="playItem(item)">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5 13 8l-9 5.5v-11Z" /></svg>
                   </button>
+                  <span v-if="isSearchItemPlayed(item)" class="search-played-badge search-played-badge--row" aria-label="已播放">✓</span>
                 </article>
               </div>
               <p v-else-if="!loading && !error" class="search-message text-white/44">
@@ -413,6 +485,8 @@ onBeforeUnmount(() => {
 .desktop-close:hover,.clear-button:hover { color: var(--color-text); background: var(--surface-soft-hover); transform: scale(1.04); }
 .result-play { border-radius: 50%; color: #fff; background: rgba(8,11,17,.7); box-shadow: 0 8px 24px rgba(0,0,0,.28); transition: background 160ms ease, color 160ms ease, transform 160ms ease; }
 .result-play:hover { color: #fff; background: rgba(8,11,17,.86); transform: scale(1.04); }
+.search-played-badge { position: absolute; right: .45rem; bottom: .45rem; display: grid; width: 1.45rem; height: 1.45rem; place-items: center; border-radius: 50%; color: #fff; background: rgba(34,197,94,.9); font-size: .68rem; font-weight: 900; }
+.search-played-badge--row { position: static; flex: 0 0 auto; }
 .search-filter-rail { scrollbar-width: none; }
 .search-filter-rail::-webkit-scrollbar { display: none; }
 .search-filter-rail.border-t { border-color: var(--color-divider); }

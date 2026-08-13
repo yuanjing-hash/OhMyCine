@@ -6,8 +6,9 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
-import { getPlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
@@ -36,6 +37,61 @@ const selectedAudioIndex = ref<number | null>(null)
 const selectedSubtitleIndex = ref<number | null>(null)
 const playbackProgressByItemId = ref<Record<string, PlaybackHistoryEntry>>({})
 const failedTitleLogoUrls = ref<Set<string>>(new Set())
+const detailPlayed = computed(() => {
+  const current = detail.value
+  if (!current)
+    return false
+  if (current.type === 'series' || current.type === 'season') {
+    const completed = new Set(Object.values(playbackProgressByItemId.value).filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
+    return areAllKnownPlayableChildrenCompleted(episodes.value, completed)
+  }
+  const sourceType = store.configs.find(config => config.id === current.sourceId)?.type
+  if (sourceType === 'emby' || sourceType === 'jellyfin')
+    return current.played === true
+  return current.played === true || playbackProgressByItemId.value[current.id]?.completed === true
+})
+const canToggleDetailPlayed = computed(() => {
+  const current = detail.value
+  if (!current)
+    return false
+  const sourceType = store.configs.find(config => config.id === current.sourceId)?.type
+  return !['series', 'season', 'folder'].includes(current.type) || sourceType === 'emby' || sourceType === 'jellyfin'
+})
+
+async function toggleDetailPlayedState() {
+  const target = detailActionTarget()
+  if (!target)
+    return
+  const outcome = await getMediaActionController().execute(target, detailPlayed.value ? 'markUnplayed' : 'markPlayed')
+  if (outcome.status === 'completed')
+    await loadDetail()
+}
+
+function detailActionTarget() {
+  const current = detail.value
+  if (!current)
+    return null
+  const source = store.configs.find(config => config.id === current.sourceId)
+  return createMediaActionTarget({ ...current, played: detailPlayed.value }, source?.type, source?.displayName ?? source?.name)
+}
+
+function beginDetailActionLongPress(event: PointerEvent) {
+  const target = detailActionTarget()
+  if (target)
+    beginMediaActionLongPress(target, event)
+}
+
+function openDetailActionMenu(event: MouseEvent) {
+  const target = detailActionTarget()
+  if (target)
+    openMediaActionContextMenu(target, event)
+  else
+    event.preventDefault()
+}
+
+function handleDetailHeroClick(event: MouseEvent) {
+  suppressMediaActionClick(event)
+}
 
 const heroStyle = computed(() => {
   const backdrop = detail.value?.backdropUrl
@@ -103,13 +159,21 @@ const episodeIndicatorStyle = computed(() => {
 })
 
 onMounted(() => {
+  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged)
   mobileEpisodeMediaQuery = window.matchMedia('(max-width: 767px)')
   updateMobileEpisodeViewport()
   mobileEpisodeMediaQuery.addEventListener('change', updateMobileEpisodeViewport)
   void loadDetail()
 })
 
-onBeforeUnmount(() => mobileEpisodeMediaQuery?.removeEventListener('change', updateMobileEpisodeViewport))
+onBeforeUnmount(() => {
+  mobileEpisodeMediaQuery?.removeEventListener('change', updateMobileEpisodeViewport)
+  window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged)
+})
+
+function handlePlayedStateChanged() {
+  void loadDetail()
+}
 
 watch([sourceId, itemId], loadDetail)
 
@@ -667,7 +731,18 @@ function markTitleLogoFailed(url: string) {
     </div>
 
     <template v-else-if="detail">
-      <section class="detail-hero theme-immersive-dark relative min-h-[68vh] overflow-hidden bg-cover bg-center" :style="heroStyle">
+      <section
+        class="detail-hero theme-immersive-dark relative min-h-[68vh] overflow-hidden bg-cover bg-center"
+        :style="heroStyle"
+        data-media-action-target
+        @pointerdown="beginDetailActionLongPress"
+        @pointermove="moveMediaActionLongPress"
+        @pointerup="endMediaActionLongPress"
+        @pointercancel="cancelMediaActionLongPress($event.pointerId)"
+        @pointerleave="cancelMediaActionLongPress($event.pointerId)"
+        @click="handleDetailHeroClick"
+        @contextmenu="openDetailActionMenu"
+      >
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
         <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
         <div class="detail-hero-content relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
@@ -711,6 +786,10 @@ function markTitleLogoFailed(url: string) {
               </button>
               <span v-if="isSeriesDetail && selectedEpisode" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ episodeTitle(selectedEpisode) }}</span>
               <span v-else-if="visibleMediaSources.length" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ sourceLabel }}</span>
+              <span class="detail-played-state" :class="{ 'is-played': detailPlayed }">{{ detailPlayed ? '✓ 已播放' : '未播放' }}</span>
+              <button v-if="canToggleDetailPlayed" type="button" class="detail-played-toggle" @click.stop="toggleDetailPlayedState">
+                {{ detailPlayed ? '标记为未播放' : '标记为已播放' }}
+              </button>
             </div>
           </div>
         </div>
@@ -982,6 +1061,9 @@ function markTitleLogoFailed(url: string) {
 </template>
 
 <style scoped>
+.detail-played-state,.detail-played-toggle { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: .7rem 1rem; color: rgba(255,255,255,.68); background: rgba(255,255,255,.08); font-size: .75rem; font-weight: 700; }
+.detail-played-state.is-played { border-color: rgba(34,197,94,.42); color: #dcfce7; background: rgba(34,197,94,.18); }
+.detail-played-toggle:hover { background: rgba(255,255,255,.14); }
 .episode-rail-shell {
   border-color: var(--color-border);
   background: var(--surface-soft);

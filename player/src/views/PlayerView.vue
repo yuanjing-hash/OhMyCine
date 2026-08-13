@@ -204,6 +204,7 @@ let lastTouchTap: { x: number, y: number, at: number } | null = null
 let touchSingleTapTimer: number | undefined
 let touchFeedbackTimer: number | undefined
 let suppressPlayerClickUntil = 0
+let suppressPlayerContextMenuUntil = 0
 let pendingTouchLevelUpdate: { kind: 'brightness' | 'volume', value: number } | null = null
 let touchLevelUpdateInFlight = false
 
@@ -466,6 +467,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
   event.preventDefault()
   host.setPointerCapture(event.pointerId)
   suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+  suppressPlayerContextMenuUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
   touchGestureSession = {
     pointerId: event.pointerId,
     simulatedWithMouse,
@@ -550,6 +552,7 @@ function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
     host.releasePointerCapture(event.pointerId)
   touchGestureSession = null
   suppressPlayerClickUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
+  suppressPlayerContextMenuUntil = Date.now() + TOUCH_CLICK_SUPPRESSION_MS
 
   const completedArrowHold = session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated
   if (session.holdArrowStarted) {
@@ -2319,6 +2322,10 @@ function clampContextMenuPosition(clientX: number, clientY: number): ContextMenu
 function openPlaybackContextMenu(event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
+  const pointerType = typeof PointerEvent !== 'undefined' && event instanceof PointerEvent ? event.pointerType : 'mouse'
+  const isRealMouseContextMenu = pointerType === 'mouse' && event.button === 2
+  if (!isRealMouseContextMenu || touchGestureSession !== null || Date.now() < suppressPlayerContextMenuUntil || isNativeAndroidPlayer)
+    return
   contextMenuPosition.value = clampContextMenuPosition(event.clientX, event.clientY)
   contextMenuOpen.value = true
   chromeVisible.value = true
@@ -2935,6 +2942,9 @@ watch(
         @update-danmaku-settings="updateDanmakuSettings"
         @reload-danmaku="loadDanmakuForMedia(currentDanmakuMediaIdentity(), duration, true)"
         @search-danmaku="openDanmakuSearch"
+        @open-playback-detail="openPlaybackDetailFromContextMenu"
+        @navigate-home="navigateFromContextMenu('home')"
+        @navigate-settings="navigateFromContextMenu('settings')"
       />
     </div>
 
@@ -3395,16 +3405,6 @@ watch(
     top: max(4rem, calc(env(safe-area-inset-top) + 3.25rem));
     right: 0.75rem;
     max-width: calc(100vw - 1.5rem);
-  }
-
-  .player-context-menu {
-    right: 0.75rem;
-    bottom: max(0.75rem, env(safe-area-inset-bottom));
-    left: 0.75rem !important;
-    top: auto !important;
-    width: auto;
-    max-width: none;
-    border-radius: 8px;
   }
 
   .context-menu-action {

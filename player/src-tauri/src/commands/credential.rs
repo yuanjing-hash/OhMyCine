@@ -59,6 +59,19 @@ pub async fn credential_delete(app: AppHandle, ref_name: String) -> Result<(), S
     Ok(())
 }
 
+pub(crate) async fn read_credential_value(
+    app: &AppHandle,
+    ref_name: &str,
+) -> Result<Option<String>, String> {
+    validate_ref(ref_name)?;
+    CredentialStorage::open(app)
+        .await?
+        .get(ref_name)?
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(|_| "Stored credential is invalid.".to_string())
+}
+
 struct CredentialStorage {
     key: [u8; KEY_LEN],
     conn: Connection,

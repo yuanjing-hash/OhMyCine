@@ -10,6 +10,7 @@ import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
 import { clearLayoutContextActions, setLayoutContextActions } from '@/services/layoutContextActions'
+import { registerMaintenanceHandler } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, enrichRawScrapedItemsEpisodeMetadata, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, readRawSourceRootPath, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
@@ -20,6 +21,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const layoutContextOwner = Symbol('source-library-layout-actions')
+let unregisterMaintenanceHandler: (() => void) | undefined
 
 const sourceId = computed(() => route.params.sourceId as string)
 const sourceConfig = computed(() =>
@@ -36,13 +38,6 @@ interface BreadcrumbNode {
 type SourceViewMode = 'media-library' | 'folders'
 type EditableArtworkKind = Extract<TmdbImageKind, 'poster' | 'logo' | 'backdrop'>
 type IdentificationTab = 'match' | 'images'
-
-interface WorkContextMenuState {
-  readonly open: boolean
-  readonly x: number
-  readonly y: number
-  readonly work: ScannedWorkItem | null
-}
 
 interface IdentificationArtworkCard {
   readonly kind: EditableArtworkKind | 'thumb' | 'banner' | 'disc' | 'art'
@@ -72,7 +67,6 @@ const scanErrorMessage = ref<string | null>(null)
 const scanLiveLogs = ref<RawLocalScanLogEntry[]>([])
 const isScanManagementOpen = ref(false)
 const selectedScannedCategoryId = ref<string | null>(null)
-const workContextMenu = ref<WorkContextMenuState>({ open: false, x: 0, y: 0, work: null })
 const identificationTarget = ref<ScannedWorkItem | null>(null)
 const identificationActiveTab = ref<IdentificationTab>('match')
 const identificationQuery = ref('')
@@ -351,7 +345,6 @@ const identificationArtworkCards = computed<IdentificationArtworkCard[]>(() => {
 })
 
 onMounted(async () => {
-  window.addEventListener('click', closeWorkContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
     if (isCurrentRawIndexStatus(status)) {
@@ -364,6 +357,7 @@ onMounted(async () => {
     }
   })
   store.loadConfigs()
+  registerCurrentMaintenanceHandler()
   syncDefaultViewModeForSource()
   await ensureSource()
   await prepareRawSourceIndex()
@@ -372,9 +366,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  unregisterMaintenanceHandler?.()
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
-  window.removeEventListener('click', closeWorkContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
   unsubscribeRawIndexStatus?.()
   unsubscribeRawIndexStatus = undefined
@@ -382,6 +376,7 @@ onBeforeUnmount(() => {
 })
 
 watch(sourceId, async () => {
+  unregisterMaintenanceHandler?.()
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
   isLoading.value = false
@@ -395,15 +390,38 @@ watch(sourceId, async () => {
   scanErrorMessage.value = null
   scanLiveLogs.value = []
   selectedScannedCategoryId.value = null
-  closeWorkContextMenu()
   closeIdentificationDialog()
   isScanManagementOpen.value = false
   syncDefaultViewModeForSource()
+  registerCurrentMaintenanceHandler()
   await ensureSource()
   await prepareRawSourceIndex()
   if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
 })
+
+function registerCurrentMaintenanceHandler() {
+  unregisterMaintenanceHandler = registerMaintenanceHandler(sourceId.value, {
+    canHandle: (target, action) => action === 'rescanLibrary' || (target.kind === 'media' && scannedWorkById.value.has(target.itemId)),
+    execute: async (target, action) => {
+      if (action === 'rescanLibrary') {
+        await startLocalScan('full')
+        return
+      }
+      const work = target.kind === 'media' ? scannedWorkById.value.get(target.itemId) : null
+      if (!work)
+        throw new Error('当前本地扫描缓存中找不到该媒体，请先重扫媒体库。')
+      if (action === 'refreshMetadata') {
+        openIdentificationDialog(work)
+        await searchIdentificationResults()
+        return
+      }
+      openIdentificationDialog(work)
+      if (action === 'editArtwork')
+        identificationActiveTab.value = 'images'
+    },
+  })
+}
 
 async function ensureSource() {
   source.value = null
@@ -935,46 +953,11 @@ function backToScannedCategories() {
   requestAppScrollTop()
 }
 
-function openScannedWorkContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-
-  if (!('path' in item))
-    return
-
-  const work = scannedWorkById.value.get(item.id)
-  if (!work)
-    return
-
-  workContextMenu.value = {
-    open: true,
-    x: event.clientX,
-    y: event.clientY,
-    work,
-  }
-}
-
-function closeWorkContextMenu() {
-  if (!workContextMenu.value.open)
-    return
-  workContextMenu.value = { open: false, x: 0, y: 0, work: null }
-}
-
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    closeWorkContextMenu()
     if (isIdentificationDialogOpen.value)
       closeIdentificationDialog()
   }
-}
-
-function openIdentificationDialogFromContextMenu() {
-  const work = workContextMenu.value.work
-  closeWorkContextMenu()
-  if (!work)
-    return
-
-  openIdentificationDialog(work)
 }
 
 function openIdentificationDialog(work: ScannedWorkItem) {
@@ -1782,7 +1765,6 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
                 :items="selectedCategoryWorkItems"
                 @select="handleSelect"
                 @play="handlePlay"
-                @contextmenu="openScannedWorkContextMenu"
               />
             </section>
           </template>
@@ -1838,20 +1820,6 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
           />
         </section>
       </template>
-    </div>
-
-    <div
-      v-if="workContextMenu.open"
-      class="work-context-menu theme-adaptive fixed z-50 min-w-48 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-xl"
-      :style="{ left: `${workContextMenu.x}px`, top: `${workContextMenu.y}px` }"
-      @click.stop
-    >
-      <button
-        class="w-full rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-white/82 transition-colors hover:bg-white/12 hover:text-white"
-        @click="openIdentificationDialogFromContextMenu"
-      >
-        识别/修正元信息
-      </button>
     </div>
 
     <div
@@ -2166,7 +2134,6 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
   background: var(--color-bg);
 }
 
-.work-context-menu,
 .identification-dialog {
   background: var(--chrome-surface);
   box-shadow: var(--chrome-shadow);

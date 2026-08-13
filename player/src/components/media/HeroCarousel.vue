@@ -2,6 +2,8 @@
 import type { MediaItem } from '@/services/datasource/types'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { artworkCacheKey } from '@/services/imageCache'
+import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
+import { useDataSourceStore } from '@/stores/datasource'
 import CachedImage from './CachedImage.vue'
 
 const props = defineProps<{
@@ -16,6 +18,7 @@ const emit = defineEmits<{
 }>()
 
 const currentIndex = ref(0)
+const store = useDataSourceStore()
 const isPaused = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 let resumeTimer: ReturnType<typeof setTimeout> | null = null
@@ -106,6 +109,9 @@ function handlePointerDown(event: PointerEvent) {
     currentY: event.clientY,
     axis: 'pending',
   }
+  const item = currentItem()
+  if (item)
+    beginMediaActionLongPress(mediaActionTarget(item), event)
 }
 
 function handlePointerMove(event: PointerEvent) {
@@ -132,9 +138,11 @@ function handlePointerMove(event: PointerEvent) {
 
   if (session.axis === 'horizontal')
     event.preventDefault()
+  moveMediaActionLongPress(event)
 }
 
 function handlePointerUp(event: PointerEvent) {
+  endMediaActionLongPress(event)
   const session = pointerSession
   if (!session || session.pointerId !== event.pointerId)
     return
@@ -157,16 +165,31 @@ function handlePointerUp(event: PointerEvent) {
 }
 
 function handlePointerCancel(event: PointerEvent) {
+  cancelMediaActionLongPress(event.pointerId)
   if (pointerSession?.pointerId === event.pointerId)
     pointerSession = null
 }
 
 function handleHeroClick(event: MouseEvent) {
-  if (Date.now() < suppressDetailClickUntil || isInteractiveTarget(event.target))
+  if (suppressMediaActionClick(event) || Date.now() < suppressDetailClickUntil || isInteractiveTarget(event.target))
     return
   const item = currentItem()
   if (item)
     emit('detail', item)
+}
+
+function mediaActionTarget(item: MediaItem) {
+  const source = store.configs.find(config => config.id === item.sourceId)
+  return createMediaActionTarget(item, source?.type, source?.displayName ?? source?.name)
+}
+
+function handleContextMenu(event: MouseEvent) {
+  const item = currentItem()
+  if (!item) {
+    event.preventDefault()
+    return
+  }
+  openMediaActionContextMenu(mediaActionTarget(item), event)
 }
 
 watch(() => props.items.length, () => {
@@ -186,11 +209,14 @@ onUnmounted(() => {
 <template>
   <div
     class="hero-carousel theme-immersive-dark relative min-h-[30rem] overflow-hidden bg-black sm:min-h-[35rem]"
+    data-media-action-target
     @click="handleHeroClick"
     @pointerdown="handlePointerDown"
     @pointermove="handlePointerMove"
     @pointerup="handlePointerUp"
     @pointercancel="handlePointerCancel"
+    @pointerleave="handlePointerCancel"
+    @contextmenu="handleContextMenu"
   >
     <!-- Background -->
     <div

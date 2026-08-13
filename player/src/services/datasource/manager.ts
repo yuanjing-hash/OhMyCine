@@ -1,4 +1,5 @@
 import type { DataSource, DataSourceConfig, DataSourceType, HomeSection, MediaItem } from './types'
+import { withMediaTombstoneFiltering } from '@/services/mediaDelete'
 import { AlistDataSource } from './alist'
 import { CloudDrive2DataSource } from './clouddrive2'
 import { EmbyDataSource } from './emby'
@@ -52,9 +53,10 @@ export class DataSourceManager {
 
     const source = createDataSource(config.type)
     await source.init(config)
-    this.sources.set(config.id, source)
+    const wrapped = withMediaTombstoneFiltering(source)
+    this.sources.set(config.id, wrapped)
     this.configSignatures.set(config.id, signature)
-    return source
+    return wrapped
   }
 
   removeSource(id: string): void {

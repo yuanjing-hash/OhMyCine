@@ -9,17 +9,29 @@ use commands::clouddrive2::{
 };
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::danmaku::{danmaku_comments, danmaku_match, danmaku_search};
+use commands::downloads::{
+    player_download_cancel, player_download_default_directory, player_download_enqueue,
+    player_download_list, player_download_retry, player_download_set_default_directory,
+    DownloadQueueState,
+};
 use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
-    player_delete_playback_history_for_source, player_get_playback_progress,
-    player_list_continue_watching, player_upsert_playback_progress,
+    player_delete_playback_history_for_source, player_get_playback_completion_batch,
+    player_get_playback_progress, player_list_continue_watching, player_remove_continue_watching,
+    player_set_playback_completed, player_upsert_playback_progress,
 };
 use commands::image_cache::{
     player_cache_image, player_get_cached_image, player_image_cache_stats, player_trim_image_cache,
 };
 use commands::local_file::{
-    local_file_list, local_file_metadata, local_file_pick_directory, local_file_pick_video,
-    local_file_stream_path, local_file_watch_start, local_file_watch_stop, LocalFileWatcherState,
+    local_file_delete_owned, local_file_list, local_file_metadata, local_file_pick_directory,
+    local_file_pick_video, local_file_stream_path, local_file_watch_start, local_file_watch_stop,
+    LocalFileWatcherState,
+};
+use commands::media_collections::{
+    player_add_media_collection_member, player_create_media_collection,
+    player_delete_media_collection, player_list_media_collections,
+    player_remove_media_collection_member, player_set_local_favorite,
 };
 use commands::pan123::{pan123_get_stream, pan123_list, pan123_login, pan123_search};
 use commands::player::{
@@ -66,6 +78,7 @@ pub fn run() {
         .manage(PendingUpdate::default())
         .manage(OpenSubtitlesSessionState::default())
         .manage(SubtitleDownloadState::default());
+    let builder = builder.manage(DownloadQueueState::default());
 
     #[cfg(target_os = "android")]
     let builder = builder
@@ -86,6 +99,12 @@ pub fn run() {
             danmaku_match,
             danmaku_search,
             danmaku_comments,
+            player_download_default_directory,
+            player_download_set_default_directory,
+            player_download_list,
+            player_download_enqueue,
+            player_download_cancel,
+            player_download_retry,
             clouddrive2_list,
             clouddrive2_search,
             clouddrive2_get_stream,
@@ -109,8 +128,17 @@ pub fn run() {
             player_clear_media_cache,
             player_upsert_playback_progress,
             player_get_playback_progress,
+            player_get_playback_completion_batch,
             player_list_continue_watching,
+            player_set_playback_completed,
+            player_remove_continue_watching,
             player_delete_playback_history_for_source,
+            player_list_media_collections,
+            player_create_media_collection,
+            player_delete_media_collection,
+            player_set_local_favorite,
+            player_add_media_collection_member,
+            player_remove_media_collection_member,
             player_get_cached_image,
             player_cache_image,
             player_image_cache_stats,
@@ -137,6 +165,7 @@ pub fn run() {
             local_file_pick_video,
             local_file_pick_directory,
             local_file_stream_path,
+            local_file_delete_owned,
             local_file_watch_start,
             local_file_watch_stop,
             emby_post_playback_json,
@@ -199,6 +228,8 @@ pub fn run() {
         })
         .setup(|app| {
             storage::initialize(app.handle()).map_err(std::io::Error::other)?;
+            commands::downloads::recover_interrupted_downloads(app.handle())
+                .map_err(std::io::Error::other)?;
             let webview_transparency_applied = app
                 .get_webview_window("main")
                 .map(|window| window.set_background_color(Some(Color(0, 0, 0, 0))).is_ok())

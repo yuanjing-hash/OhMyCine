@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { artworkCacheKey } from '@/services/imageCache'
+import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, moveMediaActionLongPress, openMediaActionContextMenu, openMediaActionMenu, suppressMediaActionClick } from '@/services/mediaActions'
+import { getPlaybackProgress, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
+import { useDataSourceStore } from '@/stores/datasource'
 import CachedImage from './CachedImage.vue'
 
 const props = defineProps<{
   item: MediaItem | MediaLibrary
   kind?: 'poster' | 'library'
   disabled?: boolean
+  contextMenuMode?: 'shared' | 'custom'
 }>()
 
 const emit = defineEmits<{
@@ -15,6 +19,9 @@ const emit = defineEmits<{
   play: [item: MediaItem]
   contextmenu: [item: MediaItem | MediaLibrary, event: MouseEvent]
 }>()
+
+const store = useDataSourceStore()
+const locallyPlayed = ref(false)
 
 const isMediaItem = computed(() => hasMediaPath(props.item))
 const title = computed(() => props.item.name)
@@ -49,6 +56,27 @@ const imageCacheKey = computed(() => artworkCacheKey(
   props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'backdrop' : 'poster',
 ))
 const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series' && props.item.type !== 'season')
+const isPlayed = computed(() => hasMediaPath(props.item) && (props.item.played === true || locallyPlayed.value))
+
+onMounted(() => {
+  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshPlayedState)
+  void refreshPlayedState()
+})
+onBeforeUnmount(() => window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, refreshPlayedState))
+watch(() => [props.item.sourceId, props.item.id] as const, () => void refreshPlayedState())
+
+async function refreshPlayedState() {
+  if (!hasMediaPath(props.item)) {
+    locallyPlayed.value = false
+    return
+  }
+  const sourceType = store.configs.find(config => config.id === props.item.sourceId)?.type
+  if (sourceType === 'emby' || sourceType === 'jellyfin') {
+    locallyPlayed.value = false
+    return
+  }
+  locallyPlayed.value = (await getPlaybackProgress({ sourceId: props.item.sourceId, mediaIdentity: props.item.id }))?.completed === true
+}
 
 function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
   return 'path' in item
@@ -59,15 +87,65 @@ function handleSelect() {
     emit('select', props.item)
 }
 
+function actionTarget() {
+  const source = store.configs.find(config => config.id === props.item.sourceId)
+  return createMediaActionTarget(props.item, source?.type, source?.displayName ?? source?.name)
+}
+
+function handlePointerDown(event: PointerEvent) {
+  if (!props.disabled)
+    beginMediaActionLongPress(actionTarget(), event)
+}
+
+function handlePointerMove(event: PointerEvent) {
+  moveMediaActionLongPress(event)
+}
+
+function handlePointerEnd(event: PointerEvent) {
+  endMediaActionLongPress(event)
+}
+
+function handlePointerCancel(event: PointerEvent) {
+  cancelMediaActionLongPress(event.pointerId)
+}
+
+function handleClick(event: MouseEvent) {
+  if (!suppressMediaActionClick(event))
+    handleSelect()
+}
+
 function handlePlay() {
   if (canPlay.value && hasMediaPath(props.item))
     emit('play', props.item)
 }
 
 function handleContextMenu(event: MouseEvent) {
+  event.preventDefault()
   if (props.disabled)
     return
-  emit('contextmenu', props.item, event)
+  if (props.contextMenuMode === 'custom') {
+    emit('contextmenu', props.item, event)
+    return
+  }
+  openMediaActionContextMenu(actionTarget(), event)
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    handleSelect()
+    return
+  }
+  if (props.contextMenuMode === 'custom' || (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')))
+    return
+  event.preventDefault()
+  const element = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  const bounds = element?.getBoundingClientRect()
+  openMediaActionMenu({
+    target: actionTarget(),
+    anchor: bounds ? { x: bounds.left + Math.min(bounds.width, 48), y: bounds.top + Math.min(bounds.height, 48) } : undefined,
+    presentation: 'popover',
+  })
 }
 </script>
 
@@ -75,8 +153,16 @@ function handleContextMenu(event: MouseEvent) {
   <article
     class="media-card group overflow-hidden rounded-[1.4rem] border transition-all duration-300"
     :class="[cardClass, disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:-translate-y-1 hover:border-white/24']"
-    @click="handleSelect"
+    data-media-action-target
+    :tabindex="disabled ? -1 : 0"
+    @pointerdown="handlePointerDown"
+    @pointermove="handlePointerMove"
+    @pointerup="handlePointerEnd"
+    @pointercancel="handlePointerCancel"
+    @pointerleave="handlePointerCancel"
+    @click="handleClick"
     @contextmenu="handleContextMenu"
+    @keydown="handleKeydown"
   >
     <div class="relative overflow-hidden bg-white/5" :class="imageClass">
       <CachedImage
@@ -101,6 +187,10 @@ function handleContextMenu(event: MouseEvent) {
       </CachedImage>
 
       <div class="absolute inset-0 bg-gradient-to-t from-black/86 via-black/10 to-transparent opacity-80" />
+
+      <span v-if="isPlayed" class="media-card-played" aria-label="已播放" title="已播放">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.4 3.4 7.6-8" /></svg>
+      </span>
 
       <button
         v-if="canPlay"
@@ -137,6 +227,9 @@ function handleContextMenu(event: MouseEvent) {
   border-radius: 1.8rem;
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 62%, transparent), color-mix(in srgb, var(--color-surface-hover) 34%, transparent));
 }
+
+.media-card-played { position: absolute; right: .55rem; bottom: .55rem; z-index: 2; display: flex; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; color: #fff; background: rgba(34,197,94,.88); box-shadow: 0 8px 18px rgba(0,0,0,.3); }
+.media-card-played svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   .media-card,

@@ -1,13 +1,37 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import UpdateDialog from '@/components/layout/UpdateDialog.vue'
+import DownloadQueue from '@/components/media/DownloadQueue.vue'
+import MediaActionHost from '@/components/media/MediaActionHost.vue'
+import MediaCollectionDialog from '@/components/media/MediaCollectionDialog.vue'
+import { configureMediaActionController, createCollectionMediaActionAdapter, createDeleteMediaActionAdapter, createDownloadMediaActionAdapter, createMaintenanceMediaActionAdapter, createNavigationMediaActionAdapter, createPlayedStateMediaActionAdapter, MediaActionController, publishFeedback, requestMediaActionConfirmation } from '@/services/mediaActions'
+import { COLLECTIONS_CHANGED_EVENT } from '@/services/mediaCollections'
+import { PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { createRawSourceAutoIndexTargets, createRawSourceLocalWatcherController, rawSourceIndexScheduler } from '@/services/scraper'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useUpdaterStore } from '@/stores/updater'
 
 const store = useDataSourceStore()
 const updater = useUpdaterStore()
+const router = useRouter()
+configureMediaActionController(new MediaActionController({
+  adapters: [createDeleteMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), resolveConfig: sourceId => store.orderedConfigs.find(config => config.id === sourceId) }), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
+  confirm: requestMediaActionConfirmation,
+  invalidate: async (invalidation) => {
+    store.getSource(invalidation.sourceId)?.clearCache?.()
+    store.invalidateSourceRootSnapshot(invalidation.sourceId)
+    if (invalidation.scopes.includes('home')) {
+      store.invalidateHomeCache()
+      await store.loadHomeSections({ force: true, background: true })
+    }
+    window.dispatchEvent(new CustomEvent(PLAYED_STATE_CHANGED_EVENT, { detail: invalidation }))
+    if (invalidation.scopes.includes('collections'))
+      window.dispatchEvent(new CustomEvent(COLLECTIONS_CHANGED_EVENT, { detail: invalidation }))
+  },
+  onFeedback: publishFeedback,
+}))
 const localWatcherController = createRawSourceLocalWatcherController({
   resolveSource: sourceId => store.getSource(sourceId),
   markDirty: target => rawSourceIndexScheduler.markIncrementalDirty(target),
@@ -15,6 +39,7 @@ const localWatcherController = createRawSourceLocalWatcherController({
 
 onMounted(() => {
   store.loadConfigs()
+  document.addEventListener('contextmenu', suppressNativeContextMenu)
   rawSourceIndexScheduler.startAutoIndexing({
     getTargets: async () => {
       await store.syncManager().catch(() => undefined)
@@ -32,10 +57,15 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  document.removeEventListener('contextmenu', suppressNativeContextMenu)
   rawSourceIndexScheduler.stopAutoIndexing()
   void localWatcherController.dispose()
   updater.cancelStartupCheck()
 })
+
+function suppressNativeContextMenu(event: MouseEvent) {
+  event.preventDefault()
+}
 </script>
 
 <template>
@@ -43,4 +73,7 @@ onBeforeUnmount(() => {
     <RouterView />
   </AppLayout>
   <UpdateDialog />
+  <MediaActionHost />
+  <MediaCollectionDialog />
+  <DownloadQueue />
 </template>

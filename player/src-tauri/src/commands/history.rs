@@ -100,6 +100,43 @@ pub fn player_list_continue_watching(
 }
 
 #[tauri::command]
+pub fn player_set_playback_completed(
+    app: AppHandle,
+    identity: PlaybackProgressIdentity,
+    completed: bool,
+) -> Result<bool, String> {
+    let identity = normalize_identity(identity)?;
+    let storage = PlaybackHistoryStorage::open(&app)?;
+    storage.set_completed(&identity, completed)
+}
+
+#[tauri::command]
+pub fn player_remove_continue_watching(
+    app: AppHandle,
+    identity: PlaybackProgressIdentity,
+) -> Result<bool, String> {
+    let identity = normalize_identity(identity)?;
+    let storage = PlaybackHistoryStorage::open(&app)?;
+    storage.delete(&identity)
+}
+
+#[tauri::command]
+pub fn player_get_playback_completion_batch(
+    app: AppHandle,
+    identities: Vec<PlaybackProgressIdentity>,
+) -> Result<Vec<PlaybackHistoryEntry>, String> {
+    let storage = PlaybackHistoryStorage::open(&app)?;
+    identities
+        .into_iter()
+        .take(500)
+        .map(normalize_identity)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|identity| storage.get(&identity).transpose())
+        .collect()
+}
+
+#[tauri::command]
 pub fn player_delete_playback_history_for_source(
     app: AppHandle,
     source_id: String,
@@ -148,6 +185,44 @@ impl PlaybackHistoryStorage {
             )
             .map_err(|_| "Failed to delete playback history for source.".to_string())?;
         Ok(deleted as u64)
+    }
+
+    fn set_completed(
+        &self,
+        identity: &PlaybackProgressIdentity,
+        completed: bool,
+    ) -> Result<bool, String> {
+        let position_expression = if completed {
+            "CASE WHEN duration IS NOT NULL AND duration > 0 THEN duration ELSE position END"
+        } else {
+            "0"
+        };
+        let changed = self
+            .conn
+            .execute(
+                &format!(
+                    "UPDATE playback_history
+                     SET completed = ?1, position = {position_expression}, updated_at = unixepoch()
+                     WHERE identity_key = ?2"
+                ),
+                params![
+                    if completed { 1 } else { 0 },
+                    identity_key(&identity.source_id, &identity.media_identity)
+                ],
+            )
+            .map_err(|_| "Failed to update playback completion state.".to_string())?;
+        Ok(changed > 0)
+    }
+
+    fn delete(&self, identity: &PlaybackProgressIdentity) -> Result<bool, String> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM playback_history WHERE identity_key = ?1 AND completed = 0",
+                params![identity_key(&identity.source_id, &identity.media_identity)],
+            )
+            .map_err(|_| "Failed to remove continue watching entry.".to_string())?;
+        Ok(changed > 0)
     }
 
     fn upsert(&self, progress: &NormalizedProgress) -> Result<(), String> {
@@ -597,6 +672,39 @@ mod tests {
             .get(&identity("source-b", "movie-2"))
             .expect("query source b")
             .is_some());
+    }
+
+    #[test]
+    fn completion_state_and_continue_removal_are_independent() {
+        let conn = Connection::open_in_memory().expect("open playback history test database");
+        initialize_schema(&conn).expect("initialize playback history schema");
+        let storage = PlaybackHistoryStorage { conn };
+        let identity = identity("source-a", "movie-1");
+        storage
+            .upsert(&progress("source-a", "movie-1"))
+            .expect("insert history");
+
+        assert!(storage
+            .set_completed(&identity, true)
+            .expect("mark completed"));
+        assert!(!storage
+            .delete(&identity)
+            .expect("completed entry must survive remove continue"));
+        assert!(
+            storage
+                .get(&identity)
+                .expect("read completed")
+                .expect("entry")
+                .completed
+        );
+
+        assert!(storage
+            .set_completed(&identity, false)
+            .expect("mark unplayed"));
+        assert!(storage
+            .delete(&identity)
+            .expect("remove incomplete continue entry"));
+        assert!(storage.get(&identity).expect("read removed").is_none());
     }
 
     fn identity(source_id: &str, media_identity: &str) -> PlaybackProgressIdentity {

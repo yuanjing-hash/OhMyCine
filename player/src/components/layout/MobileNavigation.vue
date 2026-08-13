@@ -47,6 +47,7 @@ const isNativeAndroid = isNativeAndroidRuntime()
 const isHomeActive = computed(() => route.name === 'home')
 const isLibraryActive = computed(() => route.name === 'source' || route.name === 'media-detail' || activeSheet.value === 'libraries')
 const isSettingsActive = computed(() => route.name === 'settings')
+const isFavoritesActive = computed(() => route.name === 'favorites')
 const enabledSources = computed(() => store.orderedConfigs.filter(source => source.enabled !== false))
 
 const sourceIcons: Record<string, string> = {
@@ -82,6 +83,11 @@ async function navigateHome() {
 async function navigateSettings() {
   closeSheet()
   await router.push({ name: 'settings' })
+}
+
+async function navigateFavorites() {
+  closeSheet()
+  await router.push({ name: 'favorites' })
 }
 
 async function navigateSource(sourceId: string) {
@@ -338,6 +344,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
       <span>媒体库</span>
     </button>
 
+    <button type="button" class="mobile-nav-item" :class="{ 'is-active': isFavoritesActive }" aria-label="我的收藏" @click="navigateFavorites">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20 4.8 13.3A4.8 4.8 0 0 1 11.6 6l.4.5.4-.5a4.8 4.8 0 0 1 6.8 7.3L12 20Z" /></svg>
+      <span>收藏</span>
+    </button>
+
     <button type="button" class="mobile-nav-item" :class="{ 'is-active': activeSheet === 'quick' }" aria-label="快捷操作" :aria-expanded="activeSheet === 'quick'" @click="toggleSheet('quick')">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
       <span>快捷</span>
@@ -372,7 +383,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     left: 0.75rem;
     display: grid;
     min-height: 4.5rem;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: end;
     border: 1px solid var(--chrome-border);
     border-radius: 8px;

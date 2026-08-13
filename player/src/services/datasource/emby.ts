@@ -50,6 +50,10 @@ const ITEM_FIELDS = [
   'Taglines',
 ].join(',')
 
+const FAVORITE_ITEM_FIELDS = ITEM_FIELDS.split(',')
+  .filter(field => !['MediaSources', 'MediaStreams', 'Path'].includes(field))
+  .join(',')
+
 const IMAGE_QUERY = {
   EnableImages: 'true',
   EnableImageTypes: 'Primary,Backdrop,Thumb,Logo',
@@ -75,6 +79,7 @@ const EMBY_CLIENT_VERSION = playerPackage.version
 const PLAYBACK_INFO_FAILURE_COOLDOWN_MS = 60_000
 const EMBY_HTTP_TIMEOUT_MS = 15_000
 const EMBY_MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
+const FAVORITE_OVERRIDE_TTL_MS = 30_000
 
 type EmbyPlaybackAuthMode = 'default' | 'official-compatible'
 type EmbyPlaybackInfoShape = 'simple-body' | 'query-body-lite' | 'query-only' | 'query-device-profile' | 'device-profile-body' | 'auto-open-live-stream' | 'official-simple-body'
@@ -88,7 +93,7 @@ type EmbyRequestBody = EmbyRequestBodyObject
 type EmbyNativeJsonValue = EmbyRequestBodyValue
 
 interface EmbyNativeJsonRequest {
-  readonly method: 'GET' | 'POST'
+  readonly method: 'GET' | 'POST' | 'DELETE'
   readonly baseUrl: string
   readonly path: string
   readonly query?: Record<string, string | number | boolean | null>
@@ -160,7 +165,10 @@ interface EmbyItemRecord {
   readonly ProviderIds?: Record<string, string>
   readonly MediaStreams?: EmbyMediaStreamRecord[]
   readonly MediaSources?: EmbyMediaSourceRecord[]
+  readonly CanDelete?: boolean
   readonly UserData?: {
+    readonly Played?: boolean
+    readonly IsFavorite?: boolean
     readonly PlayedPercentage?: number
     readonly PlaybackPositionTicks?: number
   }
@@ -265,6 +273,11 @@ interface EmbyDetailCachePayload {
   readonly collections: EmbyItemRecord[]
 }
 
+interface FavoriteStateOverride {
+  readonly favorite: boolean
+  readonly expiresAt: number
+}
+
 export interface EmbyLoginConfigInput {
   readonly id: string
   readonly url: string
@@ -290,6 +303,7 @@ export class EmbyDataSource implements DataSource {
   private readonly playbackSessions = new Map<string, EmbyPlaybackSessionMetadata>()
   private readonly playbackInfoFailures = new Map<string, EmbyPlaybackInfoFailure>()
   private readonly playbackSyncDiagnostics: ProviderPlaybackSyncDiagnostic[] = []
+  private readonly favoriteStateOverrides = new Map<string, FavoriteStateOverride>()
 
   readonly type = 'emby' as const
 
@@ -355,6 +369,7 @@ export class EmbyDataSource implements DataSource {
 
   destroy(): void {
     this.connected = false
+    this.favoriteStateOverrides.clear()
   }
 
   clearCache(): void {
@@ -630,6 +645,172 @@ export class EmbyDataSource implements DataSource {
     }
 
     throwPlaybackSyncDiagnostic(progress.event, startError ?? sessionError)
+  }
+
+  async setPlayedState(itemId: string, mutation: 'played' | 'unplayed' | 'removeContinueWatching'): Promise<void> {
+    this.ensureConfigured()
+    const id = itemId.trim()
+    if (!id)
+      throw new Error('缺少可更新的 Emby 媒体条目。')
+
+    if (mutation === 'played')
+      await this.request(`/Users/{UserId}/PlayedItems/${encodeURIComponent(id)}`, {}, 'POST')
+    else if (mutation === 'unplayed')
+      await this.request(`/Users/{UserId}/PlayedItems/${encodeURIComponent(id)}`, {}, 'DELETE')
+    else
+      await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}/UserData`, { PlaybackPositionTicks: 0 }, 'POST')
+    this.cache.clear()
+  }
+
+  async setFavorite(itemId: string, favorite: boolean): Promise<void> {
+    this.ensureConfigured()
+    const id = itemId.trim()
+    if (!id)
+      throw new Error('缺少可收藏的 Emby 媒体条目。')
+    await this.request(`/Users/{UserId}/FavoriteItems/${encodeURIComponent(id)}`, {}, favorite ? 'POST' : 'DELETE')
+    this.cache.clear()
+    this.favoriteStateOverrides.set(id, {
+      favorite,
+      expiresAt: Date.now() + FAVORITE_OVERRIDE_TTL_MS,
+    })
+  }
+
+  async listFavorites(): Promise<MediaItem[]> {
+    const records: EmbyItemRecord[] = []
+    const pageSize = 100
+    for (let startIndex = 0; startIndex < 2_000; startIndex += pageSize) {
+      const response = await this.request('/Users/{UserId}/Items', {
+        Recursive: 'true',
+        Filters: 'IsFavorite',
+        EnableUserData: 'true',
+        IncludeItemTypes: 'Movie,Series,Season,Episode,Video',
+        Fields: FAVORITE_ITEM_FIELDS,
+        ...IMAGE_QUERY,
+        StartIndex: startIndex,
+        Limit: pageSize,
+      })
+      const page = parseItemsPage(response)
+      records.push(...page.items)
+      if (page.items.length < pageSize || records.length >= page.totalRecordCount)
+        break
+    }
+    const byId = new Map(records.map(item => [item.Id, item]))
+    for (const [itemId, override] of this.activeFavoriteOverrides()) {
+      if (!override.favorite) {
+        byId.delete(itemId)
+        continue
+      }
+      if (byId.has(itemId))
+        continue
+      try {
+        byId.set(itemId, parseItemRecord(await this.request(`/Users/{UserId}/Items/${encodeURIComponent(itemId)}`)))
+      }
+      catch {
+        // The provider accepted the mutation, but the item may not be readable yet.
+      }
+    }
+    return [...byId.values()].map(item => ({ ...this.mapItem(item), favorite: true }))
+  }
+
+  async getFavoriteState(itemId: string): Promise<boolean> {
+    const id = itemId.trim()
+    if (!id)
+      throw new Error('缺少可查询的媒体标识。')
+    const override = this.activeFavoriteOverride(id)
+    if (override)
+      return override.favorite
+
+    const favorites = parseItemsResponse(await this.request('/Users/{UserId}/Items', {
+      Ids: id,
+      Recursive: 'true',
+      Filters: 'IsFavorite',
+      EnableUserData: 'true',
+      Limit: '1',
+    }))
+    return favorites.some(item => item.Id === id)
+  }
+
+  private activeFavoriteOverride(itemId: string): FavoriteStateOverride | undefined {
+    const override = this.favoriteStateOverrides.get(itemId)
+    if (!override)
+      return undefined
+    if (override.expiresAt > Date.now())
+      return override
+    this.favoriteStateOverrides.delete(itemId)
+    return undefined
+  }
+
+  private activeFavoriteOverrides(): Array<[string, FavoriteStateOverride]> {
+    const active: Array<[string, FavoriteStateOverride]> = []
+    for (const itemId of this.favoriteStateOverrides.keys()) {
+      const override = this.activeFavoriteOverride(itemId)
+      if (override)
+        active.push([itemId, override])
+    }
+    return active
+  }
+
+  async deleteMedia(itemId: string): Promise<void> {
+    const id = itemId.trim()
+    if (!id || id.includes('/') || id.includes('\\') || id.length > 256)
+      throw new Error('Emby 媒体标识无效。')
+    await this.request(`/Items/${encodeURIComponent(id)}`, {}, 'DELETE')
+    this.cache.clear()
+  }
+
+  async canDeleteMedia(itemId: string): Promise<boolean> {
+    const id = itemId.trim()
+    if (!id || id.includes('/') || id.includes('\\') || id.length > 256)
+      return false
+    const item = parseItemRecord(await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}`))
+    return item.CanDelete === true
+  }
+
+  async listProviderCollections(kind: 'playlist' | 'collection'): Promise<Array<{ id: string, name: string, kind: 'playlist' | 'collection', itemCount?: number }>> {
+    const records = parseItemsResponse(await this.request('/Users/{UserId}/Items', {
+      Recursive: true,
+      IncludeItemTypes: kind === 'playlist' ? 'Playlist' : 'BoxSet',
+      Fields: 'ChildCount',
+    }))
+    return records.map(item => ({ id: item.Id, name: item.Name, kind, itemCount: item.ChildCount }))
+  }
+
+  async createProviderCollection(name: string, kind: 'playlist' | 'collection'): Promise<string> {
+    const value = name.trim()
+    if (!value)
+      throw new Error('请输入名称。')
+    const response = await this.request(kind === 'playlist' ? '/Playlists' : '/Collections', {
+      Name: value,
+      UserId: this.userId,
+    }, 'POST')
+    const record: Record<string, unknown> = typeof response === 'object' && response != null && !Array.isArray(response) ? response as Record<string, unknown> : {}
+    const id = typeof record.Id === 'string' ? record.Id : typeof record.id === 'string' ? record.id : ''
+    if (!id)
+      throw new Error('媒体服务未返回新建集合标识。')
+    this.cache.clear()
+    return id
+  }
+
+  async addProviderCollectionMember(collectionId: string, itemId: string, kind: 'playlist' | 'collection'): Promise<void> {
+    await this.request(`/${kind === 'playlist' ? 'Playlists' : 'Collections'}/${encodeURIComponent(collectionId)}/Items`, {
+      Ids: itemId,
+      UserId: this.userId,
+    }, 'POST')
+    this.cache.clear()
+  }
+
+  async refreshMetadata(itemId: string): Promise<void> {
+    const id = itemId.trim()
+    if (!id)
+      throw new Error('缺少可刷新的媒体条目。')
+    await this.request(`/Items/${encodeURIComponent(id)}/Refresh`, {
+      Recursive: true,
+      MetadataRefreshMode: 'Default',
+      ImageRefreshMode: 'Default',
+      ReplaceAllMetadata: false,
+      ReplaceAllImages: false,
+    }, 'POST')
+    this.cache.clear()
   }
 
   private async syncSessionPlaybackProgress(itemId: string, session: EmbyPlaybackSessionMetadata, progress: ProviderPlaybackProgressInput): Promise<unknown | null> {
@@ -1182,7 +1363,7 @@ export class EmbyDataSource implements DataSource {
     }
   }
 
-  private async request(path: string, query: EmbyRequestPayload = {}, method: 'GET' | 'POST' = 'GET'): Promise<unknown> {
+  private async request(path: string, query: EmbyRequestPayload = {}, method: 'GET' | 'POST' | 'DELETE' = 'GET'): Promise<unknown> {
     this.ensureConfigured()
     const resolvedPath = path.replace('{UserId}', encodeURIComponent(this.userId))
 
@@ -1281,6 +1462,8 @@ export class EmbyDataSource implements DataSource {
       path: item.Id,
       resumePosition,
       progress,
+      played: item.UserData?.Played === true || progress === 1,
+      favorite: typeof item.UserData?.IsFavorite === 'boolean' ? item.UserData.IsFavorite : undefined,
       seriesName: item.Type === 'Episode' ? nonEmptyString(item.SeriesName) : undefined,
       seasonNumber: item.Type === 'Season' ? item.IndexNumber : item.Type === 'Episode' ? item.ParentIndexNumber : undefined,
       episodeNumber: item.Type === 'Episode' ? item.IndexNumber : undefined,
@@ -1553,6 +1736,14 @@ function parseItemsResponse(value: unknown): EmbyItemRecord[] {
   if (!Array.isArray(response.Items))
     return []
   return response.Items.filter(isEmbyItemRecord)
+}
+
+function parseItemsPage(value: unknown): { items: EmbyItemRecord[], totalRecordCount: number } {
+  const items = parseItemsResponse(value)
+  const totalRecordCount = isObject(value) && typeof value.TotalRecordCount === 'number'
+    ? Math.max(items.length, value.TotalRecordCount)
+    : items.length
+  return { items, totalRecordCount }
 }
 
 function parseEmbyRemoteSubtitleRecords(value: unknown): EmbyRemoteSubtitleRecord[] {
