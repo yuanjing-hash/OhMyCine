@@ -19,6 +19,7 @@
   {"code":"connections.test","module":"connections","name":"测试连接","description":"测试外部服务连接状态。","risk":"normal"},
   {"code":"connections.secrets.export","module":"connections","name":"导出连接秘密","description":"显式导出连接凭据。","risk":"destructive"},
   {"code":"storages.read","module":"storages","name":"查看存储","description":"查看存储配置、能力与脱敏探测摘要。","risk":"sensitive"},
+  {"code":"storages.browse","module":"storages","name":"浏览 Server 目录","description":"浏览 Server 进程可见的本地目录并生成短期选择令牌。","risk":"sensitive"},
   {"code":"storages.create","module":"storages","name":"创建存储","description":"注册经过路径安全校验的存储根。","risk":"sensitive"},
   {"code":"storages.update","module":"storages","name":"编辑存储","description":"编辑存储配置并重新校验根路径。","risk":"sensitive"},
   {"code":"storages.delete","module":"storages","name":"删除存储","description":"仅删除存储配置，不删除真实文件。","risk":"destructive"},

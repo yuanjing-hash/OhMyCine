@@ -12,16 +12,17 @@ import (
 )
 
 type API struct {
-	config  config.Config
-	auth    *services.AuthService
-	admin   *services.AdminService
-	audit   *services.AuditService
-	storage *services.StorageService
-	log     zerolog.Logger
+	config    config.Config
+	auth      *services.AuthService
+	admin     *services.AdminService
+	audit     *services.AuditService
+	storage   *services.StorageService
+	directory *services.DirectoryBrowserService
+	log       zerolog.Logger
 }
 
-func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, log zerolog.Logger) *API {
-	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, log: log}
+func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, log zerolog.Logger) *API {
+	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, log: log}
 }
 
 func (a *API) CookieName() string {
@@ -339,13 +340,56 @@ func (a *API) Storages(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"list": data, "total": len(data)})
 }
 
+func (a *API) DirectoryRoots(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	actor, _ := middleware.ActorFrom(c)
+	data, err := a.directory.Roots(c.Request.Context(), actor, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func (a *API) Directories(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	actor, _ := middleware.ActorFrom(c)
+	token := c.Query("token")
+	if token == "" {
+		writeError(c, a.log, invalid("缺少目录令牌", nil))
+		return
+	}
+	data, err := a.directory.List(c.Request.Context(), actor, token, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func (a *API) StorageDirectory(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	data, err := a.directory.StorageToken(c.Request.Context(), actor, id, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
 func (a *API) CreateStorage(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	var input struct {
-		Name     string `json:"name" binding:"required"`
-		Type     string `json:"type"`
-		RootPath string `json:"root_path" binding:"required"`
-		Enabled  *bool  `json:"enabled"`
+		Name        string `json:"name" binding:"required"`
+		Type        string `json:"type"`
+		RootPath    string `json:"root_path"`
+		PickerToken string `json:"picker_token"`
+		Enabled     *bool  `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		writeError(c, a.log, invalid("存储信息不完整", err))
@@ -354,6 +398,18 @@ func (a *API) CreateStorage(c *gin.Context) {
 	enabled := true
 	if input.Enabled != nil {
 		enabled = *input.Enabled
+	}
+	if input.PickerToken != "" {
+		root, err := a.directory.ResolveSelection(c.Request.Context(), actor, input.PickerToken)
+		if err != nil {
+			writeError(c, a.log, err)
+			return
+		}
+		input.RootPath = root
+	}
+	if input.RootPath == "" {
+		writeError(c, a.log, invalid("请选择存储根目录", nil))
+		return
 	}
 	data, err := a.storage.Create(actor, services.StorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, Enabled: enabled}, middleware.RequestContextFrom(c))
 	if err != nil {
@@ -370,14 +426,23 @@ func (a *API) UpdateStorage(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Name     *string `json:"name"`
-		Type     *string `json:"type"`
-		RootPath *string `json:"root_path"`
-		Enabled  *bool   `json:"enabled"`
+		Name        *string `json:"name"`
+		Type        *string `json:"type"`
+		RootPath    *string `json:"root_path"`
+		PickerToken *string `json:"picker_token"`
+		Enabled     *bool   `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		writeError(c, a.log, invalid("存储信息无效", err))
 		return
+	}
+	if input.PickerToken != nil {
+		root, err := a.directory.ResolveSelection(c.Request.Context(), actor, *input.PickerToken)
+		if err != nil {
+			writeError(c, a.log, err)
+			return
+		}
+		input.RootPath = &root
 	}
 	data, err := a.storage.Update(actor, id, services.UpdateStorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, Enabled: input.Enabled}, middleware.RequestContextFrom(c))
 	if err != nil {

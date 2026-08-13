@@ -22,6 +22,7 @@ const (
 	PermissionRolesAssign    = "roles.assign"
 	PermissionAuditRead      = "audit.read"
 	PermissionStoragesRead   = "storages.read"
+	PermissionStoragesBrowse = "storages.browse"
 	PermissionStoragesCreate = "storages.create"
 	PermissionStoragesUpdate = "storages.update"
 	PermissionStoragesDelete = "storages.delete"

@@ -37,7 +37,11 @@ func main() {
 	}
 	admin := services.NewAdminService(db, authorization, auth, audit)
 	storages := services.NewStorageService(db, audit)
-	api := handlers.NewAPI(cfg, auth, admin, audit, storages, log)
+	directories, err := services.NewDirectoryBrowserService(db, nil)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize directory browser")
+	}
+	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, log)
 	server := &http.Server{
 		Addr: cfg.Address(), Handler: httpserver.New(cfg, api, auth, log),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,

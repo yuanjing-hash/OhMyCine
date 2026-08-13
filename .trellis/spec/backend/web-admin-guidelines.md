@@ -144,6 +144,95 @@ if (request.Method == http.MethodGet || request.Method == http.MethodHead) &&
 
 ---
 
+## Scenario: Server Filesystem Directory Picker
+
+### 1. Scope / Trigger
+
+- Trigger: selecting a Server-local directory for Storage or a future Server-owned local path field.
+- This is a Server filesystem read model, never a browser-native picker and never a general file manager.
+
+### 2. Signatures
+
+- Permission: `storages.browse`.
+- Routes: `GET /api/v1/filesystem/roots`, `GET /api/v1/filesystem/directories?token=...`, and `GET /api/v1/storages/{id}/directory`.
+- Storage create/update primary Web UI field: `picker_token`; raw `root_path` remains API-compatible but is not a free-text Web UI control.
+
+### 3. Contracts
+
+- The reusable Vue dialog shows Server identity, roots, breadcrumbs, parent, refresh, current-directory selection, and loading/empty/error/truncated states.
+- The dialog traps focus, closes with Escape, restores focus, and exposes disabled-directory reasons to assistive technology.
+- The client sends only server-issued navigation/selection tokens and displays the authorized path summary read-only.
+- Tokens are short-lived, purpose/platform/adapter-version bound, AES-GCM sealed, and HMAC authenticated. Signing alone is insufficient because a base64-encoded signed payload still exposes absolute paths.
+- Root and child responses are bounded and no-store. Rate-limit state is bounded/expired by actor + IP, and a timed-out adapter call retains its concurrency slot until the adapter actually exits.
+- Storage save repeats canonicalization, Reparse Point/symlink rejection, uniqueness, and read-only probe; successful browsing is not proof that registration will succeed.
+- Revalidation checks every path component at use time because a safe directory can be replaced by a symlink/junction after token issuance. Re-selecting the unchanged stored root still repeats canonicalization and probe.
+- Apply `Cache-Control: no-store` before permission middleware so both successful and denied picker responses remain non-cacheable.
+- No create-directory, rename, move, delete, upload, download, preview, recursive scan, ACL, owner, content, or subtree-stat operation belongs in the picker.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Missing/invalid/tampered/wrong-purpose/wrong-platform token | Reject with `directory_token_invalid`; do not reveal claims or path |
+| Expired token | Reject with `directory_token_expired` and require a fresh selection |
+| Any ancestor becomes symlink/junction/Reparse Point | Reject browse/select/save with safe unavailable error |
+| Directory disappeared | Return `directory_not_found`; do not echo the path |
+| Directory is unreadable | Return `directory_unreadable`; do not return raw OS error |
+| Per actor+IP rate exceeded | Return `directory_rate_limited`; keep rate-key state bounded and expiring |
+| Concurrency limit reached | Return `directory_busy` without starting another adapter call |
+| Adapter exceeds timeout | Return `directory_unavailable` promptly, but release its concurrency slot only after the adapter exits |
+| Actor lacks `storages.browse` | Return 403 with `Cache-Control: no-store` and no root/path data |
+| Listing contains more than 500 directories | Return the bounded sorted prefix plus `truncated=true` |
+| Storage saves the same selected root again | Repeat canonicalization and read-only probe; do not skip because the string is unchanged |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an authorized remote administrator opens the picker, browses Server-visible Windows drives or container mounts through opaque tokens, and saves a directory that is revalidated at commit time.
+- Good: a directory is replaced with a junction after listing; the next browse/select/save rejects it before traversal.
+- Base: a mount disappears or token expires while the dialog is open; the UI shows a recoverable reselect state and returns to roots.
+- Bad: Vue joins `currentPath + '/' + childName`, accepts a free-text absolute path, or persists picker tokens in SQLite.
+- Bad: a signed JSON token is merely base64-encoded, allowing anyone holding it to decode the Server absolute path.
+- Bad: permission middleware returns a cacheable 403 because the no-store middleware was registered after RBAC.
+
+### 6. Tests Required
+
+- Cover middleware and service authorization, operator/viewer seed behavior, token purpose/tamper/expiry, bounded sorted listing, files excluded, symlink/Reparse Point disabled, safe errors/no-store, and picker-token Storage round trip.
+- Assert tokens do not contain or decode to the selected absolute path, are never persisted, and cannot be reused across browse/select purposes or adapter/platform versions.
+- Cover ancestor-link replacement, stale saved roots, unchanged-root reprobe, adapter timeout/concurrency retention, bounded actor+IP rate state, denied-response no-store, Unix mount escape decoding and Windows logical-drive smoke.
+- Frontend tests cover stale-request aborts, loading/empty/error/truncated states, Escape and all close-path focus restoration, collision-safe ARIA IDs, disabled reasons and absence of free-text path inputs/path concatenation.
+- Run Web UI permission drift, tests, typecheck, lint, build, Server Go test/vet/build, `go build -tags webui`, module verifies, and a Windows native root/list smoke.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+// Integrity only: anyone can base64-decode payload and read an absolute path.
+payload, _ := json.Marshal(claims)
+token := base64.RawURLEncoding.EncodeToString(append(payload, hmacSum(payload)...))
+```
+
+```ts
+// The client invents a Server path and bypasses token purpose/boundary rules.
+await api(`/api/v1/filesystem/directories?path=${currentPath}/${child.name}`)
+```
+
+#### Correct
+
+```go
+// Seal path claims, authenticate them, bind purpose/platform/version/expiry,
+// then revalidate every component when the token is consumed.
+token := sealAndAuthenticate(directoryClaims)
+path := resolveAndValidate(token, expectedPurpose)
+```
+
+```ts
+// Server-issued tokens are the only navigation and selection capability.
+await api(`/api/v1/filesystem/directories?token=${encodeURIComponent(item.token)}`)
+```
+
+---
+
 ## Scenario: One-Command Local and Production Launcher
 
 ### 1. Scope / Trigger

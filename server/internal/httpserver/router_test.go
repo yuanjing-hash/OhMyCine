@@ -51,7 +51,11 @@ func newTestClient(t *testing.T) *testClient {
 	}
 	admin := services.NewAdminService(db, authorization, auth, audit)
 	storages := services.NewStorageService(db, audit)
-	api := handlers.NewAPI(cfg, auth, admin, audit, storages, log)
+	directories, err := services.NewDirectoryBrowserService(db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, log)
 	return &testClient{router: New(cfg, api, auth, log)}
 }
 
@@ -306,6 +310,83 @@ func TestStorageCRUDRBACAndDeleteLeavesFilesUntouched(t *testing.T) {
 		if status != http.StatusForbidden || !bytes.Contains(envelope.Data, []byte(services.CodePermissionDenied)) {
 			t.Fatalf("viewer %s %s status=%d data=%s", request.method, request.path, status, envelope.Data)
 		}
+	}
+}
+
+func TestDirectoryPickerRBACNoStoreAndStorageRoundTrip(t *testing.T) {
+	owner := newTestClient(t)
+	owner.setup(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/filesystem/roots", nil)
+	req.AddCookie(owner.cookie)
+	response := httptest.NewRecorder()
+	owner.router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("roots status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+	var roots testEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &roots); err != nil {
+		t.Fatal(err)
+	}
+	var listing struct {
+		Items []struct {
+			SelectionToken string `json:"selection_token"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(roots.Data, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Items) == 0 {
+		t.Skip("Server process has no selectable filesystem roots")
+	}
+	status, envelope := owner.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "Picker root", "type": "local", "picker_token": listing.Items[0].SelectionToken}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("picker create status=%d message=%s data=%s", status, envelope.Message, envelope.Data)
+	}
+
+	// Viewer has neither middleware nor service authorization for filesystem disclosure.
+	status, rolesEnvelope := owner.request(t, http.MethodGet, "/api/v1/roles", nil, false)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	var rolesData struct {
+		List []struct {
+			ID   uint   `json:"id"`
+			Code string `json:"code"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(rolesEnvelope.Data, &rolesData); err != nil {
+		t.Fatal(err)
+	}
+	var viewerID uint
+	for _, role := range rolesData.List {
+		if role.Code == "viewer" {
+			viewerID = role.ID
+		}
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "picker-viewer", "password": "viewer-strong-password", "role_ids": []uint{viewerID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	viewer := newTestClientWithRouter(owner.router)
+	viewer.login(t, "picker-viewer", "viewer-strong-password")
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/filesystem/roots", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer roots status=%d", status)
+	}
+	viewerRequest := httptest.NewRequest(http.MethodGet, "/api/v1/filesystem/roots", nil)
+	viewerRequest.AddCookie(viewer.cookie)
+	viewerResponse := httptest.NewRecorder()
+	viewer.router.ServeHTTP(viewerResponse, viewerRequest)
+	if viewerResponse.Code != http.StatusForbidden || viewerResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("viewer roots cache status=%d cache=%q", viewerResponse.Code, viewerResponse.Header().Get("Cache-Control"))
+	}
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/filesystem/directories?token=invalid", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer directories status=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/storages/1/directory", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer storage directory status=%d", status)
 	}
 }
 

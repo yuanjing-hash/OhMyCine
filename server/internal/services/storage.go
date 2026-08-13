@@ -140,14 +140,12 @@ func (s *StorageService) Update(actor Actor, id uint, input UpdateStorageInput, 
 		}
 		record.Name, record.NameNormalized = name, normalized
 	}
-	rootChanged := false
 	if input.RootPath != nil {
 		root, err := s.driver.CanonicalizeRoot(*input.RootPath)
 		if err != nil {
 			s.auditFailure(actor, "storage.update", request)
 			return StorageSummary{}, storagePathError(err)
 		}
-		rootChanged = root != record.RootPath
 		record.RootPath, record.RootPathNormalized = root, storagefs.NormalizeForComparison(root)
 	}
 	if input.Enabled != nil {
@@ -157,15 +155,19 @@ func (s *StorageService) Update(actor Actor, id uint, input UpdateStorageInput, 
 		s.auditFailure(actor, "storage.update", request)
 		return StorageSummary{}, err
 	}
-	if rootChanged {
-		probe := s.driver.ProbeRoot(record.RootPath)
-		if !probe.Readable {
-			s.auditFailure(actor, "storage.update", request)
-			return StorageSummary{}, appError(storagefs.CodeUnreadable, "无法读取存储根路径", nil)
-		}
-		applyProbe(&record, probe)
+	root, err := s.driver.CanonicalizeRoot(record.RootPath)
+	if err != nil {
+		s.auditFailure(actor, "storage.update", request)
+		return StorageSummary{}, storagePathError(err)
 	}
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	record.RootPath, record.RootPathNormalized = root, storagefs.NormalizeForComparison(root)
+	probe := s.driver.ProbeRoot(record.RootPath)
+	if !probe.Readable {
+		s.auditFailure(actor, "storage.update", request)
+		return StorageSummary{}, appError(storagefs.CodeUnreadable, "无法读取存储根路径", nil)
+	}
+	applyProbe(&record, probe)
+	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&record).Error; err != nil {
 			return err
 		}

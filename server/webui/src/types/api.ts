@@ -53,3 +53,27 @@ export interface StorageSummary {
   id: number; name: string; type: 'local'; root_path: string; connection_id: number | null; enabled: boolean
   capabilities: StorageCapabilities; probe: StorageProbe; created_at: string; updated_at: string
 }
+
+export interface DirectoryItem {
+  name: string
+  location: string
+  token?: string
+  selection_token?: string
+  selectable: boolean
+  enterable: boolean
+  unavailable_reason?: 'link_not_allowed' | 'root_unavailable'
+  kind?: 'fixed' | 'removable' | 'network' | 'optical' | 'ramdisk' | 'unknown' | 'filesystem' | 'mount' | 'directory'
+}
+
+export interface DirectoryBreadcrumb { name: string; token: string }
+
+export interface DirectoryListing {
+  platform: string
+  location: string
+  current_token: string
+  current_selection_token: string
+  parent_token?: string
+  breadcrumbs: DirectoryBreadcrumb[]
+  items: DirectoryItem[]
+  truncated: boolean
+}

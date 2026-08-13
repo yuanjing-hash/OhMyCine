@@ -101,6 +101,16 @@ STRM cleanup must:
 - Support dry-run preview.
 - Record the files considered/deleted without exposing credentials.
 
+### Server directory picker
+
+- Server Web administration must browse the Server process filesystem through authenticated APIs; browser-native file pickers represent the client device and are not a substitute.
+- Protect root and child enumeration with the independent sensitive permission `storages.browse` at both route middleware and service policy. Owner, administrator, and operator receive it by default; viewer does not.
+- Enumerate only one directory level per request, return directories only, cap and sort results, apply cancellation/timeouts plus per-actor rate/concurrency limits, and use `Cache-Control: no-store`.
+- Windows roots are process-visible logical/mapped drives. Unix/NAS/Docker roots and mounts are only those visible in the process namespace. Never fabricate an unmounted host path.
+- Navigation and selection use short-lived signed opaque tokens bound to purpose, platform, and adapter version. Clients never join separators, `..`, drive letters, hostnames, or shares to create the next request.
+- Reject symlinks, junctions, mount-point Reparse Points, and other Reparse Point children for entry and selection. Saving a selected root always repeats canonicalization, uniqueness, and the existing read-only probe.
+- Browse logs, audit metadata, and safe errors must not contain absolute paths, child names, or raw OS errors. A picker response may include only the current interaction's displayed paths and names.
+
 ---
 
 ## External HTTP and SSRF Defense

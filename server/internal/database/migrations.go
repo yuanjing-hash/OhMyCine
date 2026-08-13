@@ -184,7 +184,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.create", "storages.update", "storages.delete", "storages.test", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
+		operatorCodes := []string{"dashboard.read", "connections.read", "connections.create", "connections.update", "connections.test", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

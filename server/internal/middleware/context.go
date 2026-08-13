@@ -142,6 +142,13 @@ func RequirePermission(code string) gin.HandlerFunc {
 	}
 }
 
+func NoStore() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	}
+}
+
 func ActorFrom(c *gin.Context) (services.Actor, bool) {
 	value, ok := c.Get(ContextActor)
 	if !ok {

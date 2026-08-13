@@ -65,6 +65,14 @@ Use action routes only when the action is not a simple CRUD update, for example:
 - `POST /api/v1/follows/{id}/pause`
 - `POST /api/v1/downloads/{id}/resume`
 
+Server filesystem browsing uses these read-only management routes:
+
+- `GET /api/v1/filesystem/roots`
+- `GET /api/v1/filesystem/directories?token=<opaque>`
+- `GET /api/v1/storages/{id}/directory` for reopening an existing saved root
+
+All three require authentication plus `storages.browse`, repeat service authorization, and return `Cache-Control: no-store`. Directory errors use stable safe codes and never echo raw operating-system errors. Storage create/update may accept `picker_token`; the legacy `root_path` field remains API-compatible, and both inputs converge on the same save validation.
+
 ---
 
 ## Permission Rules

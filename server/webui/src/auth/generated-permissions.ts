@@ -20,6 +20,7 @@ export const Permissions = {
   ConnectionsTest: 'connections.test',
   ConnectionsSecretsExport: 'connections.secrets.export',
   StoragesRead: 'storages.read',
+  StoragesBrowse: 'storages.browse',
   StoragesCreate: 'storages.create',
   StoragesUpdate: 'storages.update',
   StoragesDelete: 'storages.delete',

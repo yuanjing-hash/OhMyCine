@@ -18,6 +18,8 @@ Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显�
 
 当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。Connection、Storage Destination、Category Rule、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
 
+管理端通过 Server 目录选择器注册本地 Storage，而不是使用浏览器原生文件选择器或自由文本路径。`storages.browse` 单独保护 Server 进程可见根与单层子目录枚举；Windows 显示当前服务账户可见盘符/映射盘，Linux/NAS/Docker 只显示进程命名空间中的 `/` 与实际挂载点。导航和选择使用短期、签名、用途隔离的令牌，UI 不拼接路径；保存时仍重新执行 `CanonicalizeRoot`、Reparse Point/symlink 拒绝、唯一性和只读探测。该浏览器不递归扫描、不返回普通文件，也不提供创建、改名、移动、删除、上传或预览。
+
 这里的 `Storage` 表示“Server 能安全访问的提供方根和能力快照”，而 `StorageDestination` 表示“媒体最终放在哪里、使用什么放置/STRM 策略”。二者不能合并：一个 Storage 可在后续被多个 Destination 引用，Storage 本身不做媒体分类、扫描或写入决策。
 
 Server 管理端的目标导航、顶栏、12 列仪表盘、用户管理内部层级、权限可见性和响应式规则见 [Server Web UI 设计](08-server-web-ui-design.md)。本文仍负责后端业务、API 与数据模型，不在此复制界面设计全文。
