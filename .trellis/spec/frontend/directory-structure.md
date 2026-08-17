@@ -449,7 +449,7 @@ When Windows-native development builds Player for `x86_64-pc-windows-msvc`, or C
 - Node ESM setup scripts must convert `import.meta.url` with `fileURLToPath()` before using `node:path`; `.pathname` produces malformed drive-prefixed paths on Windows. Use `basename()` rather than splitting paths on `/` when passing archive names to extraction tools.
 - Keep native Linux builds using system libmpv/pkg-config; only add the explicit link-search path for the two Windows targets.
 - Linux/WSL cross-build success proves executable/installer generation only; Windows installation, signing, launch, and playback require the Windows-native environment.
-- In the Windows transparent WebView + mpv underlay model, WebView-reported surface bounds are the sole geometry authority during move, resize, and DPI changes. Native owner events may synchronize visibility/z-order, but must not resize the mpv HWND ahead of the WebView layout frame; `ResizeObserver` plus Tauri moved/resized/scale events report the final logical bounds back to Rust.
+- In the Windows transparent WebView + mpv underlay model, WebView-reported surface bounds are the sole size authority. A pure native owner `Moved` event must synchronously reposition the mpv HWND from the cached physical surface bounds plus the owner's current client origin; it must not wait for `ResizeObserver` or derive a replacement size from the native client rect. Owner `Resized` and `ScaleFactorChanged` events may synchronize visibility/z-order but must wait for `ResizeObserver` plus the Tauri resized/scale report before resizing the mpv HWND, so video never leads the WebView layout frame.
 
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |

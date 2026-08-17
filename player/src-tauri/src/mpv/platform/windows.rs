@@ -20,15 +20,15 @@ use std::{
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::{
         Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE},
         Gdi::{ClientToScreen, CreateRoundRectRgn, DeleteObject, SetWindowRgn},
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IsIconic, IsZoomed,
-        LoadCursorW, RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, IDC_ARROW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, IsIconic, IsZoomed, LoadCursorW,
+        RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, IDC_ARROW,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, WNDCLASSW,
         WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
     },
@@ -246,7 +246,7 @@ impl WindowsRenderSurface {
                         screen_y,
                         width,
                         height,
-                        SWP_NOACTIVATE,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
                     )
                 };
 
@@ -261,6 +261,7 @@ impl WindowsRenderSurface {
                 apply_window_region(hwnd, width, height, rounded, scale);
 
                 update_diagnostics(&diagnostics, |d| {
+                    d.mpv_hwnd_shown = true;
                     d.geometry_following = true;
                     d.z_order_underlay_applied = true;
                     d.last_sync_result = "ok".to_string();
@@ -321,7 +322,7 @@ impl WindowsRenderSurface {
                 return;
             }
             OwnerWindowEvent::Moved => {
-                self.note_waiting_for_webview_bounds("owner moved");
+                self.sync_position_from_cached_bounds();
                 return;
             }
             OwnerWindowEvent::ScaleFactorChanged => {
@@ -335,16 +336,22 @@ impl WindowsRenderSurface {
                 fullscreen,
                 maximized,
             } => {
+                let changed =
+                    self.owner_fullscreen != fullscreen || self.owner_maximized != maximized;
                 self.owner_fullscreen = fullscreen;
                 self.owner_maximized = maximized;
+                if !changed {
+                    return;
+                }
                 schedule_owner_corner_preference(&self.window, self.owner, fullscreen || maximized);
                 self.sync_geometry_from_owner();
                 return;
             }
         }
 
-        // Focus changes only reassert the current z-order/geometry. Move, resize, and DPI changes
-        // return above and wait for the WebView's next-frame surface bounds.
+        // Focus changes only reassert the current z-order/geometry. Move events have already applied
+        // the cached surface size at the owner's live client origin; resize and DPI changes return
+        // above and wait for the WebView's next-frame surface bounds.
         self.sync_geometry_from_owner();
     }
 
@@ -409,6 +416,99 @@ impl WindowsRenderSurface {
         }
     }
 
+    /// Immediately follow a pure owner move without waiting for a WebView layout event. A move does
+    /// not change the surface rectangle inside the owner client area, so its last confirmed physical
+    /// bounds remain authoritative; only the client-area origin is read again in screen coordinates.
+    ///
+    /// Tauri dispatches this from the owner window event thread. Calling `SetWindowPos` here avoids
+    /// adding another main-thread callback behind the native move loop. This path must never derive a
+    /// replacement size from `GetClientRect`; resize and DPI changes wait for WebView bounds instead.
+    fn sync_position_from_cached_bounds(&self) {
+        if !self.mpv_ready || !self.playback_active {
+            return;
+        }
+
+        let Some(bounds) = self.bounds else {
+            self.note_waiting_for_webview_bounds("owner moved without cached surface bounds");
+            return;
+        };
+
+        let owner = self.owner;
+        let hwnd = self.mpv_hwnd;
+        if unsafe { IsIconic(owner) } != 0 {
+            unsafe { ShowWindow(hwnd, SW_HIDE) };
+            update_diagnostics(&self.diagnostics, |d| {
+                d.mpv_hwnd_shown = false;
+                d.fullscreen_state = "minimized".to_string();
+                d.geometry_following = true;
+                d.last_sync_result = "hidden-minimized".to_string();
+            });
+            return;
+        }
+
+        let mut client_origin = POINT { x: 0, y: 0 };
+        if unsafe { ClientToScreen(owner, &mut client_origin) } == 0 {
+            update_diagnostics(&self.diagnostics, |d| {
+                d.geometry_following = false;
+                d.last_sync_result = "move-client-origin-failed".to_string();
+            });
+            log_diagnostics(
+                &self.log_path,
+                "sync_position_from_cached_bounds: ClientToScreen failed",
+            );
+            return;
+        }
+
+        let overscan = if self.owner_fullscreen { 1 } else { 0 };
+        let x = client_origin.x + bounds.x - overscan;
+        let y = client_origin.y + bounds.y - overscan;
+        let ok = unsafe {
+            SetWindowPos(
+                hwnd,
+                owner,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        };
+
+        let window_state = if self.owner_fullscreen {
+            "fullscreen"
+        } else if unsafe { IsZoomed(owner) } != 0 {
+            "maximized"
+        } else {
+            "normal"
+        };
+
+        if ok == 0 {
+            update_diagnostics(&self.diagnostics, |d| {
+                d.geometry_following = false;
+                d.fullscreen_state = window_state.to_string();
+                d.last_sync_result = "move-set-window-pos-failed".to_string();
+            });
+            log_diagnostics(
+                &self.log_path,
+                "sync_position_from_cached_bounds: SetWindowPos failed",
+            );
+            return;
+        }
+
+        let width = bounds.width.max(1) + overscan * 2;
+        let height = bounds.height.max(1) + overscan * 2;
+        update_diagnostics(&self.diagnostics, |d| {
+            d.mpv_hwnd_shown = true;
+            d.geometry_following = true;
+            d.z_order_underlay_applied = true;
+            d.fullscreen_state = window_state.to_string();
+            d.last_sync_result = "moved-with-cached-bounds".to_string();
+            d.scale = bounds.scale_factor;
+            d.last_bounds = Some(format!("{width}x{height} at ({x},{y})"));
+            d.syncs = d.syncs.saturating_add(1);
+        });
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
@@ -420,11 +520,17 @@ impl WindowsRenderSurface {
             return;
         }
 
+        let Some(current_bounds) = self.bounds else {
+            self.note_waiting_for_webview_bounds(
+                "owner geometry requested without cached surface bounds",
+            );
+            return;
+        };
+
         let owner = self.owner as isize;
         let hwnd = self.mpv_hwnd as isize;
         let diagnostics = Arc::clone(&self.diagnostics);
         let log_path = self.log_path.clone();
-        let current_bounds = self.bounds;
         let fullscreen = self.owner_fullscreen;
         let rounded = !fullscreen && !self.owner_maximized;
 
@@ -459,40 +565,14 @@ impl WindowsRenderSurface {
                 return;
             }
 
-            let mut client_rect = RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
-            if unsafe { GetClientRect(owner, &mut client_rect) } == 0 {
-                update_diagnostics(&diagnostics, |d| {
-                    d.geometry_following = false;
-                    d.last_sync_result = "GetClientRect failed".to_string();
-                });
-                return;
-            }
-
-            let client_w = client_rect.right - client_rect.left;
-            let client_h = client_rect.bottom - client_rect.top;
-
-            // If we have bounds from the frontend, use them full-bleed; otherwise fill the client
-            // area. The previous top/bottom occlusion model is intentionally not applied here.
-            let (mut x, mut y, mut w, mut h, scale) = if let Some(b) = current_bounds {
-                let screen_x = client_origin.left + b.x;
-                let screen_y = client_origin.top + b.y;
-                let w = b.width.max(1);
-                let h = b.height.max(1);
-                (screen_x, screen_y, w, h, b.scale_factor)
-            } else {
-                (
-                    client_origin.left,
-                    client_origin.top,
-                    client_w.max(1),
-                    client_h.max(1),
-                    1.0,
-                )
-            };
+            // WebView-reported bounds are the sole size authority. State/focus synchronization may
+            // reposition that confirmed rectangle, but it must never infer a replacement size from
+            // the owner's native client rect while a WebView layout report is still pending.
+            let mut x = client_origin.left + current_bounds.x;
+            let mut y = client_origin.top + current_bounds.y;
+            let mut w = current_bounds.width.max(1);
+            let mut h = current_bounds.height.max(1);
+            let scale = current_bounds.scale_factor;
 
             if fullscreen {
                 x -= 1;
@@ -507,7 +587,13 @@ impl WindowsRenderSurface {
                 apply_window_region(hwnd, w, h, rounded, scale);
             }
 
-            let state_str = if is_maximized { "maximized" } else { "normal" };
+            let state_str = if fullscreen {
+                "fullscreen"
+            } else if is_maximized {
+                "maximized"
+            } else {
+                "normal"
+            };
 
             if ok == 0 {
                 update_diagnostics(&diagnostics, |d| {
@@ -551,6 +637,10 @@ impl WindowsRenderSurface {
 
     fn show_mpv_hwnd(&mut self) {
         if !self.mpv_ready || !self.playback_active {
+            return;
+        }
+        if self.bounds.is_none() {
+            self.note_waiting_for_webview_bounds("show requested without cached surface bounds");
             return;
         }
         let owner = self.owner as isize;

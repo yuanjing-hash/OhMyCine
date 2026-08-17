@@ -141,8 +141,8 @@ Phase 4: 生态系统           ████████████████
 #### 基础窗口管理
 
 - [x] 无边框窗口配置 (`decorations: false`)
-- [x] 自定义标题栏组件 (`TitleBar.vue`)
-- [x] 窗口拖拽区域 (`data-tauri-drag-region`)
+- [x] 自定义标题栏组件 (`WindowChrome.vue`)
+- [x] 窗口拖拽区域（空白区域左键按下立即调用原生 `startDragging()`，保留 Windows Snap）
 - [x] 窗口控制按钮 (最小化/最大化/关闭)
 - [x] 全屏切换 (`appWindow.setFullscreen`)
 

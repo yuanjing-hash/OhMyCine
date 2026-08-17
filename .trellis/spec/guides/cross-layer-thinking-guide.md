@@ -88,6 +88,17 @@ After implementation:
 
 Android remote playback crosses `DataSource → Vue invoke → Rust command → loopback HTTP router → upstream redirect/CDN → libmpv`. A successful compile proves only the types. The regression test must start local upstream endpoints and send an actual loopback request so an incorrect router pattern, an HTTP-to-HTTPS redirect bypass, or a lost Range header fails before an APK reaches a device.
 
+### Native Window Event Timing Example
+
+A frameless desktop player crosses `DOM pointer event → Tauri window API → native move loop → Tauri WindowEvent → Win32 video underlay`. Do not assume events that all sound like “geometry changed” share one timing contract:
+
+- A native title-bar drag must start from the original primary-button press. Waiting for a movement threshold or an asynchronous maximize query can lose the OS gesture and make the first drag fail.
+- A pure window move keeps the WebView surface rectangle unchanged inside the client area. Reposition a separate native underlay immediately from its cached confirmed bounds plus the owner's current screen origin; do not wait for a `ResizeObserver` that may never fire.
+- Resize and DPI changes can change the surface size. Those paths must wait for the WebView's final layout bounds rather than deriving a replacement size from the native client rect, or the native video can visually lead the transparent UI.
+- When the native event callback uses a non-blocking lock, check whether dropped intermediate events still converge to the final position. Coalesce or provide a final reconciliation path instead of assuming every event is delivered.
+
+Regression tests should assert the distinct move/resize branches, the absence of delayed drag prerequisites, and the absence of a native-size fallback. Windows runtime testing must still cover first-drag success, Snap maximize, cross-monitor DPI changes, and continuous playback-window movement.
+
 ---
 
 ## When to Create Flow Documentation

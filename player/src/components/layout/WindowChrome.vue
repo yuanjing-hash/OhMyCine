@@ -17,8 +17,6 @@ const router = useRouter()
 const searchWorkspace = useSearchWorkspaceStore()
 const playerChrome = usePlayerChromeStore()
 
-let dragStart: { x: number, y: number } | null = null
-let isDragStarting = false
 let disposed = false
 const windowEventUnlisteners: Array<() => void> = []
 const isMaximized = ref(false)
@@ -85,34 +83,11 @@ function goBack() {
 }
 
 function beginDrag(event: MouseEvent) {
-  if (event.button !== 0)
+  if (event.button !== 0 || !appWindow)
     return
-  dragStart = { x: event.screenX, y: event.screenY }
-}
-
-async function dragIfMoved(event: MouseEvent) {
-  if (!appWindow || !dragStart || isDragStarting)
-    return
-
-  const deltaX = Math.abs(event.screenX - dragStart.x)
-  const deltaY = Math.abs(event.screenY - dragStart.y)
-  if (deltaX < 4 && deltaY < 4)
-    return
-
-  isDragStarting = true
-  dragStart = null
-  try {
-    if (await appWindow.isMaximized())
-      await appWindow.unmaximize()
-    await appWindow.startDragging()
-  }
-  finally {
-    isDragStarting = false
-  }
-}
-
-function endDrag() {
-  dragStart = null
+  event.preventDefault()
+  event.stopPropagation()
+  void appWindow.startDragging().catch(() => undefined)
 }
 
 function isTauriRuntime(): boolean {
@@ -147,14 +122,10 @@ onBeforeUnmount(() => {
   >
     <!-- full-width invisible drag region so the top area still drags above route/loading content -->
     <div
-      data-tauri-drag-region
       class="desktop-window-drag pointer-events-auto absolute inset-x-0 top-0 z-0 h-16"
       :class="{ hidden: isFullscreen }"
       @dblclick="toggleMaximize"
       @mousedown="beginDrag"
-      @mouseleave="endDrag"
-      @mousemove="dragIfMoved"
-      @mouseup="endDrag"
     />
 
     <!-- Player route keeps a compact back affordance above the drag region without restoring the full nav. -->
