@@ -3042,6 +3042,9 @@ watch(
         @update-danmaku-settings="updateDanmakuSettings"
         @reload-danmaku="loadDanmakuForMedia(currentDanmakuMediaIdentity(), duration, true)"
         @search-danmaku="openDanmakuSearch"
+        @open-playback-detail="openPlaybackDetailFromContextMenu"
+        @navigate-home="navigateFromContextMenu('home')"
+        @navigate-settings="navigateFromContextMenu('settings')"
       />
     </Transition>
 
@@ -3131,6 +3134,7 @@ watch(
       <div
         v-if="playbackDetailOpen"
         class="player-detail-panel theme-adaptive pointer-events-auto fixed left-6 top-24 z-[1070] w-[min(28rem,calc(100vw-3rem))] overflow-hidden rounded-3xl border p-4 text-sm shadow-2xl backdrop-blur-2xl"
+        :class="{ 'player-detail-panel--native-mobile': isNativeAndroidPlayer }"
         role="dialog"
         aria-label="播放详情"
         @pointerdown.stop
@@ -3398,6 +3402,17 @@ watch(
   background: rgba(255, 255, 255, 0.14);
 }
 
+.player-detail-panel.player-detail-panel--native-mobile {
+  top: max(0.75rem, env(safe-area-inset-top));
+  right: auto;
+  bottom: auto;
+  left: max(0.75rem, env(safe-area-inset-left));
+  width: min(24rem, calc(100vw - max(1.5rem, env(safe-area-inset-left) + env(safe-area-inset-right))));
+  max-height: calc(100svh - max(1.5rem, env(safe-area-inset-top) + env(safe-area-inset-bottom)));
+  overflow-y: auto;
+  border-radius: 1rem;
+}
+
 .player-chrome-top-enter-active,
 .player-chrome-top-leave-active,
 .player-chrome-bottom-enter-active,
@@ -3461,6 +3476,7 @@ watch(
     overflow-y: auto;
     border-radius: 8px;
   }
+
 }
 
 @media (any-pointer: coarse) {
