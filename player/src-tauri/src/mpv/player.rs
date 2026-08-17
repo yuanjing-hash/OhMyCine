@@ -1,19 +1,20 @@
 use std::{
     ffi::{CStr, CString},
     os::raw::{c_char, c_int, c_void},
+    path::PathBuf,
     ptr,
     sync::{Arc, Mutex},
 };
 
 use libmpv_sys::{
     mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_FILE_LOADED,
-    mpv_event_id_MPV_EVENT_NONE, mpv_event_id_MPV_EVENT_VIDEO_RECONFIG,
-    mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
-    mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
-    mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
-    mpv_get_property_string, mpv_handle, mpv_initialize, mpv_node, mpv_node_list,
-    mpv_set_option_string, mpv_set_property, mpv_set_property_string, mpv_terminate_destroy,
-    mpv_wait_event,
+    mpv_event_id_MPV_EVENT_LOG_MESSAGE, mpv_event_id_MPV_EVENT_NONE,
+    mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_format_MPV_FORMAT_DOUBLE,
+    mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
+    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
+    mpv_free, mpv_free_node_contents, mpv_get_property, mpv_get_property_string, mpv_handle,
+    mpv_initialize, mpv_node, mpv_node_list, mpv_request_log_messages, mpv_set_option_string,
+    mpv_set_property, mpv_set_property_string, mpv_terminate_destroy, mpv_wait_event,
 };
 
 use super::{
@@ -29,6 +30,7 @@ pub struct MpvEventBatch {
     pub file_loaded: bool,
     pub video_ready: bool,
     pub reached_limit: bool,
+    pub fsr_fallback: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -59,6 +61,9 @@ pub struct MpvPlayer {
     render_surface: Option<NativeRenderSurface>,
     render_state: MpvRenderState,
     engine_settings: MpvEngineSettings,
+    fsr_shader_path: Option<PathBuf>,
+    fsr_status: String,
+    fsr_reason: Option<String>,
 }
 
 // MpvPlayer is only accessed through Arc<Mutex<_>> in Tauri state. libmpv handles are designed
@@ -100,6 +105,9 @@ impl MpvPlayer {
             render_surface: None,
             render_state: current_render_state(),
             engine_settings: MpvEngineSettings::default(),
+            fsr_shader_path: None,
+            fsr_status: "not-configured".to_string(),
+            fsr_reason: None,
         };
 
         // Non-Windows: initialize immediately in the no-visible-video safety mode. Visible video
@@ -141,7 +149,11 @@ impl MpvPlayer {
         result
     }
 
-    pub fn apply_engine_settings(&mut self, settings: MpvEngineSettings) -> Result<(), String> {
+    pub fn apply_engine_settings(
+        &mut self,
+        settings: MpvEngineSettings,
+        shader_path: Option<PathBuf>,
+    ) -> Result<(), String> {
         let settings = settings.validated()?;
         if self.initialized {
             self.set_property("vo", &settings.video_output)?;
@@ -153,8 +165,22 @@ impl MpvPlayer {
             )?;
             self.set_property("video-sync", &settings.video_sync)?;
         }
+        self.fsr_shader_path = shader_path;
         self.engine_settings = settings;
+        if self.initialized {
+            self.apply_fsr_runtime_safely();
+        } else if self.engine_settings.fsr_mode == "off" {
+            self.fsr_status = "disabled".to_string();
+            self.fsr_reason = None;
+        } else {
+            self.fsr_status = "pending-render-init".to_string();
+            self.fsr_reason = None;
+        }
         Ok(())
+    }
+
+    pub fn fsr_diagnostics(&self) -> (String, Option<String>) {
+        (self.fsr_status.clone(), self.fsr_reason.clone())
     }
 
     pub fn add_subtitle(
@@ -285,6 +311,11 @@ impl MpvPlayer {
                     surface.mark_mpv_ready();
                     let snapshot = surface.snapshot();
                     self.render_surface = Some(surface);
+                    // Automatic mode requires the managed Windows surface to be present. Apply
+                    // FSR only after moving the successfully initialized surface into player
+                    // state; applying it inside the initialization closure would always observe
+                    // `render_surface == None` and incorrectly disable auto mode.
+                    self.apply_fsr_runtime_safely();
                     self.render_state.status = RenderStatus::Ready;
                     let diagnostics = snapshot.diagnostics;
                     let diagnostics_summary = diagnostics
@@ -333,6 +364,7 @@ impl MpvPlayer {
         match surface.set_bounds(bounds) {
             Ok(()) => {
                 let snapshot = surface.snapshot();
+                self.refresh_fsr_target_parameters();
                 self.render_state.status = RenderStatus::Ready;
                 let diagnostics = snapshot.diagnostics;
                 let diagnostics_summary = diagnostics
@@ -566,6 +598,120 @@ impl MpvPlayer {
             .map_err(|_| "播放请求头设置失败。".to_string())
     }
 
+    fn apply_fsr_runtime_safely(&mut self) {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
+            self.fsr_status = "unsupported-platform".to_string();
+            self.fsr_reason = Some("FSR 首发仅支持 Windows 与 Android。".to_string());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            if self.engine_settings.fsr_mode == "off" {
+                let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
+                self.fsr_status = "disabled".to_string();
+                self.fsr_reason = None;
+                return;
+            }
+
+            if self.render_surface.is_none() && self.engine_settings.fsr_mode != "force" {
+                let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
+                self.fsr_status = "unavailable".to_string();
+                self.fsr_reason = Some("当前没有可用的 Windows GPU 视频表面。".to_string());
+                return;
+            }
+
+            let Some(shader_path) = self.fsr_shader_path.as_ref() else {
+                self.record_fsr_fallback("应用内置 FSR Shader 尚未安装。");
+                return;
+            };
+            if !shader_path.is_file() {
+                self.record_fsr_fallback("应用内置 FSR Shader 文件不可用。");
+                return;
+            }
+
+            let shader_path = shader_path.to_string_lossy().into_owned();
+            let options = self.fsr_shader_options();
+            let result = (|| -> Result<(), String> {
+                self.command(&["change-list", "glsl-shaders", "clr", ""])?;
+                self.set_property("glsl-shader-opts", &options)?;
+                self.command(&["change-list", "glsl-shaders", "append", &shader_path])?;
+                Ok(())
+            })();
+
+            if result.is_err() {
+                self.record_fsr_fallback("FSR Shader 加载失败，已恢复普通缩放。")
+            } else {
+                self.fsr_status = if self.engine_settings.fsr_mode == "force" {
+                    "armed-force"
+                } else {
+                    "armed-auto"
+                }
+                .to_string();
+                self.fsr_reason = Some("仅在输出尺寸大于源画面时触发。".to_string());
+            }
+        }
+    }
+
+    fn refresh_fsr_target_parameters(&mut self) {
+        if !self.initialized
+            || self.engine_settings.fsr_mode == "off"
+            || !self.fsr_status.starts_with("armed")
+        {
+            return;
+        }
+        let options = self.fsr_shader_options();
+        if self.set_property("glsl-shader-opts", &options).is_err() {
+            self.record_fsr_fallback("FSR 目标分辨率更新失败，已恢复普通缩放。")
+        }
+    }
+
+    fn fsr_shader_options(&self) -> String {
+        let (target_width, target_height) = self.fsr_target_dimensions();
+        format!(
+            "OHMYCINE_SHARPNESS={:.3},OHMYCINE_DENOISE={},OHMYCINE_TARGET_WIDTH={},OHMYCINE_TARGET_HEIGHT={}",
+            self.engine_settings.fsr_sharpness_stops(),
+            i32::from(self.engine_settings.fsr_denoise),
+            target_width,
+            target_height,
+        )
+    }
+
+    fn fsr_target_dimensions(&self) -> (u32, u32) {
+        let Some(target_short_edge) = self.engine_settings.fsr_target_short_edge() else {
+            return (16_384, 16_384);
+        };
+        let Some(bounds) = self
+            .render_surface
+            .as_ref()
+            .and_then(|surface| surface.snapshot().bounds)
+        else {
+            return (16_384, 16_384);
+        };
+        if bounds.width <= 0 || bounds.height <= 0 {
+            return (16_384, 16_384);
+        }
+
+        let width = f64::from(bounds.width);
+        let height = f64::from(bounds.height);
+        let short_edge = width.min(height);
+        if short_edge <= f64::from(target_short_edge) {
+            return (width.round() as u32, height.round() as u32);
+        }
+        let scale = f64::from(target_short_edge) / short_edge;
+        (
+            (width * scale).round().max(1.0) as u32,
+            (height * scale).round().max(1.0) as u32,
+        )
+    }
+
+    fn record_fsr_fallback(&mut self, reason: &str) {
+        let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
+        self.fsr_status = "fallback".to_string();
+        self.fsr_reason = Some(reason.to_string());
+    }
+
     /// Finalize `mpv_initialize`. Only call once per handle lifetime.
     fn finish_initialize(&mut self) -> Result<(), String> {
         if self.initialized {
@@ -573,6 +719,9 @@ impl MpvPlayer {
         }
         self.check_error(unsafe { mpv_initialize(self.ctx) })?;
         self.initialized = true;
+        if let Ok(level) = CString::new("warn") {
+            let _ = unsafe { mpv_request_log_messages(self.ctx, level.as_ptr()) };
+        }
         Ok(())
     }
 
@@ -601,7 +750,7 @@ impl MpvPlayer {
         self.check_error(unsafe { mpv_command(self.ctx, raw_args.as_mut_ptr()) })
     }
 
-    pub fn drain_events(&self, max_events: usize) -> MpvEventBatch {
+    pub fn drain_events(&mut self, max_events: usize) -> MpvEventBatch {
         let mut batch = MpvEventBatch::default();
         for index in 0..max_events {
             let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
@@ -609,11 +758,40 @@ impl MpvPlayer {
                 break;
             }
             let event_id = unsafe { (*event).event_id };
+            if event_id == mpv_event_id_MPV_EVENT_LOG_MESSAGE {
+                let data = unsafe { (*event).data };
+                if !data.is_null() {
+                    let message = unsafe { &*(data.cast::<mpv_event_log_message>()) };
+                    let prefix = unsafe { optional_c_string(message.prefix) };
+                    let text = unsafe { optional_c_string(message.text) };
+                    if self.handle_fsr_log_message(&prefix, &text) {
+                        batch.fsr_fallback = true;
+                    }
+                }
+            }
             batch.file_loaded |= event_id == mpv_event_id_MPV_EVENT_FILE_LOADED;
             batch.video_ready |= event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG;
             batch.reached_limit = index + 1 == max_events;
         }
         batch
+    }
+
+    fn handle_fsr_log_message(&mut self, prefix: &str, text: &str) -> bool {
+        if !self.fsr_status.starts_with("armed") {
+            return false;
+        }
+        let line = format!("{prefix} {text}").to_ascii_lowercase();
+        let names_shader =
+            line.contains("shader") || line.contains("glsl") || line.contains("hook");
+        let reports_failure = line.contains("error")
+            || line.contains("failed")
+            || line.contains("compile")
+            || line.contains("invalid");
+        if !names_shader || !reports_failure {
+            return false;
+        }
+        self.record_fsr_fallback("FSR Shader 编译失败，已恢复普通缩放。");
+        true
     }
 
     fn get_property_string(&self, prop: &str) -> Result<Option<String>, String> {
@@ -682,6 +860,13 @@ impl MpvPlayer {
             .into_owned();
         Err(message)
     }
+}
+
+unsafe fn optional_c_string(value: *const c_char) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    CStr::from_ptr(value).to_string_lossy().into_owned()
 }
 
 unsafe fn parse_track_list_node(node: &mpv_node) -> Vec<MpvTrack> {

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import SevenZip from '7z-wasm'
@@ -15,6 +16,8 @@ const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const androidRoot = resolve(rootDir, 'src-tauri', 'gen', 'android', 'app', 'src', 'main')
 const nativeDir = join(androidRoot, 'jniLibs', 'arm64-v8a')
 const assetDir = join(androidRoot, 'assets', 'mpv')
+const shaderSource = resolve(rootDir, 'src-tauri', 'resources', 'shaders', 'ohmycine-fsr-v1.glsl')
+const shaderNoticeSource = resolve(rootDir, 'src-tauri', 'resources', 'shaders', 'NOTICE.md')
 const markerPath = join(nativeDir, '.ohmycine-mpv-runtime')
 const maxDownloadAttempts = 3
 const retryBaseDelayMs = 1500
@@ -41,6 +44,14 @@ function runtimeReady() {
   const marker = readFileSync(markerPath, 'utf8').trim()
   return marker === `${releaseTag} ${expectedSha256}`
     && requiredLibraries.every(name => existsSync(join(nativeDir, name)))
+}
+
+function syncManagedAssets() {
+  ensureDir(assetDir)
+  if (!existsSync(shaderSource) || !existsSync(shaderNoticeSource))
+    throw new Error('managed FSR shader resources are missing')
+  copyFileSync(shaderSource, join(assetDir, 'ohmycine-fsr-v1.glsl'))
+  copyFileSync(shaderNoticeSource, join(assetDir, 'FSR-NOTICE.md'))
 }
 
 function wait(delayMs) {
@@ -99,6 +110,7 @@ async function extractArchive(archivePath, extractDir) {
 }
 
 async function setup() {
+  syncManagedAssets()
   if (runtimeReady()) {
     console.log(`mpv-android ${releaseTag} ARM64 runtime already installed`)
     return

@@ -1,6 +1,10 @@
 use reqwest::Url;
 use sha2::{Digest, Sha256};
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tauri::{AppHandle, State};
 
 use super::player_shared::{
@@ -15,6 +19,7 @@ use crate::mpv::{
 use crate::storage;
 
 const MAX_PREPARED_SUBTITLE_BYTES: usize = 12 * 1024 * 1024;
+const FSR_SHADER_BYTES: &[u8] = include_bytes!("../../resources/shaders/ohmycine-fsr-v1.glsl");
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,11 +34,23 @@ pub struct DesktopPlaybackDiagnostics {
     hardware_decoder: Option<String>,
     video_output: &'static str,
     video_output_fallback_used: bool,
+    playback_transport: &'static str,
+    fsr_status: String,
+    fsr_reason: Option<String>,
     logs: Vec<String>,
 }
 
 #[tauri::command]
-pub fn mpv_playback_diagnostics() -> DesktopPlaybackDiagnostics {
+pub fn mpv_playback_diagnostics(state: State<'_, MpvState>) -> DesktopPlaybackDiagnostics {
+    let (fsr_status, fsr_reason) = state
+        .lock()
+        .map(|player| player.fsr_diagnostics())
+        .unwrap_or_else(|_| {
+            (
+                "unavailable".to_string(),
+                Some("播放器状态暂不可用。".to_string()),
+            )
+        });
     DesktopPlaybackDiagnostics {
         state: "desktop",
         last_event: "desktop-backend",
@@ -45,6 +62,9 @@ pub fn mpv_playback_diagnostics() -> DesktopPlaybackDiagnostics {
         hardware_decoder: None,
         video_output: "desktop",
         video_output_fallback_used: false,
+        playback_transport: "native",
+        fsr_status,
+        fsr_reason,
         logs: Vec::new(),
     }
 }
@@ -67,13 +87,31 @@ pub async fn mpv_load(
 
 #[tauri::command]
 pub async fn mpv_apply_engine_settings(
+    app: AppHandle,
     settings: MpvEngineSettings,
     state: State<'_, MpvState>,
 ) -> Result<(), String> {
+    let shader_path = if settings.fsr_mode == "off" {
+        None
+    } else {
+        materialize_fsr_shader(&app).ok()
+    };
     let mut player = state
         .lock()
         .map_err(|_| "播放器设置暂不可用，请稍后重试".to_string())?;
-    player.apply_engine_settings(settings)
+    player.apply_engine_settings(settings, shader_path)
+}
+
+fn materialize_fsr_shader(app: &AppHandle) -> Result<PathBuf, String> {
+    let layout = storage::initialize(app)?;
+    let shader_dir = layout.cache_dir.join("mpv").join("shaders");
+    fs::create_dir_all(&shader_dir).map_err(|_| "无法创建播放器 Shader 缓存。".to_string())?;
+    let target = shader_dir.join("ohmycine-fsr-v1.glsl");
+    if fs::read(&target).ok().as_deref() != Some(FSR_SHADER_BYTES) {
+        fs::write(&target, FSR_SHADER_BYTES)
+            .map_err(|_| "无法安装播放器内置 FSR Shader。".to_string())?;
+    }
+    Ok(target)
 }
 
 #[tauri::command]

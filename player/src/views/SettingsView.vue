@@ -980,6 +980,7 @@ async function savePlaybackSubtitleSettings() {
     })
     subtitleForm.longPressPlaybackSpeed = normalizeLongPressPlaybackSpeed(subtitleForm.longPressPlaybackSpeed)
     await savePlayerInteractionSettings({
+      ...loadPlayerInteractionSettings(),
       longPressPlaybackSpeed: subtitleForm.longPressPlaybackSpeed,
       mobileEpisodeLayout: subtitleForm.mobileEpisodeLayout,
       androidBackgroundPlaybackEnabled: subtitleForm.androidBackgroundPlaybackEnabled,

@@ -1,5 +1,11 @@
 import type { DataSource, MediaItem } from './types'
 
+const TOP_LEVEL_SEARCH_TYPES = new Set<MediaItem['type']>(['movie', 'series', 'folder', 'file'])
+
+export function normalizeWorkLevelSearchResults(items: readonly MediaItem[]): MediaItem[] {
+  return items.filter(item => TOP_LEVEL_SEARCH_TYPES.has(item.type))
+}
+
 export async function searchAcrossDataSources(
   sources: readonly DataSource[],
   keyword: string,
@@ -13,7 +19,7 @@ export async function searchAcrossDataSources(
   const limit = Math.max(1, options.limit ?? 60)
   const settled = await Promise.allSettled(sources.map(async (source) => {
     const items = await source.search(normalizedKeyword)
-    return items.slice(0, limitPerSource).map(item => ({
+    return normalizeWorkLevelSearchResults(items).slice(0, limitPerSource).map(item => ({
       ...item,
       sourceId: item.sourceId || source.id,
     }))

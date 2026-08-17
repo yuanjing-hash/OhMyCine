@@ -2,6 +2,7 @@
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
+import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
@@ -36,6 +37,8 @@ const props = defineProps<{
   videoBrightness: number
   trackError: string | null
   pictureSettingsError: string | null
+  fsrSettings: PlayerFsrSettings
+  fsrError: string | null
   mobileLayout: boolean
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
@@ -62,6 +65,7 @@ const emit = defineEmits<{
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
+  updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
@@ -758,7 +762,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
       </button>
     </div>
 
-    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" />
+    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" :fsr-settings="fsrSettings" :fsr-error="fsrError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" @update-fsr-settings="emit('updateFsrSettings', $event)" />
   </div>
 </template>
 

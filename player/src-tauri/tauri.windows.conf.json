@@ -3,7 +3,8 @@
     "resources": {
       "lib/libmpv-2.dll": "libmpv-2.dll",
       "lib/libmpv-wrapper.dll": "libmpv-wrapper.dll",
-      "lib/LICENSE": "lib/LICENSE"
+      "lib/LICENSE": "lib/LICENSE",
+      "resources/shaders/NOTICE.md": "FSR-NOTICE.md"
     },
     "windows": {
       "nsis": {

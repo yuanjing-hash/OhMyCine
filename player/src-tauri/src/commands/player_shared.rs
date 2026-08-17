@@ -28,6 +28,10 @@ pub struct MpvEngineSettings {
     pub demuxer_max_bytes_mb: u16,
     pub video_sync: String,
     pub background_playback_enabled: bool,
+    pub fsr_mode: String,
+    pub fsr_sharpness: f64,
+    pub fsr_denoise: bool,
+    pub fsr_target: String,
 }
 
 impl Default for MpvEngineSettings {
@@ -39,12 +43,16 @@ impl Default for MpvEngineSettings {
             demuxer_max_bytes_mb: 64,
             video_sync: "audio".to_string(),
             background_playback_enabled: true,
+            fsr_mode: "auto".to_string(),
+            fsr_sharpness: 35.0,
+            fsr_denoise: true,
+            fsr_target: "auto".to_string(),
         }
     }
 }
 
 impl MpvEngineSettings {
-    pub fn validated(self) -> Result<Self, String> {
+    pub fn validated(mut self) -> Result<Self, String> {
         if !matches!(self.video_output.as_str(), "gpu-next" | "gpu") {
             return Err("不支持的视频输出设置。".to_string());
         }
@@ -65,6 +73,19 @@ impl MpvEngineSettings {
             "audio" | "display-resample" | "display-vdrop"
         ) {
             return Err("不支持的视频同步设置。".to_string());
+        }
+        if !matches!(self.fsr_mode.as_str(), "off" | "auto" | "force") {
+            self.fsr_mode = "auto".to_string();
+        }
+        if !self.fsr_sharpness.is_finite() {
+            self.fsr_sharpness = 35.0;
+        }
+        self.fsr_sharpness = self.fsr_sharpness.clamp(0.0, 100.0).round();
+        if !matches!(
+            self.fsr_target.as_str(),
+            "auto" | "1080p" | "1440p" | "2160p"
+        ) {
+            self.fsr_target = "auto".to_string();
         }
         Ok(self)
     }
@@ -90,6 +111,19 @@ impl MpvEngineSettings {
     #[cfg(not(mobile))]
     pub fn demuxer_max_bytes(&self) -> u64 {
         u64::from(self.demuxer_max_bytes_mb) * 1024 * 1024
+    }
+
+    pub fn fsr_sharpness_stops(&self) -> f64 {
+        2.0 * (1.0 - self.fsr_sharpness / 100.0)
+    }
+
+    pub fn fsr_target_short_edge(&self) -> Option<u32> {
+        match self.fsr_target.as_str() {
+            "1080p" => Some(1080),
+            "1440p" => Some(1440),
+            "2160p" => Some(2160),
+            _ => None,
+        }
     }
 }
 
@@ -164,11 +198,25 @@ mod tests {
         assert_eq!(settings.video_output, "gpu-next");
         assert_eq!(settings.desktop_hwdec(), "auto-safe");
         assert_eq!(settings.demuxer_max_bytes(), 64 * 1024 * 1024);
+        assert!((settings.fsr_sharpness_stops() - 1.3).abs() < f64::EPSILON);
+        assert_eq!(settings.fsr_target_short_edge(), None);
 
         let invalid = MpvEngineSettings {
             video_output: "custom-vo".to_string(),
             ..MpvEngineSettings::default()
         };
         assert!(invalid.validated().is_err());
+
+        let normalized_fsr = MpvEngineSettings {
+            fsr_mode: "unknown".to_string(),
+            fsr_sharpness: f64::INFINITY,
+            fsr_target: "8k".to_string(),
+            ..MpvEngineSettings::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(normalized_fsr.fsr_mode, "auto");
+        assert_eq!(normalized_fsr.fsr_sharpness, 35.0);
+        assert_eq!(normalized_fsr.fsr_target, "auto");
     }
 }

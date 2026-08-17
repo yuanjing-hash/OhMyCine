@@ -209,6 +209,7 @@ When implementing concrete sources such as Emby, keep provider-specific protocol
 - `test()` returns connection/auth success without exposing raw provider errors or credentials.
 - `listLibraries()` returns `MediaLibrary[]` for source-level library cards and should be fetched after successful add/login so the source is known usable before it appears as connected.
 - `list(path?)`, `search(keyword)`, and `getDetail(id)` map provider responses into shared media types.
+- Top-level aggregate and source-library searches are work-level surfaces: keep `movie` and `series`, preserve raw-provider `file`/`folder` fallbacks, and exclude `season`/`episode` cards. Apply this normalization before per-source result limits so episode-heavy provider responses cannot crowd out the matching Series entity. Emby/Jellyfin top-level search requests should ask for `Movie,Series`; hierarchy browsing still fetches seasons and episodes normally.
 - OpenList/Alist `listLibraries()` exposes the selected `extra.rootPath` as the source library, `list()` treats that path as the source root, `search()` scopes provider search/fallback listing to that root when practical, and `getStreamURL()` rejects unsafe paths or paths outside the selected root before building `/d{path}` URLs.
 - `getDetail(id)` may include provider-derived media source options, audio/subtitle tracks, stills, collections, similar items, and media info, but must not expose local filesystem paths, STRM paths, credentials, or tokenized playback URLs as display fields.
 - `getStreamURL(id)` returns a playable URL for mpv/player loading and must be treated as sensitive when tokenized; for STRM/remote-provider items, inspect provider playback metadata before falling back to static stream URLs, and return a user-safe error if no real playable URL is exposed.
@@ -425,6 +426,66 @@ Correct:
 unsafe extern "C" fn update(ctx: *mut c_void) {
     signal_render_thread(ctx);
 }
+```
+
+### Managed FSR 1 Playback Shader Contract
+
+#### 1. Scope / Trigger
+- Trigger: changing Player video scaling, `glsl-shaders`, playback-engine settings, native render bounds, Windows libmpv diagnostics, Android mpv assets, or the Windows/Android playback settings UI.
+- Applies to `playerInteractionSettings.ts`, `useMpv.ts`, the Tauri `MpvEngineSettings` bridge, Windows `mpv/player.rs`, Android `MpvPlugin.kt` / `MpvSurfaceHost.kt`, and the application-owned Shader resources.
+
+#### 2. Signatures
+- Persisted/request fields: `fsrMode: 'off' | 'auto' | 'force'`, `fsrSharpness: number`, `fsrDenoise: boolean`, and `fsrTarget: 'auto' | '1080p' | '1440p' | '2160p'`.
+- Defaults: `auto`, `35`, `true`, and `auto`. Normalize sharpness to an integer in `0..100`; higher UI values mean a sharper result.
+- Diagnostics add only bounded `fsrStatus` and `fsrReason` strings. They must not contain media URLs, headers, provider paths, or credentials.
+
+#### 3. Contracts
+- Use FSR 1.x EASU + RCAS through libmpv user Shader hooks. Do not upscale video in Vue/WebView, and do not describe this as FSR 2/3, frame generation, or temporal upscaling.
+- The only accepted Shader is `src-tauri/resources/shaders/ohmycine-fsr-v1.glsl`. Windows materializes its compile-time bytes under the active profile's `cache/mpv/shaders`; Android setup copies it into APK `assets/mpv` and runtime code installs it into private `filesDir/mpv`. Never accept a user-provided Shader path through Tauri or Kotlin commands.
+- The Shader compares the effective capped intermediate target (`min(OUTPUT, target cap)`) with the source, so EASU and RCAS run only while that intermediate picture is enlarged. Testing only raw `OUTPUT > source` is insufficient because a numeric cap can be smaller than the source. `force` may bypass conservative capability prechecks but must not bypass the upscale-only condition or failure fallback.
+- `fsrSharpness` maps to RCAS stops with `2 * (1 - value / 100)`. Numeric target labels are output-picture shorter-edge caps that preserve the current render-surface aspect ratio; they are not display-mode switches and do not force the app window or screen resolution.
+- Runtime switching clears the managed list with `change-list glsl-shaders clr ""`, sets bounded `glsl-shader-opts`, and appends only the managed Shader. Render-surface size changes recompute target width/height without reloading the media.
+- Any resource installation, Shader load, compile, or parameter-update failure clears FSR and keeps ordinary mpv scaling active. Such a failure must not abort mpv initialization, media loading, hardware decoding, subtitles, danmaku, or navigation.
+- Windows controls live in the playback settings panel. Android controls live in a child panel of the right-top three-dot menu and must not consume or replace the mobile long-press speed gesture.
+- Preserve the AMD MIT notice, mpv-port provenance, and packaged notice resource whenever the Shader changes.
+
+#### 4. Validation & Error Matrix
+| Condition | Required behavior |
+|-----------|-------------------|
+| Stored mode, target, or sharpness is invalid | Restore the documented default or clamp the finite sharpness value |
+| Output is the same size as or smaller than the source | Keep the managed Shader harmlessly armed but skip EASU/RCAS passes |
+| Numeric target is smaller than the current output short edge | Cap the FSR intermediate dimensions and preserve aspect ratio |
+| Windows cache materialization fails | Pass no Shader path, report a generic fallback reason, and continue normal playback |
+| Android asset/private-file installation fails | Keep mpv initialization running, record a generic fallback, and continue normal playback |
+| mpv reports Shader/GLSL/hook load or compile failure | Clear `glsl-shaders`, set fallback diagnostics, and never expose the raw log line |
+| User selects `off` at runtime | Clear the managed Shader immediately without reloading media |
+| Render surface changes size or orientation | Recompute target width/height from physical surface bounds |
+
+#### 5. Good/Base/Bad Cases
+- Good: a 720p video displayed on a 4K surface uses the packaged EASU/RCAS Shader, the user can select a 1440p shorter-edge cap, and changing sharpness applies during playback.
+- Base: a native GPU/Shader incompatibility produces `fallback` diagnostics while the same video continues through ordinary mpv scaling.
+- Bad: accepting an arbitrary `.glsl` path, treating `2160p` as a command to resize the monitor/window, applying RCAS while downscaling, or propagating a Shader cache error as a fatal playback error.
+
+#### 6. Tests Required
+- `npm run verify:fsr-upscaling` must assert defaults/normalization, all TypeScript-Rust-Kotlin fields, EASU/RCAS/upscale condition, fixed resource paths, target mapping, clear-and-fallback behavior, and desktop/mobile UI placement.
+- Run `npm run typecheck`, `npm run lint`, and `npm run build`.
+- Run Windows-native `cargo test --target x86_64-pc-windows-msvc` and `cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings`.
+- Run `npm run setup:libmpv:android` before packaging and verify the APK assets contain both the Shader and notice. Build the Android preview APK with the Windows-native toolchain.
+- Device/runtime testing must cover low-resolution upscale, same-size/downscale bypass, off/auto/force switching, all target caps, runtime resize/fullscreen/orientation, hardware decode, subtitles, danmaku, and deliberately broken Shader fallback.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```rust
+let shader_path = Some(materialize_fsr_shader(&app)?);
+player.apply_engine_settings(settings, shader_path)?;
+```
+
+Correct:
+```rust
+let shader_path = materialize_fsr_shader(&app).ok();
+player.apply_engine_settings(settings, shader_path)?;
+// A missing managed Shader becomes FSR fallback, not playback failure.
 ```
 
 ### Windows MSVC/GNU libmpv Build Contract

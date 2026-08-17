@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { computed, nextTick, ref, watch } from 'vue'
+import FsrSettingsContent from './FsrSettingsContent.vue'
 
 interface PictureOption<T extends string> {
   readonly value: T
@@ -15,6 +17,8 @@ const props = defineProps<{
   fitMode: VideoFitMode
   videoBrightness: number
   errorMessage: string | null
+  fsrSettings: PlayerFsrSettings
+  fsrError: string | null
 }>()
 
 const emit = defineEmits<{
@@ -23,6 +27,7 @@ const emit = defineEmits<{
   setAspectMode: [mode: VideoAspectMode]
   setFitMode: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
+  updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
 }>()
 
 const panelRef = ref<HTMLElement | null>(null)
@@ -115,7 +120,7 @@ watch(
       v-if="open"
       id="player-settings-panel"
       ref="panelRef"
-      class="player-settings-panel pointer-events-auto absolute bottom-[calc(100%+1rem)] right-0 z-40 w-[min(25rem,calc(100vw-3rem))] rounded-[28px] p-4 text-white outline-none"
+      class="player-settings-panel pointer-events-auto absolute bottom-[calc(100%+1rem)] right-0 z-40 max-h-[min(80vh,48rem)] w-[min(25rem,calc(100vw-3rem))] overflow-y-auto rounded-[28px] p-4 text-white outline-none"
       role="dialog"
       aria-label="播放器设置"
       aria-modal="false"
@@ -136,7 +141,7 @@ watch(
             设置
           </h2>
           <p class="mt-1 text-sm leading-5 text-white/52">
-            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整视频比例和窗口适配方式。
+            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整画面与 FSR 超分设置。
           </p>
         </div>
         <button
@@ -157,6 +162,21 @@ watch(
       </p>
 
       <div class="mt-4 space-y-3">
+        <article class="settings-section rounded-3xl p-3">
+          <div class="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <p class="text-[10px] font-semibold tracking-[0.18em] text-white/35">
+                FidelityFX Super Resolution 1
+              </p>
+              <h3 class="mt-1 text-sm font-semibold text-white/88">
+                FSR 超分与锐化
+              </h3>
+            </div>
+            <span class="status-pill">{{ fsrSettings.fsrMode }}</span>
+          </div>
+          <FsrSettingsContent :settings="fsrSettings" :error="fsrError" @update="emit('updateFsrSettings', $event)" />
+        </article>
+
         <article class="settings-section rounded-3xl p-3">
           <div class="flex items-center justify-between gap-3">
             <div>

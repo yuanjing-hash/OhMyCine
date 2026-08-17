@@ -9,6 +9,10 @@ export interface PlayerInteractionSettings {
   cacheMode: PlayerCacheMode
   demuxerMaxBytesMb: PlayerDemuxerCacheSize
   videoSync: PlayerVideoSync
+  fsrMode: PlayerFsrMode
+  fsrSharpness: number
+  fsrDenoise: boolean
+  fsrTarget: PlayerFsrTarget
 }
 
 export type PlayerVideoOutput = 'gpu-next' | 'gpu'
@@ -16,6 +20,9 @@ export type PlayerHardwareDecoder = 'auto-safe' | 'auto' | 'software'
 export type PlayerCacheMode = 'auto' | 'enabled' | 'disabled'
 export type PlayerDemuxerCacheSize = 64 | 128 | 256 | 512
 export type PlayerVideoSync = 'audio' | 'display-resample' | 'display-vdrop'
+export type PlayerFsrMode = 'off' | 'auto' | 'force'
+export type PlayerFsrTarget = 'auto' | '1080p' | '1440p' | '2160p'
+export type PlayerFsrSettings = Pick<PlayerInteractionSettings, 'fsrMode' | 'fsrSharpness' | 'fsrDenoise' | 'fsrTarget'>
 export type MobileEpisodeLayout = 'vertical' | 'horizontal'
 
 export const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
@@ -30,6 +37,10 @@ const DEFAULT_SETTINGS: PlayerInteractionSettings = {
   cacheMode: 'auto',
   demuxerMaxBytesMb: 64,
   videoSync: 'audio',
+  fsrMode: 'auto',
+  fsrSharpness: 35,
+  fsrDenoise: true,
+  fsrTarget: 'auto',
 }
 
 export function loadPlayerInteractionSettings(): PlayerInteractionSettings {
@@ -66,7 +77,20 @@ export function normalizePlayerInteractionSettings(settings: Partial<PlayerInter
     videoSync: settings.videoSync === 'display-resample' || settings.videoSync === 'display-vdrop'
       ? settings.videoSync
       : 'audio',
+    fsrMode: settings.fsrMode === 'off' || settings.fsrMode === 'force' ? settings.fsrMode : 'auto',
+    fsrSharpness: normalizeFsrSharpness(settings.fsrSharpness),
+    fsrDenoise: settings.fsrDenoise !== false,
+    fsrTarget: settings.fsrTarget === '1080p' || settings.fsrTarget === '1440p' || settings.fsrTarget === '2160p'
+      ? settings.fsrTarget
+      : 'auto',
   }
+}
+
+function normalizeFsrSharpness(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number))
+    return DEFAULT_SETTINGS.fsrSharpness
+  return Math.round(Math.max(0, Math.min(100, number)))
 }
 
 export function normalizeLongPressPlaybackSpeed(value: unknown): number {

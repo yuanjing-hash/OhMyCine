@@ -64,6 +64,10 @@ class EngineSettingsArgs {
     var demuxerMaxBytesMb: Int = 64
     lateinit var videoSync: String
     var backgroundPlaybackEnabled: Boolean = true
+    var fsrMode: String = "auto"
+    var fsrSharpness: Double = 35.0
+    var fsrDenoise: Boolean = true
+    var fsrTarget: String = "auto"
 }
 
 @InvokeArg
@@ -119,6 +123,10 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
             cacheMode = args.cacheMode,
             demuxerMaxBytesMb = args.demuxerMaxBytesMb,
             videoSync = args.videoSync,
+            fsrMode = args.fsrMode,
+            fsrSharpness = args.fsrSharpness,
+            fsrDenoise = args.fsrDenoise,
+            fsrTarget = args.fsrTarget,
         ))
         backgroundPlaybackEnabled = args.backgroundPlaybackEnabled
         if (backgroundPlaybackEnabled)

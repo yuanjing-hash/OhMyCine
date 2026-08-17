@@ -23,7 +23,7 @@ pub fn start_event_forwarder(app_handle: AppHandle) {
         let mut last_paused = true;
 
         while let Some(state) = app_handle.try_state::<MpvState>() {
-            let snapshot = state.lock().ok().map(|player| {
+            let snapshot = state.lock().ok().map(|mut player| {
                 let events = player.drain_events(MAX_EVENTS_PER_TICK);
                 (
                     player.time_pos(),

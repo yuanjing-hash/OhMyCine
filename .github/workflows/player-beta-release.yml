@@ -155,6 +155,7 @@ jobs:
                   'lib/libmpv-2.dll': 'libmpv-2.dll',
                   'lib/libmpv-wrapper.dll': 'libmpv-wrapper.dll',
                   'lib/LICENSE': 'lib/LICENSE',
+                  'resources/shaders/NOTICE.md': 'FSR-NOTICE.md',
               },
           }
           required.update({
@@ -756,6 +757,8 @@ jobs:
             cp "player/src-tauri/lib/LICENSE" "${standard_dir}/THIRD-PARTY-LICENSES.txt"
             cp "player/src-tauri/lib/LICENSE" "${portable_dir}/THIRD-PARTY-LICENSES.txt"
           fi
+          cp "player/src-tauri/resources/shaders/NOTICE.md" "${standard_dir}/FSR-NOTICE.md"
+          cp "player/src-tauri/resources/shaders/NOTICE.md" "${portable_dir}/FSR-NOTICE.md"
 
           test ! -e "${standard_dir}/portable.flag"
           test -f "${portable_dir}/portable.flag"

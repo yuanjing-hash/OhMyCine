@@ -2,13 +2,15 @@
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
+import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { computed, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import DanmakuToggleIcon from './DanmakuToggleIcon.vue'
+import FsrSettingsContent from './FsrSettingsContent.vue'
 import ProgressBar from './ProgressBar.vue'
 
-type MobilePanel = 'more' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'orientation'
+type MobilePanel = 'more' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'orientation'
 
 const props = defineProps<{
   title: string
@@ -35,6 +37,8 @@ const props = defineProps<{
   videoBrightness: number
   trackError: string | null
   pictureSettingsError: string | null
+  fsrSettings: PlayerFsrSettings
+  fsrError: string | null
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
   danmakuSettings: DanmakuSettings
@@ -61,6 +65,7 @@ const emit = defineEmits<{
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
+  updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
   setOrientationMode: [mode: MpvOrientationMode]
   interactionChange: [active: boolean]
   toggleDanmaku: []
@@ -87,6 +92,7 @@ const panelTitle = computed(() => {
     case 'audio': return '音轨'
     case 'queue': return '播放队列'
     case 'picture': return '画面'
+    case 'fsr': return 'FSR 超分'
     case 'orientation': return '屏幕方向'
     default: return '播放工具'
   }
@@ -323,6 +329,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               <button type="button" class="mobile-sheet-action" @click="openPanel('picture')">
                 <span>画面比例与填充</span><b>›</b>
               </button>
+              <button type="button" class="mobile-sheet-action" @click="openPanel('fsr')">
+                <span>FSR 超分与锐化</span><b>›</b>
+              </button>
               <button type="button" class="mobile-sheet-action" @click="openPanel('subtitle')">
                 <span>字幕与偏移</span><b>›</b>
               </button>
@@ -447,6 +456,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
                 {{ pictureSettingsError }}
               </p>
             </template>
+
+            <FsrSettingsContent v-else-if="activePanel === 'fsr'" :settings="fsrSettings" :error="fsrError" @update="emit('updateFsrSettings', $event)" />
 
             <template v-else-if="activePanel === 'orientation'">
               <button type="button" class="mobile-sheet-action" :class="{ 'is-selected': orientationMode === 'auto' }" @click="chooseOrientation('auto')">

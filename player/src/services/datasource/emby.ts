@@ -468,7 +468,7 @@ export class EmbyDataSource implements DataSource {
     const response = await this.request('/Users/{UserId}/Items', {
       SearchTerm: trimmed,
       Recursive: 'true',
-      IncludeItemTypes: 'Movie,Series,Episode',
+      IncludeItemTypes: 'Movie,Series',
       Fields: ITEM_FIELDS,
       ...IMAGE_QUERY,
       Limit: '50',

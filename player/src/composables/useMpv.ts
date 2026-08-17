@@ -117,6 +117,8 @@ export interface MpvPlaybackDiagnostics {
   videoOutput: string
   videoOutputFallbackUsed: boolean
   playbackTransport: string
+  fsrStatus?: string
+  fsrReason?: string | null
   logs: string[]
 }
 
@@ -185,6 +187,10 @@ async function applyEngineSettings(): Promise<void> {
       demuxerMaxBytesMb: settings.demuxerMaxBytesMb,
       videoSync: settings.videoSync,
       backgroundPlaybackEnabled: settings.androidBackgroundPlaybackEnabled,
+      fsrMode: settings.fsrMode,
+      fsrSharpness: settings.fsrSharpness,
+      fsrDenoise: settings.fsrDenoise,
+      fsrTarget: settings.fsrTarget,
     },
   })
 }
@@ -361,7 +367,7 @@ export function useMpv() {
   async function refreshPlaybackDiagnostics() {
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
-      playbackDiagnostics.value = diagnostics.state === 'desktop' ? null : diagnostics
+      playbackDiagnostics.value = diagnostics
       if (diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
       if (diagnostics.state === 'error' || diagnostics.state === 'ended') {
@@ -382,8 +388,7 @@ export function useMpv() {
     renderDiagnosticsTimer = window.setInterval(() => {
       if (renderStatus.value === 'initializing' || renderStatus.value === 'ready') {
         void refreshRenderStatus()
-        if (renderBackend.value === 'androidSurface')
-          void refreshPlaybackDiagnostics()
+        void refreshPlaybackDiagnostics()
       }
     }, 1000)
   }
@@ -877,6 +882,8 @@ export function useMpv() {
     orientationMode,
     videoDynamicRange,
     trackError,
+    applyEngineSettings,
+    refreshPlaybackDiagnostics,
     initializeRender,
     updateRenderSurfaceBounds,
     setRenderStrategy,

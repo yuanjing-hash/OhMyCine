@@ -5,6 +5,7 @@ import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRe
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
+import type { PlayerFsrSettings, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -28,7 +29,7 @@ import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/servi
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
-import { loadPlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import { loadPlayerInteractionSettings, normalizePlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { videoAspectRatioValue as aspectRatioValue, compactPlayerTrackLabel as compactTrackLabel, formatPlaybackTime, playerRenderBackendLabel as renderBackendLabel, playerRenderStatusLabel as renderStatusLabel, safePlayerMenuText as safeMenuText, playerVideoAspectLabel as videoAspectLabel, playerVideoFitLabel as videoFitLabel } from '@/services/playerPresentation'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
@@ -152,6 +153,9 @@ const subtitleSearchProviderSummary = ref('')
 const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSettings().defaultLanguage)
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
+const initialInteractionSettings = loadPlayerInteractionSettings()
+const fsrSettings = ref<PlayerFsrSettings>(pickFsrSettings(initialInteractionSettings))
+const fsrSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
 const providerSyncDiagnostics = ref<ProviderPlaybackSyncDiagnostic[]>([])
 const resumeMessage = ref<string | null>(null)
@@ -237,6 +241,8 @@ const {
   orientationMode,
   videoDynamicRange,
   trackError,
+  applyEngineSettings,
+  refreshPlaybackDiagnostics,
   initializeRender,
   updateRenderSurfaceBounds,
   setRenderStrategy,
@@ -2447,6 +2453,33 @@ async function handleSetVideoBrightness(level: number) {
   await saveMediaPreferenceNow(undefined, true)
 }
 
+function pickFsrSettings(settings: PlayerInteractionSettings): PlayerFsrSettings {
+  return {
+    fsrMode: settings.fsrMode,
+    fsrSharpness: settings.fsrSharpness,
+    fsrDenoise: settings.fsrDenoise,
+    fsrTarget: settings.fsrTarget,
+  }
+}
+
+async function handleUpdateFsrSettings(patch: Partial<PlayerFsrSettings>) {
+  fsrSettingsError.value = null
+  const next = normalizePlayerInteractionSettings({
+    ...loadPlayerInteractionSettings(),
+    ...patch,
+  })
+  fsrSettings.value = pickFsrSettings(next)
+
+  try {
+    await savePlayerInteractionSettings(next)
+    await applyEngineSettings()
+    await refreshPlaybackDiagnostics()
+  }
+  catch (error) {
+    fsrSettingsError.value = toSafeErrorMessage(error, 'FSR 设置暂时无法应用，播放器已保持普通缩放。')
+  }
+}
+
 async function handleSetOrientationMode(mode: MpvOrientationMode) {
   await setOrientationMode(mode)
   const label = mode === 'landscape' ? '锁定横屏' : mode === 'portrait' ? '锁定竖屏' : '自动横屏'
@@ -2915,6 +2948,8 @@ watch(
         :video-brightness="videoBrightness"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
+        :fsr-settings="fsrSettings"
+        :fsr-error="fsrSettingsError"
         :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
@@ -2935,6 +2970,7 @@ watch(
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
+        @update-fsr-settings="handleUpdateFsrSettings"
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
@@ -2977,6 +3013,8 @@ watch(
         :video-brightness="videoBrightness"
         :track-error="trackError"
         :picture-settings-error="pictureSettingsError"
+        :fsr-settings="fsrSettings"
+        :fsr-error="fsrSettingsError"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
         :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length"
@@ -2997,6 +3035,7 @@ watch(
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
+        @update-fsr-settings="handleUpdateFsrSettings"
         @set-orientation-mode="handleSetOrientationMode"
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"

@@ -16,6 +16,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private const val PRIMARY_ANDROID_VIDEO_OUTPUT = "gpu-next"
     private const val FALLBACK_ANDROID_VIDEO_OUTPUT = "gpu"
     private const val MAX_DIAGNOSTIC_LOGS = 24
+    private const val FSR_SHADER_ASSET = "mpv/ohmycine-fsr-v1.glsl"
 
     @Volatile
     private var initialized = false
@@ -56,6 +57,24 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private var videoOutputFallbackUsed = false
     @Volatile
     private var playbackTransport = "none"
+    @Volatile
+    private var fsrMode = "auto"
+    @Volatile
+    private var fsrSharpness = 35.0
+    @Volatile
+    private var fsrDenoise = true
+    @Volatile
+    private var fsrTarget = "auto"
+    @Volatile
+    private var fsrShaderFile: File? = null
+    @Volatile
+    private var fsrStatus = "not-configured"
+    @Volatile
+    private var fsrReason: String? = null
+    @Volatile
+    private var surfaceWidth = 0
+    @Volatile
+    private var surfaceHeight = 0
     private val diagnosticLogs = ArrayDeque<String>()
 
     fun install(activity: Activity, webView: WebView) {
@@ -116,6 +135,15 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         videoSync = "audio"
         videoOutputFallbackUsed = false
         playbackTransport = "none"
+        fsrMode = "auto"
+        fsrSharpness = 35.0
+        fsrDenoise = true
+        fsrTarget = "auto"
+        fsrShaderFile = null
+        fsrStatus = "not-configured"
+        fsrReason = null
+        surfaceWidth = 0
+        surfaceHeight = 0
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
     }
 
@@ -160,7 +188,6 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         require(settings.cacheMode == "auto" || settings.cacheMode == "enabled" || settings.cacheMode == "disabled")
         require(settings.demuxerMaxBytesMb == 64 || settings.demuxerMaxBytesMb == 128 || settings.demuxerMaxBytesMb == 256 || settings.demuxerMaxBytesMb == 512)
         require(settings.videoSync == "audio" || settings.videoSync == "display-resample" || settings.videoSync == "display-vdrop")
-
         preferredVideoOutput = settings.videoOutput
         activeVideoOutput = settings.videoOutput
         hardwareDecoder = when (settings.hardwareDecoder) {
@@ -175,6 +202,12 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
         demuxerMaxBytes = settings.demuxerMaxBytesMb.toLong() * 1024L * 1024L
         videoSync = settings.videoSync
+        fsrMode = settings.fsrMode.takeIf { it == "off" || it == "auto" || it == "force" } ?: "auto"
+        fsrSharpness = settings.fsrSharpness.takeIf { it.isFinite() }?.coerceIn(0.0, 100.0) ?: 35.0
+        fsrDenoise = settings.fsrDenoise
+        fsrTarget = settings.fsrTarget.takeIf {
+            it == "auto" || it == "1080p" || it == "1440p" || it == "2160p"
+        } ?: "auto"
         videoOutputFallbackUsed = false
 
         if (initialized) {
@@ -183,6 +216,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             MPVLib.setPropertyString("cache", cacheMode)
             MPVLib.setPropertyString("demuxer-max-bytes", demuxerMaxBytes.toString())
             MPVLib.setPropertyString("video-sync", videoSync)
+            applyManagedFsrShader()
         }
     }
 
@@ -282,6 +316,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             videoOutput = activeVideoOutput,
             videoOutputFallbackUsed = videoOutputFallbackUsed,
             playbackTransport = playbackTransport,
+            fsrStatus = fsrStatus,
+            fsrReason = fsrReason,
             logs = logs,
         )
     }
@@ -357,6 +393,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
         if (level <= 20 && playbackState == "loading")
             lastPlaybackError = line
+        if (shouldFallbackFsr(level, line))
+            recordFsrFallback("FSR Shader 编译失败，已恢复普通缩放。")
         if (shouldFallbackVideoOutput(level, line)) {
             activeVideoOutput = FALLBACK_ANDROID_VIDEO_OUTPUT
             videoOutputFallbackUsed = true
@@ -372,6 +410,86 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             .getOrNull()
             ?.trim()
             ?.takeIf { it.isNotEmpty() && it != "unknown" }
+    }
+
+    private fun applyManagedFsrShader() {
+        if (!initialized)
+            return
+        if (fsrMode == "off") {
+            clearManagedFsrShader()
+            fsrStatus = "disabled"
+            fsrReason = null
+            return
+        }
+        val shader = fsrShaderFile
+        if (shader == null || !shader.isFile) {
+            recordFsrFallback("应用内置 FSR Shader 文件不可用。")
+            return
+        }
+
+        runCatching {
+            clearManagedFsrShader()
+            MPVLib.setPropertyString("glsl-shader-opts", fsrShaderOptions())
+            MPVLib.command(arrayOf("change-list", "glsl-shaders", "append", shader.absolutePath))
+        }.onSuccess {
+            fsrStatus = if (fsrMode == "force") "armed-force" else "armed-auto"
+            fsrReason = "仅在输出尺寸大于源画面时触发。"
+        }.onFailure {
+            recordFsrFallback("FSR Shader 加载失败，已恢复普通缩放。")
+        }
+    }
+
+    private fun refreshFsrTargetParameters() {
+        if (!initialized || fsrMode == "off" || !fsrStatus.startsWith("armed"))
+            return
+        runCatching { MPVLib.setPropertyString("glsl-shader-opts", fsrShaderOptions()) }
+            .onFailure { recordFsrFallback("FSR 目标分辨率更新失败，已恢复普通缩放。") }
+    }
+
+    private fun fsrShaderOptions(): String {
+        val sharpnessStops = 2.0 * (1.0 - fsrSharpness / 100.0)
+        val (targetWidth, targetHeight) = fsrTargetDimensions()
+        return "OHMYCINE_SHARPNESS=${"%.3f".format(java.util.Locale.ROOT, sharpnessStops)}," +
+            "OHMYCINE_DENOISE=${if (fsrDenoise) 1 else 0}," +
+            "OHMYCINE_TARGET_WIDTH=$targetWidth,OHMYCINE_TARGET_HEIGHT=$targetHeight"
+    }
+
+    private fun fsrTargetDimensions(): Pair<Int, Int> {
+        val shortEdgeCap = when (fsrTarget) {
+            "1080p" -> 1080
+            "1440p" -> 1440
+            "2160p" -> 2160
+            else -> return 16384 to 16384
+        }
+        if (surfaceWidth <= 0 || surfaceHeight <= 0)
+            return 16384 to 16384
+        val shortEdge = minOf(surfaceWidth, surfaceHeight)
+        if (shortEdge <= shortEdgeCap)
+            return surfaceWidth to surfaceHeight
+        val scale = shortEdgeCap.toDouble() / shortEdge.toDouble()
+        return (surfaceWidth * scale).toInt().coerceAtLeast(1) to
+            (surfaceHeight * scale).toInt().coerceAtLeast(1)
+    }
+
+    private fun clearManagedFsrShader() {
+        if (initialized)
+            runCatching { MPVLib.command(arrayOf("change-list", "glsl-shaders", "clr", "")) }
+    }
+
+    private fun recordFsrFallback(reason: String) {
+        clearManagedFsrShader()
+        fsrStatus = "fallback"
+        fsrReason = reason
+        lastPlaybackEvent = "fsr-fallback"
+    }
+
+    private fun shouldFallbackFsr(level: Int, line: String): Boolean {
+        if (level > 20 || !fsrStatus.startsWith("armed"))
+            return false
+        val normalized = line.lowercase()
+        val namesShader = normalized.contains("shader") || normalized.contains("glsl") || normalized.contains("hook")
+        val reportsFailure = normalized.contains("error") || normalized.contains("failed") || normalized.contains("compile") || normalized.contains("invalid")
+        return namesShader && reportsFailure
     }
 
     private fun safePropertyBoolean(name: String): Boolean? {
@@ -400,6 +518,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         val normalized = line.lowercase()
         return preferredVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
             && activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+            && !normalized.contains("shader")
+            && !normalized.contains("glsl")
+            && !normalized.contains("hook")
             && (normalized.contains("gpu") || normalized.contains("vo"))
             && (normalized.contains("fail") || normalized.contains("error") || normalized.contains("not supported"))
     }
@@ -424,6 +545,12 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fun initialize() {
             if (!initialized) {
                 val caFile = installCaCertificate(context)
+                fsrShaderFile = runCatching { installFsrShader(context) }
+                    .onFailure {
+                        fsrStatus = "fallback"
+                        fsrReason = "应用内置 FSR Shader 安装失败。"
+                    }
+                    .getOrNull()
                 MPVLib.create(context.applicationContext)
                 MpvSurfaceHost.registerMpvObservers()
                 MPVLib.setOptionString("config", "no")
@@ -455,6 +582,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.observeProperty("hwdec-current", MPVLib.MpvFormat.STRING)
                 initialized = true
                 lastPlaybackEvent = "mpv-initialized"
+                applyManagedFsrShader()
             }
             setZOrderMediaOverlay(false)
             holder.setFormat(PixelFormat.OPAQUE)
@@ -488,7 +616,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            surfaceWidth = width.coerceAtLeast(0)
+            surfaceHeight = height.coerceAtLeast(0)
             MPVLib.setPropertyString("android-surface-size", "${width}x$height")
+            refreshFsrTargetParameters()
         }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -513,6 +644,16 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
         return target
     }
+
+    private fun installFsrShader(context: Context): File {
+        val directory = File(context.filesDir, "mpv")
+        directory.mkdirs()
+        val target = File(directory, "ohmycine-fsr-v1.glsl")
+        context.assets.open(FSR_SHADER_ASSET).use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        return target
+    }
 }
 
 internal data class MpvHeader(val name: String, val value: String)
@@ -522,6 +663,10 @@ internal data class MpvEngineSettings(
     val cacheMode: String,
     val demuxerMaxBytesMb: Int,
     val videoSync: String,
+    val fsrMode: String,
+    val fsrSharpness: Double,
+    val fsrDenoise: Boolean,
+    val fsrTarget: String,
 )
 internal data class PendingLoad(val path: String, val headers: List<MpvHeader>)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
@@ -552,5 +697,7 @@ internal data class MpvPlaybackDiagnostics(
     val videoOutput: String,
     val videoOutputFallbackUsed: Boolean,
     val playbackTransport: String,
+    val fsrStatus: String,
+    val fsrReason: String?,
     val logs: List<String>,
 )

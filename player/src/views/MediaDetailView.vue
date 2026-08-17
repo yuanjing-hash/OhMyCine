@@ -2,7 +2,8 @@
 import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, SubtitleTrack } from '@/services/datasource/types'
 import type { PlaybackQueueInput } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
@@ -13,6 +14,7 @@ import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { getContextFlatEpisodes, getContextSeriesSeasons, getPlayableSeasonChildren } from '@/services/scraper/rawSeriesGrouping'
+import { episodeSearchTitle, searchSeriesEpisodes } from '@/services/seriesEpisodeSearch'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -26,12 +28,20 @@ const itemId = computed(() => route.params.itemId as string)
 const detail = ref<MediaDetail | null>(null)
 const seasons = ref<MediaItem[]>([])
 const episodes = ref<MediaItem[]>([])
+const seasonEpisodeCache = new Map<string, MediaItem[]>()
 const selectedSeasonId = ref<string>('')
 const isLoading = ref(false)
 const isSeriesContentLoading = ref(false)
 const isPlaying = ref(false)
 const errorMessage = ref<string | null>(null)
 const seriesErrorMessage = ref<string | null>(null)
+const isEpisodeSearchOpen = ref(false)
+const isEpisodeSearchLoading = ref(false)
+const episodeSearchKeyword = ref('')
+const episodeSearchError = ref<string | null>(null)
+const episodeSearchEntries = ref<SeriesEpisodeSearchEntry[]>([])
+const episodeSearchInputRef = ref<HTMLInputElement | null>(null)
+let episodeSearchGeneration = 0
 const selectedMediaSourceId = ref<string>('')
 const selectedAudioIndex = ref<number | null>(null)
 const selectedSubtitleIndex = ref<number | null>(null)
@@ -135,6 +145,7 @@ const maxEpisodeWindowStart = computed(() => Math.max(0, episodes.value.length -
 const visibleEpisodes = computed(() => episodes.value.slice(episodeWindowStart.value, episodeWindowStart.value + EPISODE_WINDOW_SIZE))
 const renderedEpisodes = computed(() => isMobileEpisodeViewport.value ? episodes.value : visibleEpisodes.value)
 const selectedEpisode = computed(() => episodes.value[selectedEpisodeIndex.value])
+const episodeSearchResults = computed(() => searchSeriesEpisodes(episodeSearchEntries.value, episodeSearchKeyword.value))
 const detailResumeEntry = computed(() => detail.value ? playbackProgressByItemId.value[detail.value.id] : undefined)
 const detailCanResume = computed(() => Boolean(detail.value && hasResumeProgress(detail.value, detailResumeEntry.value)))
 const seriesCanPlay = computed(() => Boolean(isSeriesDetail.value && selectedEpisode.value))
@@ -167,6 +178,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  episodeSearchGeneration += 1
   mobileEpisodeMediaQuery?.removeEventListener('change', updateMobileEpisodeViewport)
   window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged)
 })
@@ -178,12 +190,15 @@ function handlePlayedStateChanged() {
 watch([sourceId, itemId], loadDetail)
 
 async function loadDetail() {
+  episodeSearchGeneration += 1
+  closeEpisodeSearch()
   isLoading.value = true
   errorMessage.value = null
   seriesErrorMessage.value = null
   detail.value = null
   seasons.value = []
   episodes.value = []
+  seasonEpisodeCache.clear()
   selectedSeasonId.value = ''
   selectedMediaSourceId.value = ''
   selectedAudioIndex.value = null
@@ -204,11 +219,17 @@ async function loadDetail() {
         const contextSeasons = getContextSeriesSeasons(contextual.detail)
         if (contextSeasons.length > 0) {
           seasons.value = contextSeasons
+          for (const season of contextSeasons) {
+            const seasonEpisodes = getPlayableSeasonChildren(season)
+            if (seasonEpisodes.length > 0)
+              seasonEpisodeCache.set(season.id, seasonEpisodes)
+          }
           selectedSeasonId.value = contextSeasons[0].id
           episodes.value = getPlayableSeasonChildren(contextSeasons[0])
         }
         else {
           episodes.value = getContextFlatEpisodes(contextual)
+          seasonEpisodeCache.set(contextual.detail.id, episodes.value)
         }
         resetEpisodeWindow()
         await refreshPlaybackProgress(episodes.value)
@@ -266,6 +287,7 @@ async function loadSeriesSeasons(source: DataSource, seriesId: string) {
     }
 
     episodes.value = episodeItems
+    seasonEpisodeCache.set(seriesId, episodeItems)
     resetEpisodeWindow()
     await refreshPlaybackProgress(episodes.value)
     selectInitialEpisodeForSeason()
@@ -285,7 +307,17 @@ async function selectSeason(season: MediaItem) {
   selectedSeasonId.value = season.id
   const contextEpisodes = getPlayableSeasonChildren(season)
   if (contextEpisodes.length > 0) {
+    seasonEpisodeCache.set(season.id, contextEpisodes)
     episodes.value = contextEpisodes
+    resetEpisodeWindow()
+    await refreshPlaybackProgress(episodes.value)
+    selectInitialEpisodeForSeason()
+    return
+  }
+
+  const cachedEpisodes = seasonEpisodeCache.get(season.id)
+  if (cachedEpisodes) {
+    episodes.value = cachedEpisodes
     resetEpisodeWindow()
     await refreshPlaybackProgress(episodes.value)
     selectInitialEpisodeForSeason()
@@ -309,10 +341,101 @@ async function selectSeason(season: MediaItem) {
 
 async function loadSeasonEpisodes(source: DataSource, seasonId: string) {
   const items = await source.list(seasonId)
-  episodes.value = items.filter(item => item.type === 'episode' || item.type === 'file' || item.type === 'movie')
+  episodes.value = playableEpisodeItems(items)
+  seasonEpisodeCache.set(seasonId, episodes.value)
   resetEpisodeWindow()
   await refreshPlaybackProgress(episodes.value)
   selectInitialEpisodeForSeason()
+}
+
+function playableEpisodeItems(items: readonly MediaItem[]): MediaItem[] {
+  return items.filter(item => item.type === 'episode' || item.type === 'file' || item.type === 'movie')
+}
+
+async function openEpisodeSearch() {
+  isEpisodeSearchOpen.value = true
+  episodeSearchKeyword.value = ''
+  episodeSearchError.value = null
+  episodeSearchEntries.value = []
+  const generation = ++episodeSearchGeneration
+
+  await nextTick()
+  episodeSearchInputRef.value?.focus()
+
+  isEpisodeSearchLoading.value = true
+  try {
+    if (seasons.value.length === 0) {
+      const currentEpisodes = seasonEpisodeCache.get(detail.value?.id ?? '') ?? episodes.value
+      if (generation === episodeSearchGeneration)
+        episodeSearchEntries.value = currentEpisodes.map(episode => ({ season: null, episode }))
+      return
+    }
+
+    let sourcePromise: Promise<DataSource> | undefined
+    const entriesBySeason = await Promise.all(seasons.value.map(async (season) => {
+      let seasonEpisodes = seasonEpisodeCache.get(season.id)
+      if (!seasonEpisodes) {
+        const contextualEpisodes = getPlayableSeasonChildren(season)
+        if (contextualEpisodes.length > 0) {
+          seasonEpisodes = contextualEpisodes
+        }
+        else {
+          sourcePromise ??= resolveSource()
+          seasonEpisodes = playableEpisodeItems(await (await sourcePromise).list(season.id))
+        }
+        if (generation !== episodeSearchGeneration)
+          return []
+        seasonEpisodeCache.set(season.id, seasonEpisodes)
+      }
+      return seasonEpisodes.map(episode => ({ season, episode }))
+    }))
+
+    if (generation === episodeSearchGeneration)
+      episodeSearchEntries.value = entriesBySeason.flat()
+  }
+  catch (error) {
+    if (generation === episodeSearchGeneration)
+      episodeSearchError.value = toSafeErrorMessage(error, '全部分集加载失败，请稍后重试。')
+  }
+  finally {
+    if (generation === episodeSearchGeneration)
+      isEpisodeSearchLoading.value = false
+  }
+}
+
+function closeEpisodeSearch() {
+  episodeSearchGeneration += 1
+  isEpisodeSearchOpen.value = false
+  isEpisodeSearchLoading.value = false
+  episodeSearchKeyword.value = ''
+  episodeSearchError.value = null
+  episodeSearchEntries.value = []
+}
+
+async function locateEpisodeSearchResult(entry: SeriesEpisodeSearchEntry) {
+  if (entry.season)
+    await selectSeason(entry.season)
+
+  const index = episodes.value.findIndex(episode => episode.id === entry.episode.id)
+  if (index < 0) {
+    episodeSearchError.value = '无法在当前季定位这一集，请重新打开搜索后重试。'
+    return
+  }
+
+  closeEpisodeSearch()
+  await nextTick()
+  selectEpisodeIndex(index)
+}
+
+function episodeSearchSeasonLabel(entry: SeriesEpisodeSearchEntry): string {
+  if (entry.season?.name.trim())
+    return entry.season.name
+  const seasonNumber = entry.episode.seasonNumber ?? entry.season?.seasonNumber
+  return seasonNumber == null ? '本剧' : `第 ${seasonNumber} 季`
+}
+
+function episodeSearchNumberLabel(episode: MediaItem): string {
+  return episode.episodeNumber == null ? '单集' : `第 ${episode.episodeNumber} 集`
 }
 
 function resetEpisodeWindow() {
@@ -815,7 +938,16 @@ function markTitleLogoFailed(url: string) {
                 分集
               </h2>
             </div>
-            <div class="flex items-center gap-3 text-sm text-white/46">
+            <div class="flex flex-wrap items-center justify-end gap-3 text-sm text-white/46">
+              <button
+                type="button"
+                class="episode-search-trigger"
+                aria-label="搜索全部分集标题"
+                @click="openEpisodeSearch"
+              >
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="8.75" cy="8.75" r="5.75" stroke="currentColor" stroke-width="1.8" /><path d="m13 13 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+                搜索分集
+              </button>
               <span v-if="selectedSeason">{{ selectedSeason.name }} · {{ episodes.length }} 集</span>
               <span v-if="episodeRangeLabel" class="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-white/50" aria-live="polite">{{ episodeRangeLabel }}</span>
             </div>
@@ -964,6 +1096,89 @@ function markTitleLogoFailed(url: string) {
           </div>
         </section>
 
+        <Teleport to="body">
+          <div
+            v-if="isEpisodeSearchOpen"
+            class="episode-search-backdrop theme-adaptive"
+            role="presentation"
+            @click.self="closeEpisodeSearch"
+            @keydown.esc="closeEpisodeSearch"
+          >
+            <section
+              class="episode-search-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="episode-search-title"
+            >
+              <header class="flex items-start justify-between gap-4">
+                <div>
+                  <p class="text-xs uppercase tracking-[0.22em] text-white/38">
+                    Series Search
+                  </p>
+                  <h2 id="episode-search-title" class="mt-2 text-2xl font-bold text-white">
+                    搜索全部分集
+                  </h2>
+                  <p class="mt-2 text-sm text-white/48">
+                    按单集标题查找，选择后只定位到该集，不会自动播放。
+                  </p>
+                </div>
+                <button type="button" class="episode-search-close" aria-label="关闭分集搜索" @click="closeEpisodeSearch">
+                  <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 4 12 12M16 4 4 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+                </button>
+              </header>
+
+              <label class="episode-search-field mt-6">
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="8.75" cy="8.75" r="5.75" stroke="currentColor" stroke-width="1.8" /><path d="m13 13 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+                <span class="sr-only">单集标题</span>
+                <input
+                  ref="episodeSearchInputRef"
+                  v-model="episodeSearchKeyword"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="输入单集标题"
+                >
+                <button v-if="episodeSearchKeyword" type="button" aria-label="清空搜索内容" @click="episodeSearchKeyword = ''">
+                  清空
+                </button>
+              </label>
+
+              <div class="episode-search-results mt-5" aria-live="polite">
+                <div v-if="isEpisodeSearchLoading" class="episode-search-state">
+                  正在载入全部季的分集…
+                </div>
+                <div v-else-if="episodeSearchError" class="episode-search-state is-error">
+                  <p>{{ episodeSearchError }}</p>
+                  <button type="button" class="mt-3 rounded-full bg-white/10 px-4 py-2 text-xs text-white" @click="openEpisodeSearch">
+                    重试
+                  </button>
+                </div>
+                <div v-else-if="!episodeSearchKeyword.trim()" class="episode-search-state">
+                  已载入 {{ episodeSearchEntries.length }} 集，输入标题开始查找。
+                </div>
+                <div v-else-if="episodeSearchResults.length === 0" class="episode-search-state">
+                  没有找到标题包含“{{ episodeSearchKeyword.trim() }}”的分集。
+                </div>
+                <template v-else>
+                  <p class="mb-3 px-1 text-xs text-white/42">
+                    找到 {{ episodeSearchResults.length }} 个结果
+                  </p>
+                  <button
+                    v-for="entry in episodeSearchResults"
+                    :key="`${entry.season?.id ?? 'series'}:${entry.episode.id}`"
+                    type="button"
+                    class="episode-search-result"
+                    @click="locateEpisodeSearchResult(entry)"
+                  >
+                    <span class="episode-search-result-index">{{ episodeSearchSeasonLabel(entry) }} · {{ episodeSearchNumberLabel(entry.episode) }}</span>
+                    <span class="episode-search-result-title">{{ episodeSearchTitle(entry.episode) }}</span>
+                    <span v-if="entry.episode.overview" class="episode-search-result-overview">{{ entry.episode.overview }}</span>
+                  </button>
+                </template>
+              </div>
+            </section>
+          </div>
+        </Teleport>
+
         <section v-if="!isSeriesDetail && (visibleMediaSources.length || audioTracks.length || subtitleTracks.length)" class="grid gap-5 lg:grid-cols-3">
           <div v-if="visibleMediaSources.length" class="glass-panel rounded-[1.6rem] p-5">
             <h2 class="text-base font-semibold">
@@ -1064,6 +1279,172 @@ function markTitleLogoFailed(url: string) {
 .detail-played-state,.detail-played-toggle { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: .7rem 1rem; color: rgba(255,255,255,.68); background: rgba(255,255,255,.08); font-size: .75rem; font-weight: 700; }
 .detail-played-state.is-played { border-color: rgba(34,197,94,.42); color: #dcfce7; background: rgba(34,197,94,.18); }
 .detail-played-toggle:hover { background: rgba(255,255,255,.14); }
+.episode-search-trigger,
+.episode-search-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  background: var(--surface-soft);
+  transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+
+.episode-search-trigger {
+  gap: 0.45rem;
+  border-radius: 999px;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.episode-search-close {
+  width: 2.6rem;
+  height: 2.6rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.episode-search-trigger:hover,
+.episode-search-trigger:focus-visible,
+.episode-search-close:hover,
+.episode-search-close:focus-visible {
+  border-color: var(--control-border-hover);
+  color: var(--color-text);
+  background: var(--surface-soft-hover);
+}
+
+.episode-search-backdrop {
+  position: fixed;
+  z-index: 180;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: rgba(0, 0, 0, 0.68);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.episode-search-dialog {
+  width: min(42rem, 100%);
+  max-height: min(46rem, calc(100svh - 2.5rem));
+  overflow: hidden;
+  border: 1px solid var(--glass-border-hover);
+  border-radius: 2rem;
+  padding: 1.5rem;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  box-shadow: var(--glass-shadow-elevated);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+}
+
+.episode-search-field {
+  display: flex;
+  min-height: 3.25rem;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 0 1rem;
+  color: var(--color-text-muted);
+  background: var(--surface-soft);
+}
+
+.episode-search-field:focus-within {
+  border-color: var(--control-border-hover);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+.episode-search-field input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: var(--color-text);
+  background: transparent;
+}
+
+.episode-search-field input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.episode-search-field button {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.episode-search-results {
+  max-height: min(29rem, calc(100svh - 14rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.episode-search-state {
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 2.5rem 1.25rem;
+  color: var(--color-text-muted);
+  background: var(--surface-soft);
+  text-align: center;
+}
+
+.episode-search-state.is-error {
+  border-color: rgba(248, 113, 113, 0.24);
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.episode-search-result {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 0.9rem 1rem;
+  color: var(--color-text);
+  background: var(--surface-soft);
+  text-align: left;
+  transition: border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+
+.episode-search-result + .episode-search-result {
+  margin-top: 0.6rem;
+}
+
+.episode-search-result:hover,
+.episode-search-result:focus-visible {
+  border-color: var(--control-border-hover);
+  background: var(--surface-soft-hover);
+  transform: translateY(-1px);
+}
+
+.episode-search-result-index {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+}
+
+.episode-search-result-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.episode-search-result-overview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .episode-rail-shell {
   border-color: var(--color-border);
   background: var(--surface-soft);
@@ -1254,6 +1635,23 @@ function markTitleLogoFailed(url: string) {
 }
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .episode-search-backdrop {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .episode-search-dialog {
+    width: 100%;
+    max-height: 100svh;
+    border: 0;
+    border-radius: 0;
+    padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.25rem, env(safe-area-inset-bottom));
+  }
+
+  .episode-search-results {
+    max-height: calc(100svh - max(1rem, env(safe-area-inset-top)) - max(1.25rem, env(safe-area-inset-bottom)) - 11.5rem);
+  }
+
   .detail-hero,
   .detail-hero-content {
     min-height: min(68svh, 38rem);

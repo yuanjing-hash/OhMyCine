@@ -9,6 +9,7 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
+import { normalizeWorkLevelSearchResults } from '@/services/datasource/searchAggregation'
 import { clearLayoutContextActions, setLayoutContextActions } from '@/services/layoutContextActions'
 import { registerMaintenanceHandler } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
@@ -547,7 +548,7 @@ async function runSearch() {
   isLoading.value = true
   errorMessage.value = null
   try {
-    items.value = await source.value.search(keyword)
+    items.value = normalizeWorkLevelSearchResults(await source.value.search(keyword))
     selectedLibrary.value = {
       id: 'search',
       sourceId: sourceId.value,
