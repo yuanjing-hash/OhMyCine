@@ -10,6 +10,7 @@ import {
   playerShortcutTargetForEvent,
   validateUniquePlayerShortcuts,
 } from '../src/services/playerShortcuts.ts'
+import { matchPlaybackTrackPreference } from '../src/services/playerTrackPreferences.ts'
 
 async function source(relativePath: string) {
   return readFile(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
@@ -54,6 +55,8 @@ assert.match(playerView, /ref="bottomChromeRef"[\s\S]*data-player-click-ignore/)
 assert.match(playerView, /addExternalSubtitle\(track\.url, track\.title \?\? result\.title, track\.language, 'provider'\)/)
 assert.match(playerView, /addExternalSubtitle\(downloaded\.path, downloaded\.title, downloaded\.language, 'downloaded'\)/)
 assert.match(playerView, /function cancelPendingTrackPreferenceRestore\(\)/)
+assert.match(playerView, /trackPreferenceRestoreQueued/)
+assert.match(playerView, /queueMicrotask\(\(\) => void restorePendingTrackPreference\(\)\)/)
 assert.doesNotMatch(playerView, /TRACK_PREFERENCE_RETRY_LIMIT/)
 assert.doesNotMatch(playerView, /scheduleTrackPreferenceRestoreRetry/)
 assert.doesNotMatch(playerView, /refreshTrackState/)
@@ -65,7 +68,7 @@ assert.match(playerView, /await setVideoBrightness\(preference\.videoBrightness\
 assert.match(playerView, /persistedSubtitlePreference/)
 assert.match(playerView, /persistedAudioPreference/)
 assert.match(playerView, /trackStateReady\.value/)
-assert.match(playerView, /preference\.trackId != null[\s\S]*numericTrackId\(track\) === preference\.trackId/)
+assert.match(playerView, /matchPlaybackTrackPreference/)
 assert.match(playerView, /async function handleSetSubtitle[\s\S]*await saveMediaPreferenceNow\(undefined, true\)/)
 assert.match(playerView, /async function handleSetAudio[\s\S]*await saveMediaPreferenceNow\(undefined, true\)/)
 assert.match(playerView, /async function handleSetPlaybackSpeed[\s\S]*await saveMediaPreferenceNow\(undefined, true\)/)
@@ -107,6 +110,8 @@ assert.doesNotMatch(
 )
 assert.match(mpvComposable, /const trackStateReady = ref\(false\)/)
 assert.match(mpvComposable, /playbackSpeed\.value = DEFAULT_PLAYBACK_SPEED/)
+assert.match(mpvComposable, /trackError\.value = safeErrorMessage\(error, '外部字幕加载失败'\)\s+throw error/)
+assert.match(mpvComposable, /trackError\.value = message\s+throw new Error\(message\)/)
 assert.doesNotMatch(mpvComposable, /player_get_playback_speed_preference/)
 assert.doesNotMatch(mpvComposable, /player_set_playback_speed_preference/)
 
@@ -129,8 +134,37 @@ assert.match(mpvComposable, /invoke<void>\('mpv_stop'\)/)
 
 const playerCommands = await source('../src-tauri/src/commands/player.rs')
 assert.match(playerCommands, /prepare_external_subtitle/)
-assert.match(playerCommands, /layout\.cache_dir\.join\("mpv-subtitles"\)/)
-assert.match(playerCommands, /MAX_PREPARED_SUBTITLE_BYTES/)
+
+const sharedPlayerCommands = await source('../src-tauri/src/commands/player_shared.rs')
+assert.match(sharedPlayerCommands, /layout\.cache_dir\.join\("mpv-subtitles"\)/)
+assert.match(sharedPlayerCommands, /MAX_PREPARED_SUBTITLE_BYTES/)
+assert.match(sharedPlayerCommands, /redirect\(redirect::Policy::none\(\)\)/)
+assert.match(sharedPlayerCommands, /headers\.clear\(\)/)
+assert.match(sharedPlayerCommands, /拒绝不安全的 HTTPS 降级/)
+assert.match(sharedPlayerCommands, /strips_sensitive_headers_on_cross_origin_subtitle_redirects/)
+
+const subtitleSelectionHandler = playerView.match(/async function handleSetSubtitle\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+assert.match(subtitleSelectionHandler, /catch \{[\s\S]*activeCachedSubtitlePath = previousCachedSubtitlePath[\s\S]*return/)
+assert.match(subtitleSelectionHandler, /await setSubtitle\(trackId\)[\s\S]*activeCachedSubtitlePath = nextCachedSubtitlePath[\s\S]*saveMediaPreferenceNow/)
+
+const restoredByFingerprint = matchPlaybackTrackPreference([
+  { id: 1, language: 'ja', title: '日语', codec: 'aac' },
+  { id: 2, language: 'zh-Hans-CN', title: '简日双字', codec: 'hdmv_pgs_subtitle' },
+], {
+  language: 'zh-Hans-CN',
+  title: '简日双字',
+  codec: 'hdmv_pgs_subtitle',
+  trackId: 1,
+})
+assert.equal(restoredByFingerprint?.id, 2, 'stable subtitle fingerprint must win over a reused mpv track id')
+assert.equal(matchPlaybackTrackPreference([
+  { id: 1, language: 'ja', title: '日语' },
+], {
+  language: 'zh-Hans-CN',
+  title: '简日双字',
+  trackId: 1,
+}), null, 'a stale numeric id must not override a missing stable fingerprint')
+assert.equal(matchPlaybackTrackPreference([{ id: 3 }], { trackId: 3 })?.id, 3)
 
 const dataSourceStore = await source('../src/stores/datasource.ts')
 assert.match(dataSourceStore, /deletePlaybackHistoryForSource\(id\)/)
@@ -217,6 +251,7 @@ console.log(JSON.stringify({
   controlChromeIgnoresVideoClickToPause: true,
   subtitleMenuGroupsDownloadedAndMediaTracks: true,
   externalSubtitleCommandsReturnActualResult: true,
+  failedSubtitleSelectionsAreNotPersisted: true,
   externalSubtitlesUseShortRuntimeCache: true,
   subtitleControlsAvoidSynchronousTrackRefresh: true,
   trackRestoreWaitsForMetadata: true,
@@ -225,6 +260,8 @@ console.log(JSON.stringify({
   noRepeatedNativeTrackPolling: true,
   immediateTrackPreferencePersistence: true,
   stableTrackPreferenceDrafts: true,
+  stableTrackFingerprintWinsOverNumericId: true,
+  losslessReactiveTrackRestoreWakeup: true,
   playbackSpeedIsPerMedia: true,
   cacheClearPreservesGlobalState: true,
   customizableNavigationShortcuts: true,

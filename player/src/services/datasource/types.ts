@@ -88,6 +88,11 @@ export interface SubtitleTrack {
   url?: string
 }
 
+export interface PlaybackSubtitleTrack extends SubtitleTrack {
+  /** Transient playback-only request headers. Never persist or expose in route/history state. */
+  readonly headers?: Readonly<Record<string, string>>
+}
+
 export type SubtitleSearchOrigin = 'emby' | 'local'
 
 export interface SubtitleSearchInput {
@@ -153,6 +158,9 @@ export interface DataSourceConfig {
 export interface MediaStreamRequest {
   readonly url: string
   readonly headers?: Record<string, string>
+  readonly mediaSourceId?: string
+  /** Exact subtitle inventory for the resolved playback version. */
+  readonly subtitles?: readonly PlaybackSubtitleTrack[]
 }
 
 export interface PlaybackRequest {

@@ -135,6 +135,16 @@ assert.equal(sanitized.opacity, 1)
 assert.equal(sanitized.speed, 0.5)
 assert.equal(sanitized.displayArea, 0.75)
 assert.deepEqual(sanitized.blockKeywords, ['剧透'])
+const repairedVisibility = sanitizeDanmakuSettings({
+  enabled: true,
+  showScroll: false,
+  showTop: false,
+  showBottom: false,
+})
+assert.equal(repairedVisibility.enabled, true)
+assert.equal(repairedVisibility.showScroll, true)
+assert.equal(repairedVisibility.showTop, false)
+assert.equal(repairedVisibility.showBottom, false)
 
 const rust = read('src-tauri/src/commands/danmaku.rs')
 assert.match(rust, /MAX_RESPONSE_BYTES/)

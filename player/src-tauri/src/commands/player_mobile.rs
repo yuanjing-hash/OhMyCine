@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use super::player_shared::{
-    sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings, MpvHttpHeader,
-    MpvOrientationState,
+    prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
+    MpvHttpHeader, MpvOrientationState,
 };
 use crate::mpv::{
     mobile::{AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
@@ -120,19 +120,24 @@ pub async fn mpv_apply_engine_settings(
 
 #[tauri::command]
 pub async fn mpv_add_subtitle(
+    app: AppHandle,
     url: String,
     title: Option<String>,
     language: Option<String>,
+    headers: Option<Vec<MpvHttpHeader>>,
     state: State<'_, AndroidMpvState>,
 ) -> Result<(), String> {
     if url.trim().is_empty() {
         return Err("字幕地址为空。".to_string());
     }
+    let prepared_path =
+        prepare_external_subtitle(&app, &url, title.as_deref(), headers.unwrap_or_default())
+            .await?;
     state
         .run(
             "addSubtitle",
             SubtitlePayload {
-                url,
+                url: prepared_path,
                 title,
                 language,
             },

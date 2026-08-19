@@ -50,8 +50,13 @@ export function sanitizeDanmakuSettings(value: Partial<DanmakuSettings>): Danmak
   const keywords = Array.isArray(value.blockKeywords)
     ? value.blockKeywords.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean).slice(0, 100)
     : []
+  const enabled = value.enabled !== false
+  const showTop = value.showTop !== false
+  const showBottom = value.showBottom !== false
+  const requestedShowScroll = value.showScroll !== false
+  const showScroll = requestedShowScroll || (enabled && !showTop && !showBottom)
   return {
-    enabled: value.enabled !== false,
+    enabled,
     provider: value.provider === 'custom' ? 'custom' : 'official',
     customBaseUrl: typeof value.customBaseUrl === 'string' ? value.customBaseUrl.trim().slice(0, 2048) : '',
     opacity: clamp(value.opacity, 0.1, 1, DEFAULT_DANMAKU_SETTINGS.opacity),
@@ -59,9 +64,9 @@ export function sanitizeDanmakuSettings(value: Partial<DanmakuSettings>): Danmak
     speed: clamp(value.speed, 0.5, 2, DEFAULT_DANMAKU_SETTINGS.speed),
     displayArea: nearest(value.displayArea, [0.25, 0.5, 0.75, 1], DEFAULT_DANMAKU_SETTINGS.displayArea),
     density: clamp(value.density, 0.2, 1, DEFAULT_DANMAKU_SETTINGS.density),
-    showScroll: value.showScroll !== false,
-    showTop: value.showTop !== false,
-    showBottom: value.showBottom !== false,
+    showScroll,
+    showTop,
+    showBottom,
     bold: value.bold !== false,
     blockKeywords: [...new Set(keywords)],
   }

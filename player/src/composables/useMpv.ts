@@ -30,6 +30,7 @@ export interface SubtitleTrackOption {
   selectable: boolean
   mpvId?: number
   url?: string
+  headers?: Readonly<Record<string, string>>
   unavailableReason?: string
 }
 
@@ -41,6 +42,7 @@ export interface KnownSubtitleTrackInput {
   codec?: string | null
   isDefault?: boolean
   url?: string
+  headers?: Readonly<Record<string, string>>
   selectable?: boolean
   unavailableReason?: string
 }
@@ -246,6 +248,7 @@ function toKnownSubtitleTrack(track: KnownSubtitleTrackInput): SubtitleTrackOpti
     selected: false,
     selectable,
     url: track.url,
+    headers: track.headers ? { ...track.headers } : undefined,
     unavailableReason: selectable ? undefined : track.unavailableReason ?? '该字幕由媒体详情提供，但当前数据源未提供可直接加载的字幕地址。',
   }
 }
@@ -759,8 +762,9 @@ export function useMpv() {
 
     const track = knownSubtitleTracks.value.find(item => item.id === trackId)
     if (!track || !track.selectable || !track.url) {
-      trackError.value = track?.unavailableReason ?? '该字幕暂不可加载。'
-      return
+      const message = track?.unavailableReason ?? '该字幕暂不可加载。'
+      trackError.value = message
+      throw new Error(message)
     }
 
     try {
@@ -768,6 +772,7 @@ export function useMpv() {
         url: track.url,
         title: track.title ?? track.language ?? '外部字幕',
         language: track.language ?? null,
+        headers: toMpvHeaderPayload(track.headers),
       })
       selectedKnownSubtitle.value = trackId
       currentSubtitle.value = trackId
@@ -775,6 +780,7 @@ export function useMpv() {
     }
     catch (error: unknown) {
       trackError.value = safeErrorMessage(error, '外部字幕加载失败')
+      throw error
     }
   }
 
@@ -785,6 +791,7 @@ export function useMpv() {
         url,
         title: title || language || '外部字幕',
         language: language || null,
+        headers: [],
       })
       const loadedTrack = toKnownSubtitleTrack({
         id: `loaded:${++loadedExternalSubtitleSequence}`,
@@ -912,7 +919,7 @@ export function useMpv() {
   }
 }
 
-function toMpvHeaderPayload(headers: Record<string, string> | undefined): MpvHttpHeaderPayload[] | undefined {
+function toMpvHeaderPayload(headers: Readonly<Record<string, string>> | undefined): MpvHttpHeaderPayload[] | undefined {
   if (!headers)
     return undefined
 

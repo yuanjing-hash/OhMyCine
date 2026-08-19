@@ -6,6 +6,9 @@ const root = new URL('../', import.meta.url)
 const embySource = await readFile(fileURLToPath(new URL('src/services/datasource/emby.ts', root)), 'utf8')
 const embyCommand = await readFile(fileURLToPath(new URL('src-tauri/src/commands/emby.rs', root)), 'utf8')
 const lib = await readFile(fileURLToPath(new URL('src-tauri/src/lib.rs', root)), 'utf8')
+const playerView = await readFile(fileURLToPath(new URL('src/views/PlayerView.vue', root)), 'utf8')
+const playerShared = await readFile(fileURLToPath(new URL('src-tauri/src/commands/player_shared.rs', root)), 'utf8')
+const playerMobile = await readFile(fileURLToPath(new URL('src-tauri/src/commands/player_mobile.rs', root)), 'utf8')
 
 assert.doesNotMatch(embySource, /from ['"]ofetch['"]/)
 assert.match(embySource, /invoke<EmbyNativePlaybackJsonResponse>\('emby_request_json'/)
@@ -26,6 +29,18 @@ assert.doesNotMatch(embySource, /Version=\\?"0\.1\.0/)
 assert.doesNotMatch(embyCommand, /Version=\\?"0\.1\.0/)
 assert.match(lib, /emby_request_json/)
 assert.match(embySource, /emby_post_playback_json/)
+assert.match(embySource, /readonly MediaStreams\?: EmbyMediaStreamRecord\[\]/)
+assert.match(embySource, /buildPlaybackStreamRequest/)
+assert.match(embySource, /mediaSourceId: source\.Id/)
+assert.match(embySource, /source\.MediaStreams\?\.length \? source\.MediaStreams : fallbackStreams/)
+assert.match(embySource, /mapSubtitleTrack\(item\.Id, stream, mediaSourceId, undefined, false\)/)
+assert.match(embySource, /safeRequiredHttpHeaders/)
+assert.match(playerView, /syncKnownSubtitleTracks\(request\.subtitles \?\? \[\]\)/)
+assert.match(playerView, /activeResolvedMediaSourceId\.value = request\.mediaSourceId \?\? ''/)
+assert.match(playerShared, /prepare_external_subtitle/)
+assert.match(playerShared, /headers\.clear\(\)/)
+assert.match(playerShared, /strips_sensitive_headers_on_cross_origin_subtitle_redirects/)
+assert.match(playerMobile, /prepare_external_subtitle\(&app, &url/)
 
 console.log(JSON.stringify({
   ordinaryRequestsUseNativeBoundary: true,
@@ -35,4 +50,6 @@ console.log(JSON.stringify({
   responseSizeBounded: true,
   clientVersionTracksRelease: true,
   playbackPostBoundaryPreserved: true,
+  selectedMediaSourceSubtitlesPreserved: true,
+  transientSubtitleHeadersUseNativeCache: true,
 }, null, 2))

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSearchAnime, DanmakuSearchEpisode } from '@/services/danmaku/types'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, PlaybackSubtitleTrack, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
@@ -33,6 +33,7 @@ import { loadPlayerInteractionSettings, normalizePlayerInteractionSettings, PLAY
 import { videoAspectRatioValue as aspectRatioValue, compactPlayerTrackLabel as compactTrackLabel, formatPlaybackTime, playerRenderBackendLabel as renderBackendLabel, playerRenderStatusLabel as renderStatusLabel, safePlayerMenuText as safeMenuText, playerVideoAspectLabel as videoAspectLabel, playerVideoFitLabel as videoFitLabel } from '@/services/playerPresentation'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
+import { matchPlaybackTrackPreference } from '@/services/playerTrackPreferences'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { isVideoFileName } from '@/services/scraper/pathUtils'
 import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
@@ -103,6 +104,7 @@ const isNativeAndroidPlayer = isNativeAndroidRuntime()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const mediaHeaders = ref<Record<string, string>>({})
+const activeResolvedMediaSourceId = ref('')
 const activeSourceId = ref('')
 const activeItemId = ref('')
 const activeLibraryId = ref('')
@@ -192,6 +194,7 @@ let pendingTrackPreference: {
   subtitleRestored: boolean
 } | null = null
 let trackPreferenceRestoreInFlight = false
+let trackPreferenceRestoreQueued = false
 let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
 let heldArrowOwner: 'keyboard' | 'touch' | null = null
 let heldArrowTimer: number | undefined
@@ -975,8 +978,12 @@ async function restoreMediaPlaybackPreference() {
 
 async function restorePendingTrackPreference() {
   const pending = pendingTrackPreference
-  if (!pending || trackPreferenceRestoreInFlight || pending.generation !== mediaPreferenceRestoreGeneration)
+  if (!pending || pending.generation !== mediaPreferenceRestoreGeneration)
     return
+  if (trackPreferenceRestoreInFlight) {
+    trackPreferenceRestoreQueued = true
+    return
+  }
 
   trackPreferenceRestoreInFlight = true
   restoringMediaPreference = true
@@ -995,12 +1002,17 @@ async function restorePendingTrackPreference() {
   finally {
     restoringMediaPreference = false
     trackPreferenceRestoreInFlight = false
+    if (trackPreferenceRestoreQueued) {
+      trackPreferenceRestoreQueued = false
+      queueMicrotask(() => void restorePendingTrackPreference())
+    }
   }
 }
 
 function cancelPendingTrackPreferenceRestore() {
   mediaPreferenceRestoreGeneration += 1
   pendingTrackPreference = null
+  trackPreferenceRestoreQueued = false
 }
 
 function resetPersistedTrackPreferences() {
@@ -1009,7 +1021,7 @@ function resetPersistedTrackPreferences() {
 }
 
 async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
-  const track = matchTrackPreference(audioTracks.value, preference.audio)
+  const track = matchPlaybackTrackPreference(audioTracks.value, preference.audio)
   if (!track)
     return false
   try {
@@ -1027,8 +1039,8 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
     return true
   if (subtitle.kind === 'off') {
     try {
-      activeCachedSubtitlePath = null
       await setSubtitle(null)
+      activeCachedSubtitlePath = null
       return true
     }
     catch {
@@ -1051,12 +1063,12 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
       return false
     }
   }
-  const track = matchTrackPreference(subtitleTracks.value, subtitle.track)
+  const track = matchPlaybackTrackPreference(subtitleTracks.value, subtitle.track)
   if (!track)
     return false
   try {
-    activeCachedSubtitlePath = null
     await setSubtitle(track.id)
+    activeCachedSubtitlePath = null
     return true
   }
   catch {
@@ -1064,46 +1076,10 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
   }
 }
 
-function matchTrackPreference<T extends Track | SubtitleTrackOption>(tracks: readonly T[], preference: MediaTrackPreference | null | undefined): T | null {
-  if (!preference)
-    return null
-  if (preference.trackId != null) {
-    const exactTrack = tracks.find(track => numericTrackId(track) === preference.trackId)
-    if (exactTrack)
-      return exactTrack
-  }
-  let best: { track: T, score: number } | null = null
-  for (const track of tracks) {
-    let score = 0
-    if (sameTrackText(preference.title, track.title))
-      score += 6
-    if (sameTrackText(preference.language, track.language))
-      score += 4
-    if (sameTrackText(preference.codec, track.codec))
-      score += 2
-    if (preference.channels != null && track.channels === preference.channels)
-      score += 2
-    if (!best || score > best.score)
-      best = { track, score }
-  }
-  const minimumScore = preference.title || preference.language
-    ? 4
-    : preference.codec || preference.channels != null
-      ? 2
-      : Number.POSITIVE_INFINITY
-  return best && best.score >= minimumScore ? best.track : null
-}
-
 function numericTrackId(track: Track | SubtitleTrackOption): number | null {
   if ('mpvId' in track && typeof track.mpvId === 'number')
     return track.mpvId
   return typeof track.id === 'number' ? track.id : null
-}
-
-function sameTrackText(expected: string | null | undefined, actual: string | null | undefined): boolean {
-  if (!expected || !actual)
-    return false
-  return expected.trim().toLocaleLowerCase() === actual.trim().toLocaleLowerCase()
 }
 
 function currentHistoryPayload(): PlaybackProgressUpsert | null {
@@ -1146,6 +1122,8 @@ function currentMediaSourceId(): string | undefined {
   const routeMediaSourceId = queryStringValue(route.query.mediaSourceId)
   if (routeMediaSourceId)
     return routeMediaSourceId
+  if (activeResolvedMediaSourceId.value)
+    return activeResolvedMediaSourceId.value
 
   const context = currentPlaybackContext()
   const sourceId = activeSourceId.value || queryStringValue(route.query.sourceId)
@@ -1471,7 +1449,7 @@ function clearHistorySaveTimer() {
   historySaveTimer = undefined
 }
 
-async function syncKnownSubtitleTracks() {
+async function syncKnownSubtitleTracks(resolvedSubtitles: readonly PlaybackSubtitleTrack[] = []) {
   const contextId = queryStringValue(route.query.contextId)
   const playbackContext = contextId ? getPlaybackMediaContext(contextId) : null
   const sourceId = queryStringValue(route.query.sourceId) || playbackContext?.sourceId || ''
@@ -1479,6 +1457,11 @@ async function syncKnownSubtitleTracks() {
   const contextSubtitles = playbackContext && playbackContext.sourceId === sourceId && playbackContext.itemId === itemId
     ? playbackContext.subtitles
     : []
+
+  if (resolvedSubtitles.length > 0) {
+    setKnownSubtitleTracks(resolvedSubtitles.map(mapKnownSubtitleTrack))
+    return
+  }
 
   if (!sourceId || !itemId) {
     setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
@@ -1518,7 +1501,7 @@ function mergeDataSourceSubtitleTracks(...groups: readonly DataSourceSubtitleTra
   return merged
 }
 
-function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTrackInput {
+function mapKnownSubtitleTrack(track: PlaybackSubtitleTrack): KnownSubtitleTrackInput {
   const source = track.url ? 'provider' : 'detail'
   const hasUrl = Boolean(track.url)
   return {
@@ -1529,6 +1512,7 @@ function mapKnownSubtitleTrack(track: DataSourceSubtitleTrack): KnownSubtitleTra
     codec: track.codec,
     isDefault: track.isDefault,
     url: track.url,
+    headers: track.headers ? { ...track.headers } : undefined,
     selectable: hasUrl,
     unavailableReason: source === 'provider'
       ? '该外部字幕缺少可加载地址，暂时只能在详情页确认存在。'
@@ -1956,6 +1940,7 @@ watch(
     resetHistorySaveState()
     mediaPath.value = ''
     mediaHeaders.value = {}
+    activeResolvedMediaSourceId.value = ''
     pictureSettingsError.value = null
     queueSwitchError.value = null
     syncPlaybackQueueFromRoute()
@@ -1971,7 +1956,6 @@ watch(
     )
 
     if (hasPlaybackTarget) {
-      await syncKnownSubtitleTracks()
       await ensureRenderInitialized()
       if (playbackCleanupStarted)
         return
@@ -1979,6 +1963,8 @@ watch(
         const request = await resolvePlaybackLoadRequest()
         mediaPath.value = request.url
         mediaHeaders.value = { ...(request.headers ?? {}) }
+        activeResolvedMediaSourceId.value = request.mediaSourceId ?? ''
+        await syncKnownSubtitleTracks(request.subtitles ?? [])
         await load(request.url, { headers: request.headers, title: mediaTitle.value })
         await restoreMediaPlaybackPreference()
         startHistorySaveTimer()
@@ -1990,6 +1976,8 @@ watch(
       catch (error) {
         mediaPath.value = ''
         mediaHeaders.value = {}
+        activeResolvedMediaSourceId.value = ''
+        setKnownSubtitleTracks([])
         queueSwitchError.value = toSafeErrorMessage(error, '无法解析播放地址。')
       }
     }
@@ -2064,6 +2052,7 @@ async function handleFileDrop(path: string) {
   resetHistorySaveState()
   mediaPath.value = path
   mediaHeaders.value = {}
+  activeResolvedMediaSourceId.value = ''
   mediaTitle.value = path.split(/[\\/]/).pop() || '本地视频'
   playbackQueue.value = null
   playbackContextId.value = ''
@@ -2167,8 +2156,16 @@ async function handleSetSubtitleDelay(delay: number) {
 async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0]) {
   cancelPendingTrackPreferenceRestore()
   const selected = subtitleTracks.value.find(track => track.id === trackId)
-  activeCachedSubtitlePath = selected?.source === 'downloaded' && selected.url ? selected.url : null
-  await setSubtitle(trackId)
+  const previousCachedSubtitlePath = activeCachedSubtitlePath
+  const nextCachedSubtitlePath = selected?.source === 'downloaded' && selected.url ? selected.url : null
+  try {
+    await setSubtitle(trackId)
+  }
+  catch {
+    activeCachedSubtitlePath = previousCachedSubtitlePath
+    return
+  }
+  activeCachedSubtitlePath = nextCachedSubtitlePath
   persistedSubtitlePreference = currentSubtitlePreference()
   await saveMediaPreferenceNow(undefined, true)
 }

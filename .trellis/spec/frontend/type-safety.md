@@ -1069,18 +1069,20 @@ router.push({
 ### Player Per-Media Preferences, Cache, and Shortcut Contract
 
 #### 1. Scope / Trigger
-- Trigger: changing saved subtitle/audio choices, subtitle delay, per-video speed/aspect/fit, downloaded subtitle cache ownership, Player click/keyboard controls, cache clearing, or navigation shortcut settings.
-- Applies to `commands/preference.rs`, `commands/subtitle.rs`, `mediaPlaybackPreferences.ts`, `PlayerView.vue`, `SettingsView.vue`, `AppLayout.vue`, and data-source removal lifecycle.
+- Trigger: changing saved subtitle/audio choices, Emby playback-version subtitle mapping, subtitle delay, per-video speed/aspect/fit, downloaded subtitle cache ownership, Player click/keyboard controls, cache clearing, or navigation shortcut settings.
+- Applies to `commands/preference.rs`, `commands/subtitle.rs`, `commands/player_shared.rs`, `mediaPlaybackPreferences.ts`, `datasource/emby.ts`, `PlayerView.vue`, `SettingsView.vue`, `AppLayout.vue`, and data-source removal lifecycle.
 
 #### 2. Signatures
 - SQLite table: `media_playback_preferences(identity_key, source_id, media_identity, subtitle_json, audio_json, subtitle_delay, playback_speed, aspect_mode, fit_mode, created_at, updated_at)` in `player_preferences.sqlite`.
 - Rust commands: `player_get_media_playback_preference`, `player_upsert_media_playback_preference`, `player_delete_media_playback_preferences_for_source`, and `player_clear_media_cache`.
 - Subtitle download requests may include `cacheOwner: { sourceId, mediaIdentity }`; owned files are written below `cache/subtitles/<source-hash>/<media-hash>`.
+- `MediaStreamRequest` may carry transient `mediaSourceId` and `subtitles: PlaybackSubtitleTrack[]`; `PlaybackSubtitleTrack.headers` is playback-only and must not enter route, history, preferences, diagnostics, or ordinary settings.
 - Global ordinary settings: `ohmycine-player-interaction-settings-v1`, `ohmycine-player-shortcuts-v1`, and `ohmycine-navigation-shortcuts-v1` in `settings.sqlite`.
 
 #### 3. Contracts
 - Per-media identity is exact `sourceId + mediaIdentity`; remote media prefer provider item IDs, while local file/drop media may use the local path identity.
 - Subtitle/audio persistence stores stable fingerprints (`language`, `title`, `codec`, optional `channels`) and uses numeric mpv track ID only as fallback.
+- Track restoration matches stable fingerprint fields before considering numeric mpv IDs. A track-state update received while restoration is in flight queues one bounded retry after the current attempt; it must not be dropped or turned into polling.
 - A cached external subtitle path is valid only after canonicalization proves it remains inside the current storage profile's `cache/subtitles` root and has an allowed subtitle extension.
 - `Space` toggles pause; left/right arrow tap seeks 5 seconds; right hold temporarily applies the configured speed and restores the previous speed on release/blur; left hold repeatedly seeks backward; up/down arrows adjust volume in 5-point steps. Editable controls ignore these bindings.
 - Opening subtitle/audio menus and selecting an already-known track must not synchronously re-read mpv's full `track-list`. Menu state and selected IDs update optimistically from the tracks already loaded; full track refresh is reserved for media load stabilization or an explicitly bounded background refresh. This prevents a transient libmpv property query from holding the shared Player mutex and making every control appear frozen while video continues independently.
@@ -1088,6 +1090,7 @@ router.push({
 - Local/OpenList/Alist/CloudDrive2/WebDAV sibling subtitle discovery accepts `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sub`, requires an exact video basename or delimiter-led suffix match, and treats listing/URL failures as best-effort so media detail remains playable. Re-read the owning directory when detail is requested instead of keeping a permanent sibling list cache, so newly added subtitle files appear without restarting Player.
 - Apply known `sid`, `aid`, and user-triggered `sub-add` changes with synchronous libmpv commands so Vue receives the actual execution result. Do not follow those commands with an immediate full `track-list` query. The historical freeze was caused by synchronous metadata refresh during track switching; replacing short known commands with a cross-call asynchronous C-string queue caused subtitle failure and video-render regressions.
 - Player-downloaded Windows subtitle cache paths may exceed `MAX_PATH` and be canonicalized as `\\?\C:\...`. Do not strip that prefix and pass the now-invalid long path to libmpv. Before `sub-add`, copy local subtitles or bounded-download provider HTTP(S) subtitles into `cache/mpv-subtitles/<opaque-hash>.<ext>` and pass only that short local runtime path to mpv. Never persist the original signed URL, token, or headers in the runtime-cache filename or playback preference.
+- Emby external subtitle tracks come from the same selected PlaybackInfo `MediaSource` as the video, not blindly from top-level item `MediaStreams` or the first media version. Windows and Android both call the shared Rust subtitle preparation path: validate HTTP(S)/headers, cap redirects and bytes, reject HTTPS downgrade, clear all headers on cross-origin redirects, write an opaque short cache path, and give only that local path to libmpv.
 - Manual local subtitle loading uses the native file dialog and accepts only `.srt`, `.ass`, `.ssa`, `.vtt`, and `.sub`. Rust canonicalizes the explicitly selected file, rejects empty/files over 12 MiB, copies it into the current media-owned `cache/subtitles` directory through the same hashed cache boundary as downloaded subtitles, and returns only the controlled cached path for `sub-add` and preference persistence.
 - A manual subtitle/audio selection or subtitle download cancels any pending deferred track-preference restore. Already queued restore commands complete before the new ordered command, but no stale restore may be retried afterward.
 - Restored/user-selected `sid` and `aid` changes and external `sub-add` commands run only after duration/track metadata is available and return their synchronous libmpv result. The event forwarder may drain ordinary events, but track interaction must not introduce an async command-reply queue. Per-media track restoration retries from reactive track updates instead of issuing track commands during the initial remote stream load.
@@ -1103,6 +1106,10 @@ router.push({
 | arrow key is released, window blurs, route changes, or component unmounts | Cancel timers and restore temporary right-hold speed |
 | subtitle/audio menu opens or a known track is selected | Do not issue an immediate `mpv_track_state`; update UI from cached tracks/current selection |
 | saved audio/subtitle preference exists while the remote stream is still loading | Apply scalar settings immediately, defer track matching, then queue async `aid`/`sid`/`sub-add` after tracks appear |
+| a track update arrives while preference restoration is already running | Record one pending wake-up and retry after the active restore settles; do not lose the event or poll `track-list` |
+| selected Emby media version has nested `MediaStreams` | Use that exact list and `MediaSourceId`; top-level item streams are fallback only when the selected source omits them |
+| external subtitle download redirects to another origin | Remove provider headers before following; reject HTTPS-to-HTTP downgrade and excessive redirects/bytes |
+| `sid` or `sub-add` fails | Keep the previous active subtitle/cache state, expose the error, and do not persist the failed choice |
 | shortcut duplicates another shortcut in the same Player/navigation context | Reject save with a user-visible conflict message |
 | shortcut is bare Space, any arrow key, or Escape | Reject because the Player owns it |
 | Player chrome is hidden and any keyboard playback action runs | Keep full chrome hidden and show only the bounded top-right OSD |
@@ -1112,12 +1119,14 @@ router.push({
 
 #### 5. Good/Base/Bad Cases
 - Good: A downloaded subtitle for one Emby episode is restored from a hashed source/media cache directory and removed when that Emby source is deleted.
+- Good: PlaybackInfo selects the 4K media source, so Player exposes and downloads only that source's external subtitles through the shared Windows/Android cache boundary.
 - Base: A saved audio track disappears after the file changes; Player uses the new default audio and remains playable.
-- Bad: Persisting an Emby subtitle URL with API key, using one global subtitle cache folder with no owner, or clearing `settings.sqlite`/`credentials.sqlite` from the cache button.
+- Bad: Pairing the selected video with the first/top-level Emby subtitle list, persisting an Emby subtitle URL with API key, or sending provider Authorization after a cross-origin redirect.
 
 #### 6. Tests Required
-- Rust unit tests prove source deletion leaves other source rows, global cache clearing leaves `player_preferences` globals, and subtitle owner directories contain hashes rather than raw IDs.
-- `npm run verify:playback-preferences-shortcuts` checks command registration, schema, source lifecycle, fixed Player key handling, cache-clear preservation text, shortcut conflicts, and the absence of synchronous track refresh from subtitle/audio interactions.
+- Rust unit tests prove source deletion leaves other source rows, global cache clearing leaves `player_preferences` globals, subtitle owner directories contain hashes rather than raw IDs, and cross-origin subtitle redirects drop sensitive headers.
+- `npm run verify:playback-preferences-shortcuts` checks stable-fingerprint precedence, lossless bounded restore wake-up, failed-selection rollback, command registration, schema, source lifecycle, fixed Player key handling, cache-clear preservation text, shortcut conflicts, and the absence of synchronous track refresh from subtitle/audio interactions.
+- `npm run verify:emby-http-boundary` checks selected-MediaSource subtitle mapping and the transient native subtitle-cache boundary.
 - Run `npm run typecheck`, `npm run lint`, `npm run build`, `cargo test`, and the Windows GNU release build.
 - Manual Windows checks cover replay restore, cached subtitle restore, click-to-pause, arrow tap/hold/release/blur, shortcut capture/conflict, source deletion, and cache clearing.
 
@@ -1150,6 +1159,21 @@ localStorage.clear()
 Correct:
 ```ts
 await invoke('player_clear_media_cache')
+```
+
+Wrong:
+```ts
+const subtitles = item.MediaStreams
+await invoke('mpv_add_subtitle', { url: subtitles[0].DeliveryUrl, headers })
+```
+
+Correct:
+```ts
+const request = await source.getStreamRequest({ itemId, mediaSourceId })
+await invoke('mpv_add_subtitle', {
+  url: request.subtitles?.[0].url,
+  headers: request.subtitles?.[0].headers,
+}) // Rust downloads to an opaque local cache path before libmpv sub-add.
 ```
 
 ### Player Render Surface Command Contract

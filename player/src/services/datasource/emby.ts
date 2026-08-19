@@ -11,6 +11,7 @@ import type {
   MediaSourceOption,
   MediaStreamRequest,
   PlaybackRequest,
+  PlaybackSubtitleTrack,
   ProviderPlaybackProgressInput,
   ProviderPlaybackSyncDiagnostic,
   SubtitleDownloadInput,
@@ -213,6 +214,7 @@ interface EmbyMediaSourceRecord {
   readonly DirectPlayUrl?: string
   readonly TranscodingUrl?: string
   readonly RequiredHttpHeaders?: Record<string, string>
+  readonly MediaStreams?: EmbyMediaStreamRecord[]
   readonly AddApiKeyToDirectStreamUrl?: boolean
 }
 
@@ -588,13 +590,13 @@ export class EmbyDataSource implements DataSource {
       this.rememberPlaybackSession(id, embyPlaybackSource.Id)
       const resolvedUrl = this.resolveMediaSourceUrl(embyPlaybackSource, false)
       if (resolvedUrl)
-        return { url: resolvedUrl }
+        return this.buildPlaybackStreamRequest(id, resolvedUrl, embyPlaybackSource, item.MediaStreams)
     }
 
     const staticStreamSource = playableSources.find(source => typeof source.Id === 'string') ?? playableSources[0]
     if (staticStreamSource) {
       this.rememberPlaybackSession(id, staticStreamSource.Id)
-      return { url: this.buildStaticStreamUrl(id, staticStreamSource.Id) }
+      return this.buildPlaybackStreamRequest(id, this.buildStaticStreamUrl(id, staticStreamSource.Id), staticStreamSource, item.MediaStreams, false)
     }
 
     const remotePlaybackSource = playableSources.find(source => Boolean(this.resolveMediaSourceUrl(source, true)))
@@ -602,7 +604,7 @@ export class EmbyDataSource implements DataSource {
       this.rememberPlaybackSession(id, remotePlaybackSource.Id)
       const resolvedUrl = this.resolveMediaSourceUrl(remotePlaybackSource, true)
       if (resolvedUrl)
-        return { url: resolvedUrl }
+        return this.buildPlaybackStreamRequest(id, resolvedUrl, remotePlaybackSource, item.MediaStreams)
     }
 
     throw new Error('Emby 未暴露可由 Player 直接播放的流地址。请检查该条目的播放权限或 Emby/插件直链配置。')
@@ -1059,7 +1061,7 @@ export class EmbyDataSource implements DataSource {
       resolution: video?.Width && video.Height ? `${video.Width}x${video.Height}` : undefined,
       codec: video?.Codec,
       audioCodec: audio?.Codec,
-      subtitles: streams.filter(stream => stream.Type === 'Subtitle').map(stream => this.mapSubtitleTrack(item.Id, stream, mediaSourceId)),
+      subtitles: streams.filter(stream => stream.Type === 'Subtitle').map(stream => this.mapSubtitleTrack(item.Id, stream, mediaSourceId, undefined, false)),
       audioTracks: streams.filter(stream => stream.Type === 'Audio').map(mapAudioTrack),
       mediaSources: mapMediaSources(item.MediaSources),
       stills: this.stillUrls(item),
@@ -1343,7 +1345,34 @@ export class EmbyDataSource implements DataSource {
     return `${this.baseUrl}/Videos/${encodeURIComponent(id)}/stream?${params.toString()}`
   }
 
-  private mapSubtitleTrack(itemId: string, stream: EmbyMediaStreamRecord, mediaSourceId?: string): SubtitleTrack {
+  private buildPlaybackStreamRequest(
+    itemId: string,
+    url: string,
+    source: EmbyMediaSourceRecord,
+    fallbackStreams: readonly EmbyMediaStreamRecord[] | undefined,
+    includeVideoHeaders = true,
+  ): MediaStreamRequest {
+    const headers = safeRequiredHttpHeaders(source.RequiredHttpHeaders)
+    const streams = source.MediaStreams?.length ? source.MediaStreams : fallbackStreams ?? []
+    const subtitles = streams
+      .filter(stream => stream.Type === 'Subtitle' && (stream.IsExternal || Boolean(stream.DeliveryUrl)))
+      .map(stream => this.mapSubtitleTrack(itemId, stream, source.Id, headers, true))
+
+    return {
+      url,
+      headers: includeVideoHeaders && Object.keys(headers).length > 0 ? headers : undefined,
+      mediaSourceId: source.Id,
+      subtitles,
+    }
+  }
+
+  private mapSubtitleTrack(
+    itemId: string,
+    stream: EmbyMediaStreamRecord,
+    mediaSourceId?: string,
+    headers?: Readonly<Record<string, string>>,
+    includeUrl = true,
+  ): PlaybackSubtitleTrack {
     return {
       index: stream.Index ?? 0,
       language: stream.DisplayLanguage ?? stream.Language ?? 'Unknown',
@@ -1351,7 +1380,8 @@ export class EmbyDataSource implements DataSource {
       codec: stream.Codec ?? stream.Format,
       isDefault: stream.IsDefault ?? false,
       source: stream.IsExternal ? 'external' : 'embedded',
-      url: this.subtitleStreamUrl(itemId, stream, mediaSourceId),
+      url: includeUrl ? this.subtitleStreamUrl(itemId, stream, mediaSourceId) : undefined,
+      headers: includeUrl && headers && Object.keys(headers).length > 0 ? { ...headers } : undefined,
     }
   }
 
@@ -2406,6 +2436,27 @@ function isHttpUrl(value: string | undefined): boolean {
 
 function hasRequiredHeaders(source: EmbyMediaSourceRecord): boolean {
   return source.RequiredHttpHeaders != null && Object.keys(source.RequiredHttpHeaders).length > 0
+}
+
+function safeRequiredHttpHeaders(value: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  if (!value)
+    return {}
+
+  const forbidden = new Set(['accept-encoding', 'connection', 'content-length', 'host', 'range'])
+  return Object.fromEntries(Object.entries(value)
+    .filter(([name, headerValue]) => {
+      const normalizedName = name.trim().toLocaleLowerCase()
+      return normalizedName
+        && !forbidden.has(normalizedName)
+        && typeof headerValue === 'string'
+        && headerValue.trim().length > 0
+        && !name.includes('\r')
+        && !name.includes('\n')
+        && !headerValue.includes('\r')
+        && !headerValue.includes('\n')
+    })
+    .slice(0, 16)
+    .map(([name, headerValue]) => [name.trim(), headerValue.trim()]))
 }
 
 function isSameOrigin(value: string, baseUrl: string): boolean {
