@@ -14,15 +14,33 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 ### 1.1 当前实现状态（2026-08）
 
+下载预分类完成后 Server 不只设置 qBittorrent Category，还必须显式调用 `setLocation(暂存目录/分类)` 后才恢复下载；因为用户关闭 Automatic Torrent Management 时，单独修改 Category 不会改变保存位置。入库源解析仅对旧任务兼容查找暂存根目录，新任务的正常路线始终是分类目录。`copy|symlink` 入库后进入独立做种管理，按任务快照的时长/分享率条件采样；`copy` 达标后删任务与暂存源数据，`symlink` 只删任务并永久保留链接源，`move` 入库后以 `deleteData=false` 清理 qBittorrent 任务。自动清理默认关闭。
+
+下载完成后自动生成的 TransferTask 现已拥有独立 `/automation/organization` 媒体整理工作区。`GET /api/v1/transfers` 提供 own/all 范围内的稳定分页、`active|history|all` 范围、状态/媒体库/分类/方式/标题筛选、完整可见范围的筛选选项和真实统计；管理端默认“进行中”，终态记录进入“历史记录”，详情复用 transfer Job 的 attempts、timeline、ActionRequest 与阶段重试。失败、已取消和已完成的整理记录可通过 `DELETE /api/v1/transfers/{id}` 清理，操作复用 `jobs.control_own/all` 并二次确认；它只删除 TransferTask 和对应 transfer Job 执行历史，不删除 DownloadTask、下载器任务、暂存/源文件、媒体库文件或做种记录。Transfer worker 仅保存最多 100 项、48 KiB 内的目标相对命名结果摘要，读写两端均拒绝绝对路径、遍历与控制字符；私有 manifest、暂存/Storage 根、provider task ID 和原始错误不进入 API。这里不创建手动整理任务，手动选择文件与操作归后续“文件管理”。
+
 Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
 
-当前版本已实现独立的本地 `Storage` 基础：管理员可以注册、编辑、只读探测和删除本地根配置；根必须是存在的绝对目录并拒绝 Reparse Point，探测只进行受控目录读取与容量查询。创建 Storage 不会扫描媒体，删除 Storage 只删除配置而不会修改真实文件。MediaLibrary 可显式引用已注册 Storage 后独立扫描，但 Connection、Storage Destination、流水线 `CategoryRule`、STRM、302 或媒体服务器刷新业务 API 仍未实现，管理端只以明确的“规划中”状态展示这些入口。
+当前版本已实现 local 与 115 数据源基础：管理员从统一“数据源”页面先选择本地目录或 115 网盘；本地根继续执行绝对路径、Reparse Point 和只读探测校验，115 Cookie 由 Connection AES-GCM 加密保存并可被多个 provider root 复用。115 云目录选择使用绑定 actor、Connection、Storage、Storage 根、provider directory ID、用途和过期时间的 opaque token，Storage 保存稳定 file ID 与显示路径，不保存 Cookie、pickcode 或临时直链。MediaLibrary 可继续从 Storage 根选择任意下级媒体目录，私有保存稳定 provider root ID，并从该 ID 执行 bulk-tree 全量扫描；创建数据源本身不会扫描媒体，删除配置不会修改真实文件或网盘内容。Storage Destination、STRM、302 和媒体服务器刷新业务 API 仍按路线图继续实现。
 
-Server 同时已实现独立的 `MediaClassificationProfile`：它保存版本化的 movie/tv 逻辑分类规则，提供受控管理页、严格校验、复制、乐观 revision 和纯 Go matcher，供 `MediaLibrary` 选择。内置 `default-v1` 与 Player v1 默认分类语义一致，但 Server 不读取或执行 Player 配置。该 Profile 不属于下载/转移流水线的 `categories.*` / `CategoryRule`，不选择 Storage Destination，也不执行移动、重命名或任何文件写入；Profile revision 更新只把引用库标记为待重分类。
+Emby 不作为文件数据源展示，而进入独立“播放器管理”工作区。页面复用通用 Connection 记录和既有权限，以卡片展示真实探测状态、受控的服务器版本/媒体数量聚合摘要，以及默认关闭的签名 STRM 302 gateway。API Key 加密保存且永不回填；gateway 与 Web/API/STRM 共用 Server 主端口，复制地址只使用全局 `OMC_PUBLIC_ORIGIN`。默认监听 `0.0.0.0:3000` 与默认 advertised origin `http://127.0.0.1:3000` 明确分离，wildcard 地址不能进入持久 URL。为兼容不返回 CORS Header 的 115 CDN，网关修补 Emby Web 固定播放器资源中的远程 DirectPlay `crossOrigin` 赋值，并在固定 HTML 壳优先加载一个网关同源、不可配置的兜底脚本以覆盖旧模块缓存；同一固定脚本还可按网关开关提供设备适配的外部播放器入口和 Emby 背景图横向图库。外部播放器只接受本系统 PlaybackInfo 返回的短时 ticket，不传递 Emby/115 持久凭据或最终 CDN 地址；图库只使用当前 Emby 会话可见图片且无第三方前端依赖。其它 HTML/静态内容仍透明代理，不提供任意脚本注入。
 
-`MediaLibrary` 基础现已落地为只读索引边界：每个库引用一个 Storage、一个经目录选择令牌校验并持久化为 provider-relative 的根、一个分类 Profile，以及独立的全量/增量计划、扩展名、忽略规则、metadata 匹配与 provider 限速配置。新建并启用后自动执行首次全量基线，成功后才挂接该库独立的 watcher，并立即执行一次 catch-up reconciliation 覆盖交接窗口；初始化失败时保留配置、显示安全错误码与下次指数退避时间，也可仅唤醒该库“立即重试”。管理端 `/system/media-libraries` 展示状态、扫描记录和只含相对路径的媒体条目，并提供显式手动跟进扫描。当前仅接入 local Storage，因此 UI 完全隐藏 STRM/302 字段；云来源与受控 STRM 输出目录仍由后续纵向切片接入。
+Server 同时已实现独立的 `MediaClassificationProfile`：它保存版本化的 movie/tv 逻辑分类规则，提供受控管理页、严格校验、复制、乐观 revision 和纯 Go matcher，供 `MediaLibrary` 选择。内置 `default-v1` 与 Player v1 默认分类语义一致，但 Server 不读取或执行 Player 配置。Profile 自身不选择 Storage 或执行文件写入；MediaLibrary 将 Profile 与最终存储边界、排序、转移/冲突策略及命名模板组合起来。下载任务选择媒体库后快照整套路由，先用该 Profile 给 qBittorrent 预分类，完成后再由独立 Transfer Job 入库。
+
+Profile 的预识别现已内置用户指定的 MoviePilot-Help `TV.txt` 与 `anime.txt` 固定离线快照，默认按 TV → anime → 用户自定义规则执行。快照固定到明确 commit，随源码保存来源、SHA-256、同步日期和 MIT 许可证；运行时不访问 GitHub。322 条有效规则完整支持屏蔽、替换、集数偏移、捕获替换、前后查找和直接 TMDB ID 提示，并对兼容回溯正则设置输入、单次匹配、总耗时和应用次数上限。直接 ID 仍必须由 Server 向 TMDB 按类型/ID 验证后才能分类。每个 Profile 可以关闭任一只读内置词包，复制保留选择；下载任务会把词包、用户规则、分类规则和命名模板一起快照，后续修改不会改变在途任务。
+
+`MediaLibrary` 基础现已落地为只读索引边界：每个库引用一个 Storage、一个经目录选择令牌校验并持久化为 provider-relative 的根、一个分类 Profile，以及独立的全量/增量计划、扩展名、忽略规则、metadata 匹配与 provider 限速配置。新建并启用后自动执行首次全量基线，成功后才挂接该库独立的 watcher，并立即执行一次 catch-up reconciliation 覆盖交接窗口；初始化失败时保留配置、显示安全错误码与下次指数退避时间，也可仅唤醒该库“立即重试”。115 Connection 另有独立生活事件轮询：首次只锚定最新事件，后续将白名单化的创建、移动、重命名和删除事件连同 `(update_time,event_id)` 游标原子持久化，再同时唤醒关联媒体库和同 Connection 的 115 离线下载任务；监听不占额外 Job 队列，单连接失败不影响其它连接，媒体库周期 reconciliation 与离线任务低频状态查询分别负责补漏。文件 Entry 继续作为扫描事实层，并持久化 `work_key/series_title`；用户可见 catalog 在 SQLite 中先按作品聚合再分页，电视剧按 Series -> Season -> Episode 按需展开，原始 `/entries` 保留为分页诊断接口。管理端 `/system/media-libraries` 提供真实 total、标题搜索、类型筛选、20/50/100 页大小和取消过期请求的作品清单。local 与 115 已接入只读扫描；受控 STRM 输出目录仍由后续纵向切片接入。
+
+媒体库扫描和下载完成现在共用同一 provider-neutral 识别核心：local、115 以及未来 OpenList/Alist、CloudDrive2 adapter 只枚举文件事实；统一分组层负责根目录电影、剧集季目录和 BDMV/VIDEO_TS 发行目录；随后才执行 Profile 预处理、文件名/父目录/包名候选、TMDB 验证和分类。TMDB 请求不在数据库事务中进行，提交前重新校验来源、Profile revision 和 generation。匹配结果默认缓存 30 天，无匹配缓存 30 分钟，临时网络失败缓存 5 分钟，凭据缺失/认证失败不做长期负缓存。扫描事件仍按媒体库独立并发且不占任务队列；当前 local watcher 与 115 生活事件会合并唤醒同一完整只读 reconciliation，未变化识别单元通过指纹/缓存避免重复 TMDB，请求；周期扫描继续补漏。
+
+v25 新增媒体库识别单元和安全缓存持久化，Entry 关联识别投影，扫描记录显示匹配、未识别、缓存命中和识别失败数。缺少 TMDB、认证/网络失败、无匹配或低置信不会让文件枚举失败，而是进入“未识别”。管理端媒体清单提供全部、已识别、未识别和人工匹配分页；管理员可单项重试、搜索有限 TMDB 候选、只提交 TMDB ID/type 进行服务端复验，并可清除人工覆盖。更换 Storage/媒体库根/provider root 时，旧 Entry、识别单元、人工覆盖和扫描记录在同一事务内清空，再自动建立新基线；扫描和人工识别都不会移动、重命名、上传或删除来源文件。
 
 Server 运行日志已经形成独立基础设施：zerolog 事件在统一脱敏后同时写入 stdout 与本地 JSONL，默认按 20 MiB 切割、gzip 压缩，并以 10 个分片、30 天和 500 MiB 三项上限清理最旧历史。管理端顶栏日志中心通过 `logs.read` 查询并组合筛选模块、组件、插件和业务关联 ID；导出和策略修改分别由 `logs.export`、`logs.configure` 控制。运行日志与 SQLite 审计日志分域、分权、分开保留，日志文件故障时 Server 降级为 stdout 而不退出。
+
+下载器纵向切片现已接入真实持久队列：管理员可创建、编辑、测试和删除 qBittorrent 连接；qBittorrent 下载目录不再属于某个下载器或 Storage，而是在 `/system/settings` 通过全局 Server 目录选择器配置一份统一绝对暂存目录，支持 Server 可见 Windows 盘符/UNC 与 Linux 挂载点。115 原生离线下载器则受 provider 约束：复用一个 115 数据源的加密 Cookie，并通过 Storage-scoped 目录令牌选择该数据源根内任意子目录；数据库私有保存稳定 provider directory ID，管理 API 只显示数据源名和 Storage-relative 路径。115 离线任务以生活事件广播作为低延迟完成检查信号，事件到达后立即重新读取任务状态和输出清单；20 秒低频查询继续作为漏事件补偿，等待期间只刷新本地 Job lease，不把生活事件直接当作完成事实。管理端通过顶部页签切换进行中、历史记录、新建下载、做种管理和下载器管理，不再把所有区域纵向平铺；`GET /api/v1/downloads?scope=active|history|all` 按 download→transfer→seeding 完整流水线判定范围，失败或未收口的后续仍留在进行中。完整成功历史可只清理 OhMyCine 下载/整理/做种记录及 Job 执行历史，不调用 qBittorrent、不删除暂存或媒体库文件；失败/取消任务仍使用 provider-first 的破坏性删除。保存和执行均重新校验路径、symlink 与 Reparse Point，下载任务入队时快照绝对路径和媒体分类 Profile revision；旧 Storage-relative 任务保持兼容。下载完成会同时持久化 provider 完整清单与安全入库清单，只有识别、转移和目标对账全部成功后才精确清理二者差集；任何 partial、非子集、路径/文件变化都会保留数据。qBittorrent `copy|symlink` 将该清理延后到做种收口，115 只按已验证稳定 item ID 送回收站，不递归猜测目录内容。TMDB 凭据按“用户 AES-GCM 自定义凭据 → 部署凭据 → 正式构建内置应用凭据”解析，并显式区分 v4 Read Access Token/Bearer 与 v3 API Key/`api_key` query；管理 API 只显示来源和类型，清除自定义凭据自动回到下一级。v11 前的 Token 密文不重写并继续按 Read Access Token 使用。默认 API 优先短域名且只在网络错误时回退旧域名，401/403 或其它 HTTP 响应不回退；自定义 API 与图片 HTTPS 前缀分别通过固定真实请求测试成功后才独立保存。裸磁力先获取 metadata、暂停并复用 `ParseFilename + TMDB + classification.Classify` 做轻量刮削，再把结果安全映射为暂存根内的 qBittorrent category 后恢复下载；缺少凭据、认证/网络失败、无结果或低置信时自动归入 `未识别`，不阻塞后续任务，完成后再次复核。取消是经确认的破坏性操作：qBittorrent 删除任务与下载数据后，Server 事务清理 DownloadTask、Job 及依赖；failed/cancelled 也可单独删除，provider 已手动删除时幂等收口，provider 失败时保留本地记录。qBittorrent 新旧 API 与 OMC tag 幂等接管和 115 原生离线下载均已覆盖；115 离线完成后可按目标 MediaLibrary 快照，在同一 Connection 内执行云端 `move|copy`、模板改名、四种冲突策略和 dirty-generation 对账。Transmission、跨账号/跨网盘传输、STRM 与媒体服务器通知仍由后续切片实现。
+
+115 MediaLibrary 现在还可独立启用“分享与转存接管”：绑定同 Connection 的 115 原生下载器，并在 Storage 内选择一个与最终媒体库根及其它中转根互不重叠的中转目录。下载页可提交 `115_share`，Server 将分享链接和提取码按 DownloadTask AES-GCM 加密，转存到稳定的 `omc-<task-id>` 子目录；成功响应丢失或重启后先按该目录事实对账，避免重复转存。用户通过 115 App 手工放入中转根的非 `omc-*` 直接子项，由生活事件安静窗口唤醒的权威目录 sweep 接管；启动及周期 reconciliation 同时补漏，数据库部分唯一索引保证重复事件只创建一条内部 adopted DownloadTask。分享与手工转存不另建识别/整理实现，而是继续经过统一包过滤、Profile/TMDB 识别门禁和 TransferService；不识别时保留来源且不写最终目录。分享链接、提取码、provider item ID、Cookie、完整 provider 路径和上游正文均不进入 Job payload、API、WebSocket、日志或审计。
+
+元数据产物仍遵循统一“识别/TMDB 快照是数据库唯一真相，按媒体库策略投影”的后续设计：本地媒体库在媒体文件旁生成 NFO/JPG；云盘启用 STRM 时在本地 STRM 投影目录生成 STRM/NFO/JPG；云盘未启用 STRM 时默认只保存数据库元数据，并允许媒体库显式开启旁挂文件上传。这个开关必须和真实 NFO/JPG/STRM worker 同时交付，当前分享接管切片不提供无执行效果的占位设置。
 
 管理端通过 Server 目录选择器注册本地 Storage，而不是使用浏览器原生文件选择器或自由文本路径。`storages.browse` 单独保护 Server 进程可见根与单层子目录枚举；Windows 显示当前服务账户可见盘符/映射盘，Linux/NAS/Docker 只显示进程命名空间中的 `/` 与实际挂载点。导航和选择使用短期、签名、用途隔离的令牌，UI 不拼接路径；保存时仍重新执行 `CanonicalizeRoot`、Reparse Point/symlink 拒绝、唯一性和只读探测。该浏览器不递归扫描、不返回普通文件，也不提供创建、改名、移动、删除、上传或预览。
 
@@ -375,18 +393,18 @@ type StorageDestination struct {
 
 ### 6.3 STRM 管理器
 
-STRM 管理有独立的管理页面，提供定时任务配置：
+STRM 管理有独立的管理页面，当前以媒体库 generation 和 manifest 为中心提供真实运行状态；定时周期仍由媒体库扫描设置负责，入库任务继续位于媒体整理页面：
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ STRM 管理                                                  │
 ├────────────────────────────────────────────────────────────┤
 │                                                            │
-│  定时任务配置                                               │
+│  媒体库运行状态                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │ 增量同步: 每 30 分钟    [0 */30 * * *]               │  │
-│  │ 全量扫描: 每天 03:00    [0 3 * * *]                  │  │
-│  │ 无效清理: 每周日 04:00  [0 4 * * 0]                  │  │
+│  │ 已应用 / 当前 generation、最新 Run 与细分计数        │  │
+│  │ 运行历史、失败重试和 manifest-owned 产物分页         │  │
+│  │ 清理预览 + 短时确认令牌，不提供任意裸文件删除         │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                            │
 │  同步状态                                                   │
@@ -397,9 +415,17 @@ STRM 管理有独立的管理页面，提供定时任务配置：
 │  │ 剧集库   │ 5,678  │ 5,678  │ 0      │ 2小时前        │  │
 │  └──────────┴────────┴────────┴────────┴────────────────┘  │
 │                                                            │
-│  操作: [立即增量同步] [立即全量扫描] [清理无效STRM]         │
+│  操作: [立即增量刷新] [全量重建] [失败重试] [清理预览]      │
 └────────────────────────────────────────────────────────────┘
 ```
+
+媒体视频扩展固定为 `mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v`。投影伴随文件默认包含不可移除的 `srt,ssa,ass,jpg`，每个媒体库可以追加经过严格校验的小写字母/数字扩展；追加集合进入 generation policy 快照，扫描和 worker 使用同一有效集合。
+
+完整成功且非 partial 的权威扫描会把 scan run ID/kind、generation、投影根 canonical identity 和清理资格写入不可变 policy。产物 worker 在同一事务内完成新 manifest 应用、旧 manifest 失效和 applied generation 推进，然后才执行自动清理。失败、partial、superseded、未知扫描类型或投影根变化都不自动删除。
+
+自动与人工清理共用同一个 manifest primitive：持有同库扫描互斥锁，每个文件删除前持久化 `cleanup` claim，并重新校验 generation、root identity、manifest snapshot、ownership、kind/扩展名和 symlink/junction/reparse 边界。自动路径只认当前投影根；投影根更换后，人工预览/确认路径可仅根据每条 artifact owner 的不可变 policy 解析旧根，并把完整根身份集合哈希进确认令牌。只会删除 inactive + managed + `local_projection` 的 STRM/NFO/JPG/字幕/已快照伴随文件，绝不删除 unmanaged 同名文件。删除 manifest 与累计计数同事务提交；Server 中断后可通过 `pending|running|failed` 状态和文件 claim 重放收敛，不回滚已完成产物 generation。
+
+v29 迁移以 additive 列加入 run 清理状态/错误/时间和媒体库最近清理摘要；历史 completed/superseded run 回填为 `skipped`，避免升级后对旧投影发生意外删除。运行历史展示清理状态、时间、计数和安全错误码。
 
 **STRM 生成逻辑**：
 
@@ -660,53 +686,40 @@ type Torrent struct {
 ```go
 // pkg/downloader/client.go
 
-type DownloadClient interface {
-    Name() string
-    AddTorrent(ctx context.Context, req *AddRequest) (*Task, error)
-    AddURL(ctx context.Context, url string, savePath string) (*Task, error)
-    GetTask(ctx context.Context, taskID string) (*Task, error)
-    ListTasks(ctx context.Context) ([]*Task, error)
-    PauseTask(ctx context.Context, taskID string) error
-    ResumeTask(ctx context.Context, taskID string) error
-    DeleteTask(ctx context.Context, taskID string, deleteFiles bool) error
+type Client interface {
+    Test(ctx context.Context) (Health, error)
+    Submit(ctx context.Context, req SubmitRequest) (Task, error)
+    Get(ctx context.Context, taskID string) (Task, error)
+    Pause(ctx context.Context, taskID string) error
+    Resume(ctx context.Context, taskID string) error
+    Cancel(ctx context.Context, taskID string, deleteData bool) error
 }
 
-type AddRequest struct {
-    TorrentURL string // 种子下载链接或磁力链接
-    SavePath   string // 保存目录
-    Category   string // 分类标签 (用于后续自动转移识别)
-    Name       string // 任务名称
+type SubmitRequest struct {
+    Source   Source // magnet/HTTP(S) URL 或受限内存 torrent bytes
+    SavePath string // 由任务入队时快照的统一暂存设置解析
+    Tag      string // omc-<download-task-id>
 }
 
 type Task struct {
-    ID         string    `json:"id"`
-    Name       string    `json:"name"`
-    Status     string    `json:"status"`      // downloading/seeding/completed/paused/error
-    Progress   float64   `json:"progress"`    // 0-100
-    Size       int64     `json:"size"`
-    Speed      int64     `json:"speed"`       // bytes/s
-    ETA        int64     `json:"eta"`         // seconds
-    SavePath   string    `json:"save_path"`
-    Category   string    `json:"category"`
-    CreatedAt  time.Time `json:"created_at"`
+    ID             string
+    Status         string
+    Progress       *float64 // unknown 使用 nil
+    BytesCompleted *int64
+    BytesTotal     *int64
+    DownloadSpeed  *int64
+    UploadSpeed    *int64
+    ETASeconds     *int64
+    Completed      bool
+    Failed         bool
 }
 ```
 
 ### 9.2 下载器配置
 
-```yaml
-# 下载器管理配置
-download_clients:
-  - name: "主下载器"
-    type: qbittorrent           # qbittorrent / transmission
-    url: "http://localhost:8080"
-    username: admin
-    password: ""
-    # 下载目录 (种子下载到这里)
-    download_path: "/downloads"
-    # 是否默认下载器
-    is_default: true
-```
+下载器配置保存在 SQLite `downloaders`，不再以包含明文密码的 YAML 作为运行事实。`base_url` 只允许无 userinfo、path、query、fragment 的 HTTP(S) origin；username/password 分字段加密。qBittorrent 配置只描述连接和能力，API 只返回 `*_configured` 布尔值而不回显凭据。统一暂存目录保存在 singleton `download_settings`，由 `settings.read/update` 控制。发起下载时直接选择目标 MediaLibrary；选择 `0` 时按媒体库顺序取第一条真正可用的库。媒体库负责 Profile、最终路径、转移方式、冲突策略和命名模板，不再引入一层重复的 DownloadRule。
+
+每个新任务会同时快照暂存目录和目标媒体库路由，之后修改全局设置或媒体库都不会重定向在途任务。下载完成并复核真实 manifest 后创建单独的 `transfer` Job；无目标库的历史兼容任务只下载和刮削，不自动写入媒体库。
 
 ### 9.3 下载器管理 UI
 
@@ -719,14 +732,13 @@ download_clients:
 │  │ 名称         │ 类型     │ 状态     │ 操作               │  │
 │  ├──────────────┼──────────┼──────────┼────────────────────┤  │
 │  │ 主下载器     │ qBit     │ ● 在线   │ 测试│编辑│任务列表 │  │
-│  │ 备用下载器   │ Trans    │ ○ 离线   │ 测试│编辑│任务列表 │  │
+│  │ 备用下载器   │ Trans    │ 规划中   │ 后续 adapter       │  │
 │  └──────────────┴──────────┴──────────┴────────────────────┘  │
 │                                                              │
 │  [+ 添加下载器]                                               │
 │                                                              │
-│  配置:                                                       │
-│  下载目录: /downloads                                        │
-│  完成后默认操作: 移动到分类目录                                │
+│  新建任务: [磁力/URL] [上传种子] [选择下载器] [确认并入队]      │
+│  Telemetry: 进度 / 下载速度 / 上传速度 / ETA / 安全错误        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -964,7 +976,9 @@ func (f *FollowService) getMissingEpisodes(task *FollowTask) []int {
 
 ## 11. 文件转移引擎 (Transfer Engine)
 
-下载完成后自动触发转移流程。
+下载完成后自动触发独立、可恢复的转移流程。当前本地闭环以 MediaLibrary 为路由事实：下载时已经选定目标库并快照配置，转移阶段不再重新猜测目标。扫描器/监听器保持只读，只有 TransferService 能在经过边界校验后写入媒体库根目录。
+
+本地实现支持 `move`、`copy`、`symlink`；115 云端实现支持同一 Connection 内的 `move`、`copy`，两者都复用 `ask`、`overwrite`、`skip`、`rename` 冲突策略。`ask` 会产生 ActionRequest 并释放 worker slot；115 覆盖先把已验证位于目标媒体库根内的冲突项送入回收站，复制结果无法唯一确认时保留数据并失败。成功后递增媒体库 `dirty_generation`，交给并发监听/对账机制刷新索引。跨账号/跨网盘传输、STRM、媒体服务器通知和 hardlink 仍按后续切片接入。
 
 ### 11.1 转移引擎
 
@@ -1102,6 +1116,8 @@ func buildTargetPath(dest *StorageDestination, rule *CategoryRule, parsed *Parse
 ## 12. 302代理引擎 (302 Proxy)
 
 播放网盘上的STRM文件时，302代理将请求重定向到云盘CDN：
+
+115 的签名 STRM 默认采用有界双设备策略：第一台活跃设备使用原文件 pickcode，第二台在 OhMyCine 专属临时目录创建一个短命副本并使用副本 pickcode，第三台返回明确的并发上限。设备路由键只保存 `Remote IP + User-Agent` 的 SHA-256，不保存原始值。副本 lease 持久化以支持崩溃恢复；直链签发后只将该 lease 持有的精确目录送入回收站，再使用可选的 AES-GCM 回收站安全码按同一 item ID 永久删除。自动流程永不以空 ID 清空用户整个 115 回收站，安全码缺失或错误时保留待清理事实并指数退避重试。
 
 ```go
 // pkg/proxy/engine.go
@@ -1315,11 +1331,13 @@ POST   /api/v1/sites/{id}/test               # 测试站点连接
 GET    /api/v1/sites/{id}/categories         # 获取站点分类
 
 # ====== 下载器管理 ======
-GET    /api/v1/downloaders                   # 下载器列表
+GET    /api/v1/downloaders                   # 下载器列表（脱敏）
 POST   /api/v1/downloaders                   # 添加下载器
-PUT    /api/v1/downloaders/{id}             # 更新下载器
-DELETE /api/v1/downloaders/{id}             # 删除下载器
+PATCH  /api/v1/downloaders/{id}             # 更新下载器/凭据
+DELETE /api/v1/downloaders/{id}             # 删除无活跃任务引用的配置
 POST   /api/v1/downloaders/{id}/test        # 测试下载器连接
+GET    /api/v1/downloads                     # owner/all 范围下载事实
+POST   /api/v1/downloads                     # 提交 magnet/URL/torrent
 
 # ====== 发现页 ======
 POST   /api/v1/discovery/search              # 聚合搜索
@@ -1347,7 +1365,8 @@ POST   /api/v1/downloads/{id}/resume         # 恢复
 # ====== 转移任务 ======
 GET    /api/v1/transfers                     # 转移任务列表
 GET    /api/v1/transfers/{id}                # 转移任务详情
-POST   /api/v1/transfers/{id}/retry          # 重试失败的转移
+DELETE /api/v1/transfers/{id}                # 删除终态整理记录，不删除真实文件
+POST   /api/v1/jobs/{transferJobID}/retry     # 仅重试失败的转移 Job
 
 # ====== STRM管理 ======
 GET    /api/v1/strm/status                   # STRM同步状态
@@ -1366,10 +1385,17 @@ POST   /api/v1/metadata/match                # 自动匹配
 GET    /api/v1/metadata/{tmdb_id}            # 获取元数据
 
 # ====== 媒体库 ======
-GET    /api/v1/media                         # 媒体列表
-GET    /api/v1/media/{id}                    # 媒体详情
-PUT    /api/v1/media/{id}                    # 更新媒体信息
-DELETE /api/v1/media/{id}                    # 删除媒体
+GET    /api/v1/media-libraries                         # 媒体库列表
+GET    /api/v1/media-libraries/{id}                    # 媒体库详情
+POST   /api/v1/media-libraries/{id}/scan               # 立即扫描
+GET    /api/v1/media-libraries/{id}/entries            # 文件事实分页
+GET    /api/v1/media-libraries/{id}/catalog            # 作品聚合分页
+GET    /api/v1/media-libraries/{id}/runs               # 扫描记录
+GET    /api/v1/media-libraries/{id}/recognitions       # 识别单元分页
+POST   /api/v1/media-libraries/{id}/recognitions/{token}/retry
+GET    /api/v1/media-libraries/{id}/recognitions/{token}/tmdb-candidates
+PUT    /api/v1/media-libraries/{id}/recognitions/{token}/override
+DELETE /api/v1/media-libraries/{id}/recognitions/{token}/override
 
 # ====== 文件管理 ======
 GET    /api/v1/files/{connection_id}/list    # 浏览文件
@@ -1398,7 +1424,12 @@ GET    /api/v1/audit                         # audit.read
 # ====== 系统设置 ======
 GET    /api/v1/settings                      # 获取设置
 PUT    /api/v1/settings                      # 更新设置
-GET    /api/v1/settings/tmdb/test            # 测试TMDB连接
+GET    /api/v1/settings/metadata             # 元数据设置（凭据来源与非敏感路由）
+PATCH  /api/v1/settings/metadata             # 加密保存/清除显式类型的 TMDB 凭据
+POST   /api/v1/settings/metadata/test        # 使用有效凭据和当前 API 路由测试
+POST   /api/v1/settings/metadata/test-token  # 候选 API Key/Read Token 测试成功后 CAS 保存
+POST   /api/v1/settings/metadata/test-api    # 测试成功后启用 API HTTPS 前缀
+POST   /api/v1/settings/metadata/test-image  # 测试成功后启用图片 HTTPS 前缀
 
 # ====== 配置同步 (Player ↔ Server) ======
 POST   /api/v1/sync/push                     # Player推送数据源配置
@@ -1514,15 +1545,27 @@ CREATE TABLE sites (
 -- ========================================
 
 CREATE TABLE downloaders (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    name          TEXT NOT NULL,
-    type          TEXT NOT NULL,                  -- qbittorrent/transmission
-    config        TEXT NOT NULL,                  -- JSON: URL/用户名/密码
-    download_path TEXT NOT NULL,                  -- 下载目录
-    is_default    BOOLEAN DEFAULT false,
-    status        TEXT DEFAULT 'unknown',
-    last_check    DATETIME,
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    type                TEXT NOT NULL,             -- fake/qbittorrent；Transmission 后续
+    base_url            TEXT NOT NULL,
+    username_ciphertext TEXT NOT NULL,
+    password_ciphertext TEXT NOT NULL,
+    storage_id          INTEGER,                   -- v7 legacy compatibility; v8 后不再读写
+    capabilities_json   TEXT NOT NULL,
+    last_health_status  TEXT NOT NULL DEFAULT 'unknown',
+    created_at          DATETIME NOT NULL,
+    updated_at          DATETIME NOT NULL
+);
+
+CREATE TABLE download_settings (
+    id            INTEGER PRIMARY KEY CHECK(id = 1),
+    storage_id    INTEGER,
+    relative_path TEXT NOT NULL DEFAULT '/',
+    revision      INTEGER NOT NULL DEFAULT 1,
+    created_at    DATETIME NOT NULL,
+    updated_at    DATETIME NOT NULL,
+    FOREIGN KEY (storage_id) REFERENCES storages(id) ON DELETE RESTRICT
 );
 
 -- ========================================
@@ -1530,26 +1573,27 @@ CREATE TABLE downloaders (
 -- ========================================
 
 CREATE TABLE download_tasks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id         INTEGER NOT NULL,             -- 创建者
-    site_id         INTEGER,
-    downloader_id   INTEGER,                      -- 使用的下载器
-    torrent_name    TEXT,
-    torrent_url     TEXT,
-    imdb_id         TEXT,                          -- IMDB ID (用于匹配)
-    tmdb_id         INTEGER,                      -- TMDB ID
-    save_path       TEXT,                          -- 下载目录
-    status          TEXT DEFAULT 'pending',        -- pending/downloading/seeding/completed/failed/transferring
-    progress        REAL DEFAULT 0,
-    size            INTEGER DEFAULT 0,
-    speed           INTEGER DEFAULT 0,
-    client_task_id  TEXT,                          -- 下载器中的任务ID
-    category_rule_id INTEGER,                     -- 匹配到的分类规则
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (site_id) REFERENCES sites(id),
-    FOREIGN KEY (downloader_id) REFERENCES downloaders(id)
+    id                TEXT PRIMARY KEY,
+    owner_id          INTEGER NOT NULL,
+    job_id            TEXT NOT NULL UNIQUE,
+    downloader_id     TEXT,
+    source_ciphertext TEXT NOT NULL,               -- magnet/URL/torrent 加密 envelope
+    staging_absolute_path TEXT NOT NULL DEFAULT '',-- 新任务入队时快照，不进入公开 DTO
+    staging_storage_id INTEGER,                    -- 旧任务兼容 fallback
+    staging_relative_path TEXT NOT NULL DEFAULT '',-- 旧任务兼容 fallback
+    provider_task_id  TEXT NOT NULL DEFAULT '',
+    phase             TEXT NOT NULL,
+    progress          REAL,                        -- unknown 保持 NULL
+    bytes_completed   INTEGER,
+    bytes_total       INTEGER,
+    download_speed    INTEGER,
+    upload_speed      INTEGER,
+    eta_seconds       INTEGER,
+    created_at        DATETIME NOT NULL,
+    updated_at        DATETIME NOT NULL,
+    FOREIGN KEY (owner_id) REFERENCES users(id),
+    FOREIGN KEY (job_id) REFERENCES jobs(id),
+    FOREIGN KEY (downloader_id) REFERENCES downloaders(id) ON DELETE SET NULL
 );
 
 -- ========================================
@@ -1557,20 +1601,24 @@ CREATE TABLE download_tasks (
 -- ========================================
 
 CREATE TABLE transfer_tasks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    download_task_id INTEGER,                     -- 关联的下载任务
-    source_path     TEXT NOT NULL,                 -- 源文件路径
-    target_path     TEXT NOT NULL,                 -- 目标文件路径
-    transfer_mode   TEXT NOT NULL,                 -- move/hardlink/copy/symlink
-    status          TEXT DEFAULT 'pending',        -- pending/transferring/completed/failed
-    error_message   TEXT,                          -- 失败原因
-    destination_id  INTEGER,                       -- 关联的存储目标
-    strm_generated  BOOLEAN DEFAULT false,         -- 是否已生成STRM
-    emby_notified   BOOLEAN DEFAULT false,         -- 是否已通知Emby
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (download_task_id) REFERENCES download_tasks(id),
-    FOREIGN KEY (destination_id) REFERENCES storage_destinations(id)
+    id                TEXT PRIMARY KEY,
+    owner_id          INTEGER NOT NULL,
+    job_id            TEXT NOT NULL UNIQUE,
+    download_task_id  TEXT NOT NULL UNIQUE,
+    library_id        INTEGER NOT NULL,
+    library_name      TEXT NOT NULL,
+    manifest_json     TEXT NOT NULL,               -- 私有 provider-relative 清单，永不直接序列化
+    plan_summary_json TEXT NOT NULL DEFAULT '',    -- 有界、再次校验的目标相对结果摘要
+    phase             TEXT NOT NULL,
+    processed_files   INTEGER NOT NULL DEFAULT 0,
+    total_files       INTEGER NOT NULL DEFAULT 0,
+    last_error_code   TEXT NOT NULL DEFAULT '',
+    created_at        DATETIME NOT NULL,
+    updated_at        DATETIME NOT NULL,
+    finished_at       DATETIME,
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE RESTRICT,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+    FOREIGN KEY (download_task_id) REFERENCES download_tasks(id) ON DELETE CASCADE
 );
 
 -- ========================================

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
+	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
 )
 
@@ -48,7 +49,8 @@ func Logger(log zerolog.Logger) gin.HandlerFunc {
 		if actor, ok := ActorFrom(c); ok {
 			event = event.Uint("user_id", actor.User.ID)
 		}
-		event.Msg("HTTP request completed")
+		operation := serverlog.OperationForHTTPRoute(c.FullPath())
+		operation.Event(event).Msg(operation.Message("请求处理完成"))
 	}
 }
 

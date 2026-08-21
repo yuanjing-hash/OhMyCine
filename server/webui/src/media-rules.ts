@@ -1,4 +1,4 @@
-import type { ClassificationCategory, ClassificationConditions, ClassificationRulesV1, MediaType } from '@/types/api'
+import type { ClassificationCategory, ClassificationConditions, ClassificationRulesV1, MediaType, RecognitionRule } from '@/types/api'
 
 export const movieGenreOptions = [12, 14, 16, 18, 27, 28, 35, 36, 37, 53, 80, 99, 878, 9648, 10402, 10749, 10751, 10752, 10770]
 export const tvGenreOptions = [16, 18, 35, 37, 80, 99, 9648, 10751, 10759, 10762, 10763, 10764, 10765, 10766, 10767, 10768]
@@ -58,4 +58,12 @@ export function moveItem<T>(items: T[], index: number, direction: -1 | 1): T[] {
   if (target < 0 || target >= items.length) return items
   const copy = [...items]; [copy[index], copy[target]] = [copy[target]!, copy[index]!]
   return copy
+}
+
+export function cloneRecognitionRules(rules: RecognitionRule[]): RecognitionRule[] {
+  return rules.map(rule => ({ enabled: rule.enabled, media_type: rule.media_type, pattern: rule.pattern, replacement: rule.replacement }))
+}
+
+export function newRecognitionRule(): RecognitionRule {
+  return { enabled: true, media_type: 'all', pattern: '', replacement: '' }
 }

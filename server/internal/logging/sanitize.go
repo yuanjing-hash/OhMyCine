@@ -39,7 +39,7 @@ func SanitizeJSON(line []byte) []byte {
 
 func compactOversizedEvent(event map[string]any) map[string]any {
 	compact := map[string]any{"event_truncated": true}
-	for _, key := range []string{"time", "timestamp", "level", "message", "module", "component", "plugin_id", "request_id", "user_id", "task_id", "library_id", "scan_run_id", "connection_id", "storage_id", "downloader_id", "status", "duration_ms"} {
+	for _, key := range []string{"time", "timestamp", "level", "message", "module", "component", "operation", "operation_label", "plugin_id", "request_id", "user_id", "task_id", "library_id", "scan_run_id", "connection_id", "storage_id", "downloader_id", "status", "duration_ms"} {
 		if value, ok := event[key]; ok {
 			compact[key] = value
 		}

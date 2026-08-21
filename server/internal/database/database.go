@@ -22,12 +22,7 @@ func Open(path string) (*gorm.DB, error) {
 			return nil, fmt.Errorf("create database directory: %w", err)
 		}
 	}
-	dsn := path
-	if path == ":memory:" {
-		dsn = "file:ohmycine-memory?mode=memory&cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	} else if !strings.Contains(path, "?") {
-		dsn = fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", path)
-	}
+	dsn := sqliteDSN(path)
 	db, err := gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
@@ -36,4 +31,26 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
 	}
 	return db, nil
+}
+
+func sqliteDSN(path string) string {
+	base, query, _ := strings.Cut(path, "?")
+	params := []string{
+		"_pragma=foreign_keys(1)",
+		"_pragma=busy_timeout(5000)",
+		"_txlock=immediate",
+	}
+	if path == ":memory:" {
+		base = "file:ohmycine-memory"
+		query = "mode=memory&cache=shared"
+	} else {
+		if !strings.HasPrefix(base, "file:") {
+			base = "file:" + base
+		}
+		params = append(params, "_pragma=journal_mode(WAL)")
+	}
+	if query != "" {
+		params = append(params, query)
+	}
+	return base + "?" + strings.Join(params, "&")
 }

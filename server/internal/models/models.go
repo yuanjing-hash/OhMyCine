@@ -97,7 +97,70 @@ type RuntimeLogPolicy struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-const StorageTypeLocal = "local"
+const (
+	StorageTypeLocal         = "local"
+	StorageTypePan115        = "pan115"
+	ConnectionProviderPan115 = "pan115"
+	ConnectionProviderEmby   = "emby"
+)
+
+// Connection owns one external-provider credential and its redacted health
+// summary. The encrypted credential model must never be serialized directly.
+type Connection struct {
+	ID                          uint       `gorm:"primaryKey" json:"id"`
+	Name                        string     `gorm:"size:128;not null" json:"name"`
+	NameNormalized              string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	Provider                    string     `gorm:"size:32;not null;index" json:"provider"`
+	Endpoint                    string     `gorm:"size:2048;not null;default:''" json:"-"`
+	CredentialCiphertext        string     `gorm:"type:text;not null" json:"-"`
+	RecycleCredentialCiphertext string     `gorm:"type:text;not null;default:''" json:"-"`
+	Enabled                     bool       `gorm:"not null" json:"enabled"`
+	AccountID                   string     `gorm:"size:128;not null;default:''" json:"-"`
+	AccountName                 string     `gorm:"size:256;not null;default:''" json:"-"`
+	AccountVIP                  bool       `gorm:"column:account_vip;not null;default:false" json:"-"`
+	QuotaUsedBytes              *uint64    `json:"-"`
+	QuotaTotalBytes             *uint64    `json:"-"`
+	LastHealthStatus            string     `gorm:"size:16;not null;default:'unknown'" json:"-"`
+	LastHealthErrorCode         string     `gorm:"size:96;not null;default:''" json:"-"`
+	LastHealthCheckedAt         *time.Time `json:"-"`
+	Revision                    uint64     `gorm:"not null;default:1" json:"revision"`
+	CreatedAt                   time.Time  `json:"created_at"`
+	UpdatedAt                   time.Time  `json:"updated_at"`
+}
+
+const (
+	Pan115PlaybackRolePrimary   = "primary"
+	Pan115PlaybackRoleSecondary = "secondary"
+
+	Pan115PlaybackLeaseActive         = "active"
+	Pan115PlaybackLeaseCopyPending    = "copy_pending"
+	Pan115PlaybackLeaseCleanupPending = "cleanup_pending"
+	Pan115PlaybackLeaseCleanupFailed  = "cleanup_failed"
+	Pan115PlaybackLeaseCompleted      = "completed"
+)
+
+// Pan115PlaybackLease is a private ownership and recovery fact for bounded
+// two-device playback. ClientFingerprint is irreversible and is routing-only;
+// raw IP/User-Agent, pickcodes and resolved CDN URLs are never persisted.
+type Pan115PlaybackLease struct {
+	ID                   string     `gorm:"primaryKey;size:36" json:"-"`
+	ConnectionID         uint       `gorm:"not null;index" json:"-"`
+	ArtifactOpaqueID     string     `gorm:"size:64;not null;uniqueIndex:idx_pan115_playback_client" json:"-"`
+	ClientFingerprint    string     `gorm:"size:64;not null;uniqueIndex:idx_pan115_playback_client" json:"-"`
+	Role                 string     `gorm:"size:16;not null" json:"-"`
+	SourceProviderItemID string     `gorm:"size:128;not null" json:"-"`
+	CopyDirectoryID      string     `gorm:"size:128;not null;default:''" json:"-"`
+	CopyItemID           string     `gorm:"size:128;not null;default:''" json:"-"`
+	Status               string     `gorm:"size:32;not null;index" json:"-"`
+	LeaseExpiresAt       time.Time  `gorm:"not null;index" json:"-"`
+	CleanupAfter         *time.Time `gorm:"index" json:"-"`
+	RetryCount           int        `gorm:"not null;default:0" json:"-"`
+	NextRetryAt          *time.Time `gorm:"index" json:"-"`
+	LastErrorCode        string     `gorm:"size:96;not null;default:''" json:"-"`
+	CleanedAt            *time.Time `json:"-"`
+	CreatedAt            time.Time  `json:"-"`
+	UpdatedAt            time.Time  `json:"-"`
+}
 
 // Storage is a registered provider root. It does not classify media or choose a
 // final placement; those responsibilities belong to later library/destination domains.
@@ -107,6 +170,7 @@ type Storage struct {
 	NameNormalized      string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
 	Type                string     `gorm:"size:32;not null" json:"type"`
 	RootPath            string     `gorm:"type:text;not null" json:"root_path"`
+	RootDisplayPath     string     `gorm:"type:text;not null;default:''" json:"root_display_path"`
 	RootPathNormalized  string     `gorm:"type:text;not null;uniqueIndex" json:"-"`
 	ConnectionID        *uint      `gorm:"index" json:"connection_id"`
 	Enabled             bool       `gorm:"not null;default:true" json:"enabled"`
@@ -122,6 +186,32 @@ type Storage struct {
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
+// ProviderEvent is a normalized, credential-free inbox record. The composite
+// provider identity is unique so retries and process restarts are idempotent.
+type ProviderEvent struct {
+	ID               uint       `gorm:"primaryKey" json:"id"`
+	ConnectionID     uint       `gorm:"not null;uniqueIndex:idx_provider_event_identity;index" json:"connection_id"`
+	Stream           string     `gorm:"size:32;not null;uniqueIndex:idx_provider_event_identity" json:"stream"`
+	ProviderEventID  string     `gorm:"size:128;not null;uniqueIndex:idx_provider_event_identity" json:"provider_event_id"`
+	EventTime        time.Time  `gorm:"not null;index" json:"event_time"`
+	Kind             string     `gorm:"size:16;not null" json:"kind"`
+	ItemID           string     `gorm:"size:128;not null;index" json:"item_id"`
+	ParentID         string     `gorm:"size:128;not null;default:''" json:"parent_id"`
+	PreviousParentID string     `gorm:"size:128;not null;default:''" json:"previous_parent_id"`
+	Name             string     `gorm:"size:512;not null;default:''" json:"name"`
+	PayloadJSON      string     `gorm:"type:text;not null" json:"-"`
+	ProcessedAt      *time.Time `gorm:"index" json:"processed_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+}
+
+type ProviderCursor struct {
+	ConnectionID uint      `gorm:"primaryKey" json:"connection_id"`
+	Stream       string    `gorm:"primaryKey;size:32" json:"stream"`
+	CursorTime   time.Time `gorm:"not null" json:"cursor_time"`
+	CursorID     string    `gorm:"size:128;not null;default:''" json:"cursor_id"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 const (
 	MediaClassificationProfileKindSystem = "system"
 	MediaClassificationProfileKindCustom = "custom"
@@ -130,17 +220,23 @@ const (
 // MediaClassificationProfile stores logical post-identification grouping
 // rules. It is intentionally separate from download/import CategoryRule.
 type MediaClassificationProfile struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	Code           *string   `gorm:"size:64;uniqueIndex" json:"code"`
-	Name           string    `gorm:"size:128;not null" json:"name"`
-	NameNormalized string    `gorm:"size:128;not null;uniqueIndex" json:"-"`
-	Kind           string    `gorm:"size:16;not null" json:"kind"`
-	Protected      bool      `gorm:"not null;default:false" json:"protected"`
-	SchemaVersion  int       `gorm:"not null" json:"schema_version"`
-	RulesJSON      string    `gorm:"type:text;not null" json:"-"`
-	Revision       uint64    `gorm:"not null;default:1" json:"revision"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                          uint      `gorm:"primaryKey" json:"id"`
+	Code                        *string   `gorm:"size:64;uniqueIndex" json:"code"`
+	Name                        string    `gorm:"size:128;not null" json:"name"`
+	NameNormalized              string    `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	Kind                        string    `gorm:"size:16;not null" json:"kind"`
+	Protected                   bool      `gorm:"not null;default:false" json:"protected"`
+	SchemaVersion               int       `gorm:"not null" json:"schema_version"`
+	RulesJSON                   string    `gorm:"type:text;not null" json:"-"`
+	BuiltinRecognitionPacksJSON string    `gorm:"type:text;not null;default:'[\"tv-v1\",\"anime-v1\"]'" json:"-"`
+	RecognitionRulesJSON        string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	MovieDirectoryTemplate      string    `gorm:"size:512;not null;default:'{category}/{title} ({year})'" json:"-"`
+	MovieFilenameTemplate       string    `gorm:"size:512;not null;default:'{title} ({year})'" json:"-"`
+	TVDirectoryTemplate         string    `gorm:"size:512;not null;default:'{category}/{title} ({year})/Season {season:02}'" json:"-"`
+	TVFilenameTemplate          string    `gorm:"size:512;not null;default:'{title} - S{season:02}E{episode:02}'" json:"-"`
+	Revision                    uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
 }
 
 const (
@@ -150,77 +246,290 @@ const (
 	MediaLibraryStatusAttachingListener    = "attaching_listener"
 	MediaLibraryStatusReconciling          = "catch_up_reconciliation"
 	MediaLibraryStatusListening            = "listening"
+	MediaLibraryTransferMove               = "move"
+	MediaLibraryTransferCopy               = "copy"
+	MediaLibraryTransferSymlink            = "symlink"
+	MediaLibraryConflictAsk                = "ask"
+	MediaLibraryConflictOverwrite          = "overwrite"
+	MediaLibraryConflictSkip               = "skip"
+	MediaLibraryConflictRename             = "rename"
 )
 
 type MediaLibrary struct {
+	ID                           uint       `gorm:"primaryKey" json:"id"`
+	Name                         string     `gorm:"size:128;not null" json:"name"`
+	NameNormalized               string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	StorageID                    uint       `gorm:"not null;index" json:"storage_id"`
+	ProfileID                    uint       `gorm:"not null;index" json:"profile_id"`
+	ProfileRevision              uint64     `gorm:"not null" json:"profile_revision"`
+	RelativeRoot                 string     `gorm:"size:1024;not null" json:"relative_root"`
+	ProviderRootID               string     `gorm:"size:128;not null;default:'';index:idx_media_libraries_provider_root,priority:2" json:"-"`
+	SortOrder                    int        `gorm:"not null;default:0;index" json:"sort_order"`
+	TransferMode                 string     `gorm:"size:16;not null;default:'move'" json:"transfer_mode"`
+	ConflictPolicy               string     `gorm:"size:16;not null;default:'ask'" json:"conflict_policy"`
+	MovieDirectoryTemplate       string     `gorm:"size:512;not null;default:'{category}/{title} ({year})'" json:"movie_directory_template"`
+	MovieFilenameTemplate        string     `gorm:"size:512;not null;default:'{title} ({year})'" json:"movie_filename_template"`
+	TVDirectoryTemplate          string     `gorm:"size:512;not null;default:'{category}/{title} ({year})/Season {season:02}'" json:"tv_directory_template"`
+	TVFilenameTemplate           string     `gorm:"size:512;not null;default:'{title} - S{season:02}E{episode:02}'" json:"tv_filename_template"`
+	Enabled                      bool       `gorm:"not null" json:"enabled"`
+	Recursive                    bool       `gorm:"not null" json:"recursive"`
+	FullScanIntervalHours        int        `gorm:"not null;default:24" json:"full_scan_interval_hours"`
+	IncrementalMinutes           int        `gorm:"not null;default:15" json:"incremental_minutes"`
+	VideoExtensionsJSON          string     `gorm:"type:text;not null" json:"-"`
+	STRMAssetExtraExtensionsJSON string     `gorm:"column:strm_asset_extra_extensions;type:text;not null;default:'[]'" json:"-"`
+	IgnorePatternsJSON           string     `gorm:"type:text;not null" json:"-"`
+	MetadataLanguage             string     `gorm:"size:16;not null;default:'zh-CN'" json:"metadata_language"`
+	MetadataRegion               string     `gorm:"size:8;not null;default:'CN'" json:"metadata_region"`
+	MatchStrategy                string     `gorm:"size:32;not null;default:'balanced'" json:"match_strategy"`
+	ProviderRatePerSecond        int        `gorm:"not null;default:100" json:"provider_rate_per_second"`
+	ProviderConcurrency          int        `gorm:"not null;default:2" json:"provider_concurrency"`
+	MetadataRatePerSecond        int        `gorm:"not null;default:5" json:"metadata_rate_per_second"`
+	MetadataConcurrency          int        `gorm:"not null;default:1" json:"metadata_concurrency"`
+	STRMEnabled                  bool       `gorm:"not null;default:false" json:"strm_enabled"`
+	STRMLocalRoot                string     `gorm:"type:text;not null;default:''" json:"-"`
+	SignedProxyEnabled           bool       `gorm:"not null;default:false" json:"signed_proxy_enabled"`
+	MetadataArtifactsEnabled     bool       `gorm:"not null;default:false" json:"metadata_artifacts_enabled"`
+	UploadSidecars               bool       `gorm:"not null;default:false" json:"upload_sidecars"`
+	ArtifactGeneration           uint64     `gorm:"not null;default:0" json:"artifact_generation"`
+	ArtifactAppliedGeneration    uint64     `gorm:"not null;default:0" json:"artifact_applied_generation"`
+	ArtifactStatus               string     `gorm:"size:32;not null;default:'idle'" json:"artifact_status"`
+	ArtifactError                string     `gorm:"size:96;not null;default:''" json:"artifact_error"`
+	ArtifactUpdatedAt            *time.Time `json:"artifact_updated_at"`
+	ArtifactCleanupRemoved       int        `gorm:"not null;default:0" json:"artifact_cleanup_removed"`
+	ArtifactCleanupError         string     `gorm:"size:96;not null;default:''" json:"artifact_cleanup_error"`
+	ArtifactCleanupAt            *time.Time `json:"artifact_cleanup_at"`
+	IngestEnabled                bool       `gorm:"not null;default:false" json:"ingest_enabled"`
+	IngestDownloaderID           *string    `gorm:"size:36;index" json:"ingest_downloader_id,omitempty"`
+	IngestOwnerID                *uint      `gorm:"index" json:"-"`
+	IngestProviderRootID         string     `gorm:"size:128;not null;default:''" json:"-"`
+	IngestRelativeRoot           string     `gorm:"size:2048;not null;default:''" json:"ingest_relative_root"`
+	Status                       string     `gorm:"size:32;not null;index" json:"status"`
+	StatusErrorCode              string     `gorm:"size:64;not null;default:''" json:"status_error_code"`
+	NextRetryAt                  *time.Time `gorm:"index" json:"next_retry_at"`
+	LastScanAt                   *time.Time `json:"last_scan_at"`
+	LastSuccessfulScanAt         *time.Time `json:"last_successful_scan_at"`
+	BaselineGeneration           uint64     `gorm:"not null;default:0" json:"baseline_generation"`
+	DirtyGeneration              uint64     `gorm:"not null;default:0" json:"dirty_generation"`
+	ReclassificationDue          bool       `gorm:"not null;default:false" json:"reclassification_due"`
+	CreatedAt                    time.Time  `json:"created_at"`
+	UpdatedAt                    time.Time  `json:"updated_at"`
+}
+
+type MediaLibraryScanRun struct {
+	ID                uint       `gorm:"primaryKey" json:"id"`
+	LibraryID         uint       `gorm:"not null;index" json:"library_id"`
+	Kind              string     `gorm:"size:24;not null;index" json:"kind"`
+	Status            string     `gorm:"size:24;not null;index" json:"status"`
+	Generation        uint64     `gorm:"not null" json:"generation"`
+	Discovered        int        `gorm:"not null;default:0" json:"discovered"`
+	Added             int        `gorm:"not null;default:0" json:"added"`
+	Updated           int        `gorm:"not null;default:0" json:"updated"`
+	Removed           int        `gorm:"not null;default:0" json:"removed"`
+	Matched           int        `gorm:"not null;default:0" json:"matched"`
+	Unrecognized      int        `gorm:"not null;default:0" json:"unrecognized"`
+	CacheHits         int        `gorm:"not null;default:0" json:"cache_hits"`
+	RecognitionFailed int        `gorm:"not null;default:0" json:"recognition_failed"`
+	ErrorCode         string     `gorm:"size:64;not null;default:''" json:"error_code"`
+	Partial           bool       `gorm:"not null;default:false" json:"partial"`
+	StartedAt         time.Time  `gorm:"index" json:"started_at"`
+	FinishedAt        *time.Time `json:"finished_at"`
+}
+
+type MediaLibraryEntry struct {
+	ID                   uint      `gorm:"primaryKey" json:"id"`
+	LibraryID            uint      `gorm:"not null;uniqueIndex:idx_library_path;index:idx_media_library_entries_work,priority:1;index:idx_media_library_entries_search,priority:1;index:idx_media_library_entries_tmdb,priority:1" json:"library_id"`
+	RelativePath         string    `gorm:"size:2048;not null;uniqueIndex:idx_library_path" json:"relative_path"`
+	ProviderID           string    `gorm:"size:128;not null" json:"-"`
+	RecognitionID        *uint     `gorm:"index" json:"recognition_id,omitempty"`
+	Size                 int64     `gorm:"not null" json:"size"`
+	ModifiedAt           time.Time `json:"modified_at"`
+	MediaType            string    `gorm:"size:16;not null;index:idx_media_library_entries_search,priority:2" json:"media_type"`
+	Title                string    `gorm:"size:512;not null;index:idx_media_library_entries_search,priority:3" json:"title"`
+	WorkKey              string    `gorm:"size:80;not null;default:'';index:idx_media_library_entries_work,priority:2" json:"-"`
+	SeriesTitle          string    `gorm:"size:512;not null;default:''" json:"series_title"`
+	Season               *int      `json:"season"`
+	Episode              *int      `json:"episode"`
+	MatchStatus          string    `gorm:"size:24;not null" json:"match_status"`
+	TMDBID               *int64    `gorm:"index:idx_media_library_entries_tmdb,priority:2" json:"tmdb_id,omitempty"`
+	ReleaseYear          *int      `json:"release_year,omitempty"`
+	MatchConfidence      *float64  `json:"match_confidence,omitempty"`
+	RecognitionErrorCode string    `gorm:"size:96;not null;default:''" json:"recognition_error_code"`
+	CategoryName         string    `gorm:"size:128;not null" json:"category_name"`
+	MatchedRuleID        *string   `gorm:"size:128" json:"matched_rule_id"`
+	LastGeneration       uint64    `gorm:"not null;index" json:"last_generation"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+// MediaLibraryRecognition stores one library-scoped work/package recognition.
+// SourceKey, fingerprints and metadata JSON are private projections and must
+// never be serialized directly by handlers.
+type MediaLibraryRecognition struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	LibraryID        uint      `gorm:"not null;uniqueIndex:idx_library_recognition_source;index" json:"library_id"`
+	SourceKey        string    `gorm:"size:80;not null;uniqueIndex:idx_library_recognition_source" json:"-"`
+	InputFingerprint string    `gorm:"size:64;not null;index" json:"-"`
+	ProfileID        uint      `gorm:"not null;index" json:"profile_id"`
+	ProfileRevision  uint64    `gorm:"not null" json:"profile_revision"`
+	Status           string    `gorm:"size:24;not null;index" json:"status"`
+	ErrorCode        string    `gorm:"size:96;not null;default:''" json:"error_code"`
+	MediaType        string    `gorm:"size:16;not null;default:'';index" json:"media_type"`
+	Title            string    `gorm:"size:512;not null;default:''" json:"title"`
+	ReleaseYear      *int      `json:"release_year,omitempty"`
+	TMDBID           *int64    `gorm:"index" json:"tmdb_id,omitempty"`
+	Confidence       *float64  `json:"confidence,omitempty"`
+	CategoryName     string    `gorm:"size:128;not null;default:''" json:"category_name"`
+	MatchedRuleID    *string   `gorm:"size:128" json:"matched_rule_id,omitempty"`
+	MetadataJSON     string    `gorm:"type:text;not null;default:'{}'" json:"-"`
+	ManualOverride   bool      `gorm:"not null;default:false" json:"manual_override"`
+	LastGeneration   uint64    `gorm:"not null;index" json:"last_generation"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// MediaRecognitionCache contains only canonical, credential-free TMDB match
+// projections. It never stores upstream responses, URLs, paths or provider IDs.
+type MediaRecognitionCache struct {
+	LookupKey  string    `gorm:"primaryKey;size:64" json:"-"`
+	Status     string    `gorm:"size:24;not null" json:"-"`
+	ErrorCode  string    `gorm:"size:96;not null;default:''" json:"-"`
+	ResultJSON string    `gorm:"type:text;not null;default:'{}'" json:"-"`
+	ExpiresAt  time.Time `gorm:"not null;index" json:"-"`
+	CreatedAt  time.Time `json:"-"`
+	UpdatedAt  time.Time `json:"-"`
+}
+
+const (
+	MediaArtifactStatusIdle       = "idle"
+	MediaArtifactStatusQueued     = "queued"
+	MediaArtifactStatusRunning    = "running"
+	MediaArtifactStatusCompleted  = "completed"
+	MediaArtifactStatusFailed     = "failed"
+	MediaArtifactStatusSuperseded = "superseded"
+	MediaArtifactStatusCleanup    = "cleanup"
+
+	MediaArtifactCleanupPending   = "pending"
+	MediaArtifactCleanupRunning   = "running"
+	MediaArtifactCleanupCompleted = "completed"
+	MediaArtifactCleanupFailed    = "failed"
+	MediaArtifactCleanupSkipped   = "skipped"
+
+	MediaArtifactKindSTRM        = "strm"
+	MediaArtifactKindNFO         = "nfo"
+	MediaArtifactKindPoster      = "poster"
+	MediaArtifactKindFanart      = "fanart"
+	MediaArtifactKindThumb       = "thumb"
+	MediaArtifactKindSubtitle    = "subtitle"
+	MediaArtifactKindImage       = "image"
+	MediaArtifactKindSourceAsset = "source_asset"
+
+	MediaArtifactTargetLocalAdjacent   = "local_adjacent"
+	MediaArtifactTargetLocalProjection = "local_projection"
+	MediaArtifactTargetProviderSidecar = "provider_sidecar"
+
+	ProxySigningKeyStatusActive   = "active"
+	ProxySigningKeyStatusPrevious = "previous"
+	ProxySigningKeyStatusRetired  = "retired"
+)
+
+// MediaLibrarySourceAsset stores allowlisted source-side companion facts.
+// Provider identities and hashes stay private and are never serialized by API
+// handlers. Video catalog entries continue to live in MediaLibraryEntry.
+type MediaLibrarySourceAsset struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	LibraryID        uint      `gorm:"not null;uniqueIndex:idx_media_library_source_asset_path;index" json:"library_id"`
+	Generation       uint64    `gorm:"not null;index" json:"generation"`
+	ProviderID       string    `gorm:"size:128;not null;default:''" json:"-"`
+	ParentProviderID string    `gorm:"size:128;not null;default:''" json:"-"`
+	RelativePath     string    `gorm:"size:2048;not null;uniqueIndex:idx_media_library_source_asset_path" json:"relative_path"`
+	Name             string    `gorm:"size:512;not null" json:"name"`
+	Extension        string    `gorm:"size:16;not null;index" json:"extension"`
+	Size             int64     `gorm:"not null" json:"size"`
+	ModifiedAt       time.Time `json:"modified_at"`
+	HashHint         string    `gorm:"size:128;not null;default:''" json:"-"`
+	Active           bool      `gorm:"not null;default:true;index" json:"active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// MediaArtifactRun is the durable generation-level execution fact. PolicyJSON
+// is an immutable private snapshot and the queue payload contains only ID.
+type MediaArtifactRun struct {
+	ID               string     `gorm:"primaryKey;size:36" json:"id"`
+	LibraryID        uint       `gorm:"not null;uniqueIndex:idx_media_artifact_run_generation;index" json:"library_id"`
+	Generation       uint64     `gorm:"not null;uniqueIndex:idx_media_artifact_run_generation" json:"generation"`
+	JobID            *string    `gorm:"size:36;uniqueIndex" json:"job_id,omitempty"`
+	PolicyJSON       string     `gorm:"type:text;not null" json:"-"`
+	Status           string     `gorm:"size:32;not null;index" json:"status"`
+	ExpectedCount    int        `gorm:"not null;default:0" json:"expected_count"`
+	WrittenCount     int        `gorm:"not null;default:0" json:"written_count"`
+	UpdatedCount     int        `gorm:"not null;default:0" json:"updated_count"`
+	RemovedCount     int        `gorm:"not null;default:0" json:"removed_count"`
+	SkippedCount     int        `gorm:"not null;default:0" json:"skipped_count"`
+	FailedCount      int        `gorm:"not null;default:0" json:"failed_count"`
+	RetryCount       int        `gorm:"not null;default:0" json:"retry_count"`
+	ErrorCode        string     `gorm:"size:96;not null;default:''" json:"error_code"`
+	CleanupStatus    string     `gorm:"size:32;not null;default:'pending'" json:"cleanup_status"`
+	CleanupErrorCode string     `gorm:"size:96;not null;default:''" json:"cleanup_error_code"`
+	CleanupAt        *time.Time `json:"cleanup_at"`
+	StartedAt        *time.Time `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+// MediaArtifact is the ownership manifest. Only rows with Managed=true may be
+// changed or removed by reconciliation; an unmanaged on-disk name collision is
+// never adopted implicitly.
+type MediaArtifact struct {
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	OpaqueID           string    `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	RunID              string    `gorm:"size:36;not null;index" json:"run_id"`
+	LibraryID          uint      `gorm:"not null;uniqueIndex:idx_media_artifact_target;index" json:"library_id"`
+	SourceIdentity     string    `gorm:"size:96;not null;default:'';index" json:"-"`
+	ProviderItemID     string    `gorm:"size:128;not null;default:''" json:"-"`
+	ProviderParentID   string    `gorm:"size:128;not null;default:''" json:"-"`
+	Kind               string    `gorm:"size:32;not null;index" json:"kind"`
+	TargetKind         string    `gorm:"size:32;not null;uniqueIndex:idx_media_artifact_target" json:"target_kind"`
+	RelativePath       string    `gorm:"size:2048;not null;uniqueIndex:idx_media_artifact_target" json:"relative_path"`
+	ContentFingerprint string    `gorm:"size:64;not null;default:''" json:"-"`
+	TargetProviderID   string    `gorm:"size:128;not null;default:''" json:"-"`
+	Managed            bool      `gorm:"not null" json:"managed"`
+	Active             bool      `gorm:"not null;default:true;index" json:"active"`
+	Status             string    `gorm:"size:32;not null;index" json:"status"`
+	ErrorCode          string    `gorm:"size:96;not null;default:''" json:"error_code"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// ProxySigningKey stores only an encrypted HMAC secret. ID is the public kid;
+// the plaintext secret exists only in memory during signing/verification.
+type ProxySigningKey struct {
+	ID               string     `gorm:"primaryKey;size:32" json:"id"`
+	SecretCiphertext string     `gorm:"type:text;not null" json:"-"`
+	Status           string     `gorm:"size:16;not null;index" json:"status"`
+	CreatedAt        time.Time  `json:"created_at"`
+	DeactivatedAt    *time.Time `json:"deactivated_at"`
+}
+
+// EmbyProxyGateway binds one fixed Emby upstream to one stable public gateway
+// identifier. Client Emby credentials are never persisted here.
+type EmbyProxyGateway struct {
 	ID                    uint       `gorm:"primaryKey" json:"id"`
-	Name                  string     `gorm:"size:128;not null" json:"name"`
-	NameNormalized        string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
-	StorageID             uint       `gorm:"not null;index" json:"storage_id"`
-	ProfileID             uint       `gorm:"not null;index" json:"profile_id"`
-	ProfileRevision       uint64     `gorm:"not null" json:"profile_revision"`
-	RelativeRoot          string     `gorm:"size:1024;not null" json:"relative_root"`
-	Enabled               bool       `gorm:"not null" json:"enabled"`
-	Recursive             bool       `gorm:"not null" json:"recursive"`
-	FullScanIntervalHours int        `gorm:"not null;default:24" json:"full_scan_interval_hours"`
-	IncrementalMinutes    int        `gorm:"not null;default:15" json:"incremental_minutes"`
-	VideoExtensionsJSON   string     `gorm:"type:text;not null" json:"-"`
-	IgnorePatternsJSON    string     `gorm:"type:text;not null" json:"-"`
-	MetadataLanguage      string     `gorm:"size:16;not null;default:'zh-CN'" json:"metadata_language"`
-	MetadataRegion        string     `gorm:"size:8;not null;default:'CN'" json:"metadata_region"`
-	MatchStrategy         string     `gorm:"size:32;not null;default:'balanced'" json:"match_strategy"`
-	ProviderRatePerSecond int        `gorm:"not null;default:100" json:"provider_rate_per_second"`
-	ProviderConcurrency   int        `gorm:"not null;default:2" json:"provider_concurrency"`
-	MetadataRatePerSecond int        `gorm:"not null;default:5" json:"metadata_rate_per_second"`
-	MetadataConcurrency   int        `gorm:"not null;default:1" json:"metadata_concurrency"`
-	STRMEnabled           bool       `gorm:"not null;default:false" json:"strm_enabled"`
-	STRMLocalRoot         string     `gorm:"type:text;not null;default:''" json:"-"`
-	Status                string     `gorm:"size:32;not null;index" json:"status"`
-	StatusErrorCode       string     `gorm:"size:64;not null;default:''" json:"status_error_code"`
-	NextRetryAt           *time.Time `gorm:"index" json:"next_retry_at"`
-	LastScanAt            *time.Time `json:"last_scan_at"`
-	LastSuccessfulScanAt  *time.Time `json:"last_successful_scan_at"`
-	BaselineGeneration    uint64     `gorm:"not null;default:0" json:"baseline_generation"`
-	DirtyGeneration       uint64     `gorm:"not null;default:0" json:"dirty_generation"`
-	ReclassificationDue   bool       `gorm:"not null;default:false" json:"reclassification_due"`
+	ConnectionID          uint       `gorm:"not null;uniqueIndex" json:"connection_id"`
+	PublicID              string     `gorm:"size:64;not null;uniqueIndex" json:"public_id"`
+	Enabled               bool       `gorm:"not null;default:false" json:"enabled"`
+	ExternalPlayerEnabled bool       `gorm:"not null;default:true" json:"external_player_enabled"`
+	FanartEnabled         bool       `gorm:"not null;default:true" json:"fanart_enabled"`
+	PolicyRevision        uint64     `gorm:"not null;default:1" json:"policy_revision"`
+	LastHealthStatus      string     `gorm:"size:16;not null;default:'unknown'" json:"last_health_status"`
+	LastHealthErrorCode   string     `gorm:"size:96;not null;default:''" json:"last_health_error_code"`
+	LastHealthCheckedAt   *time.Time `json:"last_health_checked_at"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
-type MediaLibraryScanRun struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	LibraryID  uint       `gorm:"not null;index" json:"library_id"`
-	Kind       string     `gorm:"size:24;not null;index" json:"kind"`
-	Status     string     `gorm:"size:24;not null;index" json:"status"`
-	Generation uint64     `gorm:"not null" json:"generation"`
-	Discovered int        `gorm:"not null;default:0" json:"discovered"`
-	Added      int        `gorm:"not null;default:0" json:"added"`
-	Updated    int        `gorm:"not null;default:0" json:"updated"`
-	Removed    int        `gorm:"not null;default:0" json:"removed"`
-	ErrorCode  string     `gorm:"size:64;not null;default:''" json:"error_code"`
-	Partial    bool       `gorm:"not null;default:false" json:"partial"`
-	StartedAt  time.Time  `gorm:"index" json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at"`
-}
-
-type MediaLibraryEntry struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	LibraryID      uint      `gorm:"not null;uniqueIndex:idx_library_path" json:"library_id"`
-	RelativePath   string    `gorm:"size:2048;not null;uniqueIndex:idx_library_path" json:"relative_path"`
-	ProviderID     string    `gorm:"size:128;not null" json:"provider_id"`
-	Size           int64     `gorm:"not null" json:"size"`
-	ModifiedAt     time.Time `json:"modified_at"`
-	MediaType      string    `gorm:"size:16;not null" json:"media_type"`
-	Title          string    `gorm:"size:512;not null" json:"title"`
-	Season         *int      `json:"season"`
-	Episode        *int      `json:"episode"`
-	MatchStatus    string    `gorm:"size:24;not null" json:"match_status"`
-	CategoryName   string    `gorm:"size:128;not null" json:"category_name"`
-	MatchedRuleID  *string   `gorm:"size:128" json:"matched_rule_id"`
-	LastGeneration uint64    `gorm:"not null;index" json:"last_generation"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
+func (MediaRecognitionCache) TableName() string { return "media_recognition_cache" }
 
 const (
 	JobStatusQueued            = "queued"
@@ -319,4 +628,237 @@ type QueuePolicy struct {
 	Revision            uint64    `gorm:"not null;default:1" json:"revision"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+const (
+	DownloaderTypeFake                 = "fake"
+	DownloaderTypeQBittorrent          = "qbittorrent"
+	DownloaderTypePan115Offline        = "pan115_offline"
+	DownloadTaskStatusQueued           = "queued"
+	DownloadTaskStatusSubmitting       = "submitting"
+	DownloadTaskStatusMetadata         = "metadata"
+	DownloadTaskStatusClassifying      = "classifying"
+	DownloadTaskStatusWaiting          = "waiting_user_action"
+	DownloadTaskStatusCategorized      = "categorized"
+	DownloadTaskStatusDownloading      = "downloading"
+	DownloadTaskStatusVerifying        = "verifying"
+	DownloadTaskStatusPaused           = "paused"
+	DownloadTaskStatusCompleted        = "completed"
+	DownloadTaskStatusFailed           = "failed"
+	DownloadTaskStatusCancelled        = "cancelled"
+	DownloadSourceOriginUser           = "user"
+	DownloadSourceOriginShare          = "share"
+	DownloadSourceOriginProviderIngest = "provider_ingest"
+)
+
+// Downloader stores only encrypted credentials. Public APIs must use an
+// allowlisted DTO and never serialize this model directly.
+type Downloader struct {
+	ID                    string     `gorm:"primaryKey;size:36" json:"id"`
+	Name                  string     `gorm:"size:128;not null" json:"name"`
+	NameNormalized        string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	Type                  string     `gorm:"size:32;not null;index" json:"type"`
+	BaseURL               string     `gorm:"size:2048;not null;default:''" json:"base_url"`
+	UsernameCiphertext    string     `gorm:"type:text;not null;default:''" json:"-"`
+	PasswordCiphertext    string     `gorm:"type:text;not null;default:''" json:"-"`
+	StorageID             *uint      `gorm:"index" json:"storage_id"`
+	ProviderDirectoryID   string     `gorm:"size:128;not null;default:''" json:"-"`
+	ProviderDirectoryPath string     `gorm:"size:2048;not null;default:''" json:"-"`
+	Enabled               bool       `gorm:"not null;default:true" json:"enabled"`
+	CapabilitiesJSON      string     `gorm:"type:text;not null" json:"-"`
+	LastHealthStatus      string     `gorm:"size:24;not null;default:'unknown'" json:"-"`
+	LastHealthVersion     string     `gorm:"size:64;not null;default:''" json:"-"`
+	LastHealthErrorCode   string     `gorm:"size:96;not null;default:''" json:"-"`
+	LastHealthCheckedAt   *time.Time `json:"-"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+// DownloadSettings is the singleton Server-wide local staging boundary. It is
+// intentionally separate from downloader connections and final MediaLibraries.
+type DownloadSettings struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	StorageID    *uint     `gorm:"index" json:"storage_id"`
+	RelativePath string    `gorm:"size:1024;not null;default:'/'" json:"relative_path"`
+	AbsolutePath string    `gorm:"type:text;not null;default:''" json:"-"`
+	Revision     uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+const (
+	SeedingCompletionAll = "all"
+	SeedingCompletionAny = "any"
+)
+
+// SeedingSettings is the singleton default cleanup policy. Enabled controls
+// automatic provider cleanup only; copy/symlink imports are still represented
+// in seeding management when cleanup is disabled.
+type SeedingSettings struct {
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Enabled            bool      `gorm:"not null;default:false" json:"enabled"`
+	MinimumSeedMinutes int       `gorm:"not null;default:1440" json:"minimum_seed_minutes"`
+	MinimumRatio       float64   `gorm:"not null;default:1" json:"minimum_ratio"`
+	CompletionMode     string    `gorm:"size:8;not null;default:'all'" json:"completion_mode"`
+	Revision           uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// MetadataSettings stores an encrypted TMDB credential with an explicit kind.
+// Public settings DTOs expose configured state, never the ciphertext.
+type MetadataSettings struct {
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	TMDBTokenCiphertext string    `gorm:"type:text;not null;default:''" json:"-"`
+	TMDBCredentialKind  string    `gorm:"size:32;not null;default:'read_access_token'" json:"-"`
+	APIBaseURL          string    `gorm:"size:2048;not null" json:"api_base_url"`
+	ImageBaseURL        string    `gorm:"size:2048;not null" json:"image_base_url"`
+	Revision            uint64    `gorm:"not null;default:1" json:"revision"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// DownloadTask is the durable provider fact linked one-to-one to a queue Job.
+// SourceCiphertext may contain PT passkeys and is never exposed or logged.
+type DownloadTask struct {
+	ID                                 string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID                            uint       `gorm:"not null;index" json:"owner_id"`
+	JobID                              string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
+	DownloaderID                       *string    `gorm:"size:36;index" json:"downloader_id"`
+	DownloaderName                     string     `gorm:"size:128;not null" json:"downloader_name"`
+	ProviderType                       string     `gorm:"size:32;not null;index" json:"provider_type"`
+	ProviderTaskID                     string     `gorm:"size:256;not null;default:'';index" json:"-"`
+	ProviderOutputID                   string     `gorm:"size:128;not null;default:''" json:"-"`
+	ProviderTag                        string     `gorm:"size:96;not null;default:''" json:"-"`
+	SourceCiphertext                   string     `gorm:"type:text;not null" json:"-"`
+	StagingStorageID                   *uint      `gorm:"index" json:"-"`
+	StagingRelativePath                string     `gorm:"size:1024;not null;default:''" json:"-"`
+	StagingAbsolutePath                string     `gorm:"type:text;not null;default:''" json:"-"`
+	StagingProviderDirectoryID         string     `gorm:"size:128;not null;default:''" json:"-"`
+	IngestSourceKey                    string     `gorm:"size:64;not null;default:''" json:"-"`
+	SourceOrigin                       string     `gorm:"size:24;not null;default:'user'" json:"-"`
+	ProfileID                          uint       `gorm:"not null;default:0" json:"-"`
+	ProfileRevision                    uint64     `gorm:"not null;default:0" json:"-"`
+	ProfileRulesJSON                   string     `gorm:"type:text;not null;default:''" json:"-"`
+	ProfileBuiltinRecognitionPacksJSON string     `gorm:"type:text;not null;default:'[\"tv-v1\",\"anime-v1\"]'" json:"-"`
+	ProfileRecognitionRulesJSON        string     `gorm:"type:text;not null;default:'[]'" json:"-"`
+	TargetLibraryID                    *uint      `gorm:"index" json:"-"`
+	TargetLibraryName                  string     `gorm:"size:128;not null;default:''" json:"-"`
+	TargetStorageID                    *uint      `gorm:"index" json:"-"`
+	TargetStorageType                  string     `gorm:"size:32;not null;default:''" json:"-"`
+	TargetConnectionID                 *uint      `gorm:"index" json:"-"`
+	TargetProviderRootID               string     `gorm:"size:128;not null;default:''" json:"-"`
+	TargetStorageRoot                  string     `gorm:"type:text;not null;default:''" json:"-"`
+	TargetRelativeRoot                 string     `gorm:"size:1024;not null;default:''" json:"-"`
+	TransferMode                       string     `gorm:"size:16;not null;default:''" json:"-"`
+	ConflictPolicy                     string     `gorm:"size:16;not null;default:''" json:"-"`
+	MovieDirectoryTemplate             string     `gorm:"size:512;not null;default:''" json:"-"`
+	MovieFilenameTemplate              string     `gorm:"size:512;not null;default:''" json:"-"`
+	TVDirectoryTemplate                string     `gorm:"size:512;not null;default:''" json:"-"`
+	TVFilenameTemplate                 string     `gorm:"size:512;not null;default:''" json:"-"`
+	SeedingCleanupEnabled              bool       `gorm:"not null;default:false" json:"-"`
+	SeedingMinimumMinutes              int        `gorm:"not null;default:1440" json:"-"`
+	SeedingMinimumRatio                float64    `gorm:"not null;default:1" json:"-"`
+	SeedingCompletionMode              string     `gorm:"size:8;not null;default:'all'" json:"-"`
+	DisplayName                        string     `gorm:"size:256;not null" json:"display_name"`
+	ProviderStatus                     string     `gorm:"size:64;not null;default:''" json:"provider_status"`
+	Phase                              string     `gorm:"size:32;not null" json:"phase"`
+	Progress                           *float64   `json:"progress"`
+	BytesCompleted                     *int64     `json:"bytes_completed"`
+	BytesTotal                         *int64     `json:"bytes_total"`
+	DownloadSpeed                      *int64     `json:"download_speed"`
+	UploadSpeed                        *int64     `json:"upload_speed"`
+	ETASeconds                         *int64     `json:"eta_seconds"`
+	LastSampledAt                      *time.Time `json:"last_sampled_at"`
+	LastErrorCode                      string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	LastErrorMessage                   string     `gorm:"size:512;not null;default:''" json:"last_error_message"`
+	ScrapeStatus                       string     `gorm:"size:32;not null;default:''" json:"-"`
+	ScrapeTitle                        string     `gorm:"size:256;not null;default:''" json:"-"`
+	ScrapeMediaType                    string     `gorm:"size:16;not null;default:''" json:"-"`
+	ScrapeCategory                     string     `gorm:"size:128;not null;default:''" json:"-"`
+	ScrapeTMDBID                       *int64     `json:"-"`
+	ScrapeYear                         *int       `json:"-"`
+	ScrapeConfidence                   *float64   `json:"-"`
+	ManifestFileCount                  int        `gorm:"not null;default:0" json:"-"`
+	CreatedAt                          time.Time  `json:"created_at"`
+	UpdatedAt                          time.Time  `json:"updated_at"`
+	FinishedAt                         *time.Time `json:"finished_at"`
+}
+
+const (
+	TransferTaskStatusQueued       = "queued"
+	TransferTaskStatusPlanning     = "planning"
+	TransferTaskStatusTransferring = "transferring"
+	TransferTaskStatusReconciling  = "reconciling"
+	TransferTaskStatusCompleted    = "completed"
+	TransferTaskStatusFailed       = "failed"
+
+	TransferCleanupPending   = "pending"
+	TransferCleanupDeferred  = "deferred"
+	TransferCleanupRunning   = "running"
+	TransferCleanupCompleted = "completed"
+	TransferCleanupFailed    = "failed"
+	TransferCleanupSkipped   = "skipped"
+)
+
+// TransferTask is the private durable import fact. ManifestJSON contains
+// provider-relative media names and must never be serialized by an API.
+type TransferTask struct {
+	ID                 string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID            uint       `gorm:"not null;index" json:"owner_id"`
+	JobID              string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
+	DownloadTaskID     string     `gorm:"size:36;not null;uniqueIndex" json:"download_task_id"`
+	LibraryID          uint       `gorm:"not null;index" json:"library_id"`
+	LibraryName        string     `gorm:"size:128;not null" json:"library_name"`
+	ManifestJSON       string     `gorm:"type:text;not null" json:"-"`
+	SourceManifestJSON string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	PlanSummaryJSON    string     `gorm:"type:text;not null;default:''" json:"-"`
+	CloudStateJSON     string     `gorm:"type:text;not null;default:''" json:"-"`
+	Phase              string     `gorm:"size:32;not null;index" json:"phase"`
+	ProcessedFiles     int        `gorm:"not null;default:0" json:"processed_files"`
+	TotalFiles         int        `gorm:"not null;default:0" json:"total_files"`
+	LastErrorCode      string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	CleanupStatus      string     `gorm:"size:32;not null;default:'pending';index" json:"cleanup_status"`
+	CleanupRemoved     int        `gorm:"not null;default:0" json:"cleanup_removed"`
+	CleanupErrorCode   string     `gorm:"size:96;not null;default:''" json:"cleanup_error_code"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	FinishedAt         *time.Time `json:"finished_at"`
+}
+
+const (
+	SeedingTaskStatusQueued    = "queued"
+	SeedingTaskStatusSeeding   = "seeding"
+	SeedingTaskStatusCleanup   = "cleanup"
+	SeedingTaskStatusRetained  = "retained"
+	SeedingTaskStatusCompleted = "completed"
+	SeedingTaskStatusFailed    = "failed"
+)
+
+// SeedingTask is the durable, provider-neutral cleanup fact. ProviderTaskID is
+// private and no source path is persisted here; DeleteData is allowed for copy
+// only when the transfer manifests contain no protected unselected media.
+type SeedingTask struct {
+	ID                 string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID            uint       `gorm:"not null;index" json:"owner_id"`
+	JobID              string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
+	DownloadTaskID     string     `gorm:"size:36;not null;uniqueIndex" json:"download_task_id"`
+	DownloaderID       *string    `gorm:"size:36;index" json:"-"`
+	DownloaderName     string     `gorm:"size:128;not null" json:"downloader_name"`
+	ProviderType       string     `gorm:"size:32;not null" json:"provider_type"`
+	ProviderTaskID     string     `gorm:"size:256;not null" json:"-"`
+	TransferMode       string     `gorm:"size:16;not null" json:"transfer_mode"`
+	DeleteData         bool       `gorm:"not null" json:"delete_data"`
+	CleanupEnabled     bool       `gorm:"not null" json:"cleanup_enabled"`
+	MinimumSeedMinutes int        `gorm:"not null" json:"minimum_seed_minutes"`
+	MinimumRatio       float64    `gorm:"not null" json:"minimum_ratio"`
+	CompletionMode     string     `gorm:"size:8;not null" json:"completion_mode"`
+	Phase              string     `gorm:"size:24;not null;index" json:"phase"`
+	Ratio              *float64   `json:"ratio"`
+	SeededSeconds      *int64     `json:"seeded_seconds"`
+	UploadedBytes      *int64     `json:"uploaded_bytes"`
+	LastSampledAt      *time.Time `json:"last_sampled_at"`
+	LastErrorCode      string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	FinishedAt         *time.Time `json:"finished_at"`
 }

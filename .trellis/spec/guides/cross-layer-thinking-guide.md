@@ -83,6 +83,12 @@ After implementation:
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
 - [ ] For protocol bridges, executed one real end-to-end request through every layer instead of relying only on static assertions. Verify framework-specific route syntax, redirect behavior, security-header stripping, status codes, and streaming headers such as Range/Content-Range.
+- [ ] For provider redirects, traced `provider API request → SDK response → adapter TemporaryURL → signed resolver → client 302` and distinguished URL-acquisition headers from final playback requirements. Copying an SDK header map across that boundary is forbidden; regression fixtures must use the complete real header shape while asserting that credentials never reach the redirect, cache, database, or logs.
+- [ ] For browser media redirects, checked the final CDN response under actual HTMLMediaElement CORS semantics. A successful Server 302 is insufficient when the player sets `crossOrigin=anonymous`; either the CDN must authorize the document origin or a fixed, reviewed player compatibility patch must suppress CORS mode. Adding CORS headers to the intermediate 302 does not authorize the final response.
+- [ ] For a browser compatibility patch, verified delivery through the real document navigation path, not only a direct unit request for the patched module. Account for Service Worker/Cache Storage reuse, assert that the HTML shell loads a fixed same-origin fallback before the application boot script, and expose a safe module log/response marker so a cache miss can be distinguished from a pattern miss.
+- [ ] For retries, verified that recomputation uses immutable source facts rather than an old UI/cache projection; stale plans, progress and provider checkpoints are cleared or versioned before revalidation.
+- [ ] For production parsing bugs, copied the complete real input into a regression fixture, preserving folder prefixes, dots, spaces, brackets and hyphens instead of testing only a cleaned sample.
+- [ ] When several providers produce the same domain object, kept parsing/classification/naming before the provider adapter boundary so one fix covers every provider.
 
 ### Native Playback Bridge Example
 

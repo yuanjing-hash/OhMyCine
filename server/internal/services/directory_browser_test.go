@@ -80,7 +80,11 @@ func TestDirectoryBrowserTokensArePurposeBoundTamperProofAndExpire(t *testing.T)
 	if _, err := service.ResolveSelection(context.Background(), actor, listing.Items[0].Token); ErrorCode(err) != CodeDirectoryTokenInvalid {
 		t.Fatalf("browse token selected: %v", err)
 	}
-	tampered := listing.Items[0].SelectionToken[:len(listing.Items[0].SelectionToken)-1] + "x"
+	replacement := byte('A')
+	if listing.Items[0].SelectionToken[0] == replacement {
+		replacement = 'B'
+	}
+	tampered := string(replacement) + listing.Items[0].SelectionToken[1:]
 	if _, err := service.ResolveSelection(context.Background(), actor, tampered); ErrorCode(err) != CodeDirectoryTokenInvalid {
 		t.Fatalf("tampered token: %v", err)
 	}
@@ -184,6 +188,39 @@ func TestDirectoryBrowserResolvesOnlyStorageRelativeSelections(t *testing.T) {
 	outsideToken, _ := service.sign(outside, tokenPurposeSelect)
 	if _, err := service.ResolveStorageRelativeSelection(context.Background(), actor, storage.ID, outsideToken); ErrorCode(err) != CodeMediaLibraryPathInvalid {
 		t.Fatalf("outside code=%q err=%v", ErrorCode(err), err)
+	}
+}
+
+func TestDirectoryBrowserStorageNavigationCannotLeaveLocalRoot(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "storage-navigation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	root, outside := t.TempDir(), t.TempDir()
+	storage := models.Storage{Name: "Navigation", NameNormalized: "navigation", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`}
+	if err := db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewDirectoryBrowserService(db, fakeDirectoryAdapter{root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := Actor{User: models.User{ID: 1}, Permissions: map[string]struct{}{authz.PermissionStoragesBrowse: {}}}
+	listing, err := service.StorageToken(context.Background(), actor, storage.ID, "", "", RequestContext{})
+	if err != nil || listing.Location != root || len(listing.Items) == 0 {
+		t.Fatalf("listing=%+v err=%v", listing, err)
+	}
+	if _, err := service.StorageToken(context.Background(), actor, storage.ID, listing.Items[0].Token, "", RequestContext{}); err != nil {
+		t.Fatalf("inside navigation failed: %v", err)
+	}
+	outsideToken, _ := service.sign(outside, tokenPurposeBrowse)
+	if _, err := service.StorageToken(context.Background(), actor, storage.ID, outsideToken, "", RequestContext{}); ErrorCode(err) != CodeMediaLibraryPathInvalid {
+		t.Fatalf("outside navigation code=%q err=%v", ErrorCode(err), err)
 	}
 }
 

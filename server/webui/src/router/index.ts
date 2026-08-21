@@ -2,7 +2,7 @@ import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vu
 import { useAuthStore } from '@/stores/auth'
 import { Permissions, type PermissionCode } from '@/auth/generated-permissions'
 import { findNavigationItem, getFirstVisibleUserManagementPath, legacyRouteRedirects, userManagementPermissions } from '@/navigation'
-import { mediaLibrariesRouteContract } from '@/router/contracts'
+import { downloadsRouteContract, mediaLibrariesRouteContract, organizationRouteContract, playersRouteContract, strmRouteContract } from '@/router/contracts'
 import AppLayout from '@/layouts/AppLayout.vue'
 import SetupView from '@/views/SetupView.vue'
 import LoginView from '@/views/LoginView.vue'
@@ -14,9 +14,14 @@ import AuditView from '@/views/AuditView.vue'
 import RuntimeLogsView from '@/views/RuntimeLogsView.vue'
 import PlannedView from '@/views/PlannedView.vue'
 import StorageView from '@/views/StorageView.vue'
+import PlayersView from '@/views/PlayersView.vue'
 import MediaRulesView from '@/views/MediaRulesView.vue'
 import MediaLibrariesView from '@/views/MediaLibrariesView.vue'
 import TasksView from '@/views/TasksView.vue'
+import DownloadsView from '@/views/DownloadsView.vue'
+import OrganizationView from '@/views/OrganizationView.vue'
+import STRMView from '@/views/STRMView.vue'
+import SettingsView from '@/views/SettingsView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 
 function navigationMeta(id: string) {
@@ -30,13 +35,9 @@ const plannedRoutes = [
   ['subscriptions/manage', 'subscriptions'],
   ['subscriptions/workflows', 'workflows'],
   ['subscriptions/calendar', 'calendar'],
-  ['automation/downloads', 'downloads'],
-  ['automation/organization', 'organization'],
-  ['automation/strm-import', 'strm-import'],
   ['automation/files', 'files'],
   ['system/sites', 'sites'],
   ['system/plugins', 'plugins'],
-  ['system/settings', 'settings'],
 ] as const
 
 export const router = createRouter({
@@ -52,9 +53,14 @@ export const router = createRouter({
       children: [
         { path: '', name: 'dashboard', component: DashboardView, meta: navigationMeta('dashboard') },
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
+        { path: playersRouteContract.path, name: playersRouteContract.name, component: PlayersView, meta: navigationMeta(playersRouteContract.navigationID) },
         { path: mediaLibrariesRouteContract.path, name: mediaLibrariesRouteContract.name, component: MediaLibrariesView, meta: navigationMeta(mediaLibrariesRouteContract.navigationID) },
         { path: 'system/media-rules', name: 'media-rules', component: MediaRulesView, meta: navigationMeta('media-rules') },
         { path: 'automation/tasks', name: 'tasks', component: TasksView, meta: navigationMeta('tasks') },
+        { path: downloadsRouteContract.path, name: downloadsRouteContract.name, component: DownloadsView, meta: navigationMeta(downloadsRouteContract.navigationID) },
+		{ path: organizationRouteContract.path, name: organizationRouteContract.name, component: OrganizationView, meta: navigationMeta(organizationRouteContract.navigationID) },
+		{ path: strmRouteContract.path, name: strmRouteContract.name, component: STRMView, meta: navigationMeta(strmRouteContract.navigationID) },
+        { path: 'system/settings', name: 'settings', component: SettingsView, meta: navigationMeta('settings') },
         ...plannedRoutes.map(([path, id]) => ({ path, name: id, component: PlannedView, meta: navigationMeta(id) })),
         {
           path: 'system/users',

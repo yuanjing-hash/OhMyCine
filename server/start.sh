@@ -30,10 +30,12 @@ OhMyCine Server 一键前台启动
   OMC_DATABASE_PATH  SQLite 路径（默认在运行目录的 data/ 下）
   OMC_LOG_DIR        结构化运行日志目录（默认在运行目录的 logs/ 下）
   OMC_ENV            运行环境（默认 production）
-  OMC_SERVER_HOST    监听地址（默认 127.0.0.1）
+  OMC_SERVER_HOST    监听地址（默认 0.0.0.0）
   OMC_SERVER_PORT    监听端口（默认 3000）
   OMC_PUBLIC_ORIGIN  浏览器精确来源（默认按监听地址和端口生成）
   OMC_COOKIE_SECURE  Cookie Secure 开关（默认由 public origin 推导）
+  OMC_TMDB_READ_ACCESS_TOKEN / OMC_TMDB_API_KEY  二选一的运行时 TMDB 凭据
+  OHMYCINE_TMDB_READ_ACCESS_TOKEN / OHMYCINE_TMDB_API_KEY  二选一的构建凭据
 
 示例：
   ./start.sh
@@ -144,13 +146,26 @@ done
 
 cd -- "${SERVER_DIR}"
 
+TMDB_BUILD_TOKEN="${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}"
+TMDB_BUILD_API_KEY="${OHMYCINE_TMDB_API_KEY:-}"
+unset OHMYCINE_TMDB_READ_ACCESS_TOKEN OHMYCINE_TMDB_API_KEY
+if [[ -n "${TMDB_BUILD_TOKEN}" && -n "${TMDB_BUILD_API_KEY}" ]]; then
+  fail "只能配置一种构建期 TMDB 凭据。"
+fi
+if [[ -n "${TMDB_BUILD_TOKEN}" ]] && { (( ${#TMDB_BUILD_TOKEN} > 4096 )) || [[ ! "${TMDB_BUILD_TOKEN}" =~ ^[A-Za-z0-9._~-]+$ ]]; }; then
+  fail "OHMYCINE_TMDB_READ_ACCESS_TOKEN 包含不支持的字符。"
+fi
+if [[ -n "${TMDB_BUILD_API_KEY}" ]] && { (( ${#TMDB_BUILD_API_KEY} > 4096 )) || [[ ! "${TMDB_BUILD_API_KEY}" =~ ^[A-Za-z0-9._~-]+$ ]]; }; then
+  fail "OHMYCINE_TMDB_API_KEY 包含不支持的字符。"
+fi
+
 readonly RUNTIME_DIR="$(absolute_server_path "${OMC_RUNTIME_DIR:-.runtime}")"
 readonly BINARY_PATH="$(absolute_server_path "${OMC_BINARY_PATH:-${RUNTIME_DIR}/bin/ohmycine-server}")"
 
 export OMC_ENV="${OMC_ENV:-production}"
 export OMC_SERVER_PORT="${OMC_SERVER_PORT:-3000}"
 
-listen_host="${OMC_SERVER_HOST:-127.0.0.1}"
+listen_host="${OMC_SERVER_HOST:-0.0.0.0}"
 if [[ "${listen_host}" == *:* && "${listen_host}" != \[*\] ]]; then
   listen_host="[${listen_host}]"
 fi
@@ -212,7 +227,14 @@ else
   mkdir -p -- "$(dirname -- "${BINARY_PATH}")"
   (
     cd -- "${SERVER_DIR}"
-    "${GO_BIN}" build -tags webui -o "${BINARY_PATH}" ./cmd/server
+    build_args=(build -tags webui)
+    if [[ -n "${TMDB_BUILD_TOKEN}" ]]; then
+      build_args+=(-ldflags "-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinReadAccessToken=${TMDB_BUILD_TOKEN}")
+    elif [[ -n "${TMDB_BUILD_API_KEY}" ]]; then
+      build_args+=(-ldflags "-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinAPIKey=${TMDB_BUILD_API_KEY}")
+    fi
+    build_args+=(-o "${BINARY_PATH}" ./cmd/server)
+    "${GO_BIN}" "${build_args[@]}"
   )
 fi
 

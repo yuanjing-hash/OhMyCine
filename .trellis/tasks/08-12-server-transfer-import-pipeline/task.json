@@ -3,7 +3,7 @@
   "name": "server-transfer-import-pipeline",
   "title": "Server 跨存储传输与自动入库",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

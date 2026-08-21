@@ -7,38 +7,179 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
+	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 )
 
 const (
-	MaxEntries = 250000
-	MaxDepth   = 64
+	MaxEntries           = 250000
+	MaxDepth             = 64
+	ProviderScanPageSize = 1000
 )
-
-var episodePattern = regexp.MustCompile(`(?i)(?:^|[. _-])S(\d{1,2})E(\d{1,3})(?:[. _-]|$)`)
 
 type File struct {
 	RelativePath string
 	ProviderID   string
-	Size         int64
-	ModifiedAt   time.Time
-	MediaType    string
-	Title        string
-	Season       *int
-	Episode      *int
+	// ProviderIDStable is true only when the provider guarantees identity
+	// across rename/move. Local scan fingerprints intentionally set it false.
+	ProviderIDStable bool
+	Size             int64
+	ModifiedAt       time.Time
+	MediaType        string
+	Title            string
+	WorkKey          string
+	SeriesTitle      string
+	Season           *int
+	Episode          *int
+}
+type SourceAsset struct {
+	RelativePath     string
+	ProviderID       string
+	ParentProviderID string
+	Name             string
+	Extension        string
+	Size             int64
+	ModifiedAt       time.Time
+	HashHint         string
 }
 type Result struct {
 	Files   []File
+	Assets  []SourceAsset
 	Partial bool
 }
 
-func ScanLocal(ctx context.Context, storageRoot, relativeRoot string, recursive bool, extensions, ignores []string) (Result, error) {
+type providerDirectory struct {
+	ID           string
+	RelativePath string
+	Depth        int
+}
+
+// ScanProvider builds a provider-relative file tree from stable provider IDs.
+// Providers with a recursive tree endpoint use it for full scans. Other
+// providers retain the conservative sequential BFS fallback.
+func ScanProvider(ctx context.Context, driver cloudpkg.Driver, rootID string, recursive bool, extensions, assetExtensions, ignores []string) (Result, error) {
+	if driver == nil || strings.TrimSpace(rootID) == "" {
+		return Result{}, errors.New("provider scanner is not configured")
+	}
+	extensionsSet := map[string]struct{}{}
+	for _, ext := range extensions {
+		extensionsSet[strings.ToLower(ext)] = struct{}{}
+	}
+	assetExtensionsSet := extensionSet(assetExtensions)
+	if recursive {
+		if bulk, ok := driver.(cloudpkg.BulkTreeDriver); ok {
+			return scanProviderTree(ctx, bulk, rootID, extensionsSet, assetExtensionsSet, ignores)
+		}
+	}
+	result := Result{Files: make([]File, 0)}
+	queue := []providerDirectory{{ID: rootID}}
+	visited := map[string]struct{}{rootID: {}}
+	seenItems := 0
+	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		current := queue[0]
+		queue = queue[1:]
+		items, err := listProviderDirectory(ctx, driver, current.ID)
+		if err != nil {
+			return result, err
+		}
+		for _, item := range items {
+			seenItems++
+			if seenItems > MaxEntries {
+				result.Partial = true
+				return sortedResult(result), nil
+			}
+			relativePath := current.RelativePath + "/" + item.Name
+			if shouldIgnore(relativePath, ignores) {
+				continue
+			}
+			if item.IsDir {
+				if !recursive || current.Depth+1 >= MaxDepth {
+					continue
+				}
+				if _, exists := visited[item.ID]; exists {
+					continue
+				}
+				visited[item.ID] = struct{}{}
+				queue = append(queue, providerDirectory{ID: item.ID, RelativePath: relativePath, Depth: current.Depth + 1})
+				continue
+			}
+			extension := strings.ToLower(filepath.Ext(item.Name))
+			if _, ok := extensionsSet[extension]; ok {
+				result.Files = append(result.Files, File{RelativePath: relativePath, ProviderID: item.ID, ProviderIDStable: true, Size: item.Size, ModifiedAt: item.ModifiedAt.UTC()})
+			} else if _, ok := assetExtensionsSet[extension]; ok {
+				result.Assets = append(result.Assets, SourceAsset{RelativePath: relativePath, ProviderID: item.ID, ParentProviderID: current.ID, Name: item.Name, Extension: extension, Size: item.Size, ModifiedAt: item.ModifiedAt.UTC(), HashHint: item.SHA1})
+			}
+		}
+	}
+	return sortedResult(result), nil
+}
+
+func scanProviderTree(ctx context.Context, driver cloudpkg.BulkTreeDriver, rootID string, extensionsSet, assetExtensionsSet map[string]struct{}, ignores []string) (Result, error) {
+	tree, err := driver.ListTree(ctx, rootID, MaxEntries)
+	if err != nil {
+		return Result{}, err
+	}
+	result := Result{Files: make([]File, 0, min(len(tree.Entries), MaxEntries)), Partial: tree.Partial}
+	for _, entry := range tree.Entries {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		path := entry.RelativePath
+		if entry.IsDir || !strings.HasPrefix(path, "/") || shouldIgnore(path, ignores) {
+			continue
+		}
+		extension := strings.ToLower(filepath.Ext(entry.Name))
+		if _, video := extensionsSet[extension]; !video {
+			if _, asset := assetExtensionsSet[extension]; !asset {
+				continue
+			}
+		}
+		if len(result.Files)+len(result.Assets) >= MaxEntries {
+			result.Partial = true
+			break
+		}
+		if _, ok := extensionsSet[extension]; ok {
+			result.Files = append(result.Files, File{RelativePath: path, ProviderID: entry.ID, ProviderIDStable: true, Size: entry.Size, ModifiedAt: entry.ModifiedAt.UTC()})
+		} else {
+			result.Assets = append(result.Assets, SourceAsset{RelativePath: path, ProviderID: entry.ID, ParentProviderID: entry.ParentID, Name: entry.Name, Extension: extension, Size: entry.Size, ModifiedAt: entry.ModifiedAt.UTC(), HashHint: entry.SHA1})
+		}
+	}
+	return sortedResult(result), nil
+}
+
+func listProviderDirectory(ctx context.Context, driver cloudpkg.Driver, directoryID string) ([]cloudpkg.Item, error) {
+	items := make([]cloudpkg.Item, 0)
+	for offset := int64(0); ; {
+		page, err := driver.List(ctx, directoryID, cloudpkg.PageRequest{Offset: offset, Limit: ProviderScanPageSize})
+		if err != nil {
+			return nil, err
+		}
+		if len(page.Items) == 0 && page.HasMore {
+			return nil, errors.New("provider returned a non-progressing page")
+		}
+		items = append(items, page.Items...)
+		if !page.HasMore {
+			return items, nil
+		}
+		offset += int64(len(page.Items))
+	}
+}
+
+func sortedResult(result Result) Result {
+	sort.Slice(result.Files, func(i, j int) bool { return result.Files[i].RelativePath < result.Files[j].RelativePath })
+	sort.Slice(result.Assets, func(i, j int) bool { return result.Assets[i].RelativePath < result.Assets[j].RelativePath })
+	return result
+}
+
+func ScanLocal(ctx context.Context, storageRoot, relativeRoot string, recursive bool, extensions, assetExtensions, ignores []string) (Result, error) {
 	root, err := ResolveRoot(storageRoot, relativeRoot)
 	if err != nil {
 		return Result{}, err
@@ -47,6 +188,7 @@ func ScanLocal(ctx context.Context, storageRoot, relativeRoot string, recursive 
 	for _, ext := range extensions {
 		extensionsSet[strings.ToLower(ext)] = struct{}{}
 	}
+	assetExtensionsSet := extensionSet(assetExtensions)
 	result := Result{Files: make([]File, 0)}
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -88,10 +230,13 @@ func ScanLocal(ctx context.Context, storageRoot, relativeRoot string, recursive 
 			}
 			return nil
 		}
-		if _, ok := extensionsSet[strings.ToLower(filepath.Ext(entry.Name()))]; !ok {
+		extension := strings.ToLower(filepath.Ext(entry.Name()))
+		_, video := extensionsSet[extension]
+		_, asset := assetExtensionsSet[extension]
+		if !video && !asset {
 			return nil
 		}
-		if len(result.Files) >= MaxEntries {
+		if len(result.Files)+len(result.Assets) >= MaxEntries {
 			result.Partial = true
 			return filepath.SkipAll
 		}
@@ -99,16 +244,34 @@ func ScanLocal(ctx context.Context, storageRoot, relativeRoot string, recursive 
 		if err != nil {
 			return err
 		}
-		mediaType, title, season, episode := ParseFilename(entry.Name(), providerRel)
 		identity := sha256.Sum256([]byte(providerRel + "\x00" + info.ModTime().UTC().Format(time.RFC3339Nano) + "\x00" + strconv.FormatInt(info.Size(), 10)))
-		result.Files = append(result.Files, File{RelativePath: providerRel, ProviderID: hex.EncodeToString(identity[:16]), Size: info.Size(), ModifiedAt: info.ModTime().UTC(), MediaType: mediaType, Title: title, Season: season, Episode: episode})
+		providerID := hex.EncodeToString(identity[:16])
+		if video {
+			result.Files = append(result.Files, File{RelativePath: providerRel, ProviderID: providerID, Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
+		} else {
+			result.Assets = append(result.Assets, SourceAsset{RelativePath: providerRel, ProviderID: providerID, Name: entry.Name(), Extension: extension, Size: info.Size(), ModifiedAt: info.ModTime().UTC(), HashHint: providerID})
+		}
 		return nil
 	})
 	if err != nil && !errors.Is(err, filepath.SkipAll) {
 		return Result{}, err
 	}
-	sort.Slice(result.Files, func(i, j int) bool { return result.Files[i].RelativePath < result.Files[j].RelativePath })
-	return result, nil
+	return sortedResult(result), nil
+}
+
+func extensionSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if !strings.HasPrefix(value, ".") {
+			value = "." + value
+		}
+		result[value] = struct{}{}
+	}
+	return result
 }
 
 // InspectLocalFile validates and parses one watcher event target without
@@ -156,9 +319,8 @@ func InspectLocalFile(ctx context.Context, libraryRoot, path string, extensions,
 	if _, ok := extensionsSet[strings.ToLower(filepath.Ext(info.Name()))]; !ok {
 		return File{}, false, nil
 	}
-	mediaType, title, season, episode := ParseFilename(info.Name(), providerRel)
 	identity := sha256.Sum256([]byte(providerRel + "\x00" + info.ModTime().UTC().Format(time.RFC3339Nano) + "\x00" + strconv.FormatInt(info.Size(), 10)))
-	return File{RelativePath: providerRel, ProviderID: hex.EncodeToString(identity[:16]), Size: info.Size(), ModifiedAt: info.ModTime().UTC(), MediaType: mediaType, Title: title, Season: season, Episode: episode}, true, nil
+	return File{RelativePath: providerRel, ProviderID: hex.EncodeToString(identity[:16]), Size: info.Size(), ModifiedAt: info.ModTime().UTC()}, true, nil
 }
 
 // IsUnsafeDirectory exposes the same symlink/Reparse Point policy used by the
@@ -215,30 +377,8 @@ func NormalizeRelativeRoot(value string) (string, error) {
 	return clean, nil
 }
 func ParseFilename(name, path string) (string, string, *int, *int) {
-	base := strings.TrimSuffix(name, filepath.Ext(name))
-	title := strings.TrimSpace(strings.NewReplacer(".", " ", "_", " ").Replace(base))
-	match := episodePattern.FindStringSubmatch(" " + base + " ")
-	if len(match) == 3 {
-		season := atoi(match[1])
-		episode := atoi(match[2])
-		cleaned := strings.TrimSpace(episodePattern.ReplaceAllString(" "+title+" ", " "))
-		if cleaned != "" {
-			title = cleaned
-		}
-		return "tv", title, &season, &episode
-	}
-	lower := strings.ToLower(filepath.ToSlash(path))
-	if strings.Contains(lower, "/season ") || strings.Contains(lower, "/tv/") || strings.Contains(lower, "/剧集/") {
-		return "tv", title, nil, nil
-	}
-	return "movie", title, nil, nil
-}
-func atoi(value string) int {
-	n := 0
-	for _, r := range value {
-		n = n*10 + int(r-'0')
-	}
-	return n
+	parsed := ParseMedia(name, path)
+	return parsed.MediaType, parsed.Title, parsed.Season, parsed.Episode
 }
 func shouldIgnore(path string, patterns []string) bool {
 	lower := strings.ToLower(path)

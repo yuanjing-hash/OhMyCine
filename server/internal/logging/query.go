@@ -32,6 +32,7 @@ type Filter struct {
 	Levels       []string
 	Modules      []string
 	Components   []string
+	Operations   []string
 	PluginIDs    []string
 	Keyword      string
 	RequestID    string
@@ -46,13 +47,15 @@ type Filter struct {
 }
 
 type Entry struct {
-	Timestamp time.Time      `json:"timestamp"`
-	Level     string         `json:"level"`
-	Message   string         `json:"message"`
-	Module    string         `json:"module"`
-	Component string         `json:"component"`
-	PluginID  string         `json:"plugin_id,omitempty"`
-	Fields    map[string]any `json:"fields"`
+	Timestamp      time.Time      `json:"timestamp"`
+	Level          string         `json:"level"`
+	Message        string         `json:"message"`
+	Module         string         `json:"module"`
+	Component      string         `json:"component"`
+	Operation      string         `json:"operation,omitempty"`
+	OperationLabel string         `json:"operation_label,omitempty"`
+	PluginID       string         `json:"plugin_id,omitempty"`
+	Fields         map[string]any `json:"fields"`
 }
 
 type QueryResult struct {
@@ -66,6 +69,7 @@ type Facets struct {
 	Levels     []string `json:"levels"`
 	Modules    []string `json:"modules"`
 	Components []string `json:"components"`
+	Operations []string `json:"operations"`
 	PluginIDs  []string `json:"plugin_ids"`
 }
 
@@ -152,16 +156,19 @@ func (m *Manager) Facets(ctx context.Context, filter Filter) (Facets, error) {
 	if err != nil {
 		return Facets{}, err
 	}
-	levels, modules, components, plugins := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	levels, modules, components, operations, plugins := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	for _, entry := range result.List {
 		levels[entry.Level] = struct{}{}
 		modules[entry.Module] = struct{}{}
 		components[entry.Component] = struct{}{}
+		if entry.Operation != "" {
+			operations[entry.Operation] = struct{}{}
+		}
 		if entry.PluginID != "" {
 			plugins[entry.PluginID] = struct{}{}
 		}
 	}
-	return Facets{Levels: sortedKeys(levels), Modules: sortedKeys(modules), Components: sortedKeys(components), PluginIDs: sortedKeys(plugins)}, nil
+	return Facets{Levels: sortedKeys(levels), Modules: sortedKeys(modules), Components: sortedKeys(components), Operations: sortedKeys(operations), PluginIDs: sortedKeys(plugins)}, nil
 }
 
 func (m *Manager) queryFiles() []string {
@@ -248,21 +255,23 @@ func entryFromRaw(raw map[string]any) (Entry, bool) {
 	msg, _ := raw["message"].(string)
 	module, _ := raw["module"].(string)
 	component, _ := raw["component"].(string)
+	operation, _ := raw["operation"].(string)
+	operationLabel, _ := raw["operation_label"].(string)
 	plugin, _ := raw["plugin_id"].(string)
 	fields := map[string]any{}
 	for k, v := range raw {
-		if k != "time" && k != "timestamp" && k != "level" && k != "message" && k != "module" && k != "component" && k != "plugin_id" {
+		if k != "time" && k != "timestamp" && k != "level" && k != "message" && k != "module" && k != "component" && k != "operation" && k != "operation_label" && k != "plugin_id" {
 			fields[k] = v
 		}
 	}
-	return Entry{Timestamp: ts.UTC(), Level: level, Message: msg, Module: module, Component: component, PluginID: plugin, Fields: fields}, true
+	return Entry{Timestamp: ts.UTC(), Level: level, Message: msg, Module: module, Component: component, Operation: operation, OperationLabel: operationLabel, PluginID: plugin, Fields: fields}, true
 }
 func zerologTimestampField() string { return zerolog.TimestampFieldName }
 func matches(e Entry, f Filter) bool {
 	if e.Timestamp.Before(f.From) || e.Timestamp.After(f.To) {
 		return false
 	}
-	if !containsOrEmpty(f.Levels, e.Level) || !containsOrEmpty(f.Modules, e.Module) || !containsOrEmpty(f.Components, e.Component) || !containsOrEmpty(f.PluginIDs, e.PluginID) {
+	if !containsOrEmpty(f.Levels, e.Level) || !containsOrEmpty(f.Modules, e.Module) || !containsOrEmpty(f.Components, e.Component) || !containsOrEmpty(f.Operations, e.Operation) || !containsOrEmpty(f.PluginIDs, e.PluginID) {
 		return false
 	}
 	if f.Keyword != "" && !strings.Contains(strings.ToLower(e.Message), strings.ToLower(f.Keyword)) {

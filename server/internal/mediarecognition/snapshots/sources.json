@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "synced_at": "2026-08-20",
+  "upstream_repository": "https://github.com/Putarku/MoviePilot-Help",
+  "license": "MIT",
+  "license_file": "LICENSE.MoviePilot-Help",
+  "packs": [
+    {
+      "code": "tv-v1",
+      "name": "电视剧预识别词",
+      "source": "https://raw.githubusercontent.com/Putarku/MoviePilot-Help/f99c1b0bfd6721a727260e3e41e7d0bca73af8c7/Words/TV.txt",
+      "commit": "f99c1b0bfd6721a727260e3e41e7d0bca73af8c7",
+      "snapshot": "tv.txt",
+      "sha256": "a9b66a2eb7f5321ba79cee9404b255cbece80645e82b681258d89b3cd5dab8c8",
+      "rule_count": 28
+    },
+    {
+      "code": "anime-v1",
+      "name": "动画预识别词",
+      "source": "https://raw.githubusercontent.com/Putarku/MoviePilot-Help/8f26b5b48ac1a863cae97dd67689d05433394349/Words/anime.txt",
+      "commit": "8f26b5b48ac1a863cae97dd67689d05433394349",
+      "snapshot": "anime.txt",
+      "sha256": "a532a0ace2e9ea63ddfab6e5f5fe062c162ff47b1cc6a50fd00661e503968cc9",
+      "rule_count": 294
+    }
+  ]
+}

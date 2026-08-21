@@ -1,25 +1,42 @@
-# Server 跨存储传输与自动入库
+# Server 媒体库路由、传输与自动入库
 
 ## Goal
 
-下载完成后将内容可靠地识别、规划、跨 Storage 传输并导入用户选择的 MediaLibrary，最终触发增量扫描、分类、STRM 投影和通知。
+下载任务直接选择目标 MediaLibrary；未显式选择时按媒体库排序解析第一个可用目标。下载完成后使用该库关联的分类 Profile 和入库策略完成重命名、目录重建、冲突处理、文件转移与媒体库对账，不再引入重复的 DownloadRule 配置层。
 
 ## Requirements
 
-1. 用户提交资源时选择一条有效 DownloadRule（默认预选系统默认规则，可切换）；Server 保存规则版本快照、来源、下载输出和目标库，生成不可变 DownloadRoute。
-2. 支持 direct-to-target、local-to-local、cloud-to-local、local-to-cloud、cloud-to-cloud 五类路线。
-3. cloud-to-cloud 优先 provider server-side copy；不支持时只有在启用跨 Storage 且配置受控本地 staging 后才允许“下载到本地再上传”。
-4. 下载完成后先解析/匹配足够元数据并生成可预览 ImportPlan（目标相对路径、命名、策略、冲突）；匹配不确定进入人工确认。
-5. 分阶段以持久化队列 job 执行并保存 transfer/import progress、bytes、speed、重试、checkpoint、lease 和幂等 key。
-6. 目标存在时使用任务快照中的冲突策略。`ask` 创建 ActionRequest 后进入 `waiting_user_action` 并释放执行槽，后续队列继续；响应后重新入队并重新校验目标。`overwrite` 直接替换且不暂停：本地旧目标直接永久移除，不使用隔离回收区；cloud provider 支持原生回收站时旧目标默认入云端回收站，否则永久移除后替换；覆盖前后均重验受控目标身份并审计。hardlink 失败不自动降级 copy；移动/跨盘传输均审计。除同路径冲突 overwrite 外，任何本地或云端删除都不作为规则的隐式完成动作，普通/递归/永久删除走独立预览和反复确认流程。
-7. 传输完成后向目标 MediaLibrary supervisor 标记 dirty generation（不创建扫描队列任务），由其完成文件树 reconciliation、本地识别/分类和启用时的 STRM/伴随文件投影；需要网络请求或重试的 metadata scrape/海报处理仍创建独立持久 Queue Job。对应 generation 的必要步骤收敛后，再触发 Emby/Jellyfin refresh 与 Player 通知。
-8. 网盘扫描、TMDB 刮削、上传/下载和 direct URL 分别限速，provider 风控错误退避并可取消。
+1. MediaLibrary 支持稳定排序；管理端可拖动排序并提供键盘可用的上下移动操作。
+2. MediaLibrary 保存入库方式、冲突策略和电影/剧集目录及文件名模板。本地首版支持 `move|copy|symlink`；云端以后按 capability 隐藏 `symlink`。
+3. 下载提交直接选择目标 MediaLibrary；`0` 表示自动选择。自动选择在提交时按 `sort_order,id` 解析第一个启用、可用且与 downloader 输出兼容的库，随后快照为具体目标。
+4. 分类 Profile 只能从目标 MediaLibrary 继承。DownloadTask 快照目标库、Storage、相对根、Profile ID/revision/rules 和完整入库策略；后续排序或配置变更不改变已入队任务。
+5. 所有本地 downloader 仍只下载到 Server 全局暂存目录。qBittorrent 预分类使用目标库 Profile，并把分类结果映射为 provider category；下载完成后基于真实文件清单重新识别。
+6. 下载完成后创建独立持久 `transfer` Job，不在 download worker 内长时间执行文件操作。TransferTask 只在私有状态保存绝对边界和 manifest，公开 DTO、日志、审计和 Job payload 不暴露绝对路径。
+7. 本地入库保留视频扩展名，自动渲染受控目录/文件名模板；字幕和图片伴随文件与匹配视频使用相同目标 basename。所有源/目标路径必须重新规范化并限制在快照边界内。
+8. `ask` 冲突创建 ActionRequest 并释放 worker slot，后续任务继续；`overwrite|skip|rename` 自动执行。显式覆盖只允许已重新验证的同一目标。
+9. `move` 成功后源文件不再保留；`copy` 保留源；`symlink` 创建指向暂存源的链接并永久保留源。symlink 为管理员配置且不允许目标逃逸。
+10. 入库完成后标记目标 MediaLibrary dirty generation并触发独立 reconciliation；媒体库监听本身不进入持久任务队列。
+11. 历史无目标库 DownloadTask 继续完成下载/刮削但不自动入库；旧 API 的 `profile_id` 仅作为兼容输入，新 Web UI 不再展示独立 Profile 选择。
+12. qBittorrent 等支持做种的下载器在 `copy|symlink` 入库成功后进入独立做种管理，不长期占用 transfer worker。用户可预设最低做种时长、最低分享率和条件组合方式，任务提交时快照策略。
+13. 做种条件达成后，`copy` 删除 provider 任务及暂存源文件，`symlink` 只删除 provider 任务但必须保留源文件以保证链接有效。`move` 不进入做种管理。默认关闭自动做种清理，升级不得自动删除现有数据。
+14. 暂存源文件解析同时兼容 qBittorrent 将文件保留在暂存根目录的情况；分类目录和根目录候选路径都必须逐级拒绝 symlink/Junction/Reparse Point 逃逸。
+15. 下载页对失败的 download、transfer 和 seeding Job 都提供明确的分阶段重试入口；入库失败只重试 transfer Job，不重新提交或下载资源。
 
 ## Acceptance Criteria
 
-- [ ] fake local/cloud adapters 覆盖五类 route，错误路线在提交前拒绝。
-- [ ] 下载、传输、入库阶段分别显示百分比与速度并可从失败点重试。
-- [ ] 不确定匹配不会自动写入猜测目录；确认后幂等入库一次。
-- [ ] 一个冲突任务等待用户时不占 worker slot、不阻塞其它下载/上传/扫描/刮削任务。
-- [ ] overwrite 冲突不进入 waiting_user_action；本地旧目标直接永久删除，cloud 有回收站时入云端回收站，否则永久替换；三种路径都只影响已校验的同一目标且有审计。
-- [ ] 完成后目标媒体库扫描确认新文件，源/目标文件策略符合用户选择。
+- [x] 媒体库排序持久化，刷新后顺序不变；自动下载目标使用排序后的首个可用库。
+- [x] 手动选择目标库后，任务快照使用该库 Profile 和入库策略，后续编辑不影响任务。
+- [x] 下载页面只选择媒体库并展示 Profile、转移方式、冲突策略和目标摘要。
+- [x] 下载完成创建独立 transfer Job；失败/等待冲突不阻塞后续 download/transfer Job。
+- [x] fake 本地文件覆盖 move/copy/symlink、模板渲染、伴随文件、ask/overwrite/skip/rename 和重启幂等测试。
+- [x] 任何任务/日志/API 响应均不泄露暂存或 Storage 绝对路径。
+- [x] qBit 文件位于暂存根目录时仍可安全生成入库计划，分类目录优先且两条路径均通过 reparse-point 检查。
+- [x] `copy|symlink` 入库成功后生成独立做种任务，展示分享率、做种时长和清理策略；达标后按模式使用正确的 `deleteData` 语义。
+- [x] provider 任务已不存在时清理幂等完成；其它 provider 失败可重试且不删除做种记录。
+- [x] 下载页的失败下载、失败入库和失败做种分别重试自己的 Job，不会误重试前置阶段。
+
+## Out of Scope
+
+- 115 等网盘原生离线下载和真实 cloud-to-cloud 字节传输。
+- STRM/302 的具体投影实现。
+- 独立 DownloadRule 管理页面。

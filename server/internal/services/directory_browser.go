@@ -38,15 +38,20 @@ const (
 )
 
 type DirectoryBrowserService struct {
-	db      *gorm.DB
-	adapter directory.Adapter
-	key     []byte
-	now     func() time.Time
-	ttl     time.Duration
-	timeout time.Duration
-	active  chan struct{}
-	mu      sync.Mutex
-	limits  map[string]*browseWindow
+	db       *gorm.DB
+	adapter  directory.Adapter
+	key      []byte
+	now      func() time.Time
+	ttl      time.Duration
+	timeout  time.Duration
+	active   chan struct{}
+	mu       sync.Mutex
+	limits   map[string]*browseWindow
+	provider *ProviderDirectoryService
+}
+
+func (s *DirectoryBrowserService) SetProviderDirectoryService(provider *ProviderDirectoryService) {
+	s.provider = provider
 }
 
 type browseWindow struct {
@@ -85,6 +90,7 @@ type DirectoryListing struct {
 	CurrentToken          string           `json:"current_token"`
 	CurrentSelectionToken string           `json:"current_selection_token"`
 	ParentToken           string           `json:"parent_token,omitempty"`
+	NextPageToken         string           `json:"next_page_token,omitempty"`
 	Breadcrumbs           []DirectoryCrumb `json:"breadcrumbs"`
 	Items                 []DirectoryItem  `json:"items"`
 	Truncated             bool             `json:"truncated"`
@@ -206,7 +212,7 @@ func (s *DirectoryBrowserService) List(ctx context.Context, actor Actor, token s
 	return listing, nil
 }
 
-func (s *DirectoryBrowserService) StorageToken(ctx context.Context, actor Actor, storageID uint, request RequestContext) (DirectoryListing, error) {
+func (s *DirectoryBrowserService) StorageToken(ctx context.Context, actor Actor, storageID uint, token, pageToken string, request RequestContext) (DirectoryListing, error) {
 	if err := s.authorize(actor); err != nil {
 		return DirectoryListing{}, err
 	}
@@ -214,13 +220,53 @@ func (s *DirectoryBrowserService) StorageToken(ctx context.Context, actor Actor,
 	if err := s.db.First(&record, storageID).Error; err != nil {
 		return DirectoryListing{}, storageNotFound(err)
 	}
+	if record.Type == models.StorageTypePan115 {
+		if s.provider == nil {
+			return DirectoryListing{}, appError(CodeDirectoryUnavailable, "网盘目录服务不可用", nil)
+		}
+		return s.provider.BrowseStorage(ctx, actor, storageID, token, pageToken)
+	}
+	if record.Type != models.StorageTypeLocal || strings.TrimSpace(pageToken) != "" {
+		return DirectoryListing{}, appError(CodeDirectoryTokenInvalid, "目录令牌无效", nil)
+	}
 	if _, err := (storagefs.LocalDriver{}).CanonicalizeRoot(record.RootPath); err != nil {
 		return DirectoryListing{}, storagePathError(err)
 	}
 	if err := s.adapter.Validate(ctx, record.RootPath); err != nil {
 		return DirectoryListing{}, s.browserError(err)
 	}
+	if strings.TrimSpace(token) != "" {
+		selected, err := s.resolve(token, tokenPurposeBrowse)
+		if err != nil {
+			return DirectoryListing{}, err
+		}
+		if _, err := storagefs.Constrain(record.RootPath, selected); err != nil {
+			return DirectoryListing{}, appError(CodeMediaLibraryPathInvalid, "所选目录不在来源 Storage 范围内", nil)
+		}
+		return s.List(ctx, actor, token, request)
+	}
 	token, err := s.sign(record.RootPath, tokenPurposeBrowse)
+	if err != nil {
+		return DirectoryListing{}, err
+	}
+	return s.List(ctx, actor, token, request)
+}
+
+// OpenPath opens a Server-owned configured directory in the picker. The path
+// never comes from the browser; callers must load it from an authorized Server
+// setting before using this method.
+func (s *DirectoryBrowserService) OpenPath(ctx context.Context, actor Actor, path string, request RequestContext) (DirectoryListing, error) {
+	if err := s.authorize(actor); err != nil {
+		return DirectoryListing{}, err
+	}
+	canonical, err := (storagefs.LocalDriver{}).CanonicalizeRoot(path)
+	if err != nil {
+		return DirectoryListing{}, storagePathError(err)
+	}
+	if err := s.adapter.Validate(ctx, canonical); err != nil {
+		return DirectoryListing{}, s.browserError(err)
+	}
+	token, err := s.sign(canonical, tokenPurposeBrowse)
 	if err != nil {
 		return DirectoryListing{}, err
 	}
@@ -337,7 +383,7 @@ func (s *DirectoryBrowserService) sign(path, purpose string) (string, error) {
 
 func (s *DirectoryBrowserService) resolve(token, purpose string) (string, error) {
 	sealed, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
+	if err != nil || base64.RawURLEncoding.EncodeToString(sealed) != token {
 		return "", appError(CodeDirectoryTokenInvalid, "目录令牌无效", nil)
 	}
 	block, err := aes.NewCipher(s.key[32:])

@@ -15,24 +15,56 @@ import (
 )
 
 type API struct {
-	config      config.Config
-	auth        *services.AuthService
-	admin       *services.AdminService
-	audit       *services.AuditService
-	storage     *services.StorageService
-	directory   *services.DirectoryBrowserService
-	profiles    *services.MediaClassificationProfileService
-	libraries   *services.MediaLibraryService
-	runtimeLogs *services.RuntimeLogService
-	queue       *services.QueueService
-	queueEvents *services.QueueEventHub
-	log         zerolog.Logger
+	config            config.Config
+	auth              *services.AuthService
+	admin             *services.AdminService
+	audit             *services.AuditService
+	connections       *services.ConnectionService
+	providerDirectory *services.ProviderDirectoryService
+	storage           *services.StorageService
+	directory         *services.DirectoryBrowserService
+	profiles          *services.MediaClassificationProfileService
+	libraries         *services.MediaLibraryService
+	runtimeLogs       *services.RuntimeLogService
+	queue             *services.QueueService
+	queueEvents       *services.QueueEventHub
+	downloaders       *services.DownloaderService
+	downloads         *services.DownloadService
+	transfers         *services.TransferService
+	downloadSettings  *services.DownloadSettingsService
+	metadataSettings  *services.MetadataSettingsService
+	seedingSettings   *services.SeedingSettingsService
+	seeding           *services.SeedingService
+	signedProxy       *services.SignedProxyService
+	embyGateway       *services.EmbyGatewayService
+	strm              *services.STRMManagementService
+	log               zerolog.Logger
 }
 
-func (a *API) SetRuntimeLogService(service *services.RuntimeLogService)     { a.runtimeLogs = service }
+func (a *API) SetRuntimeLogService(service *services.RuntimeLogService) { a.runtimeLogs = service }
+func (a *API) SetConnectionService(service *services.ConnectionService) { a.connections = service }
+func (a *API) SetProviderDirectoryService(service *services.ProviderDirectoryService) {
+	a.providerDirectory = service
+}
 func (a *API) SetMediaLibraryService(service *services.MediaLibraryService) { a.libraries = service }
 func (a *API) SetQueueService(service *services.QueueService)               { a.queue = service }
 func (a *API) SetQueueEventHub(hub *services.QueueEventHub)                 { a.queueEvents = hub }
+func (a *API) SetDownloaderService(service *services.DownloaderService)     { a.downloaders = service }
+func (a *API) SetDownloadService(service *services.DownloadService)         { a.downloads = service }
+func (a *API) SetTransferService(service *services.TransferService)         { a.transfers = service }
+func (a *API) SetDownloadSettingsService(service *services.DownloadSettingsService) {
+	a.downloadSettings = service
+}
+func (a *API) SetMetadataSettingsService(service *services.MetadataSettingsService) {
+	a.metadataSettings = service
+}
+func (a *API) SetSeedingSettingsService(service *services.SeedingSettingsService) {
+	a.seedingSettings = service
+}
+func (a *API) SetSeedingService(service *services.SeedingService)               { a.seeding = service }
+func (a *API) SetSignedProxyService(service *services.SignedProxyService)       { a.signedProxy = service }
+func (a *API) SetEmbyGatewayService(service *services.EmbyGatewayService)       { a.embyGateway = service }
+func (a *API) SetSTRMManagementService(service *services.STRMManagementService) { a.strm = service }
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}
@@ -387,7 +419,7 @@ func (a *API) StorageDirectory(c *gin.Context) {
 	if !ok {
 		return
 	}
-	data, err := a.directory.StorageToken(c.Request.Context(), actor, id, middleware.RequestContextFrom(c))
+	data, err := a.directory.StorageToken(c.Request.Context(), actor, id, c.Query("token"), c.Query("page_token"), middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -398,11 +430,13 @@ func (a *API) StorageDirectory(c *gin.Context) {
 func (a *API) CreateStorage(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	var input struct {
-		Name        string `json:"name" binding:"required"`
-		Type        string `json:"type"`
-		RootPath    string `json:"root_path"`
-		PickerToken string `json:"picker_token"`
-		Enabled     *bool  `json:"enabled"`
+		Name                string `json:"name" binding:"required"`
+		Type                string `json:"type"`
+		RootPath            string `json:"root_path"`
+		PickerToken         string `json:"picker_token"`
+		ProviderPickerToken string `json:"provider_picker_token"`
+		ConnectionID        *uint  `json:"connection_id"`
+		Enabled             *bool  `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		writeError(c, a.log, invalid("存储信息不完整", err))
@@ -420,11 +454,24 @@ func (a *API) CreateStorage(c *gin.Context) {
 		}
 		input.RootPath = root
 	}
+	rootDisplayPath := input.RootPath
+	if input.ProviderPickerToken != "" {
+		if input.ConnectionID == nil {
+			writeError(c, a.log, invalid("请选择 115 账号", nil))
+			return
+		}
+		selection, err := a.providerDirectory.ResolveSelection(c.Request.Context(), actor, *input.ConnectionID, input.ProviderPickerToken)
+		if err != nil {
+			writeError(c, a.log, err)
+			return
+		}
+		input.RootPath, rootDisplayPath = selection.ProviderID, selection.DisplayPath
+	}
 	if input.RootPath == "" {
 		writeError(c, a.log, invalid("请选择存储根目录", nil))
 		return
 	}
-	data, err := a.storage.Create(actor, services.StorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, Enabled: enabled}, middleware.RequestContextFrom(c))
+	data, err := a.storage.CreateContext(c.Request.Context(), actor, services.StorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, RootDisplayPath: rootDisplayPath, ConnectionID: input.ConnectionID, Enabled: enabled}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -439,11 +486,13 @@ func (a *API) UpdateStorage(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Name        *string `json:"name"`
-		Type        *string `json:"type"`
-		RootPath    *string `json:"root_path"`
-		PickerToken *string `json:"picker_token"`
-		Enabled     *bool   `json:"enabled"`
+		Name                *string `json:"name"`
+		Type                *string `json:"type"`
+		RootPath            *string `json:"root_path"`
+		PickerToken         *string `json:"picker_token"`
+		ProviderPickerToken *string `json:"provider_picker_token"`
+		ConnectionID        *uint   `json:"connection_id"`
+		Enabled             *bool   `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		writeError(c, a.log, invalid("存储信息无效", err))
@@ -457,7 +506,20 @@ func (a *API) UpdateStorage(c *gin.Context) {
 		}
 		input.RootPath = &root
 	}
-	data, err := a.storage.Update(actor, id, services.UpdateStorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, Enabled: input.Enabled}, middleware.RequestContextFrom(c))
+	var rootDisplayPath *string
+	if input.ProviderPickerToken != nil {
+		if input.ConnectionID == nil {
+			writeError(c, a.log, invalid("请选择 115 账号", nil))
+			return
+		}
+		selection, err := a.providerDirectory.ResolveSelection(c.Request.Context(), actor, *input.ConnectionID, *input.ProviderPickerToken)
+		if err != nil {
+			writeError(c, a.log, err)
+			return
+		}
+		input.RootPath, rootDisplayPath = &selection.ProviderID, &selection.DisplayPath
+	}
+	data, err := a.storage.UpdateContext(c.Request.Context(), actor, id, services.UpdateStorageInput{Name: input.Name, Type: input.Type, RootPath: input.RootPath, RootDisplayPath: rootDisplayPath, ConnectionID: input.ConnectionID, Enabled: input.Enabled}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -471,7 +533,7 @@ func (a *API) TestStorage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	data, err := a.storage.Test(actor, id, middleware.RequestContextFrom(c))
+	data, err := a.storage.TestContext(c.Request.Context(), actor, id, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -519,14 +581,20 @@ func (a *API) MediaClassificationProfile(c *gin.Context) {
 func (a *API) CreateMediaClassificationProfile(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	var input struct {
-		Name  string          `json:"name" binding:"required"`
-		Rules json.RawMessage `json:"rules"`
+		Name                    string           `json:"name" binding:"required"`
+		Rules                   json.RawMessage  `json:"rules"`
+		BuiltinRecognitionPacks *[]string        `json:"builtin_recognition_packs"`
+		RecognitionRules        *json.RawMessage `json:"recognition_rules"`
+		MovieDirectoryTemplate  *string          `json:"movie_directory_template"`
+		MovieFilenameTemplate   *string          `json:"movie_filename_template"`
+		TVDirectoryTemplate     *string          `json:"tv_directory_template"`
+		TVFilenameTemplate      *string          `json:"tv_filename_template"`
 	}
 	if err := strictJSON(c, &input); err != nil {
 		writeError(c, a.log, invalid("媒体分类规则信息无效", err))
 		return
 	}
-	data, err := a.profiles.Create(actor, services.CreateMediaClassificationProfileInput{Name: input.Name, Rules: input.Rules}, middleware.RequestContextFrom(c))
+	data, err := a.profiles.Create(actor, services.CreateMediaClassificationProfileInput{Name: input.Name, Rules: input.Rules, BuiltinRecognitionPacks: input.BuiltinRecognitionPacks, RecognitionRules: input.RecognitionRules, MovieDirectoryTemplate: input.MovieDirectoryTemplate, MovieFilenameTemplate: input.MovieFilenameTemplate, TVDirectoryTemplate: input.TVDirectoryTemplate, TVFilenameTemplate: input.TVFilenameTemplate}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -562,15 +630,21 @@ func (a *API) UpdateMediaClassificationProfile(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Revision uint64          `json:"revision" binding:"required"`
-		Name     string          `json:"name" binding:"required"`
-		Rules    json.RawMessage `json:"rules" binding:"required"`
+		Revision                uint64           `json:"revision" binding:"required"`
+		Name                    string           `json:"name" binding:"required"`
+		Rules                   json.RawMessage  `json:"rules" binding:"required"`
+		BuiltinRecognitionPacks *[]string        `json:"builtin_recognition_packs"`
+		RecognitionRules        *json.RawMessage `json:"recognition_rules"`
+		MovieDirectoryTemplate  *string          `json:"movie_directory_template"`
+		MovieFilenameTemplate   *string          `json:"movie_filename_template"`
+		TVDirectoryTemplate     *string          `json:"tv_directory_template"`
+		TVFilenameTemplate      *string          `json:"tv_filename_template"`
 	}
 	if err := strictJSON(c, &input); err != nil {
 		writeError(c, a.log, invalid("媒体分类规则信息无效", err))
 		return
 	}
-	data, err := a.profiles.Update(actor, id, services.UpdateMediaClassificationProfileInput{Revision: input.Revision, Name: input.Name, Rules: input.Rules}, middleware.RequestContextFrom(c))
+	data, err := a.profiles.Update(actor, id, services.UpdateMediaClassificationProfileInput{Revision: input.Revision, Name: input.Name, Rules: input.Rules, BuiltinRecognitionPacks: input.BuiltinRecognitionPacks, RecognitionRules: input.RecognitionRules, MovieDirectoryTemplate: input.MovieDirectoryTemplate, MovieFilenameTemplate: input.MovieFilenameTemplate, TVDirectoryTemplate: input.TVDirectoryTemplate, TVFilenameTemplate: input.TVFilenameTemplate}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return

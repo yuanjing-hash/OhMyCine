@@ -44,6 +44,9 @@ Rules:
 - Master keys are never logged, returned by APIs, or committed.
 - Exported configs are redacted by default. Full export requires explicit confirmation.
 - API responses must not include sensitive plaintext or encrypted blobs unless explicitly designed as backup export.
+- Server TMDB credentials use an explicit `read_access_token|api_key` kind and resolve in strict order: AES-GCM custom credential, runtime deployment credential, linker-injected application credential. Read Access Tokens use Bearer; API Keys use the `api_key` query parameter. Runtime and build inputs use mutually exclusive typed variables (`OMC_TMDB_READ_ACCESS_TOKEN` / `OMC_TMDB_API_KEY` and `OHMYCINE_TMDB_READ_ACCESS_TOKEN` / `OHMYCINE_TMDB_API_KEY`). Build-only values must not be read as runtime config or inherited by npm/Vite/Server subprocesses. APIs expose source and kind labels only. Official artifacts fail when neither or both build Secrets are set, or when a value has linker-unsafe characters, without printing it; distributed application credentials remain extractable and therefore require read-only scope, independent quota, revocation and rotation. Pre-v11 ciphertext defaults to `read_access_token` without decryption or rewriting.
+- TMDB API/image proxy prefixes are non-secret but privileged network routes. Persist each only after its own bounded HTTPS test succeeds; reject userinfo/query/fragment, redirects, traversal and oversized bodies. A custom API never falls back to another host.
+- Check the metadata-settings revision before sending a candidate credential or the current effective credential to a probe route, and check it again with database CAS after the probe. Stale administrator requests must fail before any credential-bearing network request.
 - Player Rust storage must use the shared storage layout. Windows standard mode stores app databases under LocalAppData and DPAPI-wraps the credential master key; portable mode uses EXE-adjacent data with an explicit reduced-protection warning.
 - Legacy Player storage migration is file/key allowlisted and never overwrites newer target data. It runs only in standard mode; portable mode never imports standard-profile, legacy Roaming, or shared WebView localStorage data automatically.
 
@@ -73,6 +76,81 @@ URL cache requirements:
 - Cache key includes driver, path, and permission context.
 - Cached CDN URLs and token query params are never logged.
 - Cache hit still requires proxy authorization.
+- Treat provider URL-acquisition headers and redirected-playback requirements as separate contracts. An SDK response may echo Cookie, Authorization, Referer, Content-Type, or other headers used only to call the provider API; the provider adapter must discard those acquisition headers rather than forwarding, persisting, caching, or logging them. `TemporaryURL.Headers` contains only headers the final CDN request actually requires. A plain signed 302 may accept an exact downstream `User-Agent` binding, but must fail closed when the final request truly requires Cookie, Authorization, Referer, a mismatched User-Agent, or any other header that the client cannot safely reproduce.
+
+Emby 302 gateway requirements:
+
+- Reverse proxy only to the fixed, successfully probed HTTP(S) Connection endpoint. The encrypted Server API key is reserved for explicit administration calls and is never injected into gateway traffic.
+- Preserve client Emby authentication and WebSocket behavior, strip hop-by-hop headers, do not follow upstream redirects, and rewrite same-endpoint `Location` values without allowing relative redirects to escape into OhMyCine routes.
+- Take over only active managed signed-STRM sources and explicit stream/download/file routes. A reserved playback-ticket query on any other route, an invalid/ambiguous ticket, or a duplicate MediaSource binding fails closed and is never forwarded upstream.
+- Bind short-lived tickets to gateway public ID, gateway policy revision, Emby item, MediaSource, artifact opaque identity and `media-read` scope. Connection/gateway configuration changes advance the policy revision so stale and concurrent tickets cannot reactivate an untested endpoint.
+- PlaybackInfo rewrites must return Emby API-relative media paths such as `/videos/{item}/stream`, never the outer `/emby/{gateway}` mount. Emby clients append their configured gateway base and `/emby` API prefix; embedding the mount in `DirectStreamUrl` duplicates the path and invalidates the ticket route.
+- Browser 302 playback cannot manufacture CORS permission on a third-party CDN response. The gateway may patch only the fixed allowlist of Emby Web player assets needed to suppress `crossOrigin=anonymous` for remote DirectPlay. Because an already cached player module can bypass a module-only patch, the exact `/web/index.html`, `/web`, and `/web/` shell allowlist may receive one hard-coded same-origin compatibility script tag, and the gateway may serve that immutable source at one fixed path. Both the shell and module paths are deterministic, size-bounded, identity-encoded, cache-revalidation-safe and non-configurable; clear validators/source maps on modified output, set `no-store`, preserve the upstream CSP, and never include user content or credentials. Never expose arbitrary HTML/JavaScript injection, user scripts, broad path matching, or API CORS relaxation.
+- Built-in external-player links may be rendered only for a PlaybackInfo source whose relative gateway stream URL contains exactly one valid short-lived `omc_ticket` and one MediaSource binding. Construct the absolute URL from the fixed same-origin gateway base; never put the Emby token/API key, provider identity, signed STRM source, 115 credential, or final CDN URL in a custom protocol. Ordinary Emby sources receive no external-player entry. Built-in Fanart UI reads only the current user's Emby `BackdropImageTags` through the same-origin image API, has no third-party script/icon/CDN dependency, and both modules remain fixed code controlled by revisioned per-gateway booleans rather than user-provided JavaScript.
+- Reject encoded separators, repeated-encoding path traversal and endpoint-prefix escape. Bound PlaybackInfo request/response bodies, mark ticket-bearing responses `no-store`, and never log tickets, MediaSource paths, signed STRM URLs, provider identities or final CDN URLs.
+- Keep Emby administration in the dedicated Player Management UI while reusing the encrypted Connection model. Its summary endpoint may expose only bounded aggregate server/version/library/item counts; partial failures stay unknown instead of becoming zero.
+- Listen addresses and advertised origins are separate trust domains. Wildcard bind addresses are valid for the listener but invalid for `OMC_PUBLIC_ORIGIN`, persisted STRM URLs, copied gateway URLs, and CSRF origins.
+
+## Scenario: Fixed Emby Web External Players and Fanart
+
+### 1. Scope / Trigger
+
+- Trigger: changing the Emby gateway Web compatibility asset, its external-player/Fanart controls, or PlaybackInfo-to-custom-protocol behavior.
+
+### 2. Signatures
+
+- DB: `emby_proxy_gateways.external_player_enabled INTEGER NOT NULL DEFAULT 1` and `fanart_enabled INTEGER NOT NULL DEFAULT 1`.
+- `GET /api/v1/connections/{id}/emby-gateway` returns both booleans with `revision`.
+- `PATCH /api/v1/connections/{id}/emby-gateway` accepts optional `external_player_enabled` and `fanart_enabled` booleans plus the required current `revision`; omitted booleans preserve stored values.
+- Fixed asset: `GET|HEAD /emby/{alias}/web/ohmycine-directplay.js` with `no-store` and no user-provided source.
+
+### 3. Contracts
+
+- Every successful gateway policy mutation advances `policy_revision`; old playback tickets then fail validation.
+- External-player discovery calls the current Emby session's PlaybackInfo and renders only when a candidate has an API-relative DirectStreamUrl with exactly one non-empty `omc_ticket` and exactly one MediaSource binding under the current same-origin gateway base.
+- Protocol links contain only the same-origin gateway stream URL and short ticket. Never append Emby auth, Server API key, provider identity, signed STRM source, Cookie, or final CDN URL.
+- Fanart reads at most 30 unique `BackdropImageTags` for `Movie`, `Series`, `Person`, or `Video` through `ApiClient.getImageUrl`; construct all labels with DOM `textContent` and load no remote script/icon dependency.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Ordinary Emby source or missing/duplicate ticket | Do not render external-player buttons |
+| Candidate stream resolves off-origin or outside the active gateway base | Reject it in the browser module |
+| Ticket expires or policy revision changes before click | Request fresh PlaybackInfo; if unavailable, show a local safe error and do not launch |
+| Fanart item/type/tags/container is unavailable | Render no section; do not fail the Emby detail page |
+| Unknown JSON field or stale revision in PATCH | Existing strict JSON/conflict handling rejects the mutation |
+
+### 5. Good/Base/Bad Cases
+
+- Good: Windows Emby Web shows PotPlayer/VLC/MPV/弹弹Play for a managed STRM, and the launched URL reaches the gateway with only a short ticket.
+- Base: a normal local Emby movie still displays and plays normally but has no OhMyCine external-player row.
+- Bad: building `vlc://...&api_key=<Emby token>` or loading third-party player icons/scripts from a public CDN.
+
+### 6. Tests Required
+
+- Migration test proves legacy gateways receive both defaults without changing revision.
+- Service tests prove omitted settings preserve booleans, explicit settings persist, revision advances, and generated source contains the selected literal booleans plus the ticket-only gate.
+- Real router tests cover fixed asset GET/HEAD, `no-store`, `nosniff`, CSP preservation, and signed PlaybackInfo/stream routing. Run the extracted generated JavaScript through `node --check` when editing its source.
+- Frontend tests cover the revision-bound PATCH payload; full Go tests, vet, frontend test/typecheck/lint/build, and both Server build modes remain required.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```javascript
+const stream = ApiClient.serverAddress() + "/emby/videos/1/stream?api_key=" + ApiClient.accessToken()
+window.location.href = "vlc://" + stream
+```
+
+#### Correct
+
+```javascript
+const candidate = new URL(playbackSource.DirectStreamUrl, fixedGatewayAPIBase)
+if (candidate.origin === location.origin && candidate.searchParams.getAll("omc_ticket").length === 1) {
+  window.location.href = "vlc://" + encodeURI(candidate.href)
+}
+```
 
 ---
 
@@ -108,6 +186,7 @@ STRM cleanup must:
 - Enumerate only one directory level per request, return directories only, cap and sort results, apply cancellation/timeouts plus per-actor rate/concurrency limits, and use `Cache-Control: no-store`.
 - Windows roots are process-visible logical/mapped drives. Unix/NAS/Docker roots and mounts are only those visible in the process namespace. Never fabricate an unmounted host path.
 - Navigation and selection use short-lived signed opaque tokens bound to purpose, platform, and adapter version. Clients never join separators, `..`, drive letters, hostnames, or shares to create the next request.
+- Directory tokens accept only their canonical unpadded Base64URL representation before authenticated decryption; alternate text encodings of the same bytes are rejected as tampering.
 - Reject symlinks, junctions, mount-point Reparse Points, and other Reparse Point children for entry and selection. Saving a selected root always repeats canonicalization, uniqueness, and the existing read-only probe.
 - Browse logs, audit metadata, and safe errors must not contain absolute paths, child names, or raw OS errors. A picker response may include only the current interaction's displayed paths and names.
 
@@ -191,6 +270,10 @@ Security-relevant events should be auditable:
 - Proxy authorization failures.
 
 Audit logs must not include sensitive field values.
+
+Destructive download cancellation/deletion must be confirmed in the UI and provider-first in the service. Delete provider data before removing local DownloadTask/Job facts; explicit provider task-not-found is an idempotent success, while provider failure or a missing Downloader reference with a non-empty provider task ID must retain the local record. Record only task/resource IDs, outcome, and stable cleanup status in audit metadata—never source URLs, provider responses, filenames, or staging paths.
+
+Post-import garbage cleanup is a narrower system-owned staging operation, not permission to recursively clean a source directory. Its candidates come only from the strict difference between a complete provider manifest and its complete, verified package-selected manifest after transfer reconciliation succeeds, but unselected videos and unmatched subtitles are protected leftovers and never automatic deletion candidates. Revalidate canonical manifest identity, local root ancestry/type/reparse/size, or the 115 Storage-root → immutable package-output-root → exact item ID/parent/size/SHA1 chain at every item; any incomplete/non-subset/non-canonical manifest, missing package-root snapshot, or changed item fails closed. qBittorrent copy/symlink data stays protected until seeding cleanup is acknowledged, and copy may use whole-package `deleteData=true` only when the immutable manifests contain no protected leftovers; re-evaluate this immediately before every provider deletion so legacy task state cannot bypass the rule.
 
 ---
 
@@ -298,4 +381,66 @@ if err != nil || relative == ".." ||
     filepath.IsAbs(relative) {
     return ErrOutsideRoot
 }
+```
+
+## Scenario: 115 Share and Manual-Transfer Intake
+
+### 1. Scope / Trigger
+
+- Trigger: accepting a 115 share link, receiving shared files, adopting a provider item from an intake directory, or exposing intake configuration in API/UI/logs.
+
+### 2. Signatures
+
+- Public source: `115_share` with URL/query extraction code accepted only by `pan115_offline`.
+- Internal source: `provider_item`; service-created only and rejected by HTTP.
+- Private snapshots: encrypted DownloadTask source, `staging_provider_directory_id`, hashed `ingest_source_key`.
+- Safe public fields: `source_origin`, intake enabled state, downloader ID/name, and Storage-relative intake display path.
+
+### 3. Contracts
+
+- Share URLs and extraction codes are credential-like because links grant access. Encrypt them with AES-256-GCM using task-scoped purpose/AAD; never place plaintext or ciphertext in Job payloads, DTOs, WebSocket events, audit metadata, logs or exports.
+- Provider item/directory IDs are private capabilities. Clients select an intake directory only through an actor/Connection/Storage/root/purpose/expiry-bound token; services revalidate ancestry at save, submit, sweep and worker execution.
+- Intake root and final library root must not overlap in either direction. Enabled intake roots on one Connection must not overlap each other. A direct-child sweep is bounded and never recursively adopts arbitrary account content.
+- 115 responses, URLs, Cookie and provider paths are untrusted external data. Use the controlled client limits/risk lane and map failures to stable codes without logging response bodies.
+- Destructive cancellation requires the existing confirmation boundary and may recycle only the task/adopted root proven below the snapshotted intake root. No failure path may delete the final library root or a sibling.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Client submits internal provider ID/source kind | Reject before persistence/provider access |
+| Token actor, purpose, Storage, Connection, root or expiry mismatches | Reject safely and expose no provider identity/path |
+| Intake/final roots overlap or an intake root moved outside Storage | Reject configuration/execution; perform no receive, transfer or delete |
+| Share response is malformed/ambiguous | Reconcile the stable system directory; fail closed if facts remain insufficient |
+| Any log/error/DTO contains link, code, Cookie, provider ID/path or raw body | Redact/remove before fan-out; regression test the serialized boundary |
+
+### 5. Good / Base / Bad Cases
+
+- Good: encrypted share source plus opaque directory token produces a stable system folder, and public surfaces show only safe IDs/counts/status.
+- Base: life event carries no proof of completion; it only wakes a bounded authoritative directory listing.
+- Bad: accept `provider_item` from JSON, log a share URL for diagnostics, trust the event payload as a completed item, or delete by an unvalidated provider ID.
+
+### 6. Tests Required
+
+- Inspect SQLite, Job payload/checkpoint, API DTO, WebSocket/audit/runtime logs and exported logs for absence of link, extraction code, provider IDs/paths, Cookie and upstream bodies.
+- Test token tampering/replay/cross-actor/cross-Connection/cross-Storage/purpose/expiry, moved directories, root `0`, overlap in both directions and destructive-cancel confinement.
+- Test bounded share parsing/snap/receive, redirect/response limits, risk-control mapping, ambiguous-success reconciliation and idempotent task-not-found cleanup.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+job.PayloadJSON = marshal(map[string]string{"share_url": request.URL})
+log.Error().Err(err).Str("provider_item_id", itemID).Msg("share receive failed")
+```
+
+#### Correct
+
+```go
+task.SourceCiphertext = credentials.Encrypt(taskPurpose, source)
+job.PayloadJSON = marshal(downloadJobPayload{DownloadTaskID: task.ID})
+OperationPan115ShareIngest.Event(log.Error()).
+    Str("task_id", task.ID).Str("error_code", safeCode).
+    Msg(OperationPan115ShareIngest.Message("失败"))
 ```

@@ -90,7 +90,9 @@ Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服�
 
 所有 Cookie 认证的状态变更请求还必须校验 session-bound `X-CSRF-Token`、精确 Origin（必要时 Referer fallback）、Fetch Metadata 和 `application/json`。CSRF token 只保存在前端内存，不进入 URL、日志或持久化存储。
 
-持久化任务队列的 worker payload/checkpoint 属于私有执行状态，不进入 REST、WebSocket、日志或审计。写入前限制为 64 KiB JSON 对象，并递归拒绝 Authorization、Cookie、password、secret、token、passkey、credential、签名 URL 与本地/绝对路径形态的字段。租约只持久化随机 token 的 SHA-256；所有 heartbeat、checkpoint 和完成操作都必须持有当前未过期 token。运行中暂停/取消先在短事务内持久化中断意图，事务提交后才通知 worker，且在 worker确认或租约过期前继续占用并发槽，避免非协作 worker 造成超卖。
+持久化任务队列的 worker payload/checkpoint 属于私有执行状态，不进入 REST、WebSocket、日志或审计。写入前限制为 64 KiB JSON 对象，并递归拒绝 Authorization、Cookie、password、secret、token、passkey、credential、签名 URL 与本地/绝对路径形态的字段。租约只持久化随机 token 的 SHA-256；所有 heartbeat、checkpoint 和完成操作都必须持有当前未过期 token。运行中暂停/取消先在短事务内持久化中断意图，事务提交后才通知 worker，且在 worker确认或租约过期前继续占用并发槽，避免非协作 worker 造成超卖。下载取消属于显式破坏性操作，管理端必须二次确认；Server 仅在 provider 已删除任务与下载数据或明确报告 task-not-found 后，事务删除 DownloadTask、Job 及依赖并写脱敏审计。provider 不可用、返回不确定错误或 ProviderTaskID 已存在但 Downloader 配置缺失时，必须保留本地记录，不得仅为清空界面而绕过外部删除确认。
+
+115 分享链接与提取码具有访问凭据属性，只能进入按 DownloadTask purpose/AAD 隔离的 AES-256-GCM source envelope；`provider_item` 是 Server 内部来源，HTTP 客户端不得提交。分享明文、密文、provider item/directory ID、Cookie、完整 provider 路径和原始上游响应不得进入 Job payload/checkpoint、REST DTO、WebSocket、审计、运行日志或导出。分享与手工转存接管目录必须由绑定 actor、Connection、Storage、Storage 根、用途和过期时间的短期令牌选择，并在保存、提交、sweep、worker 与删除前重新验证 ancestry；中转根不能与最终媒体库根或同 Connection 其它启用中转根重叠。生活事件只用于唤醒受限的权威目录枚举，不能直接证明某个文件已经完整落盘。取消时仅能回收已证明位于任务中转根内的 provider 子树。
 
 ### 4.2 API 鉴权
 
@@ -215,7 +217,7 @@ Player 标准模式把 AES-GCM 凭据数据库的主密钥交给当前平台系�
 
 数据源非敏感配置、主题、TMDB 非敏感设置、分类规则和扫描计划进入 `settings.sqlite`。WebView localStorage 只作为标准模式的旧版本迁移输入或浏览器开发 fallback，不得继续作为 Tauri 桌面版配置源。迁移只处理固定 namespaced key 和固定 SQLite 文件白名单，不接受任意路径或敏感明文。便携模式是独立配置档案，不得自动读取、复制或删除标准目录、旧 Roaming 目录以及共享 WebView localStorage 中的数据；跨模式导入只能由用户显式触发。
 
-OhMyCine 正式发布包可通过 GitHub Actions Secret 在构建期注入应用级 TMDB Read Access Token，以提供默认元数据通道。该值不得进入 Git、普通配置、构建日志、诊断或导出；用户自己的 TMDB 凭据继续存入 Player 安全凭证边界并优先使用。由于应用级凭据会进入最终二进制，它必须被视为可提取的发布凭据，只能用于受限的只读元数据访问，并具备独立撤销、轮换和限流能力；不得复用用户账号级秘密或具有写权限的令牌。
+OhMyCine 正式发布包可通过互斥的 GitHub Actions Secret 在构建期注入应用级 TMDB Read Access Token 或 API Key，以提供默认元数据通道；前者使用 Bearer，后者仅使用 v3 `api_key` 查询参数，类型必须显式携带而不能按内容猜测。该值不得进入 Git、普通配置、构建日志、诊断、错误或导出；Server 只返回凭据来源和类型，Player/Server 用户自定义凭据分别存入各自安全凭证边界并优先使用。由于应用级凭据会进入最终二进制，它必须被视为可提取的发布凭据，只能用于受限的只读元数据访问，并具备独立撤销、轮换和限流能力；不得复用用户账号级秘密或具有写权限的令牌。Server 数据库 v11 前的 TMDB 密文保持原样并默认解释为 Read Access Token。
 
 用户自定义 TMDB API/图片代理属于显式外部信任边界：仅接受不含 userinfo、query、fragment 的 HTTPS Base URL，使用有限超时和响应体大小，禁止原生客户端自动重定向。API 与图片地址是独立设置，每项必须单独通过真实请求后才持久化；失败不得覆盖该项上一次验证通过的路由，也不得改变另一项。官方默认 API 可在纯网络故障时回退到官方旧域名，自定义 API 代理不得跨域回退，避免把内置或用户 TMDB 凭据静默转发给其它主机。日志、错误和诊断不得输出凭据或含 `api_key` 的完整 URL。
 
@@ -305,6 +307,16 @@ Player ↔ Server 配置同步是高风险功能，因为它可能把本地凭�
 
 默认推荐 `signed-url`。
 
+监听地址与对外公布地址必须分离。`0.0.0.0`/`::` 可以作为 Server bind address，但不能成为 `OMC_PUBLIC_ORIGIN`、CSRF origin、STRM 内容或 Emby gateway 地址；这些地址只由启动时严格校验的全局 `OMC_PUBLIC_ORIGIN` 生成，不能信任请求 Host/Forwarded，也不能在每个媒体库或播放器上重复配置。
+
+Emby 管理使用加密 Connection 凭据，独立“播放器管理”页面只读取受控聚合摘要：服务器名、版本、媒体库/电影/剧集/单集数量及查询时间。禁止返回 API Key、库名、item ID、路径、用户、session 或上游原始 payload；可选统计失败必须保持 unknown/partial，不能伪造成 0。302 gateway 不注入保存的服务 API Key，只保留客户端自身 Emby 权限。
+
+Emby Web 的 HTML5 播放器若为远程 DirectPlay 设置 `crossOrigin=anonymous`，浏览器会要求 302 最终 CDN 返回 CORS Header；中间网关给 302 响应添加 CORS Header 不能替代最终 CDN 授权。为保持流量直达 115 CDN，网关允许对固定的 `basehtmlplayer.js` 与 `plugin.js` 播放器资源执行确定性、限长、identity 编码的兼容修补，移除远程 DirectPlay 的 crossOrigin 赋值并禁用该响应缓存。由于 Service Worker/Cache Storage 可能完全复用旧模块，固定 `/web/index.html`、`/web`、`/web/` HTML 壳还可优先加载一个网关固定同源路径提供的不可配置兼容脚本；脚本正文硬编码、不含用户输入或凭据，保留上游 CSP，HTML 与脚本均清除缓存验证器并设为 `no-store`。禁止任意 HTML/JavaScript 注入、用户脚本、宽泛路径改写或放宽管理 API CORS；日志不记录脚本正文、播放地址或请求查询。
+
+固定同源脚本的外部播放器模块只处理本系统接管后的 PlaybackInfo：候选必须是同源 gateway stream，且恰好包含一个短时 `omc_ticket` 与一个 MediaSource 绑定；普通 Emby 媒体不渲染入口。PotPlayer、VLC、MPV、IINA、Infuse、MX Player 和弹弹Play 等协议链接最多包含网关地址与短时票据，不得包含 Emby Token/API Key、115 Cookie、provider file ID、原 signed STRM URL 或最终 CDN URL。Fanart 模块仅通过当前 Emby 用户会话读取 `BackdropImageTags` 与同源图片 API，不引入第三方脚本、图标或 CDN。两个内建模块只由 revision CAS 保护的布尔策略启停，不能承载用户脚本；策略修改推进 gateway revision 并使旧 ticket 失效。
+
+115 signed 302 的多设备兼容使用有界 lease，不把复制能力开放成通用代理参数：第一台活动设备读取原文件，第二台只可在 `/OhMyCine/.playback-copies/lease-*` 创建一个系统持有的短命副本，第三台安全限流。设备路由摘要由 Remote IP 与 User-Agent 生成但不参与鉴权，数据库和日志均不保存原始值。副本只按持久化的精确目录 item ID 送入回收站并永久清理；回收站安全码使用 AES-GCM 保存，缺失或错误时保留待清理事实并重试，自动路径永不以空 ID 清空用户整个回收站。
+
 ### 8.2 签名 URL
 
 STRM 内容建议：
@@ -366,12 +378,23 @@ HMAC-SHA256(secret, method + path + exp + user_or_library_scope)
 
 ### 9.3 STRM 清理
 
-`CleanInvalid()` 删除 STRM 前必须：
+无效投影清理必须：
 
-- 仅删除 STRM 输出根目录内的 `.strm`
-- 不跟随任意符号链接删除外部文件
-- 支持 dry-run 预览
-- 记录被删除文件列表
+- 仅删除 manifest 中 inactive、managed、`local_projection` 的托管产物；范围包括 kind/扩展名一致的 STRM、NFO、生成 JPG、字幕和 generation policy 快照内的源伴随文件，不得根据目录扫描猜测删除对象。
+- 自动清理仅由完整成功、非 partial 且类型白名单内的权威扫描触发；失败、partial、superseded、投影根变化或边界异常时保留文件。
+- 自动与人工路径共用一个删除 primitive；执行时持有同库扫描锁，每文件先以 generation/root/manifest/ownership/path/kind/fingerprint CAS 持久化 claim，再删除文件并与 manifest/计数事务收敛。
+- 每个删除边界重新检查 canonical root、manifest snapshot 和 generation，不跟随 symlink、Windows junction 或其它 reparse point 到外部文件。
+- 人工清理必须先预览，再使用绑定 operation、actor、library、generation、完整 root identity set hash、manifest snapshot 和过期时间的短时 HMAC token。投影根更换后，旧根只能从 artifact owner 的不可变 policy 解析；token 严格限长、使用 canonical Base64URL/严格 JSON，不编码任何绝对根路径。
+- 清理状态持久化为 `pending|running|completed|failed|skipped`；崩溃重放不双重计数，删除失败不回滚已完成的产物 generation。
+- 日志、审计和 API 仅暴露内部 ID、计数、状态与稳定安全错误码，不记录绝对路径、provider 身份、临时 URL 或凭据。
+
+### 9.4 下载暂存垃圾清理
+
+- 下载完成必须同时保存 provider 完整清单与经过统一识别、分类和主视频/剧集筛选的安全入库清单；自动清理候选只能是两者按稳定身份计算的精确差集。
+- 两份清单都必须完整，安全入库清单必须是完整清单的严格子集，且识别、转移和目标对账全部成功。任一条件不满足时保留全部来源数据，不通过目录扫描重新猜测“垃圾文件”。
+- 本地项逐个复验系统暂存根边界、普通文件类型、Reparse Point/symlink 和快照大小；115 项逐个复验稳定 item ID、暂存根 ancestry、父目录、大小与可用 SHA1，只回收该精确 item。
+- qBittorrent `copy|symlink` 在做种结束前保持来源包完整。copy 的 provider `deleteData=true` 成功后记录整包清理；symlink 的 `deleteData=false` 保留链接目标，只清理未选中差集。失败与重试累计计数但不扩大候选集合。
+- 普通媒体源、用户任意目录和媒体库根不属于此自动清理授权。删除任务历史也不得借用该能力删除文件。
 
 ## 10. 外部服务访问安全
 

@@ -1,0 +1,299 @@
+package cloud
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+const ProviderPan115 = "pan115"
+
+type Capabilities struct {
+	NetworkDrive          bool `json:"network_drive"`
+	DirectoryList         bool `json:"directory_list"`
+	Watch                 bool `json:"watch"`
+	NativeOfflineDownload bool `json:"native_offline_download"`
+	ShareReceive          bool `json:"share_receive"`
+	TemporaryDirectURL    bool `json:"temporary_direct_url"`
+	SignedProxy           bool `json:"signed_proxy"`
+	SmallFileUpload       bool `json:"small_file_upload"`
+	ChangeCursor          bool `json:"change_cursor"`
+	CreateDirectory       bool `json:"create_directory"`
+	Move                  bool `json:"move"`
+	Copy                  bool `json:"copy"`
+	Rename                bool `json:"rename"`
+	Recycle               bool `json:"recycle"`
+}
+
+type Config struct {
+	ConnectionID    uint
+	Cookie          string
+	RecyclePassword string
+}
+
+type Account struct {
+	ID         string
+	Name       string
+	VIP        bool
+	UsedBytes  *uint64
+	TotalBytes *uint64
+}
+
+type Item struct {
+	ID         string
+	ParentID   string
+	Name       string
+	IsDir      bool
+	Size       int64
+	SHA1       string
+	PickCode   string
+	CreatedAt  time.Time
+	ModifiedAt time.Time
+}
+
+type PageRequest struct {
+	Offset int64
+	Limit  int64
+}
+
+type Page struct {
+	Items   []Item
+	Offset  int64
+	HasMore bool
+}
+
+// TreeEntry is a provider-relative item returned by an optional bulk tree
+// enumerator. RelativePath always starts with '/' and is rooted below the
+// requested provider directory.
+type TreeEntry struct {
+	Item
+	RelativePath string
+}
+
+type TreeResult struct {
+	Entries []TreeEntry
+	Partial bool
+}
+
+// BulkTreeDriver is implemented by providers that expose a recursive listing
+// API. It keeps full scans off the latency-sensitive interactive List lane and
+// avoids one network request per small directory.
+type BulkTreeDriver interface {
+	ListTree(context.Context, string, int) (TreeResult, error)
+}
+
+type DirectURLRequest struct {
+	FileID    string
+	PickCode  string
+	UserAgent string
+}
+
+type TemporaryURL struct {
+	URL       string
+	Headers   http.Header
+	ExpiresAt time.Time
+}
+
+type OfflineTask struct {
+	ID             string
+	Name           string
+	Status         string
+	Progress       *float64
+	BytesTotal     *int64
+	ETASeconds     *int64
+	OutputItemID   string
+	Completed      bool
+	Failed         bool
+	ProviderStatus int
+}
+
+const (
+	ChangeCreated = "created"
+	ChangeMoved   = "moved"
+	ChangeRenamed = "renamed"
+	ChangeDeleted = "deleted"
+)
+
+// ChangeCursor is an ordered, provider-owned position. Event ID is retained
+// alongside time because 115 can emit several life events in the same second.
+type ChangeCursor struct {
+	Time time.Time `json:"time"`
+	ID   string    `json:"id"`
+}
+
+// ChangeEvent is deliberately allowlisted. Provider response bodies,
+// credentials, pickcodes and temporary URLs must never enter the event inbox.
+type ChangeEvent struct {
+	ID               string
+	Time             time.Time
+	Kind             string
+	ItemID           string
+	ParentID         string
+	PreviousParentID string
+	Name             string
+}
+
+type ChangePage struct {
+	Events     []ChangeEvent
+	NextCursor ChangeCursor
+	HasMore    bool
+}
+
+type ChangeSource interface {
+	Changes(context.Context, ChangeCursor, int) (ChangePage, error)
+}
+
+type NativeOfflineDriver interface {
+	Driver
+	SubmitOffline(context.Context, string, string) (OfflineTask, error)
+	GetOffline(context.Context, string) (OfflineTask, error)
+	CancelOffline(context.Context, string, bool) error
+}
+
+// ShareItem is a bounded top-level fact from a provider share. Share and
+// receive codes remain private inside ShareSnapshot and must never be exposed
+// through public DTOs or logs.
+type ShareItem struct {
+	ID    string
+	Name  string
+	IsDir bool
+	Size  int64
+}
+
+type ShareSnapshot struct {
+	ShareCode   string
+	ReceiveCode string
+	Title       string
+	Items       []ShareItem
+}
+
+// ShareReceiveDriver is an optional cloud capability. Providers own URL
+// parsing and receive API quirks; orchestration receives only bounded facts.
+type ShareReceiveDriver interface {
+	Driver
+	InspectShare(context.Context, string) (ShareSnapshot, error)
+	ReceiveShare(context.Context, ShareSnapshot, string) error
+}
+
+// MutationDriver is an optional provider capability used only by the durable
+// transfer pipeline. All identities are provider-owned opaque item IDs.
+type MutationDriver interface {
+	Driver
+	CreateDirectory(context.Context, string, string) (Item, error)
+	Move(context.Context, string, string) error
+	Copy(context.Context, string, string) error
+	Rename(context.Context, string, string) error
+	Recycle(context.Context, string) error
+}
+
+// ExactRecyclePurger permanently removes only the explicitly owned recycle
+// item. There is deliberately no empty/all-items variant in this contract.
+type ExactRecyclePurger interface {
+	Driver
+	PurgeRecycle(context.Context, string) error
+}
+
+// SmallFileUploadDriver is deliberately narrower than a general upload API.
+// Artifact orchestration must enforce extension, MIME, size and ancestry
+// policy before invoking it; providers repeat their own boundary validation.
+type SmallFileUploadDriver interface {
+	Driver
+	UploadSmallFile(context.Context, string, string, string, int64, io.ReadSeeker) (Item, error)
+}
+
+type Driver interface {
+	Provider() string
+	Capabilities() Capabilities
+	Probe(context.Context) (Account, error)
+	List(context.Context, string, PageRequest) (Page, error)
+	Stat(context.Context, string) (Item, error)
+	DirectURL(context.Context, DirectURLRequest) (TemporaryURL, error)
+}
+
+type Builder func(Config) (Driver, error)
+
+type Registry struct {
+	mu      sync.RWMutex
+	entries map[string]Builder
+}
+
+func NewRegistry() *Registry { return &Registry{entries: map[string]Builder{}} }
+
+func (r *Registry) Register(provider string, builder Builder) error {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" || builder == nil {
+		return errors.New("cloud provider and builder are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.entries[provider]; exists {
+		return errors.New("cloud provider is already registered")
+	}
+	r.entries[provider] = builder
+	return nil
+}
+
+func (r *Registry) Build(provider string, config Config) (Driver, error) {
+	r.mu.RLock()
+	builder, ok := r.entries[strings.ToLower(strings.TrimSpace(provider))]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, errors.New("cloud provider is unavailable")
+	}
+	return builder(config)
+}
+
+func (r *Registry) Types() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make([]string, 0, len(r.entries))
+	for provider := range r.entries {
+		items = append(items, provider)
+	}
+	sort.Strings(items)
+	return items
+}
+
+const (
+	CodeCookieInvalid     = "pan115_cookie_invalid"
+	CodeAuthExpired       = "pan115_auth_expired"
+	CodeRateLimited       = "pan115_rate_limited"
+	CodeUnavailable       = "pan115_unavailable"
+	CodeResponseInvalid   = "pan115_response_invalid"
+	CodeNotFound          = "pan115_item_not_found"
+	CodeOfflineNoQuota    = "pan115_offline_quota_exhausted"
+	CodeOfflineBadLink    = "pan115_offline_source_invalid"
+	CodeOfflineTaskExists = "pan115_offline_task_exists"
+	CodeShareInvalid      = "pan115_share_invalid"
+	CodeShareEmpty        = "pan115_share_empty"
+	CodeShareTooLarge     = "pan115_share_too_large"
+	CodeShareUnknown      = "pan115_share_result_unknown"
+	CodeConflict          = "cloud_item_conflict"
+	CodeMutationUnknown   = "cloud_mutation_result_unknown"
+)
+
+type ProviderError struct {
+	Code      string
+	Retryable bool
+	Cause     error
+}
+
+func (e *ProviderError) Error() string { return e.Code }
+func (e *ProviderError) Unwrap() error { return e.Cause }
+
+func Error(code string, retryable bool, cause error) error {
+	return &ProviderError{Code: code, Retryable: retryable, Cause: cause}
+}
+
+func ErrorInfo(err error) (string, bool) {
+	var provider *ProviderError
+	if errors.As(err, &provider) {
+		return provider.Code, provider.Retryable
+	}
+	return CodeUnavailable, true
+}

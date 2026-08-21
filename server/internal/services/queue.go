@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -36,19 +37,23 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type QueueService struct {
-	db        *gorm.DB
-	audit     *AuditService
-	clock     Clock
-	notify    chan struct{}
-	interrupt func(string)
-	events    *QueueEventHub
+	db                    *gorm.DB
+	audit                 *AuditService
+	clock                 Clock
+	notify                chan struct{}
+	interrupt             func(string, string)
+	interruptAcknowledged func(string, string) error
+	events                *QueueEventHub
 }
 
-func (s *QueueService) SetInterrupt(fn func(string))   { s.interrupt = fn }
+func (s *QueueService) SetInterrupt(fn func(string, string)) { s.interrupt = fn }
+func (s *QueueService) SetInterruptAcknowledged(fn func(string, string) error) {
+	s.interruptAcknowledged = fn
+}
 func (s *QueueService) SetEventHub(hub *QueueEventHub) { s.events = hub }
 func (s *QueueService) publish(job models.Job, eventType string) {
 	if s.events != nil {
-		s.events.Publish(JobEvent{Type: eventType, JobID: job.ID, OwnerID: job.OwnerID, Status: job.Status, At: s.clock.Now()})
+		s.events.Publish(JobEvent{Type: eventType, JobID: job.ID, JobType: job.JobType, OwnerID: job.OwnerID, Status: job.Status, At: s.clock.Now()})
 	}
 }
 
@@ -82,6 +87,12 @@ type EnqueueJobInput struct {
 }
 
 func (s *QueueService) Enqueue(input EnqueueJobInput) (JobDTO, error) {
+	return s.EnqueueWith(input, nil)
+}
+
+// EnqueueWith atomically creates a Job and a domain record. The callback must
+// perform database work only; wakeups/events are emitted after commit.
+func (s *QueueService) EnqueueWith(input EnqueueJobInput, after func(*gorm.DB, models.Job) error) (JobDTO, error) {
 	input.JobType = strings.ToLower(strings.TrimSpace(input.JobType))
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	if (!input.System && input.OwnerID == 0) || (input.System && input.OwnerID != 0) || input.JobType == "" || input.DisplayName == "" || len(input.DisplayName) > 256 {
@@ -128,7 +139,13 @@ func (s *QueueService) Enqueue(input EnqueueJobInput) (JobDTO, error) {
 		if err := tx.Create(&job).Error; err != nil {
 			return err
 		}
-		return recordJobEvent(tx, job.ID, "created", "", models.JobStatusQueued, owner, "", now)
+		if err := recordJobEvent(tx, job.ID, "created", "", models.JobStatusQueued, owner, "", now); err != nil {
+			return err
+		}
+		if after != nil {
+			return after(tx, job)
+		}
+		return nil
 	})
 	if err != nil {
 		return JobDTO{}, err
@@ -390,6 +407,33 @@ func (s *QueueService) Timeline(actor Actor, id string) ([]models.JobStatusEvent
 	return events, nil
 }
 
+// domainDetail returns the same allowlisted queue facts used by the task
+// center after the calling domain service has already authorized its resource.
+// It is intentionally package-private so HTTP handlers cannot bypass queue or
+// domain authorization.
+func (s *QueueService) domainDetail(id string) (JobDTO, []models.JobAttempt, []models.JobStatusEvent, error) {
+	var job models.Job
+	if err := s.db.First(&job, "id = ?", id).Error; err != nil {
+		return JobDTO{}, nil, nil, queueNotFound(err)
+	}
+	var action models.JobActionRequest
+	var actionPtr *models.JobActionRequest
+	if err := s.db.Where("job_id = ?", id).Order("version DESC").First(&action).Error; err == nil {
+		actionPtr = &action
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return JobDTO{}, nil, nil, err
+	}
+	attempts := make([]models.JobAttempt, 0)
+	if err := s.db.Where("job_id = ?", id).Order("attempt_number DESC").Find(&attempts).Error; err != nil {
+		return JobDTO{}, nil, nil, err
+	}
+	timeline := make([]models.JobStatusEvent, 0)
+	if err := s.db.Where("job_id = ?", id).Order("id").Find(&timeline).Error; err != nil {
+		return JobDTO{}, nil, nil, err
+	}
+	return s.toDTO(job, actionPtr), attempts, timeline, nil
+}
+
 type LaneRevision struct {
 	ID       string `json:"id"`
 	Revision uint64 `json:"revision"`
@@ -494,7 +538,11 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 			return appError(CodePermissionDenied, "没有控制任务的权限", nil)
 		}
 		from := job.Status
+		if job.InterruptStatus != "" {
+			return appError(CodeQueueStateConflict, "任务控制正在与下载器确认，请稍候", nil)
+		}
 		updates := map[string]any{"revision": job.Revision + 1, "updated_at": now}
+		providerControl := (job.JobType == "download" || job.JobType == "seeding") && job.Provider != "" && job.Provider != models.DownloaderTypeFake
 		switch action {
 		case "pause":
 			if from != models.JobStatusQueued && from != models.JobStatusRunning && from != models.JobStatusRetryWait {
@@ -505,6 +553,11 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 				updates["status"] = models.JobStatusRunning
 				updates["interrupt_status"] = models.JobStatusPaused
 				updates["cancellation_asked"] = true
+			} else if providerControl {
+				updates["status"] = models.JobStatusQueued
+				updates["interrupt_status"] = models.JobStatusPaused
+				updates["cancellation_asked"] = true
+				updates["next_attempt_at"] = nil
 			} else {
 				updates["status"] = models.JobStatusPaused
 				releaseLease(updates)
@@ -524,6 +577,12 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 				updates["status"] = models.JobStatusRunning
 				updates["interrupt_status"] = models.JobStatusCancelled
 				updates["cancellation_asked"] = true
+			} else if providerControl {
+				updates["status"] = models.JobStatusQueued
+				updates["interrupt_status"] = models.JobStatusCancelled
+				updates["cancellation_asked"] = true
+				updates["next_attempt_at"] = nil
+				updates["finished_at"] = nil
 			} else {
 				updates["status"] = models.JobStatusCancelled
 				updates["finished_at"] = now
@@ -545,8 +604,27 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 		if err := tx.Model(&job).Updates(updates).Error; err != nil {
 			return err
 		}
+		if providerControl && from != models.JobStatusRunning && (action == "pause" || action == "cancel") {
+			checkpoint, checkpointErr := setProviderControlOrigin(job.CheckpointJSON, from)
+			if checkpointErr != nil {
+				return checkpointErr
+			}
+			if err := tx.Model(&job).Update("checkpoint_json", checkpoint).Error; err != nil {
+				return err
+			}
+			job.CheckpointJSON = checkpoint
+			if err := tx.Model(&models.JobActionRequest{}).Where("job_id = ? AND response = ''", job.ID).Updates(map[string]any{"response": "closed_by_control", "responded_by": actor.User.ID, "responded_at": now}).Error; err != nil {
+				return err
+			}
+		}
 		job.Revision++
 		job.Status = updates["status"].(string)
+		if pending, ok := updates["interrupt_status"].(string); ok {
+			job.InterruptStatus = pending
+		}
+		if asked, ok := updates["cancellation_asked"].(bool); ok {
+			job.CancellationAsked = asked
+		}
 		job.UpdatedAt = now
 		if err := recordJobEvent(tx, job.ID, "control."+action, from, job.Status, &actor.User.ID, "", now); err != nil {
 			return err
@@ -557,15 +635,66 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 		return JobDTO{}, err
 	}
 	if interruptAfterCommit && s.interrupt != nil {
-		s.interrupt(job.ID)
+		s.interrupt(job.ID, action)
 	}
 	s.wake()
 	s.publish(job, "job.status_changed")
 	return s.Get(actor, id)
 }
 
+// RejectInterrupt clears a provider control intent when the external action
+// failed. The worker keeps its lease and continues reconciliation.
+func (s *QueueService) RejectInterrupt(id, token, action, code, message string) error {
+	if err := validatePublicText(message); err != nil {
+		message = "下载器未能执行任务控制操作"
+	}
+	expected := models.JobStatusPaused
+	if action == "cancel" {
+		expected = models.JobStatusCancelled
+	}
+	now := s.clock.Now()
+	var job models.Job
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		job, err = s.verifyLease(tx, id, token)
+		if err != nil {
+			return err
+		}
+		if job.Status != models.JobStatusRunning || job.InterruptStatus != expected {
+			return nil
+		}
+		origin := providerControlOrigin(job.CheckpointJSON)
+		updates := map[string]any{"interrupt_status": "", "cancellation_asked": false, "revision": job.Revision + 1, "last_error_code": safeLabel(code, 96), "last_error_message": safeLabel(message, 512), "checkpoint_json": clearProviderControlOrigin(job.CheckpointJSON), "updated_at": now}
+		restored := origin == models.JobStatusPaused || origin == models.JobStatusFailed
+		if restored {
+			updates["status"] = origin
+			if origin == models.JobStatusFailed {
+				updates["finished_at"] = now
+			}
+			releaseLease(updates)
+		}
+		if err := tx.Model(&job).Updates(updates).Error; err != nil {
+			return err
+		}
+		job.InterruptStatus, job.CancellationAsked, job.LastErrorCode, job.LastErrorMessage = "", false, safeLabel(code, 96), safeLabel(message, 512)
+		if restored {
+			job.Status = origin
+			if err := closeAttempt(tx, job, origin, safeLabel(code, 96), safeLabel(message, 512), now); err != nil {
+				return err
+			}
+		}
+		job.Revision++
+		return recordJobEvent(tx, id, "control."+action+".rejected", models.JobStatusRunning, job.Status, nil, safeLabel(code, 96), now)
+	})
+	if err == nil {
+		s.publish(job, "job.status_changed")
+	}
+	return err
+}
+
 func (s *QueueService) AcknowledgeInterrupt(id, token string) error {
 	now := s.clock.Now()
+	action := ""
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		job, err := s.verifyLease(tx, id, token)
 		if err != nil {
@@ -574,8 +703,18 @@ func (s *QueueService) AcknowledgeInterrupt(id, token string) error {
 		if job.InterruptStatus != models.JobStatusPaused && job.InterruptStatus != models.JobStatusCancelled {
 			return nil
 		}
+		if job.InterruptStatus == models.JobStatusCancelled {
+			action = "cancel"
+		} else {
+			action = "pause"
+		}
 		return s.acknowledgeInterruptTx(tx, job, now)
 	})
+	if err == nil && action != "" && s.interruptAcknowledged != nil {
+		if hookErr := s.interruptAcknowledged(id, action); hookErr != nil {
+			return hookErr
+		}
+	}
 	if err == nil {
 		var job models.Job
 		if s.db.First(&job, "id = ?", id).Error == nil {
@@ -589,6 +728,50 @@ func releaseLease(updates map[string]any) {
 	updates["lease_token_hash"] = ""
 	updates["lease_expires_at"] = nil
 	updates["heartbeat_at"] = nil
+}
+
+func setProviderControlOrigin(raw, origin string) (string, error) {
+	var checkpoint map[string]any
+	if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil {
+		return "", fmt.Errorf("decode provider control checkpoint: %w", err)
+	}
+	if checkpoint == nil {
+		checkpoint = map[string]any{}
+	}
+	checkpoint["provider_control"] = map[string]any{"origin_status": origin}
+	encoded, err := json.Marshal(checkpoint)
+	if err != nil || len(encoded) > 64*1024 {
+		return "", appError(CodeInvalidRequest, "任务检查点无效", err)
+	}
+	if err := validatePrivateState(encoded); err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func providerControlOrigin(raw string) string {
+	var checkpoint struct {
+		ProviderControl struct {
+			OriginStatus string `json:"origin_status"`
+		} `json:"provider_control"`
+	}
+	if json.Unmarshal([]byte(raw), &checkpoint) != nil {
+		return ""
+	}
+	return checkpoint.ProviderControl.OriginStatus
+}
+
+func clearProviderControlOrigin(raw string) string {
+	var checkpoint map[string]any
+	if json.Unmarshal([]byte(raw), &checkpoint) != nil || checkpoint == nil {
+		return "{}"
+	}
+	delete(checkpoint, "provider_control")
+	encoded, err := json.Marshal(checkpoint)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 func (s *QueueService) Respond(actor Actor, id string, version uint64, response string, request RequestContext) (JobDTO, error) {
@@ -629,10 +812,25 @@ func (s *QueueService) Respond(actor Actor, id string, version uint64, response 
 		if action.ExpiresAt != nil && action.ExpiresAt.Before(now) {
 			return appError(CodeQueueActionStale, "等待操作已过期", nil)
 		}
+		var checkpoint map[string]any
+		if err := json.Unmarshal([]byte(job.CheckpointJSON), &checkpoint); err != nil {
+			return fmt.Errorf("decode job checkpoint for action response: %w", err)
+		}
+		if checkpoint == nil {
+			checkpoint = map[string]any{}
+		}
+		checkpoint["action_response"] = map[string]any{"version": version, "action_type": action.ActionType, "value": response}
+		checkpointJSON, err := json.Marshal(checkpoint)
+		if err != nil || len(checkpointJSON) > 64*1024 {
+			return appError(CodeInvalidRequest, "任务检查点无效", err)
+		}
+		if err := validatePrivateState(checkpointJSON); err != nil {
+			return err
+		}
 		if err := tx.Model(&action).Updates(map[string]any{"response": response, "responded_by": actor.User.ID, "responded_at": now}).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&job).Updates(map[string]any{"status": models.JobStatusQueued, "revision": job.Revision + 1, "updated_at": now}).Error; err != nil {
+		if err := tx.Model(&job).Updates(map[string]any{"status": models.JobStatusQueued, "revision": job.Revision + 1, "checkpoint_json": string(checkpointJSON), "updated_at": now}).Error; err != nil {
 			return err
 		}
 		if err := recordJobEvent(tx, id, "action.responded", models.JobStatusWaitingUserAction, models.JobStatusQueued, &actor.User.ID, "", now); err != nil {
@@ -790,8 +988,19 @@ func (s *QueueService) verifyLease(tx *gorm.DB, id, token string) (models.Job, e
 }
 
 func (s *QueueService) Heartbeat(id, token string, progress *float64, processed, total *int64, speed *float64, eta *int64) error {
-	now := s.clock.Now()
+	_, err := s.heartbeat(id, token, progress, processed, total, speed, eta, true)
+	return err
+}
+
+// renewLease extends scheduler ownership without publishing a synthetic
+// progress event. Worker heartbeats retain their progress/event semantics.
+func (s *QueueService) renewLease(id, token string) (time.Duration, error) {
+	return s.heartbeat(id, token, nil, nil, nil, nil, nil, false)
+}
+
+func (s *QueueService) heartbeat(id, token string, progress *float64, processed, total *int64, speed *float64, eta *int64, publishProgress bool) (time.Duration, error) {
 	var published models.Job
+	var leaseDuration time.Duration
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		job, err := s.verifyLease(tx, id, token)
 		if err != nil {
@@ -801,7 +1010,9 @@ func (s *QueueService) Heartbeat(id, token string, progress *float64, processed,
 		if err := tx.First(&policy, "job_type = ?", job.JobType).Error; err != nil {
 			return err
 		}
-		expires := now.Add(time.Duration(policy.LeaseSeconds) * time.Second)
+		now := s.clock.Now()
+		leaseDuration = time.Duration(policy.LeaseSeconds) * time.Second
+		expires := now.Add(leaseDuration)
 		updates := map[string]any{"lease_expires_at": expires, "heartbeat_at": now, "updated_at": now}
 		if progress != nil {
 			if *progress < 0 || *progress > 100 {
@@ -827,10 +1038,10 @@ func (s *QueueService) Heartbeat(id, token string, progress *float64, processed,
 		published = job
 		return nil
 	})
-	if err == nil {
+	if err == nil && publishProgress {
 		s.publish(published, "job.progress")
 	}
-	return err
+	return leaseDuration, err
 }
 
 func (s *QueueService) SaveCheckpoint(id, token string, target any) error {
@@ -979,7 +1190,7 @@ func (s *QueueService) finishLease(id, token, status, code, message string, next
 }
 
 func (s *QueueService) acknowledgeInterruptTx(tx *gorm.DB, job models.Job, now time.Time) error {
-	updates := map[string]any{"status": job.InterruptStatus, "interrupt_status": "", "cancellation_asked": false, "revision": job.Revision + 1, "updated_at": now}
+	updates := map[string]any{"status": job.InterruptStatus, "interrupt_status": "", "cancellation_asked": false, "revision": job.Revision + 1, "checkpoint_json": clearProviderControlOrigin(job.CheckpointJSON), "last_error_code": "", "last_error_message": "", "updated_at": now}
 	if job.InterruptStatus == models.JobStatusCancelled {
 		updates["finished_at"] = now
 	}
@@ -1029,16 +1240,21 @@ func (s *QueueService) RecoverExpiredLeases() error {
 			next := any(now)
 			code := "worker_lease_expired"
 			message := "Worker connection was lost; the job will resume from its checkpoint."
-			if job.InterruptStatus == models.JobStatusPaused || job.InterruptStatus == models.JobStatusCancelled {
-				status = job.InterruptStatus
+			pendingInterrupt := job.InterruptStatus == models.JobStatusPaused || job.InterruptStatus == models.JobStatusCancelled
+			if pendingInterrupt {
+				status = models.JobStatusQueued
 				next = nil
-				code = "worker_interrupt_expired"
-				message = "Worker did not acknowledge the control request before its lease expired."
+				code = "worker_interrupt_recovered"
+				message = "Worker control was interrupted and will be reconciled with the provider."
 			} else if job.AttemptCount >= policy.MaxAttempts {
 				status = models.JobStatusFailed
 				next = nil
 			}
-			updates := map[string]any{"status": status, "revision": job.Revision + 1, "next_attempt_at": next, "last_error_code": code, "last_error_message": message, "interrupt_status": "", "cancellation_asked": false, "updated_at": now}
+			updates := map[string]any{"status": status, "revision": job.Revision + 1, "next_attempt_at": next, "last_error_code": code, "last_error_message": message, "updated_at": now}
+			if !pendingInterrupt {
+				updates["interrupt_status"] = ""
+				updates["cancellation_asked"] = false
+			}
 			if status == models.JobStatusCancelled {
 				updates["finished_at"] = now
 			}

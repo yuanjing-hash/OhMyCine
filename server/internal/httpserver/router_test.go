@@ -2,27 +2,43 @@ package httpserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/config"
+	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	"github.com/yuanjing-hash/ohmycine/server/internal/database"
 	"github.com/yuanjing-hash/ohmycine/server/internal/handlers"
 	"github.com/yuanjing-hash/ohmycine/server/internal/logging"
+	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
+	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud/pan115"
+	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
+	"gorm.io/gorm"
 )
 
 type testClient struct {
-	router http.Handler
-	cookie *http.Cookie
-	csrf   string
-	queue  *services.QueueService
+	router      http.Handler
+	cookie      *http.Cookie
+	csrf        string
+	queue       *services.QueueService
+	db          *gorm.DB
+	connections *services.ConnectionService
+	signedProxy *services.SignedProxyService
+	embyGateway *services.EmbyGatewayService
+	lastHeader  http.Header
 }
 type testEnvelope struct {
 	Code    int             `json:"code"`
@@ -30,10 +46,41 @@ type testEnvelope struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+type routerCloudDriver struct{}
+
+func (routerCloudDriver) Provider() string { return cloudpkg.ProviderPan115 }
+func (routerCloudDriver) Capabilities() cloudpkg.Capabilities {
+	return cloudpkg.Capabilities{NetworkDrive: true, DirectoryList: true, TemporaryDirectURL: true, SignedProxy: true}
+}
+func (routerCloudDriver) Probe(context.Context) (cloudpkg.Account, error) {
+	return cloudpkg.Account{ID: "safe-account", Name: "测试账号"}, nil
+}
+func (routerCloudDriver) List(_ context.Context, parentID string, _ cloudpkg.PageRequest) (cloudpkg.Page, error) {
+	if parentID == "0" {
+		return cloudpkg.Page{Items: []cloudpkg.Item{{ID: "root-1", ParentID: "0", Name: "媒体", IsDir: true}}}, nil
+	}
+	return cloudpkg.Page{}, nil
+}
+func (routerCloudDriver) Stat(_ context.Context, id string) (cloudpkg.Item, error) {
+	if id == "0" {
+		return cloudpkg.Item{ID: "0", Name: "115 网盘", IsDir: true}, nil
+	}
+	if id == "root-1" {
+		return cloudpkg.Item{ID: id, ParentID: "0", Name: "媒体", IsDir: true}, nil
+	}
+	if id == "video-1" {
+		return cloudpkg.Item{ID: id, ParentID: "root-1", Name: "Movie.mkv", PickCode: "private-pickcode", Size: 100}, nil
+	}
+	return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeNotFound, false, nil)
+}
+func (routerCloudDriver) DirectURL(context.Context, cloudpkg.DirectURLRequest) (cloudpkg.TemporaryURL, error) {
+	return cloudpkg.TemporaryURL{URL: "https://cdn.example.test/video", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
 func newTestClient(t *testing.T) *testClient {
 	t.Helper()
 	testRoot := t.TempDir()
-	cfg := config.Config{Host: "127.0.0.1", Port: 3000, DatabasePath: filepath.Join(testRoot, "server.db"), LogDirectory: filepath.Join(testRoot, "logs"), Environment: "test", PublicOrigin: "http://localhost:3000", SessionIdleTTL: 2 * time.Hour, SessionMaxTTL: 7 * 24 * time.Hour}
+	cfg := config.Config{Host: "127.0.0.1", Port: 3000, DatabasePath: filepath.Join(testRoot, "server.db"), LogDirectory: filepath.Join(testRoot, "logs"), CredentialKeyFile: filepath.Join(testRoot, "credentials.key"), Environment: "test", PublicOrigin: "http://localhost:3000", SessionIdleTTL: 2 * time.Hour, SessionMaxTTL: 7 * 24 * time.Hour}
 	db, err := database.Open(cfg.DatabasePath)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +129,335 @@ func newTestClient(t *testing.T) *testClient {
 	queue.SetEventHub(events)
 	api.SetQueueService(queue)
 	api.SetQueueEventHub(events)
-	return &testClient{router: New(cfg, api, auth, log), queue: queue}
+	credentialStore, err := credential.Open(cfg.CredentialKeyFile, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloudRegistry := cloudpkg.NewRegistry()
+	if err := cloudRegistry.Register(cloudpkg.ProviderPan115, func(config cloudpkg.Config) (cloudpkg.Driver, error) {
+		if _, err := pan115.ParseCookie(config.Cookie); err != nil {
+			return nil, cloudpkg.Error(cloudpkg.CodeCookieInvalid, false, err)
+		}
+		return routerCloudDriver{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connections := services.NewConnectionService(db, audit, credentialStore, cloudRegistry, log)
+	signedProxy, err := services.NewSignedProxyService(db, credentialStore, connections, cfg.PublicOrigin, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	embyGateway, err := services.NewEmbyGatewayService(db, audit, signedProxy, cfg.PublicOrigin, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.SetSignedProxyService(signedProxy)
+	api.SetEmbyGatewayService(embyGateway)
+	libraries.SetConnectionService(connections)
+	api.SetConnectionService(connections)
+	storages.SetConnectionService(connections)
+	providerDirectories := services.NewProviderDirectoryService(connections, credentialStore)
+	api.SetProviderDirectoryService(providerDirectories)
+	directories.SetProviderDirectoryService(providerDirectories)
+	providerRegistry := downloadpkg.NewRegistry()
+	fakeClient := downloadpkg.NewFakeClient()
+	if err := providerRegistry.Register(models.DownloaderTypeFake, downloadpkg.FakeCapabilities, func(downloadpkg.Config) (downloadpkg.Client, error) { return fakeClient, nil }); err != nil {
+		t.Fatal(err)
+	}
+	downloaders := services.NewDownloaderService(db, audit, credentialStore, providerRegistry)
+	downloadSettings := services.NewDownloadSettingsService(db, audit)
+	seedingSettings := services.NewSeedingSettingsService(db, audit)
+	metadataSettings := services.NewMetadataSettingsService(db, audit, credentialStore)
+	libraries.SetMetadataSettingsService(metadataSettings)
+	storages.AddReferenceChecker(downloadSettings)
+	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, log)
+	downloads.SetMetadataSettings(metadataSettings)
+	downloads.SetSeedingSettings(seedingSettings)
+	transfers := services.NewTransferService(db, audit, queue, log)
+	seeding := services.NewSeedingService(db, audit, queue, downloaders, log)
+	transfers.SetSeedingService(seeding)
+	downloads.SetTransferService(transfers)
+	api.SetDownloaderService(downloaders)
+	api.SetDownloadService(downloads)
+	api.SetTransferService(transfers)
+	api.SetDownloadSettingsService(downloadSettings)
+	api.SetMetadataSettingsService(metadataSettings)
+	api.SetSeedingSettingsService(seedingSettings)
+	api.SetSeedingService(seeding)
+	return &testClient{router: New(cfg, api, auth, log), queue: queue, db: db, connections: connections, signedProxy: signedProxy, embyGateway: embyGateway}
+}
+
+func createRouterSignedArtifact(t *testing.T, client *testClient, actor services.Actor) string {
+	t.Helper()
+	connection, err := client.connections.Create(actor, services.ConnectionInput{Name: "Proxy route account", Provider: cloudpkg.ProviderPan115, Cookie: "UID=100_A1; CID=cid-value; SEID=seid-value; KID=kid-value", Enabled: true}, services.RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	storage := models.Storage{Name: "Proxy route cloud", NameNormalized: "proxy-route-cloud", Type: models.StorageTypePan115, RootPath: "root-1", RootDisplayPath: "/媒体", RootPathNormalized: "pan115:proxy-route", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{"temporary_direct_url":true,"signed_proxy":true}`, CreatedAt: now, UpdatedAt: now}
+	if err := client.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	var profile models.MediaClassificationProfile
+	if err := client.db.Where("code = ?", "default-v1").First(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	library := models.MediaLibrary{Name: "Proxy route library", NameNormalized: "proxy-route-library", StorageID: storage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", ProviderRootID: "root-1", Enabled: true, Recursive: true, VideoExtensionsJSON: `[".mkv"]`, IgnorePatternsJSON: `[]`, STRMEnabled: true, SignedProxyEnabled: true, STRMLocalRoot: t.TempDir(), Status: models.MediaLibraryStatusListening, ArtifactStatus: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	if err := client.db.Select("*").Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	run := models.MediaArtifactRun{ID: "22222222-2222-4222-8222-222222222222", LibraryID: library.ID, Generation: 1, PolicyJSON: `{}`, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	if err := client.db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	opaque := "artifact_BBBBBBBBBBBBBBBBBBBBBB"
+	artifact := models.MediaArtifact{OpaqueID: opaque, RunID: run.ID, LibraryID: library.ID, ProviderItemID: "video-1", Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/Movie.strm", Managed: true, Active: true, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	if err := client.db.Select("*").Create(&artifact).Error; err != nil {
+		t.Fatal(err)
+	}
+	signed, err := client.signedProxy.SignArtifact(opaque, library.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+func TestSignedSTRMProxyUsesSignedPublicOriginAndSupportsGETHeadOnly(t *testing.T) {
+	client := newTestClient(t)
+	user := models.User{Username: "proxy-route", UsernameNormalized: "proxy-route", DisplayName: "Proxy Route", PasswordHash: "unused", Status: models.UserStatusActive}
+	if err := client.db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	actor := services.Actor{User: user, Permissions: map[string]struct{}{
+		authz.PermissionConnectionsCreate: {}, authz.PermissionConnectionsRead: {}, authz.PermissionConnectionsTest: {},
+	}}
+	signed := createRouterSignedArtifact(t, client, actor)
+	parsed, _ := url.Parse(signed)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		request := httptest.NewRequest(method, parsed.RequestURI(), nil)
+		request.Host = "attacker.example"
+		request.Header.Set("User-Agent", "OhMyCine-Test")
+		response := httptest.NewRecorder()
+		client.router.ServeHTTP(response, request)
+		if response.Code != http.StatusFound || response.Header().Get("Location") != "https://cdn.example.test/video" || strings.Contains(response.Header().Get("Location"), "attacker.example") {
+			t.Fatalf("%s status=%d location=%q body=%q", method, response.Code, response.Header().Get("Location"), response.Body.String())
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, parsed.RequestURI(), nil)
+	response := httptest.NewRecorder()
+	client.router.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" {
+		t.Fatalf("POST status=%d allow=%q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+func TestEmbyGatewayRoutePreservesUpstreamHeadersAndBypassesAdminBrowserGuard(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Forwarded") != "" || r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Forwarded-Host") != "" || r.Header.Get("X-Forwarded-Proto") != "" {
+			http.Error(w, "untrusted forwarded headers reached upstream", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/web/index.html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'")
+			_, _ = io.WriteString(w, `<!doctype html><html><head><script src="boot.js"></script></head><body></body></html>`)
+			return
+		}
+		if r.URL.Path != "/api/plain" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=120")
+		w.Header().Set("Content-Security-Policy", "default-src https://emby.example")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Permissions-Policy", "fullscreen=(self)")
+		_, _ = io.WriteString(w, r.Method)
+	}))
+	defer upstream.Close()
+	client := newTestClient(t)
+	user := models.User{Username: "emby-route", UsernameNormalized: "emby-route", DisplayName: "Emby Route", PasswordHash: "unused", Status: models.UserStatusActive}
+	if err := client.db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	actor := services.Actor{User: user, Permissions: map[string]struct{}{authz.PermissionConnectionsCreate: {}, authz.PermissionConnectionsRead: {}, authz.PermissionConnectionsUpdate: {}}}
+	connection, err := client.connections.Create(actor, services.ConnectionInput{Name: "Route Emby", Provider: models.ConnectionProviderEmby, Endpoint: upstream.URL, APIKey: "server-admin-key", Enabled: true}, services.RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.db.Model(&models.Connection{}).Where("id = ?", connection.ID).Update("last_health_status", "online").Error; err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := client.embyGateway.Configure(actor, connection.ID, true, 1, services.RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	downstream := httptest.NewServer(client.router)
+	defer downstream.Close()
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		request, err := http.NewRequest(method, downstream.URL+"/emby/"+gateway.PublicID+"/api/plain", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = "attacker.example"
+		request.Header.Set("Forwarded", "host=attacker.example;proto=https")
+		request.Header.Set("X-Forwarded-For", "203.0.113.5")
+		request.Header.Set("X-Forwarded-Host", "attacker.example")
+		request.Header.Set("X-Forwarded-Proto", "https")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK || string(body) != method || response.Header.Get("Cache-Control") != "public, max-age=120" || response.Header.Get("Content-Security-Policy") != "default-src https://emby.example" || response.Header.Get("X-Frame-Options") != "SAMEORIGIN" || response.Header.Get("Permissions-Policy") != "fullscreen=(self)" {
+			t.Fatalf("%s status=%d headers=%v body=%q", method, response.StatusCode, response.Header, body)
+		}
+	}
+	indexResponse, err := http.Get(downstream.URL + "/emby/" + gateway.PublicID + "/web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexBody, _ := io.ReadAll(indexResponse.Body)
+	_ = indexResponse.Body.Close()
+	compatibilityAssetURL := "/emby/" + gateway.PublicID + "/web/ohmycine-directplay.js"
+	if indexResponse.StatusCode != http.StatusOK || !strings.Contains(string(indexBody), `src="`+compatibilityAssetURL+`"`) || !strings.Contains(indexResponse.Header.Get("Cache-Control"), "no-store") || indexResponse.Header.Get("Content-Security-Policy") != "default-src 'self'; script-src 'self'" {
+		t.Fatalf("index status=%d headers=%v body=%q", indexResponse.StatusCode, indexResponse.Header, indexBody)
+	}
+	assetResponse, err := http.Get(downstream.URL + compatibilityAssetURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetBody, _ := io.ReadAll(assetResponse.Body)
+	_ = assetResponse.Body.Close()
+	if assetResponse.StatusCode != http.StatusOK || !strings.Contains(string(assetBody), "Object.defineProperty") || !strings.Contains(string(assetBody), "MutationObserver") || assetResponse.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("compatibility asset status=%d headers=%v body=%q", assetResponse.StatusCode, assetResponse.Header, assetBody)
+	}
+}
+
+func TestEmbyGatewayPlaybackUsesEmbyAPIRelativeStreamPathThroughGinRouter(t *testing.T) {
+	client := newTestClient(t)
+	user := models.User{Username: "emby-playback-route", UsernameNormalized: "emby-playback-route", DisplayName: "Emby Playback Route", PasswordHash: "unused", Status: models.UserStatusActive}
+	if err := client.db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	actor := services.Actor{User: user, Permissions: map[string]struct{}{
+		authz.PermissionConnectionsCreate: {},
+		authz.PermissionConnectionsRead:   {},
+		authz.PermissionConnectionsUpdate: {},
+	}}
+	signedURL := createRouterSignedArtifact(t, client, actor)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/emby/Items/7/PlaybackInfo" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": []any{
+			map[string]any{"Id": "mediasource_7", "Type": "Video", "Path": signedURL, "SupportsTranscoding": true, "TranscodingUrl": "/emby/videos/7/master.m3u8"},
+		}})
+	}))
+	defer upstream.Close()
+
+	createGateway := func(name string) services.EmbyGatewaySummary {
+		t.Helper()
+		connection, err := client.connections.Create(actor, services.ConnectionInput{Name: name, Provider: models.ConnectionProviderEmby, Endpoint: upstream.URL + "/emby", APIKey: "server-admin-key", Enabled: true}, services.RequestContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := client.db.Model(&models.Connection{}).Where("id = ?", connection.ID).Update("last_health_status", "online").Error; err != nil {
+			t.Fatal(err)
+		}
+		gateway, err := client.embyGateway.Configure(actor, connection.ID, true, 1, services.RequestContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return gateway
+	}
+	gateway := createGateway("Emby playback route")
+	downstream := httptest.NewServer(client.router)
+	defer downstream.Close()
+	httpClient := &http.Client{
+		Transport: downstream.Client().Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	doRequest := func(method, path string, body io.Reader) (*http.Response, []byte) {
+		t.Helper()
+		request, err := http.NewRequest(method, downstream.URL+path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("User-Agent", "Emby Web/4.9.5.0")
+		response, err := httpClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		responseBody, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response, responseBody
+	}
+
+	// Emby Web addresses PlaybackInfo beneath the gateway server base plus its
+	// own /emby application path.
+	gatewayBase := "/emby/" + gateway.PublicID
+	playbackResponse, playbackBody := doRequest(http.MethodPost, gatewayBase+"/emby/Items/7/PlaybackInfo", strings.NewReader(`{"UserId":"user-1"}`))
+	if playbackResponse.StatusCode != http.StatusOK || playbackResponse.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("PlaybackInfo status=%d cache=%q body=%q", playbackResponse.StatusCode, playbackResponse.Header.Get("Cache-Control"), playbackBody)
+	}
+	var playback struct {
+		MediaSources []struct {
+			ID              string `json:"Id"`
+			Path            string `json:"Path"`
+			DirectStreamURL string `json:"DirectStreamUrl"`
+		} `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(playbackBody, &playback); err != nil || len(playback.MediaSources) != 1 {
+		t.Fatalf("decode PlaybackInfo err=%v body=%q", err, playbackBody)
+	}
+	streamValue := playback.MediaSources[0].DirectStreamURL
+	streamURL, err := url.Parse(streamValue)
+	if err != nil || streamURL.Path != "/videos/7/stream" || playback.MediaSources[0].Path != streamValue || streamURL.Query().Get("omc_ticket") == "" || strings.Contains(streamValue, gatewayBase) {
+		t.Fatalf("invalid API-relative stream URL %q path=%q err=%v", streamValue, playback.MediaSources[0].Path, err)
+	}
+
+	// This is the exact construction used by Emby Web: gateway server base,
+	// Emby's /emby API base, then the API-relative DirectStreamUrl.
+	browserStreamPath := gatewayBase + "/emby" + streamURL.RequestURI()
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		response, responseBody := doRequest(method, browserStreamPath, nil)
+		if response.StatusCode != http.StatusFound || response.Header.Get("Location") != "https://cdn.example.test/video" || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s stream status=%d location=%q cache=%q body=%q", method, response.StatusCode, response.Header.Get("Location"), response.Header.Get("Cache-Control"), responseBody)
+		}
+	}
+
+	invalidQuery := streamURL.Query()
+	ticket := invalidQuery.Get("omc_ticket")
+	replacement := "A"
+	if strings.HasSuffix(ticket, replacement) {
+		replacement = "B"
+	}
+	invalidQuery.Set("omc_ticket", ticket[:len(ticket)-1]+replacement)
+	invalidResponse, _ := doRequest(http.MethodGet, gatewayBase+"/emby"+streamURL.Path+"?"+invalidQuery.Encode(), nil)
+	if invalidResponse.StatusCode != http.StatusForbidden || invalidResponse.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("invalid ticket status=%d cache=%q", invalidResponse.StatusCode, invalidResponse.Header.Get("Cache-Control"))
+	}
+
+	wrongSourceQuery := streamURL.Query()
+	wrongSourceQuery.Set("MediaSourceId", "mediasource_other")
+	wrongSourceResponse, _ := doRequest(http.MethodGet, gatewayBase+"/emby"+streamURL.Path+"?"+wrongSourceQuery.Encode(), nil)
+	if wrongSourceResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-source ticket status=%d", wrongSourceResponse.StatusCode)
+	}
+
+	secondGateway := createGateway("Emby playback route second")
+	crossGatewayResponse, _ := doRequest(http.MethodGet, "/emby/"+secondGateway.PublicID+"/emby"+streamURL.RequestURI(), nil)
+	if crossGatewayResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-gateway ticket status=%d", crossGatewayResponse.StatusCode)
+	}
 }
 
 func (c *testClient) request(t *testing.T, method, path string, body any, csrf bool) (int, testEnvelope) {
@@ -108,6 +483,7 @@ func (c *testClient) request(t *testing.T, method, path string, body any, csrf b
 	}
 	response := httptest.NewRecorder()
 	c.router.ServeHTTP(response, req)
+	c.lastHeader = response.Header().Clone()
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == "omc_session" {
 			c.cookie = cookie
@@ -136,6 +512,357 @@ func (c *testClient) setup(t *testing.T) map[string]any {
 	return data
 }
 
+func TestConnectionAPIStoresButNeverReturnsPan115Cookie(t *testing.T) {
+	client := newTestClient(t)
+	denied := httptest.NewRecorder()
+	client.router.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/v1/connections", nil))
+	if denied.Code != http.StatusUnauthorized || denied.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("denied connection response status=%d cache=%q", denied.Code, denied.Header().Get("Cache-Control"))
+	}
+	client.setup(t)
+	cookie := "UID=router_A1; CID=router-cid; SEID=router-secret; KID=router-kid"
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/connections", map[string]any{"name": "115 主账号", "provider": "pan115", "cookie": cookie, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create connection status=%d message=%s", status, envelope.Message)
+	}
+	if strings.Contains(string(envelope.Data), "router-secret") || strings.Contains(strings.ToLower(string(envelope.Data)), "cookie") {
+		t.Fatalf("create response exposed cookie: %s", envelope.Data)
+	}
+	var created services.ConnectionSummary
+	if err := json.Unmarshal(envelope.Data, &created); err != nil {
+		t.Fatal(err)
+	}
+	status, envelope = client.request(t, http.MethodPatch, "/api/v1/connections/"+uintString(created.ID), map[string]any{"name": "115 主账号", "revision": created.Revision}, true)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), "router-secret") {
+		t.Fatalf("update connection status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/connections", nil, false)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" || strings.Contains(string(envelope.Data), "router-secret") || strings.Contains(strings.ToLower(string(envelope.Data)), "cipher") {
+		t.Fatalf("list response status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
+	status, _ = client.request(t, http.MethodDelete, "/api/v1/connections/"+uintString(created.ID), map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("delete connection status=%d", status)
+	}
+}
+
+func TestPan115DirectoryPickerCreatesStableCloudStorage(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/connections", map[string]any{"name": "115 account", "provider": "pan115", "cookie": "UID=test_A1; CID=test-cid; SEID=test-secret", "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create connection status=%d message=%s", status, envelope.Message)
+	}
+	var connection services.ConnectionSummary
+	if err := json.Unmarshal(envelope.Data, &connection); err != nil {
+		t.Fatal(err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/connections/"+uintString(connection.ID)+"/directories", nil, false)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" {
+		t.Fatalf("browse status=%d cache=%q", status, client.lastHeader.Get("Cache-Control"))
+	}
+	var listing services.DirectoryListing
+	if err := json.Unmarshal(envelope.Data, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Items) != 1 || listing.Items[0].SelectionToken == "" {
+		t.Fatalf("listing=%+v", listing)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "115 media", "type": "pan115", "connection_id": connection.ID, "provider_picker_token": listing.Items[0].SelectionToken, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create storage status=%d message=%s data=%s", status, envelope.Message, envelope.Data)
+	}
+	var storage services.StorageSummary
+	if err := json.Unmarshal(envelope.Data, &storage); err != nil {
+		t.Fatal(err)
+	}
+	if storage.Type != models.StorageTypePan115 || storage.RootPath != "root-1" || storage.RootDisplayPath != "/媒体" || storage.ConnectionID == nil || *storage.ConnectionID != connection.ID {
+		t.Fatalf("storage=%+v", storage)
+	}
+	if strings.Contains(string(envelope.Data), "test-secret") || strings.Contains(strings.ToLower(string(envelope.Data)), "cookie") {
+		t.Fatalf("storage response exposed credential: %s", envelope.Data)
+	}
+}
+
+func TestDownloaderAndDownloadAPIRedactSensitiveSources(t *testing.T) {
+	client := newTestClient(t)
+	deniedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/downloaders", nil)
+	deniedResponse := httptest.NewRecorder()
+	client.router.ServeHTTP(deniedResponse, deniedRequest)
+	if deniedResponse.Code != http.StatusUnauthorized || deniedResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("denied downloader response status=%d cache=%q", deniedResponse.Code, deniedResponse.Header().Get("Cache-Control"))
+	}
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/downloaders", map[string]any{"name": "Fake downloader", "type": "fake", "enabled": true, "username": "hidden-user", "password": "hidden-password"}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create downloader status=%d body=%s", status, envelope.Data)
+	}
+	if strings.Contains(string(envelope.Data), "hidden-user") || strings.Contains(string(envelope.Data), "hidden-password") {
+		t.Fatal("downloader response leaked credentials")
+	}
+	var downloader struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(envelope.Data, &downloader); err != nil || downloader.ID == "" {
+		t.Fatalf("downloader=%+v err=%v", downloader, err)
+	}
+	source := "https://tracker.example.test/download?id=1&passkey=secret-passkey"
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/downloads", map[string]any{"downloader_id": downloader.ID, "display_name": "API download", "source_kind": "url", "source_url": source}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create download status=%d body=%s", status, envelope.Data)
+	}
+	if strings.Contains(string(envelope.Data), "tracker.example") || strings.Contains(string(envelope.Data), "secret-passkey") {
+		t.Fatal("download response leaked source")
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/downloads", nil, false)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), "secret-passkey") {
+		t.Fatalf("list status=%d body=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/downloads", map[string]any{"downloader_id": downloader.ID, "source_kind": "url", "source_url": "file:///private/media"}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid source status=%d body=%s", status, envelope.Data)
+	}
+}
+
+func TestTerminalDownloadCanBeDeletedAndActiveDownloadIsRetained(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/downloaders", map[string]any{"name": "Delete fake downloader", "type": "fake", "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create downloader status=%d body=%s", status, envelope.Data)
+	}
+	var provider struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(envelope.Data, &provider); err != nil || provider.ID == "" {
+		t.Fatalf("provider=%+v err=%v", provider, err)
+	}
+
+	create := func(name string) services.DownloadTaskSummary {
+		t.Helper()
+		status, envelope := client.request(t, http.MethodPost, "/api/v1/downloads", map[string]any{"downloader_id": provider.ID, "display_name": name, "source_kind": "url", "source_url": "magnet:?xt=urn:btih:" + strings.ToLower(strings.ReplaceAll(name, " ", "-"))}, true)
+		if status != http.StatusCreated {
+			t.Fatalf("create download %q status=%d body=%s", name, status, envelope.Data)
+		}
+		var task services.DownloadTaskSummary
+		if err := json.Unmarshal(envelope.Data, &task); err != nil || task.ID == "" || task.JobID == "" {
+			t.Fatalf("task=%+v err=%v", task, err)
+		}
+		return task
+	}
+
+	failed := create("Failed delete")
+	claimed, err := client.queue.Claim([]string{"download"})
+	if err != nil || claimed == nil || claimed.Job.ID != failed.JobID {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	if err := client.queue.Fail(failed.JobID, claimed.LeaseToken, "download_failed", "下载任务执行失败"); err != nil {
+		t.Fatal(err)
+	}
+	status, envelope = client.request(t, http.MethodDelete, "/api/v1/downloads/"+failed.ID, map[string]any{}, true)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), "magnet") {
+		t.Fatalf("delete status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/downloads", nil, false)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), failed.ID) || strings.Contains(string(envelope.Data), failed.JobID) {
+		t.Fatalf("deleted task remained status=%d data=%s", status, envelope.Data)
+	}
+
+	active := create("Active retained")
+	claimed, err = client.queue.Claim([]string{"download"})
+	if err != nil || claimed == nil || claimed.Job.ID != active.JobID {
+		t.Fatalf("active claim=%+v err=%v", claimed, err)
+	}
+	status, envelope = client.request(t, http.MethodDelete, "/api/v1/downloads/"+active.ID, map[string]any{}, true)
+	if status != http.StatusConflict {
+		t.Fatalf("active delete status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/downloads", nil, false)
+	if status != http.StatusOK || !strings.Contains(string(envelope.Data), active.ID) {
+		t.Fatalf("active task was removed status=%d data=%s", status, envelope.Data)
+	}
+}
+
+func TestWaitingProviderDownloadCancelPersistsIntentThroughHTTP(t *testing.T) {
+	client := newTestClient(t)
+	setup := client.setup(t)
+	user, ok := setup["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("setup user=%#v", setup["user"])
+	}
+	ownerID := uint(user["id"].(float64))
+	job, err := client.queue.Enqueue(services.EnqueueJobInput{OwnerID: ownerID, JobType: "download", Provider: models.DownloaderTypeQBittorrent, DisplayName: "HTTP pending cancel", Payload: map[string]any{"download_task_id": "http-task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := client.queue.Claim([]string{"download"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	if err := client.queue.Wait(job.ID, claimed.LeaseToken, services.WaitForAction{ActionType: "import_conflict", Prompt: "Choose", Options: []string{"overwrite", "skip"}, Checkpoint: map[string]any{"stage": "import"}}); err != nil {
+		t.Fatal(err)
+	}
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/jobs/"+job.ID+"/cancel", map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("cancel status=%d data=%s", status, envelope.Data)
+	}
+	var controlled services.JobDTO
+	if err := json.Unmarshal(envelope.Data, &controlled); err != nil {
+		t.Fatal(err)
+	}
+	if controlled.Status != models.JobStatusQueued || controlled.InterruptPending != models.JobStatusCancelled || !controlled.CancellationRequested || controlled.Action != nil {
+		t.Fatalf("controlled=%+v", controlled)
+	}
+}
+
+func TestUnifiedDownloadSettingsUseGlobalDirectoryTokenAndShowConfiguredPath(t *testing.T) {
+	client := newTestClient(t)
+	deniedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/downloads", nil)
+	deniedResponse := httptest.NewRecorder()
+	client.router.ServeHTTP(deniedResponse, deniedRequest)
+	if deniedResponse.Code != http.StatusUnauthorized || deniedResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("denied settings status=%d cache=%q", deniedResponse.Code, deniedResponse.Header().Get("Cache-Control"))
+	}
+	client.setup(t)
+	root := t.TempDir()
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "Unified staging", "type": "local", "root_path": root, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("storage status=%d message=%s", status, envelope.Message)
+	}
+	var storage struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(envelope.Data, &storage); err != nil || storage.ID == 0 {
+		t.Fatalf("storage=%+v err=%v", storage, err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/storages/"+uintString(storage.ID)+"/directory", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("directory status=%d message=%s", status, envelope.Message)
+	}
+	var directory struct {
+		SelectionToken string `json:"current_selection_token"`
+	}
+	if err := json.Unmarshal(envelope.Data, &directory); err != nil || directory.SelectionToken == "" {
+		t.Fatalf("directory=%+v err=%v", directory, err)
+	}
+	status, envelope = client.request(t, http.MethodPatch, "/api/v1/settings/downloads", map[string]any{"directory_token": directory.SelectionToken, "revision": 1}, true)
+	if status != http.StatusOK {
+		t.Fatalf("settings status=%d data=%s", status, envelope.Data)
+	}
+	var settings struct {
+		Configured   bool   `json:"configured"`
+		AbsolutePath string `json:"absolute_path"`
+	}
+	if err := json.Unmarshal(envelope.Data, &settings); err != nil || !settings.Configured || settings.AbsolutePath != root {
+		t.Fatalf("settings=%+v err=%v", settings, err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/downloads", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("get settings status=%d data=%s", status, envelope.Data)
+	}
+	if err := json.Unmarshal(envelope.Data, &settings); err != nil || settings.AbsolutePath != root {
+		t.Fatalf("get settings=%+v err=%v", settings, err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/downloads/directory", nil, false)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" {
+		t.Fatalf("configured directory status=%d data=%s", status, envelope.Data)
+	}
+	var current struct {
+		Location string `json:"location"`
+	}
+	if err := json.Unmarshal(envelope.Data, &current); err != nil || current.Location != root {
+		t.Fatalf("configured directory=%+v err=%v", current, err)
+	}
+	status, envelope = client.request(t, http.MethodPatch, "/api/v1/settings/downloads", map[string]any{"absolute_path": root, "revision": 2}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("client-authored staging path status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/downloads", nil, false)
+	if status != http.StatusOK || json.Unmarshal(envelope.Data, &settings) != nil || settings.AbsolutePath != root {
+		t.Fatalf("rejected absolute path changed settings status=%d settings=%+v", status, settings)
+	}
+}
+
+func TestMetadataSettingsNeverEchoTMDBToken(t *testing.T) {
+	client := newTestClient(t)
+	denied := httptest.NewRecorder()
+	client.router.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/v1/settings/metadata", nil))
+	if denied.Code != http.StatusUnauthorized || denied.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("unauthenticated metadata status=%d cache=%q", denied.Code, denied.Header().Get("Cache-Control"))
+	}
+	client.setup(t)
+	const token = "eyJhbGciOiJIUzI1NiJ9.router-secret-token"
+	status, envelope := client.request(t, http.MethodPatch, "/api/v1/settings/metadata", map[string]any{"tmdb_token": token, "credential_kind": "automatic", "clear_tmdb": false, "revision": 1}, true)
+	if status != http.StatusBadRequest || strings.Contains(string(envelope.Data), token) || strings.Contains(string(envelope.Data), "router-secret-token") || strings.Contains(envelope.Message, token) {
+		t.Fatalf("metadata patch status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/metadata", nil, false)
+	var settings struct {
+		Configured       bool   `json:"tmdb_configured"`
+		CustomConfigured bool   `json:"custom_configured"`
+		CredentialSource string `json:"credential_source"`
+		CredentialKind   string `json:"credential_kind"`
+		APIBaseURL       string `json:"api_base_url"`
+		Revision         uint64 `json:"revision"`
+	}
+	if err := json.Unmarshal(envelope.Data, &settings); err != nil || settings.Configured || settings.CustomConfigured || settings.CredentialSource != "none" || settings.CredentialKind != "" || settings.Revision != 1 {
+		t.Fatalf("settings=%+v err=%v", settings, err)
+	}
+	status, oversized := client.request(t, http.MethodPost, "/api/v1/settings/metadata/test-api", map[string]any{"base_url": "https://" + strings.Repeat("a", 20<<10) + ".example.test/3", "revision": 1}, true)
+	if status != http.StatusBadRequest || strings.Contains(string(oversized.Data), token) {
+		t.Fatalf("oversized metadata route status=%d data=%s", status, oversized.Data)
+	}
+	status, routeFailure := client.request(t, http.MethodPost, "/api/v1/settings/metadata/test-api", map[string]any{"base_url": "http://unsafe.example/3", "revision": 1}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("unsafe route status=%d data=%s", status, routeFailure.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/metadata", nil, false)
+	var afterFailure struct {
+		APIBaseURL string `json:"api_base_url"`
+		Revision   uint64 `json:"revision"`
+	}
+	if err := json.Unmarshal(envelope.Data, &afterFailure); err != nil || afterFailure.APIBaseURL != settings.APIBaseURL || afterFailure.Revision != 1 {
+		t.Fatalf("failed route changed settings=%+v err=%v", afterFailure, err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/metadata", nil, false)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), token) {
+		t.Fatalf("metadata get status=%d data=%s", status, envelope.Data)
+	}
+}
+
+func TestSeedingSettingsDefaultSafeAndRevisioned(t *testing.T) {
+	client := newTestClient(t)
+	denied := httptest.NewRecorder()
+	client.router.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/v1/settings/seeding", nil))
+	if denied.Code != http.StatusUnauthorized || denied.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d cache=%q", denied.Code, denied.Header().Get("Cache-Control"))
+	}
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodGet, "/api/v1/settings/seeding", nil, false)
+	var settings struct {
+		Enabled  bool    `json:"enabled"`
+		Minutes  int     `json:"minimum_seed_minutes"`
+		Ratio    float64 `json:"minimum_ratio"`
+		Mode     string  `json:"completion_mode"`
+		Revision uint64  `json:"revision"`
+	}
+	if status != http.StatusOK || json.Unmarshal(envelope.Data, &settings) != nil || settings.Enabled || settings.Minutes != 1440 || settings.Ratio != 1 || settings.Mode != "all" || settings.Revision != 1 {
+		t.Fatalf("status=%d settings=%+v", status, settings)
+	}
+	status, _ = client.request(t, http.MethodPatch, "/api/v1/settings/seeding", map[string]any{"enabled": true, "minimum_seed_minutes": 0, "minimum_ratio": 0, "completion_mode": "all", "revision": 1}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("empty thresholds status=%d", status)
+	}
+	status, envelope = client.request(t, http.MethodPatch, "/api/v1/settings/seeding", map[string]any{"enabled": true, "minimum_seed_minutes": 720, "minimum_ratio": 1.5, "completion_mode": "any", "revision": 1}, true)
+	if status != http.StatusOK || json.Unmarshal(envelope.Data, &settings) != nil || !settings.Enabled || settings.Revision != 2 || settings.Mode != "any" {
+		t.Fatalf("status=%d settings=%+v", status, settings)
+	}
+	status, _ = client.request(t, http.MethodPatch, "/api/v1/settings/seeding", map[string]any{"enabled": false, "minimum_seed_minutes": 0, "minimum_ratio": 0, "completion_mode": "all", "revision": 1}, true)
+	if status != http.StatusConflict {
+		t.Fatalf("stale revision status=%d", status)
+	}
+}
+
 func (c *testClient) login(t *testing.T, username, password string) {
 	status, envelope := c.request(t, http.MethodPost, "/api/v1/auth/login", map[string]string{"username": username, "password": password}, false)
 	if status != http.StatusOK {
@@ -151,7 +878,38 @@ func (c *testClient) login(t *testing.T, username, password string) {
 func TestSetupSessionAndViewerPermissionBoundary(t *testing.T) {
 	client := newTestClient(t)
 	setup := client.setup(t)
-	status, _ := client.request(t, http.MethodPost, "/api/v1/setup/owner", map[string]any{"username": "other", "password": "another-strong-password"}, false)
+	status, transfers := client.request(t, http.MethodGet, "/api/v1/transfers?page=1&page_size=20", nil, false)
+	if status != http.StatusOK || !bytes.Contains(transfers.Data, []byte(`"stats"`)) || client.lastHeader.Get("Cache-Control") != "no-store" {
+		t.Fatalf("owner transfers status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), transfers.Data)
+	}
+	status, _ = client.request(t, http.MethodDelete, "/api/v1/transfers/missing", map[string]any{}, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("transfer delete without csrf status=%d", status)
+	}
+	status, _ = client.request(t, http.MethodDelete, "/api/v1/transfers/missing", map[string]any{}, true)
+	if status != http.StatusNotFound {
+		t.Fatalf("missing transfer delete status=%d", status)
+	}
+	for _, path := range []string{
+		"/api/v1/transfers?status=unknown",
+		"/api/v1/transfers?scope=unknown",
+		"/api/v1/transfers?transfer_mode=hardlink",
+		"/api/v1/transfers?page=0",
+		"/api/v1/transfers?page_size=201",
+		"/api/v1/transfers?library_id=invalid",
+	} {
+		status, _ = client.request(t, http.MethodGet, path, nil, false)
+		if status != http.StatusBadRequest || client.lastHeader.Get("Cache-Control") != "no-store" {
+			t.Fatalf("invalid transfer filter %q status=%d cache=%q", path, status, client.lastHeader.Get("Cache-Control"))
+		}
+	}
+	for _, path := range []string{"/api/v1/downloads?scope=unknown", "/api/v1/downloads?limit=0", "/api/v1/downloads?limit=invalid"} {
+		status, _ = client.request(t, http.MethodGet, path, nil, false)
+		if status != http.StatusBadRequest {
+			t.Fatalf("invalid download filter %q status=%d", path, status)
+		}
+	}
+	status, _ = client.request(t, http.MethodPost, "/api/v1/setup/owner", map[string]any{"username": "other", "password": "another-strong-password"}, false)
 	if status != http.StatusConflict {
 		t.Fatalf("second setup status=%d", status)
 	}
@@ -192,6 +950,26 @@ func TestSetupSessionAndViewerPermissionBoundary(t *testing.T) {
 	status, _ = viewer.request(t, http.MethodGet, "/api/v1/users", nil, false)
 	if status != http.StatusForbidden {
 		t.Fatalf("viewer users status=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/transfers", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer transfers status=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodDelete, "/api/v1/transfers/missing", map[string]any{}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer transfer delete status=%d", status)
+	}
+	status, metadataDenied := viewer.request(t, http.MethodGet, "/api/v1/settings/metadata", nil, false)
+	if status != http.StatusForbidden || metadataDenied.Message == "" {
+		t.Fatalf("viewer metadata status=%d response=%+v", status, metadataDenied)
+	}
+	status, _ = viewer.request(t, http.MethodPost, "/api/v1/settings/metadata/test-api", map[string]any{"base_url": "https://api.example.test/3", "revision": 1}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer metadata mutation status=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodPost, "/api/v1/settings/metadata/test-token", map[string]any{"tmdb_token": "must-not-be-tested", "revision": 1}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer metadata token test status=%d", status)
 	}
 
 	user := setup["user"].(map[string]any)
@@ -415,13 +1193,95 @@ func TestMediaLibraryAPICRUDRBACAndAutomaticInitialization(t *testing.T) {
 	if library.Status != "listening" {
 		t.Fatalf("library status=%q", library.Status)
 	}
+	secondRoot := t.TempDir()
+	status, secondStorageEnvelope := owner.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "Second library source", "type": "local", "root_path": secondRoot, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create second storage status=%d", status)
+	}
+	var secondStorage struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(secondStorageEnvelope.Data, &secondStorage); err != nil {
+		t.Fatal(err)
+	}
+	status, secondDirectoryEnvelope := owner.request(t, http.MethodGet, "/api/v1/storages/"+uintString(secondStorage.ID)+"/directory", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("second directory status=%d", status)
+	}
+	if err := json.Unmarshal(secondDirectoryEnvelope.Data, &directory); err != nil || directory.CurrentSelectionToken == "" {
+		t.Fatalf("second directory=%+v err=%v", directory, err)
+	}
+	status, secondLibraryEnvelope := owner.request(t, http.MethodPost, "/api/v1/media-libraries", map[string]any{"name": "Second API library", "storage_id": secondStorage.ID, "profile_id": profiles.List[0].ID, "relative_root_token": directory.CurrentSelectionToken, "enabled": false}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create second library status=%d message=%s", status, secondLibraryEnvelope.Message)
+	}
+	var secondLibrary struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(secondLibraryEnvelope.Data, &secondLibrary); err != nil {
+		t.Fatal(err)
+	}
+	status, orderEnvelope := owner.request(t, http.MethodPut, "/api/v1/media-libraries/order", map[string]any{"ids": []uint{secondLibrary.ID, library.ID}}, true)
+	if status != http.StatusOK {
+		t.Fatalf("reorder status=%d message=%s", status, orderEnvelope.Message)
+	}
+	var ordered struct {
+		List []struct {
+			ID        uint `json:"id"`
+			SortOrder int  `json:"sort_order"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(orderEnvelope.Data, &ordered); err != nil || len(ordered.List) != 2 || ordered.List[0].ID != secondLibrary.ID || ordered.List[0].SortOrder != 1 {
+		t.Fatalf("ordered=%+v err=%v", ordered, err)
+	}
 	status, entriesEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID)+"/entries", nil, false)
 	if status != http.StatusOK || !strings.Contains(string(entriesEnvelope.Data), "/API.Movie.mp4") || strings.Contains(string(entriesEnvelope.Data), root) {
 		t.Fatalf("entries status=%d data=%s", status, entriesEnvelope.Data)
 	}
+	status, recognitionEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID)+"/recognitions?status=unrecognized&page=1&page_size=20", nil, false)
+	if status != http.StatusOK || owner.lastHeader.Get("Cache-Control") != "no-store" || strings.Contains(string(recognitionEnvelope.Data), root) || strings.Contains(string(recognitionEnvelope.Data), "provider_id") {
+		t.Fatalf("recognitions status=%d cache=%q data=%s", status, owner.lastHeader.Get("Cache-Control"), recognitionEnvelope.Data)
+	}
+	var recognitionPage struct {
+		List []struct {
+			Token string `json:"token"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(recognitionEnvelope.Data, &recognitionPage); err != nil || len(recognitionPage.List) != 1 || recognitionPage.List[0].Token == "" {
+		t.Fatalf("recognitions=%+v err=%v", recognitionPage, err)
+	}
+	status, retryEnvelope := owner.request(t, http.MethodPost, "/api/v1/media-libraries/"+uintString(library.ID)+"/recognitions/"+recognitionPage.List[0].Token+"/retry", map[string]any{}, true)
+	if status != http.StatusOK || !bytes.Contains(retryEnvelope.Data, []byte(`"status":"unrecognized"`)) {
+		t.Fatalf("recognition retry status=%d data=%s", status, retryEnvelope.Data)
+	}
+	status, catalogEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID)+"/catalog?page=1&page_size=20&media_type=movie", nil, false)
+	if status != http.StatusOK || !strings.Contains(string(catalogEnvelope.Data), "API Movie") || strings.Contains(string(catalogEnvelope.Data), root) {
+		t.Fatalf("catalog status=%d data=%s", status, catalogEnvelope.Data)
+	}
+	var catalog struct {
+		List []struct {
+			ID string `json:"id"`
+		} `json:"list"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(catalogEnvelope.Data, &catalog); err != nil || catalog.Total != 1 || len(catalog.List) != 1 {
+		t.Fatalf("catalog=%+v err=%v", catalog, err)
+	}
+	status, catalogDetailEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID)+"/catalog/"+catalog.List[0].ID, nil, false)
+	if status != http.StatusOK || !strings.Contains(string(catalogDetailEnvelope.Data), "/API.Movie.mp4") || strings.Contains(string(catalogDetailEnvelope.Data), root) {
+		t.Fatalf("catalog detail status=%d data=%s", status, catalogDetailEnvelope.Data)
+	}
+	status, invalidPageEnvelope := owner.request(t, http.MethodGet, "/api/v1/media-libraries/"+uintString(library.ID)+"/entries?page=nope&page_size=50", nil, false)
+	if status != http.StatusBadRequest || !bytes.Contains(invalidPageEnvelope.Data, []byte(services.CodeInvalidRequest)) {
+		t.Fatalf("invalid page status=%d data=%s", status, invalidPageEnvelope.Data)
+	}
 	status, _ = owner.request(t, http.MethodDelete, "/api/v1/storages/"+uintString(storage.ID), map[string]any{}, true)
 	if status != http.StatusConflict {
 		t.Fatalf("referenced storage delete status=%d", status)
+	}
+	status, _ = owner.request(t, http.MethodDelete, "/api/v1/media-libraries/"+uintString(secondLibrary.ID), map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("delete second media library status=%d", status)
 	}
 	status, _ = owner.request(t, http.MethodDelete, "/api/v1/media-libraries/"+uintString(library.ID), map[string]any{}, true)
 	if status != http.StatusOK {
@@ -532,16 +1392,30 @@ func TestMediaClassificationProfileLifecycleAndPermissionBoundary(t *testing.T) 
 		t.Fatalf("create status=%d message=%s", status, createEnvelope.Message)
 	}
 	var created struct {
-		ID       uint            `json:"id"`
-		Revision uint64          `json:"revision"`
-		Rules    json.RawMessage `json:"rules"`
+		ID                      uint            `json:"id"`
+		Revision                uint64          `json:"revision"`
+		Rules                   json.RawMessage `json:"rules"`
+		BuiltinRecognitionPacks []string        `json:"builtin_recognition_packs"`
 	}
 	if err := json.Unmarshal(createEnvelope.Data, &created); err != nil {
 		t.Fatal(err)
 	}
-	status, _ = owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(created.ID), map[string]any{"revision": created.Revision, "name": "API Custom", "rules": json.RawMessage(created.Rules)}, true)
+	if !reflect.DeepEqual(created.BuiltinRecognitionPacks, []string{"tv-v1", "anime-v1"}) {
+		t.Fatalf("created built-in packs=%v", created.BuiltinRecognitionPacks)
+	}
+	status, _ = owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(created.ID), map[string]any{"revision": created.Revision, "name": "API Custom", "rules": json.RawMessage(created.Rules), "builtin_recognition_packs": []string{"unknown-v1"}}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid built-in packs status=%d", status)
+	}
+	status, updateEnvelope := owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(created.ID), map[string]any{"revision": created.Revision, "name": "API Custom", "rules": json.RawMessage(created.Rules), "builtin_recognition_packs": []string{}}, true)
 	if status != http.StatusOK {
 		t.Fatalf("update status=%d", status)
+	}
+	var updated struct {
+		BuiltinRecognitionPacks []string `json:"builtin_recognition_packs"`
+	}
+	if err := json.Unmarshal(updateEnvelope.Data, &updated); err != nil || updated.BuiltinRecognitionPacks == nil || len(updated.BuiltinRecognitionPacks) != 0 {
+		t.Fatalf("updated built-in packs=%v err=%v", updated.BuiltinRecognitionPacks, err)
 	}
 	status, stale := owner.request(t, http.MethodPatch, "/api/v1/media-classification-profiles/"+uintString(created.ID), map[string]any{"revision": created.Revision, "name": "API Custom", "rules": json.RawMessage(created.Rules)}, true)
 	if status != http.StatusConflict || !bytes.Contains(stale.Data, []byte(services.CodeProfileRevisionConflict)) {

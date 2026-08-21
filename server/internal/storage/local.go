@@ -31,6 +31,7 @@ type Capabilities struct {
 	NativeOfflineDownload bool `json:"native_offline_download"`
 	TemporaryDirectURL    bool `json:"temporary_direct_url"`
 	SignedProxy           bool `json:"signed_proxy"`
+	SmallFileUpload       bool `json:"small_file_upload"`
 	ChangeCursor          bool `json:"change_cursor"`
 }
 
@@ -45,6 +46,14 @@ type Probe struct {
 }
 
 type LocalDriver struct{}
+
+// IsReparsePoint reports whether an already-lstat'ed path crosses the local
+// filesystem indirection boundary used by symlinks, junctions and mount-point
+// reparse records. Callers must still constrain the lexical path to a trusted
+// root before using this check.
+func IsReparsePoint(path string, info os.FileInfo) bool {
+	return isReparsePoint(path, info)
+}
 
 func (LocalDriver) Capabilities() Capabilities {
 	return Capabilities{DirectoryList: true, Watch: true}

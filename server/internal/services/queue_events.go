@@ -3,11 +3,14 @@ package services
 import (
 	"sync"
 	"time"
+
+	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 )
 
 type JobEvent struct {
 	Type    string    `json:"-"`
 	JobID   string    `json:"job_id"`
+	JobType string    `json:"job_type,omitempty"`
 	OwnerID *uint     `json:"owner_id"`
 	Status  string    `json:"status,omitempty"`
 	At      time.Time `json:"at"`
@@ -50,7 +53,7 @@ func (h *QueueEventHub) Publish(event JobEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, sub := range h.subscribers {
-		if !sub.actor.Can("jobs.read_all") && (event.OwnerID == nil || !sub.actor.Can("jobs.read_own") || *event.OwnerID != sub.actor.User.ID) {
+		if !canReceiveJobEvent(sub.actor, event) {
 			continue
 		}
 		if event.Type == "job.progress" {
@@ -64,4 +67,18 @@ func (h *QueueEventHub) Publish(event JobEvent) {
 		default:
 		}
 	}
+}
+
+func canReceiveJobEvent(actor Actor, event JobEvent) bool {
+	if actor.Can(authz.PermissionJobsReadAll) {
+		return true
+	}
+	owned := event.OwnerID != nil && *event.OwnerID == actor.User.ID
+	if owned && actor.Can(authz.PermissionJobsReadOwn) {
+		return true
+	}
+	if event.JobType != "transfer" {
+		return false
+	}
+	return actor.Can(authz.PermissionTransfersReadAll) || (owned && actor.Can(authz.PermissionTransfersReadOwn))
 }

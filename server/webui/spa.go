@@ -38,7 +38,10 @@ func Register(router *gin.Engine, assets fs.FS) {
 			}
 		}
 		if requestPath == "index.html" {
-			c.Header("Cache-Control", "no-cache")
+			// The shell names hashed assets. Never retain it across Server rebuilds,
+			// otherwise an administrator can keep seeing an older feature set even
+			// though the embedded binary already contains the new Web UI.
+			c.Header("Cache-Control", "no-store")
 		} else if strings.HasPrefix(requestPath, "assets/") {
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		}

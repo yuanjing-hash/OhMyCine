@@ -14,6 +14,30 @@ describe('grouped administration navigation', () => {
     expect(item.planned).toBeUndefined()
     expect(item.permissionsAny).toEqual([Permissions.JobsReadOwn, Permissions.JobsReadAll])
   })
+  it('exposes the real download workspace to download or downloader readers', () => {
+    const item = findNavigationItem('downloads')
+    expect(item.planned).toBeUndefined()
+    expect(buildVisibleNavigation([Permissions.DownloadersRead])[0]?.items.map(candidate => candidate.id)).toEqual(['downloads'])
+    expect(buildVisibleNavigation([Permissions.DownloadsReadOwn])[0]?.items.map(candidate => candidate.id)).toEqual(['downloads'])
+  })
+  it('exposes media organization only to transfer readers', () => {
+    const item = findNavigationItem('organization')
+    expect(item.planned).toBeUndefined()
+    expect(item.permissionsAny).toEqual([Permissions.TransfersReadOwn, Permissions.TransfersReadAll])
+    expect(buildVisibleNavigation([Permissions.TransfersReadOwn])[0]?.items.map(candidate => candidate.id)).toEqual(['organization'])
+    expect(buildVisibleNavigation([Permissions.CategoriesRead]).flatMap(group => group.items).map(candidate => candidate.id)).not.toContain('organization')
+  })
+  it('exposes the real settings workspace for settings.read', () => {
+    const item = findNavigationItem('settings')
+    expect(item.planned).toBeUndefined()
+    expect(buildVisibleNavigation([Permissions.SettingsRead])[0]?.items.map(candidate => candidate.id)).toEqual(['settings'])
+  })
+	it('exposes STRM management as a real workspace', () => {
+		const item = findNavigationItem('strm')
+		expect(item.planned).toBeUndefined()
+		expect(item.permissionsAny).toEqual([Permissions.StrmRunsRead])
+		expect(buildVisibleNavigation([Permissions.StrmRunsRead])[0]?.items.map(candidate => candidate.id)).toEqual(['strm'])
+	})
   it('omits every empty group and keeps the dashboard standalone', () => {
     expect(buildVisibleNavigation([Permissions.DashboardRead])).toEqual([])
   })
@@ -33,9 +57,16 @@ describe('grouped administration navigation', () => {
     expect(groups[0]?.items[0]?.planned).toBeUndefined()
   })
 
+  it('exposes player management to connection readers', () => {
+    const groups = buildVisibleNavigation([Permissions.ConnectionsRead])
+    expect(groups.map(group => group.id)).toEqual(['system'])
+    expect(groups[0]?.items.map(item => item.id)).toEqual(['players'])
+    expect(findNavigationItem('players').planned).toBeUndefined()
+  })
+
   it('exposes rule management only to the canonical profile read permission', () => {
     expect(buildVisibleNavigation([Permissions.MediaClassificationProfilesRead])[0]?.items.map(item => item.id)).toEqual(['media-rules'])
-    expect(buildVisibleNavigation([Permissions.CategoriesRead])[0]?.items.map(item => item.id)).not.toContain('media-rules')
+    expect(buildVisibleNavigation([Permissions.CategoriesRead]).flatMap(group => group.items).map(item => item.id)).not.toContain('media-rules')
   })
 
   it('exposes the media library workspace only to its generated read permission', () => {

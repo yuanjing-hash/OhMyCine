@@ -99,11 +99,12 @@ OhMyCine Server
 | 发现 / 推荐、探索 | PT/资源聚合搜索、一键提交下载或追更、TMDB/豆瓣等公开元数据与趋势 | 不承担 Player 本地库 AI 推荐；下载后的执行状态进入任务中心 |
 | 订阅 / 订阅管理、工作流、日历 | 追更生命周期、缺集检测、站点/质量/发布组过滤、调度工作流和日历事件 | 不直接保存 PT 凭据；凭据归站点连接 |
 | 任务中心 | 汇总下载、转移、STRM、入库、媒体服务器刷新和追更执行状态，突出失败/阻塞与重试入口 | 只是权限裁剪后的读模型，不成为各类任务的新写入 owner |
-| 下载管理 | 下载任务队列、速度、暂停/恢复/删除和下载器健康跳转 | qBittorrent/Transmission 凭据与连接测试归“连接” |
-| 媒体整理 | 分类规则应用结果、元数据匹配、命名/转移记录、失败重试和待人工处理项 | 分类规则定义与存储目标配置归“连接与存储” |
+| 下载管理 | 顶部切换进行中、历史记录、新建下载、做种管理和下载器管理；进行中按完整下载→整理→做种流水线收口，历史支持安全记录删除 | 下载器连接仍不决定最终媒体库；完整成功历史删除不再次操作 provider 或真实文件 |
+| 媒体整理 | 顶部切换进行中/历史记录；展示下载完成后自动生成的分类规则应用结果、元数据匹配、命名/转移记录、失败重试、冲突处理和终态记录删除 | 分类规则定义与存储目标配置归对应设置；手动选择文件并整理归“文件管理”；删除记录不删除下载内容或媒体库文件 |
 | STRM / 入库 | 增量/全量同步、无效 STRM 清理预览、NFO/海报生成结果、signed 302 状态、Emby/Jellyfin 刷新结果 | 不把 302 上游签名 URL 或本地绝对路径暴露给浏览器 |
 | 文件管理 | 在已配置连接和根目录内浏览、上传及受控的移动/重命名/删除 | 不绕过配置根、路径规范化、symlink 防逃逸、确认与审计 |
-| 连接与存储 | 已实现的本地 Storage 根/能力/只读探测，以及规划中的 115、OpenList/Alist、CloudDrive2、Emby/Jellyfin、下载器等 Connections、Storage Destinations 与 Category Rules | Storage 只声明 Server 可安全访问的提供方根；Connection 拥有接入能力与凭据；归档位置和分类决策仍分别归 Destination 与 Rule |
+| 数据源 | 本地 Storage 根/能力/只读探测，以及 115、未来 OpenList/Alist、CloudDrive2 等文件来源 | 只管理 local/cloud Storage source；Emby/Jellyfin 媒体服务器不在此页 |
+| 播放器管理 | Emby 连接卡片、真实健康、受控聚合摘要、连接编辑、签名 STRM 302 网关，以及外部播放器/Fanart 开关；未来显示安全配对的 OhMyCine Player 设备 | 复用 Connection model，不回显 API Key、库名、item、路径、用户/session 或原始 Emby payload；外部播放器只使用短时票据，不提供任意脚本；不提供假的 Player 手动添加入口 |
 | 站点管理 | PT 站点、分类映射、测试状态及脱敏配置 | Cookie/Passkey 不进入列表、日志或通知载荷 |
 | 插件 | 插件浏览、权限审阅、手动安装/启用/更新/卸载和运行状态 | Hub 是分发站点而非 Server 运行时；插件默认无全局凭据访问 |
 | 用户管理 | 管理员视角的账户、角色与权限、全局会话治理 | 当前账户自助操作归头像菜单 |
@@ -203,7 +204,7 @@ OhMyCine Server
 | 连接健康 | 115、OpenList/Alist、CloudDrive2、本地、下载器、Emby/Jellyfin 脱敏健康摘要 | connection service 与各 provider adapter | 现有 `connections.read` | `/api/v1/connections?summary=health` 或聚合字段 | 未配置时显示“添加连接”；错误不回显 URL 中的用户信息/令牌 |
 | 活动任务 | 失败、阻塞、运行中、排队的下载/转移/STRM/刷新/追更任务 | download、transfer、STRM run、media refresh、follow service；task read model 只聚合 | 对应域的 own/all read；现有包括 `downloads.read_own/read_all`、`follows.read_own/read_all`、`strm.runs.read`，其余上线前新增 | `/api/v1/tasks?state=active` | 逐域按 own/all scope 过滤；无任务显示真实完成状态，不生成演示任务 |
 | 流水线状态 | Discover/Download/Transfer/Import/Notify 各阶段运行、积压与最近失败 | 各阶段业务 service；dashboard projection 只计算摘要 | 对应可读域 permission 的并集，不能用 `dashboard.read` 扩权 | `/api/v1/dashboard/pipeline` | 未启用阶段显示“未配置”而非“正常”；无权阶段省略且不泄露计数 |
-| 近期入库/整理 | 媒体名、来源、目标、结果和时间 | transfer/import history service | 上线前新增稳定的 transfer/import read scope | `/api/v1/imports?sort=-finished_at&limit=...` | 不展示本地绝对路径、签名 URL 或 provider 凭据 |
+| 近期入库/整理 | 媒体名、来源、目标、结果和时间 | 已实现 TransferService 读模型 | `transfers.read_own` 或 `transfers.read_all` | 已实现 `/api/v1/transfers?page=1&page_size=...` | 不展示本地绝对路径、签名 URL、provider ID、私有 manifest 或凭据 |
 | 后台任务队列 | scheduler job、下次运行、重试次数和最近结果 | scheduler service | 未来 `scheduler.read` | `/api/v1/scheduler/jobs?summary=true` | 调度器未启用时给出设置入口，不伪造“全部成功” |
 | 下载速率/队列 | 按受控时间窗口采样的上/下行速率、排队和暂停数 | downloader service/adapter | 现有 `downloads.read_own` 或 `downloads.read_all`；速率只能按可见任务范围汇总 | `/api/v1/downloads/summary` | 无下载器时引导创建 connection；无可靠采样时不绘制假曲线 |
 | 订阅日历 | 将播、待搜、下载中、失败事件 | follow service + scheduler | 现有 `follows.read_own` 或 `follows.read_all` | `/api/v1/follows/calendar` | 按 own/all scope 过滤；无订阅时显示创建引导 |
@@ -262,9 +263,9 @@ OhMyCine Server
 | 仪表盘 | 现有 `dashboard.read`；内部卡片再按域权限剪裁 |
 | 发现 / 推荐、探索 | 现有 `discovery.read` |
 | 订阅 / 订阅管理、工作流、日历 | 现有 `follows.read_own` 或 `follows.read_all` |
-| 任务中心 | 可见任务域的读权限任一：`downloads.read_own/read_all`、`follows.read_own/read_all`、`strm.runs.read`；转移/入库任务上线前补充其稳定 code |
+| 任务中心 | `jobs.read_own` 或 `jobs.read_all`；各业务页另以自己的领域读取权限裁剪 |
 | 下载管理 | 现有 `downloads.read_own` 或 `downloads.read_all` |
-| 媒体整理 | 现有 `categories.read` 或未来 transfer/import read scope；只呈现获权子面板，组合操作再同时验证相关域权限 |
+| 媒体整理 | 已实现 `transfers.read_own` 或 `transfers.read_all`；重试和终态记录删除要求 `jobs.control_own/all`，冲突响应要求 `jobs.respond` 并校验任务范围 |
 | STRM / 入库 | 现有 `strm.runs.read`；刷新结果上线前新增稳定的 media-server read code，刷新动作仍独立要求 `media_servers.refresh` |
 | 文件管理 | 未来 `files.read`；移动/重命名/删除必须拆分高风险 write code |
 | 连接与存储 | 已实现 `storages.read`，以及现有规划权限 `connections.read`、`destinations.read`、`categories.read` 按子面板分别判定 |
@@ -367,6 +368,10 @@ OhMyCine Server
 `/automation/tasks` 现已接入持久化队列的真实 REST read model。页面提供状态、类型、优先级与 provider 筛选，显示 lane 位置、进度/处理量、速度/ETA、重试和安全错误摘要；未知遥测保持“未知”。仅在 `queued + 单一 job_type + 单一 priority` 视图中启用鼠标拖放和键盘上移/下移，保存冲突后刷新服务端真实顺序。详情抽屉读取持久化状态事件与 attempt 时间线，并支持版本化 ActionRequest 响应、暂停、恢复、取消和失败重试。
 
 任务中心只是统一观察与控制面，不是跨类型串行执行器。MediaLibrary watcher、文件树 reconciliation、定时扫描和 STRM projection 继续由 LibrarySupervisor 独立并行运行，既不创建 Job 也不消耗队列槽。
+
+### MediaLibrary 作品清单
+
+`/system/media-libraries` 对 local 与 115 都从所选 Storage 根继续使用同一目录选择器；浏览、翻页和最终选择始终沿 Storage-scoped endpoint，不允许前端拼接路径或回到 Connection 根。媒体清单默认展示作品而非文件：电影一行，剧集一行并按需展开 Season -> Episode。标题搜索、类型筛选、20/50/100 页大小和前后页均由 Server 的数据库查询执行；切库、换筛选和轮询会取消旧请求，避免旧结果覆盖当前状态。原始 Entry 分页接口仅保留给诊断和对账，不在默认表格平铺所有分集。
 
 - [Server 后端设计](02-server-design.md)
 - [安全设计](07-security-design.md)

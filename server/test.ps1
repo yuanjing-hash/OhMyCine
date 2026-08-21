@@ -22,6 +22,15 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'scripts\windows-common.ps1')
 
+$previousBuildTMDBToken = [Environment]::GetEnvironmentVariable('OHMYCINE_TMDB_READ_ACCESS_TOKEN', 'Process')
+$previousBuildTMDBAPIKey = [Environment]::GetEnvironmentVariable('OHMYCINE_TMDB_API_KEY', 'Process')
+$previousDeploymentTMDBToken = [Environment]::GetEnvironmentVariable('OMC_TMDB_READ_ACCESS_TOKEN', 'Process')
+$previousDeploymentTMDBAPIKey = [Environment]::GetEnvironmentVariable('OMC_TMDB_API_KEY', 'Process')
+[Environment]::SetEnvironmentVariable('OHMYCINE_TMDB_READ_ACCESS_TOKEN', $null, 'Process')
+[Environment]::SetEnvironmentVariable('OHMYCINE_TMDB_API_KEY', $null, 'Process')
+[Environment]::SetEnvironmentVariable('OMC_TMDB_READ_ACCESS_TOKEN', $null, 'Process')
+[Environment]::SetEnvironmentVariable('OMC_TMDB_API_KEY', $null, 'Process')
+try {
 $go = Get-CompatibleGo
 $tools = Get-NodeTools
 if ($CheckDependenciesOnly) {
@@ -76,10 +85,16 @@ try {
             $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
             $listener.Start(); $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port; $listener.Stop()
             $old = @{}
-            foreach ($name in @('OMC_ENV','OMC_SERVER_HOST','OMC_SERVER_PORT','OMC_PUBLIC_ORIGIN','OMC_DATABASE_PATH','OMC_LOG_DIR')) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+            foreach ($name in @('OMC_ENV','OMC_SERVER_HOST','OMC_SERVER_PORT','OMC_PUBLIC_ORIGIN','OMC_DATABASE_PATH','OMC_LOG_DIR','OMC_CREDENTIAL_KEY_FILE','OMC_CREDENTIAL_MASTER_KEY','OHMYCINE_TMDB_READ_ACCESS_TOKEN','OHMYCINE_TMDB_API_KEY','OMC_TMDB_READ_ACCESS_TOKEN','OMC_TMDB_API_KEY')) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
             $env:OMC_ENV = 'production'; $env:OMC_SERVER_HOST = '127.0.0.1'; $env:OMC_SERVER_PORT = "$port"
             $env:OMC_PUBLIC_ORIGIN = "http://127.0.0.1:$port"; $env:OMC_DATABASE_PATH = $database
             $env:OMC_LOG_DIR = Join-Path $testDirectory 'logs'
+            $env:OMC_CREDENTIAL_KEY_FILE = Join-Path $testDirectory 'data\credentials.key'
+            [Environment]::SetEnvironmentVariable('OMC_CREDENTIAL_MASTER_KEY', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('OHMYCINE_TMDB_READ_ACCESS_TOKEN', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('OHMYCINE_TMDB_API_KEY', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('OMC_TMDB_READ_ACCESS_TOKEN', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('OMC_TMDB_API_KEY', $null, 'Process')
             $process = Start-Process -FilePath $binary -WorkingDirectory $testDirectory -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
             $deadline = [DateTime]::UtcNow.AddSeconds(30)
             do {
@@ -103,3 +118,9 @@ try {
         Write-Step 'Isolated Server health check passed'
     }
 } finally { [Environment]::SetEnvironmentVariable('CGO_ENABLED', $previousCgo, 'Process') }
+} finally {
+    [Environment]::SetEnvironmentVariable('OHMYCINE_TMDB_READ_ACCESS_TOKEN', $previousBuildTMDBToken, 'Process')
+    [Environment]::SetEnvironmentVariable('OHMYCINE_TMDB_API_KEY', $previousBuildTMDBAPIKey, 'Process')
+    [Environment]::SetEnvironmentVariable('OMC_TMDB_READ_ACCESS_TOKEN', $previousDeploymentTMDBToken, 'Process')
+    [Environment]::SetEnvironmentVariable('OMC_TMDB_API_KEY', $previousDeploymentTMDBAPIKey, 'Process')
+}

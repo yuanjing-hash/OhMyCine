@@ -1,0 +1,30 @@
+{
+  "id": "server-115-cloud-storage",
+  "name": "server-115-cloud-storage",
+  "title": "Server 115 网盘连接与云存储驱动",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-08-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-19-server-115-media-library-catalog",
+    "08-19-server-115-cloud-import",
+    "08-20-server-115-share-ingest"
+  ],
+  "parent": "08-12-server-local-storage",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

@@ -1,0 +1,83 @@
+#猎冰
+The.Hunter.S01(?=.*(?:2024)) => 猎冰.The.Hunter.2024.S01
+
+#天龙八部
+Heaven.Dragon.the.Eighth.Episode.2003 => 天龙八部 (2003)
+
+#大王别慌张
+My Dear King Theatre => 大王别慌张
+
+#超异能族
+Moving.S01 => 超异能族 S01
+
+#仙剑奇侠传三
+仙剑奇侠传三.Chinese.Paladin.3.S03 => 仙剑奇侠传三.Chinese.Paladin.3.S01
+
+#婚后事
+Happily.Ever.After.2024 => 婚后事
+
+#南来北往
+Always.on.the.Move=>南来北往
+
+#黑镜
+Black Mirror 2011-2019 => 黑镜S01-S05
+
+#智能时代
+Zhi Neng Shi Dai S01 2023 => 智能时代  第一季
+
+#蜘蛛夫人：超感觉醒
+Madame.Web => 蜘蛛夫人：超感觉醒
+
+#三体（2024）
+3.Body.Problem.2024 => 三体.2024
+
+#请回答1988
+Reply 1988 => 请回答1988
+
+#天机算
+Tin.Gei.Suen.2007 => {[tmdbid=3125;type=tv]}
+
+#超意神探
+Suspect.2024 => 超意神探
+
+#青云志
+Noble.Aspirations => 青云志
+
+#武神主宰
+Dominator of Martial Gods => {[tmdbid=228707;type=tv]}
+
+#诡探前传
+Psycho.Detective.2.2019 => 诡探前传
+
+#诡探
+Psycho.Detective.2017 => 诡探
+
+#神探夏洛克
+Sherlock => 神探夏洛克
+
+#背着善宰跑
+背着善在跑吧 => {[tmdbid=230923;type=tv]}
+
+#十品官吴山羊
+十品官吴山羊.P => 十品官吴山羊.E
+
+#歌手2024
+Singer.*(S09|S05) => 歌手2024.S01
+
+#奔跑吧！兄弟
+Keep.Running.S08 => 奔跑吧！兄弟.S12
+
+#较量人生
+Race.S01(?=.*HHWEB) => 较量人生 S01
+
+#末代厨娘
+The.Last.Cook.2024.S01 => 末代厨娘
+
+#有兽焉
+Fabulous Beasts S01(?=.*E(2[5-9]|3[0-4]).*ADWeb) => Fabulous Beasts S03 && S03 <> 2023 >> EP-24
+
+#唐朝诡事录s2
+\[唐朝诡事录之西行\].Strange.Tales.of.Tang.Dynasty.II.To.the.West(?=.*QHstudIo) => 唐朝诡事录
+
+#白夜追凶s2
+\[白夜破晓\].Day.and.Night => 白夜追凶

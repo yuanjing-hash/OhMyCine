@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { describe, expect, it } from 'vitest'
-import { cloneRules, emptyRules, moveItem, newCategory } from '@/media-rules'
+import { cloneRecognitionRules, cloneRules, emptyRules, moveItem, newCategory, newRecognitionRule } from '@/media-rules'
 
 describe('controlled media rule drafts', () => {
   it('creates exactly movie and tv empty groups', () => {
@@ -30,5 +30,14 @@ describe('controlled media rule drafts', () => {
     expect(clone.groups[0]!.categories[0]!.conditions.release_year).toEqual({ from: 2000 })
     clone.groups[0]!.categories[0]!.conditions.genre_ids.include.push(16)
     expect(category.conditions.genre_ids.include).toEqual([])
+  })
+  it('creates and clones ordered recognition preprocessors independently', () => {
+    const first = newRecognitionRule()
+    first.pattern = '^【[^】]*发布[^】]*】'
+    const source = reactive([first])
+    const clone = cloneRecognitionRules(source)
+    expect(clone).toEqual([{ enabled: true, media_type: 'all', pattern: '^【[^】]*发布[^】]*】', replacement: '' }])
+    clone[0]!.pattern = 'changed'
+    expect(source[0]!.pattern).toBe('^【[^】]*发布[^】]*】')
   })
 })

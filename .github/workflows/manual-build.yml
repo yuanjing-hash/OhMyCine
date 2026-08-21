@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.scaffold.outputs.ready == 'true'
         with:
-          go-version: "1.22"
+          go-version: "1.23"
 
       - name: Download dependencies
         if: steps.scaffold.outputs.ready == 'true'
@@ -53,7 +53,32 @@ jobs:
 
       - name: Build
         if: steps.scaffold.outputs.ready == 'true'
-        run: go build -o ohmycine-server ./cmd/server
+        env:
+          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
+          OHMYCINE_TMDB_API_KEY: ${{ secrets.OHMYCINE_TMDB_API_KEY }}
+        run: |
+          if [ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ] && [ -n "${OHMYCINE_TMDB_API_KEY:-}" ]; then
+            echo "::error::Configure only one TMDB credential Secret for the official Server artifact."
+            exit 1
+          fi
+          if [ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ] && [ -z "${OHMYCINE_TMDB_API_KEY:-}" ]; then
+            echo "::error::A TMDB credential GitHub Secret is required for the official Server artifact."
+            exit 1
+          fi
+          if [ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]; then
+            if (( ${#OHMYCINE_TMDB_READ_ACCESS_TOKEN} > 4096 )) || [[ ! "${OHMYCINE_TMDB_READ_ACCESS_TOKEN}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+              echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN contains unsupported characters."
+              exit 1
+            fi
+            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinReadAccessToken=${OHMYCINE_TMDB_READ_ACCESS_TOKEN}"
+          else
+            if (( ${#OHMYCINE_TMDB_API_KEY} > 4096 )) || [[ ! "${OHMYCINE_TMDB_API_KEY}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+              echo "::error::OHMYCINE_TMDB_API_KEY contains unsupported characters."
+              exit 1
+            fi
+            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinAPIKey=${OHMYCINE_TMDB_API_KEY}"
+          fi
+          go build -ldflags "${tmdb_ldflags}" -o ohmycine-server ./cmd/server
 
       - name: Test
         if: steps.scaffold.outputs.ready == 'true'

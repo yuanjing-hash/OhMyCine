@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,33 +55,53 @@ func (s *MediaClassificationProfileService) SetRevisionNotifier(notifier Profile
 }
 
 type MediaClassificationProfileSummary struct {
-	ID              uint      `json:"id"`
-	Code            *string   `json:"code"`
-	Name            string    `json:"name"`
-	Kind            string    `json:"kind"`
-	Protected       bool      `json:"protected"`
-	SchemaVersion   int       `json:"schema_version"`
-	Revision        uint64    `json:"revision"`
-	MovieCategories int       `json:"movie_category_count"`
-	TVCategories    int       `json:"tv_category_count"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                          uint      `json:"id"`
+	Code                        *string   `json:"code"`
+	Name                        string    `json:"name"`
+	Kind                        string    `json:"kind"`
+	Protected                   bool      `json:"protected"`
+	SchemaVersion               int       `json:"schema_version"`
+	Revision                    uint64    `json:"revision"`
+	MovieCategories             int       `json:"movie_category_count"`
+	TVCategories                int       `json:"tv_category_count"`
+	RecognitionRuleCount        int       `json:"recognition_rule_count"`
+	BuiltinRecognitionPackCount int       `json:"builtin_recognition_pack_count"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
 }
 
 type MediaClassificationProfileDetail struct {
 	MediaClassificationProfileSummary
-	Rules classification.RulesV1 `json:"rules"`
+	Rules                   classification.RulesV1 `json:"rules"`
+	BuiltinRecognitionPacks []string               `json:"builtin_recognition_packs"`
+	RecognitionRules        []RecognitionRule      `json:"recognition_rules"`
+	MovieDirectoryTemplate  string                 `json:"movie_directory_template"`
+	MovieFilenameTemplate   string                 `json:"movie_filename_template"`
+	TVDirectoryTemplate     string                 `json:"tv_directory_template"`
+	TVFilenameTemplate      string                 `json:"tv_filename_template"`
 }
 
 type CreateMediaClassificationProfileInput struct {
-	Name  string
-	Rules json.RawMessage
+	Name                    string
+	Rules                   json.RawMessage
+	BuiltinRecognitionPacks *[]string
+	RecognitionRules        *json.RawMessage
+	MovieDirectoryTemplate  *string
+	MovieFilenameTemplate   *string
+	TVDirectoryTemplate     *string
+	TVFilenameTemplate      *string
 }
 type CopyMediaClassificationProfileInput struct{ Name *string }
 type UpdateMediaClassificationProfileInput struct {
-	Revision uint64
-	Name     string
-	Rules    json.RawMessage
+	Revision                uint64
+	Name                    string
+	Rules                   json.RawMessage
+	BuiltinRecognitionPacks *[]string
+	RecognitionRules        *json.RawMessage
+	MovieDirectoryTemplate  *string
+	MovieFilenameTemplate   *string
+	TVDirectoryTemplate     *string
+	TVFilenameTemplate      *string
 }
 
 func (s *MediaClassificationProfileService) List(actor Actor) ([]MediaClassificationProfileSummary, error) {
@@ -134,8 +155,12 @@ func (s *MediaClassificationProfileService) Create(actor Actor, input CreateMedi
 	if err != nil {
 		return MediaClassificationProfileDetail{}, profileValidation(err)
 	}
+	organization, err := resolveProfileOrganizationConfig(models.MediaClassificationProfile{}, input.BuiltinRecognitionPacks, input.RecognitionRules, input.MovieDirectoryTemplate, input.MovieFilenameTemplate, input.TVDirectoryTemplate, input.TVFilenameTemplate)
+	if err != nil {
+		return MediaClassificationProfileDetail{}, profileValidation(err)
+	}
 	now := time.Now().UTC()
-	record := models.MediaClassificationProfile{Name: name, NameNormalized: normalized, Kind: models.MediaClassificationProfileKindCustom, SchemaVersion: 1, RulesJSON: rulesJSON, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	record := models.MediaClassificationProfile{Name: name, NameNormalized: normalized, Kind: models.MediaClassificationProfileKindCustom, SchemaVersion: 1, RulesJSON: rulesJSON, BuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, RecognitionRulesJSON: organization.RecognitionRulesJSON, MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate, TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -208,8 +233,12 @@ func (s *MediaClassificationProfileService) createCopyRecord(actor Actor, source
 	if err != nil {
 		return MediaClassificationProfileDetail{}, err
 	}
+	organization, err := storedProfileOrganizationConfig(source)
+	if err != nil {
+		return MediaClassificationProfileDetail{}, profileValidation(err)
+	}
 	now := time.Now().UTC()
-	record := models.MediaClassificationProfile{Name: name, NameNormalized: normalized, Kind: models.MediaClassificationProfileKindCustom, SchemaVersion: 1, RulesJSON: rulesJSON, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	record := models.MediaClassificationProfile{Name: name, NameNormalized: normalized, Kind: models.MediaClassificationProfileKindCustom, SchemaVersion: 1, RulesJSON: rulesJSON, BuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, RecognitionRulesJSON: organization.RecognitionRulesJSON, MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate, TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -255,10 +284,15 @@ func (s *MediaClassificationProfileService) Update(actor Actor, id uint, input U
 		return MediaClassificationProfileDetail{}, profileValidation(err)
 	}
 	rulesJSON, _ := classification.CanonicalJSON(rules)
+	organization, err := resolveProfileOrganizationConfig(existing, input.BuiltinRecognitionPacks, input.RecognitionRules, input.MovieDirectoryTemplate, input.MovieFilenameTemplate, input.TVDirectoryTemplate, input.TVFilenameTemplate)
+	if err != nil {
+		s.auditFailure(actor, "media_classification_profile.update", uintID(id), &existing.Revision, request)
+		return MediaClassificationProfileDetail{}, profileValidation(err)
+	}
 	nextRevision := input.Revision + 1
 	now := time.Now().UTC()
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&models.MediaClassificationProfile{}).Where("id = ? AND revision = ? AND protected = 0", id, input.Revision).Updates(map[string]any{"name": name, "name_normalized": normalized, "rules_json": rulesJSON, "schema_version": 1, "revision": nextRevision, "updated_at": now})
+		result := tx.Model(&models.MediaClassificationProfile{}).Where("id = ? AND revision = ? AND protected = 0", id, input.Revision).Updates(map[string]any{"name": name, "name_normalized": normalized, "rules_json": rulesJSON, "builtin_recognition_packs_json": organization.BuiltinRecognitionPacksJSON, "recognition_rules_json": organization.RecognitionRulesJSON, "movie_directory_template": organization.MovieDirectoryTemplate, "movie_filename_template": organization.MovieFilenameTemplate, "tv_directory_template": organization.TVDirectoryTemplate, "tv_filename_template": organization.TVFilenameTemplate, "schema_version": 1, "revision": nextRevision, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -267,6 +301,12 @@ func (s *MediaClassificationProfileService) Update(actor Actor, id uint, input U
 		}
 		updated := existing
 		updated.Name, updated.NameNormalized, updated.RulesJSON, updated.Revision, updated.UpdatedAt = name, normalized, rulesJSON, nextRevision, now
+		updated.BuiltinRecognitionPacksJSON = organization.BuiltinRecognitionPacksJSON
+		updated.RecognitionRulesJSON = organization.RecognitionRulesJSON
+		updated.MovieDirectoryTemplate = organization.MovieDirectoryTemplate
+		updated.MovieFilenameTemplate = organization.MovieFilenameTemplate
+		updated.TVDirectoryTemplate = organization.TVDirectoryTemplate
+		updated.TVFilenameTemplate = organization.TVFilenameTemplate
 		return s.audit.Record(tx, &actor.User.ID, "media_classification_profile.update", "media_classification_profile", uintID(id), "success", auditProfileMetadata(updated, rules), request)
 	})
 	if err != nil {
@@ -331,7 +371,11 @@ func profileDetail(record models.MediaClassificationProfile) (MediaClassificatio
 	if err != nil {
 		return MediaClassificationProfileDetail{}, fmt.Errorf("decode stored classification profile %d: %w", record.ID, err)
 	}
-	summary := MediaClassificationProfileSummary{ID: record.ID, Code: record.Code, Name: record.Name, Kind: record.Kind, Protected: record.Protected, SchemaVersion: record.SchemaVersion, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	organization, err := storedProfileOrganizationConfig(record)
+	if err != nil {
+		return MediaClassificationProfileDetail{}, fmt.Errorf("decode stored profile organization %d: %w", record.ID, err)
+	}
+	summary := MediaClassificationProfileSummary{ID: record.ID, Code: record.Code, Name: record.Name, Kind: record.Kind, Protected: record.Protected, SchemaVersion: record.SchemaVersion, Revision: record.Revision, RecognitionRuleCount: len(organization.RecognitionRules), BuiltinRecognitionPackCount: len(organization.BuiltinRecognitionPacks), CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	for _, group := range rules.Groups {
 		if group.MediaType == classification.MediaTypeMovie {
 			summary.MovieCategories = len(group.Categories)
@@ -339,7 +383,93 @@ func profileDetail(record models.MediaClassificationProfile) (MediaClassificatio
 			summary.TVCategories = len(group.Categories)
 		}
 	}
-	return MediaClassificationProfileDetail{MediaClassificationProfileSummary: summary, Rules: rules}, nil
+	return MediaClassificationProfileDetail{MediaClassificationProfileSummary: summary, Rules: rules, BuiltinRecognitionPacks: organization.BuiltinRecognitionPacks, RecognitionRules: organization.RecognitionRules, MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate, TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate}, nil
+}
+
+func storedProfileOrganizationConfig(record models.MediaClassificationProfile) (profileOrganizationConfig, error) {
+	defaults := defaultProfileOrganizationConfig()
+	builtinRaw := []byte(record.BuiltinRecognitionPacksJSON)
+	if len(bytes.TrimSpace(builtinRaw)) == 0 {
+		builtinRaw = []byte(defaults.BuiltinRecognitionPacksJSON)
+	}
+	builtinCanonical, builtinPacks, err := canonicalBuiltinRecognitionPacks(builtinRaw)
+	if err != nil {
+		return profileOrganizationConfig{}, err
+	}
+	raw := []byte(record.RecognitionRulesJSON)
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = []byte("[]")
+	}
+	canonical, rules, err := canonicalRecognitionRules(raw)
+	if err != nil {
+		return profileOrganizationConfig{}, err
+	}
+	config := profileOrganizationConfig{
+		BuiltinRecognitionPacksJSON: builtinCanonical,
+		BuiltinRecognitionPacks:     builtinPacks,
+		RecognitionRulesJSON:        canonical,
+		RecognitionRules:            rules,
+		MovieDirectoryTemplate:      firstNonEmpty(record.MovieDirectoryTemplate, defaults.MovieDirectoryTemplate),
+		MovieFilenameTemplate:       firstNonEmpty(record.MovieFilenameTemplate, defaults.MovieFilenameTemplate),
+		TVDirectoryTemplate:         firstNonEmpty(record.TVDirectoryTemplate, defaults.TVDirectoryTemplate),
+		TVFilenameTemplate:          firstNonEmpty(record.TVFilenameTemplate, defaults.TVFilenameTemplate),
+	}
+	if err := validateProfileTemplates(config); err != nil {
+		return profileOrganizationConfig{}, err
+	}
+	return config, nil
+}
+
+func resolveProfileOrganizationConfig(existing models.MediaClassificationProfile, builtinRecognitionPacks *[]string, recognitionRules *json.RawMessage, movieDirectory, movieFilename, tvDirectory, tvFilename *string) (profileOrganizationConfig, error) {
+	config := defaultProfileOrganizationConfig()
+	if existing.ID != 0 {
+		stored, err := storedProfileOrganizationConfig(existing)
+		if err != nil {
+			return profileOrganizationConfig{}, err
+		}
+		config = stored
+	}
+	if builtinRecognitionPacks != nil {
+		raw, err := json.Marshal(*builtinRecognitionPacks)
+		if err != nil {
+			return profileOrganizationConfig{}, err
+		}
+		canonical, packs, err := canonicalBuiltinRecognitionPacks(raw)
+		if err != nil {
+			return profileOrganizationConfig{}, err
+		}
+		config.BuiltinRecognitionPacksJSON, config.BuiltinRecognitionPacks = canonical, packs
+	}
+	if recognitionRules != nil {
+		canonical, rules, err := canonicalRecognitionRules(*recognitionRules)
+		if err != nil {
+			return profileOrganizationConfig{}, err
+		}
+		config.RecognitionRulesJSON, config.RecognitionRules = canonical, rules
+	}
+	if movieDirectory != nil {
+		config.MovieDirectoryTemplate = strings.TrimSpace(*movieDirectory)
+	}
+	if movieFilename != nil {
+		config.MovieFilenameTemplate = strings.TrimSpace(*movieFilename)
+	}
+	if tvDirectory != nil {
+		config.TVDirectoryTemplate = strings.TrimSpace(*tvDirectory)
+	}
+	if tvFilename != nil {
+		config.TVFilenameTemplate = strings.TrimSpace(*tvFilename)
+	}
+	if err := validateProfileTemplates(config); err != nil {
+		return profileOrganizationConfig{}, err
+	}
+	return config, nil
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func normalizeProfileName(value string) (string, string, error) {
@@ -389,7 +519,8 @@ func auditProfileMetadata(record models.MediaClassificationProfile, rules classi
 			tv = len(group.Categories)
 		}
 	}
-	return map[string]any{"kind": record.Kind, "revision": record.Revision, "movie_category_count": movie, "tv_category_count": tv}
+	organization, _ := storedProfileOrganizationConfig(record)
+	return map[string]any{"kind": record.Kind, "revision": record.Revision, "movie_category_count": movie, "tv_category_count": tv, "builtin_recognition_pack_count": len(organization.BuiltinRecognitionPacks), "recognition_rule_count": len(organization.RecognitionRules)}
 }
 func (s *MediaClassificationProfileService) auditFailure(actor Actor, action, targetID string, revision *uint64, request RequestContext) {
 	metadata := map[string]any{}

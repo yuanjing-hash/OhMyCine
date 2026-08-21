@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"媒体库目录令牌、扫描、partial reconciliation 与 API 核心契约"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"115 provider 目录身份、路径边界和敏感信息保护"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"SQLite/GORM 加法迁移、索引和分页查询约束"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"REST envelope、RBAC、no-store 与分页接口约定"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"Server 管理台密集表格、语义样式和可访问性约束"}
+{"file":".trellis/tasks/08-18-server-115-cloud-storage/design.md","reason":"115 Connection、Storage、provider picker、bulk-tree 既有设计"}
+{"file":".trellis/tasks/08-18-server-115-cloud-storage/research.md","reason":"MoviePilot/OpenList/115driver 协议研究与失败模式"}

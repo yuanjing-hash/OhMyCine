@@ -3,12 +3,14 @@ package services
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/database"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 )
 
 func TestStorageUpdateRevalidatesAndProbesUnchangedRoot(t *testing.T) {
@@ -42,6 +44,49 @@ func TestStorageUpdateRevalidatesAndProbesUnchangedRoot(t *testing.T) {
 	_, err = service.Update(actor, created.ID, UpdateStorageInput{Name: &newName}, RequestContext{})
 	if ErrorCode(err) != "storage_path_not_found" {
 		t.Fatalf("stale unchanged root code=%q error=%v", ErrorCode(err), err)
+	}
+}
+
+func TestStorageListReconcilesStalePan115CapabilitiesFromCurrentDriver(t *testing.T) {
+	driver := &fakeCloudDriver{nativeOffline: true}
+	db, _, connections, actor := newConnectionTestService(t, driver)
+	connection, err := connections.Create(actor, ConnectionInput{Name: "115 account", Provider: cloud.ProviderPan115, Cookie: testPan115Cookie, Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := models.Storage{
+		Name: "Existing 115", NameNormalized: "existing 115", Type: models.StorageTypePan115,
+		RootPath: "root-id", RootDisplayPath: "/媒体", RootPathNormalized: "pan115:stale:root-id",
+		ConnectionID: &connection.ID, Enabled: true,
+		Capabilities: `{"network_drive":true,"directory_list":true,"native_offline_download":false}`,
+		CreatedAt:    time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewStorageService(db, NewAuditService(db))
+	service.SetConnectionService(connections)
+	items, err := service.List(actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].Capabilities.NativeOfflineDownload {
+		t.Fatalf("current driver capability was not exposed for stale Storage: %+v", items)
+	}
+	// Capability reconciliation is read-only and must not trigger a provider
+	// probe or per-item Stat request.
+	if _, err := service.Get(actor, stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	if driver.probeCalls != 0 || driver.statCalls != 0 {
+		t.Fatalf("capability reconciliation performed provider I/O: probe=%d stat=%d", driver.probeCalls, driver.statCalls)
+	}
+	var reconciled models.Storage
+	if err := db.First(&reconciled, stale.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.Capabilities == stale.Capabilities || !strings.Contains(reconciled.Capabilities, `"native_offline_download":true`) {
+		t.Fatalf("stale capability snapshot was not materialized: %s", reconciled.Capabilities)
 	}
 }
 

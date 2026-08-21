@@ -19,6 +19,10 @@ describe('mixed dashboard card contract', () => {
   it('omits protected domain cards instead of leaking their counts', () => {
     const visible = getVisibleDashboardCards([Permissions.DashboardRead])
     expect(visible.map(card => card.id)).toEqual(['server-status', 'media-summary'])
+
+    const transferVisible = getVisibleDashboardCards([Permissions.TransfersReadOwn])
+    expect(transferVisible.map(card => card.id)).toEqual(['recent-imports'])
+    expect(transferVisible[0]?.description).not.toContain('API 尚未实现')
   })
 
   it('preserves the canonical order after permission filtering', () => {

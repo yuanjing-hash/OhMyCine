@@ -1,9 +1,42 @@
-# Design: Transfer and Import Pipeline
+# Design: MediaLibrary Routing and Transfer/Import
 
-DownloadRoute 描述 downloader output、target library storage、staging 和 hops；ImportPlan 描述媒体身份、目标相对路径、命名、冲突和传输策略。二者分离，因为下载目的地由 provider 限制，而最终媒体位置由 MediaLibrary/入库策略决定。
+## Ownership
 
-状态机：queued -> downloading -> identifying -> awaiting_confirmation/planned -> transferring -> reconciling -> enriching -> projecting -> notifying -> completed，任何阶段可 failed/cancelled。每次外部副作用前持久化 intent + idempotency key。
+MediaLibrary 是用户可选择的最终目标，同时拥有排序、Profile 引用和入库策略。Downloader 只拥有连接能力，全局 DownloadSettings 只拥有本地暂存目录；不新增 DownloadRule。
 
-冲突执行器读取不可变 rule snapshot。`ask` 生成 ActionRequest；`overwrite` 不生成 ActionRequest，并在同一受控相对目标内执行 replace protocol：重新读取目标 identity → 本地 permanent remove，cloud 则 trash-if-supported / permanent remove → 写入/移动新对象 → checkpoint 新 identity → 审计。本地不创建隔离回收区；cloud 回收站能力只改变旧目标去向，不能阻止覆盖。普通、递归或永久删除 API 仍与此协议分离并反复确认。
+## Data Flow
 
-`reconciling/projecting` 是 pipeline 的阶段视图，不代表全局 Queue Job；transfer 完成只推进目标 LibrarySupervisor 的 dirty generation，并观察其对应 generation 收敛。supervisor 可为该 generation 派生独立 metadata scrape/refresh Queue Job，但监听、文件树 diff 和 STRM/伴随文件投影本身不入队。这样所有媒体库持续并行监听，pipeline 只等待自己的目标库确认，不占用其它库的监听能力。
+```text
+submit(media_library_id=0|id)
+  -> resolve ordered enabled library
+  -> snapshot library/storage/profile/import policy
+  -> qBit metadata probe + Profile preclassification/category
+  -> global staging download
+  -> completed manifest verification
+  -> enqueue TransferTask + transfer Job
+  -> plan safe target paths
+  -> resolve conflict / wait without lease
+  -> move|copy|symlink
+  -> mark library dirty + reconciliation
+  -> copy|symlink: create SeedingTask from snapshotted policy
+  -> scheduler samples provider telemetry without occupying worker lease
+  -> threshold reached: copy delete task+data; symlink delete task only
+```
+
+DownloadTask 只链接其 download Job；TransferTask 一对一引用 DownloadTask 并链接独立 transfer Job。唯一约束和幂等检查保证 download worker 重启不会重复创建 transfer Job。
+
+## Snapshots
+
+DownloadTask 私有字段保存 concrete target library/storage/root、Profile revision/rules、transfer mode、conflict policy 和模板。公开摘要只返回库 ID/名称及非敏感策略。绝对 staging/storage 根只存在于私有数据库字段。
+
+## Conflict State
+
+Transfer worker 先生成确定性的计划。目标存在且策略为 `ask` 时返回 `WaitForAction`，checkpoint 只保存目标相对摘要和选项；用户响应后任务重新入队并重新验证源、目标与边界。其它策略立即执行。
+
+## Rollout
+
+显式 v14 migration 增量添加字段并创建 transfer_tasks；MediaLibrary 排序回填为原 ID 顺序。历史 DownloadTask 的 target 字段为空，不生成 transfer Job。首版只执行 local Storage；未来 cloud driver 通过相同 TransferTask/strategy contract 扩展。
+
+v15 migration 创建单例 SeedingSettings、SeedingTask 及 DownloadTask 做种策略快照。SeedingTask 持久化 provider task ID、transfer mode、清理语义、阈值快照、最后采样和终态，Job payload 只保存 seeding_task_id，不保存路径。做种设置默认关闭；时长与分享率默认按 `all` 组合，阈值 0 表示该条件未启用。
+
+Transfer source resolution 先查找 `staging/category/relative`，再查找 `staging/relative`。每个候选都必须在规范化后逐级检查 reparse point；不安全的分类候选不能直接导致选用未检查的根目录候选。

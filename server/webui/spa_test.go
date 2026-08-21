@@ -35,8 +35,8 @@ func TestRegisterServesSPADeepLinks(t *testing.T) {
 			if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
 				t.Fatalf("Content-Type = %q, want HTML", contentType)
 			}
-			if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-cache" {
-				t.Fatalf("Cache-Control = %q, want no-cache", cacheControl)
+			if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", cacheControl)
 			}
 		})
 	}

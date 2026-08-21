@@ -1,0 +1,4 @@
+# Preserve byte-for-byte upstream snapshots on Windows checkouts.
+*.txt text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+*.json text eol=lf
+LICENSE.MoviePilot-Help text eol=lf

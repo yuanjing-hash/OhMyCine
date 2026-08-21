@@ -16,6 +16,69 @@ function Resolve-ServerPath([string]$Path) {
     return [System.IO.Path]::GetFullPath((Join-Path $script:ServerDirectory $Path))
 }
 
+function Read-ServerLocalConfig([string]$Path) {
+    $result = @{}
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
+    $file = Get-Item -LiteralPath $Path
+    if ($file.Length -gt 65536) { throw 'Server local config exceeds 64 KiB.' }
+    try { $parsed = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json } catch { throw 'Server local config is not valid JSON.' }
+    if ($null -eq $parsed -or $parsed -isnot [PSCustomObject]) { throw 'Server local config must be a JSON object.' }
+    $allowed = @('listen_host', 'port', 'public_origin')
+    foreach ($property in $parsed.PSObject.Properties) {
+        if ($allowed -cnotcontains $property.Name) { throw "Unsupported Server local config field: $($property.Name)" }
+        $result[$property.Name] = $property.Value
+    }
+    if ($result.ContainsKey('listen_host')) {
+        if ($result['listen_host'] -isnot [string]) { throw 'Server local config listen_host must be a string.' }
+        $hostValue = [string]$result['listen_host']
+        if ([String]::IsNullOrWhiteSpace($hostValue) -or $hostValue.Length -gt 255 -or $hostValue -match '[\s/\\]') { throw 'Server local config listen_host is invalid.' }
+        $result['listen_host'] = $hostValue.Trim()
+    }
+    if ($result.ContainsKey('port')) {
+        if ($result['port'] -isnot [int] -and $result['port'] -isnot [long]) { throw 'Server local config port must be an integer.' }
+        $portValue = [long]$result['port']
+        if ($portValue -lt 1 -or $portValue -gt 65535) { throw 'Server local config port must be between 1 and 65535.' }
+        $result['port'] = $portValue
+    }
+    if ($result.ContainsKey('public_origin')) {
+        if ($result['public_origin'] -isnot [string]) { throw 'Server local config public_origin must be a string.' }
+        $originValue = [string]$result['public_origin']
+        $originUri = $null
+        if (-not [Uri]::TryCreate($originValue, [UriKind]::Absolute, [ref]$originUri) -or ($originUri.Scheme -ne 'http' -and $originUri.Scheme -ne 'https') -or -not [String]::IsNullOrEmpty($originUri.UserInfo) -or $originUri.AbsolutePath -ne '/' -or -not [String]::IsNullOrEmpty($originUri.Query) -or -not [String]::IsNullOrEmpty($originUri.Fragment)) { throw 'Server local config public_origin must be an HTTP(S) origin without path, credentials, query, or fragment.' }
+        if ($originValue -match '^https?://(?:0\.0\.0\.0\.?|\[::\])(?::[0-9]+)?/?$') { throw 'Server local config public_origin cannot use a wildcard listen address.' }
+        $result['public_origin'] = $originValue.TrimEnd('/')
+    }
+    return $result
+}
+
+function Get-ServerListenSettings([hashtable]$Config) {
+    $hostValue = [Environment]::GetEnvironmentVariable('OMC_SERVER_HOST', 'Process')
+    if ([String]::IsNullOrWhiteSpace($hostValue)) {
+        $hostValue = if ($Config.ContainsKey('listen_host')) { [string]$Config['listen_host'] } else { '0.0.0.0' }
+    }
+    if ($hostValue.Contains(':') -and -not $hostValue.StartsWith('[')) { $hostValue = "[$hostValue]" }
+
+    $portValue = [Environment]::GetEnvironmentVariable('OMC_SERVER_PORT', 'Process')
+    if ([String]::IsNullOrWhiteSpace($portValue)) {
+        $portValue = if ($Config.ContainsKey('port')) { [string]$Config['port'] } else { '3000' }
+    }
+
+    $originValue = [Environment]::GetEnvironmentVariable('OMC_PUBLIC_ORIGIN', 'Process')
+    if ([String]::IsNullOrWhiteSpace($originValue)) {
+        if ($Config.ContainsKey('public_origin')) {
+            $originValue = [string]$Config['public_origin']
+        } else {
+            $originHost = switch ($hostValue) {
+                '0.0.0.0' { '127.0.0.1'; break }
+                '[::]' { '[::1]'; break }
+                default { $hostValue }
+            }
+            $originValue = "http://$originHost`:$portValue"
+        }
+    }
+    return @{ Host = $hostValue; Port = $portValue; PublicOrigin = $originValue }
+}
+
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$FailureMessage) {
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {

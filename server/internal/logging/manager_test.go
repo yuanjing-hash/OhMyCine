@@ -117,13 +117,46 @@ func TestManagerFallsBackToStdoutWhenLogDirectoryIsAFile(t *testing.T) {
 	}
 }
 
+func TestBusinessOperationCanBeDisplayedAndFiltered(t *testing.T) {
+	var stdout bytes.Buffer
+	manager, err := NewManager(t.TempDir(), "development", &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	logger := manager.Logger("media_library", "scanner")
+	OperationLibraryIncrementalScan.Event(logger.Info()).Uint("library_id", 7).Msg(OperationLibraryIncrementalScan.Message("完成"))
+	OperationLibraryFullScan.Event(logger.Info()).Uint("library_id", 7).Msg(OperationLibraryFullScan.Message("完成"))
+
+	result, err := manager.Query(context.Background(), Filter{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour), Operations: []string{OperationLibraryIncrementalScan.Code}, LibraryID: "7", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.List) != 1 || result.List[0].Operation != OperationLibraryIncrementalScan.Code || result.List[0].OperationLabel != OperationLibraryIncrementalScan.Label {
+		t.Fatalf("unexpected operation result: %+v", result.List)
+	}
+	if !strings.Contains(result.List[0].Message, "【媒体库增量扫描】") {
+		t.Fatalf("missing readable operation prefix: %q", result.List[0].Message)
+	}
+	facets, err := manager.Facets(context.Background(), Filter{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facets.Operations) != 2 {
+		t.Fatalf("unexpected operation facets: %+v", facets.Operations)
+	}
+}
+
 func TestSanitizeJSONBoundsOversizedEvents(t *testing.T) {
-	input := []byte(`{"time":"2026-08-13T00:00:00Z","level":"info","message":"large","module":"test","component":"bounds","payload":"` + strings.Repeat("x", 100_000) + `"}` + "\n")
+	input := []byte(`{"time":"2026-08-13T00:00:00Z","level":"info","message":"large","module":"test","component":"bounds","operation":"incremental_strm_generation","operation_label":"增量STRM生成","payload":"` + strings.Repeat("x", 100_000) + `"}` + "\n")
 	out := SanitizeJSON(input)
 	if len(out) > maxEventBytes {
 		t.Fatalf("event size=%d", len(out))
 	}
 	if !bytes.Contains(out, []byte(`[truncated]`)) && !bytes.Contains(out, []byte(`"event_truncated":true`)) {
 		t.Fatalf("missing truncation marker: %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"operation":"incremental_strm_generation"`)) || !bytes.Contains(out, []byte(`"operation_label":"增量STRM生成"`)) {
+		t.Fatalf("oversized event lost operation identity: %s", out)
 	}
 }

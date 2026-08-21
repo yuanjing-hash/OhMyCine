@@ -359,9 +359,27 @@ Phase 4: 生态系统           ████████████████
 - [x] 只读目录探测、磁盘容量和明确能力快照；不创建探测文件、不递归扫描
 - [x] Storage 管理页及 CRUD/test API；删除只删配置，Connection/Destination 保留规划状态
 - [x] 独立 `MediaClassificationProfile` v1：内置 Player-v1 等价默认规则、严格结构校验、纯 Go matcher、CRUD/copy/revision、独立权限与管理页；它不是流水线 `CategoryRule`
+- [x] Server 统一媒体识别核心：下载完成与 local/115 媒体库扫描共用 Profile 预处理、候选生成、TMDB 验证和分类；根电影/剧集季/BDMV 分组、持久缓存、v25 识别投影、未识别分页/重试/TMDB 人工匹配及目录变更清理已接入
+- [x] 内置预识别词包：固定离线内置 MoviePilot-Help TV/anime 共 322 条有效规则及 MIT/来源/commit/SHA-256，默认 TV→anime→用户规则，支持 Profile 关闭/复制/下载快照、直接 TMDB ID 复验和有界兼容正则
 - [x] MediaLibrary 本地只读索引基础：Storage 相对根 + Classification Profile 引用、自动首次全量、独立 watcher/catch-up、定时增量/全量、失败退避/立即重试、扫描记录与相对媒体清单，以及 `/system/media-libraries` 管理页
-- [x] Server 持久化任务队列基础：SQLite Job/Attempt/状态事件/ActionRequest/策略、type+priority lane 顺序、类型与资源并发、lease/heartbeat/checkpoint/recovery、控制与 RBAC API，以及真实 `/automation/tasks` 任务中心；当前 fake worker 仅用于非生产验收，不代表 downloader/cloud adapter 已实现
-- [ ] MediaLibrary 云 Storage driver/event/cursor、Destination、STRM/302、下载器、metadata 网络匹配和真实文件写入（由后续独立切片实现）
+- [x] Server 持久化任务队列基础：SQLite Job/Attempt/状态事件/ActionRequest/策略、type+priority lane 顺序、类型与资源并发、lease/heartbeat/checkpoint/recovery、控制与 RBAC API，以及真实 `/automation/tasks` 任务中心
+- [x] qBittorrent 下载器纵向切片：AES-GCM 凭据/下载源、TMDB 自定义→部署→构建内置凭据优先级及 Read Access Token/API Key 显式双认证、网络故障限定的官方 API 回退、独立测试后启用的 API/图片路由、系统级统一 local 暂存目录、旧/新 add API 与 OMC tag 幂等接管、magnet metadata 暂停、Profile 快照轻量刮削、暂存边界内 category、无法可靠识别时自动归入“未识别”、完成复核、实时 telemetry 与 provider 控制；fake 仅用于开发验收
+- [x] 媒体整理任务中心：`transfers.read_own/read_all`、自动 TransferTask 分页/统计/筛选、目标相对命名摘要、Job attempts/timeline/冲突响应、失败阶段重试、下载页详情深链；手动整理归后续文件管理
+- [~] MediaLibrary 云 Storage driver/event/cursor、Destination、STRM/302、Transmission 和 metadata 网络匹配；local/115 识别已统一，事件目前合并唤醒完整只读 reconciliation 并以指纹/缓存避免重复 TMDB，provider 级 affected-unit 枚举优化与其余能力由后续独立切片实现
+
+### Sprint 2.1A.2: 115 数据源与云目录基础（进行中）
+
+- [x] 115 Connection、Cookie allowlist、AES-GCM 凭据、账号/容量探测与安全健康摘要
+- [x] provider-neutral cloud Driver registry，以及 115 list/stat/DirectURL 只读 adapter 和连接级保守限速
+- [x] 统一“数据源”页面：本地/115 类型选择、新建或复用 115 账号、云端目录浏览、未完成账号恢复
+- [x] 绑定 actor、Connection、provider directory ID、用途和过期时间的 opaque 云目录令牌
+- [x] `type=pan115` Storage：稳定 file ID、显示路径、Connection-scoped 唯一根身份和 capability 快照
+- [x] 115 MediaLibrary：支持 Storage 下级目录选择、稳定 provider root 全量/周期 reconciliation、bulk-tree 分页限流与 partial-preserve，以及 Connection-scoped 生活事件增量监听；周期 reconciliation 持续补漏
+- [x] MediaLibrary 作品目录：文件事实索引、真实服务端分页/筛选，以及 Movie / Series -> Season -> Episode 聚合详情
+- [x] 115 原生离线下载器：复用 Connection Cookie、在所选 115 Storage 根内自由选择下载子目录、生活事件广播立即唤醒完成复核并由低频任务查询补漏、统一任务遥测/取消与完成 manifest 分类；不声明暂停、恢复或做种能力
+- [x] 115 云端自动整理：下载时选择同 Connection 的目标 MediaLibrary，完成后按分类与模板执行云端移动/复制/改名，复用四种冲突策略、持久化幂等 checkpoint，并通过 dirty generation 唤醒增量对账
+- [x] 115 分享与手工转存接管：媒体库绑定独立中转目录和同账号原生下载器，分享链接转存到稳定任务目录；生活事件只唤醒直接子项 sweep，启动/周期 reconciliation 补漏，并复用统一识别、广告过滤和云端 Transfer
+- [ ] 115 STRM 投影、signed 302、文件树差异同步和关联 sidecar 下载；云盘无 STRM 时提供默认关闭的 NFO/JPG 旁挂上传策略
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）
 
@@ -392,7 +410,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 中间件: CORS, Logger, Recovery
 - [x] Cookie Session 认证、CSRF 与 permission 中间件
 - [x] 统一错误响应格式
-- [ ] 统一分页格式
+- [~] 统一分页格式（MediaLibrary entries/catalog 与 transfers 已使用真实 `list,total,page,page_size`，其余列表逐步迁移）
 - [ ] API 版本路由 (`/api/v1/`)
 
 #### 数据库层
@@ -433,9 +451,9 @@ Phase 4: 生态系统           ████████████████
 - [ ] `GET /api/v1/categories` — 分类规则列表
 - [ ] `PUT /api/v1/categories/{id}` — 更新
 - [ ] `DELETE /api/v1/categories/{id}` — 删除
-- [ ] 目录模板和命名模板字段
-- [ ] 转移策略字段 (move/hardlink/copy/symlink)
-- [ ] 排序字段 (匹配优先级)
+- [x] MediaLibrary 电影/剧集目录模板和命名模板字段
+- [~] 转移策略字段（本地 move/copy/symlink 已实现；hardlink 与云盘策略待后续）
+- [x] MediaLibrary 全局排序字段、拖放和可访问顺序按钮
 
 #### 用户管理
 
@@ -467,37 +485,33 @@ Phase 4: 生态系统           ████████████████
 
 #### 网盘驱动抽象层
 
-- [ ] 定义 `Driver` 接口 (`pkg/cloud/driver.go`)
-- [ ] 定义 `File`, `DownloadURL`, `Quota` 结构体
-- [ ] 实现驱动注册机制 (`pkg/cloud/registry.go`)
+- [x] 定义 provider-neutral `Driver`、Item、Account、TemporaryURL 与 capability 接口 (`pkg/cloud/client.go`)
+- [x] 实现驱动注册机制 (`pkg/cloud/client.go`)
 - [ ] 实现 `AlistDriver` (`pkg/cloud/alist/`，兼容 OpenList/Alist API)
   - [ ] HTTP API 客户端 (`/api/fs/list`, `/api/fs/get`, `/api/fs/search`)
   - [ ] `List()`, `Get()`, `Upload()`, `GetDownloadURL()`, `Search()`
   - [ ] 连接测试 (`IsAlive`)
-- [ ] 实现 `115Driver` (`pkg/cloud/pan115/`)
-  - [ ] Cookie 认证
-  - [ ] 文件列表/搜索/下载链接
+- [~] 实现 `115Driver` (`pkg/cloud/pan115/`)
+  - [x] Cookie allowlist 认证与账号探测
+  - [~] 文件分页列表、属性、临时下载链接、原生离线下载及受控 mkdir/move/copy/rename/recycle 已实现；搜索与其它通用写操作后续接入
 - [ ] 实现 `AliyunDriver` (`pkg/cloud/aliyun/`)
   - [ ] Token 认证
   - [ ] 文件列表/搜索/下载链接
 
 #### 下载器管理
 
-- [ ] 定义 `DownloadClient` 接口 (`pkg/downloader/client.go`)
-- [ ] 定义 `Task`, `AddRequest` 结构体
-- [ ] 实现 `QBittorrentClient` (`pkg/downloader/qbittorrent/`)
-  - [ ] 认证 (cookie-based)
-  - [ ] `AddTorrent()` — 添加种子
-  - [ ] `ListTasks()` / `GetTask()` — 查询任务
-  - [ ] `PauseTask()` / `ResumeTask()` / `DeleteTask()` — 控制任务
-  - [ ] 任务状态同步
+- [x] 定义 provider-neutral `Client`、`Source`、`SubmitRequest`、`Task` 与 capability registry (`pkg/downloader/client.go`)
+- [x] 实现 `QBittorrentClient` (`pkg/downloader/qbittorrent/`)
+  - [x] Cookie-based 认证与受控 HTTP client
+  - [x] magnet/HTTP(S) URL 与内存 `.torrent` 提交
+  - [x] task/tag 查询、进度/上下行速度/ETA telemetry
+  - [x] pause/resume/cancel；取消经二次确认后固定 `deleteFiles=true`，provider 确认后清理本地任务事实
+  - [x] 持久 Job worker、lease 恢复和 provider reconciliation
 - [ ] 实现 `TransmissionClient` (`pkg/downloader/transmission/`)
   - [ ] RPC 认证
   - [ ] 同上接口实现
-- [ ] 下载器 CRUD API (`internal/handlers/download.go`)
-  - [ ] `POST /api/v1/downloaders` — 添加下载器
-  - [ ] `GET /api/v1/downloaders` — 下载器列表
-  - [ ] `POST /api/v1/downloaders/{id}/test` — 测试连接
+- [x] 下载器 CRUD/test API 与独立 RBAC (`internal/handlers/downloaders.go`)
+- [x] `POST/GET/DELETE /api/v1/downloads` 与磁力、URL、4 MiB 种子上传管理页；failed/cancelled 可安全删除，provider 已手动删除时幂等清理
 
 #### 302代理引擎
 
@@ -538,38 +552,41 @@ Phase 4: 生态系统           ████████████████
 
 #### 元数据刮削
 
-- [ ] TMDB API 客户端 (`pkg/metadata/tmdb.go`)
-  - [ ] `Search(title, year)` — 搜索电影/剧集
-  - [ ] `GetDetail(tmdbId)` — 获取详情 (含 credits/images)
+- [~] TMDB API 客户端 (`pkg/metadata/tmdb/`)（Server 已实现电影/剧集搜索、按 ID 读取、候选搜索、v3 API Key/v4 Token 与安全路由；credits/images 完整详情仍待补）
+  - [x] `Search(title, year)` — 搜索电影/剧集并比较本地化/原始标题
+  - [~] `GetDetail(tmdbId)` — 已支持识别所需按 ID 验证；credits/images 完整详情待补
   - [ ] `GetByIMDBID(imdbId)` — 通过 IMDB ID 查询
   - [ ] 图片 URL 构建 (poster, backdrop)
-- [ ] 文件名解析器 (`pkg/metadata/parser.go`)
-  - [ ] 标题提取
-  - [ ] 年份提取
+- [~] 文件名解析器（现位于共享识别/媒体库分组层，后续可再下沉为独立 `pkg/metadata` API）
+  - [x] 标题提取
+  - [x] 年份提取
   - [ ] 分辨率/编码/来源提取
-  - [ ] 季/集号提取 (剧集)
+  - [x] 季/集号提取 (剧集)
   - [ ] 制作组提取
 - [ ] NFO 生成器 (XML 格式)
 - [ ] 海报/背景图下载
 
 #### 文件转移引擎
 
-- [ ] `TransferService` (`internal/services/transfer.go`)
-- [ ] 下载完成回调监听
-- [ ] 自动分类匹配逻辑
+- [x] `TransferService` (`internal/services/transfer.go`)
+- [x] 下载完成 manifest 复核并幂等创建独立 transfer Job
+- [x] 同一 115 Connection 内的云端 move/copy、冲突回收/跳过/改名/询问、重启幂等和媒体库 dirty-generation 对账
+- [~] 自动分类匹配逻辑
   - [ ] 优先: 站点分类
   - [ ] 次选: 文件名解析 (有 season → tv)
   - [ ] 兜底: TMDB 查询确认
-- [ ] 目标路径构建 (根据分类规则模板)
-  - [ ] 变量替换: `{title}`, `{year}`, `{season:02d}`, `{episode:02d}`, `{resolution}`
-  - [ ] 扩展名保留
-- [ ] 转移策略执行
-  - [ ] `move` — 移动文件 (默认)
+- [~] 目标路径构建（按目标 MediaLibrary 快照的分类与模板）
+  - [~] 变量替换: `{category}`, `{title}`, `{year}`, `{season:02}`, `{episode:02}`（resolution 待后续）
+  - [x] 扩展名保留，并携带同名 srt/ssa/ass/jpg
+- [~] 转移策略执行
+  - [x] `move` — 同盘原子移动，跨盘复制校验后删除源文件（默认）
   - [ ] `hardlink` — 硬链接 (保种)
-  - [ ] `copy` — 复制
-  - [ ] `symlink` — 软链接
-- [ ] 转移任务记录 (transfer_tasks 表)
-- [ ] 转移失败重试机制
+  - [x] `copy` — partial + sync + 原子改名复制
+  - [x] `symlink` — 软链接（明确依赖暂存源）
+- [x] 转移任务记录 (`transfer_tasks` 表) 与私有 manifest
+- [x] 完整下载清单与安全入库清单的精确差集清理；识别/转移/对账失败时保留，qBittorrent copy/symlink 做种结束前延后，115 只回收精确 item ID
+- [x] ask/overwrite/skip/rename 冲突策略；ask 等待时释放 worker slot
+- [x] 转移失败沿持久任务队列保留事实；`/automation/organization` 提供专用筛选、详情、冲突响应和精确阶段重试
 
 #### 通知服务
 
@@ -580,22 +597,23 @@ Phase 4: 生态系统           ████████████████
 
 #### STRM 管理器
 
-- [ ] `STRMGenerator` (`pkg/strm/generator.go`)
+- [x] 基于 `MediaArtifactService` 的持久化 STRM 生成与 manifest 所有权
 - [ ] `GenerateOne()` — 生成单个 STRM 文件
   - [ ] 内容: 302 代理 URL (`http://server:3000/proxy/{driver}/{path}`)
   - [ ] 目录结构: `{dest}/{title} ({year})/{filename}.strm`
-- [ ] `IncrementalSync()` — 增量同步 (只处理新增/修改)
-- [ ] `FullSync()` — 全量扫描
-- [ ] `CleanInvalid()` — 清理无效 STRM (指向不存在的文件)
+- [x] 手动增量刷新与全量重建通过 `strm_reconcile` 持久任务触发媒体库 generation 对账
+- [x] 失效托管产物清理预览、短时确认令牌与投影根边界删除
+- [x] 完整成功且非 partial 的全量/增量 generation 自动清理旧托管产物，失败/根变化时安全保留
+- [x] 115 signed 302 默认双设备 lease：首设备原文件、次设备一个短命受控副本、第三设备限流，并按持有 item ID 精确清理回收站
+- [ ] Emby Web 4.9.x 302 播放兼容：固定播放器资源移除远程 DirectPlay `crossOrigin=anonymous`，固定 HTML 壳加载同源兜底脚本覆盖旧模块缓存；自动化路由测试已通过，待真实 Emby Web 播放复验
 - [ ] STRM 定时任务配置 (`strm_schedules` 表)
   - [ ] 增量同步 cron
   - [ ] 全量扫描 cron
   - [ ] 无效清理 cron
-- [ ] STRM 管理 API
-  - [ ] `GET /api/v1/strm/status` — 同步状态
-  - [ ] `POST /api/v1/strm/sync/incremental` — 立即增量
-  - [ ] `POST /api/v1/strm/sync/full` — 立即全量
-  - [ ] `POST /api/v1/strm/clean` — 清理无效
+- [x] STRM 管理 API 与 `/automation/strm` 页面
+  - [x] 启用 STRM 的媒体库、Run 历史和 managed artifact 分页
+  - [x] 单库增量、全量、失败重试
+  - [x] 清理 preview + confirmation execute；unmanaged 文件永不删除
 
 #### 部署配置（后置，不阻塞本地开发）
 

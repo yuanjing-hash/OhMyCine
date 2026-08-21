@@ -1,23 +1,28 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
+	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"gorm.io/gorm"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type StorageService struct {
-	db         *gorm.DB
-	audit      *AuditService
-	driver     storagefs.LocalDriver
-	references StorageReferenceChecker
+	db          *gorm.DB
+	audit       *AuditService
+	driver      storagefs.LocalDriver
+	references  []StorageReferenceChecker
+	connections *ConnectionService
 }
 
 type StorageReferenceChecker interface {
@@ -27,35 +32,48 @@ type StorageReferenceChecker interface {
 func NewStorageService(db *gorm.DB, audit *AuditService) *StorageService {
 	return &StorageService{db: db, audit: audit, driver: storagefs.LocalDriver{}}
 }
+func (s *StorageService) SetConnectionService(connections *ConnectionService) {
+	s.connections = connections
+}
 func (s *StorageService) SetReferenceChecker(references StorageReferenceChecker) {
-	s.references = references
+	s.references = []StorageReferenceChecker{references}
+}
+func (s *StorageService) AddReferenceChecker(references StorageReferenceChecker) {
+	if references != nil {
+		s.references = append(s.references, references)
+	}
 }
 
 type StorageInput struct {
-	Name     string
-	Type     string
-	RootPath string
-	Enabled  bool
+	Name            string
+	Type            string
+	RootPath        string
+	RootDisplayPath string
+	ConnectionID    *uint
+	Enabled         bool
 }
 
 type UpdateStorageInput struct {
-	Name     *string
-	Type     *string
-	RootPath *string
-	Enabled  *bool
+	Name            *string
+	Type            *string
+	RootPath        *string
+	RootDisplayPath *string
+	ConnectionID    *uint
+	Enabled         *bool
 }
 
 type StorageSummary struct {
-	ID           uint                   `json:"id"`
-	Name         string                 `json:"name"`
-	Type         string                 `json:"type"`
-	RootPath     string                 `json:"root_path"`
-	ConnectionID *uint                  `json:"connection_id"`
-	Enabled      bool                   `json:"enabled"`
-	Capabilities storagefs.Capabilities `json:"capabilities"`
-	Probe        storagefs.Probe        `json:"probe"`
-	CreatedAt    any                    `json:"created_at"`
-	UpdatedAt    any                    `json:"updated_at"`
+	ID              uint                   `json:"id"`
+	Name            string                 `json:"name"`
+	Type            string                 `json:"type"`
+	RootPath        string                 `json:"root_path"`
+	RootDisplayPath string                 `json:"root_display_path"`
+	ConnectionID    *uint                  `json:"connection_id"`
+	Enabled         bool                   `json:"enabled"`
+	Capabilities    storagefs.Capabilities `json:"capabilities"`
+	Probe           storagefs.Probe        `json:"probe"`
+	CreatedAt       any                    `json:"created_at"`
+	UpdatedAt       any                    `json:"updated_at"`
 }
 
 func (s *StorageService) List(actor Actor) ([]StorageSummary, error) {
@@ -68,12 +86,27 @@ func (s *StorageService) List(actor Actor) ([]StorageSummary, error) {
 	}
 	items := make([]StorageSummary, 0, len(records))
 	for _, record := range records {
-		items = append(items, storageSummary(record))
+		items = append(items, s.storageSummary(record))
 	}
 	return items, nil
 }
 
+func (s *StorageService) Get(actor Actor, id uint) (StorageSummary, error) {
+	if !actor.Can(authz.PermissionStoragesRead) {
+		return StorageSummary{}, appError(CodePermissionDenied, "无权查看存储", nil)
+	}
+	var record models.Storage
+	if err := s.db.First(&record, id).Error; err != nil {
+		return StorageSummary{}, storageNotFound(err)
+	}
+	return s.storageSummary(record), nil
+}
+
 func (s *StorageService) Create(actor Actor, input StorageInput, request RequestContext) (StorageSummary, error) {
+	return s.CreateContext(context.Background(), actor, input, request)
+}
+
+func (s *StorageService) CreateContext(ctx context.Context, actor Actor, input StorageInput, request RequestContext) (StorageSummary, error) {
 	if !actor.Can(authz.PermissionStoragesCreate) {
 		return StorageSummary{}, appError(CodePermissionDenied, "无权创建存储", nil)
 	}
@@ -85,6 +118,9 @@ func (s *StorageService) Create(actor Actor, input StorageInput, request Request
 	storageType := strings.TrimSpace(input.Type)
 	if storageType == "" {
 		storageType = models.StorageTypeLocal
+	}
+	if storageType == models.StorageTypePan115 {
+		return s.createPan115(ctx, actor, input, name, normalized, request)
 	}
 	if storageType != models.StorageTypeLocal {
 		s.auditFailure(actor, "storage.create", request)
@@ -111,7 +147,7 @@ func (s *StorageService) Create(actor Actor, input StorageInput, request Request
 		}
 		return StorageSummary{}, err
 	}
-	record := models.Storage{Name: name, NameNormalized: normalized, Type: storageType, RootPath: root, RootPathNormalized: storagefs.NormalizeForComparison(root), Enabled: input.Enabled, Capabilities: string(capabilities)}
+	record := models.Storage{Name: name, NameNormalized: normalized, Type: storageType, RootPath: root, RootDisplayPath: root, RootPathNormalized: storagefs.NormalizeForComparison(root), Enabled: input.Enabled, Capabilities: string(capabilities)}
 	applyProbe(&record, probe)
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
@@ -125,16 +161,23 @@ func (s *StorageService) Create(actor Actor, input StorageInput, request Request
 		}
 		return StorageSummary{}, err
 	}
-	return storageSummary(record), nil
+	return s.storageSummary(record), nil
 }
 
 func (s *StorageService) Update(actor Actor, id uint, input UpdateStorageInput, request RequestContext) (StorageSummary, error) {
+	return s.UpdateContext(context.Background(), actor, id, input, request)
+}
+
+func (s *StorageService) UpdateContext(ctx context.Context, actor Actor, id uint, input UpdateStorageInput, request RequestContext) (StorageSummary, error) {
 	if !actor.Can(authz.PermissionStoragesUpdate) {
 		return StorageSummary{}, appError(CodePermissionDenied, "无权编辑存储", nil)
 	}
 	var record models.Storage
 	if err := s.db.First(&record, id).Error; err != nil {
 		return StorageSummary{}, storageNotFound(err)
+	}
+	if record.Type == models.StorageTypePan115 {
+		return s.updatePan115(ctx, actor, record, input, request)
 	}
 	if input.Type != nil && strings.TrimSpace(*input.Type) != models.StorageTypeLocal {
 		s.auditFailure(actor, "storage.update", request)
@@ -154,7 +197,7 @@ func (s *StorageService) Update(actor Actor, id uint, input UpdateStorageInput, 
 			s.auditFailure(actor, "storage.update", request)
 			return StorageSummary{}, storagePathError(err)
 		}
-		record.RootPath, record.RootPathNormalized = root, storagefs.NormalizeForComparison(root)
+		record.RootPath, record.RootDisplayPath, record.RootPathNormalized = root, root, storagefs.NormalizeForComparison(root)
 	}
 	if input.Enabled != nil {
 		record.Enabled = *input.Enabled
@@ -184,16 +227,27 @@ func (s *StorageService) Update(actor Actor, id uint, input UpdateStorageInput, 
 	if err != nil {
 		return StorageSummary{}, err
 	}
-	return storageSummary(record), nil
+	return s.storageSummary(record), nil
 }
 
 func (s *StorageService) Test(actor Actor, id uint, request RequestContext) (storagefs.Probe, error) {
+	return s.TestContext(context.Background(), actor, id, request)
+}
+
+func (s *StorageService) TestContext(ctx context.Context, actor Actor, id uint, request RequestContext) (storagefs.Probe, error) {
 	if !actor.Can(authz.PermissionStoragesTest) {
 		return storagefs.Probe{}, appError(CodePermissionDenied, "无权测试存储", nil)
 	}
 	var record models.Storage
 	if err := s.db.First(&record, id).Error; err != nil {
 		return storagefs.Probe{}, storageNotFound(err)
+	}
+	if record.Type == models.StorageTypePan115 {
+		probe, err := s.probePan115(ctx, actor, &record)
+		if saveErr := s.saveProbe(actor, &record, probe, request); saveErr != nil {
+			return storagefs.Probe{}, saveErr
+		}
+		return probe, err
 	}
 	probe := s.driver.ProbeRoot(record.RootPath)
 	applyProbe(&record, probe)
@@ -213,6 +267,135 @@ func (s *StorageService) Test(actor Actor, id uint, request RequestContext) (sto
 	return probe, nil
 }
 
+func (s *StorageService) createPan115(ctx context.Context, actor Actor, input StorageInput, name, normalized string, request RequestContext) (StorageSummary, error) {
+	if s.connections == nil || input.ConnectionID == nil || *input.ConnectionID == 0 || strings.TrimSpace(input.RootPath) == "" || !strings.HasPrefix(input.RootDisplayPath, "/") {
+		return StorageSummary{}, appError(CodeInvalidRequest, "请选择 115 账号和网盘目录", nil)
+	}
+	connection, driver, err := s.connections.Driver(actor, *input.ConnectionID)
+	if err != nil {
+		return StorageSummary{}, err
+	}
+	item, err := driver.Stat(ctx, input.RootPath)
+	if err != nil || !item.IsDir {
+		return StorageSummary{}, providerDirectoryError(err)
+	}
+	normalizedRoot := fmt.Sprintf("pan115:%d:%s", connection.ID, item.ID)
+	if err := s.ensureUnique(0, normalized, normalizedRoot); err != nil {
+		return StorageSummary{}, err
+	}
+	capabilities, err := json.Marshal(cloudStorageCapabilities(driver.Capabilities()))
+	if err != nil {
+		return StorageSummary{}, err
+	}
+	record := models.Storage{Name: name, NameNormalized: normalized, Type: models.StorageTypePan115, RootPath: item.ID, RootDisplayPath: input.RootDisplayPath, RootPathNormalized: normalizedRoot, ConnectionID: &connection.ID, Enabled: input.Enabled, Capabilities: string(capabilities)}
+	applyProbe(&record, cloudStorageProbe(connection, ""))
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+		return s.audit.Record(tx, &actor.User.ID, "storage.create", "storage", uintID(record.ID), "success", map[string]any{"type": record.Type, "connection_id": connection.ID, "enabled": record.Enabled}, request)
+	}); err != nil {
+		if conflict := storageConstraintError(err); conflict != nil {
+			return StorageSummary{}, conflict
+		}
+		return StorageSummary{}, err
+	}
+	return s.storageSummary(record), nil
+}
+
+func (s *StorageService) updatePan115(ctx context.Context, actor Actor, record models.Storage, input UpdateStorageInput, request RequestContext) (StorageSummary, error) {
+	if input.Type != nil && strings.TrimSpace(*input.Type) != models.StorageTypePan115 {
+		return StorageSummary{}, appError(CodeStorageTypeUnsupported, "不能修改数据源类型", nil)
+	}
+	if input.Name != nil {
+		name, normalized, err := normalizeStorageName(*input.Name)
+		if err != nil {
+			return StorageSummary{}, err
+		}
+		record.Name, record.NameNormalized = name, normalized
+	}
+	if input.Enabled != nil {
+		record.Enabled = *input.Enabled
+	}
+	if input.ConnectionID != nil {
+		record.ConnectionID = input.ConnectionID
+	}
+	if input.RootPath != nil {
+		record.RootPath = *input.RootPath
+	}
+	if input.RootDisplayPath != nil {
+		record.RootDisplayPath = *input.RootDisplayPath
+	}
+	if record.ConnectionID == nil || !strings.HasPrefix(record.RootDisplayPath, "/") {
+		return StorageSummary{}, appError(CodeInvalidRequest, "请选择 115 账号和网盘目录", nil)
+	}
+	connection, driver, err := s.connections.driver(*record.ConnectionID)
+	if err != nil {
+		return StorageSummary{}, err
+	}
+	item, err := driver.Stat(ctx, record.RootPath)
+	if err != nil || !item.IsDir {
+		return StorageSummary{}, providerDirectoryError(err)
+	}
+	record.RootPath, record.RootPathNormalized = item.ID, fmt.Sprintf("pan115:%d:%s", connection.ID, item.ID)
+	if err := s.ensureUnique(record.ID, record.NameNormalized, record.RootPathNormalized); err != nil {
+		return StorageSummary{}, err
+	}
+	capabilities, _ := json.Marshal(cloudStorageCapabilities(driver.Capabilities()))
+	record.Capabilities = string(capabilities)
+	applyProbe(&record, cloudStorageProbe(connection, ""))
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&record).Error; err != nil {
+			return err
+		}
+		return s.audit.Record(tx, &actor.User.ID, "storage.update", "storage", uintID(record.ID), "success", map[string]any{"type": record.Type, "connection_id": connection.ID, "enabled": record.Enabled}, request)
+	}); err != nil {
+		return StorageSummary{}, err
+	}
+	return s.storageSummary(record), nil
+}
+
+func (s *StorageService) probePan115(ctx context.Context, _ Actor, record *models.Storage) (storagefs.Probe, error) {
+	if s.connections == nil || record.ConnectionID == nil {
+		return cloudStorageProbe(models.Connection{}, CodeConnectionUnavailable), appError(CodeConnectionUnavailable, "115 连接不可用", nil)
+	}
+	connection, driver, err := s.connections.driver(*record.ConnectionID)
+	if err != nil {
+		return cloudStorageProbe(connection, CodeConnectionUnavailable), err
+	}
+	item, err := driver.Stat(ctx, record.RootPath)
+	if err != nil || !item.IsDir {
+		return cloudStorageProbe(connection, cloudpkg.CodeNotFound), providerDirectoryError(err)
+	}
+	return cloudStorageProbe(connection, ""), nil
+}
+
+func (s *StorageService) saveProbe(actor Actor, record *models.Storage, probe storagefs.Probe, request RequestContext) error {
+	applyProbe(record, probe)
+	outcome := "success"
+	if probe.ErrorCode != "" {
+		outcome = "failure"
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(record).Error; err != nil {
+			return err
+		}
+		return s.audit.Record(tx, &actor.User.ID, "storage.test", "storage", uintID(record.ID), outcome, map[string]any{"error_code": probe.ErrorCode}, request)
+	})
+}
+
+func cloudStorageCapabilities(value cloudpkg.Capabilities) storagefs.Capabilities {
+	return storagefs.Capabilities{NetworkDrive: value.NetworkDrive, DirectoryList: value.DirectoryList, Watch: value.Watch, NativeOfflineDownload: value.NativeOfflineDownload, TemporaryDirectURL: value.TemporaryDirectURL, SignedProxy: value.SignedProxy, SmallFileUpload: value.SmallFileUpload, ChangeCursor: value.ChangeCursor}
+}
+func cloudStorageProbe(connection models.Connection, errorCode string) storagefs.Probe {
+	var free *uint64
+	if connection.QuotaTotalBytes != nil && connection.QuotaUsedBytes != nil && *connection.QuotaTotalBytes >= *connection.QuotaUsedBytes {
+		value := *connection.QuotaTotalBytes - *connection.QuotaUsedBytes
+		free = &value
+	}
+	return storagefs.Probe{Exists: errorCode == "", Readable: errorCode == "", Available: errorCode == "", FreeBytes: free, TotalBytes: connection.QuotaTotalBytes, LastCheckedAt: time.Now().UTC(), ErrorCode: errorCode}
+}
+
 func (s *StorageService) Delete(actor Actor, id uint, request RequestContext) error {
 	if !actor.Can(authz.PermissionStoragesDelete) {
 		return appError(CodePermissionDenied, "无权删除存储", nil)
@@ -222,13 +405,13 @@ func (s *StorageService) Delete(actor Actor, id uint, request RequestContext) er
 		if err := tx.First(&record, id).Error; err != nil {
 			return storageNotFound(err)
 		}
-		if s.references != nil {
-			references, err := s.references.StorageReferences(id)
+		for _, checker := range s.references {
+			references, err := checker.StorageReferences(id)
 			if err != nil {
 				return err
 			}
 			if len(references) > 0 {
-				return appError(CodeConflict, "存储正在被媒体库使用", nil)
+				return appError(CodeConflict, "存储正在被媒体库或系统设置使用", nil)
 			}
 		}
 		if err := tx.Delete(&record).Error; err != nil {
@@ -342,9 +525,31 @@ func storageSummary(record models.Storage) StorageSummary {
 		checked = *record.LastProbeCheckedAt
 	}
 	return StorageSummary{
-		ID: record.ID, Name: record.Name, Type: record.Type, RootPath: record.RootPath,
+		ID: record.ID, Name: record.Name, Type: record.Type, RootPath: record.RootPath, RootDisplayPath: record.RootDisplayPath,
 		ConnectionID: record.ConnectionID, Enabled: record.Enabled, Capabilities: capabilities,
 		Probe:     storagefs.Probe{Exists: record.LastProbeExists, Readable: record.LastProbeReadable, Available: record.LastProbeAvailable, FreeBytes: record.LastProbeFreeBytes, TotalBytes: record.LastProbeTotalBytes, LastCheckedAt: checked, ErrorCode: record.LastProbeErrorCode},
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
+}
+
+// storageSummary overlays the persisted capability snapshot with the current
+// connection driver capabilities. Snapshots deliberately preserve what was
+// known when a Storage was saved, but a Server upgrade can add a capability
+// (for example 115 native offline downloads) without requiring administrators
+// to recreate every existing Storage.
+func (s *StorageService) storageSummary(record models.Storage) StorageSummary {
+	summary := storageSummary(record)
+	if record.Type != models.StorageTypePan115 || record.ConnectionID == nil || s.connections == nil {
+		return summary
+	}
+	if _, driver, err := s.connections.driver(*record.ConnectionID); err == nil {
+		summary.Capabilities = cloudStorageCapabilities(driver.Capabilities())
+		if encoded, marshalErr := json.Marshal(summary.Capabilities); marshalErr == nil && string(encoded) != record.Capabilities {
+			// Capabilities are a derived adapter snapshot, not administrator
+			// configuration. Materialize upgrades without changing UpdatedAt or
+			// requiring the Storage to be recreated.
+			_ = s.db.Model(&models.Storage{}).Where("id = ? AND capabilities <> ?", record.ID, string(encoded)).UpdateColumn("capabilities", string(encoded)).Error
+		}
+	}
+	return summary
 }

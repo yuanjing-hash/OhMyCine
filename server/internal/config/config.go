@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,16 +13,20 @@ import (
 
 // Config contains the small set of runtime settings required by the first Server slice.
 type Config struct {
-	Host           string
-	Port           int
-	DatabasePath   string
-	LogDirectory   string
-	Environment    string
-	PublicOrigin   string
-	DevOrigin      string
-	SessionIdleTTL time.Duration
-	SessionMaxTTL  time.Duration
-	CookieSecure   bool
+	Host                          string
+	Port                          int
+	DatabasePath                  string
+	LogDirectory                  string
+	CredentialKeyFile             string
+	CredentialMasterKey           string
+	TMDBDeploymentCredentialKind  string
+	TMDBDeploymentCredentialValue string
+	Environment                   string
+	PublicOrigin                  string
+	DevOrigin                     string
+	SessionIdleTTL                time.Duration
+	SessionMaxTTL                 time.Duration
+	CookieSecure                  bool
 }
 
 // Load reads Server configuration from environment variables and safe local defaults.
@@ -48,17 +53,35 @@ func Load() (Config, error) {
 	if logDirectory == "" {
 		logDirectory = filepath.Join(filepath.Dir(databasePath), "logs")
 	}
+	deploymentToken := strings.TrimSpace(os.Getenv("OMC_TMDB_READ_ACCESS_TOKEN"))
+	deploymentAPIKey := strings.TrimSpace(os.Getenv("OMC_TMDB_API_KEY"))
+	if deploymentToken != "" && deploymentAPIKey != "" {
+		return Config{}, fmt.Errorf("configure only one of OMC_TMDB_READ_ACCESS_TOKEN and OMC_TMDB_API_KEY")
+	}
+	deploymentKind, deploymentValue := "", ""
+	if deploymentToken != "" {
+		deploymentKind, deploymentValue = "read_access_token", deploymentToken
+	} else if deploymentAPIKey != "" {
+		deploymentKind, deploymentValue = "api_key", deploymentAPIKey
+	}
+	if len(deploymentValue) > 4096 || strings.ContainsAny(deploymentValue, "\r\n") {
+		return Config{}, fmt.Errorf("TMDB deployment credential is invalid")
+	}
 	config := Config{
-		Host:           env("OMC_SERVER_HOST", "127.0.0.1"),
-		Port:           port,
-		DatabasePath:   databasePath,
-		LogDirectory:   logDirectory,
-		Environment:    environment,
-		PublicOrigin:   publicOrigin,
-		DevOrigin:      devOrigin,
-		SessionIdleTTL: 2 * time.Hour,
-		SessionMaxTTL:  7 * 24 * time.Hour,
-		CookieSecure:   secure,
+		Host:                          env("OMC_SERVER_HOST", "0.0.0.0"),
+		Port:                          port,
+		DatabasePath:                  databasePath,
+		LogDirectory:                  logDirectory,
+		CredentialKeyFile:             env("OMC_CREDENTIAL_KEY_FILE", filepath.Join(filepath.Dir(databasePath), "credentials.key")),
+		CredentialMasterKey:           strings.TrimSpace(os.Getenv("OMC_CREDENTIAL_MASTER_KEY")),
+		TMDBDeploymentCredentialKind:  deploymentKind,
+		TMDBDeploymentCredentialValue: deploymentValue,
+		Environment:                   environment,
+		PublicOrigin:                  publicOrigin,
+		DevOrigin:                     devOrigin,
+		SessionIdleTTL:                2 * time.Hour,
+		SessionMaxTTL:                 7 * 24 * time.Hour,
+		CookieSecure:                  secure,
 	}
 	if config.Port < 1 || config.Port > 65535 {
 		return Config{}, fmt.Errorf("OMC_SERVER_PORT must be between 1 and 65535")
@@ -68,6 +91,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("resolve OMC_LOG_DIR: %w", err)
 	}
 	config.LogDirectory = filepath.Clean(absLogDirectory)
+	absCredentialKeyFile, err := filepath.Abs(config.CredentialKeyFile)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve OMC_CREDENTIAL_KEY_FILE: %w", err)
+	}
+	config.CredentialKeyFile = filepath.Clean(absCredentialKeyFile)
 	if err := validateOrigin("OMC_PUBLIC_ORIGIN", config.PublicOrigin); err != nil {
 		return Config{}, err
 	}
@@ -122,6 +150,9 @@ func validateOrigin(key, value string) error {
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return fmt.Errorf("%s must not include credentials, a path, query, or fragment", key)
+	}
+	if ip := net.ParseIP(strings.TrimSuffix(parsed.Hostname(), ".")); ip != nil && ip.IsUnspecified() {
+		return fmt.Errorf("%s must advertise a reachable host, not a wildcard listen address", key)
 	}
 	return nil
 }

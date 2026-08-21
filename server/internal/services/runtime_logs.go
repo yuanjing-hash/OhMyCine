@@ -155,7 +155,7 @@ func (s *RuntimeLogService) Export(ctx context.Context, actor Actor, filter logg
 	if err := zw.Close(); err != nil {
 		return nil, 0, appError(CodeRuntimeLogUnavailable, "运行日志导出失败", err)
 	}
-	if err := s.audit.Record(nil, &actor.User.ID, "logs.export", "runtime_logs", "filtered", "success", map[string]any{"result_count": count, "output_bytes": compressed.Len(), "from": filter.From, "to": filter.To, "levels": filter.Levels, "modules": filter.Modules, "components": filter.Components, "plugin_ids": filter.PluginIDs}, request); err != nil {
+	if err := s.audit.Record(nil, &actor.User.ID, "logs.export", "runtime_logs", "filtered", "success", map[string]any{"result_count": count, "output_bytes": compressed.Len(), "from": filter.From, "to": filter.To, "levels": filter.Levels, "modules": filter.Modules, "components": filter.Components, "operations": filter.Operations, "plugin_ids": filter.PluginIDs}, request); err != nil {
 		return nil, 0, err
 	}
 	return compressed.Bytes(), count, nil

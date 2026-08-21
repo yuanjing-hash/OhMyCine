@@ -131,6 +131,11 @@ async function logout() {
   await router.replace('/login')
 }
 
+async function navigateFromPanel(path: string) {
+  await router.push(path)
+  closePanel()
+}
+
 watch(() => route.fullPath, () => { activePanel.value = null; mobileDrawerOpen.value = false })
 watch([mobileDrawerOpen, activePanel], ([drawer, panel]) => { document.body.style.overflow = drawer || panel ? 'hidden' : '' })
 onMounted(() => {
@@ -222,8 +227,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else-if="activePanel === 'logs'" class="tool-panel__body space-y-3">
-            <RouterLink v-if="auth.can(Permissions.LogsRead)" to="/logs/runtime" class="tool-row" @click="closePanel()"><div><strong>运行日志</strong><small>按模块、组件、插件和业务关联筛选</small></div><span>打开</span></RouterLink>
-            <RouterLink v-if="auth.can(Permissions.AuditRead)" to="/logs/audit" class="tool-row" @click="closePanel()"><div><strong>审计日志</strong><small>查看已实现的安全与配置变更记录</small></div><span>打开</span></RouterLink>
+            <a v-if="auth.can(Permissions.LogsRead)" href="/logs/runtime" class="tool-row" @click.prevent="navigateFromPanel('/logs/runtime')"><div><strong>运行日志</strong><small>按模块、组件、插件和业务关联筛选</small></div><span>打开</span></a>
+            <a v-if="auth.can(Permissions.AuditRead)" href="/logs/audit" class="tool-row" @click.prevent="navigateFromPanel('/logs/audit')"><div><strong>审计日志</strong><small>查看已实现的安全与配置变更记录</small></div><span>打开</span></a>
             <p v-else class="tool-empty">当前账户没有审计日志读取权限，不显示审计内容。</p>
           </div>
 
@@ -314,7 +319,7 @@ onBeforeUnmount(() => {
 .account-summary strong, .account-summary small { display: block; }
 .account-summary small { margin-top: .2rem; color: var(--text-subtle); font-size: .72rem; }
 .shell-content { padding: clamp(1.25rem, 3vw, 2.5rem); }
-.shell-scrim { position: fixed; inset: 0; z-index: 35; background: var(--overlay); }
+.shell-scrim { position: fixed; inset: 0; z-index: 25; background: var(--overlay); }
 .rotate-180 { transform: rotate(180deg); }
 
 @media (max-width: 1023px) {

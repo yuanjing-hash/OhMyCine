@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,6 +155,228 @@ func TestQueueActionRetryRecoveryCoalescingAndPrivateState(t *testing.T) {
 	}
 }
 
+func TestQueueActionResponseIsCheckpointedAndSupersededByNextWait(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	job, err := service.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "fake", DisplayName: "Action checkpoint", Payload: map[string]any{"step": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.Claim([]string{"fake"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	if err := service.Wait(job.ID, claimed.LeaseToken, WaitForAction{ActionType: "import_conflict", Prompt: "Choose", Options: []string{"overwrite", "skip"}, Checkpoint: map[string]any{"stage": "import"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Respond(actor, job.ID, 1, "overwrite", RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = service.Claim([]string{"fake"})
+	if err != nil || claimed == nil {
+		t.Fatalf("reclaim=%+v err=%v", claimed, err)
+	}
+	if got := checkpointActionResponse(claimed.Job.CheckpointJSON, "import_conflict"); got != "overwrite" {
+		t.Fatalf("checkpoint action=%q raw=%s", got, claimed.Job.CheckpointJSON)
+	}
+	if err := service.Wait(job.ID, claimed.LeaseToken, WaitForAction{ActionType: "import_conflict", Prompt: "Choose again", Options: []string{"overwrite", "skip"}, Checkpoint: map[string]any{"stage": "import"}}); err != nil {
+		t.Fatal(err)
+	}
+	var waiting models.Job
+	if err := service.db.First(&waiting, "id = ?", job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := checkpointActionResponse(waiting.CheckpointJSON, "import_conflict"); got != "" {
+		t.Fatalf("old action response survived new wait: %q raw=%s", got, waiting.CheckpointJSON)
+	}
+}
+
+func checkpointActionResponse(raw, actionType string) string {
+	var checkpoint struct {
+		ActionResponse *struct {
+			ActionType string `json:"action_type"`
+			Value      string `json:"value"`
+		} `json:"action_response"`
+	}
+	if json.Unmarshal([]byte(raw), &checkpoint) != nil || checkpoint.ActionResponse == nil || checkpoint.ActionResponse.ActionType != actionType {
+		return ""
+	}
+	return checkpoint.ActionResponse.Value
+}
+
+func TestProviderControlIntentSurvivesClaimLeaseRecovery(t *testing.T) {
+	service, actor, clock := queueFixture(t)
+	job, err := service.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", Provider: models.DownloaderTypeQBittorrent, DisplayName: "Restart-safe cancel", Payload: map[string]any{"download_task_id": "task-id"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlled, err := service.Control(actor, job.ID, "cancel", RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if controlled.Status != models.JobStatusQueued || controlled.InterruptPending != models.JobStatusCancelled {
+		t.Fatalf("controlled=%+v", controlled)
+	}
+	if _, err := service.Control(actor, job.ID, "cancel", RequestContext{}); ErrorCode(err) != CodeQueueStateConflict {
+		t.Fatalf("duplicate pending control error=%v", err)
+	}
+	claimed, err := service.Claim([]string{"download"})
+	if err != nil || claimed == nil || claimed.Job.InterruptStatus != models.JobStatusCancelled {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	clock.now = clock.now.Add(time.Minute)
+	if err := service.RecoverExpiredLeases(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := service.Get(actor, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != models.JobStatusQueued || recovered.InterruptPending != models.JobStatusCancelled || !recovered.CancellationRequested {
+		t.Fatalf("recovered=%+v", recovered)
+	}
+	reclaimed, err := service.Claim([]string{"download"})
+	if err != nil || reclaimed == nil || reclaimed.Job.InterruptStatus != models.JobStatusCancelled {
+		t.Fatalf("reclaimed=%+v err=%v", reclaimed, err)
+	}
+}
+
+func TestRejectedProviderCancelRestoresPreviouslyPausedJob(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	job, err := service.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", Provider: models.DownloaderTypeQBittorrent, DisplayName: "Paused provider cancel", Payload: map[string]any{"download_task_id": "task-id"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.Model(&models.Job{}).Where("id = ?", job.ID).Update("status", models.JobStatusPaused).Error; err != nil {
+		t.Fatal(err)
+	}
+	controlled, err := service.Control(actor, job.ID, "cancel", RequestContext{})
+	if err != nil || controlled.Status != models.JobStatusQueued || providerControlOrigin(controlledCheckpoint(t, service, job.ID)) != models.JobStatusPaused {
+		t.Fatalf("controlled=%+v err=%v", controlled, err)
+	}
+	claimed, err := service.Claim([]string{"download"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if err := service.RejectInterrupt(job.ID, claimed.LeaseToken, "cancel", "downloader_control_failed", "provider rejected cancel"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := service.Get(actor, job.ID)
+	if err != nil || restored.Status != models.JobStatusPaused || restored.InterruptPending != "" || restored.CancellationRequested {
+		t.Fatalf("restored=%+v err=%v", restored, err)
+	}
+}
+
+func controlledCheckpoint(t *testing.T, service *QueueService, id string) string {
+	t.Helper()
+	var job models.Job
+	if err := service.db.First(&job, "id = ?", id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return job.CheckpointJSON
+}
+
+func TestSchedulerKeepsLeaseAliveWhileWorkerBlocksPastNominalLease(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	service.SetClock(realClock{})
+	var policy models.QueuePolicy
+	if err := service.db.First(&policy, "job_type = ?", "fake").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdatePolicy(actor, "fake", policy.Revision, 1, 1, 3, 5, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	job := enqueueFake(t, service, actor, "Slow provider mutation", "provider-a")
+	var runs atomic.Int32
+	registry := NewWorkerRegistry()
+	if err := registry.Register("fake", WorkerFunc(func(ctx context.Context, _ JobRuntime, _ ClaimedJob) WorkerResult {
+		runs.Add(1)
+		select {
+		case <-ctx.Done():
+			return WorkerResult{ErrorCode: "unexpected_cancel", ErrorMessage: "worker was cancelled"}
+		case <-time.After(6 * time.Second):
+			return WorkerResult{}
+		}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewScheduler(service, registry, zerolog.Nop())
+	scheduler.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := scheduler.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() { cancel(); scheduler.Close() }()
+	service.wake()
+	deadline := time.Now().Add(9 * time.Second)
+	var detail JobDTO
+	var err error
+	for time.Now().Before(deadline) {
+		detail, err = service.Get(actor, job.ID)
+		if err == nil && (detail.Status == models.JobStatusCompleted || detail.Status == models.JobStatusFailed) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil || detail.Status != models.JobStatusCompleted || detail.AttemptCount != 1 || runs.Load() != 1 {
+		t.Fatalf("detail=%+v runs=%d err=%v", detail, runs.Load(), err)
+	}
+	var expired int64
+	if err := service.db.Model(&models.JobStatusEvent{}).Where("job_id = ? AND event_type = ?", job.ID, "lease.expired").Count(&expired).Error; err != nil {
+		t.Fatal(err)
+	}
+	if expired != 0 {
+		t.Fatalf("lease expired %d times", expired)
+	}
+}
+
+func TestSchedulerCancelsWorkerWhenLeaseRenewalLosesOwnership(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	service.SetClock(realClock{})
+	var policy models.QueuePolicy
+	if err := service.db.First(&policy, "job_type = ?", "fake").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdatePolicy(actor, "fake", policy.Revision, 1, 1, 3, 5, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	job := enqueueFake(t, service, actor, "Lost lease", "provider-a")
+	claimedCh := make(chan ClaimedJob, 1)
+	cancelledCh := make(chan struct{})
+	registry := NewWorkerRegistry()
+	if err := registry.Register("fake", WorkerFunc(func(ctx context.Context, _ JobRuntime, claimed ClaimedJob) WorkerResult {
+		claimedCh <- claimed
+		<-ctx.Done()
+		close(cancelledCh)
+		return WorkerResult{}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewScheduler(service, registry, zerolog.Nop())
+	scheduler.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := scheduler.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer func() { cancel(); scheduler.Close() }()
+	service.wake()
+	var claimed ClaimedJob
+	select {
+	case claimed = <-claimedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker was not claimed")
+	}
+	if err := service.Complete(job.ID, claimed.LeaseToken); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cancelledCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker kept running after definitive lease loss")
+	}
+}
+
 func TestWorkerRegistryValidationAndDeterminism(t *testing.T) {
 	registry := NewWorkerRegistry()
 	if err := registry.Register(" Fake ", WorkerFunc(func(context.Context, JobRuntime, ClaimedJob) WorkerResult { return WorkerResult{} })); err != nil {
@@ -198,7 +422,12 @@ func TestRunningInterruptKeepsCapacityUntilWorkerAcknowledges(t *testing.T) {
 		t.Fatalf("claim=%+v err=%v", claimed, err)
 	}
 	interrupted := make(chan string, 1)
-	service.SetInterrupt(func(id string) { interrupted <- id })
+	service.SetInterrupt(func(id, action string) {
+		if action != "pause" {
+			t.Errorf("action=%q", action)
+		}
+		interrupted <- id
+	})
 	detail, err := service.Control(actor, first.ID, "pause", RequestContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +451,55 @@ func TestRunningInterruptKeepsCapacityUntilWorkerAcknowledges(t *testing.T) {
 	detail, _ = service.Get(actor, first.ID)
 	if detail.Status != models.JobStatusPaused || detail.InterruptPending != "" {
 		t.Fatalf("ack detail=%+v", detail)
+	}
+}
+
+func TestRejectInterruptKeepsRunningAndClearsPendingIntent(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	job := enqueueFake(t, service, actor, "Provider control", "provider-a")
+	claimed, err := service.Claim([]string{"fake"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	service.SetInterrupt(func(string, string) {})
+	if _, err := service.Control(actor, job.ID, "pause", RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RejectInterrupt(job.ID, claimed.LeaseToken, "pause", "downloader_control_failed", "下载器未能暂停任务"); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Get(actor, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != models.JobStatusRunning || detail.InterruptPending != "" || detail.CancellationRequested || detail.LastErrorCode != "downloader_control_failed" {
+		t.Fatalf("detail=%+v", detail)
+	}
+}
+
+func TestRejectInterruptRejectsStaleLeaseWithoutClearingPendingIntent(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	job := enqueueFake(t, service, actor, "Provider control", "provider-a")
+	claimed, err := service.Claim([]string{"fake"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	service.SetInterrupt(func(string, string) {})
+	if _, err := service.Control(actor, job.ID, "pause", RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RejectInterrupt(job.ID, "stale-token", "pause", "downloader_control_failed", "下载器未能暂停任务"); ErrorCode(err) != CodeQueueLeaseInvalid {
+		t.Fatalf("stale lease=%v", err)
+	}
+	detail, err := service.Get(actor, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != models.JobStatusRunning || detail.InterruptPending != models.JobStatusPaused || !detail.CancellationRequested || detail.LastErrorCode != "" {
+		t.Fatalf("stale rejection changed pending intent: %+v", detail)
+	}
+	if err := service.RejectInterrupt(job.ID, claimed.LeaseToken, "pause", "downloader_control_failed", "下载器未能暂停任务"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -250,6 +528,45 @@ func TestQueueEventHubScopesOwnersAndThrottlesProgress(t *testing.T) {
 	select {
 	case event := <-otherEvents:
 		t.Fatalf("other owner received event: %+v", event)
+	default:
+	}
+}
+
+func TestQueueEventHubAllowsTransferReadersOnlyTransferEvents(t *testing.T) {
+	hub := NewQueueEventHub()
+	owner := Actor{User: models.User{ID: 1}, Permissions: map[string]struct{}{authz.PermissionTransfersReadOwn: {}}}
+	all := Actor{User: models.User{ID: 2}, Permissions: map[string]struct{}{authz.PermissionTransfersReadAll: {}}}
+	ownerEvents, stopOwner := hub.Subscribe(owner)
+	defer stopOwner()
+	allEvents, stopAll := hub.Subscribe(all)
+	defer stopAll()
+	ownerID := uint(1)
+	hub.Publish(JobEvent{Type: "job.updated", JobID: "transfer-one", JobType: "transfer", OwnerID: &ownerID, At: time.Now().UTC()})
+	hub.Publish(JobEvent{Type: "job.updated", JobID: "download-one", JobType: "download", OwnerID: &ownerID, At: time.Now().UTC()})
+	select {
+	case event := <-ownerEvents:
+		if event.JobID != "transfer-one" {
+			t.Fatalf("owner received wrong event: %+v", event)
+		}
+	default:
+		t.Fatal("transfer owner did not receive transfer event")
+	}
+	select {
+	case event := <-ownerEvents:
+		t.Fatalf("transfer owner received unrelated job event: %+v", event)
+	default:
+	}
+	select {
+	case event := <-allEvents:
+		if event.JobID != "transfer-one" {
+			t.Fatalf("transfer reader received wrong event: %+v", event)
+		}
+	default:
+		t.Fatal("all-transfer reader did not receive transfer event")
+	}
+	select {
+	case event := <-allEvents:
+		t.Fatalf("all-transfer reader received unrelated job event: %+v", event)
 	default:
 	}
 }

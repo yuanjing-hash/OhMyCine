@@ -79,6 +79,7 @@ func (a *API) ExportRuntimeLogs(c *gin.Context) {
 		Levels       []string `json:"levels"`
 		Modules      []string `json:"modules"`
 		Components   []string `json:"components"`
+		Operations   []string `json:"operations"`
 		PluginIDs    []string `json:"plugin_ids"`
 		Keyword      string   `json:"keyword"`
 		RequestID    string   `json:"request_id"`
@@ -93,7 +94,7 @@ func (a *API) ExportRuntimeLogs(c *gin.Context) {
 		writeError(c, a.log, invalid("运行日志导出条件无效", err))
 		return
 	}
-	filter, err := filterFromValues(input.From, input.To, input.Levels, input.Modules, input.Components, input.PluginIDs, input.Keyword, input.RequestID, input.TaskID, input.LibraryID, input.ConnectionID, input.StorageID, input.DownloaderID, input.ScanRunID, logging.MaxQueryLimit, "")
+	filter, err := filterFromValues(input.From, input.To, input.Levels, input.Modules, input.Components, input.Operations, input.PluginIDs, input.Keyword, input.RequestID, input.TaskID, input.LibraryID, input.ConnectionID, input.StorageID, input.DownloaderID, input.ScanRunID, logging.MaxQueryLimit, "")
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -119,10 +120,10 @@ func runtimeLogFilter(c *gin.Context) (logging.Filter, error) {
 		}
 		limit = value
 	}
-	return filterFromValues(c.Query("from"), c.Query("to"), splitValues(c.QueryArray("level")), splitValues(c.QueryArray("module")), splitValues(c.QueryArray("component")), splitValues(c.QueryArray("plugin_id")), c.Query("keyword"), c.Query("request_id"), c.Query("task_id"), c.Query("library_id"), c.Query("connection_id"), c.Query("storage_id"), c.Query("downloader_id"), c.Query("scan_run_id"), limit, c.Query("cursor"))
+	return filterFromValues(c.Query("from"), c.Query("to"), splitValues(c.QueryArray("level")), splitValues(c.QueryArray("module")), splitValues(c.QueryArray("component")), splitValues(c.QueryArray("operation")), splitValues(c.QueryArray("plugin_id")), c.Query("keyword"), c.Query("request_id"), c.Query("task_id"), c.Query("library_id"), c.Query("connection_id"), c.Query("storage_id"), c.Query("downloader_id"), c.Query("scan_run_id"), limit, c.Query("cursor"))
 }
 
-func filterFromValues(fromRaw, toRaw string, levels, modules, components, plugins []string, keyword, requestID, taskID, libraryID, connectionID, storageID, downloaderID, scanRunID string, limit int, cursor string) (logging.Filter, error) {
+func filterFromValues(fromRaw, toRaw string, levels, modules, components, operations, plugins []string, keyword, requestID, taskID, libraryID, connectionID, storageID, downloaderID, scanRunID string, limit int, cursor string) (logging.Filter, error) {
 	var from, to time.Time
 	var err error
 	if fromRaw != "" {
@@ -137,7 +138,7 @@ func filterFromValues(fromRaw, toRaw string, levels, modules, components, plugin
 			return logging.Filter{}, runtimeFilterError(err)
 		}
 	}
-	f := logging.Filter{From: from, To: to, Levels: levels, Modules: modules, Components: components, PluginIDs: plugins, Keyword: strings.TrimSpace(keyword), RequestID: strings.TrimSpace(requestID), TaskID: strings.TrimSpace(taskID), LibraryID: strings.TrimSpace(libraryID), ConnectionID: strings.TrimSpace(connectionID), StorageID: strings.TrimSpace(storageID), DownloaderID: strings.TrimSpace(downloaderID), ScanRunID: strings.TrimSpace(scanRunID), Limit: limit, Cursor: cursor}
+	f := logging.Filter{From: from, To: to, Levels: levels, Modules: modules, Components: components, Operations: operations, PluginIDs: plugins, Keyword: strings.TrimSpace(keyword), RequestID: strings.TrimSpace(requestID), TaskID: strings.TrimSpace(taskID), LibraryID: strings.TrimSpace(libraryID), ConnectionID: strings.TrimSpace(connectionID), StorageID: strings.TrimSpace(storageID), DownloaderID: strings.TrimSpace(downloaderID), ScanRunID: strings.TrimSpace(scanRunID), Limit: limit, Cursor: cursor}
 	if err := f.Normalize(time.Now().UTC()); err != nil {
 		return logging.Filter{}, runtimeFilterError(err)
 	}
