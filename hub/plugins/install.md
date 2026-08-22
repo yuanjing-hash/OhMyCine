@@ -1,24 +1,15 @@
-# 安装指南
-
-## 通过 Server 安装
-
-```bash
 # 安装插件
-omc plugin install <plugin-name>
 
-# 查看已安装插件
-omc plugin list
+插件只通过 OhMyCine Server 管理端安装：
 
-# 卸载插件
-omc plugin uninstall <plugin-name>
-```
+1. 打开“插件 → 仓库设置”。
+2. 添加 GitHub 仓库主页地址，例如 `https://github.com/example/ohmycine-plugins`。
+3. 刷新仓库，在“插件市场”查看通过校验的插件。
+4. 打开插件卡片，检查能力、网络域名、凭据、存储、事件和下载权限。
+5. 确认后安装并启用；需要账号的插件再创建插件连接。
 
-## 手动安装
+Server 会固定 Registry 的 Git 提交，下载同仓库 GitHub Release 中相互独立的 Manifest 和 `.omcp` 包，并校验 Manifest、Server 兼容范围、发布包 SHA-256、解包后整树 SHA-256、签名、归档路径、WASM 沙箱和权限。带签名的包只有在 Server 配置信任对应密钥后才会被接受；没有可信密钥时不会伪装成“签名已验证”。失败安装或升级不会替换正在运行的旧版本。
 
-1. 下载插件包（`.zip` 或 `.tar.gz`）
-2. 解压到 `~/.ohmycine/plugins/` 目录
-3. 重启 OhMyCine Server
+安装和升级分两步完成：Server 先生成一个 15 分钟有效、绑定包摘要、权限指纹、固定仓库提交和安装修订的一次性预览；管理员核对新增与移除权限并再次确认后，Server 会重新验证仓库与完整包树，确认没有变化才写入安装状态。新安装默认停用，启用后才启动 WASM。已启用插件升级失败时保留旧版本运行；管理端还可以显式停用、回滚和卸载。
 
-## 权限说明
-
-插件安装后需要声明所需权限，用户确认后方可启用。详见 [插件规范](/dev/spec)。
+默认不自动安装、不自动升级。升级新增权限时必须重新确认。不要把插件包手动解压到 Server 数据目录，也不要从未知 raw URL 安装代码。

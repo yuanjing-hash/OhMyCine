@@ -41,6 +41,14 @@ export interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   progressSource: PlaybackProgressSource
 }
 
+export interface PlaybackHistoryPage {
+  list: PlaybackHistoryEntry[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+}
+
 const RESUME_MIN_POSITION = 30
 const COMPLETED_REMAINING_SECONDS = 90
 const COMPLETED_PROGRESS_RATIO = 0.92
@@ -77,6 +85,17 @@ export async function listLocalContinueWatching(limit = 20): Promise<PlaybackHis
   }
   catch {
     return []
+  }
+}
+
+export async function listPlaybackHistoryPage(page = 1, pageSize = 24): Promise<PlaybackHistoryPage> {
+  const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
+  const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 24
+  try {
+    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize })
+  }
+  catch {
+    return { list: [], total: 0, page: safePage, pageSize: safePageSize, hasMore: false }
   }
 }
 

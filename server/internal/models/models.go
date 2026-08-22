@@ -113,6 +113,156 @@ type RuntimeLogPolicy struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// PluginRepository is an administrator-configured GitHub plugin registry.
+// CachedRegistryJSON is written only after the pinned registry has passed the
+// shared contract validation. GitHub credentials are deliberately not stored
+// here; future authenticated GitHub access must use the credential boundary.
+type PluginRepository struct {
+	ID                 uint       `gorm:"primaryKey" json:"id"`
+	Name               string     `gorm:"size:128;not null" json:"name"`
+	GitHubURL          string     `gorm:"column:github_url;size:512;not null;uniqueIndex" json:"github_url"`
+	GitHubOwner        string     `gorm:"column:github_owner;size:128;not null" json:"-"`
+	GitHubRepo         string     `gorm:"column:github_repo;size:128;not null" json:"-"`
+	Enabled            bool       `gorm:"not null;default:true;index" json:"enabled"`
+	Priority           int64      `gorm:"not null;index" json:"priority"`
+	Revision           uint64     `gorm:"not null;default:1" json:"revision"`
+	LastCommitSHA      string     `gorm:"column:last_commit_sha;size:40;not null;default:''" json:"last_commit_sha"`
+	LastRefreshedAt    *time.Time `json:"last_refreshed_at"`
+	LastErrorCode      string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	CachedRegistryJSON string     `gorm:"type:text;not null;default:''" json:"-"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+const (
+	PluginInstallationDisabled = "disabled"
+	PluginInstallationEnabled  = "enabled"
+	PluginInstallationFailed   = "failed"
+
+	PluginRuntimeStarting = "starting"
+	PluginRuntimeRunning  = "running"
+	PluginRuntimeStopped  = "stopped"
+	PluginRuntimeFailed   = "failed"
+)
+
+// PluginPackage is an immutable, verified release artifact. PackagePath is a
+// Server-owned content-addressed directory and must never be exposed by APIs.
+// Repository identity is copied into the record so deleting a discovery
+// repository never makes an already installed package lose provenance.
+type PluginPackage struct {
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	PluginID            string    `gorm:"size:128;not null;index:idx_plugin_packages_identity,priority:1" json:"plugin_id"`
+	Version             string    `gorm:"size:128;not null;index:idx_plugin_packages_identity,priority:2" json:"version"`
+	RepositoryID        *uint     `gorm:"index" json:"repository_id"`
+	RepositoryOwner     string    `gorm:"size:128;not null;index:idx_plugin_packages_identity,priority:3" json:"-"`
+	RepositoryRepo      string    `gorm:"size:128;not null;index:idx_plugin_packages_identity,priority:4" json:"-"`
+	RegistryCommit      string    `gorm:"size:40;not null" json:"-"`
+	RegistryEntryJSON   string    `gorm:"type:text;not null" json:"-"`
+	ManifestURL         string    `gorm:"type:text;not null" json:"-"`
+	PackageURL          string    `gorm:"type:text;not null" json:"-"`
+	PackageSHA256       string    `gorm:"size:64;not null;uniqueIndex" json:"package_sha256"`
+	ExtractedTreeSHA256 string    `gorm:"size:64;not null" json:"-"`
+	ManifestJSON        string    `gorm:"type:text;not null" json:"-"`
+	PackagePath         string    `gorm:"type:text;not null" json:"-"`
+	VerifiedAt          time.Time `gorm:"not null" json:"verified_at"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+// PluginInstallation is the mutable selection for one stable plugin ID.
+// Revision protects all user-visible lifecycle changes with compare-and-swap.
+type PluginInstallation struct {
+	PluginID             string     `gorm:"primaryKey;size:128" json:"plugin_id"`
+	ActivePackageID      uint       `gorm:"not null;index" json:"active_package_id"`
+	PreviousPackageID    *uint      `gorm:"index" json:"previous_package_id"`
+	Status               string     `gorm:"size:16;not null;index" json:"status"`
+	Revision             uint64     `gorm:"not null;default:1" json:"revision"`
+	RuntimeGeneration    uint64     `gorm:"not null;default:0" json:"runtime_generation"`
+	LastRuntimeErrorCode string     `gorm:"size:96;not null;default:''" json:"last_runtime_error_code"`
+	InstalledAt          time.Time  `gorm:"not null" json:"installed_at"`
+	UpdatedAt            time.Time  `gorm:"not null" json:"updated_at"`
+	EnabledAt            *time.Time `json:"enabled_at"`
+}
+
+// PluginPermissionGrant snapshots the exact canonical permission granted for
+// a package. Grants are package-specific; an update with additions therefore
+// cannot inherit a broader grant implicitly.
+type PluginPermissionGrant struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	PluginID        string    `gorm:"size:128;not null;index:idx_plugin_permission_grants_identity,priority:1" json:"plugin_id"`
+	PluginPackageID uint      `gorm:"not null;index:idx_plugin_permission_grants_identity,priority:2" json:"plugin_package_id"`
+	PermissionKey   string    `gorm:"size:64;not null;index:idx_plugin_permission_grants_identity,priority:3" json:"permission_key"`
+	PermissionJSON  string    `gorm:"type:text;not null" json:"-"`
+	GrantedBy       *uint     `gorm:"index" json:"granted_by"`
+	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
+}
+
+// PluginRuntimeGeneration is an append-only terminal history of runtime
+// starts. At most one generation per plugin is active in the in-memory host.
+type PluginRuntimeGeneration struct {
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	PluginID        string     `gorm:"size:128;not null;uniqueIndex:idx_plugin_runtime_generation" json:"plugin_id"`
+	PluginPackageID uint       `gorm:"not null;index" json:"plugin_package_id"`
+	Generation      uint64     `gorm:"not null;uniqueIndex:idx_plugin_runtime_generation" json:"generation"`
+	Status          string     `gorm:"size:16;not null;index" json:"status"`
+	SafeErrorCode   string     `gorm:"size:96;not null;default:''" json:"error_code"`
+	StartedAt       time.Time  `gorm:"not null" json:"started_at"`
+	StoppedAt       *time.Time `json:"stopped_at"`
+}
+
+// PluginInstallPreview binds a verified immutable package and its exact
+// permission set to an explicit, expiring user confirmation.
+type PluginInstallPreview struct {
+	ID                    string     `gorm:"primaryKey;size:36" json:"id"`
+	PluginID              string     `gorm:"size:128;not null;index" json:"plugin_id"`
+	PluginPackageID       uint       `gorm:"not null;index" json:"plugin_package_id"`
+	Operation             string     `gorm:"size:16;not null" json:"operation"`
+	PermissionFingerprint string     `gorm:"size:64;not null" json:"permission_fingerprint"`
+	InstallationRevision  uint64     `gorm:"not null" json:"installation_revision"`
+	CreatedBy             uint       `gorm:"not null;index" json:"created_by"`
+	ExpiresAt             time.Time  `gorm:"not null;index" json:"expires_at"`
+	ConsumedAt            *time.Time `json:"consumed_at"`
+	CreatedAt             time.Time  `gorm:"not null" json:"created_at"`
+}
+
+const (
+	PluginCredentialModeNone   = "none"
+	PluginCredentialModeCookie = "cookie"
+	PluginCredentialModeBearer = "bearer"
+)
+
+// PluginConnection is an administrator-created instance of an installed
+// plugin. Secrets remain encrypted and are only consumed by the controlled
+// Host HTTP capability; they are never returned to guest memory or Player.
+type PluginConnection struct {
+	ID                   string    `gorm:"primaryKey;size:36" json:"id"`
+	PluginID             string    `gorm:"size:128;not null;index" json:"plugin_id"`
+	Name                 string    `gorm:"size:128;not null" json:"name"`
+	ConfigJSON           string    `gorm:"type:text;not null;default:'{}'" json:"-"`
+	CredentialScope      string    `gorm:"size:128;not null;default:''" json:"credential_scope"`
+	CredentialMode       string    `gorm:"size:16;not null;default:'none'" json:"credential_mode"`
+	CredentialCiphertext string    `gorm:"type:text;not null;default:''" json:"-"`
+	Enabled              bool      `gorm:"not null;default:true;index" json:"enabled"`
+	Revision             uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt            time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt            time.Time `gorm:"not null" json:"updated_at"`
+}
+
+// PluginPrivateKV is encrypted per connection because plugins may keep remote
+// cursors or session-derived state in it. Quota accounting uses PlaintextBytes
+// and never relies on ciphertext expansion.
+type PluginPrivateKV struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	PluginID        string    `gorm:"size:128;not null;uniqueIndex:idx_plugin_private_kv_identity,priority:1" json:"plugin_id"`
+	ConnectionID    string    `gorm:"size:36;not null;uniqueIndex:idx_plugin_private_kv_identity,priority:2" json:"connection_id"`
+	Key             string    `gorm:"size:128;not null;uniqueIndex:idx_plugin_private_kv_identity,priority:3" json:"key"`
+	ValueCiphertext string    `gorm:"type:text;not null" json:"-"`
+	PlaintextBytes  int64     `gorm:"not null" json:"-"`
+	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt       time.Time `gorm:"not null" json:"updated_at"`
+}
+
+func (PluginPrivateKV) TableName() string { return "plugin_private_kv" }
+
 const (
 	StorageTypeLocal         = "local"
 	StorageTypePan115        = "pan115"

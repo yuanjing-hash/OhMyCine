@@ -90,6 +90,11 @@ async function navigateFavorites() {
   await router.push({ name: 'favorites' })
 }
 
+async function navigateHistory() {
+  closeSheet()
+  await router.push({ name: 'history' })
+}
+
 async function navigateSource(sourceId: string) {
   closeSheet()
   await router.push({ name: 'source', params: { sourceId } })
@@ -313,6 +318,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
                 </span>
                 <strong>管理数据源</strong>
                 <small>编辑、扫描与排序</small>
+              </button>
+
+              <button type="button" class="mobile-quick-action" @click="navigateHistory">
+                <span class="mobile-quick-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v5l3.5 2M5 6a9 9 0 1 1-2 6m0-6v5h5" /></svg>
+                </span>
+                <strong>观看历史</strong>
+                <small>分页查看本机与在线来源记录</small>
               </button>
 
               <button type="button" class="mobile-quick-action" @click="handleThemeToggle">

@@ -64,6 +64,8 @@ const (
 	PermissionTransfersReadAll                  = "transfers.read_all"
 	PermissionSettingsRead                      = "settings.read"
 	PermissionSettingsUpdate                    = "settings.update"
+	PermissionPluginsRead                       = "plugins.read"
+	PermissionPluginsInstall                    = "plugins.install"
 	PermissionSTRMRunsRead                      = "strm.runs.read"
 	PermissionSTRMRunsCreate                    = "strm.runs.create"
 	PermissionSTRMRunsCancel                    = "strm.runs.cancel"

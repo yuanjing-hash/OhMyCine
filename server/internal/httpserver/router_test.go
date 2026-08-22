@@ -184,6 +184,7 @@ func newTestClient(t *testing.T) *testClient {
 	api.SetMetadataSettingsService(metadataSettings)
 	api.SetSeedingSettingsService(seedingSettings)
 	api.SetSeedingService(seeding)
+	api.SetPluginRepositoryService(services.NewPluginRepositoryService(db, audit, nil, log))
 	return &testClient{router: New(cfg, api, auth, log), queue: queue, db: db, connections: connections, signedProxy: signedProxy, embyGateway: embyGateway}
 }
 
@@ -737,6 +738,45 @@ func (c *testClient) setup(t *testing.T) map[string]any {
 		t.Fatal("setup did not issue csrf and session cookie")
 	}
 	return data
+}
+
+func TestPluginRepositoryAPIsRequireAuthUseNoStoreAndRejectRawURLs(t *testing.T) {
+	client := newTestClient(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/plugin-repositories", nil)
+	response := httptest.NewRecorder()
+	client.router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("denied repository response status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/plugin-repositories", map[string]any{"github_url": "https://raw.githubusercontent.com/owner/plugins/main/index.json"}, true)
+	if status != http.StatusBadRequest || !bytes.Contains(envelope.Data, []byte(services.CodePluginRepositoryURLInvalid)) {
+		t.Fatalf("unsafe URL status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/plugin-repositories", map[string]any{"github_url": "https://github.com/Owner/Plugins", "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create repository status=%d message=%s", status, envelope.Message)
+	}
+	var created services.PluginRepositorySummary
+	if err := json.Unmarshal(envelope.Data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.GitHubURL != "https://github.com/owner/plugins" || created.Revision != 1 {
+		t.Fatalf("created=%+v", created)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/plugin-repositories", nil, false)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" || bytes.Contains(envelope.Data, []byte("cached_registry_json")) || bytes.Contains(envelope.Data, []byte("github_owner")) {
+		t.Fatalf("list status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPatch, "/api/v1/plugin-repositories/"+uintString(created.ID), map[string]any{"enabled": false, "revision": created.Revision + 1}, true)
+	if status != http.StatusConflict || !bytes.Contains(envelope.Data, []byte(services.CodePluginRepositoryRevision)) {
+		t.Fatalf("stale update status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/plugins/installed", nil, false)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"runtime_status":"unavailable"`)) {
+		t.Fatalf("installed status=%d data=%s", status, envelope.Data)
+	}
 }
 
 func TestConnectionAPIStoresButNeverReturnsPan115Cookie(t *testing.T) {

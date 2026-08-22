@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohmycine.example.test/schemas/plugin-manifest-v1.json",
+  "title": "OhMyCine Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "description", "version", "apiVersion", "minServerVersion", "runtime", "entry", "capabilities", "permissions", "configSchema", "author", "license", "source", "packageSha256"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$", "maxLength": 128 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "version": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+    "apiVersion": { "const": "1" },
+    "minServerVersion": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+    "maxServerVersion": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+    "runtime": { "const": "wasm" },
+    "entry": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.wasm$", "maxLength": 240 },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"] }
+    },
+    "permissions": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/permission" }
+    },
+    "configSchema": { "type": "object" },
+    "author": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "license": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "homepage": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "source": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "packageSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "signature": { "$ref": "#/$defs/signature" },
+    "update": { "$ref": "#/$defs/update" },
+    "changelog": { "type": "string", "maxLength": 4000 }
+  },
+  "$defs": {
+    "permission": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "domains"], "properties": { "kind": { "const": "network.http" }, "domains": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:\\*\\.)?[a-z0-9.-]+$", "maxLength": 253 } } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "scopes"], "properties": { "kind": { "const": "credential.use" }, "scopes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9.-]+$", "maxLength": 128 } } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "maxBytes"], "properties": { "kind": { "const": "storage.private" }, "maxBytes": { "type": "integer", "minimum": 0, "maximum": 67108864 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "topics"], "properties": { "kind": { "const": "event.subscribe" }, "topics": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9.-]+$", "maxLength": 128 } } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "download.plan" } } }
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "keyId", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": { "type": "string", "minLength": 32, "maxLength": 256 }
+      }
+    },
+    "update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registryUrl"],
+      "properties": {
+        "registryUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "channel": { "enum": ["stable", "beta"] }
+      }
+    }
+  }
+}

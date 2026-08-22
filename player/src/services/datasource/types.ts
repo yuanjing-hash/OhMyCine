@@ -35,7 +35,7 @@ export interface MediaItem {
 }
 
 export interface MediaIdentity {
-  scheme: 'tmdb' | 'emby' | 'server'
+  scheme: 'tmdb' | 'emby' | 'server' | 'plugin'
   mediaType: 'movie' | 'series' | 'season' | 'episode' | 'file'
   value: string
 }
@@ -188,13 +188,50 @@ export interface MediaStreamRequest {
   readonly url: string
   readonly headers?: Record<string, string>
   readonly mediaSourceId?: string
+  /** Current resolution/bitrate choice inside the selected media version. */
+  readonly variantId?: string
+  /** Actual choices for the selected version. URLs and provider credentials never belong here. */
+  readonly variants?: readonly StreamVariant[]
   /** Exact subtitle inventory for the resolved playback version. */
   readonly subtitles?: readonly PlaybackSubtitleTrack[]
+  /** Short-lived provider-native danmaku tracks. URLs must stay behind the source security boundary. */
+  readonly danmaku?: readonly PlaybackDanmakuTrack[]
+}
+
+export interface PlaybackDanmakuTrack {
+  readonly id: string
+  readonly label: string
+  readonly format?: string
+  readonly url: string
+  readonly headers?: Readonly<Record<string, string>>
+}
+
+export interface ProviderDanmakuComment {
+  readonly id: string
+  readonly time: number
+  readonly mode: 'scroll' | 'top' | 'bottom'
+  readonly color: string
+  readonly text: string
+}
+
+export interface StreamVariant {
+  readonly id: string
+  readonly label: string
+  readonly available: boolean
+  readonly width?: number
+  readonly height?: number
+  readonly bitrate?: number
+  readonly videoCodec?: string
+  readonly audioCodec?: string
+  readonly dynamicRange?: string
+  readonly unavailableReason?: string
 }
 
 export interface PlaybackRequest {
   readonly itemId: string
   readonly mediaSourceId?: string
+  /** Selects only a stream quality inside mediaSourceId; it must not change the episode or version. */
+  readonly variantId?: string
 }
 
 export type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
@@ -211,6 +248,19 @@ export interface ProviderPlaybackProgressInput {
   completed: boolean
   event: ProviderPlaybackProgressEvent
   playbackRate?: number
+}
+
+export interface ProviderPlaybackHistoryRequest {
+  cursor?: string
+  limit?: number
+  /** Optional online-library identity when one Server publishes multiple provider histories. */
+  libraryId?: string
+}
+
+export interface ProviderPlaybackHistoryPage {
+  items: MediaItem[]
+  cursor?: string
+  hasMore: boolean
 }
 
 export interface ProviderPlaybackSyncDiagnostic {
@@ -263,6 +313,7 @@ export interface DataSource {
 
   getStreamURL: (id: string) => Promise<string>
   getStreamRequest?: (request: PlaybackRequest) => Promise<MediaStreamRequest>
+  getDanmakuComments?: (track: PlaybackDanmakuTrack) => Promise<ProviderDanmakuComment[]>
   searchSubtitles?: (input: SubtitleSearchInput) => Promise<SubtitleSearchResult[]>
   downloadSubtitle?: (input: SubtitleDownloadInput) => Promise<SubtitleTrack>
   updateMetadata?: (itemId: string, metadata: EditableMediaMetadata) => Promise<void>
@@ -270,6 +321,7 @@ export interface DataSource {
   deleteArtwork?: (itemId: string, kind: EditableArtworkKind) => Promise<void>
   deleteSubtitle?: (itemId: string, subtitleIndex: number) => Promise<void>
   syncPlaybackProgress?: (progress: ProviderPlaybackProgressInput) => Promise<void>
+  listPlaybackHistory?: (request?: ProviderPlaybackHistoryRequest) => Promise<ProviderPlaybackHistoryPage>
   setPlayedState?: (itemId: string, mutation: PlayedStateMutation) => Promise<void>
   setFavorite?: (itemId: string, favorite: boolean) => Promise<void>
   listFavorites?: () => Promise<MediaItem[]>

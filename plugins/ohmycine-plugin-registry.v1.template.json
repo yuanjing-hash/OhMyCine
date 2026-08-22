@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "repository": {
+    "id": "org.ohmycine.official",
+    "name": "OhMyCine 官方插件库",
+    "homepage": "https://github.com/yuanjing-hash/OhMyCine",
+    "updatedAt": "${BUILD_TIME}"
+  },
+  "plugins": [
+    {
+      "id": "org.ohmycine.bilibili",
+      "name": "Bilibili",
+      "description": "将 Bilibili 作为 OhMyCine 在线媒体库浏览、播放和下载。",
+      "version": "0.1.0",
+      "channel": "beta",
+      "categories": ["online-media", "video-site"],
+      "manifestUrl": "${MANIFEST_RELEASE_URL}",
+      "packageUrl": "${PACKAGE_RELEASE_URL}",
+      "packageSha256": "${PACKAGE_SHA256}",
+      "minServerVersion": "0.1.0",
+      "releaseNotes": "首个 Bilibili 在线媒体源版本。"
+    }
+  ]
+}

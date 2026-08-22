@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohmycine.example.test/schemas/plugin-registry-v1.json",
+  "title": "OhMyCine GitHub Plugin Registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repository", "plugins"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "homepage", "updatedAt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "homepage": { "type": "string", "format": "uri", "pattern": "^https://github\\.com/[^/]+/[^/]+/?$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/plugin" }
+    }
+  },
+  "$defs": {
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "version", "channel", "categories", "manifestUrl", "packageUrl", "packageSha256", "minServerVersion"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "version": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+        "channel": { "enum": ["stable", "beta"] },
+        "categories": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9.-]+$", "maxLength": 40 } },
+        "iconUrl": { "type": "string", "format": "uri", "pattern": "^https://github\\.com/[^/?#]+/[^/?#]+/releases/download/(?!\\.{1,2}(?:/|$))[^/?#]+/(?!\\.{1,2}(?:/|$))[^/?#]+$" },
+        "manifestUrl": { "type": "string", "format": "uri", "pattern": "^https://github\\.com/[^/?#]+/[^/?#]+/releases/download/(?!\\.{1,2}(?:/|$))[^/?#]+/(?!\\.{1,2}(?:/|$))[^/?#]+$" },
+        "packageUrl": { "type": "string", "format": "uri", "pattern": "^https://github\\.com/[^/?#]+/[^/?#]+/releases/download/(?!\\.{1,2}(?:/|$))[^/?#]+/(?!\\.{1,2}(?:/|$))[^/?#]+$" },
+        "packageSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "minServerVersion": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+        "maxServerVersion": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+        "releaseNotes": { "type": "string", "maxLength": 4000 }
+      }
+    }
+  }
+}

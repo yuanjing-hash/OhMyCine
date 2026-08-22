@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "repository": {
+    "id": "org.ohmycine.fixture-repository",
+    "name": "OhMyCine Fixture Repository",
+    "homepage": "https://github.com/ohmycine/example-plugins",
+    "updatedAt": "2026-08-22T00:00:00Z"
+  },
+  "plugins": [
+    {
+      "id": "org.ohmycine.fixture.static-site",
+      "name": "Static Site Fixture",
+      "description": "Deterministic contract fixture.",
+      "version": "0.1.0",
+      "channel": "stable",
+      "categories": ["online-media"],
+      "manifestUrl": "https://github.com/ohmycine/example-plugins/releases/download/static-site-v0.1.0/plugin.json",
+      "packageUrl": "https://github.com/ohmycine/example-plugins/releases/download/static-site-v0.1.0/static-site.omcp",
+      "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "minServerVersion": "0.1.0",
+      "releaseNotes": "Initial fixture release."
+    }
+  ]
+}

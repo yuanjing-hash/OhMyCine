@@ -2713,7 +2713,24 @@ player — 播放器扩展 — 弹幕、歌词、特效
 
 第三方弹幕源可以作为 `player` 类型插件分发，通过 `DanmakuSource` 接口集成。
 
-## 12. 平台适配
+## 12. Server 在线插件媒体源
+
+Player 不安装或执行 Server 插件，也不包含 Bilibili 等提供方专用分支。`ServerDataSource` 将 Server 发布的在线媒体库作为动态子来源，消费统一的导航、Feed、详情、作品/分集/版本、播放方案和动作 DTO；插件失效只影响其来源，Player 的本地与其它直连数据源保持可用。
+
+插件页面由 Player 原生组件渲染。插件可贡献 Hero、横向卡片、海报墙、列表、搜索、刷新与标准动作，但不能传入 HTML、JavaScript、CSS 或访问 Pinia/Tauri。用户在设备侧决定哪些来源栏目参与总主页及其顺序。
+
+播放身份分为：
+
+```text
+MediaWork → MediaSegment → MediaVersion → StreamVariant
+作品          集/分P          版本/片源          清晰度/码率
+```
+
+选集菜单只负责集数、分 P 和媒体版本；独立清晰度按钮只切换当前版本的可用 `StreamVariant`。短时 URL、敏感 Header 和刷新令牌不写入持久状态；跨来源播放继续清除 Server Bearer 与提供方私有 Header。
+
+Bilibili 是首个真实在线插件，用它验证声明式导航、主页推荐、搜索、详情、DASH、多清晰度、字幕、弹幕和下载入口。该名称与任何站点 API 细节不得进入 Player 核心数据源分支。
+
+## 13. 平台适配
 
 当前平台适配状态以 Windows MVP 为先；下表中的非 Windows 项是目标能力，不代表当前 CI 或 beta release 会构建对应 Player 包。
 

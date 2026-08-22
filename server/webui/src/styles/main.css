@@ -123,6 +123,7 @@ a { color: inherit; text-decoration: none; }
 .semantic-success-text { color: var(--success); }
 .semantic-warning-text { color: var(--warning); }
 .semantic-danger-text { color: var(--danger); }
+.modal-backdrop { background: var(--overlay); }
 .semantic-table { border-collapse: collapse; }
 .semantic-table th { border-bottom: 1px solid var(--border-strong); padding: .7rem .65rem; color: var(--text-muted); font-size: .72rem; font-weight: 700; white-space: nowrap; }
 .semantic-table td { border-bottom: 1px solid var(--border); padding: .72rem .65rem; color: var(--text); vertical-align: top; }

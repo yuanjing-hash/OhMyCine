@@ -10,6 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/rs/zerolog v1.33.0
+	github.com/tetratelabs/wazero v1.9.0
 	github.com/yuanjing-hash/ohmycine/server/webui v0.0.0
 	golang.org/x/crypto v0.41.0
 	golang.org/x/sys v0.35.0

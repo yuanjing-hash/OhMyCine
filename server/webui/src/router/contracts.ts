@@ -27,3 +27,9 @@ export const strmRouteContract = {
 	name: 'strm',
 	navigationID: 'strm',
 } as const
+
+export const pluginsRouteContract = {
+  path: 'system/plugins',
+  name: 'plugins',
+  navigationID: 'plugins',
+} as const

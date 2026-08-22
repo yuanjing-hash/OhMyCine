@@ -57,6 +57,8 @@ var (
 	OperationMediaTransfer             = Operation{"media_transfer", "媒体整理"}
 	OperationSeedingManagement         = Operation{"seeding_management", "做种管理"}
 	OperationTaskQueue                 = Operation{"task_queue", "系统任务队列"}
+	OperationPluginRepository          = Operation{"plugin_repository", "插件仓库"}
+	OperationPluginRuntime             = Operation{"plugin_runtime", "插件运行时"}
 )
 
 func (o Operation) Event(event *zerolog.Event) *zerolog.Event {
@@ -117,6 +119,10 @@ func OperationForHTTPRoute(route string) Operation {
 		return OperationSystemSettings
 	case strings.HasPrefix(route, "/runtime-logs"):
 		return OperationRuntimeLogging
+	case strings.HasPrefix(route, "/plugin-repositories"), route == "/plugins/marketplace":
+		return OperationPluginRepository
+	case strings.HasPrefix(route, "/plugins"):
+		return OperationPluginRuntime
 	default:
 		return OperationHTTPRequest
 	}

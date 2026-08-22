@@ -48,6 +48,8 @@ Before changing backend code or API documentation:
 | [Downloader Management](./downloader-management.md) | Encrypted downloader config/source, qBittorrent adapters, download jobs, telemetry, recovery and safe controls | Active |
 | [Transfer Organization](./transfer-organization.md) | Automatic post-download transfer read model, safe naming summaries, RBAC, retry and conflict UI | Active |
 | [Logging Guidelines](./logging-guidelines.md) | zerolog conventions and redaction rules | Active |
+| [Plugin Repository & Lifecycle](./plugin-repository-discovery.md) | Pinned GitHub Registry discovery, verified package extraction, permission preview, WASM lifecycle, compensation, and cleanup | Active |
+| [Plugin Online Media Gateway](./plugin-online-media.md) | Player-device online libraries, provider history/progress, same-origin assets, Range streaming, and SSRF boundaries | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Testing, linting, and forbidden patterns | Active |
 
 ---

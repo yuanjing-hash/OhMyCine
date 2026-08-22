@@ -32,6 +32,11 @@ describe('grouped administration navigation', () => {
     expect(item.planned).toBeUndefined()
     expect(buildVisibleNavigation([Permissions.SettingsRead])[0]?.items.map(candidate => candidate.id)).toEqual(['settings'])
   })
+  it('exposes plugin repository management as a real workspace', () => {
+    const item = findNavigationItem('plugins')
+    expect(item.planned).toBeUndefined()
+    expect(item.permissionsAny).toEqual([Permissions.PluginsRead])
+  })
 	it('exposes STRM management as a real workspace', () => {
 		const item = findNavigationItem('strm')
 		expect(item.planned).toBeUndefined()

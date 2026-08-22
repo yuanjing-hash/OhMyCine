@@ -15,30 +15,32 @@ import (
 )
 
 type API struct {
-	config            config.Config
-	auth              *services.AuthService
-	admin             *services.AdminService
-	audit             *services.AuditService
-	connections       *services.ConnectionService
-	providerDirectory *services.ProviderDirectoryService
-	storage           *services.StorageService
-	directory         *services.DirectoryBrowserService
-	profiles          *services.MediaClassificationProfileService
-	libraries         *services.MediaLibraryService
-	runtimeLogs       *services.RuntimeLogService
-	queue             *services.QueueService
-	queueEvents       *services.QueueEventHub
-	downloaders       *services.DownloaderService
-	downloads         *services.DownloadService
-	transfers         *services.TransferService
-	downloadSettings  *services.DownloadSettingsService
-	metadataSettings  *services.MetadataSettingsService
-	seedingSettings   *services.SeedingSettingsService
-	seeding           *services.SeedingService
-	signedProxy       *services.SignedProxyService
-	embyGateway       *services.EmbyGatewayService
-	strm              *services.STRMManagementService
-	log               zerolog.Logger
+	config             config.Config
+	auth               *services.AuthService
+	admin              *services.AdminService
+	audit              *services.AuditService
+	connections        *services.ConnectionService
+	providerDirectory  *services.ProviderDirectoryService
+	storage            *services.StorageService
+	directory          *services.DirectoryBrowserService
+	profiles           *services.MediaClassificationProfileService
+	libraries          *services.MediaLibraryService
+	runtimeLogs        *services.RuntimeLogService
+	queue              *services.QueueService
+	queueEvents        *services.QueueEventHub
+	downloaders        *services.DownloaderService
+	downloads          *services.DownloadService
+	transfers          *services.TransferService
+	downloadSettings   *services.DownloadSettingsService
+	metadataSettings   *services.MetadataSettingsService
+	seedingSettings    *services.SeedingSettingsService
+	seeding            *services.SeedingService
+	signedProxy        *services.SignedProxyService
+	embyGateway        *services.EmbyGatewayService
+	strm               *services.STRMManagementService
+	pluginRepositories *services.PluginRepositoryService
+	pluginAssets       pluginAssetGateway
+	log                zerolog.Logger
 }
 
 func (a *API) SetRuntimeLogService(service *services.RuntimeLogService) { a.runtimeLogs = service }
@@ -65,6 +67,10 @@ func (a *API) SetSeedingService(service *services.SeedingService)               
 func (a *API) SetSignedProxyService(service *services.SignedProxyService)       { a.signedProxy = service }
 func (a *API) SetEmbyGatewayService(service *services.EmbyGatewayService)       { a.embyGateway = service }
 func (a *API) SetSTRMManagementService(service *services.STRMManagementService) { a.strm = service }
+func (a *API) SetPluginRepositoryService(service *services.PluginRepositoryService) {
+	a.pluginRepositories = service
+}
+func (a *API) SetPluginAssetGateway(gateway pluginAssetGateway) { a.pluginAssets = gateway }
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}

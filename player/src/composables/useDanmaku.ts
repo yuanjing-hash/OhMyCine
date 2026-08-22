@@ -6,6 +6,7 @@ import { DANMAKU_SETTINGS_CHANGED_EVENT, loadDanmakuSettings, saveDanmakuSetting
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 
 const memoryCache = new Map<string, { matches: DanmakuMatch[], selected: DanmakuMatch, comments: DanmakuComment[] }>()
+const providerTrackCache = new Map<string, DanmakuComment[]>()
 
 export interface DanmakuLoadIdentity {
   matchName: string
@@ -103,6 +104,43 @@ export function useDanmaku() {
     }
   }
 
+  async function loadProviderComments(cacheKey: string, loader: () => Promise<DanmakuComment[]>, force = false): Promise<boolean> {
+    const currentGeneration = ++generation
+    comments.value = []
+    matches.value = []
+    selectedEpisodeId.value = null
+    error.value = null
+    if (!settings.value.enabled)
+      return true
+    const cached = force ? undefined : providerTrackCache.get(cacheKey)
+    if (cached) {
+      comments.value = cached
+      return true
+    }
+    loading.value = true
+    try {
+      const nextComments = await loader()
+      if (generation !== currentGeneration)
+        return false
+      if (nextComments.length === 0)
+        return false
+      comments.value = nextComments
+      providerTrackCache.set(cacheKey, nextComments)
+      if (providerTrackCache.size > 20)
+        providerTrackCache.delete(providerTrackCache.keys().next().value as string)
+      return true
+    }
+    catch (reason) {
+      if (generation === currentGeneration)
+        error.value = toSafeErrorMessage(reason, '来源弹幕加载失败。')
+      return false
+    }
+    finally {
+      if (generation === currentGeneration)
+        loading.value = false
+    }
+  }
+
   async function selectSearchEpisode(animeId: number, animeTitle: string, episode: DanmakuSearchEpisode) {
     const currentGeneration = ++generation
     if (!settings.value.enabled)
@@ -182,5 +220,5 @@ export function useDanmaku() {
   window.addEventListener(DANMAKU_SETTINGS_CHANGED_EVENT, reloadSettings)
   onBeforeUnmount(() => window.removeEventListener(DANMAKU_SETTINGS_CHANGED_EVENT, reloadSettings))
 
-  return { settings, comments, loading, error, loadForMedia, selectSearchEpisode, resetForMediaChange, updateSettings, toggleEnabled }
+  return { settings, comments, loading, error, loadForMedia, loadProviderComments, selectSearchEpisode, resetForMediaChange, updateSettings, toggleEnabled }
 }

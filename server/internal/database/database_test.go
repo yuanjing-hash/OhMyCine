@@ -531,8 +531,8 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}) {
-		t.Fatalf("migration versions=%v, want [1..32]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}) {
+		t.Fatalf("migration versions=%v, want [1..36]", versions)
 	}
 	if !db.Migrator().HasTable("connections") || !db.Migrator().HasColumn(&models.Storage{}, "root_display_path") {
 		t.Fatal("115 connection foundation missing after upgrade")
@@ -554,6 +554,14 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	}
 	if !db.Migrator().HasTable(&models.DeviceToken{}) {
 		t.Fatal("Player device token schema missing after upgrade")
+	}
+	if !db.Migrator().HasTable(&models.PluginRepository{}) {
+		t.Fatal("plugin repository schema missing after upgrade")
+	}
+	for _, index := range []string{"idx_plugin_repositories_github_url", "idx_plugin_repositories_enabled", "idx_plugin_repositories_priority"} {
+		if !db.Migrator().HasIndex("plugin_repositories", index) {
+			t.Fatalf("plugin repository index %s missing after upgrade", index)
+		}
 	}
 	for _, column := range []string{"token_hash", "user_id", "device_id_hash", "device_name", "client_kind", "last_seen_at", "idle_expires_at", "absolute_expires_at", "revoked_at"} {
 		if !db.Migrator().HasColumn(&models.DeviceToken{}, column) {

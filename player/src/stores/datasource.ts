@@ -511,7 +511,7 @@ function sanitizeMediaIdentity(value: unknown): MediaItem['workIdentity'] {
   const scheme = value.scheme
   const mediaType = value.mediaType
   const identityValue = sanitizeIdentityText(value.value)
-  if (!['tmdb', 'emby', 'server'].includes(String(scheme)) || !['movie', 'series', 'season', 'episode', 'file'].includes(String(mediaType)) || !identityValue)
+  if (!['tmdb', 'emby', 'server', 'plugin'].includes(String(scheme)) || !['movie', 'series', 'season', 'episode', 'file'].includes(String(mediaType)) || !identityValue)
     return undefined
   return { scheme: scheme as NonNullable<MediaItem['workIdentity']>['scheme'], mediaType: mediaType as NonNullable<MediaItem['workIdentity']>['mediaType'], value: identityValue }
 }

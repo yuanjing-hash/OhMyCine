@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSettings } from '@/services/danmaku/types'
+import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import { streamVariantDescription, streamVariantLabel, usableStreamVariants } from '@/services/streamVariants'
 import { transitionWindowFullscreen } from '@/services/windowFullscreen'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import DanmakuToggleIcon from './DanmakuToggleIcon.vue'
@@ -13,7 +15,7 @@ import PlayerSettingsPanel from './PlayerSettingsPanel.vue'
 import ProgressBar from './ProgressBar.vue'
 import VolumeControl from './VolumeControl.vue'
 
-type ControlMenu = 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'orientation'
+type ControlMenu = 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'orientation'
 
 const props = defineProps<{
   isPlaying: boolean
@@ -24,6 +26,10 @@ const props = defineProps<{
   subtitleDelay: number
   subtitleTracks: readonly SubtitleTrackOption[]
   audioTracks: readonly Track[]
+  streamVariants: readonly StreamVariant[]
+  currentStreamVariantId: string | null
+  isStreamVariantSwitching: boolean
+  streamVariantError: string | null
   queueItemCount: number
   queueItems: readonly PlaybackQueueItem[]
   currentQueueIndex: number
@@ -62,6 +68,7 @@ const emit = defineEmits<{
   loadLocalSubtitle: []
   searchSubtitles: []
   setAudio: [trackId: number]
+  selectStreamVariant: [variantId: string]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
@@ -111,6 +118,9 @@ const audioLabel = computed(() => {
   return track ? compactTrackLabel(track, '音轨') : '音轨'
 })
 const showAudioControl = computed(() => props.audioTracks.length > 1)
+const selectableStreamVariants = computed(() => usableStreamVariants(props.streamVariants))
+const showQualityControl = computed(() => selectableStreamVariants.value.length >= 2)
+const qualityLabel = computed(() => streamVariantLabel(selectableStreamVariants.value.find(item => item.id === props.currentStreamVariantId)))
 const showQueueControl = computed(() => props.queueItemCount > 1)
 const queueLabel = computed(() => `${Math.max(0, props.currentQueueIndex + 1)}/${props.queueItemCount}`)
 const orientationLabel = computed(() => {
@@ -282,6 +292,13 @@ function openLocalSubtitle() {
 
 function chooseAudio(trackId: number) {
   emit('setAudio', trackId)
+  closeMenus()
+}
+
+function chooseStreamVariant(variantId: string) {
+  if (variantId === props.currentStreamVariantId || props.isStreamVariantSwitching)
+    return
+  emit('selectStreamVariant', variantId)
   closeMenus()
 }
 
@@ -499,6 +516,11 @@ watch(showQueueControl, (visible) => {
     closeMenus()
 })
 
+watch(showQualityControl, (visible) => {
+  if (!visible && activeMenu.value === 'quality')
+    closeMenus()
+})
+
 onMounted(() => {
   void syncFullscreenState()
   if (appWindow) {
@@ -570,6 +592,23 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
 
     <div class="right-controls flex shrink-0 items-center gap-2">
       <VolumeControl class="shrink-0" :volume="volume" @set-volume="(vol) => emit('setVolume', vol)" @interaction-change="setChildInteracting" />
+
+      <div v-if="showQualityControl" class="control-menu-anchor">
+        <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'quality' }" type="button" title="清晰度" aria-label="切换清晰度" aria-haspopup="menu" :aria-expanded="activeMenu === 'quality'" @click="toggleMenu('quality')">
+          <span class="control-text">{{ qualityLabel }}</span>
+        </button>
+        <Transition name="control-menu">
+          <div v-if="activeMenu === 'quality'" class="control-popover track-popover" role="menu" aria-label="选择清晰度">
+            <p v-if="streamVariantError" class="menu-empty">
+              {{ streamVariantError }}
+            </p>
+            <button v-for="variant in selectableStreamVariants" :key="variant.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentStreamVariantId === variant.id }" role="menuitemradio" :aria-checked="currentStreamVariantId === variant.id" :disabled="isStreamVariantSwitching && currentStreamVariantId !== variant.id" @click="chooseStreamVariant(variant.id)">
+              <span>{{ streamVariantLabel(variant) }}</span>
+              <small v-if="streamVariantDescription(variant)">{{ streamVariantDescription(variant) }}</small>
+            </button>
+          </div>
+        </Transition>
+      </div>
 
       <div class="control-menu-anchor">
         <button class="control-button action-chip secondary" :class="{ 'is-active': activeMenu === 'speed' }" type="button" title="倍速" aria-label="倍速" aria-haspopup="menu" :aria-expanded="activeMenu === 'speed'" @click="toggleMenu('speed')">

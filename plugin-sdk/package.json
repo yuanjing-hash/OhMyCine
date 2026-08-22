@@ -1,0 +1,23 @@
+{
+  "name": "@ohmycine/plugin-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OhMyCine Server sandboxed plugin contracts and test fixtures",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "verify": "node ./scripts/verify-contract.mjs",
+    "pack": "node ./scripts/pack-plugin.mjs",
+    "build:fixture": "node ./scripts/build-installable-fixture.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "fflate": "^0.8.2",
+    "typescript": "^5.9.2",
+    "wabt": "^1.0.37"
+  }
+}

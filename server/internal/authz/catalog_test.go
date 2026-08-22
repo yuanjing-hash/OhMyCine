@@ -12,6 +12,7 @@ func TestCatalogContainsStableImplementationCodes(t *testing.T) {
 		PermissionStoragesRead, PermissionStoragesBrowse, PermissionStoragesCreate, PermissionStoragesUpdate, PermissionStoragesDelete, PermissionStoragesTest,
 		PermissionMediaClassificationProfilesRead, PermissionMediaClassificationProfilesCreate, PermissionMediaClassificationProfilesUpdate, PermissionMediaClassificationProfilesDelete,
 		PermissionTransfersReadOwn, PermissionTransfersReadAll,
+		PermissionPluginsRead, PermissionPluginsInstall,
 	}
 	for _, code := range codes {
 		if !Contains(code) {

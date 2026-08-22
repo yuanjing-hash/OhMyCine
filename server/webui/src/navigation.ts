@@ -79,7 +79,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
       { id: 'media-libraries', label: '媒体库', to: '/system/media-libraries', permissionsAny: [Permissions.MediaLibrariesRead], description: '管理来源相对根、扫描计划、监听状态、扫描记录和媒体条目。' },
       { id: 'media-rules', label: '规则管理', to: '/system/media-rules', permissionsAny: [Permissions.MediaClassificationProfilesRead], description: '管理媒体分类、识别预处理与电影/剧集命名 Profile。' },
       { id: 'sites', label: '站点管理', to: '/system/sites', permissionsAny: [Permissions.SystemAdmin], planned: true, description: 'PT 站点与脱敏配置将在独立权限和 API 落地后开放。' },
-      { id: 'plugins', label: '插件', to: '/system/plugins', permissionsAny: [Permissions.PluginsRead], planned: true, description: '插件浏览、权限审阅与手动安装运行时仍在规划中。' },
+      { id: 'plugins', label: '插件', to: '/system/plugins', permissionsAny: [Permissions.PluginsRead], description: '管理 GitHub 插件仓库、查看固定提交上的市场条目和真实安装状态。' },
       { id: 'user-management', label: '用户管理', to: '/system/users', permissionsAny: userManagementPermissions, description: '账户与角色权限的统一管理工作区。' },
       { id: 'settings', label: '设置', to: '/system/settings', permissionsAny: [Permissions.SettingsRead], description: '配置统一下载暂存目录；更多调度、安全与同步参数将按实际 API 逐步接入。' },
     ],

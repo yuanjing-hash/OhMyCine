@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "data": {
+    "cursor": { "max": 1700000000, "view_at": 1699999900, "business": "archive" },
+    "list": [
+      {
+        "title": "固定历史视频",
+        "cover": "https://i0.hdslb.com/bfs/archive/history.jpg",
+        "author_name": "测试 UP",
+        "duration": 600,
+        "progress": 120,
+        "view_at": 1700000100,
+        "history": { "bvid": "BV1xx411c7mD", "cid": 101 }
+      }
+    ]
+  }
+}

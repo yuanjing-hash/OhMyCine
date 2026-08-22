@@ -1,0 +1,18 @@
+{
+  "code": 0,
+  "data": {
+    "item": [
+      {
+        "bvid": "BV1xx411c7mD",
+        "title": "固定推荐视频",
+        "pic": "//i0.hdslb.com/bfs/archive/poster.jpg",
+        "owner": { "name": "测试 UP" },
+        "duration": 125
+      },
+      {
+        "bvid": "invalid",
+        "title": "无效项目不会进入 DTO"
+      }
+    ]
+  }
+}

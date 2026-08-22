@@ -1,0 +1,15 @@
+{
+  "code": 0,
+  "data": {
+    "bvid": "BV1xx411c7mD",
+    "title": "固定详情视频",
+    "desc": "用于契约回归的脱敏简介",
+    "pic": "http://i0.hdslb.com/bfs/archive/detail.jpg",
+    "owner": { "name": "测试 UP" },
+    "duration": 360,
+    "pages": [
+      { "cid": 101, "page": 1, "part": "第一部分" },
+      { "cid": 102, "page": 2, "part": "第二部分" }
+    ]
+  }
+}

@@ -911,7 +911,7 @@ Phase 4: 生态系统           ████████████████
 
 ### Sprint 4.2: 插件系统 (Week 25-28)
 
-- [ ] 插件引擎 (Go plugin / WASM)
+- [ ] Server 通用 WASM 插件引擎、GitHub Registry/Release 仓库与权限生命周期（Bilibili 为首个真实参考插件，不限制后续元数据、通知、下载器、存储、媒体服务器、自动化和规则扩展）
 - [ ] 插件接口定义
 - [ ] 插件生命周期管理 (Init/Start/Stop)
 - [ ] 事件总线 (插件间通信)

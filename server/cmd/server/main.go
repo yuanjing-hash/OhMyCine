@@ -16,6 +16,9 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/httpserver"
 	"github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	pluginhostapi "github.com/yuanjing-hash/ohmycine/server/internal/plugins/hostapi"
+	pluginrepository "github.com/yuanjing-hash/ohmycine/server/internal/plugins/repository"
+	pluginruntime "github.com/yuanjing-hash/ohmycine/server/internal/plugins/runtime"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud/pan115"
@@ -123,6 +126,14 @@ func main() {
 	transfers := services.NewTransferService(db, audit, queue, logManager.Logger("transfer", "service"))
 	transfers.SetConnectionService(connections)
 	seeding := services.NewSeedingService(db, audit, queue, downloaders, logManager.Logger("seeding", "service"))
+	pluginHost := pluginruntime.NewHost(context.Background())
+	pluginHostAPI := pluginhostapi.New(db, credentialStore, logManager.Logger("plugin", "host"))
+	pluginHost.SetCapabilityHost(pluginHostAPI)
+	pluginRepositories := services.NewPluginRepositoryService(db, audit, pluginrepository.NewGitHubClient(nil), logManager.Logger("plugin", "repository"), services.WithPluginRoot(cfg.PluginDirectory), services.WithPluginRuntimeHost(pluginHost), services.WithPluginCredentialStore(credentialStore))
+	if err := pluginRepositories.RestorePlugins(context.Background()); err != nil {
+		logging.OperationPluginRuntime.Event(log.Fatal()).Str("error_code", services.ErrorCode(err)).Msg(logging.OperationPluginRuntime.Message("插件运行时恢复失败"))
+	}
+	defer pluginRepositories.ClosePlugins(context.Background())
 	transfers.SetSeedingService(seeding)
 	seeding.SetStagingCleanup(transfers.CleanupAfterSeeding)
 	downloads.SetTransferService(transfers)
@@ -165,6 +176,8 @@ func main() {
 	api.SetMetadataSettingsService(metadataSettings)
 	api.SetSeedingSettingsService(seedingSettings)
 	api.SetSeedingService(seeding)
+	api.SetPluginRepositoryService(pluginRepositories)
+	api.SetPluginAssetGateway(pluginHostAPI)
 	if err := scheduler.Start(context.Background()); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("任务调度器启动失败"))
 	}

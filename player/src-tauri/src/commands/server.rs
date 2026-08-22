@@ -133,7 +133,9 @@ fn server_url(base_url: &str, path: &str) -> Result<Url, String> {
         || path.contains("..")
         || path.contains('\\')
         || path.contains('#')
-        || ["%2e", "%2f", "%5c"].iter().any(|encoded| normalized_route_path.contains(encoded))
+        || ["%2e", "%2f", "%5c"]
+            .iter()
+            .any(|encoded| normalized_route_path.contains(encoded))
         || path.chars().any(char::is_control)
     {
         return Err("OhMyCine Server API 路径无效。".to_string());
@@ -160,9 +162,21 @@ mod tests {
         assert!(server_url("http://127.0.0.1:3000", "/api/v1/users").is_err());
         assert!(server_url("http://127.0.0.1:3000/base", "/api/v1/player/bootstrap").is_err());
         assert!(server_url("http://127.0.0.1:3000", "/api/v1/player/%2e%2e/users").is_err());
-        assert!(server_url("http://127.0.0.1:3000", "/api/v1/player/catalog%2F..%2Fusers").is_err());
-        assert!(server_url("http://127.0.0.1:3000", "/api/v1/player/catalog%5c..%5cusers").is_err());
-        assert!(server_url("http://127.0.0.1:3000", "/api/v1/player/search?query=%E4%B8%83%E6%AD%A6%E5%A3%AB").is_ok());
+        assert!(server_url(
+            "http://127.0.0.1:3000",
+            "/api/v1/player/catalog%2F..%2Fusers"
+        )
+        .is_err());
+        assert!(server_url(
+            "http://127.0.0.1:3000",
+            "/api/v1/player/catalog%5c..%5cusers"
+        )
+        .is_err());
+        assert!(server_url(
+            "http://127.0.0.1:3000",
+            "/api/v1/player/search?query=%E4%B8%83%E6%AD%A6%E5%A3%AB"
+        )
+        .is_ok());
         assert!(server_url(
             "http://user:password@127.0.0.1:3000",
             "/api/v1/player/bootstrap"

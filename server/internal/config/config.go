@@ -19,6 +19,7 @@ type Config struct {
 	LogDirectory                  string
 	CredentialKeyFile             string
 	CredentialMasterKey           string
+	PluginDirectory               string
 	TMDBDeploymentCredentialKind  string
 	TMDBDeploymentCredentialValue string
 	Environment                   string
@@ -100,6 +101,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("resolve OMC_CREDENTIAL_KEY_FILE: %w", err)
 	}
 	config.CredentialKeyFile = filepath.Clean(absCredentialKeyFile)
+	pluginDirectory := strings.TrimSpace(os.Getenv("OMC_PLUGIN_DIR"))
+	if pluginDirectory == "" {
+		pluginDirectory = filepath.Join(filepath.Dir(config.DatabasePath), "plugins")
+	}
+	absPluginDirectory, err := filepath.Abs(pluginDirectory)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve OMC_PLUGIN_DIR: %w", err)
+	}
+	config.PluginDirectory = filepath.Clean(absPluginDirectory)
 	if err := validateOrigin("OMC_PUBLIC_ORIGIN", config.PublicOrigin); err != nil {
 		return Config{}, err
 	}

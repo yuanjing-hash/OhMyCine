@@ -1729,7 +1729,31 @@ CREATE TABLE settings (
 );
 ```
 
-## 18. 配置文件格式
+## 18. 通用插件平台
+
+Server 插件系统按可组合 capability 扩展，而不是把插件限制成“站点适配器”这一种类型。Bilibili 是首个真实参考插件，但协议同时为元数据、通知、下载器、云盘/存储、媒体服务器、事件/调度、识别分类命名和声明式 UI 预留稳定扩展面。
+
+```text
+Hub/GitHub Registry → 校验并安装不可变插件包 → 隔离 WASM Runtime
+                                                   ↓
+                       受控 Host HTTP / Credential / KV / Log / Event
+                                                   ↓
+                OnlineLibrary / Metadata / Notification / DownloadPlan / ...
+```
+
+约束：
+
+- capability 可组合，不能用互斥 `type` 把插件锁死在单一领域。
+- PT 站点发现与下载保持 Server 内建，不允许第三方插件注册 PT adapter。
+- 默认运行时是无 WASI 的低权限 WASM；HTTP、凭据、事件和调度由宿主代执行并逐项授权。
+- 将来确需原生 SDK 的高权限能力使用独立进程，不回退到进程内 Go plugin。
+- 插件不能注册裸 Gin 路由、读写全局数据库、读取全部凭据、执行任意命令或注入管理端/Player JavaScript。
+- 插件 UI 只返回版本化 Schema 和声明式 DTO，由宿主自己的组件渲染。
+- 固定内容 WASM 仅作为自动化 ABI fixture，不发布给用户；正式能力由独立安装的真实插件验证。
+
+Bilibili 的站点 API、登录态、分页、签名、播放与下载解析全部位于插件包。Server 核心只处理标准 operation、权限、DTO、任务和安全网关，删除或停用 Bilibili 插件不能影响本地、115、Emby/Jellyfin、PT 等核心功能。
+
+## 19. 配置文件格式
 
 ```yaml
 # configs/config.example.yaml
@@ -1768,7 +1792,7 @@ log:
 # 不提供默认管理员密码。首次访问 /setup 通过事务创建唯一 owner。
 ```
 
-## 19. Docker 部署
+## 20. Docker 部署
 
 ```yaml
 # docker/docker-compose.yaml

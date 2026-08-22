@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSettings } from '@/services/danmaku/types'
+import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { computed, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import { streamVariantDescription, streamVariantLabel, usableStreamVariants } from '@/services/streamVariants'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import DanmakuToggleIcon from './DanmakuToggleIcon.vue'
 import FsrSettingsContent from './FsrSettingsContent.vue'
 import ProgressBar from './ProgressBar.vue'
 
-type MobilePanel = 'more' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'orientation'
+type MobilePanel = 'more' | 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'orientation'
 
 const props = defineProps<{
   title: string
@@ -24,6 +26,10 @@ const props = defineProps<{
   subtitleDelay: number
   subtitleTracks: readonly SubtitleTrackOption[]
   audioTracks: readonly Track[]
+  streamVariants: readonly StreamVariant[]
+  currentStreamVariantId: string | null
+  isStreamVariantSwitching: boolean
+  streamVariantError: string | null
   queueItemCount: number
   queueItems: readonly PlaybackQueueItem[]
   currentQueueIndex: number
@@ -62,6 +68,7 @@ const emit = defineEmits<{
   loadLocalSubtitle: []
   searchSubtitles: []
   setAudio: [trackId: number]
+  selectStreamVariant: [variantId: string]
   setVideoAspect: [mode: VideoAspectMode]
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
@@ -83,10 +90,14 @@ const progressInteracting = ref(false)
 const downloadedSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source === 'downloaded'))
 const mediaSubtitleTracks = computed(() => props.subtitleTracks.filter(track => track.source !== 'downloaded'))
 const showAudioControl = computed(() => props.audioTracks.length > 1)
+const selectableStreamVariants = computed(() => usableStreamVariants(props.streamVariants))
+const showQualityControl = computed(() => selectableStreamVariants.value.length >= 2)
+const qualityLabel = computed(() => streamVariantLabel(selectableStreamVariants.value.find(item => item.id === props.currentStreamVariantId)))
 const showQueueControl = computed(() => props.queueItemCount > 1)
 const panelTitle = computed(() => {
   switch (activePanel.value) {
     case 'speed': return '播放速度'
+    case 'quality': return '清晰度'
     case 'subtitle': return '字幕'
     case 'danmaku': return '弹幕设置'
     case 'audio': return '音轨'
@@ -186,6 +197,13 @@ function chooseAudio(trackId: number) {
   closePanel()
 }
 
+function chooseStreamVariant(variantId: string) {
+  if (variantId === props.currentStreamVariantId || props.isStreamVariantSwitching)
+    return
+  emit('selectStreamVariant', variantId)
+  closePanel()
+}
+
 function chooseQueueItem(index: number) {
   emit('selectQueueItem', index)
   closePanel()
@@ -225,6 +243,11 @@ function setProgressInteracting(active: boolean) {
 
 watch([activePanel, progressInteracting], () => {
   emit('interactionChange', activePanel.value !== null || progressInteracting.value)
+})
+
+watch(showQualityControl, (visible) => {
+  if (!visible && activePanel.value === 'quality')
+    closePanel()
 })
 
 defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSettingsFromShortcut })
@@ -296,6 +319,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
           <button type="button" class="mobile-text-button" aria-label="播放速度" @click="openPanel('speed')">
             {{ formatSpeed(playbackSpeed) }}
           </button>
+          <button v-if="showQualityControl" type="button" class="mobile-text-button" aria-label="切换清晰度" @click="openPanel('quality')">
+            {{ qualityLabel }}
+          </button>
           <button v-if="showAudioControl" type="button" class="mobile-icon-button" aria-label="音轨" @click="openPanel('audio')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4V9Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10" /></svg>
           </button>
@@ -328,6 +354,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               </label>
               <button type="button" class="mobile-sheet-action" @click="openPanel('picture')">
                 <span>画面比例与填充</span><b>›</b>
+              </button>
+              <button v-if="showQualityControl" type="button" class="mobile-sheet-action" @click="openPanel('quality')">
+                <span>清晰度 · {{ qualityLabel }}</span><b>›</b>
               </button>
               <button type="button" class="mobile-sheet-action" @click="openPanel('fsr')">
                 <span>FSR 超分与锐化</span><b>›</b>
@@ -366,6 +395,15 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
                 {{ formatSpeed(speed) }}
               </button>
             </div>
+
+            <template v-else-if="activePanel === 'quality'">
+              <p v-if="streamVariantError" class="mobile-sheet-error">
+                {{ streamVariantError }}
+              </p>
+              <button v-for="variant in selectableStreamVariants" :key="variant.id" type="button" class="mobile-track-row" :class="{ 'is-selected': currentStreamVariantId === variant.id }" :disabled="isStreamVariantSwitching && currentStreamVariantId !== variant.id" @click="chooseStreamVariant(variant.id)">
+                <span>{{ streamVariantLabel(variant) }}</span><small>{{ streamVariantDescription(variant) || '可用' }}</small>
+              </button>
+            </template>
 
             <template v-else-if="activePanel === 'subtitle'">
               <p v-if="trackError" class="mobile-sheet-error">

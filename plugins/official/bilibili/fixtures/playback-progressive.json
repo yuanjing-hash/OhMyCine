@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "data": {
+    "quality": 80,
+    "accept_quality": [80, 64, 32],
+    "accept_description": ["1080P 高清", "720P 高清", "480P 清晰"],
+    "durl": [
+      { "url": "https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/test.mp4" }
+    ]
+  }
+}

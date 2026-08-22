@@ -1,0 +1,30 @@
+{
+  "requests": {
+    "site.navigation": { "connectionId": "fixture" },
+    "site.feed": { "connectionId": "fixture", "routeKey": "recommended" },
+    "site.search": { "connectionId": "fixture", "query": "fixture" },
+    "site.detail": { "connectionId": "fixture", "itemId": "fixture-video" },
+    "media.playback": { "connectionId": "fixture", "itemId": "fixture-video", "segmentId": "segment-main", "versionId": "version-main", "variantId": "1080p" },
+    "media.download_plan": { "connectionId": "fixture", "itemId": "fixture-video", "segmentId": "segment-main", "versionId": "version-main", "variantId": "1080p" }
+  },
+  "responses": {
+    "site.navigation": [
+      { "id": "recommended", "title": "推荐", "pageType": "feed", "iconKey": "home", "routeKey": "recommended", "refreshable": true }
+    ],
+    "site.feed": [
+      { "id": "recommended", "title": "Fixture 推荐", "layout": "hero", "homeEligible": true, "refreshSession": "fixture-session-1", "items": [{ "work": { "id": "fixture-video", "title": "Fixture Video", "kind": "video", "identity": { "scheme": "fixture", "value": "fixture-video" }, "overview": "Deterministic plugin fixture", "segments": [{ "id": "segment-main", "title": "正片", "index": 1, "versions": [{ "id": "version-main", "label": "默认版本", "sourceLabel": "Fixture", "variants": [{ "id": "720p", "label": "720p", "available": true, "width": 1280, "height": 720 }, { "id": "1080p", "label": "1080p", "available": true, "width": 1920, "height": 1080 }] }] }] } }] }
+    ],
+    "site.search": [
+      { "id": "search", "title": "搜索结果", "layout": "video-list", "items": [{ "work": { "id": "fixture-video", "title": "Fixture Video", "kind": "video", "identity": { "scheme": "fixture", "value": "fixture-video" } } }] }
+    ],
+    "site.detail": {
+      "id": "fixture-video", "title": "Fixture Video", "kind": "video", "identity": { "scheme": "fixture", "value": "fixture-video" }, "overview": "Deterministic plugin fixture", "segments": [{ "id": "segment-main", "title": "正片", "index": 1, "versions": [{ "id": "version-main", "label": "默认版本", "sourceLabel": "Fixture", "variants": [{ "id": "720p", "label": "720p", "available": true, "width": 1280, "height": 720 }, { "id": "1080p", "label": "1080p", "available": true, "width": 1920, "height": 1080 }] }] }]
+    },
+    "media.playback": {
+      "workId": "fixture-video", "segmentId": "segment-main", "versionId": "version-main", "variantId": "1080p", "variants": [{ "id": "720p", "label": "720p", "available": true, "width": 1280, "height": 720 }, { "id": "1080p", "label": "1080p", "available": true, "width": 1920, "height": 1080 }], "assets": [{ "kind": "progressive", "urlRef": "fixture://video/1080p" }], "delivery": "server-gateway", "expiresAt": "2099-01-01T00:00:00Z"
+    },
+    "media.download_plan": {
+      "workId": "fixture-video", "segmentId": "segment-main", "versionId": "version-main", "variantId": "1080p", "suggestedFileName": "Fixture Video [1080p].mp4", "assets": [{ "id": "video", "kind": "video", "urlRef": "fixture://download/1080p", "expectedContentType": "video/mp4" }]
+    }
+  }
+}

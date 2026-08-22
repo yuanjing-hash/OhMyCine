@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSearchAnime, DanmakuSearchEpisode } from '@/services/danmaku/types'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, PlaybackSubtitleTrack, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
+import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, PlaybackSubtitleTrack, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, StreamVariant, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
@@ -36,6 +36,7 @@ import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerti
 import { matchPlaybackTrackPreference } from '@/services/playerTrackPreferences'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { isVideoFileName } from '@/services/scraper/pathUtils'
+import { usableStreamVariants } from '@/services/streamVariants'
 import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 import { usePlayerChromeStore } from '@/stores/playerChrome'
@@ -104,6 +105,10 @@ const isNativeAndroidPlayer = isNativeAndroidRuntime()
 const mediaTitle = ref('未命名影片')
 const mediaPath = ref('')
 const mediaHeaders = ref<Record<string, string>>({})
+const streamVariants = ref<StreamVariant[]>([])
+const currentStreamVariantId = ref<string | null>(null)
+const isStreamVariantSwitching = ref(false)
+const streamVariantError = ref<string | null>(null)
 const activeResolvedMediaSourceId = ref('')
 const activeSourceId = ref('')
 const activeItemId = ref('')
@@ -173,6 +178,7 @@ let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
 let playbackCleanupStarted = false
 let playbackStopPromise: Promise<void> | null = null
+let activeStreamRequest: MediaStreamRequest | null = null
 let historySaveTimer: number | undefined
 let resumeMessageTimer: number | undefined
 let homeRefreshTimer: number | undefined
@@ -276,6 +282,7 @@ const {
   loading: danmakuLoading,
   error: danmakuError,
   loadForMedia: loadDanmakuForMedia,
+  loadProviderComments: loadProviderDanmakuComments,
   selectSearchEpisode: selectDanmakuSearchEpisode,
   resetForMediaChange: resetDanmakuForMediaChange,
   updateSettings: updateDanmakuSettings,
@@ -814,7 +821,7 @@ function syncActiveMediaMetadataFromRoute() {
   mediaTitle.value = item?.title || item?.name || context?.title || '未命名影片'
 }
 
-async function resolvePlaybackLoadRequest(): Promise<MediaStreamRequest> {
+async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStreamRequest> {
   const context = currentPlaybackContext()
   const sourceId = queryStringValue(route.query.sourceId) || context?.sourceId || ''
   const itemId = queryStringValue(route.query.itemId) || context?.itemId || ''
@@ -835,6 +842,7 @@ async function resolvePlaybackLoadRequest(): Promise<MediaStreamRequest> {
   const request: PlaybackRequest = {
     itemId,
     mediaSourceId: currentMediaSourceId(),
+    variantId,
   }
   return source.getStreamRequest
     ? source.getStreamRequest(request)
@@ -1006,6 +1014,84 @@ async function restorePendingTrackPreference() {
       trackPreferenceRestoreQueued = false
       queueMicrotask(() => void restorePendingTrackPreference())
     }
+  }
+}
+
+function applyResolvedStreamRequest(request: MediaStreamRequest) {
+  const variants = usableStreamVariants(request.variants)
+  const requestedCurrent = request.variantId?.trim() || ''
+  streamVariants.value = variants
+  currentStreamVariantId.value = variants.some(item => item.id === requestedCurrent)
+    ? requestedCurrent
+    : variants[0]?.id ?? null
+  mediaPath.value = request.url
+  mediaHeaders.value = { ...(request.headers ?? {}) }
+  activeResolvedMediaSourceId.value = request.mediaSourceId ?? ''
+  activeStreamRequest = request
+}
+
+async function restorePlaybackAfterStreamLoad(position: number, wasPlaying: boolean, previousVolume: number, previousSpeed: number, previousSubtitleDelay: number) {
+  if (position > 0)
+    await seekMpv(position, { optimistic: true })
+  await setVolume(previousVolume)
+  await applyPlaybackSpeed(previousSpeed)
+  await applySubtitleDelay(previousSubtitleDelay)
+  if (!wasPlaying && isPlaying.value)
+    await togglePause()
+}
+
+async function selectStreamVariant(variantId: string) {
+  const target = usableStreamVariants(streamVariants.value).find(item => item.id === variantId)
+  if (!target || target.id === currentStreamVariantId.value || isStreamVariantSwitching.value)
+    return
+
+  const previousRequest = activeStreamRequest
+  if (!previousRequest)
+    return
+
+  const previousPosition = effectivePlaybackPosition()
+  const previousPlaying = isPlaying.value
+  const previousVolume = volume.value
+  const previousSpeed = playbackSpeed.value
+  const previousSubtitleDelay = subtitleDelay.value
+  let replacementStarted = false
+  let rollbackFailed = false
+
+  isStreamVariantSwitching.value = true
+  streamVariantError.value = null
+  revealChrome()
+  try {
+    const request = await resolvePlaybackLoadRequest(target.id)
+    const resolvedVariants = usableStreamVariants(request.variants)
+    const resolvedVariantID = request.variantId?.trim() || target.id
+    if (!resolvedVariants.some(item => item.id === resolvedVariantID))
+      throw new Error('媒体源没有返回所选清晰度，请刷新后重试。')
+
+    replacementStarted = true
+    await syncKnownSubtitleTracks(request.subtitles ?? [])
+    await load(request.url, { headers: request.headers, title: mediaTitle.value })
+    await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
+    applyResolvedStreamRequest({ ...request, variantId: resolvedVariantID })
+  }
+  catch (error) {
+    if (replacementStarted) {
+      try {
+        await syncKnownSubtitleTracks(previousRequest.subtitles ?? [])
+        await load(previousRequest.url, { headers: previousRequest.headers, title: mediaTitle.value })
+        await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
+        applyResolvedStreamRequest(previousRequest)
+      }
+      catch {
+        rollbackFailed = true
+      }
+    }
+    streamVariantError.value = rollbackFailed
+      ? '清晰度切换失败，原播放流也已失效，请重新打开当前视频。'
+      : toSafeErrorMessage(error, '清晰度切换失败，已保留原播放流。')
+  }
+  finally {
+    isStreamVariantSwitching.value = false
+    revealChrome()
   }
 }
 
@@ -1207,7 +1293,7 @@ async function syncProviderProgress(payload: PlaybackProgressUpsert, event: Prov
     providerSyncError.value = null
   }
   catch (error) {
-    providerSyncError.value = toSafeErrorMessage(error, 'Emby 播放进度同步失败。')
+    providerSyncError.value = toSafeErrorMessage(error, '播放进度同步失败。')
   }
   finally {
     syncProviderDiagnostics(payload.sourceId)
@@ -1577,6 +1663,21 @@ function currentDanmakuFileName(): string {
   return ''
 }
 
+async function loadDanmakuForCurrentMedia(mediaDuration: number, force = false) {
+  const source = store.getSource(currentDisplaySourceId())
+  const track = activeStreamRequest?.danmaku?.[0]
+  if (track && source?.getDanmakuComments) {
+    const loaded = await loadProviderDanmakuComments(
+      `${currentDisplaySourceId()}:${currentQueueItem.value?.id ?? queryStringValue(route.query.itemId)}:${activeStreamRequest?.mediaSourceId ?? ''}:${activeStreamRequest?.variantId ?? ''}:${track.id}`,
+      () => source.getDanmakuComments!(track),
+      force,
+    )
+    if (loaded)
+      return
+  }
+  await loadDanmakuForMedia(currentDanmakuMediaIdentity(), mediaDuration, force)
+}
+
 function closeDanmakuSearch() {
   danmakuSearchGeneration++
   danmakuSearchOpen.value = false
@@ -1940,6 +2041,10 @@ watch(
     resetHistorySaveState()
     mediaPath.value = ''
     mediaHeaders.value = {}
+    streamVariants.value = []
+    currentStreamVariantId.value = null
+    streamVariantError.value = null
+    activeStreamRequest = null
     activeResolvedMediaSourceId.value = ''
     pictureSettingsError.value = null
     queueSwitchError.value = null
@@ -1961,9 +2066,7 @@ watch(
         return
       try {
         const request = await resolvePlaybackLoadRequest()
-        mediaPath.value = request.url
-        mediaHeaders.value = { ...(request.headers ?? {}) }
-        activeResolvedMediaSourceId.value = request.mediaSourceId ?? ''
+        applyResolvedStreamRequest(request)
         await syncKnownSubtitleTracks(request.subtitles ?? [])
         await load(request.url, { headers: request.headers, title: mediaTitle.value })
         await restoreMediaPlaybackPreference()
@@ -1976,6 +2079,9 @@ watch(
       catch (error) {
         mediaPath.value = ''
         mediaHeaders.value = {}
+        streamVariants.value = []
+        currentStreamVariantId.value = null
+        activeStreamRequest = null
         activeResolvedMediaSourceId.value = ''
         setKnownSubtitleTracks([])
         queueSwitchError.value = toSafeErrorMessage(error, '无法解析播放地址。')
@@ -2030,7 +2136,7 @@ watch([videoReady, duration, mediaTitle, currentQueueItem], ([ready, mediaDurati
   if (!ready || mediaDuration <= 0 || !hasMedia.value)
     return
   danmakuLoadTimer = window.setTimeout(() => {
-    void loadDanmakuForMedia(currentDanmakuMediaIdentity(), mediaDuration)
+    void loadDanmakuForCurrentMedia(mediaDuration)
   }, 250)
 })
 
@@ -2932,6 +3038,10 @@ watch(
         :subtitle-delay="subtitleDelay"
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
+        :stream-variants="streamVariants"
+        :current-stream-variant-id="currentStreamVariantId"
+        :is-stream-variant-switching="isStreamVariantSwitching"
+        :stream-variant-error="streamVariantError"
         :queue-item-count="playbackQueueItemCount"
         :queue-items="playbackQueue?.items ?? []"
         :current-queue-index="playbackQueue?.currentIndex ?? 0"
@@ -2964,6 +3074,7 @@ watch(
         @load-local-subtitle="loadLocalSubtitleFile"
         @search-subtitles="openSubtitleSearch"
         @set-audio="handleSetAudio"
+        @select-stream-variant="selectStreamVariant"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
@@ -2973,7 +3084,7 @@ watch(
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"
         @update-danmaku-settings="updateDanmakuSettings"
-        @reload-danmaku="loadDanmakuForMedia(currentDanmakuMediaIdentity(), duration, true)"
+        @reload-danmaku="loadDanmakuForCurrentMedia(duration, true)"
         @search-danmaku="openDanmakuSearch"
         @open-playback-detail="openPlaybackDetailFromContextMenu"
         @navigate-home="navigateFromContextMenu('home')"
@@ -2997,6 +3108,10 @@ watch(
         :subtitle-delay="subtitleDelay"
         :subtitle-tracks="subtitleTracks"
         :audio-tracks="audioTracks"
+        :stream-variants="streamVariants"
+        :current-stream-variant-id="currentStreamVariantId"
+        :is-stream-variant-switching="isStreamVariantSwitching"
+        :stream-variant-error="streamVariantError"
         :queue-item-count="playbackQueueItemCount"
         :queue-items="playbackQueue?.items ?? []"
         :current-queue-index="playbackQueue?.currentIndex ?? 0"
@@ -3029,6 +3144,7 @@ watch(
         @load-local-subtitle="loadLocalSubtitleFile"
         @search-subtitles="openSubtitleSearch"
         @set-audio="handleSetAudio"
+        @select-stream-variant="selectStreamVariant"
         @set-video-aspect="handleSetVideoAspect"
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
@@ -3037,7 +3153,7 @@ watch(
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"
         @update-danmaku-settings="updateDanmakuSettings"
-        @reload-danmaku="loadDanmakuForMedia(currentDanmakuMediaIdentity(), duration, true)"
+        @reload-danmaku="loadDanmakuForCurrentMedia(duration, true)"
         @search-danmaku="openDanmakuSearch"
         @open-playback-detail="openPlaybackDetailFromContextMenu"
         @navigate-home="navigateFromContextMenu('home')"

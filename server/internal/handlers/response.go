@@ -25,7 +25,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 	status := http.StatusInternalServerError
 	code := services.ErrorCode(err)
 	switch code {
-	case services.CodeInvalidRequest, services.CodeQueueActionInvalid, services.CodeConnectionProviderUnsupported, services.CodeConnectionNameRequired, services.CodePan115CookieInvalid, services.CodeEmbyEndpointInvalid, services.CodeEmbyAPIKeyInvalid, services.CodeStorageNameRequired, services.CodeProfileValidation, services.CodeProfileNameRequired, services.CodeRuntimeLogFilterInvalid, services.CodeRuntimeLogPolicyInvalid, services.CodeMediaLibraryNameRequired, services.CodeMediaLibraryPathInvalid, services.CodeMediaLibraryStorageUnavailable, services.CodeMediaLibraryProfileUnavailable, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported, services.CodeDownloaderTypeUnsupported, services.CodeDownloaderNameRequired, services.CodeDownloaderStorageRequired, services.CodeDownloaderStorageUnavailable, services.CodeDownloadStagingRequired, services.CodeDownloadStagingUnavailable, services.CodeDownloadSourceInvalid, services.CodeDownloadTorrentInvalid, services.CodeTMDBTokenInvalid:
+	case services.CodeInvalidRequest, services.CodeQueueActionInvalid, services.CodeConnectionProviderUnsupported, services.CodeConnectionNameRequired, services.CodePan115CookieInvalid, services.CodeEmbyEndpointInvalid, services.CodeEmbyAPIKeyInvalid, services.CodeStorageNameRequired, services.CodeProfileValidation, services.CodeProfileNameRequired, services.CodeRuntimeLogFilterInvalid, services.CodeRuntimeLogPolicyInvalid, services.CodeMediaLibraryNameRequired, services.CodeMediaLibraryPathInvalid, services.CodeMediaLibraryStorageUnavailable, services.CodeMediaLibraryProfileUnavailable, services.CodePluginRepositoryURLInvalid, services.CodePluginAssetInvalid, "storage_path_not_absolute", "storage_path_not_found", "storage_path_not_directory", "storage_path_reparse_point", "storage_unreadable", services.CodeStorageTypeUnsupported, services.CodeDownloaderTypeUnsupported, services.CodeDownloaderNameRequired, services.CodeDownloaderStorageRequired, services.CodeDownloaderStorageUnavailable, services.CodeDownloadStagingRequired, services.CodeDownloadStagingUnavailable, services.CodeDownloadSourceInvalid, services.CodeDownloadTorrentInvalid, services.CodeTMDBTokenInvalid:
 		status = http.StatusBadRequest
 	case services.CodeDirectoryTokenInvalid, services.CodeDirectoryTokenExpired, services.CodeDirectoryNotFound, services.CodeDirectoryUnreadable, services.CodeDirectoryUnavailable:
 		status = http.StatusBadRequest
@@ -33,13 +33,15 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusUnauthorized
 	case services.CodePermissionDenied, services.CodePrivilegeEscalation, services.CodeOwnerProtected, services.CodeLastAdminRequired, services.CodeSelfModification, services.CodeProtectedRole, services.CodeProfileProtected:
 		status = http.StatusForbidden
-	case services.CodeNotFound:
+	case services.CodeNotFound, services.CodePluginAssetExpired:
 		status = http.StatusNotFound
-	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeConnectionNameConflict, services.CodeConnectionInUse, services.CodeStorageNameConflict, services.CodeStoragePathConflict, services.CodeProfileNameConflict, services.CodeProfileRevisionConflict, services.CodeProfileInUse, services.CodeMediaLibraryNameConflict, services.CodeMediaLibraryOverlap, services.CodeMediaLibraryBusy, services.CodeDownloaderNameConflict, services.CodeDownloaderInUse:
+	case services.CodeConflict, services.CodeSetupComplete, services.CodeRoleInUse, services.CodeRecoveryRequired, services.CodeConnectionNameConflict, services.CodeConnectionInUse, services.CodeStorageNameConflict, services.CodeStoragePathConflict, services.CodeProfileNameConflict, services.CodeProfileRevisionConflict, services.CodeProfileInUse, services.CodeMediaLibraryNameConflict, services.CodeMediaLibraryOverlap, services.CodeMediaLibraryBusy, services.CodeDownloaderNameConflict, services.CodeDownloaderInUse, services.CodePluginRepositoryConflict, services.CodePluginRepositoryRevision, services.CodePluginAlreadyInstalled, services.CodePluginPreviewExpired, services.CodePluginPermissionChanged, services.CodePluginRevisionConflict, services.CodePluginRollbackUnavailable, services.CodePluginPackageConflict, services.CodePluginSourceChange:
 		status = http.StatusConflict
 	case services.CodeQueueOrderConflict, services.CodeQueueStateConflict, services.CodeQueueLeaseInvalid, services.CodeQueueActionStale, services.CodeQueuePolicyConflict:
 		status = http.StatusConflict
 	case services.CodeLoginRateLimited:
+		status = http.StatusTooManyRequests
+	case services.CodePluginRegistryRateLimited:
 		status = http.StatusTooManyRequests
 	case services.CodeDirectoryRateLimited:
 		status = http.StatusTooManyRequests
@@ -53,8 +55,10 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusTooManyRequests
 	case services.CodeProxyUpstreamUnavailable, services.CodeProxyHeadersUnsupported, services.CodeProxyUnavailable:
 		status = http.StatusBadGateway
-	case services.CodeRuntimeLogUnavailable, services.CodeMediaLibraryScanFailed, services.CodeQueueWorkerUnavailable, services.CodeConnectionUnavailable, services.CodeEmbyUnavailable, services.CodeEmbyGatewayUnavailable, services.CodeDownloaderUnavailable, services.CodeTMDBUnavailable:
+	case services.CodeRuntimeLogUnavailable, services.CodeMediaLibraryScanFailed, services.CodeQueueWorkerUnavailable, services.CodeConnectionUnavailable, services.CodeEmbyUnavailable, services.CodeEmbyGatewayUnavailable, services.CodeDownloaderUnavailable, services.CodeTMDBUnavailable, services.CodePluginRepositoryUnavailable, services.CodePluginRuntimeUnavailable, services.CodePluginOnlineLibraryUnavailable:
 		status = http.StatusServiceUnavailable
+	case services.CodePluginRegistryInvalid, services.CodePluginRegistryTooLarge, services.CodePluginAssetUnavailable, services.CodePluginManifestInvalid, services.CodePluginManifestMismatch, services.CodePluginPackageDigest, services.CodePluginPackageInvalid, services.CodePluginPackageTooLarge, services.CodePluginSignatureUntrusted, services.CodePluginRuntimeStartFailed, services.CodePluginRuntimeStopFailed, services.CodePluginRuntimeStateFailed, services.CodePluginCleanupFailed, services.CodePluginResponseInvalid, "plugin_runtime_module_invalid", "plugin_runtime_capability_denied", "plugin_runtime_start_timeout":
+		status = http.StatusBadGateway
 	}
 	if status == http.StatusInternalServerError {
 		operation := serverlog.OperationForHTTPRoute(c.FullPath())

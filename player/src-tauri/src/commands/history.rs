@@ -10,6 +10,9 @@ const COMPLETED_REMAINING_SECONDS: f64 = 90.0;
 const COMPLETED_PROGRESS_RATIO: f64 = 0.92;
 const DEFAULT_CONTINUE_LIMIT: u32 = 20;
 const MAX_CONTINUE_LIMIT: u32 = 100;
+const DEFAULT_HISTORY_PAGE_SIZE: u32 = 24;
+const MAX_HISTORY_PAGE_SIZE: u32 = 100;
+const MAX_HISTORY_PAGE: u32 = 100_000;
 const MAX_ID_LENGTH: usize = 512;
 const MAX_IDENTITY_LENGTH: usize = 2048;
 const MAX_TEXT_LENGTH: usize = 2048;
@@ -60,6 +63,16 @@ pub struct PlaybackHistoryEntry {
     progress_source: String,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHistoryPage {
+    list: Vec<PlaybackHistoryEntry>,
+    total: u64,
+    page: u32,
+    page_size: u32,
+    has_more: bool,
+}
+
 #[tauri::command]
 pub fn player_upsert_playback_progress(
     app: AppHandle,
@@ -97,6 +110,20 @@ pub fn player_list_continue_watching(
             .unwrap_or(DEFAULT_CONTINUE_LIMIT)
             .min(MAX_CONTINUE_LIMIT),
     )
+}
+
+#[tauri::command]
+pub fn player_list_playback_history(
+    app: AppHandle,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<PlaybackHistoryPage, String> {
+    let page = page.unwrap_or(1).clamp(1, MAX_HISTORY_PAGE);
+    let page_size = page_size
+        .unwrap_or(DEFAULT_HISTORY_PAGE_SIZE)
+        .clamp(1, MAX_HISTORY_PAGE_SIZE);
+    let storage = PlaybackHistoryStorage::open(&app)?;
+    storage.list_history(page, page_size)
 }
 
 #[tauri::command]
@@ -319,6 +346,39 @@ impl PlaybackHistoryStorage {
             .map_err(|_| "Failed to read continue watching entries.".to_string())?;
 
         Ok(entries)
+    }
+
+    fn list_history(&self, page: u32, page_size: u32) -> Result<PlaybackHistoryPage, String> {
+        let total = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM playback_history", params![], |row| {
+                row.get::<_, u64>(0)
+            })
+            .map_err(|_| "Failed to count playback history entries.".to_string())?;
+        let offset = u64::from(page.saturating_sub(1)) * u64::from(page_size);
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
+                    media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
+                    completed, progress_source
+                 FROM playback_history
+                 ORDER BY updated_at DESC, identity_key ASC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|_| "Failed to read playback history entries.".to_string())?;
+        let list = statement
+            .query_map(params![page_size, offset], map_history_entry)
+            .map_err(|_| "Failed to read playback history entries.".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "Failed to read playback history entries.".to_string())?;
+        Ok(PlaybackHistoryPage {
+            list,
+            total,
+            page,
+            page_size,
+            has_more: offset.saturating_add(u64::from(page_size)) < total,
+        })
     }
 }
 
@@ -705,6 +765,36 @@ mod tests {
             .delete(&identity)
             .expect("remove incomplete continue entry"));
         assert!(storage.get(&identity).expect("read removed").is_none());
+    }
+
+    #[test]
+    fn full_history_uses_stable_bounded_pages() {
+        let conn = Connection::open_in_memory().expect("open playback history test database");
+        initialize_schema(&conn).expect("initialize playback history schema");
+        let storage = PlaybackHistoryStorage { conn };
+        for index in 0..5 {
+            storage
+                .upsert(&progress("source-a", &format!("movie-{index}")))
+                .expect("insert paged history");
+        }
+
+        let first = storage.list_history(1, 2).expect("first history page");
+        let second = storage.list_history(2, 2).expect("second history page");
+        let third = storage.list_history(3, 2).expect("third history page");
+        assert_eq!(first.total, 5);
+        assert!(first.has_more);
+        assert!(second.has_more);
+        assert!(!third.has_more);
+        let mut identities = first
+            .list
+            .into_iter()
+            .chain(second.list)
+            .chain(third.list)
+            .map(|entry| entry.media_identity)
+            .collect::<Vec<_>>();
+        identities.sort();
+        identities.dedup();
+        assert_eq!(identities.len(), 5);
     }
 
     fn identity(source_id: &str, media_identity: &str) -> PlaybackProgressIdentity {

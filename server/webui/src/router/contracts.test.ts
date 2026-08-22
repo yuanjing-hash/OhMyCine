@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { findNavigationItem } from '@/navigation'
-import { downloadsRouteContract, mediaLibrariesRouteContract, organizationRouteContract, playersRouteContract, strmRouteContract } from '@/router/contracts'
+import { downloadsRouteContract, mediaLibrariesRouteContract, organizationRouteContract, playersRouteContract, pluginsRouteContract, strmRouteContract } from '@/router/contracts'
 
 describe('media library route contract', () => {
   it('binds the system URL to the permission-filtered navigation item', () => {
@@ -34,5 +34,12 @@ describe('download route contract', () => {
   it('binds the automation URL to the permission-filtered navigation item', () => {
     expect(downloadsRouteContract).toEqual({ path: 'automation/downloads', name: 'downloads', navigationID: 'downloads' })
     expect(findNavigationItem(downloadsRouteContract.navigationID).to).toBe('/automation/downloads')
+  })
+})
+
+describe('plugin route contract', () => {
+  it('binds the real plugin workspace to its navigation item', () => {
+    expect(pluginsRouteContract).toEqual({ path: 'system/plugins', name: 'plugins', navigationID: 'plugins' })
+    expect(findNavigationItem(pluginsRouteContract.navigationID).to).toBe('/system/plugins')
   })
 })

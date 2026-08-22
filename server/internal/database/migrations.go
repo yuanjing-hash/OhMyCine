@@ -10,6 +10,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/packagefs"
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
 	"gorm.io/gorm"
 )
@@ -84,7 +85,172 @@ func Migrate(db *gorm.DB) error {
 }
 
 func schemaMigrations() []migration {
-	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}}
+	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}}
+}
+
+func migratePluginHostCapabilities(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE plugin_connections (
+			id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, name TEXT NOT NULL,
+			config_json TEXT NOT NULL DEFAULT '{}', credential_scope TEXT NOT NULL DEFAULT '',
+			credential_mode TEXT NOT NULL DEFAULT 'none', credential_ciphertext TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+			FOREIGN KEY(plugin_id) REFERENCES plugin_installations(plugin_id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX idx_plugin_connections_plugin_id ON plugin_connections(plugin_id)`,
+		`CREATE INDEX idx_plugin_connections_enabled ON plugin_connections(enabled)`,
+		`CREATE TABLE plugin_private_kv (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id TEXT NOT NULL, connection_id TEXT NOT NULL,
+			key TEXT NOT NULL, value_ciphertext TEXT NOT NULL, plaintext_bytes INTEGER NOT NULL,
+			created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+			FOREIGN KEY(plugin_id) REFERENCES plugin_installations(plugin_id) ON DELETE CASCADE,
+			FOREIGN KEY(connection_id) REFERENCES plugin_connections(id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_private_kv_identity ON plugin_private_kv(plugin_id, connection_id, key)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migratePluginInstallations(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE plugin_packages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id TEXT NOT NULL, version TEXT NOT NULL,
+			repository_id INTEGER, repository_owner TEXT NOT NULL, repository_repo TEXT NOT NULL,
+			registry_commit TEXT NOT NULL, package_sha256 TEXT NOT NULL, manifest_json TEXT NOT NULL,
+			package_path TEXT NOT NULL, verified_at DATETIME NOT NULL, created_at DATETIME NOT NULL,
+			FOREIGN KEY(repository_id) REFERENCES plugin_repositories(id) ON DELETE SET NULL
+		)`,
+		`CREATE INDEX idx_plugin_packages_identity ON plugin_packages(plugin_id, version, repository_owner, repository_repo)`,
+		`CREATE UNIQUE INDEX idx_plugin_packages_package_sha256 ON plugin_packages(package_sha256)`,
+		`CREATE TABLE plugin_installations (
+			plugin_id TEXT PRIMARY KEY, active_package_id INTEGER NOT NULL, previous_package_id INTEGER,
+			status TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, runtime_generation INTEGER NOT NULL DEFAULT 0,
+			last_runtime_error_code TEXT NOT NULL DEFAULT '', installed_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL, enabled_at DATETIME,
+			FOREIGN KEY(active_package_id) REFERENCES plugin_packages(id) ON DELETE RESTRICT,
+			FOREIGN KEY(previous_package_id) REFERENCES plugin_packages(id) ON DELETE RESTRICT
+		)`,
+		`CREATE INDEX idx_plugin_installations_active_package_id ON plugin_installations(active_package_id)`,
+		`CREATE INDEX idx_plugin_installations_previous_package_id ON plugin_installations(previous_package_id)`,
+		`CREATE INDEX idx_plugin_installations_status ON plugin_installations(status)`,
+		`CREATE TABLE plugin_permission_grants (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id TEXT NOT NULL, plugin_package_id INTEGER NOT NULL,
+			permission_key TEXT NOT NULL, permission_json TEXT NOT NULL, granted_by INTEGER NOT NULL,
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY(plugin_package_id) REFERENCES plugin_packages(id) ON DELETE CASCADE,
+			FOREIGN KEY(granted_by) REFERENCES users(id) ON DELETE RESTRICT
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_permission_grants_identity ON plugin_permission_grants(plugin_id, plugin_package_id, permission_key)`,
+		`CREATE INDEX idx_plugin_permission_grants_granted_by ON plugin_permission_grants(granted_by)`,
+		`CREATE TABLE plugin_runtime_generations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id TEXT NOT NULL, plugin_package_id INTEGER NOT NULL,
+			generation INTEGER NOT NULL, status TEXT NOT NULL, safe_error_code TEXT NOT NULL DEFAULT '',
+			started_at DATETIME NOT NULL, stopped_at DATETIME,
+			FOREIGN KEY(plugin_package_id) REFERENCES plugin_packages(id) ON DELETE RESTRICT
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_runtime_generation ON plugin_runtime_generations(plugin_id, generation)`,
+		`CREATE INDEX idx_plugin_runtime_generations_package_id ON plugin_runtime_generations(plugin_package_id)`,
+		`CREATE INDEX idx_plugin_runtime_generations_status ON plugin_runtime_generations(status)`,
+		`CREATE TABLE plugin_install_previews (
+			id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_package_id INTEGER NOT NULL,
+			operation TEXT NOT NULL, permission_fingerprint TEXT NOT NULL, installation_revision INTEGER NOT NULL,
+			created_by INTEGER NOT NULL, expires_at DATETIME NOT NULL, consumed_at DATETIME, created_at DATETIME NOT NULL,
+			FOREIGN KEY(plugin_package_id) REFERENCES plugin_packages(id) ON DELETE CASCADE,
+			FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX idx_plugin_install_previews_plugin_id ON plugin_install_previews(plugin_id)`,
+		`CREATE INDEX idx_plugin_install_previews_package_id ON plugin_install_previews(plugin_package_id)`,
+		`CREATE INDEX idx_plugin_install_previews_created_by ON plugin_install_previews(created_by)`,
+		`CREATE INDEX idx_plugin_install_previews_expires_at ON plugin_install_previews(expires_at)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migratePluginPackageIntegrity(db *gorm.DB) error {
+	for _, statement := range []string{
+		`ALTER TABLE plugin_packages ADD COLUMN registry_entry_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE plugin_packages ADD COLUMN manifest_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE plugin_packages ADD COLUMN package_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE plugin_packages ADD COLUMN extracted_tree_sha256 TEXT NOT NULL DEFAULT ''`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	var packages []models.PluginPackage
+	if err := db.Find(&packages).Error; err != nil {
+		return err
+	}
+	for _, pluginPackage := range packages {
+		treeSHA256, err := packagefs.ComputeManagedTreeSHA256(pluginPackage.PackagePath)
+		if err != nil {
+			return fmt.Errorf("enroll plugin package %d integrity: %w", pluginPackage.ID, err)
+		}
+		if err := db.Model(&models.PluginPackage{}).Where("id = ?", pluginPackage.ID).Update("extracted_tree_sha256", treeSHA256).Error; err != nil {
+			return err
+		}
+	}
+	for _, statement := range []string{
+		`CREATE TABLE plugin_permission_grants_v35 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id TEXT NOT NULL, plugin_package_id INTEGER NOT NULL,
+			permission_key TEXT NOT NULL, permission_json TEXT NOT NULL, granted_by INTEGER,
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY(plugin_package_id) REFERENCES plugin_packages(id) ON DELETE CASCADE,
+			FOREIGN KEY(granted_by) REFERENCES users(id) ON DELETE SET NULL
+		)`,
+		`INSERT INTO plugin_permission_grants_v35(id, plugin_id, plugin_package_id, permission_key, permission_json, granted_by, created_at)
+		 SELECT id, plugin_id, plugin_package_id, permission_key, permission_json, granted_by, created_at FROM plugin_permission_grants`,
+		`DROP TABLE plugin_permission_grants`,
+		`ALTER TABLE plugin_permission_grants_v35 RENAME TO plugin_permission_grants`,
+		`CREATE UNIQUE INDEX idx_plugin_permission_grants_identity ON plugin_permission_grants(plugin_id, plugin_package_id, permission_key)`,
+		`CREATE INDEX idx_plugin_permission_grants_granted_by ON plugin_permission_grants(granted_by)`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migratePluginRepositories(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE plugin_repositories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			github_url TEXT NOT NULL,
+			github_owner TEXT NOT NULL,
+			github_repo TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			priority INTEGER NOT NULL,
+			revision INTEGER NOT NULL DEFAULT 1,
+			last_commit_sha TEXT NOT NULL DEFAULT '',
+			last_refreshed_at DATETIME,
+			last_error_code TEXT NOT NULL DEFAULT '',
+			cached_registry_json TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_repositories_github_url ON plugin_repositories(github_url)`,
+		`CREATE INDEX idx_plugin_repositories_enabled ON plugin_repositories(enabled)`,
+		`CREATE INDEX idx_plugin_repositories_priority ON plugin_repositories(priority)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migratePlayerDeviceTokens(db *gorm.DB) error {

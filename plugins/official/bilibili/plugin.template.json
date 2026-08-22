@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "org.ohmycine.bilibili",
+  "name": "Bilibili",
+  "description": "将 Bilibili 作为 OhMyCine 在线媒体库浏览、播放和下载。",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "minServerVersion": "0.1.0",
+  "runtime": "wasm",
+  "entry": "plugin.wasm",
+  "capabilities": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"],
+  "permissions": [
+    { "kind": "network.http", "domains": ["api.bilibili.com", "passport.bilibili.com", "*.bilivideo.com", "*.hdslb.com"] },
+    { "kind": "credential.use", "scopes": ["bilibili.session"] },
+    { "kind": "storage.private", "maxBytes": 8388608 },
+    { "kind": "download.plan" }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "homeRecommendationEnabled": { "type": "boolean", "default": true }
+    }
+  },
+  "author": "OhMyCine",
+  "license": "MIT",
+  "homepage": "https://ohmycine.example.test/plugins/bilibili",
+  "source": "https://github.com/yuanjing-hash/OhMyCine",
+  "packageSha256": "${PACKAGE_SHA256}"
+}

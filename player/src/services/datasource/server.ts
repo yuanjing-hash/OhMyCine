@@ -1,10 +1,26 @@
 import type { ServerCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackRequest } from './types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
+import {
+  onlineLibraryToMediaLibrary,
+  onlineNavigationToMediaItem,
+  onlinePlaybackToStreamRequest,
+  onlineSectionsToHomeSections,
+  onlineWorkToDetail,
+  onlineWorkToMediaItem,
+  parseOnlineFeedSections,
+  parseOnlineHistoryPage,
+  parseOnlineItemID,
+  parseOnlineLibraryList,
+  parseOnlineNavigationList,
+  parseOnlinePlaybackPlan,
+  parseOnlineWork,
+  parseProviderDanmakuComments,
+} from './serverOnline'
 
 interface ServerConfigExtra {
   credentialRef?: string
@@ -113,6 +129,14 @@ const defaultServerBridge: ServerBridge = {
 const SERVER_PAGE_SIZE = 100
 const SERVER_MAX_PAGES = 100
 const SERVER_MAX_ITEMS = SERVER_PAGE_SIZE * SERVER_MAX_PAGES
+const SERVER_ONLINE_PROGRESS_CONTEXT_LIMIT = 256
+
+interface ServerOnlineProgressContext {
+  libraryId: string
+  workId: string
+  segmentId: string
+  versionId: string
+}
 
 export class ServerDataSource implements DataSource {
   readonly type = 'server' as const
@@ -121,6 +145,7 @@ export class ServerDataSource implements DataSource {
   private credentialRef = ''
   private credential: ServerCredentialValue | null = null
   private connected = false
+  private readonly onlineProgressContexts = new Map<string, ServerOnlineProgressContext>()
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
 
@@ -150,18 +175,42 @@ export class ServerDataSource implements DataSource {
   destroy(): void {
     this.credential = null
     this.connected = false
+    this.onlineProgressContexts.clear()
   }
 
   clearCache(): void {}
 
   async listLibraries(): Promise<MediaLibrary[]> {
-    const data = recordData(await this.request('/api/v1/player/media-libraries'))
-    const list = Array.isArray(data.list) ? data.list : []
-    return list.map(parseLibrary).filter((item): item is MediaLibrary => item != null).map(item => ({ ...item, sourceId: this.id }))
+    const [physicalResult, onlineResult] = await Promise.allSettled([
+      this.request('/api/v1/player/media-libraries'),
+      this.request('/api/v1/player/online-libraries'),
+    ])
+    if (physicalResult.status === 'rejected' && onlineResult.status === 'rejected')
+      throw physicalResult.reason
+    const physicalData = physicalResult.status === 'fulfilled' ? recordData(physicalResult.value) : {}
+    const physicalList = Array.isArray(physicalData.list) ? physicalData.list : []
+    const physical = physicalList.map(parseLibrary).filter((item): item is MediaLibrary => item != null).map(item => ({ ...item, sourceId: this.id }))
+    const online = onlineResult.status === 'fulfilled'
+      ? parseOnlineLibraryList(onlineResult.value).filter(item => item.available).map(item => onlineLibraryToMediaLibrary(this.id, item))
+      : []
+    return [...physical, ...online]
   }
 
   async list(path = ''): Promise<MediaItem[]> {
     const value = path.trim()
+    const online = parseOnlineItemID(value)
+    if (online?.kind === 'library') {
+      const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation`))
+      return navigation.map(item => onlineNavigationToMediaItem(this.id, online.libraryId, item))
+    }
+    if (online?.kind === 'feed') {
+      const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/feeds/${encodeURIComponent(online.routeKey)}`))
+      return sections.flatMap(section => section.items.map(item => onlineWorkToMediaItem(this.id, online.libraryId, item.work)))
+    }
+    if (online?.kind === 'work' || online?.kind === 'version') {
+      const work = await this.onlineWork(online.libraryId, online.workId)
+      return onlineWorkToDetail(this.id, online.libraryId, work).children ?? []
+    }
     if (/^\d+$/.test(value))
       return (await this.catalog(value)).map(item => this.mapItem(item))
     const work = parseWorkItemID(value)
@@ -191,26 +240,57 @@ export class ServerDataSource implements DataSource {
   }
 
   async getHomeSections(): Promise<HomeSection[]> {
-    const libraries = await this.listLibraries()
-    const pages = await Promise.all(libraries.slice(0, 12).map(library => this.catalog(library.id).catch(() => [])))
+    const [libraries, onlineLibraries] = await Promise.all([
+      this.listLibraries(),
+      this.onlineLibraries().catch(() => []),
+    ])
+    const physicalLibraries = libraries.filter(library => /^\d+$/.test(library.id))
+    const pages = await Promise.all(physicalLibraries.slice(0, 12).map(library => this.catalog(library.id).catch(() => [])))
     const items = pages.flat().map(item => this.mapItem(item)).sort((a, b) => Date.parse(b.modified ?? '') - Date.parse(a.modified ?? ''))
-    if (items.length === 0)
-      return []
-    return [
+    const physicalSections = [
       { id: `${this.id}:hero`, sourceId: this.id, title: 'Server 精选', type: 'hero', items: items.filter(item => item.backdropUrl).slice(0, 12) },
       { id: `${this.id}:recent`, sourceId: this.id, title: 'Server 最近入库', type: 'recentlyAdded', items: items.slice(0, 24) },
     ].filter(section => section.items.length > 0) as HomeSection[]
+    const onlineSections = (await Promise.all(onlineLibraries.filter(item => item.available).slice(0, 8).flatMap(library =>
+      library.homeContributions.slice(0, 4).map(async (routeKey) => {
+        try {
+          const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/feeds/${encodeURIComponent(routeKey)}`))
+          return onlineSectionsToHomeSections(this.id, library.id, sections.filter(section => section.homeEligible))
+        }
+        catch {
+          return []
+        }
+      }),
+    ))).flat()
+    return [...physicalSections, ...onlineSections]
   }
 
   async search(keyword: string): Promise<MediaItem[]> {
     const query = keyword.trim()
     if (!query)
       return []
-    const data = recordData(await this.request(`/api/v1/player/search?query=${encodeURIComponent(query)}&page=1&page_size=50`))
-    return arrayRecords(data.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => this.mapItem(item))
+    const [physical, onlineLibraries] = await Promise.all([
+      this.request(`/api/v1/player/search?query=${encodeURIComponent(query)}&page=1&page_size=50`).catch(() => null),
+      this.onlineLibraries().catch(() => []),
+    ])
+    const physicalData = physical == null ? {} : recordData(physical)
+    const physicalItems = arrayRecords(physicalData.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => this.mapItem(item))
+    const onlineItems = (await Promise.all(onlineLibraries.filter(item => item.available && item.capabilities.includes('site.search')).slice(0, 8).map(async (library) => {
+      try {
+        const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/search?q=${encodeURIComponent(query)}`))
+        return sections.flatMap(section => section.items.map(item => onlineWorkToMediaItem(this.id, library.id, item.work)))
+      }
+      catch {
+        return []
+      }
+    }))).flat()
+    return [...physicalItems, ...onlineItems]
   }
 
   async getDetail(id: string): Promise<MediaDetail> {
+    const online = parseOnlineItemID(id)
+    if (online?.kind === 'work' || online?.kind === 'version')
+      return onlineWorkToDetail(this.id, online.libraryId, await this.onlineWork(online.libraryId, online.workId))
     const work = parseWorkItemID(id)
     if (!work)
       throw new Error('Server 媒体标识无效。')
@@ -267,6 +347,37 @@ export class ServerDataSource implements DataSource {
   }
 
   async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
+    const online = parseOnlineItemID(request.itemId)
+    if (online?.kind === 'work' || online?.kind === 'version') {
+      const work = await this.onlineWork(online.libraryId, online.workId)
+      const requestedVersion = online.kind === 'version'
+        ? work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))).find(item => item.segment.id === online.segmentId && item.version.id === online.versionId)
+        : work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))).find(item => versionAvailable(item.version, request.variantId))
+      if (!requestedVersion)
+        throw new Error('请选择可播放的在线媒体版本。')
+      const variantId = request.variantId
+        ?? requestedVersion.version.variants.find(variant => variant.available)?.id
+      const body = {
+        segmentId: requestedVersion.segment.id,
+        versionId: requestedVersion.version.id,
+        ...(variantId ? { variantId } : {}),
+      }
+      const plan = parseOnlinePlaybackPlan(await this.request(
+        `/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/items/${encodeURIComponent(online.workId)}/playback`,
+        'POST',
+        body,
+      ))
+      if (!plan)
+        throw new Error('Server 返回的在线媒体播放方案无效。')
+      const credential = await this.ensureCredential()
+      this.rememberOnlineProgressContext(request.itemId, plan.versionId, {
+        libraryId: online.libraryId,
+        workId: online.workId,
+        segmentId: plan.segmentId,
+        versionId: plan.versionId,
+      })
+      return onlinePlaybackToStreamRequest(this.baseUrl, credential.accessToken, plan)
+    }
     const work = parseWorkItemID(request.itemId)
     let entryID: number | null = null
     if (work) {
@@ -289,6 +400,63 @@ export class ServerDataSource implements DataSource {
       url: `${this.baseUrl}/api/v1/player/media-entries/${entryID}/stream`,
       headers: { Authorization: `Bearer ${credential.accessToken}` },
       mediaSourceId: String(entryID),
+    }
+  }
+
+  async listPlaybackHistory(request: ProviderPlaybackHistoryRequest = {}): Promise<ProviderPlaybackHistoryPage> {
+    const parameters = new URLSearchParams()
+    if (request.libraryId) {
+      const onlineLibrary = parseOnlineItemID(request.libraryId)
+      if (onlineLibrary?.kind !== 'library')
+        throw new Error('在线媒体库历史来源无效。')
+      parameters.set('library_id', onlineLibrary.libraryId)
+    }
+    if (request.cursor)
+      parameters.set('cursor', request.cursor)
+    parameters.set('page_size', String(Math.max(1, Math.min(100, request.limit ?? 24))))
+    return parseOnlineHistoryPage(this.id, await this.request(`/api/v1/player/online-history?${parameters.toString()}`))
+  }
+
+  async syncPlaybackProgress(progress: ProviderPlaybackProgressInput): Promise<void> {
+    const online = parseOnlineItemID(progress.itemId)
+    const context = online?.kind === 'version'
+      ? { libraryId: online.libraryId, workId: online.workId, segmentId: online.segmentId, versionId: online.versionId }
+      : this.onlineProgressContexts.get(onlineProgressContextKey(progress.itemId, progress.mediaSourceId))
+    if (!context)
+      return
+    await this.request(
+      `/api/v1/player/online-libraries/${encodeURIComponent(context.libraryId)}/items/${encodeURIComponent(context.workId)}/progress`,
+      'POST',
+      {
+        segmentId: context.segmentId,
+        versionId: context.versionId,
+        event: progress.event,
+        positionSeconds: Math.max(0, progress.position),
+        ...(progress.duration != null ? { durationSeconds: Math.max(0, progress.duration) } : {}),
+        idempotencyKey: crypto.randomUUID(),
+        occurredAt: new Date().toISOString(),
+      },
+    )
+  }
+
+  async getDanmakuComments(track: PlaybackDanmakuTrack): Promise<ProviderDanmakuComment[]> {
+    const url = new URL(track.url)
+    if (url.origin !== new URL(this.baseUrl).origin || !url.pathname.startsWith('/api/v1/player/online-assets/') || url.username || url.password)
+      throw new Error('在线弹幕轨道未通过 Server 安全网关。')
+    const credential = await this.ensureCredential()
+    try {
+      const response = await this.bridge.request({
+        baseUrl: this.baseUrl,
+        method: 'GET',
+        path: `${url.pathname}${url.search}`,
+        accessToken: credential.accessToken,
+      })
+      if (response.status < 200 || response.status >= 300)
+        throw new Error(`在线弹幕加载失败（HTTP ${response.status}）`)
+      return parseProviderDanmakuComments(response.body)
+    }
+    catch (error) {
+      throw new Error(redactSensitiveText(error))
     }
   }
 
@@ -332,6 +500,17 @@ export class ServerDataSource implements DataSource {
     if (!item)
       throw new Error('Server 返回的媒体详情无效。')
     return { item, versions }
+  }
+
+  private async onlineLibraries() {
+    return parseOnlineLibraryList(await this.request('/api/v1/player/online-libraries'))
+  }
+
+  private async onlineWork(libraryID: string, workID: string) {
+    const work = parseOnlineWork(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(libraryID)}/items/${encodeURIComponent(workID)}`))
+    if (!work)
+      throw new Error('Server 返回的在线媒体详情无效。')
+    return work
   }
 
   private mapItem(item: ServerItemRecord): MediaItem {
@@ -411,6 +590,22 @@ export class ServerDataSource implements DataSource {
       throw new Error('OhMyCine Server 登录凭据不存在，请重新连接。')
     return this.credential
   }
+
+  private rememberOnlineProgressContext(itemId: string, mediaSourceId: string, context: ServerOnlineProgressContext): void {
+    const key = onlineProgressContextKey(itemId, mediaSourceId)
+    this.onlineProgressContexts.delete(key)
+    this.onlineProgressContexts.set(key, context)
+    while (this.onlineProgressContexts.size > SERVER_ONLINE_PROGRESS_CONTEXT_LIMIT) {
+      const oldest = this.onlineProgressContexts.keys().next().value
+      if (typeof oldest !== 'string')
+        break
+      this.onlineProgressContexts.delete(oldest)
+    }
+  }
+}
+
+function onlineProgressContextKey(itemId: string, mediaSourceId: string | undefined): string {
+  return `${itemId}\u0000${mediaSourceId ?? ''}`
 }
 
 export async function loginServerAndCreateConfig(
@@ -656,6 +851,11 @@ function imagePathList(value: unknown, limit: number): string[] | undefined {
     return undefined
   const result = [...new Set(value.map(optionalImagePath).filter((entry): entry is string => Boolean(entry)))].slice(0, limit)
   return result.length ? result : undefined
+}
+function versionAvailable(version: { variants: readonly { id: string, available: boolean }[] }, requestedVariantId?: string): boolean {
+  if (requestedVariantId)
+    return version.variants.some(variant => variant.id === requestedVariantId && variant.available)
+  return version.variants.length === 0 || version.variants.some(variant => variant.available)
 }
 function mapIdentity(value: ServerIdentityRecord): MediaIdentity {
   return { scheme: value.scheme, mediaType: value.media_type, value: value.value }

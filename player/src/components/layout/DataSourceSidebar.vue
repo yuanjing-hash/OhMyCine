@@ -58,6 +58,10 @@ function getSourceIcon(type: string) {
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 16.5 4 11a4 4 0 0 1 5.7-5.6l.3.4.3-.4A4 4 0 0 1 16 11l-6 5.5Z" stroke="currentColor" stroke-width="1.5" /></svg>
       </button>
 
+      <button class="gp-btn flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200" :class="route.path === '/history' ? 'is-active' : ''" title="观看历史" aria-label="观看历史" @click="router.push('/history')">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M10 5.5V10l3 2M4.2 5.2A7 7 0 1 1 3 10M3 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+
       <div class="gp-divider mx-auto h-px w-7" />
 
       <button

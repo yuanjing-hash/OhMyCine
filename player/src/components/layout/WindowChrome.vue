@@ -164,6 +164,11 @@ onBeforeUnmount(() => {
         收藏
       </button>
 
+      <button class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200" :class="route.path === '/history' ? 'is-active' : ''" @click="router.push('/history')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 5.5V10l3 2M4.2 5.2A7 7 0 1 1 3 10M3 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        历史
+      </button>
+
       <div class="gp-divider h-6 w-px" />
 
       <button

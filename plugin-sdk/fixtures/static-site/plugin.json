@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "org.ohmycine.fixture.static-site",
+  "name": "Static Site Fixture",
+  "description": "A deterministic fixture used to verify the public plugin contract.",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "minServerVersion": "0.1.0",
+  "runtime": "wasm",
+  "entry": "plugin.wasm",
+  "capabilities": ["site.navigation", "site.feed", "site.detail", "media.playback", "media.quality_switch"],
+  "permissions": [{ "kind": "storage.private", "maxBytes": 4096 }],
+  "configSchema": { "type": "object", "additionalProperties": false },
+  "author": "OhMyCine",
+  "license": "MIT",
+  "homepage": "https://ohmycine.example.test/plugins/static-site",
+  "source": "https://ohmycine.example.test/source/static-site",
+  "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

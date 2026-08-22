@@ -2,7 +2,7 @@ import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vu
 import { useAuthStore } from '@/stores/auth'
 import { Permissions, type PermissionCode } from '@/auth/generated-permissions'
 import { findNavigationItem, getFirstVisibleUserManagementPath, legacyRouteRedirects, userManagementPermissions } from '@/navigation'
-import { downloadsRouteContract, mediaLibrariesRouteContract, organizationRouteContract, playersRouteContract, strmRouteContract } from '@/router/contracts'
+import { downloadsRouteContract, mediaLibrariesRouteContract, organizationRouteContract, playersRouteContract, pluginsRouteContract, strmRouteContract } from '@/router/contracts'
 import AppLayout from '@/layouts/AppLayout.vue'
 import SetupView from '@/views/SetupView.vue'
 import LoginView from '@/views/LoginView.vue'
@@ -22,6 +22,7 @@ import DownloadsView from '@/views/DownloadsView.vue'
 import OrganizationView from '@/views/OrganizationView.vue'
 import STRMView from '@/views/STRMView.vue'
 import SettingsView from '@/views/SettingsView.vue'
+import PluginsView from '@/views/PluginsView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
 
 function navigationMeta(id: string) {
@@ -37,7 +38,6 @@ const plannedRoutes = [
   ['subscriptions/calendar', 'calendar'],
   ['automation/files', 'files'],
   ['system/sites', 'sites'],
-  ['system/plugins', 'plugins'],
 ] as const
 
 export const router = createRouter({
@@ -61,6 +61,7 @@ export const router = createRouter({
 		{ path: organizationRouteContract.path, name: organizationRouteContract.name, component: OrganizationView, meta: navigationMeta(organizationRouteContract.navigationID) },
 		{ path: strmRouteContract.path, name: strmRouteContract.name, component: STRMView, meta: navigationMeta(strmRouteContract.navigationID) },
         { path: 'system/settings', name: 'settings', component: SettingsView, meta: navigationMeta('settings') },
+        { path: pluginsRouteContract.path, name: pluginsRouteContract.name, component: PluginsView, meta: navigationMeta(pluginsRouteContract.navigationID) },
         ...plannedRoutes.map(([path, id]) => ({ path, name: id, component: PlannedView, meta: navigationMeta(id) })),
         {
           path: 'system/users',
