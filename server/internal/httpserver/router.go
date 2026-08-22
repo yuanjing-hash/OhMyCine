@@ -54,6 +54,8 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	protected.POST("/auth/logout", api.Logout)
 	protected.GET("/auth/me", api.Me)
 	protected.GET("/auth/csrf", api.CSRF)
+	protected.GET("/player-devices", middleware.NoStore(), middleware.RequirePermission(authz.PermissionConnectionsRead), api.PlayerDevices)
+	protected.DELETE("/player-devices/:id", middleware.NoStore(), middleware.RequirePermission(authz.PermissionConnectionsUpdate), api.RevokePlayerDevice)
 	protected.GET("/dashboard", middleware.RequirePermission(authz.PermissionDashboardRead), api.Dashboard)
 	protected.GET("/permissions", middleware.RequirePermission(authz.PermissionRolesRead), api.Permissions)
 	protected.GET("/users", middleware.RequirePermission(authz.PermissionUsersRead), api.Users)

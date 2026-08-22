@@ -76,6 +76,7 @@ interface ServerVersionRecord {
   modified_at: string
   playable: boolean
   stream_path?: string
+  delivery_kind?: 'server_stream' | 'server_redirect'
   exact_identity: string
 }
 
@@ -221,7 +222,8 @@ export class ServerDataSource implements DataSource {
       name: version.title,
       size: version.size,
       isRemote: true,
-      isStrm: version.playable,
+      sourceLabel: this.name,
+      deliveryKind: version.delivery_kind,
       sourceId: this.id,
       itemId: createEntryItemID(work.libraryId, work.workId, version.id),
       exactIdentity: version.exact_identity,
@@ -232,6 +234,7 @@ export class ServerDataSource implements DataSource {
         id: `alternate-${index}`,
         name: target.label,
         isRemote: true,
+        sourceLabel: target.label,
         sourceId: target.sourceId,
         itemId: target.itemId,
         providerMediaSourceId: target.mediaSourceId,
@@ -574,7 +577,21 @@ function parseItem(value: unknown): ServerItemRecord | null {
 function parseVersion(value: unknown): ServerVersionRecord | null {
   if (!isRecord(value) || typeof value.id !== 'number' || typeof value.title !== 'string' || typeof value.playable !== 'boolean' || typeof value.exact_identity !== 'string')
     return null
-  return value as unknown as ServerVersionRecord
+  const deliveryKind = value.delivery_kind === 'server_stream' || value.delivery_kind === 'server_redirect'
+    ? value.delivery_kind
+    : undefined
+  return {
+    id: value.id,
+    title: value.title,
+    season: numberValue(value.season),
+    episode: numberValue(value.episode),
+    size: numberValue(value.size) ?? 0,
+    modified_at: optionalString(value.modified_at) ?? '',
+    playable: value.playable,
+    stream_path: optionalString(value.stream_path),
+    delivery_kind: deliveryKind,
+    exact_identity: value.exact_identity,
+  }
 }
 
 function recordData(value: unknown): Record<string, unknown> {

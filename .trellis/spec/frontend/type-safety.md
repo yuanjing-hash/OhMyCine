@@ -1326,6 +1326,7 @@ await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
 - Credential envelope: `ServerCredentialValue { accessToken: string }`; ordinary config stores only Server origin, `credentialRef`, random device ID and safe media-library summaries.
 - Native JSON command: `server_request_json({ baseUrl, method, path, accessToken?, body? })`; only GET/POST/DELETE and `/api/v1/player/*` are allowed.
 - `MediaItem` optional identity fields: `originType`, `workIdentity`, `exactIdentity`, and typed `playbackTargets` containing configured source/item/media-source references only.
+- `MediaSourceOption` may carry `sourceLabel?: string` and `deliveryKind?: 'server_stream' | 'server_redirect'`; both are presentation-safe values parsed at the `ServerDataSource` boundary.
 - Playback remains `DataSource.getStreamRequest({ itemId, mediaSourceId? }) -> MediaStreamRequest`.
 
 ### 3. Contracts
@@ -1334,6 +1335,7 @@ await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
 - Keep one stable random device ID per configured Server source and reuse it on reconnect so Server-side same-device replacement revokes the old token. Validate bootstrap/libraries before replacing the saved credential, and advance a non-secret `credentialVersion` after successful re-authentication so the manager rebuilds any instance caching the revoked prior token. On same-origin post-login validation or config persistence failure, keep the new token and reload the runtime source because the old token is already revoked; on initial-add or cross-origin rollback, best-effort logout the new token before removing/restoring the local credential. If the secure credential write itself fails, revoke the newly issued token because Player cannot retain it safely. Source deletion also attempts logout before local credential removal, but remote cleanup failure never blocks local removal.
 - Server JSON requests use a bounded native client, reject redirects, userinfo and non-HTTP(S) origins, and require an `omc_player_` Bearer outside login.
 - Server catalog browsing must consume all API pages or fail with an explicit bounded safety error; it must never silently present only the first page. Map only `playable=true` versions into media sources, children and stream selection, and resolve a movie work ID to its first playable version before direct card playback.
+- For a Server-owned route, `playable` controls selection only. Never map it to `isStrm`. Set `sourceLabel` to the configured Server display name, parse only the two known `delivery_kind` values, and map them to the neutral labels `文件流` / `302 直链`. A precise `sourceLabel` suppresses the generic `远程` label; a missing or unknown delivery kind safely degrades to `来自 <Server 名称>`.
 - Server detail metadata fields are optional and runtime-validated. Map only bounded TMDB image identities and safe title/genre/person/ID/rating/runtime values into `MediaDetail`; old Server responses remain valid, and local movie/series versions use the same `DataSource.getStreamRequest` path as 115 versions.
 - Cross-source aggregation merges only on an exact artifact key or a trustworthy work key such as media type + TMDB ID. Title/year alone never merge. Prefer the Server card while preserving all distinct configured playback targets and media versions.
 - Emby instance/library/item identity uses the normalized SystemId fingerprint plus provider IDs; address, name, username and authentication method do not establish equality.
@@ -1352,6 +1354,9 @@ await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
 | Secure credential storage cannot save the newly issued token | Best-effort logout the new token and surface a redacted credential-storage failure |
 | Server catalog exceeds a request page | Continue bounded pagination; reject repeated/non-advancing pages or an explicit safety-limit overflow instead of truncating |
 | Work contains no `playable=true` version | Show metadata without a primary play action or selectable Server route |
+| New Server returns `server_stream` | Show `来自 <Server 名称> · 文件流`; do not show STRM |
+| New Server returns `server_redirect` | Show `来自 <Server 名称> · 302 直链`; do not expose provider/artifact/CDN details |
+| Old Server omits or future Server returns an unknown `delivery_kind` | Keep the route playable and show only `来自 <Server 名称>`; do not infer STRM or crash |
 | Same title/year without identity overlap | Render both cards |
 | Same TMDB work with Server and Emby versions | One Server-preferred card with distinct selectable targets |
 | Same artifact appears through Server and Emby | Do not show the identical version twice |
@@ -1362,12 +1367,13 @@ await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
 ### 5. Good/Base/Bad Cases
 
 - Good: a 115 movie projected into the user's Emby appears once, defaults to Server direct playback, and still offers that user's Emby version.
+- Good: a local Server movie says `来自 家庭 Server · 文件流`, while the same UI still labels a genuine Emby STRM as `STRM · 远程`.
 - Base: Emby hides MediaSource Path; TMDB identity merges the work while preserving separate versions.
-- Bad: merge by normalized title, persist a signed URL as `exactIdentity`, or hand the Server Bearer directly to libmpv across an uncontrolled redirect.
+- Bad: merge by normalized title, set `isStrm: version.playable`, persist a signed URL as `exactIdentity`, or hand the Server Bearer directly to libmpv across an uncontrolled redirect.
 
 ### 6. Tests Required
 
-- Static/TypeScript verification covers Server config sanitization, Bearer-only native requests, stable device reuse, failed-add/edit/delete token cleanup, complete bounded pagination, playable-version filtering/work resolution, SystemId normalization, uncertain non-merge, Server preference, exact-version preservation and cache-registry restoration.
+- Static/TypeScript verification covers Server config sanitization, Bearer-only native requests, stable device reuse, failed-add/edit/delete token cleanup, complete bounded pagination, playable-version filtering/work resolution, local/115/legacy delivery labels, genuine non-Server STRM retention, SystemId normalization, uncertain non-merge, Server preference, exact-version preservation and cache-registry restoration.
 - Rust tests use real loopback servers to assert same-origin header retention, cross-origin header removal and Range preservation.
 - Run `npm run verify:server-datasource`, `npm run verify:secure-playback-routing`, typecheck, lint, build, `cargo test --lib`, and Clippy with warnings denied.
 
@@ -1386,6 +1392,15 @@ if (left.name === right.name && left.year === right.year)
 const sameWork = intersects(left.workIdentity, right.workIdentity)
 const sameVersion = intersects(left.exactIdentity, right.exactIdentity)
 return sameWork || sameVersion ? mergePreservingTargets(left, right) : undefined
+```
+
+```ts
+// Wrong: every playable Server version is not a STRM file.
+isStrm: version.playable
+
+// Correct: keep selection and delivery presentation as separate contracts.
+sourceLabel: this.name,
+deliveryKind: parseServerDeliveryKind(version.delivery_kind)
 ```
 
 ---

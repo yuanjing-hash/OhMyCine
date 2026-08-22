@@ -140,7 +140,7 @@ func TestPlayerLocalSeriesProjectsPlayableSeasonsAndEpisodes(t *testing.T) {
 		t.Fatalf("series detail=%+v err=%v", detail, err)
 	}
 	for _, version := range detail.Versions {
-		if !version.Playable || version.Season == nil || *version.Season != 1 || version.Episode == nil || version.StreamPath == "" || !strings.HasPrefix(version.ExactIdentity, "server:entry:") {
+		if !version.Playable || version.DeliveryKind != playerDeliveryServerStream || version.Season == nil || *version.Season != 1 || version.Episode == nil || version.StreamPath == "" || !strings.HasPrefix(version.ExactIdentity, "server:entry:") {
 			t.Fatalf("unplayable local episode=%+v", version)
 		}
 	}

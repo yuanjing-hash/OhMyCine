@@ -83,6 +83,7 @@ type PlayerMediaVersion struct {
 	ModifiedAt    time.Time `json:"modified_at"`
 	Playable      bool      `json:"playable"`
 	StreamPath    string    `json:"stream_path,omitempty"`
+	DeliveryKind  string    `json:"delivery_kind,omitempty"`
 	ExactIdentity string    `json:"exact_identity"`
 }
 
@@ -99,8 +100,10 @@ type PlayerEmbyInstance struct {
 }
 
 const (
-	playerStreamKindLocal    = "local_file"
-	playerStreamKindRedirect = "redirect"
+	playerDeliveryServerStream   = "server_stream"
+	playerDeliveryServerRedirect = "server_redirect"
+	playerStreamKindLocal        = "local_file"
+	playerStreamKindRedirect     = "redirect"
 )
 
 // PlayerStreamResolution is an internal request-scoped result. LocalPath is
@@ -197,12 +200,14 @@ func (s *MediaLibraryService) PlayerCatalogDetail(actor Actor, libraryID uint, t
 	versions := make([]PlayerMediaVersion, 0, len(entries))
 	for _, entry := range entries {
 		playable := false
+		deliveryKind := ""
 		exactIdentity := "server:entry:" + strconv.FormatUint(uint64(entry.ID), 10)
 		switch streamMode {
 		case models.StorageTypeLocal:
 			file, _, openErr := openLocalPlayerEntry(s.db, entry)
 			if openErr == nil {
 				playable = true
+				deliveryKind = playerDeliveryServerStream
 				_ = file.Close()
 			}
 		case models.StorageTypePan115:
@@ -214,6 +219,7 @@ func (s *MediaLibraryService) PlayerCatalogDetail(actor Actor, libraryID uint, t
 			}
 			if artifactErr == nil {
 				playable = true
+				deliveryKind = playerDeliveryServerRedirect
 				exactIdentity = "ohmycine:artifact:" + artifact.OpaqueID
 			}
 		}
@@ -221,7 +227,7 @@ func (s *MediaLibraryService) PlayerCatalogDetail(actor Actor, libraryID uint, t
 		if playable {
 			streamPath = "/api/v1/player/media-entries/" + strconv.FormatUint(uint64(entry.ID), 10) + "/stream"
 		}
-		versions = append(versions, PlayerMediaVersion{ID: entry.ID, Title: entry.Title, Season: entry.Season, Episode: entry.Episode, Size: entry.Size, ModifiedAt: entry.ModifiedAt, Playable: playable, StreamPath: streamPath, ExactIdentity: exactIdentity})
+		versions = append(versions, PlayerMediaVersion{ID: entry.ID, Title: entry.Title, Season: entry.Season, Episode: entry.Episode, Size: entry.Size, ModifiedAt: entry.ModifiedAt, Playable: playable, StreamPath: streamPath, DeliveryKind: deliveryKind, ExactIdentity: exactIdentity})
 	}
 	return PlayerMediaDetail{Item: item, Versions: versions}, nil
 }

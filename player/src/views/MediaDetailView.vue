@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaSourceOption, SubtitleTrack } from '@/services/datasource/types'
+import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, SubtitleTrack } from '@/services/datasource/types'
 import type { PlaybackQueueInput } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
@@ -7,6 +7,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { describeMediaSource, hasMeaningfulMediaSource } from '@/services/datasource/mediaSourceDisplay'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
@@ -811,27 +812,6 @@ function openRelated(item: MediaItem | MediaLibrary) {
     params: { sourceId: sourceId.value, itemId: item.id },
     query: contextId ? { contextId } : undefined,
   })
-}
-
-function describeMediaSource(source: MediaSourceOption): string {
-  return [source.container?.toUpperCase(), source.size ? formatBytes(source.size) : undefined, source.isStrm ? 'STRM' : undefined, source.isRemote ? '远程' : undefined]
-    .filter(Boolean)
-    .join(' · ') || source.name
-}
-
-function hasMeaningfulMediaSource(source: MediaSourceOption): boolean {
-  return Boolean(source.container || source.size || source.bitrate || source.isRemote || source.isStrm || (source.name && !/^default$|^source-\d+$/i.test(source.name)))
-}
-
-function formatBytes(value: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let size = value
-  let unit = 0
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024
-    unit += 1
-  }
-  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
 function trackLabel(track: AudioTrack | SubtitleTrack): string {

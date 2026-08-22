@@ -75,6 +75,16 @@ export interface EmbyManagementSummary {
   checked_at: string
 }
 
+export interface PlayerDeviceSummary {
+  id: string
+  name: string
+  client_kind: string
+  created_at: string
+  last_seen_at: string
+  idle_expires_at: string
+  absolute_expires_at: string
+}
+
 export interface StorageCapabilities {
   network_drive: boolean; directory_list: boolean; watch: boolean
   native_offline_download: boolean; temporary_direct_url: boolean; signed_proxy: boolean; small_file_upload?: boolean; change_cursor: boolean

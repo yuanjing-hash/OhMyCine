@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { readServerCredential, removeCredential } from '../src/services/datasource/credentialStore.ts'
 import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrustedOhMyCineArtifactIdentity, namesByPersonType } from '../src/services/datasource/emby.ts'
 import { forgetPlaybackTargetsForSource, mergeMediaItemsByIdentity, prunePlaybackTargets, rememberPlaybackTargetsForItems } from '../src/services/datasource/identityMerge.ts'
+import { describeMediaSource } from '../src/services/datasource/mediaSourceDisplay.ts'
 import { loginServerAndCreateConfig, logoutServerBestEffort, ServerDataSource } from '../src/services/datasource/server.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
@@ -24,8 +25,8 @@ const bridge = {
             ? {
                 item: seriesItem(),
                 versions: [
-                  { id: 201, title: '第一集', season: 1, episode: 1, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', exact_identity: 'server:entry:201' },
-                  { id: 202, title: '第二集', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', exact_identity: 'server:entry:202' },
+                  { id: 201, title: '第一集', season: 1, episode: 1, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
+                  { id: 202, title: '第二集', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:202' },
                 ],
               }
             : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${legacyArtworkItem().id}`)
@@ -38,7 +39,7 @@ const bridge = {
               item: mediaItem(),
               versions: [
                 { id: 76, title: '不可播放旧版本', size: 512, modified_at: '2026-08-21T00:00:00Z', playable: false, exact_identity: '' },
-                { id: 77, title: '七武士 (1954)', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/77/stream', exact_identity: 'ohmycine:artifact:artifact_test' },
+                { id: 77, title: '七武士 (1954)', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/77/stream', delivery_kind: 'server_redirect', exact_identity: 'ohmycine:artifact:artifact_test' },
               ],
             }
           : request.path.startsWith('/api/v1/player/media-libraries/9/catalog')
@@ -68,6 +69,10 @@ assert.deepEqual(items[0].workIdentity, { scheme: 'tmdb', mediaType: 'movie', va
 const detail = await source.getDetail(items[0].id)
 assert.equal(detail.mediaSources?.[0]?.id, '77')
 assert.deepEqual(detail.mediaSources?.map(item => item.id), ['77'])
+assert.equal(detail.mediaSources?.[0]?.isStrm, undefined)
+assert.equal(detail.mediaSources?.[0]?.sourceLabel, '家庭 Server')
+assert.equal(detail.mediaSources?.[0]?.deliveryKind, 'server_redirect')
+assert.equal(describeMediaSource(detail.mediaSources![0]!), '1.0 KB · 来自 家庭 Server · 302 直链')
 assert.deepEqual(detail.children?.map(item => item.id), [`entry|9|${mediaItem().id}|77`])
 assert.equal(detail.originalTitle, '七人の侍')
 assert.equal(detail.rating, 8.5)
@@ -84,9 +89,17 @@ const seriesSeasons = await source.list(`work|9|${seriesItem().id}`)
 assert.deepEqual(seriesSeasons.map(item => [item.type, item.seasonNumber]), [['season', 1]])
 const seriesDetail = await source.getDetail(`work|9|${seriesItem().id}`)
 assert.deepEqual(seriesDetail.children?.map(item => [item.type, item.seasonNumber, item.episodeNumber]), [['episode', 1, 1], ['episode', 1, 2]])
+assert.equal(seriesDetail.mediaSources?.[0]?.isStrm, undefined)
+assert.equal(seriesDetail.mediaSources?.[0]?.deliveryKind, 'server_stream')
+assert.equal(describeMediaSource(seriesDetail.mediaSources![0]!), '2.0 KB · 来自 家庭 Server · 文件流')
 const legacyArtworkDetail = await source.getDetail(`work|9|${legacyArtworkItem().id}`)
 assert.equal(legacyArtworkDetail.stills?.length, 1)
 assert.match(legacyArtworkDetail.stills?.[0] ?? '', /\/backdrop\.jpg$/)
+assert.equal(legacyArtworkDetail.mediaSources?.[0]?.sourceLabel, '家庭 Server')
+assert.equal(legacyArtworkDetail.mediaSources?.[0]?.deliveryKind, undefined)
+assert.equal(legacyArtworkDetail.mediaSources?.[0]?.isStrm, undefined)
+assert.equal(describeMediaSource(legacyArtworkDetail.mediaSources![0]!), '1.0 KB · 来自 家庭 Server')
+assert.equal(describeMediaSource({ id: 'emby-strm', name: 'Emby STRM', isStrm: true, isRemote: true }), 'STRM · 远程')
 const stream = await source.getStreamRequest({ itemId: items[0].id })
 assert.equal(stream.url, 'http://127.0.0.1:3000/api/v1/player/media-entries/77/stream')
 assert.equal(stream.headers?.Authorization, `Bearer ${token}`)

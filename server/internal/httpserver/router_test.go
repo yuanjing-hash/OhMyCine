@@ -587,10 +587,11 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 	var playableDetail struct {
 		Versions []struct {
 			Playable      bool   `json:"playable"`
+			DeliveryKind  string `json:"delivery_kind"`
 			ExactIdentity string `json:"exact_identity"`
 		} `json:"versions"`
 	}
-	if err := json.Unmarshal(detailEnvelope.Data, &playableDetail); err != nil || len(playableDetail.Versions) != 1 || !playableDetail.Versions[0].Playable || !strings.HasPrefix(playableDetail.Versions[0].ExactIdentity, "ohmycine:artifact:") {
+	if err := json.Unmarshal(detailEnvelope.Data, &playableDetail); err != nil || len(playableDetail.Versions) != 1 || !playableDetail.Versions[0].Playable || playableDetail.Versions[0].DeliveryKind != "server_redirect" || !strings.HasPrefix(playableDetail.Versions[0].ExactIdentity, "ohmycine:artifact:") {
 		t.Fatalf("Player playable detail invalid err=%v data=%s", err, detailEnvelope.Data)
 	}
 	var entry models.MediaLibraryEntry
@@ -609,10 +610,11 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 	var localDetail struct {
 		Versions []struct {
 			Playable      bool   `json:"playable"`
+			DeliveryKind  string `json:"delivery_kind"`
 			ExactIdentity string `json:"exact_identity"`
 		} `json:"versions"`
 	}
-	if err := json.Unmarshal(localDetailEnvelope.Data, &localDetail); status != http.StatusOK || err != nil || len(localDetail.Versions) != 1 || !localDetail.Versions[0].Playable || !strings.HasPrefix(localDetail.Versions[0].ExactIdentity, "server:entry:") {
+	if err := json.Unmarshal(localDetailEnvelope.Data, &localDetail); status != http.StatusOK || err != nil || len(localDetail.Versions) != 1 || !localDetail.Versions[0].Playable || localDetail.Versions[0].DeliveryKind != "server_stream" || !strings.HasPrefix(localDetail.Versions[0].ExactIdentity, "server:entry:") {
 		t.Fatalf("local Player detail was not playable: status=%d err=%v data=%s", status, err, localDetailEnvelope.Data)
 	}
 	for _, test := range []struct {
@@ -680,17 +682,40 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 	}
 	var second struct {
 		AccessToken string `json:"access_token"`
+		Device      struct {
+			ID string `json:"id"`
+		} `json:"device"`
 	}
-	if err := json.Unmarshal(secondEnvelope.Data, &second); err != nil || second.AccessToken == "" || second.AccessToken == login.AccessToken {
+	if err := json.Unmarshal(secondEnvelope.Data, &second); err != nil || second.AccessToken == "" || second.AccessToken == login.AccessToken || second.Device.ID == "" {
 		t.Fatalf("second Player token invalid err=%v", err)
 	}
 	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/bootstrap", login.AccessToken, nil)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("superseded Player token status=%d", status)
 	}
-	status, _, _ = client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/logout", second.AccessToken, map[string]any{})
+	status, devicesEnvelope := client.request(t, http.MethodGet, "/api/v1/player-devices", nil, false)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" || bytes.Contains(devicesEnvelope.Data, []byte("token")) || bytes.Contains(devicesEnvelope.Data, []byte("device_id")) || bytes.Contains(devicesEnvelope.Data, []byte("user_agent")) {
+		t.Fatalf("browser Player devices status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), devicesEnvelope.Data)
+	}
+	var deviceList struct {
+		List []struct {
+			ID string `json:"id"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(devicesEnvelope.Data, &deviceList); err != nil || len(deviceList.List) != 1 || deviceList.List[0].ID != second.Device.ID {
+		t.Fatalf("browser Player devices invalid err=%v data=%s", err, devicesEnvelope.Data)
+	}
+	status, _ = client.request(t, http.MethodDelete, "/api/v1/player-devices/"+url.PathEscape(second.Device.ID), map[string]any{}, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("Player device revoke without csrf status=%d", status)
+	}
+	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player-devices", second.AccessToken, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("Player bearer entered device management API: status=%d", status)
+	}
+	status, _ = client.request(t, http.MethodDelete, "/api/v1/player-devices/"+url.PathEscape(second.Device.ID), map[string]any{}, true)
 	if status != http.StatusOK {
-		t.Fatalf("Player logout status=%d", status)
+		t.Fatalf("browser Player device revoke status=%d", status)
 	}
 	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/bootstrap", second.AccessToken, nil)
 	if status != http.StatusUnauthorized {
@@ -1156,6 +1181,14 @@ func TestSetupSessionAndViewerPermissionBoundary(t *testing.T) {
 	status, _ = viewer.request(t, http.MethodGet, "/api/v1/transfers", nil, false)
 	if status != http.StatusForbidden {
 		t.Fatalf("viewer transfers status=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodGet, "/api/v1/player-devices", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("viewer Player devices status=%d", status)
+	}
+	status, _ = viewer.request(t, http.MethodDelete, "/api/v1/player-devices/missing", map[string]any{}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer Player device revoke status=%d", status)
 	}
 	status, _ = viewer.request(t, http.MethodDelete, "/api/v1/transfers/missing", map[string]any{}, true)
 	if status != http.StatusForbidden {

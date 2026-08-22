@@ -99,6 +99,8 @@ export interface MediaSourceOption {
   bitrate?: number
   isRemote?: boolean
   isStrm?: boolean
+  sourceLabel?: string
+  deliveryKind?: 'server_stream' | 'server_redirect'
   sourceId?: string
   itemId?: string
   providerMediaSourceId?: string

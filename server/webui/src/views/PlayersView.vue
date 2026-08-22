@@ -11,9 +11,10 @@ import {
   isLoopbackURL,
   type EmbyConnectionDraft,
 } from '@/connections'
+import { playerClientLabel, playerDeviceConfirmation, playerDeviceListPath, playerDeviceRevokePath, playerDeviceTime } from '@/player-devices'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import type { ConnectionSummary, EmbyGatewaySummary, EmbyManagementSummary, ListResponse } from '@/types/api'
+import type { ConnectionSummary, EmbyGatewaySummary, EmbyManagementSummary, ListResponse, PlayerDeviceSummary } from '@/types/api'
 
 interface SummaryState {
   item: EmbyManagementSummary | null
@@ -25,6 +26,10 @@ const auth = useAuthStore()
 const connections = ref<ConnectionSummary[]>([])
 const summaries = ref<Record<number, SummaryState>>({})
 const gateways = ref<Record<number, EmbyGatewaySummary | null>>({})
+const devices = ref<PlayerDeviceSummary[]>([])
+const devicesLoading = ref(true)
+const devicesFailed = ref(false)
+const revokingDeviceID = ref<string | null>(null)
 const gatewayAliasDrafts = ref<Record<number, string>>({})
 const gatewayFailed = ref<Record<number, boolean>>({})
 const loading = ref(true)
@@ -41,6 +46,21 @@ const canCreate = computed(() => auth.can(Permissions.ConnectionsCreate))
 async function loadConnections() {
   const response = await api<ListResponse<ConnectionSummary>>(connectionListPath('emby'))
   connections.value = response.list
+}
+
+async function loadDevices(showSuccess = false) {
+  devicesLoading.value = true
+  devicesFailed.value = false
+  try {
+    const response = await api<ListResponse<PlayerDeviceSummary>>(playerDeviceListPath)
+    devices.value = response.list
+    if (showSuccess) notify('Player 设备已刷新', 'success')
+  } catch (reason) {
+    devicesFailed.value = true
+    notify(message(reason), 'error')
+  } finally {
+    devicesLoading.value = false
+  }
 }
 
 async function loadCard(connection: ConnectionSummary) {
@@ -264,7 +284,24 @@ function message(reason: unknown) {
   return reason instanceof Error ? reason.message : '操作失败'
 }
 
-onMounted(load)
+async function revokeDevice(device: PlayerDeviceSummary) {
+  if (!window.confirm(playerDeviceConfirmation(device))) return
+  revokingDeviceID.value = device.id
+  try {
+    await api(playerDeviceRevokePath(device.id), { method: 'DELETE', body: '{}' })
+    devices.value = devices.value.filter(item => item.id !== device.id)
+    notify('Player 设备配对已撤销', 'success')
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    revokingDeviceID.value = null
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadDevices()
+})
 </script>
 
 <template>
@@ -361,8 +398,39 @@ onMounted(load)
     </div>
 
     <section class="panel mt-7">
-      <h2 class="m-0 text-lg">OhMyCine Player 设备</h2>
-      <p class="page-description mb-0 mt-2 text-sm">以后 Player 输入 Server 地址并完成安全配对后，会自动出现在这里。本阶段不提供虚假的手动添加入口。</p>
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 class="m-0 text-lg">OhMyCine Player 设备</h2>
+          <p class="page-description mb-0 mt-2 text-sm">Player 使用 Server 账号完成安全配对后会自动出现在这里。最近活动表示上次成功访问，并不代表设备此刻在线。</p>
+        </div>
+        <button type="button" class="btn-secondary" :disabled="devicesLoading" @click="loadDevices(true)">{{ devicesLoading ? '刷新中…' : '刷新设备' }}</button>
+      </div>
+
+      <p v-if="devicesLoading && devices.length === 0" class="text-subtle mb-0 mt-5 text-sm">正在读取已配对设备…</p>
+      <div v-else-if="devicesFailed && devices.length === 0" class="semantic-warning mt-5 p-4 text-sm">
+        <strong class="block">暂时无法读取 Player 设备</strong>
+        <span class="text-subtle mt-1 block">Emby 连接不受影响，可以稍后单独刷新此区域。</span>
+      </div>
+      <p v-else-if="devices.length === 0" class="text-subtle mb-0 mt-5 text-sm">当前账号还没有有效的 Player 配对设备。</p>
+
+      <div v-else class="mt-5 grid gap-4 lg:grid-cols-2">
+        <article v-for="device in devices" :key="device.id" class="semantic-inset p-4">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <h3 class="m-0 truncate text-base">{{ device.name }}</h3>
+              <p class="text-subtle mb-0 mt-1 text-xs">{{ playerClientLabel(device.client_kind) }}</p>
+            </div>
+            <span class="status-chip status-chip--ready">配对有效</span>
+          </div>
+          <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+            <div><dt class="text-subtle text-xs">首次配对</dt><dd class="m-0 mt-1">{{ playerDeviceTime(device.created_at) }}</dd></div>
+            <div><dt class="text-subtle text-xs">最近活动</dt><dd class="m-0 mt-1">{{ playerDeviceTime(device.last_seen_at) }}</dd></div>
+            <div><dt class="text-subtle text-xs">闲置到期</dt><dd class="m-0 mt-1">{{ playerDeviceTime(device.idle_expires_at) }}</dd></div>
+            <div><dt class="text-subtle text-xs">最长有效期</dt><dd class="m-0 mt-1">{{ playerDeviceTime(device.absolute_expires_at) }}</dd></div>
+          </dl>
+          <button v-if="auth.can(Permissions.ConnectionsUpdate)" type="button" class="btn-danger mt-4" :disabled="revokingDeviceID !== null" @click="revokeDevice(device)">{{ revokingDeviceID === device.id ? '正在撤销…' : '撤销配对' }}</button>
+        </article>
+      </div>
     </section>
   </section>
 </template>
