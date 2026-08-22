@@ -1541,27 +1541,6 @@ func rootsOverlap(a, b string) bool {
 	}
 	return a == b || a == "/" || b == "/" || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
-func normalizeExtensions(values []string) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value == "" {
-			continue
-		}
-		if !strings.HasPrefix(value, ".") {
-			value = "." + value
-		}
-		if len(value) > 12 {
-			continue
-		}
-		if _, ok := seen[value]; !ok {
-			seen[value] = struct{}{}
-			out = append(out, value)
-		}
-	}
-	return out
-}
 func mediaLibraryNotFound(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return appError(CodeNotFound, "媒体库不存在", err)

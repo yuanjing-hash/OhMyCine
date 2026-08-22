@@ -962,5 +962,5 @@ func ErrorCode(err error) string {
 	if errors.As(err, &target) {
 		return target.Code
 	}
-	return fmt.Sprintf("plugin_host_internal")
+	return "plugin_host_internal"
 }

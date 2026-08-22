@@ -133,7 +133,11 @@ func main() {
 	if err := pluginRepositories.RestorePlugins(context.Background()); err != nil {
 		logging.OperationPluginRuntime.Event(log.Fatal()).Str("error_code", services.ErrorCode(err)).Msg(logging.OperationPluginRuntime.Message("插件运行时恢复失败"))
 	}
-	defer pluginRepositories.ClosePlugins(context.Background())
+	defer func() {
+		if err := pluginRepositories.ClosePlugins(context.Background()); err != nil {
+			logging.OperationPluginRuntime.Event(log.Error()).Str("error_code", services.ErrorCode(err)).Msg(logging.OperationPluginRuntime.Message("插件运行时关闭失败"))
+		}
+	}()
 	transfers.SetSeedingService(seeding)
 	seeding.SetStagingCleanup(transfers.CleanupAfterSeeding)
 	downloads.SetTransferService(transfers)

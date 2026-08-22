@@ -376,11 +376,6 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	return w.finishCompletedTransfer(ctx, task)
 }
 
-func downloadTargetIsLocalAfterLookup(db *gorm.DB, downloadTaskID string) bool {
-	var task models.DownloadTask
-	return db.Select("target_storage_type").First(&task, "id = ?", downloadTaskID).Error == nil && task.TargetStorageType != models.StorageTypePan115
-}
-
 func newTransferPlanSummary(plan []transferPlanItem) (TransferPlanSummary, error) {
 	summary := TransferPlanSummary{Items: make([]TransferPlanSummaryItem, 0, min(len(plan), maxTransferPlanSummaryItems)), TotalFiles: len(plan), Truncated: len(plan) > maxTransferPlanSummaryItems}
 	for _, item := range plan {

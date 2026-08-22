@@ -274,7 +274,11 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 			defer func() { cancel(); s.runningMu.Lock(); delete(s.running, job.Job.ID); s.runningMu.Unlock() }()
 			runtime := workerRuntime{queue: s.queue, job: job}
 			keepalive := s.startLeaseKeepalive(workerCtx, cancel, job)
-			defer keepalive.Stop()
+			defer func() {
+				if err := keepalive.Stop(); err != nil {
+					serverlog.OperationTaskQueue.Event(s.log.Warn()).Str("job_id", job.Job.ID).Str("error_code", "queue_lease_keepalive_failed").Msg(serverlog.OperationTaskQueue.Message("任务租约续期停止失败"))
+				}
+			}()
 			if job.Job.InterruptStatus == models.JobStatusPaused || job.Job.InterruptStatus == models.JobStatusCancelled {
 				action := "pause"
 				if job.Job.InterruptStatus == models.JobStatusCancelled {

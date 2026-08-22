@@ -101,14 +101,6 @@ func recognitionCandidatesFromSources(sources []string, rules []RecognitionRule)
 	return candidates
 }
 
-func downloadRecognitionSources(manifest downloadpkg.Manifest) []string {
-	files := make([]recognitionSourceFile, 0, len(manifest.Files))
-	for _, file := range manifest.Files {
-		files = append(files, recognitionSourceFile{RelativePath: file.RelativePath, Size: file.Size})
-	}
-	return recognitionSources(manifest.Name, files)
-}
-
 func recognitionSources(packageName string, files []recognitionSourceFile) []string {
 	primaryPath := ""
 	primarySize := int64(-1)

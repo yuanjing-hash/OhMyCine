@@ -1072,8 +1072,8 @@ func TestMetadataSettingsNeverEchoTMDBToken(t *testing.T) {
 		APIBaseURL       string `json:"api_base_url"`
 		Revision         uint64 `json:"revision"`
 	}
-	if err := json.Unmarshal(envelope.Data, &settings); err != nil || settings.Configured || settings.CustomConfigured || settings.CredentialSource != "none" || settings.CredentialKind != "" || settings.Revision != 1 {
-		t.Fatalf("settings=%+v err=%v", settings, err)
+	if err := json.Unmarshal(envelope.Data, &settings); status != http.StatusOK || err != nil || settings.Configured || settings.CustomConfigured || settings.CredentialSource != "none" || settings.CredentialKind != "" || settings.Revision != 1 {
+		t.Fatalf("metadata settings status=%d settings=%+v err=%v", status, settings, err)
 	}
 	status, oversized := client.request(t, http.MethodPost, "/api/v1/settings/metadata/test-api", map[string]any{"base_url": "https://" + strings.Repeat("a", 20<<10) + ".example.test/3", "revision": 1}, true)
 	if status != http.StatusBadRequest || strings.Contains(string(oversized.Data), token) {
@@ -1088,8 +1088,8 @@ func TestMetadataSettingsNeverEchoTMDBToken(t *testing.T) {
 		APIBaseURL string `json:"api_base_url"`
 		Revision   uint64 `json:"revision"`
 	}
-	if err := json.Unmarshal(envelope.Data, &afterFailure); err != nil || afterFailure.APIBaseURL != settings.APIBaseURL || afterFailure.Revision != 1 {
-		t.Fatalf("failed route changed settings=%+v err=%v", afterFailure, err)
+	if err := json.Unmarshal(envelope.Data, &afterFailure); status != http.StatusOK || err != nil || afterFailure.APIBaseURL != settings.APIBaseURL || afterFailure.Revision != 1 {
+		t.Fatalf("failed route changed metadata status=%d settings=%+v err=%v", status, afterFailure, err)
 	}
 	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/metadata", nil, false)
 	if status != http.StatusOK || strings.Contains(string(envelope.Data), token) {
