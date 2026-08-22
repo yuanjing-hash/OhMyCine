@@ -38,6 +38,7 @@
 
 [OK] **Completed**
 
+
 ### Next Steps
 
 - None - task complete
@@ -471,3 +472,44 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 18: 建立插件平台并接入 Bilibili 在线媒体源
+
+**Date**: 2026-08-23
+**Task**: 插件平台与 Bilibili 在线媒体源
+**Branch**: `develop`
+
+### Summary
+
+完成 GitHub 多插件仓库、WASM 隔离安装生命周期、受控 Host API、Server 在线媒体库和 Player 通用站点体验；Bilibili 首个插件支持推荐、热门、排行、搜索、详情、分 P、清晰度、历史分页、进度回传、原生弹幕和下载计划。
+
+### Main Changes
+
+- Player 新增真正分页的本地历史页，并支持 Server/Bilibili 历史 cursor 和来源区分。
+- 播放进度先保存本地，再按能力回传提供方；远端失败不影响播放恢复。
+- 插件弹幕优先使用 Server 同源安全资产，缺失或失败时回退原有弹幕服务。
+- 修复 Bilibili 三字段历史 cursor 和 Server 多来源耗尽游标，避免第二页重复、遗漏或无限翻页。
+- 官方 Registry 和 Bilibili `0.1.0` Release 资产可供 Server 通过 GitHub 仓库发现和安装。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `99b837f` | feat: 建立插件平台并接入 Bilibili 在线媒体源 |
+
+### Testing
+
+- [OK] Server `go test ./...`、`go vet ./...`、普通与 webui build 通过。
+- [OK] Server Web UI 102 项测试、typecheck、lint、build 通过。
+- [OK] Player 在线库/清晰度/弹幕验证、typecheck、lint、build、Cargo 91 项测试和严格 Clippy 通过。
+- [OK] Plugin SDK verify/typecheck、Hub build、Bilibili 7 项 Rust 测试、严格 Clippy、WASM 构建和确定性打包通过。
+- [OK] Windows 隔离 Server 冒烟通过，测试进程与隔离目录已清理。
+
+### Status
+
+[OK] **Current milestone completed**
+
+### Next Steps
+
+- 后续继续实现 Bilibili 扫码登录、收藏/稍后再看/关注、DASH 双轨与宿主真实下载执行器。
