@@ -3,7 +3,7 @@
   "repository": {
     "id": "org.ohmycine.official",
     "name": "OhMyCine 官方插件库",
-    "homepage": "https://github.com/yuanjing-hash/OhMyCine",
+    "homepage": "https://github.com/yuanjing-hash/OhMyCine-Plugins",
     "updatedAt": "${BUILD_TIME}"
   },
   "plugins": [

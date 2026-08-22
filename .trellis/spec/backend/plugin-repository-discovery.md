@@ -48,6 +48,7 @@ Repository input and concurrency fields:
 - The fetcher owns the GitHub endpoint. It uses GET requests to the fixed `api.github.com` host with a bounded timeout, no redirects, and bounded response bodies; callers never provide an API or raw-content host.
 - Resolve the default branch, resolve it to a canonical 40-character lowercase commit SHA, then read `ohmycine-plugin-registry.v1.json` at that SHA. Never cache a branch-relative Registry as trusted state.
 - Parse Registry JSON with unknown-field rejection and the shared Registry v1 validator. Manifest/package/icon references must be GitHub Release assets from the configured repository. Version values use the shared strict SemVer subset and range validator.
+- The official install source is the dedicated `https://github.com/yuanjing-hash/OhMyCine-Plugins` multi-plugin repository. Its default branch must contain the installable Registry, and each official Manifest `source`, Manifest URL, package URL, and Release asset must resolve to that same repository. Registry copies kept in the main OhMyCine source repository are release-validation fixtures only and must not be documented as an installation source.
 - Write `last_commit_sha`, `last_refreshed_at`, and `cached_registry_json` atomically only after the entire Registry validates. A failed refresh records a stable error code and preserves the last successful cache, successful timestamp, and commit SHA.
 - Repository changes use revision compare-and-swap. Reordering must include every current repository exactly once and update all priorities in one transaction.
 - Marketplace merging uses enabled repositories in administrator order. The first repository wins an ID conflict, but every source and the conflict flag remain visible. Stable releases are preferred within one repository before comparing versions.
@@ -85,6 +86,7 @@ Repository input and concurrency fields:
 - Migration tests assert v33 additive/idempotent creation, indexes, defaults, and preservation of repository rows across repeated migration runs.
 - HTTP tests assert authentication, plugin RBAC, CSRF on mutations, no-store, request-size limits, safe error envelopes, and absence of Registry bodies or internal causes.
 - Web tests assert repository add/toggle/reorder/refresh/delete payloads, unavailable installed state, source-conflict rendering, both themes, and disabled installation when the runtime is unavailable.
+- Every official release runs an isolated Windows smoke against the public dedicated repository: add repository, pin and refresh its default-branch commit, discover the plugin, create and confirm the permission preview, install, enable, then stop the temporary Server and remove its isolated profile. This must use the published Release assets rather than local build output.
 
 ### 7. Wrong vs Correct
 

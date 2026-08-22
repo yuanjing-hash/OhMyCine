@@ -25,6 +25,6 @@
   "author": "OhMyCine",
   "license": "MIT",
   "homepage": "https://ohmycine.example.test/plugins/bilibili",
-  "source": "https://github.com/yuanjing-hash/OhMyCine",
+  "source": "https://github.com/yuanjing-hash/OhMyCine-Plugins",
   "packageSha256": "${PACKAGE_SHA256}"
 }

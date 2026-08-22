@@ -3,8 +3,8 @@
   "repository": {
     "id": "org.ohmycine.official",
     "name": "OhMyCine 官方插件库",
-    "homepage": "https://github.com/yuanjing-hash/OhMyCine",
-    "updatedAt": "2026-08-22T19:05:25Z"
+    "homepage": "https://github.com/yuanjing-hash/OhMyCine-Plugins",
+    "updatedAt": "2026-08-22T19:44:54Z"
   },
   "plugins": [
     {
@@ -17,8 +17,8 @@
         "online-media",
         "video-site"
       ],
-      "manifestUrl": "https://github.com/yuanjing-hash/OhMyCine/releases/download/plugin-bilibili-v0.1.0/org.ohmycine.bilibili-0.1.0.manifest.json",
-      "packageUrl": "https://github.com/yuanjing-hash/OhMyCine/releases/download/plugin-bilibili-v0.1.0/org.ohmycine.bilibili-0.1.0.omcp",
+      "manifestUrl": "https://github.com/yuanjing-hash/OhMyCine-Plugins/releases/download/plugin-bilibili-v0.1.0/org.ohmycine.bilibili-0.1.0.manifest.json",
+      "packageUrl": "https://github.com/yuanjing-hash/OhMyCine-Plugins/releases/download/plugin-bilibili-v0.1.0/org.ohmycine.bilibili-0.1.0.omcp",
       "packageSha256": "3c8043f81665147fd3f914825ed5c0fe6e3380a8f2f03fe71725bc5325475d92",
       "minServerVersion": "0.1.0",
       "releaseNotes": "首个 Bilibili 在线媒体源版本，支持推荐、热门、排行、搜索、详情、分 P、清晰度、历史分页、播放进度回传、原生弹幕和下载计划。"
