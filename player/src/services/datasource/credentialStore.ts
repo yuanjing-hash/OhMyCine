@@ -35,6 +35,10 @@ export interface Pan123CredentialValue {
   readonly password?: string
 }
 
+export interface ServerCredentialValue {
+  readonly accessToken: string
+}
+
 export interface TmdbCredentialValue {
   readonly authType: 'apiKey' | 'readAccessToken'
   readonly value: string
@@ -49,7 +53,7 @@ export interface OpenSubtitlesCredentialValue {
   readonly password?: string
 }
 
-type CredentialProvider = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | '123' | 'tmdb' | 'opensubtitles'
+type CredentialProvider = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | '123' | 'server' | 'tmdb' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -92,6 +96,12 @@ interface StoredPan123CredentialEnvelope {
   readonly accessToken: string
   readonly username?: string
   readonly password?: string
+}
+
+interface StoredServerCredentialEnvelope {
+  readonly version: 1
+  readonly provider: 'server'
+  readonly accessToken: string
 }
 
 interface StoredTmdbCredentialEnvelope {
@@ -231,6 +241,21 @@ export async function savePan123Credential(ref: string, value: Pan123CredentialV
 
 export async function readPan123Credential(ref: string): Promise<Pan123CredentialValue | null> {
   return parsePan123Credential(await readRawCredential(ref))
+}
+
+export async function saveServerCredential(ref: string, value: ServerCredentialValue): Promise<void> {
+  const accessToken = value.accessToken.trim()
+  if (!accessToken.startsWith('omc_player_'))
+    throw new Error('Server credential value is invalid.')
+  await saveRawCredential(ref, JSON.stringify({
+    version: 1,
+    provider: 'server',
+    accessToken,
+  } satisfies StoredServerCredentialEnvelope))
+}
+
+export async function readServerCredential(ref: string): Promise<ServerCredentialValue | null> {
+  return parseServerCredential(await readRawCredential(ref))
 }
 
 export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
@@ -493,6 +518,22 @@ function parsePan123Credential(raw: string | null): Pan123CredentialValue | null
       username: username || undefined,
       password: password || undefined,
     }
+  }
+  catch {
+    return null
+  }
+}
+
+function parseServerCredential(raw: string | null): ServerCredentialValue | null {
+  if (!raw)
+    return null
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!isObject(value) || value.provider !== 'server' || value.version !== 1)
+      return null
+    if (typeof value.accessToken !== 'string' || !value.accessToken.trim().startsWith('omc_player_'))
+      return null
+    return { accessToken: value.accessToken.trim() }
   }
   catch {
     return null

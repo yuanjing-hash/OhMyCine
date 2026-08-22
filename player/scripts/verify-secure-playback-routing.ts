@@ -44,6 +44,7 @@ assert.equal(playbackRouteQueryNeedsSanitization({ sourceId: ['emby-home'], item
 const router = await source('src/router/index.ts')
 const playerView = await source('src/views/PlayerView.vue')
 const mobileProxy = await source('src-tauri/src/mpv/mobile_proxy.rs')
+const desktopPlayer = await source('src-tauri/src/commands/player.rs')
 const navigationFiles = await Promise.all([
   source('src/views/HomeView.vue'),
   source('src/views/MediaDetailView.vue'),
@@ -67,6 +68,8 @@ assert.match(mobileProxy, /redirect\(reqwest::redirect::Policy::none\(\)\)/)
 assert.match(mobileProxy, /for redirect_count in 0\.\.=MAX_UPSTREAM_REDIRECTS/)
 assert.match(mobileProxy, /same_origin\(&current_url, &next_url\)/)
 assert.match(mobileProxy, /loopback_bridge_follows_http_redirect_and_preserves_range_without_private_headers/)
+assert.match(desktopPlayer, /stream_proxy\.prepare\(path, headers\)\.await/)
+assert.match(desktopPlayer, /stream_proxy\.clear\(\)\.await/)
 
 console.log(JSON.stringify({
   routeIdentityOnly: true,
@@ -74,4 +77,5 @@ console.log(JSON.stringify({
   artworkQueryRejected: true,
   streamResolvedAtPlaybackBoundary: true,
   mobile302BridgePreserved: true,
+  desktop302BridgePreserved: true,
 }, null, 2))

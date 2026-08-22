@@ -385,3 +385,37 @@ func TestConnectionProbePersistsOnlySafeSummary(t *testing.T) {
 		t.Fatalf("safe health fields were not persisted: %+v", record)
 	}
 }
+
+func TestPlayerEmbyInstancesUseMediaPermissionAndNormalizedSystemID(t *testing.T) {
+	db, _, service, actor := newConnectionTestService(t, &fakeCloudDriver{})
+	now := time.Now().UTC()
+	valid := models.Connection{
+		Name: "家庭 Emby", NameNormalized: "家庭 emby", Provider: models.ConnectionProviderEmby,
+		Endpoint: "https://private.example.test", CredentialCiphertext: "encrypted-secret", Enabled: true,
+		AccountID: "  SYSTEM-ID  ", LastHealthStatus: "online", Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	missing := models.Connection{
+		Name: "待检测 Emby", NameNormalized: "待检测 emby", Provider: models.ConnectionProviderEmby,
+		Endpoint: "https://other.example.test", CredentialCiphertext: "other-secret", Enabled: true,
+		AccountID: "   ", LastHealthStatus: "unknown", Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&valid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&missing).Error; err != nil {
+		t.Fatal(err)
+	}
+	mediaActor := Actor{User: actor.User, Permissions: map[string]struct{}{authz.PermissionMediaLibrariesRead: {}}}
+	instances, err := service.PlayerEmbyInstances(mediaActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 || instances[0].Name != valid.Name || instances[0].HealthStatus != "online" || instances[0].InstanceFingerprint != EmbyInstanceFingerprint("system-id") {
+		t.Fatalf("unexpected safe Emby projection: %+v", instances)
+	}
+	connectionOnlyActor := Actor{User: actor.User, Permissions: map[string]struct{}{authz.PermissionConnectionsRead: {}}}
+	instances, err = service.PlayerEmbyInstances(connectionOnlyActor)
+	if err != nil || len(instances) != 0 {
+		t.Fatalf("connection-only actor received Player Emby projection: instances=%+v err=%v", instances, err)
+	}
+}

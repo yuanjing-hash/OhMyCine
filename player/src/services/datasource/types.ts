@@ -1,6 +1,7 @@
 export interface MediaItem {
   id: string
   sourceId: string
+  originType?: DataSourceType
   libraryId?: string
   name: string
   originalTitle?: string
@@ -25,6 +26,26 @@ export interface MediaItem {
   seasonNumber?: number
   episodeNumber?: number
   children?: MediaItem[]
+  /** Stable cross-source work identity. It never contains credentials or paths. */
+  workIdentity?: MediaIdentity
+  /** Exact playable artifact/version identity when the provider can prove it. */
+  exactIdentity?: string
+  /** Alternate provider routes retained when aggregate cards are merged. */
+  playbackTargets?: MediaPlaybackTarget[]
+}
+
+export interface MediaIdentity {
+  scheme: 'tmdb' | 'emby' | 'server'
+  mediaType: 'movie' | 'series' | 'season' | 'episode' | 'file'
+  value: string
+}
+
+export interface MediaPlaybackTarget {
+  sourceId: string
+  itemId: string
+  mediaSourceId?: string
+  label: string
+  exactIdentity?: string
 }
 
 export interface MediaLibrary {
@@ -35,6 +56,7 @@ export interface MediaLibrary {
   posterUrl?: string
   backdropUrl?: string
   itemCount?: number
+  providerIdentity?: string
 }
 
 export interface HomeSection {
@@ -76,6 +98,10 @@ export interface MediaSourceOption {
   bitrate?: number
   isRemote?: boolean
   isStrm?: boolean
+  sourceId?: string
+  itemId?: string
+  providerMediaSourceId?: string
+  exactIdentity?: string
 }
 
 export interface SubtitleTrack {

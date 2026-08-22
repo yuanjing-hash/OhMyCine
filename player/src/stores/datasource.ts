@@ -5,7 +5,9 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSettings'
 import { removeCredential } from '@/services/datasource/credentialStore'
+import { rememberPlaybackTargetsForItems } from '@/services/datasource/identityMerge'
 import { dataSourceManager } from '@/services/datasource/manager'
+import { logoutServerBestEffort } from '@/services/datasource/server'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
 import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
@@ -158,6 +160,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
       configs.value = previousConfigs
       throw error
     }
+    if (config?.type === 'server')
+      await logoutServerBestEffort(config)
     dataSourceManager.removeSource(id)
     invalidateSourceRootSnapshot(id)
     invalidateHomeCache()
@@ -198,6 +202,11 @@ export const useDataSourceStore = defineStore('datasource', () => {
     invalidateSourceRootSnapshot(id)
     invalidateHomeCache()
     homeSections.value = homeSections.value.filter(section => section.sourceId !== id)
+  }
+
+  async function reloadSource(id: string) {
+    dataSourceManager.removeSource(id)
+    await syncManager()
   }
 
   async function clearAllMediaCaches() {
@@ -323,6 +332,10 @@ export const useDataSourceStore = defineStore('datasource', () => {
       homeSections.value = cache.homeSections
       homeLoadedAt.value = cache.homeLoadedAt
       sourceRootSnapshots.value = cache.sourceRootSnapshots
+      rememberPlaybackTargetsForItems([
+        ...cache.homeSections.flatMap(section => section.items),
+        ...Object.values(cache.sourceRootSnapshots).flatMap(snapshot => snapshot.homeSections.flatMap(section => section.items)),
+      ])
     }
     catch {
       homeSections.value = []
@@ -395,6 +408,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     updateConfig,
     removeConfig,
     clearSourceCache,
+    reloadSource,
     clearAllMediaCaches,
     reorderConfigs,
     loadHomeSections,
@@ -461,6 +475,7 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
   return {
     id: safeText(item.id, 'cached-item'),
     sourceId: safeText(item.sourceId, 'unknown'),
+    originType: sanitizeDataSourceType(item.originType),
     libraryId: optionalText(item.libraryId),
     name: safeText(item.name, '未命名媒体'),
     originalTitle: optionalText(item.originalTitle),
@@ -484,7 +499,48 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
     seriesName: optionalText(item.seriesName),
     seasonNumber: optionalNumber(item.seasonNumber),
     episodeNumber: optionalNumber(item.episodeNumber),
+    workIdentity: sanitizeMediaIdentity(item.workIdentity),
+    exactIdentity: sanitizeIdentityText(item.exactIdentity),
+    playbackTargets: sanitizePlaybackTargets(item.playbackTargets),
   }
+}
+
+function sanitizeMediaIdentity(value: unknown): MediaItem['workIdentity'] {
+  if (!isRecord(value))
+    return undefined
+  const scheme = value.scheme
+  const mediaType = value.mediaType
+  const identityValue = sanitizeIdentityText(value.value)
+  if (!['tmdb', 'emby', 'server'].includes(String(scheme)) || !['movie', 'series', 'season', 'episode', 'file'].includes(String(mediaType)) || !identityValue)
+    return undefined
+  return { scheme: scheme as NonNullable<MediaItem['workIdentity']>['scheme'], mediaType: mediaType as NonNullable<MediaItem['workIdentity']>['mediaType'], value: identityValue }
+}
+
+function sanitizePlaybackTargets(value: unknown): MediaItem['playbackTargets'] {
+  if (!Array.isArray(value))
+    return undefined
+  const targets = value.slice(0, 16).flatMap((target) => {
+    if (!isRecord(target))
+      return []
+    const sourceId = optionalText(target.sourceId)
+    const itemId = optionalText(target.itemId)
+    const label = optionalText(target.label)
+    if (!sourceId || !itemId || !label)
+      return []
+    return [{ sourceId, itemId, label, mediaSourceId: optionalText(target.mediaSourceId), exactIdentity: sanitizeIdentityText(target.exactIdentity) }]
+  })
+  return targets.length > 0 ? targets : undefined
+}
+
+function sanitizeIdentityText(value: unknown): string | undefined {
+  const text = optionalText(value)
+  return text && text.length <= 256 && !/[\r\n]/.test(text) ? text : undefined
+}
+
+function sanitizeDataSourceType(value: unknown): MediaItem['originType'] {
+  return ['emby', 'jellyfin', 'alist', 'clouddrive2', 'webdav', 'server', '115', '123', 'quark', 'local'].includes(String(value))
+    ? value as MediaItem['originType']
+    : undefined
 }
 
 function sanitizeDisplayLibrary(value: unknown): MediaLibrary {
@@ -500,6 +556,7 @@ function sanitizeDisplayLibrary(value: unknown): MediaLibrary {
     posterUrl: sanitizeDisplayUrl(library.posterUrl),
     backdropUrl: sanitizeDisplayUrl(library.backdropUrl),
     itemCount: optionalNumber(library.itemCount),
+    providerIdentity: sanitizeIdentityText(library.providerIdentity),
   }
 }
 

@@ -1,4 +1,5 @@
 import type { DataSource, HomeSection, MediaItem } from './types'
+import { mergeMediaItemsByIdentity } from './identityMerge'
 
 export async function collectHomeSectionsFromSources(sources: readonly DataSource[]): Promise<HomeSection[]> {
   const settled = await Promise.allSettled(
@@ -80,13 +81,7 @@ function mergeSectionsOfType(
 }
 
 function dedupeHomeItems(items: readonly MediaItem[]): MediaItem[] {
-  const map = new Map<string, MediaItem>()
-  for (const item of items) {
-    const key = `${item.sourceId}:${item.id}`
-    if (!map.has(key))
-      map.set(key, item)
-  }
-  return [...map.values()]
+  return mergeMediaItemsByIdentity(items)
 }
 
 function singleSourceId(items: readonly MediaItem[]): string | undefined {

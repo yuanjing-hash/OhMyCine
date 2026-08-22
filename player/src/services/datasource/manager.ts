@@ -2,13 +2,15 @@ import type { DataSource, DataSourceConfig, DataSourceType, HomeSection, MediaIt
 import { withMediaTombstoneFiltering } from '@/services/mediaDelete'
 import { AlistDataSource } from './alist'
 import { CloudDrive2DataSource } from './clouddrive2'
-import { EmbyDataSource } from './emby'
+import { configureOhMyCineServerOrigins, EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
+import { forgetPlaybackTargetsForSource, prunePlaybackTargets } from './identityMerge'
 import { LocalFileDataSource } from './local'
 import { Pan123DataSource } from './pan123'
 import { QuarkDataSource } from './quark'
 import { searchAcrossDataSources } from './searchAggregation'
+import { ServerDataSource } from './server'
 import { WebDavDataSource } from './webdav'
 
 export class DataSourceManager {
@@ -18,6 +20,8 @@ export class DataSourceManager {
   async syncConfigs(configs: readonly DataSourceConfig[]): Promise<void> {
     const enabledConfigs = configs.filter(config => config.enabled !== false)
     const nextIds = new Set(enabledConfigs.map(config => config.id))
+    configureOhMyCineServerOrigins(enabledConfigs.filter(config => config.type === 'server').map(config => config.url))
+    prunePlaybackTargets(nextIds)
     const errors: string[] = []
 
     for (const [id, source] of this.sources) {
@@ -48,8 +52,10 @@ export class DataSourceManager {
     if (old && this.configSignatures.get(config.id) === signature)
       return old
 
-    if (old)
+    if (old) {
       old.destroy()
+      forgetPlaybackTargetsForSource(config.id)
+    }
 
     const source = createDataSource(config.type)
     await source.init(config)
@@ -65,6 +71,7 @@ export class DataSourceManager {
     source?.destroy()
     this.sources.delete(id)
     this.configSignatures.delete(id)
+    prunePlaybackTargets(new Set(this.sources.keys()))
   }
 
   clearSourceCache(id: string): void {
@@ -131,6 +138,8 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new Pan123DataSource()
     case 'local':
       return new LocalFileDataSource()
+    case 'server':
+      return new ServerDataSource()
     default:
       throw new Error(`${type} data source is not implemented yet.`)
   }

@@ -189,10 +189,14 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │  ServerDataSource (可选 - 连接 OhMyCine Server)       │   │
-│  │  连接后: 获取Server的媒体库、下载任务、AI推荐等       │   │
+│  │  当前: 状态/媒体库/搜索/详情/115 STRM 直连            │   │
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+`ServerDataSource` 已使用现有 DataSource 生命周期接入设置页和 `DataSourceManager`。首次连接提交 Server 地址、用户名、密码和 Player 本机随机设备 ID，成功后只保存 `credentialRef`、设备 ID、Server URL 与安全媒体库摘要；密码不保存，`omc_player_` device token 进入 provider-specific AES-GCM 凭据 envelope。后续 bootstrap、目录、搜索和详情请求统一通过受限 Tauri 原生 JSON 命令访问 `/api/v1/player/*`，禁止自动跟随重定向并限制方法、路径、请求体和响应体。
+
+Server 媒体与 Player 直连 Emby 的聚合使用显式身份，而不是标题猜测：TMDB ID 合并作品卡片，OhMyCine artifact identity 合并精确版本，Emby `SystemId` 指纹区分实例并与 Library/Item/MediaSource ID 组合。Server 项目作为聚合默认卡片，匹配的 Emby 用户线路仍保留为可选版本；显式进入 Emby 来源页时不执行跨源去重。身份不足时宁可显示两项。115 STRM 默认由 ServerDataSource 直接请求 entry stream，Player 不读取 `.strm` 文件、不使用 Server 保存的 Emby 管理 API Key，也不经过 Emby；带 Bearer 的播放请求在 Windows/Android 先进入随机令牌保护的回环桥，跨 origin 302 前移除私有 Header。
 
 ### 4.2 DataSource 接口定义
 
@@ -603,9 +607,11 @@ OhMyCine/
 
 标准模式按平台保护 AES 主密钥：Windows 使用 DPAPI，Android 使用 Keystore，macOS/iOS 使用 Apple Keychain，Linux 优先使用 Secret Service/libsecret；Linux 系统存储不可用时才降级为权限受限文件密钥并在设置页提示。旧文件主密钥原地迁移且不轮换，已有凭据数据库缺失主密钥时禁止生成新钥匙。便携模式为了能随目录移动，继续使用目录内文件密钥，因此整个便携文件夹都应视为敏感数据，并在设置页明确显示低于系统安全存储的保护等级。
 
-### 4.7 配置同步机制
+### 4.7 配置同步机制（延期）
 
-Player 连接 Server 时，双向同步配置：
+当前 Player ↔ Server 接入只实现 `ServerDataSource`、设备令牌、媒体目录、跨源身份去重和安全播放，不同步数据源配置、凭据、播放进度或多设备设置。连接 Server 不会自动 push/pull，也不会把 Player 本地数据源导入 Server。
+
+后续若启用配置同步，必须由用户显式选择方向与范围，默认只允许非敏感结构字段；下面代码仅表示未来接口形态，不是当前行为：
 
 ```typescript
 // src/services/sync.ts
@@ -628,11 +634,6 @@ export class ConfigSync {
     await this.dsManager.importConfigs(configs.datasources)
   }
 
-  // 连接时自动同步
-  async autoSync(): Promise<void> {
-    await this.pushToServer()
-    await this.pullFromServer()
-  }
 }
 ```
 

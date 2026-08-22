@@ -537,7 +537,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] `POST /api/v1/sync/push` — Player 推送数据源配置
 - [ ] `GET /api/v1/sync/pull` — Player 拉取 Server 配置
 - [ ] `GET /api/v1/sync/status` — 同步状态
-- [ ] 自动导入 Player 的数据源配置到连接管理
+- [ ] 用户显式选择方向和范围的结构化配置同步；不自动导入，不默认同步凭据
 
 **产出**:
 
@@ -625,16 +625,18 @@ Phase 4: 生态系统           ████████████████
 
 #### Player 端 Server 连接 UI
 
-- [ ] 添加 Server 连接表单 (URL + API Key)
-- [ ] 连接状态显示
-- [ ] 同步状态显示
-- [ ] Server 侧功能展示入口
+- [x] 添加 Server 连接表单（URL + 用户名/密码首次认证，换取可撤销 device token）
+- [x] `ServerDataSource` 状态、媒体库、目录、搜索与详情
+- [x] TMDB/Emby SystemId/Artifact 身份聚合，保留 Server 直连与 Player 自有 Emby 用户线路
+- [x] active 115 STRM 通过受保护 Player stream endpoint → Server 解析 → 302 直连，Windows/Android 跨源跳转清除 Bearer
+- [ ] 设备管理 Web UI、多设备设置/进度同步和数据源配置同步（延期，当前连接不会自动同步）
 
 **产出**:
 
 - [ ] 下载完成 → 自动转移 → 自动生成 STRM → 通知 Emby 刷新 → Emby 能播放
 - [ ] STRM 定时增量/全量/清理可用
-- [ ] Player 连接 Server 后配置自动同步
+- [x] Player 连接 Server 后可浏览并直连 Server 管理的媒体；Player 脱离 Server 时其它 DataSource 不受影响
+- [ ] Player ↔ Server 配置同步（延期，必须由用户显式开启，不自动同步）
 
 ---
 

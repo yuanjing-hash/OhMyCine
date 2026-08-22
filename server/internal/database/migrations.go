@@ -84,7 +84,33 @@ func Migrate(db *gorm.DB) error {
 }
 
 func schemaMigrations() []migration {
-	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}}
+	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}}
+}
+
+func migratePlayerDeviceTokens(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE device_tokens (
+			id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, user_id INTEGER NOT NULL,
+			device_id_hash TEXT NOT NULL, device_name TEXT NOT NULL, client_kind TEXT NOT NULL,
+			created_at DATETIME NOT NULL, last_seen_at DATETIME NOT NULL,
+			idle_expires_at DATETIME NOT NULL, absolute_expires_at DATETIME NOT NULL,
+			revoked_at DATETIME,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX idx_device_tokens_token_hash ON device_tokens(token_hash)`,
+		`CREATE INDEX idx_device_tokens_user_id ON device_tokens(user_id)`,
+		`CREATE INDEX idx_device_tokens_device_id_hash ON device_tokens(device_id_hash)`,
+		`CREATE INDEX idx_device_tokens_client_kind ON device_tokens(client_kind)`,
+		`CREATE INDEX idx_device_tokens_idle_expires_at ON device_tokens(idle_expires_at)`,
+		`CREATE INDEX idx_device_tokens_absolute_expires_at ON device_tokens(absolute_expires_at)`,
+		`CREATE INDEX idx_device_tokens_revoked_at ON device_tokens(revoked_at)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateEmbyWebEnhancements(db *gorm.DB) error {

@@ -37,6 +37,7 @@
     "verify:emby-http-boundary": "tsx scripts/verify-emby-http-boundary.ts",
     "verify:emby-playback-progress": "tsx scripts/verify-emby-playback-progress.ts",
     "verify:emby-favorites": "tsx scripts/verify-emby-favorites.ts",
+    "verify:server-datasource": "tsx scripts/verify-server-datasource.ts",
     "verify:view-architecture": "tsx scripts/verify-view-architecture.ts",
     "verify:tmdb-auth": "tsx scripts/verify-tmdb-auth-routing.ts",
     "verify:theme-controls": "tsx scripts/verify-theme-controls.ts",

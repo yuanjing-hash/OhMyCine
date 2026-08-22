@@ -54,6 +54,7 @@ use commands::quark::{
     quark_auth_start_qr, quark_get_stream, quark_list, quark_search, QuarkAuthState,
 };
 use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
+use commands::server::server_request_json;
 use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
 };
@@ -64,6 +65,7 @@ use commands::subtitle::{
 };
 use commands::tmdb::{tmdb_request_json, tmdb_test_image};
 use commands::updater::{player_check_for_updates, player_install_update, PendingUpdate};
+use mpv::mobile_proxy::AndroidStreamProxyState;
 #[cfg(not(mobile))]
 use mpv::surface::OwnerWindowEvent;
 
@@ -80,7 +82,8 @@ pub fn run() {
         .manage(LocalFileWatcherState::default())
         .manage(PendingUpdate::default())
         .manage(OpenSubtitlesSessionState::default())
-        .manage(SubtitleDownloadState::default());
+        .manage(SubtitleDownloadState::default())
+        .manage(AndroidStreamProxyState::default());
     let builder = builder.manage(DownloadQueueState::default());
 
     #[cfg(target_os = "android")]
@@ -89,8 +92,7 @@ pub fn run() {
         .plugin(commands::download_android::init_android())
         .plugin(commands::updater::init_android())
         .plugin(commands::local_file::init_android())
-        .plugin(mpv::mobile::init())
-        .manage(mpv::mobile_proxy::AndroidStreamProxyState::default());
+        .plugin(mpv::mobile::init());
 
     #[cfg(not(mobile))]
     let builder = builder.manage(mpv::player::create_state().expect("failed to initialize libmpv"));
@@ -156,6 +158,7 @@ pub fn run() {
             player_settings_set,
             player_settings_delete,
             player_get_storage_info,
+            server_request_json,
             subtitle_search_opensubtitles,
             subtitle_download_opensubtitles,
             subtitle_login_opensubtitles,

@@ -211,7 +211,11 @@ func createRouterSignedArtifact(t *testing.T, client *testClient, actor services
 		t.Fatal(err)
 	}
 	opaque := "artifact_BBBBBBBBBBBBBBBBBBBBBB"
-	artifact := models.MediaArtifact{OpaqueID: opaque, RunID: run.ID, LibraryID: library.ID, ProviderItemID: "video-1", Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/Movie.strm", Managed: true, Active: true, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	entry := models.MediaLibraryEntry{LibraryID: library.ID, RelativePath: "/Movie.mkv", ProviderID: "video-1", Size: 100, ModifiedAt: now, MediaType: "movie", Title: "Movie", WorkKey: "movie:file:proxy-route", MatchStatus: "unrecognized", CategoryName: "未分类", LastGeneration: 1, CreatedAt: now, UpdatedAt: now}
+	if err := client.db.Create(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	artifact := models.MediaArtifact{OpaqueID: opaque, RunID: run.ID, LibraryID: library.ID, SourceIdentity: "entry:" + uintString(entry.ID), ProviderItemID: "video-1", Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/Movie.strm", Managed: true, Active: true, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
 	if err := client.db.Select("*").Create(&artifact).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -494,6 +498,170 @@ func (c *testClient) request(t *testing.T, method, path string, body any, csrf b
 		t.Fatalf("decode response %d %s: %v", response.Code, response.Body.String(), err)
 	}
 	return response.Code, envelope
+}
+
+func (c *testClient) playerRequest(t *testing.T, method, path, token string, body any) (int, testEnvelope, http.Header) {
+	t.Helper()
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(method, path, bytes.NewReader(payload))
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response := httptest.NewRecorder()
+	c.router.ServeHTTP(response, request)
+	var envelope testEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode Player response %d %s: %v", response.Code, response.Body.String(), err)
+	}
+	return response.Code, envelope, response.Header().Clone()
+}
+
+func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	var owner models.User
+	if err := client.db.Where("username_normalized = ?", "owner").First(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	createRouterSignedArtifact(t, client, services.Actor{User: owner, Permissions: map[string]struct{}{
+		authz.PermissionConnectionsCreate: {}, authz.PermissionConnectionsRead: {},
+	}})
+	loginBody := map[string]any{"username": "owner", "password": "strong-owner-password", "device_id": "windows-device-0001", "device_name": "卧室 Windows Player"}
+	status, envelope, headers := client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/login", "", loginBody)
+	if status != http.StatusOK || headers.Get("Cache-Control") != "no-store" || len(headers.Values("Set-Cookie")) != 0 {
+		t.Fatalf("Player login status=%d cache=%q cookies=%v message=%s", status, headers.Get("Cache-Control"), headers.Values("Set-Cookie"), envelope.Message)
+	}
+	var login struct {
+		AccessToken string `json:"access_token"`
+		Device      struct {
+			ID string `json:"id"`
+		} `json:"device"`
+	}
+	if err := json.Unmarshal(envelope.Data, &login); err != nil || !strings.HasPrefix(login.AccessToken, "omc_player_") || login.Device.ID == "" {
+		t.Fatalf("invalid Player login response err=%v data=%s", err, envelope.Data)
+	}
+	status, bootstrapEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/bootstrap", login.AccessToken, nil)
+	if status != http.StatusOK {
+		t.Fatalf("Player bootstrap status=%d", status)
+	}
+	var bootstrap struct {
+		MediaLibraryCount int `json:"media_library_count"`
+	}
+	if err := json.Unmarshal(bootstrapEnvelope.Data, &bootstrap); err != nil || bootstrap.MediaLibraryCount != 1 {
+		t.Fatalf("Player bootstrap count invalid err=%v data=%s", err, bootstrapEnvelope.Data)
+	}
+	status, librariesEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries", login.AccessToken, nil)
+	if status != http.StatusOK || bytes.Contains(librariesEnvelope.Data, []byte(`"root_path"`)) || bytes.Contains(librariesEnvelope.Data, []byte(`"relative_root"`)) {
+		t.Fatalf("Player libraries status=%d data=%s", status, librariesEnvelope.Data)
+	}
+	var library models.MediaLibrary
+	if err := client.db.Where("name_normalized = ?", "proxy-route-library").First(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	status, catalogEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries/"+uintString(library.ID)+"/catalog?page=1&page_size=20", login.AccessToken, nil)
+	if status != http.StatusOK || bytes.Contains(catalogEnvelope.Data, []byte("/Movie.mkv")) || bytes.Contains(catalogEnvelope.Data, []byte("video-1")) {
+		t.Fatalf("Player catalog status=%d data=%s", status, catalogEnvelope.Data)
+	}
+	var catalog struct {
+		List []struct {
+			ID string `json:"id"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(catalogEnvelope.Data, &catalog); err != nil || len(catalog.List) != 1 || catalog.List[0].ID == "" {
+		t.Fatalf("Player catalog invalid err=%v data=%s", err, catalogEnvelope.Data)
+	}
+	status, detailEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries/"+uintString(library.ID)+"/catalog/"+url.PathEscape(catalog.List[0].ID), login.AccessToken, nil)
+	if status != http.StatusOK || bytes.Contains(detailEnvelope.Data, []byte("/Movie.mkv")) || bytes.Contains(detailEnvelope.Data, []byte("video-1")) {
+		t.Fatalf("Player detail status=%d data=%s", status, detailEnvelope.Data)
+	}
+	var playableDetail struct {
+		Versions []struct {
+			Playable      bool   `json:"playable"`
+			ExactIdentity string `json:"exact_identity"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(detailEnvelope.Data, &playableDetail); err != nil || len(playableDetail.Versions) != 1 || !playableDetail.Versions[0].Playable || !strings.HasPrefix(playableDetail.Versions[0].ExactIdentity, "ohmycine:artifact:") {
+		t.Fatalf("Player playable detail invalid err=%v data=%s", err, detailEnvelope.Data)
+	}
+	if err := client.db.Model(&models.Storage{}).Where("id = ?", library.StorageID).Update("type", models.StorageTypeLocal).Error; err != nil {
+		t.Fatal(err)
+	}
+	status, localDetailEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries/"+uintString(library.ID)+"/catalog/"+url.PathEscape(catalog.List[0].ID), login.AccessToken, nil)
+	var localDetail struct {
+		Versions []struct {
+			Playable      bool   `json:"playable"`
+			ExactIdentity string `json:"exact_identity"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(localDetailEnvelope.Data, &localDetail); status != http.StatusOK || err != nil || len(localDetail.Versions) != 1 || localDetail.Versions[0].Playable || !strings.HasPrefix(localDetail.Versions[0].ExactIdentity, "server:entry:") {
+		t.Fatalf("non-115 Player detail exposed playable artifact: status=%d err=%v data=%s", status, err, localDetailEnvelope.Data)
+	}
+	if err := client.db.Model(&models.Storage{}).Where("id = ?", library.StorageID).Update("type", models.StorageTypePan115).Error; err != nil {
+		t.Fatal(err)
+	}
+	var entry models.MediaLibraryEntry
+	if err := client.db.Where("library_id = ?", library.ID).First(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	streamRequest := httptest.NewRequest(http.MethodGet, "/api/v1/player/media-entries/"+uintString(entry.ID)+"/stream", nil)
+	streamRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	streamRequest.Header.Set("User-Agent", "OhMyCine Player Test")
+	streamResponse := httptest.NewRecorder()
+	client.router.ServeHTTP(streamResponse, streamRequest)
+	if streamResponse.Code != http.StatusFound || streamResponse.Header().Get("Location") != "https://cdn.example.test/video" || streamResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Player stream status=%d location=%q", streamResponse.Code, streamResponse.Header().Get("Location"))
+	}
+	if err := client.db.Model(&models.MediaArtifact{}).Where("source_identity = ?", "entry:"+uintString(entry.ID)).Update("active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	unavailableRequest := httptest.NewRequest(http.MethodGet, "/api/v1/player/media-entries/"+uintString(entry.ID)+"/stream", nil)
+	unavailableRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	unavailableResponse := httptest.NewRecorder()
+	client.router.ServeHTTP(unavailableResponse, unavailableRequest)
+	if unavailableResponse.Code != http.StatusNotFound || unavailableResponse.Header().Get("Location") != "" {
+		t.Fatalf("unavailable Player stream status=%d location=%q body=%s", unavailableResponse.Code, unavailableResponse.Header().Get("Location"), unavailableResponse.Body.String())
+	}
+
+	management := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	management.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	managementResponse := httptest.NewRecorder()
+	client.router.ServeHTTP(managementResponse, management)
+	if managementResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("Player bearer entered browser management API: status=%d", managementResponse.Code)
+	}
+
+	status, secondEnvelope, _ := client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/login", "", loginBody)
+	if status != http.StatusOK {
+		t.Fatalf("second Player login status=%d message=%s", status, secondEnvelope.Message)
+	}
+	var second struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(secondEnvelope.Data, &second); err != nil || second.AccessToken == "" || second.AccessToken == login.AccessToken {
+		t.Fatalf("second Player token invalid err=%v", err)
+	}
+	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/bootstrap", login.AccessToken, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("superseded Player token status=%d", status)
+	}
+	status, _, _ = client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/logout", second.AccessToken, map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("Player logout status=%d", status)
+	}
+	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/bootstrap", second.AccessToken, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("revoked Player token status=%d", status)
+	}
 }
 
 func (c *testClient) setup(t *testing.T) map[string]any {

@@ -45,6 +45,14 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusTooManyRequests
 	case services.CodeDirectoryBusy:
 		status = http.StatusServiceUnavailable
+	case services.CodeProxySignatureInvalid, services.CodeProxySignatureExpired:
+		status = http.StatusForbidden
+	case services.CodeProxyTargetUnavailable:
+		status = http.StatusNotFound
+	case services.CodeProxyDeviceLimit:
+		status = http.StatusTooManyRequests
+	case services.CodeProxyUpstreamUnavailable, services.CodeProxyHeadersUnsupported, services.CodeProxyUnavailable:
+		status = http.StatusBadGateway
 	case services.CodeRuntimeLogUnavailable, services.CodeMediaLibraryScanFailed, services.CodeQueueWorkerUnavailable, services.CodeConnectionUnavailable, services.CodeEmbyUnavailable, services.CodeEmbyGatewayUnavailable, services.CodeDownloaderUnavailable, services.CodeTMDBUnavailable:
 		status = http.StatusServiceUnavailable
 	}

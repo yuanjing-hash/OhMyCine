@@ -1315,6 +1315,80 @@ await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
 
 ---
 
+## Scenario: ServerDataSource Identity and Safe 302 Playback
+
+### 1. Scope / Trigger
+
+- Trigger: changing the `server` DataSource, Server login/settings, media identity merge, Emby SystemId/artifact extraction, alternate playback targets, native Server JSON requests, or desktop/mobile redirect handling.
+
+### 2. Signatures
+
+- Credential envelope: `ServerCredentialValue { accessToken: string }`; ordinary config stores only Server origin, `credentialRef`, random device ID and safe media-library summaries.
+- Native JSON command: `server_request_json({ baseUrl, method, path, accessToken?, body? })`; only GET/POST/DELETE and `/api/v1/player/*` are allowed.
+- `MediaItem` optional identity fields: `originType`, `workIdentity`, `exactIdentity`, and typed `playbackTargets` containing configured source/item/media-source references only.
+- Playback remains `DataSource.getStreamRequest({ itemId, mediaSourceId? }) -> MediaStreamRequest`.
+
+### 3. Contracts
+
+- Username/password are transient first-authentication inputs. Persist only the device token inside the credential boundary; never copy it into config, display cache, route, history, diagnostics or errors.
+- Keep one stable random device ID per configured Server source and reuse it on reconnect so Server-side same-device replacement revokes the old token. Validate bootstrap/libraries before replacing the saved credential, and advance a non-secret `credentialVersion` after successful re-authentication so the manager rebuilds any instance caching the revoked prior token. On same-origin post-login validation or config persistence failure, keep the new token and reload the runtime source because the old token is already revoked; on initial-add or cross-origin rollback, best-effort logout the new token before removing/restoring the local credential. If the secure credential write itself fails, revoke the newly issued token because Player cannot retain it safely. Source deletion also attempts logout before local credential removal, but remote cleanup failure never blocks local removal.
+- Server JSON requests use a bounded native client, reject redirects, userinfo and non-HTTP(S) origins, and require an `omc_player_` Bearer outside login.
+- Server catalog browsing must consume all API pages or fail with an explicit bounded safety error; it must never silently present only the first page. Map only `playable=true` versions into media sources, children and stream selection, and resolve a movie work ID to its first playable version before direct card playback.
+- Cross-source aggregation merges only on an exact artifact key or a trustworthy work key such as media type + TMDB ID. Title/year alone never merge. Prefer the Server card while preserving all distinct configured playback targets and media versions.
+- Emby instance/library/item identity uses the normalized SystemId fingerprint plus provider IDs; address, name, username and authentication method do not establish equality.
+- Cached display snapshots may keep only safe identity and configured-source references. Hydration must rebuild the in-memory playback-target registry; source removal/editing must remove stale targets.
+- Server 115 playback sends Bearer only to the configured Server origin. Windows/Android loopback bridges preserve Range but clear Authorization, Cookie and provider-private headers before following any cross-origin redirect; URL/Header state is transient.
+- A selected Emby alternate delegates to that configured EmbyDataSource and its real provider `mediaSourceId`; Server management credentials are never injected.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Server absent/offline | Source-scoped empty/error state; other DataSources remain usable |
+| Missing/revoked device credential | Safe reconnect message; no token text in the message |
+| Same-origin reconnect validation or config persistence fails after Server issued a token | Keep the new token because same-device login revoked the old one, reload the runtime source, and surface the original safe failure |
+| Initial-add or cross-origin validation/config persistence fails after Server issued a token | Best-effort logout the new token, then remove the new credential or restore the previous credential |
+| Secure credential storage cannot save the newly issued token | Best-effort logout the new token and surface a redacted credential-storage failure |
+| Server catalog exceeds a request page | Continue bounded pagination; reject repeated/non-advancing pages or an explicit safety-limit overflow instead of truncating |
+| Work contains no `playable=true` version | Show metadata without a primary play action or selectable Server route |
+| Same title/year without identity overlap | Render both cards |
+| Same TMDB work with Server and Emby versions | One Server-preferred card with distinct selectable targets |
+| Same artifact appears through Server and Emby | Do not show the identical version twice |
+| Cached merged card restored after restart | Restore alternate targets from safe identities before detail selection |
+| Redirect stays on Server origin | Keep required Server Authorization |
+| Redirect changes origin | Drop all private headers before the upstream request |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a 115 movie projected into the user's Emby appears once, defaults to Server direct playback, and still offers that user's Emby version.
+- Base: Emby hides MediaSource Path; TMDB identity merges the work while preserving separate versions.
+- Bad: merge by normalized title, persist a signed URL as `exactIdentity`, or hand the Server Bearer directly to libmpv across an uncontrolled redirect.
+
+### 6. Tests Required
+
+- Static/TypeScript verification covers Server config sanitization, Bearer-only native requests, stable device reuse, failed-add/edit/delete token cleanup, complete bounded pagination, playable-version filtering/work resolution, SystemId normalization, uncertain non-merge, Server preference, exact-version preservation and cache-registry restoration.
+- Rust tests use real loopback servers to assert same-origin header retention, cross-origin header removal and Range preservation.
+- Run `npm run verify:server-datasource`, `npm run verify:secure-playback-routing`, typecheck, lint, build, `cargo test --lib`, and Clippy with warnings denied.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+if (left.name === right.name && left.year === right.year)
+  return merge(left, right)
+```
+
+#### Correct
+
+```ts
+const sameWork = intersects(left.workIdentity, right.workIdentity)
+const sameVersion = intersects(left.exactIdentity, right.exactIdentity)
+return sameWork || sameVersion ? mergePreservingTargets(left, right) : undefined
+```
+
+---
+
 ## Common Patterns
 
 - Use discriminated unions for media item types and source types where helpful.

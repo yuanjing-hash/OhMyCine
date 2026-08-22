@@ -147,7 +147,7 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 - Desktop Player credentials should survive app restart through the Tauri credential boundary when available.
 - The SQLite credential boundary stores encrypted secret payloads in `credentials.sqlite` keyed by hashed credential references. Windows standard mode wraps the AES master key with DPAPI. Portable mode uses an EXE-adjacent file key and must display the reduced-protection warning; macOS/Linux OS key stores remain future work.
 - Browser/Vite-only fallback may keep credentials in memory only and must show/carry a limitation state when persistence is unavailable.
-- If config save or post-login validation fails after writing a credential, remove the newly written credential or restore the full previous structured credential for existing sources.
+- If config save or post-login validation fails after writing a credential, remove the newly written credential or restore the full previous structured credential for existing sources unless a provider-specific token replacement already revoked the previous credential. In particular, same-origin Server reconnect keeps the newly issued token and reloads the runtime source; if the secure credential write itself fails, revoke that new Server token because Player cannot retain it safely.
 - If a stored source is missing its credential after restart, show a reconnect/re-enter-token state instead of treating the source as deleted or connected.
 - Removing a source must delete the persistent SQLite credential row and any in-memory fallback for that `credentialRef`, delete local playback history and per-media playback preferences by exact `sourceId`, delete source-owned downloaded subtitle cache, remove its dynamic navigation shortcut, and clear source-scoped raw scan cache without affecting another source.
 - Persistence sanitization must reconstruct safe config fields and drop sensitive `extra` keys before writing config to localStorage.
@@ -161,8 +161,9 @@ Until OS secure storage is wired for every desktop target, a bounded MVP may use
 | User adds Emby source with account/password | Authenticate first, persist only non-sensitive config and credential reference, then discard password |
 | User adds source with a manually pasted token | Reject for normal Emby UX unless explicitly implementing an advanced/import flow |
 | Store generates a different id than the credential ref expects | Treat as a bug; source id and credential ref must be derived from the same id |
-| Config save fails after credential write | Remove newly written credential |
-| Post-login library validation fails after overwriting existing credential | Restore previous credential or remove new credential for a new source |
+| Config save fails after credential write | Remove the new credential for an initial-add/cross-origin rollback; for same-origin Server reconnect, keep the new token and reload because the old token was revoked |
+| Post-login library validation fails after credential replacement | Restore/remove the credential when the previous value remains valid; for same-origin Server reconnect, keep the new token and reload |
+| Secure storage fails while saving a newly issued Server token | Best-effort revoke that new token and surface a redacted storage failure |
 | Re-login succeeds but config signature does not change | Treat as a bug; bump a safe credential version/revision so the manager reloads the token |
 | App restarts in Tauri desktop | Credential should load from persistent credential boundary |
 | App runs in browser/Vite without Tauri commands | Use memory fallback only and show a persistence limitation warning |

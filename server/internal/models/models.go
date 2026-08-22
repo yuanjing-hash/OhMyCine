@@ -70,6 +70,22 @@ type Session struct {
 	IPHint            string     `gorm:"size:96" json:"-"`
 }
 
+// DeviceToken is a revocable Player credential. Only the one-way hashes are
+// persisted; the raw device identifier and bearer token never reach SQLite.
+type DeviceToken struct {
+	ID                string     `gorm:"primaryKey;size:64" json:"id"`
+	TokenHash         string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	UserID            uint       `gorm:"not null;index" json:"user_id"`
+	DeviceIDHash      string     `gorm:"size:64;not null;index" json:"-"`
+	DeviceName        string     `gorm:"size:128;not null" json:"device_name"`
+	ClientKind        string     `gorm:"size:32;not null;index" json:"client_kind"`
+	CreatedAt         time.Time  `json:"created_at"`
+	LastSeenAt        time.Time  `json:"last_seen_at"`
+	IdleExpiresAt     time.Time  `gorm:"index" json:"idle_expires_at"`
+	AbsoluteExpiresAt time.Time  `gorm:"index" json:"absolute_expires_at"`
+	RevokedAt         *time.Time `gorm:"index" json:"revoked_at,omitempty"`
+}
+
 type AuditLog struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	ActorID    *uint     `gorm:"index" json:"actor_id"`

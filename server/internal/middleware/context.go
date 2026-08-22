@@ -12,12 +12,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
+	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
 )
 
 const (
 	ContextActor        = "actor"
 	ContextSessionToken = "session_token"
+	ContextDeviceToken  = "device_token"
+	ContextDevice       = "device"
 	ContextRequestID    = "request_id"
 )
 
@@ -118,6 +121,28 @@ func Auth(auth *services.AuthService, cookieName string) gin.HandlerFunc {
 	}
 }
 
+// DeviceAuth is intentionally separate from browser Cookie authentication.
+// A Player bearer token can never enter a management route or bypass CSRF.
+func DeviceAuth(auth *services.AuthService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := strings.TrimSpace(c.GetHeader("Authorization"))
+		parts := strings.Fields(header)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			abortJSON(c, http.StatusUnauthorized, services.CodeNotAuthenticated, "请先连接 Server")
+			return
+		}
+		actor, device, err := auth.AuthenticateDevice(parts[1])
+		if err != nil {
+			abortJSON(c, http.StatusUnauthorized, services.ErrorCode(err), services.ErrorMessage(err))
+			return
+		}
+		c.Set(ContextActor, actor)
+		c.Set(ContextDeviceToken, parts[1])
+		c.Set(ContextDevice, device)
+		c.Next()
+	}
+}
+
 func CSRF(auth *services.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
@@ -178,6 +203,18 @@ func ActorFrom(c *gin.Context) (services.Actor, bool) {
 func SessionTokenFrom(c *gin.Context) string {
 	value, _ := c.Get(ContextSessionToken)
 	return stringValue(value)
+}
+func DeviceTokenFrom(c *gin.Context) string {
+	value, _ := c.Get(ContextDeviceToken)
+	return stringValue(value)
+}
+func DeviceFrom(c *gin.Context) (models.DeviceToken, bool) {
+	value, ok := c.Get(ContextDevice)
+	if !ok {
+		return models.DeviceToken{}, false
+	}
+	device, ok := value.(models.DeviceToken)
+	return device, ok
 }
 func RequestIDFrom(c *gin.Context) string {
 	value, _ := c.Get(ContextRequestID)

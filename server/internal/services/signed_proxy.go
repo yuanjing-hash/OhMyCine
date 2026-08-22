@@ -298,6 +298,7 @@ type signedProxyTarget struct {
 	Managed        bool
 	ArtifactActive bool
 	LibraryEnabled bool
+	StorageEnabled bool
 	STRMEnabled    bool
 	ProxyEnabled   bool
 }
@@ -309,12 +310,13 @@ func (s *SignedProxyService) proxyTarget(opaque string) (signedProxyTarget, erro
 			media_artifacts.provider_item_id, storages.type AS storage_type,
 			media_artifacts.status AS artifact_status, media_artifacts.kind AS artifact_kind,
 			media_artifacts.target_kind, media_artifacts.managed, media_artifacts.active AS artifact_active,
-			media_libraries.enabled AS library_enabled, media_libraries.strm_enabled,
+			media_libraries.enabled AS library_enabled, storages.enabled AS storage_enabled,
+			media_libraries.strm_enabled,
 			media_libraries.signed_proxy_enabled AS proxy_enabled`).
 		Joins("JOIN media_libraries ON media_libraries.id = media_artifacts.library_id").
 		Joins("JOIN storages ON storages.id = media_libraries.storage_id").
 		Where("media_artifacts.opaque_id = ?", opaque).Take(&target).Error
-	if err != nil || !target.Managed || !target.ArtifactActive || !target.LibraryEnabled || !target.STRMEnabled || !target.ProxyEnabled || target.ArtifactStatus != models.MediaArtifactStatusCompleted || target.ArtifactKind != models.MediaArtifactKindSTRM || target.TargetKind != models.MediaArtifactTargetLocalProjection || target.StorageType != models.StorageTypePan115 || target.ConnectionID == 0 || strings.TrimSpace(target.ProviderItemID) == "" {
+	if err != nil || !target.Managed || !target.ArtifactActive || !target.LibraryEnabled || !target.StorageEnabled || !target.STRMEnabled || !target.ProxyEnabled || target.ArtifactStatus != models.MediaArtifactStatusCompleted || target.ArtifactKind != models.MediaArtifactKindSTRM || target.TargetKind != models.MediaArtifactTargetLocalProjection || target.StorageType != models.StorageTypePan115 || target.ConnectionID == 0 || strings.TrimSpace(target.ProviderItemID) == "" {
 		return signedProxyTarget{}, appError(CodeProxyTargetUnavailable, "播放目标不可用", nil)
 	}
 	return target, nil

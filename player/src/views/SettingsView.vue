@@ -27,6 +27,7 @@ import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
 import { createAuthenticatedPan123SetupSource, loginPan123AndCreateConfig, normalizePan123RootPath, PAN123_PROVIDER_URL, Pan123DataSource, readPan123RootPath } from '@/services/datasource/pan123'
 import { cancelQuarkLogin, createAuthenticatedQuarkSetupSource, normalizeQuarkRootPath, pollQuarkAccountLogin, pollQuarkQrLogin, QUARK_PROVIDER_URL, QuarkDataSource, readQuarkRootPath, saveQuarkCookieAndCreateConfig, startQuarkAccountLogin, startQuarkQrLogin } from '@/services/datasource/quark'
+import { loginServerAndCreateConfig, logoutServerBestEffort } from '@/services/datasource/server'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import { getDefaultDownloadDirectory, pickAndroidDownloadDirectory, setDefaultDownloadDirectory } from '@/services/downloads'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
@@ -505,7 +506,7 @@ watch(() => form.type, (type) => {
     form.rootPath = ''
     form.rootLabel = ''
   }
-  else if (type === 'emby' || type === 'jellyfin') {
+  else if (type === 'emby' || type === 'jellyfin' || type === 'server') {
     form.rootPath = '/'
   }
   else if (isRootSelectableRemoteSourceType(type) && !form.rootPath) {
@@ -1207,6 +1208,8 @@ async function saveSource() {
       await store.replaceConfig(result.config)
     }
     catch (error) {
+      if (result.config.type === 'server')
+        await logoutServerBestEffort(result.config)
       await restoreCredentialForConfig(result.config, null).catch(() => undefined)
       throw error
     }
@@ -1278,22 +1281,46 @@ async function saveEditedSource(id: string) {
 
   if (shouldRelogin) {
     const previousCredential = await readCredentialBackupForConfig(existing)
-    const result = await loginAndCreateConfig(existing.type, {
-      id,
-      url: nextUrl,
-      displayName: nextDisplayName,
-      username,
-      password: form.password,
-      apiToken: form.apiToken,
-      cookie: form.cookie,
-      rootPath: nextRootPath,
-      order: existing.order,
-    })
+    const sameServerOrigin = existing.type === 'server'
+      && normalizeComparableUrl(nextUrl) === normalizeComparableUrl(existing.url)
+    let result: { config: DataSourceConfig, libraries: MediaLibrary[] }
+    try {
+      result = await loginAndCreateConfig(existing.type, {
+        id,
+        url: nextUrl,
+        displayName: nextDisplayName,
+        username,
+        password: form.password,
+        apiToken: form.apiToken,
+        cookie: form.cookie,
+        rootPath: nextRootPath,
+        order: existing.order,
+        deviceId: existing.type === 'server' && typeof existing.extra?.deviceId === 'string' ? existing.extra.deviceId : undefined,
+        retainTokenOnValidationFailure: sameServerOrigin,
+      })
+    }
+    catch (error) {
+      if (sameServerOrigin)
+        await store.reloadSource(id).catch(() => undefined)
+      throw error
+    }
     try {
       await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
     }
     catch (error) {
-      await restoreCredentialForConfig(result.config, previousCredential).catch(() => undefined)
+      const changedServerOrigin = result.config.type === 'server'
+        && normalizeComparableUrl(result.config.url) !== normalizeComparableUrl(existing.url)
+      if (result.config.type === 'server' && !changedServerOrigin) {
+        // Same-device login revoked the previous token. Keep the newly issued
+        // credential and rebuild the runtime source instead of restoring a
+        // credential that the Server has already invalidated.
+        await store.reloadSource(id).catch(() => undefined)
+      }
+      else {
+        if (result.config.type === 'server')
+          await logoutServerBestEffort(result.config)
+        await restoreCredentialForConfig(result.config, previousCredential).catch(() => undefined)
+      }
       throw error
     }
     feedback.value = { type: 'success', message: `${label} 已重新连接，并验证 ${result.libraries.length} 个入口。` }
@@ -1349,7 +1376,11 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   cookie: string
   rootPath?: string
   order: number
+  deviceId?: string
+  retainTokenOnValidationFailure?: boolean
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
+  if (type === 'server')
+    return loginServerAndCreateConfig(input)
   if (type === 'alist')
     return loginAlistAndCreateConfig(input)
   if (type === 'clouddrive2')

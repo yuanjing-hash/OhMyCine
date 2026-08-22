@@ -1,4 +1,5 @@
 import type { DataSource, MediaItem } from './types'
+import { mergeMediaItemsByIdentity } from './identityMerge'
 
 const TOP_LEVEL_SEARCH_TYPES = new Set<MediaItem['type']>(['movie', 'series', 'folder', 'file'])
 
@@ -25,20 +26,13 @@ export async function searchAcrossDataSources(
     }))
   }))
 
-  const seen = new Set<string>()
   const results: MediaItem[] = []
   for (const result of settled) {
     if (result.status !== 'fulfilled')
       continue
     for (const item of result.value) {
-      const key = `${item.sourceId}:${item.id}`
-      if (seen.has(key))
-        continue
-      seen.add(key)
       results.push(item)
-      if (results.length >= limit)
-        return results
     }
   }
-  return results
+  return mergeMediaItemsByIdentity(results).slice(0, limit)
 }

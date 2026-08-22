@@ -28,6 +28,7 @@ pub mod preference;
 pub mod provider_file;
 pub mod quark;
 pub mod raw_scan_cache;
+pub mod server;
 pub mod settings;
 pub mod subtitle;
 pub mod tmdb;

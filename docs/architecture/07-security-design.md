@@ -71,13 +71,13 @@ OhMyCine 是自托管家庭影院生态系统，安全设计的核心目标是�
 2. 外部数据源、PT 站点、网盘 API、插件和第三方 Provider 默认不可信。
 3. Server 的管理 API 默认需要登录认证。
 4. 302 代理是否允许匿名访问必须显式配置，默认不公开。
-5. Player 与 Server 的配置同步默认只同步必要字段，敏感字段需要用户确认。
+5. 当前 Player 与 Server 不自动同步配置；未来同步功能启用时默认只同步必要结构字段，敏感字段需要用户逐次确认。
 
 ## 4. 认证与会话
 
 ### 4.1 Server 登录
 
-Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服务端 opaque session；浏览器只接收 HttpOnly Cookie，不把 JWT 或 session token 写入 localStorage。Player、CLI 和自动化客户端后续使用独立 device/API token 边界。
+Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服务端 opaque session；浏览器只接收 HttpOnly Cookie，不把 JWT 或 session token 写入 localStorage。Player 已使用独立 device token 边界；CLI 和其它自动化客户端仍使用后续单独设计的 API token 边界。
 
 建议：
 
@@ -106,12 +106,11 @@ Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服�
 
 ### 4.3 Player 连接 Server
 
-Player 连接 Server 时支持两种方式：
+Player 首次连接 Server 时提交用户名、密码、随机设备 ID 和安全显示名称，密码只用于当次校验。Server 返回一次性可见的高熵 `omc_player_` device token；Server 数据库只保存 SHA-256 token hash 与不可逆 device ID hash，Player 只把原始 token 保存到 provider-specific 安全凭据 envelope，不保存 Server 密码。
 
-1. 用户名密码登录，保存 refresh token
-2. Server 生成设备授权 Token，Player 输入或扫码绑定
+device token 只允许进入 `/api/v1/player/*` 的独立 Bearer 路由组，不能作为 Cookie session、不能获得 CSRF 豁免，也不能进入普通管理 API。每次认证重新解析当前用户和权限；默认 30 天 idle、180 天 absolute 上限，并在同设备重新登录、登出、显式设备撤销、用户停用或密码重置时立即撤销。设备列表只返回记录 ID、安全名称、客户端类型和生命周期时间，不返回 token/hash、IP、User-Agent 或原始设备 ID。
 
-推荐长期使用设备授权 Token，便于撤销单台设备访问权限。
+Player 115 直连播放仍按 entry/version ID 请求 Server；Server 在每次 GET/HEAD 中重新校验媒体库权限和 active managed artifact 后才返回短期 302。Windows/Android 的 loopback 播放桥仅向 Server origin 发送 device Bearer，跨 origin 重定向必须删除 Authorization、Cookie 和 provider-private Header，禁止将 device token 转发给 115/CDN。播放 URL、Header、signed STRM URL 和上游临时地址只存在于瞬时原生播放边界，不进入路由、配置、播放历史、日志或诊断。
 
 ## 5. 权限模型
 

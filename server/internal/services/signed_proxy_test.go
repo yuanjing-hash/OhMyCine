@@ -111,6 +111,13 @@ func TestSignedProxyUsesPublicOriginValidatesSignatureAndIsolatesUserAgentCache(
 	if strings.Contains(filepath.ToSlash(signed), filepath.ToSlash(library.STRMLocalRoot)) {
 		t.Fatalf("projection root leaked in signed URL %q", signed)
 	}
+	service.now = func() time.Time { return now }
+	if err := db.Model(&models.Storage{}).Where("id = ?", storage.ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResolveArtifactForClient(context.Background(), opaque, "Player-A", "127.0.0.1:1234"); ErrorCode(err) != CodeProxyTargetUnavailable {
+		t.Fatalf("disabled storage proxy code=%q err=%v", ErrorCode(err), err)
+	}
 }
 
 func TestSignedProxyRejectsInvalidPublicOriginAndOversizedTTL(t *testing.T) {

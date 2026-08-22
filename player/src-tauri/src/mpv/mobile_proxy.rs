@@ -276,8 +276,16 @@ fn safe_error(error: &reqwest::Error) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
     use axum::{
-        http::{header::RANGE, HeaderMap, StatusCode},
+        http::{
+            header::{AUTHORIZATION, COOKIE, RANGE},
+            HeaderMap, StatusCode,
+        },
         response::Response,
         routing::get,
         Router,
@@ -329,7 +337,9 @@ mod tests {
                 get(|headers: HeaderMap| async move {
                     let range_matches = headers.get(RANGE).and_then(|value| value.to_str().ok())
                         == Some("bytes=0-3");
-                    let private_header_removed = !headers.contains_key("x-emby-token");
+                    let private_header_removed = !headers.contains_key("x-emby-token")
+                        && !headers.contains_key(AUTHORIZATION)
+                        && !headers.contains_key(COOKIE);
                     let status = if range_matches && private_header_removed {
                         StatusCode::PARTIAL_CONTENT
                     } else {
@@ -349,11 +359,22 @@ mod tests {
             let emby_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let emby_address = emby_listener.local_addr().unwrap();
             let redirect_location = format!("http://{cdn_address}/media");
+            let first_origin_received_private_headers = Arc::new(AtomicBool::new(false));
+            let first_origin_probe = first_origin_received_private_headers.clone();
             let emby = Router::new().route(
                 "/stream",
-                get(move || {
+                get(move |headers: HeaderMap| {
                     let location = redirect_location.clone();
+                    let first_origin_probe = first_origin_probe.clone();
                     async move {
+                        first_origin_probe.store(
+                            headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok())
+                                == Some("Bearer private-device-token")
+                                && headers.get(COOKIE).and_then(|value| value.to_str().ok())
+                                    == Some("private=session")
+                                && headers.get("x-emby-token").is_some(),
+                            Ordering::SeqCst,
+                        );
                         Response::builder()
                             .status(StatusCode::FOUND)
                             .header("location", location)
@@ -373,6 +394,12 @@ mod tests {
                     vec![MpvHttpHeader {
                         name: "X-Emby-Token".to_string(),
                         value: "private-token".to_string(),
+                    }, MpvHttpHeader {
+                        name: "Authorization".to_string(),
+                        value: "Bearer private-device-token".to_string(),
+                    }, MpvHttpHeader {
+                        name: "Cookie".to_string(),
+                        value: "private=session".to_string(),
                     }],
                 )
                 .await
@@ -386,6 +413,7 @@ mod tests {
 
             assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
             assert_eq!(response.bytes().await.unwrap().as_ref(), b"test");
+            assert!(first_origin_received_private_headers.load(Ordering::SeqCst));
         });
     }
 }

@@ -150,7 +150,7 @@ const detailResumeEntry = computed(() => detail.value ? playbackProgressByItemId
 const detailCanResume = computed(() => Boolean(detail.value && hasResumeProgress(detail.value, detailResumeEntry.value)))
 const seriesCanPlay = computed(() => Boolean(isSeriesDetail.value && selectedEpisode.value))
 const primaryPlayTarget = computed(() => isSeriesDetail.value ? selectedEpisode.value : detail.value ?? undefined)
-const primaryCanPlay = computed(() => isPlayableDetail.value || seriesCanPlay.value)
+const primaryCanPlay = computed(() => seriesCanPlay.value || (isPlayableDetail.value && (detail.value?.originType !== 'server' || selectedMediaSource.value != null)))
 const primaryPlayLabel = computed(() => {
   if (isPlaying.value)
     return '正在准备…'
@@ -744,20 +744,29 @@ async function playItem(item?: MediaItem) {
   isPlaying.value = true
   errorMessage.value = null
   try {
-    await resolveSource()
+    const selectedRoute = item ? undefined : selectedMediaSource.value
+    const playbackSourceId = selectedRoute?.sourceId ?? target.sourceId ?? sourceId.value
+    const playbackItemId = selectedRoute?.itemId ?? target.id
+    const playbackMediaSourceId = item
+      ? undefined
+      : selectedRoute?.providerMediaSourceId ?? (selectedRoute?.id.startsWith('alternate-') ? undefined : selectedRoute?.id)
+    store.loadConfigs()
+    await store.syncManager()
+    if (!store.getSource(playbackSourceId))
+      throw new Error('所选播放线路不可用，请检查对应数据源。')
     const isCurrentDetail = target.id === detail.value?.id
     const queue = (item ? createPlaybackQueue(episodes.value, item.id) : undefined) ?? recoverRoutePlaybackQueue(target.id)
     const playbackContextId = savePlaybackMediaContext({
-      sourceId: sourceId.value,
-      itemId: target.id,
+      sourceId: playbackSourceId,
+      itemId: playbackItemId,
       title: target.name,
-      currentItem: { ...target, resumePosition: resumePositionForItem(target) },
-      mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
+      currentItem: { ...target, id: playbackItemId, sourceId: playbackSourceId, resumePosition: resumePositionForItem(target) },
+      mediaSourceId: playbackMediaSourceId,
       locator: {
         kind: 'dataSource',
-        sourceId: sourceId.value,
-        itemId: target.id,
-        mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
+        sourceId: playbackSourceId,
+        itemId: playbackItemId,
+        mediaSourceId: playbackMediaSourceId,
       },
       subtitles: isCurrentDetail ? detail.value?.subtitles : undefined,
       audioTracks: isCurrentDetail ? detail.value?.audioTracks : undefined,
@@ -766,10 +775,10 @@ async function playItem(item?: MediaItem) {
     await router.push({
       name: 'player',
       query: createPlaybackRouteQuery({
-        sourceId: sourceId.value,
-        itemId: target.id,
+        sourceId: playbackSourceId,
+        itemId: playbackItemId,
         contextId: playbackContextId,
-        mediaSourceId: item ? undefined : selectedMediaSource.value?.id,
+        mediaSourceId: playbackMediaSourceId,
       }),
     })
   }

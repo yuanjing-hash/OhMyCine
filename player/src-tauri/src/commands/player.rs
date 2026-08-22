@@ -6,6 +6,7 @@ use super::player_shared::{
     MpvHttpHeader, MpvOrientationState,
 };
 use crate::mpv::{
+    mobile_proxy::AndroidStreamProxyState,
     player::{MpvState, MpvTrackState},
     render::MpvRenderState,
     surface::{RenderSurfaceBounds, ZOrderStrategy},
@@ -67,14 +68,27 @@ pub async fn mpv_load(
     headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
     state: State<'_, MpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
     let _ = title;
-    let mut player = state.lock().map_err(|err| err.to_string())?;
-    let headers = sanitize_http_headers(headers.unwrap_or_default())?
+    let headers = sanitize_http_headers(headers.unwrap_or_default())?;
+    let (path, headers) = if is_remote_http_stream(&path) && !headers.is_empty() {
+        (stream_proxy.prepare(path, headers).await?, Vec::new())
+    } else {
+        (path, headers)
+    };
+    let headers = headers
         .into_iter()
         .map(|header| (header.name, header.value))
         .collect::<Vec<_>>();
+    let mut player = state.lock().map_err(|err| err.to_string())?;
     player.load_file_with_headers(&path, &headers)
+}
+
+fn is_remote_http_stream(path: &str) -> bool {
+    reqwest::Url::parse(path.trim())
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -137,9 +151,16 @@ pub async fn mpv_resume(state: State<'_, MpvState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn mpv_stop(state: State<'_, MpvState>) -> Result<(), String> {
-    let mut player = state.lock().map_err(|err| err.to_string())?;
-    player.stop()
+pub async fn mpv_stop(
+    state: State<'_, MpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
+) -> Result<(), String> {
+    let result = {
+        let mut player = state.lock().map_err(|err| err.to_string())?;
+        player.stop()
+    };
+    stream_proxy.clear().await;
+    result
 }
 
 #[tauri::command]

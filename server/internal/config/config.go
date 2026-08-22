@@ -26,6 +26,8 @@ type Config struct {
 	DevOrigin                     string
 	SessionIdleTTL                time.Duration
 	SessionMaxTTL                 time.Duration
+	DeviceTokenIdleTTL            time.Duration
+	DeviceTokenMaxTTL             time.Duration
 	CookieSecure                  bool
 }
 
@@ -81,6 +83,8 @@ func Load() (Config, error) {
 		DevOrigin:                     devOrigin,
 		SessionIdleTTL:                2 * time.Hour,
 		SessionMaxTTL:                 7 * 24 * time.Hour,
+		DeviceTokenIdleTTL:            30 * 24 * time.Hour,
+		DeviceTokenMaxTTL:             180 * 24 * time.Hour,
 		CookieSecure:                  secure,
 	}
 	if config.Port < 1 || config.Port > 65535 {

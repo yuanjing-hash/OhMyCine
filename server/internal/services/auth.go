@@ -20,6 +20,12 @@ import (
 
 const bcryptCost = 12
 
+const (
+	deviceClientKind    = "player"
+	deviceTokenPrefix   = "omc_player_"
+	deviceTouchInterval = 5 * time.Minute
+)
+
 type LoginAttempt struct {
 	Count       int
 	WindowStart time.Time
@@ -78,6 +84,12 @@ type AuthService struct {
 }
 
 func NewAuthService(db *gorm.DB, cfg config.Config, authorization *AuthorizationService, audit *AuditService) (*AuthService, error) {
+	if cfg.DeviceTokenIdleTTL <= 0 {
+		cfg.DeviceTokenIdleTTL = 30 * 24 * time.Hour
+	}
+	if cfg.DeviceTokenMaxTTL <= 0 {
+		cfg.DeviceTokenMaxTTL = 180 * 24 * time.Hour
+	}
 	csrfKey := make([]byte, 32)
 	if _, err := rand.Read(csrfKey); err != nil {
 		return nil, fmt.Errorf("generate csrf key: %w", err)
@@ -197,25 +209,7 @@ func (s *AuthService) SetupOwner(input SetupInput, request RequestContext) (Acto
 }
 
 func (s *AuthService) Login(username, password, userAgent string, request RequestContext) (Actor, string, error) {
-	key := request.IPHint + "|" + NormalizeUsername(username)
-	if !s.limiter.Allow(key) {
-		_ = s.audit.Record(nil, nil, "auth.login", "user", NormalizeUsername(username), "rate_limited", map[string]any{}, request)
-		return Actor{}, "", appError(CodeLoginRateLimited, "登录尝试过多，请稍后再试", nil)
-	}
-	var user models.User
-	err := s.db.Where("username_normalized = ?", NormalizeUsername(username)).First(&user).Error
-	hash := s.dummyHash
-	if err == nil {
-		hash = []byte(user.PasswordHash)
-	}
-	passwordMatches := bcrypt.CompareHashAndPassword(hash, []byte(password)) == nil
-	if err != nil || !passwordMatches || user.Status != models.UserStatusActive {
-		s.limiter.Failure(key)
-		_ = s.audit.Record(nil, nil, "auth.login", "user", NormalizeUsername(username), "failure", map[string]any{}, request)
-		return Actor{}, "", appError(CodeInvalidCredentials, "用户名或密码错误", nil)
-	}
-	s.limiter.Success(key)
-	actor, err := s.authz.Resolve(user.ID)
+	user, actor, key, err := s.verifyLogin(username, password, request, "auth.login")
 	if err != nil {
 		return Actor{}, "", err
 	}
@@ -235,7 +229,142 @@ func (s *AuthService) Login(username, password, userAgent string, request Reques
 	if err != nil {
 		return Actor{}, "", err
 	}
+	s.limiter.Success(key)
 	return actor, token, nil
+}
+
+func (s *AuthService) verifyLogin(username, password string, request RequestContext, auditAction string) (models.User, Actor, string, error) {
+	key := request.IPHint + "|" + NormalizeUsername(username)
+	if !s.limiter.Allow(key) {
+		_ = s.audit.Record(nil, nil, auditAction, "user", NormalizeUsername(username), "rate_limited", map[string]any{}, request)
+		return models.User{}, Actor{}, key, appError(CodeLoginRateLimited, "登录尝试过多，请稍后再试", nil)
+	}
+	var user models.User
+	err := s.db.Where("username_normalized = ?", NormalizeUsername(username)).First(&user).Error
+	hash := s.dummyHash
+	if err == nil {
+		hash = []byte(user.PasswordHash)
+	}
+	passwordMatches := bcrypt.CompareHashAndPassword(hash, []byte(password)) == nil
+	if err != nil || !passwordMatches || user.Status != models.UserStatusActive {
+		s.limiter.Failure(key)
+		_ = s.audit.Record(nil, nil, auditAction, "user", NormalizeUsername(username), "failure", map[string]any{}, request)
+		return models.User{}, Actor{}, key, appError(CodeInvalidCredentials, "用户名或密码错误", nil)
+	}
+	actor, err := s.authz.Resolve(user.ID)
+	if err != nil {
+		return models.User{}, Actor{}, key, err
+	}
+	return user, actor, key, nil
+}
+
+// DeviceLogin verifies the password once and issues a long-lived, revocable
+// Player credential. The password and raw device ID are deliberately not kept.
+func (s *AuthService) DeviceLogin(username, password, deviceID, deviceName string, request RequestContext) (Actor, string, models.DeviceToken, error) {
+	deviceID = strings.TrimSpace(deviceID)
+	deviceName = strings.TrimSpace(deviceName)
+	if len(deviceID) < 8 || len(deviceID) > 256 || strings.ContainsAny(deviceID, "\r\n") {
+		return Actor{}, "", models.DeviceToken{}, appError(CodeInvalidRequest, "设备标识无效", nil)
+	}
+	if deviceName == "" || len(deviceName) > 128 || strings.ContainsAny(deviceName, "\r\n") {
+		return Actor{}, "", models.DeviceToken{}, appError(CodeInvalidRequest, "设备名称无效", nil)
+	}
+	user, actor, key, err := s.verifyLogin(username, password, request, "player.auth.login")
+	if err != nil {
+		return Actor{}, "", models.DeviceToken{}, err
+	}
+	var rawToken string
+	var device models.DeviceToken
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		now := s.now().UTC()
+		deviceHash := textHash(deviceID)
+		if err := tx.Model(&models.DeviceToken{}).
+			Where("user_id = ? AND device_id_hash = ? AND client_kind = ? AND revoked_at IS NULL", user.ID, deviceHash, deviceClientKind).
+			Update("revoked_at", now).Error; err != nil {
+			return err
+		}
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return fmt.Errorf("generate device token: %w", err)
+		}
+		rawToken = deviceTokenPrefix + base64.RawURLEncoding.EncodeToString(secret)
+		id, err := randomID()
+		if err != nil {
+			return err
+		}
+		device = models.DeviceToken{
+			ID: id, TokenHash: tokenHash(rawToken), UserID: user.ID, DeviceIDHash: deviceHash,
+			DeviceName: deviceName, ClientKind: deviceClientKind, CreatedAt: now, LastSeenAt: now,
+			IdleExpiresAt: now.Add(s.config.DeviceTokenIdleTTL), AbsoluteExpiresAt: now.Add(s.config.DeviceTokenMaxTTL),
+		}
+		if err := tx.Create(&device).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&user).Update("last_login_at", now).Error; err != nil {
+			return err
+		}
+		return s.audit.Record(tx, &user.ID, "player.auth.login", "device", device.ID, "success", map[string]any{"device_name": deviceName}, request)
+	})
+	if err != nil {
+		return Actor{}, "", models.DeviceToken{}, err
+	}
+	s.limiter.Success(key)
+	return actor, rawToken, device, nil
+}
+
+func (s *AuthService) AuthenticateDevice(token string) (Actor, models.DeviceToken, error) {
+	if len(token) > 128 || !strings.HasPrefix(token, deviceTokenPrefix) {
+		return Actor{}, models.DeviceToken{}, appError(CodeNotAuthenticated, "Player 凭据无效", nil)
+	}
+	var device models.DeviceToken
+	if err := s.db.Where("token_hash = ? AND client_kind = ?", tokenHash(token), deviceClientKind).First(&device).Error; err != nil {
+		return Actor{}, models.DeviceToken{}, appError(CodeNotAuthenticated, "Player 凭据无效", err)
+	}
+	now := s.now().UTC()
+	if device.RevokedAt != nil || !now.Before(device.IdleExpiresAt) || !now.Before(device.AbsoluteExpiresAt) {
+		return Actor{}, models.DeviceToken{}, appError(CodeNotAuthenticated, "Player 凭据已过期或被撤销", nil)
+	}
+	actor, err := s.authz.Resolve(device.UserID)
+	if err != nil {
+		return Actor{}, models.DeviceToken{}, err
+	}
+	if now.Sub(device.LastSeenAt) >= deviceTouchInterval {
+		updates := map[string]any{"last_seen_at": now, "idle_expires_at": minTime(now.Add(s.config.DeviceTokenIdleTTL), device.AbsoluteExpiresAt)}
+		if err := s.db.Model(&device).Updates(updates).Error; err != nil {
+			return Actor{}, models.DeviceToken{}, err
+		}
+		device.LastSeenAt = now
+		device.IdleExpiresAt = updates["idle_expires_at"].(time.Time)
+	}
+	return actor, device, nil
+}
+
+func (s *AuthService) ListDevices(actor Actor) ([]models.DeviceToken, error) {
+	now := s.now().UTC()
+	var devices []models.DeviceToken
+	err := s.db.Where("user_id = ? AND client_kind = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?", actor.User.ID, deviceClientKind, now, now).
+		Order("last_seen_at DESC, created_at DESC").Find(&devices).Error
+	return devices, err
+}
+
+func (s *AuthService) RevokeDevice(actor Actor, deviceID string, request RequestContext) error {
+	now := s.now().UTC()
+	result := s.db.Model(&models.DeviceToken{}).Where("id = ? AND user_id = ? AND client_kind = ? AND revoked_at IS NULL", deviceID, actor.User.ID, deviceClientKind).Update("revoked_at", now)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return appError(CodeNotFound, "Player 设备不存在", nil)
+	}
+	return s.audit.Record(nil, &actor.User.ID, "player.device.revoke", "device", deviceID, "success", map[string]any{}, request)
+}
+
+func (s *AuthService) DeviceLogout(token string, actor Actor, device models.DeviceToken, request RequestContext) error {
+	now := s.now().UTC()
+	if err := s.db.Model(&models.DeviceToken{}).Where("id = ? AND token_hash = ? AND user_id = ? AND revoked_at IS NULL", device.ID, tokenHash(token), actor.User.ID).Update("revoked_at", now).Error; err != nil {
+		return err
+	}
+	return s.audit.Record(nil, &actor.User.ID, "player.auth.logout", "device", device.ID, "success", map[string]any{}, request)
 }
 
 func (s *AuthService) createSession(db *gorm.DB, userID uint, userAgent, ipHint string) (string, error) {
@@ -294,7 +423,10 @@ func (s *AuthService) Logout(token string, actor Actor, request RequestContext) 
 
 func (s *AuthService) RevokeUserSessions(tx *gorm.DB, userID uint) error {
 	now := s.now().UTC()
-	return tx.Model(&models.Session{}).Where("user_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", now).Error
+	if err := tx.Model(&models.Session{}).Where("user_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", now).Error; err != nil {
+		return err
+	}
+	return tx.Model(&models.DeviceToken{}).Where("user_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", now).Error
 }
 
 func (s *AuthService) CSRFToken(sessionToken string) string {

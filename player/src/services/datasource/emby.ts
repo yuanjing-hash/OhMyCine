@@ -116,6 +116,7 @@ interface EmbyConfigExtra {
   readonly userId?: string
   readonly credentialRef?: string
   readonly deviceId?: string
+  readonly instanceFingerprint?: string
 }
 
 interface EmbyItemsResponse {
@@ -304,6 +305,7 @@ export class EmbyDataSource implements DataSource {
   private userId = ''
   private deviceId = ''
   private connected = false
+  private instanceFingerprint = ''
   private readonly cache = new SourceMetadataCache()
   private readonly playbackSessions = new Map<string, EmbyPlaybackSessionMetadata>()
   private readonly playbackInfoFailures = new Map<string, EmbyPlaybackInfoFailure>()
@@ -330,13 +332,26 @@ export class EmbyDataSource implements DataSource {
     const extra = readEmbyExtra(config)
     this.userId = extra.userId ?? ''
     this.deviceId = extra.deviceId ?? createDeviceId(config.id)
+    this.instanceFingerprint = extra.instanceFingerprint ?? ''
     this.token = await resolveToken(config, extra)
     this.connected = Boolean(this.baseUrl && this.token && this.userId)
   }
 
   async test(): Promise<boolean> {
     this.ensureConfigured()
-    await this.request('/System/Info')
+    const info = await this.request('/System/Info')
+    const systemID = isObject(info) && typeof info.Id === 'string'
+      ? info.Id
+      : isObject(info) && typeof info.SystemId === 'string' ? info.SystemId : ''
+    if (systemID) {
+      this.instanceFingerprint = await embyInstanceFingerprint(systemID)
+      if (this.config) {
+        this.config = sanitizeExportConfig({
+          ...this.config,
+          extra: { ...(this.config.extra ?? {}), instanceFingerprint: this.instanceFingerprint },
+        })
+      }
+    }
     this.connected = true
     return true
   }
@@ -1505,6 +1520,7 @@ export class EmbyDataSource implements DataSource {
       type: mapLibraryType(item.CollectionType),
       posterUrl: this.posterUrl(item),
       backdropUrl: this.backdropUrl(item),
+      providerIdentity: this.instanceFingerprint ? `emby:${this.instanceFingerprint}:library:${item.Id}` : undefined,
     }
   }
 
@@ -1515,14 +1531,24 @@ export class EmbyDataSource implements DataSource {
     const progress = typeof item.UserData?.PlayedPercentage === 'number'
       ? Math.max(0, Math.min(1, item.UserData.PlayedPercentage / 100))
       : undefined
+    const mappedType = mapMediaType(item.Type)
+    const tmdbID = parseTmdbId(item.ProviderIds?.Tmdb)
+    const firstMediaSourceID = item.MediaSources?.find(source => typeof source.Id === 'string')?.Id
+    const artifactIdentity = findOhMyCineArtifactIdentity(item.MediaSources)
+    const workIdentity = tmdbID != null && (mappedType === 'movie' || mappedType === 'series')
+      ? { scheme: 'tmdb' as const, mediaType: mappedType, value: String(tmdbID) }
+      : this.instanceFingerprint && (mappedType === 'movie' || mappedType === 'series' || mappedType === 'episode')
+        ? { scheme: 'emby' as const, mediaType: mappedType, value: `${this.instanceFingerprint}:item:${item.Id}` }
+        : undefined
 
     return {
       id: item.Id,
       sourceId,
+      originType: this.type,
       libraryId,
       name: item.Name,
       originalTitle: nonEmptyString(item.OriginalTitle),
-      type: mapMediaType(item.Type),
+      type: mappedType,
       posterUrl: this.posterUrl(item),
       backdropUrl: this.backdropUrl(item),
       titleLogoUrl: this.logoUrl(item),
@@ -1541,6 +1567,17 @@ export class EmbyDataSource implements DataSource {
       seriesName: item.Type === 'Episode' ? nonEmptyString(item.SeriesName) : undefined,
       seasonNumber: item.Type === 'Season' ? item.IndexNumber : item.Type === 'Episode' ? item.ParentIndexNumber : undefined,
       episodeNumber: item.Type === 'Episode' ? item.IndexNumber : undefined,
+      workIdentity,
+      exactIdentity: artifactIdentity ?? (this.instanceFingerprint && firstMediaSourceID ? `emby:${this.instanceFingerprint}:item:${item.Id}:media:${firstMediaSourceID}` : undefined),
+      playbackTargets: item.MediaSources?.length
+        ? item.MediaSources.map((mediaSource, index) => ({
+            sourceId,
+            itemId: item.Id,
+            mediaSourceId: mediaSource.Id,
+            label: mediaSource.Name?.trim() || `${this.name} · 版本 ${index + 1}`,
+            exactIdentity: findOhMyCineArtifactIdentity([mediaSource]) ?? (this.instanceFingerprint && mediaSource.Id ? `emby:${this.instanceFingerprint}:item:${item.Id}:media:${mediaSource.Id}` : undefined),
+          }))
+        : [{ sourceId, itemId: item.Id, mediaSourceId: firstMediaSourceID, label: this.name, exactIdentity: artifactIdentity }],
     }
   }
 
@@ -1736,8 +1773,11 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
   }
 
   let libraries: MediaLibrary[] = []
+  let testedConfig = safeConfig
   try {
     await source.init(safeConfig)
+    await source.test()
+    testedConfig = source.exportConfig()
     libraries = await source.listLibraries()
   }
   catch (error) {
@@ -1753,9 +1793,9 @@ export async function loginEmbyAndCreateConfig(input: EmbyLoginConfigInput): Pro
 
   return {
     config: {
-      ...safeConfig,
+      ...testedConfig,
       extra: {
-        ...safeConfig.extra,
+        ...testedConfig.extra,
         libraries: libraries.map(library => ({
           id: library.id,
           name: library.name,
@@ -1778,6 +1818,7 @@ function readEmbyExtra(config: DataSourceConfig): EmbyConfigExtra {
     userId: typeof extra.userId === 'string' ? extra.userId : undefined,
     credentialRef: typeof extra.credentialRef === 'string' ? extra.credentialRef : undefined,
     deviceId: typeof extra.deviceId === 'string' ? extra.deviceId : undefined,
+    instanceFingerprint: typeof extra.instanceFingerprint === 'string' ? extra.instanceFingerprint : undefined,
   }
 }
 
@@ -1797,6 +1838,59 @@ async function resolveToken(config: DataSourceConfig, extra: EmbyConfigExtra): P
 
 function createDeviceId(sourceId: string): string {
   return `ohmycine-${sourceId}`
+}
+
+export async function embyInstanceFingerprint(systemID: string): Promise<string> {
+  const canonical = `ohmycine:emby-instance:v1\0${systemID.trim().toLowerCase()}`
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical))
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('')
+}
+
+let trustedOhMyCineServerOrigins = new Set<string>()
+
+export function configureOhMyCineServerOrigins(values: readonly string[]): void {
+  trustedOhMyCineServerOrigins = new Set(values.flatMap((value) => {
+    try {
+      const url = new URL(value.trim())
+      return ['http:', 'https:'].includes(url.protocol)
+        && !url.username
+        && !url.password
+        && (url.pathname === '' || url.pathname === '/')
+        && !url.search
+        && !url.hash
+        ? [url.origin]
+        : []
+    }
+    catch {
+      return []
+    }
+  }))
+}
+
+export function extractTrustedOhMyCineArtifactIdentity(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim())
+    if (!trustedOhMyCineServerOrigins.has(url.origin))
+      return undefined
+    const match = url.pathname.match(/^\/proxy\/strm\/([\w-]{16,64})\/?$/)
+    return match?.[1] ? `ohmycine:artifact:${match[1]}` : undefined
+  }
+  catch {
+    return undefined
+  }
+}
+
+function findOhMyCineArtifactIdentity(sources: readonly EmbyMediaSourceRecord[] | undefined): string | undefined {
+  for (const source of sources ?? []) {
+    for (const candidate of [source.DirectPlayUrl, source.DirectStreamUrl, source.Path]) {
+      if (!candidate)
+        continue
+      const identity = extractTrustedOhMyCineArtifactIdentity(candidate)
+      if (identity)
+        return identity
+    }
+  }
+  return undefined
 }
 
 function authorizationHeader(deviceId: string, token?: string, userId?: string): string {

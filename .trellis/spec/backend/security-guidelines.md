@@ -154,6 +154,78 @@ if (candidate.origin === location.origin && candidate.searchParams.getAll("omc_t
 
 ---
 
+## Scenario: Player Device Authentication and Direct Server Media
+
+### 1. Scope / Trigger
+
+- Trigger: changing Player login/device management, `/api/v1/player/*`, Player catalog DTOs, Emby identity summaries, ServerDataSource playback, or authenticated 115 redirects.
+- This boundary is separate from browser administration and from future CLI/API-token and config-sync designs.
+
+### 2. Signatures
+
+- DB migration v32 adds `device_tokens`: random public record ID, SHA-256 `token_hash`, user ID, SHA-256 `device_id_hash`, safe device name, `client_kind=player`, created/last-seen/idle-expiry/absolute-expiry/revoked timestamps.
+- Anonymous login: `POST /api/v1/player/auth/login` with `username`, `password`, `device_id`, and `device_name`; returns the raw `omc_player_` token exactly once.
+- Bearer-only routes: logout, bootstrap, device list/revoke, media-library list/catalog/detail/search, plus GET/HEAD `/api/v1/player/media-entries/:id/stream`.
+- Emby instance identity: `SHA-256("ohmycine:emby-instance:v1\0" + lower(trim(SystemId)))`.
+
+### 3. Contracts
+
+- Player routes use a dedicated strict Bearer middleware and never accept query/cookie fallback. Browser management routes keep Cookie session + Origin/CSRF and never accept a Player Bearer as a substitute.
+- Persist no raw token, password, IP, User-Agent or device ID. Default lifetime is 30 days idle and 180 days absolute; touch idle expiry at a bounded cadence and never past the absolute expiry.
+- Re-authenticating the same user/device revokes the prior token. Logout, explicit device revoke, user disable, password reset and user removal revoke affected device tokens.
+- Player media DTOs expose safe logical IDs, metadata and opaque identity only; never absolute/provider paths, provider item IDs, Cookie, Emby API key, signed STRM URL or upstream temporary URL.
+- Player catalog/detail/search expose only enabled media libraries backed by enabled Storage rows. Search must exhaust each readable library's catalog pagination before applying global sorting and pagination; a per-library first-page cap must not undercount `total`.
+- Entry streaming rechecks actor permission, entry/library/storage ownership and an active managed completed local-projection STRM artifact on every request before resolving a short-lived provider URL.
+- Signed-proxy resolution rechecks the current Storage enabled state before every redirect, including cache hits, so disabling a Storage immediately invalidates known artifact URLs.
+- Return 302 with `Cache-Control: no-store`; unavailable targets map to a safe 404/503-class response rather than a generic 500. Do not log the redirect URL or Authorization.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Missing/malformed/non-`omc_player_` Bearer | 401; no management fallback |
+| Player Bearer sent to `/api/v1/users` or another management route | 401; it cannot bypass Cookie/CSRF |
+| Revoked, idle-expired, absolute-expired or disabled-user token | 401 |
+| Entry/library/artifact missing, disabled, unmanaged, inactive or wrong target kind | Safe not-found/unavailable response; no provider call |
+| Media library or backing Storage is disabled after a prior catalog/cache hit | Catalog/detail no longer expose it and stream/proxy resolution refuses it immediately |
+| Actor lacks media-library read | 403 |
+| Valid active 115 STRM entry | 302 `no-store` to the current short-lived provider URL |
+| Bootstrap lacks optional Emby identity or connection permission | Keep bootstrap usable and omit the optional identity |
+
+### 5. Good/Base/Bad Cases
+
+- Good: Player logs in once, restarts with its secure credential, browses a safe catalog and plays through entry ID → validated artifact → 302.
+- Base: Server is offline or the device was revoked; only that ServerDataSource reports reconnect/authentication failure and other Player sources continue working.
+- Bad: accept `Authorization: Bearer omc_player_*` in the ordinary management group, serialize `relative_path`, or store the raw device token for troubleshooting.
+
+### 6. Tests Required
+
+- Migration tests assert the v32 table, indexes and repeated migration behavior.
+- Router/service tests cover first login, same-device replacement, logout/revoke, user disable/password reset, expiry, permission denial, catalog DTO redaction, disabled library/Storage, catalogs larger than one page, invalid artifact states and valid GET/HEAD redirect.
+- Assert a Player Bearer cannot enter a representative browser management route.
+- Cross-layer playback tests must prove a foreign-origin redirect receives Range but not Server Authorization/Cookie/private headers.
+- Run `CGO_ENABLED=0 go test ./...`, `go vet ./...`, Player typecheck/lint/build, Rust tests and Clippy.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+// Broadens a device credential into the browser administration surface.
+protected.Use(AuthFromCookieOrBearer(auth))
+```
+
+#### Correct
+
+```go
+player := router.Group("/api/v1/player")
+playerProtected := player.Group("")
+playerProtected.Use(DeviceAuth(auth))
+// Browser routes remain Cookie + CSRF only.
+```
+
+---
+
 ## File and Path Safety
 
 All local file operations must:
