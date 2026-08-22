@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { readServerCredential, removeCredential } from '../src/services/datasource/credentialStore.ts'
-import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrustedOhMyCineArtifactIdentity } from '../src/services/datasource/emby.ts'
+import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrustedOhMyCineArtifactIdentity, namesByPersonType } from '../src/services/datasource/emby.ts'
 import { forgetPlaybackTargetsForSource, mergeMediaItemsByIdentity, prunePlaybackTargets, rememberPlaybackTargetsForItems } from '../src/services/datasource/identityMerge.ts'
 import { loginServerAndCreateConfig, logoutServerBestEffort, ServerDataSource } from '../src/services/datasource/server.ts'
 
@@ -20,6 +20,19 @@ const bridge = {
               item: noPlayableItem(),
               versions: [{ id: 88, title: '不可播放版本', size: 512, modified_at: '2026-08-22T00:00:00Z', playable: false, exact_identity: '' }],
             }
+          : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${seriesItem().id}`)
+            ? {
+                item: seriesItem(),
+                versions: [
+                  { id: 201, title: '第一集', season: 1, episode: 1, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', exact_identity: 'server:entry:201' },
+                  { id: 202, title: '第二集', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', exact_identity: 'server:entry:202' },
+                ],
+              }
+            : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${legacyArtworkItem().id}`)
+              ? {
+                  item: legacyArtworkItem(),
+                  versions: [{ id: 301, title: '旧 Server 电影', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/301/stream', exact_identity: 'server:entry:301' }],
+                }
           : request.path.startsWith('/api/v1/player/media-libraries/9/catalog/')
           ? {
               item: mediaItem(),
@@ -56,6 +69,24 @@ const detail = await source.getDetail(items[0].id)
 assert.equal(detail.mediaSources?.[0]?.id, '77')
 assert.deepEqual(detail.mediaSources?.map(item => item.id), ['77'])
 assert.deepEqual(detail.children?.map(item => item.id), [`entry|9|${mediaItem().id}|77`])
+assert.equal(detail.originalTitle, '七人の侍')
+assert.equal(detail.rating, 8.5)
+assert.equal(detail.duration, 207 * 60)
+assert.equal(detail.tagline, '他们站了起来。')
+assert.deepEqual(detail.genres, ['剧情', '动作'])
+assert.deepEqual(detail.directors, ['黑泽明'])
+assert.deepEqual(detail.writers, ['桥本忍'])
+assert.deepEqual(detail.cast, ['三船敏郎', '志村乔'])
+assert.equal(detail.tmdbId, 346)
+assert.equal(detail.imdbId, 'tt0047478')
+assert.equal(detail.stills?.length, 2)
+const seriesSeasons = await source.list(`work|9|${seriesItem().id}`)
+assert.deepEqual(seriesSeasons.map(item => [item.type, item.seasonNumber]), [['season', 1]])
+const seriesDetail = await source.getDetail(`work|9|${seriesItem().id}`)
+assert.deepEqual(seriesDetail.children?.map(item => [item.type, item.seasonNumber, item.episodeNumber]), [['episode', 1, 1], ['episode', 1, 2]])
+const legacyArtworkDetail = await source.getDetail(`work|9|${legacyArtworkItem().id}`)
+assert.equal(legacyArtworkDetail.stills?.length, 1)
+assert.match(legacyArtworkDetail.stills?.[0] ?? '', /\/backdrop\.jpg$/)
 const stream = await source.getStreamRequest({ itemId: items[0].id })
 assert.equal(stream.url, 'http://127.0.0.1:3000/api/v1/player/media-entries/77/stream')
 assert.equal(stream.headers?.Authorization, `Bearer ${token}`)
@@ -103,6 +134,11 @@ assert.equal(mergeMediaItemsByIdentity([
 
 assert.equal(await embyInstanceFingerprint('  SYSTEM-ID  '), await embyInstanceFingerprint('system-id'))
 assert.notEqual(await embyInstanceFingerprint('system-id'), await embyInstanceFingerprint('other-system-id'))
+assert.deepEqual(namesByPersonType([
+  { Name: ' 黑泽明 ', Type: 'director' },
+  { Name: '黑泽明', Type: 'DIRECTOR' },
+  { Name: '三船敏郎', Type: 'Actor' },
+], 'Director'), ['黑泽明'])
 
 configureOhMyCineServerOrigins(['http://127.0.0.1:3000'])
 assert.equal(
@@ -201,8 +237,12 @@ assert.match(settingsSource, /if \(result\.config\.type === 'server'\)\s*await l
 const serverSource = fs.readFileSync(new URL('../src/services/datasource/server.ts', import.meta.url), 'utf8')
 assert.match(serverSource, /credentialVersion:\s*Date\.now\(\)/)
 assert.match(serverSource, /libraries = await source\.listLibraries\(\)[\s\S]*await persistServerCredentialOrRevoke/)
+const embySource = fs.readFileSync(new URL('../src/services/datasource/emby.ts', import.meta.url), 'utf8')
+assert.match(embySource, /DETAIL_IMAGE_QUERY[\s\S]*ImageTypeLimit: '8'/)
+assert.match(embySource, /fetchDetailPayload[\s\S]*getItem\(id, true\)/)
 const detailViewSource = fs.readFileSync(new URL('../src/views/MediaDetailView.vue', import.meta.url), 'utf8')
 assert.match(detailViewSource, /detail\.value\?\.originType !== 'server' \|\| selectedMediaSource\.value != null/)
+assert.match(detailViewSource, /Server 媒体库中暂时没有可播放的分集/)
 
 console.log(JSON.stringify({
   serverDataSource: true,
@@ -220,8 +260,34 @@ console.log(JSON.stringify({
 function mediaItem(index = 0) {
   return {
     id: index === 0 ? 'bW92aWU6dG1kYjozNDY' : `movie-${index}`, library_id: 9, title: index === 0 ? '七武士' : `电影 ${index}`, kind: 'movie', release_year: 1954,
-    overview: '日本电影', poster_path: '', backdrop_path: '', work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
+    original_title: '七人の侍', overview: '日本电影', tagline: '他们站了起来。', rating: 8.5, runtime_minutes: 207,
+    genres: ['剧情', '动作'], directors: ['黑泽明'], writers: ['桥本忍'], cast: ['三船敏郎', '志村乔'], tmdb_id: 346, imdb_id: 'tt0047478',
+    poster_path: '', backdrop_path: '/backdrop.jpg', still_paths: ['/backdrop.jpg', '/still-2.jpg'], work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
     file_count: 1, season_count: 0, episode_count: 0, modified_at: '2026-08-22T00:00:00Z', match_status: 'matched',
+  }
+}
+
+function seriesItem() {
+  return {
+    ...mediaItem(),
+    id: 'c2VyaWVzOnRtZGI6MTAw',
+    title: '示例剧',
+    original_title: 'Example Series',
+    kind: 'series',
+    work_identity: { scheme: 'tmdb', media_type: 'series', value: '100' },
+    tmdb_id: 100,
+    imdb_id: 'tt0000100',
+    file_count: 2,
+    season_count: 1,
+    episode_count: 2,
+  }
+}
+
+function legacyArtworkItem() {
+  return {
+    ...mediaItem(),
+    id: 'bW92aWU6dG1kYjozNDYtbGVnYWN5',
+    still_paths: undefined,
   }
 }
 

@@ -62,6 +62,10 @@ const IMAGE_QUERY = {
   EnableImageTypes: 'Primary,Backdrop,Thumb,Logo',
   ImageTypeLimit: '1',
 } as const
+const DETAIL_IMAGE_QUERY = {
+  ...IMAGE_QUERY,
+  ImageTypeLimit: '8',
+} as const
 const HERO_IMAGE_QUERY = {
   ...IMAGE_QUERY,
   EnableImageTypes: 'Backdrop,Primary,Thumb,Logo',
@@ -1049,7 +1053,7 @@ export class EmbyDataSource implements DataSource {
   }
 
   private async fetchDetailPayload(id: string): Promise<EmbyDetailCachePayload> {
-    const item = await this.getItem(id)
+    const item = await this.getItem(id, true)
     const [similarItems, collections] = await Promise.all([
       this.getSimilarItemRecords(id),
       this.getCollectionRecords(id),
@@ -1070,6 +1074,7 @@ export class EmbyDataSource implements DataSource {
       ...base,
       genres: item.Genres ?? [],
       directors: namesByPersonType(item.People, 'Director'),
+      writers: namesByPersonType(item.People, 'Writer'),
       cast: namesByPersonType(item.People, 'Actor'),
       imdbId: item.ProviderIds?.Imdb,
       tmdbId: parseTmdbId(item.ProviderIds?.Tmdb),
@@ -1085,10 +1090,10 @@ export class EmbyDataSource implements DataSource {
     }
   }
 
-  private async getItem(id: string): Promise<EmbyItemRecord> {
+  private async getItem(id: string, detail = false): Promise<EmbyItemRecord> {
     const response = await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}`, {
       Fields: ITEM_FIELDS,
-      ...IMAGE_QUERY,
+      ...(detail ? DETAIL_IMAGE_QUERY : IMAGE_QUERY),
     })
     return parseItemRecord(response)
   }
@@ -2453,10 +2458,21 @@ function parseTmdbId(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function namesByPersonType(people: readonly EmbyPersonRecord[] | undefined, type: string): string[] {
-  return (people ?? [])
-    .filter(person => person.Type === type && typeof person.Name === 'string')
-    .map(person => person.Name as string)
+export function namesByPersonType(people: readonly EmbyPersonRecord[] | undefined, type: string): string[] {
+  const expectedType = type.trim().toLowerCase()
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const person of people ?? []) {
+    if (person.Type?.trim().toLowerCase() !== expectedType || typeof person.Name !== 'string')
+      continue
+    const name = person.Name.trim()
+    const key = name.toLowerCase()
+    if (!name || seen.has(key))
+      continue
+    seen.add(key)
+    result.push(name)
+  }
+  return result
 }
 
 function safeSubtitleExtension(value: string | undefined): string {

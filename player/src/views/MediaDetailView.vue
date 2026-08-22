@@ -161,6 +161,17 @@ const primaryPlayLabel = computed(() => {
 const canSelectEpisodePrev = computed(() => selectedEpisodeIndex.value > 0)
 const canSelectEpisodeNext = computed(() => selectedEpisodeIndex.value < episodes.value.length - 1)
 const episodeRangeLabel = computed(() => episodes.value.length > 0 ? `${selectedEpisodeIndex.value + 1} / ${episodes.value.length}` : '')
+const emptyEpisodesMessage = computed(() => {
+  const current = detail.value
+  const sourceType = store.configs.find(config => config.id === current?.sourceId)?.type ?? current?.originType
+  if (sourceType === 'emby')
+    return 'Emby 暂未返回可选择的分集。'
+  if (sourceType === 'jellyfin')
+    return 'Jellyfin 暂未返回可选择的分集。'
+  if (sourceType === 'server')
+    return 'Server 媒体库中暂时没有可播放的分集。'
+  return '暂时没有可播放的分集。'
+})
 const selectedEpisodeDomId = computed(() => episodes.value.length > 0 ? `episode-card-${selectedEpisodeIndex.value}` : undefined)
 const selectedEpisodeAriaValue = computed(() => episodes.value.length > 0 ? `第 ${selectedEpisodeIndex.value + 1} 集，共 ${episodes.value.length} 集` : '无分集')
 const episodeIndicatorStyle = computed(() => {
@@ -1101,7 +1112,7 @@ function markTitleLogoFailed(url: string) {
           </div>
 
           <div v-else class="relative mt-6 rounded-[1.5rem] border border-white/10 bg-white/5 p-8 text-center text-sm text-white/45">
-            Emby 暂未返回可选择的分集。
+            {{ emptyEpisodesMessage }}
           </div>
         </section>
 

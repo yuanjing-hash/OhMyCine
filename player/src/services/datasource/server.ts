@@ -43,11 +43,22 @@ interface ServerItemRecord {
   id: string
   library_id: number
   title: string
+  original_title?: string
   kind: 'movie' | 'series'
   release_year?: number
   overview?: string
+  tagline?: string
+  rating?: number
+  runtime_minutes?: number
+  genres?: string[]
+  directors?: string[]
+  writers?: string[]
+  cast?: string[]
+  tmdb_id?: number
+  imdb_id?: string
   poster_path?: string
   backdrop_path?: string
+  still_paths?: string[]
   work_identity: ServerIdentityRecord
   file_count: number
   season_count: number
@@ -226,11 +237,23 @@ export class ServerDataSource implements DataSource {
         providerMediaSourceId: target.mediaSourceId,
         exactIdentity: target.exactIdentity,
       } satisfies MediaSourceOption))
+    const stillPaths = detail.item.still_paths?.length
+      ? detail.item.still_paths
+      : detail.item.backdrop_path
+        ? [detail.item.backdrop_path]
+        : []
     return {
       ...item,
       id,
       type: work.season == null ? item.type : 'season',
       seasonNumber: work.season,
+      genres: detail.item.genres,
+      directors: detail.item.directors,
+      writers: detail.item.writers,
+      cast: detail.item.cast,
+      imdbId: detail.item.imdb_id,
+      tmdbId: detail.item.tmdb_id,
+      stills: stillPaths.map(path => artwork(path, 'w1280')).filter((value): value is string => Boolean(value)),
       mediaSources: [...ownSources, ...alternateSources],
       children: versions.map(version => this.mapVersion(detail.item, version, work)),
     }
@@ -315,11 +338,15 @@ export class ServerDataSource implements DataSource {
       originType: 'server',
       libraryId: String(item.library_id),
       name: item.title,
+      originalTitle: item.original_title,
       type: item.kind,
       posterUrl: artwork(item.poster_path, 'w500'),
       backdropUrl: artwork(item.backdrop_path, 'w1280'),
       year: item.release_year,
+      rating: item.rating,
       overview: item.overview,
+      tagline: item.tagline,
+      duration: item.runtime_minutes ? item.runtime_minutes * 60 : undefined,
       modified: item.modified_at,
       path: '',
       workIdentity: mapIdentity(item.work_identity),
@@ -335,11 +362,15 @@ export class ServerDataSource implements DataSource {
       originType: 'server',
       libraryId: work.libraryId,
       name: version.title,
+      originalTitle: item.original_title,
       type: item.kind === 'series' ? 'episode' : 'movie',
       posterUrl: artwork(item.poster_path, 'w500'),
       backdropUrl: artwork(item.backdrop_path, 'w1280'),
       year: item.release_year,
+      rating: item.rating,
       overview: item.overview,
+      tagline: item.tagline,
+      duration: item.runtime_minutes ? item.runtime_minutes * 60 : undefined,
       size: version.size,
       modified: version.modified_at,
       path: '',
@@ -507,7 +538,37 @@ function parseItem(value: unknown): ServerItemRecord | null {
   const identity = value.work_identity
   if ((identity.scheme !== 'tmdb' && identity.scheme !== 'server') || (identity.media_type !== 'movie' && identity.media_type !== 'series') || typeof identity.value !== 'string')
     return null
-  return value as unknown as ServerItemRecord
+  return {
+    id: value.id,
+    library_id: value.library_id,
+    title: value.title,
+    original_title: optionalString(value.original_title),
+    kind: value.kind,
+    release_year: numberValue(value.release_year),
+    overview: optionalString(value.overview),
+    tagline: optionalString(value.tagline),
+    rating: boundedNumber(value.rating, 0, 10),
+    runtime_minutes: boundedNumber(value.runtime_minutes, 1, 24 * 60),
+    genres: stringList(value.genres, 100),
+    directors: stringList(value.directors, 100),
+    writers: stringList(value.writers, 100),
+    cast: stringList(value.cast, 200),
+    tmdb_id: boundedNumber(value.tmdb_id, 1, Number.MAX_SAFE_INTEGER),
+    imdb_id: optionalIMDbID(value.imdb_id),
+    poster_path: optionalImagePath(value.poster_path),
+    backdrop_path: optionalImagePath(value.backdrop_path),
+    still_paths: imagePathList(value.still_paths, 8),
+    work_identity: {
+      scheme: identity.scheme,
+      media_type: identity.media_type,
+      value: identity.value,
+    },
+    file_count: numberValue(value.file_count) ?? 0,
+    season_count: numberValue(value.season_count) ?? 0,
+    episode_count: numberValue(value.episode_count) ?? 0,
+    modified_at: optionalString(value.modified_at) ?? '',
+    match_status: optionalString(value.match_status) ?? '',
+  }
 }
 
 function parseVersion(value: unknown): ServerVersionRecord | null {
@@ -529,7 +590,55 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 function artwork(path: string | undefined, size: 'w500' | 'w1280'): string | undefined {
-  return path?.trim() ? tmdbArtworkUrl(path, size) : undefined
+  const safePath = optionalImagePath(path)
+  return safePath ? tmdbArtworkUrl(safePath, size) : undefined
+}
+
+function optionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string')
+    return undefined
+  const trimmed = value.trim()
+  return trimmed || undefined
+}
+
+function boundedNumber(value: unknown, minimum: number, maximum: number): number | undefined {
+  const parsed = numberValue(value)
+  return parsed != null && parsed >= minimum && parsed <= maximum ? parsed : undefined
+}
+
+function stringList(value: unknown, limit: number): string[] | undefined {
+  if (!Array.isArray(value))
+    return undefined
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const entry of value) {
+    const text = optionalString(entry)
+    const key = text?.toLocaleLowerCase()
+    if (!text || !key || seen.has(key))
+      continue
+    seen.add(key)
+    result.push(text)
+    if (result.length === limit)
+      break
+  }
+  return result.length ? result : undefined
+}
+
+function optionalIMDbID(value: unknown): string | undefined {
+  const candidate = optionalString(value)
+  return candidate && /^tt\d{1,30}$/.test(candidate) ? candidate : undefined
+}
+
+function optionalImagePath(value: unknown): string | undefined {
+  const candidate = optionalString(value)
+  return candidate && candidate.startsWith('/') && candidate.length <= 512 && !/[?#\\\r\n]/.test(candidate) && !candidate.includes('..') ? candidate : undefined
+}
+
+function imagePathList(value: unknown, limit: number): string[] | undefined {
+  if (!Array.isArray(value))
+    return undefined
+  const result = [...new Set(value.map(optionalImagePath).filter((entry): entry is string => Boolean(entry)))].slice(0, limit)
+  return result.length ? result : undefined
 }
 function mapIdentity(value: ServerIdentityRecord): MediaIdentity {
   return { scheme: value.scheme, mediaType: value.media_type, value: value.value }

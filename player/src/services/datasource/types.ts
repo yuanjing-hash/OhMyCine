@@ -76,6 +76,7 @@ export interface FileEntry {
 export interface MediaDetail extends MediaItem {
   genres?: string[]
   directors?: string[]
+  writers?: string[]
   cast?: string[]
   imdbId?: string
   tmdbId?: number
