@@ -175,7 +175,7 @@ if (candidate.origin === location.origin && candidate.searchParams.getAll("omc_t
 - Re-authenticating the same user/device revokes the prior token. Logout, explicit device revoke, user disable, password reset and user removal revoke affected device tokens.
 - Player media DTOs expose safe logical IDs, metadata and opaque identity only; never absolute/provider paths, provider item IDs, Cookie, Emby API key, signed STRM URL or upstream temporary URL.
 - Player catalog/detail/search expose only enabled media libraries backed by enabled Storage rows. Search must exhaust each readable library's catalog pagination before applying global sorting and pagination; a per-library first-page cap must not undercount `total`.
-- Entry streaming rechecks actor permission, entry/library/storage ownership and an active managed completed local-projection STRM artifact on every request before resolving a short-lived provider URL.
+- Entry streaming rechecks actor permission plus enabled entry/library/storage ownership on every request. Local Storage resolves only a root-confined ordinary file after per-component symlink/Reparse Point rejection and serves authenticated GET/HEAD/Range without serializing its absolute path; 115 still requires an active managed completed local-projection STRM artifact before resolving a short-lived provider URL.
 - Signed-proxy resolution rechecks the current Storage enabled state before every redirect, including cache hits, so disabling a Storage immediately invalidates known artifact URLs.
 - Return 302 with `Cache-Control: no-store`; unavailable targets map to a safe 404/503-class response rather than a generic 500. Do not log the redirect URL or Authorization.
 
@@ -189,6 +189,7 @@ if (candidate.origin === location.origin && candidate.searchParams.getAll("omc_t
 | Entry/library/artifact missing, disabled, unmanaged, inactive or wrong target kind | Safe not-found/unavailable response; no provider call |
 | Media library or backing Storage is disabled after a prior catalog/cache hit | Catalog/detail no longer expose it and stream/proxy resolution refuses it immediately |
 | Actor lacks media-library read | 403 |
+| Valid local ordinary media entry | Authenticated GET/HEAD/Range response with `no-store`; no absolute path in DTO/error/log |
 | Valid active 115 STRM entry | 302 `no-store` to the current short-lived provider URL |
 | Bootstrap lacks optional Emby identity or connection permission | Keep bootstrap usable and omit the optional identity |
 
@@ -201,7 +202,7 @@ if (candidate.origin === location.origin && candidate.searchParams.getAll("omc_t
 ### 6. Tests Required
 
 - Migration tests assert the v32 table, indexes and repeated migration behavior.
-- Router/service tests cover first login, same-device replacement, logout/revoke, user disable/password reset, expiry, permission denial, catalog DTO redaction, disabled library/Storage, catalogs larger than one page, invalid artifact states and valid GET/HEAD redirect.
+- Router/service tests cover first login, same-device replacement, logout/revoke, user disable/password reset, expiry, permission denial, catalog DTO redaction, disabled library/Storage, catalogs larger than one page, local GET/HEAD/single-range/invalid-range plus traversal/symlink/Reparse rejection, invalid 115 artifact states and valid GET/HEAD redirect.
 - Assert a Player Bearer cannot enter a representative browser management route.
 - Cross-layer playback tests must prove a foreign-origin redirect receives Range but not Server Authorization/Cookie/private headers.
 - Run `CGO_ENABLED=0 go test ./...`, `go vet ./...`, Player typecheck/lint/build, Rust tests and Clippy.

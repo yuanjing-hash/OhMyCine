@@ -196,7 +196,7 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 
 `ServerDataSource` 已使用现有 DataSource 生命周期接入设置页和 `DataSourceManager`。首次连接提交 Server 地址、用户名、密码和 Player 本机随机设备 ID，成功后只保存 `credentialRef`、设备 ID、Server URL 与安全媒体库摘要；密码不保存，`omc_player_` device token 进入 provider-specific AES-GCM 凭据 envelope。后续 bootstrap、目录、搜索和详情请求统一通过受限 Tauri 原生 JSON 命令访问 `/api/v1/player/*`，禁止自动跟随重定向并限制方法、路径、请求体和响应体。
 
-Server 媒体与 Player 直连 Emby 的聚合使用显式身份，而不是标题猜测：TMDB ID 合并作品卡片，OhMyCine artifact identity 合并精确版本，Emby `SystemId` 指纹区分实例并与 Library/Item/MediaSource ID 组合。Server 项目作为聚合默认卡片，匹配的 Emby 用户线路仍保留为可选版本；显式进入 Emby 来源页时不执行跨源去重。身份不足时宁可显示两项。115 STRM 默认由 ServerDataSource 直接请求 entry stream，Player 不读取 `.strm` 文件、不使用 Server 保存的 Emby 管理 API Key，也不经过 Emby；带 Bearer 的播放请求在 Windows/Android 先进入随机令牌保护的回环桥，跨 origin 302 前移除私有 Header。
+Server 媒体与 Player 直连 Emby 的聚合使用显式身份，而不是标题猜测：TMDB ID 合并作品卡片，OhMyCine artifact identity 合并精确版本，Emby `SystemId` 指纹区分实例并与 Library/Item/MediaSource ID 组合。Server 项目作为聚合默认卡片，匹配的 Emby 用户线路仍保留为可选版本；显式进入 Emby 来源页时不执行跨源去重。身份不足时宁可显示两项。ServerDataSource 运行时校验 Server 返回的可选完整详情字段，映射原始标题、评分、时长、类型、演职人员、外部 ID 和多张剧照；旧 Server 缺少这些字段时继续显示基础详情。Server 本地媒体与 115 STRM 都通过 `DataSource.getStreamRequest` 请求同一个 entry stream：本地条目由 Server 提供 Bearer + Range 文件流，115 条目由 Server 返回安全 302；Player 不读取 `.strm` 文件、不接触 Server 绝对路径、不使用 Server 保存的 Emby 管理 API Key，也不经过 Emby，跨 origin 302 前仍移除私有 Header。Emby 详情请求独立允许有界多张 Backdrop，People 类型按大小写不敏感清洗去重。
 
 ### 4.2 DataSource 接口定义
 
