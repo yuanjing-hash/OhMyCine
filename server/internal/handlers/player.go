@@ -23,6 +23,13 @@ type playerDeviceResponse struct {
 	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
 }
 
+type playerNoStoreWriter struct{ http.ResponseWriter }
+
+func (writer playerNoStoreWriter) WriteHeader(statusCode int) {
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.ResponseWriter.WriteHeader(statusCode)
+}
+
 func playerDeviceDTO(device models.DeviceToken) playerDeviceResponse {
 	return playerDeviceResponse{
 		ID: device.ID, Name: device.DeviceName, ClientKind: device.ClientKind,
@@ -184,13 +191,22 @@ func (a *API) PlayerMediaEntryStream(c *gin.Context) {
 	if !ok {
 		return
 	}
-	redirect, err := a.signedProxy.ResolvePlayerEntry(c.Request.Context(), mustActor(c), id, c.GetHeader("User-Agent"), c.Request.RemoteAddr)
+	stream, err := a.signedProxy.ResolvePlayerEntry(c.Request.Context(), mustActor(c), id, c.GetHeader("User-Agent"), c.Request.RemoteAddr)
 	if err != nil {
 		writeError(c, a.log, err)
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.Header("Location", redirect.URL)
+	if stream.File != nil {
+		defer stream.File.Close()
+		http.ServeContent(playerNoStoreWriter{ResponseWriter: c.Writer}, c.Request, stream.Name, stream.ModifiedAt, stream.File)
+		return
+	}
+	if stream.RedirectURL == "" {
+		writeError(c, a.log, services.PlayerStreamUnavailableError())
+		return
+	}
+	c.Header("Location", stream.RedirectURL)
 	c.Status(http.StatusFound)
 }
 

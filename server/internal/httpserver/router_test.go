@@ -593,7 +593,16 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 	if err := json.Unmarshal(detailEnvelope.Data, &playableDetail); err != nil || len(playableDetail.Versions) != 1 || !playableDetail.Versions[0].Playable || !strings.HasPrefix(playableDetail.Versions[0].ExactIdentity, "ohmycine:artifact:") {
 		t.Fatalf("Player playable detail invalid err=%v data=%s", err, detailEnvelope.Data)
 	}
-	if err := client.db.Model(&models.Storage{}).Where("id = ?", library.StorageID).Update("type", models.StorageTypeLocal).Error; err != nil {
+	var entry models.MediaLibraryEntry
+	if err := client.db.Where("library_id = ?", library.ID).First(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	localRoot := t.TempDir()
+	localBody := []byte("0123456789abcdef")
+	if err := os.WriteFile(filepath.Join(localRoot, "Movie.mkv"), localBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.db.Model(&models.Storage{}).Where("id = ?", library.StorageID).Updates(map[string]any{"type": models.StorageTypeLocal, "root_path": localRoot, "root_path_normalized": strings.ToLower(localRoot)}).Error; err != nil {
 		t.Fatal(err)
 	}
 	status, localDetailEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries/"+uintString(library.ID)+"/catalog/"+url.PathEscape(catalog.List[0].ID), login.AccessToken, nil)
@@ -603,23 +612,48 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 			ExactIdentity string `json:"exact_identity"`
 		} `json:"versions"`
 	}
-	if err := json.Unmarshal(localDetailEnvelope.Data, &localDetail); status != http.StatusOK || err != nil || len(localDetail.Versions) != 1 || localDetail.Versions[0].Playable || !strings.HasPrefix(localDetail.Versions[0].ExactIdentity, "server:entry:") {
-		t.Fatalf("non-115 Player detail exposed playable artifact: status=%d err=%v data=%s", status, err, localDetailEnvelope.Data)
+	if err := json.Unmarshal(localDetailEnvelope.Data, &localDetail); status != http.StatusOK || err != nil || len(localDetail.Versions) != 1 || !localDetail.Versions[0].Playable || !strings.HasPrefix(localDetail.Versions[0].ExactIdentity, "server:entry:") {
+		t.Fatalf("local Player detail was not playable: status=%d err=%v data=%s", status, err, localDetailEnvelope.Data)
+	}
+	for _, test := range []struct {
+		method        string
+		rangeHeader   string
+		wantStatus    int
+		wantBody      string
+		contentRange  string
+		contentLength string
+	}{
+		{method: http.MethodGet, wantStatus: http.StatusOK, wantBody: string(localBody), contentLength: "16"},
+		{method: http.MethodHead, wantStatus: http.StatusOK, contentLength: "16"},
+		{method: http.MethodGet, rangeHeader: "bytes=4-7", wantStatus: http.StatusPartialContent, wantBody: "4567", contentRange: "bytes 4-7/16", contentLength: "4"},
+		{method: http.MethodGet, rangeHeader: "bytes=99-100", wantStatus: http.StatusRequestedRangeNotSatisfiable, wantBody: "invalid range: failed to overlap\n", contentRange: "bytes */16"},
+	} {
+		localRequest := httptest.NewRequest(test.method, "/api/v1/player/media-entries/"+uintString(entry.ID)+"/stream", nil)
+		localRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
+		if test.rangeHeader != "" {
+			localRequest.Header.Set("Range", test.rangeHeader)
+		}
+		localResponse := httptest.NewRecorder()
+		client.router.ServeHTTP(localResponse, localRequest)
+		if localResponse.Code != test.wantStatus || localResponse.Body.String() != test.wantBody || localResponse.Header().Get("Content-Range") != test.contentRange || localResponse.Header().Get("Cache-Control") != "no-store" || localResponse.Header().Get("Content-Length") != test.contentLength {
+			t.Fatalf("local stream method=%s range=%q status=%d body=%q content-range=%q", test.method, test.rangeHeader, localResponse.Code, localResponse.Body.String(), localResponse.Header().Get("Content-Range"))
+		}
+		if (test.wantStatus == http.StatusOK || test.wantStatus == http.StatusPartialContent) && (localResponse.Header().Get("Content-Type") == "" || localResponse.Header().Get("Accept-Ranges") != "bytes") {
+			t.Fatalf("local stream headers content-type=%q accept-ranges=%q", localResponse.Header().Get("Content-Type"), localResponse.Header().Get("Accept-Ranges"))
+		}
 	}
 	if err := client.db.Model(&models.Storage{}).Where("id = ?", library.StorageID).Update("type", models.StorageTypePan115).Error; err != nil {
 		t.Fatal(err)
 	}
-	var entry models.MediaLibraryEntry
-	if err := client.db.Where("library_id = ?", library.ID).First(&entry).Error; err != nil {
-		t.Fatal(err)
-	}
-	streamRequest := httptest.NewRequest(http.MethodGet, "/api/v1/player/media-entries/"+uintString(entry.ID)+"/stream", nil)
-	streamRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
-	streamRequest.Header.Set("User-Agent", "OhMyCine Player Test")
-	streamResponse := httptest.NewRecorder()
-	client.router.ServeHTTP(streamResponse, streamRequest)
-	if streamResponse.Code != http.StatusFound || streamResponse.Header().Get("Location") != "https://cdn.example.test/video" || streamResponse.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("Player stream status=%d location=%q", streamResponse.Code, streamResponse.Header().Get("Location"))
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		streamRequest := httptest.NewRequest(method, "/api/v1/player/media-entries/"+uintString(entry.ID)+"/stream", nil)
+		streamRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
+		streamRequest.Header.Set("User-Agent", "OhMyCine Player Test")
+		streamResponse := httptest.NewRecorder()
+		client.router.ServeHTTP(streamResponse, streamRequest)
+		if streamResponse.Code != http.StatusFound || streamResponse.Header().Get("Location") != "https://cdn.example.test/video" || streamResponse.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s Player stream status=%d location=%q", method, streamResponse.Code, streamResponse.Header().Get("Location"))
+		}
 	}
 	if err := client.db.Model(&models.MediaArtifact{}).Where("source_identity = ?", "entry:"+uintString(entry.ID)).Update("active", false).Error; err != nil {
 		t.Fatal(err)

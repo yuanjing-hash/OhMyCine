@@ -118,6 +118,7 @@ type Snapshot struct {
 	Cast                []Person         `json:"cast,omitempty"`
 	PosterPath          string           `json:"poster_path,omitempty"`
 	BackdropPath        string           `json:"backdrop_path,omitempty"`
+	BackdropPaths       []string         `json:"backdrop_paths,omitempty"`
 	Seasons             []SeasonSnapshot `json:"seasons,omitempty"`
 }
 
@@ -182,6 +183,12 @@ type detailCompany struct {
 type detailCreator struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+}
+
+type detailImages struct {
+	Backdrops []struct {
+		FilePath string `json:"file_path"`
+	} `json:"backdrops"`
 }
 
 // Candidate is the bounded, credential-free projection used by manual media
@@ -499,9 +506,10 @@ func (c *Client) GetByID(ctx context.Context, mediaType string, id int64, langua
 }
 
 func (c *Client) getDetailedMatch(ctx context.Context, mediaType string, id int64, language string) (Match, error) {
-	values := url.Values{"append_to_response": {"credits,external_ids"}}
+	values := url.Values{"append_to_response": {"credits,external_ids,images"}}
 	if language != "" {
 		values.Set("language", language)
+		values.Set("include_image_language", imageLanguages(language))
 	}
 	if mediaType == "movie" {
 		var detail struct {
@@ -527,6 +535,7 @@ func (c *Client) getDetailedMatch(ctx context.Context, mediaType string, id int6
 			ExternalIDs         struct {
 				IMDbID string `json:"imdb_id"`
 			} `json:"external_ids"`
+			Images detailImages `json:"images"`
 		}
 		if err := c.get(ctx, "/movie/"+strconv.FormatInt(id, 10), values, &detail); err != nil {
 			return Match{}, err
@@ -539,6 +548,7 @@ func (c *Client) getDetailedMatch(ctx context.Context, mediaType string, id int6
 			imdbID = detail.ExternalIDs.IMDbID
 		}
 		snapshot := Snapshot{Version: 1, TMDBID: id, IMDbID: cleanIMDbID(imdbID), MediaType: mediaType, Title: cleanText(detail.Title, 512), OriginalTitle: cleanText(detail.OriginalTitle, 512), ReleaseDate: cleanDate(detail.ReleaseDate), Overview: cleanText(detail.Overview, 32768), Tagline: cleanText(detail.Tagline, 2048), Status: cleanText(detail.Status, 128), VoteAverage: boundedRating(detail.VoteAverage), VoteCount: boundedCount(detail.VoteCount), RuntimeMinutes: boundedRuntime(detail.Runtime), OriginalLanguage: cleanCode(detail.OriginalLanguage), PosterPath: cleanImagePath(detail.PosterPath), BackdropPath: cleanImagePath(detail.BackdropPath)}
+		snapshot.BackdropPaths = collectBackdropPaths(snapshot.BackdropPath, detail.Images)
 		populateCommonSnapshot(&snapshot, detail.Genres, detail.ProductionCountries, nil, detail.Credits, nil)
 		populateDetailSnapshot(&snapshot, detail.SpokenLanguages, detail.ProductionCompanies)
 		return matchFromSnapshot(snapshot), nil
@@ -577,6 +587,7 @@ func (c *Client) getDetailedMatch(ctx context.Context, mediaType string, id int6
 		ExternalIDs struct {
 			IMDbID string `json:"imdb_id"`
 		} `json:"external_ids"`
+		Images detailImages `json:"images"`
 	}
 	if err := c.get(ctx, "/tv/"+strconv.FormatInt(id, 10), values, &detail); err != nil {
 		return Match{}, err
@@ -589,6 +600,7 @@ func (c *Client) getDetailedMatch(ctx context.Context, mediaType string, id int6
 		runtimeMinutes = boundedRuntime(detail.EpisodeRuntime[0])
 	}
 	snapshot := Snapshot{Version: 1, TMDBID: id, IMDbID: cleanIMDbID(detail.ExternalIDs.IMDbID), MediaType: mediaType, Title: cleanText(detail.Name, 512), OriginalTitle: cleanText(detail.OriginalName, 512), ReleaseDate: cleanDate(detail.FirstAirDate), Overview: cleanText(detail.Overview, 32768), Tagline: cleanText(detail.Tagline, 2048), Status: cleanText(detail.Status, 128), VoteAverage: boundedRating(detail.VoteAverage), VoteCount: boundedCount(detail.VoteCount), RuntimeMinutes: runtimeMinutes, SeasonCount: boundedCount(detail.NumberOfSeasons), EpisodeCount: boundedCount(detail.NumberOfEpisodes), OriginalLanguage: cleanCode(detail.OriginalLanguage), PosterPath: cleanImagePath(detail.PosterPath), BackdropPath: cleanImagePath(detail.BackdropPath)}
+	snapshot.BackdropPaths = collectBackdropPaths(snapshot.BackdropPath, detail.Images)
 	populateCommonSnapshot(&snapshot, detail.Genres, detail.ProductionCountries, detail.OriginCountries, detail.Credits, detail.CreatedBy)
 	populateDetailSnapshot(&snapshot, detail.SpokenLanguages, detail.ProductionCompanies)
 	for _, season := range detail.Seasons {
@@ -601,6 +613,44 @@ func (c *Client) getDetailedMatch(ctx context.Context, mediaType string, id int6
 		}
 	}
 	return matchFromSnapshot(snapshot), nil
+}
+
+func imageLanguages(language string) string {
+	language = strings.ToLower(strings.TrimSpace(language))
+	if separator := strings.IndexAny(language, "-_"); separator >= 0 {
+		language = language[:separator]
+	}
+	if len(language) != 2 {
+		return "null,en"
+	}
+	if language == "en" {
+		return "en,null"
+	}
+	return language + ",null,en"
+}
+
+func collectBackdropPaths(primary string, images detailImages) []string {
+	result := make([]string, 0, 8)
+	seen := make(map[string]struct{}, 8)
+	appendPath := func(value string) {
+		value = cleanImagePath(value)
+		if value == "" || len(result) >= 8 {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	appendPath(primary)
+	for _, image := range images.Backdrops {
+		appendPath(image.FilePath)
+		if len(result) == 8 {
+			break
+		}
+	}
+	return result
 }
 
 func populateDetailSnapshot(snapshot *Snapshot, languages []detailLanguage, companies []detailCompany) {

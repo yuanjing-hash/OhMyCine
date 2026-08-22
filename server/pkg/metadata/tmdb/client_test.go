@@ -28,10 +28,10 @@ func TestClientUsesBoundedOfficialShapeWithoutLeakingTokenIntoURL(t *testing.T) 
 			}
 			_, _ = io.WriteString(w, `{"results":[{"id":42,"title":"Example Movie","original_language":"zh","genre_ids":[16],"release_date":"2026-01-01"}]}`)
 		case "/movie/42":
-			if r.URL.Query().Get("append_to_response") != "credits,external_ids" {
-				t.Fatalf("append_to_response=%q", r.URL.Query().Get("append_to_response"))
+			if r.URL.Query().Get("append_to_response") != "credits,external_ids,images" || r.URL.Query().Get("include_image_language") != "zh,null,en" {
+				t.Fatalf("detail query=%q", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `{"id":42,"title":"示例电影","original_title":"Example Movie","original_language":"zh","release_date":"2026-01-01","overview":"安全简介","tagline":"一句话简介","status":"Released","vote_average":8.5,"vote_count":1234,"runtime":123,"poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg","genres":[{"id":16,"name":"动画"}],"production_countries":[{"iso_3166_1":"CN"}],"spoken_languages":[{"iso_639_1":"zh"},{"iso_639_1":"en"}],"production_companies":[{"id":9,"name":"示例制片厂"}],"credits":{"cast":[{"id":1,"name":"演员","character":"角色"}],"crew":[{"id":2,"name":"导演","department":"Directing","job":"Director"},{"id":3,"name":"编剧","department":"Writing","job":"Screenplay"}]},"external_ids":{"imdb_id":"tt1234567"}}`)
+			_, _ = io.WriteString(w, `{"id":42,"title":"示例电影","original_title":"Example Movie","original_language":"zh","release_date":"2026-01-01","overview":"安全简介","tagline":"一句话简介","status":"Released","vote_average":8.5,"vote_count":1234,"runtime":123,"poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg","genres":[{"id":16,"name":"动画"}],"production_countries":[{"iso_3166_1":"CN"}],"spoken_languages":[{"iso_639_1":"zh"},{"iso_639_1":"en"}],"production_companies":[{"id":9,"name":"示例制片厂"}],"credits":{"cast":[{"id":1,"name":"演员","character":"角色"}],"crew":[{"id":2,"name":"导演","department":"Directing","job":"Director"},{"id":3,"name":"编剧","department":"Writing","job":"Screenplay"}]},"external_ids":{"imdb_id":"tt1234567"},"images":{"backdrops":[{"file_path":"/backdrop.jpg"},{"file_path":"/still-2.jpg"},{"file_path":"https://unsafe.example/still.jpg"}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -52,7 +52,7 @@ func TestClientUsesBoundedOfficialShapeWithoutLeakingTokenIntoURL(t *testing.T) 
 	if match.ID != 42 || match.Confidence < .9 || len(match.ProductionCountries) != 1 || match.ProductionCountries[0] != "CN" {
 		t.Fatalf("match=%+v", match)
 	}
-	if match.Snapshot.TMDBID != 42 || match.Snapshot.IMDbID != "tt1234567" || match.Snapshot.PosterPath != "/poster.jpg" || match.Snapshot.Tagline != "一句话简介" || match.Snapshot.Status != "Released" || match.Snapshot.VoteCount != 1234 || len(match.Snapshot.SpokenLanguages) != 2 || len(match.Snapshot.Studios) != 1 || match.Snapshot.Studios[0].Name != "示例制片厂" || len(match.Snapshot.Directors) != 1 || len(match.Snapshot.Writers) != 1 || len(match.Snapshot.Cast) != 1 {
+	if match.Snapshot.TMDBID != 42 || match.Snapshot.IMDbID != "tt1234567" || match.Snapshot.PosterPath != "/poster.jpg" || match.Snapshot.Tagline != "一句话简介" || match.Snapshot.Status != "Released" || match.Snapshot.VoteCount != 1234 || len(match.Snapshot.SpokenLanguages) != 2 || len(match.Snapshot.Studios) != 1 || match.Snapshot.Studios[0].Name != "示例制片厂" || len(match.Snapshot.Directors) != 1 || len(match.Snapshot.Writers) != 1 || len(match.Snapshot.Cast) != 1 || len(match.Snapshot.BackdropPaths) != 2 || match.Snapshot.BackdropPaths[1] != "/still-2.jpg" {
 		t.Fatalf("snapshot=%+v", match.Snapshot)
 	}
 	payload, err := json.Marshal(match.Snapshot)
@@ -91,7 +91,10 @@ func TestGetByIDBuildsSafeTVSnapshotWithSeasonImages(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = io.WriteString(w, `{"id":100,"name":"示例剧","original_name":"Example Show","original_language":"ja","first_air_date":"2020-04-01","overview":"简介","tagline":"剧集标语","status":"Returning Series","vote_average":7.8,"vote_count":88,"episode_run_time":[24],"number_of_seasons":1,"number_of_episodes":12,"origin_country":["JP"],"production_countries":[{"iso_3166_1":"JP"}],"spoken_languages":[{"iso_639_1":"ja"}],"production_companies":[{"id":10,"name":"动画工作室"}],"poster_path":"https://unsafe.example/poster.jpg?token=x","backdrop_path":"/safe-backdrop.jpg","genres":[{"id":16,"name":"Animation"}],"created_by":[{"id":3,"name":"原作"}],"seasons":[{"id":10,"season_number":1,"name":"Season 1","air_date":"2020-04-01","episode_count":12,"poster_path":"/season-1.jpg"}],"external_ids":{"imdb_id":"tt7654321"}}`)
+		if r.URL.Query().Get("include_image_language") != "zh,null,en" {
+			t.Fatalf("include_image_language=%q", r.URL.Query().Get("include_image_language"))
+		}
+		_, _ = io.WriteString(w, `{"id":100,"name":"示例剧","original_name":"Example Show","original_language":"ja","first_air_date":"2020-04-01","overview":"简介","tagline":"剧集标语","status":"Returning Series","vote_average":7.8,"vote_count":88,"episode_run_time":[24],"number_of_seasons":1,"number_of_episodes":12,"origin_country":["JP"],"production_countries":[{"iso_3166_1":"JP"}],"spoken_languages":[{"iso_639_1":"ja"}],"production_companies":[{"id":10,"name":"动画工作室"}],"poster_path":"https://unsafe.example/poster.jpg?token=x","backdrop_path":"/safe-backdrop.jpg","genres":[{"id":16,"name":"Animation"}],"created_by":[{"id":3,"name":"原作"}],"seasons":[{"id":10,"season_number":1,"name":"Season 1","air_date":"2020-04-01","episode_count":12,"poster_path":"/season-1.jpg"}],"external_ids":{"imdb_id":"tt7654321"},"images":{"backdrops":[{"file_path":"/safe-backdrop.jpg"},{"file_path":"/safe-backdrop-2.jpg"}]}}`)
 	}))
 	defer server.Close()
 	client, err := NewForTest("test-token", server.URL, server.Client())
@@ -102,7 +105,7 @@ func TestGetByIDBuildsSafeTVSnapshotWithSeasonImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if match.Snapshot.PosterPath != "" || match.Snapshot.BackdropPath != "/safe-backdrop.jpg" || match.Snapshot.SeasonCount != 1 || match.Snapshot.EpisodeCount != 12 || match.Snapshot.VoteCount != 88 || len(match.Snapshot.Studios) != 1 || len(match.Snapshot.Seasons) != 1 || match.Snapshot.Seasons[0].PosterPath != "/season-1.jpg" || len(match.Snapshot.Writers) != 1 {
+	if match.Snapshot.PosterPath != "" || match.Snapshot.BackdropPath != "/safe-backdrop.jpg" || len(match.Snapshot.BackdropPaths) != 2 || match.Snapshot.SeasonCount != 1 || match.Snapshot.EpisodeCount != 12 || match.Snapshot.VoteCount != 88 || len(match.Snapshot.Studios) != 1 || len(match.Snapshot.Seasons) != 1 || match.Snapshot.Seasons[0].PosterPath != "/season-1.jpg" || len(match.Snapshot.Writers) != 1 {
 		t.Fatalf("snapshot=%+v", match.Snapshot)
 	}
 }
