@@ -391,3 +391,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 15: 打通 Player 与 Server 安全媒体接入
+
+**Date**: 2026-08-22
+**Task**: 打通 Player 与 Server 安全媒体接入
+**Branch**: `develop`
+
+### Summary
+
+完成 Player 设备登录、Server 媒体目录、115 直连播放、Emby 身份合并与播放线路选择；修复令牌重连生命周期、分页截断、停用库与存储访问，并通过 Player、Rust、Server 全量质量门。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c695b38` | (see git log) |
+
+### Status
+
+[OK] **Completed**
