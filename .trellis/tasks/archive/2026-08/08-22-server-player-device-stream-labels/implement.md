@@ -48,10 +48,10 @@
 
 ## 7. Commit, push, and Player Beta release
 
-- [ ] 按 Server、Player/前端、文档/任务工件的实际边界创建中文 Conventional Commits，不纳入既有 dirty 文件。
-- [ ] 推送 `develop`，重新 fetch 并确认 `HEAD == origin/develop`。
-- [ ] 从最新远端 `develop` 触发 Player `v1.1.11` Beta 发布；不创建 Server tag/Release。
-- [ ] 等待 workflow 完成并核实 GitHub prerelease、更新清单以及 Windows/Android 资产。
+- [x] 按 Server、Player/前端、文档/任务工件的实际边界创建中文 Conventional Commits，不纳入既有 dirty 文件。
+- [x] 推送 `develop`，重新 fetch 并确认 `HEAD == origin/develop`。
+- [x] 从最新远端 `develop` 触发 Player `v1.1.11` Beta 发布；不创建 Server tag/Release。
+- [x] 等待 workflow 完成并核实 GitHub prerelease、更新清单以及 Windows/Android 资产。
 
 ## Rollback points
 
