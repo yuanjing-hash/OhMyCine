@@ -450,3 +450,24 @@
 ### Next Steps
 
 - 在真实本地媒体库与 Emby 环境中人工验证电影播放、剧集季集、演职人员和多剧照展示。
+
+
+## Session 17: 修复 Player 设备管理与 Server 媒体来源
+
+**Date**: 2026-08-22
+**Task**: 修复 Player 设备管理与 Server 媒体来源
+**Branch**: `develop`
+
+### Summary
+
+接通 Server Web UI 的真实 Player 配对设备列表与安全撤销；区分 Server 本地文件流和 115 302 直链，完成全量验证并发布 Player v1.1.11 Beta。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `16ec854` | (see git log) |
+
+### Status
+
+[OK] **Completed**
