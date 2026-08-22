@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
+- **Total Sessions**: 16
 - **Last Active**: 2026-08-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~414 | Active |
+| `journal-1.md` | ~452 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-08-22 | 修复 Server 本地播放与媒体详情并发布 Player v1.1.10 | `c2f753d`, `2651402`, `5e2d2a0` | `develop` |
 | 15 | 2026-08-22 | 打通 Player 与 Server 安全媒体接入 | `c695b38` | `develop` |
 | 14 | 2026-08-13 | 实现 Server 持久化任务队列与任务中心 | `bb99538`, `8ac2eec`, `02ba79c` | `develop` |
 | 13 | 2026-08-13 | 完成 Server 媒体库自动扫描与监听基础 | `2fffbe5` | `develop` |

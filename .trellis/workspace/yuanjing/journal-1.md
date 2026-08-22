@@ -412,3 +412,41 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 16: 修复 Server 本地播放与媒体详情并发布 Player v1.1.10
+
+**Date**: 2026-08-22
+**Task**: 修复 Server 本地播放与媒体详情并发布 Player v1.1.10
+**Branch**: `develop`
+
+### Summary
+
+完成 Server 本地安全 Range 直出、完整 TMDB 元数据与多剧照、Player Server/Emby 详情修复；全部质量门通过并成功发布 Player v1.1.10 Beta，Server 仅推送 develop。
+
+### Main Changes
+
+- 本地 Storage 电影与剧集可通过 Player Bearer stream endpoint 播放，支持 GET/HEAD/Range 并拒绝路径逃逸和 Windows reparse point。
+- Server DTO 与 Player DataSource 补齐评分、时长、类型、演职人员、外部 ID 和多剧照，Emby People 与 backdrop 查询同步补强。
+- 从最新远端 develop 提交发布 v1.1.10 Beta，Windows、Android、签名清单与校验资产全部成功。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c2f753d` | (see git log) |
+| `2651402` | (see git log) |
+| `5e2d2a0` | (see git log) |
+
+### Testing
+
+- [OK] Server go test ./...、CGO_ENABLED=0 go test ./...、go vet ./... 通过。
+- [OK] Player 专用 verify、typecheck、lint、build 通过；Rust cargo test 90/90、check、clippy 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 在真实本地媒体库与 Emby 环境中人工验证电影播放、剧集季集、演职人员和多剧照展示。
