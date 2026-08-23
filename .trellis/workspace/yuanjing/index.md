@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
-- **Last Active**: 2026-08-23
+- **Total Sessions**: 23
+- **Last Active**: 2026-08-24
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~620 | Active |
+| `journal-1.md` | ~641 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-08-24 | 修复 Bilibili 双轨播放与动态媒体库封面 | `8469966` | `develop` |
 | 22 | 2026-08-23 | 完善 Server 媒体库封面与分层导航 | `c248b7b` | `develop` |
 | 21 | 2026-08-23 | Server 嵌套媒体库导航与 Bilibili 在线播放 | `84d2079` | `develop` |
 | 20 | 2026-08-23 | 修复并发布 Bilibili 扫码登录 0.3.1 | `d9ffecb` | `develop` |

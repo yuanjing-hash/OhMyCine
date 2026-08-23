@@ -618,3 +618,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 23: 修复 Bilibili 双轨播放与动态媒体库封面
+
+**Date**: 2026-08-24
+**Task**: 修复 Bilibili 双轨播放与动态媒体库封面
+**Branch**: `develop`
+
+### Summary
+
+修复 Player 桌面与 Android 的 DASH 视频音频多 token 回环会话；Server 为本地、115 与插件媒体库生成签名动态封面，Player 独立目录本地组合封面，并发布 Bilibili 0.3.4 所需插件契约与安全校验。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8469966` | (see git log) |
+
+### Status
+
+[OK] **Completed**
