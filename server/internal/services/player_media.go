@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
@@ -30,6 +32,14 @@ type PlayerMediaLibrary struct {
 	DirectStream   bool       `json:"direct_stream"`
 	STRMEnabled    bool       `json:"strm_enabled"`
 	LastSuccessful *time.Time `json:"last_successful_scan_at,omitempty"`
+}
+
+type PlayerMediaCategory struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
+	ItemCount int64  `json:"item_count"`
+	SortOrder int    `json:"sort_order"`
 }
 
 type PlayerMediaIdentity struct {
@@ -150,6 +160,73 @@ func (s *MediaLibraryService) PlayerLibraries(actor Actor) ([]PlayerMediaLibrary
 	for _, row := range rows {
 		directStream := row.StorageType == models.StorageTypeLocal || row.StorageType == models.StorageTypePan115 && row.STRMEnabled && row.SignedProxyEnabled
 		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, LastSuccessful: row.LastSuccessfulScanAt})
+	}
+	return result, nil
+}
+
+func (s *MediaLibraryService) PlayerCategories(actor Actor, libraryID uint) ([]PlayerMediaCategory, error) {
+	if err := s.ensurePlayerMediaLibraryReadable(actor, libraryID); err != nil {
+		return nil, err
+	}
+	var library models.MediaLibrary
+	if err := s.db.Select("id", "profile_id").First(&library, libraryID).Error; err != nil {
+		return nil, err
+	}
+	var profile models.MediaClassificationProfile
+	if err := s.db.Select("id", "rules_json").First(&profile, library.ProfileID).Error; err != nil {
+		return nil, appError(CodeMediaLibraryProfileUnavailable, "媒体库分类规则不可用", err)
+	}
+	rules, err := classification.DecodeStrict([]byte(profile.RulesJSON))
+	if err != nil {
+		return nil, appError(CodeProfileValidation, "媒体库分类规则无效", err)
+	}
+	type countRow struct {
+		CategoryName string
+		MediaType    string
+		ItemCount    int64
+	}
+	var rows []countRow
+	if err := s.db.Model(&models.MediaLibraryEntry{}).
+		Select("category_name, CASE WHEN media_type = 'tv' THEN 'series' ELSE 'movie' END AS media_type, COUNT(DISTINCT work_key) AS item_count").
+		Where("library_id = ? AND work_key <> '' AND category_name <> ''", libraryID).
+		Group("category_name, CASE WHEN media_type = 'tv' THEN 'series' ELSE 'movie' END").
+		Order("media_type ASC, category_name ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.MediaType+"\x00"+row.CategoryName] += row.ItemCount
+	}
+	result := make([]PlayerMediaCategory, 0, len(rows)+4)
+	seen := make(map[string]struct{}, len(rows)+4)
+	appendCategory := func(mediaType, name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		key := mediaType + "\x00" + name
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, PlayerMediaCategory{
+			ID: base64.RawURLEncoding.EncodeToString([]byte(key)), Name: name, MediaType: mediaType,
+			ItemCount: counts[key], SortOrder: len(result),
+		})
+	}
+	for _, group := range rules.Groups {
+		mediaType := "movie"
+		if group.MediaType == classification.MediaTypeTV {
+			mediaType = "series"
+		}
+		for _, category := range group.Categories {
+			appendCategory(mediaType, category.Name)
+		}
+		appendCategory(mediaType, group.FallbackCategoryName)
+	}
+	for _, row := range rows {
+		appendCategory(row.MediaType, row.CategoryName)
 	}
 	return result, nil
 }

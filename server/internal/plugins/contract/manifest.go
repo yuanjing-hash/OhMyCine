@@ -104,6 +104,7 @@ type Manifest struct {
 	Runtime          string          `json:"runtime"`
 	Entry            string          `json:"entry"`
 	Capabilities     []Capability    `json:"capabilities"`
+	NavigationMode   string          `json:"navigationMode,omitempty"`
 	Permissions      []Permission    `json:"permissions"`
 	ConfigSchema     json.RawMessage `json:"configSchema"`
 	SettingsPage     *SettingsPage   `json:"settingsPage,omitempty"`
@@ -180,6 +181,12 @@ func (manifest Manifest) Validate() error {
 	if err := validateCapabilities(manifest.Capabilities); err != nil {
 		return err
 	}
+	if manifest.NavigationMode != "" && manifest.NavigationMode != "flat" && manifest.NavigationMode != "hierarchical" {
+		return errors.New("plugin navigationMode is invalid")
+	}
+	if manifest.NavigationMode == "hierarchical" && !manifestHasCapabilityValue(manifest.Capabilities, CapabilitySiteNavigation) {
+		return errors.New("hierarchical navigation requires site.navigation capability")
+	}
 	if len(manifest.Permissions) > MaxPermissions {
 		return errors.New("plugin permission list is too large")
 	}
@@ -226,6 +233,15 @@ func (manifest Manifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+func manifestHasCapabilityValue(capabilities []Capability, wanted Capability) bool {
+	for _, capability := range capabilities {
+		if capability == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // CompareVersions compares the strict SemVer subset accepted by plugin

@@ -498,6 +498,8 @@ Server 运行日志在 stdout 与文件分流前执行同一套结构化脱敏�
 9. 插件不获得本地绝对路径、115 Cookie、Storage 凭据、上传、移动或删除能力；它只返回受校验的 DownloadPlan/ProviderMetadata，由 Server 内置下载、TransferService 和 Storage Driver 执行通用动作
 10. `media.metadata` 必须绑定原插件 ID、实际版本、连接和内容身份；其图片等 opaque asset 也必须绑定同一插件连接。已保存快照在运行时查询之前优先使用，不得因插件停用/卸载而改用全局元数据，也不得为其他来源提供候选
 11. `settingsPage` 只是经 Manifest 校验的宿主组件树；未知组件、重复绑定、Schema 外字段、enum 外选项、放宽数值边界和任意 HTML/JavaScript/CSS 必须在安装时拒绝
+12. 插件分层导航的 node key 不直接提供给 Player。Server 签名 token 必须绑定在线媒体库、深度、祖先链和短期有效期，并限制最大深度/宽度、拒绝循环与跨库复用
+13. 普通插件 HTTP 继续禁止自定义端口；短时在线播放资产可使用 Server 内建的已知 CDN HTTPS 端口白名单（当前 `443/4483/8082`），但注册、读取和每次重定向都必须重新验证 Manifest 域名权限与公网 IP。插件升级新增 CDN 域名仍必须重新确认权限
 
 ### 11.3 插件权限模型
 

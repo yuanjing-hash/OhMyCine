@@ -34,6 +34,12 @@ func (a *API) PlayerOnlineNavigation(c *gin.Context) {
 	})
 }
 
+func (a *API) PlayerOnlineNavigationChildren(c *gin.Context) {
+	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
+		return a.pluginRepositories.OnlineNavigationChildren(c.Request.Context(), actor, c.Param("id"), c.Param("nodeToken"))
+	})
+}
+
 func (a *API) PlayerOnlineFeed(c *gin.Context) {
 	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
 		return a.pluginRepositories.OnlineFeed(c.Request.Context(), actor, c.Param("id"), c.Param("routeKey"), c.Query("cursor"), c.Query("refresh_session"))

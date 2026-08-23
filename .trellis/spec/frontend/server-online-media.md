@@ -21,6 +21,9 @@ DataSource.getDanmakuComments?(track)
 DataSource.refreshHomeSection?(refreshKey)
 DataSource.performSiteAction?(itemId, actionId, value?, confirmed?)
 MediaStreamRequest.audioUrl / audioHeaders
+online-library | libraryId
+online-node | libraryId | opaqueNodeToken
+server-category | libraryId | mediaType | categoryName
 ```
 
 Local history ordering is `updated_at DESC, identity_key ASC`; the next page uses both boundary values.
@@ -28,6 +31,9 @@ Local history ordering is `updated_at DESC, identity_key ASC`; the next page use
 ### 3. Contracts
 
 - Parse Server responses from `unknown` at the DataSource boundary. Views do not call plugin/provider APIs or depend on provider-specific fields.
+- A Server source root lists libraries only. A physical library lists Server-owned classification categories before catalog works; an online plugin library lists generic navigation nodes. Player never hard-codes a provider, region, channel name or plugin route.
+- Nested plugin navigation remains inside `DataSource.list()`: branch folders retain the online library identity plus the Server-issued opaque node token, while leaf folders retain their generic route identity. Breadcrumb labels are presentation only and must never be used to reconstruct node keys.
+- v1 flat navigation arrays remain accepted. v2 navigation must be a strict hierarchical envelope; malformed nodes must not become provider-specific fallback routes or leak raw node keys into Player state.
 - The History page is distinct from Continue Watching. Local SQLite history uses stable bounded pages; Server online history keeps its opaque cursor and exposes concrete online libraries such as Bilibili as separate history sources.
 - Playback always saves local history first. Provider progress sync runs through the DataSource boundary; failure shows a safe source-level diagnostic but never rolls back local history or interrupts playback.
 - Online playback context preserves exact library/work/segment/version identity across detail, history, and direct-play entry points so progress cannot be written to the wrong provider item.
@@ -52,6 +58,7 @@ Local history ordering is `updated_at DESC, identity_key ASC`; the next page use
 | Site action is destructive or requires confirmation | Require explicit user confirmation and pass `confirmed=true`; ordinary add actions execute without a redundant confirmation |
 | DASH audio bridge fails | Fail the prepared replacement plan safely; do not leak credentials or silently play video-only |
 | Online DTO contains an unsafe URL/unknown shape | Reject at DataSource boundary |
+| Nested node token is malformed, expired, or belongs to another library | Surface a safe source error and keep the existing breadcrumb state |
 
 ### 5. Good / Base / Bad Cases
 
@@ -66,6 +73,7 @@ Local history ordering is `updated_at DESC, identity_key ASC`; the next page use
 
 - Rust tests cover stable local-history page boundaries, source filters, deletion isolation, and bounded limits.
 - TypeScript verification covers generic online DTOs, home contribution fault isolation and refresh, action descriptor filtering, same-origin gateway rules, online history, progress sync, plugin danmaku, variants, DASH audio, and fallback behavior.
+- Navigation verification covers physical category ordering/filtering, v1 flat compatibility, v2 branches, opaque token preservation, multi-level back/refresh behavior, and the absence of provider-specific branches in `ServerDataSource`.
 - Rust and Android bridge tests/assertions cover separate video/audio loopback routes, Range preservation, and cross-origin private-header stripping.
 - Run `verify:server-datasource`, `verify:server-online-library`, `verify:stream-quality`, `verify:danmaku`, typecheck, lint, build, Cargo tests, and strict all-target Clippy.
 

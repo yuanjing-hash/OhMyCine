@@ -11,7 +11,7 @@
         { "id": 64, "baseUrl": "https://upos-sz-mirrorcos.bilivideo.com/video-720.m4s", "bandwidth": 1800000, "width": 1280, "height": 720, "codecs": "avc1.64001f" }
       ],
       "audio": [
-        { "id": 30280, "baseUrl": "https://upos-sz-mirrorcos.bilivideo.com/audio.m4s", "bandwidth": 192000, "codecs": "mp4a.40.2" }
+        { "id": 30280, "baseUrl": "https://xy113x207x104x18xy.mcdn.bilivideo.cn:8082/audio.m4s", "backupUrl": ["https://upos-sz-mirrorcos.bilivideo.com/audio.m4s"], "bandwidth": 192000, "codecs": "mp4a.40.2" }
       ]
     }
   }

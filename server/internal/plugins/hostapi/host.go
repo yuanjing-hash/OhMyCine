@@ -118,7 +118,7 @@ func (host *Host) defaultHTTPClient() *http.Client {
 
 func (host *Host) dialPublicContext(ctx context.Context, network, address string) (net.Conn, error) {
 	hostname, port, err := net.SplitHostPort(address)
-	if err != nil || port != "443" {
+	if err != nil || !allowedAssetPort(port) {
 		return nil, denied("plugin_http_dial_denied", err)
 	}
 	addresses, err := host.resolve(ctx, hostname)
@@ -282,7 +282,7 @@ func (host *Host) registerAsset(ctx context.Context, pluginID string, authorizat
 		}
 	} else {
 		target, err = url.Parse(input.URL)
-		if err != nil || target.Scheme != "https" || target.User != nil || target.Hostname() == "" || target.Port() != "" || target.Fragment != "" || !domainAllowed(target.Hostname(), permissions) {
+		if err != nil || !allowedAssetURL(target) || !domainAllowed(target.Hostname(), permissions) {
 			return nil, denied("plugin_asset_url_denied", err)
 		}
 		if err := host.requirePublicHost(ctx, target.Hostname()); err != nil {
@@ -394,7 +394,7 @@ func (host *Host) OpenAsset(ctx context.Context, reference, method, rangeHeader 
 		return openInlineAsset(asset, method, rangeHeader)
 	}
 	target, err := url.Parse(asset.URL)
-	if err != nil || target.Scheme != "https" || target.User != nil || target.Hostname() == "" || target.Port() != "" || target.Fragment != "" || !domainAllowed(target.Hostname(), permissions) {
+	if err != nil || !allowedAssetURL(target) || !domainAllowed(target.Hostname(), permissions) {
 		return nil, denied("plugin_asset_url_denied", err)
 	}
 	if err := host.requirePublicHost(ctx, target.Hostname()); err != nil {
@@ -408,7 +408,7 @@ func (host *Host) OpenAsset(ctx context.Context, reference, method, rangeHeader 
 	if rangeHeader != "" {
 		request.Header.Set("Range", rangeHeader)
 	}
-	client := host.clientForPermissions(permissions)
+	client := host.clientForPermissions(permissions, true)
 	response, err := client.Do(request)
 	if err != nil {
 		if response != nil && response.Body != nil {
@@ -612,7 +612,7 @@ func (host *Host) http(ctx context.Context, pluginID string, authorization plugi
 			return httpResponse{}, err
 		}
 	}
-	client := host.clientForPermissions(permissions)
+	client := host.clientForPermissions(permissions, false)
 	response, err := client.Do(request)
 	if err != nil {
 		if response != nil && response.Body != nil {
@@ -821,14 +821,14 @@ func canonicalOrigin(value *url.URL) string {
 	return "https://" + strings.ToLower(strings.TrimSuffix(value.Hostname(), "."))
 }
 
-func (host *Host) clientForPermissions(permissions []contract.Permission) http.Client {
+func (host *Host) clientForPermissions(permissions []contract.Permission, allowAssetPorts bool) http.Client {
 	client := *host.client
 	originalRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return denied("plugin_http_redirect_denied", nil)
 		}
-		if next.URL.Scheme != "https" || next.URL.User != nil || next.URL.Port() != "" || !domainAllowed(next.URL.Hostname(), permissions) {
+		if next.URL.Scheme != "https" || next.URL.User != nil || next.URL.Hostname() == "" || next.URL.Fragment != "" || (!allowAssetPorts && next.URL.Port() != "") || (allowAssetPorts && !allowedAssetPort(next.URL.Port())) || !domainAllowed(next.URL.Hostname(), permissions) {
 			return denied("plugin_http_redirect_denied", nil)
 		}
 		if err := host.requirePublicHost(next.Context(), next.URL.Hostname()); err != nil {
@@ -844,6 +844,19 @@ func (host *Host) clientForPermissions(permissions []contract.Permission) http.C
 		return nil
 	}
 	return client
+}
+
+func allowedAssetURL(target *url.URL) bool {
+	return target != nil && target.Scheme == "https" && target.User == nil && target.Hostname() != "" && target.Fragment == "" && allowedAssetPort(target.Port())
+}
+
+func allowedAssetPort(port string) bool {
+	switch port {
+	case "", "443", "4483", "8082":
+		return true
+	default:
+		return false
+	}
 }
 
 func (host *Host) attachCredential(pluginID, connectionID, scope string, bindings []credentialBinding, permissions []contract.Permission, request *http.Request) error {

@@ -19,7 +19,9 @@ const source = new ServerDataSource({
       else if (request.path === '/api/v1/player/online-libraries')
         data = { list: [{ id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: '在线视频', providerLabel: 'Fixture', capabilities: ['site.feed', 'site.search', 'site.detail', 'media.playback'], available: true, homeContributions: ['recommended'] }] }
       else if (request.path.endsWith('/navigation'))
-        data = [{ id: 'recommended', title: '推荐', pageType: 'feed', routeKey: 'recommended', refreshable: true }]
+        data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'recommended', title: '推荐', kind: 'feed', routeKey: 'recommended', refreshable: true }, { id: 'anime', title: '番剧', kind: 'branch', nodeToken: 'signed-anime-node', hasChildren: true }] }
+      else if (request.path.endsWith('/navigation/signed-anime-node/children'))
+        data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'anime-jp', title: '日本番剧', kind: 'feed', routeKey: 'recommended', refreshable: true }] }
       else if (request.path.includes('/feeds/recommended'))
         data = { sections: [{ id: 'hero', title: '在线视频推荐', layout: 'hero', homeEligible: true, refreshable: true, refreshSession: 'session-1', items: [{ work: onlineWork(), actions: [{ id: 'favorite.add', label: '收藏', state: false }, { id: 'watch-later.remove', label: '移出稍后再看', state: true }, { id: 'provider-private-action', label: '越权动作' }] }] }] }
       else if (request.path.includes('/search?'))
@@ -58,8 +60,11 @@ assert.deepEqual(libraries.map(item => [item.id, item.name, item.providerIdentit
   ['online-library|library-1', '在线视频', 'plugin:org.ohmycine.fixture:library-1'],
 ])
 const navigation = await source.list(libraries[0].id)
-assert.deepEqual(navigation.map(item => [item.type, item.name]), [['folder', '推荐']])
-const feed = await source.list(navigation[0].id)
+assert.deepEqual(navigation.map(item => [item.type, item.name]), [['folder', '推荐'], ['folder', '番剧']])
+const nested = await source.list(navigation[1].id)
+assert.deepEqual(nested.map(item => [item.type, item.name]), [['folder', '日本番剧']])
+assert.equal(calls.some(call => call.path.endsWith('/navigation/signed-anime-node/children')), true)
+const feed = await source.list(nested[0].id)
 assert.deepEqual(feed.map(item => [item.name, item.workIdentity?.scheme]), [['演示视频', 'plugin']])
 assert.deepEqual(feed[0].siteActions, [
   { id: 'favorite.add', label: '收藏', state: false, requiresConfirmation: false, destructive: false },
@@ -126,7 +131,7 @@ await assert.rejects(async () => {
   await unsafe.getStreamRequest({ itemId: 'online-version|library-1|video-1|part-1|source-1' })
 }, /安全网关/)
 
-console.log(JSON.stringify({ onlineLibrary: true, genericPluginDTO: true, qualityVariants: true, dashAudio: true, sameOriginGateway: true, homeRefresh: true, siteActions: true, serverDownload: true, providerHistory: true, providerProgressSync: true, providerDanmaku: true }, null, 2))
+console.log(JSON.stringify({ onlineLibrary: true, nestedPluginNavigation: true, genericPluginDTO: true, qualityVariants: true, dashAudio: true, sameOriginGateway: true, homeRefresh: true, siteActions: true, serverDownload: true, providerHistory: true, providerProgressSync: true, providerDanmaku: true }, null, 2))
 
 function onlineWork() {
   return {

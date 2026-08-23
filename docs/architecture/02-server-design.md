@@ -1765,6 +1765,9 @@ Server NFO/JPG + library reconciliation
 - 插件不能获得本地绝对路径、Storage 凭据或通用上传/移动/删除 API。目标媒体库、Profile、命名、转移方式和冲突策略都由 Server 快照并执行；新云盘只需实现宿主 `UploadDriver`，既有插件便可自动复用。
 - 插件 UI 只返回版本化 `configSchema` 和 `settingsPage` 声明式 DTO，由宿主白名单组件渲染；未知组件、Schema 外字段和越界选项必须拒绝。
 - `media.metadata` 只能服务于同一插件连接产生的内容。Server 保存带插件 ID、版本、连接和内容身份的不可变快照，停用/卸载后已入队任务仍可入库；该 Provider 不进入本地、115、qBittorrent 或其他插件的全局刮削链。
+- 在线导航分成标准物理媒体库分类和插件声明式树两类：普通媒体库从其 Profile 顺序发布一级分类；插件只有在 Manifest 声明 `navigationMode=hierarchical` 时才能返回 `branch/feed` 树。Server 对分支签发绑定连接、深度与祖先链的短时 HMAC token，限制 8 层与每层 100 项并拒绝循环，Player 不接触插件 node key、提供方路径或私有路由。
+- 在线播放插件返回的业务错误只按受控 code 映射为 Server 自有错误与文案；插件 message、CDN URL 和 token 不进入 API。DASH 视频与音频分别注册，轨道优先选择 AVC/AAC，并从 `baseUrl/backupUrl` 中选择可达候选。
+- 在线资产 Host 默认只允许标准 HTTPS；为 Bilibili 等已知 CDN 播放资产额外允许 `4483/8082`，且该例外只作用于短时资产注册/读取/重定向，不作用于普通插件 HTTP。域名 Manifest 权限、公网 DNS/IP 复验、重定向限制与跨域凭据清除仍逐跳执行。
 - 固定内容 WASM 仅作为自动化 ABI fixture，不发布给用户；正式能力由独立安装的真实插件验证。
 
 Bilibili 的站点 API、登录态、分页、签名、播放与下载解析全部位于插件包。Server 核心只处理标准 operation、权限、DTO、任务和安全网关，删除或停用 Bilibili 插件不能影响本地、115、Emby/Jellyfin、PT 等核心功能。

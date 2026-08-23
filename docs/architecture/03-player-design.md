@@ -2719,6 +2719,8 @@ Player 不安装或执行 Server 插件，也不包含 Bilibili 等提供方专�
 
 插件页面由 Player 原生组件渲染。插件可贡献 Hero、横向卡片、海报墙、列表、搜索、刷新与标准动作，但不能传入 HTML、JavaScript、CSS 或访问 Pinia/Tauri。用户在设备侧决定哪些来源栏目参与总主页及其顺序。
 
+Server 来源入口先展示其媒体库卡片。普通本地/115 媒体库进入后按 Server 分类规则展示华语电影、外语电影、剧集等标准分类，再进入内容；声明 `hierarchical` 的插件在线库则可使用任意深度的 `branch/feed` 导航。Player 只解释通用节点类型和 Server 签名 token，不硬编码 Bilibili 栏目名称，也不允许普通物理媒体库借此变成不受约束的插件树。
+
 播放身份分为：
 
 ```text

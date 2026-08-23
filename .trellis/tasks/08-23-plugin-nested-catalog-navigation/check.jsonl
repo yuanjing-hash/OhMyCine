@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Server 契约和兼容测试门禁"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"节点循环、跨库和输入边界检查"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player 构建、类型和导航回归检查"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"确认复用 DataSource 和现有面包屑而非站点硬编码"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查分类和导航跨层一致性"}

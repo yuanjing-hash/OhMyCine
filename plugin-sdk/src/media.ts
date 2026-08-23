@@ -65,13 +65,30 @@ export interface StreamVariant {
   unavailableReason?: string
 }
 
-export interface NavigationItem {
+export interface FlatNavigationItem {
   id: string
   title: string
   pageType: 'feed' | 'search' | 'user-library'
   iconKey?: string
   routeKey: string
   refreshable?: boolean
+}
+
+export interface HierarchicalNavigationNode {
+  id: string
+  title: string
+  kind: 'branch' | 'feed' | 'search' | 'user-library'
+  nodeKey?: string
+  routeKey?: string
+  hasChildren?: boolean
+  iconKey?: string
+  refreshable?: boolean
+}
+
+export interface HierarchicalNavigationResponse {
+  version: 2
+  mode: 'hierarchical'
+  nodes: readonly HierarchicalNavigationNode[]
 }
 
 export interface FeedItem {

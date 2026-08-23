@@ -141,6 +141,19 @@ func (a *API) PlayerMediaLibraries(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"list": libraries, "total": len(libraries)})
 }
 
+func (a *API) PlayerMediaLibraryCategories(c *gin.Context) {
+	id, ok := a.playerPathID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := a.libraries.PlayerCategories(mustActor(c), id)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+
 func (a *API) PlayerMediaLibraryCatalog(c *gin.Context) {
 	id, ok := a.playerPathID(c, "id")
 	if !ok {

@@ -332,6 +332,19 @@ func TestHostHTTPRevalidatesDNSAtDialTime(t *testing.T) {
 	}
 }
 
+func TestHostDialAcceptsOnlyTheAssetPortAllowlist(t *testing.T) {
+	fixture := newHostFixture(t, nil)
+	host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithResolver(func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}))
+	if _, err := host.dialPublicContext(context.Background(), "tcp", "cdn.example.test:8082"); ErrorCode(err) != "plugin_http_private_address_denied" {
+		t.Fatalf("allowlisted port did not reach DNS safety check: %v code=%s", err, ErrorCode(err))
+	}
+	if _, err := host.dialPublicContext(context.Background(), "tcp", "cdn.example.test:22"); ErrorCode(err) != "plugin_http_dial_denied" {
+		t.Fatalf("unsafe port error=%v code=%s", err, ErrorCode(err))
+	}
+}
+
 func TestHostPrivateStorageIsEncryptedQuotaBoundAndConnectionScoped(t *testing.T) {
 	quota := int64(8)
 	fixture := newHostFixture(t, []contract.Permission{{Kind: contract.PermissionPrivateStorage, MaxBytes: &quota}})
@@ -387,6 +400,10 @@ func TestHostAssetsSupportURLAndInlineContentWithExpiryAndCapacity(t *testing.T)
 	urlAssetAgain, err := host.ResolveAsset(urlRef)
 	if err != nil || urlAssetAgain.Headers.Get("Referer") == "mutated" {
 		t.Fatal("resolved asset did not return an isolated header copy")
+	}
+	unsafePortPayload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, URL: "https://cdn.example.test:22/video.mp4", TTLSeconds: 60})
+	if _, err := host.Call(context.Background(), fixture.pluginID, OperationAssetRegister, unsafePortPayload); ErrorCode(err) != "plugin_asset_url_denied" {
+		t.Fatalf("unsafe asset port error=%v code=%s", err, ErrorCode(err))
 	}
 
 	inlineBody := []byte(`{"comments":[{"id":"dm:1","time":1,"mode":"scroll","color":"#ffffff","text":"hello"}]}`)
@@ -458,9 +475,11 @@ func TestHostOpenAssetStreamsRemoteRangeAndRechecksPluginState(t *testing.T) {
 	fixture := newHostFixture(t, []contract.Permission{{Kind: contract.PermissionNetworkHTTP, Domains: []string{"cdn.example.test"}}})
 	var receivedMethod string
 	var receivedRange string
+	var receivedPort string
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		receivedMethod = request.Method
 		receivedRange = request.Header.Get("Range")
+		receivedPort = request.URL.Port()
 		return &http.Response{
 			StatusCode:    http.StatusPartialContent,
 			Header:        http.Header{"Content-Type": {"video/mp4"}, "Content-Range": {"bytes 0-3/10"}, "Accept-Ranges": {"bytes"}, "Set-Cookie": {"secret=leak"}},
@@ -470,7 +489,7 @@ func TestHostOpenAssetStreamsRemoteRangeAndRechecksPluginState(t *testing.T) {
 		}, nil
 	})}
 	host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithHTTPClient(client), WithResolver(publicResolver))
-	payload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, URL: "https://cdn.example.test/video.mp4", Headers: map[string]string{"Referer": "https://www.example.test/"}, TTLSeconds: 60})
+	payload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, URL: "https://cdn.example.test:8082/video.mp4", Headers: map[string]string{"Referer": "https://www.example.test/"}, TTLSeconds: 60})
 	response, err := host.Call(context.Background(), fixture.pluginID, OperationAssetRegister, payload)
 	if err != nil {
 		t.Fatal(err)
@@ -484,6 +503,9 @@ func TestHostOpenAssetStreamsRemoteRangeAndRechecksPluginState(t *testing.T) {
 	_ = stream.Body.Close()
 	if receivedMethod != http.MethodGet || receivedRange != "bytes=0-3" || stream.StatusCode != http.StatusPartialContent || string(body) != "data" {
 		t.Fatalf("method=%s range=%s status=%d body=%q", receivedMethod, receivedRange, stream.StatusCode, body)
+	}
+	if receivedPort != "8082" {
+		t.Fatalf("non-default Bilibili CDN asset port=%q", receivedPort)
 	}
 	if stream.Header.Get("Content-Range") != "bytes 0-3/10" || stream.Header.Get("Content-Length") != "4" || stream.Header.Get("Set-Cookie") != "" {
 		t.Fatalf("unsafe or incomplete asset headers: %#v", stream.Header)

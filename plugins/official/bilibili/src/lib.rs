@@ -91,7 +91,7 @@ pub unsafe extern "C" fn omc_invoke(
     }
     let request = slice::from_raw_parts(request_pointer as *const u8, request_length as usize);
     let result = match operation {
-        1 => navigation(),
+        1 => parse_request(request).and_then(navigation),
         2 => parse_request(request).and_then(feed),
         3 => parse_request(request).and_then(search),
         4 => parse_request(request).and_then(detail),
@@ -111,21 +111,47 @@ pub unsafe extern "C" fn omc_invoke(
     })
 }
 
-fn navigation() -> Result<Value, PluginError> {
-    Ok(json!([
-        {"id":"recommended","title":"推荐","pageType":"feed","iconKey":"home","routeKey":"recommended","refreshable":true},
-        {"id":"popular","title":"热门","pageType":"feed","iconKey":"flame","routeKey":"popular","refreshable":true},
-        {"id":"ranking","title":"排行","pageType":"feed","iconKey":"chart","routeKey":"ranking","refreshable":true},
-        {"id":"search","title":"搜索","pageType":"search","iconKey":"search","routeKey":"search"}
-        ,{"id":"anime","title":"番剧","pageType":"feed","iconKey":"tv","routeKey":"anime","refreshable":true}
-        ,{"id":"cinephile","title":"影视","pageType":"feed","iconKey":"movie","routeKey":"cinephile","refreshable":true}
-        ,{"id":"documentary","title":"纪录片","pageType":"feed","iconKey":"documentary","routeKey":"documentary","refreshable":true}
-        ,{"id":"favorites","title":"收藏","pageType":"user-library","iconKey":"favorite","routeKey":"favorites","refreshable":true}
-        ,{"id":"watch-later","title":"稍后再看","pageType":"user-library","iconKey":"clock","routeKey":"watch-later","refreshable":true}
-        ,{"id":"history","title":"历史","pageType":"user-library","iconKey":"history","routeKey":"history","refreshable":true}
-        ,{"id":"following","title":"关注","pageType":"user-library","iconKey":"person","routeKey":"following","refreshable":true}
-        ,{"id":"subscriptions","title":"追更","pageType":"user-library","iconKey":"subscriptions","routeKey":"subscriptions","refreshable":true}
-    ]))
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NavigationRequest {
+    connection_id: String,
+    parent_node_key: Option<String>,
+    depth: Option<u8>,
+}
+
+fn navigation(request: NavigationRequest) -> Result<Value, PluginError> {
+    if !valid_opaque_key(&request.connection_id) || request.depth.unwrap_or(0) > 8 {
+        return Err(PluginError::new("invalid-request", "导航请求无效"));
+    }
+    let nodes = match request.parent_node_key.as_deref() {
+        None => json!([
+            {"id":"recommended","title":"推荐","kind":"feed","routeKey":"recommended","refreshable":true},
+            {"id":"popular","title":"热门","kind":"feed","routeKey":"popular","refreshable":true},
+            {"id":"ranking","title":"排行","kind":"feed","routeKey":"ranking","refreshable":true},
+            {"id":"anime","title":"番剧与动画","kind":"branch","nodeKey":"anime","hasChildren":true},
+            {"id":"cinephile","title":"影视专区","kind":"branch","nodeKey":"cinephile","hasChildren":true},
+            {"id":"documentary","title":"纪录片","kind":"feed","routeKey":"documentary","refreshable":true},
+            {"id":"personal","title":"我的 Bilibili","kind":"branch","nodeKey":"personal","hasChildren":true}
+        ]),
+        Some("anime") => json!([
+            {"id":"anime-jp","title":"日本番剧","kind":"feed","routeKey":"anime-jp","refreshable":true},
+            {"id":"anime-cn","title":"国产动画","kind":"feed","routeKey":"anime-cn","refreshable":true},
+            {"id":"anime-other","title":"动画专区","kind":"feed","routeKey":"anime-other","refreshable":true}
+        ]),
+        Some("cinephile") => json!([
+            {"id":"movies","title":"电影","kind":"feed","routeKey":"movies","refreshable":true},
+            {"id":"tv-series","title":"电视剧","kind":"feed","routeKey":"tv-series","refreshable":true},
+            {"id":"cinephile-talk","title":"影视杂谈","kind":"feed","routeKey":"cinephile","refreshable":true}
+        ]),
+        Some("personal") => json!([
+            {"id":"favorites","title":"收藏","kind":"user-library","routeKey":"favorites","refreshable":true},
+            {"id":"watch-later","title":"稍后再看","kind":"user-library","routeKey":"watch-later","refreshable":true},
+            {"id":"following","title":"关注","kind":"user-library","routeKey":"following","refreshable":true},
+            {"id":"subscriptions","title":"追更","kind":"user-library","routeKey":"subscriptions","refreshable":true}
+        ]),
+        Some(_) => return Err(PluginError::new("invalid-request", "导航分支无效")),
+    };
+    Ok(json!({"version":2,"mode":"hierarchical","nodes":nodes}))
 }
 
 #[derive(Deserialize)]
@@ -742,11 +768,39 @@ fn feed(request: FeedRequest) -> Result<Value, PluginError> {
             "热门视频",
             "poster-grid",
         ),
-        "anime" => (
+        "anime" | "anime-jp" => (
             format!(
                 "https://api.bilibili.com/x/web-interface/dynamic/region?ps=20&pn={page}&rid=13"
             ),
             "番剧",
+            "poster-grid",
+        ),
+        "anime-cn" => (
+            format!(
+                "https://api.bilibili.com/x/web-interface/dynamic/region?ps=20&pn={page}&rid=168"
+            ),
+            "国产动画",
+            "poster-grid",
+        ),
+        "anime-other" => (
+            format!(
+                "https://api.bilibili.com/x/web-interface/dynamic/region?ps=20&pn={page}&rid=1"
+            ),
+            "动画专区",
+            "poster-grid",
+        ),
+        "movies" => (
+            format!(
+                "https://api.bilibili.com/x/web-interface/dynamic/region?ps=20&pn={page}&rid=23"
+            ),
+            "电影",
+            "poster-grid",
+        ),
+        "tv-series" => (
+            format!(
+                "https://api.bilibili.com/x/web-interface/dynamic/region?ps=20&pn={page}&rid=11"
+            ),
+            "电视剧",
             "poster-grid",
         ),
         "cinephile" => (
@@ -1572,6 +1626,12 @@ struct ResolvedPlayback {
 }
 
 fn resolve_playback(request: &PlaybackRequest) -> Result<ResolvedPlayback, PluginError> {
+    host_log(
+        "debug",
+        "media.playback.identity",
+        "playback identity validation started",
+        1,
+    );
     let cid = request
         .segment_id
         .strip_prefix("cid:")
@@ -1579,10 +1639,16 @@ fn resolve_playback(request: &PlaybackRequest) -> Result<ResolvedPlayback, Plugi
     if cid.is_empty() || !cid.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(PluginError::new("invalid-request", "分 P 身份无效"));
     }
-    let bvid = resolve_version_bvid(&request.item_id, &request.version_id, cid)?;
+    let bvid = playback_stage(
+        "identity",
+        resolve_version_bvid(&request.item_id, &request.version_id, cid),
+    )?;
     if validate_bvid(&request.item_id).is_ok()
         && request.item_id != bvid
-        && !collection_contains_version(&request.connection_id, &request.item_id, bvid, cid)?
+        && !playback_stage(
+            "identity_collection",
+            collection_contains_version(&request.connection_id, &request.item_id, bvid, cid),
+        )?
     {
         return Err(PluginError::new("invalid-request", "合集媒体版本身份无效"));
     }
@@ -1600,29 +1666,64 @@ fn resolve_playback(request: &PlaybackRequest) -> Result<ResolvedPlayback, Plugi
         "https://api.bilibili.com/x/player/playurl"
     };
     let url = format!("{endpoint}?bvid={bvid}&cid={cid}&qn={qn}&fnver=0&fnval=4048&fourk=1");
-    let payload = bili_get(&request.connection_id, &url, true)?;
+    let payload = playback_stage("playurl", bili_get(&request.connection_id, &url, true))?;
     let data = payload
         .get("data")
         .or_else(|| payload.get("result"))
-        .ok_or_else(|| PluginError::new("invalid-response", "播放响应无效"))?;
-    let source = parse_playback_data(data, qn)?;
+        .ok_or_else(|| PluginError::new("invalid-response", "播放响应无效"));
+    let data = playback_stage("playurl_shape", data)?;
+    let source = playback_stage("parse_dash", parse_playback_data(data, qn))?;
     let headers = json!({"Referer":"https://www.bilibili.com/","User-Agent":USER_AGENT});
-    let (video_ref, expires_at) =
-        register_asset(&request.connection_id, &source.video_url, headers.clone())?;
+    let (video_ref, expires_at) = playback_stage(
+        "register_video",
+        register_asset(&request.connection_id, &source.video_url, headers.clone()),
+    )?;
     let mut assets = vec![json!({
         "kind":if source.audio_url.is_some() { "dash-video" } else { "progressive" },
         "urlRef":video_ref
     })];
     if let Some(audio_url) = source.audio_url {
-        let (audio_ref, _) = register_asset(&request.connection_id, &audio_url, headers)?;
+        let (audio_ref, _) = playback_stage(
+            "register_audio",
+            register_asset(&request.connection_id, &audio_url, headers),
+        )?;
         assets.push(json!({"kind":"dash-audio","urlRef":audio_ref}));
     }
+    host_log(
+        "info",
+        "media.playback.ready",
+        "playback plan resolved",
+        assets.len(),
+    );
     Ok(ResolvedPlayback {
         variant_id: source.variant_id,
         variants: source.variants,
         assets,
         expires_at,
     })
+}
+
+fn playback_stage<T>(stage: &str, result: Result<T, PluginError>) -> Result<T, PluginError> {
+    match result {
+        Ok(value) => {
+            host_log(
+                "debug",
+                &format!("media.playback.{stage}"),
+                "playback stage completed",
+                1,
+            );
+            Ok(value)
+        }
+        Err(error) => {
+            host_log(
+                "warn",
+                &format!("media.playback.{stage}"),
+                "playback stage failed",
+                0,
+            );
+            Err(error)
+        }
+    }
 }
 
 fn resolve_version_bvid<'a>(
@@ -1713,7 +1814,16 @@ fn parse_playback_data(
                 .flatten(),
         );
         if audio_tracks.is_empty() {
-            return Err(PluginError::new("invalid-response", "DASH 音轨缺失"));
+            host_log(
+                "warn",
+                "media.playback.parse_dash_audio_tracks",
+                "DASH audio tracks are unavailable",
+                0,
+            );
+            return Err(PluginError::new(
+                "playback-audio-unavailable",
+                "DASH 音轨缺失",
+            ));
         }
         let selected_quality = requested_quality
             .parse::<i64>()
@@ -1724,18 +1834,18 @@ fn parse_playback_data(
                     .any(|track| track.get("id").and_then(Value::as_i64) == Some(*quality))
             })
             .or_else(|| data.get("quality").and_then(Value::as_i64))
-            .ok_or_else(|| PluginError::new("invalid-response", "DASH 清晰度无效"))?;
+            .ok_or_else(|| PluginError::new("quality-unavailable", "DASH 清晰度无效"))?;
         let video = video_tracks
             .iter()
             .filter(|track| track.get("id").and_then(Value::as_i64) == Some(selected_quality))
-            .max_by_key(|track| track.get("bandwidth").and_then(Value::as_u64).unwrap_or(0))
+            .max_by_key(|track| playback_track_rank(track, TrackKind::Video))
             .ok_or_else(|| PluginError::new("not-found", "请求的清晰度不可用"))?;
         let audio = audio_tracks
             .into_iter()
-            .max_by_key(|track| track.get("bandwidth").and_then(Value::as_u64).unwrap_or(0))
+            .max_by_key(|track| playback_track_rank(track, TrackKind::Audio))
             .ok_or_else(|| PluginError::new("invalid-response", "DASH 音轨缺失"))?;
-        let video_url = dash_url(video)?;
-        let audio_url = dash_url(audio)?;
+        let video_url = playback_stage("parse_dash_video_url", dash_url(video))?;
+        let audio_url = playback_stage("parse_dash_audio_url", dash_url(audio))?;
         let descriptions = quality_descriptions(data);
         let audio_codec = audio.get("codecs").and_then(Value::as_str).unwrap_or("");
         let mut qualities = video_tracks
@@ -1750,7 +1860,7 @@ fn parse_playback_data(
                 let track = video_tracks
                     .iter()
                     .filter(|track| track.get("id").and_then(Value::as_i64) == Some(quality))
-                    .max_by_key(|track| track.get("bandwidth").and_then(Value::as_u64).unwrap_or(0))?;
+                    .max_by_key(|track| playback_track_rank(track, TrackKind::Video))?;
                 let mut variant = json!({
                     "id":format!("qn:{quality}"),
                     "label":descriptions.get(&quality).cloned().unwrap_or_else(|| format!("清晰度 {quality}")),
@@ -1801,6 +1911,33 @@ fn parse_playback_data(
     })
 }
 
+#[derive(Clone, Copy)]
+enum TrackKind {
+    Video,
+    Audio,
+}
+
+fn playback_track_rank(track: &Value, kind: TrackKind) -> (u8, u64) {
+    let codec = track
+        .get("codecs")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let compatibility = match kind {
+        TrackKind::Video if codec.starts_with("avc1") || codec.starts_with("avc3") => 3,
+        TrackKind::Video if codec.starts_with("hev1") || codec.starts_with("hvc1") => 2,
+        TrackKind::Video if codec.starts_with("av01") => 1,
+        TrackKind::Audio if codec.starts_with("mp4a") => 3,
+        TrackKind::Audio if codec.starts_with("ec-3") || codec.starts_with("ac-3") => 2,
+        TrackKind::Audio => 1,
+        TrackKind::Video => 0,
+    };
+    (
+        compatibility,
+        track.get("bandwidth").and_then(Value::as_u64).unwrap_or(0),
+    )
+}
+
 fn parse_frame_rate(value: &str) -> Option<f64> {
     if let Some((numerator, denominator)) = value.split_once('/') {
         let numerator = numerator.parse::<f64>().ok()?;
@@ -1813,12 +1950,45 @@ fn parse_frame_rate(value: &str) -> Option<f64> {
 }
 
 fn dash_url(track: &Value) -> Result<String, PluginError> {
-    track
-        .get("baseUrl")
-        .or_else(|| track.get("base_url"))
-        .and_then(Value::as_str)
-        .and_then(safe_https_url)
-        .ok_or_else(|| PluginError::new("invalid-response", "DASH 资源地址无效"))
+    let mut candidates = Vec::new();
+    for key in ["baseUrl", "base_url"] {
+        if let Some(value) = track.get(key).and_then(Value::as_str) {
+            candidates.push(value);
+        }
+    }
+    for key in ["backupUrl", "backup_url"] {
+        candidates.extend(
+            track
+                .get(key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        );
+    }
+    candidates
+        .into_iter()
+        .filter_map(safe_https_url)
+        .max_by_key(|url| dash_url_rank(url))
+        .ok_or_else(|| PluginError::new("asset-domain-denied", "DASH 资源地址无效"))
+}
+
+fn dash_url_rank(value: &str) -> (u8, u8) {
+    let authority = value
+        .strip_prefix("https://")
+        .and_then(|remainder| remainder.split('/').next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let standard_port = !authority.contains(':') || authority.ends_with(":443");
+    let hostname = authority.split(':').next().unwrap_or_default();
+    let provider_rank = if hostname == "bilivideo.com" || hostname.ends_with(".bilivideo.com") {
+        2
+    } else if hostname == "bilivideo.cn" || hostname.ends_with(".bilivideo.cn") {
+        1
+    } else {
+        0
+    };
+    (u8::from(standard_port), provider_rank)
 }
 
 fn quality_descriptions(data: &Value) -> std::collections::HashMap<i64, String> {
@@ -1957,6 +2127,18 @@ fn parse_bili_json(decoded: &[u8]) -> Result<Value, PluginError> {
         return Err(PluginError::new(
             "not-authenticated",
             "Bilibili 登录已失效，请重新扫码",
+        ));
+    }
+    if code == -404 {
+        return Err(PluginError::new("not-found", "站点内容不存在或不可访问"));
+    }
+    if matches!(code, -412 | -509) {
+        return Err(PluginError::new("rate-limited", "站点请求受到限流"));
+    }
+    if code == -10403 {
+        return Err(PluginError::new(
+            "access-restricted",
+            "当前账号或地区无权播放该内容",
         ));
     }
     if code != 0 {
@@ -2369,6 +2551,21 @@ fn host_log(level: &str, operation: &str, message: &str, count: usize) {
     );
 }
 
+fn host_log_domain_denied(hostname: &str) {
+    if hostname.len() > 253 {
+        return;
+    }
+    let _ = host_json(
+        HOST_LOG,
+        &json!({
+            "level":"warn",
+            "operation":"media.playback.asset_domain",
+            "message":"playback asset domain denied",
+            "fields":{"domain":hostname}
+        }),
+    );
+}
+
 fn parse_request<T: for<'de> Deserialize<'de>>(request: &[u8]) -> Result<T, PluginError> {
     serde_json::from_slice(request)
         .map_err(|_| PluginError::new("invalid-request", "插件请求格式无效"))
@@ -2398,24 +2595,43 @@ fn safe_https_url(value: &str) -> Option<String> {
     };
     let remainder = normalized.strip_prefix("https://")?;
     let authority = remainder.split(['/', '?', '#']).next()?;
-    if authority.is_empty()
-        || authority.contains(['@', ':'])
-        || !authority
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (hostname, port) = match authority.rsplit_once(':') {
+        Some((hostname, port))
+            if !hostname.contains(':') && matches!(port.parse::<u16>(), Ok(443 | 4483 | 8082)) =>
+        {
+            (hostname, Some(port))
+        }
+        Some(_) => {
+            host_log_domain_denied(authority);
+            return None;
+        }
+        None => (authority, None),
+    };
+    if hostname.is_empty()
+        || !hostname
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
     {
+        host_log_domain_denied(authority);
         return None;
     }
-    let hostname = authority.to_ascii_lowercase();
+    let hostname = hostname.to_ascii_lowercase();
     if !hostname.ends_with(".bilibili.com")
         && hostname != "bilibili.com"
         && !hostname.ends_with(".hdslb.com")
         && hostname != "hdslb.com"
         && !hostname.ends_with(".bilivideo.com")
         && hostname != "bilivideo.com"
+        && !hostname.ends_with(".bilivideo.cn")
+        && hostname != "bilivideo.cn"
     {
+        host_log_domain_denied(&hostname);
         return None;
     }
+    let _ = port;
     Some(normalized)
 }
 
@@ -2520,14 +2736,35 @@ mod tests {
 
     #[test]
     fn navigation_and_recommendation_map_to_generic_site_contract() {
-        let navigation = navigation().expect("navigation");
-        let routes = navigation.as_array().expect("navigation list");
+        let navigation_value = navigation(NavigationRequest {
+            connection_id: "connection".to_owned(),
+            parent_node_key: None,
+            depth: Some(0),
+        })
+        .expect("navigation");
+        let routes = navigation_value
+            .pointer("/nodes")
+            .and_then(Value::as_array)
+            .expect("navigation list");
         assert!(routes
             .iter()
             .any(|item| item.get("routeKey") == Some(&json!("recommended"))));
         assert!(routes
             .iter()
-            .any(|item| item.get("routeKey") == Some(&json!("history"))));
+            .any(|item| item.get("nodeKey") == Some(&json!("anime"))));
+
+        let anime = navigation(NavigationRequest {
+            connection_id: "connection".to_owned(),
+            parent_node_key: Some("anime".to_owned()),
+            depth: Some(1),
+        })
+        .expect("anime navigation");
+        assert!(anime
+            .pointer("/nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| nodes
+                .iter()
+                .any(|item| item.get("routeKey") == Some(&json!("anime-jp")))));
 
         let payload = fixture("recommended");
         let items = payload
@@ -2546,6 +2783,26 @@ mod tests {
         assert!(items[0].to_string().find("cookie").is_none());
         assert_eq!(safe_https_url("javascript:alert(1)"), None);
         assert_eq!(safe_https_url("https://user@example.com/poster.jpg"), None);
+        assert_eq!(
+            safe_https_url("https://xy113x207x104x18xy.mcdn.bilivideo.cn/audio.m4s"),
+            Some("https://xy113x207x104x18xy.mcdn.bilivideo.cn/audio.m4s".to_owned())
+        );
+        assert_eq!(
+            safe_https_url("https://xy113x207x104x18xy.mcdn.bilivideo.cn:4483/audio.m4s"),
+            Some("https://xy113x207x104x18xy.mcdn.bilivideo.cn:4483/audio.m4s".to_owned())
+        );
+        assert_eq!(
+            safe_https_url("https://xy113x207x104x18xy.mcdn.bilivideo.cn:22/audio.m4s"),
+            None
+        );
+        assert_eq!(
+            safe_https_url("https://xy113x207x104x18xy.mcdn.bilivideo.cn:8082/audio.m4s"),
+            Some("https://xy113x207x104x18xy.mcdn.bilivideo.cn:8082/audio.m4s".to_owned())
+        );
+        assert_eq!(
+            safe_https_url("https://bilivideo.cn.evil.example/audio.m4s"),
+            None
+        );
     }
 
     #[test]
@@ -2603,6 +2860,23 @@ mod tests {
         let error = parse_progressive_data(&dash_only, "80")
             .expect_err("DASH-only response must not masquerade as complete progressive media");
         assert_eq!(error.code, "upstream-unavailable");
+    }
+
+    #[test]
+    fn bilibili_playback_business_errors_map_to_stable_codes() {
+        for (code, expected) in [
+            (-101, "not-authenticated"),
+            (-404, "not-found"),
+            (-412, "rate-limited"),
+            (-509, "rate-limited"),
+            (-10403, "access-restricted"),
+        ] {
+            let payload =
+                serde_json::to_vec(&json!({"code":code,"message":"untrusted"})).expect("fixture");
+            let error = parse_bili_json(&payload).expect_err("business error");
+            assert_eq!(error.code, expected);
+            assert!(!error.message.contains("untrusted"));
+        }
     }
 
     #[test]
@@ -2756,7 +3030,10 @@ mod tests {
             Some(&json!("mp4a.40.2"))
         );
         assert!(source.video_url.ends_with("video-4k.m4s"));
-        assert!(source.audio_url.unwrap().ends_with("audio.m4s"));
+        assert_eq!(
+            source.audio_url.as_deref(),
+            Some("https://upos-sz-mirrorcos.bilivideo.com/audio.m4s")
+        );
     }
 
     #[test]

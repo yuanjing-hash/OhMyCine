@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
@@ -63,16 +65,17 @@ func WithPluginCredentialStore(store *credential.Store) PluginServiceOption {
 }
 
 type PluginRepositoryService struct {
-	db          *gorm.DB
-	audit       *AuditService
-	fetcher     PluginRegistryFetcher
-	log         zerolog.Logger
-	version     string
-	assets      PluginAssetFetcher
-	runtime     PluginRuntimeHost
-	credentials *credential.Store
-	pluginRoot  string
-	lifecycleMu sync.Mutex
+	db            *gorm.DB
+	audit         *AuditService
+	fetcher       PluginRegistryFetcher
+	log           zerolog.Logger
+	version       string
+	assets        PluginAssetFetcher
+	runtime       PluginRuntimeHost
+	credentials   *credential.Store
+	pluginRoot    string
+	lifecycleMu   sync.Mutex
+	navigationKey [32]byte
 }
 
 type PluginRepositorySummary struct {
@@ -143,9 +146,11 @@ type pluginMarketplaceCandidate struct {
 }
 
 func NewPluginRepositoryService(db *gorm.DB, audit *AuditService, fetcher PluginRegistryFetcher, log zerolog.Logger, options ...PluginServiceOption) *PluginRepositoryService {
+	navigationKey := sha256.Sum256([]byte(uuid.NewString() + uuid.NewString()))
 	service := &PluginRepositoryService{
 		db: db, audit: audit, fetcher: fetcher, log: log, version: CurrentServerVersion,
-		assets: pluginrepository.NewAssetClient(nil),
+		assets:        pluginrepository.NewAssetClient(nil),
+		navigationKey: navigationKey,
 	}
 	for _, option := range options {
 		option(service)

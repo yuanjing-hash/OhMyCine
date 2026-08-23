@@ -146,6 +146,41 @@ func TestPlayerLocalSeriesProjectsPlayableSeasonsAndEpisodes(t *testing.T) {
 	}
 }
 
+func TestPlayerCategoriesFollowProfileOrderAndFilterCatalog(t *testing.T) {
+	service, library, actor := createCatalogTestLibrary(t)
+	if err := service.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	entries := []models.MediaLibraryEntry{
+		{LibraryID: library.ID, RelativePath: "/Chinese.mkv", ProviderID: "chinese", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "华语片", WorkKey: "movie:chinese", MatchStatus: "matched", CategoryName: "华语电影", LastGeneration: 1},
+		{LibraryID: library.ID, RelativePath: "/Foreign.mkv", ProviderID: "foreign", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "外语片", WorkKey: "movie:foreign", MatchStatus: "matched", CategoryName: "外语电影", LastGeneration: 1},
+		{LibraryID: library.ID, RelativePath: "/Unknown-Z.mkv", ProviderID: "unknown-z", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "未知乙", WorkKey: "movie:unknown-z", MatchStatus: "matched", CategoryName: "Z 自定义", LastGeneration: 1},
+		{LibraryID: library.ID, RelativePath: "/Unknown-A.mkv", ProviderID: "unknown-a", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "未知甲", WorkKey: "movie:unknown-a", MatchStatus: "matched", CategoryName: "A 自定义", LastGeneration: 1},
+	}
+	if err := service.db.Create(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+	categories, err := service.PlayerCategories(actor, library.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := map[string]int{}
+	for position, category := range categories {
+		index[category.MediaType+":"+category.Name] = position
+	}
+	if index["movie:华语电影"] >= index["movie:外语电影"] || categories[index["movie:外语电影"]].ItemCount != 1 {
+		t.Fatalf("categories=%+v", categories)
+	}
+	if index["movie:A 自定义"] >= index["movie:Z 自定义"] {
+		t.Fatalf("unknown categories are not stable: %+v", categories)
+	}
+	page, err := service.PlayerCatalog(actor, library.ID, MediaPageQuery{Page: 1, PageSize: 20, MediaType: "movie", Category: "外语电影"})
+	if err != nil || page.Total != 1 || len(page.List) != 1 || page.List[0].Title != "外语片" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
 func TestSnapshotStillPathsAreSafeUniqueAndBounded(t *testing.T) {
 	snapshot := tmdb.Snapshot{BackdropPath: "/primary.jpg", BackdropPaths: []string{
 		"/primary.jpg", "https://unsafe.example/still.jpg", "/../escape.jpg", "/one.jpg", "/two.jpg", "/three.jpg", "/four.jpg", "/five.jpg", "/six.jpg", "/seven.jpg", "/eight.jpg",

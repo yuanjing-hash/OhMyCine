@@ -33,6 +33,12 @@ npm run typecheck
 
 `fixtures/online-media.v1.json` 是 Go Host 与 TypeScript SDK 共读的安全契约夹具，固定验证 Work → Segment → Version → Variant、声明式动作、DASH 双轨、字幕/弹幕、UUID 资产引用和短时选择令牌。修改这些字段时必须同时通过 SDK verify 与 Server 共读测试。
 
+## 在线媒体库导航
+
+Manifest 默认使用 `navigationMode: "flat"`。需要番剧 → 国家/地区 → 栏目等多层目录时，插件显式声明 `navigationMode: "hierarchical"`，并由 `site.navigation` 返回 `branch` 或最终 `feed` 节点。分支只返回插件内部 `nodeKey`；Server 会把它替换为绑定在线媒体库、深度、祖先链和过期时间的签名 `nodeToken`，Player 后续只能用该 token 请求子节点。插件不能向 Player 暴露提供方 URL、Cookie、游标或私有路由。
+
+Server 当前限制最大 8 层、每层最多 100 个节点，并拒绝循环、重复键、越权 token 与模式不一致。普通本地/115 媒体库继续使用 Server 分类规则提供的标准一级分类，不会为了兼容站点插件而变成任意树。
+
 ## 本地生命周期 fixture
 
 ```powershell
@@ -50,6 +56,7 @@ npm run build:fixture
 - Host HTTP 只允许 Manifest 授权的 HTTPS 域名，并限制 DNS、重定向、超时和载荷。Cookie/Token 只能由凭据引用附加，不能返回 WASM。
 - 扫码登录使用两阶段 Cookie 捕获：HTTP 返回一次性 `credentialCaptureRef`，插件确认提供方业务状态成功后才调用 `credentialCommit`。引用短时、单次且绑定插件、运行代次、连接、scope 与 origin。
 - 远端播放/下载地址先注册成短时 `urlRef`；普通 DTO、日志和 Player 持久状态不能出现最终 CDN URL 或敏感 Header。
+- DASH 应同时检查 `baseUrl` 与 `backupUrl`，优先选择已授权域名上的标准 HTTPS 端口。确需提供方 CDN 端口时，Server 在线资产 Host 只接受内建白名单端口并在注册、读取及每次重定向时重复校验域名和公网 IP；普通 Host HTTP 仍禁止自定义端口。
 - Manifest 只能声明 SDK 已知 capability 和精确权限。
 - PT 站点适配器属于 Server 内建能力，不通过此 SDK 注册。
 

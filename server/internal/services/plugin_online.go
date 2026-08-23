@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
 	"gorm.io/gorm"
@@ -131,7 +133,20 @@ func (s *PluginRepositoryService) OnlineLibraries(actor Actor) ([]PluginOnlineLi
 }
 
 func (s *PluginRepositoryService) OnlineNavigation(ctx context.Context, actor Actor, libraryID string) (json.RawMessage, error) {
-	return s.invokeOnline(ctx, actor, libraryID, contract.CapabilitySiteNavigation, map[string]any{"connectionId": libraryID})
+	_, _, manifest, err := s.onlineLibrary(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.invokeOnline(ctx, actor, libraryID, contract.CapabilitySiteNavigation, map[string]any{"connectionId": libraryID, "depth": 0})
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := s.normalizeOnlineNavigation(libraryID, manifest, raw)
+	if err != nil {
+		s.logInvalidOnlineNavigation(libraryID, manifest.ID, err)
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func (s *PluginRepositoryService) OnlineFeed(ctx context.Context, actor Actor, libraryID, routeKey, cursor, refreshSession string) (json.RawMessage, error) {
@@ -504,19 +519,68 @@ func (s *PluginRepositoryService) invokeOnline(ctx context.Context, actor Actor,
 	if err != nil {
 		return nil, err
 	}
-	if !json.Valid(raw) {
+	trimmed := bytes.TrimSpace(raw)
+	if !json.Valid(trimmed) {
 		return nil, appError(CodePluginResponseInvalid, "插件返回的数据格式无效", nil)
 	}
-	var envelope pluginErrorEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, appError(CodePluginResponseInvalid, "插件返回的数据格式无效", err)
+	var object map[string]json.RawMessage
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		if err := json.Unmarshal(trimmed, &object); err != nil {
+			return nil, appError(CodePluginResponseInvalid, "插件返回的数据格式无效", err)
+		}
 	}
-	if envelope.PluginError != nil {
+	pluginErrorJSON, hasPluginError := object["pluginError"]
+	if hasPluginError {
+		var envelope pluginErrorEnvelope
+		if err := json.Unmarshal(trimmed, &envelope); err != nil || envelope.PluginError == nil || strings.TrimSpace(envelope.PluginError.Code) == "" {
+			serverlog.OperationPluginRuntime.Event(s.log.Warn()).
+				Str("plugin_id", safeLabel(connection.PluginID, 128)).
+				Str("library_id", safeLabel(libraryID, 128)).
+				Str("capability", safeLabel(string(capability), 96)).
+				Str("error_code", CodePluginResponseInvalid).
+				Msg(serverlog.OperationPluginRuntime.Message("插件错误响应格式无效"))
+			return nil, appError(CodePluginResponseInvalid, "插件返回的数据格式无效", err)
+		}
+		_ = pluginErrorJSON
+		serverlog.OperationPluginRuntime.Event(s.log.Warn()).
+			Str("plugin_id", safeLabel(connection.PluginID, 128)).
+			Str("library_id", safeLabel(libraryID, 128)).
+			Str("capability", safeLabel(string(capability), 96)).
+			Str("error_code", safeLabel(envelope.PluginError.Code, 96)).
+			Msg(serverlog.OperationPluginRuntime.Message("在线媒体能力调用失败"))
 		// Plugin text is untrusted and may contain an upstream URL, credential,
-		// cookie, or provider diagnostic. Keep the public error stable and safe.
-		return nil, appError(CodePluginOnlineLibraryUnavailable, "在线媒体来源暂时不可用", nil)
+		// cookie, or provider diagnostic. Only the bounded code selects a stable,
+		// Server-owned message.
+		return nil, mapPluginOnlineError(envelope.PluginError.Code, capability)
 	}
-	return append(json.RawMessage(nil), raw...), nil
+	return append(json.RawMessage(nil), trimmed...), nil
+}
+
+func mapPluginOnlineError(pluginCode string, capability contract.Capability) error {
+	switch strings.TrimSpace(pluginCode) {
+	case "not-authenticated":
+		return appError(CodePluginOnlineAuthentication, "在线媒体账号登录已失效，请在 Server 插件设置中重新登录", nil)
+	case "access-restricted":
+		return appError(CodePluginOnlineAccessRestricted, "当前账号或地区无法播放此在线媒体", nil)
+	case "not-found":
+		return appError(CodeNotFound, "在线媒体不存在或不可访问", nil)
+	case "quality-unavailable":
+		return appError(CodePluginOnlineQualityUnavailable, "所选在线媒体清晰度不可用，请选择其他清晰度", nil)
+	case "rate-limited":
+		return appError(CodePluginOnlineRateLimited, "在线媒体服务请求过于频繁，请稍后重试", nil)
+	case "invalid-response":
+		if capability == contract.CapabilityMediaPlayback {
+			return appError(CodePluginResponseInvalid, "在线媒体播放方案无效，请更新插件后重试", nil)
+		}
+		return appError(CodePluginResponseInvalid, "在线媒体来源返回的数据无效，请更新插件后重试", nil)
+	case "playback-audio-unavailable", "asset-domain-denied":
+		if capability == contract.CapabilityMediaPlayback {
+			return appError(CodePluginResponseInvalid, "在线媒体播放方案无效，请更新插件后重试", nil)
+		}
+		return appError(CodePluginOnlineLibraryUnavailable, "在线媒体来源暂时不可用", nil)
+	default:
+		return appError(CodePluginOnlineLibraryUnavailable, "在线媒体来源暂时不可用", nil)
+	}
 }
 
 func (s *PluginRepositoryService) onlineConnection(libraryID string) (models.PluginConnection, contract.Manifest, error) {

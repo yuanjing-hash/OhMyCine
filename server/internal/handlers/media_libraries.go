@@ -315,7 +315,7 @@ func (a *API) MediaLibraryRuns(c *gin.Context) {
 }
 
 func mediaPageQuery(c *gin.Context, legacyLimit bool) (services.MediaPageQuery, error) {
-	query := services.MediaPageQuery{Query: c.Query("query"), MediaType: c.Query("media_type"), MatchStatus: c.Query("match_status")}
+	query := services.MediaPageQuery{Query: c.Query("query"), MediaType: c.Query("media_type"), MatchStatus: c.Query("match_status"), Category: c.Query("category")}
 	var err error
 	if raw, exists := c.GetQuery("page"); exists {
 		query.Page, err = strconv.Atoi(raw)

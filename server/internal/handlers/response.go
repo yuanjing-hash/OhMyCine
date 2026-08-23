@@ -41,7 +41,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusConflict
 	case services.CodeLoginRateLimited:
 		status = http.StatusTooManyRequests
-	case services.CodePluginRegistryRateLimited, services.CodePluginFeedRateLimited:
+	case services.CodePluginRegistryRateLimited, services.CodePluginFeedRateLimited, services.CodePluginOnlineRateLimited:
 		status = http.StatusTooManyRequests
 	case services.CodeDirectoryRateLimited:
 		status = http.StatusTooManyRequests
@@ -55,8 +55,12 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusTooManyRequests
 	case services.CodeProxyUpstreamUnavailable, services.CodeProxyHeadersUnsupported, services.CodeProxyUnavailable:
 		status = http.StatusBadGateway
-	case services.CodeRuntimeLogUnavailable, services.CodeMediaLibraryScanFailed, services.CodeQueueWorkerUnavailable, services.CodeConnectionUnavailable, services.CodeEmbyUnavailable, services.CodeEmbyGatewayUnavailable, services.CodeDownloaderUnavailable, services.CodeTMDBUnavailable, services.CodePluginRepositoryUnavailable, services.CodePluginRuntimeUnavailable, services.CodePluginOnlineLibraryUnavailable:
+	case services.CodeRuntimeLogUnavailable, services.CodeMediaLibraryScanFailed, services.CodeQueueWorkerUnavailable, services.CodeConnectionUnavailable, services.CodeEmbyUnavailable, services.CodeEmbyGatewayUnavailable, services.CodeDownloaderUnavailable, services.CodeTMDBUnavailable, services.CodePluginRepositoryUnavailable, services.CodePluginRuntimeUnavailable, services.CodePluginOnlineLibraryUnavailable, services.CodePluginOnlineAuthentication:
 		status = http.StatusServiceUnavailable
+	case services.CodePluginOnlineAccessRestricted:
+		status = http.StatusForbidden
+	case services.CodePluginOnlineQualityUnavailable:
+		status = http.StatusNotFound
 	case services.CodePluginRegistryInvalid, services.CodePluginRegistryTooLarge, services.CodePluginAssetUnavailable, services.CodePluginManifestInvalid, services.CodePluginManifestMismatch, services.CodePluginPackageDigest, services.CodePluginPackageInvalid, services.CodePluginPackageTooLarge, services.CodePluginSignatureUntrusted, services.CodePluginRuntimeStartFailed, services.CodePluginRuntimeStopFailed, services.CodePluginRuntimeStateFailed, services.CodePluginCleanupFailed, services.CodePluginResponseInvalid, "plugin_runtime_module_invalid", "plugin_runtime_capability_denied", "plugin_runtime_start_timeout":
 		status = http.StatusBadGateway
 	}

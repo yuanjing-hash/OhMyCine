@@ -51,6 +51,7 @@ export interface PluginManifestV1 {
   runtime: 'wasm'
   entry: string
   capabilities: readonly PluginCapability[]
+  navigationMode?: 'flat' | 'hierarchical'
   permissions: readonly PluginPermission[]
   configSchema: Readonly<Record<string, unknown>>
   settingsPage?: PluginSettingsPage

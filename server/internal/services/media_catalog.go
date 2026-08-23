@@ -21,6 +21,7 @@ type MediaPageQuery struct {
 	Query       string
 	MediaType   string
 	MatchStatus string
+	Category    string
 }
 
 type MediaLibraryEntryPage struct {
@@ -206,6 +207,10 @@ func normalizeMediaPageQuery(query MediaPageQuery) (MediaPageQuery, error) {
 	if query.MatchStatus != "" && query.MatchStatus != mediaRecognitionStatusMatched && query.MatchStatus != mediaRecognitionStatusUnrecognized {
 		return MediaPageQuery{}, appError(CodeInvalidRequest, "匹配状态筛选无效", nil)
 	}
+	query.Category = strings.TrimSpace(query.Category)
+	if len([]rune(query.Category)) > 128 || strings.ContainsAny(query.Category, "\x00\r\n") {
+		return MediaPageQuery{}, appError(CodeInvalidRequest, "媒体分类筛选无效", nil)
+	}
 	return query, nil
 }
 
@@ -223,6 +228,9 @@ func applyEntryFilters(db *gorm.DB, query MediaPageQuery) *gorm.DB {
 	if query.MatchStatus != "" {
 		db = db.Where("match_status = ?", query.MatchStatus)
 	}
+	if query.Category != "" {
+		db = db.Where("category_name = ?", query.Category)
+	}
 	return db
 }
 
@@ -239,6 +247,9 @@ func applyCatalogFilters(db *gorm.DB, query MediaPageQuery) *gorm.DB {
 	}
 	if query.MatchStatus != "" {
 		db = db.Where("match_status = ?", query.MatchStatus)
+	}
+	if query.Category != "" {
+		db = db.Where("category_name = ?", query.Category)
 	}
 	return db
 }

@@ -51,6 +51,13 @@ interface ServerLibraryRecord {
   entry_count: number
 }
 
+interface ServerCategoryRecord {
+  id: string
+  name: string
+  media_type: 'movie' | 'series'
+  item_count: number
+}
+
 interface ServerIdentityRecord {
   scheme: 'tmdb' | 'server'
   media_type: 'movie' | 'series'
@@ -205,6 +212,10 @@ export class ServerDataSource implements DataSource {
       const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation`))
       return navigation.map(item => onlineNavigationToMediaItem(this.id, online.libraryId, item))
     }
+    if (online?.kind === 'node') {
+      const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation/${encodeURIComponent(online.nodeToken)}/children`))
+      return navigation.map(item => onlineNavigationToMediaItem(this.id, online.libraryId, item))
+    }
     if (online?.kind === 'feed') {
       const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/feeds/${encodeURIComponent(online.routeKey)}`))
       return sections.flatMap(section => section.items.map(item => ({
@@ -217,7 +228,10 @@ export class ServerDataSource implements DataSource {
       return onlineWorkToDetail(this.id, online.libraryId, work).children ?? []
     }
     if (/^\d+$/.test(value))
-      return (await this.catalog(value)).map(item => this.mapItem(item))
+      return (await this.categories(value)).map(category => this.mapCategory(value, category))
+    const category = parseServerCategoryID(value)
+    if (category)
+      return (await this.catalog(category.libraryId, category.name, category.mediaType)).map(item => this.mapItem(item))
     const work = parseWorkItemID(value)
     if (work) {
       const detail = await this.detail(work.libraryId, work.workId)
@@ -551,8 +565,35 @@ export class ServerDataSource implements DataSource {
     return sanitizeServerConfig(this.config)
   }
 
-  private async catalog(libraryID: string): Promise<ServerItemRecord[]> {
-    return this.pagedItems(`/api/v1/player/media-libraries/${encodeURIComponent(libraryID)}/catalog`)
+  private async catalog(libraryID: string, category?: string, mediaType?: 'movie' | 'series'): Promise<ServerItemRecord[]> {
+    const query = category ? `?category=${encodeURIComponent(category)}&media_type=${encodeURIComponent(mediaType ?? '')}` : ''
+    return this.pagedItems(`/api/v1/player/media-libraries/${encodeURIComponent(libraryID)}/catalog${query}`)
+  }
+
+  private async categories(libraryID: string): Promise<ServerCategoryRecord[]> {
+    const data = recordData(await this.request(`/api/v1/player/media-libraries/${encodeURIComponent(libraryID)}/categories`))
+    return arrayRecords(data.list).flatMap((value): ServerCategoryRecord[] => {
+      if (!isRecord(value))
+        return []
+      const id = optionalString(value.id)
+      const name = optionalString(value.name)
+      const mediaType = value.media_type === 'movie' || value.media_type === 'series' ? value.media_type : null
+      if (!id || !name || !mediaType)
+        return []
+      return [{ id, name, media_type: mediaType, item_count: numberValue(value.item_count) ?? 0 }]
+    })
+  }
+
+  private mapCategory(libraryID: string, category: ServerCategoryRecord): MediaItem {
+    return {
+      id: createServerCategoryID(libraryID, category.media_type, category.name),
+      sourceId: this.id,
+      originType: 'server',
+      libraryId: libraryID,
+      name: category.name,
+      type: 'folder',
+      path: '',
+    }
   }
 
   private async pagedItems(path: string): Promise<ServerItemRecord[]> {
@@ -815,6 +856,27 @@ function parseLibrary(value: unknown): MediaLibrary | null {
     return null
   const record = value as unknown as ServerLibraryRecord
   return { id: String(record.id), sourceId: '', name: record.name, type: 'mixed', itemCount: numberValue(record.entry_count) }
+}
+
+function createServerCategoryID(libraryId: string, mediaType: 'movie' | 'series', name: string): string {
+  return ['server-category', libraryId, mediaType, name].map((value, index) => index === 0 ? value : encodeURIComponent(value)).join('|')
+}
+
+function parseServerCategoryID(value: string): { libraryId: string, mediaType: 'movie' | 'series', name: string } | null {
+  const [kind, rawLibraryId, rawMediaType, rawName, ...rest] = value.split('|')
+  if (kind !== 'server-category' || !rawLibraryId || !rawMediaType || !rawName || rest.length > 0)
+    return null
+  try {
+    const libraryId = decodeURIComponent(rawLibraryId)
+    const mediaType = decodeURIComponent(rawMediaType)
+    const name = decodeURIComponent(rawName)
+    if (!/^\d+$/.test(libraryId) || (mediaType !== 'movie' && mediaType !== 'series') || !name)
+      return null
+    return { libraryId, mediaType, name }
+  }
+  catch {
+    return null
+  }
 }
 
 function parseItem(value: unknown): ServerItemRecord | null {

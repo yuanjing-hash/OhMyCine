@@ -16,6 +16,7 @@ Player Device Bearer routes:
 ```text
 GET  /api/v1/player/online-libraries
 GET  /api/v1/player/online-libraries/:id/navigation
+GET  /api/v1/player/online-libraries/:id/navigation/:nodeToken/children
 GET  /api/v1/player/online-libraries/:id/feeds/:routeKey
 GET  /api/v1/player/online-libraries/:id/search
 GET  /api/v1/player/online-libraries/:id/items/:itemId
@@ -40,6 +41,9 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 - Every route requires an authenticated Player device with `media_libraries.read`; handlers and services both enforce the boundary.
 - Only enabled installations and enabled plugin connections are published. Every invoked operation must also exist in the active Manifest capability set.
 - Core code knows only generic plugin operations and DTOs. Provider-specific APIs, cursors, IDs, and error bodies remain inside the plugin.
+- `navigationMode` defaults to `flat`. A plugin may return branch nodes only when its Manifest explicitly declares `hierarchical`; existing v1 flat array responses remain accepted unchanged.
+- Hierarchical navigation uses the strict v2 `{version:2,mode:"hierarchical",nodes:[...]}` envelope. The Server accepts only `branch|feed|search|user-library`, limits one level to 100 nodes and the active path to 8 levels, and rejects unknown fields, sibling IDs, ancestor node-key reuse, excessive identifiers, malformed leaf routes, and unsupported node kinds.
+- A branch node key never crosses the Player boundary. The Server replaces it with a short-lived HMAC token bound to the online library/connection, branch kind, depth, complete ancestor chain and expiry. Child requests accept only this token and reject tampered, expired, cross-library, non-branch, cyclic or over-depth claims.
 - Provider errors map to stable Server codes and safe messages. Never return a plugin-supplied message directly through ordinary APIs.
 - A single-library history query passes the provider cursor through opaquely. Aggregate history encodes a bounded base64url map of connection ID to provider cursor or an internal exhausted sentinel.
 - Aggregate history must remember exhausted sources. A source that exactly fills one page but reports `hasMore=false` must not be called again; the next page must reach later sources.
@@ -65,6 +69,8 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 | Missing/revoked Player token or permission | Return 401/403 with no plugin invocation |
 | Installation or connection disabled | Return a safe unavailable/not-found result |
 | Capability absent | Reject before invoking WASM |
+| Hierarchical response is malformed, too wide/deep, cyclic, duplicated, or uses an unsupported node kind | Return `plugin_response_invalid`; expose no partial tree |
+| Navigation token is expired, tampered, non-branch, or replayed against another library | Reject before invoking WASM |
 | Provider returns `hasMore=true` without cursor, too many rows, or invalid JSON | Single library: `plugin_response_invalid`; aggregate: exhaust that source and continue |
 | First aggregate source is exhausted after filling the page | Cursor records exhaustion and the next request starts at a later source |
 | Asset reference is unknown, expired, or package changed | Return `plugin_asset_expired` without revealing internals |
@@ -87,6 +93,7 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 ### 6. Tests Required
 
 - Service tests cover permission duplication, enabled-state checks, capability checks, safe error mapping, `libraryId` injection, single-source cursor pass-through, aggregate exhaustion, exact-page boundaries, malformed-source isolation, and cursor tampering.
+- Navigation tests cover v1 compatibility, strict v2 parsing, branch token binding, sibling duplication, ancestor cycles, depth/width limits, expiry, tampering and cross-library rejection.
 - Host tests cover GET/HEAD, 206/416, response-size/header limits, private-IP rejection, DNS rebinding, redirect revalidation, cross-origin credential stripping, and package/permission revalidation.
 - Download tests cover plan identity/topology validation, plugin-owned assets, single-file and DASH execution, subtitle/danmaku manifests, task-root confinement, retry re-resolution, cancellation/deletion cleanup, and fixed MediaTool behavior.
 - Metadata/transfer tests cover provenance backfill, immutable snapshot reuse after plugin disable, package-version binding, no cross-plugin/global invocation, Server-rendered NFO/artwork manifests, local import, 115 upload conflict/retry reconciliation, staging retention and task-root confinement.

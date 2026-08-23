@@ -15,6 +15,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
 )
 
 type onlinePluginRuntime struct {
@@ -160,10 +161,37 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 		t.Fatalf("connection health=%+v err=%v", healthy, err)
 	}
 	runtime.handler = nil
+	runtime.responses["site.navigation"] = []byte(" \n [{\"id\":\"recommended\",\"title\":\"推荐\",\"pageType\":\"feed\",\"routeKey\":\"recommended\"}] \n")
+	navigation, err := service.OnlineNavigation(context.Background(), actor, connection.ID)
+	if err != nil || !json.Valid(navigation) || navigation[0] != '[' {
+		t.Fatalf("navigation=%s err=%v", navigation, err)
+	}
 	playback, err := service.OnlinePlayback(context.Background(), actor, connection.ID, "BV1234567890", "cid:1", "v1", "qn:80")
 	if err != nil || strings.Count(string(playback), "/api/v1/player/online-assets/"+assetID) != 2 {
 		t.Fatalf("playback=%s err=%v", playback, err)
 	}
+	for _, test := range []struct {
+		pluginCode string
+		serverCode string
+	}{
+		{pluginCode: "not-authenticated", serverCode: CodePluginOnlineAuthentication},
+		{pluginCode: "access-restricted", serverCode: CodePluginOnlineAccessRestricted},
+		{pluginCode: "quality-unavailable", serverCode: CodePluginOnlineQualityUnavailable},
+		{pluginCode: "rate-limited", serverCode: CodePluginOnlineRateLimited},
+		{pluginCode: "invalid-response", serverCode: CodePluginResponseInvalid},
+	} {
+		runtime.handler = func(operation string, _ []byte) ([]byte, error) {
+			if operation == "media.playback" {
+				return []byte(fmt.Sprintf(" \n {\"pluginError\":{\"code\":%q,\"message\":\"https://cdn.example.test/video?token=secret\"}} \n", test.pluginCode)), nil
+			}
+			return runtime.responses[operation], nil
+		}
+		_, mappedErr := service.OnlinePlayback(context.Background(), actor, connection.ID, "BV1234567890", "cid:1", "v1", "qn:80")
+		if ErrorCode(mappedErr) != test.serverCode || strings.Contains(ErrorMessage(mappedErr), "secret") || strings.Contains(ErrorMessage(mappedErr), "cdn.example") {
+			t.Fatalf("plugin code=%s mapped err=%v server code=%s message=%q", test.pluginCode, mappedErr, ErrorCode(mappedErr), ErrorMessage(mappedErr))
+		}
+	}
+	runtime.handler = nil
 	history, err := service.OnlineHistory(context.Background(), actor, "", "", 24)
 	if err != nil || len(history.List) != 2 || !history.HasMore || history.Cursor == "" {
 		t.Fatalf("history=%+v err=%v", history, err)
@@ -233,5 +261,49 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 	}
 	if _, err := service.OnlinePlayback(context.Background(), actor, connection.ID, "BV1234567890", "cid:1", "v1", "qn:80"); ErrorCode(err) != CodePluginOnlineLibraryUnavailable {
 		t.Fatalf("disabled error=%v code=%s", err, ErrorCode(err))
+	}
+}
+
+func TestHierarchicalPluginNavigationIssuesBoundTokensAndRejectsCycles(t *testing.T) {
+	service, _, _ := pluginRepositoryFixture(t)
+	raw := json.RawMessage(`{"version":2,"mode":"hierarchical","nodes":[{"id":"anime","title":"番剧","kind":"branch","nodeKey":"anime","hasChildren":true},{"id":"recommended","title":"推荐","kind":"feed","routeKey":"recommended","refreshable":true}]}`)
+	normalized, err := service.normalizeHierarchicalNavigation("library-1", raw, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response pluginNavigationResponse
+	if err := json.Unmarshal(normalized, &response); err != nil || len(response.Nodes) != 2 || response.Nodes[0].NodeToken == "" || response.Nodes[0].NodeKey != "" {
+		t.Fatalf("response=%s parsed=%+v err=%v", normalized, response, err)
+	}
+	claim, err := service.verifyPluginNavigationToken(response.Nodes[0].NodeToken)
+	if err != nil || claim.LibraryID != "library-1" || claim.Kind != "branch" || claim.NodeKey != "anime" || claim.Depth != 1 || len(claim.Ancestors) != 1 {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	wrongKind := claim
+	wrongKind.Kind = "feed"
+	wrongKindToken, err := service.signPluginNavigationToken(wrongKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.verifyPluginNavigationToken(wrongKindToken); err == nil {
+		t.Fatal("non-branch navigation token was accepted")
+	}
+	if _, err := service.verifyPluginNavigationToken(response.Nodes[0].NodeToken + "x"); err == nil {
+		t.Fatal("tampered navigation token was accepted")
+	}
+	cycle := json.RawMessage(`{"version":2,"mode":"hierarchical","nodes":[{"id":"anime-again","title":"循环","kind":"branch","nodeKey":"anime","hasChildren":true}]}`)
+	if _, err := service.normalizeHierarchicalNavigation("library-1", cycle, 1, []string{"anime"}); ErrorCode(err) != CodePluginResponseInvalid {
+		t.Fatalf("cycle error=%v code=%s", err, ErrorCode(err))
+	}
+}
+
+func TestPluginOnlineErrorMessagesRemainCapabilitySpecific(t *testing.T) {
+	navigationErr := mapPluginOnlineError("invalid-response", contract.CapabilitySiteNavigation)
+	if ErrorCode(navigationErr) != CodePluginResponseInvalid || ErrorMessage(navigationErr) != "在线媒体来源返回的数据无效，请更新插件后重试" {
+		t.Fatalf("navigation error=%v code=%s", navigationErr, ErrorCode(navigationErr))
+	}
+	playbackErr := mapPluginOnlineError("invalid-response", contract.CapabilityMediaPlayback)
+	if ErrorCode(playbackErr) != CodePluginResponseInvalid || ErrorMessage(playbackErr) != "在线媒体播放方案无效，请更新插件后重试" {
+		t.Fatalf("playback error=%v code=%s", playbackErr, ErrorCode(playbackErr))
 	}
 }

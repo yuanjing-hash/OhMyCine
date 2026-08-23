@@ -16,6 +16,8 @@ const bridge = {
       ? { capabilities: ['media_catalog', 'direct_stream'] }
       : request.path === '/api/v1/player/media-libraries'
         ? { list: [{ id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 101 }], total: 1 }
+        : request.path === '/api/v1/player/media-libraries/9/categories'
+          ? { list: [{ id: 'category-movie', name: '外语电影', media_type: 'movie', item_count: 101 }], total: 1 }
         : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${noPlayableItem().id}`)
           ? {
               item: noPlayableItem(),
@@ -61,9 +63,12 @@ await source.init({
 assert.equal(await source.test(), true)
 const libraries = await source.listLibraries()
 assert.deepEqual(libraries.map(item => [item.id, item.sourceId, item.name]), [['9', 'server-home', '115 电影']])
-const items = await source.list('9')
+const categories = await source.list('9')
+assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '外语电影']])
+const items = await source.list(categories[0].id)
 assert.equal(items.length, 101)
 assert.equal(calls.filter(call => call.path.startsWith('/api/v1/player/media-libraries/9/catalog?')).length, 2)
+assert.equal(calls.some(call => call.path.includes('category=%E5%A4%96%E8%AF%AD%E7%94%B5%E5%BD%B1') && call.path.includes('media_type=movie')), true)
 assert.equal(items[0].originType, 'server')
 assert.deepEqual(items[0].workIdentity, { scheme: 'tmdb', mediaType: 'movie', value: '346' })
 const detail = await source.getDetail(items[0].id)

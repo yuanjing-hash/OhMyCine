@@ -1,4 +1,4 @@
-import type { DownloadPlan, FeedSection, MediaWork, NavigationItem, PlaybackPlan, ProviderMetadataSnapshot } from './media'
+import type { DownloadPlan, FeedSection, FlatNavigationItem, HierarchicalNavigationResponse, MediaWork, PlaybackPlan, ProviderMetadataSnapshot } from './media'
 
 export const PLUGIN_OPERATION_CODES = {
   'site.navigation': 1,
@@ -56,7 +56,7 @@ export type PluginErrorCode
     | 'internal'
 
 export interface PluginRequestMap {
-  'site.navigation': { connectionId: string }
+  'site.navigation': { connectionId: string, parentNodeKey?: string, depth?: number }
   'site.feed': { connectionId: string, routeKey: string, cursor?: string, refreshSession?: string }
   'site.search': { connectionId: string, query: string, cursor?: string }
   'site.detail': { connectionId: string, itemId: string }
@@ -71,7 +71,7 @@ export interface PluginRequestMap {
 }
 
 export interface PluginResponseMap {
-  'site.navigation': readonly NavigationItem[]
+  'site.navigation': readonly FlatNavigationItem[] | HierarchicalNavigationResponse
   'site.feed': readonly FeedSection[]
   'site.search': readonly FeedSection[]
   'site.detail': MediaWork

@@ -15,8 +15,9 @@ export interface OnlineLibrarySummary {
 export interface OnlineNavigationItem {
   id: string
   title: string
-  pageType: 'feed' | 'search' | 'user-library'
-  routeKey: string
+  kind: 'branch' | 'feed' | 'search' | 'user-library'
+  nodeToken?: string
+  routeKey?: string
   refreshable: boolean
 }
 
@@ -102,6 +103,7 @@ interface OnlineHistoryRecord {
 
 export type OnlineItemID
   = | { kind: 'library', libraryId: string }
+    | { kind: 'node', libraryId: string, nodeToken: string }
     | { kind: 'feed', libraryId: string, routeKey: string }
     | { kind: 'work', libraryId: string, workId: string }
     | { kind: 'version', libraryId: string, workId: string, segmentId: string, versionId: string }
@@ -116,7 +118,8 @@ export function parseOnlineLibraryList(value: unknown): OnlineLibrarySummary[] {
 }
 
 export function parseOnlineNavigationList(value: unknown): OnlineNavigationItem[] {
-  const data = Array.isArray(value) ? value : record(value).list
+  const envelope = record(value)
+  const data = Array.isArray(value) ? value : Array.isArray(envelope.nodes) ? envelope.nodes : envelope.list
   if (!Array.isArray(data))
     return []
   return data.slice(0, 100).map(parseNavigation).filter((item): item is OnlineNavigationItem => item != null)
@@ -282,7 +285,9 @@ export function onlineLibraryToMediaLibrary(sourceId: string, item: OnlineLibrar
 
 export function onlineNavigationToMediaItem(sourceId: string, libraryId: string, item: OnlineNavigationItem): MediaItem {
   return {
-    id: createOnlineFeedID(libraryId, item.routeKey),
+    id: item.kind === 'branch' && item.nodeToken
+      ? createOnlineNodeID(libraryId, item.nodeToken)
+      : createOnlineFeedID(libraryId, item.routeKey ?? item.id),
     sourceId,
     originType: 'server',
     libraryId: createOnlineLibraryID(libraryId),
@@ -457,6 +462,10 @@ export function createOnlineFeedID(libraryId: string, routeKey: string): string 
   return joinOnlineID('online-feed', libraryId, routeKey)
 }
 
+export function createOnlineNodeID(libraryId: string, nodeToken: string): string {
+  return joinOnlineID('online-node', libraryId, nodeToken)
+}
+
 export function createOnlineWorkID(libraryId: string, workId: string): string {
   return joinOnlineID('online-work', libraryId, workId)
 }
@@ -471,6 +480,8 @@ export function parseOnlineItemID(value: string): OnlineItemID | null {
     const values = encoded.map(entry => decodeURIComponent(entry))
     if (kind === 'online-library' && values.length === 1 && values[0])
       return { kind: 'library', libraryId: values[0] }
+    if (kind === 'online-node' && values.length === 2 && values.every(Boolean))
+      return { kind: 'node', libraryId: values[0], nodeToken: values[1] }
     if (kind === 'online-feed' && values.length === 2 && values.every(Boolean))
       return { kind: 'feed', libraryId: values[0], routeKey: values[1] }
     if (kind === 'online-work' && values.length === 2 && values.every(Boolean))
@@ -541,9 +552,13 @@ function parseNavigation(value: unknown): OnlineNavigationItem | null {
   const item = record(value)
   const id = requiredText(item.id, 128)
   const title = requiredText(item.title, 256)
-  const pageType = oneOf(item.pageType ?? item.page_type, ['feed', 'search', 'user-library'] as const)
-  const routeKey = requiredText(item.routeKey ?? item.route_key, 256)
-  return id && title && pageType && routeKey ? { id, title, pageType, routeKey, refreshable: item.refreshable === true } : null
+  const legacyPageType = oneOf(item.pageType ?? item.page_type, ['feed', 'search', 'user-library'] as const)
+  const kind = oneOf(item.kind, ['branch', 'feed', 'search', 'user-library'] as const) ?? legacyPageType
+  const nodeToken = optionalText(item.nodeToken ?? item.node_token, 4096)
+  const routeKey = optionalText(item.routeKey ?? item.route_key, 256)
+  if (!id || !title || !kind || (kind === 'branch' ? !nodeToken : !routeKey))
+    return null
+  return { id, title, kind, nodeToken, routeKey, refreshable: item.refreshable === true }
 }
 
 function parseFeedSection(value: unknown): OnlineFeedSection | null {
