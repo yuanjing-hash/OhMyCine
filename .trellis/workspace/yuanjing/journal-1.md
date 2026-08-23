@@ -576,3 +576,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 21: Server 嵌套媒体库导航与 Bilibili 在线播放
+
+**Date**: 2026-08-23
+**Task**: Server 嵌套媒体库导航与 Bilibili 在线播放
+**Branch**: `develop`
+
+### Summary
+
+实现标准媒体库分类入口和插件任意层级导航，修复 Bilibili DASH 音频 CDN 端口与备用地址选择，完成跨层安全校验、全量回归、插件与 Player 发布准备。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `84d2079` | (see git log) |
+
+### Status
+
+[OK] **Completed**
