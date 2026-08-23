@@ -118,9 +118,26 @@ export interface PluginConnectionSummary {
   credential_mode: PluginCredentialMode
   credential_configured: boolean
   enabled: boolean
+  health_status: 'unknown' | 'auth_pending' | 'auth_expired' | 'healthy' | 'error' | string
+  health_error_code?: string
+  health_checked_at?: string | null
   revision: number
   created_at: string
   updated_at: string
+}
+
+export interface PluginAuthStartSummary {
+  loginSession: string
+  qrCodeUrl: string
+  expiresAt: string
+  pollAfterSeconds: number
+}
+
+export interface PluginAuthPollSummary {
+  state: 'pending' | 'scanned' | 'confirmed' | 'expired'
+  authenticated: boolean
+  account?: { id: string, name: string, avatarUrl?: string }
+  pollAfterSeconds?: number
 }
 
 export const pluginRepositoryListPath = '/api/v1/plugin-repositories'
@@ -157,6 +174,14 @@ export function pluginConnectionsPath(pluginID: string) {
 
 export function pluginConnectionPath(pluginID: string, connectionID: string) {
   return `${pluginConnectionsPath(pluginID)}/${encodeURIComponent(connectionID)}`
+}
+
+export function pluginConnectionAuthPath(pluginID: string, connectionID: string, operation: 'start' | 'poll') {
+  return `${pluginConnectionPath(pluginID, connectionID)}/auth/${operation}`
+}
+
+export function pluginLogsPath(pluginID: string) {
+  return `/logs/runtime?plugin_id=${encodeURIComponent(pluginID)}`
 }
 
 export function buildPluginRepositoryCreatePayload(githubURL: string, name = '') {

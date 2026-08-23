@@ -164,6 +164,153 @@ func TestHostHTTPCrossOriginRedirectStripsCredentials(t *testing.T) {
 	}
 }
 
+func TestHostHTTPCredentialCaptureRequiresExplicitOneShotCommit(t *testing.T) {
+	fixture := newHostFixture(t, []contract.Permission{
+		{Kind: contract.PermissionNetworkHTTP, Domains: []string{"api.example.test"}},
+		{Kind: contract.PermissionCredentialUse, Scopes: []string{"site.session"}},
+	})
+	if err := fixture.db.Model(&models.PluginConnection{}).Where("id = ?", fixture.connection.ID).Updates(map[string]any{
+		"credential_ciphertext": "", "credential_scope": "site.session", "credential_mode": models.PluginCredentialModeCookie,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": {"application/json"},
+				"Set-Cookie": {
+					"SESSDATA=new-session; Path=/; Domain=.example.test; Secure; HttpOnly",
+					"csrf=csrf-value; Path=/; Secure",
+				},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"code":0}`)), Request: request,
+		}, nil
+	})}
+	host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithHTTPClient(client), WithResolver(publicResolver))
+	payload, _ := json.Marshal(httpRequest{
+		ConnectionID: fixture.connection.ID, Method: http.MethodGet, URL: "https://api.example.test/login/poll",
+		CaptureCredentialScope: "site.session",
+	})
+	response, err := host.Call(context.Background(), fixture.pluginID, OperationHTTP, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(response, []byte("SESSDATA")) || bytes.Contains(response, []byte("csrf-value")) || bytes.Contains(response, []byte("Set-Cookie")) {
+		t.Fatalf("capture response leaked cookie material: %s", response)
+	}
+	var envelope struct {
+		Data httpResponse `json:"data"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil || envelope.Data.CredentialCaptureRef == "" || envelope.Data.CredentialCaptureExpiresAt == "" {
+		t.Fatalf("capture response=%s err=%v", response, err)
+	}
+	var before models.PluginConnection
+	if err := fixture.db.First(&before, "id = ?", fixture.connection.ID).Error; err != nil || before.CredentialCiphertext != "" {
+		t.Fatalf("credential was persisted before commit: %+v err=%v", before, err)
+	}
+	commitPayload, _ := json.Marshal(credentialCommitRequest{ConnectionID: fixture.connection.ID, Scope: "site.session", CaptureRef: envelope.Data.CredentialCaptureRef})
+	commitResponse, err := host.Call(context.Background(), fixture.pluginID, OperationCredentialCommit, commitPayload)
+	if err != nil || !bytes.Contains(commitResponse, []byte(`"credentialUpdated":true`)) {
+		t.Fatalf("commit response=%s err=%v", commitResponse, err)
+	}
+	var after models.PluginConnection
+	if err := fixture.db.First(&after, "id = ?", fixture.connection.ID).Error; err != nil || after.CredentialCiphertext == "" || after.Revision != before.Revision+1 {
+		t.Fatalf("credential was not committed: %+v err=%v", after, err)
+	}
+	plaintext, err := fixture.credentials.Decrypt(CredentialPurpose(fixture.pluginID, fixture.connection.ID, "site.session"), after.CredentialCiphertext)
+	if err != nil || plaintext != "SESSDATA=new-session; csrf=csrf-value" {
+		t.Fatalf("stored credential=%q err=%v", plaintext, err)
+	}
+	if _, err := host.Call(context.Background(), fixture.pluginID, OperationCredentialCommit, commitPayload); ErrorCode(err) != "plugin_credential_capture_expired" {
+		t.Fatalf("capture reference was reusable: %v code=%s", err, ErrorCode(err))
+	}
+}
+
+func TestHostHTTPCredentialCaptureRejectsCrossOriginAndInvalidCookieScope(t *testing.T) {
+	fixture := newHostFixture(t, []contract.Permission{
+		{Kind: contract.PermissionNetworkHTTP, Domains: []string{"api.example.test", "cdn.example.test"}},
+		{Kind: contract.PermissionCredentialUse, Scopes: []string{"site.session"}},
+	})
+	if err := fixture.db.Model(&models.PluginConnection{}).Where("id = ?", fixture.connection.ID).Updates(map[string]any{"credential_ciphertext": "", "credential_scope": "site.session", "credential_mode": models.PluginCredentialModeCookie}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		finalRequest := request.Clone(request.Context())
+		finalRequest.URL, _ = url.Parse("https://cdn.example.test/final")
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Set-Cookie": {"SESSDATA=must-not-capture; Path=/; Secure"}}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: finalRequest}, nil
+	})}
+	host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithHTTPClient(client), WithResolver(publicResolver))
+	payload, _ := json.Marshal(httpRequest{ConnectionID: fixture.connection.ID, Method: http.MethodGet, URL: "https://api.example.test/start", CaptureCredentialScope: "site.session"})
+	response, err := host.Call(context.Background(), fixture.pluginID, OperationHTTP, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(response, []byte("credentialCaptureRef")) {
+		t.Fatalf("cross-origin response yielded a capture: %s", response)
+	}
+	deniedPayload, _ := json.Marshal(httpRequest{ConnectionID: fixture.connection.ID, Method: http.MethodGet, URL: "https://api.example.test/start", CaptureCredentialScope: "other.session"})
+	if _, err := host.Call(context.Background(), fixture.pluginID, OperationHTTP, deniedPayload); ErrorCode(err) != "plugin_credential_capture_denied" {
+		t.Fatalf("ungranted scope error=%v code=%s", err, ErrorCode(err))
+	}
+}
+
+func TestHostHTTPCredentialCaptureRejectsPackageOrGenerationChange(t *testing.T) {
+	for _, change := range []string{"package", "generation"} {
+		t.Run(change, func(t *testing.T) {
+			permission := contract.Permission{Kind: contract.PermissionCredentialUse, Scopes: []string{"site.session"}}
+			fixture := newHostFixture(t, []contract.Permission{{Kind: contract.PermissionNetworkHTTP, Domains: []string{"api.example.test"}}, permission})
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Set-Cookie": {"SESSDATA=changed; Path=/; Secure"}}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+			})}
+			host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithHTTPClient(client), WithResolver(publicResolver))
+			payload, _ := json.Marshal(httpRequest{ConnectionID: fixture.connection.ID, Method: http.MethodGet, URL: "https://api.example.test/login", CaptureCredentialScope: "site.session"})
+			response, err := host.Call(context.Background(), fixture.pluginID, OperationHTTP, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Data httpResponse `json:"data"`
+			}
+			if err := json.Unmarshal(response, &envelope); err != nil || envelope.Data.CredentialCaptureRef == "" {
+				t.Fatalf("capture response=%s err=%v", response, err)
+			}
+			if change == "generation" {
+				if err := fixture.db.Model(&models.PluginInstallation{}).Where("plugin_id = ?", fixture.pluginID).Update("runtime_generation", gorm.Expr("runtime_generation + 1")).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var current models.PluginPackage
+				if err := fixture.db.First(&current, "plugin_id = ?", fixture.pluginID).Error; err != nil {
+					t.Fatal(err)
+				}
+				next := current
+				next.ID = 0
+				next.Version = "0.2.0"
+				next.PackageSHA256 = strings.Repeat("d", 64)
+				next.ExtractedTreeSHA256 = strings.Repeat("e", 64)
+				if err := fixture.db.Create(&next).Error; err != nil {
+					t.Fatal(err)
+				}
+				encoded, _ := json.Marshal(permission)
+				if err := fixture.db.Create(&models.PluginPermissionGrant{PluginID: fixture.pluginID, PluginPackageID: next.ID, PermissionKey: "credential.use", PermissionJSON: string(encoded), CreatedAt: time.Now().UTC()}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := fixture.db.Model(&models.PluginInstallation{}).Where("plugin_id = ?", fixture.pluginID).Update("active_package_id", next.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			commit, _ := json.Marshal(credentialCommitRequest{ConnectionID: fixture.connection.ID, Scope: "site.session", CaptureRef: envelope.Data.CredentialCaptureRef})
+			if _, err := host.Call(context.Background(), fixture.pluginID, OperationCredentialCommit, commit); ErrorCode(err) != "plugin_credential_capture_generation_mismatch" {
+				t.Fatalf("change=%s error=%v code=%s", change, err, ErrorCode(err))
+			}
+			if _, err := host.Call(context.Background(), fixture.pluginID, OperationCredentialCommit, commit); ErrorCode(err) != "plugin_credential_capture_expired" {
+				t.Fatalf("failed capture was not consumed: %v", err)
+			}
+		})
+	}
+}
+
 func TestHostHTTPRevalidatesDNSAtDialTime(t *testing.T) {
 	fixture := newHostFixture(t, []contract.Permission{{Kind: contract.PermissionNetworkHTTP, Domains: []string{"api.example.test"}}})
 	resolveCount := 0
@@ -226,7 +373,7 @@ func TestHostAssetsSupportURLAndInlineContentWithExpiryAndCapacity(t *testing.T)
 	host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithHTTPClient(&http.Client{}), WithResolver(publicResolver))
 	host.now = func() time.Time { return now }
 
-	urlPayload, _ := json.Marshal(assetRegisterRequest{URL: "https://cdn.example.test/video.mp4?temporary=opaque", Headers: map[string]string{"Referer": "https://www.example.test/"}, TTLSeconds: 60})
+	urlPayload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, URL: "https://cdn.example.test/video.mp4?temporary=opaque", Headers: map[string]string{"Referer": "https://www.example.test/"}, TTLSeconds: 60})
 	urlResponse, err := host.Call(context.Background(), fixture.pluginID, OperationAssetRegister, urlPayload)
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +390,7 @@ func TestHostAssetsSupportURLAndInlineContentWithExpiryAndCapacity(t *testing.T)
 	}
 
 	inlineBody := []byte(`{"comments":[{"id":"dm:1","time":1,"mode":"scroll","color":"#ffffff","text":"hello"}]}`)
-	inlinePayload, _ := json.Marshal(assetRegisterRequest{BodyBase64: base64.StdEncoding.EncodeToString(inlineBody), ContentType: "application/json", TTLSeconds: 30})
+	inlinePayload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, BodyBase64: base64.StdEncoding.EncodeToString(inlineBody), ContentType: "application/json", TTLSeconds: 30})
 	inlineResponse, err := host.Call(context.Background(), fixture.pluginID, OperationAssetRegister, inlinePayload)
 	if err != nil {
 		t.Fatal(err)
@@ -261,6 +408,9 @@ func TestHostAssetsSupportURLAndInlineContentWithExpiryAndCapacity(t *testing.T)
 	inlineRange, err := host.OpenAsset(context.Background(), inlineRef, http.MethodGet, "bytes=1-4")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := host.OpenAssetForPlugin(context.Background(), "org.ohmycine.other", inlineRef, http.MethodGet, ""); ErrorCode(err) != "plugin_asset_reference_denied" {
+		t.Fatalf("cross-plugin asset reference was not denied: %v", err)
 	}
 	rangeBody, _ := io.ReadAll(inlineRange.Body)
 	_ = inlineRange.Body.Close()
@@ -317,7 +467,7 @@ func TestHostOpenAssetStreamsRemoteRangeAndRechecksPluginState(t *testing.T) {
 		}, nil
 	})}
 	host := New(fixture.db, fixture.credentials, zerolog.Nop(), WithHTTPClient(client), WithResolver(publicResolver))
-	payload, _ := json.Marshal(assetRegisterRequest{URL: "https://cdn.example.test/video.mp4", Headers: map[string]string{"Referer": "https://www.example.test/"}, TTLSeconds: 60})
+	payload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, URL: "https://cdn.example.test/video.mp4", Headers: map[string]string{"Referer": "https://www.example.test/"}, TTLSeconds: 60})
 	response, err := host.Call(context.Background(), fixture.pluginID, OperationAssetRegister, payload)
 	if err != nil {
 		t.Fatal(err)
@@ -338,8 +488,38 @@ func TestHostOpenAssetStreamsRemoteRangeAndRechecksPluginState(t *testing.T) {
 	if err := fixture.db.Model(&models.PluginInstallation{}).Where("plugin_id = ?", fixture.pluginID).Update("status", models.PluginInstallationDisabled).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.OpenAsset(context.Background(), reference, http.MethodGet, ""); ErrorCode(err) != "plugin_host_plugin_disabled" {
+	if _, err := host.OpenAsset(context.Background(), reference, http.MethodGet, ""); ErrorCode(err) != "plugin_asset_expired" {
 		t.Fatalf("disabled plugin asset error=%v code=%s", err, ErrorCode(err))
+	}
+}
+
+func TestHostAssetReadRevalidatesConnectionAndRuntimeGeneration(t *testing.T) {
+	fixture := newHostFixture(t, nil)
+	host := New(fixture.db, fixture.credentials, zerolog.Nop())
+	register := func() string {
+		payload, _ := json.Marshal(assetRegisterRequest{ConnectionID: fixture.connection.ID, BodyBase64: base64.StdEncoding.EncodeToString([]byte(`{}`)), ContentType: "application/json", TTLSeconds: 60})
+		response, err := host.Call(context.Background(), fixture.pluginID, OperationAssetRegister, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return assetReference(t, response)
+	}
+	connectionRef := register()
+	if err := fixture.db.Model(&models.PluginConnection{}).Where("id = ?", fixture.connection.ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.ResolveAsset(connectionRef); ErrorCode(err) != "plugin_asset_expired" {
+		t.Fatalf("disabled connection asset error=%v code=%s", err, ErrorCode(err))
+	}
+	if err := fixture.db.Model(&models.PluginConnection{}).Where("id = ?", fixture.connection.ID).Update("enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	generationRef := register()
+	if err := fixture.db.Model(&models.PluginInstallation{}).Where("plugin_id = ?", fixture.pluginID).Update("runtime_generation", gorm.Expr("runtime_generation + 1")).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.ResolveAsset(generationRef); ErrorCode(err) != "plugin_asset_expired" {
+		t.Fatalf("changed generation asset error=%v code=%s", err, ErrorCode(err))
 	}
 }
 

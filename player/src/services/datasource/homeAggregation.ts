@@ -23,24 +23,26 @@ async function collectHomeSectionsFromSource(source: DataSource): Promise<HomeSe
 }
 
 function hasVisibleHomeItems(section: HomeSection): boolean {
-  return section.items.length > 0
+  return section.items.length > 0 || Boolean(section.providerIdentity && section.errorCode)
 }
 
 function mergeAggregatedHomeSections(sections: readonly HomeSection[]): HomeSection[] {
-  const heroSection = mergeSectionsOfType(sections, 'hero', {
+  const contributionSections = sections.filter(section => Boolean(section.providerIdentity))
+  const ordinarySections = sections.filter(section => !section.providerIdentity)
+  const heroSection = mergeSectionsOfType(ordinarySections, 'hero', {
     id: 'hero-aggregated',
     title: '精选',
     limit: 16,
     sortItems: compareHeroItems,
   })
-  const recentlyAddedSection = mergeSectionsOfType(sections, 'recentlyAdded', {
+  const recentlyAddedSection = mergeSectionsOfType(ordinarySections, 'recentlyAdded', {
     id: 'recently-added-aggregated',
     title: '最新影片',
     limit: 24,
     sortItems: compareRecentlyAddedItems,
   })
-  const continueSections = sections.filter(section => section.type === 'continueWatching')
-  const passthroughSections = sections.filter(section =>
+  const continueSections = ordinarySections.filter(section => section.type === 'continueWatching')
+  const passthroughSections = ordinarySections.filter(section =>
     section.type !== 'hero'
     && section.type !== 'recentlyAdded'
     && section.type !== 'continueWatching',
@@ -48,10 +50,11 @@ function mergeAggregatedHomeSections(sections: readonly HomeSection[]): HomeSect
 
   return [
     heroSection,
+    ...contributionSections,
     ...continueSections,
     recentlyAddedSection,
     ...passthroughSections,
-  ].filter((section): section is HomeSection => section != null && section.items.length > 0)
+  ].filter((section): section is HomeSection => section != null && (section.items.length > 0 || Boolean(section.providerIdentity && section.errorCode)))
 }
 
 function mergeSectionsOfType(

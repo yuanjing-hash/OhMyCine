@@ -32,6 +32,26 @@ export interface MediaItem {
   exactIdentity?: string
   /** Alternate provider routes retained when aggregate cards are merged. */
   playbackTargets?: MediaPlaybackTarget[]
+  siteActions?: readonly SiteActionDescriptor[]
+}
+
+export type SiteActionKey
+  = | 'like.add'
+    | 'like.remove'
+    | 'favorite.add'
+    | 'favorite.remove'
+    | 'watch-later.add'
+    | 'watch-later.remove'
+    | 'follow.add'
+    | 'follow.remove'
+    | 'history.remove'
+
+export interface SiteActionDescriptor {
+  readonly id: SiteActionKey
+  readonly label: string
+  readonly state?: boolean
+  readonly requiresConfirmation?: boolean
+  readonly destructive?: boolean
 }
 
 export interface MediaIdentity {
@@ -65,6 +85,16 @@ export interface HomeSection {
   title: string
   type: 'hero' | 'continueWatching' | 'recentlyAdded' | 'recommended' | 'libraryRow'
   items: MediaItem[]
+  /** Stable, non-secret provider identity used only for device-side layout preferences. */
+  providerIdentity?: string
+  /** Safe source label rendered by Player; it must never contain credentials or upstream URLs. */
+  sourceLabel?: string
+  /** Opaque key that asks the owning DataSource to create a fresh recommendation session. */
+  refreshKey?: string
+  refreshable?: boolean
+  layout?: 'hero' | 'row' | 'poster-grid' | 'video-list'
+  /** Safe stable source-level diagnostic; raw provider errors never belong here. */
+  errorCode?: string
 }
 
 export interface FileEntry {
@@ -187,6 +217,9 @@ export interface DataSourceConfig {
 export interface MediaStreamRequest {
   readonly url: string
   readonly headers?: Record<string, string>
+  /** Optional separate audio asset for DASH-style playback. It is transient and never persisted. */
+  readonly audioUrl?: string
+  readonly audioHeaders?: Record<string, string>
   readonly mediaSourceId?: string
   /** Current resolution/bitrate choice inside the selected media version. */
   readonly variantId?: string
@@ -305,6 +338,9 @@ export interface DataSource {
   list: (path?: string) => Promise<MediaItem[]>
   listLibraries?: () => Promise<MediaLibrary[]>
   getHomeSections?: () => Promise<HomeSection[]>
+  refreshHomeSection?: (refreshKey: string) => Promise<HomeSection[]>
+  enqueueOnlineDownload?: (request: PlaybackRequest & { readonly mediaLibraryId?: number }) => Promise<void>
+  performSiteAction?: (itemId: string, action: SiteActionKey, value?: boolean, confirmed?: boolean) => Promise<void>
   getFeaturedItems?: () => Promise<MediaItem[]>
   getContinueWatching?: () => Promise<MediaItem[]>
   getRecentlyAdded?: () => Promise<MediaItem[]>

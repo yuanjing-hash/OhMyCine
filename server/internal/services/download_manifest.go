@@ -88,7 +88,7 @@ func normalizedManifestPath(value string) string {
 
 func sidecarBelongsToAcceptedMedia(relativePath string, acceptedByDirectory map[string][]string) bool {
 	extension := strings.ToLower(pathpkg.Ext(relativePath))
-	if !isAutomaticTransferSubtitleFile(relativePath) && extension != ".jpg" {
+	if !isAutomaticTransferSubtitleFile(relativePath) && !isAutomaticTransferDanmakuFile(relativePath) && extension != ".jpg" {
 		return false
 	}
 	stems := acceptedByDirectory[strings.ToLower(pathpkg.Dir(relativePath))]

@@ -1069,7 +1069,12 @@ async function selectStreamVariant(variantId: string) {
 
     replacementStarted = true
     await syncKnownSubtitleTracks(request.subtitles ?? [])
-    await load(request.url, { headers: request.headers, title: mediaTitle.value })
+    await load(request.url, {
+      headers: request.headers,
+      audioUrl: request.audioUrl,
+      audioHeaders: request.audioHeaders,
+      title: mediaTitle.value,
+    })
     await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
     applyResolvedStreamRequest({ ...request, variantId: resolvedVariantID })
   }
@@ -1077,7 +1082,12 @@ async function selectStreamVariant(variantId: string) {
     if (replacementStarted) {
       try {
         await syncKnownSubtitleTracks(previousRequest.subtitles ?? [])
-        await load(previousRequest.url, { headers: previousRequest.headers, title: mediaTitle.value })
+        await load(previousRequest.url, {
+          headers: previousRequest.headers,
+          audioUrl: previousRequest.audioUrl,
+          audioHeaders: previousRequest.audioHeaders,
+          title: mediaTitle.value,
+        })
         await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
         applyResolvedStreamRequest(previousRequest)
       }
@@ -2068,7 +2078,12 @@ watch(
         const request = await resolvePlaybackLoadRequest()
         applyResolvedStreamRequest(request)
         await syncKnownSubtitleTracks(request.subtitles ?? [])
-        await load(request.url, { headers: request.headers, title: mediaTitle.value })
+        await load(request.url, {
+          headers: request.headers,
+          audioUrl: request.audioUrl,
+          audioHeaders: request.audioHeaders,
+          title: mediaTitle.value,
+        })
         await restoreMediaPlaybackPreference()
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()

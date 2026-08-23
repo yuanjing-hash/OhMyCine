@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "feed": [
+    {
+      "id": "recommended",
+      "title": "契约推荐",
+      "layout": "hero",
+      "refreshable": true,
+      "homeEligible": true,
+      "refreshSession": "fixture-session-1",
+      "items": [
+        {
+          "work": {
+            "id": "fixture-work",
+            "title": "契约视频",
+            "kind": "video",
+            "identity": { "scheme": "fixture.work", "value": "fixture-work" },
+            "segments": [
+              {
+                "id": "segment-main",
+                "title": "正片",
+                "index": 1,
+                "versions": [
+                  {
+                    "id": "version-main",
+                    "label": "网络版",
+                    "sourceLabel": "Fixture",
+                    "resolution": "2160p",
+                    "sourceMedium": "WEB",
+                    "releaseKind": "encode",
+                    "dynamicRange": "HDR",
+                    "videoCodec": "hevc",
+                    "audioCodec": "aac",
+                    "audioLanguages": ["zh-CN"],
+                    "sizeBytes": 4294967296,
+                    "delivery": "online",
+                    "variants": [
+                      {
+                        "id": "qn:120",
+                        "label": "4K 超清",
+                        "available": true,
+                        "width": 3840,
+                        "height": 2160,
+                        "bitrate": 9000000,
+                        "frameRate": 60,
+                        "container": "mp4",
+                        "videoCodec": "hevc",
+                        "audioCodec": "aac",
+                        "dynamicRange": "HDR",
+                        "hdr": true,
+                        "dolbyVision": false,
+                        "dolbyAtmos": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "actions": [
+            { "id": "favorite.add", "label": "收藏", "state": false },
+            { "id": "history.remove", "label": "删除历史", "requiresConfirmation": true, "destructive": true }
+          ]
+        }
+      ]
+    }
+  ],
+  "playback": {
+    "workId": "fixture-work",
+    "segmentId": "segment-main",
+    "versionId": "version-main",
+    "variantId": "qn:120",
+    "selectionToken": "selection-fixture-1",
+    "variants": [
+      { "id": "qn:120", "label": "4K 超清", "available": true, "width": 3840, "height": 2160 }
+    ],
+    "assets": [
+      { "kind": "dash-video", "urlRef": "11111111-1111-4111-8111-111111111111" },
+      { "kind": "dash-audio", "urlRef": "22222222-2222-4222-8222-222222222222" }
+    ],
+    "delivery": "server-gateway",
+    "subtitles": [
+      { "id": "subtitle-zh", "label": "简体中文", "language": "zh-CN", "format": "vtt", "urlRef": "33333333-3333-4333-8333-333333333333" }
+    ],
+    "danmaku": [
+      { "id": "danmaku-main", "label": "弹幕", "language": "zh-CN", "format": "ohmycine-danmaku-v1+json", "urlRef": "44444444-4444-4444-8444-444444444444" }
+    ]
+  }
+}

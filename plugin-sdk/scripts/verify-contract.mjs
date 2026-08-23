@@ -9,6 +9,7 @@ const fixture = JSON.parse(await readFile(new URL('../fixtures/static-site/plugi
 const registrySchema = JSON.parse(await readFile(new URL('../schema/registry-v1.schema.json', import.meta.url), 'utf8'))
 const registryFixture = JSON.parse(await readFile(new URL('../fixtures/repository/ohmycine-plugin-registry.v1.json', import.meta.url), 'utf8'))
 const officialRegistry = JSON.parse(await readFile(new URL('../../ohmycine-plugin-registry.v1.json', import.meta.url), 'utf8'))
+const onlineMediaFixture = JSON.parse(await readFile(new URL('../fixtures/online-media.v1.json', import.meta.url), 'utf8'))
 const ajv = new Ajv2020({ allErrors: true, strict: true })
 addFormats(ajv)
 const validate = ajv.compile(schema)
@@ -20,6 +21,31 @@ if (!validateRegistry(registryFixture))
   throw new Error(`valid registry fixture rejected: ${ajv.errorsText(validateRegistry.errors)}`)
 if (!validateRegistry(officialRegistry))
   throw new Error(`official registry rejected: ${ajv.errorsText(validateRegistry.errors)}`)
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const fixtureWork = onlineMediaFixture.feed?.[0]?.items?.[0]?.work
+const fixtureVersion = fixtureWork?.segments?.[0]?.versions?.[0]
+const fixtureAction = onlineMediaFixture.feed?.[0]?.items?.[0]?.actions?.[0]
+const allowedActionIDs = new Set(['favorite.add', 'favorite.remove', 'watch-later.add', 'watch-later.remove', 'follow.add', 'follow.remove', 'like.add', 'like.remove', 'history.remove'])
+const fixtureActions = onlineMediaFixture.feed?.[0]?.items?.[0]?.actions ?? []
+const playback = onlineMediaFixture.playback
+const assetRefs = [
+  ...(playback?.assets ?? []),
+  ...(playback?.subtitles ?? []),
+  ...(playback?.danmaku ?? []),
+].map(asset => asset.urlRef)
+if (onlineMediaFixture.schemaVersion !== 1
+  || fixtureWork?.identity?.value !== 'fixture-work'
+  || fixtureVersion?.delivery !== 'online'
+  || fixtureVersion?.variants?.[0]?.id !== 'qn:120'
+  || fixtureAction?.id !== 'favorite.add'
+  || fixtureActions.some(action => !allowedActionIDs.has(action.id))
+  || playback?.selectionToken !== 'selection-fixture-1'
+  || playback?.assets?.map(asset => asset.kind).join(',') !== 'dash-video,dash-audio'
+  || assetRefs.length !== 4
+  || assetRefs.some(reference => !uuidPattern.test(reference))) {
+  throw new Error('online media cross-language fixture is invalid')
+}
 
 for (const [name, mutate] of [
   ['unknown capability', value => value.capabilities.push('pt.site')],

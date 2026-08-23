@@ -25,6 +25,7 @@ import (
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/downloader/pan115offline"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/downloader/qbittorrent"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/mediatool"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 )
 
@@ -130,6 +131,8 @@ func main() {
 	pluginHostAPI := pluginhostapi.New(db, credentialStore, logManager.Logger("plugin", "host"))
 	pluginHost.SetCapabilityHost(pluginHostAPI)
 	pluginRepositories := services.NewPluginRepositoryService(db, audit, pluginrepository.NewGitHubClient(nil), logManager.Logger("plugin", "repository"), services.WithPluginRoot(cfg.PluginDirectory), services.WithPluginRuntimeHost(pluginHost), services.WithPluginCredentialStore(credentialStore))
+	pluginDownloads := services.NewPluginDownloadExecutor(downloads, pluginRepositories, pluginHostAPI, mediatool.Discover(cfg.FFmpegPath))
+	downloads.SetPluginDownloadExecutor(pluginDownloads)
 	if err := pluginRepositories.RestorePlugins(context.Background()); err != nil {
 		logging.OperationPluginRuntime.Event(log.Fatal()).Str("error_code", services.ErrorCode(err)).Msg(logging.OperationPluginRuntime.Message("插件运行时恢复失败"))
 	}

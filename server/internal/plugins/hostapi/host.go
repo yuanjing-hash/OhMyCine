@@ -24,29 +24,34 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
+	"golang.org/x/net/publicsuffix"
 	"gorm.io/gorm"
 )
 
 const (
-	OperationHTTP          uint32 = 1
-	OperationStorageGet    uint32 = 2
-	OperationStorageSet    uint32 = 3
-	OperationLog           uint32 = 4
-	OperationNow           uint32 = 5
-	OperationEventPoll     uint32 = 6
-	OperationAssetRegister uint32 = 7
+	OperationHTTP             uint32 = 1
+	OperationStorageGet       uint32 = 2
+	OperationStorageSet       uint32 = 3
+	OperationLog              uint32 = 4
+	OperationNow              uint32 = 5
+	OperationEventPoll        uint32 = 6
+	OperationAssetRegister    uint32 = 7
+	OperationCredentialCommit uint32 = 8
 
-	maxHostRequestBytes  = 256 * 1024
-	maxAssetRequestBytes = 4 * 1024 * 1024
-	maxHTTPResponseBytes = 2 * 1024 * 1024
-	maxHostResponseBytes = 4 * 1024 * 1024
-	maxEventPayloadBytes = 64 * 1024
-	maxEventsPerPlugin   = 64
+	maxHostRequestBytes   = 256 * 1024
+	maxAssetRequestBytes  = 4 * 1024 * 1024
+	maxHTTPResponseBytes  = 2 * 1024 * 1024
+	maxHostResponseBytes  = 4 * 1024 * 1024
+	maxEventPayloadBytes  = 64 * 1024
+	maxEventsPerPlugin    = 64
+	maxCredentialCaptures = 1024
+	credentialCaptureTTL  = 2 * time.Minute
 )
 
 var (
 	privateKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
 	operationPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	cookieNamePattern = regexp.MustCompile(`^[!#$%&'*+.^_` + "`" + `|~0-9A-Za-z-]{1,128}$`)
 	forbiddenLogKey   = regexp.MustCompile(`(?i)(authorization|cookie|password|secret|token|api[_-]?key|passkey|credential|path|url)`)
 )
 
@@ -74,6 +79,8 @@ type Host struct {
 	events      map[string][]eventRecord
 	assetsMu    sync.Mutex
 	assets      map[string]Asset
+	capturesMu  sync.Mutex
+	captures    map[string]credentialCapture
 }
 
 type Option func(*Host)
@@ -84,10 +91,11 @@ func WithResolver(resolver Resolver) Option     { return func(host *Host) { host
 func New(db *gorm.DB, credentials *credential.Store, log zerolog.Logger, options ...Option) *Host {
 	host := &Host{
 		db: db, credentials: credentials, log: log,
-		resolve: net.DefaultResolver.LookupIPAddr,
-		now:     time.Now,
-		events:  make(map[string][]eventRecord),
-		assets:  make(map[string]Asset),
+		resolve:  net.DefaultResolver.LookupIPAddr,
+		now:      time.Now,
+		events:   make(map[string][]eventRecord),
+		assets:   make(map[string]Asset),
+		captures: make(map[string]credentialCapture),
 	}
 	for _, option := range options {
 		option(host)
@@ -146,14 +154,15 @@ func (host *Host) Call(ctx context.Context, pluginID string, operation uint32, p
 	if len(payload) > maxHostRequestBytes && (operation != OperationAssetRegister || len(payload) > maxAssetRequestBytes) {
 		return nil, invalid("plugin_host_request_too_large", nil)
 	}
-	permissions, err := host.permissions(pluginID)
+	authorization, err := host.authorization(pluginID)
 	if err != nil {
 		return nil, err
 	}
+	permissions := authorization.Permissions
 	var response any
 	switch operation {
 	case OperationHTTP:
-		response, err = host.http(ctx, pluginID, permissions, payload)
+		response, err = host.http(ctx, pluginID, authorization, payload)
 	case OperationStorageGet:
 		response, err = host.storageGet(pluginID, permissions, payload)
 	case OperationStorageSet:
@@ -169,7 +178,9 @@ func (host *Host) Call(ctx context.Context, pluginID string, operation uint32, p
 	case OperationEventPoll:
 		response, err = host.pollEvents(pluginID, permissions, payload)
 	case OperationAssetRegister:
-		response, err = host.registerAsset(ctx, pluginID, permissions, payload)
+		response, err = host.registerAsset(ctx, pluginID, authorization, payload)
+	case OperationCredentialCommit:
+		response, err = host.commitCredential(pluginID, authorization, payload)
 	default:
 		err = invalid("plugin_host_operation_invalid", nil)
 	}
@@ -184,12 +195,15 @@ func (host *Host) Call(ctx context.Context, pluginID string, operation uint32, p
 }
 
 type Asset struct {
-	PluginID    string
-	URL         string
-	Headers     http.Header
-	ExpiresAt   time.Time
-	Body        []byte
-	ContentType string
+	PluginID          string
+	ConnectionID      string
+	PackageID         uint
+	RuntimeGeneration uint64
+	URL               string
+	Headers           http.Header
+	ExpiresAt         time.Time
+	Body              []byte
+	ContentType       string
 }
 
 // AssetStream is the only supported bridge from a registered opaque asset to
@@ -202,18 +216,27 @@ type AssetStream struct {
 }
 
 type assetRegisterRequest struct {
-	URL         string            `json:"url"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	TTLSeconds  int               `json:"ttlSeconds,omitempty"`
-	BodyBase64  string            `json:"bodyBase64,omitempty"`
-	ContentType string            `json:"contentType,omitempty"`
+	ConnectionID string            `json:"connectionId"`
+	URL          string            `json:"url"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	TTLSeconds   int               `json:"ttlSeconds,omitempty"`
+	BodyBase64   string            `json:"bodyBase64,omitempty"`
+	ContentType  string            `json:"contentType,omitempty"`
 }
 
-func (host *Host) registerAsset(ctx context.Context, pluginID string, permissions []contract.Permission, payload []byte) (map[string]any, error) {
+func (host *Host) registerAsset(ctx context.Context, pluginID string, authorization pluginAuthorization, payload []byte) (map[string]any, error) {
 	var input assetRegisterRequest
 	if err := strictJSON(payload, &input); err != nil {
 		return nil, invalid("plugin_asset_request_invalid", err)
 	}
+	if _, err := uuid.Parse(input.ConnectionID); err != nil {
+		return nil, denied("plugin_asset_connection_denied", err)
+	}
+	var connection models.PluginConnection
+	if err := host.db.First(&connection, "id = ? AND plugin_id = ? AND enabled = ?", input.ConnectionID, pluginID, true).Error; err != nil {
+		return nil, denied("plugin_asset_connection_denied", err)
+	}
+	permissions := authorization.Permissions
 	inline := input.BodyBase64 != ""
 	if inline == (input.URL != "") {
 		return nil, invalid("plugin_asset_request_invalid", nil)
@@ -259,7 +282,11 @@ func (host *Host) registerAsset(ctx context.Context, pluginID string, permission
 	if target != nil {
 		targetURL = target.String()
 	}
-	asset := Asset{PluginID: pluginID, URL: targetURL, Headers: headers, ExpiresAt: now.Add(time.Duration(ttl) * time.Second), Body: append([]byte(nil), body...), ContentType: input.ContentType}
+	asset := Asset{
+		PluginID: pluginID, ConnectionID: connection.ID, PackageID: authorization.PackageID,
+		RuntimeGeneration: authorization.RuntimeGeneration, URL: targetURL, Headers: headers,
+		ExpiresAt: now.Add(time.Duration(ttl) * time.Second), Body: append([]byte(nil), body...), ContentType: input.ContentType,
+	}
 	host.assetsMu.Lock()
 	for key, current := range host.assets {
 		if !current.ExpiresAt.After(now) {
@@ -292,7 +319,23 @@ func (host *Host) ResolveAsset(reference string) (Asset, error) {
 	}
 	asset.Headers = asset.Headers.Clone()
 	asset.Body = append([]byte(nil), asset.Body...)
+	if err := host.validateAssetOwner(asset); err != nil {
+		delete(host.assets, reference)
+		return Asset{}, err
+	}
 	return asset, nil
+}
+
+func (host *Host) validateAssetOwner(asset Asset) error {
+	authorization, err := host.authorization(asset.PluginID)
+	if err != nil || authorization.PackageID != asset.PackageID || authorization.RuntimeGeneration != asset.RuntimeGeneration {
+		return invalid("plugin_asset_expired", err)
+	}
+	var connection models.PluginConnection
+	if err := host.db.First(&connection, "id = ? AND plugin_id = ? AND enabled = ?", asset.ConnectionID, asset.PluginID, true).Error; err != nil {
+		return invalid("plugin_asset_expired", err)
+	}
+	return nil
 }
 
 // OpenAsset resolves and opens an opaque online-media asset without exposing
@@ -311,10 +354,14 @@ func (host *Host) OpenAsset(ctx context.Context, reference, method, rangeHeader 
 	if err != nil {
 		return nil, err
 	}
-	permissions, err := host.permissions(asset.PluginID)
+	authorization, err := host.authorization(asset.PluginID)
 	if err != nil {
 		return nil, err
 	}
+	if authorization.PackageID != asset.PackageID || authorization.RuntimeGeneration != asset.RuntimeGeneration {
+		return nil, invalid("plugin_asset_expired", nil)
+	}
+	permissions := authorization.Permissions
 	if asset.URL == "" {
 		return openInlineAsset(asset, method, rangeHeader)
 	}
@@ -357,6 +404,20 @@ func (host *Host) OpenAsset(ctx context.Context, reference, method, rangeHeader 
 	return &AssetStream{StatusCode: response.StatusCode, Header: headers, Body: response.Body}, nil
 }
 
+// OpenAssetForPlugin additionally binds an opaque reference to the plugin
+// whose validated DownloadPlan is being executed. A plugin cannot consume a
+// guessed reference registered by another runtime generation/plugin.
+func (host *Host) OpenAssetForPlugin(ctx context.Context, pluginID, reference, method, rangeHeader string) (*AssetStream, error) {
+	asset, err := host.ResolveAsset(reference)
+	if err != nil {
+		return nil, err
+	}
+	if pluginID == "" || asset.PluginID != pluginID {
+		return nil, denied("plugin_asset_reference_denied", nil)
+	}
+	return host.OpenAsset(ctx, reference, method, rangeHeader)
+}
+
 func openInlineAsset(asset Asset, method, rangeHeader string) (*AssetStream, error) {
 	start, end := int64(0), int64(len(asset.Body)-1)
 	status := http.StatusOK
@@ -383,14 +444,20 @@ func openInlineAsset(asset Asset, method, rangeHeader string) (*AssetStream, err
 	return &AssetStream{StatusCode: status, Header: headers, Body: io.NopCloser(bytes.NewReader(body))}, nil
 }
 
-func (host *Host) permissions(pluginID string) ([]contract.Permission, error) {
+type pluginAuthorization struct {
+	PackageID         uint
+	RuntimeGeneration uint64
+	Permissions       []contract.Permission
+}
+
+func (host *Host) authorization(pluginID string) (pluginAuthorization, error) {
 	var installation models.PluginInstallation
 	if err := host.db.First(&installation, "plugin_id = ?", pluginID).Error; err != nil || installation.Status != models.PluginInstallationEnabled {
-		return nil, denied("plugin_host_plugin_disabled", err)
+		return pluginAuthorization{}, denied("plugin_host_plugin_disabled", err)
 	}
 	var grants []models.PluginPermissionGrant
 	if err := host.db.Where("plugin_id = ? AND plugin_package_id = ?", pluginID, installation.ActivePackageID).Order("id ASC").Find(&grants).Error; err != nil {
-		return nil, invalid("plugin_host_permissions_unavailable", err)
+		return pluginAuthorization{}, invalid("plugin_host_permissions_unavailable", err)
 	}
 	permissions := make([]contract.Permission, 0, len(grants))
 	for _, grant := range grants {
@@ -398,22 +465,23 @@ func (host *Host) permissions(pluginID string) ([]contract.Permission, error) {
 		decoder := json.NewDecoder(strings.NewReader(grant.PermissionJSON))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&permission); err != nil || permission.Validate() != nil {
-			return nil, denied("plugin_host_permission_snapshot_invalid", err)
+			return pluginAuthorization{}, denied("plugin_host_permission_snapshot_invalid", err)
 		}
 		permissions = append(permissions, permission)
 	}
-	return permissions, nil
+	return pluginAuthorization{PackageID: installation.ActivePackageID, RuntimeGeneration: installation.RuntimeGeneration, Permissions: permissions}, nil
 }
 
 type httpRequest struct {
-	ConnectionID       string              `json:"connectionId"`
-	Method             string              `json:"method"`
-	URL                string              `json:"url"`
-	Headers            map[string]string   `json:"headers,omitempty"`
-	Credential         string              `json:"credentialRef,omitempty"`
-	BodyBase64         string              `json:"bodyBase64,omitempty"`
-	TimeoutMS          int                 `json:"timeoutMs,omitempty"`
-	CredentialBindings []credentialBinding `json:"credentialBindings,omitempty"`
+	ConnectionID           string              `json:"connectionId"`
+	Method                 string              `json:"method"`
+	URL                    string              `json:"url"`
+	Headers                map[string]string   `json:"headers,omitempty"`
+	Credential             string              `json:"credentialRef,omitempty"`
+	BodyBase64             string              `json:"bodyBase64,omitempty"`
+	TimeoutMS              int                 `json:"timeoutMs,omitempty"`
+	CredentialBindings     []credentialBinding `json:"credentialBindings,omitempty"`
+	CaptureCredentialScope string              `json:"captureCredentialScope,omitempty"`
 }
 
 type credentialBinding struct {
@@ -424,12 +492,38 @@ type credentialBinding struct {
 }
 
 type httpResponse struct {
-	Status     int               `json:"status"`
-	Headers    map[string]string `json:"headers"`
-	BodyBase64 string            `json:"bodyBase64"`
+	Status                     int               `json:"status"`
+	Headers                    map[string]string `json:"headers"`
+	BodyBase64                 string            `json:"bodyBase64"`
+	CredentialCaptureRef       string            `json:"credentialCaptureRef,omitempty"`
+	CredentialCaptureExpiresAt string            `json:"credentialCaptureExpiresAt,omitempty"`
 }
 
-func (host *Host) http(ctx context.Context, pluginID string, permissions []contract.Permission, payload []byte) (httpResponse, error) {
+type capturedCookie struct {
+	Name   string
+	Value  string
+	Delete bool
+}
+
+type credentialCapture struct {
+	PluginID          string
+	ConnectionID      string
+	Scope             string
+	Origin            string
+	PackageID         uint
+	RuntimeGeneration uint64
+	Cookies           []capturedCookie
+	ExpiresAt         time.Time
+}
+
+type credentialCommitRequest struct {
+	ConnectionID string `json:"connectionId"`
+	Scope        string `json:"scope"`
+	CaptureRef   string `json:"captureRef"`
+}
+
+func (host *Host) http(ctx context.Context, pluginID string, authorization pluginAuthorization, payload []byte) (httpResponse, error) {
+	permissions := authorization.Permissions
 	var input httpRequest
 	if err := strictJSON(payload, &input); err != nil {
 		return httpResponse{}, invalid("plugin_http_request_invalid", err)
@@ -475,6 +569,15 @@ func (host *Host) http(ctx context.Context, pluginID string, permissions []contr
 	if len(input.CredentialBindings) != 0 && input.Credential == "" {
 		return httpResponse{}, denied("plugin_credential_binding_denied", nil)
 	}
+	if input.CaptureCredentialScope != "" {
+		if input.ConnectionID == "" || !scopeAllowed(input.CaptureCredentialScope, permissions) {
+			return httpResponse{}, denied("plugin_credential_capture_denied", nil)
+		}
+		var connection models.PluginConnection
+		if err := host.db.First(&connection, "id = ? AND plugin_id = ? AND enabled = ?", input.ConnectionID, pluginID, true).Error; err != nil || connection.CredentialScope != input.CaptureCredentialScope || connection.CredentialMode != models.PluginCredentialModeCookie {
+			return httpResponse{}, denied("plugin_credential_capture_denied", err)
+		}
+	}
 	if input.Credential != "" {
 		if err := host.attachCredential(pluginID, input.ConnectionID, input.Credential, input.CredentialBindings, permissions, request); err != nil {
 			return httpResponse{}, err
@@ -501,7 +604,192 @@ func (host *Host) http(ctx context.Context, pluginID string, permissions []contr
 	if len(responseBody) > maxHTTPResponseBytes {
 		return httpResponse{}, invalid("plugin_http_response_too_large", nil)
 	}
-	return httpResponse{Status: response.StatusCode, Headers: safeResponseHeaders(response.Header), BodyBase64: base64.StdEncoding.EncodeToString(responseBody)}, nil
+	result := httpResponse{Status: response.StatusCode, Headers: safeResponseHeaders(response.Header), BodyBase64: base64.StdEncoding.EncodeToString(responseBody)}
+	if input.CaptureCredentialScope != "" {
+		reference, expiresAt, captureErr := host.captureCredential(pluginID, input.ConnectionID, input.CaptureCredentialScope, authorization, target, response)
+		if captureErr != nil {
+			return httpResponse{}, captureErr
+		}
+		result.CredentialCaptureRef = reference
+		if !expiresAt.IsZero() {
+			result.CredentialCaptureExpiresAt = expiresAt.Format(time.RFC3339Nano)
+		}
+	}
+	return result, nil
+}
+
+func (host *Host) captureCredential(pluginID, connectionID, scope string, authorization pluginAuthorization, initial *url.URL, response *http.Response) (string, time.Time, error) {
+	if response.Request == nil || response.Request.URL == nil || !sameHTTPSOrigin(initial, response.Request.URL) {
+		// A successful cross-origin redirect may still be useful to the plugin,
+		// but it can never be a credential-capture boundary.
+		return "", time.Time{}, nil
+	}
+	cookies, err := validateCapturedCookies(response.Request.URL, response.Cookies())
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if len(cookies) == 0 {
+		return "", time.Time{}, nil
+	}
+	now := host.now().UTC()
+	expiresAt := now.Add(credentialCaptureTTL)
+	reference := uuid.NewString()
+	capture := credentialCapture{
+		PluginID: pluginID, ConnectionID: connectionID, Scope: scope,
+		Origin: canonicalOrigin(initial), PackageID: authorization.PackageID,
+		RuntimeGeneration: authorization.RuntimeGeneration, Cookies: cookies, ExpiresAt: expiresAt,
+	}
+	host.capturesMu.Lock()
+	defer host.capturesMu.Unlock()
+	for key, current := range host.captures {
+		if !current.ExpiresAt.After(now) {
+			delete(host.captures, key)
+		}
+	}
+	if len(host.captures) >= maxCredentialCaptures {
+		return "", time.Time{}, invalid("plugin_credential_capture_capacity_exceeded", nil)
+	}
+	host.captures[reference] = capture
+	return reference, expiresAt, nil
+}
+
+func (host *Host) commitCredential(pluginID string, authorization pluginAuthorization, payload []byte) (map[string]any, error) {
+	permissions := authorization.Permissions
+	var input credentialCommitRequest
+	if err := strictJSON(payload, &input); err != nil || !scopeAllowed(input.Scope, permissions) {
+		return nil, denied("plugin_credential_commit_denied", err)
+	}
+	if _, err := uuid.Parse(input.ConnectionID); err != nil {
+		return nil, denied("plugin_credential_commit_denied", err)
+	}
+	if _, err := uuid.Parse(input.CaptureRef); err != nil {
+		return nil, denied("plugin_credential_capture_invalid", err)
+	}
+	now := host.now().UTC()
+	host.capturesMu.Lock()
+	capture, found := host.captures[input.CaptureRef]
+	delete(host.captures, input.CaptureRef) // every reference is one-shot, including failed attempts
+	host.capturesMu.Unlock()
+	if !found || !capture.ExpiresAt.After(now) {
+		return nil, denied("plugin_credential_capture_expired", nil)
+	}
+	if capture.PluginID != pluginID || capture.ConnectionID != input.ConnectionID || capture.Scope != input.Scope {
+		return nil, denied("plugin_credential_capture_owner_mismatch", nil)
+	}
+	if authorization.PackageID != capture.PackageID || authorization.RuntimeGeneration != capture.RuntimeGeneration {
+		return nil, denied("plugin_credential_capture_generation_mismatch", nil)
+	}
+	var connection models.PluginConnection
+	if err := host.db.First(&connection, "id = ? AND plugin_id = ? AND enabled = ?", input.ConnectionID, pluginID, true).Error; err != nil || connection.CredentialScope != input.Scope || connection.CredentialMode != models.PluginCredentialModeCookie {
+		return nil, denied("plugin_credential_commit_denied", err)
+	}
+	merged, err := host.mergeCapturedCredential(pluginID, connection, capture.Cookies)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := host.credentials.Encrypt(CredentialPurpose(pluginID, connection.ID, input.Scope), merged)
+	if err != nil {
+		return nil, invalid("plugin_credential_store_unavailable", err)
+	}
+	result := host.db.Model(&models.PluginConnection{}).
+		Where("id = ? AND plugin_id = ? AND enabled = ? AND revision = ? AND credential_scope = ? AND credential_mode = ?", connection.ID, pluginID, true, connection.Revision, input.Scope, models.PluginCredentialModeCookie).
+		Updates(map[string]any{"credential_ciphertext": ciphertext, "revision": connection.Revision + 1, "updated_at": now})
+	if result.Error != nil {
+		return nil, invalid("plugin_credential_store_unavailable", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return nil, denied("plugin_credential_connection_changed", nil)
+	}
+	return map[string]any{"credentialUpdated": true}, nil
+}
+
+func (host *Host) mergeCapturedCredential(pluginID string, connection models.PluginConnection, captured []capturedCookie) (string, error) {
+	values := make(map[string]string)
+	if connection.CredentialCiphertext != "" {
+		plaintext, err := host.credentials.Decrypt(CredentialPurpose(pluginID, connection.ID, connection.CredentialScope), connection.CredentialCiphertext)
+		if err != nil {
+			return "", denied("plugin_credential_unavailable", err)
+		}
+		request := &http.Request{Header: http.Header{"Cookie": {plaintext}}}
+		for _, cookie := range request.Cookies() {
+			if cookieNamePattern.MatchString(cookie.Name) && len(cookie.Value) <= 4096 {
+				values[cookie.Name] = cookie.Value
+			}
+		}
+	}
+	for _, cookie := range captured {
+		if cookie.Delete {
+			delete(values, cookie.Name)
+		} else {
+			values[cookie.Name] = cookie.Value
+		}
+	}
+	if len(values) == 0 || len(values) > 128 {
+		return "", denied("plugin_credential_capture_invalid", nil)
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+"="+values[name])
+	}
+	merged := strings.Join(parts, "; ")
+	if len(merged) > 32*1024 {
+		return "", denied("plugin_credential_capture_invalid", nil)
+	}
+	return merged, nil
+}
+
+func validateCapturedCookies(origin *url.URL, cookies []*http.Cookie) ([]capturedCookie, error) {
+	if origin == nil || origin.Scheme != "https" || origin.Hostname() == "" || len(cookies) > 128 {
+		return nil, denied("plugin_credential_capture_invalid", nil)
+	}
+	hostname := strings.ToLower(strings.TrimSuffix(origin.Hostname(), "."))
+	result := make([]capturedCookie, 0, len(cookies))
+	seen := make(map[string]struct{}, len(cookies))
+	for _, cookie := range cookies {
+		if cookie == nil || !cookieNamePattern.MatchString(cookie.Name) || len(cookie.Value) > 4096 || strings.ContainsAny(cookie.Value, "\x00\r\n;") {
+			return nil, denied("plugin_credential_capture_invalid", nil)
+		}
+		domain := strings.ToLower(strings.Trim(strings.TrimSpace(cookie.Domain), "."))
+		if domain != "" {
+			if domain != hostname && !strings.HasSuffix(hostname, "."+domain) {
+				return nil, denied("plugin_credential_capture_domain_denied", nil)
+			}
+			public, _ := publicsuffix.PublicSuffix(domain)
+			if public == domain {
+				return nil, denied("plugin_credential_capture_domain_denied", nil)
+			}
+		}
+		if cookie.Path != "" && (!strings.HasPrefix(cookie.Path, "/") || len(cookie.Path) > 1024 || strings.ContainsAny(cookie.Path, "\x00\r\n")) {
+			return nil, denied("plugin_credential_capture_path_denied", nil)
+		}
+		// The host only performs HTTPS requests. SameSite=None without Secure is
+		// rejected because accepting it would normalize an invalid auth cookie.
+		if cookie.SameSite == http.SameSiteNoneMode && !cookie.Secure {
+			return nil, denied("plugin_credential_capture_secure_denied", nil)
+		}
+		if _, duplicate := seen[cookie.Name]; duplicate {
+			return nil, denied("plugin_credential_capture_invalid", nil)
+		}
+		seen[cookie.Name] = struct{}{}
+		result = append(result, capturedCookie{Name: cookie.Name, Value: cookie.Value, Delete: cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now().UTC()))})
+	}
+	return result, nil
+}
+
+func sameHTTPSOrigin(left, right *url.URL) bool {
+	return left != nil && right != nil && canonicalOrigin(left) != "" && canonicalOrigin(left) == canonicalOrigin(right)
+}
+
+func canonicalOrigin(value *url.URL) string {
+	if value == nil || value.Scheme != "https" || value.User != nil || value.Port() != "" || value.Hostname() == "" {
+		return ""
+	}
+	return "https://" + strings.ToLower(strings.TrimSuffix(value.Hostname(), "."))
 }
 
 func (host *Host) clientForPermissions(permissions []contract.Permission) http.Client {

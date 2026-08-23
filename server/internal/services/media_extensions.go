@@ -44,6 +44,12 @@ func isAutomaticTransferSubtitleFile(value string) bool {
 	return ok
 }
 
+func isAutomaticTransferDanmakuFile(value string) bool {
+	extension := strings.ToLower(pathpkg.Ext(value))
+	stem := strings.ToLower(strings.TrimSuffix(pathpkg.Base(value), extension))
+	return (extension == ".xml" || extension == ".json") && strings.Contains(stem, ".danmaku-")
+}
+
 func isAutomaticTransferSidecarFile(value string) bool {
-	return isAutomaticTransferSubtitleFile(value) || strings.EqualFold(pathpkg.Ext(value), ".jpg")
+	return isAutomaticTransferSubtitleFile(value) || isAutomaticTransferDanmakuFile(value) || strings.EqualFold(pathpkg.Ext(value), ".jpg")
 }

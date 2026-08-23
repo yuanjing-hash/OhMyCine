@@ -85,7 +85,51 @@ func Migrate(db *gorm.DB) error {
 }
 
 func schemaMigrations() []migration {
-	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}}
+	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}}
+}
+
+func migratePluginOnlineMediaContracts(db *gorm.DB) error {
+	statements := []string{
+		`ALTER TABLE plugin_connections ADD COLUMN last_health_status TEXT NOT NULL DEFAULT 'unknown'`,
+		`ALTER TABLE plugin_connections ADD COLUMN last_health_error_code TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE plugin_connections ADD COLUMN last_health_checked_at DATETIME`,
+		`CREATE INDEX idx_plugin_connections_last_health_status ON plugin_connections(last_health_status)`,
+		`CREATE TABLE plugin_online_libraries (
+			id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, connection_id TEXT NOT NULL,
+			external_key TEXT NOT NULL, name TEXT NOT NULL, home_contributions_json TEXT NOT NULL DEFAULT '[]',
+			enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0,
+			revision INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+			FOREIGN KEY(plugin_id) REFERENCES plugin_installations(plugin_id) ON DELETE CASCADE,
+			FOREIGN KEY(connection_id) REFERENCES plugin_connections(id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_online_library_identity ON plugin_online_libraries(connection_id, external_key)`,
+		`CREATE INDEX idx_plugin_online_libraries_plugin_id ON plugin_online_libraries(plugin_id)`,
+		`CREATE INDEX idx_plugin_online_libraries_enabled ON plugin_online_libraries(enabled)`,
+		`CREATE INDEX idx_plugin_online_libraries_sort_order ON plugin_online_libraries(sort_order)`,
+		`INSERT INTO plugin_online_libraries(id, plugin_id, connection_id, external_key, name, enabled, sort_order, revision, created_at, updated_at)
+		 SELECT id, plugin_id, id, 'default', name, enabled, 0, 1, created_at, updated_at FROM plugin_connections`,
+		`CREATE TABLE plugin_feed_caches (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, library_id TEXT NOT NULL, route_key TEXT NOT NULL,
+			cursor_key TEXT NOT NULL, refresh_session TEXT NOT NULL, response_json TEXT NOT NULL,
+			expires_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+			FOREIGN KEY(library_id) REFERENCES plugin_online_libraries(id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_feed_cache_identity ON plugin_feed_caches(library_id, route_key, cursor_key, refresh_session)`,
+		`CREATE INDEX idx_plugin_feed_caches_expires_at ON plugin_feed_caches(expires_at)`,
+		`CREATE TABLE plugin_action_receipts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, library_id TEXT NOT NULL, action TEXT NOT NULL,
+			idempotency_hash TEXT NOT NULL, response_json TEXT NOT NULL, created_at DATETIME NOT NULL,
+			FOREIGN KEY(library_id) REFERENCES plugin_online_libraries(id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX idx_plugin_action_receipt_identity ON plugin_action_receipts(library_id, action, idempotency_hash)`,
+		`CREATE INDEX idx_plugin_action_receipts_created_at ON plugin_action_receipts(created_at)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migratePluginHostCapabilities(db *gorm.DB) error {

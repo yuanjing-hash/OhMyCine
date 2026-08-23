@@ -20,6 +20,7 @@ type Config struct {
 	CredentialKeyFile             string
 	CredentialMasterKey           string
 	PluginDirectory               string
+	FFmpegPath                    string
 	TMDBDeploymentCredentialKind  string
 	TMDBDeploymentCredentialValue string
 	Environment                   string
@@ -80,6 +81,7 @@ func Load() (Config, error) {
 		TMDBDeploymentCredentialKind:  deploymentKind,
 		TMDBDeploymentCredentialValue: deploymentValue,
 		Environment:                   environment,
+		FFmpegPath:                    strings.TrimSpace(os.Getenv("OMC_FFMPEG_PATH")),
 		PublicOrigin:                  publicOrigin,
 		DevOrigin:                     devOrigin,
 		SessionIdleTTL:                2 * time.Hour,
@@ -87,6 +89,9 @@ func Load() (Config, error) {
 		DeviceTokenIdleTTL:            30 * 24 * time.Hour,
 		DeviceTokenMaxTTL:             180 * 24 * time.Hour,
 		CookieSecure:                  secure,
+	}
+	if strings.ContainsAny(config.FFmpegPath, "\x00\r\n") {
+		return Config{}, fmt.Errorf("OMC_FFMPEG_PATH is invalid")
 	}
 	if config.Port < 1 || config.Port > 65535 {
 		return Config{}, fmt.Errorf("OMC_SERVER_PORT must be between 1 and 65535")

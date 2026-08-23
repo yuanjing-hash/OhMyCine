@@ -1,0 +1,5 @@
+{
+  "favorite": { "bvid": "BV1xx411c7mD", "title": "收藏视频", "cover": "//i0.hdslb.com/favorite.jpg", "duration": 600, "upper": { "name": "UP 主" } },
+  "creator": { "mid": 123456, "uname": "关注的 UP 主", "face": "https://i1.hdslb.com/face.jpg", "sign": "简介" },
+  "subscription": { "season_id": 9876, "title": "追更番剧", "cover": "https://i0.hdslb.com/season.jpg", "evaluate": "番剧简介" }
+}

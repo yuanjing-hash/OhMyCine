@@ -11,12 +11,17 @@ const source = new ServerDataSource({
       let data: unknown = {}
       if (request.path === '/api/v1/player/media-libraries')
         data = { list: [] }
+      else if (request.path === '/api/v1/player/home-contributions')
+        data = { list: [{
+          id: 'library-1:recommended', libraryId: 'library-1', pluginId: 'org.ohmycine.fixture', providerLabel: 'Fixture', routeKey: 'recommended', title: '在线视频推荐', layout: 'hero', refreshable: true,
+          sections: [{ id: 'hero', title: '在线视频推荐', layout: 'hero', homeEligible: true, refreshable: true, refreshSession: 'session-1', items: [{ work: onlineWork(), actions: [{ id: 'favorite.add', label: '收藏', state: false }, { id: 'watch-later.remove', label: '移出稍后再看', state: true }] }] }],
+        }] }
       else if (request.path === '/api/v1/player/online-libraries')
         data = { list: [{ id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: '在线视频', providerLabel: 'Fixture', capabilities: ['site.feed', 'site.search', 'site.detail', 'media.playback'], available: true, homeContributions: ['recommended'] }] }
       else if (request.path.endsWith('/navigation'))
         data = [{ id: 'recommended', title: '推荐', pageType: 'feed', routeKey: 'recommended', refreshable: true }]
       else if (request.path.includes('/feeds/recommended'))
-        data = { sections: [{ id: 'hero', title: '在线视频推荐', layout: 'hero', homeEligible: true, items: [{ work: onlineWork() }] }], refreshSession: 'session-1' }
+        data = { sections: [{ id: 'hero', title: '在线视频推荐', layout: 'hero', homeEligible: true, refreshable: true, refreshSession: 'session-1', items: [{ work: onlineWork(), actions: [{ id: 'favorite.add', label: '收藏', state: false }, { id: 'watch-later.remove', label: '移出稍后再看', state: true }, { id: 'provider-private-action', label: '越权动作' }] }] }] }
       else if (request.path.includes('/search?'))
         data = { sections: [{ id: 'search', title: '搜索结果', layout: 'video-list', items: [{ work: onlineWork() }] }] }
       else if (request.path.startsWith('/api/v1/player/online-history?'))
@@ -27,7 +32,10 @@ const source = new ServerDataSource({
         data = {
           workId: 'video-1', segmentId: 'part-1', versionId: 'source-1', variantId: '1080p', delivery: 'server-gateway',
           variants: [{ id: '720p', label: '720P', available: true, width: 1280, height: 720 }, { id: '1080p', label: '1080P', available: true, width: 1920, height: 1080 }],
-          assets: [{ kind: 'progressive', urlRef: '/api/v1/player/online-assets/asset-1' }],
+          assets: [
+            { kind: 'dash-video', urlRef: '/api/v1/player/online-assets/asset-1' },
+            { kind: 'dash-audio', urlRef: '/api/v1/player/online-assets/audio-1' },
+          ],
           subtitles: [{ id: 'zh', label: '中文', language: 'zh-CN', format: 'vtt', urlRef: '/api/v1/player/online-assets/subtitle-1' }],
           danmaku: [{ id: 'native', label: '来源弹幕', format: 'ohmycine-danmaku-v1+json', urlRef: '/api/v1/player/online-assets/danmaku-1' }],
         }
@@ -53,12 +61,18 @@ const navigation = await source.list(libraries[0].id)
 assert.deepEqual(navigation.map(item => [item.type, item.name]), [['folder', '推荐']])
 const feed = await source.list(navigation[0].id)
 assert.deepEqual(feed.map(item => [item.name, item.workIdentity?.scheme]), [['演示视频', 'plugin']])
+assert.deepEqual(feed[0].siteActions, [
+  { id: 'favorite.add', label: '收藏', state: false, requiresConfirmation: false, destructive: false },
+  { id: 'watch-later.remove', label: '移出稍后再看', state: true, requiresConfirmation: false, destructive: false },
+])
 const detail = await source.getDetail(feed[0].id)
 assert.equal(detail.children?.[0]?.name, '第一部分')
 assert.deepEqual(detail.mediaSources?.map(item => item.name), ['默认线路'])
 const stream = await source.getStreamRequest({ itemId: detail.children![0].id, variantId: '1080p' })
 assert.equal(stream.url, 'http://127.0.0.1:3000/api/v1/player/online-assets/asset-1')
+assert.equal(stream.audioUrl, 'http://127.0.0.1:3000/api/v1/player/online-assets/audio-1')
 assert.equal(stream.headers?.Authorization, `Bearer ${token}`)
+assert.equal(stream.audioHeaders?.Authorization, `Bearer ${token}`)
 assert.equal(stream.variantId, '1080p')
 assert.deepEqual(stream.variants?.map(item => item.id), ['720p', '1080p'])
 assert.equal(stream.subtitles?.[0]?.url, 'http://127.0.0.1:3000/api/v1/player/online-assets/subtitle-1')
@@ -67,6 +81,19 @@ assert.deepEqual(await source.getDanmakuComments(stream.danmaku![0]!), [{ id: 'c
 assert.deepEqual(calls.find(call => call.path.includes('/playback'))?.body, { segmentId: 'part-1', versionId: 'source-1', variantId: '1080p' })
 const home = await source.getHomeSections()
 assert.equal(home.find(section => section.title === '在线视频推荐')?.items[0]?.name, '演示视频')
+const onlineHome = home.find(section => section.title === '在线视频推荐')!
+assert.equal(onlineHome.sourceLabel, 'Fixture')
+assert.equal(onlineHome.refreshable, true)
+assert.deepEqual(onlineHome.items[0]?.siteActions, [
+  { id: 'favorite.add', label: '收藏', state: false, requiresConfirmation: false, destructive: false },
+  { id: 'watch-later.remove', label: '移出稍后再看', state: true, requiresConfirmation: false, destructive: false },
+])
+await source.refreshHomeSection!(onlineHome.refreshKey!)
+assert.equal(calls.some(call => call.path.endsWith('/feeds/recommended/refresh') && call.method === 'POST'), true)
+await source.performSiteAction!(feed[0].id, 'favorite.add', true, true)
+assert.equal(calls.some(call => call.path.endsWith('/actions/favorite.add') && call.method === 'POST' && (call.body as { confirmed?: boolean }).confirmed === true), true)
+await source.enqueueOnlineDownload!({ itemId: detail.children![0].id })
+assert.equal(calls.some(call => call.path.endsWith('/download') && call.method === 'POST'), true)
 assert.equal((await source.search('演示')).some(item => item.name === '演示视频'), true)
 const history = await source.listPlaybackHistory({ limit: 24, libraryId: libraries[0].id })
 assert.equal(history.items[0]?.resumePosition, 120)
@@ -99,7 +126,7 @@ await assert.rejects(async () => {
   await unsafe.getStreamRequest({ itemId: 'online-version|library-1|video-1|part-1|source-1' })
 }, /安全网关/)
 
-console.log(JSON.stringify({ onlineLibrary: true, genericPluginDTO: true, qualityVariants: true, sameOriginGateway: true, providerHistory: true, providerProgressSync: true, providerDanmaku: true }, null, 2))
+console.log(JSON.stringify({ onlineLibrary: true, genericPluginDTO: true, qualityVariants: true, dashAudio: true, sameOriginGateway: true, homeRefresh: true, siteActions: true, serverDownload: true, providerHistory: true, providerProgressSync: true, providerDanmaku: true }, null, 2))
 
 function onlineWork() {
   return {

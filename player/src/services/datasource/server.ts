@@ -1,11 +1,12 @@
 import type { ServerCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput } from './types'
+import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
 import {
+  onlineContributionErrorToHomeSection,
   onlineLibraryToMediaLibrary,
   onlineNavigationToMediaItem,
   onlinePlaybackToStreamRequest,
@@ -14,6 +15,7 @@ import {
   onlineWorkToMediaItem,
   parseOnlineFeedSections,
   parseOnlineHistoryPage,
+  parseOnlineHomeContributions,
   parseOnlineItemID,
   parseOnlineLibraryList,
   parseOnlineNavigationList,
@@ -205,7 +207,10 @@ export class ServerDataSource implements DataSource {
     }
     if (online?.kind === 'feed') {
       const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/feeds/${encodeURIComponent(online.routeKey)}`))
-      return sections.flatMap(section => section.items.map(item => onlineWorkToMediaItem(this.id, online.libraryId, item.work)))
+      return sections.flatMap(section => section.items.map(item => ({
+        ...onlineWorkToMediaItem(this.id, online.libraryId, item.work),
+        siteActions: item.actions,
+      })))
     }
     if (online?.kind === 'work' || online?.kind === 'version') {
       const work = await this.onlineWork(online.libraryId, online.workId)
@@ -240,9 +245,10 @@ export class ServerDataSource implements DataSource {
   }
 
   async getHomeSections(): Promise<HomeSection[]> {
-    const [libraries, onlineLibraries] = await Promise.all([
+    const [libraries, onlineLibraries, contributionResponse] = await Promise.all([
       this.listLibraries(),
       this.onlineLibraries().catch(() => []),
+      this.request('/api/v1/player/home-contributions').catch(() => null),
     ])
     const physicalLibraries = libraries.filter(library => /^\d+$/.test(library.id))
     const pages = await Promise.all(physicalLibraries.slice(0, 12).map(library => this.catalog(library.id).catch(() => [])))
@@ -251,18 +257,57 @@ export class ServerDataSource implements DataSource {
       { id: `${this.id}:hero`, sourceId: this.id, title: 'Server 精选', type: 'hero', items: items.filter(item => item.backdropUrl).slice(0, 12) },
       { id: `${this.id}:recent`, sourceId: this.id, title: 'Server 最近入库', type: 'recentlyAdded', items: items.slice(0, 24) },
     ].filter(section => section.items.length > 0) as HomeSection[]
-    const onlineSections = (await Promise.all(onlineLibraries.filter(item => item.available).slice(0, 8).flatMap(library =>
-      library.homeContributions.slice(0, 4).map(async (routeKey) => {
-        try {
-          const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/feeds/${encodeURIComponent(routeKey)}`))
-          return onlineSectionsToHomeSections(this.id, library.id, sections.filter(section => section.homeEligible))
-        }
-        catch {
-          return []
-        }
-      }),
-    ))).flat()
+    const onlineSections = contributionResponse == null
+      ? (await Promise.all(onlineLibraries.filter(item => item.available).slice(0, 8).flatMap(library =>
+          library.homeContributions.slice(0, 4).map(async (routeKey) => {
+            try {
+              const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/feeds/${encodeURIComponent(routeKey)}`))
+              return onlineSectionsToHomeSections(this.id, library.id, sections.filter(section => section.homeEligible), routeKey, library.providerLabel)
+            }
+            catch {
+              return []
+            }
+          }),
+        ))).flat()
+      : parseOnlineHomeContributions(contributionResponse).flatMap((contribution) => {
+          if (contribution.errorCode)
+            return [onlineContributionErrorToHomeSection(this.id, contribution)]
+          const eligible = contribution.sections.filter(section => section.homeEligible)
+          return onlineSectionsToHomeSections(
+            this.id,
+            contribution.libraryId,
+            eligible.length > 0 ? eligible : contribution.sections,
+            contribution.routeKey,
+            contribution.providerLabel,
+          )
+        })
     return [...physicalSections, ...onlineSections]
+  }
+
+  async refreshHomeSection(refreshKey: string): Promise<HomeSection[]> {
+    const [kind, libraryValue, routeValue] = refreshKey.split('|')
+    if (kind !== 'online-refresh' || !libraryValue || !routeValue)
+      throw new Error('在线栏目刷新标识无效。')
+    let libraryId: string
+    let routeKey: string
+    try {
+      libraryId = decodeURIComponent(libraryValue)
+      routeKey = decodeURIComponent(routeValue)
+    }
+    catch {
+      throw new Error('在线栏目刷新标识无效。')
+    }
+    const [sections, libraries] = await Promise.all([
+      this.request(
+        `/api/v1/player/online-libraries/${encodeURIComponent(libraryId)}/feeds/${encodeURIComponent(routeKey)}/refresh`,
+        'POST',
+        {},
+      ),
+      this.onlineLibraries().catch(() => []),
+    ])
+    const parsed = parseOnlineFeedSections(sections)
+    const providerLabel = libraries.find(item => item.id === libraryId)?.providerLabel
+    return onlineSectionsToHomeSections(this.id, libraryId, parsed.filter(section => section.homeEligible), routeKey, providerLabel)
   }
 
   async search(keyword: string): Promise<MediaItem[]> {
@@ -344,6 +389,48 @@ export class ServerDataSource implements DataSource {
 
   async getStreamURL(id: string): Promise<string> {
     return (await this.getStreamRequest({ itemId: id })).url
+  }
+
+  async enqueueOnlineDownload(request: PlaybackRequest & { readonly mediaLibraryId?: number }): Promise<void> {
+    const online = parseOnlineItemID(request.itemId)
+    if (online?.kind !== 'work' && online?.kind !== 'version')
+      throw new Error('当前 Server 媒体不是可下载的在线插件内容。')
+    const work = await this.onlineWork(online.libraryId, online.workId)
+    const candidates = work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version })))
+    const selected = online.kind === 'version'
+      ? candidates.find(item => item.segment.id === online.segmentId && item.version.id === online.versionId)
+      : candidates.find(item => item.version.id === request.mediaSourceId)
+        ?? candidates.find(item => versionAvailable(item.version, request.variantId))
+    if (!selected)
+      throw new Error('请选择可下载的媒体版本。')
+    const variantId = request.variantId ?? selected.version.variants.find(variant => variant.available)?.id
+    await this.request(
+      `/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/items/${encodeURIComponent(online.workId)}/download`,
+      'POST',
+      {
+        segmentId: selected.segment.id,
+        versionId: selected.version.id,
+        ...(variantId ? { variantId } : {}),
+        mediaLibraryId: request.mediaLibraryId ?? 0,
+        displayName: work.title,
+      },
+    )
+  }
+
+  async performSiteAction(itemId: string, action: SiteActionKey, value?: boolean, confirmed = false): Promise<void> {
+    const online = parseOnlineItemID(itemId)
+    if (online?.kind !== 'work' && online?.kind !== 'version')
+      throw new Error('当前媒体不支持站点操作。')
+    await this.request(
+      `/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/items/${encodeURIComponent(online.workId)}/actions/${encodeURIComponent(action)}`,
+      'POST',
+      {
+        ...(online.kind === 'version' ? { segmentId: online.segmentId, versionId: online.versionId } : {}),
+        ...(value != null ? { value } : {}),
+        confirmed,
+        idempotencyKey: crypto.randomUUID(),
+      },
+    )
   }
 
   async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {

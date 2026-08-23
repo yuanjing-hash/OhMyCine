@@ -40,6 +40,28 @@ func (a *API) PlayerOnlineFeed(c *gin.Context) {
 	})
 }
 
+func (a *API) PlayerOnlineFeedRefresh(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	var input struct{}
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("在线媒体栏目刷新请求无效", err))
+		return
+	}
+	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
+		return a.pluginRepositories.RefreshOnlineFeed(c.Request.Context(), actor, c.Param("id"), c.Param("routeKey"))
+	})
+}
+
+func (a *API) PlayerHomeContributions(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	items, err := a.pluginRepositories.HomeContributions(c.Request.Context(), actor)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+
 func (a *API) PlayerOnlineSearch(c *gin.Context) {
 	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
 		return a.pluginRepositories.OnlineSearch(c.Request.Context(), actor, c.Param("id"), c.Query("q"), c.Query("cursor"))
@@ -66,6 +88,54 @@ func (a *API) PlayerOnlinePlayback(c *gin.Context) {
 	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
 		return a.pluginRepositories.OnlinePlayback(c.Request.Context(), actor, c.Param("id"), c.Param("itemId"), input.SegmentID, input.VersionID, input.VariantID)
 	})
+}
+
+func (a *API) PlayerOnlineAction(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
+	var input struct {
+		SegmentID      string `json:"segmentId"`
+		VersionID      string `json:"versionId"`
+		Value          *bool  `json:"value"`
+		IdempotencyKey string `json:"idempotencyKey"`
+		Confirmed      bool   `json:"confirmed"`
+	}
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("在线媒体操作请求无效", err))
+		return
+	}
+	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
+		return a.pluginRepositories.InvokeSiteAction(c.Request.Context(), actor, c.Param("id"), c.Param("itemId"), c.Param("action"), services.PluginSiteActionInput{
+			SegmentID: input.SegmentID, VersionID: input.VersionID, Value: input.Value,
+			IdempotencyKey: input.IdempotencyKey, Confirmed: input.Confirmed,
+		})
+	})
+}
+
+func (a *API) PlayerOnlineDownload(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
+	var input struct {
+		SegmentID      string `json:"segmentId"`
+		VersionID      string `json:"versionId"`
+		VariantID      string `json:"variantId"`
+		MediaLibraryID uint   `json:"mediaLibraryId"`
+		Priority       int    `json:"priority"`
+		DisplayName    string `json:"displayName"`
+	}
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("在线媒体下载请求无效", err))
+		return
+	}
+	actor, _ := middleware.ActorFrom(c)
+	item, err := a.downloads.SubmitPluginDownload(c.Request.Context(), actor, services.SubmitPluginDownloadInput{
+		ConnectionID: c.Param("id"), ItemID: c.Param("itemId"), SegmentID: input.SegmentID,
+		VersionID: input.VersionID, VariantID: input.VariantID, MediaLibraryID: input.MediaLibraryID,
+		Priority: input.Priority, DisplayName: input.DisplayName,
+	}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusAccepted, item)
 }
 
 func (a *API) PlayerOnlineProgress(c *gin.Context) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import {
@@ -20,7 +21,9 @@ import {
   pluginInstallPreviewPath,
   pluginLifecyclePath,
   pluginConnectionPath,
+  pluginConnectionAuthPath,
   pluginConnectionsPath,
+  pluginLogsPath,
   pluginRepositoryListPath,
   pluginRepositoryPath,
   pluginRepositoryRefreshPath,
@@ -33,6 +36,8 @@ import {
   type InstalledPluginsResponse,
   type InstalledPluginSummary,
   type PluginConnectionSummary,
+  type PluginAuthPollSummary,
+  type PluginAuthStartSummary,
   type PluginCredentialMode,
   type PluginInstallPreview,
   type PluginMarketplaceEntry,
@@ -74,6 +79,8 @@ const connectionConfigText = ref('{\n  "homeRecommendationEnabled": true\n}')
 const connectionCredentialMode = ref<PluginCredentialMode>('none')
 const connectionCredentialScope = ref('')
 const connectionCredential = ref('')
+const connectionAuth = ref<Record<string, { loginSession: string, qrDataURL: string, expiresAt: string, state: PluginAuthPollSummary['state'], accountName?: string }>>({})
+const authPollTimers = new Map<string, number>()
 let installDialogReturnFocus: HTMLElement | null = null
 
 const canManage = computed(() => auth.can(Permissions.PluginsInstall))
@@ -196,9 +203,63 @@ async function deleteConnection(plugin: InstalledPluginSummary, connection: Plug
   }
 }
 
+async function startConnectionAuth(plugin: InstalledPluginSummary, connection: PluginConnectionSummary) {
+  connectionBusyID.value = `auth:${connection.id}`
+  try {
+    const response = await api<PluginAuthStartSummary>(pluginConnectionAuthPath(plugin.id, connection.id, 'start'), { method: 'POST', body: '{}' })
+    const qrDataURL = await QRCode.toDataURL(response.qrCodeUrl, { width: 220, margin: 1, errorCorrectionLevel: 'M' })
+    connectionAuth.value = { ...connectionAuth.value, [connection.id]: { loginSession: response.loginSession, qrDataURL, expiresAt: response.expiresAt, state: 'pending' } }
+    scheduleAuthPoll(plugin, connection, response.pollAfterSeconds)
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    connectionBusyID.value = ''
+  }
+}
+
+function scheduleAuthPoll(plugin: InstalledPluginSummary, connection: PluginConnectionSummary, delaySeconds: number) {
+  const existing = authPollTimers.get(connection.id)
+  if (existing !== undefined) window.clearTimeout(existing)
+  const timer = window.setTimeout(() => { void pollConnectionAuth(plugin, connection) }, Math.max(1, Math.min(delaySeconds, 30)) * 1000)
+  authPollTimers.set(connection.id, timer)
+}
+
+async function pollConnectionAuth(plugin: InstalledPluginSummary, connection: PluginConnectionSummary) {
+  const current = connectionAuth.value[connection.id]
+  if (!current) return
+  try {
+    const response = await api<PluginAuthPollSummary>(pluginConnectionAuthPath(plugin.id, connection.id, 'poll'), { method: 'POST', body: JSON.stringify({ login_session: current.loginSession }) })
+    connectionAuth.value = { ...connectionAuth.value, [connection.id]: { ...current, state: response.state, accountName: response.account?.name } }
+    if (response.state === 'pending' || response.state === 'scanned') scheduleAuthPoll(plugin, connection, response.pollAfterSeconds ?? 2)
+    else {
+      authPollTimers.delete(connection.id)
+      if (response.authenticated) {
+        notify(`已登录${response.account?.name ? `：${response.account.name}` : ''}`, 'success')
+        await loadConnections(plugin)
+      } else notify('二维码已过期，请重新生成', 'warning')
+    }
+  } catch (reason) {
+    authPollTimers.delete(connection.id)
+    notify(message(reason), 'error')
+  }
+}
+
+function connectionHealthLabel(connection: PluginConnectionSummary) {
+  if (connection.health_status === 'healthy') return '连接正常'
+  if (connection.health_status === 'auth_pending') return '等待扫码'
+  if (connection.health_status === 'auth_expired') return '登录已过期'
+  if (connection.health_status === 'error') return '连接异常'
+  return connection.enabled ? '待检测' : '已停用'
+}
+
 function credentialScopes(plugin: InstalledPluginSummary) {
   return plugin.permissions.filter(permission => permission.kind === 'credential.use').flatMap(permission => permission.scopes ?? [])
 }
+
+onBeforeUnmount(() => {
+  for (const timer of authPollTimers.values()) window.clearTimeout(timer)
+  authPollTimers.clear()
+})
 
 async function createRepository() {
   creating.value = true
@@ -517,12 +578,20 @@ onMounted(() => { void loadAll() })
           <div class="mt-4 flex flex-wrap gap-2">
             <span v-for="capability in plugin.capabilities" :key="capability" class="status-chip">{{ capability }}</span>
           </div>
+          <div class="semantic-inset mt-4 grid gap-2 p-3 text-xs">
+            <strong>已授权权限</strong>
+            <div v-for="permission in plugin.permissions" :key="`${permission.kind}:${permissionDetails(permission)}`" class="flex flex-wrap justify-between gap-2">
+              <span>{{ permissionLabel(permission.kind) }}</span><span class="text-subtle">{{ permissionDetails(permission) }}</span>
+            </div>
+            <span v-if="plugin.permissions.length === 0" class="text-subtle">此插件没有 Host 权限。</span>
+          </div>
           <div v-if="canManage" class="mt-5 flex flex-wrap gap-2">
             <button v-if="plugin.status === 'enabled'" type="button" class="btn-secondary" :disabled="pluginBusyID !== ''" @click="setPluginEnabled(plugin, false)">停用</button>
             <button v-else type="button" class="btn-primary" :disabled="pluginBusyID !== ''" @click="setPluginEnabled(plugin, true)">启用</button>
             <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || plugin.status !== 'enabled'" :aria-expanded="expandedPluginID === plugin.id" @click="toggleConnectionPanel(plugin)">{{ expandedPluginID === plugin.id ? '收起连接' : '连接与在线库' }}</button>
             <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || !hasMarketplaceUpdate(plugin)" @click="updateInstalledPlugin(plugin)">{{ hasMarketplaceUpdate(plugin) ? '升级' : '已是仓库最新版' }}</button>
             <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || !plugin.previous_version" @click="rollbackPlugin(plugin)">回滚</button>
+            <RouterLink class="btn-secondary" :to="pluginLogsPath(plugin.id)">查看日志</RouterLink>
             <button type="button" class="btn-danger" :disabled="pluginBusyID !== ''" @click="uninstallPlugin(plugin)">卸载</button>
           </div>
           <section v-if="expandedPluginID === plugin.id" class="semantic-inset mt-5 grid gap-4 p-4" :aria-label="`${plugin.name} 连接配置`">
@@ -538,9 +607,16 @@ onMounted(() => { void loadAll() })
                     <strong class="text-sm">{{ connection.name }}</strong>
                     <p class="text-subtle m-0 mt-1 text-xs">{{ connection.credential_configured ? `${connection.credential_mode} 凭据已安全配置` : '匿名连接' }}</p>
                   </div>
-                  <span :class="connection.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ connection.enabled ? '已启用' : '已停用' }}</span>
+                  <div class="flex flex-wrap gap-2"><span :class="connection.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ connection.enabled ? '已启用' : '已停用' }}</span><span :class="connection.health_status === 'error' || connection.health_status === 'auth_expired' ? 'status-chip status-chip--warning' : 'status-chip'">{{ connectionHealthLabel(connection) }}</span></div>
                 </div>
-                <div v-if="canManage" class="mt-3 flex gap-2">
+                <p v-if="connection.health_error_code" class="semantic-warning mt-3 p-2 text-xs">健康错误：<span class="font-mono">{{ connection.health_error_code }}</span></p>
+                <div v-if="connectionAuth[connection.id]" class="semantic-inset mt-3 grid justify-items-center gap-2 p-3 text-center text-xs">
+                  <img :src="connectionAuth[connection.id].qrDataURL" width="220" height="220" alt="插件登录二维码" class="rounded bg-white p-2" />
+                  <strong>{{ connectionAuth[connection.id].state === 'scanned' ? '已扫码，请在手机端确认' : connectionAuth[connection.id].state === 'confirmed' ? `登录成功${connectionAuth[connection.id].accountName ? `：${connectionAuth[connection.id].accountName}` : ''}` : connectionAuth[connection.id].state === 'expired' ? '二维码已过期' : '请使用站点客户端扫码' }}</strong>
+                  <span class="text-subtle">二维码有效期至 {{ formatTime(connectionAuth[connection.id].expiresAt) }}</span>
+                </div>
+                <div v-if="canManage" class="mt-3 flex flex-wrap gap-2">
+                  <button v-if="connection.credential_mode === 'cookie' && plugin.capabilities.includes('site.interaction')" type="button" class="btn-primary" :disabled="connectionBusyID !== '' || !connection.enabled" @click="startConnectionAuth(plugin, connection)">{{ connection.credential_configured ? '重新扫码登录' : '扫码登录' }}</button>
                   <button type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="setConnectionEnabled(plugin, connection, !connection.enabled)">{{ connection.enabled ? '停用' : '启用' }}</button>
                   <button type="button" class="btn-danger" :disabled="connectionBusyID !== ''" @click="deleteConnection(plugin, connection)">删除</button>
                 </div>
@@ -555,7 +631,7 @@ onMounted(() => { void loadAll() })
                 <div><label class="label">认证方式</label><select v-model="connectionCredentialMode" class="input"><option value="none">匿名 / 不使用凭据</option><option v-if="credentialScopes(plugin).length" value="cookie">Cookie</option><option v-if="credentialScopes(plugin).length" value="bearer">Bearer Token</option></select></div>
                 <div v-if="connectionCredentialMode !== 'none'"><label class="label">凭据范围</label><select v-model="connectionCredentialScope" class="input" required><option v-for="scope in credentialScopes(plugin)" :key="scope" :value="scope">{{ scope }}</option></select></div>
               </div>
-              <div v-if="connectionCredentialMode !== 'none'"><label class="label">凭据</label><textarea v-model="connectionCredential" class="input min-h-20 font-mono text-xs" required autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">保存后不会再次回显明文；日志、普通 API 和 Player 都不会收到它。</p></div>
+              <div v-if="connectionCredentialMode !== 'none'"><label class="label">凭据{{ connectionCredentialMode === 'cookie' ? '（可留空后扫码登录）' : '' }}</label><textarea v-model="connectionCredential" class="input min-h-20 font-mono text-xs" :required="connectionCredentialMode === 'bearer'" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">Cookie 模式可先创建连接再扫码；手动填写的凭据保存后也不会再次回显明文，日志、普通 API 和 Player 都不会收到它。</p></div>
               <button class="btn-primary" :disabled="connectionBusyID !== '' || !connectionName.trim()">{{ connectionBusyID === `new:${plugin.id}` ? '正在创建…' : '创建连接' }}</button>
             </form>
           </section>

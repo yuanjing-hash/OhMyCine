@@ -15,12 +15,14 @@
   "dependencies": {
     "@unocss/reset": "^66.3.3",
     "pinia": "^3.0.3",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.17",
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.1",
     "@types/node": "^24.0.10",
+    "@types/qrcode": "^1.5.6",
     "@unocss/preset-wind3": "^66.3.3",
     "@unocss/vite": "^66.3.3",
     "@vitejs/plugin-vue": "^6.0.0",

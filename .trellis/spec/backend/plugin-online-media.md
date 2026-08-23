@@ -20,6 +20,7 @@ GET  /api/v1/player/online-libraries/:id/feeds/:routeKey
 GET  /api/v1/player/online-libraries/:id/search
 GET  /api/v1/player/online-libraries/:id/items/:itemId
 POST /api/v1/player/online-libraries/:id/items/:itemId/playback
+POST /api/v1/player/online-libraries/:id/items/:itemId/download
 POST /api/v1/player/online-libraries/:id/items/:itemId/progress
 GET  /api/v1/player/online-history
 GET|HEAD /api/v1/player/online-assets/:opaque
@@ -47,6 +48,9 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 - Playback-plan UUID asset references are rewritten to same-origin `/api/v1/player/online-assets/{uuid}` URLs. Asset lookup revalidates installation state, connection, permission, domain, and package generation on every read.
 - Online assets allow GET/HEAD and one Range only. Stream responses preserve only allowlisted media headers, support 206/416, use `Cache-Control: no-store`, and never buffer whole remote media.
 - Host HTTP disables ambient environment proxies, resolves and dials a validated public IP, revalidates every redirect, and strips Cookie/Authorization on cross-origin redirects.
+- Download requests select a physical local media library explicitly or by its configured ordering, snapshot its classification/naming/transfer settings, and enter the existing persistent `download` queue. The plugin returns only a validated `DownloadPlan`; it never selects a filesystem path or command line.
+- Every plugin download attempt resolves a fresh plan from immutable Work/Segment/Version/Variant identities. Plans may contain one video asset, optional sidecars, or exactly one DASH video/audio pair with a fixed `dash-av` merge. Asset references are UUIDs bound to the owning plugin and are never persisted as reusable upstream URLs.
+- Plugin downloads write only below `<staging>/.ohmycine-plugin-downloads/<download-task-uuid>`. Cancel, retry, terminal-history deletion, and post-transfer cleanup revalidate this exact task boundary and reject directories or symlinks. DASH merge uses the host-owned MediaTool with fixed FFmpeg arguments and no plugin-provided flags.
 
 ### 4. Validation & Error Matrix
 
@@ -60,6 +64,9 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 | Asset reference is unknown, expired, or package changed | Return `plugin_asset_expired` without revealing internals |
 | Asset targets private/reserved IP, unsafe redirect, or unauthorized domain | Reject before response bytes are exposed |
 | Cross-origin redirect occurs | Remove Cookie and Authorization before the next hop |
+| DownloadPlan contains a path, raw URL, header reference, extra audio/video, unknown asset type, or mismatched identity | Reject with `plugin_response_invalid`; create no unmanaged output |
+| Download asset expires before completion | Resolve one fresh plan in the current attempt; never reuse the old URL reference |
+| FFmpeg is missing or merge fails | Persist a safe media-tool error and retain only task-scoped managed output for controlled retry/deletion |
 
 ### 5. Good / Base / Bad Cases
 
@@ -72,6 +79,7 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 
 - Service tests cover permission duplication, enabled-state checks, capability checks, safe error mapping, `libraryId` injection, single-source cursor pass-through, aggregate exhaustion, exact-page boundaries, malformed-source isolation, and cursor tampering.
 - Host tests cover GET/HEAD, 206/416, response-size/header limits, private-IP rejection, DNS rebinding, redirect revalidation, cross-origin credential stripping, and package/permission revalidation.
+- Download tests cover plan identity/topology validation, plugin-owned assets, single-file and DASH execution, subtitle/danmaku manifests, task-root confinement, retry re-resolution, cancellation/deletion cleanup, and fixed MediaTool behavior.
 - HTTP tests cover Player Device Bearer only, no-store, route parameter bounds, and safe error envelopes.
 - Run `go test ./...`, `go vet ./...`, both Server builds, and a Windows isolated runtime smoke.
 

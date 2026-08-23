@@ -49,6 +49,9 @@ var operationCodes = map[string]uint64{
 	"media.download_plan":    6,
 	"site.history":           7,
 	"playback.progress_sync": 8,
+	"site.interaction":       9,
+	"site.auth.start":        10,
+	"site.auth.poll":         11,
 }
 
 type Error struct {

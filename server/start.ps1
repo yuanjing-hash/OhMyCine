@@ -92,6 +92,9 @@ $env:OMC_SERVER_PORT = $listenSettings.Port
 $env:OMC_PUBLIC_ORIGIN = $listenSettings.PublicOrigin
 $env:OMC_DATABASE_PATH = $database
 $env:OMC_LOG_DIR = $logDirectory
+if (-not [Environment]::GetEnvironmentVariable('OMC_FFMPEG_PATH', 'Process')) {
+    $env:OMC_FFMPEG_PATH = Join-Path $runtime 'tools\ffmpeg\bin\ffmpeg.exe'
+}
 
 Write-Step "Starting OhMyCine Server at $($env:OMC_PUBLIC_ORIGIN)"
 Write-Host "    Database: $database"

@@ -66,12 +66,15 @@ pub fn mpv_playback_diagnostics(state: State<'_, MpvState>) -> DesktopPlaybackDi
 pub async fn mpv_load(
     path: String,
     headers: Option<Vec<MpvHttpHeader>>,
+    audio_path: Option<String>,
+    audio_headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
     state: State<'_, MpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
     let _ = title;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
+    let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
     let (path, headers) = if is_remote_http_stream(&path) && !headers.is_empty() {
         (stream_proxy.prepare(path, headers).await?, Vec::new())
     } else {
@@ -81,8 +84,19 @@ pub async fn mpv_load(
         .into_iter()
         .map(|header| (header.name, header.value))
         .collect::<Vec<_>>();
+    let audio_path = match audio_path {
+        Some(value) if !value.trim().is_empty() => {
+            let value = value.trim().to_string();
+            if is_remote_http_stream(&value) && !audio_headers.is_empty() {
+                Some(stream_proxy.prepare(value, audio_headers).await?)
+            } else {
+                Some(value)
+            }
+        }
+        _ => None,
+    };
     let mut player = state.lock().map_err(|err| err.to_string())?;
-    player.load_file_with_headers(&path, &headers)
+    player.load_file_with_headers(&path, &headers, audio_path.as_deref())
 }
 
 fn is_remote_http_stream(path: &str) -> bool {

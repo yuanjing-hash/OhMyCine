@@ -1,6 +1,6 @@
 [package]
 name = "ohmycine-plugin-bilibili"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -14,7 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 urlencoding = "2"
 roxmltree = "0.21"
-time = { version = "0.3", default-features = false, features = ["formatting"] }
+time = { version = "0.3", default-features = false, features = ["formatting", "parsing"] }
 
 [profile.release]
 codegen-units = 1

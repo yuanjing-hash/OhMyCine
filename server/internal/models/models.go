@@ -234,17 +234,20 @@ const (
 // plugin. Secrets remain encrypted and are only consumed by the controlled
 // Host HTTP capability; they are never returned to guest memory or Player.
 type PluginConnection struct {
-	ID                   string    `gorm:"primaryKey;size:36" json:"id"`
-	PluginID             string    `gorm:"size:128;not null;index" json:"plugin_id"`
-	Name                 string    `gorm:"size:128;not null" json:"name"`
-	ConfigJSON           string    `gorm:"type:text;not null;default:'{}'" json:"-"`
-	CredentialScope      string    `gorm:"size:128;not null;default:''" json:"credential_scope"`
-	CredentialMode       string    `gorm:"size:16;not null;default:'none'" json:"credential_mode"`
-	CredentialCiphertext string    `gorm:"type:text;not null;default:''" json:"-"`
-	Enabled              bool      `gorm:"not null;default:true;index" json:"enabled"`
-	Revision             uint64    `gorm:"not null;default:1" json:"revision"`
-	CreatedAt            time.Time `gorm:"not null" json:"created_at"`
-	UpdatedAt            time.Time `gorm:"not null" json:"updated_at"`
+	ID                   string     `gorm:"primaryKey;size:36" json:"id"`
+	PluginID             string     `gorm:"size:128;not null;index" json:"plugin_id"`
+	Name                 string     `gorm:"size:128;not null" json:"name"`
+	ConfigJSON           string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	CredentialScope      string     `gorm:"size:128;not null;default:''" json:"credential_scope"`
+	CredentialMode       string     `gorm:"size:16;not null;default:'none'" json:"credential_mode"`
+	CredentialCiphertext string     `gorm:"type:text;not null;default:''" json:"-"`
+	Enabled              bool       `gorm:"not null;default:true;index" json:"enabled"`
+	LastHealthStatus     string     `gorm:"size:16;not null;default:'unknown';index" json:"last_health_status"`
+	LastHealthErrorCode  string     `gorm:"size:96;not null;default:''" json:"last_health_error_code"`
+	LastHealthCheckedAt  *time.Time `json:"last_health_checked_at"`
+	Revision             uint64     `gorm:"not null;default:1" json:"revision"`
+	CreatedAt            time.Time  `gorm:"not null" json:"created_at"`
+	UpdatedAt            time.Time  `gorm:"not null" json:"updated_at"`
 }
 
 // PluginPrivateKV is encrypted per connection because plugins may keep remote
@@ -262,6 +265,49 @@ type PluginPrivateKV struct {
 }
 
 func (PluginPrivateKV) TableName() string { return "plugin_private_kv" }
+
+// PluginOnlineLibrary is a logical online catalog published by one plugin
+// connection. It is deliberately separate from physical media_libraries: it
+// cannot be scanned, transferred, or used as a STRM projection root.
+type PluginOnlineLibrary struct {
+	ID                    string    `gorm:"primaryKey;size:36" json:"id"`
+	PluginID              string    `gorm:"size:128;not null;index" json:"plugin_id"`
+	ConnectionID          string    `gorm:"size:36;not null;uniqueIndex:idx_plugin_online_library_identity,priority:1" json:"connection_id"`
+	ExternalKey           string    `gorm:"size:128;not null;uniqueIndex:idx_plugin_online_library_identity,priority:2" json:"external_key"`
+	Name                  string    `gorm:"size:128;not null" json:"name"`
+	HomeContributionsJSON string    `gorm:"type:text;not null;default:'[]'" json:"-"`
+	Enabled               bool      `gorm:"not null;default:true;index" json:"enabled"`
+	SortOrder             int64     `gorm:"not null;default:0;index" json:"sort_order"`
+	Revision              uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt             time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt             time.Time `gorm:"not null" json:"updated_at"`
+}
+
+// PluginFeedCache stores only host-validated, credential-free DTOs. Provider
+// cursors remain opaque and are bound to a refresh session so a new refresh
+// never invalidates an older page that the Player is still browsing.
+type PluginFeedCache struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	LibraryID      string    `gorm:"size:36;not null;uniqueIndex:idx_plugin_feed_cache_identity,priority:1" json:"library_id"`
+	RouteKey       string    `gorm:"size:256;not null;uniqueIndex:idx_plugin_feed_cache_identity,priority:2" json:"route_key"`
+	CursorKey      string    `gorm:"size:64;not null;uniqueIndex:idx_plugin_feed_cache_identity,priority:3" json:"-"`
+	RefreshSession string    `gorm:"size:36;not null;uniqueIndex:idx_plugin_feed_cache_identity,priority:4" json:"refresh_session"`
+	ResponseJSON   string    `gorm:"type:text;not null" json:"-"`
+	ExpiresAt      time.Time `gorm:"not null;index" json:"expires_at"`
+	CreatedAt      time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"not null" json:"updated_at"`
+}
+
+// PluginActionReceipt makes a remote-mutating site action idempotent without
+// storing the raw user-provided idempotency key.
+type PluginActionReceipt struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	LibraryID       string    `gorm:"size:36;not null;uniqueIndex:idx_plugin_action_receipt_identity,priority:1" json:"library_id"`
+	Action          string    `gorm:"size:64;not null;uniqueIndex:idx_plugin_action_receipt_identity,priority:2" json:"action"`
+	IdempotencyHash string    `gorm:"size:64;not null;uniqueIndex:idx_plugin_action_receipt_identity,priority:3" json:"-"`
+	ResponseJSON    string    `gorm:"type:text;not null" json:"-"`
+	CreatedAt       time.Time `gorm:"not null;index" json:"created_at"`
+}
 
 const (
 	StorageTypeLocal         = "local"
@@ -800,14 +846,17 @@ const (
 	DownloaderTypeFake                 = "fake"
 	DownloaderTypeQBittorrent          = "qbittorrent"
 	DownloaderTypePan115Offline        = "pan115_offline"
+	DownloaderTypePluginHTTP           = "plugin_http"
 	DownloadTaskStatusQueued           = "queued"
 	DownloadTaskStatusSubmitting       = "submitting"
+	DownloadTaskStatusResolving        = "resolving"
 	DownloadTaskStatusMetadata         = "metadata"
 	DownloadTaskStatusClassifying      = "classifying"
 	DownloadTaskStatusWaiting          = "waiting_user_action"
 	DownloadTaskStatusCategorized      = "categorized"
 	DownloadTaskStatusDownloading      = "downloading"
 	DownloadTaskStatusVerifying        = "verifying"
+	DownloadTaskStatusMerging          = "merging"
 	DownloadTaskStatusPaused           = "paused"
 	DownloadTaskStatusCompleted        = "completed"
 	DownloadTaskStatusFailed           = "failed"
@@ -815,6 +864,7 @@ const (
 	DownloadSourceOriginUser           = "user"
 	DownloadSourceOriginShare          = "share"
 	DownloadSourceOriginProviderIngest = "provider_ingest"
+	DownloadSourceOriginPlugin         = "plugin"
 )
 
 // Downloader stores only encrypted credentials. Public APIs must use an

@@ -345,3 +345,37 @@ func (a *API) DeletePluginConnection(c *gin.Context) {
 	}
 	success(c, http.StatusOK, gin.H{"deleted": true})
 }
+
+func (a *API) StartPluginConnectionAuth(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	var payload struct{}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("插件登录请求无效", err))
+		return
+	}
+	item, err := a.pluginRepositories.StartConnectionAuth(c.Request.Context(), actor, c.Param("plugin_id"), c.Param("connection_id"))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}
+
+func (a *API) PollPluginConnectionAuth(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 8<<10)
+	var payload struct {
+		LoginSession string `json:"login_session"`
+	}
+	if err := strictJSON(c, &payload); err != nil || payload.LoginSession == "" {
+		writeError(c, a.log, invalid("插件登录轮询请求无效", err))
+		return
+	}
+	item, err := a.pluginRepositories.PollConnectionAuth(c.Request.Context(), actor, c.Param("plugin_id"), c.Param("connection_id"), payload.LoginSession)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}

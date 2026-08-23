@@ -17,6 +17,7 @@ use crate::mpv::{
 struct LoadPayload {
     path: String,
     headers: Vec<MpvHttpHeader>,
+    audio_path: Option<String>,
     title: Option<String>,
 }
 
@@ -78,6 +79,8 @@ pub struct MpvTrackState {
 pub async fn mpv_load(
     path: String,
     headers: Option<Vec<MpvHttpHeader>>,
+    audio_path: Option<String>,
+    audio_headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
     state: State<'_, AndroidMpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
@@ -86,14 +89,27 @@ pub async fn mpv_load(
         return Err("播放地址为空。".to_string());
     }
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
+    let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
     let (path, headers) = if is_remote_http_stream(&path) {
         (stream_proxy.prepare(path, headers).await?, Vec::new())
     } else {
         (path, headers)
     };
+    let audio_path = match audio_path {
+        Some(value) if !value.trim().is_empty() => {
+            let value = value.trim().to_string();
+            if is_remote_http_stream(&value) {
+                Some(stream_proxy.prepare(value, audio_headers).await?)
+            } else {
+                Some(value)
+            }
+        }
+        _ => None,
+    };
     let payload = LoadPayload {
         path,
         headers,
+        audio_path,
         title: title.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.chars().take(160).collect())

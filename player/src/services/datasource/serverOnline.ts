@@ -1,4 +1,4 @@
-import type { HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackSubtitleTrack, ProviderDanmakuComment, ProviderPlaybackHistoryPage, StreamVariant } from './types'
+import type { HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackSubtitleTrack, ProviderDanmakuComment, ProviderPlaybackHistoryPage, SiteActionDescriptor, SiteActionKey, StreamVariant } from './types'
 
 export interface OnlineLibrarySummary {
   id: string
@@ -57,10 +57,11 @@ export interface OnlineFeedSection {
   id: string
   title: string
   layout: 'hero' | 'row' | 'poster-grid' | 'video-list'
-  items: Array<{ work: OnlineMediaWork, actions: string[] }>
+  items: Array<{ work: OnlineMediaWork, actions: SiteActionDescriptor[] }>
   cursor?: string
   refreshSession?: string
   homeEligible: boolean
+  refreshable: boolean
 }
 
 export interface OnlinePlaybackPlan {
@@ -74,6 +75,19 @@ export interface OnlinePlaybackPlan {
   expiresAt?: string
   subtitles: Array<{ id: string, label: string, language?: string, format?: string, urlRef: string }>
   danmaku: Array<{ id: string, label: string, language?: string, format?: string, urlRef: string }>
+}
+
+export interface OnlineHomeContribution {
+  id: string
+  libraryId: string
+  pluginId: string
+  providerLabel: string
+  routeKey: string
+  title: string
+  layout: OnlineFeedSection['layout']
+  refreshable: boolean
+  sections: OnlineFeedSection[]
+  errorCode?: string
 }
 
 interface OnlineHistoryRecord {
@@ -112,6 +126,51 @@ export function parseOnlineFeedSections(value: unknown): OnlineFeedSection[] {
   const data = record(value)
   const sections = Array.isArray(data.sections) ? data.sections : Array.isArray(value) ? value : []
   return sections.slice(0, 50).map(parseFeedSection).filter((item): item is OnlineFeedSection => item != null)
+}
+
+export function parseOnlineHomeContributions(value: unknown): OnlineHomeContribution[] {
+  const data = record(value)
+  const list = Array.isArray(data.list) ? data.list : []
+  return list.slice(0, 100).flatMap((raw): OnlineHomeContribution[] => {
+    const item = record(raw)
+    const id = requiredText(item.id, 512)
+    const libraryId = requiredText(item.libraryId ?? item.library_id, 512)
+    const pluginId = requiredText(item.pluginId ?? item.plugin_id, 256)
+    const providerLabel = requiredText(item.providerLabel ?? item.provider_label, 256)
+    const routeKey = requiredText(item.routeKey ?? item.route_key, 256)
+    const title = requiredText(item.title, 512)
+    const layout = oneOf(item.layout, ['hero', 'row', 'poster-grid', 'video-list'] as const)
+    if (!id || !libraryId || !pluginId || !providerLabel || !routeKey || !title || !layout)
+      return []
+    return [{
+      id,
+      libraryId,
+      pluginId,
+      providerLabel,
+      routeKey,
+      title,
+      layout,
+      refreshable: item.refreshable === true,
+      sections: parseOnlineFeedSections(item.sections),
+      errorCode: optionalText(item.errorCode ?? item.error_code, 128),
+    }]
+  })
+}
+
+export function onlineContributionErrorToHomeSection(sourceId: string, item: OnlineHomeContribution): HomeSection {
+  return {
+    id: `online:${item.libraryId}:error:${item.routeKey}`,
+    sourceId,
+    title: item.title,
+    type: 'recommended',
+    items: [],
+    providerIdentity: `online-library:${item.libraryId}`,
+    sourceLabel: item.providerLabel,
+    refreshKey: item.refreshable ? joinOnlineID('online-refresh', item.libraryId, item.routeKey) : undefined,
+    refreshable: item.refreshable,
+    layout: item.layout,
+    errorCode: item.errorCode ?? 'plugin_online_library_unavailable',
+  }
 }
 
 export function parseOnlineWork(value: unknown): OnlineMediaWork | null {
@@ -271,13 +330,65 @@ export function onlineWorkToDetail(sourceId: string, libraryId: string, item: On
   return { ...root, mediaSources, children }
 }
 
-export function onlineSectionsToHomeSections(sourceId: string, libraryId: string, sections: readonly OnlineFeedSection[]): HomeSection[] {
+export function onlineSectionsToHomeSections(
+  sourceId: string,
+  libraryId: string,
+  sections: readonly OnlineFeedSection[],
+  routeKey?: string,
+  providerLabel = 'Server 在线媒体库',
+): HomeSection[] {
   return sections.flatMap((section) => {
-    const items = section.items.map(item => onlineWorkToMediaItem(sourceId, libraryId, item.work))
+    const items = section.items.map(item => ({
+      ...onlineWorkToMediaItem(sourceId, libraryId, item.work),
+      siteActions: parseSiteActions(item.actions),
+    }))
     if (items.length === 0)
       return []
     const type: HomeSection['type'] = section.layout === 'hero' ? 'hero' : section.homeEligible ? 'recommended' : 'libraryRow'
-    return [{ id: `online:${libraryId}:${section.id}`, sourceId, title: section.title, type, items }]
+    return [{
+      id: `online:${libraryId}:${section.id}`,
+      sourceId,
+      title: section.title,
+      type,
+      items,
+      providerIdentity: `online-library:${libraryId}`,
+      sourceLabel: providerLabel,
+      refreshKey: section.refreshable && routeKey ? joinOnlineID('online-refresh', libraryId, routeKey) : undefined,
+      refreshable: section.refreshable,
+      layout: section.layout,
+    }]
+  })
+}
+
+function parseSiteActions(value: unknown): SiteActionDescriptor[] {
+  if (!Array.isArray(value))
+    return []
+  const allowed = new Set<SiteActionKey>([
+    'like.add',
+    'like.remove',
+    'favorite.add',
+    'favorite.remove',
+    'watch-later.add',
+    'watch-later.remove',
+    'follow.add',
+    'follow.remove',
+    'history.remove',
+  ])
+  const seen = new Set<SiteActionKey>()
+  return value.slice(0, 32).flatMap((raw): SiteActionDescriptor[] => {
+    const item = typeof raw === 'string' ? { id: raw, label: raw } : record(raw)
+    const id = requiredText(item.id, 64) as SiteActionKey | null
+    const label = requiredText(item.label, 128)
+    if (!id || !label || !allowed.has(id) || seen.has(id))
+      return []
+    seen.add(id)
+    return [{
+      id,
+      label,
+      state: typeof item.state === 'boolean' ? item.state : undefined,
+      requiresConfirmation: item.requiresConfirmation === true || item.requires_confirmation === true,
+      destructive: item.destructive === true,
+    }]
   })
 }
 
@@ -291,6 +402,9 @@ export function onlinePlaybackToStreamRequest(
   if (!primary)
     throw new Error('在线媒体播放方案缺少可播放视频资源。')
   const url = resolveServerGatewayURL(baseUrl, primary.urlRef)
+  const audio = primary.kind === 'dash-video'
+    ? plan.assets.find(asset => asset.kind === 'dash-audio')
+    : undefined
   const subtitles = plan.subtitles.flatMap((track, index): PlaybackSubtitleTrack[] => {
     try {
       return [{
@@ -325,6 +439,8 @@ export function onlinePlaybackToStreamRequest(
   return {
     url,
     headers: { Authorization: `Bearer ${accessToken}` },
+    audioUrl: audio ? resolveServerGatewayURL(baseUrl, audio.urlRef) : undefined,
+    audioHeaders: audio ? { Authorization: `Bearer ${accessToken}` } : undefined,
     mediaSourceId: plan.versionId,
     variantId: plan.variantId,
     variants: plan.variants,
@@ -441,7 +557,7 @@ function parseFeedSection(value: unknown): OnlineFeedSection | null {
     ? item.items.slice(0, MAX_LIST_ITEMS).flatMap((raw) => {
         const entry = record(raw)
         const work = parseOnlineWork(entry.work)
-        return work ? [{ work, actions: stringList(entry.actions, 50) }] : []
+        return work ? [{ work, actions: parseSiteActions(entry.actions) }] : []
       })
     : []
   return {
@@ -452,6 +568,7 @@ function parseFeedSection(value: unknown): OnlineFeedSection | null {
     cursor: optionalText(item.cursor, MAX_TEXT_LENGTH),
     refreshSession: optionalText(item.refreshSession ?? item.refresh_session, MAX_TEXT_LENGTH),
     homeEligible: item.homeEligible === true || item.home_eligible === true,
+    refreshable: item.refreshable === true,
   }
 }
 

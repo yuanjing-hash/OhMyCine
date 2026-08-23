@@ -41,7 +41,7 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 		status = http.StatusConflict
 	case services.CodeLoginRateLimited:
 		status = http.StatusTooManyRequests
-	case services.CodePluginRegistryRateLimited:
+	case services.CodePluginRegistryRateLimited, services.CodePluginFeedRateLimited:
 		status = http.StatusTooManyRequests
 	case services.CodeDirectoryRateLimited:
 		status = http.StatusTooManyRequests

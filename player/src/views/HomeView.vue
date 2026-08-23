@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { DataSource, MediaItem } from '@/services/datasource/types'
+import type { DataSource, HomeSection, MediaItem, SiteActionDescriptor } from '@/services/datasource/types'
+import type { HomeContributionPlacement, HomeContributionPreferences } from '@/services/homeContributionPreferences'
 import type { LocalMediaCollection } from '@/services/mediaCollections'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -7,8 +8,9 @@ import { useRouter } from 'vue-router'
 import CachedImage from '@/components/media/CachedImage.vue'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { contributionPreferenceKey, loadHomeContributionPreferences, saveHomeContributionPreferences } from '@/services/homeContributionPreferences'
 import { artworkCacheKey } from '@/services/imageCache'
-import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
+import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, requestMediaActionConfirmation, suppressMediaActionClick } from '@/services/mediaActions'
 import { annotateMissingCollectionSources, listLocalMediaCollections, removeLocalCollectionMember } from '@/services/mediaCollections'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackCompletionBatch, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
@@ -32,6 +34,10 @@ const errorMessage = ref<string | null>(null)
 const hasLoadedInitialHomeState = ref(false)
 const completedItemKeys = ref<Set<string>>(new Set())
 const localCollections = ref<LocalMediaCollection[]>([])
+const contributionPreferences = ref<HomeContributionPreferences>({})
+const isCustomizingHome = ref(false)
+const refreshingSectionId = ref<string | null>(null)
+const siteActionBusyKey = ref<string | null>(null)
 let seriesTargetRefreshId = 0
 
 const hasConfiguredSources = computed(() => store.configs.length > 0)
@@ -39,10 +45,22 @@ const hasHomeContent = computed(() => store.homeSections.some(section =>
   section.items.some(item => item.sourceId !== 'placeholder'),
 ))
 const isFirstRunHome = computed(() => hasLoadedInitialHomeState.value && !hasConfiguredSources.value && !hasHomeContent.value)
-const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero' && s.items.length > 0))
+const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero' && !s.providerIdentity && s.items.length > 0))
 const continueWatchingSection = computed(() => store.homeSections.find(s => s.type === 'continueWatching' && s.items.length > 0))
 const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded' && s.items.length > 0))
-const heroItems = computed(() => heroSection.value?.items ?? [])
+const contributionSections = computed(() => store.homeSections.filter(section => section.providerIdentity && section.items.length > 0))
+const contributionErrors = computed(() => store.homeSections.filter(section => section.providerIdentity && section.errorCode))
+const visibleContributionSections = computed(() => contributionSections.value
+  .filter(section => contributionPreference(section).enabled)
+  .sort((left, right) => contributionPreference(left).order - contributionPreference(right).order))
+const contentContributionSections = computed(() => visibleContributionSections.value
+  .filter(section => contributionPreference(section).placement === 'content'))
+const heroItems = computed(() => dedupeHomeItems([
+  ...(heroSection.value?.items ?? []),
+  ...visibleContributionSections.value
+    .filter(section => contributionPreference(section).placement === 'hero')
+    .flatMap(section => section.items),
+]).slice(0, 20))
 const recentlyAddedItems = computed(() => recentlyAddedSection.value?.items.slice(0, 6) ?? [])
 const recentlyAddedBrowseSourceId = computed(() => recentlyAddedSection.value?.sourceId)
 
@@ -133,6 +151,7 @@ function handleHomeCardClick(item: MediaItem, event: MouseEvent, action: 'play' 
 onMounted(async () => {
   window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshHomePlayedStates)
   store.loadConfigs()
+  contributionPreferences.value = loadHomeContributionPreferences()
   try {
     await store.loadHomeSections()
   }
@@ -143,6 +162,101 @@ onMounted(async () => {
   await refreshHomePlayedStates()
   await refreshLocalCollections()
 })
+
+function contributionPreference(section: HomeSection) {
+  const key = contributionKey(section)
+  return contributionPreferences.value[key] ?? {
+    enabled: true,
+    order: contributionSections.value.findIndex(item => contributionKey(item) === key),
+    placement: section.layout === 'hero' ? 'hero' as const : 'content' as const,
+  }
+}
+
+function contributionKey(section: HomeSection): string {
+  return contributionPreferenceKey(section.providerIdentity ?? 'unknown', section.id)
+}
+
+async function updateContributionPreference(section: HomeSection, patch: Partial<{ enabled: boolean, order: number, placement: HomeContributionPlacement }>) {
+  const key = contributionKey(section)
+  contributionPreferences.value = {
+    ...contributionPreferences.value,
+    [key]: { ...contributionPreference(section), ...patch },
+  }
+  await saveHomeContributionPreferences(contributionPreferences.value)
+}
+
+async function moveContribution(section: HomeSection, direction: -1 | 1) {
+  const ordered = [...visibleContributionSections.value]
+  const index = ordered.findIndex(item => contributionKey(item) === contributionKey(section))
+  const target = index + direction
+  if (index < 0 || target < 0 || target >= ordered.length)
+    return
+  const currentOrder = contributionPreference(ordered[index]).order
+  const targetOrder = contributionPreference(ordered[target]).order
+  await updateContributionPreference(ordered[index], { order: targetOrder })
+  await updateContributionPreference(ordered[target], { order: currentOrder })
+}
+
+async function refreshContribution(section: HomeSection) {
+  if (!section.refreshable || refreshingSectionId.value)
+    return
+  refreshingSectionId.value = section.id
+  errorMessage.value = null
+  try {
+    await store.refreshHomeSection(section)
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, '栏目刷新失败，请稍后重试。')
+  }
+  finally {
+    refreshingSectionId.value = null
+  }
+}
+
+function dedupeHomeItems(items: readonly MediaItem[]): MediaItem[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = item.workIdentity
+      ? `${item.workIdentity.scheme}:${item.workIdentity.mediaType}:${item.workIdentity.value}`
+      : `${item.sourceId}:${item.id}`
+    if (seen.has(key))
+      return false
+    seen.add(key)
+    return true
+  })
+}
+
+async function performSiteAction(item: MediaItem, action: SiteActionDescriptor) {
+  const source = store.getSource(item.sourceId)
+  if (!source?.performSiteAction)
+    return
+  const label = action.label
+  let confirmed = false
+  if (action.requiresConfirmation || action.destructive) {
+    const confirmation = await requestMediaActionConfirmation({
+      title: `确认${label}`,
+      message: `确定要对“${item.name}”执行“${label}”吗？此操作会同步到远端站点。`,
+      confirmLabel: label,
+      cancelLabel: '取消',
+      danger: action.destructive ? 'destructive' : 'caution',
+    })
+    if (!confirmation.confirmed)
+      return
+    confirmed = true
+  }
+  const busyKey = `${item.sourceId}:${item.id}:${action.id}`
+  siteActionBusyKey.value = busyKey
+  errorMessage.value = null
+  try {
+    await source.performSiteAction(item.id, action.id, action.state == null ? undefined : !action.state, confirmed)
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, `${label}失败，请稍后重试。`)
+  }
+  finally {
+    siteActionBusyKey.value = null
+  }
+}
 
 onBeforeUnmount(() => window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, refreshHomePlayedStates))
 
@@ -455,6 +569,52 @@ function isContainerItem(item: MediaItem): boolean {
         {{ errorMessage }}
       </div>
 
+      <section v-if="contributionSections.length || contributionErrors.length" class="home-contribution-toolbar glass-panel rounded-2xl px-4 py-3 sm:px-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <strong class="text-sm" style="color: var(--gp-text-full)">在线推荐</strong>
+            <span class="ml-2 text-xs" style="color: var(--gp-text-dim)">由 Server 插件提供 · 本机布局</span>
+          </div>
+          <button class="rounded-xl px-3 py-2 text-xs transition-colors" style="background: var(--gp-hover); color: var(--gp-text)" @click="isCustomizingHome = !isCustomizingHome">
+            {{ isCustomizingHome ? '完成' : '自定义首页' }}
+          </button>
+        </div>
+        <div v-if="contributionErrors.length" class="mt-3 grid gap-2">
+          <div v-for="section in contributionErrors" :key="section.id" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-xs text-amber-100">
+            <span>{{ section.sourceLabel ?? section.title }} 暂时不可用（{{ section.errorCode }}），其它媒体来源不受影响。</span>
+            <button v-if="section.refreshable" type="button" class="rounded-lg bg-white/10 px-2 py-1 disabled:opacity-50" :disabled="refreshingSectionId != null" @click="refreshContribution(section)">
+              {{ refreshingSectionId === section.id ? '重试中…' : '重试' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="isCustomizingHome" class="mt-3 grid gap-2 lg:grid-cols-2">
+          <div v-for="section in contributionSections" :key="contributionKey(section)" class="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 px-3 py-2">
+            <label class="flex min-w-0 flex-1 items-center gap-2 text-sm">
+              <input type="checkbox" :checked="contributionPreference(section).enabled" @change="updateContributionPreference(section, { enabled: ($event.target as HTMLInputElement).checked })">
+              <span class="truncate">{{ section.title }}</span>
+            </label>
+            <select
+              class="rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-xs"
+              :value="contributionPreference(section).placement"
+              @change="updateContributionPreference(section, { placement: ($event.target as HTMLSelectElement).value as HomeContributionPlacement })"
+            >
+              <option value="content">
+                独立栏目
+              </option>
+              <option value="hero">
+                顶部精选
+              </option>
+            </select>
+            <button aria-label="上移栏目" class="rounded-lg px-2 py-1 text-xs" style="background: var(--gp-hover)" @click="moveContribution(section, -1)">
+              ↑
+            </button>
+            <button aria-label="下移栏目" class="rounded-lg px-2 py-1 text-xs" style="background: var(--gp-hover)" @click="moveContribution(section, 1)">
+              ↓
+            </button>
+          </div>
+        </div>
+      </section>
+
       <div class="theme-adaptive grid grid-cols-1 gap-6 pb-8 xl:grid-cols-2">
         <section class="home-feed-section glass-panel rounded-[1.75rem] p-6">
           <div class="mb-5 flex items-center justify-between">
@@ -604,6 +764,80 @@ function isContainerItem(item: MediaItem): boolean {
           </div>
         </section>
       </div>
+
+      <section
+        v-for="section in contentContributionSections"
+        :key="contributionKey(section)"
+        class="home-online-section glass-panel rounded-[1.75rem] p-5 sm:p-6"
+      >
+        <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-xs uppercase tracking-[0.2em]" style="color: var(--gp-text-dim)">
+              {{ section.sourceLabel ?? 'Server 在线来源' }}
+            </p>
+            <h2 class="mt-1 text-xl font-bold" style="color: var(--gp-text-full)">
+              {{ section.title }}
+            </h2>
+          </div>
+          <button
+            v-if="section.refreshable"
+            class="rounded-xl px-3 py-2 text-xs transition-colors disabled:opacity-50"
+            style="background: var(--gp-hover); color: var(--gp-text)"
+            :disabled="refreshingSectionId != null"
+            @click="refreshContribution(section)"
+          >
+            {{ refreshingSectionId === section.id ? '刷新中…' : '换一批' }}
+          </button>
+        </div>
+        <div class="flex gap-4 overflow-x-auto pb-2 cinema-scrollbar">
+          <article
+            v-for="item in section.items"
+            :key="`${item.sourceId}:${item.id}`"
+            class="online-media-card group w-40 flex-shrink-0 cursor-pointer overflow-hidden rounded-2xl"
+            data-media-action-target
+            tabindex="0"
+            @pointerdown="beginHomeActionLongPress(item, $event)"
+            @pointermove="moveMediaActionLongPress"
+            @pointerup="endMediaActionLongPress"
+            @pointercancel="cancelMediaActionLongPress($event.pointerId)"
+            @pointerleave="cancelMediaActionLongPress($event.pointerId)"
+            @click="handleHomeCardClick(item, $event, 'detail')"
+            @contextmenu="openHomeActionMenu(item, $event)"
+            @keydown="handleHomeCardKey(item, $event, 'detail')"
+          >
+            <div class="relative aspect-[16/10] media-placeholder overflow-hidden">
+              <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'backdrop')" :src="item.backdropUrl ?? item.posterUrl" :alt="item.name" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                <template #fallback>
+                  <div class="flex h-full items-center justify-center p-3 text-center text-xs text-white/50">
+                    {{ item.name }}
+                  </div>
+                </template>
+              </CachedImage>
+              <span v-if="item.duration" class="absolute bottom-2 right-2 rounded-md bg-black/70 px-1.5 py-0.5 text-[0.65rem] text-white">{{ Math.round(item.duration / 60) }} 分钟</span>
+            </div>
+            <div class="px-1 py-3">
+              <h3 class="line-clamp-2 text-sm font-medium" style="color: var(--gp-text-full)">
+                {{ item.name }}
+              </h3>
+              <p class="mt-1 truncate text-xs" style="color: var(--gp-text-dim)">
+                {{ item.year ?? section.sourceLabel ?? '在线内容' }}
+              </p>
+              <div v-if="item.siteActions?.length" class="mt-2 flex gap-1 overflow-x-auto" @click.stop>
+                <button
+                  v-for="action in item.siteActions.slice(0, 3)"
+                  :key="action.id"
+                  type="button"
+                  class="flex-shrink-0 rounded-lg border border-white/10 bg-white/6 px-2 py-1 text-[0.65rem] text-white/65 hover:bg-white/12 disabled:opacity-50"
+                  :disabled="siteActionBusyKey != null"
+                  @click="performSiteAction(item, action)"
+                >
+                  {{ siteActionBusyKey === `${item.sourceId}:${item.id}:${action.id}` ? '处理中…' : action.label }}
+                </button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
       <section v-if="localCollections.some(collection => collection.members.length)" class="glass-panel rounded-[1.75rem] p-6">
         <h2 class="text-xl font-bold">
           本地收藏与合集

@@ -103,6 +103,7 @@ const (
 	CodePluginRevisionConflict         = "plugin_installation_revision_conflict"
 	CodePluginRollbackUnavailable      = "plugin_rollback_unavailable"
 	CodePluginOnlineLibraryUnavailable = "plugin_online_library_unavailable"
+	CodePluginFeedRateLimited          = "plugin_feed_rate_limited"
 	CodePluginResponseInvalid          = "plugin_response_invalid"
 	CodePluginAssetExpired             = "plugin_asset_expired"
 )

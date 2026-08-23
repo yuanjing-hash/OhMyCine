@@ -280,6 +280,24 @@ export const useDataSourceStore = defineStore('datasource', () => {
     }
   }
 
+  async function refreshHomeSection(section: HomeSection): Promise<void> {
+    if (!section.sourceId || !section.refreshKey)
+      throw new Error('该栏目不支持单独刷新。')
+    await syncManager()
+    const source = dataSourceManager.getSource(section.sourceId)
+    if (!source?.refreshHomeSection)
+      throw new Error('当前媒体来源不支持单独刷新栏目。')
+    const replacement = await source.refreshHomeSection(section.refreshKey)
+    const index = homeSections.value.findIndex(item => item.id === section.id)
+    if (index < 0)
+      return
+    const next = [...homeSections.value]
+    next.splice(index, 1, ...replacement)
+    homeSections.value = next
+    homeLoadedAt.value = Date.now()
+    void persistDisplayCache()
+  }
+
   function getSourceRootSnapshot(id: string): SourceRootSnapshot | null {
     return sourceRootSnapshots.value[id] ?? null
   }
@@ -412,6 +430,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     clearAllMediaCaches,
     reorderConfigs,
     loadHomeSections,
+    refreshHomeSection,
     getSourceRootSnapshot,
     isSourceRootSnapshotFresh,
     setSourceRootSnapshot,
@@ -464,6 +483,14 @@ function sanitizeDisplayHomeSection(value: unknown): HomeSection {
     title: safeText(section.title, '媒体'),
     type,
     items: Array.isArray(section.items) ? section.items.map(sanitizeDisplayMediaItem) : [],
+    providerIdentity: sanitizeIdentityText(section.providerIdentity),
+    sourceLabel: optionalText(section.sourceLabel),
+    refreshKey: sanitizeIdentityText(section.refreshKey),
+    refreshable: section.refreshable === true,
+    layout: ['hero', 'row', 'poster-grid', 'video-list'].includes(String(section.layout))
+      ? section.layout as HomeSection['layout']
+      : undefined,
+    errorCode: sanitizeIdentityText(section.errorCode),
   }
 }
 
@@ -502,7 +529,31 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
     workIdentity: sanitizeMediaIdentity(item.workIdentity),
     exactIdentity: sanitizeIdentityText(item.exactIdentity),
     playbackTargets: sanitizePlaybackTargets(item.playbackTargets),
+    siteActions: sanitizeSiteActions(item.siteActions),
   }
+}
+
+function sanitizeSiteActions(value: unknown): MediaItem['siteActions'] {
+  if (!Array.isArray(value))
+    return undefined
+  const allowed = new Set(['like.add', 'like.remove', 'favorite.add', 'favorite.remove', 'watch-later.add', 'watch-later.remove', 'follow.add', 'follow.remove', 'history.remove'])
+  const seen = new Set<string>()
+  const actions = value.flatMap((raw): NonNullable<MediaItem['siteActions']>[number][] => {
+    if (!isRecord(raw) || typeof raw.id !== 'string' || !allowed.has(raw.id) || seen.has(raw.id))
+      return []
+    const label = optionalText(raw.label)
+    if (!label)
+      return []
+    seen.add(raw.id)
+    return [{
+      id: raw.id as NonNullable<MediaItem['siteActions']>[number]['id'],
+      label,
+      state: typeof raw.state === 'boolean' ? raw.state : undefined,
+      requiresConfirmation: raw.requiresConfirmation === true,
+      destructive: raw.destructive === true,
+    }]
+  })
+  return actions.length > 0 ? actions : undefined
 }
 
 function sanitizeMediaIdentity(value: unknown): MediaItem['workIdentity'] {

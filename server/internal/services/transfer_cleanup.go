@@ -30,6 +30,20 @@ func (w *TransferWorker) finishCompletedTransfer(ctx context.Context, task model
 			return WorkerResult{RetryAt: &next, ErrorCode: "post_transfer_provider_failed", ErrorMessage: "下载器收尾失败，将自动重试"}
 		}
 	}
+	if download.ProviderType == models.DownloaderTypePluginHTTP {
+		if download.TransferMode == models.MediaLibraryTransferSymlink {
+			_ = w.service.db.Model(&models.TransferTask{}).Where("id = ?", task.ID).Updates(map[string]any{"cleanup_status": models.TransferCleanupSkipped, "cleanup_error_code": "", "updated_at": time.Now().UTC()}).Error
+			return WorkerResult{}
+		}
+		removed, err := cleanupPluginDownloadOutput(download)
+		if err != nil {
+			next := time.Now().UTC().Add(time.Minute)
+			return WorkerResult{RetryAt: &next, ErrorCode: "download_staging_cleanup_failed", ErrorMessage: "入库已完成，站点下载暂存清理将自动重试"}
+		}
+		_ = w.service.db.Model(&models.TransferTask{}).Where("id = ?", task.ID).Updates(map[string]any{"cleanup_status": models.TransferCleanupCompleted, "cleanup_removed": removed, "cleanup_error_code": "", "updated_at": time.Now().UTC()}).Error
+		serverlog.OperationDownloadStagingCleanup.Event(w.service.log.Info()).Str("task_id", task.ID).Int("removed", removed).Str("source_cleanup", "plugin_managed_output").Msg(serverlog.OperationDownloadStagingCleanup.Message("已清理站点下载暂存产物"))
+		return WorkerResult{}
+	}
 	if download.ProviderType == models.DownloaderTypeQBittorrent && (download.TransferMode == models.MediaLibraryTransferCopy || download.TransferMode == models.MediaLibraryTransferSymlink) {
 		if task.CleanupStatus != models.TransferCleanupCompleted {
 			_ = w.service.db.Model(&models.TransferTask{}).Where("id = ?", task.ID).Updates(map[string]any{"cleanup_status": models.TransferCleanupDeferred, "cleanup_error_code": "", "updated_at": time.Now().UTC()}).Error
@@ -151,7 +165,7 @@ func buildTransferCleanupPlan(task models.TransferTask) (transferCleanupPlan, er
 			// verification. Never make that mistake irreversible by deleting an
 			// unselected video or an unmatched subtitle. Only clearly non-media
 			// manifest items are eligible for automatic staging cleanup.
-			if isVideoFile(file.RelativePath) || isAutomaticTransferSubtitleFile(file.RelativePath) {
+			if isVideoFile(file.RelativePath) || isAutomaticTransferSubtitleFile(file.RelativePath) || isAutomaticTransferDanmakuFile(file.RelativePath) {
 				plan.ProtectedCount++
 				continue
 			}

@@ -49,6 +49,8 @@ export interface KnownSubtitleTrackInput {
 
 export interface MpvLoadOptions {
   readonly headers?: Record<string, string>
+  readonly audioUrl?: string
+  readonly audioHeaders?: Record<string, string>
   readonly title?: string
 }
 
@@ -662,7 +664,13 @@ export function useMpv() {
     videoFitMode.value = 'fit'
     await subtitleDelayCommand.catch(() => undefined)
     await applyEngineSettings()
-    await invoke<void>('mpv_load', { path, headers: toMpvHeaderPayload(options.headers), title: options.title })
+    await invoke<void>('mpv_load', {
+      path,
+      headers: toMpvHeaderPayload(options.headers),
+      audioPath: options.audioUrl,
+      audioHeaders: toMpvHeaderPayload(options.audioHeaders),
+      title: options.title,
+    })
     startBufferingPolling()
     try {
       await invoke<void>('mpv_resume')

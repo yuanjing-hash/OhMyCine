@@ -74,17 +74,29 @@ func (h *providerEventWakeHub) publish(connectionID uint) {
 }
 
 type DownloadService struct {
-	db             *gorm.DB
-	audit          *AuditService
-	credentials    *credential.Store
-	downloader     *DownloaderService
-	settings       *DownloadSettingsService
-	queue          *QueueService
-	log            zerolog.Logger
-	metadata       *MetadataSettingsService
-	transfers      *TransferService
-	seeding        *SeedingSettingsService
-	providerEvents *providerEventWakeHub
+	db              *gorm.DB
+	audit           *AuditService
+	credentials     *credential.Store
+	downloader      *DownloaderService
+	settings        *DownloadSettingsService
+	queue           *QueueService
+	log             zerolog.Logger
+	metadata        *MetadataSettingsService
+	transfers       *TransferService
+	seeding         *SeedingSettingsService
+	providerEvents  *providerEventWakeHub
+	pluginDownloads *PluginDownloadExecutor
+}
+
+func (s *DownloadService) SetPluginDownloadExecutor(executor *PluginDownloadExecutor) {
+	s.pluginDownloads = executor
+}
+
+func (s *DownloadService) SubmitPluginDownload(ctx context.Context, actor Actor, input SubmitPluginDownloadInput, request RequestContext) (DownloadTaskSummary, error) {
+	if s.pluginDownloads == nil {
+		return DownloadTaskSummary{}, appError(CodePluginRuntimeUnavailable, "插件下载服务不可用", nil)
+	}
+	return s.pluginDownloads.Submit(ctx, actor, input, request)
 }
 
 func NewDownloadService(db *gorm.DB, audit *AuditService, credentials *credential.Store, downloader *DownloaderService, settings *DownloadSettingsService, queue *QueueService, log zerolog.Logger) *DownloadService {
@@ -137,11 +149,16 @@ type SubmitDownloadInput struct {
 }
 
 type downloadSourceEnvelope struct {
-	Kind           string `json:"kind"`
-	URL            string `json:"url,omitempty"`
-	Torrent        []byte `json:"torrent,omitempty"`
-	Filename       string `json:"filename,omitempty"`
-	ProviderItemID string `json:"provider_item_id,omitempty"`
+	Kind               string `json:"kind"`
+	URL                string `json:"url,omitempty"`
+	Torrent            []byte `json:"torrent,omitempty"`
+	Filename           string `json:"filename,omitempty"`
+	ProviderItemID     string `json:"provider_item_id,omitempty"`
+	PluginConnectionID string `json:"plugin_connection_id,omitempty"`
+	PluginItemID       string `json:"plugin_item_id,omitempty"`
+	PluginSegmentID    string `json:"plugin_segment_id,omitempty"`
+	PluginVersionID    string `json:"plugin_version_id,omitempty"`
+	PluginVariantID    string `json:"plugin_variant_id,omitempty"`
 }
 
 type downloadJobPayload struct {
@@ -667,6 +684,12 @@ func (s *DownloadService) Delete(ctx context.Context, actor Actor, id string, re
 		return appError(CodeQueueStateConflict, "仅失败、已取消或完整收口的下载历史可以删除", nil)
 	}
 	providerCleanup := "not_required"
+	if task.ProviderType == models.DownloaderTypePluginHTTP {
+		if _, err := cleanupPluginDownloadOutput(task); err != nil {
+			return appError("plugin_download_cleanup_failed", "站点下载暂存清理失败，本地任务记录已保留", nil)
+		}
+		providerCleanup = "plugin_managed_output"
+	}
 	if task.ProviderTaskID != "" && task.DownloaderID != nil {
 		_, client, err := s.downloader.client(*task.DownloaderID)
 		if err != nil {
@@ -793,6 +816,15 @@ func (s *DownloadService) finalizeInterrupt(jobID, action string) error {
 			return nil
 		}
 		return err
+	}
+	if task.ProviderType == models.DownloaderTypePluginHTTP && s.pluginDownloads != nil {
+		root, err := s.pluginDownloads.taskRoot(task)
+		if err != nil {
+			return err
+		}
+		if err := removeManagedTaskRoot(task.StagingAbsolutePath, root); err != nil {
+			return err
+		}
 	}
 	var event models.JobStatusEvent
 	var actorID *uint
@@ -926,6 +958,15 @@ func NewDownloadWorker(service *DownloadService) *DownloadWorker {
 }
 
 func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job ClaimedJob) WorkerResult {
+	if w.service != nil && w.service.pluginDownloads != nil {
+		var payload downloadJobPayload
+		if json.Unmarshal([]byte(job.Job.PayloadJSON), &payload) == nil && payload.DownloadTaskID != "" {
+			var provider struct{ ProviderType string }
+			if w.service.db.Model(&models.DownloadTask{}).Select("provider_type").First(&provider, "id = ?", payload.DownloadTaskID).Error == nil && provider.ProviderType == models.DownloaderTypePluginHTTP {
+				return w.service.pluginDownloads.Run(ctx, runtime, job)
+			}
+		}
+	}
 	started := time.Now()
 	task, downloaderRecord, client, source, savePath, err := w.load(ctx, job)
 	if err != nil {
@@ -1429,6 +1470,9 @@ func (w *DownloadWorker) Interrupt(ctx context.Context, job ClaimedJob, action s
 	var task models.DownloadTask
 	if err := w.service.db.First(&task, "job_id = ?", job.Job.ID).Error; err != nil {
 		return err
+	}
+	if task.ProviderType == models.DownloaderTypePluginHTTP && w.service.pluginDownloads != nil {
+		return w.service.pluginDownloads.Interrupt(ctx, job, action)
 	}
 	if task.ProviderTaskID == "" {
 		updates := map[string]any{"phase": map[string]string{"pause": models.DownloadTaskStatusPaused, "cancel": models.DownloadTaskStatusCancelled}[action], "updated_at": time.Now().UTC()}

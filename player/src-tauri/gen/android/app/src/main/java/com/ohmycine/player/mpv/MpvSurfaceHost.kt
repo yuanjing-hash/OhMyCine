@@ -151,9 +151,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     fun initializationError(): String? = initializationError
 
     @Synchronized
-    fun load(path: String, headers: List<MpvHeader>) {
+    fun load(path: String, audioPath: String?, headers: List<MpvHeader>) {
         initializationError?.let { error(it) }
-        val request = PendingLoad(path, headers)
+        val request = PendingLoad(path, audioPath, headers)
         pendingLoad = request
         if (!isReady())
             return
@@ -178,7 +178,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
-        MPVLib.command(arrayOf("loadfile", request.path, "replace"))
+        val command = request.audioPath?.let {
+            arrayOf("loadfile", request.path, "replace", "-1", "audio-file=$it")
+        } ?: arrayOf("loadfile", request.path, "replace")
+        MPVLib.command(command)
     }
 
     @Synchronized
@@ -668,7 +671,7 @@ internal data class MpvEngineSettings(
     val fsrDenoise: Boolean,
     val fsrTarget: String,
 )
-internal data class PendingLoad(val path: String, val headers: List<MpvHeader>)
+internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
 internal data class MpvTrack(
     val id: Long,

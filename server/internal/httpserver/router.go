@@ -44,9 +44,13 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	playerProtected.GET("/online-libraries", api.PlayerOnlineLibraries)
 	playerProtected.GET("/online-libraries/:id/navigation", api.PlayerOnlineNavigation)
 	playerProtected.GET("/online-libraries/:id/feeds/:routeKey", api.PlayerOnlineFeed)
+	playerProtected.POST("/online-libraries/:id/feeds/:routeKey/refresh", api.PlayerOnlineFeedRefresh)
+	playerProtected.GET("/home-contributions", api.PlayerHomeContributions)
 	playerProtected.GET("/online-libraries/:id/search", api.PlayerOnlineSearch)
 	playerProtected.GET("/online-libraries/:id/items/:itemId", api.PlayerOnlineDetail)
 	playerProtected.POST("/online-libraries/:id/items/:itemId/playback", api.PlayerOnlinePlayback)
+	playerProtected.POST("/online-libraries/:id/items/:itemId/actions/:action", api.PlayerOnlineAction)
+	playerProtected.POST("/online-libraries/:id/items/:itemId/download", api.PlayerOnlineDownload)
 	playerProtected.POST("/online-libraries/:id/items/:itemId/progress", api.PlayerOnlineProgress)
 	playerProtected.GET("/online-history", api.PlayerOnlineHistory)
 	playerProtected.GET("/online-assets/:opaque", api.PlayerOnlineAsset)
@@ -213,6 +217,8 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	pluginAPI.POST("/plugins/:plugin_id/connections", middleware.RequirePermission(authz.PermissionPluginsInstall), api.CreatePluginConnection)
 	pluginAPI.PATCH("/plugins/:plugin_id/connections/:connection_id", middleware.RequirePermission(authz.PermissionPluginsInstall), api.UpdatePluginConnection)
 	pluginAPI.DELETE("/plugins/:plugin_id/connections/:connection_id", middleware.RequirePermission(authz.PermissionPluginsInstall), api.DeletePluginConnection)
+	pluginAPI.POST("/plugins/:plugin_id/connections/:connection_id/auth/start", middleware.RequirePermission(authz.PermissionPluginsInstall), api.StartPluginConnectionAuth)
+	pluginAPI.POST("/plugins/:plugin_id/connections/:connection_id/auth/poll", middleware.RequirePermission(authz.PermissionPluginsInstall), api.PollPluginConnectionAuth)
 
 	if assets, ok := webui.Assets(); ok {
 		webui.Register(router, assets)

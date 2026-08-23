@@ -1,4 +1,4 @@
-export type OnlineMediaKind = 'movie' | 'series' | 'episode' | 'video' | 'live'
+export type OnlineMediaKind = 'movie' | 'series' | 'episode' | 'video' | 'live' | 'creator' | 'collection'
 
 export interface MediaIdentity {
   scheme: string
@@ -35,6 +35,15 @@ export interface MediaVersion {
   sourceLabel?: string
   edition?: string
   releaseGroup?: string
+  resolution?: string
+  sourceMedium?: string
+  releaseKind?: string
+  dynamicRange?: string
+  videoCodec?: string
+  audioCodec?: string
+  audioLanguages?: readonly string[]
+  sizeBytes?: number
+  delivery?: 'local-file' | 'cloud-direct' | 'strm' | 'server-stream' | 'online'
   variants: readonly StreamVariant[]
 }
 
@@ -48,6 +57,11 @@ export interface StreamVariant {
   videoCodec?: string
   audioCodec?: string
   dynamicRange?: string
+  frameRate?: number
+  container?: string
+  hdr?: boolean
+  dolbyVision?: boolean
+  dolbyAtmos?: boolean
   unavailableReason?: string
 }
 
@@ -62,7 +76,15 @@ export interface NavigationItem {
 
 export interface FeedItem {
   work: MediaWork
-  actions?: readonly string[]
+  actions?: readonly (string | SiteActionDescriptor)[]
+}
+
+export interface SiteActionDescriptor {
+  id: string
+  label: string
+  state?: boolean
+  requiresConfirmation?: boolean
+  destructive?: boolean
 }
 
 export interface FeedSection {
@@ -73,6 +95,7 @@ export interface FeedSection {
   cursor?: string
   refreshSession?: string
   homeEligible?: boolean
+  refreshable?: boolean
 }
 
 export interface PlaybackAsset {
@@ -91,6 +114,7 @@ export interface PlaybackPlan {
   delivery: 'direct' | 'server-gateway' | 'loopback-bridge'
   expiresAt?: string
   refreshToken?: string
+  selectionToken?: string
   subtitles?: readonly TrackDescriptor[]
   danmaku?: readonly TrackDescriptor[]
 }

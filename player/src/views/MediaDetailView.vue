@@ -34,6 +34,8 @@ const selectedSeasonId = ref<string>('')
 const isLoading = ref(false)
 const isSeriesContentLoading = ref(false)
 const isPlaying = ref(false)
+const isEnqueueingOnlineDownload = ref(false)
+const downloadFeedback = ref<string | null>(null)
 const errorMessage = ref<string | null>(null)
 const seriesErrorMessage = ref<string | null>(null)
 const isEpisodeSearchOpen = ref(false)
@@ -78,6 +80,33 @@ async function toggleDetailPlayedState() {
     await loadDetail()
 }
 
+async function enqueueOnlineDownload() {
+  const current = detail.value
+  const mediaSource = (current?.mediaSources ?? []).find(source => source.id === selectedMediaSourceId.value)
+    ?? current?.mediaSources?.[0]
+  if (!current || !mediaSource?.itemId || isEnqueueingOnlineDownload.value)
+    return
+  const source = store.getSource(current.sourceId)
+  if (!source?.enqueueOnlineDownload)
+    return
+  isEnqueueingOnlineDownload.value = true
+  errorMessage.value = null
+  downloadFeedback.value = null
+  try {
+    await source.enqueueOnlineDownload({
+      itemId: mediaSource.itemId,
+      mediaSourceId: mediaSource.providerMediaSourceId ?? mediaSource.id,
+    })
+    downloadFeedback.value = '已加入 Server 下载队列，将按媒体库顺序自动选择入库目标。'
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, '无法创建 Server 下载任务。')
+  }
+  finally {
+    isEnqueueingOnlineDownload.value = false
+  }
+}
+
 function detailActionTarget() {
   const current = detail.value
   if (!current)
@@ -117,6 +146,11 @@ const isPlayableDetail = computed(() => detail.value != null && !['series', 'sea
 const mediaSources = computed(() => detail.value?.mediaSources ?? [])
 const visibleMediaSources = computed(() => isSeriesDetail.value ? [] : mediaSources.value.filter(hasMeaningfulMediaSource))
 const selectedMediaSource = computed(() => visibleMediaSources.value.find(source => source.id === selectedMediaSourceId.value) ?? visibleMediaSources.value[0])
+const canEnqueueOnlineDownload = computed(() => {
+  const current = detail.value
+  const source = current ? store.getSource(current.sourceId) : null
+  return Boolean(current && source?.enqueueOnlineDownload && selectedMediaSource.value?.itemId?.startsWith('online-version|'))
+})
 const audioTracks = computed(() => isPlayableDetail.value ? (detail.value?.audioTracks ?? []) : [])
 const subtitleTracks = computed(() => isPlayableDetail.value ? (detail.value?.subtitles ?? []) : [])
 const runtimeLabel = computed(() => detail.value?.duration ? `${Math.round(detail.value.duration / 60)} 分钟` : '')
@@ -206,6 +240,7 @@ async function loadDetail() {
   closeEpisodeSearch()
   isLoading.value = true
   errorMessage.value = null
+  downloadFeedback.value = null
   seriesErrorMessage.value = null
   detail.value = null
   seasons.value = []
@@ -907,6 +942,15 @@ function markTitleLogoFailed(url: string) {
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z" /></svg>
                 {{ primaryPlayLabel }}
               </button>
+              <button
+                v-if="canEnqueueOnlineDownload"
+                type="button"
+                class="rounded-full border border-white/16 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/16 disabled:opacity-50"
+                :disabled="isEnqueueingOnlineDownload"
+                @click="enqueueOnlineDownload"
+              >
+                {{ isEnqueueingOnlineDownload ? '正在提交…' : '下载并入库' }}
+              </button>
               <span v-if="isSeriesDetail && selectedEpisode" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ episodeTitle(selectedEpisode) }}</span>
               <span v-else-if="visibleMediaSources.length" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ sourceLabel }}</span>
               <span class="detail-played-state" :class="{ 'is-played': detailPlayed }">{{ detailPlayed ? '✓ 已播放' : '未播放' }}</span>
@@ -919,6 +963,9 @@ function markTitleLogoFailed(url: string) {
       </section>
 
       <main class="detail-content mobile-nav-safe space-y-10 px-4 pb-14 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
+        <div v-if="downloadFeedback" class="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-5 py-4 text-sm text-emerald-100">
+          {{ downloadFeedback }}
+        </div>
         <div v-if="errorMessage" class="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-4 text-sm text-red-100">
           {{ errorMessage }}
         </div>

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -31,6 +32,9 @@ type PluginConnectionSummary struct {
 	CredentialMode       string          `json:"credential_mode"`
 	CredentialConfigured bool            `json:"credential_configured"`
 	Enabled              bool            `json:"enabled"`
+	HealthStatus         string          `json:"health_status"`
+	HealthErrorCode      string          `json:"health_error_code,omitempty"`
+	HealthCheckedAt      *time.Time      `json:"health_checked_at,omitempty"`
 	Revision             uint64          `json:"revision"`
 	CreatedAt            time.Time       `json:"created_at"`
 	UpdatedAt            time.Time       `json:"updated_at"`
@@ -54,6 +58,26 @@ type UpdatePluginConnectionInput struct {
 	ClearCredential bool
 	Enabled         *bool
 	Revision        uint64
+}
+
+type PluginAuthStartSummary struct {
+	LoginSession     string `json:"loginSession"`
+	QRCodeURL        string `json:"qrCodeUrl"`
+	ExpiresAt        string `json:"expiresAt"`
+	PollAfterSeconds int    `json:"pollAfterSeconds"`
+}
+
+type PluginAccountSummary struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+}
+
+type PluginAuthPollSummary struct {
+	State            string                `json:"state"`
+	Authenticated    bool                  `json:"authenticated"`
+	Account          *PluginAccountSummary `json:"account,omitempty"`
+	PollAfterSeconds int                   `json:"pollAfterSeconds,omitempty"`
 }
 
 func (s *PluginRepositoryService) ListConnections(actor Actor, pluginID string) ([]PluginConnectionSummary, error) {
@@ -98,6 +122,16 @@ func (s *PluginRepositoryService) CreateConnection(actor Actor, pluginID string,
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
 			return err
+		}
+		if manifestHasCapability(manifest, contract.CapabilitySiteFeed) && manifestHasCapability(manifest, contract.CapabilityMediaPlayback) {
+			homeJSON, _ := json.Marshal(configuredHomeContributions(record.ConfigJSON))
+			library := models.PluginOnlineLibrary{
+				ID: record.ID, PluginID: pluginID, ConnectionID: record.ID, ExternalKey: "default", Name: record.Name,
+				HomeContributionsJSON: string(homeJSON), Enabled: record.Enabled, Revision: 1, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&library).Error; err != nil {
+				return err
+			}
 		}
 		return s.audit.Record(tx, &actor.User.ID, "plugin_connection.create", "plugin_connection", record.ID, "success", map[string]any{"plugin_id": pluginID, "credential_scope": scope, "credential_mode": mode, "credential_configured": record.CredentialCiphertext != ""}, request)
 	}); err != nil {
@@ -153,8 +187,6 @@ func (s *PluginRepositoryService) UpdateConnection(actor Actor, pluginID, connec
 	}
 	if input.ClearCredential || (input.Credential != nil && strings.TrimSpace(*input.Credential) == "") {
 		updates["credential_ciphertext"] = ""
-		updates["credential_scope"] = ""
-		updates["credential_mode"] = models.PluginCredentialModeNone
 	} else if input.Credential != nil {
 		ciphertext, err := s.credentials.Encrypt(hostapi.CredentialPurpose(pluginID, connectionID, scope), strings.TrimSpace(*input.Credential))
 		if err != nil {
@@ -171,6 +203,14 @@ func (s *PluginRepositoryService) UpdateConnection(actor Actor, pluginID, connec
 		}
 		if result.RowsAffected != 1 {
 			return appError(CodePluginRevisionConflict, "插件连接已变化，请刷新后重试", nil)
+		}
+		homeJSON, _ := json.Marshal(configuredHomeContributions(string(config)))
+		libraryUpdates := map[string]any{"name": name, "home_contributions_json": string(homeJSON), "updated_at": updates["updated_at"]}
+		if input.Enabled != nil {
+			libraryUpdates["enabled"] = *input.Enabled
+		}
+		if err := tx.Model(&models.PluginOnlineLibrary{}).Where("connection_id = ? AND external_key = ?", connectionID, "default").Updates(libraryUpdates).Error; err != nil {
+			return err
 		}
 		return s.audit.Record(tx, &actor.User.ID, "plugin_connection.update", "plugin_connection", connectionID, "success", map[string]any{"plugin_id": pluginID, "credential_scope": updates["credential_scope"], "credential_mode": updates["credential_mode"], "credential_changed": input.Credential != nil || input.ClearCredential}, request)
 	}); err != nil {
@@ -201,9 +241,154 @@ func (s *PluginRepositoryService) DeleteConnection(actor Actor, pluginID, connec
 	})
 }
 
+func (s *PluginRepositoryService) StartConnectionAuth(ctx context.Context, actor Actor, pluginID, connectionID string) (PluginAuthStartSummary, error) {
+	if !actor.Can(authz.PermissionPluginsInstall) {
+		return PluginAuthStartSummary{}, appError(CodePermissionDenied, "无权登录插件连接", nil)
+	}
+	connection, manifest, err := s.authConnection(pluginID, connectionID)
+	if err != nil {
+		return PluginAuthStartSummary{}, err
+	}
+	raw, err := s.invokePluginOperation(ctx, connection.ID, "site.auth.start", contract.CapabilitySiteInteraction, map[string]any{"connectionId": connection.ID})
+	if err != nil {
+		return PluginAuthStartSummary{}, err
+	}
+	var response PluginAuthStartSummary
+	if err := strictPluginResponse(raw, &response); err != nil || !safeOnlineText(response.LoginSession, 512) || response.PollAfterSeconds < 1 || response.PollAfterSeconds > 30 {
+		return PluginAuthStartSummary{}, pluginAuthResponseError(raw, err)
+	}
+	qrURL, parseErr := url.Parse(response.QRCodeURL)
+	expiresAt, timeErr := time.Parse(time.RFC3339Nano, response.ExpiresAt)
+	now := time.Now().UTC()
+	if parseErr != nil || qrURL.Scheme != "https" || qrURL.User != nil || qrURL.Hostname() == "" || qrURL.Fragment != "" || len(response.QRCodeURL) > 4096 || !manifestAllowsNetworkHost(manifest, qrURL.Hostname()) || timeErr != nil || !expiresAt.After(now) || expiresAt.After(now.Add(15*time.Minute)) {
+		return PluginAuthStartSummary{}, appError(CodePluginResponseInvalid, "插件登录响应无效", nil)
+	}
+	s.recordPluginConnectionHealth(connection.ID, "auth_pending", "")
+	return response, nil
+}
+
+func (s *PluginRepositoryService) PollConnectionAuth(ctx context.Context, actor Actor, pluginID, connectionID, loginSession string) (PluginAuthPollSummary, error) {
+	if !actor.Can(authz.PermissionPluginsInstall) {
+		return PluginAuthPollSummary{}, appError(CodePermissionDenied, "无权登录插件连接", nil)
+	}
+	if !safeOnlineText(loginSession, 512) {
+		return PluginAuthPollSummary{}, appError(CodeInvalidRequest, "插件登录会话无效", nil)
+	}
+	connection, _, err := s.authConnection(pluginID, connectionID)
+	if err != nil {
+		return PluginAuthPollSummary{}, err
+	}
+	raw, err := s.invokePluginOperation(ctx, connection.ID, "site.auth.poll", contract.CapabilitySiteInteraction, map[string]any{"connectionId": connection.ID, "loginSession": loginSession})
+	if err != nil {
+		s.recordPluginConnectionHealth(connection.ID, "error", CodePluginOnlineLibraryUnavailable)
+		return PluginAuthPollSummary{}, err
+	}
+	var response PluginAuthPollSummary
+	if err := strictPluginResponse(raw, &response); err != nil {
+		return PluginAuthPollSummary{}, pluginAuthResponseError(raw, err)
+	}
+	switch response.State {
+	case "pending", "scanned":
+		if response.Authenticated || response.Account != nil || response.PollAfterSeconds < 1 || response.PollAfterSeconds > 30 {
+			return PluginAuthPollSummary{}, appError(CodePluginResponseInvalid, "插件登录响应无效", nil)
+		}
+		s.recordPluginConnectionHealth(connection.ID, "auth_pending", "")
+	case "confirmed":
+		if !response.Authenticated || response.Account == nil || !safeOnlineText(response.Account.ID, 256) || !safeOnlineText(response.Account.Name, 256) || !safeOptionalHTTPSURL(response.Account.AvatarURL) {
+			return PluginAuthPollSummary{}, appError(CodePluginResponseInvalid, "插件登录响应无效", nil)
+		}
+		s.recordPluginConnectionHealth(connection.ID, "healthy", "")
+	case "expired":
+		if response.Authenticated || response.Account != nil {
+			return PluginAuthPollSummary{}, appError(CodePluginResponseInvalid, "插件登录响应无效", nil)
+		}
+		s.recordPluginConnectionHealth(connection.ID, "auth_expired", "")
+	default:
+		return PluginAuthPollSummary{}, appError(CodePluginResponseInvalid, "插件登录响应无效", nil)
+	}
+	return response, nil
+}
+
+func (s *PluginRepositoryService) authConnection(pluginID, connectionID string) (models.PluginConnection, contract.Manifest, error) {
+	var connection models.PluginConnection
+	if err := s.db.First(&connection, "id = ? AND plugin_id = ? AND enabled = ?", connectionID, pluginID, true).Error; err != nil {
+		return models.PluginConnection{}, contract.Manifest{}, pluginConnectionNotFound(err)
+	}
+	manifest, err := s.installedManifest(pluginID)
+	if err != nil {
+		return models.PluginConnection{}, contract.Manifest{}, err
+	}
+	if !manifestHasCapability(manifest, contract.CapabilitySiteInteraction) || connection.CredentialMode != models.PluginCredentialModeCookie || connection.CredentialScope == "" || !manifestHasCredentialScope(manifest, connection.CredentialScope) {
+		return models.PluginConnection{}, contract.Manifest{}, appError(CodePermissionDenied, "插件连接不支持安全登录", nil)
+	}
+	return connection, manifest, nil
+}
+
+func (s *PluginRepositoryService) recordPluginConnectionHealth(connectionID, status, errorCode string) {
+	_ = s.db.Model(&models.PluginConnection{}).Where("id = ?", connectionID).Updates(map[string]any{
+		"last_health_status": status, "last_health_error_code": errorCode, "last_health_checked_at": time.Now().UTC(),
+	}).Error
+}
+
+func strictPluginResponse(raw []byte, destination any) error {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("plugin response contains trailing data")
+	}
+	return nil
+}
+
+func pluginAuthResponseError(raw []byte, cause error) error {
+	var envelope pluginErrorEnvelope
+	if json.Unmarshal(raw, &envelope) == nil && envelope.PluginError != nil {
+		return appError(CodePluginOnlineLibraryUnavailable, "插件登录服务暂时不可用", nil)
+	}
+	return appError(CodePluginResponseInvalid, "插件登录响应无效", cause)
+}
+
+func safeOptionalHTTPSURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "https" && parsed.User == nil && parsed.Hostname() != "" && parsed.Fragment == "" && len(raw) <= 2048
+}
+
+func manifestAllowsNetworkHost(manifest contract.Manifest, hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	if hostname == "" {
+		return false
+	}
+	for _, permission := range manifest.Permissions {
+		if permission.Kind != contract.PermissionNetworkHTTP {
+			continue
+		}
+		for _, domain := range permission.Domains {
+			domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+			if strings.HasPrefix(domain, "*.") {
+				root := strings.TrimPrefix(domain, "*.")
+				if hostname != root && strings.HasSuffix(hostname, "."+root) {
+					return true
+				}
+			} else if hostname == domain {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // InvokePlugin is the generic site-operation boundary used by online-library
 // services. It never interprets provider-specific IDs or response fields.
 func (s *PluginRepositoryService) InvokePlugin(ctx context.Context, connectionID, operation string, request any) ([]byte, error) {
+	return s.invokePluginOperation(ctx, connectionID, operation, contract.Capability(operation), request)
+}
+
+func (s *PluginRepositoryService) invokePluginOperation(ctx context.Context, connectionID, operation string, requiredCapability contract.Capability, request any) ([]byte, error) {
 	if s.runtime == nil {
 		return nil, appError(CodePluginRuntimeUnavailable, "插件运行时不可用", nil)
 	}
@@ -215,7 +400,7 @@ func (s *PluginRepositoryService) InvokePlugin(ctx context.Context, connectionID
 	if err != nil {
 		return nil, err
 	}
-	if !manifestHasCapability(manifest, contract.Capability(operation)) {
+	if !manifestHasCapability(manifest, requiredCapability) {
 		return nil, appError(CodePermissionDenied, "插件未声明此能力", nil)
 	}
 	payload, err := json.Marshal(request)
@@ -255,7 +440,10 @@ func normalizePluginConnectionInput(manifest contract.Manifest, name string, con
 		return "", nil, "", "", appError(CodeInvalidRequest, "插件连接配置无效或包含敏感字段", nil)
 	}
 	scope, mode = strings.TrimSpace(scope), strings.TrimSpace(mode)
-	if !hasCredential {
+	if mode == "" || mode == models.PluginCredentialModeNone {
+		if hasCredential {
+			return "", nil, "", "", appError(CodeInvalidRequest, "插件凭据模式无效", nil)
+		}
 		return name, append(json.RawMessage(nil), config...), "", models.PluginCredentialModeNone, nil
 	}
 	if scope == "" || !manifestHasCredentialScope(manifest, scope) {
@@ -263,6 +451,13 @@ func normalizePluginConnectionInput(manifest contract.Manifest, name string, con
 	}
 	if mode != models.PluginCredentialModeCookie && mode != models.PluginCredentialModeBearer {
 		return "", nil, "", "", appError(CodeInvalidRequest, "插件凭据模式无效", nil)
+	}
+	// Cookie connections may begin without a credential. This is required by
+	// two-step QR login: the Host captures Set-Cookie into an opaque one-shot
+	// reference, then commits only after the plugin confirms provider success.
+	// Bearer credentials cannot be captured and therefore must be supplied.
+	if mode == models.PluginCredentialModeBearer && !hasCredential {
+		return "", nil, "", "", appError(CodeInvalidRequest, "Bearer 凭据不能为空", nil)
 	}
 	return name, append(json.RawMessage(nil), config...), scope, mode, nil
 }
@@ -334,7 +529,7 @@ func manifestHasCapability(manifest contract.Manifest, capability contract.Capab
 }
 
 func pluginConnectionSummary(record models.PluginConnection) PluginConnectionSummary {
-	return PluginConnectionSummary{ID: record.ID, PluginID: record.PluginID, Name: record.Name, Config: json.RawMessage(record.ConfigJSON), CredentialScope: record.CredentialScope, CredentialMode: record.CredentialMode, CredentialConfigured: record.CredentialCiphertext != "", Enabled: record.Enabled, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	return PluginConnectionSummary{ID: record.ID, PluginID: record.PluginID, Name: record.Name, Config: json.RawMessage(record.ConfigJSON), CredentialScope: record.CredentialScope, CredentialMode: record.CredentialMode, CredentialConfigured: record.CredentialCiphertext != "", Enabled: record.Enabled, HealthStatus: record.LastHealthStatus, HealthErrorCode: record.LastHealthErrorCode, HealthCheckedAt: record.LastHealthCheckedAt, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 }
 
 func pluginConnectionNotFound(err error) error {

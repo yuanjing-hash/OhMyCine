@@ -18,6 +18,9 @@ player_list_playback_history(sourceId?, afterUpdatedAt?, afterIdentityKey?, limi
 DataSource.listPlaybackHistory?(cursor?, limit?)
 DataSource.syncPlaybackProgress?(event)
 DataSource.getDanmakuComments?(track)
+DataSource.refreshHomeSection?(refreshKey)
+DataSource.performSiteAction?(itemId, actionId, value?, confirmed?)
+MediaStreamRequest.audioUrl / audioHeaders
 ```
 
 Local history ordering is `updated_at DESC, identity_key ASC`; the next page uses both boundary values.
@@ -31,6 +34,9 @@ Local history ordering is `updated_at DESC, identity_key ASC`; the next page use
 - A dedicated quality button switches only `StreamVariant`; it does not change segment or media version and hides when fewer than two usable variants exist. Replacement playback is prepared before switching, and failure preserves or restores the previous stream.
 - When the exact playback plan includes plugin danmaku, Player loads that Server same-origin authenticated track first. Missing, empty, or failed plugin tracks fall back to the existing generic danmaku matcher; manual search remains available.
 - Provider danmaku cache keys include source, item, media source/version, variant, and track ID. Never cache or persist upstream URLs, provider headers, Server Bearer tokens, or credential values.
+- Home contributions are generic Server DTOs. Player stores only device-side `enabled`, `order`, and `placement` preferences, keeps provider identity visible, refreshes one contribution through its opaque refresh key, and renders one source failure without discarding healthy sources.
+- Site actions use the exact allowlisted action descriptor supplied by Server. Confirm only when `requiresConfirmation` or `destructive` is true; destructive actions use the danger confirmation style. Never invent provider action IDs in a view.
+- DASH video and audio are separate playback assets. Desktop and Android route both URLs and their independent headers through the native safe playback bridge; neither route may forward Server Bearer or provider-private headers after a cross-origin redirect.
 - Server Bearer may be attached only to the configured Server origin. Cross-origin playback and subtitle/danmaku requests must drop private headers.
 
 ### 4. Validation & Error Matrix
@@ -42,19 +48,25 @@ Local history ordering is `updated_at DESC, identity_key ASC`; the next page use
 | Provider progress returns an error | Keep playback and local history; show safe sync diagnostic |
 | Plugin danmaku is absent/empty/fails | Fall back to generic matching without blocking playback |
 | Variant is unavailable or refresh fails | Keep/restore the current playable stream and report a safe error |
+| One home contribution fails | Render its safe source-level error; keep other contributions and physical sources |
+| Site action is destructive or requires confirmation | Require explicit user confirmation and pass `confirmed=true`; ordinary add actions execute without a redundant confirmation |
+| DASH audio bridge fails | Fail the prepared replacement plan safely; do not leak credentials or silently play video-only |
 | Online DTO contains an unsafe URL/unknown shape | Reject at DataSource boundary |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: Player opens Bilibili history page 2 with the Server cursor, starts a segment, saves local progress, and then reports the same exact identity remotely.
 - Good: a Bilibili playback plan supplies a Server danmaku asset; comments load directly and generic title matching is skipped.
+- Good: a generic online source contributes one Hero and one row; Player applies device order/placement and refreshes only the selected row.
+- Good: a destructive `follow.remove` action declares confirmation while `favorite.add` does not; both use the same generic DataSource method.
 - Base: Bilibili progress sync fails while offline; playback and local resume state still work.
-- Bad: treat Continue Watching as complete history, paginate by timestamp alone, infer provider identity from title, or send Server Bearer to a provider/CDN URL.
+- Bad: treat Continue Watching as complete history, paginate by timestamp alone, infer provider identity from title, hard-code one provider action in a view, or send Server Bearer to a provider/CDN URL.
 
 ### 6. Tests Required
 
 - Rust tests cover stable local-history page boundaries, source filters, deletion isolation, and bounded limits.
-- TypeScript verification covers generic online DTOs, same-origin gateway rules, online history, progress sync, plugin danmaku, variants, and fallback behavior.
+- TypeScript verification covers generic online DTOs, home contribution fault isolation and refresh, action descriptor filtering, same-origin gateway rules, online history, progress sync, plugin danmaku, variants, DASH audio, and fallback behavior.
+- Rust and Android bridge tests/assertions cover separate video/audio loopback routes, Range preservation, and cross-origin private-header stripping.
 - Run `verify:server-datasource`, `verify:server-online-library`, `verify:stream-quality`, `verify:danmaku`, typecheck, lint, build, Cargo tests, and strict all-target Clippy.
 
 ### 7. Wrong vs Correct
@@ -71,4 +83,11 @@ await fetch(providerDanmakuUrl, { headers: { Cookie: providerCookie } })
 const loaded = await source.getDanmakuComments?.(playbackPlan.danmaku[0])
 if (!loaded?.length)
   await loadGenericDanmakuFallback(identity)
+```
+
+For site actions, do not branch on a provider name:
+
+```ts
+// Wrong: if (provider === 'bilibili') await callBilibiliFavorite()
+// Correct: await source.performSiteAction?.(item.id, descriptor.id, nextState, confirmed)
 ```

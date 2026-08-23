@@ -1,0 +1,6 @@
+{
+  "pending": { "code": 0, "data": { "code": 86101, "message": "not scanned" } },
+  "scanned": { "code": 0, "data": { "code": 86090, "message": "scanned" } },
+  "confirmed": { "code": 0, "data": { "code": 0, "message": "ok" } },
+  "expired": { "code": 0, "data": { "code": 86038, "message": "expired" } }
+}

@@ -31,6 +31,8 @@ npm run verify
 npm run typecheck
 ```
 
+`fixtures/online-media.v1.json` 是 Go Host 与 TypeScript SDK 共读的安全契约夹具，固定验证 Work → Segment → Version → Variant、声明式动作、DASH 双轨、字幕/弹幕、UUID 资产引用和短时选择令牌。修改这些字段时必须同时通过 SDK verify 与 Server 共读测试。
+
 ## 本地生命周期 fixture
 
 ```powershell
@@ -42,7 +44,11 @@ npm run build:fixture
 ## Runtime v1 最小约束
 
 - 必须导出 `omc_api_version() i32` 并返回 `1`。
-- 可以导出 `omc_start()`。
-- 当前安装生命周期不开放 WASI 或任意 Host import。
+- 必须导出线性内存、`omc_alloc(size) i32` 与 `omc_invoke(operation, pointer, length) i64`；可以导出 `omc_start()`。
+- 唯一允许的 import 是 `ohmycine.host_call`。WASM 不开放 WASI、Socket、文件系统、环境变量、系统命令或数据库。
+- 插件操作使用 [`src/runtime.ts`](src/runtime.ts) 中冻结的 operation code 和 JSON DTO；站点交互、扫码登录、播放进度、PlaybackPlan 与 DownloadPlan 均不得另建私有路由。
+- Host HTTP 只允许 Manifest 授权的 HTTPS 域名，并限制 DNS、重定向、超时和载荷。Cookie/Token 只能由凭据引用附加，不能返回 WASM。
+- 扫码登录使用两阶段 Cookie 捕获：HTTP 返回一次性 `credentialCaptureRef`，插件确认提供方业务状态成功后才调用 `credentialCommit`。引用短时、单次且绑定插件、运行代次、连接、scope 与 origin。
+- 远端播放/下载地址先注册成短时 `urlRef`；普通 DTO、日志和 Player 持久状态不能出现最终 CDN URL 或敏感 Header。
 - Manifest 只能声明 SDK 已知 capability 和精确权限。
 - PT 站点适配器属于 Server 内建能力，不通过此 SDK 注册。

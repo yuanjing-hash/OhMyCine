@@ -24,6 +24,7 @@ import app.tauri.plugin.Plugin
 class LoadArgs {
     lateinit var path: String
     var headers: List<HeaderArgs>? = null
+    var audioPath: String? = null
     var title: String? = null
 }
 
@@ -105,7 +106,11 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         enterPlaybackMode()
         try {
             val playablePath = preparePlayablePath(args.path)
-            MpvSurfaceHost.load(playablePath, args.headers.orEmpty().map { MpvHeader(it.name, it.value) })
+            MpvSurfaceHost.load(
+                playablePath,
+                args.audioPath?.trim()?.takeIf { it.isNotEmpty() }?.let(::preparePlayablePath),
+                args.headers.orEmpty().map { MpvHeader(it.name, it.value) },
+            )
             currentMediaTitle = args.title?.trim()?.take(160).takeUnless { it.isNullOrEmpty() } ?: "正在播放"
             syncBackgroundPlaybackService()
         } catch (error: Exception) {

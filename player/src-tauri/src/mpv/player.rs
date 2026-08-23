@@ -134,13 +134,19 @@ impl MpvPlayer {
         &mut self,
         path: &str,
         headers: &[(String, String)],
+        audio_path: Option<&str>,
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.apply_http_headers(headers)?;
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
-        let result = self.command(&["loadfile", path, "replace"]);
+        let audio_option = audio_path.map(|value| format!("audio-file={value}"));
+        let result = if let Some(option) = audio_option.as_deref() {
+            self.command(&["loadfile", path, "replace", "-1", option])
+        } else {
+            self.command(&["loadfile", path, "replace"])
+        };
         if result.is_ok() {
             if let Some(surface) = self.render_surface.as_mut() {
                 surface.set_playback_active(true);

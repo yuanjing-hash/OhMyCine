@@ -50,6 +50,7 @@ var (
 	OperationArtifactCleanup           = Operation{"artifact_cleanup", "产物清理"}
 	OperationDownloadStagingCleanup    = Operation{"download_staging_cleanup", "下载暂存清理"}
 	OperationDownloadTask              = Operation{"download_task", "下载任务"}
+	OperationPluginDownload            = Operation{"plugin_download", "站点插件下载"}
 	OperationDownloadClassification    = Operation{"download_classification", "下载预分类"}
 	OperationPan115OfflineDownload     = Operation{"pan115_offline_download", "115离线下载"}
 	OperationPan115ShareIngest         = Operation{"pan115_share_ingest", "115分享摄取"}
@@ -111,6 +112,10 @@ func OperationForHTTPRoute(route string) Operation {
 		return OperationDownloaderManagement
 	case strings.HasPrefix(route, "/downloads"):
 		return OperationDownloadTask
+	case strings.HasPrefix(route, "/player/online-libraries") && strings.HasSuffix(route, "/download"):
+		return OperationPluginDownload
+	case strings.HasPrefix(route, "/player/online-libraries"), strings.HasPrefix(route, "/player/online-assets"), strings.HasPrefix(route, "/player/online-history"):
+		return OperationPluginRuntime
 	case strings.HasPrefix(route, "/seeding-tasks"), strings.HasPrefix(route, "/settings/seeding"):
 		return OperationSeedingManagement
 	case strings.HasPrefix(route, "/settings/metadata"):

@@ -135,6 +135,7 @@ $env:OMC_SERVER_PORT = '3300'
 | `OMC_CREDENTIAL_MASTER_KEY` | 未设置 | 可选的 Base64 编码 32-byte 部署主密钥；设置后优先于 key 文件，禁止写入日志或仓库 |
 | `OMC_TMDB_READ_ACCESS_TOKEN` | 未设置 | 运行时部署级 TMDB Token；优先级低于 Web UI 中 AES-GCM 保存的自定义 Token，高于构建内置 Token |
 | `OMC_TMDB_API_KEY` | 未设置 | 运行时部署级 TMDB v3 API Key；与 `OMC_TMDB_READ_ACCESS_TOKEN` 互斥，优先级相同 |
+| `OMC_FFMPEG_PATH` | 自动发现隔离目录或 `PATH` | 可选 FFmpeg 可执行文件；只用于 Server 固定参数的 DASH 音视频合流 |
 | `OMC_ENV` | `production` | `development` / `production` |
 | `OMC_PUBLIC_ORIGIN` | `http://127.0.0.1:3000`（默认端口） | Web UI、STRM 与 Emby 网关使用的精确对外来源；不得使用通配监听地址 |
 | `OMC_COOKIE_SECURE` | 随 public origin 推导 | HTTPS 生产环境应为 `true` |
@@ -146,6 +147,8 @@ OMC_SERVER_PORT=3300 ./start.sh
 ```
 
 手动开发模式仍使用 Server 内部默认值，并额外支持 `OMC_DEV_ORIGIN`（默认 `http://127.0.0.1:5173`）作为 Vite 开发来源。
+
+Windows 可运行 `powershell -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.ps1`，把经过固定 SHA-256 校验的 FFmpeg 安装到 gitignored 的 `server/.runtime/windows/tools/ffmpeg`。脚本不修改系统 `PATH`、不安装到系统目录，也不会覆盖现有隔离工具；正式部署也可以通过 `OMC_FFMPEG_PATH` 指向管理员审核的 FFmpeg。
 
 TMDB 有效凭据优先级为：Web UI 加密自定义凭据 → 运行时部署凭据 → 正式构建内置应用凭据。每一级都显式区分 `read_access_token`（Bearer）和 `api_key`（v3 query），不按内容猜测；同一级的两个环境变量不能同时配置。清除自定义凭据会回到下一级；API 永远只返回 `custom/deployment/builtin/none` 来源与安全类型，不回显密文。默认 API 是 `https://api.tmdb.org/3`，仅 DNS、连接或超时错误回退 `https://api.themoviedb.org/3`；任何 HTTP 响应均不回退。自定义 API 和图片 HTTPS 前缀必须在设置页分别测试成功后才会保存。
 
