@@ -23,6 +23,7 @@ const (
 	MaxArchiveEntries    = 256
 	MaxUncompressedBytes = 128 * 1024 * 1024
 	MaxEntryBytes        = 64 * 1024 * 1024
+	MaxArtworkBytes      = 4 * 1024 * 1024
 )
 
 var windowsReservedNames = map[string]struct{}{
@@ -64,6 +65,9 @@ func ExtractVerified(root, archiveDigest string, manifest contract.Manifest, arc
 		return "", "", err
 	}
 	if err := validateInstalledEntry(temporary, manifest.Entry); err != nil {
+		return "", "", err
+	}
+	if err := validateInstalledArtwork(temporary, manifest.LibraryArtwork); err != nil {
 		return "", "", err
 	}
 	extractedTreeSHA256, err := managedTreeSHA256(temporary)
@@ -127,6 +131,9 @@ func ValidateManagedPackage(root, packagePath string, manifest contract.Manifest
 		return err
 	}
 	if err := validateInstalledEntry(cleaned, manifest.Entry); err != nil {
+		return err
+	}
+	if err := validateInstalledArtwork(cleaned, manifest.LibraryArtwork); err != nil {
 		return err
 	}
 	actualTreeSHA256, err := managedTreeSHA256(cleaned)
@@ -316,6 +323,52 @@ func validateInstalledEntry(root, entry string) error {
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info) || info.Size() == 0 || info.Size() > MaxEntryBytes {
 		return errors.New("plugin entry is not a safe regular file")
+	}
+	return nil
+}
+
+func validateInstalledArtwork(root, artwork string) error {
+	if artwork == "" {
+		return nil
+	}
+	cleaned, err := safeArchivePath(artwork)
+	if err != nil {
+		return errors.New("plugin manifest libraryArtwork is unsafe")
+	}
+	target := filepath.Join(root, filepath.FromSlash(cleaned))
+	if !withinRoot(root, target) {
+		return errors.New("plugin library artwork escapes package root")
+	}
+	info, err := os.Lstat(target)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info) || info.Size() == 0 || info.Size() > MaxArtworkBytes {
+		return errors.New("plugin library artwork is not a safe regular file")
+	}
+	file, err := os.Open(target)
+	if err != nil {
+		return errors.New("plugin library artwork cannot be opened")
+	}
+	defer file.Close()
+	header := make([]byte, 12)
+	read, err := io.ReadFull(file, header)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return errors.New("plugin library artwork cannot be read")
+	}
+	header = header[:read]
+	switch strings.ToLower(filepath.Ext(target)) {
+	case ".png":
+		if len(header) < 8 || !bytes.Equal(header[:8], []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}) {
+			return errors.New("plugin library artwork content does not match PNG")
+		}
+	case ".jpg", ".jpeg":
+		if len(header) < 3 || header[0] != 0xff || header[1] != 0xd8 || header[2] != 0xff {
+			return errors.New("plugin library artwork content does not match JPEG")
+		}
+	case ".webp":
+		if len(header) < 12 || string(header[:4]) != "RIFF" || string(header[8:12]) != "WEBP" {
+			return errors.New("plugin library artwork content does not match WebP")
+		}
+	default:
+		return errors.New("plugin library artwork type is unsupported")
 	}
 	return nil
 }

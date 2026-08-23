@@ -39,6 +39,7 @@
     "verify:emby-favorites": "tsx scripts/verify-emby-favorites.ts",
     "verify:server-datasource": "tsx scripts/verify-server-datasource.ts",
     "verify:server-online-library": "tsx scripts/verify-server-online-library.ts",
+    "verify:server-library-navigation": "tsx scripts/verify-server-library-navigation.ts",
     "verify:stream-quality": "tsx scripts/verify-stream-quality-switch.ts",
     "verify:view-architecture": "tsx scripts/verify-view-architecture.ts",
     "verify:tmdb-auth": "tsx scripts/verify-tmdb-auth-routing.ts",

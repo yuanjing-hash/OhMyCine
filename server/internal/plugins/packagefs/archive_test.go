@@ -96,6 +96,36 @@ func TestValidateManagedPackageRejectsModifiedWASM(t *testing.T) {
 	}
 }
 
+func TestExtractVerifiedRequiresDeclaredRasterArtwork(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "plugins")
+	digest := strings.Repeat("9", 64)
+	manifest := contract.Manifest{Entry: "plugin.wasm", LibraryArtwork: "assets/library.png", PackageSHA256: digest}
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	installed, treeSHA256, err := ExtractVerified(root, digest, manifest, zipFixture(t, []zipFixtureEntry{
+		{name: "plugin.wasm", body: []byte("wasm")},
+		{name: "assets/library.png", body: png},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateManagedPackage(root, installed, manifest, treeSHA256); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "assets", "library.png"), []byte("<svg>active</svg>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateManagedPackage(root, installed, manifest, treeSHA256); err == nil {
+		t.Fatal("managed package accepted modified active artwork")
+	}
+
+	missingDigest := strings.Repeat("8", 64)
+	missing := manifest
+	missing.PackageSHA256 = missingDigest
+	if _, _, err := ExtractVerified(root, missingDigest, missing, zipFixture(t, []zipFixtureEntry{{name: "plugin.wasm", body: []byte("wasm")}})); err == nil {
+		t.Fatal("package accepted a missing declared artwork")
+	}
+}
+
 func TestReconcileStagingRestoresReferencedAndDeletesCommittedUninstall(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "plugins")
 	digest := strings.Repeat("c", 64)

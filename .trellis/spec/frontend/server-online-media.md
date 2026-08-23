@@ -99,3 +99,58 @@ For site actions, do not branch on a provider name:
 // Wrong: if (provider === 'bilibili') await callBilibiliFavorite()
 // Correct: await source.performSiteAction?.(item.id, descriptor.id, nextState, confirmed)
 ```
+
+## Scenario: Server library artwork and hierarchical back navigation
+
+### 1. Scope / Trigger
+
+- Trigger: changing Server physical/plugin library cards, Server navigation folders, or global desktop back controls.
+
+### 2. Signatures
+
+- `MediaLibrary.posterUrl/backdropUrl?: string` and folder `MediaItem.posterUrl/backdropUrl?: string` carry only safe display artwork.
+- `registerLayoutBackHandler(owner, handler) -> unregister`; `handler() -> boolean | Promise<boolean>` returns true only when it consumed one internal level.
+
+### 3. Contracts
+
+- Resolve Server artwork against the configured Server origin only when the normalized path starts with `/api/v1/assets/`; reject userinfo, cross-origin URLs and other paths.
+- Library and navigation-folder cards use landscape presentation; playable works retain poster presentation.
+- A source view registers one layout back handler. Both desktop back controls invoke the shared dispatcher, which consumes category/node/library state before Router history.
+- Unregister on unmount so a stale view cannot intercept another route. At source root, preserve the existing Router-history/home fallback.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing artwork | Render the established fallback without blocking navigation |
+| Cross-origin or malformed artwork | Discard it at the DataSource boundary |
+| Nested stack has two or more nodes | Load the previous node and keep the source route |
+| Selected library is at its first node | Return to the Server library list |
+| Source root has no internal state | Delegate to Router history/home |
+| View unmounts | Remove its handler |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `分类内容 → 分类列表 → Server 媒体库列表 → 上一页面` uses consecutive back presses.
+- Base: an old Server omits artwork and the card fallback remains usable.
+- Bad: every back click calls `router.back()` directly, or Player hard-codes Bilibili/115 cover URLs.
+
+### 6. Tests Required
+
+- DataSource verification covers physical, category and plugin same-origin artwork mapping.
+- Navigation verification covers handler-first behavior, Router fallback and both desktop controls using the shared dispatcher.
+- Run `verify:server-datasource`, `verify:server-online-library`, `verify:server-library-navigation`, typecheck, lint and build.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```ts
+router.back()
+```
+
+Correct:
+
+```ts
+await navigateLayoutBack(router)
+```

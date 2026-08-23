@@ -50,6 +50,7 @@ export interface PluginManifestV1 {
   maxServerVersion?: string
   runtime: 'wasm'
   entry: string
+  libraryArtwork?: string
   capabilities: readonly PluginCapability[]
   navigationMode?: 'flat' | 'hierarchical'
   permissions: readonly PluginPermission[]

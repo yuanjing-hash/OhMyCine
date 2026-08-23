@@ -103,6 +103,7 @@ type Manifest struct {
 	MaxServerVersion string          `json:"maxServerVersion,omitempty"`
 	Runtime          string          `json:"runtime"`
 	Entry            string          `json:"entry"`
+	LibraryArtwork   string          `json:"libraryArtwork,omitempty"`
 	Capabilities     []Capability    `json:"capabilities"`
 	NavigationMode   string          `json:"navigationMode,omitempty"`
 	Permissions      []Permission    `json:"permissions"`
@@ -177,6 +178,9 @@ func (manifest Manifest) Validate() error {
 	}
 	if !safePackageEntry(manifest.Entry) {
 		return errors.New("plugin entry must be a package-relative wasm path")
+	}
+	if manifest.LibraryArtwork != "" && !safeLibraryArtwork(manifest.LibraryArtwork) {
+		return errors.New("plugin libraryArtwork must be a package-relative PNG, JPEG, or WebP path")
 	}
 	if err := validateCapabilities(manifest.Capabilities); err != nil {
 		return err
@@ -420,6 +424,18 @@ func safePackageEntry(value string) bool {
 	}
 	cleaned := path.Clean(value)
 	return cleaned == value && !path.IsAbs(cleaned) && cleaned != "." && !strings.HasPrefix(cleaned, "../") && strings.HasSuffix(strings.ToLower(cleaned), ".wasm")
+}
+
+func safeLibraryArtwork(value string) bool {
+	if value == "" || len(value) > 240 || strings.Contains(value, "\\") || strings.ContainsRune(value, '\x00') {
+		return false
+	}
+	cleaned := path.Clean(value)
+	if cleaned != value || path.IsAbs(cleaned) || cleaned == "." || strings.HasPrefix(cleaned, "../") {
+		return false
+	}
+	extension := strings.ToLower(path.Ext(cleaned))
+	return extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".webp"
 }
 
 func validateCapabilities(capabilities []Capability) error {

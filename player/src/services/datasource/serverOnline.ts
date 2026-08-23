@@ -10,6 +10,7 @@ export interface OnlineLibrarySummary {
   available: boolean
   errorCode?: string
   homeContributions: string[]
+  artworkUrl?: string
 }
 
 export interface OnlineNavigationItem {
@@ -273,12 +274,15 @@ export function parseOnlineHistoryPage(sourceId: string, value: unknown): Provid
   }
 }
 
-export function onlineLibraryToMediaLibrary(sourceId: string, item: OnlineLibrarySummary): MediaLibrary {
+export function onlineLibraryToMediaLibrary(sourceId: string, item: OnlineLibrarySummary, serverBaseUrl: string): MediaLibrary {
+  const artworkUrl = resolveLibraryArtworkURL(serverBaseUrl, item.artworkUrl)
   return {
     id: createOnlineLibraryID(item.id),
     sourceId,
     name: item.name,
     type: 'mixed',
+    posterUrl: artworkUrl,
+    backdropUrl: artworkUrl,
     providerIdentity: `plugin:${item.pluginId}:${item.id}`,
   }
 }
@@ -528,6 +532,23 @@ function parseOnlineLibrary(value: unknown): OnlineLibrarySummary | null {
     available: item.available !== false,
     errorCode: optionalText(item.errorCode ?? item.error_code, 128),
     homeContributions: stringList(item.homeContributions ?? item.home_contributions, 50),
+    artworkUrl: optionalText(item.artworkUrl ?? item.artwork_url, MAX_TEXT_LENGTH),
+  }
+}
+
+function resolveLibraryArtworkURL(baseUrl: string, value: unknown): string | undefined {
+  const candidate = optionalText(value, MAX_TEXT_LENGTH)
+  if (!candidate)
+    return undefined
+  try {
+    const server = new URL(baseUrl)
+    const resolved = new URL(candidate, `${server.origin}/`)
+    if (resolved.origin !== server.origin || resolved.username || resolved.password || !resolved.pathname.startsWith('/api/v1/assets/'))
+      return undefined
+    return resolved.toString()
+  }
+  catch {
+    return undefined
   }
 }
 

@@ -50,6 +50,8 @@ if (onlineMediaFixture.schemaVersion !== 1
 for (const [name, mutate] of [
   ['unknown capability', value => value.capabilities.push('pt.site')],
   ['path traversal', value => { value.entry = '../plugin.wasm' }],
+  ['artwork path traversal', value => { value.libraryArtwork = '../cover.png' }],
+  ['active artwork', value => { value.libraryArtwork = 'assets/cover.svg' }],
   ['unknown field', value => { value.serverInternals = true }],
   ['invalid semver', value => { value.version = '1.0.0-beta..1' }],
   ['duplicate permission', value => { value.permissions = [{ kind: 'download.plan' }, { kind: 'download.plan' }] }],

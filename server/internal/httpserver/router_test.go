@@ -46,6 +46,24 @@ type testEnvelope struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+func TestBuiltInLibraryArtworkIsPublicInertRaster(t *testing.T) {
+	client := newTestClient(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/assets/library-covers/library-local.png", nil)
+	response := httptest.NewRecorder()
+	client.router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || response.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.HasPrefix(response.Header().Get("Cache-Control"), "public") {
+		t.Fatalf("status=%d type=%q cache=%q nosniff=%q", response.Code, response.Header().Get("Content-Type"), response.Header().Get("Cache-Control"), response.Header().Get("X-Content-Type-Options"))
+	}
+	if body := response.Body.Bytes(); len(body) < 8 || !bytes.Equal(body[:8], []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}) {
+		t.Fatalf("invalid embedded PNG: %x", body)
+	}
+	missing := httptest.NewRecorder()
+	client.router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/v1/assets/library-covers/../../secret", nil))
+	if missing.Code == http.StatusOK {
+		t.Fatal("unsafe artwork path was served")
+	}
+}
+
 type routerCloudDriver struct{}
 
 func (routerCloudDriver) Provider() string { return cloudpkg.ProviderPan115 }

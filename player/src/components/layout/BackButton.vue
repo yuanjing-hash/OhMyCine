@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { navigateLayoutBack } from '@/services/layoutBackNavigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -8,10 +9,7 @@ const router = useRouter()
 const shouldShowBackButton = computed(() => route.path !== '/')
 
 function goBack() {
-  if (window.history.state?.back)
-    router.back()
-  else
-    router.push('/')
+  void navigateLayoutBack(router)
 }
 </script>
 

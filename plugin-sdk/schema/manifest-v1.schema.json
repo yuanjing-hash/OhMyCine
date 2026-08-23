@@ -16,6 +16,7 @@
     "maxServerVersion": { "type": "string", "maxLength": 128, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
     "runtime": { "const": "wasm" },
     "entry": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.wasm$", "maxLength": 240 },
+    "libraryArtwork": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.(?:png|jpe?g|webp)$", "maxLength": 240 },
     "capabilities": {
       "type": "array",
       "uniqueItems": true,

@@ -59,7 +59,7 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 
 	manifestJSON := strings.ReplaceAll(`{
       "schemaVersion":1,"id":"org.ohmycine.online-test","name":"在线测试","description":"fixture",
-      "version":"0.1.0","apiVersion":"1","minServerVersion":"0.1.0","runtime":"wasm","entry":"plugin.wasm",
+      "version":"0.1.0","apiVersion":"1","minServerVersion":"0.1.0","runtime":"wasm","entry":"plugin.wasm","libraryArtwork":"assets/library.png",
       "capabilities":["site.navigation","site.feed","site.detail","site.interaction","media.playback","home.contribution","feed.refresh","site.history","playback.progress_sync"],
       "permissions":[{"kind":"network.http","domains":["login.example.test"]},{"kind":"credential.use","scopes":["site.session"]}],"configSchema":{"type":"object"},"author":"test","license":"MIT",
       "homepage":"https://example.test/plugin","source":"https://github.com/example/plugin","packageSha256":"${SHA}"
@@ -89,7 +89,7 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 	}
 
 	libraries, err := service.OnlineLibraries(actor)
-	if err != nil || len(libraries) != 2 || libraries[0].ID != connection.ID || len(libraries[0].HomeContributions) != 1 || libraries[0].HomeContributions[0] != "recommended" {
+	if err != nil || len(libraries) != 2 || libraries[0].ID != connection.ID || len(libraries[0].HomeContributions) != 1 || libraries[0].HomeContributions[0] != "recommended" || libraries[0].ArtworkURL != "/api/v1/assets/plugin-covers/"+strings.Repeat("a", 64) {
 		t.Fatalf("libraries=%+v err=%v", libraries, err)
 	}
 	feedCalls, actionCalls := 0, 0

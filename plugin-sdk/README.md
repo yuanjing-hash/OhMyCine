@@ -14,11 +14,25 @@ npm run pack -- --manifest ..\plugins\official\example\plugin.template.json --wa
 输出是两个独立的 GitHub Release 资产：
 
 - `<plugin-id>-<version>.manifest.json`：包含工具计算后的 `packageSha256`。
-- `<plugin-id>-<version>.omcp`：内容确定的 ZIP 包，只包含 WASM 入口和将来允许的受管资源。
+- `<plugin-id>-<version>.omcp`：内容确定的 ZIP 包，只包含 WASM 入口和 Manifest 明确声明的受管静态资源。
 
 Manifest 不能放进 `.omcp`，否则 Manifest 中的包摘要会与包含 Manifest 自身的压缩包形成循环。不要手工修改生成后 Manifest 的身份、版本、来源或摘要。
 
 Server 安装时还会为安全解包后的完整目录树计算独立摘要，并在确认、启用、回滚和重启恢复前重新计算。即使 `.omcp` 摘要和内容寻址目录名不变，安装后被修改或增加文件的包也不会执行。
+
+## 媒体库静态封面
+
+在线媒体插件可在 Manifest 顶层声明 `libraryArtwork`，让 Server 专区的媒体库卡片显示插件自己的横向封面：
+
+```json
+{
+  "libraryArtwork": "assets/library-cover.png"
+}
+```
+
+该路径必须是包内正斜杠相对路径，且只能指向 PNG、JPEG 或 WebP。打包器会校验文件存在、最大 4 MiB、扩展名与文件 magic bytes 一致，再把它加入 `.omcp`；绝对路径、反斜杠、路径穿越、符号链接、SVG、HTML 和未声明的附加文件都会被拒绝。Server 安装和每次读取时会重新验证相同约束。
+
+Player 不直接读取插件目录，也不会请求插件提供的远端图片地址。Server 只为当前启用且完整性有效的安装生成基于包 SHA-256 的同源只读地址 `/api/v1/assets/plugin-covers/<packageSha256>`；URL 不携带 Player Token、插件凭据或本地安装路径。旧插件不声明 `libraryArtwork` 时继续使用 Player 的默认占位封面。
 
 ## 生成 Registry 条目
 

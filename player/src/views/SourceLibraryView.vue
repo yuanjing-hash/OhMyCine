@@ -10,6 +10,7 @@ import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
 import { normalizeWorkLevelSearchResults } from '@/services/datasource/searchAggregation'
+import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { clearLayoutContextActions, setLayoutContextActions } from '@/services/layoutContextActions'
 import { registerMaintenanceHandler } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
@@ -23,6 +24,7 @@ const router = useRouter()
 const store = useDataSourceStore()
 const layoutContextOwner = Symbol('source-library-layout-actions')
 let unregisterMaintenanceHandler: (() => void) | undefined
+let unregisterLayoutBackHandler: (() => void) | undefined
 
 const sourceId = computed(() => route.params.sourceId as string)
 const sourceConfig = computed(() =>
@@ -347,6 +349,7 @@ const identificationArtworkCards = computed<IdentificationArtworkCard[]>(() => {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
+  unregisterLayoutBackHandler = registerLayoutBackHandler(layoutContextOwner, handleInPageBack)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
     if (isCurrentRawIndexStatus(status)) {
       setRawIndexStatus(status)
@@ -368,6 +371,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unregisterMaintenanceHandler?.()
+  unregisterLayoutBackHandler?.()
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
   window.removeEventListener('keydown', handleGlobalKeydown)
@@ -573,6 +577,21 @@ function backToLibraries() {
   items.value = []
   searchKeyword.value = ''
   requestAppScrollTop()
+}
+
+async function handleInPageBack(): Promise<boolean> {
+  if (isMediaLibraryView.value && selectedScannedCategoryId.value) {
+    backToScannedCategories()
+    return true
+  }
+  if (!selectedLibrary.value)
+    return false
+  if (navigationStack.value.length > 1) {
+    await navigateToCrumb(navigationStack.value.length - 2)
+    return true
+  }
+  backToLibraries()
+  return true
 }
 
 async function navigateToCrumb(index: number) {

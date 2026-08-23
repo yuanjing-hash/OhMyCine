@@ -20,6 +20,14 @@ function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {
   return 'path' in item
 }
 
+function isPosterCard(item: MediaItem | MediaLibrary): boolean {
+  return hasMediaPath(item) && item.type !== 'folder'
+}
+
+function cardKind(item: MediaItem | MediaLibrary): 'poster' | 'library' {
+  return isPosterCard(item) ? 'poster' : 'library'
+}
+
 function handleContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
   emit('contextmenu', item, event)
 }
@@ -31,12 +39,12 @@ function handleContextMenu(item: MediaItem | MediaLibrary, event: MouseEvent) {
       <div v-for="i in 12" :key="i" class="aspect-[2/3] animate-pulse rounded-[1.4rem] bg-white/6" />
     </div>
 
-    <div v-else-if="items.length" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5" :class="items.some(hasMediaPath) ? 'media-grid-posters' : 'media-grid-libraries'">
+    <div v-else-if="items.length" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5" :class="items.some(isPosterCard) ? 'media-grid-posters' : 'media-grid-libraries'">
       <MediaCard
         v-for="item in items"
         :key="item.id"
         :item="item"
-        :kind="hasMediaPath(item) ? 'poster' : 'library'"
+        :kind="cardKind(item)"
         :context-menu-mode="contextMenuMode"
         @select="emit('select', $event)"
         @play="emit('play', $event)"

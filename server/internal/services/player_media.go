@@ -31,15 +31,17 @@ type PlayerMediaLibrary struct {
 	EntryCount     int64      `json:"entry_count"`
 	DirectStream   bool       `json:"direct_stream"`
 	STRMEnabled    bool       `json:"strm_enabled"`
+	ArtworkURL     string     `json:"artwork_url,omitempty"`
 	LastSuccessful *time.Time `json:"last_successful_scan_at,omitempty"`
 }
 
 type PlayerMediaCategory struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	MediaType string `json:"media_type"`
-	ItemCount int64  `json:"item_count"`
-	SortOrder int    `json:"sort_order"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	MediaType  string `json:"media_type"`
+	ItemCount  int64  `json:"item_count"`
+	SortOrder  int    `json:"sort_order"`
+	ArtworkURL string `json:"artwork_url,omitempty"`
 }
 
 type PlayerMediaIdentity struct {
@@ -159,7 +161,7 @@ func (s *MediaLibraryService) PlayerLibraries(actor Actor) ([]PlayerMediaLibrary
 	result := make([]PlayerMediaLibrary, 0, len(rows))
 	for _, row := range rows {
 		directStream := row.StorageType == models.StorageTypeLocal || row.StorageType == models.StorageTypePan115 && row.STRMEnabled && row.SignedProxyEnabled
-		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, LastSuccessful: row.LastSuccessfulScanAt})
+		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, ArtworkURL: playerLibraryArtworkURL(row.StorageType), LastSuccessful: row.LastSuccessfulScanAt})
 	}
 	return result, nil
 }
@@ -206,13 +208,16 @@ func (s *MediaLibraryService) PlayerCategories(actor Actor, libraryID uint) ([]P
 			return
 		}
 		key := mediaType + "\x00" + name
+		if counts[key] <= 0 {
+			return
+		}
 		if _, exists := seen[key]; exists {
 			return
 		}
 		seen[key] = struct{}{}
 		result = append(result, PlayerMediaCategory{
 			ID: base64.RawURLEncoding.EncodeToString([]byte(key)), Name: name, MediaType: mediaType,
-			ItemCount: counts[key], SortOrder: len(result),
+			ItemCount: counts[key], SortOrder: len(result), ArtworkURL: "/api/v1/assets/library-covers/category-cinema.png",
 		})
 	}
 	for _, group := range rules.Groups {
@@ -229,6 +234,13 @@ func (s *MediaLibraryService) PlayerCategories(actor Actor, libraryID uint) ([]P
 		appendCategory(row.MediaType, row.CategoryName)
 	}
 	return result, nil
+}
+
+func playerLibraryArtworkURL(storageType string) string {
+	if storageType == models.StorageTypeLocal {
+		return "/api/v1/assets/library-covers/library-local.png"
+	}
+	return "/api/v1/assets/library-covers/library-cloud.png"
 }
 
 func (s *MediaLibraryService) PlayerCatalog(actor Actor, libraryID uint, query MediaPageQuery) (PlayerMediaItemPage, error) {

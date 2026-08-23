@@ -41,6 +41,7 @@ type PluginOnlineLibrarySummary struct {
 	Available         bool                  `json:"available"`
 	ErrorCode         string                `json:"errorCode,omitempty"`
 	HomeContributions []string              `json:"homeContributions"`
+	ArtworkURL        string                `json:"artworkUrl,omitempty"`
 }
 
 type PluginHomeContribution struct {
@@ -117,10 +118,14 @@ func (s *PluginRepositoryService) OnlineLibraries(actor Actor) ([]PluginOnlineLi
 				home = []string{"recommended"}
 			}
 		}
+		artworkURL := ""
+		if manifest.LibraryArtwork != "" {
+			artworkURL = "/api/v1/assets/plugin-covers/" + manifest.PackageSHA256
+		}
 		result = append(result, PluginOnlineLibrarySummary{
 			ID: library.ID, PluginID: library.PluginID, ConnectionID: library.ConnectionID,
 			Name: library.Name, ProviderLabel: manifest.Name, Capabilities: append([]contract.Capability(nil), manifest.Capabilities...),
-			Available: true, HomeContributions: home,
+			Available: true, HomeContributions: home, ArtworkURL: artworkURL,
 		})
 	}
 	sort.SliceStable(result, func(i, j int) bool {

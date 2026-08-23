@@ -26,6 +26,8 @@ func TestParseManifestRejectsUnsafeOrUnknownInput(t *testing.T) {
 		"unknown capability":      func(value map[string]any) { value["capabilities"] = []any{"pt.site"} },
 		"entry traversal":         func(value map[string]any) { value["entry"] = "../plugin.wasm" },
 		"entry windows traversal": func(value map[string]any) { value["entry"] = `..\plugin.wasm` },
+		"artwork traversal":       func(value map[string]any) { value["libraryArtwork"] = "../cover.png" },
+		"artwork active content":  func(value map[string]any) { value["libraryArtwork"] = "assets/cover.svg" },
 		"http source":             func(value map[string]any) { value["source"] = "http://example.test/plugin" },
 		"duplicate permission": func(value map[string]any) {
 			value["permissions"] = []any{map[string]any{"kind": "download.plan"}, map[string]any{"kind": "download.plan"}}

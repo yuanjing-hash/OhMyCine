@@ -116,3 +116,60 @@ return pluginMessage, pluginPlaybackURL
 safeError := mapPluginErrorToStableServerError(pluginEnvelope)
 assetURL := "/api/v1/player/online-assets/" + validatedOpaqueReference
 ```
+
+## Scenario: Plugin-owned library artwork
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing plugin library-card artwork, Manifest packaging, package extraction, Player online-library summaries, or artwork HTTP routes.
+
+### 2. Signatures
+
+- Manifest v1 optional field: `libraryArtwork: string`.
+- Public inert asset route: `GET /api/v1/assets/plugin-covers/:packageSha256`.
+- Online library DTO optional field: `artworkUrl`, containing only a Server-relative `/api/v1/assets/` path.
+
+### 3. Contracts
+
+- `libraryArtwork` is a package-relative PNG/JPEG/WebP path of at most 240 characters; absolute paths, backslashes, dot segments, SVG, HTML, empty files and files larger than 4 MiB are forbidden.
+- The packer includes exactly the declared artwork and the Server validates extension, magic bytes, size, managed-tree digest and active installation before every read.
+- The public URL is content-addressed by the lowercase package SHA-256. It contains no Player token, plugin credential, installation path, connection ID or provider URL.
+- Public artwork is permitted only because it is inert, bounded release content. Provider media, user artwork, history and playback assets remain behind Player Device authentication.
+- Player resolves relative artwork only against the configured Server origin and only below `/api/v1/assets/`; cross-origin, userinfo and other paths are rejected.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing/unsafe/active-content Manifest path | Reject the Manifest before installation |
+| Declared file missing, oversized, linked or magic bytes mismatch extension | Reject package extraction/validation |
+| Digest malformed, unknown, disabled or no longer active | Return 404 without package or plugin details |
+| Managed package changed after install | Return a safe package-invalid error and no bytes |
+| Player receives cross-origin artwork URL | Discard it and render the normal fallback |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an enabled plugin declares `assets/library-cover.png`; Player receives a same-origin digest URL and renders it on the library card.
+- Base: an old plugin has no `libraryArtwork`; the library remains usable with the existing fallback.
+- Bad: embed a Player Bearer in an image query, serve arbitrary package files, trust MIME from the Manifest, or load a remote plugin-provided cover URL directly.
+
+### 6. Tests Required
+
+- JSON Schema and Go Manifest tests reject traversal and active-content extensions.
+- Pack/extraction tests require the declared raster and reject magic-byte substitution and tree mutation.
+- Service/HTTP tests cover active-package lookup, disabled/unknown digest, inert MIME, cache headers and `nosniff`.
+- Player verification covers same-origin resolution, library/category mapping and cross-origin rejection.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```json
+{"artworkUrl":"https://plugin.example/cover.svg?token=player-token"}
+```
+
+Correct:
+
+```json
+{"artworkUrl":"/api/v1/assets/plugin-covers/0123456789abcdef..."}
+```

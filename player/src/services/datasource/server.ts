@@ -49,6 +49,7 @@ interface ServerLibraryRecord {
   name: string
   storage_type: string
   entry_count: number
+  artwork_url?: string
 }
 
 interface ServerCategoryRecord {
@@ -56,6 +57,7 @@ interface ServerCategoryRecord {
   name: string
   media_type: 'movie' | 'series'
   item_count: number
+  artwork_url?: string
 }
 
 interface ServerIdentityRecord {
@@ -198,9 +200,9 @@ export class ServerDataSource implements DataSource {
       throw physicalResult.reason
     const physicalData = physicalResult.status === 'fulfilled' ? recordData(physicalResult.value) : {}
     const physicalList = Array.isArray(physicalData.list) ? physicalData.list : []
-    const physical = physicalList.map(parseLibrary).filter((item): item is MediaLibrary => item != null).map(item => ({ ...item, sourceId: this.id }))
+    const physical = physicalList.map(item => parseLibrary(item, this.baseUrl)).filter((item): item is MediaLibrary => item != null).map(item => ({ ...item, sourceId: this.id }))
     const online = onlineResult.status === 'fulfilled'
-      ? parseOnlineLibraryList(onlineResult.value).filter(item => item.available).map(item => onlineLibraryToMediaLibrary(this.id, item))
+      ? parseOnlineLibraryList(onlineResult.value).filter(item => item.available).map(item => onlineLibraryToMediaLibrary(this.id, item, this.baseUrl))
       : []
     return [...physical, ...online]
   }
@@ -580,7 +582,7 @@ export class ServerDataSource implements DataSource {
       const mediaType = value.media_type === 'movie' || value.media_type === 'series' ? value.media_type : null
       if (!id || !name || !mediaType)
         return []
-      return [{ id, name, media_type: mediaType, item_count: numberValue(value.item_count) ?? 0 }]
+      return [{ id, name, media_type: mediaType, item_count: numberValue(value.item_count) ?? 0, artwork_url: optionalString(value.artwork_url) }]
     })
   }
 
@@ -592,6 +594,8 @@ export class ServerDataSource implements DataSource {
       libraryId: libraryID,
       name: category.name,
       type: 'folder',
+      posterUrl: resolveServerArtworkURL(this.baseUrl, category.artwork_url),
+      backdropUrl: resolveServerArtworkURL(this.baseUrl, category.artwork_url),
       path: '',
     }
   }
@@ -851,11 +855,12 @@ async function persistServerCredentialOrRevoke(
   }
 }
 
-function parseLibrary(value: unknown): MediaLibrary | null {
+function parseLibrary(value: unknown, baseUrl: string): MediaLibrary | null {
   if (!isRecord(value) || typeof value.id !== 'number' || typeof value.name !== 'string')
     return null
   const record = value as unknown as ServerLibraryRecord
-  return { id: String(record.id), sourceId: '', name: record.name, type: 'mixed', itemCount: numberValue(record.entry_count) }
+  const artworkUrl = resolveServerArtworkURL(baseUrl, record.artwork_url)
+  return { id: String(record.id), sourceId: '', name: record.name, type: 'mixed', posterUrl: artworkUrl, backdropUrl: artworkUrl, itemCount: numberValue(record.entry_count) }
 }
 
 function createServerCategoryID(libraryId: string, mediaType: 'movie' | 'series', name: string): string {
@@ -953,6 +958,22 @@ function numberValue(value: unknown): number | undefined {
 function artwork(path: string | undefined, size: 'w500' | 'w1280'): string | undefined {
   const safePath = optionalImagePath(path)
   return safePath ? tmdbArtworkUrl(safePath, size) : undefined
+}
+
+function resolveServerArtworkURL(baseUrl: string, value: unknown): string | undefined {
+  const candidate = optionalString(value)
+  if (!candidate || candidate.length > 2048)
+    return undefined
+  try {
+    const server = new URL(baseUrl)
+    const resolved = new URL(candidate, `${server.origin}/`)
+    if (resolved.origin !== server.origin || resolved.username || resolved.password || !resolved.pathname.startsWith('/api/v1/assets/'))
+      return undefined
+    return resolved.toString()
+  }
+  catch {
+    return undefined
+  }
 }
 
 function optionalString(value: unknown): string | undefined {

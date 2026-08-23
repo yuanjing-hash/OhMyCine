@@ -151,6 +151,10 @@ func TestPlayerCategoriesFollowProfileOrderAndFilterCatalog(t *testing.T) {
 	if err := service.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("enabled", true).Error; err != nil {
 		t.Fatal(err)
 	}
+	libraries, err := service.PlayerLibraries(actor)
+	if err != nil || len(libraries) != 1 || libraries[0].ArtworkURL == "" {
+		t.Fatalf("libraries=%+v err=%v", libraries, err)
+	}
 	now := time.Now().UTC()
 	entries := []models.MediaLibraryEntry{
 		{LibraryID: library.ID, RelativePath: "/Chinese.mkv", ProviderID: "chinese", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "华语片", WorkKey: "movie:chinese", MatchStatus: "matched", CategoryName: "华语电影", LastGeneration: 1},
@@ -168,12 +172,18 @@ func TestPlayerCategoriesFollowProfileOrderAndFilterCatalog(t *testing.T) {
 	index := map[string]int{}
 	for position, category := range categories {
 		index[category.MediaType+":"+category.Name] = position
+		if category.ItemCount <= 0 || category.ArtworkURL == "" {
+			t.Fatalf("empty or unillustrated category leaked: %+v", category)
+		}
 	}
 	if index["movie:华语电影"] >= index["movie:外语电影"] || categories[index["movie:外语电影"]].ItemCount != 1 {
 		t.Fatalf("categories=%+v", categories)
 	}
 	if index["movie:A 自定义"] >= index["movie:Z 自定义"] {
 		t.Fatalf("unknown categories are not stable: %+v", categories)
+	}
+	if _, exists := index["movie:动画电影"]; exists {
+		t.Fatalf("zero-count configured category leaked: %+v", categories)
 	}
 	page, err := service.PlayerCatalog(actor, library.ID, MediaPageQuery{Page: 1, PageSize: 20, MediaType: "movie", Category: "外语电影"})
 	if err != nil || page.Total != 1 || len(page.List) != 1 || page.List[0].Title != "外语片" {

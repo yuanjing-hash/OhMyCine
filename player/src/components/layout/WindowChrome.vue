@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { navigateLayoutBack } from '@/services/layoutBackNavigation'
 import { usePlayerChromeStore } from '@/stores/playerChrome'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 
@@ -76,10 +77,7 @@ async function close() {
 }
 
 function goBack() {
-  if (window.history.state?.back)
-    router.back()
-  else
-    router.push('/')
+  void navigateLayoutBack(router)
 }
 
 function beginDrag(event: MouseEvent) {
