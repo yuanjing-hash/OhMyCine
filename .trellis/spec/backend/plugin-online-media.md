@@ -56,6 +56,7 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 - Provider NFO/artwork is rendered by Server and appended to both selected and complete managed manifests. Ordinary provider video can bypass the generic package minimum-size rule only when its exact plugin download identity has already been validated; non-plugin flows retain the normal advertisement filter.
 - The target library snapshots the Storage connection/root, Profile, naming, transfer mode and conflict policy at submission. Local staging routes through the existing local transfer executor; an upload-capable cloud target routes through the Server-only `cloud.UploadDriver`. Cloud drivers reconcile ambiguous prior results before retry and plugins never select remote paths.
 - Manifest `settingsPage` is a versioned Host-owned component tree. Only tabs, sections, notices, credential status, switches, text, number and select fields are supported, and every field must remain within `configSchema` including enums and numeric bounds. A plugin controls where `credential-status` appears; the Host renders login state, QR/re-login actions and the QR image at that declared position while retaining credential capture, polling and encrypted storage. Generic credential controls are a legacy fallback only when no declarative login component exists. Plugins cannot inject routes, Vue, JavaScript, HTML or CSS.
+- Every external HTTPS URL returned for Host-rendered authentication UI, including a QR-code target, must use a hostname covered by the active package's exact `network.http` permission. Provider login-domain migrations therefore require a new explicitly reviewed package permission; the Host must reject an undeclared hostname instead of widening trust dynamically.
 
 ### 4. Validation & Error Matrix
 
@@ -90,6 +91,7 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 - Download tests cover plan identity/topology validation, plugin-owned assets, single-file and DASH execution, subtitle/danmaku manifests, task-root confinement, retry re-resolution, cancellation/deletion cleanup, and fixed MediaTool behavior.
 - Metadata/transfer tests cover provenance backfill, immutable snapshot reuse after plugin disable, package-version binding, no cross-plugin/global invocation, Server-rendered NFO/artwork manifests, local import, 115 upload conflict/retry reconciliation, staging retention and task-root confinement.
 - Settings tests share the Manifest contract across Go, JSON Schema and Web UI and reject unknown components, duplicate bindings, schema-external fields, invalid select options and widened numeric constraints.
+- Authentication fixtures preserve the provider's complete current response shape (with opaque credentials replaced), and tests assert that every returned QR/login hostname is explicitly declared while broad provider-domain wildcards remain absent.
 - HTTP tests cover Player Device Bearer only, no-store, route parameter bounds, and safe error envelopes.
 - Run `go test ./...`, `go vet ./...`, both Server builds, and a Windows isolated runtime smoke.
 

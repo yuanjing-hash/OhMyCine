@@ -11,14 +11,14 @@
       "id": "org.ohmycine.bilibili",
       "name": "Bilibili",
       "description": "将 Bilibili 作为 OhMyCine 在线媒体库浏览、播放和下载。",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "channel": "beta",
       "categories": ["online-media", "video-site"],
       "manifestUrl": "${MANIFEST_RELEASE_URL}",
       "packageUrl": "${PACKAGE_RELEASE_URL}",
       "packageSha256": "${PACKAGE_SHA256}",
       "minServerVersion": "0.1.0",
-      "releaseNotes": "新增插件专属声明式设置页、Host 内嵌扫码登录、插件元数据与 Server 统一下载入库能力。"
+      "releaseNotes": "修复 Bilibili 官方二维码迁移到 account.bilibili.com 后扫码登录被精确网络权限拦截的问题。"
     }
   ]
 }

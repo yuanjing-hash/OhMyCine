@@ -1,7 +1,7 @@
 {
   "code": 0,
   "data": {
-    "url": "https://passport.bilibili.com/h5-app/passport/login/scan?navhide=1&qrcode_key=fixture-key",
+    "url": "https://account.bilibili.com/h5/account-h5/auth/scan-web?navhide=1&callback=close&qrcode_key=fixture-key&from=",
     "qrcode_key": "fixture-key"
   }
 }

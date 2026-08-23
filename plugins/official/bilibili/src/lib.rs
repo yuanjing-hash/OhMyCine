@@ -2701,8 +2701,29 @@ mod tests {
     #[test]
     fn qr_login_fixtures_cover_generate_scan_confirm_and_expiry() {
         let (url, key) = parse_qr_generate(&fixture("qr-generate")).expect("qr generate");
-        assert!(url.starts_with("https://passport.bilibili.com/"));
+        assert_eq!(
+            url,
+            "https://account.bilibili.com/h5/account-h5/auth/scan-web?navhide=1&callback=close&qrcode_key=fixture-key&from="
+        );
         assert_eq!(key, "fixture-key");
+        let manifest: Value =
+            serde_json::from_str(include_str!("../plugin.template.json")).expect("manifest");
+        let network_domains = manifest["permissions"]
+            .as_array()
+            .and_then(|permissions| {
+                permissions.iter().find(|permission| {
+                    permission.get("kind").and_then(Value::as_str) == Some("network.http")
+                })
+            })
+            .and_then(|permission| permission.get("domains"))
+            .and_then(Value::as_array)
+            .expect("network domains");
+        assert!(network_domains
+            .iter()
+            .any(|domain| domain.as_str() == Some("account.bilibili.com")));
+        assert!(!network_domains
+            .iter()
+            .any(|domain| domain.as_str() == Some("*.bilibili.com")));
         let states = fixture("qr-poll");
         assert_eq!(
             parse_qr_poll(&states["pending"]).unwrap(),
