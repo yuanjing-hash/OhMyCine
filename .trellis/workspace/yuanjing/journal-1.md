@@ -597,3 +597,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 22: 完善 Server 媒体库封面与分层导航
+
+**Date**: 2026-08-23
+**Task**: 完善 Server 媒体库封面与分层导航
+**Branch**: `develop`
+
+### Summary
+
+为 Server 物理媒体库、分类与插件在线媒体库增加安全静态封面，过滤空分类，统一 Player 分层返回，并发布 Bilibili 插件 0.3.3。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c248b7b` | (see git log) |
+
+### Status
+
+[OK] **Completed**
