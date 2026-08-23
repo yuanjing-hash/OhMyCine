@@ -534,3 +534,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 19: 发布插件宿主能力与 Bilibili 0.3.0
+
+**Date**: 2026-08-23
+**Task**: 发布插件宿主能力与 Bilibili 0.3.0
+**Branch**: `develop`
+
+### Summary
+
+完成声明式插件设置页、Host 内嵌扫码、插件专属元数据及统一下载入库能力；Server 已推送 develop，Bilibili 0.3.0 已发布至官方插件仓库并通过公网哈希与 Manifest 校验。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e33669f` | (see git log) |
+
+### Status
+
+[OK] **Completed**
