@@ -72,6 +72,7 @@ export function createScannedCategory(input: ScannedCategoryInput): ScannedCateg
   const type = name === RAW_UNRESOLVED_CATEGORY_NAME ? 'unresolved' : scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
   const works = createScannedWorkItems(entries, sourceId, rootPath)
   const previewItems = works.map(work => work.item).slice(0, 4)
+  const artworkCandidates = uniqueArtworkCandidates(works.map(work => work.item), 4)
   const previewArtwork = previewItems.find(item => item.backdropUrl || item.posterUrl)
   const library: MediaLibrary = {
     id: `category:${encodeURIComponent(name)}`,
@@ -80,6 +81,9 @@ export function createScannedCategory(input: ScannedCategoryInput): ScannedCateg
     type: mediaLibraryTypeForCategory(type),
     posterUrl: previewArtwork?.posterUrl,
     backdropUrl: previewArtwork?.backdropUrl ?? previewArtwork?.posterUrl,
+    artworkCandidates,
+    artworkRevision: localArtworkRevision(name, artworkCandidates),
+    artworkSource: artworkCandidates.length > 1 ? 'generated' : artworkCandidates.length === 1 ? 'provider' : 'fallback',
     itemCount: works.length,
   }
 
@@ -100,6 +104,31 @@ export function createScannedCategory(input: ScannedCategoryInput): ScannedCateg
     subtitle: scannedCategorySubtitle({ categoryName: name, fileCount: entries.length, movieCount, tvCount: tvEntries.length, unresolvedCount, seriesCount }),
     previewTitles: uniqueDisplayTitles(entries).slice(0, 3),
   }
+}
+
+function uniqueArtworkCandidates(items: readonly MediaItem[], limit: number): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of items) {
+    const candidate = item.posterUrl ?? item.backdropUrl
+    if (!candidate || seen.has(candidate))
+      continue
+    seen.add(candidate)
+    result.push(candidate)
+    if (result.length === limit)
+      break
+  }
+  return result
+}
+
+function localArtworkRevision(name: string, candidates: readonly string[]): string {
+  let hash = 0xCBF29CE484222325n
+  const value = `library-artwork-v1\0${name}\0${[...candidates].sort().join('\0')}`
+  for (let index = 0; index < value.length; index++) {
+    hash ^= BigInt(value.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * 0x100000001B3n)
+  }
+  return `local-${hash.toString(16).padStart(16, '0')}`
 }
 
 export function playableItemsFromWorks(works: readonly ScannedWorkItem[]): MediaItem[] {

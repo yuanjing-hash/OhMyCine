@@ -629,6 +629,8 @@ Phase 4: 生态系统           ████████████████
 - [x] `ServerDataSource` 状态、媒体库、目录、搜索与详情
 - [x] TMDB/Emby SystemId/Artifact 身份聚合，保留 Server 直连与 Player 自有 Emby 用户线路
 - [x] active 115 STRM 通过受保护 Player stream endpoint → Server 解析 → 302 直连，Windows/Android 跨源跳转清除 Bearer
+- [x] Bilibili DASH 视频/音频双轨 loopback 会话与 Range 播放，切换/停止后统一回收旧 token
+- [x] Server 本地/115/插件库动态合成封面与 Player 独立目录本地封面，支持内容 revision、安全同源分发和静态兜底
 - [ ] 设备管理 Web UI、多设备设置/进度同步和数据源配置同步（延期，当前连接不会自动同步）
 
 **产出**:

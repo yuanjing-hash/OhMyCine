@@ -45,6 +45,8 @@ assert.match(mobileCommands, /wait_for_android_surface/)
 assert.match(mobileCommands, /Android 播放器表面准备超时/)
 assert.match(mobileCommands, /stream_proxy\.prepare\(path, headers\)/)
 assert.match(mobileCommands, /stream_proxy\.clear\(\)/)
+assert.match(mobileCommands, /pub async fn mpv_load[\s\S]*?stream_proxy\.clear\(\)\.await;[\s\S]*?let result = async[\s\S]*?if result\.is_err\(\)[\s\S]*?stream_proxy\.clear\(\)\.await;/)
+assert.match(mobileCommands, /stream_proxy\.prepare\(value, audio_headers\)\.await[\s\S]*?Err\(error\)[\s\S]*?stream_proxy\.clear\(\)\.await;/)
 assert.match(mobileCommands, /matches!\(url\.scheme\(\), "http" \| "https"\)/)
 
 const streamProxy = await source('src-tauri/src/mpv/mobile_proxy.rs')

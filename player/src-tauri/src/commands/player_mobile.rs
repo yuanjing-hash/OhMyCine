@@ -88,6 +88,7 @@ pub async fn mpv_load(
     if path.trim().is_empty() {
         return Err("播放地址为空。".to_string());
     }
+    stream_proxy.clear().await;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
     let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
     let (path, headers) = if is_remote_http_stream(&path) {
@@ -99,7 +100,13 @@ pub async fn mpv_load(
         Some(value) if !value.trim().is_empty() => {
             let value = value.trim().to_string();
             if is_remote_http_stream(&value) {
-                Some(stream_proxy.prepare(value, audio_headers).await?)
+                match stream_proxy.prepare(value, audio_headers).await {
+                    Ok(url) => Some(url),
+                    Err(error) => {
+                        stream_proxy.clear().await;
+                        return Err(error);
+                    }
+                }
             } else {
                 Some(value)
             }
@@ -115,8 +122,15 @@ pub async fn mpv_load(
             (!trimmed.is_empty()).then(|| trimmed.chars().take(160).collect())
         }),
     };
-    wait_for_android_surface(state.inner()).await?;
-    state.run("load", payload).await
+    let result = async {
+        wait_for_android_surface(state.inner()).await?;
+        state.run("load", payload).await
+    }
+    .await;
+    if result.is_err() {
+        stream_proxy.clear().await;
+    }
+    result
 }
 
 fn is_remote_http_stream(path: &str) -> bool {

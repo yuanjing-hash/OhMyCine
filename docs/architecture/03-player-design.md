@@ -2294,7 +2294,7 @@ Emby/Jellyfin 等 provider 返回有效续播位置时，以 provider 位置作�
 
 Android 远程媒体的续播 seek 不能以前端乐观时间作为成功依据。桌面端保留现有正常的 optimistic seek 时序；只有 Android 自动续播调用关闭 optimistic 更新，`PlayerView` 在 `videoReady` 且原生 `time-pos` 落在目标前后 5 秒内之前持续保留待恢复位置。慢加载期间本机历史与 Emby session 上报均使用该待恢复位置，避免 `FILE_LOADED` 把早期 seek 重置为 0 后覆盖跨设备云端记录。用户主动拖动或手势 seek 会取消待恢复状态并继续使用交互式即时反馈。
 
-Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每次播放生成独立的 24 字节 URL-safe 随机令牌，只保留一个内存目标；停止播放即清理目标。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
+Android 真机可能使用与 Rust HTTP 客户端不同的 libmpv/FFmpeg TLS 栈。所有初始 HTTP/HTTPS 媒体请求都由 Rust reqwest/rustls 拉取，再通过仅监听 `127.0.0.1` 随机端口的 axum 回环桥交给 libmpv；这也覆盖 Emby 先返回 HTTP 播放入口、再 302 到 HTTPS CDN 的情况，不能等初始 URL 已经是 HTTPS 才启用桥接。每个播放会话可注册最多 8 个独立的 24 字节 URL-safe 随机 token，使 Bilibili 等 DASH 视频轨与音频轨同时保留自己的 URL/Header；切换媒体、停止、加载失败都会回收整个会话，未知或过期 token 被拒绝。token 仍采用恒定时间比较。桥接保留 GET/HEAD、Range、If-Range、ETag、Last-Modified 和 Content-Range 等流媒体语义，手动限制跳转次数，并在跨 origin 302 前清除 Emby 等提供器私有 Header。原始直链、签名查询与认证 Header 不进入 URL、持久化、普通日志或播放诊断，且不得关闭 TLS 证书校验。
 
 Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等竖屏断点作为唯一判断，因为手机横屏宽度经常超过该值。透明 WebView 中只要存在当前媒体，就必须保留覆盖整个视频面的独立触摸捕获层；该层不能因播放诊断进入 `error` 而移除。单击画面切换控制 UI，并对 Android 在短点击后产生的 `pointercancel` 保留受限兜底，不能让 SurfaceView 层吞掉控制唤出；播放加载失败或自然结束时前端必须同步退出“正在播放”状态，避免错误页继续自动隐藏控制 UI。移动控制栏提供独立方向锁图标，打开后可选择“自动横屏 / 锁定横屏 / 锁定竖屏”，锁图标反映自动或锁定状态，切换结果通过右上角短提示反馈；该状态不复用桌面全屏按钮。首页“继续观看”和“最新影片”横向媒体条只处理横向滚动，不得用纵向 overscroll containment 阻断页面上下滑动。空播放面统一只显示“等待播放中”，不展示桌面拖拽文件说明。
 
@@ -2720,6 +2720,8 @@ Player 不安装或执行 Server 插件，也不包含 Bilibili 等提供方专�
 插件页面由 Player 原生组件渲染。插件可贡献 Hero、横向卡片、海报墙、列表、搜索、刷新与标准动作，但不能传入 HTML、JavaScript、CSS 或访问 Pinia/Tauri。用户在设备侧决定哪些来源栏目参与总主页及其顺序。
 
 Server 来源入口先展示其媒体库卡片。普通本地/115 媒体库进入后按 Server 分类规则展示华语电影、外语电影、剧集等标准分类，再进入内容；声明 `hierarchical` 的插件在线库则可使用任意深度的 `branch/feed` 导航。Player 只解释通用节点类型和 Server 签名 token，不硬编码 Bilibili 栏目名称，也不允许普通物理媒体库借此变成不受约束的插件树。
+
+媒体库封面同样保持 Player 独立优先：Player 自己索引的本地、OpenList/Alist、CloudDrive2 等原始目录从本地扫描结果选取最多 4 张不重复海报，以 16:9 卡片拼图呈现并用稳定 revision 失效缓存，不在用户媒体目录写文件；直连 Emby/Jellyfin 优先使用 provider 自带库图。ServerDataSource 的物理库和插件库则只消费 Server 的同源 `artworkUrl/artworkRevision/artworkSource`，不接收或二次组合候选。Server 生成图的短时签名 query 只存在运行时，图片缓存 sidecar 仍只保存不可逆 URL hash。
 
 播放身份分为：
 

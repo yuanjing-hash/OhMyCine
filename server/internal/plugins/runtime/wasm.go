@@ -41,18 +41,19 @@ const (
 // Operation codes are part of the public runtime v1 ABI. Keep these values in
 // sync with plugin-sdk/src/runtime.ts and the cross-language fixture.
 var operationCodes = map[string]uint64{
-	"site.navigation":        1,
-	"site.feed":              2,
-	"site.search":            3,
-	"site.detail":            4,
-	"media.playback":         5,
-	"media.download_plan":    6,
-	"site.history":           7,
-	"playback.progress_sync": 8,
-	"site.interaction":       9,
-	"site.auth.start":        10,
-	"site.auth.poll":         11,
-	"media.metadata":         12,
+	"site.navigation":            1,
+	"site.feed":                  2,
+	"site.search":                3,
+	"site.detail":                4,
+	"media.playback":             5,
+	"media.download_plan":        6,
+	"site.history":               7,
+	"playback.progress_sync":     8,
+	"site.interaction":           9,
+	"site.auth.start":            10,
+	"site.auth.poll":             11,
+	"media.metadata":             12,
+	"library.artwork_candidates": 13,
 }
 
 type Error struct {

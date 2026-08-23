@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(dead_code))]
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
@@ -26,6 +26,7 @@ use crate::commands::player_shared::MpvHttpHeader;
 
 const LOOPBACK_PATH: &str = "/media/:token";
 const MAX_UPSTREAM_REDIRECTS: usize = 10;
+const MAX_SESSION_TARGETS: usize = 8;
 
 #[derive(Default)]
 pub struct AndroidStreamProxyState {
@@ -34,12 +35,11 @@ pub struct AndroidStreamProxyState {
 
 struct ProxyRuntime {
     port: u16,
-    target: Arc<RwLock<Option<ProxyTarget>>>,
+    targets: Arc<RwLock<HashMap<String, ProxyTarget>>>,
 }
 
 #[derive(Clone)]
 struct ProxyTarget {
-    token: String,
     url: String,
     headers: Vec<MpvHttpHeader>,
 }
@@ -47,7 +47,7 @@ struct ProxyTarget {
 #[derive(Clone)]
 struct ProxyAppState {
     client: reqwest::Client,
-    target: Arc<RwLock<Option<ProxyTarget>>>,
+    targets: Arc<RwLock<HashMap<String, ProxyTarget>>>,
 }
 
 impl AndroidStreamProxyState {
@@ -62,17 +62,17 @@ impl AndroidStreamProxyState {
         }
         let runtime = runtime.as_ref().expect("proxy runtime initialized");
         let token = random_token();
-        *runtime.target.write().await = Some(ProxyTarget {
-            token: token.clone(),
-            url,
-            headers,
-        });
+        let mut targets = runtime.targets.write().await;
+        if targets.len() >= MAX_SESSION_TARGETS {
+            return Err("当前媒体包含过多独立流，无法安全建立播放会话。".to_string());
+        }
+        targets.insert(token.clone(), ProxyTarget { url, headers });
         Ok(format!("http://127.0.0.1:{}/media/{token}", runtime.port))
     }
 
     pub async fn clear(&self) {
         if let Some(runtime) = self.runtime.lock().await.as_ref() {
-            *runtime.target.write().await = None;
+            runtime.targets.write().await.clear();
         }
     }
 }
@@ -85,7 +85,7 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
         .local_addr()
         .map_err(|_| "Android 本地流桥接端口不可用。".to_string())?
         .port();
-    let target = Arc::new(RwLock::new(None));
+    let targets = Arc::new(RwLock::new(HashMap::new()));
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
@@ -95,7 +95,7 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
         .route(LOOPBACK_PATH, any(proxy_media))
         .with_state(ProxyAppState {
             client,
-            target: target.clone(),
+            targets: targets.clone(),
         });
 
     tauri::async_runtime::spawn(async move {
@@ -104,7 +104,7 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
         }
     });
 
-    Ok(ProxyRuntime { port, target })
+    Ok(ProxyRuntime { port, targets })
 }
 
 async fn proxy_media(
@@ -116,12 +116,16 @@ async fn proxy_media(
         return plain_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     }
 
-    let Some(target) = state.target.read().await.clone() else {
+    let targets = state.targets.read().await;
+    if targets.is_empty() {
         return plain_response(StatusCode::GONE, "media session expired");
-    };
-    if !constant_time_eq(token.as_bytes(), target.token.as_bytes()) {
-        return plain_response(StatusCode::NOT_FOUND, "not found");
     }
+    let Some(target) = targets.iter().find_map(|(candidate, target)| {
+        constant_time_eq(token.as_bytes(), candidate.as_bytes()).then(|| target.clone())
+    }) else {
+        return plain_response(StatusCode::NOT_FOUND, "not found");
+    };
+    drop(targets);
 
     let response = match send_upstream(
         &state.client,
@@ -368,7 +372,9 @@ mod tests {
                     let first_origin_probe = first_origin_probe.clone();
                     async move {
                         first_origin_probe.store(
-                            headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok())
+                            headers
+                                .get(AUTHORIZATION)
+                                .and_then(|value| value.to_str().ok())
                                 == Some("Bearer private-device-token")
                                 && headers.get(COOKIE).and_then(|value| value.to_str().ok())
                                     == Some("private=session")
@@ -391,16 +397,20 @@ mod tests {
             let loopback_url = proxy
                 .prepare(
                     format!("http://{emby_address}/stream"),
-                    vec![MpvHttpHeader {
-                        name: "X-Emby-Token".to_string(),
-                        value: "private-token".to_string(),
-                    }, MpvHttpHeader {
-                        name: "Authorization".to_string(),
-                        value: "Bearer private-device-token".to_string(),
-                    }, MpvHttpHeader {
-                        name: "Cookie".to_string(),
-                        value: "private=session".to_string(),
-                    }],
+                    vec![
+                        MpvHttpHeader {
+                            name: "X-Emby-Token".to_string(),
+                            value: "private-token".to_string(),
+                        },
+                        MpvHttpHeader {
+                            name: "Authorization".to_string(),
+                            value: "Bearer private-device-token".to_string(),
+                        },
+                        MpvHttpHeader {
+                            name: "Cookie".to_string(),
+                            value: "private=session".to_string(),
+                        },
+                    ],
                 )
                 .await
                 .unwrap();
@@ -414,6 +424,97 @@ mod tests {
             assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
             assert_eq!(response.bytes().await.unwrap().as_ref(), b"test");
             assert!(first_origin_received_private_headers.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn loopback_bridge_keeps_dash_video_and_audio_targets_in_one_session() {
+        tauri::async_runtime::block_on(async {
+            let upstream_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let upstream_address = upstream_listener.local_addr().unwrap();
+            let upstream = Router::new()
+                .route(
+                    "/video",
+                    get(|headers: HeaderMap| async move {
+                        let status = if headers.get(RANGE).and_then(|value| value.to_str().ok())
+                            == Some("bytes=0-10")
+                        {
+                            StatusCode::PARTIAL_CONTENT
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        };
+                        Response::builder()
+                            .status(status)
+                            .header("content-range", "bytes 0-10/11")
+                            .body(axum::body::Body::from("video-track"))
+                            .unwrap()
+                    }),
+                )
+                .route(
+                    "/audio",
+                    get(|headers: HeaderMap| async move {
+                        let status = if headers.get(RANGE).and_then(|value| value.to_str().ok())
+                            == Some("bytes=0-10")
+                        {
+                            StatusCode::PARTIAL_CONTENT
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        };
+                        Response::builder()
+                            .status(status)
+                            .header("content-range", "bytes 0-10/11")
+                            .body(axum::body::Body::from("audio-track"))
+                            .unwrap()
+                    }),
+                );
+            tauri::async_runtime::spawn(async move {
+                axum::serve(upstream_listener, upstream).await.unwrap();
+            });
+
+            let proxy = AndroidStreamProxyState::default();
+            let video_url = proxy
+                .prepare(
+                    format!("http://{upstream_address}/video"),
+                    vec![MpvHttpHeader {
+                        name: "Referer".to_string(),
+                        value: "https://www.bilibili.com/".to_string(),
+                    }],
+                )
+                .await
+                .unwrap();
+            let audio_url = proxy
+                .prepare(
+                    format!("http://{upstream_address}/audio"),
+                    vec![MpvHttpHeader {
+                        name: "Referer".to_string(),
+                        value: "https://www.bilibili.com/".to_string(),
+                    }],
+                )
+                .await
+                .unwrap();
+
+            let client = reqwest::Client::new();
+            let (video, audio) = tokio::join!(
+                client.get(&video_url).header(RANGE, "bytes=0-10").send(),
+                client.get(&audio_url).header(RANGE, "bytes=0-10").send(),
+            );
+            let video = video.unwrap();
+            let audio = audio.unwrap();
+            assert_eq!(video.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(audio.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(video.text().await.unwrap(), "video-track");
+            assert_eq!(audio.text().await.unwrap(), "audio-track");
+
+            let unknown = client
+                .get(video_url.replace("/media/", "/media/unknown-"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+            proxy.clear().await;
+            let expired = client.get(audio_url).send().await.unwrap();
+            assert_eq!(expired.status(), StatusCode::GONE);
         });
     }
 }

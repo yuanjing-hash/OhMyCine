@@ -23,16 +23,18 @@ import (
 )
 
 type PlayerMediaLibrary struct {
-	ID             uint       `json:"id"`
-	Name           string     `json:"name"`
-	StorageType    string     `json:"storage_type"`
-	SortOrder      int        `json:"sort_order"`
-	Status         string     `json:"status"`
-	EntryCount     int64      `json:"entry_count"`
-	DirectStream   bool       `json:"direct_stream"`
-	STRMEnabled    bool       `json:"strm_enabled"`
-	ArtworkURL     string     `json:"artwork_url,omitempty"`
-	LastSuccessful *time.Time `json:"last_successful_scan_at,omitempty"`
+	ID              uint       `json:"id"`
+	Name            string     `json:"name"`
+	StorageType     string     `json:"storage_type"`
+	SortOrder       int        `json:"sort_order"`
+	Status          string     `json:"status"`
+	EntryCount      int64      `json:"entry_count"`
+	DirectStream    bool       `json:"direct_stream"`
+	STRMEnabled     bool       `json:"strm_enabled"`
+	ArtworkURL      string     `json:"artwork_url,omitempty"`
+	ArtworkRevision string     `json:"artwork_revision,omitempty"`
+	ArtworkSource   string     `json:"artwork_source,omitempty"`
+	LastSuccessful  *time.Time `json:"last_successful_scan_at,omitempty"`
 }
 
 type PlayerMediaCategory struct {

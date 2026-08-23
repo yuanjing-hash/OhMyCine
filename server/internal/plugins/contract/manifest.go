@@ -52,6 +52,7 @@ const (
 	CapabilityFeedRefresh      Capability = "feed.refresh"
 	CapabilitySiteHistory      Capability = "site.history"
 	CapabilityPlaybackProgress Capability = "playback.progress_sync"
+	CapabilityLibraryArtwork   Capability = "library.artwork_candidates"
 )
 
 var knownCapabilities = map[Capability]struct{}{
@@ -60,7 +61,7 @@ var knownCapabilities = map[Capability]struct{}{
 	CapabilityQualitySwitch: {}, CapabilityMediaSubtitle: {}, CapabilityMediaDanmaku: {},
 	CapabilityMediaDownload: {}, CapabilityHomeContribution: {}, CapabilityFeedRefresh: {},
 	CapabilityMediaMetadata: {},
-	CapabilitySiteHistory:   {}, CapabilityPlaybackProgress: {},
+	CapabilitySiteHistory:   {}, CapabilityPlaybackProgress: {}, CapabilityLibraryArtwork: {},
 }
 
 type PermissionKind string

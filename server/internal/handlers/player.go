@@ -138,6 +138,9 @@ func (a *API) PlayerMediaLibraries(c *gin.Context) {
 		writeError(c, a.log, err)
 		return
 	}
+	if a.libraryArtwork != nil {
+		libraries = a.libraryArtwork.DecorateMediaLibraries(c.Request.Context(), libraries)
+	}
 	success(c, http.StatusOK, gin.H{"list": libraries, "total": len(libraries)})
 }
 

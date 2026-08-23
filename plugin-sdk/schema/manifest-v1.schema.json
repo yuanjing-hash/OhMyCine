@@ -20,7 +20,7 @@
     "capabilities": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "enum": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "media.metadata", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"] }
+      "items": { "enum": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "media.metadata", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync", "library.artwork_candidates"] }
     },
     "navigationMode": { "enum": ["flat", "hierarchical"] },
     "permissions": {

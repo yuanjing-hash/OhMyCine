@@ -73,6 +73,10 @@ pub async fn mpv_load(
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
     let _ = title;
+    // Every load owns a fresh loopback session. Video and external DASH audio
+    // may register separate targets below, while tokens from the previous
+    // media item become invalid before libmpv starts the new request set.
+    stream_proxy.clear().await;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
     let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
     let (path, headers) = if is_remote_http_stream(&path) && !headers.is_empty() {
@@ -88,15 +92,27 @@ pub async fn mpv_load(
         Some(value) if !value.trim().is_empty() => {
             let value = value.trim().to_string();
             if is_remote_http_stream(&value) && !audio_headers.is_empty() {
-                Some(stream_proxy.prepare(value, audio_headers).await?)
+                match stream_proxy.prepare(value, audio_headers).await {
+                    Ok(url) => Some(url),
+                    Err(error) => {
+                        stream_proxy.clear().await;
+                        return Err(error);
+                    }
+                }
             } else {
                 Some(value)
             }
         }
         _ => None,
     };
-    let mut player = state.lock().map_err(|err| err.to_string())?;
-    player.load_file_with_headers(&path, &headers, audio_path.as_deref())
+    let result = match state.lock() {
+        Ok(mut player) => player.load_file_with_headers(&path, &headers, audio_path.as_deref()),
+        Err(error) => Err(error.to_string()),
+    };
+    if result.is_err() {
+        stream_proxy.clear().await;
+    }
+    result
 }
 
 fn is_remote_http_stream(path: &str) -> bool {

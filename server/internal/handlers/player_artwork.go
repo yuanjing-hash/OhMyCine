@@ -58,3 +58,22 @@ func (a *API) PluginLibraryArtwork(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
 	http.ServeContent(c.Writer, c.Request, artwork.Name, artwork.ModifiedAt, artwork.File)
 }
+
+func (a *API) GeneratedLibraryArtwork(c *gin.Context) {
+	if a.libraryArtwork == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	digest := c.Param("digest")
+	artwork, err := a.libraryArtwork.OpenSigned(digest, c.Query("exp"), c.Query("sig"))
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	c.Header("Cache-Control", "private, max-age=600, immutable")
+	c.Header("Content-Type", "image/jpeg")
+	c.Header("Content-Length", strconv.Itoa(len(artwork.Bytes)))
+	c.Header("ETag", `"`+artwork.Digest+`"`)
+	c.Header("X-Content-Type-Options", "nosniff")
+	http.ServeContent(c.Writer, c.Request, artwork.Digest+".jpg", time.Time{}, bytes.NewReader(artwork.Bytes))
+}

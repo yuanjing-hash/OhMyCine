@@ -16,7 +16,7 @@ const bridge = {
       ? { capabilities: ['media_catalog', 'direct_stream'] }
       : request.path === '/api/v1/player/media-libraries'
         ? { list: [
-            { id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 101, artwork_url: '/api/v1/assets/library-covers/library-cloud.png' },
+            { id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 101, artwork_url: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', artwork_revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_source: 'generated' },
             { id: 10, name: '不安全封面', storage_type: 'local', entry_count: 0, artwork_url: 'https://attacker.example/cover.png' },
           ], total: 2 }
         : request.path === '/api/v1/player/media-libraries/9/categories'
@@ -69,7 +69,10 @@ assert.deepEqual(libraries.map(item => [item.id, item.sourceId, item.name]), [
   ['9', 'server-home', '115 电影'],
   ['10', 'server-home', '不安全封面'],
 ])
-assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/library-covers/library-cloud.png')
+assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+assert.equal(libraries[0].artworkRevision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+assert.equal(libraries[0].artworkSource, 'generated')
+assert.equal(libraries[0].artworkCandidates, undefined)
 assert.equal(libraries[1].backdropUrl, undefined)
 const categories = await source.list('9')
 assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '外语电影']])

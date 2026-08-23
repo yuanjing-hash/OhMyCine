@@ -42,6 +42,30 @@ type PluginOnlineLibrarySummary struct {
 	ErrorCode         string                `json:"errorCode,omitempty"`
 	HomeContributions []string              `json:"homeContributions"`
 	ArtworkURL        string                `json:"artworkUrl,omitempty"`
+	ArtworkRevision   string                `json:"artworkRevision,omitempty"`
+	ArtworkSource     string                `json:"artworkSource,omitempty"`
+}
+
+func (s *PluginRepositoryService) OnlineArtworkCandidates(ctx context.Context, actor Actor, libraryID string) ([]contract.LibraryArtworkCandidate, error) {
+	if !actor.Can(authz.PermissionMediaLibrariesRead) {
+		return nil, appError(CodePermissionDenied, "无权读取媒体库封面候选", nil)
+	}
+	_, connection, manifest, err := s.onlineLibrary(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	if !manifestHasCapability(manifest, contract.CapabilityLibraryArtwork) {
+		return nil, nil
+	}
+	raw, err := s.InvokePlugin(ctx, connection.ID, string(contract.CapabilityLibraryArtwork), map[string]any{"connectionId": connection.ID})
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := contract.NormalizeLibraryArtworkCandidates(raw)
+	if err != nil {
+		return nil, appError(CodePluginResponseInvalid, "插件媒体库封面候选无效", err)
+	}
+	return candidates, nil
 }
 
 type PluginHomeContribution struct {

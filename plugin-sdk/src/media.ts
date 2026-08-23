@@ -20,6 +20,12 @@ export interface MediaWork {
   segments?: readonly MediaSegment[]
 }
 
+/** A credential-free stable identity plus a short-lived opaque Host asset. */
+export interface LibraryArtworkCandidate {
+  id: string
+  assetRef: string
+}
+
 export interface MediaSegment {
   id: string
   title: string

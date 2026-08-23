@@ -75,6 +75,11 @@ export interface MediaLibrary {
   type: 'movies' | 'series' | 'anime' | 'music' | 'mixed' | 'folders'
   posterUrl?: string
   backdropUrl?: string
+  /** Stable visual revision used to invalidate the device image cache. */
+  artworkRevision?: string
+  artworkSource?: 'generated' | 'provider' | 'custom' | 'fallback'
+  /** Player-owned libraries may compose these locally; Server libraries do not expose them. */
+  artworkCandidates?: string[]
   itemCount?: number
   providerIdentity?: string
 }

@@ -40,6 +40,7 @@ type API struct {
 	strm               *services.STRMManagementService
 	pluginRepositories *services.PluginRepositoryService
 	pluginAssets       pluginAssetGateway
+	libraryArtwork     *services.LibraryArtworkService
 	log                zerolog.Logger
 }
 
@@ -71,6 +72,9 @@ func (a *API) SetPluginRepositoryService(service *services.PluginRepositoryServi
 	a.pluginRepositories = service
 }
 func (a *API) SetPluginAssetGateway(gateway pluginAssetGateway) { a.pluginAssets = gateway }
+func (a *API) SetLibraryArtworkService(service *services.LibraryArtworkService) {
+	a.libraryArtwork = service
+}
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}

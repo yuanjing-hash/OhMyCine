@@ -48,11 +48,17 @@ const posterUrl = computed(() => {
     return props.item.backdropUrl ?? props.item.posterUrl
   return props.item.posterUrl
 })
+const libraryArtworkCandidates = computed(() => {
+  if (props.kind !== 'library' || hasMediaPath(props.item))
+    return []
+  return [...new Set(props.item.artworkCandidates ?? [])].filter(Boolean).slice(0, 4)
+})
+const hasLibraryCollage = computed(() => libraryArtworkCandidates.value.length > 1)
 const cardClass = computed(() => props.kind === 'library' ? 'library-card' : 'poster-card')
 const imageClass = computed(() => props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'aspect-[16/9]' : 'aspect-[2/3]')
 const imageCacheKey = computed(() => artworkCacheKey(
   props.item.sourceId,
-  props.item.id,
+  `${props.item.id}:${!hasMediaPath(props.item) ? props.item.artworkRevision ?? 'initial' : 'media'}`,
   props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'backdrop' : 'poster',
 ))
 const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series' && props.item.type !== 'season')
@@ -165,7 +171,28 @@ function handleKeydown(event: KeyboardEvent) {
     @keydown="handleKeydown"
   >
     <div class="relative overflow-hidden bg-white/5" :class="imageClass">
+      <div
+        v-if="hasLibraryCollage"
+        class="library-artwork-collage"
+        :style="{ gridTemplateColumns: `repeat(${libraryArtworkCandidates.length}, minmax(0, 1fr))` }"
+      >
+        <CachedImage
+          v-for="(candidate, index) in libraryArtworkCandidates"
+          :key="candidate"
+          :cache-key="`${imageCacheKey}:candidate:${index}`"
+          :src="candidate"
+          :alt="`${title} 封面 ${index + 1}`"
+          loading="lazy"
+          decoding="async"
+          class="h-full min-w-0 object-cover transition-transform duration-500 group-hover:scale-105"
+        >
+          <template #fallback>
+            <div class="h-full w-full bg-white/5" />
+          </template>
+        </CachedImage>
+      </div>
       <CachedImage
+        v-else
         :cache-key="imageCacheKey"
         :src="posterUrl"
         :alt="title"
@@ -226,6 +253,20 @@ function handleKeydown(event: KeyboardEvent) {
 .library-card {
   border-radius: 1.8rem;
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 62%, transparent), color-mix(in srgb, var(--color-surface-hover) 34%, transparent));
+}
+
+.library-artwork-collage {
+  display: grid;
+  height: 100%;
+  width: 100%;
+}
+
+.library-artwork-collage :deep(.cached-image-host),
+.library-artwork-collage :deep(img) {
+  height: 100%;
+  min-width: 0;
+  width: 100%;
+  object-fit: cover;
 }
 
 .media-card-played { position: absolute; right: .55rem; bottom: .55rem; z-index: 2; display: flex; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; color: #fff; background: rgba(34,197,94,.88); box-shadow: 0 8px 18px rgba(0,0,0,.3); }

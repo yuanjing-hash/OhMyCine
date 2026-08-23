@@ -17,6 +17,7 @@ export const PLUGIN_CAPABILITIES = [
   'feed.refresh',
   'site.history',
   'playback.progress_sync',
+  'library.artwork_candidates',
 ] as const
 
 export type PluginCapability = typeof PLUGIN_CAPABILITIES[number]

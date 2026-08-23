@@ -25,6 +25,9 @@ func (a *API) PlayerOnlineLibraries(c *gin.Context) {
 		writeError(c, a.log, err)
 		return
 	}
+	if a.libraryArtwork != nil {
+		items = a.libraryArtwork.DecoratePluginLibraries(c.Request.Context(), actor, items)
+	}
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }
 

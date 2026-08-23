@@ -70,6 +70,8 @@ assert.match(mobileProxy, /same_origin\(&current_url, &next_url\)/)
 assert.match(mobileProxy, /loopback_bridge_follows_http_redirect_and_preserves_range_without_private_headers/)
 assert.match(desktopPlayer, /stream_proxy\.prepare\(path, headers\)\.await/)
 assert.match(desktopPlayer, /stream_proxy\.clear\(\)\.await/)
+assert.match(desktopPlayer, /pub async fn mpv_load[\s\S]*?stream_proxy\.clear\(\)\.await;[\s\S]*?stream_proxy\.prepare\(value, audio_headers\)\.await[\s\S]*?Err\(error\)[\s\S]*?stream_proxy\.clear\(\)\.await;/)
+assert.match(desktopPlayer, /let result = match state\.lock\(\)[\s\S]*?if result\.is_err\(\)[\s\S]*?stream_proxy\.clear\(\)\.await;/)
 
 console.log(JSON.stringify({
   routeIdentityOnly: true,

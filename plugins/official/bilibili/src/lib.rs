@@ -103,12 +103,69 @@ pub unsafe extern "C" fn omc_invoke(
         10 => parse_request(request).and_then(auth_start),
         11 => parse_request(request).and_then(auth_poll),
         12 => parse_request(request).and_then(metadata),
+        13 => parse_request(request).and_then(library_artwork_candidates),
         _ => Err(PluginError::new("invalid-request", "不支持的插件操作")),
     };
     encode_response(match result {
         Ok(value) => value,
         Err(error) => plugin_error(error.code, error.message),
     })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LibraryArtworkRequest {
+    connection_id: String,
+}
+
+fn library_artwork_candidates(request: LibraryArtworkRequest) -> Result<Value, PluginError> {
+    if !valid_opaque_key(&request.connection_id) {
+        return Err(PluginError::new("invalid-request", "媒体库封面请求无效"));
+    }
+    let payload = bili_get(&request.connection_id, &recommendation_url(1, None), true)?;
+    let items = payload
+        .pointer("/data/item")
+        .or_else(|| payload.pointer("/data/items"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| PluginError::new("invalid-response", "推荐封面响应无效"))?;
+    let mut candidates = Vec::new();
+    for item in items {
+        let Some(bvid) = item.get("bvid").and_then(Value::as_str) else {
+            continue;
+        };
+        if validate_bvid(bvid).is_err() {
+            continue;
+        }
+        let Some(url) = item
+            .get("pic")
+            .or_else(|| item.get("cover"))
+            .and_then(Value::as_str)
+            .and_then(safe_https_url)
+        else {
+            continue;
+        };
+        let headers = json!({"Referer":"https://www.bilibili.com/","User-Agent":USER_AGENT});
+        let Ok((asset_ref, _)) = register_asset(&request.connection_id, &url, headers) else {
+            continue;
+        };
+        candidates.push(json!({"id":bvid,"assetRef":asset_ref}));
+        if candidates.len() == 9 {
+            break;
+        }
+    }
+    if candidates.is_empty() {
+        return Err(PluginError::new(
+            "upstream-unavailable",
+            "暂时没有可用的媒体库封面候选",
+        ));
+    }
+    host_log(
+        "info",
+        "library.artwork_candidates",
+        "library artwork candidates resolved",
+        candidates.len(),
+    );
+    Ok(Value::Array(candidates))
 }
 
 #[derive(Deserialize)]

@@ -606,6 +606,11 @@ function sanitizeDisplayLibrary(value: unknown): MediaLibrary {
     type,
     posterUrl: sanitizeDisplayUrl(library.posterUrl),
     backdropUrl: sanitizeDisplayUrl(library.backdropUrl),
+    artworkRevision: sanitizeIdentityText(library.artworkRevision),
+    artworkSource: ['generated', 'provider', 'custom', 'fallback'].includes(String(library.artworkSource)) ? library.artworkSource as MediaLibrary['artworkSource'] : undefined,
+    artworkCandidates: Array.isArray(library.artworkCandidates)
+      ? library.artworkCandidates.map(sanitizeDisplayUrl).filter((entry): entry is string => Boolean(entry)).slice(0, 4)
+      : undefined,
     itemCount: optionalNumber(library.itemCount),
     providerIdentity: sanitizeIdentityText(library.providerIdentity),
   }

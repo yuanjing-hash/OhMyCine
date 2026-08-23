@@ -26,6 +26,7 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	router.Any("/emby/:gateway/*path", api.EmbyGateway)
 	router.GET("/api/v1/assets/library-covers/:name", api.PlayerLibraryArtwork)
 	router.GET("/api/v1/assets/plugin-covers/:digest", api.PluginLibraryArtwork)
+	router.GET("/api/v1/assets/generated-library-covers/:digest", api.GeneratedLibraryArtwork)
 	// Native Player routes are registered before browser-only Origin/CSRF
 	// middleware. They use their own strict bearer boundary instead.
 	player := router.Group("/api/v1/player")

@@ -1,4 +1,4 @@
-import type { DownloadPlan, FeedSection, FlatNavigationItem, HierarchicalNavigationResponse, MediaWork, PlaybackPlan, ProviderMetadataSnapshot } from './media'
+import type { DownloadPlan, FeedSection, FlatNavigationItem, HierarchicalNavigationResponse, LibraryArtworkCandidate, MediaWork, PlaybackPlan, ProviderMetadataSnapshot } from './media'
 
 export const PLUGIN_OPERATION_CODES = {
   'site.navigation': 1,
@@ -13,6 +13,7 @@ export const PLUGIN_OPERATION_CODES = {
   'site.auth.start': 10,
   'site.auth.poll': 11,
   'media.metadata': 12,
+  'library.artwork_candidates': 13,
 } as const
 
 /**
@@ -68,6 +69,7 @@ export interface PluginRequestMap {
   'site.auth.start': { connectionId: string }
   'site.auth.poll': { connectionId: string, loginSession: string }
   'site.interaction': SiteActionRequest
+  'library.artwork_candidates': { connectionId: string }
 }
 
 export interface PluginResponseMap {
@@ -83,6 +85,7 @@ export interface PluginResponseMap {
   'site.auth.start': SiteAuthStartResponse
   'site.auth.poll': SiteAuthPollResponse
   'site.interaction': SiteActionResponse
+  'library.artwork_candidates': readonly LibraryArtworkCandidate[]
 }
 
 export interface SiteAuthStartResponse {

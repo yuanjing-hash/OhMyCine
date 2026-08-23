@@ -11,6 +11,8 @@ export interface OnlineLibrarySummary {
   errorCode?: string
   homeContributions: string[]
   artworkUrl?: string
+  artworkRevision?: string
+  artworkSource?: 'generated' | 'provider' | 'custom' | 'fallback'
 }
 
 export interface OnlineNavigationItem {
@@ -283,6 +285,8 @@ export function onlineLibraryToMediaLibrary(sourceId: string, item: OnlineLibrar
     type: 'mixed',
     posterUrl: artworkUrl,
     backdropUrl: artworkUrl,
+    artworkRevision: item.artworkRevision,
+    artworkSource: item.artworkSource,
     providerIdentity: `plugin:${item.pluginId}:${item.id}`,
   }
 }
@@ -533,6 +537,8 @@ function parseOnlineLibrary(value: unknown): OnlineLibrarySummary | null {
     errorCode: optionalText(item.errorCode ?? item.error_code, 128),
     homeContributions: stringList(item.homeContributions ?? item.home_contributions, 50),
     artworkUrl: optionalText(item.artworkUrl ?? item.artwork_url, MAX_TEXT_LENGTH),
+    artworkRevision: optionalText(item.artworkRevision ?? item.artwork_revision, 128),
+    artworkSource: oneOf(item.artworkSource ?? item.artwork_source, ['generated', 'provider', 'custom', 'fallback'] as const) ?? undefined,
   }
 }
 

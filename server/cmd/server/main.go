@@ -131,6 +131,7 @@ func main() {
 	pluginHostAPI := pluginhostapi.New(db, credentialStore, logManager.Logger("plugin", "host"))
 	pluginHost.SetCapabilityHost(pluginHostAPI)
 	pluginRepositories := services.NewPluginRepositoryService(db, audit, pluginrepository.NewGitHubClient(nil), logManager.Logger("plugin", "repository"), services.WithPluginRoot(cfg.PluginDirectory), services.WithPluginRuntimeHost(pluginHost), services.WithPluginCredentialStore(credentialStore))
+	libraryArtwork := services.NewLibraryArtworkService(db, metadataSettings, pluginRepositories, pluginHostAPI, logManager.Logger("library_artwork", "generator"))
 	pluginDownloads := services.NewPluginDownloadExecutor(downloads, pluginRepositories, pluginHostAPI, mediatool.Discover(cfg.FFmpegPath))
 	downloads.SetPluginDownloadExecutor(pluginDownloads)
 	if err := pluginRepositories.RestorePlugins(context.Background()); err != nil {
@@ -185,6 +186,7 @@ func main() {
 	api.SetSeedingService(seeding)
 	api.SetPluginRepositoryService(pluginRepositories)
 	api.SetPluginAssetGateway(pluginHostAPI)
+	api.SetLibraryArtworkService(libraryArtwork)
 	if err := scheduler.Start(context.Background()); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("任务调度器启动失败"))
 	}

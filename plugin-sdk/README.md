@@ -34,6 +34,8 @@ Server 安装时还会为安全解包后的完整目录树计算独立摘要，�
 
 Player 不直接读取插件目录，也不会请求插件提供的远端图片地址。Server 只为当前启用且完整性有效的安装生成基于包 SHA-256 的同源只读地址 `/api/v1/assets/plugin-covers/<packageSha256>`；URL 不携带 Player Token、插件凭据或本地安装路径。旧插件不声明 `libraryArtwork` 时继续使用 Player 的默认占位封面。
 
+需要用真实内容动态合成封面时，Manifest 另声明 `library.artwork_candidates`。operation 13 返回最多 9 个 `{id, assetRef}`：`id` 是稳定媒体身份，`assetRef` 必须是插件已通过 Host `asset.register` 注册、且绑定当前连接的 UUID。插件不得返回上游图片 URL、Header、Cookie 或本地路径。Server 会重新校验 asset 所有权与网络权限，限制响应和解码尺寸，选择最多 4 张合成 16:9 JPEG，并只向 Player 返回带短时 HMAC 的同源生成图；包内 `libraryArtwork` 继续作为失败兜底。
+
 ## 生成 Registry 条目
 
 仓库根目录发布 `ohmycine-plugin-registry.v1.json`。每个条目的 `manifestUrl` 和 `packageUrl` 必须指向同一 GitHub 仓库的 Release 资产，`packageSha256` 必须与生成 Manifest 和 `.omcp` 完全一致。Server 会先固定 Registry 所在提交 SHA，再受控下载 Release 资产。

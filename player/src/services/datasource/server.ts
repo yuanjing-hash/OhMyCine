@@ -50,6 +50,8 @@ interface ServerLibraryRecord {
   storage_type: string
   entry_count: number
   artwork_url?: string
+  artwork_revision?: string
+  artwork_source?: 'generated' | 'provider' | 'custom' | 'fallback'
 }
 
 interface ServerCategoryRecord {
@@ -860,7 +862,21 @@ function parseLibrary(value: unknown, baseUrl: string): MediaLibrary | null {
     return null
   const record = value as unknown as ServerLibraryRecord
   const artworkUrl = resolveServerArtworkURL(baseUrl, record.artwork_url)
-  return { id: String(record.id), sourceId: '', name: record.name, type: 'mixed', posterUrl: artworkUrl, backdropUrl: artworkUrl, itemCount: numberValue(record.entry_count) }
+  return {
+    id: String(record.id),
+    sourceId: '',
+    name: record.name,
+    type: 'mixed',
+    posterUrl: artworkUrl,
+    backdropUrl: artworkUrl,
+    artworkRevision: optionalString(record.artwork_revision),
+    artworkSource: parseArtworkSource(record.artwork_source),
+    itemCount: numberValue(record.entry_count),
+  }
+}
+
+function parseArtworkSource(value: unknown): MediaLibrary['artworkSource'] {
+  return ['generated', 'provider', 'custom', 'fallback'].includes(String(value)) ? value as MediaLibrary['artworkSource'] : undefined
 }
 
 function createServerCategoryID(libraryId: string, mediaType: 'movie' | 'series', name: string): string {

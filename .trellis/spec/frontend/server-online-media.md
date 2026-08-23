@@ -109,11 +109,15 @@ For site actions, do not branch on a provider name:
 ### 2. Signatures
 
 - `MediaLibrary.posterUrl/backdropUrl?: string` and folder `MediaItem.posterUrl/backdropUrl?: string` carry only safe display artwork.
+- `MediaLibrary.artworkRevision?: string`, `artworkSource?: generated|provider|custom|fallback`, and Player-owned-only `artworkCandidates?: string[]` carry cache and local composition semantics.
 - `registerLayoutBackHandler(owner, handler) -> unregister`; `handler() -> boolean | Promise<boolean>` returns true only when it consumed one internal level.
 
 ### 3. Contracts
 
 - Resolve Server artwork against the configured Server origin only when the normalized path starts with `/api/v1/assets/`; reject userinfo, cross-origin URLs and other paths.
+- Server-managed physical/plugin libraries consume only Server `artworkUrl` plus revision/source and never compose or persist candidate URLs. Signed query values remain runtime-only and the native image cache persists only an irreversible source hash.
+- Player-owned scanned local/raw categories may select up to four distinct indexed poster references and render a local 16:9 collage. Candidate/revision changes invalidate the image cache; no generated file is written into the user's media directory.
+- Direct Emby/Jellyfin library artwork remains provider-owned. Use it when present instead of replacing it with a Player collage.
 - Library and navigation-folder cards use landscape presentation; playable works retain poster presentation.
 - A source view registers one layout back handler. Both desktop back controls invoke the shared dispatcher, which consumes category/node/library state before Router history.
 - Unregister on unmount so a stale view cannot intercept another route. At source root, preserve the existing Router-history/home fallback.
@@ -124,6 +128,9 @@ For site actions, do not branch on a provider name:
 | --- | --- |
 | Missing artwork | Render the established fallback without blocking navigation |
 | Cross-origin or malformed artwork | Discard it at the DataSource boundary |
+| Server DTO attempts to provide `artworkCandidates` or an upstream provider URL | Ignore candidates and discard the unsafe URL; Server remains the generation owner |
+| Player-owned category has one valid candidate | Use its normal poster/backdrop without requiring a collage |
+| Player-owned category has two to four candidates | Render a 16:9 local collage with revision-scoped cache keys |
 | Nested stack has two or more nodes | Load the previous node and keep the source route |
 | Selected library is at its first node | Return to the Server library list |
 | Source root has no internal state | Delegate to Router history/home |
@@ -132,12 +139,15 @@ For site actions, do not branch on a provider name:
 ### 5. Good / Base / Bad Cases
 
 - Good: `分类内容 → 分类列表 → Server 媒体库列表 → 上一页面` uses consecutive back presses.
+- Good: a local directory works while Server is disconnected and its category card updates when locally indexed posters change.
+- Good: a Server Bilibili card uses the Server-generated image and exposes no Bilibili cover URL to Player.
 - Base: an old Server omits artwork and the card fallback remains usable.
-- Bad: every back click calls `router.back()` directly, or Player hard-codes Bilibili/115 cover URLs.
+- Bad: every back click calls `router.back()` directly, Player hard-codes Bilibili/115 cover URLs, or Player recomposes Server candidate artwork.
 
 ### 6. Tests Required
 
-- DataSource verification covers physical, category and plugin same-origin artwork mapping.
+- DataSource verification covers physical, category and plugin same-origin artwork mapping, revision/source parsing, signed query preservation and no Server candidate propagation.
+- Player-owned scan verification covers candidate deduplication, deterministic revision changes and local collage fallback.
 - Navigation verification covers handler-first behavior, Router fallback and both desktop controls using the shared dispatcher.
 - Run `verify:server-datasource`, `verify:server-online-library`, `verify:server-library-navigation`, typecheck, lint and build.
 

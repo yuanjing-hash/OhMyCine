@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -89,6 +90,37 @@ type MediaWork struct {
 	PublishedAt     string         `json:"publishedAt,omitempty"`
 	DurationSeconds int64          `json:"durationSeconds,omitempty"`
 	Segments        []MediaSegment `json:"segments,omitempty"`
+}
+
+type LibraryArtworkCandidate struct {
+	ID       string `json:"id"`
+	AssetRef string `json:"assetRef"`
+}
+
+func NormalizeLibraryArtworkCandidates(data []byte) ([]LibraryArtworkCandidate, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var candidates []LibraryArtworkCandidate
+	if err := decoder.Decode(&candidates); err != nil || len(candidates) == 0 || len(candidates) > 9 {
+		return nil, errors.New("library artwork candidates are invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("library artwork candidates contain trailing data")
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if !safeDTOText(candidate.ID, 512) {
+			return nil, errors.New("library artwork candidate identity is invalid")
+		}
+		if _, err := uuid.Parse(candidate.AssetRef); err != nil {
+			return nil, errors.New("library artwork candidate asset is invalid")
+		}
+		if _, exists := seen[candidate.ID]; exists {
+			return nil, errors.New("library artwork candidate identity is duplicated")
+		}
+		seen[candidate.ID] = struct{}{}
+	}
+	return candidates, nil
 }
 
 type SiteActionDescriptor struct {
