@@ -513,3 +513,24 @@
 ### Next Steps
 
 - 后续继续实现 Bilibili 扫码登录、收藏/稍后再看/关注、DASH 双轨与宿主真实下载执行器。
+
+
+## Session 18: 完成插件平台与 Bilibili 在线媒体全链路
+
+**Date**: 2026-08-23
+**Task**: 完成插件平台与 Bilibili 在线媒体全链路
+**Branch**: `develop`
+
+### Summary
+
+完成通用在线媒体插件契约、安全扫码凭据捕获、Bilibili 浏览播放与真实下载、Player 首页贡献和 DASH 双轨；发布插件 0.2.0 与 Player v1.1.13 Beta。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `35e92a8` | (see git log) |
+
+### Status
+
+[OK] **Completed**
