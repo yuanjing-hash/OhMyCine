@@ -32,6 +32,7 @@ type Capabilities struct {
 	TemporaryDirectURL    bool `json:"temporary_direct_url"`
 	SignedProxy           bool `json:"signed_proxy"`
 	SmallFileUpload       bool `json:"small_file_upload"`
+	FileUpload            bool `json:"file_upload"`
 	ChangeCursor          bool `json:"change_cursor"`
 }
 

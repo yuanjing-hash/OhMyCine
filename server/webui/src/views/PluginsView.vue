@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
+import PluginSettingsForm from '@/components/PluginSettingsForm.vue'
 import {
   buildPluginRepositoryCreatePayload,
   buildPluginRepositoryDeletePayload,
@@ -11,6 +12,9 @@ import {
   buildPluginInstallConfirmPayload,
   buildPluginInstallPreviewPayload,
   buildPluginConnectionCreatePayload,
+  buildPluginConnectionCreatePayloadFromConfig,
+  buildPluginConnectionConfigPayload,
+  buildPluginConnectionQRCodePayload,
   buildPluginConnectionDeletePayload,
   buildPluginConnectionTogglePayload,
   buildPluginRevisionPayload,
@@ -30,6 +34,9 @@ import {
   pluginUninstallPath,
   permissionDetails,
   permissionLabel,
+  pluginQRCodeAuthScope,
+  normalizePluginInstallPreview,
+  normalizeInstalledPluginSummary,
   pluginHasMarketplaceUpdate,
   pluginMarketplaceAction,
   selectedMarketplaceSource,
@@ -38,6 +45,7 @@ import {
   type PluginConnectionSummary,
   type PluginAuthPollSummary,
   type PluginAuthStartSummary,
+  type PluginQRCodeAuthState,
   type PluginCredentialMode,
   type PluginInstallPreview,
   type PluginMarketplaceEntry,
@@ -76,10 +84,13 @@ const connectionsLoadingID = ref('')
 const connectionBusyID = ref('')
 const connectionName = ref('')
 const connectionConfigText = ref('{\n  "homeRecommendationEnabled": true\n}')
+const connectionConfig = ref<Record<string, unknown>>({})
+const editingConnectionID = ref('')
+const connectionEditConfig = ref<Record<string, unknown>>({})
 const connectionCredentialMode = ref<PluginCredentialMode>('none')
 const connectionCredentialScope = ref('')
 const connectionCredential = ref('')
-const connectionAuth = ref<Record<string, { loginSession: string, qrDataURL: string, expiresAt: string, state: PluginAuthPollSummary['state'], accountName?: string }>>({})
+const connectionAuth = ref<Record<string, PluginQRCodeAuthState>>({})
 const authPollTimers = new Map<string, number>()
 let installDialogReturnFocus: HTMLElement | null = null
 
@@ -117,7 +128,7 @@ async function loadInstalled() {
   installedError.value = ''
   try {
     const response = await api<InstalledPluginsResponse>(installedPluginsPath)
-    installed.value = response.list
+    installed.value = Array.isArray(response.list) ? response.list.map(normalizeInstalledPluginSummary) : []
   } catch (reason) {
     installedError.value = message(reason)
   } finally {
@@ -148,9 +159,11 @@ async function toggleConnectionPanel(plugin: InstalledPluginSummary) {
   }
   expandedPluginID.value = plugin.id
   connectionName.value = `${plugin.name} 连接`
-  connectionConfigText.value = '{\n  "homeRecommendationEnabled": true\n}'
-  connectionCredentialMode.value = 'none'
-  connectionCredentialScope.value = credentialScopes(plugin)[0] ?? ''
+  connectionConfig.value = { ...plugin.config_defaults }
+  connectionConfigText.value = JSON.stringify(plugin.config_defaults ?? {}, null, 2)
+  const qrAuthScope = pluginQRCodeAuthScope(plugin)
+  connectionCredentialMode.value = qrAuthScope ? 'cookie' : 'none'
+  connectionCredentialScope.value = qrAuthScope ?? credentialScopes(plugin)[0] ?? ''
   connectionCredential.value = ''
   await loadConnections(plugin)
 }
@@ -158,16 +171,36 @@ async function toggleConnectionPanel(plugin: InstalledPluginSummary) {
 async function createConnection(plugin: InstalledPluginSummary) {
   connectionBusyID.value = `new:${plugin.id}`
   try {
-    const payload = buildPluginConnectionCreatePayload({
-      name: connectionName.value,
-      configText: connectionConfigText.value,
-      credentialScope: connectionCredentialScope.value,
-      credentialMode: connectionCredentialMode.value,
-      credential: connectionCredential.value,
-    })
-    await api<PluginConnectionSummary>(pluginConnectionsPath(plugin.id), { method: 'POST', body: JSON.stringify(payload) })
+    const payload = plugin.settings_page
+      ? buildPluginConnectionCreatePayloadFromConfig({ name: connectionName.value, config: connectionConfig.value, credentialScope: connectionCredentialScope.value, credentialMode: connectionCredentialMode.value, credential: connectionCredential.value })
+      : buildPluginConnectionCreatePayload({ name: connectionName.value, configText: connectionConfigText.value, credentialScope: connectionCredentialScope.value, credentialMode: connectionCredentialMode.value, credential: connectionCredential.value })
+    const connection = await api<PluginConnectionSummary>(pluginConnectionsPath(plugin.id), { method: 'POST', body: JSON.stringify(payload) })
     connectionCredential.value = ''
-    notify('插件连接已创建；Player 将通过 Server 在线媒体库读取此来源', 'success')
+    await loadConnections(plugin)
+    if (pluginQRCodeAuthScope(plugin)) {
+      notify(`插件连接已创建，请使用 ${plugin.name} 客户端扫码登录`, 'success')
+      await startConnectionAuth(plugin, connection)
+    } else {
+      notify('插件连接已创建；Player 将通过 Server 在线媒体库读取此来源', 'success')
+    }
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    connectionBusyID.value = ''
+  }
+}
+
+function beginEditConnection(connection: PluginConnectionSummary) {
+  editingConnectionID.value = connection.id
+  connectionEditConfig.value = { ...connection.config }
+}
+
+async function saveConnectionConfig(plugin: InstalledPluginSummary, connection: PluginConnectionSummary) {
+  connectionBusyID.value = connection.id
+  try {
+    await api(pluginConnectionPath(plugin.id, connection.id), { method: 'PATCH', body: JSON.stringify(buildPluginConnectionConfigPayload(connection, connectionEditConfig.value)) })
+    notify('插件设置已保存', 'success')
+    editingConnectionID.value = ''
     await loadConnections(plugin)
   } catch (reason) {
     notify(message(reason), 'error')
@@ -206,10 +239,20 @@ async function deleteConnection(plugin: InstalledPluginSummary, connection: Plug
 async function startConnectionAuth(plugin: InstalledPluginSummary, connection: PluginConnectionSummary) {
   connectionBusyID.value = `auth:${connection.id}`
   try {
-    const response = await api<PluginAuthStartSummary>(pluginConnectionAuthPath(plugin.id, connection.id, 'start'), { method: 'POST', body: '{}' })
+    const qrAuthScope = pluginQRCodeAuthScope(plugin)
+    if (!qrAuthScope) throw new Error('此插件没有声明可用的扫码登录能力。')
+    let authConnection = connection
+    if (connection.credential_mode !== 'cookie' || connection.credential_scope !== qrAuthScope) {
+      authConnection = await api<PluginConnectionSummary>(pluginConnectionPath(plugin.id, connection.id), {
+        method: 'PATCH',
+        body: JSON.stringify(buildPluginConnectionQRCodePayload(connection, qrAuthScope)),
+      })
+      await loadConnections(plugin)
+    }
+    const response = await api<PluginAuthStartSummary>(pluginConnectionAuthPath(plugin.id, authConnection.id, 'start'), { method: 'POST', body: '{}' })
     const qrDataURL = await QRCode.toDataURL(response.qrCodeUrl, { width: 220, margin: 1, errorCorrectionLevel: 'M' })
     connectionAuth.value = { ...connectionAuth.value, [connection.id]: { loginSession: response.loginSession, qrDataURL, expiresAt: response.expiresAt, state: 'pending' } }
-    scheduleAuthPoll(plugin, connection, response.pollAfterSeconds)
+    scheduleAuthPoll(plugin, authConnection, response.pollAfterSeconds)
   } catch (reason) {
     notify(message(reason), 'error')
   } finally {
@@ -365,10 +408,11 @@ async function beginInstallPreview(entry: PluginMarketplaceEntry) {
   }
   pluginBusyID.value = entry.id
   try {
-    installPreview.value = await api<PluginInstallPreview>(pluginInstallPreviewPath(entry.id), {
+    const preview = await api<PluginInstallPreview>(pluginInstallPreviewPath(entry.id), {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+    installPreview.value = normalizePluginInstallPreview(preview)
     installConfirmed.value = false
   } catch (reason) {
     notify(message(reason), 'error')
@@ -589,7 +633,7 @@ onMounted(() => { void loadAll() })
             <button v-if="plugin.status === 'enabled'" type="button" class="btn-secondary" :disabled="pluginBusyID !== ''" @click="setPluginEnabled(plugin, false)">停用</button>
             <button v-else type="button" class="btn-primary" :disabled="pluginBusyID !== ''" @click="setPluginEnabled(plugin, true)">启用</button>
             <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || plugin.status !== 'enabled'" :aria-expanded="expandedPluginID === plugin.id" @click="toggleConnectionPanel(plugin)">{{ expandedPluginID === plugin.id ? '收起连接' : '连接与在线库' }}</button>
-            <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || !hasMarketplaceUpdate(plugin)" @click="updateInstalledPlugin(plugin)">{{ hasMarketplaceUpdate(plugin) ? '升级' : '已是仓库最新版' }}</button>
+            <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || !hasMarketplaceUpdate(plugin)" @click="updateInstalledPlugin(plugin)">{{ hasMarketplaceUpdate(plugin) ? '校验升级包' : '已是仓库最新版' }}</button>
             <button type="button" class="btn-secondary" :disabled="pluginBusyID !== '' || !plugin.previous_version" @click="rollbackPlugin(plugin)">回滚</button>
             <RouterLink class="btn-secondary" :to="pluginLogsPath(plugin.id)">查看日志</RouterLink>
             <button type="button" class="btn-danger" :disabled="pluginBusyID !== ''" @click="uninstallPlugin(plugin)">卸载</button>
@@ -610,13 +654,37 @@ onMounted(() => { void loadAll() })
                   <div class="flex flex-wrap gap-2"><span :class="connection.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ connection.enabled ? '已启用' : '已停用' }}</span><span :class="connection.health_status === 'error' || connection.health_status === 'auth_expired' ? 'status-chip status-chip--warning' : 'status-chip'">{{ connectionHealthLabel(connection) }}</span></div>
                 </div>
                 <p v-if="connection.health_error_code" class="semantic-warning mt-3 p-2 text-xs">健康错误：<span class="font-mono">{{ connection.health_error_code }}</span></p>
-                <div v-if="connectionAuth[connection.id]" class="semantic-inset mt-3 grid justify-items-center gap-2 p-3 text-center text-xs">
-                  <img :src="connectionAuth[connection.id].qrDataURL" width="220" height="220" alt="插件登录二维码" class="rounded bg-white p-2" />
-                  <strong>{{ connectionAuth[connection.id].state === 'scanned' ? '已扫码，请在手机端确认' : connectionAuth[connection.id].state === 'confirmed' ? `登录成功${connectionAuth[connection.id].accountName ? `：${connectionAuth[connection.id].accountName}` : ''}` : connectionAuth[connection.id].state === 'expired' ? '二维码已过期' : '请使用站点客户端扫码' }}</strong>
-                  <span class="text-subtle">二维码有效期至 {{ formatTime(connectionAuth[connection.id].expiresAt) }}</span>
-                </div>
+                <PluginSettingsForm
+                  v-if="plugin.settings_page && editingConnectionID === connection.id"
+                  v-model="connectionEditConfig"
+                  class="mt-3"
+                  :page="plugin.settings_page"
+                  :credential-configured="connection.credential_configured"
+                  :health-status="connection.health_status"
+                  :qr-auth-state="canManage ? connectionAuth[connection.id] : undefined"
+                  :qr-auth-action-visible="canManage && Boolean(pluginQRCodeAuthScope(plugin))"
+                  :qr-auth-action-disabled="connectionBusyID !== '' || !connection.enabled"
+                  @start-auth="startConnectionAuth(plugin, connection)"
+                />
+                <PluginSettingsForm
+                  v-else-if="plugin.settings_page"
+                  :model-value="connection.config"
+                  class="mt-3"
+                  :page="plugin.settings_page"
+                  :credential-configured="connection.credential_configured"
+                  :health-status="connection.health_status"
+                  :qr-auth-state="canManage ? connectionAuth[connection.id] : undefined"
+                  :qr-auth-action-visible="canManage && Boolean(pluginQRCodeAuthScope(plugin))"
+                  :qr-auth-action-disabled="connectionBusyID !== '' || !connection.enabled"
+                  disabled
+                  @start-auth="startConnectionAuth(plugin, connection)"
+                />
                 <div v-if="canManage" class="mt-3 flex flex-wrap gap-2">
-                  <button v-if="connection.credential_mode === 'cookie' && plugin.capabilities.includes('site.interaction')" type="button" class="btn-primary" :disabled="connectionBusyID !== '' || !connection.enabled" @click="startConnectionAuth(plugin, connection)">{{ connection.credential_configured ? '重新扫码登录' : '扫码登录' }}</button>
+                  <template v-if="plugin.settings_page">
+                    <button v-if="editingConnectionID !== connection.id" type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="beginEditConnection(connection)">编辑设置</button>
+                    <button v-else type="button" class="btn-primary" :disabled="connectionBusyID !== ''" @click="saveConnectionConfig(plugin, connection)">保存设置</button>
+                    <button v-if="editingConnectionID === connection.id" type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="editingConnectionID = ''">取消</button>
+                  </template>
                   <button type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="setConnectionEnabled(plugin, connection, !connection.enabled)">{{ connection.enabled ? '停用' : '启用' }}</button>
                   <button type="button" class="btn-danger" :disabled="connectionBusyID !== ''" @click="deleteConnection(plugin, connection)">删除</button>
                 </div>
@@ -626,13 +694,15 @@ onMounted(() => { void loadAll() })
 
             <form v-if="canManage" class="grid gap-3" @submit.prevent="createConnection(plugin)">
               <div><label class="label">连接名称</label><input v-model="connectionName" class="input" maxlength="128" required /></div>
-              <div><label class="label">普通配置（JSON）</label><textarea v-model="connectionConfigText" class="input min-h-28 font-mono text-xs" spellcheck="false" /></div>
-              <div class="grid gap-3 sm:grid-cols-2">
+              <PluginSettingsForm v-if="plugin.settings_page" v-model="connectionConfig" :page="plugin.settings_page" />
+              <div v-else><label class="label">普通配置（JSON）</label><textarea v-model="connectionConfigText" class="input min-h-28 font-mono text-xs" spellcheck="false" /></div>
+              <p v-if="pluginQRCodeAuthScope(plugin)" class="semantic-inset m-0 p-3 text-sm">创建连接后会立即显示 {{ plugin.name }} 登录二维码，无需手动填写 Cookie。</p>
+              <div v-else class="grid gap-3 sm:grid-cols-2">
                 <div><label class="label">认证方式</label><select v-model="connectionCredentialMode" class="input"><option value="none">匿名 / 不使用凭据</option><option v-if="credentialScopes(plugin).length" value="cookie">Cookie</option><option v-if="credentialScopes(plugin).length" value="bearer">Bearer Token</option></select></div>
                 <div v-if="connectionCredentialMode !== 'none'"><label class="label">凭据范围</label><select v-model="connectionCredentialScope" class="input" required><option v-for="scope in credentialScopes(plugin)" :key="scope" :value="scope">{{ scope }}</option></select></div>
               </div>
-              <div v-if="connectionCredentialMode !== 'none'"><label class="label">凭据{{ connectionCredentialMode === 'cookie' ? '（可留空后扫码登录）' : '' }}</label><textarea v-model="connectionCredential" class="input min-h-20 font-mono text-xs" :required="connectionCredentialMode === 'bearer'" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">Cookie 模式可先创建连接再扫码；手动填写的凭据保存后也不会再次回显明文，日志、普通 API 和 Player 都不会收到它。</p></div>
-              <button class="btn-primary" :disabled="connectionBusyID !== '' || !connectionName.trim()">{{ connectionBusyID === `new:${plugin.id}` ? '正在创建…' : '创建连接' }}</button>
+              <div v-if="!pluginQRCodeAuthScope(plugin) && connectionCredentialMode !== 'none'"><label class="label">凭据{{ connectionCredentialMode === 'cookie' ? '（可留空后扫码登录）' : '' }}</label><textarea v-model="connectionCredential" class="input min-h-20 font-mono text-xs" :required="connectionCredentialMode === 'bearer'" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">手动填写的凭据保存后不会再次回显明文，日志、普通 API 和 Player 都不会收到它。</p></div>
+              <button class="btn-primary" :disabled="connectionBusyID !== '' || !connectionName.trim()">{{ connectionBusyID === `new:${plugin.id}` ? '正在创建…' : pluginQRCodeAuthScope(plugin) ? '创建连接并扫码登录' : '创建连接' }}</button>
             </form>
           </section>
         </article>
@@ -755,7 +825,7 @@ onMounted(() => { void loadAll() })
             <li v-for="(permission, index) in installPreview.permission_diff.removed" :key="`${permission.kind}-${index}`"><strong>{{ permissionLabel(permission.kind) }}</strong>：{{ permissionDetails(permission) }}</li>
           </ul>
         </div>
-        <div v-if="installPreview.permission_diff.added.length === 0 && installPreview.permission_diff.removed.length === 0" class="semantic-inset mt-5 p-4 text-sm">该升级没有权限变化，原有精确授权将按新包快照重新绑定。</div>
+        <div v-if="installPreview.permission_diff.added.length === 0 && installPreview.permission_diff.removed.length === 0" class="semantic-inset mt-5 p-4 text-sm">{{ installPreview.operation === 'update' ? '该升级没有权限变化，原有精确授权将按新包快照重新绑定。' : '该插件不申请 Host 权限。' }}</div>
 
         <div class="mt-5">
           <strong class="text-sm">插件能力</strong>
@@ -768,7 +838,7 @@ onMounted(() => { void loadAll() })
         </label>
         <div class="mt-5 flex justify-end gap-3">
           <button type="button" class="btn-secondary" :disabled="pluginBusyID !== ''" @click="closeInstallPreview">取消</button>
-          <button type="button" class="btn-primary" :disabled="!installConfirmed || pluginBusyID !== ''" @click="confirmInstallation">{{ pluginBusyID ? '处理中…' : '确认执行' }}</button>
+          <button type="button" class="btn-primary" :disabled="!installConfirmed || pluginBusyID !== ''" @click="confirmInstallation">{{ pluginBusyID ? '处理中…' : installPreview.operation === 'update' ? '确认升级' : '确认安装' }}</button>
         </div>
       </section>
     </div>

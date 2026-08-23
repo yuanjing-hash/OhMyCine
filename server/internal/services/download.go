@@ -467,12 +467,8 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "目标媒体库目录不可用", err)
 		}
 	case models.StorageTypePan115:
-		if downloader.Type != models.DownloaderTypePan115Offline || downloader.StorageID == nil || storage.ConnectionID == nil || strings.TrimSpace(library.ProviderRootID) == "" || s.downloader == nil || s.downloader.connections == nil {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标媒体库只能接收同账号离线下载", nil)
-		}
-		var sourceStorage models.Storage
-		if err := s.db.First(&sourceStorage, *downloader.StorageID).Error; err != nil || sourceStorage.Type != models.StorageTypePan115 || sourceStorage.ConnectionID == nil || *sourceStorage.ConnectionID != *storage.ConnectionID {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 离线下载与目标媒体库不属于同一账号", err)
+		if storage.ConnectionID == nil || strings.TrimSpace(library.ProviderRootID) == "" || s.downloader == nil || s.downloader.connections == nil {
+			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标媒体库连接不可用", nil)
 		}
 		if library.TransferMode != models.MediaLibraryTransferMove && library.TransferMode != models.MediaLibraryTransferCopy {
 			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 媒体库仅支持移动或复制入库", nil)
@@ -481,13 +477,23 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 		if err != nil {
 			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标连接不可用", err)
 		}
-		mutations, ok := driver.(cloudpkg.MutationDriver)
-		if !ok {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标暂不支持云端整理", nil)
-		}
-		capabilities := mutations.Capabilities()
-		if !capabilities.CreateDirectory || !capabilities.Rename || !capabilities.Recycle || (library.TransferMode == models.MediaLibraryTransferMove && !capabilities.Move) || (library.TransferMode == models.MediaLibraryTransferCopy && !capabilities.Copy) {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标缺少所需的云端整理能力", nil)
+		capabilities := driver.Capabilities()
+		if downloader.Type == models.DownloaderTypePluginHTTP && sourceKind == "plugin_plan" {
+			if _, ok := driver.(cloudpkg.UploadDriver); !ok || !capabilities.FileUpload || !capabilities.CreateDirectory || !capabilities.Recycle {
+				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标缺少文件上传能力", nil)
+			}
+		} else {
+			if downloader.Type != models.DownloaderTypePan115Offline || downloader.StorageID == nil {
+				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标媒体库只能接收同账号离线下载或受管站点下载", nil)
+			}
+			var sourceStorage models.Storage
+			if err := s.db.First(&sourceStorage, *downloader.StorageID).Error; err != nil || sourceStorage.Type != models.StorageTypePan115 || sourceStorage.ConnectionID == nil || *sourceStorage.ConnectionID != *storage.ConnectionID {
+				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 离线下载与目标媒体库不属于同一账号", err)
+			}
+			_, ok := driver.(cloudpkg.MutationDriver)
+			if !ok || !capabilities.CreateDirectory || !capabilities.Rename || !capabilities.Recycle || (library.TransferMode == models.MediaLibraryTransferMove && !capabilities.Move) || (library.TransferMode == models.MediaLibraryTransferCopy && !capabilities.Copy) {
+				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标缺少所需的云端整理能力", nil)
+			}
 		}
 		root, err := providerItemWithinRoot(ctx, driver, library.ProviderRootID, storage.RootPath)
 		if err != nil || !root.IsDir {

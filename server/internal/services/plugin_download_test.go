@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -10,12 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/hostapi"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
+	"gorm.io/gorm"
 )
 
 type fakePluginAssetGateway struct {
@@ -25,9 +28,9 @@ type fakePluginAssetGateway struct {
 	}
 }
 
-func (g fakePluginAssetGateway) OpenAssetForPlugin(_ context.Context, pluginID, ref, method, rangeHeader string) (*hostapi.AssetStream, error) {
+func (g fakePluginAssetGateway) OpenAssetForPluginConnection(_ context.Context, pluginID, connectionID, ref, method, rangeHeader string) (*hostapi.AssetStream, error) {
 	asset, ok := g.assets[ref]
-	if !ok || pluginID == "" || method != http.MethodGet || rangeHeader != "" {
+	if !ok || pluginID == "" || connectionID == "" || method != http.MethodGet || rangeHeader != "" {
 		return nil, errors.New("unexpected asset request")
 	}
 	return &hostapi.AssetStream{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {asset.contentType}}, Body: io.NopCloser(bytes.NewReader(asset.body))}, nil
@@ -215,7 +218,7 @@ func TestPluginDownloadExecutesDASHAndBuildsManagedManifest(t *testing.T) {
 	}}
 	tool := &fakeMediaTool{}
 	executor := &PluginDownloadExecutor{downloads: downloads, assets: assets, tool: tool}
-	task := models.DownloadTask{ID: uuid.NewString(), ProviderType: models.DownloaderTypePluginHTTP, StagingAbsolutePath: t.TempDir()}
+	task := models.DownloadTask{ID: uuid.NewString(), ProviderType: models.DownloaderTypePluginHTTP, StagingAbsolutePath: t.TempDir(), PluginConnectionID: uuid.NewString()}
 	root := filepath.Join(task.StagingAbsolutePath, pluginDownloadRootName, task.ID)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -228,9 +231,144 @@ func TestPluginDownloadExecutesDASHAndBuildsManagedManifest(t *testing.T) {
 		t.Fatalf("unexpected execution result calls=%d manifest=%+v source=%+v", tool.calls, manifest, source)
 	}
 	for _, file := range manifest.Files {
-		if filepath.IsAbs(file.RelativePath) || !strings.HasPrefix(file.RelativePath, pluginDownloadRootName+"/") {
+		if filepath.IsAbs(file.RelativePath) || strings.Contains(file.RelativePath, "/") || strings.Contains(file.RelativePath, "\\") {
 			t.Fatalf("unsafe manifest path: %q", file.RelativePath)
 		}
+	}
+}
+
+func TestPluginProviderArtifactsAreHostGeneratedAndAddedToBothManifests(t *testing.T) {
+	root := t.TempDir()
+	posterRef, fanartRef := uuid.NewString(), uuid.NewString()
+	jpeg := []byte{0xff, 0xd8, 0x01, 0xff, 0xd9}
+	executor := &PluginDownloadExecutor{assets: fakePluginAssetGateway{assets: map[string]struct {
+		body        []byte
+		contentType string
+	}{
+		posterRef: {jpeg, "image/jpeg"},
+		fanartRef: {jpeg, "image/jpeg"},
+	}}}
+	snapshot := contract.ProviderMetadataSnapshot{
+		Version: 1, WorkID: "BV1fixture", SegmentID: "cid-123", Kind: "video", Title: "测试视频", OriginalTitle: "Fixture Video",
+		Overview: "由插件提供结构化元数据，产物由 Server 生成。", Author: "UP 主", PublishedAt: "2026-08-20T00:00:00Z", DurationSeconds: 120,
+		Genres: []string{"纪录片"}, Tags: []string{"测试"}, UniqueIDs: map[string]string{"bvid": "BV1fixture", "cid": "cid-123"},
+		Artwork: []contract.ProviderArtwork{{Kind: "poster", AssetRef: posterRef}, {Kind: "fanart", AssetRef: fanartRef}},
+	}
+	manifest := downloadpkg.Manifest{Name: "Fixture", Complete: true, Files: []downloadpkg.File{{RelativePath: "Fixture.mp4", Size: 8}}}
+	task := models.DownloadTask{ID: uuid.NewString(), PluginConnectionID: uuid.NewString()}
+	selected, source, err := executor.attachProviderArtifacts(context.Background(), &task, root, "org.ohmycine.fixture", snapshot, manifest, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected.Files) != 4 || len(source.Files) != 4 {
+		t.Fatalf("selected=%+v source=%+v", selected.Files, source.Files)
+	}
+	for _, name := range []string{"Fixture.nfo", "Fixture-poster.jpg", "Fixture-fanart.jpg"} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+	nfoBody, err := os.ReadFile(filepath.Join(root, "Fixture.nfo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nfoText := string(nfoBody)
+	for _, expected := range []string{"<title>测试视频</title>", `<uniqueid type="bvid" default="true">BV1fixture</uniqueid>`, `<uniqueid type="cid">cid-123</uniqueid>`, "<director>UP 主</director>"} {
+		if !strings.Contains(nfoText, expected) {
+			t.Fatalf("NFO missing %q: %s", expected, nfoText)
+		}
+	}
+	// Once Host-owned artifacts exist, a retry must not depend on the plugin
+	// runtime or its short-lived opaque artwork references.
+	executor.assets = fakePluginAssetGateway{assets: map[string]struct {
+		body        []byte
+		contentType string
+	}{}}
+	if _, _, err := executor.attachProviderArtifacts(context.Background(), &task, root, "org.ohmycine.fixture", snapshot, manifest, manifest); err != nil {
+		t.Fatalf("materialized provider artifacts were not reusable: %v", err)
+	}
+}
+
+func TestProviderMetadataSnapshotSurvivesUnavailablePluginAndBindsConnection(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	source := downloadSourceEnvelope{Kind: "plugin_plan", PluginConnectionID: "connection-one", PluginItemID: "work", PluginSegmentID: "segment", PluginVersionID: "version"}
+	snapshot := contract.ProviderMetadataSnapshot{Version: 1, WorkID: source.PluginItemID, SegmentID: source.PluginSegmentID, Kind: "video", Title: "Snapshot", UniqueIDs: map[string]string{"provider": "work"}}
+	raw, err := json.Marshal(providerMetadataEnvelope{Version: 1, PluginID: "org.ohmycine.fixture", PluginVersion: "1.0.0", ConnectionID: source.PluginConnectionID, Snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := models.DownloadTask{PluginID: "org.ohmycine.fixture", PluginVersion: "1.0.0", PluginConnectionID: source.PluginConnectionID, ProviderMetadataJSON: string(raw)}
+	// plugins is deliberately nil: a durable snapshot must remain usable after
+	// the package is disabled, upgraded, or uninstalled.
+	executor := &PluginDownloadExecutor{downloads: downloads}
+	resolved, err := executor.resolveProviderMetadata(context.Background(), &task, source)
+	if err != nil || resolved == nil || resolved.Title != snapshot.Title {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	otherSource := source
+	otherSource.PluginConnectionID = "connection-two"
+	if _, err := executor.resolveProviderMetadata(context.Background(), &task, otherSource); ErrorCode(err) != CodePluginResponseInvalid {
+		t.Fatalf("cross-connection snapshot error=%v code=%q", err, ErrorCode(err))
+	}
+}
+
+func TestEnsurePluginProvenanceBackfillsOnlyFullyLegacyTask(t *testing.T) {
+	downloads, _, queue, actor, _ := downloadFixture(t)
+	now := time.Now().UTC()
+	pluginID := "org.ohmycine.legacy-fixture"
+	pluginPackage := models.PluginPackage{PluginID: pluginID, Version: "1.2.3", RepositoryOwner: "example", RepositoryRepo: "plugins", RegistryCommit: strings.Repeat("a", 40), RegistryEntryJSON: `{}`, ManifestURL: "https://github.com/example/plugins/releases/download/v1/manifest.json", PackageURL: "https://github.com/example/plugins/releases/download/v1/plugin.omcp", PackageSHA256: strings.Repeat("b", 64), ExtractedTreeSHA256: strings.Repeat("c", 64), ManifestJSON: `{}`, PackagePath: filepath.Join(t.TempDir(), "package"), VerifiedAt: now, CreatedAt: now}
+	if err := downloads.db.Create(&pluginPackage).Error; err != nil {
+		t.Fatal(err)
+	}
+	installation := models.PluginInstallation{PluginID: pluginID, ActivePackageID: pluginPackage.ID, Status: models.PluginInstallationEnabled, Revision: 1, RuntimeGeneration: 1, InstalledAt: now, UpdatedAt: now, EnabledAt: &now}
+	if err := downloads.db.Create(&installation).Error; err != nil {
+		t.Fatal(err)
+	}
+	connection := models.PluginConnection{ID: uuid.NewString(), PluginID: pluginID, Name: "Legacy", ConfigJSON: `{}`, CredentialMode: models.PluginCredentialModeNone, Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if err := downloads.db.Create(&connection).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := models.DownloadTask{ID: uuid.NewString(), OwnerID: actor.User.ID, ProviderType: models.DownloaderTypePluginHTTP, DisplayName: "Legacy", Phase: models.DownloadTaskStatusQueued, CreatedAt: now, UpdatedAt: now}
+	_, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: task.DisplayName, Payload: downloadJobPayload{DownloadTaskID: task.ID}}, func(tx *gorm.DB, job models.Job) error {
+		task.JobID = job.ID
+		return tx.Create(&task).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &PluginDownloadExecutor{downloads: downloads}
+	if err := executor.ensurePluginProvenance(&task, connection); err != nil {
+		t.Fatal(err)
+	}
+	if task.PluginID != pluginID || task.PluginVersion != "1.2.3" || task.PluginConnectionID != connection.ID {
+		t.Fatalf("task=%+v", task)
+	}
+	var persisted models.DownloadTask
+	if err := downloads.db.First(&persisted, "id = ?", task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.PluginID != pluginID || persisted.PluginVersion != "1.2.3" || persisted.PluginConnectionID != connection.ID {
+		t.Fatalf("persisted=%+v", persisted)
+	}
+	metadataSource := downloadSourceEnvelope{Kind: "plugin_plan", PluginConnectionID: connection.ID, PluginItemID: "work", PluginSegmentID: "segment", PluginVersionID: "version"}
+	metadata := contract.ProviderMetadataSnapshot{Version: 1, WorkID: "work", SegmentID: "segment", Kind: "video", Title: "Fixture", UniqueIDs: map[string]string{"fixture": "work"}}
+	if err := executor.persistProviderMetadata(&task, metadataSource, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if task.ProviderMetadataJSON == "" {
+		t.Fatal("durable metadata was not synchronized back to the active download task")
+	}
+
+	partial := models.DownloadTask{ID: uuid.NewString(), OwnerID: actor.User.ID, ProviderType: models.DownloaderTypePluginHTTP, PluginID: pluginID, DisplayName: "Partial", Phase: models.DownloadTaskStatusQueued, CreatedAt: now, UpdatedAt: now}
+	_, err = queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: partial.DisplayName, Payload: downloadJobPayload{DownloadTaskID: partial.ID}}, func(tx *gorm.DB, job models.Job) error {
+		partial.JobID = job.ID
+		return tx.Create(&partial).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.ensurePluginProvenance(&partial, connection); ErrorCode(err) != CodePluginResponseInvalid {
+		t.Fatalf("partial provenance error=%v code=%q", err, ErrorCode(err))
 	}
 }
 

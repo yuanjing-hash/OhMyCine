@@ -51,5 +51,6 @@ func isAutomaticTransferDanmakuFile(value string) bool {
 }
 
 func isAutomaticTransferSidecarFile(value string) bool {
-	return isAutomaticTransferSubtitleFile(value) || isAutomaticTransferDanmakuFile(value) || strings.EqualFold(pathpkg.Ext(value), ".jpg")
+	extension := strings.ToLower(pathpkg.Ext(value))
+	return isAutomaticTransferSubtitleFile(value) || isAutomaticTransferDanmakuFile(value) || extension == ".jpg" || extension == ".nfo"
 }

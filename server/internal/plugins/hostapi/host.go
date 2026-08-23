@@ -37,6 +37,7 @@ const (
 	OperationEventPoll        uint32 = 6
 	OperationAssetRegister    uint32 = 7
 	OperationCredentialCommit uint32 = 8
+	OperationConfigGet        uint32 = 9
 
 	maxHostRequestBytes   = 256 * 1024
 	maxAssetRequestBytes  = 4 * 1024 * 1024
@@ -181,6 +182,8 @@ func (host *Host) Call(ctx context.Context, pluginID string, operation uint32, p
 		response, err = host.registerAsset(ctx, pluginID, authorization, payload)
 	case OperationCredentialCommit:
 		response, err = host.commitCredential(pluginID, authorization, payload)
+	case OperationConfigGet:
+		response, err = host.configGet(pluginID, payload)
 	default:
 		err = invalid("plugin_host_operation_invalid", nil)
 	}
@@ -192,6 +195,31 @@ func (host *Host) Call(ctx context.Context, pluginID string, operation uint32, p
 		return nil, invalid("plugin_host_response_invalid", err)
 	}
 	return encoded, nil
+}
+
+type configGetRequest struct {
+	ConnectionID string `json:"connectionId"`
+}
+
+func (host *Host) configGet(pluginID string, payload []byte) (map[string]any, error) {
+	var input configGetRequest
+	if err := strictJSON(payload, &input); err != nil {
+		return nil, invalid("plugin_config_request_invalid", err)
+	}
+	if _, err := uuid.Parse(input.ConnectionID); err != nil {
+		return nil, denied("plugin_config_connection_denied", err)
+	}
+	var connection models.PluginConnection
+	if err := host.db.Select("id", "plugin_id", "config_json").First(&connection, "id = ? AND plugin_id = ? AND enabled = ?", input.ConnectionID, pluginID, true).Error; err != nil {
+		return nil, denied("plugin_config_connection_denied", err)
+	}
+	var config map[string]any
+	decoder := json.NewDecoder(strings.NewReader(connection.ConfigJSON))
+	decoder.UseNumber()
+	if err := decoder.Decode(&config); err != nil || config == nil {
+		return nil, invalid("plugin_config_invalid", err)
+	}
+	return config, nil
 }
 
 type Asset struct {
@@ -404,15 +432,16 @@ func (host *Host) OpenAsset(ctx context.Context, reference, method, rangeHeader 
 	return &AssetStream{StatusCode: response.StatusCode, Header: headers, Body: response.Body}, nil
 }
 
-// OpenAssetForPlugin additionally binds an opaque reference to the plugin
-// whose validated DownloadPlan is being executed. A plugin cannot consume a
-// guessed reference registered by another runtime generation/plugin.
-func (host *Host) OpenAssetForPlugin(ctx context.Context, pluginID, reference, method, rangeHeader string) (*AssetStream, error) {
+// OpenAssetForPluginConnection additionally binds an opaque reference to the
+// exact plugin connection whose validated DownloadPlan or ProviderMetadata is
+// being executed. A plugin cannot consume a guessed reference registered by
+// another runtime generation, plugin, or connection.
+func (host *Host) OpenAssetForPluginConnection(ctx context.Context, pluginID, connectionID, reference, method, rangeHeader string) (*AssetStream, error) {
 	asset, err := host.ResolveAsset(reference)
 	if err != nil {
 		return nil, err
 	}
-	if pluginID == "" || asset.PluginID != pluginID {
+	if pluginID == "" || connectionID == "" || asset.PluginID != pluginID || asset.ConnectionID != connectionID {
 		return nil, denied("plugin_asset_reference_denied", nil)
 	}
 	return host.OpenAsset(ctx, reference, method, rangeHeader)

@@ -1731,7 +1731,7 @@ CREATE TABLE settings (
 
 ## 18. 通用插件平台
 
-Server 插件系统按可组合 capability 扩展，而不是把插件限制成“站点适配器”这一种类型。Bilibili 是首个真实参考插件，但协议同时为元数据、通知、下载器、云盘/存储、媒体服务器、事件/调度、识别分类命名和声明式 UI 预留稳定扩展面。
+Server 插件系统按可组合 capability 扩展，而不是把插件限制成“站点适配器”这一种类型。Bilibili 是首个真实参考插件。元数据、通知、下载器、云盘/存储、媒体服务器、事件/调度、识别分类命名和声明式 UI 均通过稳定宿主协议扩展；其中涉及存储、文件、队列和凭据的通用动作必须由 Server 内置服务完成，不向插件下放原始能力。
 
 ```text
 Hub/GitHub Registry → 校验并安装不可变插件包 → 隔离 WASM Runtime
@@ -1741,6 +1741,20 @@ Hub/GitHub Registry → 校验并安装不可变插件包 → 隔离 WASM Runtim
                 OnlineLibrary / Metadata / Notification / DownloadPlan / ...
 ```
 
+下载入库的固定数据流为：
+
+```text
+Plugin DownloadPlan / ProviderMetadata
+        ↓
+Server DownloadService / MediaTool
+        ↓
+Server TransferService
+        ↓
+Local executor / cloud UploadDriver
+        ↓
+Server NFO/JPG + library reconciliation
+```
+
 约束：
 
 - capability 可组合，不能用互斥 `type` 把插件锁死在单一领域。
@@ -1748,7 +1762,9 @@ Hub/GitHub Registry → 校验并安装不可变插件包 → 隔离 WASM Runtim
 - 默认运行时是无 WASI 的低权限 WASM；HTTP、凭据、事件和调度由宿主代执行并逐项授权。
 - 将来确需原生 SDK 的高权限能力使用独立进程，不回退到进程内 Go plugin。
 - 插件不能注册裸 Gin 路由、读写全局数据库、读取全部凭据、执行任意命令或注入管理端/Player JavaScript。
-- 插件 UI 只返回版本化 Schema 和声明式 DTO，由宿主自己的组件渲染。
+- 插件不能获得本地绝对路径、Storage 凭据或通用上传/移动/删除 API。目标媒体库、Profile、命名、转移方式和冲突策略都由 Server 快照并执行；新云盘只需实现宿主 `UploadDriver`，既有插件便可自动复用。
+- 插件 UI 只返回版本化 `configSchema` 和 `settingsPage` 声明式 DTO，由宿主白名单组件渲染；未知组件、Schema 外字段和越界选项必须拒绝。
+- `media.metadata` 只能服务于同一插件连接产生的内容。Server 保存带插件 ID、版本、连接和内容身份的不可变快照，停用/卸载后已入队任务仍可入库；该 Provider 不进入本地、115、qBittorrent 或其他插件的全局刮削链。
 - 固定内容 WASM 仅作为自动化 ABI fixture，不发布给用户；正式能力由独立安装的真实插件验证。
 
 Bilibili 的站点 API、登录态、分页、签名、播放与下载解析全部位于插件包。Server 核心只处理标准 operation、权限、DTO、任务和安全网关，删除或停用 Bilibili 插件不能影响本地、115、Emby/Jellyfin、PT 等核心功能。

@@ -58,3 +58,19 @@ func TestRenderRejectsIncompleteSnapshotAndPlansTVImages(t *testing.T) {
 		t.Fatalf("images=%+v", images)
 	}
 }
+
+func TestRenderProviderUsesProviderIdentityAndMediaRoot(t *testing.T) {
+	for _, test := range []struct{ kind, root string }{{"video", "movie"}, {"series", "tvshow"}, {"episode", "episodedetails"}} {
+		t.Run(test.kind, func(t *testing.T) {
+			season, episode := 1, 2
+			body, err := RenderProvider(ProviderSnapshot{Kind: test.kind, Title: "示例视频", Overview: "简介", Author: "UP 主", PublishedDate: "2026-08-23", DurationSeconds: 125, SeasonNumber: &season, EpisodeNumber: &episode, Genres: []string{"动画"}, UniqueIDs: map[string]string{"bilibili.bvid": "BV1xx411c7mD", "bilibili.cid": "123"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(body)
+			if !strings.Contains(text, "<"+test.root+">") || !strings.Contains(text, `type="bilibili.bvid"`) || !strings.Contains(text, "BV1xx411c7mD") || strings.Contains(text, "tmdbid") {
+				t.Fatalf("unexpected provider NFO: %s", text)
+			}
+		})
+	}
+}

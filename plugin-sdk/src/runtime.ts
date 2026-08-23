@@ -1,4 +1,4 @@
-import type { DownloadPlan, FeedSection, MediaWork, NavigationItem, PlaybackPlan } from './media'
+import type { DownloadPlan, FeedSection, MediaWork, NavigationItem, PlaybackPlan, ProviderMetadataSnapshot } from './media'
 
 export const PLUGIN_OPERATION_CODES = {
   'site.navigation': 1,
@@ -12,6 +12,7 @@ export const PLUGIN_OPERATION_CODES = {
   'site.interaction': 9,
   'site.auth.start': 10,
   'site.auth.poll': 11,
+  'media.metadata': 12,
 } as const
 
 /**
@@ -61,6 +62,7 @@ export interface PluginRequestMap {
   'site.detail': { connectionId: string, itemId: string }
   'media.playback': { connectionId: string, itemId: string, segmentId: string, versionId: string, variantId?: string }
   'media.download_plan': { connectionId: string, itemId: string, segmentId: string, versionId: string, variantId?: string }
+  'media.metadata': { connectionId: string, itemId: string, segmentId: string, versionId: string }
   'site.history': { connectionId: string, cursor?: string, pageSize?: number }
   'playback.progress_sync': PlaybackProgressSyncRequest
   'site.auth.start': { connectionId: string }
@@ -75,6 +77,7 @@ export interface PluginResponseMap {
   'site.detail': MediaWork
   'media.playback': PlaybackPlan
   'media.download_plan': DownloadPlan
+  'media.metadata': ProviderMetadataSnapshot
   'site.history': PluginHistoryPage
   'playback.progress_sync': PlaybackProgressSyncResponse
   'site.auth.start': SiteAuthStartResponse
@@ -183,6 +186,7 @@ export interface HostApi {
   now(): Promise<string>
   registerAsset(input: HostAssetRegistration): Promise<{ ref: string, expiresAt: string }>
   commitCredential(input: HostCredentialCommit): Promise<{ credentialUpdated: boolean }>
+  configGet(connectionId: string): Promise<Readonly<Record<string, unknown>>>
 }
 
 export interface HostCredentialBinding {
@@ -201,6 +205,7 @@ export const HOST_OPERATION_CODES = {
   eventPoll: 6,
   assetRegister: 7,
   credentialCommit: 8,
+  configGet: 9,
 } as const
 
 export interface HostCredentialCommit {

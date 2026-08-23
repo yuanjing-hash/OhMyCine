@@ -4,7 +4,9 @@
 
 - PT 站点适配属于 Server 内建能力，不放入此插件库。
 - 插件不得导入 Server `internal/` 包，也不得向 Player 注入 JavaScript、Vue 组件或样式。
-- 每个插件只能声明 SDK 已公开的 capability，并通过 Host API 使用网络、凭据、私有存储、日志和下载计划能力。
+- 每个插件只能声明 SDK 已公开的 capability，并通过 Host API 使用受控网络、连接内凭据、私有 KV、日志、下载方案和插件专属元数据能力。
+- 下载、合流、队列、命名、冲突处理、本地入库、115 上传、NFO/JPG 和媒体库对账全部属于 Server 宿主。插件不得读取 Storage 凭据、本地绝对路径，也不得直接上传、移动或删除 Storage 文件。
+- 插件设置页是 Manifest 中的声明式 `settingsPage`，只能组合宿主白名单组件，不能包含任意前端代码。
 
 首个正式插件位于 `official/bilibili/`。使用 `plugin-sdk` 的 `npm run pack` 生成独立 Manifest 与 `.omcp` Release 资产；源码阶段不提交伪造的 `plugin.wasm` 或摘要，本地 `dist/` 也不会进入 Git。
 

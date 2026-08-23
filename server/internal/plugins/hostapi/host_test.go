@@ -409,8 +409,11 @@ func TestHostAssetsSupportURLAndInlineContentWithExpiryAndCapacity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.OpenAssetForPlugin(context.Background(), "org.ohmycine.other", inlineRef, http.MethodGet, ""); ErrorCode(err) != "plugin_asset_reference_denied" {
+	if _, err := host.OpenAssetForPluginConnection(context.Background(), "org.ohmycine.other", fixture.connection.ID, inlineRef, http.MethodGet, ""); ErrorCode(err) != "plugin_asset_reference_denied" {
 		t.Fatalf("cross-plugin asset reference was not denied: %v", err)
+	}
+	if _, err := host.OpenAssetForPluginConnection(context.Background(), fixture.pluginID, uuid.NewString(), inlineRef, http.MethodGet, ""); ErrorCode(err) != "plugin_asset_reference_denied" {
+		t.Fatalf("cross-connection asset reference was not denied: %v", err)
 	}
 	rangeBody, _ := io.ReadAll(inlineRange.Body)
 	_ = inlineRange.Body.Close()
@@ -547,6 +550,28 @@ func TestHostLogsCannotOverridePluginIdentityOrSensitiveFields(t *testing.T) {
 	logged := output.String()
 	if !strings.Contains(logged, fixture.pluginID) || strings.Contains(logged, "spoof") || strings.Contains(logged, "secret") {
 		t.Fatalf("unsafe plugin log: %s", logged)
+	}
+}
+
+func TestHostConfigGetReturnsOnlyOwningEnabledConnectionConfig(t *testing.T) {
+	fixture := newHostFixture(t, nil)
+	if err := fixture.db.Model(&models.PluginConnection{}).Where("id = ?", fixture.connection.ID).Update("config_json", `{"defaultQuality":"1080p","downloadDanmaku":true}`).Error; err != nil {
+		t.Fatal(err)
+	}
+	host := New(fixture.db, fixture.credentials, zerolog.Nop())
+	payload, _ := json.Marshal(configGetRequest{ConnectionID: fixture.connection.ID})
+	response, err := host.Call(context.Background(), fixture.pluginID, OperationConfigGet, payload)
+	if err != nil || !bytes.Contains(response, []byte(`"defaultQuality":"1080p"`)) || bytes.Contains(response, []byte("SESSDATA")) {
+		t.Fatalf("config response=%s err=%v", response, err)
+	}
+	if _, err := host.configGet("org.ohmycine.other", payload); ErrorCode(err) != "plugin_config_connection_denied" {
+		t.Fatalf("cross-plugin connection config error=%v code=%s", err, ErrorCode(err))
+	}
+	if err := fixture.db.Model(&models.PluginConnection{}).Where("id = ?", fixture.connection.ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Call(context.Background(), fixture.pluginID, OperationConfigGet, payload); ErrorCode(err) != "plugin_config_connection_denied" {
+		t.Fatalf("disabled connection error=%v code=%s", err, ErrorCode(err))
 	}
 }
 

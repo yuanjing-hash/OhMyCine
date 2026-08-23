@@ -49,8 +49,13 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 - Online assets allow GET/HEAD and one Range only. Stream responses preserve only allowlisted media headers, support 206/416, use `Cache-Control: no-store`, and never buffer whole remote media.
 - Host HTTP disables ambient environment proxies, resolves and dials a validated public IP, revalidates every redirect, and strips Cookie/Authorization on cross-origin redirects.
 - Download requests select a physical local media library explicitly or by its configured ordering, snapshot its classification/naming/transfer settings, and enter the existing persistent `download` queue. The plugin returns only a validated `DownloadPlan`; it never selects a filesystem path or command line.
-- Every plugin download attempt resolves a fresh plan from immutable Work/Segment/Version/Variant identities. Plans may contain one video asset, optional sidecars, or exactly one DASH video/audio pair with a fixed `dash-av` merge. Asset references are UUIDs bound to the owning plugin and are never persisted as reusable upstream URLs.
+- Every plugin download attempt resolves a fresh plan from immutable Work/Segment/Version/Variant identities. Plans may contain one video asset, optional sidecars, or exactly one DASH video/audio pair with a fixed `dash-av` merge. Asset references are UUIDs bound to the owning plugin, package generation and exact connection and are never persisted as reusable upstream URLs.
 - Plugin downloads write only below `<staging>/.ohmycine-plugin-downloads/<download-task-uuid>`. Cancel, retry, terminal-history deletion, and post-transfer cleanup revalidate this exact task boundary and reject directories or symlinks. DASH merge uses the host-owned MediaTool with fixed FFmpeg arguments and no plugin-provided flags.
+- A plugin returns only provider-specific `DownloadPlan` and optional `ProviderMetadata`. Server owns download, merge, queues, classification/naming snapshots, conflict handling, local transfer, cloud upload, NFO/artwork rendering, cleanup and library reconciliation. A plugin never receives a local absolute path, Storage credential, 115 Cookie, or raw upload/move/delete capability.
+- `media.metadata` is connection-scoped. The Host binds plugin ID, actual package version, connection, work and segment identities, validates the response, and persists an immutable task snapshot. A saved snapshot is consumed before consulting the current installation, so disabling or uninstalling the plugin cannot break an already queued transfer. The capability is never registered as a scraper for local/115 scans, qBittorrent downloads or another plugin.
+- Provider NFO/artwork is rendered by Server and appended to both selected and complete managed manifests. Ordinary provider video can bypass the generic package minimum-size rule only when its exact plugin download identity has already been validated; non-plugin flows retain the normal advertisement filter.
+- The target library snapshots the Storage connection/root, Profile, naming, transfer mode and conflict policy at submission. Local staging routes through the existing local transfer executor; an upload-capable cloud target routes through the Server-only `cloud.UploadDriver`. Cloud drivers reconcile ambiguous prior results before retry and plugins never select remote paths.
+- Manifest `settingsPage` is a versioned Host-owned component tree. Only tabs, sections, notices, credential status, switches, text, number and select fields are supported, and every field must remain within `configSchema` including enums and numeric bounds. A plugin controls where `credential-status` appears; the Host renders login state, QR/re-login actions and the QR image at that declared position while retaining credential capture, polling and encrypted storage. Generic credential controls are a legacy fallback only when no declarative login component exists. Plugins cannot inject routes, Vue, JavaScript, HTML or CSS.
 
 ### 4. Validation & Error Matrix
 
@@ -67,6 +72,9 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 | DownloadPlan contains a path, raw URL, header reference, extra audio/video, unknown asset type, or mismatched identity | Reject with `plugin_response_invalid`; create no unmanaged output |
 | Download asset expires before completion | Resolve one fresh plan in the current attempt; never reuse the old URL reference |
 | FFmpeg is missing or merge fails | Persist a safe media-tool error and retain only task-scoped managed output for controlled retry/deletion |
+| Provider metadata identity/version/connection does not match the task | Reject it as `plugin_response_invalid`; do not fall back to another plugin provider |
+| Cloud upload is ambiguous after a timeout/restart | Retain staging and reconcile the exact target name/size before retry; do not upload a duplicate |
+| Declarative settings contain an unknown component, schema-external key, enum-external option or wider numeric range | Reject the Manifest or configuration before runtime invocation |
 
 ### 5. Good / Base / Bad Cases
 
@@ -80,6 +88,8 @@ Progress events are `started|progress|paused|resumed|stopped|completed` and incl
 - Service tests cover permission duplication, enabled-state checks, capability checks, safe error mapping, `libraryId` injection, single-source cursor pass-through, aggregate exhaustion, exact-page boundaries, malformed-source isolation, and cursor tampering.
 - Host tests cover GET/HEAD, 206/416, response-size/header limits, private-IP rejection, DNS rebinding, redirect revalidation, cross-origin credential stripping, and package/permission revalidation.
 - Download tests cover plan identity/topology validation, plugin-owned assets, single-file and DASH execution, subtitle/danmaku manifests, task-root confinement, retry re-resolution, cancellation/deletion cleanup, and fixed MediaTool behavior.
+- Metadata/transfer tests cover provenance backfill, immutable snapshot reuse after plugin disable, package-version binding, no cross-plugin/global invocation, Server-rendered NFO/artwork manifests, local import, 115 upload conflict/retry reconciliation, staging retention and task-root confinement.
+- Settings tests share the Manifest contract across Go, JSON Schema and Web UI and reject unknown components, duplicate bindings, schema-external fields, invalid select options and widened numeric constraints.
 - HTTP tests cover Player Device Bearer only, no-store, route parameter bounds, and safe error envelopes.
 - Run `go test ./...`, `go vet ./...`, both Server builds, and a Windows isolated runtime smoke.
 

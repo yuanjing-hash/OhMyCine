@@ -495,6 +495,9 @@ Server 运行日志在 stdout 与文件分流前执行同一套结构化脱敏�
 6. `.omcp` 的发布包 SHA-256 与解包后整树 SHA-256 必须分别保存；确认、启用、回滚和 Server 重启恢复前逐文件复验，不能只信任内容寻址目录名
 7. 安装预览必须绑定管理员、安装/升级操作、安装修订和固定仓库提交；确认时重新验证仓库仍启用且 Registry 中 Manifest URL、Package URL 与摘要完全一致
 8. 运行时替换与数据库状态写入失败时必须恢复受校验旧版本；无法恢复或补偿写入失败时停止插件并标记故障，不能留下虚假的“运行中”状态
+9. 插件不获得本地绝对路径、115 Cookie、Storage 凭据、上传、移动或删除能力；它只返回受校验的 DownloadPlan/ProviderMetadata，由 Server 内置下载、TransferService 和 Storage Driver 执行通用动作
+10. `media.metadata` 必须绑定原插件 ID、实际版本、连接和内容身份；其图片等 opaque asset 也必须绑定同一插件连接。已保存快照在运行时查询之前优先使用，不得因插件停用/卸载而改用全局元数据，也不得为其他来源提供候选
+11. `settingsPage` 只是经 Manifest 校验的宿主组件树；未知组件、重复绑定、Schema 外字段、enum 外选项、放宽数值边界和任意 HTML/JavaScript/CSS 必须在安装时拒绝
 
 ### 11.3 插件权限模型
 
@@ -517,6 +520,8 @@ Server 运行日志在 stdout 与文件分流前执行同一套结构化脱敏�
 - 执行系统命令
 - 访问任意网络地址
 - 修改用户和权限配置
+
+通用存储上传不是插件 Host API。只有 Server Transfer worker 可在重新校验任务专属 managed staging root、普通文件类型和大小后调用 `UploadDriver`。覆盖仅允许精确回收媒体库根内已对账的冲突项；上传结果不明时保留 staging，重试必须先分页对账已完成项，不得盲目再传一份。
 
 ## 12. AI 功能安全
 

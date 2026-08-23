@@ -52,6 +52,7 @@ var operationCodes = map[string]uint64{
 	"site.interaction":       9,
 	"site.auth.start":        10,
 	"site.auth.poll":         11,
+	"media.metadata":         12,
 }
 
 type Error struct {

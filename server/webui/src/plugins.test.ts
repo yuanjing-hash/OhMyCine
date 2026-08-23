@@ -9,11 +9,17 @@ import {
   buildPluginInstallPreviewPayload,
   buildPluginRevisionPayload,
   buildPluginConnectionCreatePayload,
+  buildPluginConnectionCreatePayloadFromConfig,
+  buildPluginConnectionConfigPayload,
+  buildPluginConnectionQRCodePayload,
   buildPluginConnectionDeletePayload,
   buildPluginConnectionTogglePayload,
   permissionDetails,
+  normalizePluginInstallPreview,
+  normalizeInstalledPluginSummary,
   pluginHasMarketplaceUpdate,
   pluginMarketplaceAction,
+  pluginQRCodeAuthScope,
   pluginInstallConfirmPath,
   pluginInstallPreviewPath,
   pluginLifecyclePath,
@@ -72,6 +78,67 @@ describe('plugin connection contracts', () => {
     expect(buildPluginConnectionTogglePayload(connection, false)).toEqual({ enabled: false, revision: 4 })
     expect(buildPluginConnectionDeletePayload(connection)).toEqual({ revision: 4 })
   })
+
+  it('preserves declarative settings defaults in create and revision-bound update payloads', () => {
+    const plugin = {
+      id: 'org.ohmycine.bilibili',
+      config_defaults: { homeRecommendationEnabled: true, defaultQuality: '1080p', downloadSubtitle: true },
+      settings_page: {
+        version: 1,
+        tabs: [{
+          id: 'general',
+          title: '常规',
+          sections: [{ id: 'download', title: '下载', fields: [{ type: 'select', key: 'defaultQuality', label: '默认清晰度', options: [{ label: '1080P', value: '1080p' }] }] }],
+        }],
+      },
+    } satisfies Pick<InstalledPluginSummary, 'id' | 'config_defaults' | 'settings_page'>
+    expect(plugin.settings_page?.tabs[0]?.sections[0]?.fields[0]).toMatchObject({ type: 'select', key: 'defaultQuality' })
+    expect(buildPluginConnectionCreatePayloadFromConfig({
+      name: '  我的 Bilibili  ',
+      config: { ...plugin.config_defaults },
+      credentialScope: 'bilibili.session',
+      credentialMode: 'none',
+      credential: 'must-not-be-sent',
+    })).toEqual({
+      name: '我的 Bilibili',
+      config: plugin.config_defaults,
+      credential_scope: '',
+      credential_mode: 'none',
+      credential: '',
+      enabled: true,
+    })
+    expect(buildPluginConnectionConfigPayload(connection, { ...plugin.config_defaults, defaultQuality: '720p' })).toEqual({
+      config: { homeRecommendationEnabled: true, defaultQuality: '720p', downloadSubtitle: true },
+      revision: 4,
+    })
+  })
+
+  it('recognizes Host-owned QR login and migrates anonymous connections to encrypted cookie mode', () => {
+    const plugin = {
+      capabilities: ['site.interaction'],
+      permissions: [{ kind: 'credential.use', scopes: ['bilibili.session'] }],
+      settings_page: {
+        version: 1,
+        tabs: [{
+          id: 'account',
+          title: '账号',
+          sections: [{ id: 'login', title: '登录', fields: [{ type: 'credential-status', label: '账号状态' }] }],
+        }],
+      },
+    } satisfies Pick<InstalledPluginSummary, 'capabilities' | 'permissions' | 'settings_page'>
+
+    expect(pluginQRCodeAuthScope(plugin)).toBe('bilibili.session')
+    expect(buildPluginConnectionQRCodePayload(connection, 'bilibili.session')).toEqual({
+      credential_scope: 'bilibili.session',
+      credential_mode: 'cookie',
+      revision: 4,
+    })
+    expect(pluginQRCodeAuthScope({ ...plugin, settings_page: undefined })).toBeNull()
+    expect(pluginQRCodeAuthScope({
+      ...plugin,
+      permissions: [{ kind: 'credential.use', scopes: ['bilibili.session', 'bilibili.creator'] }],
+    })).toBeNull()
+  })
 })
 
 describe('plugin repository API contracts', () => {
@@ -128,6 +195,49 @@ describe('plugin marketplace presentation', () => {
     expect(pluginInstallConfirmPath(preview)).toBe('/api/v1/plugins/org.example.video/update')
   })
 
+  it('normalizes empty permission collections returned by older servers', () => {
+    const preview = {
+      id: 'preview-id',
+      plugin_id: 'org.example.video',
+      name: 'Example',
+      version: '1.0.0',
+      operation: 'install',
+      repository_id: 9,
+      repository_name: 'Official',
+      capabilities: ['site.navigation'],
+      permissions: null,
+      permission_diff: { added: [{ kind: 'download.plan' }], removed: null, unchanged: null },
+      permission_fingerprint: 'digest',
+      installation_revision: 0,
+      expires_at: '2026-08-23T00:00:00Z',
+    } as unknown as PluginInstallPreview
+
+    expect(normalizePluginInstallPreview(preview)).toMatchObject({
+      permissions: [],
+      permission_diff: {
+        added: [{ kind: 'download.plan' }],
+        removed: [],
+        unchanged: [],
+      },
+    })
+  })
+
+  it('normalizes nullable installed-plugin collections returned by older servers', () => {
+    const plugin = {
+      id: 'org.example.video',
+      capabilities: null,
+      permissions: null,
+      config_schema: null,
+      config_defaults: null,
+    } as unknown as InstalledPluginSummary
+    expect(normalizeInstalledPluginSummary(plugin)).toMatchObject({
+      capabilities: [],
+      permissions: [],
+      config_schema: {},
+      config_defaults: {},
+    })
+  })
+
   it('binds lifecycle actions to the current installation revision', () => {
     const plugin = { id: 'org.example.video', revision: 7 } as InstalledPluginSummary
     expect(buildPluginRevisionPayload(plugin)).toEqual({ revision: 7 })
@@ -146,8 +256,15 @@ describe('plugin marketplace presentation', () => {
     } as PluginMarketplaceEntry
     expect(pluginMarketplaceAction({ ...base, install_status: 'installed' })).toEqual({ label: '当前版本已安装', disabled: true })
     expect(pluginHasMarketplaceUpdate(base.id, [{ ...base, install_status: 'installed' }])).toBe(false)
-    expect(pluginMarketplaceAction({ ...base, version: '1.1.0', install_status: 'update_available' })).toEqual({ label: '升级到 v1.1.0', disabled: false })
+    expect(pluginMarketplaceAction({ ...base, version: '1.1.0', install_status: 'update_available' })).toEqual({ label: '校验升级包 v1.1.0', disabled: false })
     expect(pluginHasMarketplaceUpdate(base.id, [{ ...base, install_status: 'update_available' }])).toBe(true)
+  })
+
+  it('describes preview actions as package validation instead of completed installation', () => {
+    const entry = {
+      id: 'org.example.video', version: '1.0.0', compatibility: 'compatible', permissions_available: true, install_status: 'available',
+    } as PluginMarketplaceEntry
+    expect(pluginMarketplaceAction(entry)).toEqual({ label: '校验安装包', disabled: false })
   })
 
   it('disables installation when the server plugin runtime is unavailable', () => {

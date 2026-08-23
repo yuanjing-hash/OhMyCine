@@ -952,6 +952,10 @@ type DownloadTask struct {
 	StagingProviderDirectoryID         string     `gorm:"size:128;not null;default:''" json:"-"`
 	IngestSourceKey                    string     `gorm:"size:64;not null;default:''" json:"-"`
 	SourceOrigin                       string     `gorm:"size:24;not null;default:'user'" json:"-"`
+	PluginID                           string     `gorm:"size:128;not null;default:'';index" json:"-"`
+	PluginVersion                      string     `gorm:"size:128;not null;default:''" json:"-"`
+	PluginConnectionID                 string     `gorm:"size:36;not null;default:'';index" json:"-"`
+	ProviderMetadataJSON               string     `gorm:"type:text;not null;default:''" json:"-"`
 	ProfileID                          uint       `gorm:"not null;default:0" json:"-"`
 	ProfileRevision                    uint64     `gorm:"not null;default:0" json:"-"`
 	ProfileRulesJSON                   string     `gorm:"type:text;not null;default:''" json:"-"`

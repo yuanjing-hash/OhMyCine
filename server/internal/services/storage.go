@@ -385,7 +385,7 @@ func (s *StorageService) saveProbe(actor Actor, record *models.Storage, probe st
 }
 
 func cloudStorageCapabilities(value cloudpkg.Capabilities) storagefs.Capabilities {
-	return storagefs.Capabilities{NetworkDrive: value.NetworkDrive, DirectoryList: value.DirectoryList, Watch: value.Watch, NativeOfflineDownload: value.NativeOfflineDownload, TemporaryDirectURL: value.TemporaryDirectURL, SignedProxy: value.SignedProxy, SmallFileUpload: value.SmallFileUpload, ChangeCursor: value.ChangeCursor}
+	return storagefs.Capabilities{NetworkDrive: value.NetworkDrive, DirectoryList: value.DirectoryList, Watch: value.Watch, NativeOfflineDownload: value.NativeOfflineDownload, TemporaryDirectURL: value.TemporaryDirectURL, SignedProxy: value.SignedProxy, SmallFileUpload: value.SmallFileUpload, FileUpload: value.FileUpload, ChangeCursor: value.ChangeCursor}
 }
 func cloudStorageProbe(connection models.Connection, errorCode string) storagefs.Probe {
 	var free *uint64

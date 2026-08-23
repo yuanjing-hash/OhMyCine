@@ -126,6 +126,22 @@ func TestPluginInstallationLifecycleAndPermissionConfirmation(t *testing.T) {
 	}
 }
 
+func TestPluginInstallPreviewSerializesEmptyPermissionDiffsAsArrays(t *testing.T) {
+	diff, _, err := permissionDifference(nil, []contract.Permission{{Kind: contract.PermissionDownloadPlan}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(PluginInstallPreviewSummary{Capabilities: make([]contract.Capability, 0), Permissions: make([]contract.Permission, 0), PermissionDiff: diff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"capabilities":[]`, `"permissions":[]`, `"added":[`, `"removed":[]`, `"unchanged":[]`} {
+		if !bytes.Contains(payload, []byte(expected)) {
+			t.Fatalf("preview JSON must contain %q instead of null: %s", expected, payload)
+		}
+	}
+}
+
 func TestPluginConfirmationRejectsPackageContentTampering(t *testing.T) {
 	service, actor, fetcher := pluginRepositoryFixture(t)
 	service.runtime = &fakePluginRuntime{}

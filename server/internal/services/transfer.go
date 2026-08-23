@@ -20,6 +20,7 @@ import (
 	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/releaseversion"
@@ -248,6 +249,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		task.TotalFiles = len(verifiedManifest.Files)
 	}
 	if download.TargetStorageType == models.StorageTypePan115 {
+		if download.ProviderType == models.DownloaderTypePluginHTTP {
+			return w.runCloudUpload(ctx, runtime, task, download, manifest, started)
+		}
 		return w.runCloudTransfer(ctx, runtime, task, download, manifest, started)
 	}
 	_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.TransferTaskStatusPlanning, "updated_at": time.Now().UTC()}).Error
@@ -508,6 +512,9 @@ func buildTransferPlan(download models.DownloadTask, manifest downloadpkg.Manife
 		return nil, "", err
 	}
 	sourceRoot := filepath.Join(download.StagingAbsolutePath, download.ScrapeCategory)
+	if download.ProviderType == models.DownloaderTypePluginHTTP {
+		sourceRoot = filepath.Join(download.StagingAbsolutePath, pluginDownloadRootName, download.ID)
+	}
 	if err := ensureWithin(download.StagingAbsolutePath, sourceRoot); err != nil {
 		return nil, "", err
 	}
@@ -517,7 +524,13 @@ func buildTransferPlan(download models.DownloadTask, manifest downloadpkg.Manife
 	}
 	plan := make([]transferPlanItem, 0, len(targets))
 	for _, target := range targets {
-		source, err := resolveManifestSource(sourceRoot, download.StagingAbsolutePath, target.File.RelativePath)
+		fallbackRoot := download.StagingAbsolutePath
+		if download.ProviderType == models.DownloaderTypePluginHTTP {
+			// Plugin manifests are owned by one exact task root. They must never
+			// fall back to another file in the shared download staging directory.
+			fallbackRoot = sourceRoot
+		}
+		source, err := resolveManifestSource(sourceRoot, fallbackRoot, target.File.RelativePath)
 		if err != nil {
 			return nil, "", err
 		}
@@ -617,7 +630,13 @@ func buildTransferTargets(download models.DownloadTask, manifest downloadpkg.Man
 }
 
 func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest downloadpkg.Manifest) error {
-	if download.ScrapeStatus != "completed_verified" || download.ScrapeTMDBID == nil || download.ScrapeConfidence == nil || *download.ScrapeConfidence < .80 {
+	providerVerified := false
+	if download.ProviderType == models.DownloaderTypePluginHTTP && download.ProviderMetadataJSON != "" {
+		if envelope, err := decodeProviderMetadataEnvelope(download.ProviderMetadataJSON); err == nil && envelope.PluginID == download.PluginID && envelope.PluginVersion == download.PluginVersion && envelope.ConnectionID == download.PluginConnectionID && contract.ValidateProviderMetadataSnapshot(envelope.Snapshot, envelope.Snapshot.WorkID, envelope.Snapshot.SegmentID) == nil {
+			providerVerified = true
+		}
+	}
+	if download.ScrapeStatus != "completed_verified" || (!providerVerified && download.ScrapeTMDBID == nil) || download.ScrapeConfidence == nil || *download.ScrapeConfidence < .80 {
 		return errors.New("transfer requires a verified metadata snapshot")
 	}
 	if strings.TrimSpace(download.ScrapeTitle) == "" || strings.TrimSpace(download.ScrapeCategory) == "" || (download.ScrapeMediaType != "movie" && download.ScrapeMediaType != "tv") {
@@ -627,6 +646,9 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 		return errors.New("transfer manifest is incomplete")
 	}
 	selected, err := selectDownloadPackageManifest(manifest, download.ScrapeMediaType)
+	if providerVerified {
+		selected, err = selectProviderDownloadPackageManifest(manifest, download.ScrapeMediaType)
+	}
 	if err != nil || !sameAutomaticTransferFiles(manifest.Files, selected.Files) {
 		return errors.New("transfer manifest was not package-selected")
 	}

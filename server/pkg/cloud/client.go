@@ -22,6 +22,7 @@ type Capabilities struct {
 	TemporaryDirectURL    bool `json:"temporary_direct_url"`
 	SignedProxy           bool `json:"signed_proxy"`
 	SmallFileUpload       bool `json:"small_file_upload"`
+	FileUpload            bool `json:"file_upload"`
 	ChangeCursor          bool `json:"change_cursor"`
 	CreateDirectory       bool `json:"create_directory"`
 	Move                  bool `json:"move"`
@@ -204,6 +205,20 @@ type ExactRecyclePurger interface {
 type SmallFileUploadDriver interface {
 	Driver
 	UploadSmallFile(context.Context, string, string, string, int64, io.ReadSeeker) (Item, error)
+}
+
+type UploadRequest struct {
+	ParentID string
+	Name     string
+	Size     int64
+	Reader   io.ReadSeeker
+}
+
+// UploadDriver is available only to the Server transfer worker. Plugins never
+// receive this interface, local paths, destination identities, or credentials.
+type UploadDriver interface {
+	Driver
+	Upload(context.Context, UploadRequest) (Item, error)
 }
 
 type Driver interface {

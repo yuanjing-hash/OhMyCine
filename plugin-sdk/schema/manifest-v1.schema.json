@@ -19,7 +19,7 @@
     "capabilities": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "enum": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"] }
+      "items": { "enum": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "media.metadata", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"] }
     },
     "permissions": {
       "type": "array",
@@ -28,6 +28,7 @@
       "items": { "$ref": "#/$defs/permission" }
     },
     "configSchema": { "type": "object" },
+    "settingsPage": { "$ref": "#/$defs/settingsPage" },
     "author": { "type": "string", "minLength": 1, "maxLength": 120 },
     "license": { "type": "string", "minLength": 1, "maxLength": 80 },
     "homepage": { "type": "string", "format": "uri", "pattern": "^https://" },
@@ -38,6 +39,60 @@
     "changelog": { "type": "string", "maxLength": 4000 }
   },
   "$defs": {
+    "settingsPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "tabs"],
+      "properties": {
+        "version": { "const": 1 },
+        "tabs": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/settingsTab" } }
+      }
+    },
+    "settingsTab": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "sections"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,79}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "sections": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/settingsSection" } }
+      }
+    },
+    "settingsSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "fields"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,79}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "fields": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/settingsField" } }
+      }
+    },
+    "settingsField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "label"],
+      "properties": {
+        "type": { "enum": ["switch", "text", "number", "select", "notice", "credential-status"] },
+        "key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,79}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "options": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/settingsOption" } },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" }
+      }
+    },
+    "settingsOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "value": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
     "permission": {
       "oneOf": [
         { "type": "object", "additionalProperties": false, "required": ["kind", "domains"], "properties": { "kind": { "const": "network.http" }, "domains": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:\\*\\.)?[a-z0-9.-]+$", "maxLength": 253 } } } },

@@ -103,8 +103,40 @@ export interface InstalledPluginSummary {
   last_runtime_error_code: string
   capabilities: string[]
   permissions: PluginPermission[]
+  config_schema: Record<string, unknown>
+  config_defaults: Record<string, unknown>
+  settings_page?: PluginSettingsPage
   installed_at: string
   updated_at: string
+}
+
+export interface PluginSettingsPage {
+  version: 1
+  tabs: PluginSettingsTab[]
+}
+
+export interface PluginSettingsTab {
+  id: string
+  title: string
+  sections: PluginSettingsSection[]
+}
+
+export interface PluginSettingsSection {
+  id: string
+  title: string
+  description?: string
+  fields: PluginSettingsField[]
+}
+
+export interface PluginSettingsField {
+  type: 'switch' | 'text' | 'number' | 'select' | 'notice' | 'credential-status'
+  key?: string
+  label: string
+  description?: string
+  placeholder?: string
+  options?: Array<{ label: string, value: string }>
+  minimum?: number
+  maximum?: number
 }
 
 export type PluginCredentialMode = 'none' | 'cookie' | 'bearer'
@@ -138,6 +170,14 @@ export interface PluginAuthPollSummary {
   authenticated: boolean
   account?: { id: string, name: string, avatarUrl?: string }
   pollAfterSeconds?: number
+}
+
+export interface PluginQRCodeAuthState {
+  loginSession: string
+  qrDataURL: string
+  expiresAt: string
+  state: PluginAuthPollSummary['state']
+  accountName?: string
 }
 
 export const pluginRepositoryListPath = '/api/v1/plugin-repositories'
@@ -206,6 +246,30 @@ export function buildPluginInstallPreviewPayload(entry: PluginMarketplaceEntry) 
   return { repository_id: source.repository_id, version: source.version }
 }
 
+export function normalizePluginInstallPreview(preview: PluginInstallPreview) {
+  const permissionDiff = preview.permission_diff as PluginPermissionDiff | null | undefined
+  return {
+    ...preview,
+    capabilities: Array.isArray(preview.capabilities) ? preview.capabilities : [],
+    permissions: Array.isArray(preview.permissions) ? preview.permissions : [],
+    permission_diff: {
+      added: Array.isArray(permissionDiff?.added) ? permissionDiff.added : [],
+      removed: Array.isArray(permissionDiff?.removed) ? permissionDiff.removed : [],
+      unchanged: Array.isArray(permissionDiff?.unchanged) ? permissionDiff.unchanged : [],
+    },
+  } satisfies PluginInstallPreview
+}
+
+export function normalizeInstalledPluginSummary(plugin: InstalledPluginSummary) {
+  return {
+    ...plugin,
+    capabilities: Array.isArray(plugin.capabilities) ? plugin.capabilities : [],
+    permissions: Array.isArray(plugin.permissions) ? plugin.permissions : [],
+    config_schema: plugin.config_schema && typeof plugin.config_schema === 'object' && !Array.isArray(plugin.config_schema) ? plugin.config_schema : {},
+    config_defaults: plugin.config_defaults && typeof plugin.config_defaults === 'object' && !Array.isArray(plugin.config_defaults) ? plugin.config_defaults : {},
+  } satisfies InstalledPluginSummary
+}
+
 export function buildPluginInstallConfirmPayload(preview: PluginInstallPreview) {
   return {
     preview_id: preview.id,
@@ -238,6 +302,47 @@ export function buildPluginConnectionCreatePayload(input: {
   }
 }
 
+export function buildPluginConnectionCreatePayloadFromConfig(input: {
+  name: string
+  config: Record<string, unknown>
+  credentialScope: string
+  credentialMode: PluginCredentialMode
+  credential: string
+}) {
+  return {
+    name: input.name.trim(),
+    config: input.config,
+    credential_scope: input.credentialMode === 'none' ? '' : input.credentialScope,
+    credential_mode: input.credentialMode,
+    credential: input.credentialMode === 'none' ? '' : input.credential,
+    enabled: true,
+  }
+}
+
+export function buildPluginConnectionConfigPayload(connection: PluginConnectionSummary, config: Record<string, unknown>) {
+  return { config, revision: connection.revision }
+}
+
+export function pluginQRCodeAuthScope(plugin: Pick<InstalledPluginSummary, 'capabilities' | 'permissions' | 'settings_page'>) {
+  const exposesCredentialStatus = plugin.settings_page?.tabs.some(tab =>
+    tab.sections.some(section => section.fields.some(field => field.type === 'credential-status')),
+  ) ?? false
+  if (!exposesCredentialStatus || !plugin.capabilities.includes('site.interaction')) return null
+  const scopes = new Set(
+    plugin.permissions
+      .filter(permission => permission.kind === 'credential.use')
+      .flatMap(permission => permission.scopes ?? [])
+      .map(scope => scope.trim())
+      .filter(scope => scope.length > 0),
+  )
+  if (scopes.size !== 1) return null
+  return scopes.values().next().value ?? null
+}
+
+export function buildPluginConnectionQRCodePayload(connection: PluginConnectionSummary, credentialScope: string) {
+  return { credential_scope: credentialScope, credential_mode: 'cookie' as const, revision: connection.revision }
+}
+
 export function buildPluginConnectionTogglePayload(connection: PluginConnectionSummary, enabled: boolean) {
   return { enabled, revision: connection.revision }
 }
@@ -254,8 +359,8 @@ export function pluginMarketplaceAction(entry: PluginMarketplaceEntry) {
   if (!entry.permissions_available) return { label: '插件运行时不可用', disabled: true }
   if (entry.compatibility !== 'compatible' || entry.install_status === 'incompatible') return { label: '与当前 Server 不兼容', disabled: true }
   if (entry.install_status === 'installed') return { label: '当前版本已安装', disabled: true }
-  if (entry.install_status === 'update_available') return { label: `升级到 v${entry.version}`, disabled: false }
-  return { label: '校验并安装', disabled: false }
+  if (entry.install_status === 'update_available') return { label: `校验升级包 v${entry.version}`, disabled: false }
+  return { label: '校验安装包', disabled: false }
 }
 
 export function pluginHasMarketplaceUpdate(pluginID: string, entries: readonly PluginMarketplaceEntry[]) {

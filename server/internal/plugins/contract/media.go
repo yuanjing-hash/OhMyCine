@@ -328,3 +328,70 @@ type DownloadPlan struct {
 	Assets            []DownloadAsset `json:"assets"`
 	Merge             *DownloadMerge  `json:"merge,omitempty"`
 }
+
+type ProviderArtwork struct {
+	Kind     string `json:"kind"`
+	AssetRef string `json:"assetRef"`
+}
+
+type ProviderMetadataSnapshot struct {
+	Version         int               `json:"version"`
+	WorkID          string            `json:"workId"`
+	SegmentID       string            `json:"segmentId"`
+	Kind            string            `json:"kind"`
+	Title           string            `json:"title"`
+	OriginalTitle   string            `json:"originalTitle,omitempty"`
+	Overview        string            `json:"overview,omitempty"`
+	Author          string            `json:"author,omitempty"`
+	PublishedAt     string            `json:"publishedAt,omitempty"`
+	DurationSeconds int64             `json:"durationSeconds,omitempty"`
+	SeasonNumber    *int              `json:"seasonNumber,omitempty"`
+	EpisodeNumber   *int              `json:"episodeNumber,omitempty"`
+	Genres          []string          `json:"genres,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
+	UniqueIDs       map[string]string `json:"uniqueIds"`
+	Artwork         []ProviderArtwork `json:"artwork,omitempty"`
+}
+
+func ValidateProviderMetadataSnapshot(snapshot ProviderMetadataSnapshot, workID, segmentID string) error {
+	if snapshot.Version != 1 || snapshot.WorkID != workID || snapshot.SegmentID != segmentID || !safeDTOText(snapshot.Title, 512) || !safeOptionalDTOText(snapshot.OriginalTitle, 512) || !safeOptionalDTOText(snapshot.Overview, 16*1024) || !safeOptionalDTOText(snapshot.Author, 512) || snapshot.DurationSeconds < 0 || snapshot.DurationSeconds > 365*24*60*60 {
+		return errors.New("provider metadata identity is invalid")
+	}
+	switch snapshot.Kind {
+	case "movie", "series", "episode", "video":
+	default:
+		return errors.New("provider metadata kind is invalid")
+	}
+	if snapshot.PublishedAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, snapshot.PublishedAt); err != nil || parsed.Year() < 1900 || parsed.After(time.Now().UTC().Add(24*time.Hour)) {
+			return errors.New("provider metadata published time is invalid")
+		}
+	}
+	if len(snapshot.UniqueIDs) == 0 || len(snapshot.UniqueIDs) > 16 || len(snapshot.Genres) > 32 || len(snapshot.Tags) > 64 || len(snapshot.Artwork) > 4 {
+		return errors.New("provider metadata collection size is invalid")
+	}
+	for key, value := range snapshot.UniqueIDs {
+		if !safeDTOText(key, 64) || !safeDTOText(value, 512) {
+			return errors.New("provider metadata unique id is invalid")
+		}
+	}
+	for _, value := range append(append([]string(nil), snapshot.Genres...), snapshot.Tags...) {
+		if !safeDTOText(value, 128) {
+			return errors.New("provider metadata label is invalid")
+		}
+	}
+	seenArtwork := make(map[string]struct{}, len(snapshot.Artwork))
+	for _, artwork := range snapshot.Artwork {
+		if artwork.Kind != "poster" && artwork.Kind != "fanart" {
+			return errors.New("provider metadata artwork kind is invalid")
+		}
+		if _, err := uuid.Parse(artwork.AssetRef); err != nil {
+			return errors.New("provider metadata artwork reference is invalid")
+		}
+		if _, duplicate := seenArtwork[artwork.Kind]; duplicate {
+			return errors.New("provider metadata artwork kind is duplicated")
+		}
+		seenArtwork[artwork.Kind] = struct{}{}
+	}
+	return nil
+}

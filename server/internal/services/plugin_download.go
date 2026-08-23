@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +26,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/hostapi"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/mediatool"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/nfo"
 	"gorm.io/gorm"
 )
 
@@ -36,7 +38,7 @@ const (
 )
 
 type pluginDownloadAssetGateway interface {
-	OpenAssetForPlugin(context.Context, string, string, string, string) (*hostapi.AssetStream, error)
+	OpenAssetForPluginConnection(context.Context, string, string, string, string, string) (*hostapi.AssetStream, error)
 }
 
 type SubmitPluginDownloadInput struct {
@@ -88,8 +90,9 @@ func (e *PluginDownloadExecutor) Submit(ctx context.Context, actor Actor, input 
 	if err != nil {
 		return DownloadTaskSummary{}, err
 	}
-	if target.StorageType != models.StorageTypeLocal {
-		return DownloadTaskSummary{}, appError(CodeMediaLibraryStorageUnavailable, "站点下载当前需要本地媒体库作为入库目标", nil)
+	pluginVersion, err := e.activePluginVersion(connection.PluginID)
+	if err != nil {
+		return DownloadTaskSummary{}, err
 	}
 	rules, err := classification.DecodeStrict([]byte(profile.RulesJSON))
 	if err != nil {
@@ -125,10 +128,12 @@ func (e *PluginDownloadExecutor) Submit(ctx context.Context, actor Actor, input 
 	record := models.DownloadTask{
 		ID: taskID, OwnerID: actor.User.ID, DownloaderName: connection.Name, ProviderType: models.DownloaderTypePluginHTTP,
 		SourceCiphertext: encryptedSource, StagingAbsolutePath: staging.AbsolutePath, SourceOrigin: models.DownloadSourceOriginPlugin,
+		PluginID: connection.PluginID, PluginVersion: pluginVersion, PluginConnectionID: connection.ID,
 		ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: canonicalRules,
 		ProfileBuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, ProfileRecognitionRulesJSON: organization.RecognitionRulesJSON,
 		TargetLibraryID: &target.LibraryID, TargetLibraryName: target.LibraryName, TargetStorageID: &target.StorageID,
-		TargetStorageType: target.StorageType, TargetStorageRoot: target.StorageRoot, TargetRelativeRoot: target.RelativeRoot,
+		TargetStorageType: target.StorageType, TargetConnectionID: target.ConnectionID, TargetProviderRootID: target.ProviderRootID,
+		TargetStorageRoot: target.StorageRoot, TargetRelativeRoot: target.RelativeRoot,
 		TransferMode: target.TransferMode, ConflictPolicy: target.ConflictPolicy,
 		MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate,
 		TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate,
@@ -146,6 +151,18 @@ func (e *PluginDownloadExecutor) Submit(ctx context.Context, actor Actor, input 
 	}
 	serverlog.OperationPluginDownload.Event(e.downloads.log.Info()).Str("task_id", taskID).Str("plugin_id", connection.PluginID).Uint("library_id", target.LibraryID).Msg(serverlog.OperationPluginDownload.Message("下载计划已进入队列"))
 	return downloadTaskSummary(record, job.Status), nil
+}
+
+func (e *PluginDownloadExecutor) activePluginVersion(pluginID string) (string, error) {
+	var installation models.PluginInstallation
+	if err := e.downloads.db.Select("active_package_id", "status").First(&installation, "plugin_id = ?", pluginID).Error; err != nil || installation.Status != models.PluginInstallationEnabled {
+		return "", appError(CodePluginRuntimeUnavailable, "插件当前不可用", err)
+	}
+	var pluginPackage models.PluginPackage
+	if err := e.downloads.db.Select("version").First(&pluginPackage, installation.ActivePackageID).Error; err != nil || !safeOnlineText(pluginPackage.Version, 128) {
+		return "", appError(CodePluginRuntimeUnavailable, "插件版本快照不可用", err)
+	}
+	return pluginPackage.Version, nil
 }
 
 func (e *PluginDownloadExecutor) hasActivePermission(pluginID string, kind contract.PermissionKind) bool {
@@ -194,6 +211,9 @@ func (e *PluginDownloadExecutor) Run(ctx context.Context, runtime JobRuntime, jo
 	if e.downloads.db.Select("plugin_id").First(&connection, "id = ? AND enabled = ?", source.PluginConnectionID, true).Error != nil || connection.PluginID == "" {
 		return e.fail(task, CodePluginOnlineLibraryUnavailable, "在线媒体来源暂时不可用", true)
 	}
+	if err := e.ensurePluginProvenance(&task, connection); err != nil {
+		return e.fail(task, ErrorCode(err), "插件下载来源快照无效", false)
+	}
 	taskRoot, err := e.prepareTaskRoot(ctx, task)
 	if err != nil {
 		return e.fail(task, CodeDownloadStagingUnavailable, "下载暂存目录不可用", false)
@@ -225,9 +245,25 @@ func (e *PluginDownloadExecutor) Run(ctx context.Context, runtime JobRuntime, jo
 			retryable := code == "plugin_asset_upstream_unavailable" || code == CodePluginRuntimeUnavailable
 			return e.fail(task, code, pluginDownloadErrorMessage(code), retryable)
 		}
-		selected, err := NewDownloadWorker(e.downloads).verifyCompleted(ctx, &task, manifest)
+		metadata, err := e.resolveProviderMetadata(ctx, &task, source)
 		if err != nil {
-			return e.fail(task, ErrorCode(err), "下载完成，但媒体识别或清单校验失败", false)
+			return e.fail(task, ErrorCode(err), "下载完成，但插件元数据获取失败", true)
+		}
+		var selected downloadpkg.Manifest
+		if metadata != nil {
+			manifest, sourceManifest, err = e.attachProviderArtifacts(ctx, &task, taskRoot, connection.PluginID, *metadata, manifest, sourceManifest)
+			if err != nil {
+				return e.fail(task, pluginDownloadErrorCode(err), "下载完成，但元数据产物生成失败", true)
+			}
+			if err := e.persistProviderMetadata(&task, source, *metadata); err != nil {
+				return e.fail(task, ErrorCode(err), "下载完成，但插件元数据快照保存失败", true)
+			}
+			selected, err = e.verifyProviderCompleted(&task, *metadata, manifest)
+		} else {
+			selected, err = NewDownloadWorker(e.downloads).verifyCompleted(ctx, &task, manifest)
+		}
+		if err != nil {
+			return e.fail(task, ErrorCode(err), "下载完成，但插件媒体清单校验失败", false)
 		}
 		if e.downloads.transfers == nil {
 			return e.fail(task, "transfer_service_unavailable", "入库服务不可用", false)
@@ -243,6 +279,31 @@ func (e *PluginDownloadExecutor) Run(ctx context.Context, runtime JobRuntime, jo
 		return WorkerResult{}
 	}
 	return e.fail(task, "plugin_asset_expired", "下载资源已过期，请重试", true)
+}
+
+func (e *PluginDownloadExecutor) ensurePluginProvenance(task *models.DownloadTask, connection models.PluginConnection) error {
+	if task.PluginID == "" && task.PluginVersion == "" && task.PluginConnectionID == "" {
+		version, err := e.activePluginVersion(connection.PluginID)
+		if err != nil {
+			return err
+		}
+		updates := map[string]any{"plugin_id": connection.PluginID, "plugin_version": version, "plugin_connection_id": connection.ID, "updated_at": time.Now().UTC()}
+		result := e.downloads.db.Model(&models.DownloadTask{}).Where("id = ? AND plugin_id = '' AND plugin_version = '' AND plugin_connection_id = ''", task.ID).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 1 {
+			task.PluginID, task.PluginVersion, task.PluginConnectionID = connection.PluginID, version, connection.ID
+			return nil
+		}
+		if err := e.downloads.db.Select("plugin_id", "plugin_version", "plugin_connection_id").First(task, "id = ?", task.ID).Error; err != nil {
+			return err
+		}
+	}
+	if task.PluginID != connection.PluginID || task.PluginConnectionID != connection.ID || task.PluginVersion == "" {
+		return appError(CodePluginResponseInvalid, "插件下载来源快照不一致", nil)
+	}
+	return nil
 }
 
 func (e *PluginDownloadExecutor) Interrupt(_ context.Context, job ClaimedJob, action string) error {
@@ -295,6 +356,270 @@ func (e *PluginDownloadExecutor) resolvePlan(ctx context.Context, task models.Do
 		return contract.DownloadPlan{}, appError(CodePluginResponseInvalid, "插件下载方案无效", err)
 	}
 	return plan, nil
+}
+
+type providerMetadataEnvelope struct {
+	Version       int                               `json:"version"`
+	PluginID      string                            `json:"pluginId"`
+	PluginVersion string                            `json:"pluginVersion"`
+	ConnectionID  string                            `json:"connectionId"`
+	Snapshot      contract.ProviderMetadataSnapshot `json:"snapshot"`
+}
+
+func (e *PluginDownloadExecutor) resolveProviderMetadata(ctx context.Context, task *models.DownloadTask, source downloadSourceEnvelope) (*contract.ProviderMetadataSnapshot, error) {
+	if task == nil {
+		return nil, appError(CodePluginResponseInvalid, "插件元数据来源快照无效", nil)
+	}
+	if task.PluginID == "" || task.PluginVersion == "" || task.PluginConnectionID != source.PluginConnectionID {
+		return nil, appError(CodePluginResponseInvalid, "插件元数据来源快照无效", nil)
+	}
+	if strings.TrimSpace(task.ProviderMetadataJSON) != "" {
+		envelope, err := decodeProviderMetadataEnvelope(task.ProviderMetadataJSON)
+		if err != nil || envelope.PluginID != task.PluginID || envelope.PluginVersion != task.PluginVersion || envelope.ConnectionID != source.PluginConnectionID || contract.ValidateProviderMetadataSnapshot(envelope.Snapshot, source.PluginItemID, source.PluginSegmentID) != nil {
+			return nil, appError(CodePluginResponseInvalid, "插件元数据快照无效", err)
+		}
+		return &envelope.Snapshot, nil
+	}
+	manifest, err := e.plugins.installedManifest(task.PluginID)
+	if err != nil {
+		return nil, err
+	}
+	if !manifestHasCapability(manifest, contract.CapabilityMediaMetadata) {
+		return nil, nil
+	}
+	if manifest.Version != task.PluginVersion {
+		return nil, appError(CodeConflict, "插件版本已变化，不能生成旧任务的元数据快照", nil)
+	}
+	raw, err := e.plugins.InvokePlugin(ctx, source.PluginConnectionID, string(contract.CapabilityMediaMetadata), map[string]any{
+		"connectionId": source.PluginConnectionID, "itemId": source.PluginItemID,
+		"segmentId": source.PluginSegmentID, "versionId": source.PluginVersionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var pluginError pluginErrorEnvelope
+	if json.Unmarshal(raw, &pluginError) == nil && pluginError.PluginError != nil {
+		return nil, appError(CodePluginOnlineLibraryUnavailable, "插件元数据暂时不可用", nil)
+	}
+	var snapshot contract.ProviderMetadataSnapshot
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&snapshot) != nil || decoder.Decode(&struct{}{}) != io.EOF || contract.ValidateProviderMetadataSnapshot(snapshot, source.PluginItemID, source.PluginSegmentID) != nil {
+		return nil, appError(CodePluginResponseInvalid, "插件元数据响应无效", nil)
+	}
+	return &snapshot, nil
+}
+
+// persistProviderMetadata runs only after every Host-owned metadata artifact
+// has been materialized in the managed task root. Once the immutable snapshot
+// is durable, later transfer retries no longer depend on the plugin runtime or
+// its short-lived opaque artwork references.
+func (e *PluginDownloadExecutor) persistProviderMetadata(task *models.DownloadTask, source downloadSourceEnvelope, snapshot contract.ProviderMetadataSnapshot) error {
+	if task == nil || contract.ValidateProviderMetadataSnapshot(snapshot, source.PluginItemID, source.PluginSegmentID) != nil {
+		return appError(CodePluginResponseInvalid, "插件元数据快照无效", nil)
+	}
+	envelope := providerMetadataEnvelope{Version: 1, PluginID: task.PluginID, PluginVersion: task.PluginVersion, ConnectionID: source.PluginConnectionID, Snapshot: snapshot}
+	encoded, err := json.Marshal(envelope)
+	if err != nil || len(encoded) > maxPluginConnectionConfigBytes {
+		return appError(CodePluginResponseInvalid, "插件元数据响应过大", err)
+	}
+	result := e.downloads.db.Model(&models.DownloadTask{}).Where("id = ? AND provider_metadata_json = ''", task.ID).Update("provider_metadata_json", string(encoded))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		var current models.DownloadTask
+		if err := e.downloads.db.Select("provider_metadata_json").First(&current, "id = ?", task.ID).Error; err != nil {
+			return err
+		}
+		persisted, err := decodeProviderMetadataEnvelope(current.ProviderMetadataJSON)
+		if err != nil || persisted.PluginID != envelope.PluginID || persisted.PluginVersion != envelope.PluginVersion || persisted.ConnectionID != envelope.ConnectionID || contract.ValidateProviderMetadataSnapshot(persisted.Snapshot, source.PluginItemID, source.PluginSegmentID) != nil {
+			return appError(CodeConflict, "插件元数据快照已变化", err)
+		}
+		encoded = []byte(current.ProviderMetadataJSON)
+	}
+	task.ProviderMetadataJSON = string(encoded)
+	return nil
+}
+
+func decodeProviderMetadataEnvelope(raw string) (providerMetadataEnvelope, error) {
+	if len(raw) == 0 || len(raw) > maxPluginConnectionConfigBytes {
+		return providerMetadataEnvelope{}, errors.New("provider metadata snapshot is invalid")
+	}
+	var envelope providerMetadataEnvelope
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&envelope) != nil || decoder.Decode(&struct{}{}) != io.EOF || envelope.Version != 1 {
+		return providerMetadataEnvelope{}, errors.New("provider metadata snapshot is invalid")
+	}
+	return envelope, nil
+}
+
+func (e *PluginDownloadExecutor) attachProviderArtifacts(ctx context.Context, task *models.DownloadTask, taskRoot, pluginID string, snapshot contract.ProviderMetadataSnapshot, manifest, sourceManifest downloadpkg.Manifest) (downloadpkg.Manifest, downloadpkg.Manifest, error) {
+	var video downloadpkg.File
+	for _, file := range manifest.Files {
+		if isVideoFile(file.RelativePath) {
+			video = file
+			break
+		}
+	}
+	if video.RelativePath == "" {
+		return manifest, sourceManifest, errors.New("provider manifest contains no video")
+	}
+	videoName := filepath.Base(filepath.FromSlash(video.RelativePath))
+	stem := strings.TrimSuffix(videoName, filepath.Ext(videoName))
+	provider := nfo.ProviderSnapshot{Kind: snapshot.Kind, Title: snapshot.Title, OriginalTitle: snapshot.OriginalTitle, Overview: snapshot.Overview, Author: snapshot.Author, PublishedDate: snapshot.PublishedAt, DurationSeconds: snapshot.DurationSeconds, SeasonNumber: snapshot.SeasonNumber, EpisodeNumber: snapshot.EpisodeNumber, Genres: append([]string(nil), snapshot.Genres...), Tags: append([]string(nil), snapshot.Tags...), UniqueIDs: snapshot.UniqueIDs}
+	body, err := nfo.RenderProvider(provider)
+	if err != nil {
+		return manifest, sourceManifest, err
+	}
+	nfoName := stem + ".nfo"
+	if err := writeManagedPluginArtifact(taskRoot, nfoName, body, 4<<20); err != nil {
+		return manifest, sourceManifest, err
+	}
+	nfoFile := downloadpkg.File{RelativePath: nfoName, Size: int64(len(body))}
+	manifest.Files, sourceManifest.Files = append(manifest.Files, nfoFile), append(sourceManifest.Files, nfoFile)
+	for _, artwork := range snapshot.Artwork {
+		name := stem + "-" + artwork.Kind + ".jpg"
+		file, err := e.downloadProviderArtwork(ctx, taskRoot, pluginID, task.PluginConnectionID, artwork.AssetRef, name)
+		if err != nil {
+			return manifest, sourceManifest, err
+		}
+		manifest.Files, sourceManifest.Files = append(manifest.Files, file), append(sourceManifest.Files, file)
+	}
+	return manifest, sourceManifest, nil
+}
+
+func writeManagedPluginArtifact(root, name string, body []byte, maximum int64) error {
+	if filepath.Base(name) != name || len(body) == 0 || int64(len(body)) > maximum {
+		return errors.New("managed plugin artifact is invalid")
+	}
+	target := filepath.Join(root, name)
+	if err := ensureWithin(root, target); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(target); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("managed plugin artifact target is unsafe")
+		}
+		existing, readErr := os.ReadFile(target)
+		if readErr != nil {
+			return readErr
+		}
+		if bytes.Equal(existing, body) {
+			return nil
+		}
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	temporary := target + ".partial"
+	_ = os.Remove(temporary)
+	if err := os.WriteFile(temporary, body, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return nil
+}
+
+func (e *PluginDownloadExecutor) downloadProviderArtwork(ctx context.Context, root, pluginID, connectionID, reference, name string) (downloadpkg.File, error) {
+	const maximum = int64(12 << 20)
+	if existing, ok, err := existingManagedProviderJPEG(root, name, maximum); err != nil {
+		return downloadpkg.File{}, err
+	} else if ok {
+		return existing, nil
+	}
+	stream, err := e.assets.OpenAssetForPluginConnection(ctx, pluginID, connectionID, reference, http.MethodGet, "")
+	if err != nil {
+		return downloadpkg.File{}, err
+	}
+	defer stream.Body.Close()
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(stream.Header.Get("Content-Type"), ";")[0]))
+	if stream.StatusCode != http.StatusOK || contentType != "image/jpeg" {
+		return downloadpkg.File{}, errors.New("provider artwork must be a JPEG")
+	}
+	body, err := io.ReadAll(io.LimitReader(stream.Body, maximum+1))
+	if err != nil || len(body) == 0 || int64(len(body)) > maximum || len(body) < 3 || body[0] != 0xff || body[1] != 0xd8 || body[len(body)-2] != 0xff || body[len(body)-1] != 0xd9 {
+		return downloadpkg.File{}, errors.New("provider artwork response is invalid")
+	}
+	if err := writeManagedPluginArtifact(root, name, body, maximum); err != nil {
+		return downloadpkg.File{}, err
+	}
+	return downloadpkg.File{RelativePath: name, Size: int64(len(body))}, nil
+}
+
+func existingManagedProviderJPEG(root, name string, maximum int64) (downloadpkg.File, bool, error) {
+	if filepath.Base(name) != name {
+		return downloadpkg.File{}, false, errors.New("managed provider artwork name is invalid")
+	}
+	target := filepath.Join(root, name)
+	if err := ensureWithin(root, target); err != nil {
+		return downloadpkg.File{}, false, err
+	}
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return downloadpkg.File{}, false, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() < 4 || info.Size() > maximum {
+		return downloadpkg.File{}, false, errors.New("managed provider artwork is unsafe")
+	}
+	file, err := os.Open(target)
+	if err != nil {
+		return downloadpkg.File{}, false, err
+	}
+	defer file.Close()
+	header := make([]byte, 2)
+	footer := make([]byte, 2)
+	if _, err := io.ReadFull(file, header); err != nil {
+		return downloadpkg.File{}, false, err
+	}
+	if _, err := file.ReadAt(footer, info.Size()-2); err != nil {
+		return downloadpkg.File{}, false, err
+	}
+	if header[0] != 0xff || header[1] != 0xd8 || footer[0] != 0xff || footer[1] != 0xd9 {
+		return downloadpkg.File{}, false, errors.New("managed provider artwork is invalid")
+	}
+	return downloadpkg.File{RelativePath: name, Size: info.Size()}, true, nil
+}
+
+func (e *PluginDownloadExecutor) verifyProviderCompleted(task *models.DownloadTask, snapshot contract.ProviderMetadataSnapshot, manifest downloadpkg.Manifest) (downloadpkg.Manifest, error) {
+	mediaType := "movie"
+	classificationType := classification.MediaTypeMovie
+	if snapshot.Kind == "series" || snapshot.Kind == "episode" {
+		mediaType, classificationType = "tv", classification.MediaTypeTV
+	}
+	rules, err := classification.DecodeStrict([]byte(task.ProfileRulesJSON))
+	if err != nil {
+		return downloadpkg.Manifest{}, err
+	}
+	year := (*int)(nil)
+	if len(snapshot.PublishedAt) >= 4 {
+		if parsed, parseErr := time.Parse(time.RFC3339, snapshot.PublishedAt); parseErr == nil {
+			value := parsed.Year()
+			year = &value
+		}
+	}
+	category := classification.Classify(classification.Metadata{MediaType: classificationType, ReleaseYear: year}, rules).CategoryName
+	if strings.TrimSpace(category) == "" {
+		category = "未分类"
+	}
+	selected, err := selectProviderDownloadPackageManifest(manifest, mediaType)
+	if err != nil {
+		return downloadpkg.Manifest{}, err
+	}
+	confidence := 1.0
+	updates := map[string]any{"scrape_status": "completed_verified", "scrape_title": safeLabel(snapshot.Title, 256), "scrape_media_type": mediaType, "scrape_category": safeLabel(category, 128), "scrape_tmdb_id": nil, "scrape_confidence": confidence, "scrape_year": year, "manifest_file_count": len(manifest.Files), "updated_at": time.Now().UTC()}
+	if err := e.downloads.db.Model(task).Updates(updates).Error; err != nil {
+		return downloadpkg.Manifest{}, err
+	}
+	task.ScrapeStatus, task.ScrapeTitle, task.ScrapeMediaType, task.ScrapeCategory = "completed_verified", safeLabel(snapshot.Title, 256), mediaType, safeLabel(category, 128)
+	task.ScrapeTMDBID, task.ScrapeConfidence, task.ScrapeYear, task.ManifestFileCount = nil, &confidence, year, len(manifest.Files)
+	return selected, nil
 }
 
 func validateDownloadPlan(plan contract.DownloadPlan, source downloadSourceEnvelope) error {
@@ -402,7 +727,7 @@ func (e *PluginDownloadExecutor) executePlan(ctx context.Context, runtime JobRun
 	if err := verifyRegularNonEmpty(output, pluginDownloadMaxMediaBytes); err != nil {
 		return downloadpkg.Manifest{}, downloadpkg.Manifest{}, err
 	}
-	files := []downloadpkg.File{{RelativePath: filepath.ToSlash(filepath.Join(pluginDownloadRootName, task.ID, filepath.Base(output))), Size: fileSize(output)}}
+	files := []downloadpkg.File{{RelativePath: filepath.Base(output), Size: fileSize(output)}}
 	stem := strings.TrimSuffix(filepath.Base(output), filepath.Ext(output))
 	sidecarIndex := 0
 	for _, asset := range plan.Assets {
@@ -416,14 +741,14 @@ func (e *PluginDownloadExecutor) executePlan(ctx context.Context, runtime JobRun
 		if err := os.Rename(paths[asset.ID], destination); err != nil {
 			return downloadpkg.Manifest{}, downloadpkg.Manifest{}, err
 		}
-		files = append(files, downloadpkg.File{RelativePath: filepath.ToSlash(filepath.Join(pluginDownloadRootName, task.ID, name)), Size: fileSize(destination)})
+		files = append(files, downloadpkg.File{RelativePath: name, Size: fileSize(destination)})
 	}
 	manifest := downloadpkg.Manifest{Name: suggested, Files: files, Complete: true}
 	return manifest, manifest, nil
 }
 
 func (e *PluginDownloadExecutor) downloadAsset(ctx context.Context, runtime JobRuntime, task *models.DownloadTask, root, pluginID string, asset contract.DownloadAsset, already, totalExpected int64, index, count int) (string, int64, error) {
-	stream, err := e.assets.OpenAssetForPlugin(ctx, pluginID, asset.URLRef, http.MethodGet, "")
+	stream, err := e.assets.OpenAssetForPluginConnection(ctx, pluginID, task.PluginConnectionID, asset.URLRef, http.MethodGet, "")
 	if err != nil {
 		return "", 0, err
 	}

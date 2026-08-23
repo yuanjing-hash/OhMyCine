@@ -16,6 +16,14 @@ const minimumAutomaticTransferVideoBytes int64 = 16 * 1024 * 1024
 // media package that is allowed to enter automatic organization. The same
 // selection is used for local downloaders and native cloud offline downloads.
 func selectDownloadPackageManifest(manifest downloadpkg.Manifest, mediaType string) (downloadpkg.Manifest, error) {
+	return selectDownloadPackageManifestWithMinimum(manifest, mediaType, minimumAutomaticTransferVideoBytes)
+}
+
+func selectProviderDownloadPackageManifest(manifest downloadpkg.Manifest, mediaType string) (downloadpkg.Manifest, error) {
+	return selectDownloadPackageManifestWithMinimum(manifest, mediaType, 1)
+}
+
+func selectDownloadPackageManifestWithMinimum(manifest downloadpkg.Manifest, mediaType string, minimumVideoBytes int64) (downloadpkg.Manifest, error) {
 	videos := make([]downloadpkg.File, 0, len(manifest.Files))
 	for _, file := range manifest.Files {
 		if isVideoFile(file.RelativePath) && file.Size > 0 {
@@ -27,7 +35,7 @@ func selectDownloadPackageManifest(manifest downloadpkg.Manifest, mediaType stri
 	}
 	sort.SliceStable(videos, func(left, right int) bool { return videos[left].Size > videos[right].Size })
 	anchor := videos[0]
-	if anchor.Size < minimumAutomaticTransferVideoBytes {
+	if anchor.Size < minimumVideoBytes {
 		return downloadpkg.Manifest{}, errors.New("manifest contains no plausible primary video")
 	}
 
@@ -38,8 +46,8 @@ func selectDownloadPackageManifest(manifest downloadpkg.Manifest, mediaType stri
 		accepted[normalizedManifestPath(anchor.RelativePath)] = struct{}{}
 	case "tv":
 		minimumEpisodeBytes := anchor.Size / 20
-		if minimumEpisodeBytes < minimumAutomaticTransferVideoBytes {
-			minimumEpisodeBytes = minimumAutomaticTransferVideoBytes
+		if minimumEpisodeBytes < minimumVideoBytes {
+			minimumEpisodeBytes = minimumVideoBytes
 		}
 		for _, file := range videos {
 			if file.Size < minimumEpisodeBytes {
@@ -88,7 +96,7 @@ func normalizedManifestPath(value string) string {
 
 func sidecarBelongsToAcceptedMedia(relativePath string, acceptedByDirectory map[string][]string) bool {
 	extension := strings.ToLower(pathpkg.Ext(relativePath))
-	if !isAutomaticTransferSubtitleFile(relativePath) && !isAutomaticTransferDanmakuFile(relativePath) && extension != ".jpg" {
+	if !isAutomaticTransferSubtitleFile(relativePath) && !isAutomaticTransferDanmakuFile(relativePath) && extension != ".jpg" && extension != ".nfo" {
 		return false
 	}
 	stems := acceptedByDirectory[strings.ToLower(pathpkg.Dir(relativePath))]

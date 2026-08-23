@@ -3,12 +3,12 @@
   "id": "org.ohmycine.bilibili",
   "name": "Bilibili",
   "description": "将 Bilibili 作为 OhMyCine 在线媒体库浏览、播放和下载。",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "apiVersion": "1",
   "minServerVersion": "0.1.0",
   "runtime": "wasm",
   "entry": "plugin.wasm",
-  "capabilities": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"],
+  "capabilities": ["site.navigation", "site.feed", "site.search", "site.detail", "site.user_library", "site.interaction", "media.playback", "media.quality_switch", "media.subtitle", "media.danmaku", "media.download_plan", "media.metadata", "home.contribution", "feed.refresh", "site.history", "playback.progress_sync"],
   "permissions": [
     { "kind": "network.http", "domains": ["api.bilibili.com", "passport.bilibili.com", "*.bilivideo.com", "*.hdslb.com"] },
     { "kind": "credential.use", "scopes": ["bilibili.session"] },
@@ -19,8 +19,73 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "homeRecommendationEnabled": { "type": "boolean", "default": true }
+      "homeRecommendationEnabled": { "type": "boolean", "default": true },
+      "defaultQuality": { "type": "string", "enum": ["auto", "highest", "1080p", "720p"], "default": "auto" },
+      "downloadSubtitles": { "type": "boolean", "default": true },
+      "downloadDanmaku": { "type": "boolean", "default": true }
     }
+  },
+  "settingsPage": {
+    "version": 1,
+    "tabs": [
+      {
+        "id": "account",
+        "title": "账号",
+        "sections": [
+          {
+            "id": "login",
+            "title": "Bilibili 登录",
+            "description": "扫码登录由 Server Host 处理，Cookie 加密保存且不会提供给管理页面或 Player。",
+            "fields": [
+              { "type": "credential-status", "label": "账号状态", "description": "创建连接后可直接在本账号设置页扫码登录或重新登录。" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "content",
+        "title": "内容",
+        "sections": [
+          {
+            "id": "home",
+            "title": "主页聚合",
+            "fields": [
+              { "type": "switch", "key": "homeRecommendationEnabled", "label": "参与 Server / Player 主页推荐", "description": "启用后仅由 Bilibili 推荐栏目参与主页聚合。" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "download",
+        "title": "下载",
+        "sections": [
+          {
+            "id": "download-defaults",
+            "title": "下载默认值",
+            "description": "下载执行、DASH 合流、暂存、入库与上传均由 Server 内置任务流水线完成。",
+            "fields": [
+              { "type": "select", "key": "defaultQuality", "label": "默认清晰度", "options": [{ "label": "跟随当前选择", "value": "auto" }, { "label": "最高可用", "value": "highest" }, { "label": "1080P", "value": "1080p" }, { "label": "720P", "value": "720p" }] },
+              { "type": "switch", "key": "downloadSubtitles", "label": "下载可用字幕" },
+              { "type": "switch", "key": "downloadDanmaku", "label": "下载弹幕" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "metadata",
+        "title": "元数据",
+        "sections": [
+          {
+            "id": "metadata-source",
+            "title": "元数据来源",
+            "fields": [
+              { "type": "notice", "label": "使用 Bilibili 原生元数据", "description": "标题、简介、UP 主、发布日期、BVID/CID 和封面由本插件提供；普通视频无需 TMDB 也能生成 NFO。" },
+              { "type": "notice", "label": "插件元数据仅作用于本插件内容", "description": "不会加入本地媒体库、115 扫描、qBittorrent 或其他插件的普通刮削流程。" }
+            ]
+          }
+        ]
+      }
+    ]
   },
   "author": "OhMyCine",
   "license": "MIT",

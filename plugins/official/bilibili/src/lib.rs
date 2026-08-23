@@ -13,6 +13,7 @@ const HOST_STORAGE_GET: i32 = 2;
 const HOST_STORAGE_SET: i32 = 3;
 const HOST_ASSET_REGISTER: i32 = 7;
 const HOST_CREDENTIAL_COMMIT: i32 = 8;
+const HOST_CONFIG_GET: i32 = 9;
 const HOST_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const SESSION_SCOPE: &str = "bilibili.session";
 const USER_AGENT: &str = "Mozilla/5.0 OhMyCine/0.1 BilibiliPlugin/0.1";
@@ -101,6 +102,7 @@ pub unsafe extern "C" fn omc_invoke(
         9 => parse_request(request).and_then(site_action),
         10 => parse_request(request).and_then(auth_start),
         11 => parse_request(request).and_then(auth_poll),
+        12 => parse_request(request).and_then(metadata),
         _ => Err(PluginError::new("invalid-request", "不支持的插件操作")),
     };
     encode_response(match result {
@@ -1279,12 +1281,14 @@ struct DownloadRequest {
 }
 
 fn download_plan(request: DownloadRequest) -> Result<Value, PluginError> {
+    let config = connection_config(&request.connection_id);
+    let configured_variant = download_quality_variant(&config, request.variant_id.clone());
     let resolved = resolve_playback(&PlaybackRequest {
         connection_id: request.connection_id.clone(),
         item_id: request.item_id.clone(),
         segment_id: request.segment_id.clone(),
         version_id: request.version_id.clone(),
-        variant_id: request.variant_id.clone(),
+        variant_id: configured_variant,
     })?;
     let mut assets = resolved
         .assets
@@ -1305,13 +1309,21 @@ fn download_plan(request: DownloadRequest) -> Result<Value, PluginError> {
             }))
         })
         .collect::<Vec<_>>();
-    let subtitles = resolve_subtitles(
-        &request.connection_id,
-        &request.item_id,
-        &request.segment_id,
-        &request.version_id,
-    )
-    .unwrap_or_default();
+    let subtitles = if config
+        .get("downloadSubtitles")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        resolve_subtitles(
+            &request.connection_id,
+            &request.item_id,
+            &request.segment_id,
+            &request.version_id,
+        )
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     // Server v1 accepts at most eight assets. Reserve video, optional audio,
     // and danmaku slots, then keep the first five authorized subtitle tracks.
     for (index, track) in subtitles.iter().take(5).enumerate() {
@@ -1322,14 +1334,20 @@ fn download_plan(request: DownloadRequest) -> Result<Value, PluginError> {
             "expectedContentType":"text/vtt"
         }));
     }
-    if let Ok(track) = register_danmaku(&request.connection_id, &request.segment_id) {
-        if let Some(reference) = track.get("urlRef").and_then(Value::as_str) {
-            assets.push(json!({
-                "id":"danmaku",
-                "kind":"danmaku",
-                "urlRef":reference,
-                "expectedContentType":"application/json"
-            }));
+    if config
+        .get("downloadDanmaku")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        if let Ok(track) = register_danmaku(&request.connection_id, &request.segment_id) {
+            if let Some(reference) = track.get("urlRef").and_then(Value::as_str) {
+                assets.push(json!({
+                    "id":"danmaku",
+                    "kind":"danmaku",
+                    "urlRef":reference,
+                    "expectedContentType":"application/json"
+                }));
+            }
         }
     }
     let merge = if resolved
@@ -1357,6 +1375,126 @@ fn download_plan(request: DownloadRequest) -> Result<Value, PluginError> {
         "assets":assets,
         "merge":merge
     }))
+}
+
+fn download_quality_variant(config: &Value, requested: Option<String>) -> Option<String> {
+    if requested.is_some() {
+        return requested;
+    }
+    match config
+        .get("defaultQuality")
+        .and_then(Value::as_str)
+        .unwrap_or("auto")
+    {
+        "highest" => Some("qn:127".to_owned()),
+        "1080p" => Some("qn:80".to_owned()),
+        "720p" => Some("qn:64".to_owned()),
+        _ => None,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataRequest {
+    connection_id: String,
+    item_id: String,
+    segment_id: String,
+    version_id: String,
+}
+
+fn metadata(request: MetadataRequest) -> Result<Value, PluginError> {
+    let cid = request
+        .segment_id
+        .strip_prefix("cid:")
+        .unwrap_or(&request.segment_id);
+    if cid.is_empty() || !cid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(PluginError::new("invalid-request", "元数据分 P 身份无效"));
+    }
+    let bvid = resolve_version_bvid(&request.item_id, &request.version_id, cid)?;
+    let payload = bili_get(
+        &request.connection_id,
+        &format!("https://api.bilibili.com/x/web-interface/view?bvid={bvid}"),
+        true,
+    )?;
+    let data = payload
+        .get("data")
+        .ok_or_else(|| PluginError::new("not-found", "视频元数据不存在"))?;
+    let work_title = data
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Bilibili 视频");
+    let segment_title = data
+        .get("pages")
+        .and_then(Value::as_array)
+        .and_then(|pages| {
+            pages.iter().find(|page| {
+                page.get("cid")
+                    .and_then(Value::as_u64)
+                    .map(|value| value.to_string() == cid)
+                    .unwrap_or(false)
+            })
+        })
+        .and_then(|page| page.get("part"))
+        .and_then(Value::as_str);
+    let title = match segment_title {
+        Some(part)
+            if part != work_title
+                && data
+                    .get("pages")
+                    .and_then(Value::as_array)
+                    .is_some_and(|pages| pages.len() > 1) =>
+        {
+            format!("{work_title} - {part}")
+        }
+        _ => work_title.to_owned(),
+    };
+    let published_at = data
+        .get("pubdate")
+        .and_then(Value::as_i64)
+        .and_then(|timestamp| OffsetDateTime::from_unix_timestamp(timestamp).ok())
+        .and_then(|value| value.format(&Rfc3339).ok());
+    let mut artwork = Vec::new();
+    if let Some(url) = data
+        .get("pic")
+        .and_then(Value::as_str)
+        .and_then(safe_https_url)
+    {
+        if let Ok((reference, _)) = register_asset(&request.connection_id, &url, json!({})) {
+            artwork.push(json!({"kind":"poster","assetRef":reference}));
+        }
+    }
+    let overview = data
+        .get("desc")
+        .and_then(Value::as_str)
+        .map(normalize_metadata_text)
+        .filter(|value| !value.is_empty());
+    Ok(json!({
+        "version":1,
+        "workId":request.item_id,
+        "segmentId":request.segment_id,
+        "kind":"video",
+        "title":title,
+        "overview":overview,
+        "author":data.pointer("/owner/name").and_then(Value::as_str),
+        "publishedAt":published_at,
+        "durationSeconds":data.get("duration").and_then(Value::as_u64),
+        "uniqueIds":{"bilibili.bvid":bvid,"bilibili.cid":cid},
+        "artwork":artwork
+    }))
+}
+
+fn normalize_metadata_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(16_000)
+        .collect()
+}
+
+fn connection_config(connection_id: &str) -> Value {
+    host_json(HOST_CONFIG_GET, &json!({"connectionId":connection_id})).unwrap_or_else(|_| json!({}))
 }
 
 fn resolve_download_title(
@@ -1469,7 +1607,8 @@ fn resolve_playback(request: &PlaybackRequest) -> Result<ResolvedPlayback, Plugi
         .ok_or_else(|| PluginError::new("invalid-response", "播放响应无效"))?;
     let source = parse_playback_data(data, qn)?;
     let headers = json!({"Referer":"https://www.bilibili.com/","User-Agent":USER_AGENT});
-    let (video_ref, expires_at) = register_asset(&request.connection_id, &source.video_url, headers.clone())?;
+    let (video_ref, expires_at) =
+        register_asset(&request.connection_id, &source.video_url, headers.clone())?;
     let mut assets = vec![json!({
         "kind":if source.audio_url.is_some() { "dash-video" } else { "progressive" },
         "urlRef":video_ref
@@ -1772,7 +1911,11 @@ fn parse_progressive_data(
     Ok((selected, variants, durl))
 }
 
-fn register_asset(connection_id: &str, url: &str, headers: Value) -> Result<(String, String), PluginError> {
+fn register_asset(
+    connection_id: &str,
+    url: &str,
+    headers: Value,
+) -> Result<(String, String), PluginError> {
     let registered = host_json(
         HOST_ASSET_REGISTER,
         &json!({"connectionId":connection_id,"url":url,"headers":headers,"ttlSeconds":300}),
@@ -2649,5 +2792,24 @@ mod tests {
             "七武士：导演剪辑版测试 [Bilibili BV1xx411c7mD Q120].mp4"
         );
         assert!(filename.len() < 240);
+    }
+
+    #[test]
+    fn configured_download_quality_is_applied_without_overriding_user_choice() {
+        assert_eq!(
+            download_quality_variant(&json!({"defaultQuality":"1080p"}), None),
+            Some("qn:80".to_owned())
+        );
+        assert_eq!(
+            download_quality_variant(
+                &json!({"defaultQuality":"highest"}),
+                Some("qn:64".to_owned())
+            ),
+            Some("qn:64".to_owned())
+        );
+        assert_eq!(
+            download_quality_variant(&json!({"defaultQuality":"auto"}), None),
+            None
+        );
     }
 }

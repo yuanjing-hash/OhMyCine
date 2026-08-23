@@ -52,3 +52,23 @@ npm run build:fixture
 - 远端播放/下载地址先注册成短时 `urlRef`；普通 DTO、日志和 Player 持久状态不能出现最终 CDN URL 或敏感 Header。
 - Manifest 只能声明 SDK 已知 capability 和精确权限。
 - PT 站点适配器属于 Server 内建能力，不通过此 SDK 注册。
+
+## 宿主能力边界
+
+插件只适配提供方特有事实：登录、内容发现、播放/下载方案与该插件的元数据。插件不得实现上传、移动、删除、冲突处理、重命名或 NFO/JPG 写入，也不会获得本地绝对路径、115 Cookie 或其他 Storage 凭据。
+
+```text
+Plugin DownloadPlan / ProviderMetadata
+        ↓
+Server DownloadService / MediaTool
+        ↓
+Server TransferService
+        ↓
+Local executor / cloud UploadDriver
+        ↓
+Server NFO/JPG + library reconciliation
+```
+
+`media.metadata` 只能由产生当前内容身份的同一插件连接调用。Server 会校验 work/segment 身份并把结果保存为不可变快照；它不会注册成本地扫库、115 扫库、qBittorrent 或其他插件可调用的全局刮削器。普通视频因此可以不依赖 TMDB，但 NFO/JPG 仍由 Server 统一生成。
+
+Manifest 可用 `settingsPage` 声明完整的插件专属配置页。插件决定 tab、section 和白名单字段的位置；`credential-status` 会在声明位置渲染 Host 拥有的登录状态、扫码/重新登录动作与二维码，而 Cookie 捕获、轮询和加密保存仍由 Host 执行。普通字段必须受同一 Manifest 的 `configSchema` 约束。任意 Vue/JavaScript/HTML/CSS、裸路由或 Schema 外字段都不是 SDK 能力。

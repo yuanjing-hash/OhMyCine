@@ -1,16 +1,19 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 )
 
@@ -36,6 +39,11 @@ func (runtime *onlinePluginRuntime) Invoke(_ context.Context, _ string, operatio
 
 func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 	service, actor, _ := pluginRepositoryFixture(t)
+	credentialStore, err := credential.Open(filepath.Join(t.TempDir(), "plugin-online.key"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.credentials = credentialStore
 	actor.Permissions[authz.PermissionMediaLibrariesRead] = struct{}{}
 	assetID := uuid.NewString()
 	runtime := &onlinePluginRuntime{responses: map[string][]byte{
@@ -116,8 +124,18 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 	if err != nil || duplicateErr != nil || actionCalls != 1 || strings.Contains(string(firstAction), `"duplicate":true`) || !strings.Contains(string(secondAction), `"duplicate":true`) {
 		t.Fatalf("first=%s second=%s calls=%d err=%v duplicateErr=%v", firstAction, secondAction, actionCalls, err, duplicateErr)
 	}
-	if err := service.db.Model(&models.PluginConnection{}).Where("id = ?", connection.ID).Updates(map[string]any{"credential_scope": "site.session", "credential_mode": models.PluginCredentialModeCookie}).Error; err != nil {
-		t.Fatal(err)
+	credentialScope, credentialMode := "site.session", models.PluginCredentialModeCookie
+	migrated, err := service.UpdateConnection(actor, pluginPackage.PluginID, connection.ID, UpdatePluginConnectionInput{
+		CredentialScope: &credentialScope,
+		CredentialMode:  &credentialMode,
+		Revision:        connection.Revision,
+	}, RequestContext{})
+	if err != nil || migrated.Revision != connection.Revision+1 || migrated.CredentialScope != credentialScope || migrated.CredentialMode != credentialMode || migrated.CredentialConfigured {
+		t.Fatalf("anonymous QR migration=%+v err=%v", migrated, err)
+	}
+	encodedMigration, err := json.Marshal(migrated)
+	if err != nil || bytes.Contains(encodedMigration, []byte("ciphertext")) || bytes.Contains(encodedMigration, []byte("SESSDATA")) {
+		t.Fatalf("anonymous QR migration leaked credential material: %s err=%v", encodedMigration, err)
 	}
 	runtime.handler = func(operation string, _ []byte) ([]byte, error) {
 		switch operation {

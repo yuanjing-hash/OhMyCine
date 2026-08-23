@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -65,6 +67,10 @@ type mutationSDK interface {
 	Copy(string, ...string) error
 	Rename(string, string) error
 	Delete(...string) error
+}
+
+type uploadSDK interface {
+	UploadFastOrByMultipart(string, string, int64, *os.File, ...pan115sdk.UploadMultipartOption) error
 }
 
 type sdkAdapter struct{ *pan115sdk.Pan115Client }
@@ -215,7 +221,7 @@ func New(config cloud.Config) (cloud.Driver, error) {
 func (c *Client) Provider() string { return cloud.ProviderPan115 }
 
 func (c *Client) Capabilities() cloud.Capabilities {
-	return cloud.Capabilities{NetworkDrive: true, DirectoryList: true, Watch: true, NativeOfflineDownload: true, ShareReceive: true, TemporaryDirectURL: true, SignedProxy: true, ChangeCursor: true, CreateDirectory: true, Move: true, Copy: true, Rename: true, Recycle: true}
+	return cloud.Capabilities{NetworkDrive: true, DirectoryList: true, Watch: true, NativeOfflineDownload: true, ShareReceive: true, TemporaryDirectURL: true, SignedProxy: true, FileUpload: true, ChangeCursor: true, CreateDirectory: true, Move: true, Copy: true, Rename: true, Recycle: true}
 }
 
 const maxShareTopLevelItems = 1000
@@ -375,6 +381,68 @@ func (c *Client) CreateDirectory(ctx context.Context, parentID, name string) (cl
 		return cloud.Item{}, cloud.Error(cloud.CodeMutationUnknown, true, errors.New("115 returned no created directory identity"))
 	}
 	return cloud.Item{ID: itemID, ParentID: parentID, Name: name, IsDir: true}, nil
+}
+
+func (c *Client) Upload(ctx context.Context, request cloud.UploadRequest) (cloud.Item, error) {
+	parentID := normalizeID(request.ParentID)
+	name, err := mutationName(request.Name)
+	if err != nil || request.Size <= 0 {
+		return cloud.Item{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 upload request is invalid"))
+	}
+	file, ok := request.Reader.(*os.File)
+	if !ok || file == nil {
+		return cloud.Item{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 upload requires a managed regular file"))
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != request.Size {
+		return cloud.Item{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 upload file changed"))
+	}
+	sdk, ok := c.sdk.(uploadSDK)
+	if !ok {
+		return cloud.Item{}, cloud.Error(cloud.CodeUnavailable, false, errors.New("115 upload API is unavailable"))
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return cloud.Item{}, cloud.Error(cloud.CodeResponseInvalid, false, err)
+	}
+	if err := c.waitForRecovery(ctx); err != nil {
+		return cloud.Item{}, mapError(err)
+	}
+	if err := c.mutationRate.Wait(ctx); err != nil {
+		return cloud.Item{}, mapError(err)
+	}
+	select {
+	case c.callSlots <- struct{}{}:
+	case <-ctx.Done():
+		return cloud.Item{}, mapError(ctx.Err())
+	}
+	uploadErr := sdk.UploadFastOrByMultipart(parentID, name, request.Size, file, pan115sdk.UploadMultipartWithThreadsNum(1))
+	<-c.callSlots
+	c.recordOutcome(uploadErr)
+	if uploadErr != nil {
+		return cloud.Item{}, mapError(uploadErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return cloud.Item{}, mapError(err)
+	}
+	matches := make([]cloud.Item, 0, 1)
+	for offset := int64(0); offset < 10_000; offset += maxPageSize {
+		page, err := c.List(ctx, parentID, cloud.PageRequest{Offset: offset, Limit: maxPageSize})
+		if err != nil {
+			return cloud.Item{}, err
+		}
+		for _, item := range page.Items {
+			if item.Name == name && !item.IsDir && item.Size == request.Size {
+				matches = append(matches, item)
+			}
+		}
+		if !page.HasMore {
+			break
+		}
+	}
+	if len(matches) != 1 {
+		return cloud.Item{}, cloud.Error(cloud.CodeMutationUnknown, true, errors.New("115 upload result could not be reconciled"))
+	}
+	return matches[0], nil
 }
 
 func (c *Client) Move(ctx context.Context, itemID, targetParentID string) error {

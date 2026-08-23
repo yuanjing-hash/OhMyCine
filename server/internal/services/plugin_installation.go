@@ -47,21 +47,24 @@ type PluginInstallPreviewSummary struct {
 }
 
 type InstalledPluginSummary struct {
-	ID                   string                `json:"id"`
-	Name                 string                `json:"name"`
-	Description          string                `json:"description"`
-	Version              string                `json:"version"`
-	PreviousVersion      string                `json:"previous_version,omitempty"`
-	RepositoryID         *uint                 `json:"repository_id"`
-	RepositoryName       string                `json:"repository_name"`
-	Status               string                `json:"status"`
-	Revision             uint64                `json:"revision"`
-	RuntimeGeneration    uint64                `json:"runtime_generation"`
-	LastRuntimeErrorCode string                `json:"last_runtime_error_code"`
-	Capabilities         []contract.Capability `json:"capabilities"`
-	Permissions          []contract.Permission `json:"permissions"`
-	InstalledAt          time.Time             `json:"installed_at"`
-	UpdatedAt            time.Time             `json:"updated_at"`
+	ID                   string                 `json:"id"`
+	Name                 string                 `json:"name"`
+	Description          string                 `json:"description"`
+	Version              string                 `json:"version"`
+	PreviousVersion      string                 `json:"previous_version,omitempty"`
+	RepositoryID         *uint                  `json:"repository_id"`
+	RepositoryName       string                 `json:"repository_name"`
+	Status               string                 `json:"status"`
+	Revision             uint64                 `json:"revision"`
+	RuntimeGeneration    uint64                 `json:"runtime_generation"`
+	LastRuntimeErrorCode string                 `json:"last_runtime_error_code"`
+	Capabilities         []contract.Capability  `json:"capabilities"`
+	Permissions          []contract.Permission  `json:"permissions"`
+	ConfigSchema         json.RawMessage        `json:"config_schema"`
+	ConfigDefaults       json.RawMessage        `json:"config_defaults"`
+	SettingsPage         *contract.SettingsPage `json:"settings_page,omitempty"`
+	InstalledAt          time.Time              `json:"installed_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
 }
 
 func (s *PluginRepositoryService) PrepareInstall(ctx context.Context, actor Actor, pluginID string, repositoryID uint, version string, request RequestContext) (PluginInstallPreviewSummary, error) {
@@ -197,8 +200,8 @@ func (s *PluginRepositoryService) PrepareInstall(ctx context.Context, actor Acto
 	serverlog.OperationPluginRuntime.Event(s.log.Info()).Str("plugin_id", entry.ID).Uint("repository_id", repository.ID).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationPluginRuntime.Message("安装包校验完成"))
 	return PluginInstallPreviewSummary{
 		ID: preview.ID, PluginID: entry.ID, Name: manifest.Name, Version: manifest.Version, Operation: operation,
-		RepositoryID: repository.ID, RepositoryName: repository.Name, Capabilities: append([]contract.Capability(nil), manifest.Capabilities...),
-		Permissions: append([]contract.Permission(nil), manifest.Permissions...), PermissionDiff: diff,
+		RepositoryID: repository.ID, RepositoryName: repository.Name, Capabilities: append(make([]contract.Capability, 0, len(manifest.Capabilities)), manifest.Capabilities...),
+		Permissions: append(make([]contract.Permission, 0, len(manifest.Permissions)), manifest.Permissions...), PermissionDiff: diff,
 		PermissionFingerprint: fingerprint, InstallationRevision: revision, ExpiresAt: preview.ExpiresAt,
 	}, nil
 }
@@ -921,7 +924,16 @@ func permissionDifference(oldPermissions, newPermissions []contract.Permission) 
 	if err != nil {
 		return PluginPermissionDiff{}, "", err
 	}
-	diff := PluginPermissionDiff{}
+	// Keep every collection JSON-stable. A nil slice is encoded as null, while
+	// the Web UI contract expects arrays and renders their lengths directly.
+	// Installation previews commonly have no removed/unchanged permissions, so
+	// returning null here used to crash the confirmation dialog before the user
+	// could actually confirm the installation.
+	diff := PluginPermissionDiff{
+		Added:     make([]contract.Permission, 0),
+		Removed:   make([]contract.Permission, 0),
+		Unchanged: make([]contract.Permission, 0),
+	}
 	for key, permission := range newMap {
 		if _, ok := oldMap[key]; ok {
 			diff.Unchanged = append(diff.Unchanged, permission)
@@ -1020,7 +1032,11 @@ func (s *PluginRepositoryService) installedSummary(installation models.PluginIns
 	if err != nil {
 		return InstalledPluginSummary{}, err
 	}
-	item := InstalledPluginSummary{ID: installation.PluginID, Name: manifest.Name, Description: manifest.Description, Version: manifest.Version, RepositoryID: pluginPackage.RepositoryID, Status: installation.Status, Revision: installation.Revision, RuntimeGeneration: installation.RuntimeGeneration, LastRuntimeErrorCode: installation.LastRuntimeErrorCode, Capabilities: append([]contract.Capability(nil), manifest.Capabilities...), Permissions: append([]contract.Permission(nil), manifest.Permissions...), InstalledAt: installation.InstalledAt, UpdatedAt: installation.UpdatedAt}
+	configDefaults, err := contract.PluginConfigDefaults(manifest.ConfigSchema)
+	if err != nil {
+		return InstalledPluginSummary{}, err
+	}
+	item := InstalledPluginSummary{ID: installation.PluginID, Name: manifest.Name, Description: manifest.Description, Version: manifest.Version, RepositoryID: pluginPackage.RepositoryID, Status: installation.Status, Revision: installation.Revision, RuntimeGeneration: installation.RuntimeGeneration, LastRuntimeErrorCode: installation.LastRuntimeErrorCode, Capabilities: append(make([]contract.Capability, 0, len(manifest.Capabilities)), manifest.Capabilities...), Permissions: append(make([]contract.Permission, 0, len(manifest.Permissions)), manifest.Permissions...), ConfigSchema: append(json.RawMessage(nil), manifest.ConfigSchema...), ConfigDefaults: configDefaults, SettingsPage: manifest.SettingsPage, InstalledAt: installation.InstalledAt, UpdatedAt: installation.UpdatedAt}
 	if pluginPackage.RepositoryID != nil {
 		var repository models.PluginRepository
 		if err := s.db.Select("name").First(&repository, *pluginPackage.RepositoryID).Error; err == nil {

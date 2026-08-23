@@ -439,6 +439,9 @@ func normalizePluginConnectionInput(manifest contract.Manifest, name string, con
 	if len(config) > maxPluginConnectionConfigBytes || !json.Valid(config) || !safePluginConfig(config) {
 		return "", nil, "", "", appError(CodeInvalidRequest, "插件连接配置无效或包含敏感字段", nil)
 	}
+	if err := contract.ValidatePluginConfig(manifest.ConfigSchema, config); err != nil {
+		return "", nil, "", "", appError(CodeInvalidRequest, "插件连接配置不符合插件声明", err)
+	}
 	scope, mode = strings.TrimSpace(scope), strings.TrimSpace(mode)
 	if mode == "" || mode == models.PluginCredentialModeNone {
 		if hasCredential {

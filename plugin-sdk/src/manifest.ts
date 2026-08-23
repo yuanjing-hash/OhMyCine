@@ -12,6 +12,7 @@ export const PLUGIN_CAPABILITIES = [
   'media.subtitle',
   'media.danmaku',
   'media.download_plan',
+  'media.metadata',
   'home.contribution',
   'feed.refresh',
   'site.history',
@@ -52,6 +53,7 @@ export interface PluginManifestV1 {
   capabilities: readonly PluginCapability[]
   permissions: readonly PluginPermission[]
   configSchema: Readonly<Record<string, unknown>>
+  settingsPage?: PluginSettingsPage
   author: string
   license: string
   homepage?: string
@@ -60,4 +62,33 @@ export interface PluginManifestV1 {
   signature?: PluginSignature
   update?: PluginUpdateInfo
   changelog?: string
+}
+
+export interface PluginSettingsPage {
+  version: 1
+  tabs: readonly PluginSettingsTab[]
+}
+
+export interface PluginSettingsTab {
+  id: string
+  title: string
+  sections: readonly PluginSettingsSection[]
+}
+
+export interface PluginSettingsSection {
+  id: string
+  title: string
+  description?: string
+  fields: readonly PluginSettingsField[]
+}
+
+export interface PluginSettingsField {
+  type: 'switch' | 'text' | 'number' | 'select' | 'notice' | 'credential-status'
+  key?: string
+  label: string
+  description?: string
+  placeholder?: string
+  options?: readonly { label: string, value: string }[]
+  minimum?: number
+  maximum?: number
 }

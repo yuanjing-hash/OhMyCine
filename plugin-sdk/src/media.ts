@@ -145,3 +145,22 @@ export interface DownloadPlan {
   assets: readonly DownloadAsset[]
   merge?: { kind: 'dash-av', videoAssetId: string, audioAssetId: string }
 }
+
+export interface ProviderMetadataSnapshot {
+  version: 1
+  workId: string
+  segmentId: string
+  kind: 'movie' | 'series' | 'episode' | 'video'
+  title: string
+  originalTitle?: string
+  overview?: string
+  author?: string
+  publishedAt?: string
+  durationSeconds?: number
+  seasonNumber?: number
+  episodeNumber?: number
+  genres?: readonly string[]
+  tags?: readonly string[]
+  uniqueIds: Readonly<Record<string, string>>
+  artwork?: readonly { kind: 'poster' | 'fanart', assetRef: string }[]
+}

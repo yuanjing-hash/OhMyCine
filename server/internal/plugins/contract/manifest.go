@@ -47,6 +47,7 @@ const (
 	CapabilityMediaSubtitle    Capability = "media.subtitle"
 	CapabilityMediaDanmaku     Capability = "media.danmaku"
 	CapabilityMediaDownload    Capability = "media.download_plan"
+	CapabilityMediaMetadata    Capability = "media.metadata"
 	CapabilityHomeContribution Capability = "home.contribution"
 	CapabilityFeedRefresh      Capability = "feed.refresh"
 	CapabilitySiteHistory      Capability = "site.history"
@@ -58,7 +59,8 @@ var knownCapabilities = map[Capability]struct{}{
 	CapabilitySiteUserLibrary: {}, CapabilitySiteInteraction: {}, CapabilityMediaPlayback: {},
 	CapabilityQualitySwitch: {}, CapabilityMediaSubtitle: {}, CapabilityMediaDanmaku: {},
 	CapabilityMediaDownload: {}, CapabilityHomeContribution: {}, CapabilityFeedRefresh: {},
-	CapabilitySiteHistory: {}, CapabilityPlaybackProgress: {},
+	CapabilityMediaMetadata: {},
+	CapabilitySiteHistory:   {}, CapabilityPlaybackProgress: {},
 }
 
 type PermissionKind string
@@ -104,6 +106,7 @@ type Manifest struct {
 	Capabilities     []Capability    `json:"capabilities"`
 	Permissions      []Permission    `json:"permissions"`
 	ConfigSchema     json.RawMessage `json:"configSchema"`
+	SettingsPage     *SettingsPage   `json:"settingsPage,omitempty"`
 	Author           string          `json:"author"`
 	License          string          `json:"license"`
 	Homepage         string          `json:"homepage,omitempty"`
@@ -197,6 +200,11 @@ func (manifest Manifest) Validate() error {
 	}
 	if !isJSONObject(manifest.ConfigSchema) {
 		return errors.New("plugin configSchema must be a JSON object")
+	}
+	if manifest.SettingsPage != nil {
+		if err := manifest.SettingsPage.Validate(manifest.ConfigSchema); err != nil {
+			return fmt.Errorf("plugin settingsPage is invalid: %w", err)
+		}
 	}
 	if strings.TrimSpace(manifest.Author) == "" || strings.TrimSpace(manifest.License) == "" {
 		return errors.New("plugin author and license are required")

@@ -3,6 +3,7 @@ package nfo
 import (
 	"encoding/xml"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -106,6 +107,95 @@ type ImageIdentity struct {
 	Kind         string
 	SeasonNumber *int
 	TMDBPath     string
+}
+
+// ProviderSnapshot is the provider-neutral metadata accepted from one
+// Host-bound plugin operation. It deliberately contains no filesystem paths,
+// upstream URLs, credentials, or TMDB requirement.
+type ProviderSnapshot struct {
+	Kind            string
+	Title           string
+	OriginalTitle   string
+	Overview        string
+	Author          string
+	PublishedDate   string
+	DurationSeconds int64
+	SeasonNumber    *int
+	EpisodeNumber   *int
+	Genres          []string
+	Tags            []string
+	UniqueIDs       map[string]string
+}
+
+type providerDocument struct {
+	XMLName       xml.Name
+	Title         string     `xml:"title"`
+	OriginalTitle string     `xml:"originaltitle,omitempty"`
+	Outline       string     `xml:"outline,omitempty"`
+	Plot          string     `xml:"plot,omitempty"`
+	Year          int        `xml:"year,omitempty"`
+	Premiered     string     `xml:"premiered,omitempty"`
+	ReleaseDate   string     `xml:"releasedate,omitempty"`
+	Runtime       int        `xml:"runtime,omitempty"`
+	Season        *int       `xml:"season,omitempty"`
+	Episode       *int       `xml:"episode,omitempty"`
+	UniqueIDs     []uniqueID `xml:"uniqueid"`
+	Genres        []string   `xml:"genre,omitempty"`
+	Tags          []string   `xml:"tag,omitempty"`
+	Directors     []string   `xml:"director,omitempty"`
+	Credits       []string   `xml:"credits,omitempty"`
+}
+
+// RenderProvider serializes plugin-scoped metadata without registering it as
+// a global scraper and without requiring a TMDB identity.
+func RenderProvider(snapshot ProviderSnapshot) ([]byte, error) {
+	if strings.TrimSpace(snapshot.Title) == "" || len(snapshot.UniqueIDs) == 0 {
+		return nil, ErrSnapshotIncomplete
+	}
+	identities := make([]uniqueID, 0, len(snapshot.UniqueIDs))
+	keys := make([]string, 0, len(snapshot.UniqueIDs))
+	for key := range snapshot.UniqueIDs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for index, key := range keys {
+		identities = append(identities, uniqueID{Type: key, Default: index == 0, Value: snapshot.UniqueIDs[key]})
+	}
+	published := snapshot.PublishedDate
+	if len(published) > 10 {
+		published = published[:10]
+	}
+	year := 0
+	if len(published) >= 4 {
+		year, _ = strconv.Atoi(published[:4])
+	}
+	authors := []string(nil)
+	if strings.TrimSpace(snapshot.Author) != "" {
+		authors = []string{snapshot.Author}
+	}
+	root := "movie"
+	switch snapshot.Kind {
+	case "series":
+		root = "tvshow"
+	case "episode":
+		root = "episodedetails"
+	case "movie", "video":
+	default:
+		return nil, ErrSnapshotIncomplete
+	}
+	document := providerDocument{
+		XMLName: xml.Name{Local: root},
+		Title:   snapshot.Title, OriginalTitle: snapshot.OriginalTitle, Outline: snapshot.Overview,
+		Plot: snapshot.Overview, Year: year, Premiered: published, ReleaseDate: published,
+		Runtime: int((snapshot.DurationSeconds + 30) / 60), Season: snapshot.SeasonNumber,
+		Episode: snapshot.EpisodeNumber, UniqueIDs: identities, Genres: snapshot.Genres,
+		Tags: snapshot.Tags, Directors: authors, Credits: authors,
+	}
+	body, err := xml.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]byte(xml.Header), body...), '\n'), nil
 }
 
 // Render serializes a deterministic Kodi/Emby-compatible movie or tvshow NFO.
