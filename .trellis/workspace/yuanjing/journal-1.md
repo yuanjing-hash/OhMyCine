@@ -555,3 +555,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 20: 修复并发布 Bilibili 扫码登录 0.3.1
+
+**Date**: 2026-08-23
+**Task**: 修复并发布 Bilibili 扫码登录 0.3.1
+**Branch**: `develop`
+
+### Summary
+
+定位 Bilibili 二维码域名迁移导致 Host 精确权限校验拒绝，补齐 account.bilibili.com 最小权限和真实响应回归测试，发布官方插件 0.3.1 并完成公网摘要校验。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d9ffecb` | (see git log) |
+
+### Status
+
+[OK] **Completed**

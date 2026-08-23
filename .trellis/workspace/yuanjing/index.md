@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
+- **Total Sessions**: 20
 - **Last Active**: 2026-08-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~557 | Active |
+| `journal-1.md` | ~578 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-08-23 | 修复并发布 Bilibili 扫码登录 0.3.1 | `d9ffecb` | `develop` |
 | 19 | 2026-08-23 | 发布插件宿主能力与 Bilibili 0.3.0 | `e33669f` | `develop` |
 | 18 | 2026-08-23 | 完成插件平台与 Bilibili 在线媒体全链路 | `35e92a8` | `develop` |
 | 17 | 2026-08-22 | 修复 Player 设备管理与 Server 媒体来源 | `16ec854` | `develop` |
