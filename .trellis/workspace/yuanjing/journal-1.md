@@ -660,3 +660,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 25: 修复分类封面候选与少海报构图
+
+**Date**: 2026-08-24
+**Task**: 修复分类封面候选与少海报构图
+**Branch**: `develop`
+
+### Summary
+
+用真实本地与115数据库定位低置信识别快照被候选查询遗漏的问题；按参考插件补齐九个风格3槽位，修复Player独立媒体库单海报分类，并补充跨层回归测试与规范。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d7b9a68` | (see git log) |
+
+### Status
+
+[OK] **Completed**
