@@ -38,9 +38,14 @@ type API struct {
 	signedProxy        *services.SignedProxyService
 	embyGateway        *services.EmbyGatewayService
 	strm               *services.STRMManagementService
+	mediaChanges       *services.MediaChangeService
+	mediaServerRefresh *services.MediaServerRefreshService
 	pluginRepositories *services.PluginRepositoryService
 	pluginAssets       pluginAssetGateway
 	libraryArtwork     *services.LibraryArtworkService
+	discovery          *services.DiscoveryService
+	sites              *services.SiteService
+	cookieCloud        *services.CookieCloudService
 	log                zerolog.Logger
 }
 
@@ -68,6 +73,10 @@ func (a *API) SetSeedingService(service *services.SeedingService)               
 func (a *API) SetSignedProxyService(service *services.SignedProxyService)       { a.signedProxy = service }
 func (a *API) SetEmbyGatewayService(service *services.EmbyGatewayService)       { a.embyGateway = service }
 func (a *API) SetSTRMManagementService(service *services.STRMManagementService) { a.strm = service }
+func (a *API) SetMediaChangeService(service *services.MediaChangeService)       { a.mediaChanges = service }
+func (a *API) SetMediaServerRefreshService(service *services.MediaServerRefreshService) {
+	a.mediaServerRefresh = service
+}
 func (a *API) SetPluginRepositoryService(service *services.PluginRepositoryService) {
 	a.pluginRepositories = service
 }
@@ -75,6 +84,9 @@ func (a *API) SetPluginAssetGateway(gateway pluginAssetGateway) { a.pluginAssets
 func (a *API) SetLibraryArtworkService(service *services.LibraryArtworkService) {
 	a.libraryArtwork = service
 }
+func (a *API) SetDiscoveryService(service *services.DiscoveryService)     { a.discovery = service }
+func (a *API) SetSiteService(service *services.SiteService)               { a.sites = service }
+func (a *API) SetCookieCloudService(service *services.CookieCloudService) { a.cookieCloud = service }
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}

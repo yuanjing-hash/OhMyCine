@@ -12,6 +12,7 @@ import (
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 )
@@ -143,6 +144,8 @@ func (s *MediaLibraryService) recognizeLibraryUnits(ctx context.Context, library
 		result := recognizeMedia(workerCtx, lookup, MediaRecognitionRequest{
 			PackageName:      unit.PackageName,
 			Files:            files,
+			SourceKind:       mediarecognition.SourceLibraryScan,
+			MediaTypeHint:    unit.MediaTypeHint,
 			BuiltinPackCodes: organization.BuiltinRecognitionPacks,
 			BuiltinProcessor: processor,
 			RecognitionRules: organization.RecognitionRules,
@@ -247,7 +250,7 @@ func mediaLibraryRecognitionCacheKey(unit medialibrary.RecognitionUnit, profile 
 	// v2 refreshes older derived cache entries so the additive v1 snapshot
 	// receives the richer bounded detail fields without breaking persisted v1
 	// envelopes or requiring a database migration.
-	value := "snapshot-v2\x00" + unit.InputFingerprint + "\x00" + strconv.FormatUint(uint64(profile.ID), 10) + "\x00" + strconv.FormatUint(profile.Revision, 10) + "\x00" + library.MetadataLanguage + "\x00" + library.MetadataRegion
+	value := "recognition:" + mediarecognition.EngineVersion + ":snapshot-v2\x00" + unit.InputFingerprint + "\x00" + strconv.FormatUint(uint64(profile.ID), 10) + "\x00" + strconv.FormatUint(profile.Revision, 10) + "\x00" + library.MetadataLanguage + "\x00" + library.MetadataRegion
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }

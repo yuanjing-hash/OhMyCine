@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -20,6 +21,7 @@ const (
 	mediaRecognitionStatusMatched      = "matched"
 	mediaRecognitionStatusUnrecognized = "unrecognized"
 	mediaRecognitionLowConfidence      = "tmdb_low_confidence"
+	mediaRecognitionCandidateConflict  = "tmdb_candidate_conflict"
 	mediaRecognitionCredentialMissing  = "tmdb_credential_unavailable"
 )
 
@@ -28,12 +30,27 @@ type mediaRecognitionLookup interface {
 	GetByID(context.Context, string, int64, string) (tmdb.Match, error)
 }
 
+type mediaRecognitionCandidateLookup interface {
+	SearchCandidates(context.Context, string, string, *int, string, string, int) ([]tmdb.Candidate, error)
+}
+
+type mediaRecognitionCandidateEnricher interface {
+	EnrichCandidates(context.Context, []tmdb.Candidate, string, int) ([]tmdb.Candidate, error)
+}
+
+const (
+	mediaRecognitionMaxQueries = 10
+)
+
 // MediaRecognitionRequest contains only provider-neutral names and Profile
 // snapshots. Absolute paths, provider IDs and credentials never enter the
 // recognizer.
 type MediaRecognitionRequest struct {
 	PackageName      string
 	Files            []recognitionSourceFile
+	SourceKind       mediarecognition.SourceKind
+	MediaTypeHint    string
+	YearHint         *int
 	BuiltinPackCodes []string
 	BuiltinProcessor *mediarecognition.WordProcessor
 	RecognitionRules []RecognitionRule
@@ -116,14 +133,24 @@ func recognizeMedia(ctx context.Context, lookup mediaRecognitionLookup, request 
 			directHint = processed.Hint
 		}
 	}
-	candidates := recognitionCandidatesFromSources(processedSources, request.RecognitionRules)
-	if len(candidates) > 0 {
-		result.Title = candidates[0].Title
-		result.MediaType = candidates[0].MediaType
-		result.ReleaseYear = cloneInt(candidates[0].Year)
+	parsed, parseErr := parseRecognitionFacts(request, processedSources, directHint)
+	if parseErr != nil {
+		result.ErrorCode = tmdb.ErrorInvalidRequest
+		return result
+	}
+	result.Title = parsed.CanonicalTitle
+	result.MediaType = string(parsed.SuggestedType)
+	result.ReleaseYear = cloneInt(parsed.Year)
+	if parsed.Season != nil {
+		result.SeasonHint = cloneInt(parsed.Season)
+	}
+	if parsed.Episodes.EpisodeMin != nil {
+		result.EpisodeHint = cloneInt(parsed.Episodes.EpisodeMin)
+	}
+	if parsed.DirectHint != nil && parsed.DirectHint.MediaType != mediarecognition.MediaTypeUnknown {
+		result.MediaType = string(parsed.DirectHint.MediaType)
 	}
 	if directHint != nil {
-		result.MediaType = directHint.MediaType
 		result.SeasonHint = cloneInt(directHint.Season)
 		result.EpisodeHint = cloneInt(directHint.Episode)
 	}
@@ -133,17 +160,21 @@ func recognizeMedia(ctx context.Context, lookup mediaRecognitionLookup, request 
 	}
 
 	var (
-		match tmdb.Match
-		err   error
+		match                tmdb.Match
+		err                  error
+		legacyConfidenceGate bool
 	)
-	if directHint != nil {
-		match, err = lookup.GetByID(ctx, directHint.MediaType, int64(directHint.TMDBID), request.Language)
-	} else if len(candidates) == 0 {
+	if parsed.DirectHint != nil {
+		match, err = recognizeDirectDomainHint(ctx, lookup, parsed, *parsed.DirectHint, request.Language)
+	} else if len(parsed.Queries) == 0 {
 		result.ErrorCode = tmdb.ErrorInvalidRequest
 		return result
+	} else if candidateLookup, ok := lookup.(mediaRecognitionCandidateLookup); ok {
+		match, err = recognizeFromDomainCandidates(ctx, lookup, candidateLookup, parsed, request.Language, request.Region)
 	} else {
-		for _, candidate := range candidates {
-			match, err = lookup.Search(ctx, candidate.MediaType, candidate.Title, candidate.Year, request.Language, request.Region)
+		legacyConfidenceGate = true
+		for _, query := range domainRecognitionSearchQueries(parsed) {
+			match, err = lookup.Search(ctx, query.MediaType, query.Title, query.Year, request.Language, request.Region)
 			if err == nil || tmdb.ErrorCode(err) != tmdb.ErrorNoMatch {
 				break
 			}
@@ -170,12 +201,294 @@ func recognizeMedia(ctx context.Context, lookup mediaRecognitionLookup, request 
 	result.ReleaseYear = cloneInt(match.ReleaseYear)
 	result.Confidence = cloneFloat64(&match.Confidence)
 	result.Snapshot = match.Snapshot
-	if match.Confidence < .80 {
+	if legacyConfidenceGate && match.Confidence < mediarecognition.DefaultScoreConfig().MatchThreshold {
 		result.ErrorCode = mediaRecognitionLowConfidence
 		return result
 	}
 	result.Status = mediaRecognitionStatusMatched
 	return result
+}
+
+func recognizeDirectDomainHint(ctx context.Context, lookup mediaRecognitionLookup, parsed mediarecognition.ParsedFacts, hint mediarecognition.IdentityHint, language string) (tmdb.Match, error) {
+	if hint.MediaType == mediarecognition.MediaTypeMovie || hint.MediaType == mediarecognition.MediaTypeTV {
+		return lookup.GetByID(ctx, string(hint.MediaType), hint.ID, language)
+	}
+	types := []mediarecognition.MediaType{mediarecognition.MediaTypeMovie, mediarecognition.MediaTypeTV}
+	if parsed.SuggestedType == mediarecognition.MediaTypeTV {
+		types[0], types[1] = types[1], types[0]
+	}
+	matches := make([]tmdb.Match, 0, 2)
+	var firstFailure error
+	for _, mediaType := range types {
+		match, err := lookup.GetByID(ctx, string(mediaType), hint.ID, language)
+		if err != nil {
+			if firstFailure == nil {
+				firstFailure = err
+			}
+			continue
+		}
+		matches = append(matches, match)
+	}
+	if len(matches) == 0 {
+		return tmdb.Match{}, firstFailure
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	remote := make([]mediarecognition.RemoteCandidate, 0, len(matches))
+	for _, match := range matches {
+		remote = append(remote, mediarecognition.RemoteCandidate{ID: match.ID, MediaType: mediarecognition.MediaType(match.MediaType), Title: match.Title, OriginalTitle: match.Snapshot.OriginalTitle, ReleaseYear: cloneInt(match.ReleaseYear)})
+	}
+	decision := mediarecognition.Rank(parsed, remote)
+	if decision.Status != mediarecognition.DecisionMatched || decision.Match == nil {
+		return tmdb.Match{}, &tmdb.ClientError{Code: domainRecognitionErrorCode(decision.Reason)}
+	}
+	for _, match := range matches {
+		if match.ID == decision.Match.ID && match.MediaType == string(decision.Match.MediaType) {
+			return match, nil
+		}
+	}
+	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorInvalidResponse}
+}
+
+type mediaRecognitionQuery struct {
+	Title     string
+	MediaType string
+	Year      *int
+	Order     int
+}
+
+type rankedMediaRecognitionCandidate struct {
+	Candidate tmdb.Candidate
+}
+
+func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionLookup, candidateLookup mediaRecognitionCandidateLookup, parsed mediarecognition.ParsedFacts, language, region string) (tmdb.Match, error) {
+	queries := domainRecognitionSearchQueries(parsed)
+	candidates := make(map[string]tmdb.Candidate)
+	var firstFailure error
+	for _, query := range queries {
+		items, err := candidateLookup.SearchCandidates(ctx, query.MediaType, query.Title, query.Year, language, region, 10)
+		if err != nil {
+			if tmdb.ErrorCode(err) == tmdb.ErrorNoMatch {
+				continue
+			}
+			if firstFailure == nil {
+				firstFailure = err
+			}
+			continue
+		}
+		for _, candidate := range items {
+			key := fmt.Sprintf("%s:%d", candidate.MediaType, candidate.ID)
+			current, exists := candidates[key]
+			if !exists || candidate.Confidence > current.Confidence {
+				candidates[key] = candidate
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		if firstFailure != nil {
+			return tmdb.Match{}, firstFailure
+		}
+		return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+	}
+	remote := make([]mediarecognition.RemoteCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		remote = append(remote, remoteRecognitionCandidate(candidate))
+	}
+	decision := mediarecognition.Rank(parsed, remote)
+	if enricher, ok := candidateLookup.(mediaRecognitionCandidateEnricher); ok && len(decision.Ranked) > 0 {
+		shortlist := make([]tmdb.Candidate, 0, tmdb.DefaultCandidateEnrichmentLimit)
+		for _, ranked := range decision.Ranked {
+			key := fmt.Sprintf("%s:%d", ranked.Candidate.MediaType, ranked.Candidate.ID)
+			if candidate, exists := candidates[key]; exists {
+				shortlist = append(shortlist, candidate)
+			}
+			if len(shortlist) == tmdb.DefaultCandidateEnrichmentLimit {
+				break
+			}
+		}
+		enriched, enrichErr := enricher.EnrichCandidates(ctx, shortlist, language, tmdb.DefaultCandidateEnrichmentLimit)
+		if enrichErr != nil {
+			return tmdb.Match{}, enrichErr
+		}
+		for _, candidate := range enriched {
+			candidates[fmt.Sprintf("%s:%d", candidate.MediaType, candidate.ID)] = candidate
+		}
+		remote = remote[:0]
+		for _, candidate := range candidates {
+			remote = append(remote, remoteRecognitionCandidate(candidate))
+		}
+		decision = mediarecognition.Rank(parsed, remote)
+	}
+	if decision.Status != mediarecognition.DecisionMatched || decision.Match == nil {
+		return tmdb.Match{}, &tmdb.ClientError{Code: domainRecognitionErrorCode(decision.Reason)}
+	}
+	best := *decision.Match
+	match, err := lookup.GetByID(ctx, string(best.MediaType), best.ID, language)
+	if err != nil {
+		return tmdb.Match{}, err
+	}
+	if match.Snapshot.OriginalTitle == "" {
+		match.Snapshot.OriginalTitle = strings.TrimSpace(best.OriginalTitle)
+	}
+	if match.OriginalLanguage == "" {
+		candidate := candidates[fmt.Sprintf("%s:%d", best.MediaType, best.ID)]
+		match.OriginalLanguage = candidate.OriginalLanguage
+		match.Snapshot.OriginalLanguage = candidate.OriginalLanguage
+	}
+	if match.ReleaseYear == nil {
+		match.ReleaseYear = cloneInt(best.ReleaseYear)
+	}
+	match.Confidence = decision.Confidence
+	return match, nil
+}
+
+func domainRecognitionSearchQueries(parsed mediarecognition.ParsedFacts) []mediaRecognitionQuery {
+	queries := make([]mediaRecognitionQuery, 0, mediaRecognitionMaxQueries)
+	seen := make(map[string]struct{})
+	add := func(title string, mediaType mediarecognition.MediaType, year *int) {
+		if len(queries) >= mediaRecognitionMaxQueries {
+			return
+		}
+		if mediaType != mediarecognition.MediaTypeMovie && mediaType != mediarecognition.MediaTypeTV {
+			return
+		}
+		key := string(mediaType) + "\x00" + strings.ToLower(title) + "\x00"
+		if year != nil {
+			key += fmt.Sprint(*year)
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		queries = append(queries, mediaRecognitionQuery{Title: title, MediaType: string(mediaType), Year: cloneInt(year), Order: len(queries)})
+	}
+	typesFor := func(preferred mediarecognition.MediaType) []mediarecognition.MediaType {
+		if preferred == mediarecognition.MediaTypeTV {
+			return []mediarecognition.MediaType{mediarecognition.MediaTypeTV, mediarecognition.MediaTypeMovie}
+		}
+		return []mediarecognition.MediaType{mediarecognition.MediaTypeMovie, mediarecognition.MediaTypeTV}
+	}
+	variants := prioritizedDomainQueryVariants(parsed.Queries, 3)
+	for index, variant := range variants {
+		if index >= 3 {
+			break
+		}
+		for _, mediaType := range typesFor(variant.SuggestedType) {
+			add(variant.Title, mediaType, variant.Year)
+		}
+		if len(queries) >= mediaRecognitionMaxQueries {
+			break
+		}
+	}
+	for index, variant := range variants {
+		if index >= 1 || variant.Year == nil {
+			continue
+		}
+		previous, next := *variant.Year-1, *variant.Year+1
+		for _, mediaType := range typesFor(variant.SuggestedType) {
+			add(variant.Title, mediaType, &previous)
+			add(variant.Title, mediaType, &next)
+			add(variant.Title, mediaType, nil)
+		}
+	}
+	return queries
+}
+
+func prioritizedDomainQueryVariants(variants []mediarecognition.QueryVariant, maximum int) []mediarecognition.QueryVariant {
+	result := make([]mediarecognition.QueryVariant, 0, maximum)
+	seen := make(map[string]struct{})
+	add := func(variant mediarecognition.QueryVariant) {
+		if len(result) >= maximum {
+			return
+		}
+		title := strings.TrimSpace(variant.Title)
+		if title == "" {
+			return
+		}
+		key := strings.ToLower(title) + "\x00" + string(variant.SuggestedType) + "\x00"
+		if variant.Year != nil {
+			key += fmt.Sprint(*variant.Year)
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, variant)
+	}
+	for _, variant := range variants {
+		if variant.Reason == "canonical" {
+			add(variant)
+		}
+	}
+	for _, variant := range variants {
+		if variant.Reason != "canonical" {
+			add(variant)
+		}
+	}
+	return result
+}
+
+func parseRecognitionFacts(request MediaRecognitionRequest, processedSources []string, directHint *mediarecognition.DirectTMDBHint) (mediarecognition.ParsedFacts, error) {
+	prepared := make([]mediarecognition.PreparedName, 0, len(processedSources)*3)
+	seen := make(map[string]struct{})
+	addPrepared := func(value, source string) {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if value == "" || len(prepared) >= 32 {
+			return
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		prepared = append(prepared, mediarecognition.PreparedName{Value: value, Source: source})
+	}
+	for _, source := range processedSources {
+		addPrepared(source, "builtin")
+		for _, mediaType := range []string{"movie", "tv"} {
+			if processed := applyRecognitionRules(source, mediaType, request.RecognitionRules); processed != source {
+				addPrepared(processed, "profile_"+mediaType)
+			}
+		}
+	}
+	files := make([]mediarecognition.FileFact, 0, len(request.Files))
+	for _, file := range request.Files {
+		relative := strings.ReplaceAll(strings.TrimSpace(file.RelativePath), "\\", "/")
+		// MediaLibrary entries use one leading slash as their canonical logical
+		// provider-root marker after the storage boundary has already validated
+		// them. Strip exactly that marker only for the trusted scan adapter; raw
+		// downloader/unknown facts keep it and are rejected as absolute input by
+		// the pure recognizer.
+		if request.SourceKind == mediarecognition.SourceLibraryScan && strings.HasPrefix(relative, "/") && !strings.HasPrefix(relative, "//") {
+			relative = strings.TrimPrefix(relative, "/")
+		}
+		files = append(files, mediarecognition.FileFact{RelativePath: relative, Size: file.Size})
+	}
+	input := mediarecognition.InputFacts{PackageName: strings.TrimSpace(request.PackageName), SourceKind: request.SourceKind, Files: files, MediaTypeHint: mediarecognition.MediaType(request.MediaTypeHint), YearHint: cloneInt(request.YearHint), PreparedNames: prepared}
+	if directHint != nil {
+		input.DirectHint = &mediarecognition.IdentityHint{Provider: "tmdb", ID: int64(directHint.TMDBID), MediaType: mediarecognition.MediaType(directHint.MediaType)}
+	}
+	return mediarecognition.Parse(input)
+}
+
+func remoteRecognitionCandidate(candidate tmdb.Candidate) mediarecognition.RemoteCandidate {
+	remote := mediarecognition.RemoteCandidate{ID: candidate.ID, MediaType: mediarecognition.MediaType(candidate.MediaType), Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, AlternativeTitles: append([]string(nil), candidate.AlternativeTitles...), Translations: append([]string(nil), candidate.Translations...), ReleaseYear: cloneInt(candidate.ReleaseYear), Popularity: candidate.Popularity}
+	if candidate.SeasonCount > 0 {
+		remote.SeasonCount = cloneInt(&candidate.SeasonCount)
+	}
+	return remote
+}
+
+func domainRecognitionErrorCode(reason mediarecognition.DecisionReason) string {
+	switch reason {
+	case mediarecognition.ReasonLowConfidence:
+		return mediaRecognitionLowConfidence
+	case mediarecognition.ReasonCandidateConflict:
+		return mediaRecognitionCandidateConflict
+	default:
+		return tmdb.ErrorNoMatch
+	}
 }
 
 func recognitionProcessorErrorCode(err error) string {

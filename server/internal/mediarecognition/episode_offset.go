@@ -127,9 +127,11 @@ func parseEpisodeNumber(value string) (number int, chinese bool, err error) {
 
 	digit := func(r rune) (int, bool) {
 		switch r {
+		case '零', '〇':
+			return 0, true
 		case '一':
 			return 1, true
-		case '二':
+		case '二', '两', '兩':
 			return 2, true
 		case '三':
 			return 3, true

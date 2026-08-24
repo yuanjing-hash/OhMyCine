@@ -94,8 +94,13 @@ func main() {
 	profiles.SetRevisionNotifier(libraries)
 	storages.SetReferenceChecker(libraries)
 	queue := services.NewQueueService(db, audit)
+	mediaChanges := services.NewMediaChangeService(db)
+	mediaServerRefresh := services.NewMediaServerRefreshService(db, queue, audit, connections)
+	mediaChanges.SetReadyHandler(mediaServerRefresh.EnqueueLibrary)
+	libraries.SetMediaChangeService(mediaChanges)
 	artifacts := services.NewMediaArtifactService(db, queue, signedProxy, logManager.Logger("media_artifact", "worker"))
 	artifacts.SetConnectionService(connections)
+	artifacts.SetMediaChangeService(mediaChanges)
 	libraries.SetArtifactService(artifacts)
 	strmManagement := services.NewSTRMManagementService(db, audit, queue, libraries, artifacts, logManager.Logger("strm", "management"))
 	artifacts.SetCleanupService(strmManagement)
@@ -117,10 +122,14 @@ func main() {
 	downloadSettings := services.NewDownloadSettingsService(db, audit)
 	seedingSettings := services.NewSeedingSettingsService(db, audit)
 	metadataSettings := services.NewMetadataSettingsService(db, audit, credentialStore, tmdb.Credential{Kind: tmdb.CredentialKind(cfg.TMDBDeploymentCredentialKind), Value: cfg.TMDBDeploymentCredentialValue})
+	discoveryService := services.NewDiscoveryService(db, metadataSettings, logManager.Logger("discovery", "service"))
 	libraries.SetMetadataSettingsService(metadataSettings)
 	artifacts.SetMetadataSettingsService(metadataSettings)
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, logManager.Logger("download", "service"))
+	sites := services.NewSiteService(db, audit, credentialStore, downloads, logManager.Logger("site", "service"))
+	sites.SetMetadataSettings(metadataSettings)
+	cookieCloud := services.NewCookieCloudService(db, audit, credentialStore, sites, logManager.Logger("site", "cookiecloud"))
 	downloads.SetMetadataSettings(metadataSettings)
 	downloads.SetSeedingSettings(seedingSettings)
 	libraries.SetIngestEnqueuer(downloads)
@@ -153,6 +162,8 @@ func main() {
 	api.SetRuntimeLogService(runtimeLogs)
 	api.SetMediaLibraryService(libraries)
 	api.SetSTRMManagementService(strmManagement)
+	api.SetMediaChangeService(mediaChanges)
+	api.SetMediaServerRefreshService(mediaServerRefresh)
 	queueEvents := services.NewQueueEventHub()
 	queue.SetEventHub(queueEvents)
 	registry := services.NewWorkerRegistry()
@@ -174,6 +185,9 @@ func main() {
 	if err := registry.Register(services.JobTypeSTRMReconcile, services.NewSTRMReconcileWorker(strmManagement)); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "strm_reconcile_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("STRM 刷新 Worker 注册失败"))
 	}
+	if err := registry.Register(services.JobTypeMediaServerRefresh, services.NewMediaServerRefreshWorker(mediaServerRefresh)); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "media_server_refresh_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("媒体服务器刷新 Worker 注册失败"))
+	}
 	scheduler := services.NewScheduler(queue, registry, logManager.Logger("queue", "scheduler"))
 	api.SetQueueService(queue)
 	api.SetQueueEventHub(queueEvents)
@@ -187,10 +201,20 @@ func main() {
 	api.SetPluginRepositoryService(pluginRepositories)
 	api.SetPluginAssetGateway(pluginHostAPI)
 	api.SetLibraryArtworkService(libraryArtwork)
+	api.SetDiscoveryService(discoveryService)
+	api.SetSiteService(sites)
+	api.SetCookieCloudService(cookieCloud)
+	if err := cookieCloud.Start(context.Background()); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "cookiecloud_start_failed").Msg(logging.OperationServerLifecycle.Message("CookieCloud 同步服务启动失败"))
+	}
+	defer cookieCloud.Close()
 	if err := scheduler.Start(context.Background()); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("任务调度器启动失败"))
 	}
 	defer scheduler.Close()
+	if err := mediaServerRefresh.RecoverPending(); err != nil {
+		logging.OperationServerLifecycle.Event(log.Error()).Err(err).Str("error_code", "media_server_refresh_recovery_failed").Msg(logging.OperationServerLifecycle.Message("媒体服务器刷新恢复失败"))
+	}
 	if err := libraries.Start(context.Background()); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "media_library_supervisor_start_failed").Msg(logging.OperationServerLifecycle.Message("媒体库监听启动失败"))
 	}

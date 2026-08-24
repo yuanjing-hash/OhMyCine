@@ -34,6 +34,7 @@
 - [x] 媒体库配置根据 Storage capability 限制 transfer mode。
 - [x] 媒体整理详情复用现有冲突响应、重试、删除历史和计划摘要。
 - [x] 增加“115云端整理”日志 operation、过滤项和脱敏审计事件。
+- [x] 命名计划保存后立即进入“正在入库”，目录准备保持该阶段；下载管理与媒体整理明确提示 115 风控限速，多文件任务按完成项更新真实进度。
 
 ## 6. Verification and documentation
 

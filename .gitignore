@@ -51,6 +51,7 @@ $RECYCLE.BIN/
 
 node_modules/
 dist/
+.pnpm-store/
 .nuxt/
 .output/
 *.local
@@ -129,6 +130,7 @@ hub/.vitepress/cache/
 *.log
 logs/
 server/.runtime/
+server/.tmp/
 
 # ====================
 # Secrets / Credentials

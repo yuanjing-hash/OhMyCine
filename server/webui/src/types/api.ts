@@ -75,6 +75,30 @@ export interface EmbyManagementSummary {
   checked_at: string
 }
 
+export interface MediaServerLibrarySummary {
+  id: string
+  name: string
+  content_type: string
+}
+
+export interface MediaServerRefreshTargetSummary {
+  id: number
+  library_id: number
+  connection_id: number
+  upstream_library_name: string
+  enabled: boolean
+  desired_revision: number
+  successful_revision: number
+  last_job_id: string | null
+  last_status: string
+  last_error_code: string
+  last_attempt_at: string | null
+  last_successful_at: string | null
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
 export interface PlayerDeviceSummary {
   id: string
   name: string
@@ -192,7 +216,7 @@ export interface MediaRecognitionSummary {
   file_count: number; source_summary: string; updated_at: string
 }
 export interface TMDBCandidate {
-  id: number; title: string; media_type: 'movie' | 'tv'; original_language: string; release_year?: number; confidence: number
+  id: number; title: string; original_title?: string; media_type: 'movie' | 'tv'; original_language: string; release_year?: number; confidence: number
 }
 export interface PageResponse<T> extends ListResponse<T> { page: number; page_size: number }
 export interface MediaLibraryWritePayload {

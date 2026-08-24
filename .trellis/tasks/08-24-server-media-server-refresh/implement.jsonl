@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"Authoritative scan/reconciliation and catalog mutation contracts."}
+{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"Refresh Job coalescing, lease and restart recovery contracts."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Additive SQLite/GORM migration and transaction rules."}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Refresh target REST and permission conventions."}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Encrypted media-server credentials and external HTTP redaction rules."}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Player Management UI, permissions and truthful operational state."}
+{"file":"docs/architecture/02-server-design.md","reason":"Server Notify pipeline and media-server integration architecture."}

@@ -36,6 +36,7 @@ type MediaLibraryService struct {
 	metadata    *MetadataSettingsService
 	ingest      MediaLibraryIngestEnqueuer
 	artifacts   *MediaArtifactService
+	changes     *MediaChangeService
 	closed      bool
 }
 
@@ -118,6 +119,9 @@ func (s *MediaLibraryService) SetIngestEnqueuer(ingest MediaLibraryIngestEnqueue
 }
 func (s *MediaLibraryService) SetArtifactService(artifacts *MediaArtifactService) {
 	s.artifacts = artifacts
+}
+func (s *MediaLibraryService) SetMediaChangeService(changes *MediaChangeService) {
+	s.changes = changes
 }
 func (s *MediaLibraryService) Start(ctx context.Context) error {
 	var libraries []models.MediaLibrary
@@ -1287,6 +1291,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 	run.Discovered = len(result.Files)
 	run.Partial = result.Partial
 	finished = time.Now().UTC()
+	var committedChange models.MediaLibraryChange
 	transactionErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var currentLibrary models.MediaLibrary
 		if err := tx.First(&currentLibrary, id).Error; err != nil {
@@ -1459,7 +1464,22 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		}
 		run.Status = "success"
 		run.FinishedAt = &finished
-		return tx.Save(&run).Error
+		if err := tx.Save(&run).Error; err != nil {
+			return err
+		}
+		if s.changes != nil && !run.Partial && (run.Added > 0 || run.Updated > 0 || run.Removed > 0) {
+			kind := models.MediaLibraryChangeCatalog
+			if run.Removed > 0 && run.Added == 0 && run.Updated == 0 {
+				kind = models.MediaLibraryChangeRemoval
+			}
+			requiresArtifacts := currentLibrary.STRMEnabled || currentLibrary.MetadataArtifactsEnabled
+			change, err := s.changes.RecordTx(tx, id, generation, kind, !requiresArtifacts)
+			if err != nil {
+				return err
+			}
+			committedChange = change
+		}
+		return nil
 	})
 	if transactionErr != nil {
 		finished := time.Now().UTC()
@@ -1469,6 +1489,9 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		_ = s.db.Save(&run).Error
 		operation.Event(s.log.Error()).Str("error_code", CodeMediaLibraryScanFailed).Uint("library_id", id).Uint("scan_run_id", run.ID).Str("scan_kind", kind).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(operation.Message("结果入库失败"))
 		return run, transactionErr
+	}
+	if committedChange.State == models.MediaLibraryChangeReady && s.changes != nil {
+		s.changes.NotifyCommitted(committedChange.LibraryID, committedChange.Revision)
 	}
 	operation.Event(s.log.Info()).Uint("library_id", id).Uint("scan_run_id", run.ID).Str("scan_kind", kind).Int("discovered", run.Discovered).Int("added", run.Added).Int("updated", run.Updated).Int("removed", run.Removed).Bool("partial", run.Partial).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(operation.Message("完成"))
 	matched, snapshots, cacheHits := 0, 0, 0

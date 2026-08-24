@@ -1,6 +1,7 @@
 import type { ServerCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
+import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { invoke } from '@tauri-apps/api/core'
+import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
@@ -49,6 +50,7 @@ interface ServerLibraryRecord {
   name: string
   storage_type: string
   entry_count: number
+  work_count?: number
   artwork_url?: string
   artwork_revision?: string
   artwork_source?: 'generated' | 'provider' | 'custom' | 'fallback'
@@ -70,6 +72,14 @@ interface ServerIdentityRecord {
   value: string
 }
 
+interface ServerPersonRecord {
+  tmdb_id?: number
+  name: string
+  role?: string
+  character?: string
+  profile_path?: string
+}
+
 interface ServerItemRecord {
   id: string
   library_id: number
@@ -85,6 +95,7 @@ interface ServerItemRecord {
   directors?: string[]
   writers?: string[]
   cast?: string[]
+  people?: ServerPersonRecord[]
   tmdb_id?: number
   imdb_id?: string
   poster_path?: string
@@ -114,6 +125,12 @@ interface ServerVersionRecord {
 interface ServerDetailRecord {
   item: ServerItemRecord
   versions: ServerVersionRecord[]
+}
+
+interface ServerMediaChangePage {
+  cursor: string
+  resyncRequired: boolean
+  libraryIds: string[]
 }
 
 export interface ServerLoginInput {
@@ -163,6 +180,7 @@ export class ServerDataSource implements DataSource {
   private readonly onlineProgressContexts = new Map<string, ServerOnlineProgressContext>()
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
+  private mediaChangeWatchGeneration = 0
 
   constructor(options: { bridge?: ServerBridge, readCredential?: (ref: string) => Promise<ServerCredentialValue | null> } = {}) {
     this.bridge = options.bridge ?? defaultServerBridge
@@ -188,12 +206,22 @@ export class ServerDataSource implements DataSource {
   }
 
   destroy(): void {
+    this.mediaChangeWatchGeneration += 1
     this.credential = null
     this.connected = false
     this.onlineProgressContexts.clear()
   }
 
   clearCache(): void {}
+
+  watchMediaChanges(listener: (change: DataSourceMediaChange) => void): () => void {
+    const generation = ++this.mediaChangeWatchGeneration
+    void this.runMediaChangeWatch(generation, listener)
+    return () => {
+      if (this.mediaChangeWatchGeneration === generation)
+        this.mediaChangeWatchGeneration += 1
+    }
+  }
 
   async listLibraries(): Promise<MediaLibrary[]> {
     const [physicalResult, onlineResult] = await Promise.allSettled([
@@ -399,6 +427,13 @@ export class ServerDataSource implements DataSource {
       directors: detail.item.directors,
       writers: detail.item.writers,
       cast: detail.item.cast,
+      people: detail.item.people?.map(person => ({
+        id: person.tmdb_id ? String(person.tmdb_id) : undefined,
+        name: person.name,
+        role: person.role,
+        character: person.character,
+        imageUrl: artwork(person.profile_path, 'w500'),
+      })),
       imdbId: detail.item.imdb_id,
       tmdbId: detail.item.tmdb_id,
       stills: stillPaths.map(path => artwork(path, 'w1280')).filter((value): value is string => Boolean(value)),
@@ -727,6 +762,31 @@ export class ServerDataSource implements DataSource {
     }
   }
 
+  private async runMediaChangeWatch(generation: number, listener: (change: DataSourceMediaChange) => void): Promise<void> {
+    const cursorKey = `ohmycine:server-media-change-cursor:${this.id}`
+    let cursor = safeServerChangeCursor(getAppSetting(cursorKey))
+    let retryDelay = 1_000
+    while (this.connected && this.mediaChangeWatchGeneration === generation) {
+      try {
+        const page = parseServerMediaChangePage(await this.request(`/api/v1/player/media-changes?cursor=${encodeURIComponent(cursor)}&wait_seconds=12`))
+        if (this.mediaChangeWatchGeneration !== generation)
+          return
+        if (page.cursor !== cursor) {
+          cursor = page.cursor
+          await setAppSetting(cursorKey, cursor)
+        }
+        if (page.resyncRequired || page.libraryIds.length > 0) {
+          listener({ sourceId: this.id, libraryIds: page.libraryIds, resyncRequired: page.resyncRequired })
+        }
+        retryDelay = 1_000
+      }
+      catch {
+        await waitForMediaChangeRetry(retryDelay)
+        retryDelay = Math.min(retryDelay * 2, 15_000)
+      }
+    }
+  }
+
   private async ensureCredential(): Promise<ServerCredentialValue> {
     if (this.credential)
       return this.credential
@@ -748,6 +808,30 @@ export class ServerDataSource implements DataSource {
       this.onlineProgressContexts.delete(oldest)
     }
   }
+}
+
+function safeServerChangeCursor(value: string | null): string {
+  return value && /^\d{1,20}$/.test(value) ? value : '0'
+}
+
+function parseServerMediaChangePage(value: unknown): ServerMediaChangePage {
+  const record = isRecord(value) ? value : {}
+  const cursor = typeof record.cursor === 'string' && /^\d{1,20}$/.test(record.cursor) ? record.cursor : '0'
+  const changes = Array.isArray(record.changes) ? record.changes : []
+  return {
+    cursor,
+    resyncRequired: record.resync_required === true,
+    libraryIds: [...new Set(changes.flatMap((item) => {
+      if (!isRecord(item))
+        return []
+      const libraryId = Number(item.library_id)
+      return Number.isSafeInteger(libraryId) && libraryId > 0 ? [String(libraryId)] : []
+    }))],
+  }
+}
+
+function waitForMediaChangeRetry(delay: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, delay))
 }
 
 function onlineProgressContextKey(itemId: string, mediaSourceId: string | undefined): string {
@@ -883,7 +967,7 @@ function parseLibrary(value: unknown, baseUrl: string): MediaLibrary | null {
     backdropUrl: artworkUrl,
     artworkRevision: optionalString(record.artwork_revision),
     artworkSource: parseArtworkSource(record.artwork_source),
-    itemCount: numberValue(record.entry_count),
+    itemCount: numberValue(record.work_count) ?? numberValue(record.entry_count),
   }
 }
 
@@ -933,6 +1017,7 @@ function parseItem(value: unknown): ServerItemRecord | null {
     directors: stringList(value.directors, 100),
     writers: stringList(value.writers, 100),
     cast: stringList(value.cast, 200),
+    people: personList(value.people, 100),
     tmdb_id: boundedNumber(value.tmdb_id, 1, Number.MAX_SAFE_INTEGER),
     imdb_id: optionalIMDbID(value.imdb_id),
     poster_path: optionalImagePath(value.poster_path),
@@ -1028,6 +1113,29 @@ function stringList(value: unknown, limit: number): string[] | undefined {
       continue
     seen.add(key)
     result.push(text)
+    if (result.length === limit)
+      break
+  }
+  return result.length ? result : undefined
+}
+
+function personList(value: unknown, limit: number): ServerPersonRecord[] | undefined {
+  if (!Array.isArray(value))
+    return undefined
+  const result: ServerPersonRecord[] = []
+  for (const entry of value) {
+    if (!isRecord(entry))
+      continue
+    const name = optionalString(entry.name)
+    if (!name)
+      continue
+    result.push({
+      tmdb_id: boundedNumber(entry.tmdb_id, 1, Number.MAX_SAFE_INTEGER),
+      name,
+      role: optionalString(entry.role),
+      character: optionalString(entry.character),
+      profile_path: optionalImagePath(entry.profile_path),
+    })
     if (result.length === limit)
       break
   }

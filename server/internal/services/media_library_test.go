@@ -183,7 +183,7 @@ func TestMediaLibraryRecognitionHonorsConfiguredConcurrencyAndRateGate(t *testin
 			return
 		}
 		if request.URL.Path == "/movie/100" {
-			_, _ = response.Write([]byte(`{"production_countries":[{"iso_3166_1":"US"}]}`))
+			_, _ = response.Write([]byte(`{"id":100,"title":"Concurrent title","original_title":"Concurrent title","original_language":"en","release_date":"2020-01-01","genres":[{"id":18}],"production_countries":[{"iso_3166_1":"US"}]}`))
 			return
 		}
 		http.NotFound(response, request)

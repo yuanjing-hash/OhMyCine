@@ -94,6 +94,8 @@ Server 同源 Web 管理端使用用户名密码登录，建立可撤销的服�
 
 115 分享链接与提取码具有访问凭据属性，只能进入按 DownloadTask purpose/AAD 隔离的 AES-256-GCM source envelope；`provider_item` 是 Server 内部来源，HTTP 客户端不得提交。分享明文、密文、provider item/directory ID、Cookie、完整 provider 路径和原始上游响应不得进入 Job payload/checkpoint、REST DTO、WebSocket、审计、运行日志或导出。分享与手工转存接管目录必须由绑定 actor、Connection、Storage、Storage 根、用途和过期时间的短期令牌选择，并在保存、提交、sweep、worker 与删除前重新验证 ancestry；中转根不能与最终媒体库根或同 Connection 其它启用中转根重叠。生活事件只用于唤醒受限的权威目录枚举，不能直接证明某个文件已经完整落盘。取消时仅能回收已证明位于任务中转根内的 provider 子树。
 
+PT 站点 Cookie/passkey 使用独立于下载任务的站点 AES-GCM purpose/AAD，普通 API 只返回 `credential_configured`，不得返回密文、种子下载 URL 或 passkey。站点 Base URL 只接受无 userinfo/query/fragment 的 HTTPS 根地址；adapter 使用超时、响应大小、重定向次数和严格同源（含端口）限制。PT 搜索结果令牌必须使用 256-bit 随机值并绑定 actor、site、torrent identity 和过期时间；下载确认采用原子 reserve，第二个并发消费者必须失败，provider/入队失败时只能在原 TTL 内恢复，成功后永久消费。SSE 只序列化脱敏结果 DTO，写入串行；客户端取消后不得继续写错误或上游信息。
+
 ### 4.2 API 鉴权
 
 | API 类型 | 默认策略 |
@@ -111,6 +113,10 @@ Player 首次连接 Server 时提交用户名、密码、随机设备 ID 和安�
 device token 只允许进入 `/api/v1/player/*` 的独立 Bearer 路由组，不能作为 Cookie session、不能获得 CSRF 豁免，也不能进入普通管理 API。每次认证重新解析当前用户和权限；默认 30 天 idle、180 天 absolute 上限，并在同设备重新登录、登出、显式设备撤销、用户停用或密码重置时立即撤销。设备列表只返回记录 ID、安全名称、客户端类型和生命周期时间，不返回 token/hash、IP、User-Agent 或原始设备 ID。
 
 Player 115 直连播放仍按 entry/version ID 请求 Server；Server 在每次 GET/HEAD 中重新校验媒体库权限和 active managed artifact 后才返回短期 302。Windows/Android 的 loopback 播放桥仅向 Server origin 发送 device Bearer，跨 origin 重定向必须删除 Authorization、Cookie 和 provider-private Header，禁止将 device token 转发给 115/CDN。播放 URL、Header、signed STRM URL 和上游临时地址只存在于瞬时原生播放边界，不进入路由、配置、播放历史、日志或诊断。
+
+Player 媒体变更使用同一 `/api/v1/player/*` Bearer 边界上的 12 秒有界长轮询，不使用 query token、Cookie、WebSocket subprotocol 或管理端 Job WebSocket。每次 poll 都重新认证设备/用户并按当前媒体库权限过滤；cursor 只是可持久化的断线恢复提示，不授予访问权。事件只包含逻辑媒体库 ID、content revision、受控 kind、时间和新 cursor；禁止包含绝对路径、115/provider ID、Emby/Jellyfin upstream ID/API Key、signed STRM、临时 URL 或原始错误。ready outbox 有界保留，过期 cursor 返回 `resync_required`，不为离线设备创建无界逐设备队列。
+
+Emby/Jellyfin 管理 API Key 继续使用 Connection provider/purpose 隔离的 AES-GCM envelope，只有刷新服务调用边界可以解密。`media_server_refresh` Job payload 只允许 target record ID；上游 library ID 仅作为私有目标配置保存，不进入目标 DTO、Job、日志或审计。外部客户端固定到已验证的 HTTP(S) endpoint，拒绝 credential-bearing redirect，限制超时和响应大小，并将认证/配置错误与可重试的网络不可用/限流明确分开。
 
 ## 5. 权限模型
 
@@ -540,6 +546,7 @@ AI 功能默认在 Player 侧实现，使用用户自己的 API Key。
 
 ## 13. WebSocket 安全
 
+- Player 媒体库 change feed 不复用本节管理 WebSocket；它使用可携带 Authorization Header 且每次重验权限的 device Bearer 长轮询。
 - WebSocket 连接必须认证
 - 事件按用户权限过滤
 - 普通用户只能收到自己的下载/追更事件，以及有权访问的媒体事件

@@ -116,6 +116,10 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
 	task.PlanSummaryJSON, task.TotalFiles = encodedSummary, len(targets)
+	if err := w.persistCloudState(&task, state, models.TransferTaskStatusTransferring, completedCloudItems(state), &encodedSummary); err != nil {
+		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
+	}
+	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Int("files", len(targets)).Msg(serverlog.OperationPan115CloudTransfer.Message("已完成命名规划，开始按 115 风控节奏准备目录并逐文件入库"))
 
 	for _, target := range targets {
 		if err := validateCloudTargetItem(target); err != nil {
@@ -382,7 +386,11 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 		}
 	}
 	state.Directories[relative] = directory.ID
-	if err := w.persistCloudState(task, *state, models.TransferTaskStatusPlanning, task.ProcessedFiles, nil); err != nil {
+	phase := task.Phase
+	if phase == "" {
+		phase = models.TransferTaskStatusPlanning
+	}
+	if err := w.persistCloudState(task, *state, phase, task.ProcessedFiles, nil); err != nil {
 		return "", cloudTransferError("transfer_state_persist_failed", true, err)
 	}
 	return directory.ID, nil

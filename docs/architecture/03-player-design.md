@@ -198,6 +198,8 @@ Player 的核心设计是 **DataSource 抽象层** — 每种媒体源（Emby、
 
 Server 媒体与 Player 直连 Emby 的聚合使用显式身份，而不是标题猜测：TMDB ID 合并作品卡片，OhMyCine artifact identity 合并精确版本，Emby `SystemId` 指纹区分实例并与 Library/Item/MediaSource ID 组合。Server 项目作为聚合默认卡片，匹配的 Emby 用户线路仍保留为可选版本；显式进入 Emby 来源页时不执行跨源去重。身份不足时宁可显示两项。ServerDataSource 运行时校验 Server 返回的可选完整详情字段，映射原始标题、评分、时长、类型、演职人员、外部 ID 和多张剧照；旧 Server 缺少这些字段时继续显示基础详情。Server 本地媒体与 115 STRM 都通过 `DataSource.getStreamRequest` 请求同一个 entry stream：本地条目由 Server 提供 Bearer + Range 文件流，115 条目由 Server 返回安全 302；Player 不读取 `.strm` 文件、不接触 Server 绝对路径、不使用 Server 保存的 Emby 管理 API Key，也不经过 Emby，跨 origin 302 前仍移除私有 Header。Emby 详情请求独立允许有界多张 Backdrop，People 类型按大小写不敏感清洗去重。
 
+每个启用且凭据有效的 `ServerDataSource` 还维护一个 device Bearer 长轮询：`GET /api/v1/player/media-changes?cursor=...&wait_seconds=12`。cursor 以 `ohmycine:server-media-change-cursor:<sourceId>` 保存到 app settings；断线按 source 独立指数退避，最大 15 秒，`resync_required` 只全量失效该 Server source。收到 ready change 后立即清除对应 ServerDataSource cache/来源根快照、失效聚合首页并在后台强制刷新；直连 Emby/Jellyfin、本地、OpenList/Alist、CloudDrive2、WebDAV 与正在播放的流不受影响。若用户正在浏览受影响的 Server 列表，保留当前内容和 `main.cinema-scrollbar.scrollTop`，合并显示“媒体库已更新”；点击后原位刷新并恢复滚动，离开再进入则直接读取最新数据。旧 Server 不支持端点时继续使用现有 TTL/手工刷新，不影响浏览。
+
 ### 4.2 DataSource 接口定义
 
 ```typescript

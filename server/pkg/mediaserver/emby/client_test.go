@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/yuanjing-hash/ohmycine/server/pkg/mediaserver"
 )
 
 func TestProbeUsesHeaderCredentialAndNeverFollowsRedirect(t *testing.T) {
@@ -146,5 +148,67 @@ func TestManagementSummaryTreatsMissingNullAndNegativeAggregatesAsUnknown(t *tes
 	}
 	if !summary.Partial || summary.LibraryCount != nil || summary.MovieCount == nil || *summary.MovieCount != 12 || summary.SeriesCount != nil || summary.EpisodeCount != nil {
 		t.Fatalf("invalid aggregates were presented as facts: %+v", summary)
+	}
+}
+
+func TestListLibrariesAndRefreshUseStableItemID(t *testing.T) {
+	var refreshPath, refreshQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Emby-Token") != "management-key" {
+			t.Fatal("management credential missing")
+		}
+		switch r.URL.Path {
+		case "/prefix/Library/VirtualFolders":
+			_, _ = w.Write([]byte(`[{"ItemId":"stable-library-id","Name":"电影","CollectionType":"movies"}]`))
+		case "/prefix/Items/stable-library-id/Refresh":
+			refreshPath, refreshQuery = r.URL.Path, r.URL.RawQuery
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Endpoint: server.URL + "/prefix", APIKey: "management-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	libraries, err := client.ListLibraries(context.Background())
+	if err != nil || len(libraries) != 1 || libraries[0].ID != "stable-library-id" || libraries[0].Name != "电影" {
+		t.Fatalf("libraries=%+v err=%v", libraries, err)
+	}
+	if err := client.RefreshLibrary(context.Background(), libraries[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if refreshPath == "" || !strings.Contains(refreshQuery, "Recursive=true") {
+		t.Fatalf("refresh path=%q query=%q", refreshPath, refreshQuery)
+	}
+}
+
+func TestRefreshRejectsOversizedSuccessResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("x", maxProbeResponseBytes+1)))
+	}))
+	defer server.Close()
+	client, err := New(Config{Endpoint: server.URL, APIKey: "management-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RefreshLibrary(context.Background(), "library-id"); err == nil {
+		t.Fatal("oversized refresh response was accepted")
+	}
+}
+
+func TestProbePreservesStableProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "private response", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	client, err := New(Config{Endpoint: server.URL, APIKey: "management-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Probe(context.Background()); mediaserver.ErrorCode(err) != mediaserver.ErrorUnauthorized {
+		t.Fatalf("probe error=%v code=%q", err, mediaserver.ErrorCode(err))
 	}
 }

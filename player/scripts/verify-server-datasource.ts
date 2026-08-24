@@ -16,7 +16,7 @@ const bridge = {
       ? { capabilities: ['media_catalog', 'direct_stream'] }
       : request.path === '/api/v1/player/media-libraries'
         ? { list: [
-            { id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 101, artwork_url: '/api/v1/assets/library-covers/library-cloud.png', artwork_revision: 'fixed-cloud-v1', artwork_source: 'fallback' },
+            { id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 102, work_count: 101, artwork_url: '/api/v1/assets/library-covers/library-cloud.png', artwork_revision: 'fixed-cloud-v1', artwork_source: 'fallback' },
             { id: 10, name: '不安全封面', storage_type: 'local', entry_count: 0, artwork_url: 'https://attacker.example/cover.png' },
           ], total: 2 }
         : request.path === '/api/v1/player/media-libraries/9/categories'
@@ -73,6 +73,7 @@ assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/libr
 assert.equal(libraries[0].artworkRevision, 'fixed-cloud-v1')
 assert.equal(libraries[0].artworkSource, 'fallback')
 assert.equal(libraries[0].artworkCandidates, undefined)
+assert.equal(libraries[0].itemCount, 101)
 assert.equal(libraries[1].backdropUrl, undefined)
 const categories = await source.list('9')
 assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '外语电影']])
@@ -101,6 +102,11 @@ assert.deepEqual(detail.genres, ['剧情', '动作'])
 assert.deepEqual(detail.directors, ['黑泽明'])
 assert.deepEqual(detail.writers, ['桥本忍'])
 assert.deepEqual(detail.cast, ['三船敏郎', '志村乔'])
+assert.deepEqual(detail.people?.map(person => [person.name, person.role, person.character]), [
+  ['黑泽明', 'Director', undefined],
+  ['三船敏郎', 'Actor', '菊千代'],
+])
+assert.match(detail.people?.[1]?.imageUrl ?? '', /image\.tmdb\.org\/t\/p\/w500\/mifune\.jpg$/)
 assert.equal(detail.tmdbId, 346)
 assert.equal(detail.imdbId, 'tt0047478')
 assert.equal(detail.stills?.length, 2)
@@ -127,6 +133,28 @@ const noPlayableDetail = await source.getDetail(`work|9|${noPlayableItem().id}`)
 assert.deepEqual(noPlayableDetail.mediaSources, [])
 assert.deepEqual(noPlayableDetail.children, [])
 assert.ok(calls.filter(call => call.path !== '/api/v1/player/auth/login').every(call => call.accessToken === token))
+
+const changeCalls: string[] = []
+const changeSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      changeCalls.push(request.path)
+      return { status: 200, body: { code: 0, message: 'success', data: { cursor: '8', resync_required: false, changes: [{ library_id: 9, revision: 3, kind: 'catalog' }] } } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await changeSource.init({ id: 'server-change', type: 'server', name: '变更测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-change-credential', deviceId: 'device-change' } })
+let stopChangeWatch = () => {}
+const observedChange = await new Promise<{ sourceId: string, libraryIds: string[], resyncRequired: boolean }>((resolve) => {
+  stopChangeWatch = changeSource.watchMediaChanges((change) => {
+    stopChangeWatch()
+    resolve(change)
+  })
+})
+assert.deepEqual(observedChange, { sourceId: 'server-change', libraryIds: ['9'], resyncRequired: false })
+assert.match(changeCalls[0] ?? '', /\/api\/v1\/player\/media-changes\?cursor=0&wait_seconds=12/)
+changeSource.destroy()
 
 const logoutCalls: Array<{ path: string, accessToken?: string }> = []
 await logoutServerBestEffort(source.exportConfig(), {
@@ -272,9 +300,12 @@ assert.match(serverSource, /libraries = await source\.listLibraries\(\)[\s\S]*aw
 const embySource = fs.readFileSync(new URL('../src/services/datasource/emby.ts', import.meta.url), 'utf8')
 assert.match(embySource, /DETAIL_IMAGE_QUERY[\s\S]*ImageTypeLimit: '8'/)
 assert.match(embySource, /fetchDetailPayload[\s\S]*getItem\(id, true\)/)
+assert.match(embySource, /PrimaryImageTag/)
+assert.match(embySource, /people:[\s\S]*this\.imageUrl\(person\.Id, 'Primary'/)
 const detailViewSource = fs.readFileSync(new URL('../src/views/MediaDetailView.vue', import.meta.url), 'utf8')
 assert.match(detailViewSource, /detail\.value\?\.originType !== 'server' \|\| selectedMediaSource\.value != null/)
 assert.match(detailViewSource, /Server 媒体库中暂时没有可播放的分集/)
+assert.match(detailViewSource, /visiblePeople/)
 
 console.log(JSON.stringify({
   serverDataSource: true,
@@ -285,6 +316,7 @@ console.log(JSON.stringify({
   workIdResolvesPlayableEntry: true,
   unplayableVersionsExcluded: true,
   catalogPagination: true,
+  durableServerMediaChangePolling: true,
   stableServerDeviceId: true,
   deviceTokenRevocation: true,
 }, null, 2))
@@ -293,7 +325,8 @@ function mediaItem(index = 0) {
   return {
     id: index === 0 ? 'bW92aWU6dG1kYjozNDY' : `movie-${index}`, library_id: 9, title: index === 0 ? '七武士' : `电影 ${index}`, kind: 'movie', release_year: 1954,
     original_title: '七人の侍', overview: '日本电影', tagline: '他们站了起来。', rating: 8.5, runtime_minutes: 207,
-    genres: ['剧情', '动作'], directors: ['黑泽明'], writers: ['桥本忍'], cast: ['三船敏郎', '志村乔'], tmdb_id: 346, imdb_id: 'tt0047478',
+    genres: ['剧情', '动作'], directors: ['黑泽明'], writers: ['桥本忍'], cast: ['三船敏郎', '志村乔'],
+    people: [{ tmdb_id: 1, name: '黑泽明', role: 'Director' }, { tmdb_id: 2, name: '三船敏郎', role: 'Actor', character: '菊千代', profile_path: '/mifune.jpg' }], tmdb_id: 346, imdb_id: 'tt0047478',
     poster_path: '', backdrop_path: '/backdrop.jpg', still_paths: ['/backdrop.jpg', '/still-2.jpg'], work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
     file_count: 1, season_count: 0, episode_count: 0, modified_at: '2026-08-22T00:00:00Z', match_status: 'matched',
   }

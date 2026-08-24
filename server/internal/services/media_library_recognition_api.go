@@ -11,9 +11,11 @@ import (
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type MediaRecognitionSummary struct {
@@ -261,17 +263,48 @@ func (s *MediaLibraryService) recognizeStoredUnit(ctx context.Context, library m
 		files = append(files, recognitionSourceFile{RelativePath: entry.RelativePath, Size: entry.Size})
 	}
 	packageName := recognitionPackageName(entries)
-	return recognizeMedia(ctx, lookup, MediaRecognitionRequest{PackageName: packageName, Files: files, BuiltinPackCodes: organization.BuiltinRecognitionPacks, BuiltinProcessor: processor, RecognitionRules: organization.RecognitionRules, Classification: rules, Language: library.MetadataLanguage, Region: library.MetadataRegion}), nil
+	mediaTypeHint := ""
+	if len(entries) > 0 {
+		mediaTypeHint = entries[0].MediaType
+	}
+	return recognizeMedia(ctx, lookup, MediaRecognitionRequest{PackageName: packageName, Files: files, SourceKind: mediarecognition.SourceLibraryScan, MediaTypeHint: mediaTypeHint, BuiltinPackCodes: organization.BuiltinRecognitionPacks, BuiltinProcessor: processor, RecognitionRules: organization.RecognitionRules, Classification: rules, Language: library.MetadataLanguage, Region: library.MetadataRegion}), nil
 }
 
 func (s *MediaLibraryService) persistRecognitionResult(record models.MediaLibraryRecognition, profile models.MediaClassificationProfile, result MediaRecognitionResult, manual bool) error {
+	lock := s.scanLock(record.LibraryID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	metadataJSON, err := marshalRecognitionMetadata(result)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		updates := map[string]any{"profile_id": profile.ID, "profile_revision": profile.Revision, "status": result.Status, "error_code": result.ErrorCode, "media_type": result.MediaType, "title": result.Title, "release_year": result.ReleaseYear, "tmdb_id": result.TMDBID, "confidence": result.Confidence, "category_name": result.CategoryName, "matched_rule_id": result.MatchedRuleID, "metadata_json": string(metadataJSON), "manual_override": manual, "updated_at": now}
+	var committedChange models.MediaLibraryChange
+	var artifactGeneration uint64
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var library models.MediaLibrary
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&library, record.LibraryID).Error; err != nil {
+			return err
+		}
+		if library.ProfileID != profile.ID || library.ProfileRevision != profile.Revision {
+			return appError(CodeConflict, "媒体库识别配置已变化，请重试", nil)
+		}
+		var current models.MediaLibraryRecognition
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND library_id = ?", record.ID, record.LibraryID).First(&current).Error; err != nil {
+			return err
+		}
+		generation := current.LastGeneration
+		var storage models.Storage
+		if err := tx.First(&storage, library.StorageID).Error; err != nil {
+			return err
+		}
+		requiresArtifacts := s.artifacts != nil && ((storage.Type == models.StorageTypeLocal && library.MetadataArtifactsEnabled) || (storage.Type != models.StorageTypeLocal && library.STRMEnabled && library.SignedProxyEnabled))
+		if requiresArtifacts {
+			generation = max(max(library.DirtyGeneration, library.ArtifactGeneration), current.LastGeneration) + 1
+			artifactGeneration = generation
+		}
+		updates := map[string]any{"profile_id": profile.ID, "profile_revision": profile.Revision, "status": result.Status, "error_code": result.ErrorCode, "media_type": result.MediaType, "title": result.Title, "release_year": result.ReleaseYear, "tmdb_id": result.TMDBID, "confidence": result.Confidence, "category_name": result.CategoryName, "matched_rule_id": result.MatchedRuleID, "metadata_json": string(metadataJSON), "manual_override": manual, "last_generation": generation, "updated_at": now}
 		if err := tx.Model(&models.MediaLibraryRecognition{}).Where("id = ? AND library_id = ?", record.ID, record.LibraryID).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -279,8 +312,43 @@ func (s *MediaLibraryService) persistRecognitionResult(record models.MediaLibrar
 		if result.MediaType == "tv" {
 			entryUpdates["series_title"] = result.Title
 		}
-		return tx.Model(&models.MediaLibraryEntry{}).Where("library_id = ? AND recognition_id = ?", record.LibraryID, record.ID).Updates(entryUpdates).Error
+		if err := tx.Model(&models.MediaLibraryEntry{}).Where("library_id = ? AND recognition_id = ?", record.LibraryID, record.ID).Updates(entryUpdates).Error; err != nil {
+			return err
+		}
+		if artifactGeneration > 0 {
+			// A manual metadata correction is a complete logical projection
+			// generation. Carry all unchanged recognition/source-asset facts into
+			// it so the artifact worker can safely rewrite the full sidecar set;
+			// cleanup remains ineligible because this was not a complete scan.
+			if err := tx.Model(&models.MediaLibraryRecognition{}).Where("library_id = ?", record.LibraryID).Updates(map[string]any{"last_generation": artifactGeneration, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.MediaLibrarySourceAsset{}).Where("library_id = ?", record.LibraryID).Updates(map[string]any{"generation": artifactGeneration, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.MediaLibrary{}).Where("id = ?", record.LibraryID).Updates(map[string]any{"dirty_generation": artifactGeneration, "updated_at": now}).Error; err != nil {
+				return err
+			}
+		}
+		if s.changes != nil {
+			change, err := s.changes.RecordTx(tx, record.LibraryID, generation, models.MediaLibraryChangeMetadata, artifactGeneration == 0)
+			if err != nil {
+				return err
+			}
+			committedChange = change
+		}
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if artifactGeneration > 0 {
+		return s.artifacts.ScheduleGeneration(record.LibraryID, artifactGeneration)
+	}
+	if committedChange.State == models.MediaLibraryChangeReady && s.changes != nil {
+		s.changes.NotifyCommitted(committedChange.LibraryID, committedChange.Revision)
+	}
+	return nil
 }
 
 func (s *MediaLibraryService) recognitionSummary(record models.MediaLibraryRecognition) (MediaRecognitionSummary, error) {

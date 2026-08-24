@@ -60,6 +60,10 @@ var (
 	OperationTaskQueue                 = Operation{"task_queue", "系统任务队列"}
 	OperationPluginRepository          = Operation{"plugin_repository", "插件仓库"}
 	OperationPluginRuntime             = Operation{"plugin_runtime", "插件运行时"}
+	OperationDiscoveryRecommendation   = Operation{"discovery_recommendation", "影视推荐"}
+	OperationDiscoverySearch           = Operation{"discovery_search", "资源探索"}
+	OperationPTSiteManagement          = Operation{"pt_site_management", "PT站点管理"}
+	OperationCookieCloud               = Operation{"cookiecloud_sync", "CookieCloud同步"}
 )
 
 func (o Operation) Event(event *zerolog.Event) *zerolog.Event {
@@ -120,6 +124,8 @@ func OperationForHTTPRoute(route string) Operation {
 		return OperationSeedingManagement
 	case strings.HasPrefix(route, "/settings/metadata"):
 		return OperationMetadataConfiguration
+	case strings.HasPrefix(route, "/settings/sites/cookiecloud"):
+		return OperationCookieCloud
 	case strings.HasPrefix(route, "/settings"):
 		return OperationSystemSettings
 	case strings.HasPrefix(route, "/runtime-logs"):
@@ -128,6 +134,12 @@ func OperationForHTTPRoute(route string) Operation {
 		return OperationPluginRepository
 	case strings.HasPrefix(route, "/plugins"):
 		return OperationPluginRuntime
+	case strings.HasPrefix(route, "/discovery/recommendations"):
+		return OperationDiscoveryRecommendation
+	case strings.HasPrefix(route, "/discovery"):
+		return OperationDiscoverySearch
+	case strings.HasPrefix(route, "/sites"):
+		return OperationPTSiteManagement
 	default:
 		return OperationHTTPRequest
 	}

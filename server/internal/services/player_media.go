@@ -29,6 +29,7 @@ type PlayerMediaLibrary struct {
 	SortOrder       int        `json:"sort_order"`
 	Status          string     `json:"status"`
 	EntryCount      int64      `json:"entry_count"`
+	WorkCount       int64      `json:"work_count"`
 	DirectStream    bool       `json:"direct_stream"`
 	STRMEnabled     bool       `json:"strm_enabled"`
 	ArtworkURL      string     `json:"artwork_url,omitempty"`
@@ -54,6 +55,14 @@ type PlayerMediaIdentity struct {
 	Value     string `json:"value"`
 }
 
+type PlayerMediaPerson struct {
+	TMDBID      int64  `json:"tmdb_id,omitempty"`
+	Name        string `json:"name"`
+	Role        string `json:"role,omitempty"`
+	Character   string `json:"character,omitempty"`
+	ProfilePath string `json:"profile_path,omitempty"`
+}
+
 type PlayerMediaItem struct {
 	ID             string              `json:"id"`
 	LibraryID      uint                `json:"library_id"`
@@ -69,6 +78,7 @@ type PlayerMediaItem struct {
 	Directors      []string            `json:"directors,omitempty"`
 	Writers        []string            `json:"writers,omitempty"`
 	Cast           []string            `json:"cast,omitempty"`
+	People         []PlayerMediaPerson `json:"people,omitempty"`
 	TMDBID         int64               `json:"tmdb_id,omitempty"`
 	IMDbID         string              `json:"imdb_id,omitempty"`
 	PosterPath     string              `json:"poster_path,omitempty"`
@@ -151,10 +161,11 @@ func (s *MediaLibraryService) PlayerLibraries(actor Actor) ([]PlayerMediaLibrary
 		SignedProxyEnabled   bool
 		LastSuccessfulScanAt *time.Time
 		EntryCount           int64
+		WorkCount            int64
 	}
 	var rows []row
 	err := s.db.Table("media_libraries").
-		Select("media_libraries.id, media_libraries.name, storages.type AS storage_type, media_libraries.sort_order, media_libraries.status, media_libraries.strm_enabled, media_libraries.signed_proxy_enabled, media_libraries.last_successful_scan_at, COUNT(media_library_entries.id) AS entry_count").
+		Select("media_libraries.id, media_libraries.name, storages.type AS storage_type, media_libraries.sort_order, media_libraries.status, media_libraries.strm_enabled, media_libraries.signed_proxy_enabled, media_libraries.last_successful_scan_at, COUNT(media_library_entries.id) AS entry_count, COUNT(DISTINCT CASE WHEN media_library_entries.work_key <> '' THEN media_library_entries.work_key END) AS work_count").
 		Joins("JOIN storages ON storages.id = media_libraries.storage_id").
 		Joins("LEFT JOIN media_library_entries ON media_library_entries.library_id = media_libraries.id").
 		Where("media_libraries.enabled = ? AND storages.enabled = ?", true, true).
@@ -166,7 +177,7 @@ func (s *MediaLibraryService) PlayerLibraries(actor Actor) ([]PlayerMediaLibrary
 	for _, row := range rows {
 		directStream := row.StorageType == models.StorageTypeLocal || row.StorageType == models.StorageTypePan115 && row.STRMEnabled && row.SignedProxyEnabled
 		artworkURL := playerLibraryArtworkURL(row.StorageType)
-		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, ArtworkURL: artworkURL, ArtworkRevision: fallbackArtworkRevision(artworkURL), ArtworkSource: "fallback", LastSuccessful: row.LastSuccessfulScanAt})
+		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, WorkCount: row.WorkCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, ArtworkURL: artworkURL, ArtworkRevision: fallbackArtworkRevision(artworkURL), ArtworkSource: "fallback", LastSuccessful: row.LastSuccessfulScanAt})
 	}
 	return result, nil
 }
@@ -444,11 +455,42 @@ func (s *MediaLibraryService) playerMediaItem(libraryID uint, item MediaCatalogI
 		Kind: item.Kind, ReleaseYear: item.ReleaseYear, Overview: snapshot.Overview, Tagline: snapshot.Tagline,
 		Rating: snapshot.VoteAverage, RuntimeMinutes: snapshot.RuntimeMinutes, Genres: genreNames(snapshot.Genres),
 		Directors: personNames(snapshot.Directors), Writers: personNames(snapshot.Writers), Cast: personNames(snapshot.Cast),
+		People: playerMediaPeople(snapshot),
 		TMDBID: snapshot.TMDBID, IMDbID: snapshot.IMDbID, PosterPath: safeTMDBImagePath(snapshot.PosterPath), BackdropPath: safeTMDBImagePath(snapshot.BackdropPath),
 		StillPaths: snapshotStillPaths(snapshot), WorkIdentity: identity, FileCount: item.FileCount,
 		SeasonCount: item.SeasonCount, EpisodeCount: item.EpisodeCount, ModifiedAt: item.ModifiedAt,
 		CategoryName: item.CategoryName, MatchStatus: item.MatchStatus,
 	}, nil
+}
+
+func playerMediaPeople(snapshot tmdb.Snapshot) []PlayerMediaPerson {
+	result := make([]PlayerMediaPerson, 0, len(snapshot.Directors)+len(snapshot.Writers)+len(snapshot.Cast))
+	seen := make(map[string]struct{}, cap(result))
+	appendPeople := func(people []tmdb.Person, defaultRole string) {
+		for _, person := range people {
+			if len(result) >= 100 {
+				return
+			}
+			name := strings.TrimSpace(person.Name)
+			role := strings.TrimSpace(person.Job)
+			if role == "" {
+				role = defaultRole
+			}
+			key := strconv.FormatInt(person.TMDBID, 10) + "\x00" + strings.ToLower(name) + "\x00" + strings.ToLower(role)
+			if name == "" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, PlayerMediaPerson{TMDBID: person.TMDBID, Name: name, Role: role, Character: strings.TrimSpace(person.Character), ProfilePath: safeTMDBImagePath(person.ProfilePath)})
+		}
+	}
+	appendPeople(snapshot.Directors, "Director")
+	appendPeople(snapshot.Writers, "Writer")
+	appendPeople(snapshot.Cast, "Actor")
+	return result
 }
 
 func genreNames(genres []tmdb.Genre) []string {

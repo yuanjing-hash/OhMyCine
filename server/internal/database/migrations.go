@@ -85,7 +85,91 @@ func Migrate(db *gorm.DB) error {
 }
 
 func schemaMigrations() []migration {
-	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}, {Version: 38, Apply: migratePluginManagedImports}}
+	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}, {Version: 38, Apply: migratePluginManagedImports}, {Version: 39, Apply: migrateMediaRefreshNotify}, {Version: 40, Apply: migrateDiscoveryCache}, {Version: 41, Apply: migrateDownloadRecognitionOverride}, {Version: 42, Apply: migratePTSites}, {Version: 43, Apply: migrateCookieCloudAndSiteRendering}}
+}
+
+func migrateCookieCloudAndSiteRendering(db *gorm.DB) error {
+	now := time.Now().UTC()
+	statements := []string{
+		`ALTER TABLE sites ADD COLUMN browser_emulation INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sites ADD COLUMN browser_service_url TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE cookie_cloud_settings (id INTEGER PRIMARY KEY CHECK(id = 1), mode TEXT NOT NULL DEFAULT 'disabled' CHECK(mode IN ('disabled','remote','local')), base_url TEXT NOT NULL DEFAULT '', credential_ciphertext TEXT NOT NULL DEFAULT '', auto_sync_minutes INTEGER NOT NULL DEFAULT 0, last_sync_status TEXT NOT NULL DEFAULT 'never', last_sync_error_code TEXT NOT NULL DEFAULT '', last_sync_at DATETIME, revision INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)`,
+		`CREATE TABLE cookie_cloud_payloads (id INTEGER PRIMARY KEY CHECK(id = 1), uuid_hash TEXT NOT NULL DEFAULT '', encrypted_payload TEXT NOT NULL DEFAULT '', crypto_type TEXT NOT NULL DEFAULT 'legacy', updated_at DATETIME NOT NULL)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	if err := db.Exec(`INSERT INTO cookie_cloud_settings(id,mode,base_url,credential_ciphertext,auto_sync_minutes,last_sync_status,last_sync_error_code,revision,created_at,updated_at) VALUES (1,'disabled','','',0,'never','',1,?,?)`, now, now).Error; err != nil {
+		return err
+	}
+	return db.Exec(`INSERT INTO cookie_cloud_payloads(id,uuid_hash,encrypted_payload,crypto_type,updated_at) VALUES (1,'','','legacy',?)`, now).Error
+}
+
+func migratePTSites(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE sites (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, name_normalized TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('pttime')), base_url TEXT NOT NULL, credential_ciphertext TEXT NOT NULL, user_agent TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 100, timeout_seconds INTEGER NOT NULL DEFAULT 12, rate_limit_per_minute INTEGER NOT NULL DEFAULT 12, last_health_status TEXT NOT NULL DEFAULT 'unknown', last_health_error_code TEXT NOT NULL DEFAULT '', last_health_username TEXT NOT NULL DEFAULT '', last_health_checked_at DATETIME, revision INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)`,
+		`CREATE UNIQUE INDEX idx_sites_name_normalized ON sites(name_normalized)`,
+		`CREATE INDEX idx_sites_kind ON sites(kind)`,
+		`CREATE INDEX idx_sites_enabled ON sites(enabled)`,
+		`CREATE INDEX idx_sites_priority ON sites(priority)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateDownloadRecognitionOverride(db *gorm.DB) error {
+	for _, statement := range []string{
+		`ALTER TABLE download_tasks ADD COLUMN recognition_override_tmdb_id INTEGER`,
+		`ALTER TABLE download_tasks ADD COLUMN recognition_override_media_type TEXT NOT NULL DEFAULT ''`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateDiscoveryCache(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TABLE discovery_caches (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, section TEXT NOT NULL, locale TEXT NOT NULL, page INTEGER NOT NULL, payload_json TEXT NOT NULL, fresh_until DATETIME NOT NULL, stale_until DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)`,
+		`CREATE UNIQUE INDEX idx_discovery_cache_identity ON discovery_caches(provider, section, locale, page)`,
+		`CREATE INDEX idx_discovery_caches_fresh_until ON discovery_caches(fresh_until)`,
+		`CREATE INDEX idx_discovery_caches_stale_until ON discovery_caches(stale_until)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateMediaRefreshNotify(db *gorm.DB) error {
+	statements := []string{
+		`ALTER TABLE media_libraries ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0`,
+		`CREATE TABLE media_library_changes (sequence INTEGER PRIMARY KEY AUTOINCREMENT, library_id INTEGER NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('catalog','metadata','removal')), state TEXT NOT NULL CHECK(state IN ('pending','ready')), generation INTEGER NOT NULL DEFAULT 0, ready_at DATETIME, created_at DATETIME NOT NULL, FOREIGN KEY(library_id) REFERENCES media_libraries(id) ON DELETE CASCADE, UNIQUE(library_id, revision))`,
+		`CREATE INDEX idx_media_library_changes_ready ON media_library_changes(state, sequence)`,
+		`CREATE INDEX idx_media_library_changes_created_at ON media_library_changes(created_at)`,
+		`CREATE TABLE media_server_refresh_targets (id INTEGER PRIMARY KEY AUTOINCREMENT, library_id INTEGER NOT NULL, connection_id INTEGER NOT NULL, upstream_library_id TEXT NOT NULL, upstream_library_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, desired_revision INTEGER NOT NULL DEFAULT 0, successful_revision INTEGER NOT NULL DEFAULT 0, manual_generation INTEGER NOT NULL DEFAULT 0, successful_manual_generation INTEGER NOT NULL DEFAULT 0, last_job_id TEXT, last_status TEXT NOT NULL DEFAULT 'idle', last_error_code TEXT NOT NULL DEFAULT '', last_attempt_at DATETIME, last_successful_at DATETIME, revision INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, FOREIGN KEY(library_id) REFERENCES media_libraries(id) ON DELETE CASCADE, FOREIGN KEY(connection_id) REFERENCES connections(id) ON DELETE RESTRICT, FOREIGN KEY(last_job_id) REFERENCES jobs(id) ON DELETE SET NULL, UNIQUE(library_id, connection_id, upstream_library_id))`,
+		`CREATE INDEX idx_media_server_refresh_targets_library ON media_server_refresh_targets(library_id)`,
+		`CREATE INDEX idx_media_server_refresh_targets_connection ON media_server_refresh_targets(connection_id)`,
+		`CREATE INDEX idx_media_server_refresh_targets_desired ON media_server_refresh_targets(desired_revision)`,
+		`CREATE TABLE media_server_refresh_runs (id TEXT PRIMARY KEY, target_id INTEGER NOT NULL, job_id TEXT NOT NULL, desired_revision INTEGER NOT NULL, status TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '', started_at DATETIME NOT NULL, finished_at DATETIME, FOREIGN KEY(target_id) REFERENCES media_server_refresh_targets(id) ON DELETE CASCADE, FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)`,
+		`CREATE INDEX idx_media_server_refresh_runs_target ON media_server_refresh_runs(target_id, started_at DESC)`,
+		`CREATE INDEX idx_media_server_refresh_runs_job ON media_server_refresh_runs(job_id)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migratePluginManagedImports(db *gorm.DB) error {
@@ -1180,6 +1264,7 @@ func seedQueuePolicies(db *gorm.DB) error {
 		{JobType: "scrape", Concurrency: 4, ResourceConcurrency: 2, MaxAttempts: 4, LeaseSeconds: 30},
 		{JobType: "media_artifact", Concurrency: 4, ResourceConcurrency: 1, MaxAttempts: 4, LeaseSeconds: 30},
 		{JobType: "strm_reconcile", Concurrency: 4, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 30},
+		{JobType: "media_server_refresh", Concurrency: 4, ResourceConcurrency: 1, MaxAttempts: 5, LeaseSeconds: 30},
 		{JobType: "refresh", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 30},
 		{JobType: "fake", Concurrency: 2, ResourceConcurrency: 1, MaxAttempts: 3, LeaseSeconds: 10},
 	}

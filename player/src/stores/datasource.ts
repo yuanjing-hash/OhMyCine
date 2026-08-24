@@ -1,4 +1,4 @@
-import type { DataSource, DataSourceConfig, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { RawFileSourceType } from '@/services/scraper/types'
 import { defineStore } from 'pinia'
@@ -12,6 +12,7 @@ import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
 import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
+import { dispatchServerLibraryRefresh } from '@/services/serverMediaChanges'
 
 const STORAGE_KEY = 'ohmycine-datasources'
 const DISPLAY_CACHE_KEY = 'ohmycine-media-display-cache-v1'
@@ -43,8 +44,10 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const sourceRootSnapshots = ref<Record<string, SourceRootSnapshot>>({})
   const isLoading = ref(false)
   const lastError = ref<string | null>(null)
+  const pendingServerUpdateSourceIds = ref<string[]>([])
   let homeLoadId = 0
   let displayCacheHydrated = false
+  const mediaChangeWatchers = new Map<string, { source: DataSource, stop: () => void }>()
 
   const orderedConfigs = computed(() =>
     [...configs.value].sort((a, b) => a.order - b.order),
@@ -53,6 +56,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const activeSource = computed(() =>
     configs.value.find(c => c.id === activeSourceId.value) ?? null,
   )
+
+  const hasServerLibraryUpdates = computed(() => pendingServerUpdateSourceIds.value.length > 0)
 
   function loadConfigs() {
     hydrateDisplayCache()
@@ -107,6 +112,47 @@ export const useDataSourceStore = defineStore('datasource', () => {
     catch (error) {
       lastError.value = error instanceof Error ? error.message : '数据源初始化失败'
     }
+    syncMediaChangeWatchers()
+  }
+
+  function syncMediaChangeWatchers() {
+    const activeServerIds = new Set(configs.value.filter(config => config.type === 'server' && config.enabled !== false).map(config => config.id))
+    for (const [sourceId, watcher] of mediaChangeWatchers) {
+      const source = dataSourceManager.getSource(sourceId)
+      if (!activeServerIds.has(sourceId) || source !== watcher.source) {
+        watcher.stop()
+        mediaChangeWatchers.delete(sourceId)
+      }
+    }
+    for (const sourceId of activeServerIds) {
+      const source = dataSourceManager.getSource(sourceId)
+      if (!source?.watchMediaChanges || mediaChangeWatchers.has(sourceId))
+        continue
+      mediaChangeWatchers.set(sourceId, { source, stop: source.watchMediaChanges(handleServerMediaChange) })
+    }
+  }
+
+  function handleServerMediaChange(change: DataSourceMediaChange) {
+    if (!pendingServerUpdateSourceIds.value.includes(change.sourceId))
+      pendingServerUpdateSourceIds.value = [...pendingServerUpdateSourceIds.value, change.sourceId]
+    dataSourceManager.clearSourceCache(change.sourceId)
+    invalidateSourceRootSnapshot(change.sourceId)
+    invalidateHomeCache()
+    void loadHomeSections({ force: true, background: true })
+  }
+
+  function applyServerLibraryUpdates() {
+    const sourceIds = pendingServerUpdateSourceIds.value
+    if (sourceIds.length === 0)
+      return
+    pendingServerUpdateSourceIds.value = []
+    dispatchServerLibraryRefresh(sourceIds)
+  }
+
+  function stopMediaChangeWatchers() {
+    for (const watcher of mediaChangeWatchers.values())
+      watcher.stop()
+    mediaChangeWatchers.clear()
   }
 
   async function addConfig(config: Omit<DataSourceConfig, 'id' | 'order'> & Partial<Pick<DataSourceConfig, 'id' | 'order'>>) {
@@ -162,6 +208,9 @@ export const useDataSourceStore = defineStore('datasource', () => {
     }
     if (config?.type === 'server')
       await logoutServerBestEffort(config)
+    mediaChangeWatchers.get(id)?.stop()
+    mediaChangeWatchers.delete(id)
+    pendingServerUpdateSourceIds.value = pendingServerUpdateSourceIds.value.filter(sourceId => sourceId !== id)
     dataSourceManager.removeSource(id)
     invalidateSourceRootSnapshot(id)
     invalidateHomeCache()
@@ -420,6 +469,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     homeLoadedAt,
     isLoading,
     lastError,
+    hasServerLibraryUpdates,
+    pendingServerUpdateSourceIds,
     loadConfigs,
     addConfig,
     replaceConfig,
@@ -439,6 +490,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     searchAllSources,
     getSource,
     syncManager,
+    applyServerLibraryUpdates,
+    stopMediaChangeWatchers,
   }
 })
 

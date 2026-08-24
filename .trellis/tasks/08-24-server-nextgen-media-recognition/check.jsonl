@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Go/WebUI 测试、lint、回归和验收证据要求"}
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"核对下载与媒体库是否真正共享识别器和缓存语义"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"核对诊断、日志、API 和持久化是否泄露敏感字段"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"核对迁移兼容、版本字段和回滚形态"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"核对已完成下载的恢复按钮、权限和错误反馈"}
+{"file":".trellis/tasks/08-24-server-nextgen-media-recognition/research/benchmark-strategy.md","reason":"核对 Top-1、误匹配率、未识别率、请求数和差异报告"}
+{"file":".trellis/tasks/08-24-server-nextgen-media-recognition/research/moviepilot-v3.md","reason":"防止把人工候选选择误写成 MoviePilot 默认流程"}

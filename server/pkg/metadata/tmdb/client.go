@@ -133,10 +133,11 @@ type Company struct {
 }
 
 type Person struct {
-	TMDBID    int64  `json:"tmdb_id,omitempty"`
-	Name      string `json:"name"`
-	Character string `json:"character,omitempty"`
-	Job       string `json:"job,omitempty"`
+	TMDBID      int64  `json:"tmdb_id,omitempty"`
+	Name        string `json:"name"`
+	Character   string `json:"character,omitempty"`
+	Job         string `json:"job,omitempty"`
+	ProfilePath string `json:"profile_path,omitempty"`
 }
 
 type SeasonSnapshot struct {
@@ -150,15 +151,17 @@ type SeasonSnapshot struct {
 
 type detailCredits struct {
 	Cast []struct {
-		ID        int64  `json:"id"`
-		Name      string `json:"name"`
-		Character string `json:"character"`
+		ID          int64  `json:"id"`
+		Name        string `json:"name"`
+		Character   string `json:"character"`
+		ProfilePath string `json:"profile_path"`
 	} `json:"cast"`
 	Crew []struct {
-		ID         int64  `json:"id"`
-		Name       string `json:"name"`
-		Department string `json:"department"`
-		Job        string `json:"job"`
+		ID          int64  `json:"id"`
+		Name        string `json:"name"`
+		Department  string `json:"department"`
+		Job         string `json:"job"`
+		ProfilePath string `json:"profile_path"`
 	} `json:"crew"`
 }
 
@@ -196,10 +199,197 @@ type detailImages struct {
 type Candidate struct {
 	ID               int64   `json:"id"`
 	Title            string  `json:"title"`
+	OriginalTitle    string  `json:"original_title,omitempty"`
 	MediaType        string  `json:"media_type"`
 	OriginalLanguage string  `json:"original_language"`
 	ReleaseYear      *int    `json:"release_year,omitempty"`
 	Confidence       float64 `json:"confidence"`
+	// The fields below are internal ranking evidence. They are intentionally
+	// omitted from the administrator correction DTO: the browser needs only a
+	// safe identity summary, while the automatic recognizer may enrich a small
+	// shortlist with additional TMDB evidence.
+	AlternativeTitles []string `json:"-"`
+	Translations      []string `json:"-"`
+	SeasonCount       int      `json:"-"`
+	EpisodeCount      int      `json:"-"`
+	Popularity        float64  `json:"-"`
+	VoteCount         int      `json:"-"`
+}
+
+// DiscoveryPage is the bounded, credential-free projection returned by TMDB
+// recommendation endpoints. It deliberately keeps image file identities
+// separate from the configured image origin.
+type DiscoveryPage struct {
+	Page       int
+	TotalPages int
+	Items      []DiscoveryItem
+}
+
+type DiscoveryItem struct {
+	ID            int64
+	MediaType     string
+	Title         string
+	OriginalTitle string
+	Year          *int
+	Overview      string
+	Rating        *float64
+	VoteCount     *int
+	PosterPath    string
+	BackdropPath  string
+}
+
+// ImageURL resolves only a validated TMDB image identity and a fixed size.
+func (c *Client) ImageURL(identity, size string) (string, error) {
+	identity = cleanImagePath(identity)
+	if identity == "" || !allowedImageSize(size) {
+		return "", clientError(ErrorInvalidRequest, nil)
+	}
+	return c.imageBase + "/" + size + identity, nil
+}
+
+// Discover provides the small allowlist of recommendation sections used by
+// the Server discovery page. Callers cannot supply an arbitrary TMDB path.
+func (c *Client) Discover(ctx context.Context, section string, page int, language, region string) (DiscoveryPage, error) {
+	if page < 1 || page > 5 {
+		return DiscoveryPage{}, clientError(ErrorInvalidRequest, nil)
+	}
+	endpoint, mediaType := "", ""
+	switch strings.TrimSpace(section) {
+	case "trending-movie":
+		endpoint, mediaType = "/trending/movie/week", "movie"
+	case "trending-tv":
+		endpoint, mediaType = "/trending/tv/week", "tv"
+	case "now-playing":
+		endpoint, mediaType = "/movie/now_playing", "movie"
+	case "upcoming":
+		endpoint, mediaType = "/movie/upcoming", "movie"
+	case "top-rated-movie":
+		endpoint, mediaType = "/movie/top_rated", "movie"
+	case "top-rated-tv":
+		endpoint, mediaType = "/tv/top_rated", "tv"
+	case "anime-movie":
+		endpoint, mediaType = "/discover/movie", "movie"
+	case "anime-tv":
+		endpoint, mediaType = "/discover/tv", "tv"
+	default:
+		return DiscoveryPage{}, clientError(ErrorInvalidRequest, nil)
+	}
+	values := url.Values{"page": {strconv.Itoa(page)}, "include_adult": {"false"}}
+	if strings.HasPrefix(section, "anime-") {
+		values.Set("with_genres", "16")
+		values.Set("sort_by", "popularity.desc")
+	}
+	if language = normalizeTMDBLanguage(language); language != "" {
+		values.Set("language", language)
+	}
+	if region = normalizeTMDBRegion(region); region != "" && mediaType == "movie" {
+		values.Set("region", region)
+	}
+	var response struct {
+		Page       int `json:"page"`
+		TotalPages int `json:"total_pages"`
+		Results    []struct {
+			ID            int64   `json:"id"`
+			Title         string  `json:"title"`
+			OriginalTitle string  `json:"original_title"`
+			Name          string  `json:"name"`
+			OriginalName  string  `json:"original_name"`
+			ReleaseDate   string  `json:"release_date"`
+			FirstAirDate  string  `json:"first_air_date"`
+			Overview      string  `json:"overview"`
+			VoteAverage   float64 `json:"vote_average"`
+			VoteCount     int     `json:"vote_count"`
+			PosterPath    string  `json:"poster_path"`
+			BackdropPath  string  `json:"backdrop_path"`
+		} `json:"results"`
+	}
+	if err := c.get(ctx, endpoint, values, &response); err != nil {
+		return DiscoveryPage{}, err
+	}
+	result := DiscoveryPage{Page: max(1, response.Page), TotalPages: min(500, max(1, response.TotalPages)), Items: make([]DiscoveryItem, 0, len(response.Results))}
+	for _, raw := range response.Results {
+		title, original, date := raw.Title, raw.OriginalTitle, raw.ReleaseDate
+		if mediaType == "tv" {
+			title, original, date = raw.Name, raw.OriginalName, raw.FirstAirDate
+		}
+		title = cleanText(title, 512)
+		if raw.ID <= 0 || title == "" {
+			continue
+		}
+		var rating *float64
+		if raw.VoteAverage >= 0 && raw.VoteAverage <= 10 {
+			value := boundedRating(raw.VoteAverage)
+			rating = &value
+		}
+		var votes *int
+		if raw.VoteCount >= 0 {
+			value := boundedCount(raw.VoteCount)
+			votes = &value
+		}
+		result.Items = append(result.Items, DiscoveryItem{ID: raw.ID, MediaType: mediaType, Title: title, OriginalTitle: cleanText(original, 512), Year: parseYear(date), Overview: cleanText(raw.Overview, 4096), Rating: rating, VoteCount: votes, PosterPath: cleanImagePath(raw.PosterPath), BackdropPath: cleanImagePath(raw.BackdropPath)})
+	}
+	return result, nil
+}
+
+// Related fetches one of TMDB's fixed related-work lists. It shares the same
+// bounded projection as discovery and never exposes an upstream request URL.
+func (c *Client) Related(ctx context.Context, mediaType string, id int64, kind string, page int, language string) (DiscoveryPage, error) {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if (mediaType != "movie" && mediaType != "tv") || id <= 0 || (kind != "recommendations" && kind != "similar") || page < 1 || page > 5 {
+		return DiscoveryPage{}, clientError(ErrorInvalidRequest, nil)
+	}
+	values := url.Values{"page": {strconv.Itoa(page)}}
+	if language = normalizeTMDBLanguage(language); language != "" {
+		values.Set("language", language)
+	}
+	var response struct {
+		Page       int `json:"page"`
+		TotalPages int `json:"total_pages"`
+		Results    []struct {
+			ID            int64   `json:"id"`
+			Title         string  `json:"title"`
+			OriginalTitle string  `json:"original_title"`
+			Name          string  `json:"name"`
+			OriginalName  string  `json:"original_name"`
+			ReleaseDate   string  `json:"release_date"`
+			FirstAirDate  string  `json:"first_air_date"`
+			Overview      string  `json:"overview"`
+			VoteAverage   float64 `json:"vote_average"`
+			VoteCount     int     `json:"vote_count"`
+			PosterPath    string  `json:"poster_path"`
+			BackdropPath  string  `json:"backdrop_path"`
+		} `json:"results"`
+	}
+	if err := c.get(ctx, "/"+mediaType+"/"+strconv.FormatInt(id, 10)+"/"+kind, values, &response); err != nil {
+		return DiscoveryPage{}, err
+	}
+	result := DiscoveryPage{Page: max(1, response.Page), TotalPages: min(500, max(1, response.TotalPages)), Items: make([]DiscoveryItem, 0, len(response.Results))}
+	for _, raw := range response.Results {
+		title, original, date := raw.Title, raw.OriginalTitle, raw.ReleaseDate
+		if mediaType == "tv" {
+			title, original, date = raw.Name, raw.OriginalName, raw.FirstAirDate
+		}
+		title = cleanText(title, 512)
+		if raw.ID <= 0 || title == "" {
+			continue
+		}
+		var rating *float64
+		if raw.VoteAverage >= 0 && raw.VoteAverage <= 10 {
+			value := boundedRating(raw.VoteAverage)
+			rating = &value
+		}
+		var votes *int
+		if raw.VoteCount >= 0 {
+			value := boundedCount(raw.VoteCount)
+			votes = &value
+		}
+		result.Items = append(result.Items, DiscoveryItem{ID: raw.ID, MediaType: mediaType, Title: title, OriginalTitle: cleanText(original, 512), Year: parseYear(date), Overview: cleanText(raw.Overview, 4096), Rating: rating, VoteCount: votes, PosterPath: cleanImagePath(raw.PosterPath), BackdropPath: cleanImagePath(raw.BackdropPath)})
+		if len(result.Items) == 20 {
+			break
+		}
+	}
+	return result, nil
 }
 
 func New(token string) (*Client, error) {
@@ -707,7 +897,7 @@ func populateCommonSnapshot(snapshot *Snapshot, genres []detailGenre, production
 		appendUniquePerson(&snapshot.Writers, Person{TMDBID: max(int64(0), creator.ID), Name: cleanText(creator.Name, 256), Job: "Creator"}, 50)
 	}
 	for _, crew := range credits.Crew {
-		person := Person{TMDBID: max(int64(0), crew.ID), Name: cleanText(crew.Name, 256), Job: cleanText(crew.Job, 128)}
+		person := Person{TMDBID: max(int64(0), crew.ID), Name: cleanText(crew.Name, 256), Job: cleanText(crew.Job, 128), ProfilePath: cleanImagePath(crew.ProfilePath)}
 		if person.Name == "" {
 			continue
 		}
@@ -719,7 +909,7 @@ func populateCommonSnapshot(snapshot *Snapshot, genres []detailGenre, production
 		}
 	}
 	for _, cast := range credits.Cast {
-		person := Person{TMDBID: max(int64(0), cast.ID), Name: cleanText(cast.Name, 256), Character: cleanText(cast.Character, 256)}
+		person := Person{TMDBID: max(int64(0), cast.ID), Name: cleanText(cast.Name, 256), Character: cleanText(cast.Character, 256), ProfilePath: cleanImagePath(cast.ProfilePath)}
 		if person.Name != "" {
 			appendUniquePerson(&snapshot.Cast, person, 100)
 		}
@@ -773,6 +963,31 @@ func cleanCode(value string) string {
 		return ""
 	}
 	return value
+}
+
+func normalizeTMDBLanguage(value string) string {
+	value = strings.TrimSpace(value)
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '-' || r == '_' })
+	if len(parts) == 1 && len(parts[0]) == 2 {
+		return strings.ToLower(parts[0])
+	}
+	if len(parts) == 2 && len(parts[0]) == 2 && len(parts[1]) == 2 {
+		return strings.ToLower(parts[0]) + "-" + strings.ToUpper(parts[1])
+	}
+	return ""
+}
+
+func normalizeTMDBRegion(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) != 2 {
+		return ""
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return ""
+		}
+	}
+	return strings.ToUpper(value)
 }
 
 func cleanDate(value string) string {
@@ -868,12 +1083,16 @@ func (c *Client) SearchCandidates(ctx context.Context, mediaType, title string, 
 	}
 	var response struct {
 		Results []struct {
-			ID               int64  `json:"id"`
-			Title            string `json:"title"`
-			Name             string `json:"name"`
-			OriginalLanguage string `json:"original_language"`
-			ReleaseDate      string `json:"release_date"`
-			FirstAirDate     string `json:"first_air_date"`
+			ID               int64   `json:"id"`
+			Title            string  `json:"title"`
+			Name             string  `json:"name"`
+			OriginalTitle    string  `json:"original_title"`
+			OriginalName     string  `json:"original_name"`
+			OriginalLanguage string  `json:"original_language"`
+			ReleaseDate      string  `json:"release_date"`
+			FirstAirDate     string  `json:"first_air_date"`
+			Popularity       float64 `json:"popularity"`
+			VoteCount        int     `json:"vote_count"`
 		} `json:"results"`
 	}
 	if err := c.get(ctx, "/search/"+mediaType, values, &response); err != nil {
@@ -884,14 +1103,14 @@ func (c *Client) SearchCandidates(ctx context.Context, mediaType, title string, 
 	}
 	items := make([]Candidate, 0, min(limit, len(response.Results)))
 	for _, result := range response.Results {
-		candidateTitle, date := result.Title, result.ReleaseDate
+		candidateTitle, originalTitle, date := result.Title, result.OriginalTitle, result.ReleaseDate
 		if mediaType == "tv" {
-			candidateTitle, date = result.Name, result.FirstAirDate
+			candidateTitle, originalTitle, date = result.Name, result.OriginalName, result.FirstAirDate
 		}
 		if result.ID <= 0 || strings.TrimSpace(candidateTitle) == "" {
 			continue
 		}
-		items = append(items, Candidate{ID: result.ID, Title: candidateTitle, MediaType: mediaType, OriginalLanguage: result.OriginalLanguage, ReleaseYear: parseYear(date), Confidence: titleConfidence(title, candidateTitle)})
+		items = append(items, Candidate{ID: result.ID, Title: cleanText(candidateTitle, 512), OriginalTitle: cleanText(originalTitle, 512), MediaType: mediaType, OriginalLanguage: strings.ToLower(cleanCode(result.OriginalLanguage)), ReleaseYear: parseYear(date), Confidence: max(titleConfidence(title, candidateTitle), titleConfidence(title, originalTitle)), Popularity: boundedPopularity(result.Popularity), VoteCount: boundedCount(result.VoteCount)})
 		if len(items) == limit {
 			break
 		}

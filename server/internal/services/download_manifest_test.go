@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,6 +37,26 @@ func TestDownloadSearchTitlesUsesRealReleaseFolderWithoutBreakingTitleHyphens(t 
 	}
 }
 
+func TestDownloadSearchTitlesCleansMingDynastyReleaseWithoutDroppingNumericTitle(t *testing.T) {
+	candidates := downloadSearchTitles("Ming Dynasty in 1566 HQ -BlackTV")
+	if len(candidates) == 0 || candidates[0] != "Ming Dynasty in 1566" {
+		t.Fatalf("candidates=%v", candidates)
+	}
+
+	files := make([]downloadpkg.File, 0, 49)
+	for episode := 1; episode <= 49; episode++ {
+		files = append(files, downloadpkg.File{
+			RelativePath: fmt.Sprintf("Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E%02d.HQ-BlackTV.mkv", episode),
+			Size:         6 * 1024 * 1024 * 1024,
+		})
+	}
+	manifest := downloadpkg.Manifest{Name: "Ming Dynasty in 1566 HQ -BlackTV", Complete: true, Files: files}
+	recognition := downloadRecognitionCandidates(manifest, nil)
+	if len(recognition) == 0 || recognition[0].Title != "Ming Dynasty in 1566" || recognition[0].MediaType != "tv" || recognition[0].Year != nil {
+		t.Fatalf("recognition=%+v", recognition)
+	}
+}
+
 func TestSelectDownloadPackageManifestRejectsAdvertisementVideos(t *testing.T) {
 	mainPath := "Seven Samurai CC MA 2 0 SONYHD/Seven Samurai CC MA 2 0 SONYHD.mkv"
 	manifest := downloadpkg.Manifest{
@@ -62,15 +83,13 @@ func TestClassifyRealSevenSamuraiReleaseQueriesCleanTitleAndYear(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/search/movie":
-			if got := request.URL.Query().Get("query"); got != "Seven Samurai" {
-				t.Fatalf("query=%q", got)
-			}
-			if got := request.URL.Query().Get("year"); got != "1954" {
-				t.Fatalf("year=%q", got)
+			if request.URL.Query().Get("query") != "Seven Samurai" || request.URL.Query().Get("year") != "1954" {
+				_, _ = w.Write([]byte(`{"results":[]}`))
+				return
 			}
 			_, _ = w.Write([]byte(`{"results":[{"id":346,"title":"Seven Samurai","original_title":"七人の侍","original_language":"ja","genre_ids":[18],"release_date":"1954-04-26"}]}`))
 		case "/movie/346":
-			_, _ = w.Write([]byte(`{"production_countries":[{"iso_3166_1":"JP"}]}`))
+			_, _ = w.Write([]byte(`{"id":346,"title":"Seven Samurai","original_title":"七人の侍","original_language":"ja","release_date":"1954-04-26","genres":[{"id":18,"name":"Drama"}],"production_countries":[{"iso_3166_1":"JP"}]}`))
 		default:
 			http.NotFound(w, request)
 		}

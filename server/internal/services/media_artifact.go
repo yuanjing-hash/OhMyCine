@@ -68,6 +68,7 @@ type MediaArtifactService struct {
 	metadata    *MetadataSettingsService
 	connections *ConnectionService
 	cleanup     MediaArtifactCleanup
+	changes     *MediaChangeService
 	log         zerolog.Logger
 }
 
@@ -85,6 +86,9 @@ func (s *MediaArtifactService) SetConnectionService(connections *ConnectionServi
 
 func (s *MediaArtifactService) SetCleanupService(cleanup MediaArtifactCleanup) {
 	s.cleanup = cleanup
+}
+func (s *MediaArtifactService) SetMediaChangeService(changes *MediaChangeService) {
+	s.changes = changes
 }
 
 // ScheduleGeneration persists the immutable policy snapshot first and then
@@ -220,9 +224,12 @@ func (w *MediaArtifactWorker) Run(ctx context.Context, runtime JobRuntime, job C
 	}
 	if run.Status == models.MediaArtifactStatusCompleted {
 		if w.service.cleanup != nil && run.CleanupStatus != models.MediaArtifactCleanupCompleted && run.CleanupStatus != models.MediaArtifactCleanupSkipped {
-			_ = w.service.cleanup.AutoCleanup(ctx, run.ID)
+			cleanup := w.service.cleanup.AutoCleanup(ctx, run.ID)
+			if cleanup.ErrorCode != "" {
+				return WorkerResult{ErrorCode: cleanup.ErrorCode, ErrorMessage: "媒体产物清理失败，媒体变更尚未发布"}
+			}
 		}
-		return WorkerResult{}
+		return w.service.publishGenerationReady(run.LibraryID, run.Generation)
 	}
 	if run.Status == models.MediaArtifactStatusSuperseded {
 		return WorkerResult{}
@@ -470,7 +477,28 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 		return WorkerResult{RetryAt: &next, ErrorCode: code, ErrorMessage: "部分媒体产物生成失败，将自动重试"}
 	}
 	if s.cleanup != nil {
-		_ = s.cleanup.AutoCleanup(ctx, run.ID)
+		cleanup := s.cleanup.AutoCleanup(ctx, run.ID)
+		if cleanup.ErrorCode != "" {
+			return WorkerResult{ErrorCode: cleanup.ErrorCode, ErrorMessage: "媒体产物清理失败，媒体变更尚未发布"}
+		}
+	}
+	return s.publishGenerationReady(run.LibraryID, run.Generation)
+}
+
+func (s *MediaArtifactService) publishGenerationReady(libraryID uint, generation uint64) WorkerResult {
+	if s.changes == nil {
+		return WorkerResult{}
+	}
+	var readied []models.MediaLibraryChange
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		readied, err = s.changes.MarkGenerationReadyTx(tx, libraryID, generation)
+		return err
+	}); err != nil {
+		return WorkerResult{ErrorCode: "media_change_ready_failed", ErrorMessage: "媒体变更发布失败"}
+	}
+	if len(readied) > 0 {
+		s.changes.NotifyCommitted(libraryID, readied[len(readied)-1].Revision)
 	}
 	return WorkerResult{}
 }

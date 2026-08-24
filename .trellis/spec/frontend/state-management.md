@@ -235,3 +235,75 @@ addConfig({
 - Reordering data sources without persisting the order.
 - Automatically overwriting local credentials during sync.
 - Clearing already rendered Home/source-root content before a routine background refresh completes.
+
+## Scenario: ServerDataSource Media Change Convergence
+
+### 1. Scope / Trigger
+
+- Trigger: changing Player consumption of Server media-change revisions, ServerDataSource cache invalidation, Home refresh, or the current-library update notice.
+
+### 2. Signatures
+
+```ts
+GET /api/v1/player/media-changes?cursor=<cursor>&wait_seconds=12
+
+type MediaChangeResponse = {
+  cursor: string
+  resync_required: boolean
+  changes: Array<{ library_id: string; content_revision: number; kinds: string[]; changed_at: string }>
+}
+
+app setting key = ohmycine:server-media-change-cursor:<sourceId>
+window event = ohmycine:server-library-refresh
+```
+
+### 3. Contracts
+
+- `DataSourceManager` owns at most one long-poll controller per enabled, credential-valid ServerDataSource and disposes it on disable, removal, replacement, or app teardown.
+- Polling uses the existing native `/api/v1/player/*` Bearer bridge, a 12-second server wait below the 20-second native timeout, and bounded exponential retry capped at 15 seconds. One source's failure does not block browsing, playback, Home, or another source.
+- Persist only the safe cursor per source. Never persist the Bearer token in app settings or copy event payloads, paths, stream URLs, provider IDs, or credentials into UI state.
+- A ready change clears only the matching Server source cache/root snapshot, invalidates aggregated Home, and starts a background forced Home refresh. Direct Emby/Jellyfin, local, OpenList/Alist, CloudDrive2, WebDAV, active playback, progress, subtitles, and audio tracks remain untouched.
+- The current affected list keeps rendered items and scroll position and shows one coalesced update notice. Clicking reloads the current logical location and restores `main.cinema-scrollbar.scrollTop`; leaving and re-entering reads fresh data automatically.
+- `resync_required` applies to the Server source as a whole and advances to the returned cursor; an unsupported older Server keeps normal TTL/manual browsing behavior.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Poll returns ready changes | Invalidate only that Server source and refresh Home in background |
+| User is viewing the affected Server list | Keep content/scroll, coalesce notice, refresh only on action |
+| Poll fails or device is offline | Back off per source without repeated user-facing errors |
+| Source is disabled/removed or app unmounts | Abort and dispose its controller; no duplicate poll loop |
+| Server returns `resync_required` | Clear safe Server source snapshots and continue from returned cursor |
+| Non-Server source is active | Do not reload, clear, or display a Server-list notice there |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a ready Server change refreshes Home silently, preserves the current poster wall, and applies new items in place when the user clicks the notice.
+- Base: an older Server lacks the endpoint; Server browsing remains available through existing TTL/manual refresh.
+- Bad: call `clearAllCaches()`, scroll the list to top automatically, or restart the active playback stream on every media event.
+
+### 6. Tests Required
+
+- Verify device-Bearer polling, cursor persistence, reconnect catch-up, bounded retry, source lifecycle disposal, and no overlapping loops.
+- Verify exact Server source cache/root/Home invalidation and that direct providers remain intact.
+- Verify the current list notice coalesces, refreshes the same logical route, ignores stale requests, and restores scroll.
+- Run Player typecheck, lint, production build, and `verify:server-datasource`.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```ts
+onServerChange(() => window.location.reload())
+```
+
+Correct:
+
+```ts
+onServerChange(change => {
+  invalidateServerSource(change.sourceId)
+  void refreshHomeInBackground()
+  notifyCurrentServerList(change)
+})
+```

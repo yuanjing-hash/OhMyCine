@@ -40,6 +40,7 @@ const MIGRATABLE_EXACT_KEYS = new Set([
 const MIGRATABLE_PREFIXES = [
   'ohmycine-raw-source-index-schedule-v1:',
   'ohmycine-raw-source-index-schedule-v2:',
+  'ohmycine:server-media-change-cursor:',
 ]
 
 const settings = new Map<string, string>()

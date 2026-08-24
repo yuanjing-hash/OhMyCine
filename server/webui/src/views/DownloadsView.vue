@@ -7,7 +7,7 @@ import DirectoryPickerDialog from '@/components/DirectoryPickerDialog.vue'
 import { compatibleDownloadLibraries, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, formatSampleTime, isDownloadHistoryTask, summarizeDownloaderTasks, torrentToBase64, type DownloadManagementSection, type DownloadSourceMode } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import type { DownloaderSummary, DownloadSettings, DownloadTaskSummary, ListResponse, MediaLibraryDetail, SeedingTaskSummary, StorageSummary } from '@/types/api'
+import type { DownloaderSummary, DownloadSettings, DownloadTaskSummary, ListResponse, MediaLibraryDetail, SeedingTaskSummary, StorageSummary, TMDBCandidate } from '@/types/api'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -32,6 +32,10 @@ const submitForm = ref({ downloaderID: '', mediaLibraryID: 0, displayName: '', p
 const activeSection = ref<DownloadManagementSection>(readSection())
 const activeTotal = ref(0)
 const historyTotal = ref(0)
+const recognitionTaskID = ref('')
+const recognitionCandidates = ref<TMDBCandidate[]>([])
+const recognitionSearching = ref(false)
+const recognitionForm = ref({ keyword: '', mediaType: '' as '' | 'movie' | 'tv', tmdbID: null as number | null })
 const editing = computed(() => downloaders.value.find(item => item.id === editingID.value) ?? null)
 const enabledDownloaders = computed(() => downloaders.value.filter(item => item.enabled))
 const selectedDownloader = computed(() => enabledDownloaders.value.find(item => item.id === submitForm.value.downloaderID) ?? null)
@@ -217,6 +221,62 @@ async function control(task: DownloadTaskSummary, action: 'pause' | 'resume' | '
   } catch (reason) { notify(message(reason), 'error') } finally { saving.value = false; await load(false, true) }
 }
 
+function isCompletedRecognitionFailure(task: DownloadTaskSummary) {
+  return task.job_status === 'failed' && task.scrape_status === 'completed_unrecognized'
+}
+
+async function retryRecognitionImport(task: DownloadTaskSummary) {
+  saving.value = true
+  try {
+    await api(`/api/v1/jobs/${task.job_id}/retry`, { method: 'POST', body: '{}' })
+    notify('已使用 115 中现有文件重新识别并入库，不会重复下载', 'success')
+  } catch (reason) { notify(message(reason), 'error') } finally { saving.value = false; await load(false, true) }
+}
+
+function openRecognitionRecovery(task: DownloadTaskSummary) {
+  if (recognitionTaskID.value === task.id) {
+    recognitionTaskID.value = ''
+    recognitionCandidates.value = []
+    return
+  }
+  recognitionTaskID.value = task.id
+  recognitionCandidates.value = []
+  recognitionForm.value = {
+    keyword: task.scrape_title || task.display_name,
+    mediaType: task.scrape_media_type === 'movie' || task.scrape_media_type === 'tv' ? task.scrape_media_type : '',
+    tmdbID: null,
+  }
+}
+
+async function searchRecognitionCandidates(task: DownloadTaskSummary) {
+  const keyword = recognitionForm.value.keyword.trim()
+  if (!keyword) { notify('请输入要搜索的影视名称', 'warning'); return }
+  recognitionSearching.value = true
+  recognitionCandidates.value = []
+  try {
+    const params = new URLSearchParams({ title: keyword })
+    if (recognitionForm.value.mediaType) params.set('media_type', recognitionForm.value.mediaType)
+    const data = await api<ListResponse<TMDBCandidate>>(`/api/v1/downloads/${task.id}/tmdb-candidates?${params}`)
+    recognitionCandidates.value = data.list
+  } catch (reason) { notify(message(reason), 'error') } finally { recognitionSearching.value = false }
+}
+
+function selectRecognitionCandidate(candidate: TMDBCandidate) {
+  recognitionForm.value.mediaType = candidate.media_type
+  recognitionForm.value.tmdbID = candidate.id
+}
+
+async function submitRecognitionOverride(task: DownloadTaskSummary) {
+  if (!recognitionForm.value.tmdbID || !recognitionForm.value.mediaType) { notify('请选择搜索结果，或填写 TMDB ID 并选择媒体类型', 'warning'); return }
+  saving.value = true
+  try {
+    await api(`/api/v1/downloads/${task.id}/recognition-override`, { method: 'PUT', body: JSON.stringify({ tmdb_id: recognitionForm.value.tmdbID, media_type: recognitionForm.value.mediaType }) })
+    recognitionTaskID.value = ''
+    recognitionCandidates.value = []
+    notify('TMDB 身份已由 Server 验证，正在使用现有文件继续入库', 'success')
+  } catch (reason) { notify(message(reason), 'error') } finally { saving.value = false; await load(false, true) }
+}
+
 async function retryStage(jobID: string, label: string) {
   if (!jobID) return
   saving.value = true
@@ -270,6 +330,9 @@ function transferModeLabel(mode: string) { return ({ move: '移动', copy: '复�
 function transferPhaseLabel(phase: string) {
   return ({ queued: '等待入库', planning: '规划目录', transferring: '正在入库', reconciling: '刷新媒体库', completed: '入库完成', failed: '入库失败' } as Record<string, string>)[phase] ?? '下载完成后入库'
 }
+function showPan115TransferPacing(task: DownloadTaskSummary) {
+  return task.provider_type === 'pan115_offline' && ['planning', 'transferring'].includes(task.transfer_phase)
+}
 
 let refreshTimer: number | undefined
 onMounted(async () => { await load(); refreshTimer = window.setInterval(() => { void load(false, true) }, 3000) })
@@ -303,16 +366,19 @@ onBeforeUnmount(() => { if (refreshTimer !== undefined) window.clearInterval(ref
         <table class="semantic-table w-full min-w-260 text-left text-sm">
           <thead><tr><th>任务</th><th>状态</th><th>目标 / 入库</th><th>进度</th><th>下载 / 上传</th><th>已完成 / 总量</th><th>ETA</th><th>操作</th></tr></thead>
           <tbody>
-            <tr v-for="task in visibleTasks" :key="task.id">
-              <td><strong class="block">{{ task.display_name }}</strong><span class="text-subtle mt-1 block text-xs">{{ task.downloader_name }} · {{ task.provider_status || '尚未采样' }}</span><span v-if="task.scrape_title" class="text-subtle mt-1 block text-xs">{{ task.scrape_title }} · {{ task.scrape_category || '待分类' }}<template v-if="task.scrape_tmdb_id"> · TMDB {{ task.scrape_tmdb_id }}</template></span><span v-if="task.last_error_message && task.job_status !== 'cancelled'" :class="task.scrape_status === 'fallback_unrecognized' ? 'semantic-warning-text' : 'semantic-danger-text'" class="mt-1 block text-xs">{{ task.last_error_message }}</span></td>
-              <td><span :class="downloadStatusClass(task)">{{ downloadStatusLabel(task) }}</span></td>
-              <td class="min-w-36"><strong v-if="task.target_library_id" class="block">{{ task.target_library_name }}</strong><span v-else class="text-subtle block">仅下载</span><span v-if="task.target_library_id" class="text-subtle mt-1 block text-xs">{{ transferModeLabel(task.transfer_mode) }} · {{ transferPhaseLabel(task.transfer_phase) }}</span></td>
-              <td class="min-w-36"><progress class="w-full" max="100" :value="task.progress ?? undefined" /><span class="text-subtle mt-1 block text-xs">{{ formatProgress(task.progress) }}</span></td>
-              <td>{{ formatBytes(task.download_speed, '/s') }}<span class="text-subtle block text-xs">↑ {{ formatBytes(task.upload_speed, '/s') }}</span></td>
-              <td>{{ formatBytes(task.bytes_completed) }}<span class="text-subtle block text-xs">/ {{ formatBytes(task.bytes_total) }}</span></td>
-              <td>{{ formatETA(task.eta_seconds) }}</td>
-              <td><div v-if="canReadTransfers && task.transfer_task_id || canControl(task) || canDelete(task)" class="flex flex-wrap gap-2"><RouterLink v-if="canReadTransfers && task.transfer_task_id" class="btn-secondary" :to="{ name: 'organization', query: { task: task.transfer_task_id, scope: task.lifecycle_scope === 'history' ? 'history' : 'active' } }">查看整理详情</RouterLink><button v-if="canControl(task) && ['queued','running','retry_wait'].includes(task.job_status)" class="btn-secondary" type="button" :disabled="saving" @click="control(task, 'pause')">暂停</button><button v-if="canControl(task) && task.job_status === 'paused'" class="btn-secondary" type="button" :disabled="saving" @click="control(task, 'resume')">恢复</button><button v-if="canControl(task) && task.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="control(task, 'retry')">重试下载</button><button v-if="canControl(task) && task.transfer_job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retryStage(task.transfer_job_id, '入库任务')">重试入库</button><button v-if="canControl(task) && !['completed','failed','cancelled'].includes(task.job_status)" class="btn-danger" type="button" :disabled="saving" @click="control(task, 'cancel')">取消并删除数据</button><button v-if="canDelete(task) && (['failed','cancelled'].includes(task.job_status) || task.lifecycle_scope === 'history')" class="btn-danger" type="button" :disabled="saving" @click="deleteDownload(task)">{{ task.job_status === 'completed' ? '删除历史记录' : '删除' }}</button></div><span v-else class="text-subtle text-xs">只读</span></td>
-            </tr>
+            <template v-for="task in visibleTasks" :key="task.id">
+              <tr>
+                <td><strong class="block">{{ task.display_name }}</strong><span class="text-subtle mt-1 block text-xs">{{ task.downloader_name }} · {{ task.provider_status || '尚未采样' }}</span><span v-if="task.scrape_title" class="text-subtle mt-1 block text-xs">{{ task.scrape_title }} · {{ task.scrape_category || '待分类' }}<template v-if="task.scrape_tmdb_id"> · TMDB {{ task.scrape_tmdb_id }}</template></span><span v-if="task.last_error_message && task.job_status !== 'cancelled'" :class="task.scrape_status === 'fallback_unrecognized' ? 'semantic-warning-text' : 'semantic-danger-text'" class="mt-1 block text-xs">{{ task.last_error_message }}</span></td>
+                <td><span :class="downloadStatusClass(task)">{{ downloadStatusLabel(task) }}</span></td>
+                <td class="min-w-36"><strong v-if="task.target_library_id" class="block">{{ task.target_library_name }}</strong><span v-else class="text-subtle block">仅下载</span><span v-if="task.target_library_id" class="text-subtle mt-1 block text-xs">{{ transferModeLabel(task.transfer_mode) }} · {{ transferPhaseLabel(task.transfer_phase) }}</span><span v-if="showPan115TransferPacing(task)" class="text-subtle mt-1 block text-xs">115 风控限速处理中，多文件入库可能需要数分钟</span></td>
+                <td class="min-w-36"><progress class="w-full" max="100" :value="task.progress ?? undefined" /><span class="text-subtle mt-1 block text-xs">{{ formatProgress(task.progress) }}</span></td>
+                <td>{{ formatBytes(task.download_speed, '/s') }}<span class="text-subtle block text-xs">↑ {{ formatBytes(task.upload_speed, '/s') }}</span></td>
+                <td>{{ formatBytes(task.bytes_completed) }}<span class="text-subtle block text-xs">/ {{ formatBytes(task.bytes_total) }}</span></td>
+                <td>{{ formatETA(task.eta_seconds) }}</td>
+                <td><div v-if="canReadTransfers && task.transfer_task_id || canControl(task) || canDelete(task)" class="flex flex-wrap gap-2"><RouterLink v-if="canReadTransfers && task.transfer_task_id" class="btn-secondary" :to="{ name: 'organization', query: { task: task.transfer_task_id, scope: task.lifecycle_scope === 'history' ? 'history' : 'active' } }">查看整理详情</RouterLink><button v-if="canControl(task) && ['queued','running','retry_wait'].includes(task.job_status)" class="btn-secondary" type="button" :disabled="saving" @click="control(task, 'pause')">暂停</button><button v-if="canControl(task) && task.job_status === 'paused'" class="btn-secondary" type="button" :disabled="saving" @click="control(task, 'resume')">恢复</button><button v-if="canControl(task) && isCompletedRecognitionFailure(task)" class="btn-secondary" type="button" :disabled="saving" @click="retryRecognitionImport(task)">重新识别并入库</button><button v-else-if="canControl(task) && task.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="control(task, 'retry')">重试下载</button><button v-if="canControl(task) && isCompletedRecognitionFailure(task)" class="btn-secondary" type="button" :disabled="saving" @click="openRecognitionRecovery(task)">人工介入</button><button v-if="canControl(task) && task.transfer_job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retryStage(task.transfer_job_id, '入库任务')">重试入库</button><button v-if="canControl(task) && !['completed','failed','cancelled'].includes(task.job_status)" class="btn-danger" type="button" :disabled="saving" @click="control(task, 'cancel')">取消并删除数据</button><button v-if="canDelete(task) && (['failed','cancelled'].includes(task.job_status) || task.lifecycle_scope === 'history')" class="btn-danger" type="button" :disabled="saving" @click="deleteDownload(task)">{{ task.job_status === 'completed' ? '删除历史记录' : '删除' }}</button></div><span v-else class="text-subtle text-xs">只读</span></td>
+              </tr>
+              <tr v-if="recognitionTaskID === task.id"><td colspan="8"><div class="semantic-inset grid gap-3 p-4"><div><strong>人工识别恢复</strong><p class="text-subtle mb-0 mt-1 text-xs">仅在自动识别失败后使用。搜索结果或手填 ID 都会由 Server 向 TMDB 重新验证，随后复用已经下载完成的文件继续入库。</p></div><div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_auto]"><input v-model="recognitionForm.keyword" class="input" maxlength="256" placeholder="输入中文、英文或原名关键词" @keyup.enter="searchRecognitionCandidates(task)" /><select v-model="recognitionForm.mediaType" class="input"><option value="">电影 + 剧集</option><option value="movie">电影</option><option value="tv">剧集</option></select><button class="btn-secondary" type="button" :disabled="recognitionSearching" @click="searchRecognitionCandidates(task)">{{ recognitionSearching ? '搜索中…' : '搜索 TMDB' }}</button></div><div v-if="recognitionCandidates.length" class="grid gap-2 md:grid-cols-2"><button v-for="candidate in recognitionCandidates" :key="`${candidate.media_type}-${candidate.id}`" class="semantic-list-item flex items-center justify-between gap-3 p-3 text-left" :class="{ 'semantic-list-item--selected': recognitionForm.tmdbID === candidate.id && recognitionForm.mediaType === candidate.media_type }" type="button" @click="selectRecognitionCandidate(candidate)"><span><strong>{{ candidate.title }}</strong><small v-if="candidate.original_title && candidate.original_title !== candidate.title" class="text-subtle mt-1 block">{{ candidate.original_title }}</small><small class="text-subtle mt-1 block">{{ candidate.media_type === 'tv' ? '剧集' : '电影' }} · {{ candidate.release_year || '年份未知' }} · TMDB {{ candidate.id }}</small></span><span>{{ Math.round(candidate.confidence * 100) }}%</span></button></div><div class="grid gap-3 md:grid-cols-[10rem_12rem_auto]"><select v-model="recognitionForm.mediaType" class="input" aria-label="直接指定媒体类型"><option value="" disabled>选择媒体类型</option><option value="movie">电影</option><option value="tv">剧集</option></select><input v-model.number="recognitionForm.tmdbID" class="input" type="number" min="1" step="1" placeholder="TMDB ID" /><button class="btn-primary" type="button" :disabled="saving || !recognitionForm.tmdbID || !recognitionForm.mediaType" @click="submitRecognitionOverride(task)">验证并继续入库</button></div></div></td></tr>
+            </template>
           </tbody>
         </table>
       </div>

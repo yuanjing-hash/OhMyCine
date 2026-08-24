@@ -310,10 +310,11 @@ type PluginActionReceipt struct {
 }
 
 const (
-	StorageTypeLocal         = "local"
-	StorageTypePan115        = "pan115"
-	ConnectionProviderPan115 = "pan115"
-	ConnectionProviderEmby   = "emby"
+	StorageTypeLocal           = "local"
+	StorageTypePan115          = "pan115"
+	ConnectionProviderPan115   = "pan115"
+	ConnectionProviderEmby     = "emby"
+	ConnectionProviderJellyfin = "jellyfin"
 )
 
 // Connection owns one external-provider credential and its redacted health
@@ -523,8 +524,64 @@ type MediaLibrary struct {
 	BaselineGeneration           uint64     `gorm:"not null;default:0" json:"baseline_generation"`
 	DirtyGeneration              uint64     `gorm:"not null;default:0" json:"dirty_generation"`
 	ReclassificationDue          bool       `gorm:"not null;default:false" json:"reclassification_due"`
+	ContentRevision              uint64     `gorm:"not null;default:0" json:"content_revision"`
 	CreatedAt                    time.Time  `json:"created_at"`
 	UpdatedAt                    time.Time  `json:"updated_at"`
+}
+
+const (
+	MediaLibraryChangePending = "pending"
+	MediaLibraryChangeReady   = "ready"
+
+	MediaLibraryChangeCatalog  = "catalog"
+	MediaLibraryChangeMetadata = "metadata"
+	MediaLibraryChangeRemoval  = "removal"
+)
+
+// MediaLibraryChange is the durable, credential-free outbox shared by media
+// server refresh workers and Player long polling. Revision is monotonic within
+// a library; Sequence is the global opaque cursor.
+type MediaLibraryChange struct {
+	Sequence   uint64     `gorm:"primaryKey;autoIncrement" json:"sequence"`
+	LibraryID  uint       `gorm:"not null;uniqueIndex:idx_media_library_change_revision;index:idx_media_library_changes_ready,priority:2" json:"library_id"`
+	Revision   uint64     `gorm:"not null;uniqueIndex:idx_media_library_change_revision" json:"revision"`
+	Kind       string     `gorm:"size:16;not null" json:"kind"`
+	State      string     `gorm:"size:16;not null;index:idx_media_library_changes_ready,priority:1" json:"state"`
+	Generation uint64     `gorm:"not null;default:0" json:"-"`
+	ReadyAt    *time.Time `gorm:"index" json:"ready_at,omitempty"`
+	CreatedAt  time.Time  `gorm:"not null;index" json:"created_at"`
+}
+
+type MediaServerRefreshTarget struct {
+	ID                         uint       `gorm:"primaryKey" json:"id"`
+	LibraryID                  uint       `gorm:"not null;uniqueIndex:idx_media_server_refresh_target_identity;index" json:"library_id"`
+	ConnectionID               uint       `gorm:"not null;uniqueIndex:idx_media_server_refresh_target_identity;index" json:"connection_id"`
+	UpstreamLibraryID          string     `gorm:"size:256;not null;uniqueIndex:idx_media_server_refresh_target_identity" json:"-"`
+	UpstreamLibraryName        string     `gorm:"size:256;not null" json:"upstream_library_name"`
+	Enabled                    bool       `gorm:"not null;default:true;index" json:"enabled"`
+	DesiredRevision            uint64     `gorm:"not null;default:0;index" json:"desired_revision"`
+	SuccessfulRevision         uint64     `gorm:"not null;default:0" json:"successful_revision"`
+	ManualGeneration           uint64     `gorm:"not null;default:0" json:"-"`
+	SuccessfulManualGeneration uint64     `gorm:"not null;default:0" json:"-"`
+	LastJobID                  *string    `gorm:"size:36;index" json:"last_job_id,omitempty"`
+	LastStatus                 string     `gorm:"size:32;not null;default:'idle';index" json:"last_status"`
+	LastErrorCode              string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	LastAttemptAt              *time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessfulAt           *time.Time `json:"last_successful_at,omitempty"`
+	Revision                   uint64     `gorm:"not null;default:1" json:"revision"`
+	CreatedAt                  time.Time  `gorm:"not null" json:"created_at"`
+	UpdatedAt                  time.Time  `gorm:"not null" json:"updated_at"`
+}
+
+type MediaServerRefreshRun struct {
+	ID              string     `gorm:"primaryKey;size:36" json:"id"`
+	TargetID        uint       `gorm:"not null;index" json:"target_id"`
+	JobID           string     `gorm:"size:36;not null;index" json:"job_id"`
+	DesiredRevision uint64     `gorm:"not null" json:"desired_revision"`
+	Status          string     `gorm:"size:32;not null;index" json:"status"`
+	ErrorCode       string     `gorm:"size:96;not null;default:''" json:"error_code"`
+	StartedAt       time.Time  `gorm:"not null" json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 }
 
 type MediaLibraryScanRun struct {
@@ -933,6 +990,74 @@ type MetadataSettings struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
+// DiscoveryCache stores only credential-free provider projections. Cached
+// upstream payloads, request URLs and headers are never persisted.
+type DiscoveryCache struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Provider    string    `gorm:"size:32;not null;uniqueIndex:idx_discovery_cache_identity" json:"provider"`
+	Section     string    `gorm:"size:64;not null;uniqueIndex:idx_discovery_cache_identity" json:"section"`
+	Locale      string    `gorm:"size:32;not null;uniqueIndex:idx_discovery_cache_identity" json:"locale"`
+	Page        int       `gorm:"not null;uniqueIndex:idx_discovery_cache_identity" json:"page"`
+	PayloadJSON string    `gorm:"type:text;not null" json:"-"`
+	FreshUntil  time.Time `gorm:"not null;index" json:"fresh_until"`
+	StaleUntil  time.Time `gorm:"not null;index" json:"stale_until"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Site is an administrator-managed PT connection. CredentialCiphertext holds
+// the cookie/passkey envelope and is never serialized or copied to jobs.
+type Site struct {
+	ID                   uint       `gorm:"primaryKey" json:"id"`
+	Name                 string     `gorm:"size:128;not null" json:"name"`
+	NameNormalized       string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
+	Kind                 string     `gorm:"size:32;not null;index" json:"kind"`
+	BaseURL              string     `gorm:"size:2048;not null" json:"base_url"`
+	CredentialCiphertext string     `gorm:"type:text;not null" json:"-"`
+	UserAgent            string     `gorm:"size:256;not null;default:''" json:"user_agent"`
+	BrowserEmulation     bool       `gorm:"not null;default:false" json:"browser_emulation"`
+	BrowserServiceURL    string     `gorm:"size:2048;not null;default:''" json:"browser_service_url"`
+	Enabled              bool       `gorm:"not null;default:true;index" json:"enabled"`
+	Priority             int        `gorm:"not null;default:100;index" json:"priority"`
+	TimeoutSeconds       int        `gorm:"not null;default:12" json:"timeout_seconds"`
+	RateLimitPerMinute   int        `gorm:"not null;default:12" json:"rate_limit_per_minute"`
+	LastHealthStatus     string     `gorm:"size:16;not null;default:'unknown'" json:"last_health_status"`
+	LastHealthErrorCode  string     `gorm:"size:96;not null;default:''" json:"last_health_error_code"`
+	LastHealthUsername   string     `gorm:"size:128;not null;default:''" json:"last_health_username"`
+	LastHealthCheckedAt  *time.Time `json:"last_health_checked_at"`
+	Revision             uint64     `gorm:"not null;default:1" json:"revision"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+// CookieCloudSettings is the singleton site-credential synchronization policy.
+// UUID, password and local upload authentication are stored only in the
+// encrypted credential envelope.
+type CookieCloudSettings struct {
+	ID                   uint       `gorm:"primaryKey" json:"id"`
+	Mode                 string     `gorm:"size:16;not null;default:'disabled'" json:"mode"`
+	BaseURL              string     `gorm:"size:2048;not null;default:''" json:"base_url"`
+	CredentialCiphertext string     `gorm:"type:text;not null;default:''" json:"-"`
+	AutoSyncMinutes      int        `gorm:"not null;default:0" json:"auto_sync_minutes"`
+	LastSyncStatus       string     `gorm:"size:24;not null;default:'never'" json:"last_sync_status"`
+	LastSyncErrorCode    string     `gorm:"size:96;not null;default:''" json:"last_sync_error_code"`
+	LastSyncAt           *time.Time `json:"last_sync_at"`
+	Revision             uint64     `gorm:"not null;default:1" json:"revision"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+// CookieCloudPayload stores the already end-to-end encrypted extension blob.
+// The UUID itself is represented only by a hash so local uploads cannot be
+// enumerated through the database.
+type CookieCloudPayload struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	UUIDHash         string    `gorm:"size:64;not null;default:''" json:"-"`
+	EncryptedPayload string    `gorm:"type:text;not null;default:''" json:"-"`
+	CryptoType       string    `gorm:"size:32;not null;default:'legacy'" json:"-"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 // DownloadTask is the durable provider fact linked one-to-one to a queue Job.
 // SourceCiphertext may contain PT passkeys and is never exposed or logged.
 type DownloadTask struct {
@@ -998,6 +1123,8 @@ type DownloadTask struct {
 	ScrapeTMDBID                       *int64     `json:"-"`
 	ScrapeYear                         *int       `json:"-"`
 	ScrapeConfidence                   *float64   `json:"-"`
+	RecognitionOverrideTMDBID          *int64     `json:"-"`
+	RecognitionOverrideMediaType       string     `gorm:"size:16;not null;default:''" json:"-"`
 	ManifestFileCount                  int        `gorm:"not null;default:0" json:"-"`
 	CreatedAt                          time.Time  `json:"created_at"`
 	UpdatedAt                          time.Time  `json:"updated_at"`

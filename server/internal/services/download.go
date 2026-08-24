@@ -22,6 +22,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
@@ -1309,11 +1310,45 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 			client = metadataClient
 		}
 	}
+	if task.RecognitionOverrideTMDBID != nil && task.RecognitionOverrideMediaType != "" {
+		if client == nil {
+			return result, appError(mediaRecognitionCredentialMissing, classificationFallbackMessage(mediaRecognitionCredentialMissing), nil)
+		}
+		language, _ := w.service.downloadRecognitionLocale(task)
+		verified, verifyErr := client.GetByID(ctx, task.RecognitionOverrideMediaType, *task.RecognitionOverrideTMDBID, language)
+		if verifyErr != nil {
+			return result, appError(tmdb.ErrorCode(verifyErr), "TMDB 人工匹配验证失败", nil)
+		}
+		metadata := classification.Metadata{
+			MediaType:           classification.MediaType(verified.MediaType),
+			GenreIDs:            append([]int(nil), verified.GenreIDs...),
+			OriginalLanguage:    verified.OriginalLanguage,
+			ProductionCountries: append([]string(nil), verified.ProductionCountries...),
+			OriginCountries:     append([]string(nil), verified.OriginCountries...),
+			ReleaseYear:         cloneInt(verified.ReleaseYear),
+		}
+		classified := classification.Classify(metadata, rules)
+		result.Title = verified.Title
+		result.MediaType = verified.MediaType
+		result.Category = classified.CategoryName
+		result.TMDBID = cloneInt64(&verified.ID)
+		result.Confidence = cloneFloat64(&verified.Confidence)
+		result.Year = cloneInt(verified.ReleaseYear)
+		// A persisted override is not a fuzzy match: GetByID has just re-fetched
+		// and validated the authoritative identity. Require a complete verified
+		// projection instead of applying the automatic-ranking threshold again.
+		result.Confident = verified.ID == *task.RecognitionOverrideTMDBID && verified.MediaType == task.RecognitionOverrideMediaType && strings.TrimSpace(result.Title) != "" && strings.TrimSpace(result.Category) != "" && result.Confidence != nil
+		if !result.Confident {
+			return result, appError(mediaRecognitionLowConfidence, "TMDB 人工匹配验证结果不完整", nil)
+		}
+		return result, nil
+	}
 	files := make([]recognitionSourceFile, 0, len(manifest.Files))
 	for _, file := range manifest.Files {
 		files = append(files, recognitionSourceFile{RelativePath: file.RelativePath, Size: file.Size})
 	}
-	recognized := recognizeMedia(ctx, client, MediaRecognitionRequest{PackageName: manifest.Name, Files: files, BuiltinPackCodes: packCodes, RecognitionRules: recognitionRules, Classification: rules, Language: "zh-CN", Region: "CN"})
+	language, region := w.service.downloadRecognitionLocale(task)
+	recognized := recognizeMedia(ctx, client, MediaRecognitionRequest{PackageName: manifest.Name, Files: files, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: task.ScrapeMediaType, YearHint: task.ScrapeYear, BuiltinPackCodes: packCodes, RecognitionRules: recognitionRules, Classification: rules, Language: language, Region: region})
 	result.Title, result.MediaType, result.Category = recognized.Title, recognized.MediaType, recognized.CategoryName
 	result.TMDBID, result.Confidence, result.Year = recognized.TMDBID, recognized.Confidence, recognized.ReleaseYear
 	result.Confident = recognized.Status == mediaRecognitionStatusMatched && recognized.MatchedRuleID != nil && recognized.CategoryName != ""

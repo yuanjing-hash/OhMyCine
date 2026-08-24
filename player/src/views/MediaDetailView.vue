@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, SubtitleTrack } from '@/services/datasource/types'
+import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaPerson, SubtitleTrack } from '@/services/datasource/types'
 import type { PlaybackQueueInput } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
@@ -207,6 +207,23 @@ const emptyEpisodesMessage = computed(() => {
     return 'Server 媒体库中暂时没有可播放的分集。'
   return '暂时没有可播放的分集。'
 })
+const visiblePeople = computed<MediaPerson[]>(() => {
+  const current = detail.value
+  if (!current)
+    return []
+  if (current.people?.length)
+    return current.people.slice(0, 30)
+  return [
+    ...(current.directors ?? []).map(name => ({ name, role: 'Director' })),
+    ...(current.cast ?? []).map(name => ({ name, role: 'Actor' })),
+  ].slice(0, 30)
+})
+
+function personSubtitle(role?: string, character?: string): string {
+  if (character)
+    return character
+  return ({ actor: '演员', director: '导演', writer: '编剧', creator: '主创' } as Record<string, string>)[role?.toLocaleLowerCase() ?? ''] ?? role ?? '演职员'
+}
 const selectedEpisodeDomId = computed(() => episodes.value.length > 0 ? `episode-card-${selectedEpisodeIndex.value}` : undefined)
 const selectedEpisodeAriaValue = computed(() => episodes.value.length > 0 ? `第 ${selectedEpisodeIndex.value + 1} 集，共 ${episodes.value.length} 集` : '无分集')
 const episodeIndicatorStyle = computed(() => {
@@ -1281,15 +1298,22 @@ function markTitleLogoFailed(url: string) {
         </section>
 
         <section class="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-          <div class="glass-panel rounded-[1.6rem] p-6">
+          <div class="glass-panel min-w-0 rounded-[1.6rem] p-6">
             <h2 class="text-xl font-bold">
               演职员
             </h2>
-            <p class="mt-4 text-sm leading-7 text-white/58">
-              <span v-if="detail.directors?.length">导演：{{ detail.directors.join('、') }}</span>
-              <br v-if="detail.directors?.length && detail.cast?.length">
-              <span v-if="detail.cast?.length">演员：{{ detail.cast.slice(0, 12).join('、') }}</span>
-              <span v-if="!detail.directors?.length && !detail.cast?.length">暂无演职员信息。</span>
+            <div v-if="visiblePeople.length" class="people-strip cinema-scrollbar mt-4">
+              <article v-for="person in visiblePeople" :key="`${person.id || person.name}:${person.role || ''}:${person.character || ''}`" class="person-tile">
+                <div class="person-avatar">
+                  <img v-if="person.imageUrl" :src="person.imageUrl" :alt="`${person.name} 照片`" loading="lazy" decoding="async">
+                  <span v-else>{{ person.name.slice(0, 1) }}</span>
+                </div>
+                <strong :title="person.name">{{ person.name }}</strong>
+                <small :title="personSubtitle(person.role, person.character)">{{ personSubtitle(person.role, person.character) }}</small>
+              </article>
+            </div>
+            <p v-else class="mt-4 text-sm leading-7 text-white/58">
+              暂无演职员信息。
             </p>
           </div>
           <div v-if="mediaInfoRows.length" class="glass-panel rounded-[1.6rem] p-6">
@@ -1326,6 +1350,13 @@ function markTitleLogoFailed(url: string) {
 .detail-played-state,.detail-played-toggle { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: .7rem 1rem; color: rgba(255,255,255,.68); background: rgba(255,255,255,.08); font-size: .75rem; font-weight: 700; }
 .detail-played-state.is-played { border-color: rgba(34,197,94,.42); color: #dcfce7; background: rgba(34,197,94,.18); }
 .detail-played-toggle:hover { background: rgba(255,255,255,.14); }
+.people-strip { display: grid; grid-auto-flow: column; grid-auto-columns: 7.25rem; gap: 1rem; overflow-x: auto; padding-bottom: .55rem; }
+.person-tile { min-width: 0; text-align: center; }
+.person-avatar { display: grid; width: 5.75rem; height: 5.75rem; margin: 0 auto .7rem; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(255,255,255,.07); color: rgba(255,255,255,.52); font-size: 1.35rem; }
+.person-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.person-tile strong,.person-tile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-tile strong { font-size: .82rem; }
+.person-tile small { margin-top: .22rem; color: rgba(255,255,255,.46); font-size: .7rem; }
 .episode-search-trigger,
 .episode-search-close {
   display: inline-flex;

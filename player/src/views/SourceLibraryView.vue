@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSourceIndexStatus, RawSourceIndexTarget, RawSourceScanKind, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
+import type { ServerLibraryRefreshDetail } from '@/services/serverMediaChanges'
 import type { ScannedCategory, ScannedDisplayItem, ScannedSeriesWork, ScannedWorkItem } from '@/services/sourceLibraryScannedMedia'
-import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
@@ -16,6 +17,7 @@ import { registerMaintenanceHandler } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, enrichRawScrapedItemsEpisodeMetadata, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, readRawSourceRootPath, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
+import { SERVER_LIBRARY_REFRESH_EVENT } from '@/services/serverMediaChanges'
 import { compareHeroScannedItems, compareScannedCategories, createScannedCategory, domainForScannedEntry, findVisibleHomeSection, formatRawIndexStatus, formatRawIndexTime, isContainerItem, labelForSourceType, metadataForCandidate, playableItemsFromWorks } from '@/services/sourceLibraryScannedMedia'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -349,6 +351,7 @@ const identificationArtworkCards = computed<IdentificationArtworkCard[]>(() => {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener(SERVER_LIBRARY_REFRESH_EVENT, handleServerLibraryRefresh)
   unregisterLayoutBackHandler = registerLayoutBackHandler(layoutContextOwner, handleInPageBack)
   unsubscribeRawIndexStatus = rawSourceIndexScheduler.subscribe((status) => {
     if (isCurrentRawIndexStatus(status)) {
@@ -375,10 +378,50 @@ onBeforeUnmount(() => {
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener(SERVER_LIBRARY_REFRESH_EVENT, handleServerLibraryRefresh)
   unsubscribeRawIndexStatus?.()
   unsubscribeRawIndexStatus = undefined
   clearLayoutContextActions(layoutContextOwner)
 })
+
+async function handleServerLibraryRefresh(event: Event) {
+  const detail = (event as CustomEvent<ServerLibraryRefreshDetail>).detail
+  if (sourceConfig.value?.type !== 'server' || !detail?.sourceIds.includes(sourceId.value) || !source.value)
+    return
+
+  const scrollRoot = document.querySelector<HTMLElement>('main.cinema-scrollbar')
+  const scrollTop = scrollRoot?.scrollTop ?? 0
+  source.value.clearCache?.()
+  store.invalidateSourceRootSnapshot(sourceId.value)
+
+  if (!selectedLibrary.value) {
+    await loadSourceRoot({ force: true })
+  }
+  else if (searchKeyword.value.trim()) {
+    await runSearch()
+  }
+  else {
+    const loadingSourceId = sourceId.value
+    const parentId = currentNode.value?.id ?? selectedLibrary.value.id
+    isLoading.value = true
+    errorMessage.value = null
+    try {
+      const nextItems = await source.value.list(parentId)
+      if (sourceId.value === loadingSourceId)
+        items.value = nextItems
+    }
+    catch (error) {
+      errorMessage.value = toSafeErrorMessage(error, '媒体条目刷新失败。')
+    }
+    finally {
+      if (sourceId.value === loadingSourceId)
+        isLoading.value = false
+    }
+  }
+
+  await nextTick()
+  window.requestAnimationFrame(() => scrollRoot?.scrollTo({ top: scrollTop, left: 0, behavior: 'auto' }))
+}
 
 watch(sourceId, async () => {
   unregisterMaintenanceHandler?.()

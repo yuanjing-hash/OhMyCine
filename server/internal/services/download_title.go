@@ -15,11 +15,11 @@ import (
 var (
 	downloadEpisodeToken  = regexp.MustCompile(`(?i)\bS\s*0*\d{1,2}\s*E\s*0*\d{1,3}\b|\b0*\d{1,2}x0*\d{1,3}\b|\b(?:EP?|Episode)\s*0*\d{1,3}\b`)
 	downloadBracketNoise  = regexp.MustCompile(`\[[^\]]+\]|\([^)]*\)|【[^】]+】`)
-	downloadTechToken     = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8K|4K|UHD|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|DV|10bit|8bit|Proper|Repack)\b`)
+	downloadTechToken     = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8K|4K|UHD|HQ|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|DV|10bit|8bit|Proper|Repack)\b`)
 	downloadSourceToken   = regexp.MustCompile(`(?i)\b(?:AMZN|Amazon|NF|Netflix|DSNP|Disney\+?|HMAX|HBO|Hulu|ATVP|AppleTV|iTunes|BiliBili|Baha|Crunchyroll|Viu|U-?NEXT|ABEMA|TVING|PrimeVideo|Peacock|Paramount\+?)\b`)
 	downloadReleaseGroup  = regexp.MustCompile(`(?i)\b(?:GrassTV|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|YTS|MeGusta|VARYG|LoliHouse|ANi|Lilith|U3|CatWEB|MTeam|MWeb|Hares|SweetSub|MagicStar|Skymoon|XiaYong|Nekomoe|DBD-Raws|GM-Team|NC-Raws)\b`)
 	downloadSubtitleToken = regexp.MustCompile(`(?i)\b(?:CHS|CHT|GB|BIG5|SUBS?|MULTI[- .]?SUB)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕`)
-	downloadTrailingGroup = regexp.MustCompile(`(?i)\s+-\s+[\da-z][\da-z-]{1,30}$`)
+	downloadTrailingGroup = regexp.MustCompile(`(?i)\s+-\s*[\da-z][\da-z-]{1,30}$`)
 	downloadSuffixPart    = regexp.MustCompile(`[\p{L}\p{N}]+`)
 	downloadChineseTitle  = regexp.MustCompile(`[\p{Han}][\p{Han}\s·・、，：:《》“”"'—-]*`)
 	downloadLatinTitle    = regexp.MustCompile(`[A-Za-z][A-Za-z0-9\s'’:&.,!?+\-]*`)
@@ -51,7 +51,55 @@ func downloadRecognitionCandidates(manifest downloadpkg.Manifest, rules []Recogn
 // recognitionCandidates is shared by downloader manifests and media-library
 // recognition units. It accepts provider-relative names and sizes only.
 func recognitionCandidates(packageName string, files []recognitionSourceFile, rules []RecognitionRule) []downloadRecognitionCandidate {
-	return recognitionCandidatesFromSources(recognitionSources(packageName, files), rules)
+	candidates := recognitionCandidatesFromSources(recognitionSources(packageName, files), rules)
+	filesSuggestTV := recognitionFilesSuggestTV(files)
+	// Search both TMDB media types for every parsed title, but interleave the
+	// structurally preferred type first. This preserves cross-type recall
+	// without letting a guessed type become a hard gate.
+	result := make([]downloadRecognitionCandidate, 0, len(candidates)*2)
+	seen := make(map[string]struct{})
+	add := func(candidate downloadRecognitionCandidate, mediaType string) {
+		candidate.MediaType = mediaType
+		key := mediaType + "\x00" + strings.ToLower(candidate.Title) + "\x00"
+		if candidate.Year != nil {
+			key += strconv.Itoa(*candidate.Year)
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, candidate)
+	}
+	for _, candidate := range candidates {
+		preferredType := candidate.MediaType
+		if filesSuggestTV {
+			preferredType = "tv"
+		}
+		add(candidate, preferredType)
+		fallbackType := "tv"
+		if preferredType == "tv" {
+			fallbackType = "movie"
+		}
+		add(candidate, fallbackType)
+	}
+	return result
+}
+
+func recognitionFilesSuggestTV(files []recognitionSourceFile) bool {
+	videoCount := 0
+	episodeCount := 0
+	for _, file := range files {
+		if !isVideoFile(file.RelativePath) {
+			continue
+		}
+		videoCount++
+		normalized := normalizedManifestPath(file.RelativePath)
+		_, _, _, episode := medialibrary.ParseFilename(pathpkg.Base(normalized), "/"+strings.TrimLeft(normalized, "/"))
+		if episode != nil {
+			episodeCount++
+		}
+	}
+	return episodeCount >= 2 || videoCount >= 3
 }
 
 func recognitionCandidatesFromSources(sources []string, rules []RecognitionRule) []downloadRecognitionCandidate {

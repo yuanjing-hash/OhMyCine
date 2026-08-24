@@ -15,9 +15,10 @@ describe('Emby connection form boundary', () => {
   it('uses provider-filtered list endpoints so storage never receives Emby records', () => {
     expect(connectionListPath('pan115')).toBe('/api/v1/connections?provider=pan115')
     expect(connectionListPath('emby')).toBe('/api/v1/connections?provider=emby')
+    expect(connectionListPath('jellyfin')).toBe('/api/v1/connections?provider=jellyfin')
   })
   it('sends the API Key only while creating the encrypted credential', () => {
-    expect(buildEmbyCreatePayload({ name: ' 家庭 Emby ', endpoint: ' http://nas.example.test:8096/ ', apiKey: ' secret ', enabled: true })).toEqual({
+    expect(buildEmbyCreatePayload({ provider: 'emby', name: ' 家庭 Emby ', endpoint: ' http://nas.example.test:8096/ ', apiKey: ' secret ', enabled: true })).toEqual({
       name: '家庭 Emby',
       provider: 'emby',
       endpoint: 'http://nas.example.test:8096/',
@@ -27,7 +28,7 @@ describe('Emby connection form boundary', () => {
   })
 
   it('does not replace or retain the credential when the edit field is blank', () => {
-    expect(buildEmbyUpdatePayload({ name: '家庭 Emby', endpoint: 'http://nas.example.test:8096', apiKey: '   ', enabled: true }, 7)).toEqual({
+    expect(buildEmbyUpdatePayload({ provider: 'emby', name: '家庭 Emby', endpoint: 'http://nas.example.test:8096', apiKey: '   ', enabled: true }, 7)).toEqual({
       name: '家庭 Emby',
       endpoint: 'http://nas.example.test:8096',
       enabled: true,
@@ -36,7 +37,7 @@ describe('Emby connection form boundary', () => {
   })
 
   it('clears a create credential from page state before the request starts', () => {
-    const draft = { name: '家庭 Emby', endpoint: 'http://nas.example.test:8096', apiKey: 'secret', enabled: true }
+    const draft = { provider: 'emby' as const, name: '家庭 Emby', endpoint: 'http://nas.example.test:8096', apiKey: 'secret', enabled: true }
     const payload = consumeEmbyCreatePayload(draft)
 
     expect(payload.api_key).toBe('secret')
@@ -44,7 +45,7 @@ describe('Emby connection form boundary', () => {
   })
 
   it('clears an optional replacement credential from page state before the request starts', () => {
-    const draft = { name: '家庭 Emby', endpoint: 'http://nas.example.test:8096', apiKey: 'replacement', enabled: true }
+    const draft = { provider: 'emby' as const, name: '家庭 Emby', endpoint: 'http://nas.example.test:8096', apiKey: 'replacement', enabled: true }
     const payload = consumeEmbyUpdatePayload(draft, 7)
 
     expect(payload.api_key).toBe('replacement')

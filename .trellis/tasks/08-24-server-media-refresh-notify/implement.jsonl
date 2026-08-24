@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"Defines authoritative media-library reconciliation, generation and safe catalog contracts."}
+{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"Defines persistent Job coalescing, leases, recovery and private payload rules."}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"Defines REST, event envelope, authentication and permission conventions."}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Defines Player device auth, media-server credentials, event filtering and redaction boundaries."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Defines source-scoped cache invalidation, background Home refresh and Player independence."}
+{"file":".trellis/spec/frontend/server-online-media.md","reason":"Defines ServerDataSource runtime-validation, source isolation and navigation behavior."}
+{"file":"docs/architecture/02-server-design.md","reason":"Canonical Server pipeline, artifact and media-server architecture context."}
+{"file":"docs/architecture/03-player-design.md","reason":"Canonical ServerDataSource and Player integration context."}

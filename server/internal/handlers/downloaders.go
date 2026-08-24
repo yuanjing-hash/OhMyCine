@@ -187,6 +187,51 @@ func (a *API) DeleteDownload(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"deleted": true})
 }
 
+func (a *API) DownloadRecognitionCandidates(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := stringID(c)
+	if !ok {
+		return
+	}
+	var year *int
+	if raw := strings.TrimSpace(c.Query("year")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1888 || value > 2200 {
+			writeError(c, a.log, invalid("年份无效", err))
+			return
+		}
+		year = &value
+	}
+	items, err := a.downloads.RecognitionCandidates(c.Request.Context(), actor, id, c.Query("title"), c.Query("media_type"), year)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+
+func (a *API) OverrideDownloadRecognition(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := stringID(c)
+	if !ok {
+		return
+	}
+	var payload struct {
+		TMDBID    int64  `json:"tmdb_id"`
+		MediaType string `json:"media_type"`
+	}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("TMDB 匹配选择无效", err))
+		return
+	}
+	item, err := a.downloads.OverrideRecognition(c.Request.Context(), actor, id, services.DownloadRecognitionOverrideInput{TMDBID: payload.TMDBID, MediaType: payload.MediaType}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}
+
 func stringID(c *gin.Context) (string, bool) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" || len(id) > 64 || strings.ContainsAny(id, "/\\\x00") {

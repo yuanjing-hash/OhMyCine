@@ -183,8 +183,11 @@ interface EmbyItemRecord {
 }
 
 interface EmbyPersonRecord {
+  readonly Id?: string
   readonly Name?: string
   readonly Type?: string
+  readonly Role?: string
+  readonly PrimaryImageTag?: string
 }
 
 interface EmbyMediaStreamRecord {
@@ -1076,6 +1079,18 @@ export class EmbyDataSource implements DataSource {
       directors: namesByPersonType(item.People, 'Director'),
       writers: namesByPersonType(item.People, 'Writer'),
       cast: namesByPersonType(item.People, 'Actor'),
+      people: (item.People ?? []).flatMap((person) => {
+        const name = nonEmptyString(person.Name)
+        if (!name)
+          return []
+        return [{
+          id: nonEmptyString(person.Id),
+          name,
+          role: nonEmptyString(person.Type),
+          character: nonEmptyString(person.Role),
+          imageUrl: this.imageUrl(person.Id, 'Primary', person.PrimaryImageTag, { width: '240', height: '240' }),
+        }]
+      }),
       imdbId: item.ProviderIds?.Imdb,
       tmdbId: parseTmdbId(item.ProviderIds?.Tmdb),
       resolution: video?.Width && video.Height ? `${video.Width}x${video.Height}` : undefined,

@@ -1,18 +1,19 @@
 export interface EmbyConnectionDraft {
+  provider: 'emby' | 'jellyfin'
   name: string
   endpoint: string
   apiKey: string
   enabled: boolean
 }
 
-export function connectionListPath(provider: 'pan115' | 'emby') {
+export function connectionListPath(provider: 'pan115' | 'emby' | 'jellyfin') {
   return `/api/v1/connections?provider=${provider}`
 }
 
 export function buildEmbyCreatePayload(draft: EmbyConnectionDraft) {
   return {
     name: draft.name.trim(),
-    provider: 'emby' as const,
+    provider: draft.provider,
     endpoint: draft.endpoint.trim(),
     api_key: draft.apiKey.trim(),
     enabled: draft.enabled,

@@ -7,6 +7,7 @@ import DownloadQueue from '@/components/media/DownloadQueue.vue'
 import MediaActionHost from '@/components/media/MediaActionHost.vue'
 import MediaCollectionDialog from '@/components/media/MediaCollectionDialog.vue'
 import MediaEditorHost from '@/components/media/MediaEditorHost.vue'
+import ServerLibraryUpdateNotice from '@/components/media/ServerLibraryUpdateNotice.vue'
 import { configureMediaActionController, createCollectionMediaActionAdapter, createDeleteMediaActionAdapter, createDownloadMediaActionAdapter, createMaintenanceMediaActionAdapter, createNavigationMediaActionAdapter, createPlayedStateMediaActionAdapter, MediaActionController, publishFeedback, requestMediaActionConfirmation } from '@/services/mediaActions'
 import { COLLECTIONS_CHANGED_EVENT } from '@/services/mediaCollections'
 import { PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
@@ -60,6 +61,7 @@ watch(
 onBeforeUnmount(() => {
   document.removeEventListener('contextmenu', suppressNativeContextMenu)
   rawSourceIndexScheduler.stopAutoIndexing()
+  store.stopMediaChangeWatchers()
   void localWatcherController.dispose()
   updater.cancelStartupCheck()
 })
@@ -77,5 +79,6 @@ function suppressNativeContextMenu(event: MouseEvent) {
   <MediaActionHost />
   <MediaCollectionDialog />
   <MediaEditorHost />
+  <ServerLibraryUpdateNotice />
   <DownloadQueue />
 </template>

@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Review device revocation, permission filtering and response redaction."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player test/typecheck/lint/build review gate."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Review cache isolation, background refresh and offline fallback."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Review one-loop lifecycle and listener/request cleanup."}
+{"file":".trellis/spec/frontend/server-online-media.md","reason":"Review ServerDataSource navigation, playback and source isolation regressions."}
+{"file":"docs/architecture/07-security-design.md","reason":"Cross-layer device event security review."}

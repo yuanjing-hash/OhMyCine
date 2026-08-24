@@ -14,7 +14,7 @@ import {
 import { playerClientLabel, playerDeviceConfirmation, playerDeviceListPath, playerDeviceRevokePath, playerDeviceTime } from '@/player-devices'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import type { ConnectionSummary, EmbyGatewaySummary, EmbyManagementSummary, ListResponse, PlayerDeviceSummary } from '@/types/api'
+import type { ConnectionSummary, EmbyGatewaySummary, EmbyManagementSummary, ListResponse, MediaLibraryDetail, MediaServerLibrarySummary, MediaServerRefreshTargetSummary, PlayerDeviceSummary } from '@/types/api'
 
 interface SummaryState {
   item: EmbyManagementSummary | null
@@ -37,15 +37,23 @@ const creating = ref(false)
 const busyCounts = ref<Record<number, number>>({})
 const addOpen = ref(false)
 const editingID = ref<number | null>(null)
-const createDraft = ref<EmbyConnectionDraft>({ name: '', endpoint: 'http://127.0.0.1:8096', apiKey: '', enabled: true })
-const editDraft = ref<EmbyConnectionDraft>({ name: '', endpoint: '', apiKey: '', enabled: true })
+const createDraft = ref<EmbyConnectionDraft>({ provider: 'emby', name: '', endpoint: 'http://127.0.0.1:8096', apiKey: '', enabled: true })
+const editDraft = ref<EmbyConnectionDraft>({ provider: 'emby', name: '', endpoint: '', apiKey: '', enabled: true })
+const mediaLibraries = ref<MediaLibraryDetail[]>([])
+const refreshTargets = ref<MediaServerRefreshTargetSummary[]>([])
+const upstreamLibraries = ref<MediaServerLibrarySummary[]>([])
+const refreshDraft = ref({ libraryId: 0, connectionId: 0, upstreamLibraryId: '', enabled: true })
+const refreshBusy = ref(false)
 
-const players = computed(() => connections.value.filter(item => item.provider === 'emby'))
+const players = computed(() => connections.value.filter(item => item.provider === 'emby' || item.provider === 'jellyfin'))
 const canCreate = computed(() => auth.can(Permissions.ConnectionsCreate))
 
 async function loadConnections() {
-  const response = await api<ListResponse<ConnectionSummary>>(connectionListPath('emby'))
-  connections.value = response.list
+  const [emby, jellyfin] = await Promise.all([
+    api<ListResponse<ConnectionSummary>>(connectionListPath('emby')),
+    api<ListResponse<ConnectionSummary>>(connectionListPath('jellyfin')),
+  ])
+  connections.value = [...emby.list, ...jellyfin.list]
 }
 
 async function loadDevices(showSuccess = false) {
@@ -64,6 +72,12 @@ async function loadDevices(showSuccess = false) {
 }
 
 async function loadCard(connection: ConnectionSummary) {
+  if (connection.provider === 'jellyfin') {
+    summaries.value[connection.id] = { item: null, loading: false, failed: false }
+    gateways.value[connection.id] = null
+    gatewayFailed.value[connection.id] = false
+    return
+  }
   summaries.value[connection.id] = { item: null, loading: connection.enabled, failed: false }
   gatewayFailed.value[connection.id] = false
   const summaryRequest = connection.enabled
@@ -93,7 +107,7 @@ async function load() {
   loading.value = true
   try {
     await loadConnections()
-    await Promise.all(players.value.map(loadCard))
+    await Promise.all([Promise.all(players.value.map(loadCard)), loadRefreshTargets()])
   } catch (reason) {
     notify(message(reason), 'error')
   } finally {
@@ -104,7 +118,7 @@ async function load() {
 function toggleAdd() {
   addOpen.value = !addOpen.value
   createDraft.value.apiKey = ''
-  if (!addOpen.value) createDraft.value = { name: '', endpoint: 'http://127.0.0.1:8096', apiKey: '', enabled: true }
+  if (!addOpen.value) createDraft.value = { provider: 'emby', name: '', endpoint: 'http://127.0.0.1:8096', apiKey: '', enabled: true }
 }
 
 async function createEmby() {
@@ -112,9 +126,10 @@ async function createEmby() {
   creating.value = true
   try {
     await api('/api/v1/connections', { method: 'POST', body: JSON.stringify(payload) })
-    createDraft.value = { name: '', endpoint: 'http://127.0.0.1:8096', apiKey: '', enabled: true }
+    const provider = createDraft.value.provider
+    createDraft.value = { provider, name: '', endpoint: 'http://127.0.0.1:8096', apiKey: '', enabled: true }
     addOpen.value = false
-    notify('Emby 已添加，请先测试连接再开启 302 网关', 'success')
+    notify(`${providerLabel(provider)} 已添加，请先测试连接`, 'success')
     await load()
   } catch (reason) {
     notify(message(reason), 'error')
@@ -126,13 +141,13 @@ async function createEmby() {
 function startEdit(connection: ConnectionSummary) {
   editDraft.value.apiKey = ''
   editingID.value = connection.id
-  editDraft.value = { name: connection.name, endpoint: connection.endpoint, apiKey: '', enabled: connection.enabled }
+  editDraft.value = { provider: connection.provider === 'jellyfin' ? 'jellyfin' : 'emby', name: connection.name, endpoint: connection.endpoint, apiKey: '', enabled: connection.enabled }
 }
 
 function cancelEdit() {
   editDraft.value.apiKey = ''
   editingID.value = null
-  editDraft.value = { name: '', endpoint: '', apiKey: '', enabled: true }
+  editDraft.value = { provider: 'emby', name: '', endpoint: '', apiKey: '', enabled: true }
 }
 
 async function saveEmby(connection: ConnectionSummary) {
@@ -141,7 +156,7 @@ async function saveEmby(connection: ConnectionSummary) {
   try {
     await api(`/api/v1/connections/${connection.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
     cancelEdit()
-    notify('Emby 连接已保存；302 网关已安全关闭，请重新测试后启用', 'success')
+    notify(`${providerLabel(connection.provider)} 连接已保存，请重新测试`, 'success')
     await load()
   } catch (reason) {
     notify(message(reason), 'error')
@@ -155,7 +170,7 @@ async function testConnection(connection: ConnectionSummary) {
   beginCardWork(connection.id)
   try {
     await api(`/api/v1/connections/${connection.id}/test`, { method: 'POST', body: '{}' })
-    notify('Emby 连接测试成功', 'success')
+    notify(`${providerLabel(connection.provider)} 连接测试成功`, 'success')
     await loadConnections()
     const current = players.value.find(item => item.id === connection.id)
     if (current) await loadCard(current)
@@ -284,6 +299,93 @@ function message(reason: unknown) {
   return reason instanceof Error ? reason.message : '操作失败'
 }
 
+function providerLabel(provider: string) {
+  return provider === 'jellyfin' ? 'Jellyfin' : 'Emby'
+}
+
+async function loadRefreshTargets() {
+  if (!auth.can(Permissions.MediaLibrariesRead)) return
+  const [libraries, targets] = await Promise.all([
+    api<ListResponse<MediaLibraryDetail>>('/api/v1/media-libraries'),
+    api<ListResponse<MediaServerRefreshTargetSummary>>('/api/v1/media-server-refresh-targets'),
+  ])
+  mediaLibraries.value = libraries.list
+  refreshTargets.value = targets.list
+}
+
+async function loadUpstreamLibraries() {
+  refreshDraft.value.upstreamLibraryId = ''
+  upstreamLibraries.value = []
+  if (!refreshDraft.value.connectionId) return
+  try {
+    const response = await api<ListResponse<MediaServerLibrarySummary>>(`/api/v1/connections/${refreshDraft.value.connectionId}/media-server-libraries`)
+    upstreamLibraries.value = response.list
+  } catch (reason) {
+    notify(message(reason), 'error')
+  }
+}
+
+async function createRefreshTarget() {
+  refreshBusy.value = true
+  try {
+    await api('/api/v1/media-server-refresh-targets', { method: 'POST', body: JSON.stringify({ library_id: refreshDraft.value.libraryId, connection_id: refreshDraft.value.connectionId, upstream_library_id: refreshDraft.value.upstreamLibraryId, enabled: refreshDraft.value.enabled }) })
+    notify('媒体服务器刷新绑定已创建', 'success')
+    refreshDraft.value = { libraryId: 0, connectionId: 0, upstreamLibraryId: '', enabled: true }
+    upstreamLibraries.value = []
+    await loadRefreshTargets()
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    refreshBusy.value = false
+  }
+}
+
+async function toggleRefreshTarget(target: MediaServerRefreshTargetSummary) {
+  refreshBusy.value = true
+  try {
+    await api(`/api/v1/media-server-refresh-targets/${target.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !target.enabled, revision: target.revision }) })
+    await loadRefreshTargets()
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    refreshBusy.value = false
+  }
+}
+
+async function runRefreshTarget(target: MediaServerRefreshTargetSummary) {
+  refreshBusy.value = true
+  try {
+    await api(`/api/v1/media-server-refresh-targets/${target.id}/refresh`, { method: 'POST', body: '{}' })
+    notify('媒体服务器刷新任务已入队', 'success')
+    await loadRefreshTargets()
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    refreshBusy.value = false
+  }
+}
+
+async function deleteRefreshTarget(target: MediaServerRefreshTargetSummary) {
+  if (!window.confirm(`确认删除刷新绑定“${target.upstream_library_name}”？`)) return
+  refreshBusy.value = true
+  try {
+    await api(`/api/v1/media-server-refresh-targets/${target.id}`, { method: 'DELETE', body: '{}' })
+    await loadRefreshTargets()
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    refreshBusy.value = false
+  }
+}
+
+function libraryName(id: number) {
+  return mediaLibraries.value.find(item => item.id === id)?.name ?? `媒体库 #${id}`
+}
+
+function connectionName(id: number) {
+  return connections.value.find(item => item.id === id)?.name ?? `连接 #${id}`
+}
+
 async function revokeDevice(device: PlayerDeviceSummary) {
   if (!window.confirm(playerDeviceConfirmation(device))) return
   revokingDeviceID.value = device.id
@@ -309,24 +411,25 @@ onMounted(() => {
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
         <h1 class="m-0 text-3xl font-800">播放器管理</h1>
-        <p class="page-description mb-0 mt-2 max-w-3xl">集中管理 Emby 连接、只读运行摘要和本系统签名 STRM 的 302 播放网关。</p>
+        <p class="page-description mb-0 mt-2 max-w-3xl">集中管理 Emby/Jellyfin 连接、媒体库刷新绑定，以及 Emby 签名 STRM 的 302 播放网关。</p>
       </div>
-      <button v-if="canCreate" class="btn-primary" @click="toggleAdd">{{ addOpen ? '取消添加' : '添加 Emby' }}</button>
+      <button v-if="canCreate" class="btn-primary" @click="toggleAdd">{{ addOpen ? '取消添加' : '添加媒体服务器' }}</button>
     </div>
 
     <form v-if="addOpen" class="panel mt-6 grid gap-4 md:grid-cols-2" @submit.prevent="createEmby">
-      <div class="md:col-span-2"><h2 class="m-0 text-xl">添加 Emby</h2><p class="text-subtle mb-0 mt-2 text-sm">API Key 只发送给 Server，并使用 AES-GCM 加密保存。</p></div>
-      <div><label class="label">名称</label><input v-model="createDraft.name" class="input" required maxlength="128" placeholder="家庭 Emby" /></div>
-      <div><label class="label">Emby 本地地址</label><input v-model="createDraft.endpoint" class="input" required type="url" placeholder="http://127.0.0.1:8096" /></div>
+      <div class="md:col-span-2"><h2 class="m-0 text-xl">添加媒体服务器</h2><p class="text-subtle mb-0 mt-2 text-sm">API Key 只发送给 Server，并使用 AES-GCM 加密保存。</p></div>
+      <div><label class="label">类型</label><select v-model="createDraft.provider" class="input"><option value="emby">Emby</option><option value="jellyfin">Jellyfin</option></select></div>
+      <div><label class="label">名称</label><input v-model="createDraft.name" class="input" required maxlength="128" :placeholder="`家庭 ${providerLabel(createDraft.provider)}`" /></div>
+      <div><label class="label">服务地址</label><input v-model="createDraft.endpoint" class="input" required type="url" placeholder="http://127.0.0.1:8096" /></div>
       <div class="md:col-span-2"><label class="label">API Key</label><input v-model="createDraft.apiKey" class="input font-mono" required type="password" autocomplete="new-password" spellcheck="false" /></div>
       <label class="text-muted flex items-center gap-3 text-sm"><input v-model="createDraft.enabled" type="checkbox" />添加后启用</label>
-      <button class="btn-primary md:col-span-2" :disabled="creating || !createDraft.name.trim() || !createDraft.endpoint.trim() || !createDraft.apiKey.trim()">添加 Emby</button>
+      <button class="btn-primary md:col-span-2" :disabled="creating || !createDraft.name.trim() || !createDraft.endpoint.trim() || !createDraft.apiKey.trim()">添加 {{ providerLabel(createDraft.provider) }}</button>
     </form>
 
     <p v-if="loading" class="text-subtle mt-8">正在读取播放器…</p>
     <section v-else-if="!players.length" class="panel mt-7">
-      <h2 class="m-0 text-lg">尚未添加 Emby</h2>
-      <p class="page-description mb-0 mt-2 text-sm">添加后先测试连接，即可查看服务器版本和媒体数量，并按需开启 302 网关。</p>
+      <h2 class="m-0 text-lg">尚未添加 Emby/Jellyfin</h2>
+      <p class="page-description mb-0 mt-2 text-sm">添加并测试连接后，即可绑定上游媒体库并自动刷新。</p>
     </section>
 
     <div v-else class="mt-7 grid gap-5 lg:grid-cols-2">
@@ -336,14 +439,15 @@ onMounted(() => {
           <span :class="healthClass(connection)">{{ healthLabel(connection) }}</span>
         </div>
 
-        <div class="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <p class="text-subtle mb-0 mt-2 text-xs">{{ providerLabel(connection.provider) }}</p>
+        <div v-if="connection.provider === 'emby'" class="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div class="semantic-inset p-3"><span class="text-subtle text-xs">媒体库</span><strong class="mt-1 block">{{ summaryValue(connection.id, 'library_count') }}</strong></div>
           <div class="semantic-inset p-3"><span class="text-subtle text-xs">电影</span><strong class="mt-1 block">{{ summaryValue(connection.id, 'movie_count') }}</strong></div>
           <div class="semantic-inset p-3"><span class="text-subtle text-xs">剧集</span><strong class="mt-1 block">{{ summaryValue(connection.id, 'series_count') }}</strong></div>
           <div class="semantic-inset p-3"><span class="text-subtle text-xs">单集</span><strong class="mt-1 block">{{ summaryValue(connection.id, 'episode_count') }}</strong></div>
         </div>
 
-        <div class="mt-4 grid gap-2 text-xs sm:grid-cols-2">
+        <div v-if="connection.provider === 'emby'" class="mt-4 grid gap-2 text-xs sm:grid-cols-2">
           <div><span class="text-subtle">Emby 版本：</span><strong>{{ summaries[connection.id]?.item?.version || '未知' }}</strong></div>
           <div><span class="text-subtle">服务器：</span><strong>{{ summaries[connection.id]?.item?.server_name || '未知' }}</strong></div>
           <div><span class="text-subtle">摘要查询：</span>{{ checkedAt(summaries[connection.id]?.item?.checked_at) }}</div>
@@ -352,7 +456,7 @@ onMounted(() => {
         <p v-if="summaries[connection.id]?.failed" class="semantic-warning mb-0 mt-4 p-3 text-xs">摘要读取失败，统计值保持“未知”。请重新测试连接并检查运行日志。</p>
         <p v-else-if="summaries[connection.id]?.item?.status === 'partial'" class="semantic-warning mb-0 mt-4 p-3 text-xs">Emby 已连接，但部分聚合统计暂不可用；不可用项目保持“未知”。</p>
 
-        <section class="semantic-inset mt-5 p-4">
+        <section v-if="connection.provider === 'emby'" class="semantic-inset mt-5 p-4">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div><h3 class="m-0 text-base">Emby 302 网关</h3><p class="text-subtle mb-0 mt-1 text-xs">与 Web UI 和 STRM 共用 Server 主端口，不单独配置端口。</p></div>
             <span v-if="gateways[connection.id]" :class="gateways[connection.id]?.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ gateways[connection.id]?.enabled ? '已启用' : '默认关闭' }}</span>
@@ -381,7 +485,7 @@ onMounted(() => {
 
         <form v-if="editingID === connection.id" class="semantic-inset mt-5 grid gap-4 p-4 md:grid-cols-2" @submit.prevent="saveEmby(connection)">
           <div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" /></div>
-          <div><label class="label">Emby 本地地址</label><input v-model="editDraft.endpoint" class="input" required type="url" /></div>
+          <div><label class="label">服务地址</label><input v-model="editDraft.endpoint" class="input" required type="url" /></div>
           <div class="md:col-span-2"><label class="label">更换 API Key（可选）</label><input v-model="editDraft.apiKey" class="input font-mono" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空表示继续使用已保存的 API Key" /><p class="text-subtle mb-0 mt-2 text-xs">API Key 永不回填；保存或取消后都会清空输入框。</p></div>
           <label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" />启用连接</label>
           <div class="text-subtle self-center text-xs">凭据：{{ connection.credential_configured ? '已安全配置' : '未配置' }}</div>
@@ -390,12 +494,37 @@ onMounted(() => {
 
         <div class="mt-5 flex flex-wrap gap-3">
           <button v-if="auth.can(Permissions.ConnectionsTest)" type="button" class="btn-primary" :disabled="cardBusy(connection.id) || !connection.enabled" @click="testConnection(connection)">测试连接</button>
-          <button type="button" class="btn-secondary" :disabled="cardBusy(connection.id) || !connection.enabled" @click="refreshSummary(connection)">刷新摘要</button>
+          <button v-if="connection.provider === 'emby'" type="button" class="btn-secondary" :disabled="cardBusy(connection.id) || !connection.enabled" @click="refreshSummary(connection)">刷新摘要</button>
           <button v-if="auth.can(Permissions.ConnectionsUpdate) && editingID !== connection.id" type="button" class="btn-secondary" :disabled="cardBusy(connection.id)" @click="startEdit(connection)">编辑连接</button>
           <button v-if="auth.can(Permissions.ConnectionsDelete)" type="button" class="btn-danger" :disabled="cardBusy(connection.id)" @click="deleteEmby(connection)">删除</button>
         </div>
       </article>
     </div>
+
+    <section class="panel mt-7">
+      <div>
+        <h2 class="m-0 text-lg">媒体库自动刷新</h2>
+        <p class="page-description mb-0 mt-2 text-sm">媒体真正可用后，Server 会并行通知所有启用的 Emby/Jellyfin 绑定；失败目标不会阻塞 Player 更新。</p>
+      </div>
+
+      <form v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" class="semantic-inset mt-5 grid gap-4 p-4 md:grid-cols-2" @submit.prevent="createRefreshTarget">
+        <div><label class="label">OhMyCine 媒体库</label><select v-model.number="refreshDraft.libraryId" class="input" required><option :value="0" disabled>选择媒体库</option><option v-for="library in mediaLibraries" :key="library.id" :value="library.id">{{ library.name }}</option></select></div>
+        <div><label class="label">媒体服务器连接</label><select v-model.number="refreshDraft.connectionId" class="input" required @change="loadUpstreamLibraries"><option :value="0" disabled>选择连接</option><option v-for="connection in players" :key="connection.id" :value="connection.id" :disabled="!connection.enabled">{{ connection.name }} · {{ providerLabel(connection.provider) }}</option></select></div>
+        <div class="md:col-span-2"><label class="label">上游媒体库</label><select v-model="refreshDraft.upstreamLibraryId" class="input" required :disabled="!refreshDraft.connectionId"><option value="" disabled>{{ refreshDraft.connectionId ? '选择上游媒体库' : '请先选择连接' }}</option><option v-for="library in upstreamLibraries" :key="library.id" :value="library.id">{{ library.name }}{{ library.content_type ? ` · ${library.content_type}` : '' }}</option></select></div>
+        <label class="text-muted flex items-center gap-3 text-sm"><input v-model="refreshDraft.enabled" type="checkbox" />创建后启用自动刷新</label>
+        <button class="btn-primary md:col-span-2" :disabled="refreshBusy || !refreshDraft.libraryId || !refreshDraft.connectionId || !refreshDraft.upstreamLibraryId">创建刷新绑定</button>
+      </form>
+
+      <p v-if="refreshTargets.length === 0" class="text-subtle mb-0 mt-5 text-sm">尚未配置刷新绑定。没有绑定时 Server 不会伪造刷新成功。</p>
+      <div v-else class="mt-5 grid gap-4 lg:grid-cols-2">
+        <article v-for="target in refreshTargets" :key="target.id" class="semantic-inset p-4">
+          <div class="flex items-start justify-between gap-4"><div><h3 class="m-0 text-base">{{ libraryName(target.library_id) }} → {{ target.upstream_library_name }}</h3><p class="text-subtle mb-0 mt-1 text-xs">{{ connectionName(target.connection_id) }}</p></div><span :class="target.last_status === 'failed' ? 'status-chip status-chip--error' : target.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ target.enabled ? target.last_status : '已停用' }}</span></div>
+          <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><dt class="text-subtle text-xs">待刷新版本</dt><dd class="m-0 mt-1">{{ target.desired_revision }}</dd></div><div><dt class="text-subtle text-xs">成功版本</dt><dd class="m-0 mt-1">{{ target.successful_revision }}</dd></div><div><dt class="text-subtle text-xs">最近尝试</dt><dd class="m-0 mt-1">{{ checkedAt(target.last_attempt_at) }}</dd></div><div><dt class="text-subtle text-xs">最近成功</dt><dd class="m-0 mt-1">{{ checkedAt(target.last_successful_at) }}</dd></div></dl>
+          <p v-if="target.last_error_code" class="semantic-warning mb-0 mt-4 p-3 text-xs">刷新失败：{{ target.last_error_code }}</p>
+          <div class="mt-4 flex flex-wrap gap-2"><button v-if="auth.can(Permissions.MediaServersRefresh)" type="button" class="btn-primary" :disabled="refreshBusy || !target.enabled" @click="runRefreshTarget(target)">立即刷新</button><button v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" type="button" class="btn-secondary" :disabled="refreshBusy" @click="toggleRefreshTarget(target)">{{ target.enabled ? '停用' : '启用' }}</button><button v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" type="button" class="btn-danger" :disabled="refreshBusy" @click="deleteRefreshTarget(target)">删除</button></div>
+        </article>
+      </div>
+    </section>
 
     <section class="panel mt-7">
       <div class="flex flex-wrap items-start justify-between gap-4">

@@ -159,11 +159,16 @@ func TestPlayerCategoriesFollowProfileOrderAndFilterCatalog(t *testing.T) {
 	entries := []models.MediaLibraryEntry{
 		{LibraryID: library.ID, RelativePath: "/Chinese.mkv", ProviderID: "chinese", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "华语片", WorkKey: "movie:chinese", MatchStatus: "matched", CategoryName: "华语电影", LastGeneration: 1},
 		{LibraryID: library.ID, RelativePath: "/Foreign.mkv", ProviderID: "foreign", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "外语片", WorkKey: "movie:foreign", MatchStatus: "matched", CategoryName: "外语电影", LastGeneration: 1},
+		{LibraryID: library.ID, RelativePath: "/Foreign-Version.mkv", ProviderID: "foreign-version", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "外语片", WorkKey: "movie:foreign", MatchStatus: "matched", CategoryName: "外语电影", LastGeneration: 1},
 		{LibraryID: library.ID, RelativePath: "/Unknown-Z.mkv", ProviderID: "unknown-z", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "未知乙", WorkKey: "movie:unknown-z", MatchStatus: "matched", CategoryName: "Z 自定义", LastGeneration: 1},
 		{LibraryID: library.ID, RelativePath: "/Unknown-A.mkv", ProviderID: "unknown-a", Size: 1, ModifiedAt: now, MediaType: "movie", Title: "未知甲", WorkKey: "movie:unknown-a", MatchStatus: "matched", CategoryName: "A 自定义", LastGeneration: 1},
 	}
 	if err := service.db.Create(&entries).Error; err != nil {
 		t.Fatal(err)
+	}
+	libraries, err = service.PlayerLibraries(actor)
+	if err != nil || len(libraries) != 1 || libraries[0].EntryCount != 5 || libraries[0].WorkCount != 4 {
+		t.Fatalf("library counts=%+v err=%v", libraries, err)
 	}
 	categories, err := service.PlayerCategories(actor, library.ID)
 	if err != nil {
@@ -301,5 +306,16 @@ func TestPlayerSearchPagesThroughEveryEnabledLibrary(t *testing.T) {
 	}
 	if page.Total != 205 || len(page.List) != 0 {
 		t.Fatalf("huge player search page=%+v", page)
+	}
+}
+
+
+func TestPlayerMediaPeopleProjectsSafeProfileIdentities(t *testing.T) {
+	people := playerMediaPeople(tmdb.Snapshot{
+		Directors: []tmdb.Person{{TMDBID: 1, Name: "黑泽明", Job: "Director", ProfilePath: "/director.jpg"}},
+		Cast:      []tmdb.Person{{TMDBID: 2, Name: "三船敏郎", Character: "菊千代", ProfilePath: "/actor.jpg"}, {TMDBID: 3, Name: "不安全", ProfilePath: "https://unsafe.example/avatar.jpg"}},
+	})
+	if len(people) != 3 || people[0].Role != "Director" || people[1].Role != "Actor" || people[1].Character != "菊千代" || people[1].ProfilePath != "/actor.jpg" || people[2].ProfilePath != "" {
+		t.Fatalf("people=%+v", people)
 	}
 }

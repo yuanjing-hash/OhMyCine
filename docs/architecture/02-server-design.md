@@ -14,17 +14,21 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 ### 1.1 当前实现状态（2026-08）
 
+发现阶段现已同时上线推荐与首个内建 PT 站点纵向切片。推荐页使用统一 provider DTO，首版提供 TMDB 趋势/上映/高分栏目和豆瓣热门/TOP250，按 provider/栏目缓存 24 小时并允许 7 天旧快照降级；首次或手动刷新最多四栏目并发，单个来源失败不拖垮其它栏目。PTTime 通过版本化 `pkg/site` adapter 接入 NexusPHP 兼容的登录态检测、分页搜索、结果解析和种子获取；管理员保存的 Cookie/passkey 使用站点 ID 与类型绑定的 AES-GCM purpose 加密，候选编辑只有在连接测试成功后才以 revision CAS 原子替换，纯停用操作则无需再次向故障站点发送凭据。多站搜索执行每站限速和四站有界并发，通过 SSE 按站渐进输出并保留普通 JSON 降级接口；浏览器只得到绑定当前用户、站点和 torrent 身份的 15 分钟 256-bit 不透明令牌。下载确认会原子 reserve 令牌、在失败时于原到期时间内恢复、成功后单次销毁，再把 Server 获取的受限 `.torrent` 交给既有 `DownloadService`，继续走统一媒体库排序/选择、分类、整理和入库流水线。参考 MoviePilot 的是推荐与搜索分层、按站渐进结果和统一下载闭环；实现不复制其 GPL 代码、选择器、内置密钥、签名或凭据。
+
 下载预分类完成后 Server 不只设置 qBittorrent Category，还必须显式调用 `setLocation(暂存目录/分类)` 后才恢复下载；因为用户关闭 Automatic Torrent Management 时，单独修改 Category 不会改变保存位置。入库源解析仅对旧任务兼容查找暂存根目录，新任务的正常路线始终是分类目录。`copy|symlink` 入库后进入独立做种管理，按任务快照的时长/分享率条件采样；`copy` 达标后删任务与暂存源数据，`symlink` 只删任务并永久保留链接源，`move` 入库后以 `deleteData=false` 清理 qBittorrent 任务。自动清理默认关闭。
 
 下载完成后自动生成的 TransferTask 现已拥有独立 `/automation/organization` 媒体整理工作区。`GET /api/v1/transfers` 提供 own/all 范围内的稳定分页、`active|history|all` 范围、状态/媒体库/分类/方式/标题筛选、完整可见范围的筛选选项和真实统计；管理端默认“进行中”，终态记录进入“历史记录”，详情复用 transfer Job 的 attempts、timeline、ActionRequest 与阶段重试。失败、已取消和已完成的整理记录可通过 `DELETE /api/v1/transfers/{id}` 清理，操作复用 `jobs.control_own/all` 并二次确认；它只删除 TransferTask 和对应 transfer Job 执行历史，不删除 DownloadTask、下载器任务、暂存/源文件、媒体库文件或做种记录。Transfer worker 仅保存最多 100 项、48 KiB 内的目标相对命名结果摘要，读写两端均拒绝绝对路径、遍历与控制字符；私有 manifest、暂存/Storage 根、provider task ID 和原始错误不进入 API。这里不创建手动整理任务，手动选择文件与操作归后续“文件管理”。
 
 Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显式版本迁移、首次 owner 设置、opaque HttpOnly Cookie 会话、CSRF/Origin 防护、登录限速、用户/角色/permission catalog、多角色权限并集、审计基础，以及 Vue 3 管理端的分组导航、统一顶栏、用户管理二级路由、日志中心入口、响应式抽屉和混合型仪表盘。生产方向使用 `webui` build tag 将 Vite `dist` 嵌入 Go 二进制；默认 `go test` / `go run` 不要求 `dist` 存在。
 
-当前版本已实现 local 与 115 数据源基础：管理员从统一“数据源”页面先选择本地目录或 115 网盘；本地根继续执行绝对路径、Reparse Point 和只读探测校验，115 Cookie 由 Connection AES-GCM 加密保存并可被多个 provider root 复用。115 云目录选择使用绑定 actor、Connection、Storage、Storage 根、provider directory ID、用途和过期时间的 opaque token，Storage 保存稳定 file ID 与显示路径，不保存 Cookie、pickcode 或临时直链。MediaLibrary 可继续从 Storage 根选择任意下级媒体目录，私有保存稳定 provider root ID，并从该 ID 执行 bulk-tree 全量扫描；创建数据源本身不会扫描媒体，删除配置不会修改真实文件或网盘内容。Storage Destination、STRM、302 和媒体服务器刷新业务 API 仍按路线图继续实现。
+当前版本已实现 local 与 115 数据源基础：管理员从统一“数据源”页面先选择本地目录或 115 网盘；本地根继续执行绝对路径、Reparse Point 和只读探测校验，115 Cookie 由 Connection AES-GCM 加密保存并可被多个 provider root 复用。115 云目录选择使用绑定 actor、Connection、Storage、Storage 根、provider directory ID、用途和过期时间的 opaque token，Storage 保存稳定 file ID 与显示路径，不保存 Cookie、pickcode 或临时直链。MediaLibrary 可继续从 Storage 根选择任意下级媒体目录，私有保存稳定 provider root ID，并从该 ID 执行 bulk-tree 全量扫描；创建数据源本身不会扫描媒体，删除配置不会修改真实文件或网盘内容。媒体服务器连接、目标绑定、持久刷新任务和 Player 媒体变更通知已经接入；其余 Storage Destination、STRM/302 纵向能力仍按各自路线图继续完善。
 
 Emby 不作为文件数据源展示，而进入独立“播放器管理”工作区。页面复用通用 Connection 记录和既有权限，以卡片展示真实探测状态、受控的服务器版本/媒体数量聚合摘要，以及默认关闭的签名 STRM 302 gateway。API Key 加密保存且永不回填；gateway 与 Web/API/STRM 共用 Server 主端口，复制地址只使用全局 `OMC_PUBLIC_ORIGIN`。默认监听 `0.0.0.0:3000` 与默认 advertised origin `http://127.0.0.1:3000` 明确分离，wildcard 地址不能进入持久 URL。为兼容不返回 CORS Header 的 115 CDN，网关修补 Emby Web 固定播放器资源中的远程 DirectPlay `crossOrigin` 赋值，并在固定 HTML 壳优先加载一个网关同源、不可配置的兜底脚本以覆盖旧模块缓存；同一固定脚本还可按网关开关提供设备适配的外部播放器入口和 Emby 背景图横向图库。外部播放器只接受本系统 PlaybackInfo 返回的短时 ticket，不传递 Emby/115 持久凭据或最终 CDN 地址；图库只使用当前 Emby 会话可见图片且无第三方前端依赖。其它 HTML/静态内容仍透明代理，不提供任意脚本注入。
 
 Player 现已通过独立 `ServerDataSource` 接入 Server 媒体目录。用户首次在 Player 输入 Server 用户名和密码，Server 只在该次验证后签发可撤销的 `omc_player_` device token；数据库仅保存 token 与设备 ID 的不可逆摘要，Player 密码不持久化，device token 进入 Player provider-specific 安全凭据库。`/api/v1/player/*` 使用独立 Bearer 中间件并注册在浏览器 Origin/CSRF 边界之外，Bearer 不能进入 Cookie 管理 API；停用用户、重置密码、同设备重新登录、登出或显式撤销都会使对应令牌失效。Player 专用 DTO 只返回安全媒体库、作品、版本和身份投影，不返回绝对路径、115 provider ID、Cookie、Emby API Key、signed STRM URL 或上游临时地址。
+
+Server 的 Notify 阶段以 `MediaLibrary.content_revision` 和持久 `media_library_changes` 为权威边界：完整扫描或人工识别修正只在真实 catalog/metadata 变化时推进一次 revision；需要 STRM/NFO/JPG 或 cleanup 的变更先保持 pending，匹配的当前 artifact generation 成功后才转为 ready。ready 变更同时、互不等待地推进所有启用 Emby/Jellyfin 目标的 desired revision，并唤醒 Player 长轮询。`media_server_refresh` Job 只保存 target ID，按目标合并并在执行时读取最新 revision、手动 generation 和加密 Connection；认证/配置错误安全失败，网络不可用/限流走有界重试，重启后恢复。Player 使用 device Bearer 请求 `GET /api/v1/player/media-changes?cursor=...&wait_seconds=12`，持久 cursor 补偿断线；历史过旧返回 `resync_required`，响应不含路径、provider/upstream ID、凭据或播放地址。
 
 Player 通过同一个受 Bearer 保护的 entry stream endpoint 播放 Server 媒体，但 Server 按 Storage 类型安全分流：本地条目从注册 Storage 根和媒体库相对根逐段校验，拒绝越界、symlink、junction/Reparse Point 与目录后直接提供 GET/HEAD/Range 文件流，绝对路径不进入 DTO、错误或日志；已生成 STRM 的 115 条目不读取 `.strm` 文本，也不经过 Emby，而是再次校验 active managed STRM artifact，复用 `SignedProxyService.ResolveArtifactForClient` 解析当前设备的短期 115 地址并返回 302。Player Windows/Android 原生播放桥只把 Bearer 发给 Server origin，跨 origin 跳转前删除 Authorization、Cookie 和其它私有 Header，同时保留 Range。Player 媒体 DTO 还从持久化 TMDB 快照投影原始标题、评分、时长、类型、导演、编剧、演员、IMDb/TMDB ID 与有界背景图身份；旧快照没有图片数组时回退现有单张背景。Server 与 Player 直连 Emby 的聚合去重使用 TMDB 作品身份及 `MediaArtifact.OpaqueID` 精确版本身份；Emby 实例仅以规范化 `SystemId` 的不可逆指纹判断，同名、同地址或不同认证方式均不作为相等依据。配置同步和多设备设置/进度同步不属于这一接入切片，连接 Server 不会自动导入或上传 Player 数据源配置。
 
@@ -37,6 +41,8 @@ Profile 的预识别现已内置用户指定的 MoviePilot-Help `TV.txt` 与 `an
 `MediaLibrary` 基础现已落地为只读索引边界：每个库引用一个 Storage、一个经目录选择令牌校验并持久化为 provider-relative 的根、一个分类 Profile，以及独立的全量/增量计划、扩展名、忽略规则、metadata 匹配与 provider 限速配置。新建并启用后自动执行首次全量基线，成功后才挂接该库独立的 watcher，并立即执行一次 catch-up reconciliation 覆盖交接窗口；初始化失败时保留配置、显示安全错误码与下次指数退避时间，也可仅唤醒该库“立即重试”。115 Connection 另有独立生活事件轮询：首次只锚定最新事件，后续将白名单化的创建、移动、重命名和删除事件连同 `(update_time,event_id)` 游标原子持久化，再同时唤醒关联媒体库和同 Connection 的 115 离线下载任务；监听不占额外 Job 队列，单连接失败不影响其它连接，媒体库周期 reconciliation 与离线任务低频状态查询分别负责补漏。文件 Entry 继续作为扫描事实层，并持久化 `work_key/series_title`；用户可见 catalog 在 SQLite 中先按作品聚合再分页，电视剧按 Series -> Season -> Episode 按需展开，原始 `/entries` 保留为分页诊断接口。管理端 `/system/media-libraries` 提供真实 total、标题搜索、类型筛选、20/50/100 页大小和取消过期请求的作品清单。local 与 115 已接入只读扫描；受控 STRM 输出目录仍由后续纵向切片接入。
 
 媒体库扫描和下载完成现在共用同一 provider-neutral 识别核心：local、115 以及未来 OpenList/Alist、CloudDrive2 adapter 只枚举文件事实；统一分组层负责根目录电影、剧集季目录和 BDMV/VIDEO_TS 发行目录；随后才执行 Profile 预处理、文件名/父目录/包名候选、TMDB 验证和分类。TMDB 请求不在数据库事务中进行，提交前重新校验来源、Profile revision 和 generation。匹配结果默认缓存 30 天，无匹配缓存 30 分钟，临时网络失败缓存 5 分钟，凭据缺失/认证失败不做长期负缓存。扫描事件仍按媒体库独立并发且不占任务队列；当前 local watcher 与 115 生活事件会合并唤醒同一完整只读 reconciliation，未变化识别单元通过指纹/缓存避免重复 TMDB，请求；周期扫描继续补漏。
+
+自动识别不会把 TMDB 第一条搜索结果直接当成答案：`internal/mediarecognition` 先把包名、provider-relative 文件集合、季集/光盘结构和 Profile 预处理结果解析成有理由的结构事实与查询变体；TMDB 召回同时覆盖 movie/tv、年份精确/±1/无年份，并只对初排前三名补充 alternative titles、translations 和季信息。统一排名器再按 Unicode/标点/空白/简繁等价标题、年份、类型、季集、文件集合、一致性、唯一性和弱流行度证据作出单一决定，对胜出身份执行 `GetByID` 复验；拒绝结果明确区分无候选、低置信和候选冲突。`HQ`、尾部发布组、多集目录与 `CC MA 2.0` 等尾部版本/音轨片段属于结构化规格证据，`1566`、`1917`、`3 Body Problem`、合法连字符和方括号标题不得被盲删。Top-k 只存在于内部评分、诊断和 benchmark，不是正常入库的人工作业。已完成下载若仍未识别，下载页显示“重新识别并入库”并保留 provider task/output；用户主动展开人工介入后可按关键词搜索最多十条安全 TMDB 摘要，或直接填写媒体类型与 ID。Server 只持久化复验后的类型/ID，并在 Worker 创建 verified transfer snapshot 前再次 `GetByID`，随后继续既有 Transfer → Import → Notify，不重新提交 115 离线下载。冻结的离线 corpus/report 用于比较合成旧版代理与新引擎，必须明确资料与许可证边界，不能冒充真实运行 MoviePilot、Emby 或历史 Server 的横向实测。
 
 v25 新增媒体库识别单元和安全缓存持久化，Entry 关联识别投影，扫描记录显示匹配、未识别、缓存命中和识别失败数。缺少 TMDB、认证/网络失败、无匹配或低置信不会让文件枚举失败，而是进入“未识别”。管理端媒体清单提供全部、已识别、未识别和人工匹配分页；管理员可单项重试、搜索有限 TMDB 候选、只提交 TMDB ID/type 进行服务端复验，并可清除人工覆盖。更换 Storage/媒体库根/provider root 时，旧 Entry、识别单元、人工覆盖和扫描记录在同一事务内清空，再自动建立新基线；扫描和人工识别都不会移动、重命名、上传或删除来源文件。
 
@@ -205,10 +211,11 @@ ohmycine-server/
               └──→ 开启了STRM？ → 生成STRM到指定本地目录
        │
        ▼
-通知 Emby/Jellyfin 刷新媒体库 (REST API)
+权威 catalog / artifact readiness 提交并生成 content revision
        │
-       ▼
-通知 Player 客户端刷新 (WebSocket)
+       ├──→ 持久 Job 通知 Emby/Jellyfin 刷新目标 (REST API)
+       │
+       └──→ device Bearer 长轮询通知 Player ServerDataSource
        │
        ▼
 Player 展示新媒体
@@ -225,19 +232,10 @@ Player 展示新媒体
 
 package mediaserver
 
-type MediaServerClient interface {
-    // 测试连接
-    TestConnection(ctx context.Context) error
-    // 获取系统信息
-    GetSystemInfo(ctx context.Context) (*SystemInfo, error)
-    // 触发媒体库扫描
+type Client interface {
+    Probe(ctx context.Context) (ServerInfo, error)
+    ListLibraries(ctx context.Context) ([]Library, error)
     RefreshLibrary(ctx context.Context, libraryID string) error
-    // 获取媒体库列表
-    GetLibraries(ctx context.Context) ([]*Library, error)
-    // 获取媒体项目
-    GetItems(ctx context.Context, libraryID string, query ItemQuery) ([]*Item, error)
-    // 搜索媒体
-    Search(ctx context.Context, keyword string) ([]*Item, error)
 }
 ```
 

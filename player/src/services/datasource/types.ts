@@ -116,6 +116,7 @@ export interface MediaDetail extends MediaItem {
   directors?: string[]
   writers?: string[]
   cast?: string[]
+  people?: MediaPerson[]
   imdbId?: string
   tmdbId?: number
   resolution?: string
@@ -143,6 +144,14 @@ export interface MediaSourceOption {
   itemId?: string
   providerMediaSourceId?: string
   exactIdentity?: string
+}
+
+export interface MediaPerson {
+  id?: string
+  name: string
+  role?: string
+  character?: string
+  imageUrl?: string
 }
 
 export interface SubtitleTrack {
@@ -379,6 +388,13 @@ export interface DataSource {
   getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 
   clearCache?: () => void
+  watchMediaChanges?: (listener: (change: DataSourceMediaChange) => void) => () => void
 
   exportConfig: () => DataSourceConfig
+}
+
+export interface DataSourceMediaChange {
+  sourceId: string
+  libraryIds: string[]
+  resyncRequired: boolean
 }

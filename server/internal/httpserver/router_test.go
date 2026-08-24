@@ -26,6 +26,7 @@ import (
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud/pan115"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
+	sitepkg "github.com/yuanjing-hash/ohmycine/server/pkg/site"
 	"gorm.io/gorm"
 )
 
@@ -38,6 +39,8 @@ type testClient struct {
 	connections *services.ConnectionService
 	signedProxy *services.SignedProxyService
 	embyGateway *services.EmbyGatewayService
+	changes     *services.MediaChangeService
+	sites       *services.SiteService
 	lastHeader  http.Header
 }
 type testEnvelope struct {
@@ -65,6 +68,20 @@ func TestBuiltInLibraryArtworkIsPublicInertRaster(t *testing.T) {
 }
 
 type routerCloudDriver struct{}
+
+type routerSiteAdapter struct{}
+
+func (routerSiteAdapter) Kind() string { return "pttime" }
+func (routerSiteAdapter) Test(context.Context, sitepkg.Config) (sitepkg.Health, error) {
+	return sitepkg.Health{Status: "online", Username: "router-user"}, nil
+}
+func (routerSiteAdapter) Search(_ context.Context, _ sitepkg.Config, query sitepkg.Query) (sitepkg.Page, error) {
+	seeders := 8
+	return sitepkg.Page{Page: query.Page, Items: []sitepkg.Result{{TorrentID: "88", Title: "Seven.Samurai.1954.1080p", Seeders: &seeders}}}, nil
+}
+func (routerSiteAdapter) Download(context.Context, sitepkg.Config, string) ([]byte, string, error) {
+	return []byte("d4:infod4:name4:testee"), "fixture.torrent", nil
+}
 
 func (routerCloudDriver) Provider() string { return cloudpkg.ProviderPan115 }
 func (routerCloudDriver) Capabilities() cloudpkg.Capabilities {
@@ -161,6 +178,12 @@ func newTestClient(t *testing.T) *testClient {
 		t.Fatal(err)
 	}
 	connections := services.NewConnectionService(db, audit, credentialStore, cloudRegistry, log)
+	changes := services.NewMediaChangeService(db)
+	refresh := services.NewMediaServerRefreshService(db, queue, audit, connections)
+	changes.SetReadyHandler(refresh.EnqueueLibrary)
+	libraries.SetMediaChangeService(changes)
+	api.SetMediaChangeService(changes)
+	api.SetMediaServerRefreshService(refresh)
 	signedProxy, err := services.NewSignedProxyService(db, credentialStore, connections, cfg.PublicOrigin, log)
 	if err != nil {
 		t.Fatal(err)
@@ -186,11 +209,15 @@ func newTestClient(t *testing.T) *testClient {
 	downloadSettings := services.NewDownloadSettingsService(db, audit)
 	seedingSettings := services.NewSeedingSettingsService(db, audit)
 	metadataSettings := services.NewMetadataSettingsService(db, audit, credentialStore)
+	discovery := services.NewDiscoveryService(db, metadataSettings, log)
+	api.SetDiscoveryService(discovery)
 	libraries.SetMetadataSettingsService(metadataSettings)
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, log)
 	downloads.SetMetadataSettings(metadataSettings)
 	downloads.SetSeedingSettings(seedingSettings)
+	sites := services.NewSiteServiceWithAdapters(db, audit, credentialStore, downloads, []sitepkg.Adapter{routerSiteAdapter{}}, log)
+	api.SetSiteService(sites)
 	transfers := services.NewTransferService(db, audit, queue, log)
 	seeding := services.NewSeedingService(db, audit, queue, downloaders, log)
 	transfers.SetSeedingService(seeding)
@@ -203,7 +230,7 @@ func newTestClient(t *testing.T) *testClient {
 	api.SetSeedingSettingsService(seedingSettings)
 	api.SetSeedingService(seeding)
 	api.SetPluginRepositoryService(services.NewPluginRepositoryService(db, audit, nil, log))
-	return &testClient{router: New(cfg, api, auth, log), queue: queue, db: db, connections: connections, signedProxy: signedProxy, embyGateway: embyGateway}
+	return &testClient{router: New(cfg, api, auth, log), queue: queue, db: db, connections: connections, signedProxy: signedProxy, embyGateway: embyGateway, changes: changes, sites: sites}
 }
 
 func createRouterSignedArtifact(t *testing.T, client *testClient, actor services.Actor) string {
@@ -587,6 +614,19 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 	if err := client.db.Where("name_normalized = ?", "proxy-route-library").First(&library).Error; err != nil {
 		t.Fatal(err)
 	}
+	var readyChange models.MediaLibraryChange
+	if err := client.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		readyChange, err = client.changes.RecordTx(tx, library.ID, library.DirtyGeneration, models.MediaLibraryChangeCatalog, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client.changes.NotifyCommitted(library.ID, readyChange.Revision)
+	status, changesEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=0", login.AccessToken, nil)
+	if status != http.StatusOK || !bytes.Contains(changesEnvelope.Data, []byte(`"library_id":`+uintString(library.ID))) || bytes.Contains(changesEnvelope.Data, []byte("relative_root")) {
+		t.Fatalf("Player changes status=%d data=%s", status, changesEnvelope.Data)
+	}
 	status, catalogEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries/"+uintString(library.ID)+"/catalog?page=1&page_size=20", login.AccessToken, nil)
 	if status != http.StatusOK || bytes.Contains(catalogEnvelope.Data, []byte("/Movie.mkv")) || bytes.Contains(catalogEnvelope.Data, []byte("video-1")) {
 		t.Fatalf("Player catalog status=%d data=%s", status, catalogEnvelope.Data)
@@ -756,6 +796,58 @@ func (c *testClient) setup(t *testing.T) map[string]any {
 		t.Fatal("setup did not issue csrf and session cookie")
 	}
 	return data
+}
+
+func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T) {
+	client := newTestClient(t)
+	unauthenticated := httptest.NewRecorder()
+	client.router.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/v1/sites", nil))
+	if unauthenticated.Code != http.StatusUnauthorized || unauthenticated.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("unauthenticated sites status=%d cache=%q", unauthenticated.Code, unauthenticated.Header().Get("Cache-Control"))
+	}
+
+	client.setup(t)
+	payload := map[string]any{"name": "PTTime", "kind": "pttime", "base_url": "https://pt.example.test", "cookie": "uid=1; token=router-secret", "passkey": "router-passkey", "enabled": true, "priority": 100, "timeout_seconds": 12, "rate_limit_per_minute": 120}
+	status, _ := client.request(t, http.MethodPost, "/api/v1/sites", payload, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("site create without csrf status=%d", status)
+	}
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/sites", payload, true)
+	if status != http.StatusCreated || bytes.Contains(envelope.Data, []byte("router-secret")) || bytes.Contains(envelope.Data, []byte("router-passkey")) {
+		t.Fatalf("site create status=%d data=%s", status, envelope.Data)
+	}
+	var created services.SiteSummary
+	if err := json.Unmarshal(envelope.Data, &created); err != nil || created.ID == 0 || created.Health.Status != "online" {
+		t.Fatalf("created site err=%v item=%+v", err, created)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/sites", nil, false)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" || bytes.Contains(envelope.Data, []byte("router-secret")) || bytes.Contains(envelope.Data, []byte("router-passkey")) || bytes.Contains(envelope.Data, []byte("credential_ciphertext")) {
+		t.Fatalf("site list status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
+
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/discovery/pt-search?keyword=Seven%20Samurai&media_type=movie&year=1954&page=1", nil, false)
+	if status != http.StatusOK || bytes.Contains(envelope.Data, []byte("torrent_id")) || bytes.Contains(envelope.Data, []byte("router-secret")) || !bytes.Contains(envelope.Data, []byte(`"token"`)) {
+		t.Fatalf("PT search status=%d data=%s", status, envelope.Data)
+	}
+
+	streamRequest := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/pt-search/stream?keyword=Seven%20Samurai&page=1", nil)
+	streamRequest.Header.Set("Origin", "http://localhost:3000")
+	streamRequest.AddCookie(client.cookie)
+	streamResponse := httptest.NewRecorder()
+	client.router.ServeHTTP(streamResponse, streamRequest)
+	streamBody := streamResponse.Body.String()
+	if streamResponse.Code != http.StatusOK || !strings.HasPrefix(streamResponse.Header().Get("Content-Type"), "text/event-stream") || !strings.Contains(streamBody, "event: site") || !strings.Contains(streamBody, "event: done") || strings.Contains(streamBody, "router-secret") || strings.Contains(streamBody, "torrent_id") {
+		t.Fatalf("SSE status=%d type=%q body=%q", streamResponse.Code, streamResponse.Header().Get("Content-Type"), streamBody)
+	}
+
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/discovery/downloads", map[string]any{"result_token": "invalid", "downloader_id": "none", "media_library_id": 0}, true)
+	if status != http.StatusGone || !bytes.Contains(envelope.Data, []byte(services.CodeSiteResultExpired)) {
+		t.Fatalf("invalid discovery token status=%d data=%s", status, envelope.Data)
+	}
+	status, _ = client.request(t, http.MethodDelete, "/api/v1/sites/"+uintString(created.ID), map[string]any{}, true)
+	if status != http.StatusOK {
+		t.Fatalf("delete site status=%d", status)
+	}
 }
 
 func TestPluginRepositoryAPIsRequireAuthUseNoStoreAndRejectRawURLs(t *testing.T) {

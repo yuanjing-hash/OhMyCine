@@ -24,6 +24,10 @@ import STRMView from '@/views/STRMView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import PluginsView from '@/views/PluginsView.vue'
 import ForbiddenView from '@/views/ForbiddenView.vue'
+import RecommendationsView from '@/views/RecommendationsView.vue'
+import ExploreView from '@/views/ExploreView.vue'
+import SitesView from '@/views/SitesView.vue'
+import DiscoveryDetailView from '@/views/DiscoveryDetailView.vue'
 
 function navigationMeta(id: string) {
   const item = findNavigationItem(id)
@@ -31,13 +35,10 @@ function navigationMeta(id: string) {
 }
 
 const plannedRoutes = [
-  ['discovery/recommendations', 'recommendations'],
-  ['discovery/explore', 'explore'],
   ['subscriptions/manage', 'subscriptions'],
   ['subscriptions/workflows', 'workflows'],
   ['subscriptions/calendar', 'calendar'],
   ['automation/files', 'files'],
-  ['system/sites', 'sites'],
 ] as const
 
 export const router = createRouter({
@@ -52,10 +53,14 @@ export const router = createRouter({
       component: AppLayout,
       children: [
         { path: '', name: 'dashboard', component: DashboardView, meta: navigationMeta('dashboard') },
+        { path: 'discovery/recommendations', name: 'recommendations', component: RecommendationsView, meta: navigationMeta('recommendations') },
+        { path: 'discovery/details/:provider/:mediaType/:providerID', name: 'discovery-detail', component: DiscoveryDetailView, meta: navigationMeta('recommendations') },
+        { path: 'discovery/explore', name: 'explore', component: ExploreView, meta: navigationMeta('explore') },
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
         { path: playersRouteContract.path, name: playersRouteContract.name, component: PlayersView, meta: navigationMeta(playersRouteContract.navigationID) },
         { path: mediaLibrariesRouteContract.path, name: mediaLibrariesRouteContract.name, component: MediaLibrariesView, meta: navigationMeta(mediaLibrariesRouteContract.navigationID) },
         { path: 'system/media-rules', name: 'media-rules', component: MediaRulesView, meta: navigationMeta('media-rules') },
+        { path: 'system/sites', name: 'sites', component: SitesView, meta: navigationMeta('sites') },
         { path: 'automation/tasks', name: 'tasks', component: TasksView, meta: navigationMeta('tasks') },
         { path: downloadsRouteContract.path, name: downloadsRouteContract.name, component: DownloadsView, meta: navigationMeta(downloadsRouteContract.navigationID) },
 		{ path: organizationRouteContract.path, name: organizationRouteContract.name, component: OrganizationView, meta: navigationMeta(organizationRouteContract.navigationID) },

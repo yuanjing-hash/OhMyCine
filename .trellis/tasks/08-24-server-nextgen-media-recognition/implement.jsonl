@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"共享媒体库识别、provider-neutral 输入与识别缓存的既有契约"}
+{"file":".trellis/spec/backend/transfer-organization.md","reason":"已完成下载从识别恢复到 Transfer/Import/Notify 的管线与幂等边界"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"版本化诊断字段和缓存迁移约束"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"重新识别、显式 ID 纠错和诊断响应的 API 约定"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"识别输入、诊断、日志和显式身份验证的安全边界"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Server 管理界面的恢复状态和高级纠错交互"}
+{"file":".trellis/tasks/08-24-server-nextgen-media-recognition/research/current-gap.md","reason":"当前实现缺口、失败样本和可复用基础"}
+{"file":".trellis/tasks/08-24-server-nextgen-media-recognition/research/moviepilot-v3.md","reason":"MoviePilot 自动识别链、解析行为和失败后显式 ID 纠错边界"}
+{"file":".trellis/tasks/08-24-server-nextgen-media-recognition/research/emby-naming.md","reason":"Emby 目录结构、显式 provider ID 和命名解析维度"}
+{"file":".trellis/tasks/08-24-server-nextgen-media-recognition/research/benchmark-strategy.md","reason":"冻结语料、指标、对照和发布门"}

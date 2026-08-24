@@ -58,10 +58,19 @@ Shared recognition boundary:
 
 ```text
 provider/local enumeration -> provider-neutral file facts
-  -> deterministic recognition units
-  -> built-in packs -> Profile user rules -> filename/parent/package candidates
-  -> TMDB validation -> Profile classification
+  -> deterministic recognition units -> mediarecognition.Parse(InputFacts)
+  -> built-in packs -> Profile user rules -> structured ParsedFacts/QueryVariant
+  -> bounded TMDB movie+tv recall -> top-3 detail enrichment -> mediarecognition.Rank
+  -> winning GetByID validation -> Profile classification
   -> recognition + entry/catalog projection
+```
+
+Pure domain signatures:
+
+```go
+mediarecognition.Parse(InputFacts) (ParsedFacts, error)
+mediarecognition.Rank(ParsedFacts, []RemoteCandidate) Decision
+tmdb.Client.EnrichCandidates(ctx, candidates, language, limit) ([]tmdb.Candidate, error)
 ```
 
 Runtime lifecycle:
@@ -92,9 +101,13 @@ disabled -> initializing -> attaching_listener
 - Provider scanners may implement the optional `cloud.BulkTreeDriver` contract for full recursive scans. The 115 adapter uses a dedicated recursive file stream plus a descendant-folder map to reconstruct provider-relative paths locally; it must not issue one `Stat` per item or one interactive `List` per directory. Interactive directory browsing keeps its conservative limiter, while the bulk lane uses bounded pages, at most two in-flight calls, shared risk backoff/circuit state, cancellation, and partial-result semantics.
 - Scanner/provider adapters only enumerate file facts and structural hints. They never own Profile preprocessing, title cleanup, TMDB calls, final classification, `work_key`, or manual correction behavior. Local, 115 and future providers feed the same `GroupRecognitionUnits` plus shared recognizer boundary.
 - Recognition units are deterministic: root-level movie files stay separate; one series/season directory is recognized once rather than once per episode; `BDMV` and `VIDEO_TS` use the outer release directory; stable provider IDs may participate only inside a hashed private source anchor. The source key, input fingerprint and provider ID never enter public DTOs or runtime logs.
-- Built-in Profile packs run before user Profile RE2 rules and candidate parsing. Candidate sources include the primary filename, meaningful parent directory and package name. TMDB matching compares localized and original titles; a unique exact original-title/year result such as `Seven Samurai (1954)` remains valid when the returned localized title is `七武士`.
+- Built-in Profile packs run before user Profile RE2 rules and structured parsing. `InputFacts` contains only a bounded package name, provider-root-relative file facts, source kind and explicit hints; no provider ID, absolute root, credential or URL may cross this boundary. Media-library entries use one leading `/` as a logical provider-root marker, and only the validated library-scan adapter may remove that marker before `Parse`; unknown/downloader input with an absolute, UNC or drive path is rejected.
+- `ParsedFacts` keeps canonical/title variants, year/season/episode, resource specifications, release group, directory/file-set structure, type evidence and query reasons. Parsing uses stable 1888–2200 year validation and must not depend on the host clock. Chinese `第N集/话` and `第N季` expressions are structural facts and are removed from a larger work-title surface, but an entire legitimate title such as `第八集` must remain searchable. Destructive bracket stripping is forbidden because `[REC]` and similar text can be a legal title; explicit `[tmdbid=123]` / `{tmdb-123}` markers are parsed separately and still require `GetByID` verification.
+- TMDB recall covers movie and TV with a maximum of ten search requests while reserving exact-year, `±1`, no-year and cross-type attempts. Within that budget, canonical variants from distinct filename/parent/package sources receive an opportunity before noisy fallback stages from one source, so a dirty primary filename cannot crowd out a clean parent title. Search summaries include localized/original titles; only the initial top three may be enriched with alternative titles, translations and season structure before final ranking. A single enrichment failure degrades to the original safe summary; caller cancellation remains terminal.
+- `mediarecognition.Rank` is the only automatic scoring/threshold owner. Services must not reintroduce first-result selection or local `.98/.82/.62` similarity constants. It compares Unicode NFC/case/punctuation/space/Han-equivalent titles plus year/type/season/structure/consistency/uniqueness and weak popularity evidence, then returns exactly one of `matched|no_match|low_confidence|candidate_conflict`. A matched winner is fetched again through `GetByID` before persistence.
+- Normal recognition remains fully automatic; internal Top-k exists only for ranking, diagnostics and benchmark metrics. Bounded TMDB keyword search and direct ID entry are recovery tools shown only after automatic recognition failed, and browser-provided title/year/category/artwork is never trusted.
 - TMDB network calls happen outside SQLite transactions. Before committing recognized results, the transaction reloads and verifies source identity, Profile ID/revision and dirty generation so stale network results cannot overwrite a changed library.
-- Recognition cache keys bind the unit fingerprint, Profile ID/revision, metadata language and region. Matched results default to 30 days, ordinary no-match to 30 minutes, and transient network failures to five minutes. Missing credentials and authentication failures are not retained as durable lookup answers. Cache JSON contains only canonical match/classification fields, never credentials, URLs, paths, provider IDs or raw upstream responses.
+- Recognition cache keys bind `mediarecognition.EngineVersion`, unit fingerprint, Profile ID/revision, metadata language and region. An engine-version change must bypass old positive and negative decisions. Matched results default to 30 days, ordinary no-match to 30 minutes, and transient network failures to five minutes. Missing credentials and authentication failures are not retained as durable lookup answers. Cache JSON contains only canonical match/classification fields, never credentials, URLs, paths, provider IDs or raw upstream responses.
 - A single recognition failure preserves the enumerated file facts and produces `status=unrecognized` plus a stable `error_code`; it does not fail the scan. Enumerator, database, source-boundary or recognition-configuration failures still fail the scan run. Scan runs expose `matched`, `unrecognized`, `cache_hits`, and `recognition_failed` counters.
 - Manual override accepts only TMDB ID and `movie|tv`. The Server fetches and validates that TMDB item, reclassifies it with the current Profile, and atomically updates the recognition plus linked entry projections. Normal reconciliation retains manual overrides; clearing one immediately re-enters automatic recognition. Client-provided title, category, confidence or metadata is never trusted.
 - Recognition endpoints use library-scoped non-semantic tokens, enforce read/scan permissions in router and service layers, and return `Cache-Control: no-store`. Responses may include a relative basename summary, but never absolute paths, complete provider paths, provider IDs, cache keys or stored metadata JSON.
@@ -135,6 +148,10 @@ disabled -> initializing -> attaching_listener
 | Catalog token is invalid or does not belong to the requested library | `invalid_request` or `not_found`; never search another library |
 | Recognition status is not `matched|unrecognized`, or manual filter is malformed | `invalid_request`; run no unbounded query |
 | TMDB is missing, unauthorized, unavailable, no-match, or below confidence threshold | Preserve facts and return an `unrecognized` item with a stable safe code |
+| Best candidate is below the corpus threshold | `tmdb_low_confidence`; do not call the winning `GetByID` path |
+| Top candidates remain inside the corpus conflict margin | `tmdb_candidate_conflict`; do not silently select the first result |
+| Provider-neutral facts contain an absolute/UNC/drive path, URL or credential marker | `tmdb_invalid_request`; run no TMDB request |
+| One top-three enrichment detail fails | Keep the original bounded candidate and continue ranking; never expand beyond the request budget |
 | Retry targets a manual override | Reject with conflict until the override is cleared |
 | Override submits an invalid type/ID or TMDB does not confirm it | Reject safely; preserve the previous recognition and entry projection |
 | Profile/source/generation changes during TMDB work | Reject the stale commit and let the supervisor reconcile the current configuration |
@@ -149,8 +166,9 @@ disabled -> initializing -> attaching_listener
 - Good: change an enabled library from `/Old` to `/New`, observe the old catalog disappear with the update, then observe only `/New` entries after the automatic initial and catch-up scans.
 - Good: local and 115 scans of the same release facts produce the same TMDB identity/category, and the second unchanged scan uses the persisted recognition cache without another TMDB request.
 - Good: an unrecognized release remains visible, an administrator searches bounded TMDB candidates and saves an ID-only override, and a later scan retains the verified override.
+- Good: `Ming Dynasty in 1566 HQ -BlackTV` with 49 episode files parses to the numeric-preserving title, strong TV evidence and the correct TMDB identity without user interaction.
 - Base: create disabled, save the explicit `false`, and start no scan until a later update enables it.
-- Bad: accept `../`, reuse a token across Storages, start every 115 library at the Storage root, recognize every episode separately, let a provider adapter call TMDB, group episodes after pagination, persist an absolute source path in an entry, log `scanErr` containing a filesystem path, mark listening after failed catch-up, delete unseen entries from a partial scan, or retain recognitions/overrides from the old source identity.
+- Bad: accept `../`, reuse a token across Storages, start every 115 library at the Storage root, recognize every episode separately, let a provider adapter call TMDB, accept TMDB result zero, copy fuzzy thresholds into services, expose normal-flow Top-k selection, group episodes after pagination, persist an absolute source path in an entry, log `scanErr` containing a filesystem path, mark listening after failed catch-up, delete unseen entries from a partial scan, or retain recognitions/overrides from the old source identity.
 
 ## 6. Tests Required
 
@@ -165,6 +183,8 @@ disabled -> initializing -> attaching_listener
 - Catalog: parser fixtures cover `S01E02`, `1x02`, `EP02`, Chinese episode/season labels and season folders; 12,099 entries return a true second page and total; Series grouping occurs before pagination; search/filter totals, out-of-range pages, and season/episode order are asserted.
 - Recognition grouping: root movies remain separate, season episodes share one unit, disc structures use the outer release folder, and stable provider identity survives a rename without exposing the raw ID.
 - Recognition integration: local and fake provider facts share the exact recognizer; `Seven.Samurai.1954...` queries `Seven Samurai` and matches a localized TMDB response through original title plus year; a repeated unchanged scan asserts zero additional TMDB requests.
+- Next-generation corpus: offline fixtures cover numeric titles, legal hyphens/brackets, 49-episode TV structure, BDMV/VIDEO_TS, Chinese simplified/traditional, English/Japanese/Korean names, release/audio suffixes, close candidates and strong year conflicts. Golden baseline/candidate reports must be reproducible without live TMDB and must label synthetic/reference behavior honestly.
+- Ranking/retrieval: candidate input order does not change the decision; exact/±1/no-year/cross-type requests remain within ten searches; detail enrichment remains within three candidates; alternative/translated titles can change the winner; no-match, low-confidence and conflict return distinct reason codes and never call `GetByID` for a rejected winner.
 - Recognition failures/correction: missing credential, auth, network, no-match and low confidence preserve facts; retry, bounded candidate search, verified override, retained override and clear-then-auto behavior are covered with RBAC, strict JSON, no-store and safe DTO assertions.
 - v25 migration: fresh creation, v24 upgrade and repeated migration assert recognition/cache tables, entry/run additive columns, indexes/cascades, old entries retained as pending facts, and source replacement removing recognitions plus manual overrides.
 - API: automatic initialization reaches `listening`, entries/catalog contain no physical root, invalid paging returns 400, strict JSON rejects unknown fields, reorder persists, and deletion leaves source files untouched.
@@ -214,6 +234,25 @@ facts := provider.Enumerate(ctx, root)                  // no TMDB
 units := medialibrary.GroupRecognitionUnits(facts)
 results := recognizer.Recognize(ctx, profile, units)   // outside DB transaction
 commitIfCurrent(tx, librarySource, profile.Revision, generation, results)
+```
+
+Wrong:
+
+```go
+match := tmdb.Search(ctx, title) // accepts result zero and owns hidden thresholds
+if match.Confidence >= .82 { persist(match) }
+```
+
+Correct:
+
+```go
+parsed, err := mediarecognition.Parse(facts)
+candidates := recallWithinBudget(ctx, parsed.Queries)
+decision := mediarecognition.Rank(parsed, enrichTopThree(ctx, candidates))
+if decision.Status == mediarecognition.DecisionMatched {
+    verified := tmdb.GetByID(ctx, decision.Match.MediaType, decision.Match.ID)
+    persist(verified)
+}
 ```
 
 Wrong:
@@ -332,4 +371,73 @@ Correct:
 snapshot.PosterPath = validatedTMDBFileIdentity(detail.PosterPath)
 if !manifestOwns(target) { return skipped }
 atomicWriteArtifact(root, target, rendered)
+```
+
+## Scenario: Authoritative Media Change and Notify Convergence
+
+### 1. Scope / Trigger
+
+- Trigger: changing catalog reconciliation, manual recognition, managed artifacts, Emby/Jellyfin refresh targets, or Player ServerDataSource change delivery.
+
+### 2. Signatures
+
+```text
+media_libraries.content_revision
+media_library_changes(sequence, library_id, content_revision, kind, state, generation)
+media_server_refresh_targets(desired_revision, successful_revision, manual_generation, successful_manual_generation)
+media_server_refresh_runs(target_id, requested_revision, job_id, status, error_code)
+
+GET /api/v1/player/media-changes?cursor=<uint>&wait_seconds=<0..12>
+Authorization: Bearer omc_player_...
+
+media_server_refresh Job payload = { "target_id": <uint> }
+```
+
+### 3. Contracts
+
+- A complete authoritative reconciliation increments `content_revision` once and writes its change in the same transaction. No-op, failed, partial, superseded, stale-generation, or conflict-waiting work does not publish a ready change.
+- A change that requires STRM/NFO/JPG or cleanup is persisted as pending. The matching current artifact generation and cleanup must succeed before it becomes ready. Manual metadata override uses the same new-generation barrier when sidecars are enabled.
+- Marking a change ready advances every enabled refresh target's desired revision and wakes Player waiters only after commit. Emby/Jellyfin and Player consume the same ready revision independently.
+- Refresh jobs coalesce by target and store only `target_id`; workers reload encrypted Connection credentials and the latest desired/manual generation at execution time. Manual refresh at content revision zero still executes once without fabricating a content revision.
+- The Player endpoint authenticates every bounded poll with device Bearer, filters libraries through current visibility, and returns only logical library ID, revision, controlled kind, time, cursor, and `resync_required`. It never returns paths, provider/upstream IDs, credentials, signed URLs, or raw upstream bodies.
+- Ready history is bounded. A cursor older than retained history receives `resync_required` and a new safe baseline instead of an unbounded per-device queue.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Artifact generation is pending, failed, or superseded | Keep the change non-ready; do not advance targets or Player visibility |
+| Emby/Jellyfin authentication or target configuration is invalid | Persist a safe terminal error; do not retry as transient |
+| Upstream is unavailable or rate-limited | Use the queue's bounded retry policy without blocking other targets or Player |
+| Target is deleted while an old Job remains | Worker exits as a safe no-op |
+| Desired/manual generation advances while a worker runs | Reconcile the latest generation before terminal success |
+| Player token is revoked or user loses access | Reject/re-filter the next poll; cursor never authorizes access |
+| Player cursor predates retained history | Return `resync_required=true` and a current cursor |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a 115 scan commits catalog state, finishes STRM/sidecar generation and cleanup, then independently refreshes every enabled media-server target and wakes eligible Players.
+- Base: no refresh target is configured; ready changes still reach Player and the administration UI shows a truthful empty state.
+- Bad: emit from downloader completion, put API keys/upstream library IDs in Job payloads, or mark a manual metadata change ready before its replacement sidecars exist.
+
+### 6. Tests Required
+
+- Migration tests cover fresh/upgrade/repeat application, defaults, indexes, foreign keys, revision zero, and queue policy registration.
+- Media-change tests cover ready/pending/no-op/partial/stale/superseded transitions, artifact recovery, manual metadata barrier, retention, and `resync_required`.
+- Refresh tests cover Emby and Jellyfin prefixes/auth/response bounds/redirect rejection, revision-zero manual refresh, coalescing generation, target isolation, auth versus transient retry, restart recovery, deleted targets, and secret-free payloads/DTOs.
+- Router tests use device Bearer, verify revocation/visibility, and assert no path/provider/credential leakage.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+onDownloadComplete(func() { refreshAllServers(); broadcastToPlayers(entry) })
+```
+
+Correct:
+
+```go
+change := recordPendingOrReadyInCatalogTransaction(tx, library, generation)
+afterCommit(func() { wakeReadyConsumers(change.LibraryID) })
 ```

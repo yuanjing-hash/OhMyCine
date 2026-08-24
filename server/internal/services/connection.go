@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,9 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud/pan115"
+	mediaserverpkg "github.com/yuanjing-hash/ohmycine/server/pkg/mediaserver"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/mediaserver/emby"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/mediaserver/jellyfin"
 	"gorm.io/gorm"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -105,7 +108,7 @@ func (s *ConnectionService) List(actor Actor, providers ...string) ([]Connection
 	query := s.db.Order("name_normalized,id")
 	if len(providers) > 0 && strings.TrimSpace(providers[0]) != "" {
 		provider := strings.ToLower(strings.TrimSpace(providers[0]))
-		if provider != cloudpkg.ProviderPan115 && provider != models.ConnectionProviderEmby {
+		if provider != cloudpkg.ProviderPan115 && !isMediaServerProvider(provider) {
 			return nil, appError(CodeConnectionProviderUnsupported, "当前 Server 不支持该连接类型", nil)
 		}
 		query = query.Where("provider = ?", provider)
@@ -173,7 +176,7 @@ func (s *ConnectionService) Create(actor Actor, input ConnectionInput, request R
 		return ConnectionSummary{}, err
 	}
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))
-	if provider != cloudpkg.ProviderPan115 && provider != models.ConnectionProviderEmby {
+	if provider != cloudpkg.ProviderPan115 && !isMediaServerProvider(provider) {
 		return ConnectionSummary{}, appError(CodeConnectionProviderUnsupported, "当前 Server 不支持该连接类型", nil)
 	}
 	endpoint, credentialValue, err := s.validateCreateConfig(provider, input)
@@ -254,17 +257,17 @@ func (s *ConnectionService) Update(actor Actor, id uint, input UpdateConnectionI
 	if pan115HasEmbyConfig {
 		return ConnectionSummary{}, appError(CodeInvalidRequest, "115 连接不接受 Emby 配置", nil)
 	}
-	if record.Provider == models.ConnectionProviderEmby && input.Cookie != nil && strings.TrimSpace(*input.Cookie) != "" {
-		return ConnectionSummary{}, appError(CodeInvalidRequest, "Emby 连接不接受 Cookie", nil)
+	if isMediaServerProvider(record.Provider) && input.Cookie != nil && strings.TrimSpace(*input.Cookie) != "" {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "媒体服务器连接不接受 Cookie", nil)
 	}
-	if record.Provider == models.ConnectionProviderEmby && input.RecyclePassword != nil {
-		return ConnectionSummary{}, appError(CodeInvalidRequest, "Emby 连接不接受 115 回收站安全码", nil)
+	if isMediaServerProvider(record.Provider) && input.RecyclePassword != nil {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "媒体服务器连接不接受 115 回收站安全码", nil)
 	}
 	if input.Endpoint != nil {
-		if record.Provider != models.ConnectionProviderEmby {
+		if !isMediaServerProvider(record.Provider) {
 			return ConnectionSummary{}, appError(CodeInvalidRequest, "连接地址不适用于该类型", nil)
 		}
-		parsed, err := emby.ParseEndpoint(*input.Endpoint)
+		parsed, err := mediaServerEndpoint(record.Provider, *input.Endpoint)
 		if err != nil {
 			return ConnectionSummary{}, appError(CodeEmbyEndpointInvalid, "Emby 地址无效", nil)
 		}
@@ -285,10 +288,10 @@ func (s *ConnectionService) Update(actor Actor, id uint, input UpdateConnectionI
 		record.CredentialCiphertext = ciphertext
 	}
 	if input.APIKey != nil && strings.TrimSpace(*input.APIKey) != "" {
-		if record.Provider != models.ConnectionProviderEmby {
+		if !isMediaServerProvider(record.Provider) {
 			return ConnectionSummary{}, appError(CodeInvalidRequest, "API Key 不适用于该连接类型", nil)
 		}
-		apiKey, err := emby.NormalizeAPIKey(*input.APIKey)
+		apiKey, err := normalizeMediaServerAPIKey(record.Provider, *input.APIKey)
 		if err != nil {
 			return ConnectionSummary{}, appError(CodeEmbyAPIKeyInvalid, "Emby API Key 无效", nil)
 		}
@@ -364,11 +367,9 @@ func (s *ConnectionService) Test(ctx context.Context, actor Actor, id uint, requ
 	if err == nil && !record.Enabled {
 		err = appError(CodeConnectionUnavailable, "连接已停用", nil)
 	}
-	if err == nil && record.Provider == models.ConnectionProviderEmby {
-		apiKey, decryptErr := s.credentials.Decrypt(connectionPurpose(id, record.Provider), record.CredentialCiphertext)
-		if decryptErr != nil {
-			err, errorCode = decryptErr, CodeConnectionUnavailable
-		} else if client, clientErr := emby.New(emby.Config{Endpoint: record.Endpoint, APIKey: apiKey}); clientErr != nil {
+	if err == nil && isMediaServerProvider(record.Provider) {
+		client, _, clientErr := s.mediaServerClient(id)
+		if clientErr != nil {
 			err, errorCode = clientErr, CodeEmbyEndpointInvalid
 		} else if info, probeErr := client.Probe(ctx); probeErr != nil {
 			err, errorCode = probeErr, CodeEmbyUnavailable
@@ -535,8 +536,8 @@ func connectionPurpose(id uint, providers ...string) string {
 	if len(providers) > 0 {
 		provider = providers[0]
 	}
-	if provider == models.ConnectionProviderEmby {
-		return "connection:" + uintID(id) + ":emby:api-key"
+	if isMediaServerProvider(provider) {
+		return "connection:" + uintID(id) + ":" + provider + ":api-key"
 	}
 	return "connection:" + uintID(id) + ":pan115:cookie"
 }
@@ -558,11 +559,11 @@ func connectionSummary(record models.Connection) ConnectionSummary {
 }
 
 func connectionTestMessage(provider, code string) string {
-	if provider == models.ConnectionProviderEmby {
+	if isMediaServerProvider(provider) {
 		if code == CodeEmbyEndpointInvalid {
-			return "Emby 地址无效"
+			return "媒体服务器地址无效"
 		}
-		return "无法连接 Emby，请检查地址、API Key 与网络"
+		return "无法连接媒体服务器，请检查地址、API Key 与网络"
 	}
 	switch code {
 	case cloudpkg.CodeAuthExpired, cloudpkg.CodeCookieInvalid:
@@ -577,12 +578,12 @@ func connectionTestMessage(provider, code string) string {
 }
 
 func (s *ConnectionService) validateCreateConfig(provider string, input ConnectionInput) (string, string, error) {
-	if provider == models.ConnectionProviderEmby {
-		parsed, err := emby.ParseEndpoint(input.Endpoint)
+	if isMediaServerProvider(provider) {
+		parsed, err := mediaServerEndpoint(provider, input.Endpoint)
 		if err != nil {
 			return "", "", appError(CodeEmbyEndpointInvalid, "Emby 地址无效", nil)
 		}
-		apiKey, err := emby.NormalizeAPIKey(input.APIKey)
+		apiKey, err := normalizeMediaServerAPIKey(provider, input.APIKey)
 		if err != nil {
 			return "", "", appError(CodeEmbyAPIKeyInvalid, "请填写 Emby API Key", nil)
 		}
@@ -599,6 +600,44 @@ func (s *ConnectionService) validateCreateConfig(provider string, input Connecti
 		return "", "", connectionProviderError(err)
 	}
 	return "", normalized, nil
+}
+
+func isMediaServerProvider(provider string) bool {
+	return provider == models.ConnectionProviderEmby || provider == models.ConnectionProviderJellyfin
+}
+
+func mediaServerEndpoint(provider, value string) (*url.URL, error) {
+	if provider == models.ConnectionProviderJellyfin {
+		return jellyfin.ParseEndpoint(value)
+	}
+	return emby.ParseEndpoint(value)
+}
+
+func normalizeMediaServerAPIKey(provider, value string) (string, error) {
+	if provider == models.ConnectionProviderJellyfin {
+		return jellyfin.NormalizeAPIKey(value)
+	}
+	return emby.NormalizeAPIKey(value)
+}
+
+func (s *ConnectionService) mediaServerClient(id uint) (mediaserverpkg.Client, models.Connection, error) {
+	var record models.Connection
+	if err := s.db.First(&record, id).Error; err != nil {
+		return nil, record, connectionNotFound(err)
+	}
+	if !isMediaServerProvider(record.Provider) || !record.Enabled {
+		return nil, record, appError(CodeConnectionUnavailable, "媒体服务器连接不可用", nil)
+	}
+	apiKey, err := s.credentials.Decrypt(connectionPurpose(id, record.Provider), record.CredentialCiphertext)
+	if err != nil {
+		return nil, record, appError(CodeConnectionUnavailable, "媒体服务器凭据不可用", err)
+	}
+	if record.Provider == models.ConnectionProviderJellyfin {
+		client, err := jellyfin.New(jellyfin.Config{Endpoint: record.Endpoint, APIKey: apiKey})
+		return client, record, err
+	}
+	client, err := emby.New(emby.Config{Endpoint: record.Endpoint, APIKey: apiKey})
+	return client, record, err
 }
 
 func newGatewayAlias() (string, error) {

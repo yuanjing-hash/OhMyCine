@@ -31,7 +31,7 @@ func TestClientUsesBoundedOfficialShapeWithoutLeakingTokenIntoURL(t *testing.T) 
 			if r.URL.Query().Get("append_to_response") != "credits,external_ids,images" || r.URL.Query().Get("include_image_language") != "zh,null,en" {
 				t.Fatalf("detail query=%q", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `{"id":42,"title":"示例电影","original_title":"Example Movie","original_language":"zh","release_date":"2026-01-01","overview":"安全简介","tagline":"一句话简介","status":"Released","vote_average":8.5,"vote_count":1234,"runtime":123,"poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg","genres":[{"id":16,"name":"动画"}],"production_countries":[{"iso_3166_1":"CN"}],"spoken_languages":[{"iso_639_1":"zh"},{"iso_639_1":"en"}],"production_companies":[{"id":9,"name":"示例制片厂"}],"credits":{"cast":[{"id":1,"name":"演员","character":"角色"}],"crew":[{"id":2,"name":"导演","department":"Directing","job":"Director"},{"id":3,"name":"编剧","department":"Writing","job":"Screenplay"}]},"external_ids":{"imdb_id":"tt1234567"},"images":{"backdrops":[{"file_path":"/backdrop.jpg"},{"file_path":"/still-2.jpg"},{"file_path":"https://unsafe.example/still.jpg"}]}}`)
+			_, _ = io.WriteString(w, `{"id":42,"title":"示例电影","original_title":"Example Movie","original_language":"zh","release_date":"2026-01-01","overview":"安全简介","tagline":"一句话简介","status":"Released","vote_average":8.5,"vote_count":1234,"runtime":123,"poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg","genres":[{"id":16,"name":"动画"}],"production_countries":[{"iso_3166_1":"CN"}],"spoken_languages":[{"iso_639_1":"zh"},{"iso_639_1":"en"}],"production_companies":[{"id":9,"name":"示例制片厂"}],"credits":{"cast":[{"id":1,"name":"演员","character":"角色","profile_path":"/actor.jpg"}],"crew":[{"id":2,"name":"导演","department":"Directing","job":"Director","profile_path":"/director.jpg"},{"id":3,"name":"编剧","department":"Writing","job":"Screenplay"}]},"external_ids":{"imdb_id":"tt1234567"},"images":{"backdrops":[{"file_path":"/backdrop.jpg"},{"file_path":"/still-2.jpg"},{"file_path":"https://unsafe.example/still.jpg"}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -54,6 +54,9 @@ func TestClientUsesBoundedOfficialShapeWithoutLeakingTokenIntoURL(t *testing.T) 
 	}
 	if match.Snapshot.TMDBID != 42 || match.Snapshot.IMDbID != "tt1234567" || match.Snapshot.PosterPath != "/poster.jpg" || match.Snapshot.Tagline != "一句话简介" || match.Snapshot.Status != "Released" || match.Snapshot.VoteCount != 1234 || len(match.Snapshot.SpokenLanguages) != 2 || len(match.Snapshot.Studios) != 1 || match.Snapshot.Studios[0].Name != "示例制片厂" || len(match.Snapshot.Directors) != 1 || len(match.Snapshot.Writers) != 1 || len(match.Snapshot.Cast) != 1 || len(match.Snapshot.BackdropPaths) != 2 || match.Snapshot.BackdropPaths[1] != "/still-2.jpg" {
 		t.Fatalf("snapshot=%+v", match.Snapshot)
+	}
+	if match.Snapshot.Directors[0].ProfilePath != "/director.jpg" || match.Snapshot.Cast[0].ProfilePath != "/actor.jpg" {
+		t.Fatalf("people=%+v %+v", match.Snapshot.Directors, match.Snapshot.Cast)
 	}
 	payload, err := json.Marshal(match.Snapshot)
 	if err != nil || strings.Contains(string(payload), server.URL) || strings.Contains(string(payload), "test-token") || strings.Contains(string(payload), "api_key") {

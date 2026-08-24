@@ -316,7 +316,7 @@ func TestArtifactAutoCleanupMigrationBackfillsHistoricalRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	library := models.MediaLibrary{Name: "Cleanup library", NameNormalized: "cleanup-library", StorageID: storage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", Enabled: true, Recursive: true, FullScanIntervalHours: 24, IncrementalMinutes: 15, VideoExtensionsJSON: `[".mkv"]`, STRMAssetExtraExtensionsJSON: `[]`, IgnorePatternsJSON: `[]`, MetadataLanguage: "zh-CN", MetadataRegion: "CN", MatchStrategy: "balanced", ProviderRatePerSecond: 100, ProviderConcurrency: 2, MetadataRatePerSecond: 5, MetadataConcurrency: 1, Status: models.MediaLibraryStatusListening, CreatedAt: now, UpdatedAt: now}
-	if err := db.Omit("ArtifactCleanupRemoved", "ArtifactCleanupError", "ArtifactCleanupAt").Create(&library).Error; err != nil {
+	if err := db.Omit("ArtifactCleanupRemoved", "ArtifactCleanupError", "ArtifactCleanupAt", "ContentRevision").Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range []struct {
@@ -531,11 +531,23 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38}) {
-		t.Fatalf("migration versions=%v, want [1..38]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}) {
+		t.Fatalf("migration versions=%v, want [1..43]", versions)
 	}
 	if !db.Migrator().HasColumn(&models.DownloadTask{}, "provider_metadata_json") || !db.Migrator().HasColumn(&models.DownloadTask{}, "plugin_connection_id") {
 		t.Fatal("plugin managed import snapshot columns missing after upgrade")
+	}
+	if !db.Migrator().HasColumn(&models.MediaLibrary{}, "content_revision") || !db.Migrator().HasTable(&models.MediaLibraryChange{}) || !db.Migrator().HasTable(&models.MediaServerRefreshTarget{}) || !db.Migrator().HasTable(&models.MediaServerRefreshRun{}) {
+		t.Fatal("media refresh notify foundation missing after upgrade")
+	}
+	if !db.Migrator().HasTable(&models.DiscoveryCache{}) {
+		t.Fatal("discovery cache table missing after upgrade")
+	}
+	if !db.Migrator().HasTable(&models.Site{}) {
+		t.Fatal("PT sites table missing after upgrade")
+	}
+	if !db.Migrator().HasTable(&models.CookieCloudSettings{}) || !db.Migrator().HasTable(&models.CookieCloudPayload{}) || !db.Migrator().HasColumn(&models.Site{}, "BrowserEmulation") {
+		t.Fatal("CookieCloud and site browser rendering foundation missing after upgrade")
 	}
 	if !db.Migrator().HasTable("connections") || !db.Migrator().HasColumn(&models.Storage{}, "root_display_path") {
 		t.Fatal("115 connection foundation missing after upgrade")
@@ -1165,7 +1177,7 @@ func TestPersistentQueueMigrationPoliciesRBACAndForeignKeys(t *testing.T) {
 		}
 	}
 	var policies int64
-	if err := db.Model(&models.QueuePolicy{}).Count(&policies).Error; err != nil || policies != 9 {
+	if err := db.Model(&models.QueuePolicy{}).Count(&policies).Error; err != nil || policies != 10 {
 		t.Fatalf("policies=%d err=%v", policies, err)
 	}
 	var operator models.Role

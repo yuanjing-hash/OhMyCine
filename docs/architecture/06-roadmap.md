@@ -389,7 +389,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] Storage Destination：关联连接、远端路径、受控 STRM 根目录
 - [ ] 持久化 STRM Run：可重跑、幂等、逐项错误与原子写入
 - [ ] signed URL 续签/轮换策略与安全 302
-- [ ] Emby/Jellyfin 连接和库刷新
+- [x] Emby/Jellyfin 连接、受控媒体库枚举、明确目标绑定与持久库刷新
 - [ ] 可重复的本地端到端演示与真实播放验证
 
 ### 原 Sprint 2.1 横向清单（按纵向切片逐步吸收）
@@ -524,13 +524,13 @@ Phase 4: 生态系统           ████████████████
 
 #### 媒体服务器客户端
 
-- [ ] 定义 `MediaServerClient` 接口 (`pkg/mediaserver/client.go`)
-- [ ] 实现 `EmbyClient` (`pkg/mediaserver/emby.go`)
-  - [ ] `TestConnection()` — 测试连接
-  - [ ] `RefreshLibrary(libraryID)` — 刷新媒体库
-  - [ ] `GetLibraries()` — 获取媒体库列表
+- [x] 定义 provider-neutral `mediaserver.Client` 接口 (`pkg/mediaserver/client.go`)
+- [~] 实现 `EmbyClient` (`pkg/mediaserver/emby/`)
+  - [x] `Probe()` — 测试连接
+  - [x] `RefreshLibrary(libraryID)` — 刷新媒体库
+  - [x] `ListLibraries()` — 获取受控媒体库列表
   - [ ] `Search(keyword)` — 搜索
-- [ ] 实现 `JellyfinClient` (`pkg/mediaserver/jellyfin.go`)
+- [x] 实现 `JellyfinClient` (`pkg/mediaserver/jellyfin/`)，覆盖探测、媒体库枚举和刷新
 
 #### 配置同步 API
 
@@ -544,7 +544,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] 网盘文件浏览/上传可用
 - [ ] qBit/Transmission 能连接和控制
 - [ ] 302 代理能重定向到云盘 CDN
-- [ ] Emby/Jellyfin 能通过 API 刷新媒体库
+- [x] Emby/Jellyfin 能通过 API 和持久目标 Job 刷新明确绑定的媒体库
 
 ### Sprint 2.3: 媒体流水线 + STRM + 元数据 (Week 13-14)
 
@@ -590,10 +590,10 @@ Phase 4: 生态系统           ████████████████
 
 #### 通知服务
 
-- [ ] `NotifyService` (`internal/services/notify.go`)
-- [ ] Emby/Jellyfin 刷新通知 (REST API 调用)
-- [ ] Player 客户端通知 (WebSocket 推送)
-- [ ] 通知事件类型: `media.added`, `transfer.completed`
+- [x] 统一 `MediaChangeService`：事务 content revision、ready/pending outbox、artifact readiness 与有界保留
+- [x] Emby/Jellyfin 刷新通知：目标级持久 Job、合并、重试、恢复与手动执行
+- [x] Player 客户端通知：device Bearer 长轮询、持久 cursor、`resync_required` 与权限过滤
+- [x] 通知变化类型：受控 `catalog` / `metadata` / `artifacts` / `removed`，不从下载或转移中间事件直接发布
 
 #### STRM 管理器
 
@@ -631,6 +631,7 @@ Phase 4: 生态系统           ████████████████
 - [x] active 115 STRM 通过受保护 Player stream endpoint → Server 解析 → 302 直连，Windows/Android 跨源跳转清除 Bearer
 - [x] Bilibili DASH 视频/音频双轨 loopback 会话与 Range 播放，切换/停止后统一回收旧 token
 - [x] Server 本地/115/插件库动态合成封面与 Player 独立目录本地封面，支持内容 revision、安全同源分发和静态兜底
+- [x] Server ready change 只失效对应 ServerDataSource，后台刷新聚合首页；当前列表提示后原位刷新并恢复滚动
 - [ ] 设备管理 Web UI、多设备设置/进度同步和数据源配置同步（延期，当前连接不会自动同步）
 
 **产出**:
@@ -652,17 +653,23 @@ Phase 4: 生态系统           ████████████████
 
 #### PT 站点框架
 
-- [ ] 定义 `Site` 接口 (`pkg/scraper/site.go`)
-- [ ] 定义 `SiteConfig`, `SearchRequest`, `Torrent` 结构体
-- [ ] 站点注册机制
-- [ ] 站点管理 API
-  - [ ] `POST /api/v1/sites` — 添加站点
-  - [ ] `GET /api/v1/sites` — 站点列表
-  - [ ] `PUT /api/v1/sites/{id}` — 更新
-  - [ ] `DELETE /api/v1/sites/{id}` — 删除
-  - [ ] `POST /api/v1/sites/{id}/test` — 测试连接
+- [x] 定义版本化 `Site` adapter 接口与统一搜索 DTO (`pkg/site`)
+- [x] 定义 `Config`, `Query`, `Page`, `Result` 与稳定错误分类
+- [x] 内建 adapter 注册机制
+- [x] 站点管理 API（首版管理入口仍仅系统管理员）
+  - [x] `POST /api/v1/sites` — 测试候选配置并添加
+  - [x] `GET /api/v1/sites` — 脱敏站点列表
+  - [x] `PATCH /api/v1/sites/{id}` — revision CAS 更新
+  - [x] `DELETE /api/v1/sites/{id}` — 删除
+  - [x] `POST /api/v1/sites/{id}/test` — 测试连接
 
 #### PT 站点实现
+
+- [x] PTTime 首个内建适配器
+  - [x] Cookie 登录态检测与加密配置
+  - [x] NexusPHP 兼容分页搜索和脱敏 fixture 解析
+  - [x] 受控种子获取、大小/类型边界和错误分类
+  - [~] 媒体类型候选已进入统一查询 DTO；真实站点分类 ID 映射待账户联调后固化在 adapter 内
 
 - [ ] M-Team (馒头) 站点适配器
   - [ ] Cookie 认证
@@ -678,8 +685,9 @@ Phase 4: 生态系统           ████████████████
 
 #### 发现页聚合搜索
 
-- [ ] `DiscoveryService` (`internal/services/discovery.go`)
-- [ ] 并发搜索所有已配置站点 (`goroutine` + `channel`)
+- [x] 推荐 `DiscoveryService`：TMDB + 豆瓣栏目、缓存和来源级降级
+- [x] PT `SiteService`：有界并发搜索所有已启用站点 (`goroutine` + `channel`)
+- [x] SSE 按站渐进结果、普通 JSON 回退、单站重试与分页
 - [ ] 结果聚合 + 去重
 - [ ] TMDB 自动匹配 (IMDB ID 优先, 标题+年份兜底)
 - [ ] 结果排序 (相关度/做种数/大小)
@@ -693,8 +701,8 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] 自动分类匹配 (站点分类 + 文件名解析 + TMDB)
 - [ ] 确定下载目录 (根据分类规则 → 存储目标)
-- [ ] 提交到下载器
-- [ ] 记录下载任务 (关联用户 ID)
+- [x] 不透明结果令牌换取种子并提交到既有下载器服务
+- [x] 复用现有下载任务记录、用户归属、媒体库排序和后续整理入库
 - [ ] WebSocket 进度推送
 - [ ] 下载 API
   - [ ] `POST /api/v1/discovery/download` — 一键下载
