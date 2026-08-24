@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 25
+- **Total Sessions**: 26
 - **Last Active**: 2026-08-24
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~683 | Active |
+| `journal-1.md` | ~704 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 26 | 2026-08-24 | 发布 Player 下一代多语言识别器 Beta | `8b7c56ad9a5f988be5c87a72e0f79a3163e0f270` | `codex/player-nextgen-media-recognition-beta` |
 | 25 | 2026-08-24 | 修复分类封面候选与少海报构图 | `d7b9a68` | `develop` |
 | 24 | 2026-08-24 | 统一风格3分类封面并发布新版 | `5f9ab90` | `develop` |
 | 23 | 2026-08-24 | 修复 Bilibili 双轨播放与动态媒体库封面 | `8469966` | `develop` |

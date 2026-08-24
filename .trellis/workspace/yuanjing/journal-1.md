@@ -681,3 +681,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 26: 发布 Player 下一代多语言识别器 Beta
+
+**Date**: 2026-08-24
+**Task**: 发布 Player 下一代多语言识别器 Beta
+**Branch**: `codex/player-nextgen-media-recognition-beta`
+
+### Summary
+
+完成 Unicode 多语言解析、确定性 TMDB 候选排名、安全缓存迁移与人工覆盖保护；通过 Player 全量门禁后推送 develop，并成功发布 v1.1.19 Beta，核对 Windows/Android 资产和提交链一致。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8b7c56ad9a5f988be5c87a72e0f79a3163e0f270` | (see git log) |
+
+### Status
+
+[OK] **Completed**
