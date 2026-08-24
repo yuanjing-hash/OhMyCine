@@ -116,7 +116,8 @@ For site actions, do not branch on a provider name:
 
 - Resolve Server artwork against the configured Server origin only when the normalized path starts with `/api/v1/assets/`; reject userinfo, cross-origin URLs and other paths.
 - Server-managed physical/plugin libraries consume only Server `artworkUrl` plus revision/source and never compose or persist candidate URLs. Signed query values remain runtime-only and the native image cache persists only an irreversible source hash.
-- Player-owned scanned local/raw categories may select up to four distinct indexed poster references and render a local 16:9 collage. Candidate/revision changes invalidate the image cache; no generated file is written into the user's media directory.
+- Player-owned scanned local/raw categories may select up to nine distinct indexed poster references and render the same 16:9 style-static-3 composition used by Server: poster-derived background, left title region, and three shadowed 410:610 poster columns rotated -15.8 degrees in `315426987` visibility order. Candidate/revision changes invalidate the image cache; no generated file is written into the user's media directory.
+- Server source roots and their top-level physical/plugin library cards remain fixed entry artwork. Only physical categories and plugin navigation nodes carry generated artwork; Player never recomposes Server candidates.
 - Direct Emby/Jellyfin library artwork remains provider-owned. Use it when present instead of replacing it with a Player collage.
 - Library and navigation-folder cards use landscape presentation; playable works retain poster presentation.
 - A source view registers one layout back handler. Both desktop back controls invoke the shared dispatcher, which consumes category/node/library state before Router history.
@@ -129,8 +130,8 @@ For site actions, do not branch on a provider name:
 | Missing artwork | Render the established fallback without blocking navigation |
 | Cross-origin or malformed artwork | Discard it at the DataSource boundary |
 | Server DTO attempts to provide `artworkCandidates` or an upstream provider URL | Ignore candidates and discard the unsafe URL; Server remains the generation owner |
-| Player-owned category has one valid candidate | Use its normal poster/backdrop without requiring a collage |
-| Player-owned category has two to four candidates | Render a 16:9 local collage with revision-scoped cache keys |
+| Player-owned category has one valid candidate | Render the partial style-static-3 composition with the single poster; do not stretch it across the 16:9 card |
+| Player-owned category has two to nine candidates | Render the style-static-3 16:9 composition with revision-scoped cache keys |
 | Nested stack has two or more nodes | Load the previous node and keep the source route |
 | Selected library is at its first node | Return to the Server library list |
 | Source root has no internal state | Delegate to Router history/home |

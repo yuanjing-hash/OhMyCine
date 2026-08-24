@@ -116,29 +116,87 @@ pub unsafe extern "C" fn omc_invoke(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LibraryArtworkRequest {
     connection_id: String,
+    scope_key: Option<String>,
 }
 
 fn library_artwork_candidates(request: LibraryArtworkRequest) -> Result<Value, PluginError> {
     if !valid_opaque_key(&request.connection_id) {
         return Err(PluginError::new("invalid-request", "媒体库封面请求无效"));
     }
-    let payload = bili_get(&request.connection_id, &recommendation_url(1, None), true)?;
-    let items = payload
-        .pointer("/data/item")
-        .or_else(|| payload.pointer("/data/items"))
+    let route_key = match request.scope_key.as_deref().unwrap_or("route:recommended") {
+        "branch:anime" => "anime-jp",
+        "branch:cinephile" => "movies",
+        "branch:personal" => "favorites",
+        value
+            if value.starts_with("route:")
+                && matches!(
+                    &value[6..],
+                    "recommended"
+                        | "popular"
+                        | "ranking"
+                        | "anime-jp"
+                        | "anime-cn"
+                        | "anime-other"
+                        | "movies"
+                        | "tv-series"
+                        | "cinephile"
+                        | "documentary"
+                        | "favorites"
+                        | "watch-later"
+                        | "following"
+                        | "subscriptions"
+                ) =>
+        {
+            &value[6..]
+        }
+        value
+            if matches!(
+                value,
+                "recommended"
+                    | "popular"
+                    | "ranking"
+                    | "anime-jp"
+                    | "anime-cn"
+                    | "anime-other"
+                    | "movies"
+                    | "tv-series"
+                    | "cinephile"
+                    | "documentary"
+                    | "favorites"
+                    | "watch-later"
+                    | "following"
+                    | "subscriptions"
+            ) =>
+        {
+            value
+        }
+        _ => return Err(PluginError::new("invalid-request", "媒体库封面栏目无效")),
+    };
+    let sections = feed(FeedRequest {
+        connection_id: request.connection_id.clone(),
+        route_key: route_key.to_owned(),
+        cursor: None,
+        refresh_session: None,
+    })?;
+    let items = sections
+        .pointer("/0/items")
         .and_then(Value::as_array)
-        .ok_or_else(|| PluginError::new("invalid-response", "推荐封面响应无效"))?;
+        .ok_or_else(|| PluginError::new("invalid-response", "栏目封面响应无效"))?;
     let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for item in items {
-        let Some(bvid) = item.get("bvid").and_then(Value::as_str) else {
+        let Some(work) = item.get("work") else {
             continue;
         };
-        if validate_bvid(bvid).is_err() {
+        let Some(item_id) = work.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !valid_identity_key(item_id) || !seen.insert(item_id.to_owned()) {
             continue;
         }
-        let Some(url) = item
-            .get("pic")
-            .or_else(|| item.get("cover"))
+        let Some(url) = work
+            .get("posterUrl")
+            .or_else(|| work.get("backdropUrl"))
             .and_then(Value::as_str)
             .and_then(safe_https_url)
         else {
@@ -148,7 +206,7 @@ fn library_artwork_candidates(request: LibraryArtworkRequest) -> Result<Value, P
         let Ok((asset_ref, _)) = register_asset(&request.connection_id, &url, headers) else {
             continue;
         };
-        candidates.push(json!({"id":bvid,"assetRef":asset_ref}));
+        candidates.push(json!({"id":item_id,"assetRef":asset_ref}));
         if candidates.len() == 9 {
             break;
         }
@@ -162,7 +220,7 @@ fn library_artwork_candidates(request: LibraryArtworkRequest) -> Result<Value, P
     host_log(
         "info",
         "library.artwork_candidates",
-        "library artwork candidates resolved",
+        "scoped library artwork candidates resolved",
         candidates.len(),
     );
     Ok(Value::Array(candidates))

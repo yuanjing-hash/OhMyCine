@@ -46,7 +46,7 @@ type PluginOnlineLibrarySummary struct {
 	ArtworkSource     string                `json:"artworkSource,omitempty"`
 }
 
-func (s *PluginRepositoryService) OnlineArtworkCandidates(ctx context.Context, actor Actor, libraryID string) ([]contract.LibraryArtworkCandidate, error) {
+func (s *PluginRepositoryService) OnlineArtworkCandidates(ctx context.Context, actor Actor, libraryID, scopeKey string) ([]contract.LibraryArtworkCandidate, error) {
 	if !actor.Can(authz.PermissionMediaLibrariesRead) {
 		return nil, appError(CodePermissionDenied, "无权读取媒体库封面候选", nil)
 	}
@@ -57,7 +57,14 @@ func (s *PluginRepositoryService) OnlineArtworkCandidates(ctx context.Context, a
 	if !manifestHasCapability(manifest, contract.CapabilityLibraryArtwork) {
 		return nil, nil
 	}
-	raw, err := s.InvokePlugin(ctx, connection.ID, string(contract.CapabilityLibraryArtwork), map[string]any{"connectionId": connection.ID})
+	input := map[string]any{"connectionId": connection.ID}
+	if scopeKey = strings.TrimSpace(scopeKey); scopeKey != "" {
+		if !safeOnlineText(scopeKey, 256) {
+			return nil, appError(CodeInvalidRequest, "媒体库封面作用域无效", nil)
+		}
+		input["scopeKey"] = scopeKey
+	}
+	raw, err := s.InvokePlugin(ctx, connection.ID, string(contract.CapabilityLibraryArtwork), input)
 	if err != nil {
 		return nil, err
 	}
@@ -143,13 +150,16 @@ func (s *PluginRepositoryService) OnlineLibraries(actor Actor) ([]PluginOnlineLi
 			}
 		}
 		artworkURL := ""
+		artworkSource := "fallback"
 		if manifest.LibraryArtwork != "" {
 			artworkURL = "/api/v1/assets/plugin-covers/" + manifest.PackageSHA256
+			artworkSource = "custom"
 		}
 		result = append(result, PluginOnlineLibrarySummary{
 			ID: library.ID, PluginID: library.PluginID, ConnectionID: library.ConnectionID,
 			Name: library.Name, ProviderLabel: manifest.Name, Capabilities: append([]contract.Capability(nil), manifest.Capabilities...),
 			Available: true, HomeContributions: home, ArtworkURL: artworkURL,
+			ArtworkRevision: fallbackArtworkRevision(artworkURL), ArtworkSource: artworkSource,
 		})
 	}
 	sort.SliceStable(result, func(i, j int) bool {

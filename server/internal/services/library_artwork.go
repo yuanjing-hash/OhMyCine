@@ -8,12 +8,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -23,16 +25,17 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/hostapi"
 	"gorm.io/gorm"
 )
 
 const (
-	libraryArtworkTemplateVersion = "library-artwork-v1"
-	libraryArtworkWidth           = 1280
-	libraryArtworkHeight          = 720
+	libraryArtworkTemplateVersion = "library-artwork-style-static-3-v1"
+	libraryArtworkWidth           = 1920
+	libraryArtworkHeight          = 1080
 	libraryArtworkCandidateLimit  = 9
-	libraryArtworkRenderLimit     = 4
+	libraryArtworkRenderLimit     = 9
 	libraryArtworkMaxSourceBytes  = 8 << 20
 	libraryArtworkMaxDimension    = 8192
 	libraryArtworkMaxPixels       = 36_000_000
@@ -85,71 +88,99 @@ func NewLibraryArtworkService(db *gorm.DB, metadata *MetadataSettingsService, pl
 	}
 }
 
-func (s *LibraryArtworkService) DecorateMediaLibraries(ctx context.Context, libraries []PlayerMediaLibrary) []PlayerMediaLibrary {
-	for index := range libraries {
-		libraries[index].ArtworkSource = "fallback"
-		libraries[index].ArtworkRevision = fallbackArtworkRevision(libraries[index].ArtworkURL)
-		candidates, err := s.mediaLibraryCandidates(libraries[index].ID)
+func (s *LibraryArtworkService) DecorateMediaCategories(ctx context.Context, libraryID uint, categories []PlayerMediaCategory) []PlayerMediaCategory {
+	for index := range categories {
+		categories[index].ArtworkSource = "fallback"
+		categories[index].ArtworkRevision = fallbackArtworkRevision(categories[index].ArtworkURL)
+		candidates, err := s.mediaCategoryCandidates(libraryID, categories[index].Name, categories[index].MediaType)
 		if err != nil || len(candidates) == 0 {
 			continue
 		}
-		asset, err := s.generate(ctx, libraries[index].Name, candidates)
+		asset, err := s.generate(ctx, categories[index].Name, candidates)
 		if err != nil {
-			s.log.Debug().Str("module", "library_artwork").Str("library_kind", "media").Str("error_code", "library_artwork_generation_failed").Msg("动态媒体库封面生成失败，继续使用兜底图")
+			s.log.Debug().Str("module", "library_artwork").Uint("library_id", libraryID).Str("category", categories[index].Name).Str("error_code", "library_artwork_generation_failed").Msg("动态分类封面生成失败，继续使用兜底图")
 			continue
 		}
-		libraries[index].ArtworkURL = s.signedArtworkURL(asset.Digest)
-		libraries[index].ArtworkRevision = asset.Digest
-		libraries[index].ArtworkSource = "generated"
+		categories[index].ArtworkURL = s.signedArtworkURL(asset.Digest)
+		categories[index].ArtworkRevision = asset.Digest
+		categories[index].ArtworkSource = "generated"
 	}
-	return libraries
+	return categories
 }
 
-func (s *LibraryArtworkService) DecoratePluginLibraries(ctx context.Context, actor Actor, libraries []PluginOnlineLibrarySummary) []PluginOnlineLibrarySummary {
+func (s *LibraryArtworkService) DecoratePluginNavigation(ctx context.Context, actor Actor, libraryID string, raw json.RawMessage) (json.RawMessage, error) {
 	if s.plugins == nil || s.assets == nil {
-		return libraries
+		return raw, nil
 	}
-	for index := range libraries {
-		libraries[index].ArtworkSource = "fallback"
-		libraries[index].ArtworkRevision = fallbackArtworkRevision(libraries[index].ArtworkURL)
-		items, err := s.plugins.OnlineArtworkCandidates(ctx, actor, libraries[index].ID)
-		if err != nil || len(items) == 0 {
+	var response pluginNavigationResponse
+	if err := json.Unmarshal(raw, &response); err != nil || response.Version != 2 || response.Mode != "hierarchical" {
+		return raw, nil
+	}
+	_, connection, manifest, err := s.plugins.onlineLibrary(libraryID)
+	if err != nil {
+		return raw, nil
+	}
+	fallbackURL := ""
+	if manifest.LibraryArtwork != "" {
+		fallbackURL = "/api/v1/assets/plugin-covers/" + manifest.PackageSHA256
+	}
+	for index := range response.Nodes {
+		response.Nodes[index].ArtworkURL = fallbackURL
+		response.Nodes[index].ArtworkRevision = fallbackArtworkRevision(fallbackURL)
+		response.Nodes[index].ArtworkSource = "fallback"
+		scopeKey := "route:" + response.Nodes[index].RouteKey
+		if response.Nodes[index].Kind == "branch" {
+			claim, verifyErr := s.plugins.verifyPluginNavigationToken(response.Nodes[index].NodeToken)
+			if verifyErr != nil || claim.LibraryID != libraryID {
+				continue
+			}
+			scopeKey = "branch:" + claim.NodeKey
+		}
+		items, candidateErr := s.plugins.OnlineArtworkCandidates(ctx, actor, libraryID, scopeKey)
+		if candidateErr != nil || len(items) == 0 {
 			continue
 		}
-		pluginID := libraries[index].PluginID
-		connectionID := libraries[index].ConnectionID
-		candidates := make([]artworkCandidate, 0, len(items))
-		for _, item := range items {
-			item := item
-			candidates = append(candidates, artworkCandidate{
-				key: item.ID,
-				load: func(loadCtx context.Context) ([]byte, error) {
-					stream, err := s.assets.OpenAssetForPluginConnection(loadCtx, pluginID, connectionID, item.AssetRef, http.MethodGet, "")
-					if err != nil {
-						return nil, err
-					}
-					defer stream.Body.Close()
-					if stream.StatusCode != http.StatusOK {
-						return nil, errors.New("plugin artwork asset returned non-200 status")
-					}
-					contentType := strings.ToLower(strings.TrimSpace(strings.Split(stream.Header.Get("Content-Type"), ";")[0]))
-					if contentType != "image/jpeg" && contentType != "image/png" {
-						return nil, errors.New("plugin artwork asset type is unsupported")
-					}
-					return readBoundedArtwork(stream.Body)
-				},
-			})
-		}
-		asset, err := s.generate(ctx, libraries[index].Name, candidates)
-		if err != nil {
-			s.log.Debug().Str("module", "library_artwork").Str("library_kind", "plugin").Str("plugin_id", pluginID).Str("error_code", "library_artwork_generation_failed").Msg("插件动态媒体库封面生成失败，继续使用兜底图")
+		candidates := s.pluginArtworkCandidates(manifest.ID, connection.ID, scopeKey, items)
+		asset, generateErr := s.generate(ctx, response.Nodes[index].Title, candidates)
+		if generateErr != nil {
+			s.log.Debug().Str("module", "library_artwork").Str("plugin_id", manifest.ID).Str("scope", scopeKey).Str("error_code", "library_artwork_generation_failed").Msg("插件分类封面生成失败，继续使用兜底图")
 			continue
 		}
-		libraries[index].ArtworkURL = s.signedArtworkURL(asset.Digest)
-		libraries[index].ArtworkRevision = asset.Digest
-		libraries[index].ArtworkSource = "generated"
+		response.Nodes[index].ArtworkURL = s.signedArtworkURL(asset.Digest)
+		response.Nodes[index].ArtworkRevision = asset.Digest
+		response.Nodes[index].ArtworkSource = "generated"
 	}
-	return libraries
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return raw, nil
+	}
+	return json.RawMessage(encoded), nil
+}
+
+func (s *LibraryArtworkService) pluginArtworkCandidates(pluginID, connectionID, scopeKey string, items []contract.LibraryArtworkCandidate) []artworkCandidate {
+	candidates := make([]artworkCandidate, 0, len(items))
+	for _, item := range items {
+		item := item
+		candidates = append(candidates, artworkCandidate{
+			key: "plugin:" + scopeKey + ":" + item.ID,
+			load: func(loadCtx context.Context) ([]byte, error) {
+				stream, err := s.assets.OpenAssetForPluginConnection(loadCtx, pluginID, connectionID, item.AssetRef, http.MethodGet, "")
+				if err != nil {
+					return nil, err
+				}
+				defer stream.Body.Close()
+				if stream.StatusCode != http.StatusOK {
+					return nil, errors.New("plugin artwork asset returned non-200 status")
+				}
+				contentType := strings.ToLower(strings.TrimSpace(strings.Split(stream.Header.Get("Content-Type"), ";")[0]))
+				if contentType != "image/jpeg" && contentType != "image/png" {
+					return nil, errors.New("plugin artwork asset type is unsupported")
+				}
+				return readBoundedArtwork(stream.Body)
+			},
+		})
+	}
+	return candidates
 }
 
 func (s *LibraryArtworkService) Open(digest string) (LibraryArtworkAsset, error) {
@@ -183,8 +214,15 @@ func (s *LibraryArtworkService) OpenSigned(digest, expiration, signature string)
 	return s.Open(digest)
 }
 
-func (s *LibraryArtworkService) mediaLibraryCandidates(libraryID uint) ([]artworkCandidate, error) {
+func (s *LibraryArtworkService) mediaCategoryCandidates(libraryID uint, categoryName, mediaType string) ([]artworkCandidate, error) {
 	if s.metadata == nil {
+		return nil, nil
+	}
+	categoryName = strings.TrimSpace(categoryName)
+	entryMediaType := "movie"
+	if mediaType == "series" {
+		entryMediaType = "tv"
+	} else if mediaType != "movie" {
 		return nil, nil
 	}
 	client, err := s.metadata.Client()
@@ -194,7 +232,7 @@ func (s *LibraryArtworkService) mediaLibraryCandidates(libraryID uint) ([]artwor
 	var rows []models.MediaLibraryRecognition
 	err = s.db.Model(&models.MediaLibraryRecognition{}).
 		Where("media_library_recognitions.library_id = ? AND media_library_recognitions.status = ?", libraryID, "matched").
-		Where("EXISTS (SELECT 1 FROM media_library_entries WHERE media_library_entries.library_id = ? AND media_library_entries.recognition_id = media_library_recognitions.id)", libraryID).
+		Where("EXISTS (SELECT 1 FROM media_library_entries WHERE media_library_entries.library_id = ? AND media_library_entries.recognition_id = media_library_recognitions.id AND media_library_entries.category_name = ? AND media_library_entries.media_type = ?)", libraryID, categoryName, entryMediaType).
 		Order("media_library_recognitions.updated_at DESC, media_library_recognitions.id DESC").
 		Limit(64).Find(&rows).Error
 	if err != nil {
@@ -348,22 +386,202 @@ func artworkGenerationKey(title string, candidates []artworkCandidate) string {
 }
 
 func renderLibraryArtwork(images []image.Image) *image.RGBA {
-	destination := image.NewRGBA(image.Rect(0, 0, libraryArtworkWidth, libraryArtworkHeight))
-	count := len(images)
-	for index, source := range images {
-		left := index * libraryArtworkWidth / count
-		right := (index + 1) * libraryArtworkWidth / count
-		drawCover(destination, image.Rect(left, 0, right, libraryArtworkHeight), source)
+	if len(images) == 0 {
+		return image.NewRGBA(image.Rect(0, 0, libraryArtworkWidth, libraryArtworkHeight))
 	}
-	for y := 0; y < libraryArtworkHeight; y++ {
-		position := float64(y) / float64(libraryArtworkHeight-1)
-		alpha := uint8(10 + 105*position*position)
-		for x := 0; x < libraryArtworkWidth; x++ {
-			base := destination.RGBAAt(x, y)
-			destination.SetRGBA(x, y, blendOver(base, color.RGBA{A: alpha}))
+	images = style3PosterOrder(images)
+	theme := artworkThemeColor(images[0])
+	destination := style3Gradient(theme)
+	const (
+		rows          = 3
+		columns       = 3
+		cellWidth     = 410
+		cellHeight    = 610
+		margin        = 22
+		cornerRadius  = 46
+		shadowExtra   = 60
+		startX        = 835
+		startY        = -362
+		columnSpacing = 100
+		rotationAngle = -15.8
+	)
+	columnHeight := rows*cellHeight + (rows-1)*margin
+	for columnIndex := 0; columnIndex < columns; columnIndex++ {
+		start := columnIndex * rows
+		if start >= len(images) {
+			break
+		}
+		column := image.NewRGBA(image.Rect(0, 0, cellWidth+shadowExtra, columnHeight+shadowExtra))
+		for rowIndex := 0; rowIndex < rows && start+rowIndex < len(images); rowIndex++ {
+			poster := style3Poster(images[start+rowIndex], cellWidth, cellHeight, cornerRadius, shadowExtra)
+			pasteRGBA(column, poster, image.Pt(0, rowIndex*(cellHeight+margin)))
+		}
+		rotated := rotateRGBA(column, rotationAngle)
+		columnX := startX + columnIndex*columnSpacing
+		columnCenterY := startY + columnHeight/2
+		columnCenterX := columnX
+		if columnIndex == 1 {
+			columnCenterX += cellWidth - 50
+		} else if columnIndex == 2 {
+			columnCenterY -= 155
+			columnCenterX += (cellWidth-50)*2 + 40
+		}
+		finalX := columnCenterX - rotated.Bounds().Dx()/2 + cellWidth/2
+		finalY := columnCenterY - rotated.Bounds().Dy()/2
+		pasteRGBA(destination, rotated, image.Pt(finalX, finalY))
+	}
+	return destination
+}
+
+func style3PosterOrder(images []image.Image) []image.Image {
+	// Mirrors style_static_3.py's 315426987 placement so the first two
+	// candidates occupy the most visible center positions.
+	order := [...]int{2, 0, 4, 3, 1, 5, 8, 7, 6}
+	result := make([]image.Image, 0, len(images))
+	used := make([]bool, len(images))
+	for _, index := range order {
+		if index < len(images) {
+			result = append(result, images[index])
+			used[index] = true
+		}
+	}
+	for index, source := range images {
+		if !used[index] {
+			result = append(result, source)
+		}
+	}
+	return result
+}
+
+func style3Gradient(theme color.RGBA) *image.RGBA {
+	destination := image.NewRGBA(image.Rect(0, 0, libraryArtworkWidth, libraryArtworkHeight))
+	left := color.RGBA{
+		R: uint8(float64(theme.R) * .65),
+		G: uint8(float64(theme.G) * .65),
+		B: uint8(float64(theme.B) * .65),
+		A: 255,
+	}
+	lighten := func(value uint8) uint8 {
+		return uint8(math.Min(230, math.Max(float64(value)*1.9, float64(value)+80)))
+	}
+	right := color.RGBA{R: lighten(left.R), G: lighten(left.G), B: lighten(left.B), A: 255}
+	for x := 0; x < libraryArtworkWidth; x++ {
+		position := float64(x) / float64(libraryArtworkWidth-1)
+		// Match style_static_3.py's left-to-right nonlinear mask.
+		eased := math.Pow(position, .7)
+		pixel := color.RGBA{
+			R: uint8(float64(left.R)*(1-eased) + float64(right.R)*eased),
+			G: uint8(float64(left.G)*(1-eased) + float64(right.G)*eased),
+			B: uint8(float64(left.B)*(1-eased) + float64(right.B)*eased), A: 255,
+		}
+		for y := 0; y < libraryArtworkHeight; y++ {
+			destination.SetRGBA(x, y, pixel)
 		}
 	}
 	return destination
+}
+
+func artworkThemeColor(source image.Image) color.RGBA {
+	bounds := source.Bounds()
+	best := color.RGBA{R: 237, G: 159, B: 77, A: 255}
+	bestScore := -1.0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += max(1, bounds.Dy()/24) {
+		for x := bounds.Min.X; x < bounds.Max.X; x += max(1, bounds.Dx()/24) {
+			r, g, b, _ := source.At(x, y).RGBA()
+			rf, gf, bf := float64(r>>8), float64(g>>8), float64(b>>8)
+			maximum, minimum := math.Max(rf, math.Max(gf, bf)), math.Min(rf, math.Min(gf, bf))
+			lightness := (maximum + minimum) / 2
+			saturation := maximum - minimum
+			score := saturation - math.Abs(lightness-140)*.25
+			if lightness >= 55 && lightness <= 215 && score > bestScore {
+				best, bestScore = color.RGBA{R: uint8(rf), G: uint8(gf), B: uint8(bf), A: 255}, score
+			}
+		}
+	}
+	return best
+}
+
+func style3Poster(source image.Image, width, height, radius, shadowExtra int) *image.RGBA {
+	poster := image.NewRGBA(image.Rect(0, 0, width, height))
+	drawCover(poster, poster.Bounds(), source)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if !insideRoundedRectangle(x, y, width, height, radius) {
+				poster.SetRGBA(x, y, color.RGBA{})
+			}
+		}
+	}
+	tile := image.NewRGBA(image.Rect(0, 0, width+shadowExtra, height+shadowExtra))
+	for layer := 0; layer < 20; layer++ {
+		offset := 20 - layer/2
+		alpha := uint8(9 + layer/2)
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				if insideRoundedRectangle(x, y, width, height, radius) {
+					blendRGBAAt(tile, x+offset, y+offset, color.RGBA{A: alpha})
+				}
+			}
+		}
+	}
+	pasteRGBA(tile, poster, image.Point{})
+	return tile
+}
+
+func insideRoundedRectangle(x, y, width, height, radius int) bool {
+	if x >= radius && x < width-radius || y >= radius && y < height-radius {
+		return true
+	}
+	cx := radius
+	if x >= width-radius {
+		cx = width - radius - 1
+	}
+	cy := radius
+	if y >= height-radius {
+		cy = height - radius - 1
+	}
+	dx, dy := x-cx, y-cy
+	return dx*dx+dy*dy <= radius*radius
+}
+
+func rotateRGBA(source *image.RGBA, degrees float64) *image.RGBA {
+	angle := degrees * math.Pi / 180
+	cosine, sine := math.Cos(angle), math.Sin(angle)
+	width, height := source.Bounds().Dx(), source.Bounds().Dy()
+	rotatedWidth := int(math.Ceil(math.Abs(float64(width)*cosine) + math.Abs(float64(height)*sine)))
+	rotatedHeight := int(math.Ceil(math.Abs(float64(width)*sine) + math.Abs(float64(height)*cosine)))
+	destination := image.NewRGBA(image.Rect(0, 0, rotatedWidth, rotatedHeight))
+	sourceCX, sourceCY := float64(width-1)/2, float64(height-1)/2
+	destinationCX, destinationCY := float64(rotatedWidth-1)/2, float64(rotatedHeight-1)/2
+	for y := 0; y < rotatedHeight; y++ {
+		for x := 0; x < rotatedWidth; x++ {
+			dx, dy := float64(x)-destinationCX, float64(y)-destinationCY
+			sourceX := cosine*dx + sine*dy + sourceCX
+			sourceY := -sine*dx + cosine*dy + sourceCY
+			sx, sy := int(math.Round(sourceX)), int(math.Round(sourceY))
+			if sx >= 0 && sx < width && sy >= 0 && sy < height {
+				destination.SetRGBA(x, y, source.RGBAAt(sx, sy))
+			}
+		}
+	}
+	return destination
+}
+
+func pasteRGBA(destination, source *image.RGBA, point image.Point) {
+	for y := 0; y < source.Bounds().Dy(); y++ {
+		for x := 0; x < source.Bounds().Dx(); x++ {
+			pixel := source.RGBAAt(x, y)
+			if pixel.A != 0 {
+				blendRGBAAt(destination, point.X+x, point.Y+y, pixel)
+			}
+		}
+	}
+}
+
+func blendRGBAAt(destination *image.RGBA, x, y int, overlay color.RGBA) {
+	if !image.Pt(x, y).In(destination.Bounds()) || overlay.A == 0 {
+		return
+	}
+	destination.SetRGBA(x, y, blendOver(destination.RGBAAt(x, y), overlay))
 }
 
 func drawCover(destination *image.RGBA, target image.Rectangle, source image.Image) {
@@ -399,13 +617,25 @@ func drawCover(destination *image.RGBA, target image.Rectangle, source image.Ima
 }
 
 func blendOver(base, overlay color.RGBA) color.RGBA {
-	alpha := uint16(overlay.A)
-	inverse := uint16(255 - overlay.A)
+	if overlay.A == 255 || base.A == 0 {
+		return overlay
+	}
+	if overlay.A == 0 {
+		return base
+	}
+	overlayAlpha := uint32(overlay.A)
+	baseAlpha := uint32(base.A)
+	inverse := uint32(255 - overlay.A)
+	outAlpha := overlayAlpha + (baseAlpha*inverse)/255
+	if outAlpha == 0 {
+		return color.RGBA{}
+	}
+	blend := func(over, under uint8) uint8 {
+		value := (uint32(over)*overlayAlpha*255 + uint32(under)*baseAlpha*inverse) / (outAlpha * 255)
+		return uint8(value)
+	}
 	return color.RGBA{
-		R: uint8((uint16(overlay.R)*alpha + uint16(base.R)*inverse) / 255),
-		G: uint8((uint16(overlay.G)*alpha + uint16(base.G)*inverse) / 255),
-		B: uint8((uint16(overlay.B)*alpha + uint16(base.B)*inverse) / 255),
-		A: 255,
+		R: blend(overlay.R, base.R), G: blend(overlay.G, base.G), B: blend(overlay.B, base.B), A: uint8(outAlpha),
 	}
 }
 

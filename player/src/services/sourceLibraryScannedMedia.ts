@@ -71,8 +71,8 @@ export function createScannedCategory(input: ScannedCategoryInput): ScannedCateg
   const seriesCount = seriesCountForEntries(tvEntries)
   const type = name === RAW_UNRESOLVED_CATEGORY_NAME ? 'unresolved' : scannedCategoryType(movieCount, tvEntries.length, unresolvedCount)
   const works = createScannedWorkItems(entries, sourceId, rootPath)
-  const previewItems = works.map(work => work.item).slice(0, 4)
-  const artworkCandidates = uniqueArtworkCandidates(works.map(work => work.item), 4)
+  const previewItems = works.map(work => work.item).slice(0, 9)
+  const artworkCandidates = uniqueArtworkCandidates(works.map(work => work.item), 9)
   const previewArtwork = previewItems.find(item => item.backdropUrl || item.posterUrl)
   const library: MediaLibrary = {
     id: `category:${encodeURIComponent(name)}`,

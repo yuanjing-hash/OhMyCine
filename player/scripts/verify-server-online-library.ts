@@ -18,11 +18,11 @@ const source = new ServerDataSource({
         }] }
       else if (request.path === '/api/v1/player/online-libraries')
         data = { list: [
-          { id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: '在线视频', providerLabel: 'Fixture', capabilities: ['site.feed', 'site.search', 'site.detail', 'media.playback'], available: true, homeContributions: ['recommended'], artworkUrl: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', artworkRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkSource: 'generated' },
+          { id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: '在线视频', providerLabel: 'Fixture', capabilities: ['site.feed', 'site.search', 'site.detail', 'media.playback'], available: true, homeContributions: ['recommended'], artworkUrl: '/api/v1/assets/plugin-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkRevision: 'fixed-plugin-v1', artworkSource: 'custom' },
           { id: 'library-unsafe', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-unsafe', name: '不安全在线封面', providerLabel: 'Fixture', capabilities: ['site.feed'], available: true, homeContributions: [], artworkUrl: 'https://attacker.example/plugin-cover.png' },
         ] }
       else if (request.path.endsWith('/navigation'))
-        data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'recommended', title: '推荐', kind: 'feed', routeKey: 'recommended', refreshable: true }, { id: 'anime', title: '番剧', kind: 'branch', nodeToken: 'signed-anime-node', hasChildren: true }] }
+        data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'recommended', title: '推荐', kind: 'feed', routeKey: 'recommended', refreshable: true, artworkUrl: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', artworkRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkSource: 'generated' }, { id: 'anime', title: '番剧', kind: 'branch', nodeToken: 'signed-anime-node', hasChildren: true, artworkUrl: '/api/v1/assets/generated-library-covers/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc?exp=1787565600&sig=ddddddddddddddddddddddddddddddddddddddddddd', artworkRevision: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', artworkSource: 'generated' }] }
       else if (request.path.endsWith('/navigation/signed-anime-node/children'))
         data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'anime-jp', title: '日本番剧', kind: 'feed', routeKey: 'recommended', refreshable: true }] }
       else if (request.path.includes('/feeds/recommended'))
@@ -63,13 +63,15 @@ assert.deepEqual(libraries.map(item => [item.id, item.name, item.providerIdentit
   ['online-library|library-1', '在线视频', 'plugin:org.ohmycine.fixture:library-1'],
   ['online-library|library-unsafe', '不安全在线封面', 'plugin:org.ohmycine.fixture:library-unsafe'],
 ])
-assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-assert.equal(libraries[0].artworkRevision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
-assert.equal(libraries[0].artworkSource, 'generated')
+assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/plugin-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+assert.equal(libraries[0].artworkRevision, 'fixed-plugin-v1')
+assert.equal(libraries[0].artworkSource, 'custom')
 assert.equal(libraries[0].artworkCandidates, undefined)
 assert.equal(libraries[1].backdropUrl, undefined)
 const navigation = await source.list(libraries[0].id)
 assert.deepEqual(navigation.map(item => [item.type, item.name]), [['folder', '推荐'], ['folder', '番剧']])
+assert.match(navigation[0].backdropUrl ?? '', /generated-library-covers/)
+assert.equal(navigation[0].artworkSource, 'generated')
 const nested = await source.list(navigation[1].id)
 assert.deepEqual(nested.map(item => [item.type, item.name]), [['folder', '日本番剧']])
 assert.equal(calls.some(call => call.path.endsWith('/navigation/signed-anime-node/children')), true)

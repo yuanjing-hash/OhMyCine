@@ -22,6 +22,9 @@ export interface OnlineNavigationItem {
   nodeToken?: string
   routeKey?: string
   refreshable: boolean
+  artworkUrl?: string
+  artworkRevision?: string
+  artworkSource?: 'generated' | 'provider' | 'custom' | 'fallback'
 }
 
 export interface OnlineMediaWork {
@@ -120,12 +123,12 @@ export function parseOnlineLibraryList(value: unknown): OnlineLibrarySummary[] {
   return list.slice(0, 100).map(parseOnlineLibrary).filter((item): item is OnlineLibrarySummary => item != null)
 }
 
-export function parseOnlineNavigationList(value: unknown): OnlineNavigationItem[] {
+export function parseOnlineNavigationList(value: unknown, baseUrl = ''): OnlineNavigationItem[] {
   const envelope = record(value)
   const data = Array.isArray(value) ? value : Array.isArray(envelope.nodes) ? envelope.nodes : envelope.list
   if (!Array.isArray(data))
     return []
-  return data.slice(0, 100).map(parseNavigation).filter((item): item is OnlineNavigationItem => item != null)
+  return data.slice(0, 100).map(item => parseNavigation(item, baseUrl)).filter((item): item is OnlineNavigationItem => item != null)
 }
 
 export function parseOnlineFeedSections(value: unknown): OnlineFeedSection[] {
@@ -301,6 +304,10 @@ export function onlineNavigationToMediaItem(sourceId: string, libraryId: string,
     libraryId: createOnlineLibraryID(libraryId),
     name: item.title,
     type: 'folder',
+    posterUrl: item.artworkUrl,
+    backdropUrl: item.artworkUrl,
+    artworkRevision: item.artworkRevision,
+    artworkSource: item.artworkSource,
     path: '',
   }
 }
@@ -575,7 +582,7 @@ function parseOnlineHistoryRecord(value: unknown): OnlineHistoryRecord | null {
   }
 }
 
-function parseNavigation(value: unknown): OnlineNavigationItem | null {
+function parseNavigation(value: unknown, baseUrl: string): OnlineNavigationItem | null {
   const item = record(value)
   const id = requiredText(item.id, 128)
   const title = requiredText(item.title, 256)
@@ -585,7 +592,17 @@ function parseNavigation(value: unknown): OnlineNavigationItem | null {
   const routeKey = optionalText(item.routeKey ?? item.route_key, 256)
   if (!id || !title || !kind || (kind === 'branch' ? !nodeToken : !routeKey))
     return null
-  return { id, title, kind, nodeToken, routeKey, refreshable: item.refreshable === true }
+  return {
+    id,
+    title,
+    kind,
+    nodeToken,
+    routeKey,
+    refreshable: item.refreshable === true,
+    artworkUrl: resolveLibraryArtworkURL(baseUrl, item.artworkUrl ?? item.artwork_url),
+    artworkRevision: optionalText(item.artworkRevision ?? item.artwork_revision, 128),
+    artworkSource: oneOf(item.artworkSource ?? item.artwork_source, ['generated', 'provider', 'custom', 'fallback'] as const) ?? undefined,
+  }
 }
 
 function parseFeedSection(value: unknown): OnlineFeedSection | null {

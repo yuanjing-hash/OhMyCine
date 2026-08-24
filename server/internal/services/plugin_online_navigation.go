@@ -37,15 +37,28 @@ type pluginNavigationResponse struct {
 	Nodes   []pluginNavigationNode `json:"nodes"`
 }
 
-type pluginNavigationNode struct {
+type pluginNavigationInputNode struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Kind        string `json:"kind"`
 	NodeKey     string `json:"nodeKey,omitempty"`
-	NodeToken   string `json:"nodeToken,omitempty"`
 	RouteKey    string `json:"routeKey,omitempty"`
 	HasChildren bool   `json:"hasChildren,omitempty"`
 	Refreshable bool   `json:"refreshable,omitempty"`
+}
+
+type pluginNavigationNode struct {
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Kind            string `json:"kind"`
+	NodeKey         string `json:"nodeKey,omitempty"`
+	NodeToken       string `json:"nodeToken,omitempty"`
+	RouteKey        string `json:"routeKey,omitempty"`
+	HasChildren     bool   `json:"hasChildren,omitempty"`
+	Refreshable     bool   `json:"refreshable,omitempty"`
+	ArtworkURL      string `json:"artworkUrl,omitempty"`
+	ArtworkRevision string `json:"artworkRevision,omitempty"`
+	ArtworkSource   string `json:"artworkSource,omitempty"`
 }
 
 func (s *PluginRepositoryService) OnlineNavigationChildren(ctx context.Context, actor Actor, libraryID, token string) (json.RawMessage, error) {
@@ -96,9 +109,9 @@ func (s *PluginRepositoryService) normalizeOnlineNavigation(libraryID string, ma
 
 func (s *PluginRepositoryService) normalizeHierarchicalNavigation(libraryID string, raw json.RawMessage, depth int, ancestors []string) (json.RawMessage, error) {
 	var input struct {
-		Version int                    `json:"version"`
-		Mode    string                 `json:"mode"`
-		Nodes   []pluginNavigationNode `json:"nodes"`
+		Version int                         `json:"version"`
+		Mode    string                      `json:"mode"`
+		Nodes   []pluginNavigationInputNode `json:"nodes"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

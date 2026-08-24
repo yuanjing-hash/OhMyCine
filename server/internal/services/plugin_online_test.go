@@ -48,19 +48,20 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 	actor.Permissions[authz.PermissionMediaLibrariesRead] = struct{}{}
 	assetID := uuid.NewString()
 	runtime := &onlinePluginRuntime{responses: map[string][]byte{
-		"site.navigation":        []byte(`[{"id":"recommended","title":"推荐","pageType":"feed","routeKey":"recommended"}]`),
-		"site.feed":              []byte(`[{"id":"recommended","title":"推荐","layout":"hero","refreshable":true,"homeEligible":true,"items":[{"work":{"id":"video-1","title":"视频","kind":"video","identity":{"scheme":"fixture.video","value":"video-1"}},"actions":["favorite.add"]}]}]`),
-		"media.playback":         []byte(`{"workId":"BV1234567890","segmentId":"cid:1","versionId":"v1","variantId":"qn:80","variants":[],"assets":[{"kind":"progressive","urlRef":"` + assetID + `"}],"delivery":"server-gateway","danmaku":[{"id":"dm","label":"弹幕","urlRef":"` + assetID + `"}]}`),
-		"site.interaction":       []byte(`{"accepted":true,"state":true}`),
-		"site.history":           []byte(`{"list":[{"work":{"id":"BV1234567890","title":"测试视频","kind":"video","identity":{"scheme":"bilibili.bvid","value":"BV1234567890"}}}],"cursor":"123","hasMore":true}`),
-		"playback.progress_sync": []byte(`{"accepted":true,"remote":true}`),
+		"site.navigation":            []byte(`[{"id":"recommended","title":"推荐","pageType":"feed","routeKey":"recommended"}]`),
+		"site.feed":                  []byte(`[{"id":"recommended","title":"推荐","layout":"hero","refreshable":true,"homeEligible":true,"items":[{"work":{"id":"video-1","title":"视频","kind":"video","identity":{"scheme":"fixture.video","value":"video-1"}},"actions":["favorite.add"]}]}]`),
+		"media.playback":             []byte(`{"workId":"BV1234567890","segmentId":"cid:1","versionId":"v1","variantId":"qn:80","variants":[],"assets":[{"kind":"progressive","urlRef":"` + assetID + `"}],"delivery":"server-gateway","danmaku":[{"id":"dm","label":"弹幕","urlRef":"` + assetID + `"}]}`),
+		"site.interaction":           []byte(`{"accepted":true,"state":true}`),
+		"site.history":               []byte(`{"list":[{"work":{"id":"BV1234567890","title":"测试视频","kind":"video","identity":{"scheme":"bilibili.bvid","value":"BV1234567890"}}}],"cursor":"123","hasMore":true}`),
+		"playback.progress_sync":     []byte(`{"accepted":true,"remote":true}`),
+		"library.artwork_candidates": []byte(`[{"id":"video-1","assetRef":"` + assetID + `"}]`),
 	}}
 	service.runtime = runtime
 
 	manifestJSON := strings.ReplaceAll(`{
       "schemaVersion":1,"id":"org.ohmycine.online-test","name":"在线测试","description":"fixture",
       "version":"0.1.0","apiVersion":"1","minServerVersion":"0.1.0","runtime":"wasm","entry":"plugin.wasm","libraryArtwork":"assets/library.png",
-      "capabilities":["site.navigation","site.feed","site.detail","site.interaction","media.playback","home.contribution","feed.refresh","site.history","playback.progress_sync"],
+      "capabilities":["site.navigation","site.feed","site.detail","site.interaction","media.playback","home.contribution","feed.refresh","site.history","playback.progress_sync","library.artwork_candidates"],
       "permissions":[{"kind":"network.http","domains":["login.example.test"]},{"kind":"credential.use","scopes":["site.session"]}],"configSchema":{"type":"object"},"author":"test","license":"MIT",
       "homepage":"https://example.test/plugin","source":"https://github.com/example/plugin","packageSha256":"${SHA}"
     }`, "${SHA}", strings.Repeat("a", 64))
@@ -89,18 +90,31 @@ func TestPluginOnlineLibraryPlaybackHistoryAndDisableBoundary(t *testing.T) {
 	}
 
 	libraries, err := service.OnlineLibraries(actor)
-	if err != nil || len(libraries) != 2 || libraries[0].ID != connection.ID || len(libraries[0].HomeContributions) != 1 || libraries[0].HomeContributions[0] != "recommended" || libraries[0].ArtworkURL != "/api/v1/assets/plugin-covers/"+strings.Repeat("a", 64) {
+	if err != nil || len(libraries) != 2 || libraries[0].ID != connection.ID || len(libraries[0].HomeContributions) != 1 || libraries[0].HomeContributions[0] != "recommended" || libraries[0].ArtworkURL != "/api/v1/assets/plugin-covers/"+strings.Repeat("a", 64) || libraries[0].ArtworkSource != "custom" || libraries[0].ArtworkRevision == "" {
 		t.Fatalf("libraries=%+v err=%v", libraries, err)
 	}
 	feedCalls, actionCalls := 0, 0
+	artworkScope := ""
 	runtime.handler = func(operation string, request []byte) ([]byte, error) {
 		switch operation {
 		case "site.feed":
 			feedCalls++
 		case "site.interaction":
 			actionCalls++
+		case "library.artwork_candidates":
+			var input struct {
+				ScopeKey string `json:"scopeKey"`
+			}
+			if err := json.Unmarshal(request, &input); err != nil {
+				return nil, err
+			}
+			artworkScope = input.ScopeKey
 		}
 		return runtime.responses[operation], nil
+	}
+	artworkCandidates, err := service.OnlineArtworkCandidates(context.Background(), actor, connection.ID, "route:anime-jp")
+	if err != nil || len(artworkCandidates) != 1 || artworkScope != "route:anime-jp" {
+		t.Fatalf("artwork candidates=%+v scope=%q err=%v", artworkCandidates, artworkScope, err)
 	}
 	feed, err := service.OnlineFeed(context.Background(), actor, connection.ID, "recommended", "", "")
 	var feedSections []struct {

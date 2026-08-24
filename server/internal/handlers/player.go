@@ -138,9 +138,6 @@ func (a *API) PlayerMediaLibraries(c *gin.Context) {
 		writeError(c, a.log, err)
 		return
 	}
-	if a.libraryArtwork != nil {
-		libraries = a.libraryArtwork.DecorateMediaLibraries(c.Request.Context(), libraries)
-	}
 	success(c, http.StatusOK, gin.H{"list": libraries, "total": len(libraries)})
 }
 
@@ -153,6 +150,9 @@ func (a *API) PlayerMediaLibraryCategories(c *gin.Context) {
 	if err != nil {
 		writeError(c, a.log, err)
 		return
+	}
+	if a.libraryArtwork != nil {
+		items = a.libraryArtwork.DecorateMediaCategories(c.Request.Context(), id, items)
 	}
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }

@@ -38,12 +38,14 @@ type PlayerMediaLibrary struct {
 }
 
 type PlayerMediaCategory struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	MediaType  string `json:"media_type"`
-	ItemCount  int64  `json:"item_count"`
-	SortOrder  int    `json:"sort_order"`
-	ArtworkURL string `json:"artwork_url,omitempty"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	MediaType       string `json:"media_type"`
+	ItemCount       int64  `json:"item_count"`
+	SortOrder       int    `json:"sort_order"`
+	ArtworkURL      string `json:"artwork_url,omitempty"`
+	ArtworkRevision string `json:"artwork_revision,omitempty"`
+	ArtworkSource   string `json:"artwork_source,omitempty"`
 }
 
 type PlayerMediaIdentity struct {
@@ -163,7 +165,8 @@ func (s *MediaLibraryService) PlayerLibraries(actor Actor) ([]PlayerMediaLibrary
 	result := make([]PlayerMediaLibrary, 0, len(rows))
 	for _, row := range rows {
 		directStream := row.StorageType == models.StorageTypeLocal || row.StorageType == models.StorageTypePan115 && row.STRMEnabled && row.SignedProxyEnabled
-		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, ArtworkURL: playerLibraryArtworkURL(row.StorageType), LastSuccessful: row.LastSuccessfulScanAt})
+		artworkURL := playerLibraryArtworkURL(row.StorageType)
+		result = append(result, PlayerMediaLibrary{ID: row.ID, Name: row.Name, StorageType: row.StorageType, SortOrder: row.SortOrder, Status: row.Status, EntryCount: row.EntryCount, DirectStream: directStream, STRMEnabled: row.STRMEnabled, ArtworkURL: artworkURL, ArtworkRevision: fallbackArtworkRevision(artworkURL), ArtworkSource: "fallback", LastSuccessful: row.LastSuccessfulScanAt})
 	}
 	return result, nil
 }
@@ -219,7 +222,7 @@ func (s *MediaLibraryService) PlayerCategories(actor Actor, libraryID uint) ([]P
 		seen[key] = struct{}{}
 		result = append(result, PlayerMediaCategory{
 			ID: base64.RawURLEncoding.EncodeToString([]byte(key)), Name: name, MediaType: mediaType,
-			ItemCount: counts[key], SortOrder: len(result), ArtworkURL: "/api/v1/assets/library-covers/category-cinema.png",
+			ItemCount: counts[key], SortOrder: len(result), ArtworkURL: "/api/v1/assets/library-covers/category-cinema.png", ArtworkSource: "fallback",
 		})
 	}
 	for _, group := range rules.Groups {

@@ -9,6 +9,9 @@ export interface MediaItem {
   type: 'movie' | 'series' | 'season' | 'episode' | 'folder' | 'file'
   posterUrl?: string
   backdropUrl?: string
+  /** Stable visual revision for folder/category artwork. */
+  artworkRevision?: string
+  artworkSource?: 'generated' | 'provider' | 'custom' | 'fallback'
   year?: number
   rating?: number
   overview?: string

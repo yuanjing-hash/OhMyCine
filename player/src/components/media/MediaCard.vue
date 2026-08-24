@@ -51,14 +51,30 @@ const posterUrl = computed(() => {
 const libraryArtworkCandidates = computed(() => {
   if (props.kind !== 'library' || hasMediaPath(props.item))
     return []
-  return [...new Set(props.item.artworkCandidates ?? [])].filter(Boolean).slice(0, 4)
+  return [...new Set(props.item.artworkCandidates ?? [])].filter(Boolean).slice(0, 9)
 })
-const hasLibraryCollage = computed(() => libraryArtworkCandidates.value.length > 1)
+const hasLibraryCollage = computed(() => libraryArtworkCandidates.value.length > 0)
+const style3ArtworkColumns = computed(() => {
+  const candidates = libraryArtworkCandidates.value
+  const order = [2, 0, 4, 3, 1, 5, 8, 7, 6]
+  const arranged = order.filter(index => index < candidates.length).map(index => candidates[index])
+  candidates.forEach((candidate, index) => {
+    if (!order.includes(index))
+      arranged.push(candidate)
+  })
+  return [arranged.slice(0, 3), arranged.slice(3, 6), arranged.slice(6, 9)].filter(column => column.length > 0)
+})
+const usesStyle3Artwork = computed(() => props.kind === 'library' && props.item.artworkSource === 'generated')
 const cardClass = computed(() => props.kind === 'library' ? 'library-card' : 'poster-card')
 const imageClass = computed(() => props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'aspect-[16/9]' : 'aspect-[2/3]')
+const imageRevisionKey = computed(() => {
+  if (props.kind === 'library')
+    return props.item.artworkRevision ?? 'initial'
+  return hasMediaPath(props.item) ? 'media' : props.item.artworkRevision ?? 'initial'
+})
 const imageCacheKey = computed(() => artworkCacheKey(
   props.item.sourceId,
-  `${props.item.id}:${!hasMediaPath(props.item) ? props.item.artworkRevision ?? 'initial' : 'media'}`,
+  `${props.item.id}:${imageRevisionKey.value}`,
   props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'backdrop' : 'poster',
 ))
 const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series' && props.item.type !== 'season')
@@ -173,23 +189,43 @@ function handleKeydown(event: KeyboardEvent) {
     <div class="relative overflow-hidden bg-white/5" :class="imageClass">
       <div
         v-if="hasLibraryCollage"
-        class="library-artwork-collage"
-        :style="{ gridTemplateColumns: `repeat(${libraryArtworkCandidates.length}, minmax(0, 1fr))` }"
+        class="library-artwork-style3"
       >
         <CachedImage
-          v-for="(candidate, index) in libraryArtworkCandidates"
-          :key="candidate"
-          :cache-key="`${imageCacheKey}:candidate:${index}`"
-          :src="candidate"
-          :alt="`${title} 封面 ${index + 1}`"
+          :cache-key="`${imageCacheKey}:style3-background`"
+          :src="libraryArtworkCandidates[0]"
+          :alt="`${title} 背景`"
           loading="lazy"
           decoding="async"
-          class="h-full min-w-0 object-cover transition-transform duration-500 group-hover:scale-105"
+          class="library-artwork-style3-background"
         >
           <template #fallback>
             <div class="h-full w-full bg-white/5" />
           </template>
         </CachedImage>
+        <div class="library-artwork-style3-gradient" />
+        <div class="library-artwork-style3-columns">
+          <div
+            v-for="(column, columnIndex) in style3ArtworkColumns"
+            :key="`column:${columnIndex}`"
+            class="library-artwork-style3-column"
+          >
+            <CachedImage
+              v-for="(candidate, rowIndex) in column"
+              :key="candidate"
+              :cache-key="`${imageCacheKey}:candidate:${columnIndex}:${rowIndex}`"
+              :src="candidate"
+              :alt="`${title} 封面 ${columnIndex * 3 + rowIndex + 1}`"
+              loading="lazy"
+              decoding="async"
+              class="library-artwork-style3-poster"
+            >
+              <template #fallback>
+                <div class="h-full w-full bg-white/5" />
+              </template>
+            </CachedImage>
+          </div>
+        </div>
       </div>
       <CachedImage
         v-else
@@ -213,7 +249,10 @@ function handleKeydown(event: KeyboardEvent) {
         </template>
       </CachedImage>
 
-      <div class="absolute inset-0 bg-gradient-to-t from-black/86 via-black/10 to-transparent opacity-80" />
+      <div
+        v-if="!usesStyle3Artwork"
+        class="absolute inset-0 bg-gradient-to-t from-black/86 via-black/10 to-transparent opacity-80"
+      />
 
       <span v-if="isPlayed" class="media-card-played" aria-label="已播放" title="已播放">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.4 3.4 7.6-8" /></svg>
@@ -231,7 +270,10 @@ function handleKeydown(event: KeyboardEvent) {
         </svg>
       </button>
 
-      <div class="theme-immersive-dark absolute inset-x-0 bottom-0 p-4">
+      <div
+        class="theme-immersive-dark library-artwork-copy absolute inset-x-0 bottom-0 p-4"
+        :class="{ 'library-artwork-copy-style3': usesStyle3Artwork }"
+      >
         <p class="line-clamp-2 text-sm font-semibold text-white drop-shadow">
           {{ title }}
         </p>
@@ -255,18 +297,97 @@ function handleKeydown(event: KeyboardEvent) {
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 62%, transparent), color-mix(in srgb, var(--color-surface-hover) 34%, transparent));
 }
 
-.library-artwork-collage {
-  display: grid;
+.library-artwork-style3 {
+  position: relative;
   height: 100%;
   width: 100%;
+  overflow: hidden;
+  background: #241d24;
 }
 
-.library-artwork-collage :deep(.cached-image-host),
-.library-artwork-collage :deep(img) {
+.library-artwork-style3-background,
+.library-artwork-style3-background :deep(.cached-image-host),
+.library-artwork-style3-background :deep(img) {
+  position: absolute;
+  inset: -18%;
   height: 100%;
-  min-width: 0;
   width: 100%;
   object-fit: cover;
+  filter: blur(34px) saturate(1.25);
+  opacity: 0.76;
+  transform: scale(1.35);
+}
+
+.library-artwork-style3-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(8, 7, 11, .92) 0%, rgba(15, 12, 17, .74) 31%, rgba(19, 15, 18, .18) 65%, rgba(255, 255, 255, .08) 100%);
+}
+
+.library-artwork-style3-columns {
+  position: absolute;
+  inset: 0;
+}
+
+.library-artwork-style3-column {
+  position: absolute;
+  left: 32.81%;
+  top: -33.52%;
+  width: 21.35%;
+  height: 173.52%;
+  transform: rotate(-15.8deg);
+  transform-origin: 50% 50%;
+}
+
+.library-artwork-style3-column:nth-child(2) {
+  left: 56.77%;
+}
+
+.library-artwork-style3-column:nth-child(3) {
+  left: 82.81%;
+  top: -47.87%;
+}
+
+.library-artwork-style3-poster,
+.library-artwork-style3-poster :deep(.cached-image-host),
+.library-artwork-style3-poster :deep(img) {
+  display: block;
+  width: 100%;
+  aspect-ratio: 410 / 610;
+  object-fit: cover;
+  border-radius: 8%;
+  box-shadow: .35rem .55rem 1.05rem rgba(0, 0, 0, .62);
+}
+
+.library-artwork-style3-poster {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.library-artwork-style3-poster:nth-child(2) {
+  top: 33.72%;
+}
+
+.library-artwork-style3-poster:nth-child(3) {
+  top: 67.45%;
+}
+
+.library-artwork-copy-style3 {
+  top: 39.57%;
+  right: auto;
+  bottom: auto;
+  z-index: 2;
+  width: 44%;
+  transform: none;
+  padding-left: 3.82%;
+}
+
+.library-artwork-copy-style3 p:first-child {
+  font-size: clamp(.88rem, 1.35vw, 1.45rem);
+  line-height: 1.08;
+  letter-spacing: -.035em;
+  text-shadow: 0 .18rem .65rem rgba(0, 0, 0, .5);
 }
 
 .media-card-played { position: absolute; right: .55rem; bottom: .55rem; z-index: 2; display: flex; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; color: #fff; background: rgba(34,197,94,.88); box-shadow: 0 8px 18px rgba(0,0,0,.3); }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import type { MediaItem } from '../src/services/datasource/types'
 import type { ScannedDisplayItem } from '../src/services/sourceLibraryScannedMedia'
 import type { RawMediaCandidate } from '../src/services/scraper/types'
@@ -46,12 +47,22 @@ const first = category([
   scannedMovie('three', 'C', 'https://image.example/b.jpg'),
   scannedMovie('four', 'D', 'https://image.example/d.jpg'),
   scannedMovie('five', 'E', 'https://image.example/e.jpg'),
+  scannedMovie('six', 'F', 'https://image.example/f.jpg'),
+  scannedMovie('seven', 'G', 'https://image.example/g.jpg'),
+  scannedMovie('eight', 'H', 'https://image.example/h.jpg'),
+  scannedMovie('nine', 'I', 'https://image.example/i.jpg'),
+  scannedMovie('ten', 'J', 'https://image.example/j.jpg'),
 ])
 assert.deepEqual(first.library.artworkCandidates, [
   'https://image.example/a.jpg',
   'https://image.example/b.jpg',
   'https://image.example/d.jpg',
   'https://image.example/e.jpg',
+  'https://image.example/f.jpg',
+  'https://image.example/g.jpg',
+  'https://image.example/h.jpg',
+  'https://image.example/i.jpg',
+  'https://image.example/j.jpg',
 ])
 assert.equal(first.library.artworkSource, 'generated')
 assert.match(first.library.artworkRevision ?? '', /^local-[0-9a-f]{16}$/)
@@ -73,10 +84,28 @@ const empty = category([scannedMovie('one', 'A')])
 assert.equal(empty.library.artworkSource, 'fallback')
 assert.deepEqual(empty.library.artworkCandidates, [])
 
+const mediaCard = fs.readFileSync(new URL('../src/components/media/MediaCard.vue', import.meta.url), 'utf8')
+assert.match(mediaCard, /\[2, 0, 4, 3, 1, 5, 8, 7, 6\]/)
+assert.match(mediaCard, /rotate\(-15\.8deg\)/)
+assert.match(mediaCard, /aspect-ratio: 410 \/ 610/)
+assert.match(mediaCard, /left: 32\.81%/)
+assert.match(mediaCard, /left: 56\.77%/)
+assert.match(mediaCard, /left: 82\.81%/)
+assert.match(mediaCard, /top: -47\.87%/)
+assert.match(mediaCard, /height: 173\.52%/)
+assert.match(mediaCard, /top: 33\.72%/)
+assert.match(mediaCard, /top: 67\.45%/)
+assert.match(mediaCard, /top: 39\.57%/)
+assert.match(mediaCard, /padding-left: 3\.82%/)
+assert.match(mediaCard, /v-if="!usesStyle3Artwork"/)
+assert.match(mediaCard, /libraryArtworkCandidates\.value\.length > 0/)
+assert.doesNotMatch(mediaCard, /library-artwork-collage/)
+
 console.log(JSON.stringify({
   playerOwnedArtwork: true,
   distinctCandidates: true,
   deterministicRevision: true,
   contentChangeInvalidatesRevision: true,
   providerAndFallbackStates: true,
+  styleStatic3Layout: true,
 }, null, 2))

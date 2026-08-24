@@ -90,7 +90,32 @@ func solidArtworkLoader(fill color.RGBA) func(context.Context) ([]byte, error) {
 	}
 }
 
-func TestLibraryArtworkCandidatesLimitDistinctRecognitionsBeforeEpisodeRows(t *testing.T) {
+func TestLibraryArtworkStyleStatic3OrderAndGradientMatchReference(t *testing.T) {
+	posters := make([]image.Image, 9)
+	for index := range posters {
+		poster := image.NewRGBA(image.Rect(0, 0, 1, 1))
+		poster.SetRGBA(0, 0, color.RGBA{R: uint8(index + 1), A: 255})
+		posters[index] = poster
+	}
+	ordered := style3PosterOrder(posters)
+	wantOrder := []uint8{3, 1, 5, 4, 2, 6, 9, 8, 7}
+	for index, want := range wantOrder {
+		got, _, _, _ := ordered[index].At(0, 0).RGBA()
+		if uint8(got>>8) != want {
+			t.Fatalf("poster order at %d=%d, want %d", index, got>>8, want)
+		}
+	}
+
+	gradient := style3Gradient(color.RGBA{R: 100, G: 120, B: 140, A: 255})
+	if got, want := gradient.RGBAAt(0, 0), (color.RGBA{R: 65, G: 78, B: 91, A: 255}); got != want {
+		t.Fatalf("style 3 left gradient=%v, want %v", got, want)
+	}
+	if got, want := gradient.RGBAAt(libraryArtworkWidth-1, 0), (color.RGBA{R: 145, G: 158, B: 172, A: 255}); got != want {
+		t.Fatalf("style 3 right gradient=%v, want %v", got, want)
+	}
+}
+
+func TestLibraryArtworkCandidatesAreIsolatedByLibraryCategoryAndMediaType(t *testing.T) {
 	db, _, _, _ := newConnectionTestService(t, &fakeCloudDriver{})
 	now := time.Now().UTC()
 	storage := models.Storage{
@@ -161,12 +186,26 @@ func TestLibraryArtworkCandidatesLimitDistinctRecognitionsBeforeEpisodeRows(t *t
 
 	metadata := NewMetadataSettingsService(db, NewAuditService(db), nil, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "deployment-token"})
 	service := NewLibraryArtworkService(db, metadata, nil, nil, zerolog.Nop())
-	candidates, err := service.mediaLibraryCandidates(library.ID)
+	candidates, err := service.mediaCategoryCandidates(library.ID, "Series", "series")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 2 || candidates[0].key != "tmdb:/series.jpg" || candidates[1].key != "tmdb:/movie.jpg" {
-		t.Fatalf("candidates=%+v", candidates)
+	if len(candidates) != 1 || candidates[0].key != "tmdb:/series.jpg" {
+		t.Fatalf("series candidates=%+v", candidates)
+	}
+	candidates, err = service.mediaCategoryCandidates(library.ID, "Movies", "movie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].key != "tmdb:/movie.jpg" {
+		t.Fatalf("movie candidates=%+v", candidates)
+	}
+	candidates, err = service.mediaCategoryCandidates(library.ID, "Series", "movie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("cross-kind candidates=%+v", candidates)
 	}
 }
 

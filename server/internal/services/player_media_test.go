@@ -152,7 +152,7 @@ func TestPlayerCategoriesFollowProfileOrderAndFilterCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	libraries, err := service.PlayerLibraries(actor)
-	if err != nil || len(libraries) != 1 || libraries[0].ArtworkURL == "" {
+	if err != nil || len(libraries) != 1 || libraries[0].ArtworkURL == "" || libraries[0].ArtworkSource != "fallback" || libraries[0].ArtworkRevision == "" {
 		t.Fatalf("libraries=%+v err=%v", libraries, err)
 	}
 	now := time.Now().UTC()

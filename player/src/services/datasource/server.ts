@@ -60,6 +60,8 @@ interface ServerCategoryRecord {
   media_type: 'movie' | 'series'
   item_count: number
   artwork_url?: string
+  artwork_revision?: string
+  artwork_source?: 'generated' | 'provider' | 'custom' | 'fallback'
 }
 
 interface ServerIdentityRecord {
@@ -213,11 +215,11 @@ export class ServerDataSource implements DataSource {
     const value = path.trim()
     const online = parseOnlineItemID(value)
     if (online?.kind === 'library') {
-      const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation`))
+      const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation`), this.baseUrl)
       return navigation.map(item => onlineNavigationToMediaItem(this.id, online.libraryId, item))
     }
     if (online?.kind === 'node') {
-      const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation/${encodeURIComponent(online.nodeToken)}/children`))
+      const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation/${encodeURIComponent(online.nodeToken)}/children`), this.baseUrl)
       return navigation.map(item => onlineNavigationToMediaItem(this.id, online.libraryId, item))
     }
     if (online?.kind === 'feed') {
@@ -584,7 +586,15 @@ export class ServerDataSource implements DataSource {
       const mediaType = value.media_type === 'movie' || value.media_type === 'series' ? value.media_type : null
       if (!id || !name || !mediaType)
         return []
-      return [{ id, name, media_type: mediaType, item_count: numberValue(value.item_count) ?? 0, artwork_url: optionalString(value.artwork_url) }]
+      return [{
+        id,
+        name,
+        media_type: mediaType,
+        item_count: numberValue(value.item_count) ?? 0,
+        artwork_url: optionalString(value.artwork_url),
+        artwork_revision: optionalString(value.artwork_revision),
+        artwork_source: parseArtworkSource(value.artwork_source),
+      }]
     })
   }
 
@@ -598,6 +608,8 @@ export class ServerDataSource implements DataSource {
       type: 'folder',
       posterUrl: resolveServerArtworkURL(this.baseUrl, category.artwork_url),
       backdropUrl: resolveServerArtworkURL(this.baseUrl, category.artwork_url),
+      artworkRevision: category.artwork_revision,
+      artworkSource: category.artwork_source,
       path: '',
     }
   }

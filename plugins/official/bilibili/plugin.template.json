@@ -3,7 +3,7 @@
   "id": "org.ohmycine.bilibili",
   "name": "Bilibili",
   "description": "将 Bilibili 作为 OhMyCine 在线媒体库浏览、播放和下载。",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "apiVersion": "1",
   "minServerVersion": "0.1.0",
   "runtime": "wasm",

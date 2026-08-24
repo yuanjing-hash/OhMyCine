@@ -11,14 +11,14 @@
       "id": "org.ohmycine.bilibili",
       "name": "Bilibili",
       "description": "将 Bilibili 作为 OhMyCine 在线媒体库浏览、播放和下载。",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "channel": "beta",
       "categories": ["online-media", "video-site"],
       "manifestUrl": "${MANIFEST_RELEASE_URL}",
       "packageUrl": "${PACKAGE_RELEASE_URL}",
       "packageSha256": "${PACKAGE_SHA256}",
       "minServerVersion": "0.1.0",
-      "releaseNotes": "新增安全媒体库封面候选能力，由 Server 使用真实推荐视频海报动态合成库封面；保持嵌套导航、扫码登录、DASH 播放和下载能力。"
+      "releaseNotes": "媒体库最外层保留固定入口图；推荐、热门、番剧、电影、收藏等导航分类按各自栏目提供真实海报候选，由 Server 合成风格 3 分类封面。"
     }
   ]
 }

@@ -25,21 +25,26 @@ func (a *API) PlayerOnlineLibraries(c *gin.Context) {
 		writeError(c, a.log, err)
 		return
 	}
-	if a.libraryArtwork != nil {
-		items = a.libraryArtwork.DecoratePluginLibraries(c.Request.Context(), actor, items)
-	}
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }
 
 func (a *API) PlayerOnlineNavigation(c *gin.Context) {
 	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
-		return a.pluginRepositories.OnlineNavigation(c.Request.Context(), actor, c.Param("id"))
+		items, err := a.pluginRepositories.OnlineNavigation(c.Request.Context(), actor, c.Param("id"))
+		if err != nil || a.libraryArtwork == nil {
+			return items, err
+		}
+		return a.libraryArtwork.DecoratePluginNavigation(c.Request.Context(), actor, c.Param("id"), items)
 	})
 }
 
 func (a *API) PlayerOnlineNavigationChildren(c *gin.Context) {
 	a.playerOnlineInvoke(c, func(actor services.Actor) (json.RawMessage, error) {
-		return a.pluginRepositories.OnlineNavigationChildren(c.Request.Context(), actor, c.Param("id"), c.Param("nodeToken"))
+		items, err := a.pluginRepositories.OnlineNavigationChildren(c.Request.Context(), actor, c.Param("id"), c.Param("nodeToken"))
+		if err != nil || a.libraryArtwork == nil {
+			return items, err
+		}
+		return a.libraryArtwork.DecoratePluginNavigation(c.Request.Context(), actor, c.Param("id"), items)
 	})
 }
 
