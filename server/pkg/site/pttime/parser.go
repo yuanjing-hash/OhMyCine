@@ -44,6 +44,12 @@ func parseRow(row *html.Node) (site.Result, bool) {
 	var result site.Result
 	anchors := findNodes(row, "a")
 	for _, anchor := range anchors {
+		// NexusPHP titles may contain nested tables. Only let the closest row
+		// own an anchor; otherwise both the outer and nested row become the
+		// same torrent and the result list contains duplicates.
+		if nearestAncestor(anchor.Parent, "tr") != row {
+			continue
+		}
 		href := attr(anchor, "href")
 		parsed, err := urlParseRelative(href)
 		if err != nil || !strings.HasSuffix(parsed.Path, "details.php") {
@@ -66,7 +72,7 @@ func parseRow(row *html.Node) (site.Result, bool) {
 	text := clean(nodeText(row), 4096)
 	result.SizeBytes = parseSize(text)
 	result.Quality = qualitySummary(result.Title)
-	cells := findNodes(row, "td")
+	cells := directChildren(row, "td")
 	if len(cells) >= 3 {
 		numbers := make([]int, 0, 3)
 		for i := len(cells) - 1; i >= 0 && len(numbers) < 3; i-- {
@@ -96,6 +102,25 @@ func parseRow(row *html.Node) (site.Result, bool) {
 		result.Published = published
 	}
 	return result, true
+}
+
+func nearestAncestor(node *html.Node, tag string) *html.Node {
+	for current := node; current != nil; current = current.Parent {
+		if current.Type == html.ElementNode && current.Data == tag {
+			return current
+		}
+	}
+	return nil
+}
+
+func directChildren(root *html.Node, tag string) []*html.Node {
+	items := make([]*html.Node, 0)
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && child.Data == tag {
+			items = append(items, child)
+		}
+	}
+	return items
 }
 
 func findNodes(root *html.Node, tag string) []*html.Node {

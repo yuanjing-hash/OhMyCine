@@ -14,12 +14,15 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	sitepkg "github.com/yuanjing-hash/ohmycine/server/pkg/site"
-	"github.com/yuanjing-hash/ohmycine/server/pkg/site/pttime"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/site/builtin"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
@@ -98,6 +101,13 @@ type SiteSummary struct {
 	CreatedAt            time.Time         `json:"created_at"`
 	UpdatedAt            time.Time         `json:"updated_at"`
 }
+type SiteCatalogSummary struct {
+	Key          string   `json:"key"`
+	Name         string   `json:"name"`
+	Engine       string   `json:"engine"`
+	BaseURLs     []string `json:"base_urls"`
+	AutoDiscover bool     `json:"auto_discover"`
+}
 type SiteSearchInput struct {
 	Keyword, MediaType, SearchBy string
 	Year                         *int
@@ -135,9 +145,28 @@ type SiteDownloadInput struct {
 	ProfileID                 uint
 	Priority                  int
 }
+type SiteRecognitionSpecifications struct {
+	Resolution   string `json:"resolution,omitempty"`
+	Source       string `json:"source,omitempty"`
+	VideoCodec   string `json:"video_codec,omitempty"`
+	AudioCodec   string `json:"audio_codec,omitempty"`
+	HDR          string `json:"hdr,omitempty"`
+	ReleaseGroup string `json:"release_group,omitempty"`
+}
+type SiteRecognitionSummary struct {
+	Status         string                        `json:"status"`
+	ErrorCode      string                        `json:"error_code,omitempty"`
+	Title          string                        `json:"title"`
+	OriginalTitle  string                        `json:"original_title,omitempty"`
+	MediaType      string                        `json:"media_type,omitempty"`
+	Year           *int                          `json:"year,omitempty"`
+	TMDBID         *int64                        `json:"tmdb_id,omitempty"`
+	PosterURL      string                        `json:"poster_url,omitempty"`
+	Specifications SiteRecognitionSpecifications `json:"specifications"`
+}
 
 func NewSiteService(db *gorm.DB, audit *AuditService, credentials *credential.Store, downloads *DownloadService, log zerolog.Logger) *SiteService {
-	return NewSiteServiceWithAdapters(db, audit, credentials, downloads, []sitepkg.Adapter{pttime.New()}, log)
+	return NewSiteServiceWithAdapters(db, audit, credentials, downloads, builtin.Adapters(), log)
 }
 func NewSiteServiceWithAdapters(db *gorm.DB, audit *AuditService, credentials *credential.Store, downloads *DownloadService, adapters []sitepkg.Adapter, log zerolog.Logger) *SiteService {
 	registry := map[string]sitepkg.Adapter{}
@@ -162,6 +191,21 @@ func (s *SiteService) List(actor Actor) ([]SiteSummary, error) {
 	items := make([]SiteSummary, 0, len(records))
 	for _, record := range records {
 		items = append(items, siteSummary(record))
+	}
+	return items, nil
+}
+
+func (s *SiteService) Catalog(actor Actor) ([]SiteCatalogSummary, error) {
+	if !actor.IsSystemAdmin() {
+		return nil, appError(CodePermissionDenied, "仅管理员可以查看 PT 站点目录", nil)
+	}
+	definitions := builtin.Definitions()
+	items := make([]SiteCatalogSummary, 0, len(definitions))
+	for _, definition := range definitions {
+		if s.adapters[definition.Key] == nil {
+			continue
+		}
+		items = append(items, SiteCatalogSummary{Key: definition.Key, Name: definition.Name, Engine: definition.Engine, BaseURLs: append([]string(nil), definition.BaseURLs...), AutoDiscover: definition.AutoDiscover})
 	}
 	return items, nil
 }
@@ -234,7 +278,7 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 // accepted the discovered cookie. It is intentionally internal: CookieCloud
 // discovery is an administrator-configured background operation and must not
 // bypass the normal adapter allowlist or credential encryption boundary.
-func (s *SiteService) createFromCookieCloud(ctx context.Context, kind, baseURL, cookie string) (SiteSummary, error) {
+func (s *SiteService) createFromCookieCloud(ctx context.Context, name, kind, baseURL, cookie string) (SiteSummary, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	adapter := s.adapters[kind]
 	if adapter == nil {
@@ -256,7 +300,7 @@ func (s *SiteService) createFromCookieCloud(ctx context.Context, kind, baseURL, 
 	if err != nil {
 		return SiteSummary{}, siteAdapterError(err, "CookieCloud 中的站点凭据验证失败")
 	}
-	name, normalized, err := normalizeSiteName("PTTime")
+	name, normalized, err := normalizeSiteName(name)
 	if err != nil {
 		return SiteSummary{}, err
 	}
@@ -588,6 +632,145 @@ func (s *SiteService) searchSite(ctx context.Context, actor Actor, record models
 	}
 	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Int("results", len(group.Items)).Int("skipped", group.Skipped).Msg(serverlog.OperationDiscoverySearch.Message("PT 站点搜索完成"))
 	return group
+}
+
+// RecognizeResult resolves only the actor-bound server-side title claim. It
+// intentionally does not reserve or consume the claim, fetch a torrent, or
+// submit a download task.
+func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultToken string) (SiteRecognitionSummary, error) {
+	if !actor.Can(authz.PermissionDiscoveryRead) {
+		return SiteRecognitionSummary{}, appError(CodePermissionDenied, "无权识别 PT 资源", nil)
+	}
+	claim, err := s.resolveClaim(strings.TrimSpace(resultToken), actor.User.ID)
+	if err != nil {
+		return SiteRecognitionSummary{}, err
+	}
+	input := mediarecognition.InputFacts{PackageName: claim.Title, SourceKind: mediarecognition.SourceDownload}
+	parsed, parseErr := mediarecognition.Parse(input)
+	summary := SiteRecognitionSummary{Status: mediaRecognitionStatusUnrecognized, Title: claim.Title}
+	if parseErr == nil {
+		summary.Title = parsed.CanonicalTitle
+		summary.MediaType = string(parsed.SuggestedType)
+		summary.Year = cloneInt(parsed.Year)
+		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
+	} else {
+		summary.ErrorCode = tmdb.ErrorInvalidRequest
+	}
+	if s.metadata == nil {
+		summary.ErrorCode = mediaRecognitionCredentialMissing
+		return s.logRecognitionSummary(claim.SiteID, summary), nil
+	}
+	client, err := s.metadata.Client()
+	if err != nil {
+		summary.ErrorCode = CodeTMDBUnavailable
+		return s.logRecognitionSummary(claim.SiteID, summary), nil
+	}
+
+	result := recognizeMedia(ctx, client, MediaRecognitionRequest{
+		PackageName:      claim.Title,
+		SourceKind:       mediarecognition.SourceDownload,
+		BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
+		Classification:   classification.DefaultRules(),
+		Language:         "zh-CN",
+		Region:           "CN",
+	})
+	summary = SiteRecognitionSummary{
+		Status:    result.Status,
+		ErrorCode: result.ErrorCode,
+		Title:     strings.TrimSpace(result.Title),
+		MediaType: result.MediaType,
+		Year:      cloneInt(result.ReleaseYear),
+		TMDBID:    cloneInt64(result.TMDBID),
+	}
+	if parseErr == nil {
+		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
+		if summary.Title == "" {
+			summary.Title = parsed.CanonicalTitle
+		}
+		if summary.Year == nil {
+			summary.Year = cloneInt(parsed.Year)
+		}
+		if summary.MediaType == "" {
+			summary.MediaType = string(parsed.SuggestedType)
+		}
+	}
+	if summary.Title == "" {
+		summary.Title = claim.Title
+	}
+	if result.Status == mediaRecognitionStatusMatched {
+		summary.OriginalTitle = result.Snapshot.OriginalTitle
+		if result.Snapshot.PosterPath != "" {
+			if upstream, imageErr := client.ImageURL(result.Snapshot.PosterPath, "w500"); imageErr == nil {
+				summary.PosterURL = proxyDiscoveryImage("tmdb", upstream)
+			}
+		}
+	}
+	return s.logRecognitionSummary(claim.SiteID, summary), nil
+}
+
+func (s *SiteService) logRecognitionSummary(siteID uint, summary SiteRecognitionSummary) SiteRecognitionSummary {
+	event := serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", siteID).Str("status", summary.Status)
+	if summary.ErrorCode != "" {
+		event = event.Str("error_code", summary.ErrorCode)
+	}
+	event.Msg(serverlog.OperationDiscoverySearch.Message("PT 搜索结果识别完成"))
+	return summary
+}
+
+func siteRecognitionSpecifications(specifications []string, releaseGroup string) SiteRecognitionSpecifications {
+	contains := func(values ...string) bool {
+		for _, actual := range specifications {
+			for _, expected := range values {
+				if strings.EqualFold(actual, expected) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	first := func(candidates ...string) string {
+		for index := 0; index+1 < len(candidates); index += 2 {
+			if contains(candidates[index]) {
+				return candidates[index+1]
+			}
+		}
+		return ""
+	}
+	result := SiteRecognitionSpecifications{ReleaseGroup: strings.TrimSpace(releaseGroup)}
+	result.Resolution = first("4320P", "4320p", "8K", "8K", "2160P", "2160p", "4K", "4K", "1080P", "1080p", "720P", "720p", "576P", "576p", "480P", "480p")
+	sources := make([]string, 0, 2)
+	source := first("BLURAY", "BluRay", "BLU-RAY", "BluRay", "WEB-DL", "WEB-DL", "WEBRIP", "WEBRip", "BDRIP", "BDRip", "HDTV", "HDTV", "DVDRIP", "DVDRip")
+	if source == "BluRay" && contains("UHD") {
+		source = "UHD BluRay"
+	}
+	if source != "" {
+		sources = append(sources, source)
+	} else if contains("UHD") {
+		sources = append(sources, "UHD")
+	}
+	if contains("REMUX", "BDREMUX") {
+		sources = append(sources, "REMUX")
+	}
+	result.Source = strings.Join(sources, " ")
+	result.VideoCodec = first("X265", "H.265/HEVC", "H265", "H.265/HEVC", "H.265", "H.265/HEVC", "HEVC", "H.265/HEVC", "X264", "H.264/AVC", "H264", "H.264/AVC", "H.264", "H.264/AVC", "AV1", "AV1")
+	audio := make([]string, 0, 3)
+	seenAudio := map[string]struct{}{}
+	for _, candidate := range []struct{ token, label string }{{"TRUEHD", "TrueHD"}, {"DTS-HD", "DTS-HD"}, {"DTS", "DTS"}, {"DDP", "Dolby Digital Plus"}, {"DD", "Dolby Digital"}, {"AAC", "AAC"}, {"ATMOS", "Atmos"}} {
+		if _, exists := seenAudio[candidate.label]; contains(candidate.token) && !exists {
+			audio = append(audio, candidate.label)
+			seenAudio[candidate.label] = struct{}{}
+		}
+	}
+	result.AudioCodec = strings.Join(audio, " / ")
+	hdr := make([]string, 0, 2)
+	if value := first("HDR10+", "HDR10+", "HDR10", "HDR10", "HDR", "HDR"); value != "" {
+		hdr = append(hdr, value)
+	}
+	if contains("DOVI", "DOLBYVISION") {
+		hdr = append(hdr, "Dolby Vision")
+	}
+	result.HDR = strings.Join(hdr, " / ")
+	return result
 }
 
 func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownloadInput, request RequestContext) (DownloadTaskSummary, error) {

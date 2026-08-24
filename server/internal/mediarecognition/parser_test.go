@@ -118,6 +118,26 @@ func TestParseProtectsNumericTitlesAndLegalHyphens(t *testing.T) {
 	}
 }
 
+func TestParseKeepsHyphenatedTechnicalTokensOutOfReleaseGroup(t *testing.T) {
+	tests := []struct {
+		input string
+		spec  string
+		group string
+	}{
+		{input: "Seven.Samurai.1954.2160p.DTS-HD-GROUP", spec: "DTS-HD", group: "GROUP"},
+		{input: "Seven.Samurai.1954.1080p.WEB-DL-GROUP-ABC", spec: "WEB-DL", group: "GROUP-ABC"},
+	}
+	for _, test := range tests {
+		parsed, err := Parse(InputFacts{PackageName: test.input, SourceKind: SourceDownload})
+		if err != nil {
+			t.Fatalf("input=%q err=%v", test.input, err)
+		}
+		if !containsFold(parsed.Specifications, test.spec) || parsed.ReleaseGroup != test.group {
+			t.Fatalf("input=%q specs=%v group=%q", test.input, parsed.Specifications, parsed.ReleaseGroup)
+		}
+	}
+}
+
 func TestParseIsIndependentOfWallClockYear(t *testing.T) {
 	input := InputFacts{PackageName: "Future Film 2099 1080p", MediaTypeHint: MediaTypeMovie}
 	oldClock, err := parseAt(input, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))

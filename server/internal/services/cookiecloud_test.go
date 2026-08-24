@@ -103,6 +103,77 @@ func TestCookieCloudSyncDiscoversAndCreatesSupportedSite(t *testing.T) {
 	}
 }
 
+func TestCookieCloudSyncDiscoversMultipleCatalogSites(t *testing.T) {
+	sites, _, actor, store, _, _ := siteFixture(t)
+	for _, kind := range []string{"hdsky", "ourbits"} {
+		sites.adapters[kind] = &stubSiteAdapter{kind: kind, testErr: map[string]error{}, searchErr: map[string]error{}}
+	}
+	service := NewCookieCloudService(sites.db, sites.audit, store, sites, zerolog.Nop())
+	if _, err := service.Update(context.Background(), actor, CookieCloudSettingsInput{
+		Mode: "local", UUID: "fixture-user", Password: "fixture-password",
+		AuthHeader: "fixture-shared-auth", Revision: 1,
+	}, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	payload := cryptoJSCookieCloudFixture(t, "fixture-user", "fixture-password", map[string]any{
+		"cookie_data": map[string]any{
+			"pttime":  []map[string]string{{"domain": ".pttime.org", "name": "uid", "value": "1"}, {"domain": ".pttime.org", "name": "token", "value": "one"}},
+			"hdsky":   []map[string]string{{"domain": ".hdsky.me", "name": "uid", "value": "2"}, {"domain": ".hdsky.me", "name": "token", "value": "two"}},
+			"ourbits": []map[string]string{{"domain": ".ourbits.club", "name": "uid", "value": "3"}, {"domain": ".ourbits.club", "name": "token", "value": "three"}},
+		},
+	})
+	if err := service.Receive("fixture-user", payload, "legacy", "fixture-shared-auth"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Sync(context.Background(), actor, RequestContext{})
+	if err != nil || result.Created != 3 || result.Updated != 0 || result.Failed != 0 || result.SkippedUnsupportedDomains != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var records []models.Site
+	if err := sites.db.Order("kind").Find(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 || records[0].Kind != "hdsky" || records[0].Name != "HDSky" || records[1].Kind != "ourbits" || records[1].Name != "OurBits" || records[2].Kind != "pttime" || records[2].Name != "PTTime" {
+		t.Fatalf("records=%+v", records)
+	}
+}
+
+func TestCookieCloudSyncReportsUnsupportedDomainsAndMissingLoginCookiesWithoutNames(t *testing.T) {
+	sites, _, actor, store, _, _ := siteFixture(t)
+	service := NewCookieCloudService(sites.db, sites.audit, store, sites, zerolog.Nop())
+	if _, err := service.Update(context.Background(), actor, CookieCloudSettingsInput{
+		Mode: "local", UUID: "fixture-user", Password: "fixture-password",
+		AuthHeader: "fixture-shared-auth", Revision: 1,
+	}, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	payload := cryptoJSCookieCloudFixture(t, "fixture-user", "fixture-password", map[string]any{
+		"cookie_data": map[string]any{
+			"pttime": []map[string]string{{"domain": ".pttime.org", "name": "cf_clearance", "value": "not-a-login"}},
+			"other": []map[string]string{
+				{"domain": ".unsupported-one.example", "name": "session", "value": "secret-one"},
+				{"domain": ".unsupported-two.example", "name": "session", "value": "secret-two"},
+			},
+		},
+	})
+	if err := service.Receive("fixture-user", payload, "legacy", "fixture-shared-auth"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Sync(context.Background(), actor, RequestContext{})
+	if err != nil || result.Created != 0 || result.Updated != 0 || result.Failed != 0 || result.SkippedUnsupportedDomains != 2 || result.SkippedMissingLoginCookies != 1 || result.Skipped != 3 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"unsupported-one", "unsupported-two", "pttime.org", "not-a-login", "secret-one", "secret-two"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("sync summary leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestCookieCloudDecryptRejectsWrongPasswordAndFiltersUnsafeEntries(t *testing.T) {
 	payload := cryptoJSCookieCloudFixture(t, "fixture-user", "correct-password", map[string]any{
 		"cookie_data": map[string]any{"group": []map[string]string{

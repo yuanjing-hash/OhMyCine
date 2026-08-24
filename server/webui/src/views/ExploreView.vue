@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, ptSearchPath, ptSearchStreamPath, ptSearchURL, upsertPTGroup, type PTSearchGroup, type PTSearchResponse, type PTSearchResult } from '@/sites'
+import { discoveryDownloadsPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, ptSearchPath, ptSearchStreamPath, ptSearchURL, upsertPTGroup, type PTRecognitionResult, type PTSearchGroup, type PTSearchResponse, type PTSearchResult } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -27,6 +27,9 @@ const storages = ref<StorageSummary[]>([])
 const downloadDialog = ref<PTSearchResult | null>(null)
 const downloadForm = ref({ downloaderID: '', mediaLibraryID: 0, priority: 0 })
 const submitting = ref(false)
+const recognitions = ref<Record<string, PTRecognitionResult>>({})
+const recognitionErrors = ref<Record<string, string>>({})
+const recognizingTokens = ref<string[]>([])
 let source: EventSource | null = null
 let streamTimeout: number | undefined
 
@@ -119,6 +122,22 @@ async function openDownload(item: PTSearchResult) {
   catch (reason) { notify(message(reason), 'error') }
 }
 
+async function recognizeResult(item: PTSearchResult) {
+  if (recognizingTokens.value.includes(item.token)) return
+  recognizingTokens.value = [...recognizingTokens.value, item.token]
+  const errors = { ...recognitionErrors.value }
+  delete errors[item.token]
+  recognitionErrors.value = errors
+  try {
+    const result = await api<PTRecognitionResult>(ptRecognitionPath, { method: 'POST', body: JSON.stringify({ result_token: item.token }) })
+    recognitions.value = { ...recognitions.value, [item.token]: result }
+  } catch (reason) {
+    recognitionErrors.value = { ...recognitionErrors.value, [item.token]: message(reason) }
+  } finally {
+    recognizingTokens.value = recognizingTokens.value.filter(token => token !== item.token)
+  }
+}
+
 async function submitDownload() {
   const item = downloadDialog.value
   if (!item || !downloadForm.value.downloaderID) { notify('请选择已启用的下载器', 'warning'); return }
@@ -134,6 +153,7 @@ async function submitDownload() {
 
 function formatTime(value?: string) { return value ? new Date(value).toLocaleString() : '未知' }
 function count(value?: number) { return value == null ? '—' : String(value) }
+function mediaTypeLabel(value?: string) { return value === 'movie' ? '电影' : value === 'tv' ? '剧集' : '类型待定' }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'PT 搜索暂时不可用' }
 
 onMounted(() => { if (keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search() })
@@ -164,8 +184,20 @@ onBeforeUnmount(stopStream)
       <div v-else-if="!group.items.length" class="p-5 text-sm text-muted">此页没有匹配结果。</div>
       <div v-else class="divide-y divide-[var(--border)]">
         <article v-for="item in group.items" :key="item.token" class="grid gap-4 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><strong class="break-words">{{ item.title }}</strong><span v-if="item.promotion" class="status-chip status-chip--ready">{{ item.promotion.toUpperCase() }}</span><span v-if="item.quality" class="status-chip">{{ item.quality }}</span></div><p v-if="item.subtitle" class="text-subtle mb-0 mt-1 text-xs">{{ item.subtitle }}</p><div class="text-subtle mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"><span>{{ formatBytes(item.size_bytes ?? null) }}</span><span>{{ formatTime(item.published_at) }}</span><span>做种 {{ count(item.seeders) }}</span><span>下载 {{ count(item.leechers) }}</span><span>完成 {{ count(item.completed) }}</span></div></div>
-          <button class="btn-primary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openDownload(item)">选择下载器并入队</button>
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2"><strong class="break-words">{{ item.title }}</strong><span v-if="item.promotion" class="status-chip status-chip--ready">{{ item.promotion.toUpperCase() }}</span><span v-if="item.quality" class="status-chip">{{ item.quality }}</span></div><p v-if="item.subtitle" class="text-subtle mb-0 mt-1 text-xs">{{ item.subtitle }}</p><div class="text-subtle mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"><span>{{ formatBytes(item.size_bytes ?? null) }}</span><span>{{ formatTime(item.published_at) }}</span><span>做种 {{ count(item.seeders) }}</span><span>下载 {{ count(item.leechers) }}</span><span>完成 {{ count(item.completed) }}</span></div>
+            <div v-if="recognitions[item.token]" class="semantic-inset mt-3 flex gap-3 p-3">
+              <img v-if="recognitions[item.token].poster_url" :src="recognitions[item.token].poster_url" :alt="`${recognitions[item.token].title} 海报`" class="h-24 w-16 shrink-0 rounded object-cover" loading="lazy" />
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2"><strong>{{ recognitions[item.token].title }}</strong><span :class="recognitions[item.token].status === 'matched' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ recognitions[item.token].status === 'matched' ? '已识别' : '未识别' }}</span><span class="status-chip">{{ mediaTypeLabel(recognitions[item.token].media_type) }}</span><span v-if="recognitions[item.token].year" class="status-chip">{{ recognitions[item.token].year }}</span></div>
+                <p v-if="recognitions[item.token].original_title && recognitions[item.token].original_title !== recognitions[item.token].title" class="text-subtle mb-0 mt-1 text-xs">{{ recognitions[item.token].original_title }}</p>
+                <div v-if="ptRecognitionSpecLabels(recognitions[item.token].specifications).length" class="mt-2 flex flex-wrap gap-1.5"><span v-for="label in ptRecognitionSpecLabels(recognitions[item.token].specifications)" :key="label" class="status-chip">{{ label }}</span></div>
+                <p v-if="recognitions[item.token].error_code" class="text-subtle mb-0 mt-2 text-xs">{{ ptRecognitionErrorLabel(recognitions[item.token].error_code) }} <span class="font-mono">（{{ recognitions[item.token].error_code }}）</span></p>
+              </div>
+            </div>
+            <p v-if="recognitionErrors[item.token]" class="semantic-warning mb-0 mt-3 p-3 text-xs">{{ recognitionErrors[item.token] }}</p>
+          </div>
+          <div class="flex flex-wrap gap-2 lg:justify-end"><button class="btn-secondary" :disabled="recognizingTokens.includes(item.token)" @click="recognizeResult(item)">{{ recognizingTokens.includes(item.token) ? '识别中…' : recognitions[item.token] ? '重新识别' : '识别' }}</button><button class="btn-primary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openDownload(item)">选择下载器并入队</button></div>
         </article>
       </div>
       <footer v-if="group.status === 'success' && group.has_next" class="border-t border-[var(--border)] p-4 text-center"><button class="btn-secondary" :disabled="searching" @click="nextPage(group)">加载此站下一页</button></footer>

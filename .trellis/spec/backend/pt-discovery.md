@@ -20,6 +20,7 @@ DELETE /api/v1/sites/:id
 POST   /api/v1/sites/:id/test
 GET    /api/v1/discovery/pt-search
 GET    /api/v1/discovery/pt-search/stream
+POST   /api/v1/discovery/pt-results/recognize
 POST   /api/v1/discovery/downloads
 ```
 
@@ -32,6 +33,8 @@ POST   /api/v1/discovery/downloads
 - User-configured site roots require HTTPS with no userinfo, query, or fragment. Adapter clients set bounded timeout, redirect count, response size, and strict same-origin checks including port.
 - Multi-site search has a global concurrency bound and per-site rate limiter. One site failure produces only that site's error group. SSE group writes are serialized, and JSON fallback returns the same DTO.
 - Browser results contain a 256-bit opaque claim, not a torrent URL or provider identity. The claim binds actor, site, torrent identity, and a short expiry.
+- Quick recognition accepts only that opaque claim, resolves its server-side title without reserving or consuming it, and never downloads the torrent. It reuses the shared media-recognition parser before optional TMDB enrichment. Missing/unavailable/no-match metadata returns HTTP 200 with `status=unrecognized`, a stable error code, and safe parsed title/year/specifications; only permission and invalid/expired claims are request errors.
+- Recognition posters use the existing authenticated same-origin Discovery image gateway. Raw TMDB image URLs are not a new browser contract.
 - Download confirmation atomically reserves a claim. Concurrent consumers receive the generic expired/unavailable result. Provider or `DownloadService` failure releases the reservation only until its original expiry; success permanently consumes it.
 - PT downloads call the existing `DownloadService.Submit` with a bounded torrent source. They do not create a parallel queue, transfer path, media-library selector, or naming implementation.
 - Management remains system-admin-only in the first release even though stable `sites.*` permission codes exist for future delegation. Search requires `discovery.read`; download requires `downloads.create`.
@@ -77,6 +80,8 @@ CookieCloudSyncSummary {
   created: integer
   updated: integer
   skipped: integer
+  skipped_unsupported_domains: integer
+  skipped_missing_login_cookies: integer
   failed: integer
   issues?: [{ action: "create" | "update", site_id?: integer, kind: string, error_code: string }]
 }
@@ -88,6 +93,7 @@ CookieCloudSyncSummary {
 - Cookie selection reproduces browser domain delivery for the fixed candidate host: merge every matching parent and exact-host domain, then let the more-specific domain override duplicate cookie names. Reject public-suffix-like single-label domains and return no candidate when the merged set contains only `cf_clearance`.
 - Candidate validation happens before encrypted Site creation/update. Failure leaves existing credentials unchanged and returns only stable issue fields; Cookie values, domains, Base URLs, usernames, and upstream bodies never enter issues, logs, or audit metadata.
 - A partial sync persists its first stable issue code in `last_sync_error_code`, records audit outcome `partial`, and emits the same safe code in the runtime terminal event. It must not call `ErrorCode(nil)` or collapse a known candidate failure into `INTERNAL_ERROR`.
+- Sync summaries may count CookieCloud domains that do not match a configured or built-in supported host, but must label them as other CookieCloud domains rather than PT sites. They also count supported candidates without a usable authentication Cookie. API, audit, logs and UI never list the domains or Cookie names/values.
 
 ### 4. Validation & Error Matrix
 
@@ -126,3 +132,26 @@ Correct:
 candidate := discoveryCandidate{baseURL: "https://www.pttime.org", cookieHost: "www.pttime.org"}
 cookie := mergeMatchingDomainsParentFirst(cookies, candidate.cookieHost)
 ```
+
+## Scenario: Built-in Multi-Site Catalog
+
+### Scope / Trigger
+
+- Trigger: adding a built-in PT site, changing a shared tracker parser, exposing the supported-site directory, or changing CookieCloud multi-site discovery.
+
+### Contracts
+
+- Keep tracker identity separate from parser engine. A catalog definition owns a stable key, display name, engine, canonical HTTPS origins and auto-discovery policy; adapters remain registered by stable key.
+- Standard NexusPHP definitions reuse one bounded request/parser implementation. A non-NexusPHP tracker must receive an explicit adapter override instead of being declared compatible only to make discovery counts look larger.
+- The Site table accepts versioned catalog keys rather than a single PTTime check constraint. Existing `pttime` rows and credential AAD remain unchanged during migration.
+- CookieCloud discovery iterates every supported definition, validates each candidate independently and may create multiple Sites in one sync. A configured key or canonical host suppresses only the same tracker, not every tracker sharing an engine.
+- Unknown CookieCloud domains remain count-only. Do not probe arbitrary browser-cookie domains or return their names merely to auto-detect an unsupported tracker.
+- Generic NexusPHP is a manual administrator option with no automatic CookieCloud domain matching.
+- Nested result markup is owned by its nearest torrent row. Outer NexusPHP layout rows must not duplicate a nested torrent result.
+
+### Tests Required
+
+- Catalog keys are unique and each has a registered adapter.
+- A CookieCloud payload containing three supported domains creates three encrypted Site rows with their own names and keys.
+- Migration preserves existing PTTime rows and allows additional catalog keys.
+- A nested NexusPHP result fixture produces one result, not duplicate outer/inner rows.

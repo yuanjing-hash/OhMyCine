@@ -24,6 +24,7 @@ import (
 	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	sitepkg "github.com/yuanjing-hash/ohmycine/server/pkg/site"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/site/builtin"
 	"gorm.io/gorm"
 )
 
@@ -69,12 +70,14 @@ type CookieCloudSettingsSummary struct {
 }
 
 type CookieCloudSyncSummary struct {
-	Status  string                 `json:"status"`
-	Created int                    `json:"created"`
-	Updated int                    `json:"updated"`
-	Skipped int                    `json:"skipped"`
-	Failed  int                    `json:"failed"`
-	Issues  []CookieCloudSyncIssue `json:"issues,omitempty"`
+	Status                     string                 `json:"status"`
+	Created                    int                    `json:"created"`
+	Updated                    int                    `json:"updated"`
+	Skipped                    int                    `json:"skipped"`
+	SkippedUnsupportedDomains  int                    `json:"skipped_unsupported_domains"`
+	SkippedMissingLoginCookies int                    `json:"skipped_missing_login_cookies"`
+	Failed                     int                    `json:"failed"`
+	Issues                     []CookieCloudSyncIssue `json:"issues,omitempty"`
 }
 
 type CookieCloudSyncIssue struct {
@@ -89,6 +92,25 @@ type cookieCloudEntry struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
 }
+
+type cookieCloudDiscoveryCandidate struct {
+	name, kind, baseURL, cookieHost string
+}
+
+var cookieCloudDiscoveryCandidates = func() []cookieCloudDiscoveryCandidate {
+	items := make([]cookieCloudDiscoveryCandidate, 0)
+	for _, definition := range builtin.Definitions() {
+		if !definition.AutoDiscover {
+			continue
+		}
+		for _, baseURL := range definition.BaseURLs {
+			if host := builtin.Host(baseURL); host != "" {
+				items = append(items, cookieCloudDiscoveryCandidate{name: definition.Name, kind: definition.Key, baseURL: baseURL, cookieHost: host})
+			}
+		}
+	}
+	return items
+}()
 
 type cookieCloudEncryptedPayload struct {
 	Encrypted  string
@@ -200,7 +222,7 @@ func (s *CookieCloudService) Sync(ctx context.Context, actor Actor, request Requ
 	if err != nil {
 		outcome = "failed"
 	}
-	_ = s.audit.Record(s.db, &actor.User.ID, "cookiecloud.sync", "cookiecloud", "1", outcome, map[string]any{"created": result.Created, "updated": result.Updated, "skipped": result.Skipped, "failed": result.Failed, "error_code": cookieCloudSyncErrorCode(result, err)}, request)
+	_ = s.audit.Record(s.db, &actor.User.ID, "cookiecloud.sync", "cookiecloud", "1", outcome, map[string]any{"created": result.Created, "updated": result.Updated, "skipped": result.Skipped, "skipped_unsupported_domains": result.SkippedUnsupportedDomains, "skipped_missing_login_cookies": result.SkippedMissingLoginCookies, "failed": result.Failed, "error_code": cookieCloudSyncErrorCode(result, err)}, request)
 	return result, err
 }
 
@@ -314,7 +336,10 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 		return CookieCloudSyncSummary{}, err
 	}
 	result := CookieCloudSyncSummary{Status: "success"}
+	result.SkippedUnsupportedDomains = countUnsupportedCookieDomains(cookies, sites)
+	result.Skipped += result.SkippedUnsupportedDomains
 	configuredKinds := make(map[string]struct{}, len(sites))
+	configuredHosts := make(map[string]struct{}, len(sites))
 	for _, siteRecord := range sites {
 		configuredKinds[siteRecord.Kind] = struct{}{}
 		host, parseErr := url.Parse(siteRecord.BaseURL)
@@ -322,9 +347,11 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 			result.Skipped++
 			continue
 		}
+		configuredHosts[strings.ToLower(host.Hostname())] = struct{}{}
 		cookie := cookieForHost(cookies, host.Hostname())
 		if cookie == "" {
 			result.Skipped++
+			result.SkippedMissingLoginCookies++
 			continue
 		}
 		oldCredential, decryptErr := s.sites.decryptCredential(siteRecord)
@@ -359,24 +386,27 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 		s.sites.deleteClaimsForSite(siteRecord.ID)
 		result.Updated++
 	}
-	for _, candidate := range []struct {
-		kind, baseURL, cookieHost string
-	}{
-		{kind: "pttime", baseURL: "https://www.pttime.org", cookieHost: "www.pttime.org"},
-		{kind: "pttime", baseURL: "https://www.pttime.me", cookieHost: "www.pttime.me"},
-	} {
+	for _, candidate := range cookieCloudDiscoveryCandidates {
 		if _, exists := configuredKinds[candidate.kind]; exists {
+			continue
+		}
+		if _, exists := configuredHosts[candidate.cookieHost]; exists {
 			continue
 		}
 		cookie := cookieForHost(cookies, candidate.cookieHost)
 		if cookie == "" {
+			if hasCookieDomainForHost(cookies, candidate.cookieHost) {
+				result.Skipped++
+				result.SkippedMissingLoginCookies++
+			}
 			continue
 		}
-		if _, createErr := s.sites.createFromCookieCloud(ctx, candidate.kind, candidate.baseURL, cookie); createErr != nil {
+		if _, createErr := s.sites.createFromCookieCloud(ctx, candidate.name, candidate.kind, candidate.baseURL, cookie); createErr != nil {
 			result.addIssue("create", 0, candidate.kind, ErrorCode(createErr))
 			continue
 		}
 		configuredKinds[candidate.kind] = struct{}{}
+		configuredHosts[candidate.cookieHost] = struct{}{}
 		result.Created++
 	}
 	if result.Failed > 0 {
@@ -384,7 +414,7 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 	}
 	errorCode := cookieCloudSyncErrorCode(result, nil)
 	s.recordSync(record, result.Status, errorCode)
-	event := serverlog.OperationCookieCloud.Event(s.log.Info()).Int("created", result.Created).Int("updated", result.Updated).Int("skipped", result.Skipped).Int("failed", result.Failed)
+	event := serverlog.OperationCookieCloud.Event(s.log.Info()).Int("created", result.Created).Int("updated", result.Updated).Int("skipped", result.Skipped).Int("skipped_unsupported_domains", result.SkippedUnsupportedDomains).Int("skipped_missing_login_cookies", result.SkippedMissingLoginCookies).Int("failed", result.Failed)
 	if errorCode != "" {
 		event = event.Str("error_code", errorCode)
 	}
@@ -659,11 +689,52 @@ func cookiesByDomain(entries []cookieCloudEntry) map[string]map[string]string {
 	return grouped
 }
 
+func countUnsupportedCookieDomains(cookies map[string]map[string]string, sites []models.Site) int {
+	hosts := make([]string, 0, len(sites)+len(cookieCloudDiscoveryCandidates))
+	for _, siteRecord := range sites {
+		if parsed, err := url.Parse(siteRecord.BaseURL); err == nil && parsed.Hostname() != "" {
+			hosts = append(hosts, parsed.Hostname())
+		}
+	}
+	for _, candidate := range cookieCloudDiscoveryCandidates {
+		hosts = append(hosts, candidate.cookieHost)
+	}
+	unsupported := 0
+	for domain := range cookies {
+		known := false
+		for _, host := range hosts {
+			if cookieDomainMatchesHost(domain, host) {
+				known = true
+				break
+			}
+		}
+		if !known {
+			unsupported++
+		}
+	}
+	return unsupported
+}
+
+func hasCookieDomainForHost(cookies map[string]map[string]string, host string) bool {
+	for domain := range cookies {
+		if cookieDomainMatchesHost(domain, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func cookieDomainMatchesHost(domain, host string) bool {
+	domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	host = strings.ToLower(strings.TrimSpace(host))
+	return strings.Contains(domain, ".") && (host == domain || strings.HasSuffix(host, "."+domain))
+}
+
 func cookieForHost(cookies map[string]map[string]string, host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	matchingDomains := make([]string, 0)
 	for domain := range cookies {
-		if (host == domain || strings.HasSuffix(host, "."+domain)) && strings.Contains(domain, ".") {
+		if cookieDomainMatchesHost(domain, host) {
 			matchingDomains = append(matchingDomains, domain)
 		}
 	}

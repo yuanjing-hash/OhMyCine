@@ -217,6 +217,7 @@ func newTestClient(t *testing.T) *testClient {
 	downloads.SetMetadataSettings(metadataSettings)
 	downloads.SetSeedingSettings(seedingSettings)
 	sites := services.NewSiteServiceWithAdapters(db, audit, credentialStore, downloads, []sitepkg.Adapter{routerSiteAdapter{}}, log)
+	sites.SetMetadataSettings(metadataSettings)
 	api.SetSiteService(sites)
 	transfers := services.NewTransferService(db, audit, queue, log)
 	seeding := services.NewSeedingService(db, audit, queue, downloaders, log)
@@ -807,12 +808,16 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	}
 
 	client.setup(t)
+	status, envelope := client.request(t, http.MethodGet, "/api/v1/sites/catalog", nil, false)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"key":"pttime"`)) || bytes.Contains(envelope.Data, []byte("cookie")) {
+		t.Fatalf("site catalog status=%d data=%s", status, envelope.Data)
+	}
 	payload := map[string]any{"name": "PTTime", "kind": "pttime", "base_url": "https://pt.example.test", "cookie": "uid=1; token=router-secret", "passkey": "router-passkey", "enabled": true, "priority": 100, "timeout_seconds": 12, "rate_limit_per_minute": 120}
-	status, _ := client.request(t, http.MethodPost, "/api/v1/sites", payload, false)
+	status, _ = client.request(t, http.MethodPost, "/api/v1/sites", payload, false)
 	if status != http.StatusForbidden {
 		t.Fatalf("site create without csrf status=%d", status)
 	}
-	status, envelope := client.request(t, http.MethodPost, "/api/v1/sites", payload, true)
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/sites", payload, true)
 	if status != http.StatusCreated || bytes.Contains(envelope.Data, []byte("router-secret")) || bytes.Contains(envelope.Data, []byte("router-passkey")) {
 		t.Fatalf("site create status=%d data=%s", status, envelope.Data)
 	}
@@ -828,6 +833,21 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	status, envelope = client.request(t, http.MethodGet, "/api/v1/discovery/pt-search?keyword=Seven%20Samurai&media_type=movie&year=1954&page=1", nil, false)
 	if status != http.StatusOK || bytes.Contains(envelope.Data, []byte("torrent_id")) || bytes.Contains(envelope.Data, []byte("router-secret")) || !bytes.Contains(envelope.Data, []byte(`"token"`)) {
 		t.Fatalf("PT search status=%d data=%s", status, envelope.Data)
+	}
+	var searchResult struct {
+		Groups []services.SiteSearchGroup `json:"groups"`
+	}
+	if err := json.Unmarshal(envelope.Data, &searchResult); err != nil || len(searchResult.Groups) != 1 || len(searchResult.Groups[0].Items) != 1 {
+		t.Fatalf("PT search envelope err=%v result=%+v", err, searchResult)
+	}
+	client.sites.SetMetadataSettings(nil)
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/discovery/pt-results/recognize", map[string]any{"result_token": searchResult.Groups[0].Items[0].Token}, true)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"status":"unrecognized"`)) || !bytes.Contains(envelope.Data, []byte("tmdb_credential_unavailable")) {
+		t.Fatalf("metadata-free recognition status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/discovery/pt-results/recognize", map[string]any{"result_token": "invalid"}, true)
+	if status != http.StatusGone || !bytes.Contains(envelope.Data, []byte(services.CodeSiteResultExpired)) {
+		t.Fatalf("invalid recognition token status=%d data=%s", status, envelope.Data)
 	}
 
 	streamRequest := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/pt-search/stream?keyword=Seven%20Samurai&page=1", nil)

@@ -175,3 +175,11 @@ func TestFlareSolverrStatusIsMapped(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestParserDoesNotDuplicateNestedNexusPHPRows(t *testing.T) {
+	body := []byte(`<html><body><table><tr><td>电影</td><td><table><tr><td><a href="details.php?id=77" title="Nested.Movie.2026.1080p">Nested Movie</a></td></tr></table></td><td>1 GiB</td><td>9</td><td>1</td><td>20</td></tr></table></body></html>`)
+	items, skipped, _, err := parseTorrentPage(body)
+	if err != nil || skipped != 0 || len(items) != 1 || items[0].TorrentID != "77" {
+		t.Fatalf("items=%+v skipped=%d err=%v", items, skipped, err)
+	}
+}

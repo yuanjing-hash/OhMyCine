@@ -22,17 +22,25 @@ const (
 )
 
 type Adapter struct {
+	kind          string
 	clientFactory func(site.Config) (*http.Client, *url.URL, error)
 }
 
-func New() *Adapter { return &Adapter{clientFactory: controlledClient} }
+func New() *Adapter { return NewForKind(Kind) }
+func NewForKind(kind string) *Adapter {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		kind = Kind
+	}
+	return &Adapter{kind: kind, clientFactory: controlledClient}
+}
 func NewForTest(client *http.Client) *Adapter {
-	return &Adapter{clientFactory: func(config site.Config) (*http.Client, *url.URL, error) {
+	return &Adapter{kind: Kind, clientFactory: func(config site.Config) (*http.Client, *url.URL, error) {
 		base, err := url.Parse(strings.TrimRight(config.BaseURL, "/"))
 		return client, base, err
 	}}
 }
-func (a *Adapter) Kind() string { return Kind }
+func (a *Adapter) Kind() string { return a.kind }
 
 func (a *Adapter) Test(ctx context.Context, config site.Config) (site.Health, error) {
 	body, _, err := a.request(ctx, config, "/index.php", nil, maxHTMLBytes)
@@ -248,7 +256,11 @@ func numericID(value string) bool {
 
 func looksLikeLogin(body []byte) bool {
 	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "takelogin.php") || strings.Contains(lower, "name=\"password\"") || strings.Contains(lower, "name='password'")
+	return strings.Contains(lower, "takelogin.php") ||
+		strings.Contains(lower, "login.php") && strings.Contains(lower, "password") ||
+		strings.Contains(lower, "name=\"password\"") ||
+		strings.Contains(lower, "name='password'") ||
+		strings.Contains(lower, "powered by nexusphp") && strings.Contains(lower, "login")
 }
 
 func parseUsername(body []byte) string {

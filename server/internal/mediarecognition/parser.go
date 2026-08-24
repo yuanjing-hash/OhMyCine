@@ -362,15 +362,33 @@ func separateTrailingGroup(value string) (string, string, bool) {
 	if len(match) != 4 {
 		return value, "", false
 	}
-	group := match[3]
-	strong := techTokenPattern.MatchString(match[1])
+	left, group := match[1], match[3]
+	// The permissive group pattern deliberately allows hyphenated release
+	// groups, but its first possible delimiter can also land inside a known
+	// technical token such as DTS-HD or WEB-DL. Move only the leading group
+	// segments that complete a trailing technical token back to the release
+	// title; genuine group names such as GROUP-ABC stay intact.
+	for parts := strings.Split(group, "-"); len(parts) > 1; parts = strings.Split(group, "-") {
+		candidate := left + "-" + parts[0]
+		if !endsWithTechnicalToken(candidate) {
+			break
+		}
+		left = candidate
+		group = strings.Join(parts[1:], "-")
+	}
+	strong := techTokenPattern.MatchString(left)
 	if !strong && strings.Contains(match[2], " ") && releaseGroupStyled(group) {
 		// A spaced delimiter plus group-like casing is useful as a query
 		// variant, but is intentionally not destructive without a nearby
 		// resource token. Legal titles remain the canonical form.
-		return match[1], group, false
+		return left, group, false
 	}
-	return match[1], group, strong
+	return left, group, strong
+}
+
+func endsWithTechnicalToken(value string) bool {
+	indices := techTokenPattern.FindAllStringIndex(value, -1)
+	return len(indices) > 0 && indices[len(indices)-1][1] == len(value)
 }
 
 func releaseGroupStyled(value string) bool {

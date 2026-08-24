@@ -38,6 +38,16 @@ func (a *API) Sites(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }
 
+func (a *API) SiteCatalog(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	items, err := a.sites.Catalog(actor)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+
 func (a *API) CreateSite(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
@@ -235,4 +245,22 @@ func (a *API) CreateDiscoveryDownload(c *gin.Context) {
 		return
 	}
 	success(c, http.StatusCreated, item)
+}
+
+func (a *API) RecognizePTResult(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+	var payload struct {
+		ResultToken string `json:"result_token"`
+	}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("PT 识别参数无效", err))
+		return
+	}
+	item, err := a.sites.RecognizeResult(c.Request.Context(), actor, payload.ResultToken)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
 }

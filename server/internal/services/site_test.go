@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,10 +17,12 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	sitepkg "github.com/yuanjing-hash/ohmycine/server/pkg/site"
 )
 
 type stubSiteAdapter struct {
+	kind            string
 	mu              sync.Mutex
 	testErr         map[string]error
 	searchErr       map[string]error
@@ -26,9 +30,15 @@ type stubSiteAdapter struct {
 	downloads       int
 	downloadStarted chan struct{}
 	downloadRelease chan struct{}
+	searchTitle     string
 }
 
-func (*stubSiteAdapter) Kind() string { return "pttime" }
+func (a *stubSiteAdapter) Kind() string {
+	if a.kind == "" {
+		return "pttime"
+	}
+	return a.kind
+}
 func (a *stubSiteAdapter) Test(_ context.Context, config sitepkg.Config) (sitepkg.Health, error) {
 	if err := a.testErr[config.BaseURL]; err != nil {
 		return sitepkg.Health{}, err
@@ -40,7 +50,11 @@ func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query
 		return sitepkg.Page{}, err
 	}
 	seeders, leechers := 12, 1
-	return sitepkg.Page{Page: query.Page, Items: []sitepkg.Result{{TorrentID: "42", Title: "Seven.Samurai.1954.1080p", SizeBytes: 1024, Seeders: &seeders, Leechers: &leechers}}, HasNext: true}, nil
+	title := a.searchTitle
+	if title == "" {
+		title = "Seven.Samurai.1954.1080p"
+	}
+	return sitepkg.Page{Page: query.Page, Items: []sitepkg.Result{{TorrentID: "42", Title: title, SizeBytes: 1024, Seeders: &seeders, Leechers: &leechers}}, HasNext: true}, nil
 }
 func (a *stubSiteAdapter) Download(_ context.Context, _ sitepkg.Config, torrentID string) ([]byte, string, error) {
 	if a.downloadStarted != nil {
@@ -195,6 +209,63 @@ func TestSiteSearchIsolatesFailuresAndBindsClaimsToActor(t *testing.T) {
 	service.now = func() time.Time { return time.Now().UTC().Add(ptResultTTL + time.Second) }
 	if _, err := service.resolveClaim(token, actor.User.ID); ErrorCode(err) != CodeSiteResultExpired {
 		t.Fatalf("expired token err=%v", err)
+	}
+}
+
+func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDownload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/search/movie":
+			_, _ = writer.Write([]byte(`{"results":[{"id":346,"title":"七武士","original_title":"Seven Samurai","original_language":"ja","release_date":"1954-04-26","popularity":80}]}`))
+		case "/movie/346":
+			_, _ = writer.Write([]byte(`{"id":346,"title":"七武士","original_title":"Seven Samurai","original_language":"ja","release_date":"1954-04-26","poster_path":"/seven.jpg","genres":[{"id":18,"name":"剧情"}],"production_countries":[{"iso_3166_1":"JP"}]}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer upstream.Close()
+
+	service, adapter, actor, store, _, _ := siteFixture(t)
+	metadata := NewMetadataSettingsService(service.db, service.audit, store, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
+	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
+		return tmdb.NewForTest("test-token", upstream.URL, upstream.Client())
+	}
+	service.SetMetadataSettings(metadata)
+	adapter.searchTitle = "Seven.Samurai.1954.2160p.UHD.BluRay.REMUX.HDR10.DoVi.x265.DTS-HD.[GROUP]"
+	created, err := service.Create(context.Background(), actor, validSiteInput("PTTime", "https://one.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Seven Samurai", SiteID: &created.ID, Page: 1})
+	if err != nil || len(groups) != 1 || len(groups[0].Items) != 1 {
+		t.Fatalf("groups=%+v err=%v", groups, err)
+	}
+	token := groups[0].Items[0].Token
+	result, err := service.RecognizeResult(context.Background(), actor, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != mediaRecognitionStatusMatched || result.Title != "七武士" || result.OriginalTitle != "Seven Samurai" || result.MediaType != "movie" || result.Year == nil || *result.Year != 1954 || result.TMDBID == nil || *result.TMDBID != 346 {
+		t.Fatalf("recognition=%+v", result)
+	}
+	if !strings.HasPrefix(result.PosterURL, "/api/v1/discovery/images/tmdb/") || result.Specifications.Resolution != "2160p" || result.Specifications.Source != "UHD BluRay REMUX" || result.Specifications.VideoCodec != "H.265/HEVC" || result.Specifications.AudioCodec != "DTS-HD" || result.Specifications.HDR != "HDR10 / Dolby Vision" || result.Specifications.ReleaseGroup != "GROUP" {
+		t.Fatalf("recognition presentation=%+v", result)
+	}
+	if adapter.downloads != 0 {
+		t.Fatalf("recognition fetched torrent %d time(s)", adapter.downloads)
+	}
+	if _, err := service.resolveClaim(token, actor.User.ID); err != nil {
+		t.Fatalf("recognition consumed claim: %v", err)
+	}
+	service.SetMetadataSettings(nil)
+	fallback, err := service.RecognizeResult(context.Background(), actor, token)
+	if err != nil || fallback.Status != mediaRecognitionStatusUnrecognized || fallback.ErrorCode != mediaRecognitionCredentialMissing || fallback.Title != "Seven Samurai" || fallback.Year == nil || *fallback.Year != 1954 || fallback.PosterURL != "" || fallback.Specifications.Resolution != "2160p" || fallback.Specifications.VideoCodec != "H.265/HEVC" {
+		t.Fatalf("metadata-free fallback=%+v err=%v", fallback, err)
+	}
+	foreign := actor
+	foreign.User.ID++
+	if _, err := service.RecognizeResult(context.Background(), foreign, token); ErrorCode(err) != CodeSiteResultExpired {
+		t.Fatalf("foreign recognition error=%v", err)
 	}
 }
 

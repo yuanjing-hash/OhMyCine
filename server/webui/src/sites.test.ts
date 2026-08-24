@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, siteCatalogPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -24,11 +24,21 @@ describe('PT discovery contracts', () => {
     expect(query.get('search_by')).toBe('tmdb_id')
     expect(cookieCloudSettingsPath).toBe('/api/v1/settings/sites/cookiecloud')
     expect(cookieCloudSyncPath).toBe('/api/v1/settings/sites/cookiecloud/sync')
+    expect(siteCatalogPath).toBe('/api/v1/sites/catalog')
+    expect(ptRecognitionPath).toBe('/api/v1/discovery/pt-results/recognize')
+  })
+
+  it('presents shared recognition specifications without accepting a raw title or torrent URL', () => {
+    expect(ptRecognitionSpecLabels({ resolution: '2160p', source: 'UHD BluRay REMUX', video_codec: 'H.265/HEVC', audio_codec: 'DTS-HD', hdr: 'HDR10 / Dolby Vision', release_group: 'GROUP' }))
+      .toEqual(['2160p', 'UHD BluRay REMUX', 'H.265/HEVC', 'DTS-HD', 'HDR10 / Dolby Vision', '压制组 GROUP'])
+    expect(ptRecognitionPath).not.toContain('torrent')
+    expect(ptRecognitionErrorLabel('tmdb_no_match')).toContain('未找到可信匹配')
+    expect(ptRecognitionErrorLabel('tmdb_credential_unavailable')).toContain('仅显示本地解析结果')
   })
 
   it('renders safe CookieCloud site failure codes as actionable Chinese text', () => {
-    expect(cookieCloudErrorLabel('site_authentication_failed')).toBe('PTTime 登录 Cookie 已失效或不完整')
-    expect(cookieCloudErrorLabel('site_unavailable')).toBe('PTTime 站点暂时不可用')
+    expect(cookieCloudErrorLabel('site_authentication_failed')).toBe('站点登录 Cookie 已失效或不完整')
+    expect(cookieCloudErrorLabel('site_unavailable')).toBe('站点暂时不可用')
     expect(cookieCloudErrorLabel('future_safe_code')).toBe('future_safe_code')
   })
 })

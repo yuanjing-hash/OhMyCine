@@ -6,17 +6,20 @@ import {
   cookieCloudErrorLabel,
   cookieCloudSettingsPath,
   cookieCloudSyncPath,
+  siteCatalogPath,
   sitePath,
   sitesPath,
   siteTestPath,
   type CookieCloudMode,
   type CookieCloudSettings,
   type CookieCloudSyncResult,
+  type SiteCatalogItem,
   type SiteSummary,
 } from '@/sites'
 import type { ListResponse } from '@/types/api'
 
 interface SiteForm {
+  kind: string
   name: string
   baseURL: string
   cookie: string
@@ -42,6 +45,7 @@ interface CookieCloudForm {
 }
 
 const sites = ref<SiteSummary[]>([])
+const siteCatalog = ref<SiteCatalogItem[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const saving = ref(false)
@@ -65,7 +69,7 @@ const cookieCloudEndpoint = computed(() => {
 
 function emptyForm(): SiteForm {
   return {
-    name: 'PTTime', baseURL: '', cookie: '', passkey: '', userAgent: '', enabled: true,
+    kind: 'pttime', name: 'PTTime', baseURL: '', cookie: '', passkey: '', userAgent: '', enabled: true,
     priority: 100, timeoutSeconds: 12, rateLimitPerMinute: 12,
     browserEmulation: false, browserServiceURL: '', clearPasskey: false,
   }
@@ -79,8 +83,12 @@ async function loadSites() {
   loading.value = true
   loadError.value = ''
   try {
-    const response = await api<ListResponse<SiteSummary>>(sitesPath)
+    const [response, catalog] = await Promise.all([
+      api<ListResponse<SiteSummary>>(sitesPath),
+      api<ListResponse<SiteCatalogItem>>(siteCatalogPath),
+    ])
     sites.value = response.list
+    siteCatalog.value = catalog.list
   } catch (reason) { loadError.value = message(reason) }
   finally { loading.value = false }
 }
@@ -88,16 +96,25 @@ async function loadSites() {
 function openCreate() {
   editing.value = null
   form.value = emptyForm()
+  applyCatalogSelection()
   dialogStep.value = 'type'
   dialogOpen.value = true
 }
 
 function selectPTType() { dialogStep.value = 'form' }
 
+function applyCatalogSelection() {
+  if (editing.value) return
+  const selected = siteCatalog.value.find(item => item.key === form.value.kind)
+  if (!selected) return
+  form.value.name = selected.name
+  form.value.baseURL = selected.base_urls[0] || ''
+}
+
 function openEdit(site: SiteSummary) {
   editing.value = site
   form.value = {
-    name: site.name, baseURL: site.base_url, cookie: '', passkey: '', userAgent: site.user_agent,
+    kind: site.kind, name: site.name, baseURL: site.base_url, cookie: '', passkey: '', userAgent: site.user_agent,
     enabled: site.enabled, priority: site.priority, timeoutSeconds: site.timeout_seconds,
     rateLimitPerMinute: site.rate_limit_per_minute, browserEmulation: site.browser_emulation,
     browserServiceURL: site.browser_service_url, clearPasskey: false,
@@ -137,7 +154,7 @@ async function save() {
       notify('候选配置测试通过，站点已更新', 'success')
     } else {
       await api(sitesPath, { method: 'POST', body: JSON.stringify({
-        ...common, kind: 'pttime', cookie: form.value.cookie, passkey: form.value.passkey,
+        ...common, kind: form.value.kind, cookie: form.value.cookie, passkey: form.value.passkey,
       }) })
       notify('PT 站点测试通过并已安全保存', 'success')
     }
@@ -198,7 +215,10 @@ async function syncCookieCloud() {
     const result = await api<CookieCloudSyncResult>(cookieCloudSyncPath, { method: 'POST', body: '{}' })
     const issueLabels = [...new Set((result.issues || []).map(issue => cookieCloudErrorLabel(issue.error_code)))]
     const reason = issueLabels.length ? `；原因：${issueLabels.join('、')}` : ''
-    notify(`同步完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，失败 ${result.failed}${reason}`, result.failed ? 'warning' : 'success')
+    const skipDetails = result.skipped
+      ? `（CookieCloud 中其他域名、当前不是受支持站点：${result.skipped_unsupported_domains || 0}；受支持候选缺少有效登录 Cookie：${result.skipped_missing_login_cookies || 0}）`
+      : ''
+    notify(`同步完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}${skipDetails}，失败 ${result.failed}${reason}`, result.failed || result.skipped ? 'warning' : 'success')
     const settings = await api<CookieCloudSettings>(cookieCloudSettingsPath)
     cookieCloudSettings.value = settings
     cookieCloudForm.value.revision = settings.revision
@@ -315,7 +335,7 @@ onMounted(loadSites)
         </div>
         <button class="type-card mt-5 w-full text-left" type="button" @click="selectPTType">
           <span class="type-card__icon">PT</span>
-          <span><strong class="block">PT 站点</strong><span class="text-subtle mt-1 block text-sm">连接 PTTime，聚合搜索并提交真实下载任务。</span></span>
+          <span><strong class="block">PT 站点</strong><span class="text-subtle mt-1 block text-sm">从内建站点目录选择，标准 NexusPHP 站点复用通用解析引擎。</span></span>
           <span class="ml-auto text-subtle">下一步 →</span>
         </button>
         <p class="text-subtle mb-0 mt-4 text-xs">后续可在这里增加其他资源站点类型，不会把所有站点强制归类为 PT。</p>
@@ -328,6 +348,7 @@ onMounted(loadSites)
         </div>
         <button v-if="!editing" class="link-button mt-4" type="button" @click="dialogStep = 'type'">← 返回选择类型</button>
         <div class="mt-5 grid gap-4 sm:grid-cols-2">
+          <div class="sm:col-span-2"><label class="label" for="site-catalog">站点适配</label><select id="site-catalog" v-model="form.kind" class="input" :disabled="Boolean(editing)" @change="applyCatalogSelection"><option v-for="item in siteCatalog" :key="item.key" :value="item.key">{{ item.name }} · {{ item.engine === 'nexusphp' ? 'NexusPHP' : item.engine }}</option></select><p class="text-subtle mb-0 mt-1 text-xs">没有收录时可选择“通用 NexusPHP”并填写地址；特殊架构站点会使用独立适配器，不会伪装成 NexusPHP。</p></div>
           <div><label class="label" for="site-name">显示名称</label><input id="site-name" v-model="form.name" class="input" maxlength="128" required /></div>
           <div><label class="label" for="site-url">HTTPS 根地址</label><input id="site-url" v-model="form.baseURL" class="input font-mono" type="url" placeholder="https://pt.example.test" required autocomplete="off" /></div>
           <div class="sm:col-span-2"><label class="label" for="site-cookie">Cookie{{ editing ? '（留空不修改）' : '' }}</label><textarea id="site-cookie" v-model="form.cookie" class="input min-h-24 font-mono text-xs" :required="!editing" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">CookieCloud 同步成功后也可在此继续手动更新，不会写入日志或普通任务字段。</p></div>
