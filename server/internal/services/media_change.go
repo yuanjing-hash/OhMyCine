@@ -1,7 +1,6 @@
 package services
 
 import (
-	"errors"
 	"sync"
 	"time"
 
@@ -148,11 +147,4 @@ func (s *MediaChangeService) ReadyAfter(cursor uint64, limit int) (MediaChangePa
 	}
 	err := s.db.Where("state = ? AND sequence > ?", models.MediaLibraryChangeReady, cursor).Order("sequence").Limit(limit).Find(&page.Changes).Error
 	return page, err
-}
-
-func mediaChangeNotFound(err error) error {
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return appError(CodeNotFound, "媒体变更不存在", err)
-	}
-	return err
 }

@@ -258,10 +258,6 @@ type mediaRecognitionQuery struct {
 	Order     int
 }
 
-type rankedMediaRecognitionCandidate struct {
-	Candidate tmdb.Candidate
-}
-
 func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionLookup, candidateLookup mediaRecognitionCandidateLookup, parsed mediarecognition.ParsedFacts, language, region string) (tmdb.Match, error) {
 	queries := domainRecognitionSearchQueries(parsed)
 	candidates := make(map[string]tmdb.Candidate)
