@@ -69,11 +69,19 @@ type CookieCloudSettingsSummary struct {
 }
 
 type CookieCloudSyncSummary struct {
-	Status  string `json:"status"`
-	Created int    `json:"created"`
-	Updated int    `json:"updated"`
-	Skipped int    `json:"skipped"`
-	Failed  int    `json:"failed"`
+	Status  string                 `json:"status"`
+	Created int                    `json:"created"`
+	Updated int                    `json:"updated"`
+	Skipped int                    `json:"skipped"`
+	Failed  int                    `json:"failed"`
+	Issues  []CookieCloudSyncIssue `json:"issues,omitempty"`
+}
+
+type CookieCloudSyncIssue struct {
+	Action    string `json:"action"`
+	SiteID    uint   `json:"site_id,omitempty"`
+	Kind      string `json:"kind"`
+	ErrorCode string `json:"error_code"`
 }
 
 type cookieCloudEntry struct {
@@ -185,11 +193,14 @@ func (s *CookieCloudService) Sync(ctx context.Context, actor Actor, request Requ
 		return CookieCloudSyncSummary{}, appError(CodePermissionDenied, "仅管理员可以同步 CookieCloud", nil)
 	}
 	result, err := s.sync(ctx)
-	outcome := "success"
+	outcome := result.Status
+	if outcome == "" {
+		outcome = "success"
+	}
 	if err != nil {
 		outcome = "failed"
 	}
-	_ = s.audit.Record(s.db, &actor.User.ID, "cookiecloud.sync", "cookiecloud", "1", outcome, map[string]any{"created": result.Created, "updated": result.Updated, "skipped": result.Skipped, "failed": result.Failed, "error_code": ErrorCode(err)}, request)
+	_ = s.audit.Record(s.db, &actor.User.ID, "cookiecloud.sync", "cookiecloud", "1", outcome, map[string]any{"created": result.Created, "updated": result.Updated, "skipped": result.Skipped, "failed": result.Failed, "error_code": cookieCloudSyncErrorCode(result, err)}, request)
 	return result, err
 }
 
@@ -318,7 +329,7 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 		}
 		oldCredential, decryptErr := s.sites.decryptCredential(siteRecord)
 		if decryptErr != nil {
-			result.Failed++
+			result.addIssue("update", siteRecord.ID, siteRecord.Kind, CodeSiteCredentialInvalid)
 			continue
 		}
 		adapter := s.sites.adapters[siteRecord.Kind]
@@ -329,19 +340,19 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 		candidate := sitepkgConfig(siteRecord, oldCredential, cookie)
 		health, probeErr := adapter.Test(ctx, candidate)
 		if probeErr != nil {
-			result.Failed++
+			result.addIssue("update", siteRecord.ID, siteRecord.Kind, siteErrorCode(probeErr))
 			continue
 		}
 		oldCredential.Cookie = cookie
 		ciphertext, encryptErr := s.sites.encryptCredential(siteRecord.ID, siteRecord.Kind, oldCredential)
 		if encryptErr != nil {
-			result.Failed++
+			result.addIssue("update", siteRecord.ID, siteRecord.Kind, CodeSiteCredentialInvalid)
 			continue
 		}
 		now := s.now()
 		update := s.db.Model(&models.Site{}).Where("id = ? AND revision = ?", siteRecord.ID, siteRecord.Revision).Updates(map[string]any{"credential_ciphertext": ciphertext, "last_health_status": "online", "last_health_error_code": "", "last_health_username": safeLabel(health.Username, 128), "last_health_checked_at": now, "revision": gorm.Expr("revision + 1"), "updated_at": now})
 		if update.Error != nil || update.RowsAffected != 1 {
-			result.Failed++
+			result.addIssue("update", siteRecord.ID, siteRecord.Kind, CodeConflict)
 			continue
 		}
 		s.sites.invalidateLimiter(siteRecord.ID)
@@ -351,8 +362,8 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 	for _, candidate := range []struct {
 		kind, baseURL, cookieHost string
 	}{
-		{kind: "pttime", baseURL: "https://pttime.org", cookieHost: "www.pttime.org"},
-		{kind: "pttime", baseURL: "https://pttime.me", cookieHost: "www.pttime.me"},
+		{kind: "pttime", baseURL: "https://www.pttime.org", cookieHost: "www.pttime.org"},
+		{kind: "pttime", baseURL: "https://www.pttime.me", cookieHost: "www.pttime.me"},
 	} {
 		if _, exists := configuredKinds[candidate.kind]; exists {
 			continue
@@ -362,7 +373,7 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 			continue
 		}
 		if _, createErr := s.sites.createFromCookieCloud(ctx, candidate.kind, candidate.baseURL, cookie); createErr != nil {
-			result.Failed++
+			result.addIssue("create", 0, candidate.kind, ErrorCode(createErr))
 			continue
 		}
 		configuredKinds[candidate.kind] = struct{}{}
@@ -371,9 +382,32 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 	if result.Failed > 0 {
 		result.Status = "partial"
 	}
-	s.recordSync(record, result.Status, "")
-	serverlog.OperationCookieCloud.Event(s.log.Info()).Int("created", result.Created).Int("updated", result.Updated).Int("skipped", result.Skipped).Int("failed", result.Failed).Msg(serverlog.OperationCookieCloud.Message("站点凭据同步完成"))
+	errorCode := cookieCloudSyncErrorCode(result, nil)
+	s.recordSync(record, result.Status, errorCode)
+	event := serverlog.OperationCookieCloud.Event(s.log.Info()).Int("created", result.Created).Int("updated", result.Updated).Int("skipped", result.Skipped).Int("failed", result.Failed)
+	if errorCode != "" {
+		event = event.Str("error_code", errorCode)
+	}
+	event.Msg(serverlog.OperationCookieCloud.Message("站点凭据同步完成"))
 	return result, nil
+}
+
+func (s *CookieCloudSyncSummary) addIssue(action string, siteID uint, kind, code string) {
+	if code == "" || code == "INTERNAL_ERROR" {
+		code = CodeSiteUnavailable
+	}
+	s.Failed++
+	s.Issues = append(s.Issues, CookieCloudSyncIssue{Action: action, SiteID: siteID, Kind: kind, ErrorCode: code})
+}
+
+func cookieCloudSyncErrorCode(result CookieCloudSyncSummary, err error) string {
+	if err != nil {
+		return ErrorCode(err)
+	}
+	if len(result.Issues) > 0 {
+		return result.Issues[0].ErrorCode
+	}
+	return ""
 }
 
 func sitepkgConfig(record models.Site, old siteCredentialEnvelope, cookie string) sitepkg.Config {
@@ -609,45 +643,57 @@ func evpBytesToKey(passphrase, salt []byte, size int) []byte {
 	return result[:size]
 }
 
-func cookiesByDomain(entries []cookieCloudEntry) map[string]string {
-	type pair struct{ name, value string }
-	grouped := map[string][]pair{}
+func cookiesByDomain(entries []cookieCloudEntry) map[string]map[string]string {
+	grouped := map[string]map[string]string{}
 	for _, entry := range entries {
 		domain := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(entry.Domain)), ".")
 		name, value := strings.TrimSpace(entry.Name), strings.TrimSpace(entry.Value)
 		if domain == "" || name == "" || value == "" || strings.ContainsAny(name+value, "\x00\r\n;") || name == "CookieAutoDeleteBrowsingDataCleanup" || name == "CookieAutoDeleteCleaningDiscarded" {
 			continue
 		}
-		grouped[domain] = append(grouped[domain], pair{name, value})
-	}
-	result := map[string]string{}
-	for domain, pairs := range grouped {
-		sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].name < pairs[j].name })
-		parts := make([]string, 0, len(pairs))
-		nonCF := false
-		for _, item := range pairs {
-			if item.name != "cf_clearance" {
-				nonCF = true
-			}
-			parts = append(parts, item.name+"="+item.value)
+		if grouped[domain] == nil {
+			grouped[domain] = map[string]string{}
 		}
-		if nonCF {
-			result[domain] = strings.Join(parts, "; ")
-		}
+		grouped[domain][name] = value
 	}
-	return result
+	return grouped
 }
 
-func cookieForHost(cookies map[string]string, host string) string {
+func cookieForHost(cookies map[string]map[string]string, host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
-	best := ""
-	for domain, value := range cookies {
-		if host == domain || strings.HasSuffix(host, "."+domain) {
-			if len(domain) > len(best) {
-				best = domain
-				_ = value
-			}
+	matchingDomains := make([]string, 0)
+	for domain := range cookies {
+		if (host == domain || strings.HasSuffix(host, "."+domain)) && strings.Contains(domain, ".") {
+			matchingDomains = append(matchingDomains, domain)
 		}
 	}
-	return cookies[best]
+	sort.SliceStable(matchingDomains, func(i, j int) bool {
+		if len(matchingDomains[i]) == len(matchingDomains[j]) {
+			return matchingDomains[i] < matchingDomains[j]
+		}
+		return len(matchingDomains[i]) < len(matchingDomains[j])
+	})
+	merged := map[string]string{}
+	for _, domain := range matchingDomains {
+		for name, value := range cookies[domain] {
+			merged[name] = value
+		}
+	}
+	names := make([]string, 0, len(merged))
+	nonCF := false
+	for name := range merged {
+		if !strings.EqualFold(name, "cf_clearance") {
+			nonCF = true
+		}
+		names = append(names, name)
+	}
+	if !nonCF {
+		return ""
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+"="+merged[name])
+	}
+	return strings.Join(parts, "; ")
 }

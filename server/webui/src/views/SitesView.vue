@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { notify } from '@/toast'
 import {
+  cookieCloudErrorLabel,
   cookieCloudSettingsPath,
   cookieCloudSyncPath,
   sitePath,
@@ -195,7 +196,9 @@ async function syncCookieCloud() {
   cookieCloudSyncing.value = true
   try {
     const result = await api<CookieCloudSyncResult>(cookieCloudSyncPath, { method: 'POST', body: '{}' })
-    notify(`同步完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，失败 ${result.failed}`, result.failed ? 'warning' : 'success')
+    const issueLabels = [...new Set((result.issues || []).map(issue => cookieCloudErrorLabel(issue.error_code)))]
+    const reason = issueLabels.length ? `；原因：${issueLabels.join('、')}` : ''
+    notify(`同步完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，失败 ${result.failed}${reason}`, result.failed ? 'warning' : 'success')
     const settings = await api<CookieCloudSettings>(cookieCloudSettingsPath)
     cookieCloudSettings.value = settings
     cookieCloudForm.value.revision = settings.revision
@@ -248,7 +251,8 @@ function cookieCloudStatus() {
   if (!settings?.last_sync_at) return '尚未同步'
   const time = new Date(settings.last_sync_at).toLocaleString()
   if (settings.last_sync_status === 'success') return `最近同步成功 · ${time}`
-  return `最近同步失败 · ${settings.last_sync_error_code || '未知错误'} · ${time}`
+  const status = settings.last_sync_status === 'partial' ? '最近同步部分失败' : '最近同步失败'
+  return `${status} · ${cookieCloudErrorLabel(settings.last_sync_error_code)} · ${time}`
 }
 
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '站点操作失败' }

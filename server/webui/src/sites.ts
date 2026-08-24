@@ -44,6 +44,14 @@ export interface CookieCloudSyncResult {
   updated: number
   skipped: number
   failed: number
+  issues?: CookieCloudSyncIssue[]
+}
+
+export interface CookieCloudSyncIssue {
+  action: 'create' | 'update'
+  site_id?: number
+  kind: string
+  error_code: string
 }
 
 export interface PTSearchResult {
@@ -83,6 +91,17 @@ export const cookieCloudSyncPath = `${cookieCloudSettingsPath}/sync`
 
 export function sitePath(id: number) { return `${sitesPath}/${id}` }
 export function siteTestPath(id: number) { return `${sitePath(id)}/test` }
+
+export function cookieCloudErrorLabel(code: string) {
+  return ({
+    site_authentication_failed: 'PTTime 登录 Cookie 已失效或不完整',
+    site_unavailable: 'PTTime 站点暂时不可用',
+    site_rate_limited: 'PTTime 请求受到限速',
+    site_response_invalid: 'PTTime 返回内容无法识别',
+    site_credential_invalid: '已保存的站点凭据不可用',
+    CONFLICT: '站点配置已变化，请重新同步',
+  } as Record<string, string>)[code] || code || '未知错误'
+}
 
 export function buildPTSearchQuery(input: { keyword: string; mediaType?: string; year?: number; tmdbID?: number; searchBy?: 'title' | 'tmdb_id'; page?: number; siteID?: number }) {
   const query = new URLSearchParams({ keyword: input.keyword.trim(), page: String(input.page ?? 1) })

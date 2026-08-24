@@ -60,3 +60,69 @@ POST   /api/v1/discovery/downloads
 Wrong: send a passkey-bearing `download.php` URL to the browser and let the UI POST it back.
 
 Correct: return an opaque actor-bound claim, resolve and fetch the torrent inside Server, then submit the bytes through `DownloadService`.
+
+## Scenario: CookieCloud Site Discovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing CookieCloud domain matching, supported-site discovery, credential probing, sync summaries, runtime logs, or the Site-management sync UI.
+
+### 2. Signatures
+
+```text
+POST /api/v1/settings/sites/cookiecloud/sync
+
+CookieCloudSyncSummary {
+  status: "success" | "partial"
+  created: integer
+  updated: integer
+  skipped: integer
+  failed: integer
+  issues?: [{ action: "create" | "update", site_id?: integer, kind: string, error_code: string }]
+}
+```
+
+### 3. Contracts
+
+- Each built-in discovery candidate uses the provider's canonical HTTPS origin, including the canonical host. Do not depend on an apex-to-`www` redirect because the PT client deliberately rejects cross-origin redirects.
+- Cookie selection reproduces browser domain delivery for the fixed candidate host: merge every matching parent and exact-host domain, then let the more-specific domain override duplicate cookie names. Reject public-suffix-like single-label domains and return no candidate when the merged set contains only `cf_clearance`.
+- Candidate validation happens before encrypted Site creation/update. Failure leaves existing credentials unchanged and returns only stable issue fields; Cookie values, domains, Base URLs, usernames, and upstream bodies never enter issues, logs, or audit metadata.
+- A partial sync persists its first stable issue code in `last_sync_error_code`, records audit outcome `partial`, and emits the same safe code in the runtime terminal event. It must not call `ErrorCode(nil)` or collapse a known candidate failure into `INTERNAL_ERROR`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Canonical host accepts merged Cookie | Create/update the encrypted Site and increment the matching success count |
+| Apex origin redirects to canonical host | Use the canonical host in the discovery registry; do not weaken strict redirect checks |
+| Parent and exact-host domains contain the same cookie name | Exact-host value wins; emit one cookie pair |
+| Candidate probe rejects authentication | Return `site_authentication_failed`, persist partial status, create no Site |
+| Candidate probe is unavailable/rate-limited/malformed | Return the matching stable Site code without raw provider details |
+| CookieCloud contains only Cloudflare clearance state | Do not probe or create a Site |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `.pttime.org` authentication cookies are merged for `www.pttime.org`, probed against `https://www.pttime.org`, and create one encrypted PTTime Site.
+- Base: one supported candidate fails while another succeeds; counts and safe issues describe the partial result without aborting successful work.
+- Bad: probe `https://pttime.org`, reject its expected redirect, report only `failed=1`, and leave the UI showing an unknown error.
+
+### 6. Tests Required
+
+- Service tests cover canonical discovered Base URLs, parent/exact-host merge precedence, Cloudflare-only rejection, successful creation, authentication failure issues, persisted `last_sync_error_code`, partial audit outcome, and absence of Cookie values in serialized/audited output.
+- Web tests cover stable-code localization and unknown future-code fallback; test, typecheck, lint, and production build remain required.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+candidate := discoveryCandidate{baseURL: "https://pttime.org", cookieHost: "www.pttime.org"}
+cookie := cookies[longestMatchingDomain] // drops matching parent-domain cookies
+```
+
+Correct:
+
+```go
+candidate := discoveryCandidate{baseURL: "https://www.pttime.org", cookieHost: "www.pttime.org"}
+cookie := mergeMatchingDomainsParentFirst(cookies, candidate.cookieHost)
+```

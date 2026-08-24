@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudSettingsPath, cookieCloudSyncPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -24,5 +24,11 @@ describe('PT discovery contracts', () => {
     expect(query.get('search_by')).toBe('tmdb_id')
     expect(cookieCloudSettingsPath).toBe('/api/v1/settings/sites/cookiecloud')
     expect(cookieCloudSyncPath).toBe('/api/v1/settings/sites/cookiecloud/sync')
+  })
+
+  it('renders safe CookieCloud site failure codes as actionable Chinese text', () => {
+    expect(cookieCloudErrorLabel('site_authentication_failed')).toBe('PTTime 登录 Cookie 已失效或不完整')
+    expect(cookieCloudErrorLabel('site_unavailable')).toBe('PTTime 站点暂时不可用')
+    expect(cookieCloudErrorLabel('future_safe_code')).toBe('future_safe_code')
   })
 })
