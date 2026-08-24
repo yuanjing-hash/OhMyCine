@@ -140,7 +140,7 @@ func TestLibraryArtworkCandidatesAreIsolatedByLibraryCategoryAndMediaType(t *tes
 		t.Fatal(err)
 	}
 
-	createRecognition := func(sourceKey, title, poster string, updatedAt time.Time) models.MediaLibraryRecognition {
+	createRecognition := func(sourceKey, title, poster, status string, updatedAt time.Time) models.MediaLibraryRecognition {
 		t.Helper()
 		metadataJSON, err := marshalRecognitionMetadata(MediaRecognitionResult{
 			Metadata: classification.Metadata{MediaType: classification.MediaTypeMovie},
@@ -152,9 +152,12 @@ func TestLibraryArtworkCandidatesAreIsolatedByLibraryCategoryAndMediaType(t *tes
 		tmdbID, confidence := int64(len(sourceKey)), .99
 		recognition := models.MediaLibraryRecognition{
 			LibraryID: library.ID, SourceKey: sourceKey, InputFingerprint: strings.Repeat(sourceKey[:1], 64),
-			ProfileID: profile.ID, ProfileRevision: profile.Revision, Status: mediaRecognitionStatusMatched,
+			ProfileID: profile.ID, ProfileRevision: profile.Revision, Status: status,
 			MediaType: "movie", Title: title, TMDBID: &tmdbID, Confidence: &confidence,
 			MetadataJSON: metadataJSON, LastGeneration: 1, CreatedAt: updatedAt, UpdatedAt: updatedAt,
+		}
+		if status == mediaRecognitionStatusUnrecognized {
+			recognition.ErrorCode = mediaRecognitionLowConfidence
 		}
 		if err := db.Create(&recognition).Error; err != nil {
 			t.Fatal(err)
@@ -162,8 +165,8 @@ func TestLibraryArtworkCandidatesAreIsolatedByLibraryCategoryAndMediaType(t *tes
 		return recognition
 	}
 
-	series := createRecognition("series", "Series", "/series.jpg", now)
-	movie := createRecognition("movie", "Movie", "/movie.jpg", now.Add(-time.Minute))
+	series := createRecognition("series", "Series", "/series.jpg", mediaRecognitionStatusUnrecognized, now)
+	movie := createRecognition("movie", "Movie", "/movie.jpg", mediaRecognitionStatusMatched, now.Add(-time.Minute))
 	entries := make([]models.MediaLibraryEntry, 0, 81)
 	for index := 0; index < 80; index++ {
 		recognitionID := series.ID
@@ -206,6 +209,65 @@ func TestLibraryArtworkCandidatesAreIsolatedByLibraryCategoryAndMediaType(t *tes
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("cross-kind candidates=%+v", candidates)
+	}
+}
+
+func TestFillStyle3PosterSlotsCompletesReferenceGridForSparseCandidates(t *testing.T) {
+	for _, candidateCount := range []int{1, 2, 3, 4, 8, 9} {
+		t.Run(strconv.Itoa(candidateCount), func(t *testing.T) {
+			candidates := make([]image.Image, candidateCount)
+			for index := range candidates {
+				poster := image.NewRGBA(image.Rect(0, 0, 1, 1))
+				poster.SetRGBA(0, 0, color.RGBA{R: uint8(index + 1), A: 255})
+				candidates[index] = poster
+			}
+			filled := fillStyle3PosterSlots(candidates, libraryArtworkRenderLimit)
+			if len(filled) != libraryArtworkRenderLimit {
+				t.Fatalf("filled slots=%d, want %d", len(filled), libraryArtworkRenderLimit)
+			}
+			for index, poster := range filled {
+				red, _, _, _ := poster.At(0, 0).RGBA()
+				if got, want := uint8(red>>8), uint8(index%candidateCount+1); got != want {
+					t.Fatalf("slot %d=%d, want %d", index, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderLibraryArtworkSparseCandidatesOccupyCompleteStyle3Grid(t *testing.T) {
+	var expectedBrightPixels int
+	for _, candidateCount := range []int{1, 2, 3, 4, 8, 9} {
+		t.Run(strconv.Itoa(candidateCount), func(t *testing.T) {
+			candidates := make([]image.Image, candidateCount)
+			for index := range candidates {
+				poster := image.NewRGBA(image.Rect(0, 0, 30, 45))
+				for y := 0; y < poster.Bounds().Dy(); y++ {
+					for x := 0; x < poster.Bounds().Dx(); x++ {
+						poster.SetRGBA(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+					}
+				}
+				candidates[index] = poster
+			}
+			rendered := renderLibraryArtwork(candidates)
+			brightPixels := 0
+			for y := 0; y < rendered.Bounds().Dy(); y++ {
+				for x := 0; x < rendered.Bounds().Dx(); x++ {
+					pixel := rendered.RGBAAt(x, y)
+					if pixel.R >= 250 && pixel.G >= 250 && pixel.B >= 250 {
+						brightPixels++
+					}
+				}
+			}
+			if brightPixels < 200_000 {
+				t.Fatalf("sparse style 3 foreground coverage=%d pixels", brightPixels)
+			}
+			if expectedBrightPixels == 0 {
+				expectedBrightPixels = brightPixels
+			} else if brightPixels != expectedBrightPixels {
+				t.Fatalf("sparse style 3 coverage=%d, want %d", brightPixels, expectedBrightPixels)
+			}
+		})
 	}
 }
 

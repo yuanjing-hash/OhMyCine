@@ -1,0 +1,31 @@
+{
+  "id": "fix-category-artwork-candidates-fill",
+  "name": "fix-category-artwork-candidates-fill",
+  "title": "修复分类封面候选筛选与少海报构图",
+  "description": "依据真实本地与115数据修复分类封面候选遗漏，并按参考插件补齐九张海报后生成风格3。",
+  "status": "in_progress",
+  "dev_type": "bugfix",
+  "scope": "player-server",
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-08-24",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "develop",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/internal/services/library_artwork.go",
+    "server/internal/services/library_artwork_test.go",
+    "player/src/components/media/MediaCard.vue",
+    "player/src/services/sourceLibraryScannedMedia.ts"
+  ],
+  "notes": "",
+  "meta": {}
+}

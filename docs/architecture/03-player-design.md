@@ -2721,7 +2721,7 @@ Player 不安装或执行 Server 插件，也不包含 Bilibili 等提供方专�
 
 Server 来源入口先展示其媒体库卡片。普通本地/115 媒体库进入后按 Server 分类规则展示华语电影、外语电影、剧集等标准分类，再进入内容；声明 `hierarchical` 的插件在线库则可使用任意深度的 `branch/feed` 导航。Player 只解释通用节点类型和 Server 签名 token，不硬编码 Bilibili 栏目名称，也不允许普通物理媒体库借此变成不受约束的插件树。
 
-媒体库封面同样保持 Player 独立优先：Player 自己索引的本地、OpenList/Alist、CloudDrive2 等原始目录从本地扫描结果选取最多 9 张不重复海报，以 1920×1080 语义的“风格 3”构图呈现——左侧标题区、海报主题色渐变背景、右侧三列阴影圆角海报、整列 -15.8° 倾斜和 `315426987` 显眼位顺序——并用稳定 revision 失效缓存，不在用户媒体目录写文件；直连 Emby/Jellyfin 优先使用 provider 自带库图。Server 专区和物理/插件媒体库最外层入口使用固定图，进入后的物理分类与插件导航节点才消费 Server 生成的同源 `artworkUrl/artworkRevision/artworkSource`；Player 不接收或二次组合 Server 候选。Server 生成图的短时签名 query 只存在运行时，图片缓存 sidecar 仍只保存不可逆 URL hash。
+媒体库封面同样保持 Player 独立优先：Player 自己索引的本地、OpenList/Alist、CloudDrive2 等原始目录从本地扫描结果选取最多 9 张不重复海报；只有 1～8 张时先确定性循环补齐九个展示槽位，再以 1920×1080 语义的“风格 3”构图呈现——左侧标题区、海报主题色渐变背景、右侧三列阴影圆角海报、整列 -15.8° 倾斜和 `315426987` 显眼位顺序——并用稳定 revision 失效缓存，不在用户媒体目录写文件；直连 Emby/Jellyfin 优先使用 provider 自带库图。Server 专区和物理/插件媒体库最外层入口使用固定图，进入后的物理分类与插件导航节点才消费 Server 生成的同源 `artworkUrl/artworkRevision/artworkSource`；Player 不接收或二次组合 Server 候选。Server 生成图的短时签名 query 只存在运行时，图片缓存 sidecar 仍只保存不可逆 URL hash。
 
 播放身份分为：
 

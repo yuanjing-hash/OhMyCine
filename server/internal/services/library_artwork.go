@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	libraryArtworkTemplateVersion = "library-artwork-style-static-3-v1"
+	libraryArtworkTemplateVersion = "library-artwork-style-static-3-v2"
 	libraryArtworkWidth           = 1920
 	libraryArtworkHeight          = 1080
 	libraryArtworkCandidateLimit  = 9
@@ -231,7 +231,7 @@ func (s *LibraryArtworkService) mediaCategoryCandidates(libraryID uint, category
 	}
 	var rows []models.MediaLibraryRecognition
 	err = s.db.Model(&models.MediaLibraryRecognition{}).
-		Where("media_library_recognitions.library_id = ? AND media_library_recognitions.status = ?", libraryID, "matched").
+		Where("media_library_recognitions.library_id = ?", libraryID).
 		Where("EXISTS (SELECT 1 FROM media_library_entries WHERE media_library_entries.library_id = ? AND media_library_entries.recognition_id = media_library_recognitions.id AND media_library_entries.category_name = ? AND media_library_entries.media_type = ?)", libraryID, categoryName, entryMediaType).
 		Order("media_library_recognitions.updated_at DESC, media_library_recognitions.id DESC").
 		Limit(64).Find(&rows).Error
@@ -389,6 +389,7 @@ func renderLibraryArtwork(images []image.Image) *image.RGBA {
 	if len(images) == 0 {
 		return image.NewRGBA(image.Rect(0, 0, libraryArtworkWidth, libraryArtworkHeight))
 	}
+	images = fillStyle3PosterSlots(images, libraryArtworkRenderLimit)
 	images = style3PosterOrder(images)
 	theme := artworkThemeColor(images[0])
 	destination := style3Gradient(theme)
@@ -431,6 +432,20 @@ func renderLibraryArtwork(images []image.Image) *image.RGBA {
 		pasteRGBA(destination, rotated, image.Pt(finalX, finalY))
 	}
 	return destination
+}
+
+func fillStyle3PosterSlots(images []image.Image, target int) []image.Image {
+	if len(images) == 0 || target <= 0 {
+		return nil
+	}
+	if target > libraryArtworkRenderLimit {
+		target = libraryArtworkRenderLimit
+	}
+	result := make([]image.Image, target)
+	for index := range result {
+		result[index] = images[index%len(images)]
+	}
+	return result
 }
 
 func style3PosterOrder(images []image.Image) []image.Image {

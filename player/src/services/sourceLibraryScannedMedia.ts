@@ -83,7 +83,7 @@ export function createScannedCategory(input: ScannedCategoryInput): ScannedCateg
     backdropUrl: previewArtwork?.backdropUrl ?? previewArtwork?.posterUrl,
     artworkCandidates,
     artworkRevision: localArtworkRevision(name, artworkCandidates),
-    artworkSource: artworkCandidates.length > 1 ? 'generated' : artworkCandidates.length === 1 ? 'provider' : 'fallback',
+    artworkSource: artworkCandidates.length > 0 ? 'generated' : 'fallback',
     itemCount: works.length,
   }
 
@@ -123,7 +123,7 @@ function uniqueArtworkCandidates(items: readonly MediaItem[], limit: number): st
 
 function localArtworkRevision(name: string, candidates: readonly string[]): string {
   let hash = 0xCBF29CE484222325n
-  const value = `library-artwork-v1\0${name}\0${[...candidates].sort().join('\0')}`
+  const value = `library-artwork-v2\0${name}\0${[...candidates].sort().join('\0')}`
   for (let index = 0; index < value.length; index++) {
     hash ^= BigInt(value.charCodeAt(index))
     hash = BigInt.asUintN(64, hash * 0x100000001B3n)

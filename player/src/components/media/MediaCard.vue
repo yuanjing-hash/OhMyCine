@@ -54,8 +54,14 @@ const libraryArtworkCandidates = computed(() => {
   return [...new Set(props.item.artworkCandidates ?? [])].filter(Boolean).slice(0, 9)
 })
 const hasLibraryCollage = computed(() => libraryArtworkCandidates.value.length > 0)
-const style3ArtworkColumns = computed(() => {
+const filledStyle3ArtworkCandidates = computed(() => {
   const candidates = libraryArtworkCandidates.value
+  if (candidates.length === 0)
+    return []
+  return Array.from({ length: 9 }, (_, index) => candidates[index % candidates.length])
+})
+const style3ArtworkColumns = computed(() => {
+  const candidates = filledStyle3ArtworkCandidates.value
   const order = [2, 0, 4, 3, 1, 5, 8, 7, 6]
   const arranged = order.filter(index => index < candidates.length).map(index => candidates[index])
   candidates.forEach((candidate, index) => {
@@ -212,7 +218,7 @@ function handleKeydown(event: KeyboardEvent) {
           >
             <CachedImage
               v-for="(candidate, rowIndex) in column"
-              :key="candidate"
+              :key="`${candidate}:${columnIndex}:${rowIndex}`"
               :cache-key="`${imageCacheKey}:candidate:${columnIndex}:${rowIndex}`"
               :src="candidate"
               :alt="`${title} 封面 ${columnIndex * 3 + rowIndex + 1}`"

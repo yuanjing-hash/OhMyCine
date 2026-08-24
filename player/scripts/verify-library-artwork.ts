@@ -77,7 +77,7 @@ const changed = category([
 assert.notEqual(changed.library.artworkRevision, first.library.artworkRevision)
 
 const single = category([scannedMovie('one', 'A', 'https://image.example/a.jpg')])
-assert.equal(single.library.artworkSource, 'provider')
+assert.equal(single.library.artworkSource, 'generated')
 assert.deepEqual(single.library.artworkCandidates, ['https://image.example/a.jpg'])
 
 const empty = category([scannedMovie('one', 'A')])
@@ -99,6 +99,7 @@ assert.match(mediaCard, /top: 39\.57%/)
 assert.match(mediaCard, /padding-left: 3\.82%/)
 assert.match(mediaCard, /v-if="!usesStyle3Artwork"/)
 assert.match(mediaCard, /libraryArtworkCandidates\.value\.length > 0/)
+assert.match(mediaCard, /Array\.from\(\{ length: 9 \}, \(_, index\) => candidates\[index % candidates\.length\]\)/)
 assert.doesNotMatch(mediaCard, /library-artwork-collage/)
 
 console.log(JSON.stringify({
@@ -106,6 +107,6 @@ console.log(JSON.stringify({
   distinctCandidates: true,
   deterministicRevision: true,
   contentChangeInvalidatesRevision: true,
-  providerAndFallbackStates: true,
+  sparseAndFallbackStates: true,
   styleStatic3Layout: true,
 }, null, 2))
