@@ -4,6 +4,7 @@ import type { RawCategoryAssignment, RawMediaCandidate, RawScrapedMediaItem } fr
 import { resolveRawCandidateCategoryAssignment } from './categoryGrouping'
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
 import { createRawSeriesGroupingKey } from './rawSeriesGrouping'
+import { PLAYER_RECOGNITION_ENGINE_VERSION } from './recognition'
 import { extractCandidateTmdbSearchTitles, isMatchingTmdbEpisodeMetadata } from './tmdb'
 
 export interface RawManualIdentificationInput {
@@ -59,6 +60,8 @@ export function createEffectiveRawScrapeItemMap(
           ...representative.searchTitles,
           ...extractCandidateTmdbSearchTitles(candidate),
         ]),
+        matchSource: representative.matchSource,
+        recognitionEngineVersion: representative.recognitionEngineVersion,
       }))
     }
   }
@@ -138,6 +141,8 @@ export function applyRawManualArtworkOverride(
       ? {
           ...existing,
           metadata,
+          matchSource: 'manual',
+          recognitionEngineVersion: PLAYER_RECOGNITION_ENGINE_VERSION,
         }
       : createMatchedScrapedItem(candidate, metadata, {
           matchedSearchTitle: existing?.matchedSearchTitle,
@@ -203,7 +208,12 @@ export function applyRawManualMetadataOverride(
   for (const candidate of targetCandidates) {
     const existing = existingItems.get(candidate.record.id)
     existingItems.set(candidate.record.id, existing?.matchStatus === 'matched'
-      ? { ...existing, metadata }
+      ? {
+          ...existing,
+          metadata,
+          matchSource: 'manual',
+          recognitionEngineVersion: PLAYER_RECOGNITION_ENGINE_VERSION,
+        }
       : createMatchedScrapedItem(candidate, metadata, {
           matchedSearchTitle: existing?.matchedSearchTitle,
           searchTitles: existing?.searchTitles,
@@ -295,6 +305,8 @@ function createMatchedScrapedItem(
     readonly matchedSearchTitle?: string
     readonly episodeMetadata?: TmdbEpisodeMetadata
     readonly searchTitles?: readonly string[]
+    readonly matchSource?: RawScrapedMediaItem['matchSource']
+    readonly recognitionEngineVersion?: string
   },
 ): RawScrapedMediaItem {
   const metadataAssignment = createMetadataCategoryAssignment(metadata)
@@ -305,6 +317,8 @@ function createMatchedScrapedItem(
     recordId: candidate.record.id,
     providerPath: candidate.record.providerPath,
     matchStatus: 'matched',
+    matchSource: options.matchSource ?? 'manual',
+    recognitionEngineVersion: options.recognitionEngineVersion ?? PLAYER_RECOGNITION_ENGINE_VERSION,
     searchTitles: uniqueSearchTitles([
       ...(options.searchTitles ?? []),
       ...extractCandidateTmdbSearchTitles(candidate),

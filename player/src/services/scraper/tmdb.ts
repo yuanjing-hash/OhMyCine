@@ -6,6 +6,13 @@ import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { readTmdbCredential, removeCredential, saveTmdbCredential } from '@/services/datasource/credentialStore'
 import { extractMediaSearchTitles, normalizeTitleKey } from './parser'
 import { stripFileExtension } from './pathUtils'
+import {
+  buildRecognitionSearchRequests,
+  buildRecognitionTitleVariants,
+  decideRecognitionCandidate,
+  MAX_TMDB_RECOGNITION_DETAILS,
+  titleSimilarityScore,
+} from './recognition'
 import { buildTmdbRequestDescriptor, resolveEffectiveTmdbCredential, tmdbHttpFailureMessage } from './tmdbAuth'
 
 export type TmdbAuthType = TmdbCredentialValue['authType']
@@ -24,6 +31,9 @@ export interface TmdbMetadata {
   readonly mediaType: ScrapeMediaType
   readonly title: string
   readonly originalTitle?: string
+  readonly alternativeTitles?: string[]
+  readonly translations?: string[]
+  readonly seasonCount?: number
   readonly imdbId?: string
   readonly tvdbId?: number
   readonly overview?: string
@@ -213,19 +223,68 @@ export class TmdbScraper {
   }
 
   async searchCandidate(candidate: RawMediaCandidate): Promise<TmdbCandidateMatch | null> {
-    const searchTitles = extractCandidateTmdbSearchTitles(candidate)
-    if (searchTitles.length === 0)
+    const titleVariants = buildRecognitionTitleVariants(candidate)
+    const requests = buildRecognitionSearchRequests(candidate)
+    if (requests.length === 0)
       return null
 
-    for (const mediaType of preferredMediaTypes(candidate)) {
-      for (const searchTitle of searchTitles) {
-        const metadata = await this.search(mediaType, searchTitle, candidate.year)
-        if (metadata)
-          return { metadata, searchTitle }
+    const summaries = new Map<string, TmdbSearchResult>()
+    let successfulSearches = 0
+    let lastFailure: unknown
+    for (const request of requests) {
+      try {
+        const results = await this.searchResults(request.mediaType, request.title, request.year)
+        successfulSearches += 1
+        for (const result of results)
+          summaries.set(`${result.mediaType}:${result.id}`, result)
+      }
+      catch (error) {
+        if (isFatalRecognitionRequestError(error))
+          throw error
+        lastFailure = error
       }
     }
+    if (successfulSearches === 0 && lastFailure)
+      throw lastFailure
 
-    return null
+    const preliminary = decideRecognitionCandidate(candidate, titleVariants, [...summaries.values()])
+    const detailIdentities = preliminary.ranked.slice(0, MAX_TMDB_RECOGNITION_DETAILS)
+    const details: TmdbMetadata[] = []
+    for (const item of detailIdentities) {
+      try {
+        details.push(await this.getDetail(item.candidate.mediaType, item.candidate.id))
+      }
+      catch (error) {
+        if (isFatalRecognitionRequestError(error))
+          throw error
+      }
+    }
+    const decision = decideRecognitionCandidate(candidate, titleVariants, details.map(metadata => ({
+      id: metadata.tmdbId,
+      mediaType: metadata.mediaType,
+      title: metadata.title,
+      originalTitle: metadata.originalTitle,
+      alternativeTitles: metadata.alternativeTitles,
+      translations: metadata.translations,
+      releaseYear: metadata.releaseYear,
+      seasonCount: metadata.seasonCount,
+      popularity: summaries.get(`${metadata.mediaType}:${metadata.tmdbId}`)?.popularity,
+    })))
+    if (decision.reason !== 'matched' || !decision.match)
+      return null
+
+    const metadata = details.find(item => item.tmdbId === decision.match?.id && item.mediaType === decision.match.mediaType)
+    if (!metadata)
+      return null
+    const aliases = [metadata.title, metadata.originalTitle, ...(metadata.alternativeTitles ?? []), ...(metadata.translations ?? [])]
+    const searchTitle = [...titleVariants]
+      .sort((left, right) => Math.max(...aliases.map(alias => titleSimilarityScore(right.title, alias ?? '')))
+        - Math.max(...aliases.map(alias => titleSimilarityScore(left.title, alias ?? ''))))[0]
+      ?.title
+      ?? titleVariants[0]?.title
+      ?? candidate.title
+
+    return { metadata, searchTitle }
   }
 
   async search(mediaType: ScrapeMediaType, title: string, year?: number): Promise<TmdbMetadata | null> {
@@ -248,7 +307,7 @@ export class TmdbScraper {
   async getDetail(mediaType: ScrapeMediaType, tmdbId: number): Promise<TmdbMetadata> {
     const data = await this.requestJson(`/${mediaType}/${tmdbId}`, {
       language: this.settings.language,
-      append_to_response: 'external_ids,images',
+      append_to_response: 'external_ids,images,alternative_titles,translations',
       include_image_language: preferredImageLanguageParam(this.settings.language),
     })
     return mapTmdbDetail(data, mediaType, this.settings.language, this.settings.imageBaseUrl)
@@ -302,7 +361,11 @@ export class TmdbScraper {
   }
 }
 
-class TmdbHttpError extends Error {}
+class TmdbHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
 
 interface TmdbJsonRequestInput {
   readonly path: string
@@ -360,7 +423,7 @@ export async function requestTmdbJsonWithFallback(input: TmdbJsonRequestInput): 
     try {
       const response = await fetcher(request.url, { headers: request.headers, signal: controller.signal })
       if (!response.ok)
-        throw new TmdbHttpError(tmdbHttpFailureMessage(input.credential.authType, response.status, await safeReadResponseText(response)))
+        throw new TmdbHttpError(tmdbHttpFailureMessage(input.credential.authType, response.status, await safeReadResponseText(response)), response.status)
       return response.json()
     }
     catch (error) {
@@ -447,7 +510,7 @@ async function requestTmdbJsonWithNativeFallback(
         input.credential.authType,
         result.status ?? 0,
         result.responseText ?? '',
-      ))
+      ), result.status ?? 0)
     }
     lastNetworkError = new Error('TMDB 请求失败。')
   }
@@ -495,14 +558,6 @@ async function safeReadResponseText(response: Response): Promise<string> {
   catch {
     return ''
   }
-}
-
-function preferredMediaTypes(candidate: RawMediaCandidate): ScrapeMediaType[] {
-  if (candidate.kind === 'episode' || candidate.kind === 'tv')
-    return ['tv', 'movie']
-  if (candidate.kind === 'movie')
-    return ['movie', 'tv']
-  return ['movie', 'tv']
 }
 
 function selectBestSearchResult(
@@ -588,12 +643,12 @@ function titleMatchQuality(query: string, title: string, originalTitle?: string)
 function compactTitleKey(value: string | undefined): string {
   if (!value)
     return ''
-  return normalizeTitleKey(value).replace(/[^a-z0-9\u4E00-\u9FFF]+/g, '')
+  return normalizeTitleKey(value).replace(/[^\p{L}\p{N}\p{M}]+/gu, '')
 }
 
 function tokenizeTitle(value: string): string[] {
   return normalizeTitleKey(value)
-    .split(/[^a-z0-9\u4E00-\u9FFF]+/g)
+    .split(/[^\p{L}\p{N}\p{M}]+/gu)
     .map(token => token.trim())
     .filter(token => token.length >= 2)
 }
@@ -641,6 +696,9 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: str
     mediaType,
     title,
     originalTitle: stringValue(mediaType === 'movie' ? value.original_title : value.original_name),
+    alternativeTitles: alternativeTitlesFromDetail(value.alternative_titles, mediaType),
+    translations: translationsFromDetail(value.translations, mediaType),
+    seasonCount: mediaType === 'tv' ? nonNegativeIntegerValue(value.number_of_seasons) : undefined,
     imdbId: stringValue(externalIds?.imdb_id),
     tvdbId: numberValue(externalIds?.tvdb_id),
     overview: stringValue(value.overview),
@@ -890,6 +948,51 @@ function nonNegativeNumberValue(value: unknown): number | undefined {
 function positiveIntegerValue(value: unknown): number | undefined {
   const number = numberValue(value)
   return number != null && Number.isInteger(number) && number > 0 ? number : undefined
+}
+
+function nonNegativeIntegerValue(value: unknown): number | undefined {
+  const number = numberValue(value)
+  return number != null && Number.isInteger(number) && number >= 0 ? number : undefined
+}
+
+function alternativeTitlesFromDetail(value: unknown, mediaType: ScrapeMediaType): string[] {
+  if (!isRecord(value))
+    return []
+  const records = mediaType === 'movie' ? value.titles : value.results
+  if (!Array.isArray(records))
+    return []
+  return uniqueBoundedStrings(records.map(item => isRecord(item) ? stringValue(item.title) : undefined))
+}
+
+function translationsFromDetail(value: unknown, mediaType: ScrapeMediaType): string[] {
+  if (!isRecord(value) || !Array.isArray(value.translations))
+    return []
+  return uniqueBoundedStrings(value.translations.map((item) => {
+    if (!isRecord(item) || !isRecord(item.data))
+      return undefined
+    return stringValue(mediaType === 'movie' ? item.data.title : item.data.name)
+  }))
+}
+
+function uniqueBoundedStrings(values: readonly (string | undefined)[]): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const title = value?.normalize('NFC').trim().slice(0, 256)
+    const key = title?.toLocaleLowerCase()
+    if (!title || !key || seen.has(key))
+      continue
+    seen.add(key)
+    result.push(title)
+    if (result.length >= 32)
+      break
+  }
+  return result
+}
+
+function isFatalRecognitionRequestError(error: unknown): boolean {
+  return (error instanceof TmdbHttpError && (error.status === 401 || error.status === 403 || error.status === 429))
+    || (error instanceof DOMException && error.name === 'AbortError')
 }
 
 function isPositiveInteger(value: number): boolean {

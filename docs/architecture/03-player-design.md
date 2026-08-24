@@ -735,6 +735,10 @@ TMDB API 查询与详情补全
 
 路径识别采用 MoviePilot-like 的合并顺序：先解析文件名 stem，再解析父目录，再解析祖父目录，并用后续层级补齐缺失的身份字段。`Season 01` / `S01` / `第1季` 这类父目录只提供季信息，不作为标题；`S01E01.mkv` 这类文件名只提供季集信息，不作为标题；在 `剧名/Season 01/S01E01.mkv` 中，祖父目录才是剧名候选。带发布源/制作组噪声的作品目录，例如 `机械之声的传奇 The Legend of Vox Machina AMZN GrassTV`，应清洗出 `机械之声的传奇` / `The Legend of Vox Machina` 作为搜索标题，而不能成为媒体库 root 分类。
 
+Player 的独立识别器以 Unicode NFC 和 Unicode letter/number/mark 边界处理标题，不使用“只允许中文或 ASCII”的脚本白名单。季集 token pack 覆盖 `S01E02`、`1x02`、中英日韩及常见欧洲语言标签；只有删除后仍存在有效作品标题时，才移除可能与合法片名冲突的自然语言 token，因此《第八集》、`[REC]`、`Spider-Man` 等整标题必须保留。TMDB 自动识别先让 file、parent、grandparent 的 canonical 标题公平获得查询机会，再消费噪声回退；单作品搜索最多 10 次、详情补全最多 3 个身份。最终匹配同时使用本地化标题、原标题、别名、翻译、年份、媒体类型和季集结构，并以确定性置信度及候选间距拒绝低置信或身份冲突，不接受 provider 返回数组的首项作为身份。
+
+Player 与 Server 使用同一个脱敏 `provider-neutral-v1` 识别 corpus 作为跨实现契约。Player 识别缓存写入独立引擎版本和 `automatic` / `manual` 来源；引擎升级只使旧自动失败或旧自动派生结果重新计算，已有人工 TMDB 身份、人工元数据/图片覆盖、文件扫描事实、数据源配置、凭据和播放历史不得被清空或覆盖。
+
 示例：
 
 ```text

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { verifyNextgenRecognition } from './verify-nextgen-recognition.ts'
 import { deriveRawCandidateCategoryAssignment, RAW_MOVIE_CATEGORY_NAME, RAW_UNRESOLVED_CATEGORY_NAME, resolveRawCandidateCategoryAssignment, resolveRawScrapedCategoryAssignment } from '../src/services/scraper/categoryGrouping.ts'
 import { classifyScrapeMetadata, DEFAULT_SCRAPE_CLASSIFICATION_RULES } from '../src/services/scraper/classificationRules.ts'
-import { loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
+import { hasRawRecognitionEngineDrift, loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, createEffectiveRawScrapeItemMap } from '../src/services/scraper/manualIdentification.ts'
 import { enrichRawMediaCandidates, enrichRawScrapedItemsEpisodeMetadata } from '../src/services/scraper/metadataEnrichment.ts'
 import { recognizePathAwareMedia } from '../src/services/scraper/pathRecognition.ts'
@@ -11,6 +12,7 @@ import { createRawSourceHomeSections } from '../src/services/scraper/rawHomeMapp
 import { createRawSeriesSeasonChildren, getContextSeriesSeasons, getPlayableSeasonChildren, groupRawSeriesEntries } from '../src/services/scraper/rawSeriesGrouping.ts'
 import { createRawScanPreview } from '../src/services/scraper/scanner.ts'
 import { TmdbScraper } from '../src/services/scraper/tmdb.ts'
+import { PLAYER_RECOGNITION_ENGINE_VERSION } from '../src/services/scraper/recognition.ts'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '../src/services/playbackContext.ts'
 import type { MediaItem } from '../src/services/datasource/types.ts'
 import type { RawLocalScanCache } from '../src/services/scraper/localScanCache.ts'
@@ -373,6 +375,8 @@ assert.equal(manuallyIdentifiedCache.scrapedItems?.length, standardSeriesCandida
 assert.deepEqual([...new Set(manualCategories)], ['动漫'])
 assert.equal(manualCategories.includes(RAW_UNRESOLVED_CATEGORY_NAME), false)
 assert.equal(manuallyIdentifiedCache.scrapedItems?.[0]?.metadata?.titleLogoUrl, 'https://image.tmdb.org/t/p/w500/logo.png')
+assert.equal(manuallyIdentifiedCache.scrapedItems?.every(item => item.matchSource === 'manual'), true)
+assert.equal(manuallyIdentifiedCache.scrapedItems?.every(item => item.recognitionEngineVersion === PLAYER_RECOGNITION_ENGINE_VERSION), true)
 
 const seasonTwoEpisodeMetadata: TmdbEpisodeMetadata = {
   ...matchedEpisodeMetadata,
@@ -619,6 +623,8 @@ assert.equal(mixedStandaloneSearches.includes('movie:阿凡达'), true)
 assert.equal(standaloneAvatarScrape?.matchStatus, 'matched')
 assert.equal(standaloneAvatarScrape?.mediaType, 'movie')
 assert.equal(standaloneAvatarScrape?.metadata?.title, '阿凡达')
+assert.equal(standaloneAvatarScrape?.matchSource, 'automatic')
+assert.equal(standaloneAvatarScrape?.recognitionEngineVersion, PLAYER_RECOGNITION_ENGINE_VERSION)
 const standaloneAvatarDisplayAssignment = resolveRawScrapedCategoryAssignment(standaloneAvatarCandidate, standaloneAvatarScrape)
 assert.equal(standaloneAvatarDisplayAssignment.source, 'metadataRule')
 assert.notEqual(categoryNameForRawCandidate(standaloneAvatarCandidate, standaloneAvatarScrape), '动漫')
@@ -834,6 +840,24 @@ await withMockLocalStorage(async () => {
   const loadedCache = await loadRawSourceScanCache('alist', 'alist', '/')
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.stillUrl, matchedEpisodeMetadata.stillUrl)
   assert.equal(loadedCache?.scrapedItems?.[0]?.episodeMetadata?.overview, matchedEpisodeMetadata.overview)
+  assert.equal(loadedCache?.scrapedItems?.[0]?.matchSource, 'manual')
+  assert.equal(loadedCache ? hasRawRecognitionEngineDrift(loadedCache) : true, false)
+})
+await withMockLocalStorage(async () => {
+  assert.equal(await saveRawSourceScanCache({
+    ...episodeMetadataCache,
+    scanId: 'scan-stale-automatic-recognition',
+    scrapedItems: [{
+      ...matchedEpisodeScrape,
+      matchStatus: 'notFound',
+      matchSource: 'automatic',
+      recognitionEngineVersion: 'player-legacy-v1',
+      metadata: undefined,
+      episodeMetadata: undefined,
+    }],
+  }), true)
+  const loadedCache = await loadRawSourceScanCache('alist', 'alist', '/')
+  assert.equal(loadedCache ? hasRawRecognitionEngineDrift(loadedCache) : false, true)
 })
 await withMockLocalStorage(async () => {
   assert.equal(await saveRawSourceScanCache({
@@ -957,6 +981,7 @@ assert.equal(tokenizedPathPreview.records.length, 0)
 
 await verifyTmdbEpisodeDetailMapping()
 await verifyTmdbExactTitlePreference()
+const nextgenRecognition = await verifyNextgenRecognition()
 
 console.log(JSON.stringify({
   cleanedTitle,
@@ -1003,6 +1028,7 @@ console.log(JSON.stringify({
   categoryOnlySeasonSearchTitles: categoryOnlyRecognition.searchTitles,
   tokenizedPathRecordCount: tokenizedPathPreview.records.length,
   tmdbExactTitlePreference: '复仇者联盟',
+  nextgenRecognition,
 }, null, 2))
 
 async function verifyTmdbEpisodeDetailMapping(): Promise<void> {

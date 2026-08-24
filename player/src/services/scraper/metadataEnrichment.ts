@@ -6,6 +6,7 @@ import { createRawUnresolvedCategoryAssignment, resolveRawCandidateCategoryAssig
 import { classifyScrapeMetadata, loadScrapeClassificationRules } from './classificationRules'
 import { normalizeTitleKey } from './parser'
 import { createRawSeriesGroupingKey } from './rawSeriesGrouping'
+import { PLAYER_RECOGNITION_ENGINE_VERSION } from './recognition'
 import { extractCandidateTmdbSearchTitles, isMatchingTmdbEpisodeMetadata, loadTmdbLocalSettings, readConfiguredTmdbCredential, TmdbScraper } from './tmdb'
 
 export interface EnrichRawMediaCandidatesOptions {
@@ -91,6 +92,8 @@ export async function enrichRawMediaCandidates(
           recordId: candidate.record.id,
           providerPath: candidate.record.providerPath,
           matchStatus: 'matched',
+          matchSource: 'automatic',
+          recognitionEngineVersion: PLAYER_RECOGNITION_ENGINE_VERSION,
           searchTitles: group.searchTitles,
           matchedSearchTitle: match.searchTitle,
           metadata: match.metadata,
@@ -285,6 +288,8 @@ function fallbackScrapedItem(
     recordId: candidate.record.id,
     providerPath: candidate.record.providerPath,
     matchStatus,
+    matchSource: 'automatic',
+    recognitionEngineVersion: PLAYER_RECOGNITION_ENGINE_VERSION,
     searchTitles: extractCandidateTmdbSearchTitles(candidate),
     mediaType: fallbackMediaType(candidate),
     categoryName: categoryAssignment.categoryName,
@@ -363,6 +368,8 @@ function createMatchedScrapedItemFromMetadata(
     recordId: candidate.record.id,
     providerPath: candidate.record.providerPath,
     matchStatus: 'matched',
+    matchSource: 'automatic',
+    recognitionEngineVersion: PLAYER_RECOGNITION_ENGINE_VERSION,
     searchTitles: uniqueSearchTitles([
       ...representative.searchTitles,
       ...extractCandidateTmdbSearchTitles(candidate),

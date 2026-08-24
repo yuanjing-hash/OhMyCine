@@ -17,17 +17,22 @@ const BRACKETED_YEAR_TOKEN_RE = new RegExp(`[([【](${YEAR_PATTERN})[)\\]】]`)
 const LOOSE_YEAR_TOKEN_RE = new RegExp(`(?:^|[\\s._-])(${YEAR_PATTERN})(?=$|[\\s._-])`)
 const SXXEXX_RE = /\bS\s*0*(\d{1,2})\s*E\s*0*(\d{1,3})\b/i
 const ONE_X_EPISODE_RE = /\b0*(\d{1,2})x0*(\d{1,3})\b/i
-const CHINESE_EPISODE_RE = /第\s*([0-9一二三四五六七八九十百两〇零]+)\s*[集话話]/
-const EPISODE_ONLY_RE = /\b(?:EP?|Episode)\s*0*(\d{1,3})\b/i
-const SEASON_SEGMENT_RE = /^(?:Season|Seanson)\s*0*(\d{1,2})$/i
+const EAST_ASIAN_ORDINAL = '[0-9零〇一二三四五六七八九十百千两兩]+'
+const CHINESE_EPISODE_RE = new RegExp(`第\\s*(${EAST_ASIAN_ORDINAL})\\s*[集话話]`)
+const EAST_ASIAN_EPISODE_RE = new RegExp(`[第제]?\\s*(${EAST_ASIAN_ORDINAL})\\s*[集话話화회]`)
+const EPISODE_ONLY_RE = /\b(?:E(?:P(?:ISODE)?)?|Épisode|Folge|Episodio|Episódio|Aflevering|Avsnitt|Jakso|Odcinek|Bölüm)\s*0*(\d{1,3})\b/iu
+const SEASON_SEGMENT_RE = /^(?:Season|Seanson|Saison|Staffel|Temporada|Stagione|Seizoen|Säsong|Sesong|Kausi|Sezon|Série)\s*0*(\d{1,2})$/iu
 const S_SEASON_SEGMENT_RE = /^S\s*0*(\d{1,2})$/i
-const CHINESE_SEASON_RE = /第\s*([0-9一二三四五六七八九十百两〇零]+)\s*季/
-const TECH_TOKEN_RE = /\b(?:2160p|1080p|720p|576p|480p|UHD|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|DV|10bit|8bit|Proper|Repack)\b/gi
+const CHINESE_SEASON_RE = new RegExp(`第\\s*(${EAST_ASIAN_ORDINAL})\\s*季`)
+const EAST_ASIAN_SEASON_RE = new RegExp(`(?:第|제)?\\s*(${EAST_ASIAN_ORDINAL})\\s*(?:季|期|시즌)`)
+const SEASON_SUFFIX_RE = /^(\d{1,2})\s*시즌$/u
+const TECH_TOKEN_RE = /\b(?:2160p|1080p|720p|576p|480p|UHD|HQ|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|DV|10bit|8bit|Proper|Repack)\b/gi
 const SOURCE_TOKEN_RE = /\b(?:AMZN|Amazon|NF|Netflix|DSNP|Disney\+?|HMAX|HBO|Hulu|ATVP|AppleTV|iTunes|BiliBili|Baha|Crunchyroll|CR|Viu|U-?NEXT|ABEMA|TVING|PrimeVideo|MAX|Peacock|Paramount\+?)\b/g
-const RELEASE_GROUP_TOKEN_RE = /\b(?:GrassTV|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|YTS|MeGusta|VARYG|LoliHouse|ANi|Lilith|U3|CatWEB|MTeam|MWeb|Hares|SweetSub|MagicStar|Skymoon|XiaYong|Nekomoe|DBD-Raws|GM-Team|NC-Raws)\b/gi
+const RELEASE_GROUP_TOKEN_RE = /\b(?:GrassTV|BlackTV|GRP|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|YTS|MeGusta|VARYG|LoliHouse|ANi|Lilith|U3|CatWEB|MTeam|MWeb|Hares|SweetSub|MagicStar|Skymoon|XiaYong|Nekomoe|DBD-Raws|GM-Team|NC-Raws)\b/gi
 const SUBTITLE_TOKEN_RE = /\b(?:CHS|CHT|CHS&CHT|CHT&CHS|GB|BIG5|SUBS?|MULTI[- .]?SUB)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕/gi
-const CHINESE_TITLE_RE = /[\u4E00-\u9FFF][\u4E00-\u9FFF\s·・、，：:《》“”"'\-—]*/g
-const LATIN_TITLE_RE = /[a-z][a-z0-9\s'’:&.,!?+\-]*/gi
+const HAN_TITLE_RE = /\p{Script_Extensions=Han}[\p{Script_Extensions=Han}\p{N}\p{M}\s·，：:“”"'’&.!?+\-—]*/gu
+const LATIN_TITLE_RE = /\p{Script_Extensions=Latin}[\p{Script_Extensions=Latin}\p{N}\p{M}\s'’:&.,!?+\-—]*/gu
+const MEANINGFUL_TITLE_RE = /[\p{L}\p{N}]/u
 const GENERIC_TITLE_SEGMENT_KEYS = new Set([
   'download',
   'downloads',
@@ -278,34 +283,32 @@ export function extractRawPathHints(record: RawFileRecord): RawPathHints {
 }
 
 export function cleanMediaTitle(value: string): string {
-  return value
-    .replace(BRACKETED_YEAR_TOKEN_RE, ' ')
-    .replace(LOOSE_YEAR_TOKEN_RE, ' ')
-    .replace(SXXEXX_RE, ' ')
-    .replace(ONE_X_EPISODE_RE, ' ')
-    .replace(CHINESE_EPISODE_RE, ' ')
-    .replace(EPISODE_ONLY_RE, ' ')
-    .replace(/\[[^\]]+\]|\([^)]*\)|【[^】]+】/g, ' ')
+  const normalized = value.normalize('NFC')
+  return removeYearTokensSafely(removeStructureTokensSafely(normalized))
+    .replace(/\[([^\]]+)\]|\(([^)]*)\)|【([^】]+)】/g, (surface, square: string, round: string, corner: string) => {
+      const content = square ?? round ?? corner ?? ''
+      return isRemovableBracketToken(content) ? ' ' : surface
+    })
     .replace(TECH_TOKEN_RE, ' ')
     .replace(SOURCE_TOKEN_RE, ' ')
     .replace(RELEASE_GROUP_TOKEN_RE, ' ')
     .replace(SUBTITLE_TOKEN_RE, ' ')
     .replace(/[._]+/g, ' ')
-    .replace(/\s+-\s+[\da-z]+$/i, ' ')
-    .replace(/[-—]+/g, ' ')
+    .replace(/\s+[-—]\s+(?=$|[-—]\s|[\p{L}\p{N}])/gu, ' ')
     .replace(/\s+/g, ' ')
+    .replace(/^[\s,，:：;；·・-]+|[\s,，:：;；·・-]+$/gu, '')
     .trim()
 }
 
 export function normalizeTitleKey(value: string): string {
-  return cleanMediaTitle(value).toLocaleLowerCase()
+  return cleanMediaTitle(value).normalize('NFC').toLocaleLowerCase()
 }
 
 export function extractMediaSearchTitles(value: string): string[] {
   const cleaned = cleanSearchTitle(value)
   const candidates: string[] = []
 
-  for (const match of cleaned.matchAll(CHINESE_TITLE_RE))
+  for (const match of cleaned.matchAll(HAN_TITLE_RE))
     addSearchTitleCandidate(candidates, match[0])
   for (const match of cleaned.matchAll(LATIN_TITLE_RE))
     addSearchTitleCandidate(candidates, match[0])
@@ -329,14 +332,15 @@ function hasSearchableStandaloneMovieTitle(hints: RawPathHints, allowNested: boo
 }
 
 function parseTitleYear(value: string): TitleYearMatch | null {
-  const bracketed = BRACKETED_YEAR_TOKEN_RE.exec(value)
-  if (bracketed)
-    return createTitleYearMatch(value.slice(0, bracketed.index), bracketed[1])
-
-  const loose = LOOSE_YEAR_TOKEN_RE.exec(value)
-  if (loose)
-    return createTitleYearMatch(value.slice(0, loose.index), loose[1])
-
+  const matches = [
+    ...findPatternMatches(value, BRACKETED_YEAR_TOKEN_RE),
+    ...findPatternMatches(value, LOOSE_YEAR_TOKEN_RE),
+  ].sort((left, right) => right.index - left.index)
+  for (const match of matches) {
+    const parsed = createTitleYearMatch(value.slice(0, match.index), match.groups[1])
+    if (parsed)
+      return parsed
+  }
   return null
 }
 
@@ -373,6 +377,12 @@ function parseEpisode(value: string): EpisodeMatch | null {
     return episodeNumber == null ? null : { episodeNumber, chinese: true }
   }
 
+  const eastAsian = EAST_ASIAN_EPISODE_RE.exec(value)
+  if (eastAsian) {
+    const episodeNumber = parseNumberText(eastAsian[1])
+    return episodeNumber == null ? null : { episodeNumber, chinese: false }
+  }
+
   const episodeOnly = EPISODE_ONLY_RE.exec(value)
   if (episodeOnly)
     return { episodeNumber: Number(episodeOnly[1]), chinese: false }
@@ -381,12 +391,16 @@ function parseEpisode(value: string): EpisodeMatch | null {
 }
 
 function parseSeasonFolder(value: string): number | null {
-  const season = SEASON_SEGMENT_RE.exec(value) ?? S_SEASON_SEGMENT_RE.exec(value)
+  const season = SEASON_SEGMENT_RE.exec(value) ?? S_SEASON_SEGMENT_RE.exec(value) ?? SEASON_SUFFIX_RE.exec(value)
   if (season)
     return Number(season[1])
 
   const chinese = CHINESE_SEASON_RE.exec(value)
-  return chinese ? parseNumberText(chinese[1]) : null
+  if (chinese)
+    return parseNumberText(chinese[1])
+
+  const eastAsian = EAST_ASIAN_SEASON_RE.exec(value)
+  return eastAsian ? parseNumberText(eastAsian[1]) : null
 }
 
 function parseNumberText(value: string): number | null {
@@ -400,6 +414,7 @@ function parseNumberText(value: string): number | null {
     一: 1,
     二: 2,
     两: 2,
+    兩: 2,
     三: 3,
     四: 4,
     五: 5,
@@ -409,16 +424,22 @@ function parseNumberText(value: string): number | null {
     九: 9,
   }
 
-  if (normalized === '十')
-    return 10
-  if (normalized.includes('十')) {
-    const [tensRaw, onesRaw = ''] = normalized.split('十')
-    const tens = tensRaw ? digits[tensRaw] : 1
-    const ones = onesRaw ? digits[onesRaw] : 0
-    return tens == null || ones == null ? null : tens * 10 + ones
+  let total = 0
+  let current = 0
+  for (const character of normalized) {
+    if (character === '千' || character === '百' || character === '十') {
+      const unit = character === '千' ? 1000 : character === '百' ? 100 : 10
+      total += (current || 1) * unit
+      current = 0
+      continue
+    }
+    const digit = digits[character]
+    if (digit == null)
+      return null
+    current = current * 10 + digit
   }
-
-  return digits[normalized] ?? null
+  const result = total + current
+  return result >= 0 && result <= 10_000 ? result : null
 }
 
 function findLastTitleYearSegment(segments: readonly string[]): { index: number, match: TitleYearMatch } | null {
@@ -440,11 +461,7 @@ function findLastSeasonFolder(segments: readonly string[]): { index: number, sea
 }
 
 function titleBeforeEpisode(value: string): string {
-  return cleanMediaTitle(value
-    .replace(SXXEXX_RE, ' ')
-    .replace(ONE_X_EPISODE_RE, ' ')
-    .replace(CHINESE_EPISODE_RE, ' ')
-    .replace(EPISODE_ONLY_RE, ' '))
+  return cleanMediaTitle(value)
 }
 
 function cleanEpisodeTitleFromStem(value: string): string | undefined {
@@ -497,7 +514,7 @@ function isObviousStandaloneMovieNoiseTitle(value: string): boolean {
 }
 
 function normalizeSegmentTitleKey(value: string): string {
-  return cleanMediaTitle(value).toLocaleLowerCase().replace(/[^a-z0-9\u4E00-\u9FFF]+/g, '')
+  return cleanMediaTitle(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, '')
 }
 
 function folderTitleFallback(parentSegments: readonly string[], cleanFileTitle: string): string | undefined {
@@ -600,6 +617,72 @@ function isLikelyNoiseTitle(value: string): boolean {
   if (/^(?:S\d+|EP?\d+)$/i.test(normalized))
     return true
   return false
+}
+
+function removeStructureTokensSafely(value: string): string {
+  const patterns: Array<{ pattern: RegExp, preserveWholeTitle: boolean }> = [
+    { pattern: SXXEXX_RE, preserveWholeTitle: false },
+    { pattern: ONE_X_EPISODE_RE, preserveWholeTitle: false },
+    { pattern: EPISODE_ONLY_RE, preserveWholeTitle: false },
+    { pattern: CHINESE_EPISODE_RE, preserveWholeTitle: true },
+    { pattern: EAST_ASIAN_EPISODE_RE, preserveWholeTitle: true },
+  ]
+  let current = value
+  for (const item of patterns) {
+    const candidate = current.replace(new RegExp(item.pattern.source, `${item.pattern.flags.replace('g', '')}g`), ' ')
+    if (!item.preserveWholeTitle || hasMeaningfulTitle(candidate))
+      current = candidate
+  }
+  return current
+}
+
+function hasMeaningfulTitle(value: string): boolean {
+  const compact = value
+    .replace(TECH_TOKEN_RE, ' ')
+    .replace(SOURCE_TOKEN_RE, ' ')
+    .replace(RELEASE_GROUP_TOKEN_RE, ' ')
+    .replace(SUBTITLE_TOKEN_RE, ' ')
+    .replace(/[\s._\-—()[\]【】]+/gu, '')
+  return MEANINGFUL_TITLE_RE.test(compact)
+}
+
+function removeYearTokensSafely(value: string): string {
+  const matches = [
+    ...findPatternMatches(value, BRACKETED_YEAR_TOKEN_RE),
+    ...findPatternMatches(value, LOOSE_YEAR_TOKEN_RE),
+  ].sort((left, right) => right.index - left.index)
+  for (const match of matches) {
+    const candidate = `${value.slice(0, match.index)} ${value.slice(match.index + match.surface.length)}`
+    if (hasMeaningfulTitle(candidate))
+      return candidate
+  }
+  return value
+}
+
+function findPatternMatches(value: string, pattern: RegExp): Array<{ index: number, surface: string, groups: RegExpExecArray }> {
+  const global = new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`)
+  const matches: Array<{ index: number, surface: string, groups: RegExpExecArray }> = []
+  for (const match of value.matchAll(global))
+    matches.push({ index: match.index, surface: match[0], groups: match })
+  return matches
+}
+
+function isRemovableBracketToken(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed)
+    return true
+  if (new RegExp(`^${YEAR_PATTERN}$`).test(trimmed))
+    return true
+  if (/^(?:tmdb|imdb|tvdb)\s*(?:[-:=#]\s*)?\d+$/iu.test(trimmed))
+    return true
+
+  const stripped = trimmed
+    .replace(TECH_TOKEN_RE, ' ')
+    .replace(SOURCE_TOKEN_RE, ' ')
+    .replace(RELEASE_GROUP_TOKEN_RE, ' ')
+    .replace(SUBTITLE_TOKEN_RE, ' ')
+    .replace(/[\s._\-—]+/gu, '')
+  return !stripped
 }
 
 function clamp(value: number, min: number, max: number): number {

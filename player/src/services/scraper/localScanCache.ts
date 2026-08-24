@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { enrichRawMediaCandidates } from './metadataEnrichment'
 import { isLikelySensitiveProviderPath, isPathWithinRoot, isVideoFileName, normalizeProviderPath, providerParentPath, relativeProviderPath } from './pathUtils'
+import { PLAYER_RECOGNITION_ENGINE_VERSION } from './recognition'
 import { createRawScanPreview } from './scanner'
 import { isMatchingTmdbEpisodeMetadata, tmdbArtworkUrl } from './tmdb'
 
@@ -81,14 +82,17 @@ const DEFAULT_MAX_DEPTH = 12
 const DEFAULT_MAX_FOLDERS = 600
 const DEFAULT_MAX_ENTRIES = 8_000
 export async function runRawSourceLocalScan(input: RunRawSourceScanInput): Promise<RawLocalScanCache> {
+  const normalizedRootPath = normalizeProviderPath(input.rootPath)
+  const previousCache = await loadRawSourceScanCache(input.sourceId, input.sourceType, normalizedRootPath)
   const snapshot = await collectRawSourceScanSnapshot(input, '开始只读扫描')
   const { logs, preview, rootPath, startedAt } = snapshot
-  const scrapedItems = await enrichRawMediaCandidates(preview.candidates, {
+  const automaticScrapedItems = await enrichRawMediaCandidates(preview.candidates, {
     onLog: (entry) => {
       logs.push(entry)
       input.onLog?.(entry)
     },
   })
+  const scrapedItems = preserveManualScrapedItems(preview.candidates, automaticScrapedItems, previousCache)
   const scrapedItemsByRecordId = new Map(scrapedItems.map(item => [item.recordId, item]))
   const candidates = preview.candidates.map((candidate) => {
     const scraped = scrapedItemsByRecordId.get(candidate.record.id)
@@ -156,6 +160,11 @@ export async function runRawSourceIncrementalScan(input: RunRawSourceScanInput):
       'info',
       `增量扫描发现变化：新增 ${changeSummary.added}、删除 ${changeSummary.removed}、修改 ${changeSummary.changed}，开始刷新本地索引。`,
     )
+    return runRawSourceLocalScan({ ...input, rootPath, scanKind: 'full' })
+  }
+
+  if (hasRawRecognitionEngineDrift(previousCache)) {
+    addScanLog(snapshot.logs, input.onLog, 'info', '识别引擎已升级，保留人工识别并重新计算自动结果。')
     return runRawSourceLocalScan({ ...input, rootPath, scanKind: 'full' })
   }
 
@@ -308,6 +317,46 @@ function rawRecordFingerprint(record: RawFileRecord): string {
 
 function hasIncrementalChanges(summary: RawSourceIncrementalChangeSummary): boolean {
   return summary.added > 0 || summary.removed > 0 || summary.changed > 0
+}
+
+export function hasRawRecognitionEngineDrift(cache: Pick<RawLocalScanCache, 'scrapedItems'>): boolean {
+  return (cache.scrapedItems ?? []).some(item =>
+    inferredMatchSource(item) === 'automatic'
+    && item.recognitionEngineVersion !== PLAYER_RECOGNITION_ENGINE_VERSION)
+}
+
+function preserveManualScrapedItems(
+  candidates: readonly RawMediaCandidate[],
+  automaticItems: readonly RawScrapedMediaItem[],
+  previousCache: RawLocalScanCache | null,
+): RawScrapedMediaItem[] {
+  if (!previousCache)
+    return [...automaticItems]
+
+  const previousRecordPaths = new Map(previousCache.candidates.map(candidate => [candidate.record.id, candidate.record.providerPath]))
+  const previousItems = new Map((previousCache.scrapedItems ?? [])
+    .filter(item => inferredMatchSource(item) === 'manual' && item.matchStatus === 'matched' && item.metadata != null)
+    .map(item => [previousRecordPaths.get(item.recordId) ?? item.providerPath, item]))
+  const automaticByRecordId = new Map(automaticItems.map(item => [item.recordId, item]))
+
+  return candidates.map((candidate) => {
+    const manual = previousItems.get(candidate.record.providerPath)
+    if (!manual)
+      return automaticByRecordId.get(candidate.record.id)!
+    return {
+      ...manual,
+      recordId: candidate.record.id,
+      providerPath: candidate.record.providerPath,
+      matchSource: 'manual',
+      recognitionEngineVersion: manual.recognitionEngineVersion ?? PLAYER_RECOGNITION_ENGINE_VERSION,
+    }
+  }).filter((item): item is RawScrapedMediaItem => item != null)
+}
+
+function inferredMatchSource(item: RawScrapedMediaItem): NonNullable<RawScrapedMediaItem['matchSource']> {
+  if (item.matchSource === 'manual' || item.matchSource === 'automatic')
+    return item.matchSource
+  return item.matchStatus === 'matched' && item.metadata != null ? 'manual' : 'automatic'
 }
 
 function addScanLog(
@@ -592,6 +641,8 @@ function sanitizeRawScrapedMediaItem(item: RawScrapedMediaItem, record: RawFileR
     recordId: record.id,
     providerPath: record.providerPath,
     matchStatus: item.matchStatus,
+    matchSource: inferredMatchSource(item),
+    recognitionEngineVersion: item.recognitionEngineVersion,
     searchTitles: [...item.searchTitles],
     matchedSearchTitle: item.matchedSearchTitle,
     metadata: sanitizeTmdbMetadata(item.metadata),
@@ -634,6 +685,9 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     mediaType: metadata.mediaType,
     title: metadata.title,
     originalTitle: metadata.originalTitle,
+    alternativeTitles: [...(metadata.alternativeTitles ?? [])],
+    translations: [...(metadata.translations ?? [])],
+    seasonCount: metadata.seasonCount,
     imdbId: metadata.imdbId,
     tvdbId: metadata.tvdbId,
     overview: metadata.overview,

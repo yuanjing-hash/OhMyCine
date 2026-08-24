@@ -8,6 +8,7 @@ export type RawFileStructureMode = Exclude<RawScanModePreference, 'auto'>
 export type RawMediaCandidateKind = 'movie' | 'tv' | 'episode' | 'unresolved'
 export type RawParseStatus = 'parsed' | 'partial' | 'unresolved'
 export type RawTmdbMatchStatus = 'matched' | 'notConfigured' | 'notFound' | 'failed' | 'skipped'
+export type RawRecognitionMatchSource = 'automatic' | 'manual'
 
 export interface RawProviderScanItem {
   readonly name?: string
@@ -119,6 +120,8 @@ export interface RawScrapedMediaItem {
   readonly recordId: string
   readonly providerPath: string
   readonly matchStatus: RawTmdbMatchStatus
+  readonly matchSource?: RawRecognitionMatchSource
+  readonly recognitionEngineVersion?: string
   readonly searchTitles: string[]
   readonly matchedSearchTitle?: string
   readonly metadata?: TmdbMetadata

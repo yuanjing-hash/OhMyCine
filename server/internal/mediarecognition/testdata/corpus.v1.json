@@ -1,0 +1,165 @@
+{
+  "version": "provider-neutral-v1",
+  "reference_boundaries": [
+    {
+      "name": "OhMyCine legacy proxy",
+      "basis": "Synthetic clean-and-first-result proxy for offline development; not a measured execution of the historical Server pipeline",
+      "license": "OhMyCine project code"
+    },
+    {
+      "name": "MoviePilot v3",
+      "basis": "Publicly observable parsing dimensions only; no source copied",
+      "license": "GPLv3 reference boundary"
+    },
+    {
+      "name": "Emby",
+      "basis": "Official movie/TV naming documents and public naming-test dimensions only",
+      "license": "Current Server internals not claimed"
+    }
+  ],
+  "cases": [
+    {
+      "id": "tv-en-number-title-49-episodes-hq-release-group",
+      "input": {
+        "package_name": "Ming Dynasty in 1566 HQ -BlackTV",
+        "source_kind": "download",
+        "year_hint": 2007,
+        "files": [
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E01.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E02.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E03.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E04.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E05.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E06.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E07.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E08.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E09.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E10.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E11.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E12.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E13.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E14.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E15.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E16.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E17.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E18.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E19.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E20.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E21.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E22.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E23.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E24.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E25.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E26.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E27.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E28.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E29.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E30.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E31.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E32.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E33.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E34.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E35.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E36.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E37.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E38.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E39.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E40.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E41.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E42.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E43.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E44.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E45.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E46.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E47.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E48.HQ-BlackTV.mkv","size":1073741824},
+          {"relative_path":"Ming Dynasty in 1566 HQ -BlackTV/Ming.Dynasty.in.1566.S01E49.HQ-BlackTV.mkv","size":1073741824}
+        ]
+      },
+      "candidates": [
+        {"id":9,"media_type":"tv","title":"Ming Dynasty","release_year":2006,"popularity":100},
+        {"id":100,"media_type":"tv","title":"大明王朝1566","original_title":"Ming Dynasty in 1566","alternative_titles":["大明王朝 1566"],"release_year":2007,"season_count":1,"popularity":5},
+        {"id":200,"media_type":"movie","title":"Ming Dynasty in 1566","release_year":2007,"popularity":500}
+      ],
+      "expected":{"media_type":"tv","canonical_title":"Ming Dynasty in 1566","year":2007,"remote_id":100},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-numeric-title-1917",
+      "input":{"package_name":"1917.2019.2160p.UHD.BluRay-GRP","media_type_hint":"movie"},
+      "candidates":[{"id":191700,"media_type":"movie","title":"1917 Documentary","release_year":2017,"popularity":90},{"id":530915,"media_type":"movie","title":"1917","release_year":2019,"popularity":50}],
+      "expected":{"media_type":"movie","canonical_title":"1917","year":2019,"remote_id":530915},
+      "policy":"must_match"
+    },
+    {
+      "id":"tv-leading-number-title-3-body-problem",
+      "input":{"package_name":"3.Body.Problem.S01.2024.1080p.NF-WEB","files":[{"relative_path":"3 Body Problem/Season 01/3.Body.Problem.S01E01.mkv"},{"relative_path":"3 Body Problem/Season 01/3.Body.Problem.S01E02.mkv"},{"relative_path":"3 Body Problem/Season 01/3.Body.Problem.S01E03.mkv"}]},
+      "candidates":[{"id":108545,"media_type":"tv","title":"3 Body Problem","alternative_titles":["The Three-Body Problem"],"release_year":2024,"season_count":1},{"id":999,"media_type":"movie","title":"Body Problem","release_year":2024}],
+      "expected":{"media_type":"tv","canonical_title":"3 Body Problem","year":2024,"remote_id":108545},
+      "policy":"must_match"
+    },
+    {
+      "id":"tv-traditional-simplified-alternative-title",
+      "input":{"package_name":"後宮甄嬛傳.2011.S01E01.1080p","media_type_hint":"tv"},
+      "candidates":[{"id":321,"media_type":"tv","title":"Empresses in the Palace","alternative_titles":["后宫甄嬛传"],"translations":["The Legend of Zhen Huan"],"release_year":2011,"season_count":1}],
+      "expected":{"media_type":"tv","canonical_title":"後宮甄嬛傳","year":2011,"remote_id":321},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-japanese-original-title",
+      "input":{"package_name":"七人の侍.1954.1080p.BluRay-GRP","media_type_hint":"movie"},
+      "candidates":[{"id":346,"media_type":"movie","title":"Seven Samurai","original_title":"七人の侍","translations":["七武士"],"release_year":1954}],
+      "expected":{"media_type":"movie","canonical_title":"七人の侍","year":1954,"remote_id":346},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-korean-original-title",
+      "input":{"package_name":"기생충.2019.1080p.BluRay-GRP","media_type_hint":"movie"},
+      "candidates":[{"id":496243,"media_type":"movie","title":"Parasite","original_title":"기생충","translations":["寄生虫"],"release_year":2019}],
+      "expected":{"media_type":"movie","canonical_title":"기생충","year":2019,"remote_id":496243},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-legal-hyphen-spider-man",
+      "input":{"package_name":"Spider-Man.2002.1080p.BluRay-GRP","media_type_hint":"movie"},
+      "candidates":[{"id":557,"media_type":"movie","title":"Spider Man: The Myth","release_year":2000},{"id":558,"media_type":"movie","title":"Spider-Man","release_year":2002}],
+      "expected":{"media_type":"movie","canonical_title":"Spider-Man","year":2002,"remote_id":558},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-bdmv-parent-structure",
+      "input":{"package_name":"Seven Samurai 1954","files":[{"relative_path":"Seven Samurai 1954/BDMV/STREAM/00000.m2ts","size":32212254720}]},
+      "candidates":[{"id":346,"media_type":"movie","title":"Seven Samurai","original_title":"七人の侍","release_year":1954}],
+      "expected":{"media_type":"movie","canonical_title":"Seven Samurai","year":1954,"remote_id":346},
+      "policy":"must_match"
+    },
+    {
+      "id":"negative-two-identical-candidates",
+      "input":{"package_name":"The Office.2005.S01E01","media_type_hint":"tv"},
+      "candidates":[{"id":2316,"media_type":"tv","title":"The Office","release_year":2005},{"id":9999,"media_type":"tv","title":"The Office","release_year":2005}],
+      "expected":{"media_type":"tv","canonical_title":"The Office","year":2005},
+      "policy":"must_reject"
+    },
+    {
+      "id":"negative-strong-year-conflict",
+      "input":{"package_name":"Dune.2021.2160p.BluRay-GRP","media_type_hint":"movie"},
+      "candidates":[{"id":841,"media_type":"movie","title":"Dune","release_year":1984}],
+      "expected":{"media_type":"movie","canonical_title":"Dune","year":2021},
+      "policy":"must_reject"
+    },
+    {
+      "id":"negative-only-resource-specifications",
+      "input":{"package_name":"1080p.BluRay.HQ.x265-GRP"},
+      "candidates":[],
+      "expected":{"canonical_title":""},
+      "policy":"must_reject"
+    },
+    {
+      "id":"movie-legal-release-like-title-suffix",
+      "input":{"package_name":"Tinker-Tailor-Soldier-Spy.2011.1080p","media_type_hint":"movie"},
+      "candidates":[{"id":49517,"media_type":"movie","title":"Tinker Tailor Soldier Spy","release_year":2011}],
+      "expected":{"media_type":"movie","canonical_title":"Tinker-Tailor-Soldier-Spy","year":2011,"remote_id":49517},
+      "policy":"must_match"
+    }
+  ]
+}
