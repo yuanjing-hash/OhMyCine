@@ -639,3 +639,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 24: 统一风格3分类封面并发布新版
+
+**Date**: 2026-08-24
+**Task**: 统一风格3分类封面并发布新版
+**Branch**: `develop`
+
+### Summary
+
+对照 MoviePilot-Plugins style_static_3 源码，将 Server 顶层入口固定封面与分类动态封面分层；本地、115 和 Bilibili 分类统一 1920×1080 风格3，保持 Emby/Jellyfin 原生图不受影响；推送 develop，发布 Bilibili 0.3.5 与 Player v1.1.17 Beta。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5f9ab90` | (see git log) |
+
+### Status
+
+[OK] **Completed**
