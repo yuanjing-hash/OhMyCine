@@ -30,7 +30,7 @@
 - [x] Player 独立本地/原始来源分类同样使用风格 3；直连 Emby/Jellyfin 封面未被重组或覆盖。
 - [x] Player 不接收插件远端图片 URL、Cookie、Host asset UUID 或 Server 内部路径，只消费 Server 同源封面 URL。
 - [x] Server、插件与 Player 的相关回归测试通过，Player typecheck/lint/build 与 Server `go test ./...`、`go vet ./...` 通过。
-- [ ] 完成后推送 Server/Player 代码至 `develop`，发布新的 Player Beta；若 Bilibili 包协议或实现改变，发布新版官方插件。
+- [x] 完成后推送 Server/Player 代码至 `develop`，发布新的 Player Beta；若 Bilibili 包协议或实现改变，发布新版官方插件。
 
 ## Out of Scope
 
