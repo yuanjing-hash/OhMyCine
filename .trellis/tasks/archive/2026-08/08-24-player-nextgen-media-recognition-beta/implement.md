@@ -37,12 +37,12 @@
 
 ## 6. Commit、Push 与 Beta
 
-- [ ] 审计 dirty worktree，只暂存本任务拥有的文件。
-- [ ] 创建 `feat(player): 升级多语言媒体识别器` 或等价 Conventional Commit。
-- [ ] fetch 并将提交安全落到最新远端 `develop`，push 后验证远端 SHA。
-- [ ] 选择下一个未占用 patch Beta 版本并触发 `player-beta-release.yml`。
-- [ ] 等待 workflow 完成，核对 prerelease、Windows 三包、SHA-256、updater manifest 和 Android ARM64 APK。
-- [ ] 记录 release/tag/commit 链接；完成后使用 `trellis-finish-work` 收口任务。
+- [x] 审计 dirty worktree，只暂存本任务拥有的文件。
+- [x] 创建 `feat(player): 升级多语言媒体识别器` 或等价 Conventional Commit。
+- [x] fetch 并将提交安全落到最新远端 `develop`，push 后验证远端 SHA。
+- [x] 选择下一个未占用 patch Beta 版本并触发 `player-beta-release.yml`。
+- [x] 等待 workflow 完成，核对 prerelease、Windows 三包、SHA-256、updater manifest 和 Android ARM64 APK。
+- [x] 记录 release/tag/commit 链接；完成后使用 `trellis-finish-work` 收口任务。
 
 ## Validation Commands
 
@@ -76,6 +76,8 @@ git diff --check
 - Actual mocked TMDB orchestration used 2/10 search requests and 1/3 detail requests; HTTP 429 stopped after the first search request and after the first detail request. Ordinary detail failures degrade safely, while authentication, rate-limit, and cancellation errors retain termination semantics.
 - Cache verification passed for conservative legacy-match preservation, stale automatic-engine drift, manual-source persistence, raw cache storage, source index scheduler, and TMDB authentication routing.
 - `vue-tsc --noEmit`, full Player ESLint, and Vite production build passed. No Rust/Tauri files changed, so Cargo checks are not applicable to this implementation slice.
+- Work commit `8b7c56ad9a5f988be5c87a72e0f79a3163e0f270` was pushed to `origin/develop`; the fetched remote SHA matched exactly before release dispatch.
+- GitHub Actions run `32716283283` completed successfully. Release `v1.1.19` is a non-draft prerelease whose tag and target commit match `origin/develop`; Windows setup/standard/portable assets, SHA-256, updater signature/`latest.json`, Android ARM64 APK, and Android checksum are uploaded.
 
 ## Pre-Start Gate
 
