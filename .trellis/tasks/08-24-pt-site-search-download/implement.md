@@ -14,3 +14,7 @@
 12. 增加基于不透明结果 claim 的只读快速识别 API、共享识别/TMDB 降级摘要、同源海报、发行规格与探索页行内结果。
 13. 扩展 CookieCloud 安全同步摘要，分别统计其它未支持域名和受支持候选缺少登录 Cookie，并补服务/UI 测试。
 14. 增加内建站点目录、共享 NexusPHP adapter、可扩展站点 kind 迁移、目录 API/管理 UI 与 CookieCloud 多站发现；增加多域同步和嵌套表格去重回归测试。
+15. 将 SewerPT 与 PandaPT 加入首批真实目录和 CookieCloud 自动发现；收紧 NexusPHP 登录正向证明，并修复 PandaPT 嵌套标题行的外层统计、`span[title]` 时间、`pro_free*` 促销和无 `title` 文本回退解析。
+16. 扩展目录与 Site DTO 的 `site_type/credential_kind`，实现 Nyaa 等首批公开 BT RSS profiles 及 Torznab adapter/API Key 凭据。
+17. 增加 adapter `SourceResolver` 可选契约，将受控 torrent/magnet 复用 DownloadService；增加通用 torrent JSON/SSE/识别路由并保留 PT 兼容路由。
+18. 更新站点管理 PT/BT 向导、动态凭据表单、类型卡片与探索页文案，并补齐 Server/Web UI 跨层与脱敏回归。

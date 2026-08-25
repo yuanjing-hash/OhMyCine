@@ -15,3 +15,9 @@ CookieCloud 使用单例设置与专用 AES-GCM purpose 保存 Server URL、UUID
 CookieCloud 同步只统计未知观察域名和受支持候选无有效登录 Cookie 的数量。已知域名集合来自已配置站点 host 与固定内建发现候选；响应、日志和审计只记录数字，不记录域名、Cookie 名称或值。
 
 多站支持采用 MoviePilot 已验证的分层思路，但实现为 OhMyCine 自有目录：`pkg/site/builtin` 保存稳定站点键、显示名、解析引擎、规范 HTTPS 根地址与自动发现策略；标准站点复用 NexusPHP adapter，特殊站点未来只替换对应键的 adapter。数据库 `kind` 保存目录键并取消 PTTime 单值约束。CookieCloud 对每个目录项分别做同域 Cookie 合并、候选验证和加密创建，已配置判断同时使用目录键与规范 host，不能再按一个共享解析引擎阻止后续站点。
+
+首批目录在 PTTime 之外加入 `sewerpt`（`https://sewerpt.com`）和 `panda`（`https://pandapt.net`）。共享 NexusPHP adapter 使用目录注入的最小 profile 管理健康、普通视频搜索和种子下载路径；健康检查必须看到 `logout.php` 或欢迎标识等已登录正向证明。解析器先按 torrent ID 聚合标题链接，再从其所有祖先 `tr` 中选择 direct `td` 最完整的种子行，解决 PandaPT 的 `table.torrentname` 嵌套标题既不能重复、又不能丢失外层大小/做种/下载/完成人数字段。发布时间优先读取 `span[title]`，免费促销兼容 `pro_free*` 类名；无 `title` 的链接回退可见文本。
+
+BT 与 PT 共享 SiteService、限速器、结果 vault、快速识别和 DownloadService 桥接，但 adapter 和凭据契约独立。`pkg/site/btrss` 使用编译期 profile 定义公开 RSS 查询路径/参数/固定下载 host，只接受同源或 profile 明确允许的 torrent URL 以及规范 `magnet:?xt=urn:btih:*`。`pkg/site/torznab` 只向管理员配置且已验证的 HTTPS API 端点发送 API Key，不跟随跨源重定向。
+
+Adapter 可选实现 `SourceResolver`，把服务端私有结果 identity 解析为 torrent bytes 或 magnet；旧 PT adapter 继续使用 `Download` 契约。SiteService 将两者都转换成既有 `DownloadSourceInput`，禁止在公开 DTO 增加下载 URL/magnet/API Key。通用 `/discovery/torrent-search*` 路由成为管理端主契约，旧 `/discovery/pt-search*` 保留为兼容别名。

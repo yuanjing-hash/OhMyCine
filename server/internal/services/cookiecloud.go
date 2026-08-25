@@ -348,6 +348,10 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 			continue
 		}
 		configuredHosts[strings.ToLower(host.Hostname())] = struct{}{}
+		definition, known := builtin.DefinitionForKey(siteRecord.Kind)
+		if !known || definition.CredentialKind != builtin.CredentialCookie {
+			continue
+		}
 		cookie := cookieForHost(cookies, host.Hostname())
 		if cookie == "" {
 			result.Skipped++
@@ -692,6 +696,10 @@ func cookiesByDomain(entries []cookieCloudEntry) map[string]map[string]string {
 func countUnsupportedCookieDomains(cookies map[string]map[string]string, sites []models.Site) int {
 	hosts := make([]string, 0, len(sites)+len(cookieCloudDiscoveryCandidates))
 	for _, siteRecord := range sites {
+		definition, known := builtin.DefinitionForKey(siteRecord.Kind)
+		if !known || definition.CredentialKind != builtin.CredentialCookie {
+			continue
+		}
 		if parsed, err := url.Parse(siteRecord.BaseURL); err == nil && parsed.Hostname() != "" {
 			hosts = append(hosts, parsed.Hostname())
 		}

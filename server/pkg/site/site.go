@@ -18,10 +18,19 @@ type Config struct {
 	BaseURL           string
 	Cookie            string
 	Passkey           string
+	APIKey            string
 	UserAgent         string
 	Timeout           time.Duration
 	BrowserEmulation  bool
 	BrowserServiceURL string
+}
+
+// Source is the server-only download material resolved from an opaque search
+// result identity. Exactly one of Torrent or Magnet is populated.
+type Source struct {
+	Torrent  []byte
+	Filename string
+	Magnet   string
 }
 
 type Query struct {
@@ -63,4 +72,11 @@ type Adapter interface {
 	Test(context.Context, Config) (Health, error)
 	Search(context.Context, Config, Query) (Page, error)
 	Download(context.Context, Config, string) ([]byte, string, error)
+}
+
+// SourceResolver is implemented by public BT and Torznab adapters whose
+// search identities resolve to either a bounded torrent file or a normalized
+// magnet. The identity never leaves the SiteService result vault.
+type SourceResolver interface {
+	ResolveSource(context.Context, Config, string) (Source, error)
 }

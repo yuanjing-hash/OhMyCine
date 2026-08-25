@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, ptSearchPath, ptSearchStreamPath, ptSearchURL, upsertPTGroup, type PTRecognitionResult, type PTSearchGroup, type PTSearchResponse, type PTSearchResult } from '@/sites'
+import { discoveryDownloadsPath, ptRecognitionErrorLabel, ptRecognitionSpecLabels, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -17,17 +17,17 @@ const year = ref<number | undefined>(typeof route.query.year === 'string' ? Numb
 const tmdbID = ref<number | undefined>(typeof route.query.tmdb_id === 'string' ? Number(route.query.tmdb_id) || undefined : undefined)
 const searchBy = ref<'title' | 'tmdb_id'>(route.query.search_by === 'tmdb_id' ? 'tmdb_id' : 'title')
 const selectedTitle = computed(() => typeof route.query.title === 'string' ? route.query.title : '')
-const groups = ref<PTSearchGroup[]>([])
+const groups = ref<TorrentSearchGroup[]>([])
 const searching = ref(false)
 const searchError = ref('')
 const searched = ref(false)
 const downloaders = ref<DownloaderSummary[]>([])
 const libraries = ref<MediaLibraryDetail[]>([])
 const storages = ref<StorageSummary[]>([])
-const downloadDialog = ref<PTSearchResult | null>(null)
+const downloadDialog = ref<TorrentSearchResult | null>(null)
 const downloadForm = ref({ downloaderID: '', mediaLibraryID: 0, priority: 0 })
 const submitting = ref(false)
-const recognitions = ref<Record<string, PTRecognitionResult>>({})
+const recognitions = ref<Record<string, TorrentRecognitionResult>>({})
 const recognitionErrors = ref<Record<string, string>>({})
 const recognizingTokens = ref<string[]>([])
 let source: EventSource | null = null
@@ -51,8 +51,8 @@ function stopStream() {
 
 async function searchJSON(siteID?: number, page = 1, append = false) {
   try {
-    const response = await api<PTSearchResponse>(ptSearchURL(ptSearchPath, searchInput(siteID, page)))
-    for (const group of response.groups) groups.value = upsertPTGroup(groups.value, group, append)
+    const response = await api<TorrentSearchResponse>(torrentSearchURL(torrentSearchPath, searchInput(siteID, page)))
+    for (const group of response.groups) groups.value = upsertTorrentGroup(groups.value, group, append)
     searched.value = true
   } catch (reason) { searchError.value = message(reason) }
   finally { searching.value = false }
@@ -68,12 +68,12 @@ function search() {
   searching.value = true
   if (typeof EventSource === 'undefined') { void searchJSON(); return }
   let delivered = false
-  const eventSource = new EventSource(ptSearchURL(ptSearchStreamPath, searchInput()))
+  const eventSource = new EventSource(torrentSearchURL(torrentSearchStreamPath, searchInput()))
   source = eventSource
   eventSource.addEventListener('site', event => {
     try {
-      const group = JSON.parse((event as MessageEvent<string>).data) as PTSearchGroup
-      groups.value = upsertPTGroup(groups.value, group)
+      const group = JSON.parse((event as MessageEvent<string>).data) as TorrentSearchGroup
+      groups.value = upsertTorrentGroup(groups.value, group)
       delivered = true
       searched.value = true
     } catch { /* malformed events are ignored; JSON fallback remains available */ }
@@ -95,13 +95,13 @@ function search() {
   }, 30_000)
 }
 
-async function retrySite(group: PTSearchGroup) {
+async function retrySite(group: TorrentSearchGroup) {
   searching.value = true
   searchError.value = ''
   await searchJSON(group.site_id, 1)
 }
 
-async function nextPage(group: PTSearchGroup) {
+async function nextPage(group: TorrentSearchGroup) {
   searching.value = true
   await searchJSON(group.site_id, group.page + 1, true)
 }
@@ -115,21 +115,21 @@ async function loadDownloadOptions() {
   if (!enabledDownloaders.value.some(item => item.id === downloadForm.value.downloaderID)) downloadForm.value.downloaderID = enabledDownloaders.value[0]?.id ?? ''
 }
 
-async function openDownload(item: PTSearchResult) {
+async function openDownload(item: TorrentSearchResult) {
   downloadDialog.value = item
   downloadForm.value = { downloaderID: '', mediaLibraryID: 0, priority: 0 }
   try { await loadDownloadOptions() }
   catch (reason) { notify(message(reason), 'error') }
 }
 
-async function recognizeResult(item: PTSearchResult) {
+async function recognizeResult(item: TorrentSearchResult) {
   if (recognizingTokens.value.includes(item.token)) return
   recognizingTokens.value = [...recognizingTokens.value, item.token]
   const errors = { ...recognitionErrors.value }
   delete errors[item.token]
   recognitionErrors.value = errors
   try {
-    const result = await api<PTRecognitionResult>(ptRecognitionPath, { method: 'POST', body: JSON.stringify({ result_token: item.token }) })
+    const result = await api<TorrentRecognitionResult>(torrentRecognitionPath, { method: 'POST', body: JSON.stringify({ result_token: item.token }) })
     recognitions.value = { ...recognitions.value, [item.token]: result }
   } catch (reason) {
     recognitionErrors.value = { ...recognitionErrors.value, [item.token]: message(reason) }
@@ -154,7 +154,7 @@ async function submitDownload() {
 function formatTime(value?: string) { return value ? new Date(value).toLocaleString() : '未知' }
 function count(value?: number) { return value == null ? '—' : String(value) }
 function mediaTypeLabel(value?: string) { return value === 'movie' ? '电影' : value === 'tv' ? '剧集' : '类型待定' }
-function message(reason: unknown) { return reason instanceof Error ? reason.message : 'PT 搜索暂时不可用' }
+function message(reason: unknown) { return reason instanceof Error ? reason.message : '种子搜索暂时不可用' }
 
 onMounted(() => { if (keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search() })
 onBeforeUnmount(stopStream)
@@ -162,7 +162,7 @@ onBeforeUnmount(stopStream)
 
 <template>
   <section class="space-y-5">
-    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Explore</p><h1 class="mt-1 text-2xl font-800">探索与 PT 搜索</h1><p class="page-description mt-1">从推荐作品或关键词查询已启用站点；浏览器只收到 15 分钟有效的不透明结果令牌。</p></header>
+    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Explore</p><h1 class="mt-1 text-2xl font-800">探索与种子搜索</h1><p class="page-description mt-1">聚合查询已启用的 PT 与公开 BT 站点；浏览器只收到 15 分钟有效的不透明结果令牌。</p></header>
     <form class="panel" @submit.prevent="search">
       <div class="mb-4 flex flex-wrap gap-2" role="group" aria-label="搜索方式"><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'title' }" @click="searchBy = 'title'">按标题</button><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'tmdb_id' }" @click="searchBy = 'tmdb_id'">按 TMDB ID</button></div>
       <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] md:items-end">
@@ -170,16 +170,16 @@ onBeforeUnmount(stopStream)
         <div v-else><label class="label" for="discovery-tmdb">TMDB ID</label><input id="discovery-tmdb" v-model.number="tmdbID" class="input font-mono" type="number" min="1" placeholder="346" required /></div>
         <div><label class="label" for="discovery-kind">媒体类型</label><select id="discovery-kind" v-model="mediaType" class="input"><option value="">自动</option><option value="movie">电影</option><option value="tv">剧集</option></select></div>
         <div><label class="label" for="discovery-year">年份</label><input id="discovery-year" v-model.number="year" class="input" type="number" min="1880" max="2200" placeholder="可选" /></div>
-        <button class="btn-primary" :disabled="searching">{{ searching ? '搜索中…' : '搜索 PT 资源' }}</button>
+        <button class="btn-primary" :disabled="searching">{{ searching ? '搜索中…' : '搜索种子资源' }}</button>
       </div>
     </form>
     <div v-if="selectedTitle" class="panel"><span class="status-chip">已选作品</span><h2 class="mt-3 text-xl font-750">{{ selectedTitle }}</h2><p class="mt-1 text-sm text-muted">推荐来源只帮助确认作品身份，真实种子搜索仍按站点分别执行。</p></div>
     <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">重试全部站点</button></div>
     <div v-if="searching && !groups.length" class="panel py-10 text-center text-muted">正在按站点限速并行搜索，结果会渐进出现…</div>
-    <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT 站点，或当前关键词暂无结果。可以先到“站点管理”添加 PTTime。</div>
+    <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT/BT 站点，或当前关键词暂无结果。可以先到“站点管理”添加站点。</div>
 
     <article v-for="group in groups" :key="group.site_id" class="panel overflow-hidden p-0">
-      <header class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4"><div class="flex flex-wrap items-center gap-2"><h2 class="m-0 text-lg">{{ group.site_name }}</h2><span :class="group.status === 'success' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ group.status === 'success' ? `${group.items.length} 条结果` : '搜索失败' }}</span><span v-if="group.skipped" class="status-chip">跳过 {{ group.skipped }} 条畸形数据</span></div><button v-if="group.status === 'error'" class="btn-secondary" :disabled="searching" @click="retrySite(group)">只重试此站</button></header>
+      <header class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4"><div class="flex flex-wrap items-center gap-2"><h2 class="m-0 text-lg">{{ group.site_name }}</h2><span class="status-chip">{{ group.site_type?.toUpperCase() || 'PT' }}</span><span :class="group.status === 'success' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ group.status === 'success' ? `${group.items.length} 条结果` : '搜索失败' }}</span><span v-if="group.skipped" class="status-chip">跳过 {{ group.skipped }} 条畸形数据</span></div><button v-if="group.status === 'error'" class="btn-secondary" :disabled="searching" @click="retrySite(group)">只重试此站</button></header>
       <div v-if="group.status === 'error'" class="p-5 text-sm text-muted">该站点暂时不可用（<span class="font-mono">{{ group.error_code || 'site_unavailable' }}</span>），不影响其它站点结果。</div>
       <div v-else-if="!group.items.length" class="p-5 text-sm text-muted">此页没有匹配结果。</div>
       <div v-else class="divide-y divide-[var(--border)]">

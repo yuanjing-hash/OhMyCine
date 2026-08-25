@@ -105,7 +105,7 @@ func TestCookieCloudSyncDiscoversAndCreatesSupportedSite(t *testing.T) {
 
 func TestCookieCloudSyncDiscoversMultipleCatalogSites(t *testing.T) {
 	sites, _, actor, store, _, _ := siteFixture(t)
-	for _, kind := range []string{"hdsky", "ourbits"} {
+	for _, kind := range []string{"sewerpt", "panda"} {
 		sites.adapters[kind] = &stubSiteAdapter{kind: kind, testErr: map[string]error{}, searchErr: map[string]error{}}
 	}
 	service := NewCookieCloudService(sites.db, sites.audit, store, sites, zerolog.Nop())
@@ -118,8 +118,8 @@ func TestCookieCloudSyncDiscoversMultipleCatalogSites(t *testing.T) {
 	payload := cryptoJSCookieCloudFixture(t, "fixture-user", "fixture-password", map[string]any{
 		"cookie_data": map[string]any{
 			"pttime":  []map[string]string{{"domain": ".pttime.org", "name": "uid", "value": "1"}, {"domain": ".pttime.org", "name": "token", "value": "one"}},
-			"hdsky":   []map[string]string{{"domain": ".hdsky.me", "name": "uid", "value": "2"}, {"domain": ".hdsky.me", "name": "token", "value": "two"}},
-			"ourbits": []map[string]string{{"domain": ".ourbits.club", "name": "uid", "value": "3"}, {"domain": ".ourbits.club", "name": "token", "value": "three"}},
+			"sewerpt": []map[string]string{{"domain": ".sewerpt.com", "name": "uid", "value": "2"}, {"domain": ".sewerpt.com", "name": "token", "value": "two"}},
+			"panda":   []map[string]string{{"domain": ".pandapt.net", "name": "uid", "value": "3"}, {"domain": ".pandapt.net", "name": "token", "value": "three"}},
 		},
 	})
 	if err := service.Receive("fixture-user", payload, "legacy", "fixture-shared-auth"); err != nil {
@@ -133,8 +133,40 @@ func TestCookieCloudSyncDiscoversMultipleCatalogSites(t *testing.T) {
 	if err := sites.db.Order("kind").Find(&records).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 3 || records[0].Kind != "hdsky" || records[0].Name != "HDSky" || records[1].Kind != "ourbits" || records[1].Name != "OurBits" || records[2].Kind != "pttime" || records[2].Name != "PTTime" {
+	if len(records) != 3 || records[0].Kind != "panda" || records[0].Name != "熊猫高清 · PandaPT" || records[1].Kind != "pttime" || records[1].Name != "PTTime" || records[2].Kind != "sewerpt" || records[2].Name != "下水道 · SewerPT" {
 		t.Fatalf("records=%+v", records)
+	}
+}
+
+func TestCookieCloudSyncIgnoresPublicBTConnections(t *testing.T) {
+	sites, _, actor, store, _, _ := siteFixture(t)
+	sites.adapters["nyaa"] = &stubSiteAdapter{kind: "nyaa", testErr: map[string]error{}, searchErr: map[string]error{}}
+	created, err := sites.Create(context.Background(), actor, SiteInput{Name: "Nyaa", Kind: "nyaa", BaseURL: "https://nyaa.si", Enabled: true, Priority: 100, TimeoutSeconds: 12, RateLimitPerMinute: 12}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCookieCloudService(sites.db, sites.audit, store, sites, zerolog.Nop())
+	if _, err := service.Update(context.Background(), actor, CookieCloudSettingsInput{Mode: "local", UUID: "fixture-user", Password: "fixture-password", AuthHeader: "fixture-shared-auth", Revision: 1}, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	payload := cryptoJSCookieCloudFixture(t, "fixture-user", "fixture-password", map[string]any{"cookie_data": map[string]any{"nyaa": []map[string]string{{"domain": ".nyaa.si", "name": "session", "value": "must-not-be-imported"}}}})
+	if err := service.Receive("fixture-user", payload, "legacy", "fixture-shared-auth"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Sync(context.Background(), actor, RequestContext{})
+	if err != nil || result.Updated != 0 || result.Failed != 0 || result.SkippedUnsupportedDomains != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var record models.Site
+	if err := sites.db.First(&record, created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Revision != created.Revision {
+		t.Fatalf("public BT connection was unexpectedly updated: %+v", record)
+	}
+	plain, err := sites.decryptCredential(record)
+	if err != nil || plain.Cookie != "" || plain.APIKey != "" {
+		t.Fatalf("public BT credential was polluted: %+v err=%v", plain, err)
 	}
 }
 

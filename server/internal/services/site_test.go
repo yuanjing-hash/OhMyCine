@@ -31,6 +31,20 @@ type stubSiteAdapter struct {
 	downloadStarted chan struct{}
 	downloadRelease chan struct{}
 	searchTitle     string
+	lastConfig      sitepkg.Config
+}
+
+type stubResolverAdapter struct {
+	*stubSiteAdapter
+	resolved   sitepkg.Source
+	resolveErr error
+}
+
+func (a *stubResolverAdapter) ResolveSource(_ context.Context, _ sitepkg.Config, identity string) (sitepkg.Source, error) {
+	if identity != "42" {
+		return sitepkg.Source{}, sitepkg.ErrNotFound
+	}
+	return a.resolved, a.resolveErr
 }
 
 func (a *stubSiteAdapter) Kind() string {
@@ -40,10 +54,56 @@ func (a *stubSiteAdapter) Kind() string {
 	return a.kind
 }
 func (a *stubSiteAdapter) Test(_ context.Context, config sitepkg.Config) (sitepkg.Health, error) {
+	a.mu.Lock()
+	a.lastConfig = config
+	a.mu.Unlock()
 	if err := a.testErr[config.BaseURL]; err != nil {
 		return sitepkg.Health{}, err
 	}
 	return sitepkg.Health{Status: "online", Username: "fixture-user"}, nil
+}
+
+func TestPublicBTAndTorznabCredentialContracts(t *testing.T) {
+	service, _, actor, _, _, _ := siteFixture(t)
+	publicAdapter := &stubSiteAdapter{kind: "nyaa", testErr: map[string]error{}, searchErr: map[string]error{}}
+	torznabAdapter := &stubSiteAdapter{kind: "torznab", testErr: map[string]error{}, searchErr: map[string]error{}}
+	service.adapters["nyaa"] = publicAdapter
+	service.adapters["torznab"] = torznabAdapter
+
+	public, err := service.Create(context.Background(), actor, SiteInput{Name: "Nyaa", Kind: "nyaa", BaseURL: "https://nyaa.si", Enabled: true, Priority: 100, TimeoutSeconds: 12, RateLimitPerMinute: 12}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public.SiteType != "bt" || public.CredentialKind != "none" || public.CredentialConfigured {
+		t.Fatalf("unexpected public BT summary: %+v", public)
+	}
+	if _, err := service.Create(context.Background(), actor, SiteInput{Name: "Bad Nyaa", Kind: "nyaa", BaseURL: "https://mirror.example.test", Enabled: true, Priority: 100, TimeoutSeconds: 12, RateLimitPerMinute: 12}, RequestContext{}); ErrorCode(err) != CodeSiteURLInvalid {
+		t.Fatalf("custom RSS host accepted: %v", err)
+	}
+
+	const secret = "torznab-server-only-secret"
+	torznab, err := service.Create(context.Background(), actor, SiteInput{Name: "Prowlarr", Kind: "torznab", BaseURL: "https://prowlarr.example.test", APIKey: secret, Enabled: true, Priority: 110, TimeoutSeconds: 12, RateLimitPerMinute: 12}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if torznab.SiteType != "bt" || torznab.CredentialKind != "api_key" || !torznab.CredentialConfigured {
+		t.Fatalf("unexpected Torznab summary: %+v", torznab)
+	}
+	if torznabAdapter.lastConfig.APIKey != secret {
+		t.Fatal("adapter did not receive API key")
+	}
+	var record models.Site
+	if err := service.db.First(&record, torznab.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(torznab)
+	if strings.Contains(record.CredentialCiphertext, secret) || strings.Contains(string(encoded), secret) {
+		t.Fatal("Torznab API key leaked")
+	}
+	credential, err := service.decryptCredential(record)
+	if err != nil || credential.APIKey != secret || credential.Cookie != "" || credential.Passkey != "" {
+		t.Fatalf("Torznab API key did not round-trip through the site AES-GCM envelope: %+v err=%v", credential, err)
+	}
 }
 func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query sitepkg.Query) (sitepkg.Page, error) {
 	if err := a.searchErr[config.BaseURL]; err != nil {
@@ -313,6 +373,53 @@ func TestSiteDownloadUsesExistingDownloadPipelineAndConsumesToken(t *testing.T) 
 	}
 	if _, err := service.Download(context.Background(), actor, SiteDownloadInput{ResultToken: token, DownloaderID: downloader.ID}, RequestContext{}); ErrorCode(err) != CodeSiteResultExpired {
 		t.Fatalf("reused token err=%v", err)
+	}
+}
+
+func TestBTResolverUsesExistingDownloadPipelineWithoutPublicSourceLeak(t *testing.T) {
+	service, _, actor, _, _, downloaders := siteFixture(t)
+	const magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+	adapter := &stubResolverAdapter{stubSiteAdapter: &stubSiteAdapter{kind: "nyaa", testErr: map[string]error{}, searchErr: map[string]error{}}, resolved: sitepkg.Source{Magnet: magnet}}
+	service.adapters["nyaa"] = adapter
+	created, err := service.Create(context.Background(), actor, SiteInput{Name: "Nyaa", Kind: "nyaa", BaseURL: "https://nyaa.si", Enabled: true, Priority: 100, TimeoutSeconds: 12, RateLimitPerMinute: 120}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Seven Samurai", SiteID: &created.ID, Page: 1})
+	if err != nil || len(groups) != 1 || len(groups[0].Items) != 1 || groups[0].SiteType != "bt" {
+		t.Fatalf("groups=%+v err=%v", groups, err)
+	}
+	public, _ := json.Marshal(groups)
+	if strings.Contains(string(public), "magnet:") || strings.Contains(string(public), "0123456789abcdef") {
+		t.Fatal("BT source leaked into search DTO")
+	}
+	downloader, err := downloaders.Create(actor, DownloaderInput{Name: "BT qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Download(context.Background(), actor, SiteDownloadInput{ResultToken: groups[0].Items[0].Token, DownloaderID: downloader.ID, Priority: 10}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task models.DownloadTask
+	if err := service.db.First(&task, "id = ?", result.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	raw, err := service.downloads.credentials.Decrypt(downloadSourcePurpose(task.ID), task.SourceCiphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source downloadSourceEnvelope
+	if json.Unmarshal([]byte(raw), &source) != nil || source.Kind != downloadpkg.SourceURL || source.URL != magnet {
+		t.Fatalf("unexpected encrypted source: %+v", source)
+	}
+	groups, err = service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Seven Samurai", SiteID: &created.ID, Page: 1})
+	if err != nil || len(groups) != 1 || len(groups[0].Items) != 1 {
+		t.Fatalf("second search groups=%+v err=%v", groups, err)
+	}
+	adapter.resolved = sitepkg.Source{Magnet: magnet, Torrent: []byte("d4:infod4:name7:samuraiee"), Filename: "both.torrent"}
+	if _, err := service.Download(context.Background(), actor, SiteDownloadInput{ResultToken: groups[0].Items[0].Token, DownloaderID: downloader.ID}, RequestContext{}); ErrorCode(err) != CodeSiteResponseInvalid {
+		t.Fatalf("ambiguous resolver source err=%v", err)
 	}
 }
 

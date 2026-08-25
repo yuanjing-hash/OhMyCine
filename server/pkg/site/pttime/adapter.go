@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/pkg/site"
+	"golang.org/x/net/html"
 )
 
 const (
@@ -23,19 +24,35 @@ const (
 
 type Adapter struct {
 	kind          string
+	profile       Profile
 	clientFactory func(site.Config) (*http.Client, *url.URL, error)
 }
 
-func New() *Adapter { return NewForKind(Kind) }
-func NewForKind(kind string) *Adapter {
+// Profile keeps the standard NexusPHP request contract configurable per
+// built-in tracker without duplicating the bounded HTTP implementation.
+// Trackers with a genuinely different contract must use their own adapter.
+type Profile struct {
+	HealthPath   string
+	SearchPath   string
+	DownloadPath string
+}
+
+func NexusPHPProfile() Profile {
+	return Profile{HealthPath: "/index.php", SearchPath: "/torrents.php", DownloadPath: "/download.php"}
+}
+
+func New() *Adapter                   { return NewForKind(Kind) }
+func NewForKind(kind string) *Adapter { return NewForProfile(kind, NexusPHPProfile()) }
+func NewForProfile(kind string, profile Profile) *Adapter {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind == "" {
 		kind = Kind
 	}
-	return &Adapter{kind: kind, clientFactory: controlledClient}
+	profile = normalizedProfile(profile)
+	return &Adapter{kind: kind, profile: profile, clientFactory: controlledClient}
 }
 func NewForTest(client *http.Client) *Adapter {
-	return &Adapter{kind: Kind, clientFactory: func(config site.Config) (*http.Client, *url.URL, error) {
+	return &Adapter{kind: Kind, profile: NexusPHPProfile(), clientFactory: func(config site.Config) (*http.Client, *url.URL, error) {
 		base, err := url.Parse(strings.TrimRight(config.BaseURL, "/"))
 		return client, base, err
 	}}
@@ -43,11 +60,11 @@ func NewForTest(client *http.Client) *Adapter {
 func (a *Adapter) Kind() string { return a.kind }
 
 func (a *Adapter) Test(ctx context.Context, config site.Config) (site.Health, error) {
-	body, _, err := a.request(ctx, config, "/index.php", nil, maxHTMLBytes)
+	body, _, err := a.request(ctx, config, a.profile.HealthPath, nil, maxHTMLBytes)
 	if err != nil {
 		return site.Health{}, err
 	}
-	if looksLikeLogin(body) {
+	if looksLikeLogin(body) || !hasAuthenticatedProof(body) {
 		return site.Health{}, site.ErrAuthentication
 	}
 	return site.Health{Status: "online", Username: parseUsername(body)}, nil
@@ -62,7 +79,7 @@ func (a *Adapter) Search(ctx context.Context, config site.Config, query site.Que
 		keyword += " " + strconv.Itoa(*query.Year)
 	}
 	values := url.Values{"search": {keyword}, "notnewword": {"1"}, "page": {strconv.Itoa(query.Page - 1)}}
-	body, _, err := a.request(ctx, config, "/torrents.php", values, maxHTMLBytes)
+	body, _, err := a.request(ctx, config, a.profile.SearchPath, values, maxHTMLBytes)
 	if err != nil {
 		return site.Page{}, err
 	}
@@ -84,7 +101,7 @@ func (a *Adapter) Download(ctx context.Context, config site.Config, torrentID st
 	if passkey := strings.TrimSpace(config.Passkey); passkey != "" {
 		values.Set("passkey", passkey)
 	}
-	body, response, err := a.request(ctx, config, "/download.php", values, maxTorrentBytes)
+	body, response, err := a.request(ctx, config, a.profile.DownloadPath, values, maxTorrentBytes)
 	if err != nil {
 		return nil, "", err
 	}
@@ -114,7 +131,7 @@ func (a *Adapter) request(ctx context.Context, config site.Config, endpoint stri
 	requestURL := *base
 	requestURL.Path = strings.TrimRight(base.Path, "/") + endpoint
 	requestURL.RawQuery = query.Encode()
-	if config.BrowserEmulation && endpoint != "/download.php" {
+	if config.BrowserEmulation && endpoint != a.profile.DownloadPath {
 		return renderedRequest(ctx, config, requestURL.String(), limit)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
@@ -254,6 +271,24 @@ func numericID(value string) bool {
 	return err == nil
 }
 
+func normalizedProfile(profile Profile) Profile {
+	defaults := NexusPHPProfile()
+	if !safeEndpointPath(profile.HealthPath) {
+		profile.HealthPath = defaults.HealthPath
+	}
+	if !safeEndpointPath(profile.SearchPath) {
+		profile.SearchPath = defaults.SearchPath
+	}
+	if !safeEndpointPath(profile.DownloadPath) {
+		profile.DownloadPath = defaults.DownloadPath
+	}
+	return profile
+}
+
+func safeEndpointPath(value string) bool {
+	return strings.HasPrefix(value, "/") && !strings.ContainsAny(value, "?#\\\x00\r\n") && !strings.Contains(value, "..")
+}
+
 func looksLikeLogin(body []byte) bool {
 	lower := strings.ToLower(string(body))
 	return strings.Contains(lower, "takelogin.php") ||
@@ -261,6 +296,23 @@ func looksLikeLogin(body []byte) bool {
 		strings.Contains(lower, "name=\"password\"") ||
 		strings.Contains(lower, "name='password'") ||
 		strings.Contains(lower, "powered by nexusphp") && strings.Contains(lower, "login")
+}
+
+func hasAuthenticatedProof(body []byte) bool {
+	// Match the same positive proof NexusPHP exposes to an authenticated
+	// browser. A raw substring is insufficient because anonymous pages may
+	// mention logout.php in comments, scripts or documentation.
+	document, err := html.Parse(bytes.NewReader(body))
+	if err == nil {
+		for _, anchor := range findNodes(document, "a") {
+			parsed, parseErr := urlParseRelative(attr(anchor, "href"))
+			if parseErr == nil && strings.EqualFold(path.Base(parsed.Path), "logout.php") {
+				return true
+			}
+		}
+	}
+	text := strings.ToLower(plainText(body))
+	return strings.Contains(text, "欢迎回来") || strings.Contains(text, "welcome back")
 }
 
 func parseUsername(body []byte) string {

@@ -147,7 +147,10 @@ cookie := mergeMatchingDomainsParentFirst(cookies, candidate.cookieHost)
 - CookieCloud discovery iterates every supported definition, validates each candidate independently and may create multiple Sites in one sync. A configured key or canonical host suppresses only the same tracker, not every tracker sharing an engine.
 - Unknown CookieCloud domains remain count-only. Do not probe arbitrary browser-cookie domains or return their names merely to auto-detect an unsupported tracker.
 - Generic NexusPHP is a manual administrator option with no automatic CookieCloud domain matching.
-- Nested result markup is owned by its nearest torrent row. Outer NexusPHP layout rows must not duplicate a nested torrent result.
+- Nested result markup is grouped by torrent ID and parsed from the ancestor torrent row with the richest direct-cell structure. Outer layout rows must not duplicate a nested result, while inner title rows must not discard outer size or peer fields.
+- The initial verified catalog includes `pttime`, `sewerpt` (`https://sewerpt.com`), and `panda` (`https://pandapt.net`). Panda audio-only `special.php` is not advertised until it has its own tested query contract; ordinary video search remains `torrents.php`.
+- A shared NexusPHP health probe requires positive authenticated evidence such as a `logout.php` link or the tracker welcome marker. Absence of a login form alone is not proof that a Cookie is valid.
+- For nested title tables, group anchors by torrent ID and choose the ancestor torrent row with the richest direct-cell structure. This must preserve outer size/peer/completion fields while still emitting one item. Title text is the bounded fallback when the anchor has no `title`; `span[title]` timestamps and `pro_free*` promotion classes are supported.
 
 ### Tests Required
 
@@ -155,3 +158,24 @@ cookie := mergeMatchingDomainsParentFirst(cookies, candidate.cookieHost)
 - A CookieCloud payload containing three supported domains creates three encrypted Site rows with their own names and keys.
 - Migration preserves existing PTTime rows and allows additional catalog keys.
 - A nested NexusPHP result fixture produces one result, not duplicate outer/inner rows.
+- Adapter fixtures cover positive login proof. SewerPT and PandaPT result fixtures cover standard and nested rows, Panda title-text fallback, outer peer statistics, `span[title]` publication time, and `pro_free*` promotion markers.
+
+## Scenario: Public BT RSS and Torznab
+
+### Contracts
+
+- Catalog and DTOs expose stable `site_type=pt|bt` and `credential_kind=cookie|api_key|none`. Existing PT rows derive these values from their catalog key without a destructive migration.
+- Built-in public BT RSS entries are Nyaa, AnimeTosho, Tokyo Toshokan, Mikan and AniDex. Their feed origin, query parameter and torrent download host/path are compile-time profiles; an administrator cannot turn a built-in key into an arbitrary HTTPS fetcher.
+- Fixed public RSS download origins accept only normal HTTPS ports unless the exact configured test origin is injected; matching a hostname alone must not authorize an arbitrary alternate port.
+- Torznab is the explicit custom Jackett/Prowlarr connection. Its API Key uses the Site AES-GCM envelope and is sent only to the configured same-origin HTTPS API. Cross-origin torrent links and redirects are rejected, and a feed-provided download URL cannot override the encrypted configured API Key.
+- CookieCloud considers only catalog entries whose credential kind is `cookie`. Public RSS and Torznab hosts remain unsupported CookieCloud domains and their encrypted envelopes are never updated from browser cookies.
+- RSS/Torznab adapters may implement `site.SourceResolver`. The resolver converts a server-only identity to a bounded torrent or canonical BTIH magnet, then `SiteService` reuses `DownloadService.Submit` and the existing classification/transfer pipeline.
+- REST/SSE results contain only actor-bound opaque tokens. API Keys, magnets, torrent URLs and provider response bodies never appear in DTOs, logs, audit metadata or job payloads.
+- `/discovery/torrent-search`, `/discovery/torrent-search/stream` and `/discovery/torrent-results/recognize` are the primary generic routes. Existing PT routes remain compatible aliases.
+
+### Tests Required
+
+- Each built-in profile asserts its feed path/query key and rejects foreign feed/download hosts.
+- Nyaa fixture covers title, size, publication time, seed/leech/completion counts and controlled torrent resolution.
+- AnimeTosho compatibility covers `torrent_url` and `magnet_uri`; Torznab covers caps, namespaced attrs, encrypted API Key and same-origin download.
+- Cross-layer tests prove a resolved magnet/torrent enters the normal DownloadService while public JSON/SSE contains no source or credential.

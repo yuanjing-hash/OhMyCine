@@ -809,7 +809,7 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 
 	client.setup(t)
 	status, envelope := client.request(t, http.MethodGet, "/api/v1/sites/catalog", nil, false)
-	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"key":"pttime"`)) || bytes.Contains(envelope.Data, []byte("cookie")) {
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"key":"pttime"`)) {
 		t.Fatalf("site catalog status=%d data=%s", status, envelope.Data)
 	}
 	payload := map[string]any{"name": "PTTime", "kind": "pttime", "base_url": "https://pt.example.test", "cookie": "uid=1; token=router-secret", "passkey": "router-passkey", "enabled": true, "priority": 100, "timeout_seconds": 12, "rate_limit_per_minute": 120}
@@ -833,6 +833,10 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	status, envelope = client.request(t, http.MethodGet, "/api/v1/discovery/pt-search?keyword=Seven%20Samurai&media_type=movie&year=1954&page=1", nil, false)
 	if status != http.StatusOK || bytes.Contains(envelope.Data, []byte("torrent_id")) || bytes.Contains(envelope.Data, []byte("router-secret")) || !bytes.Contains(envelope.Data, []byte(`"token"`)) {
 		t.Fatalf("PT search status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/discovery/torrent-search?keyword=Seven%20Samurai&media_type=movie&year=1954&page=1", nil, false)
+	if status != http.StatusOK || bytes.Contains(envelope.Data, []byte("torrent_id")) || bytes.Contains(envelope.Data, []byte("router-secret")) || !bytes.Contains(envelope.Data, []byte(`"token"`)) {
+		t.Fatalf("torrent search alias status=%d data=%s", status, envelope.Data)
 	}
 	var searchResult struct {
 		Groups []services.SiteSearchGroup `json:"groups"`

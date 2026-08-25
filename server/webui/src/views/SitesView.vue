@@ -24,6 +24,7 @@ interface SiteForm {
   baseURL: string
   cookie: string
   passkey: string
+  apiKey: string
   userAgent: string
   enabled: boolean
   priority: number
@@ -32,6 +33,7 @@ interface SiteForm {
   browserEmulation: boolean
   browserServiceURL: string
   clearPasskey: boolean
+  clearAPIKey: boolean
 }
 
 interface CookieCloudForm {
@@ -52,6 +54,7 @@ const saving = ref(false)
 const busyID = ref<number | null>(null)
 const dialogOpen = ref(false)
 const dialogStep = ref<'type' | 'form'>('type')
+const selectedType = ref<'pt' | 'bt'>('pt')
 const editing = ref<SiteSummary | null>(null)
 const form = ref<SiteForm>(emptyForm())
 const cookieCloudOpen = ref(false)
@@ -61,7 +64,10 @@ const cookieCloudSyncing = ref(false)
 const cookieCloudSettings = ref<CookieCloudSettings | null>(null)
 const cookieCloudForm = ref<CookieCloudForm>(emptyCookieCloudForm())
 
-const title = computed(() => editing.value ? `编辑 ${editing.value.name}` : '添加 PT 站点')
+const title = computed(() => editing.value ? `编辑 ${editing.value.name}` : `添加 ${selectedType.value.toUpperCase()} 站点`)
+const filteredCatalog = computed(() => siteCatalog.value.filter(item => item.site_type === selectedType.value))
+const selectedCatalog = computed(() => siteCatalog.value.find(item => item.key === form.value.kind))
+const credentialKind = computed(() => selectedCatalog.value?.credential_kind || editing.value?.credential_kind || 'cookie')
 const cookieCloudEndpoint = computed(() => {
   const path = cookieCloudSettings.value?.local_upload_path || '/cookiecloud'
   return `${window.location.origin}${path}`
@@ -69,9 +75,9 @@ const cookieCloudEndpoint = computed(() => {
 
 function emptyForm(): SiteForm {
   return {
-    kind: 'pttime', name: 'PTTime', baseURL: '', cookie: '', passkey: '', userAgent: '', enabled: true,
+    kind: 'pttime', name: 'PTTime', baseURL: '', cookie: '', passkey: '', apiKey: '', userAgent: '', enabled: true,
     priority: 100, timeoutSeconds: 12, rateLimitPerMinute: 12,
-    browserEmulation: false, browserServiceURL: '', clearPasskey: false,
+    browserEmulation: false, browserServiceURL: '', clearPasskey: false, clearAPIKey: false,
   }
 }
 
@@ -101,7 +107,13 @@ function openCreate() {
   dialogOpen.value = true
 }
 
-function selectPTType() { dialogStep.value = 'form' }
+function selectSiteType(type: 'pt' | 'bt') {
+  selectedType.value = type
+  const first = siteCatalog.value.find(item => item.site_type === type)
+  if (first) form.value.kind = first.key
+  applyCatalogSelection()
+  dialogStep.value = 'form'
+}
 
 function applyCatalogSelection() {
   if (editing.value) return
@@ -114,11 +126,12 @@ function applyCatalogSelection() {
 function openEdit(site: SiteSummary) {
   editing.value = site
   form.value = {
-    kind: site.kind, name: site.name, baseURL: site.base_url, cookie: '', passkey: '', userAgent: site.user_agent,
+    kind: site.kind, name: site.name, baseURL: site.base_url, cookie: '', passkey: '', apiKey: '', userAgent: site.user_agent,
     enabled: site.enabled, priority: site.priority, timeoutSeconds: site.timeout_seconds,
     rateLimitPerMinute: site.rate_limit_per_minute, browserEmulation: site.browser_emulation,
-    browserServiceURL: site.browser_service_url, clearPasskey: false,
+    browserServiceURL: site.browser_service_url, clearPasskey: false, clearAPIKey: false,
   }
+  selectedType.value = site.site_type
   dialogStep.value = 'form'
   dialogOpen.value = true
 }
@@ -149,14 +162,15 @@ async function save() {
       await api(sitePath(current.id), { method: 'PATCH', body: JSON.stringify({
         ...common, cookie: form.value.cookie.trim() || undefined,
         passkey: form.value.passkey.trim() || undefined, clear_passkey: form.value.clearPasskey,
+        api_key: form.value.apiKey.trim() || undefined, clear_api_key: form.value.clearAPIKey,
         revision: current.revision,
       }) })
       notify('候选配置测试通过，站点已更新', 'success')
     } else {
       await api(sitesPath, { method: 'POST', body: JSON.stringify({
-        ...common, kind: form.value.kind, cookie: form.value.cookie, passkey: form.value.passkey,
+        ...common, kind: form.value.kind, cookie: form.value.cookie, passkey: form.value.passkey, api_key: form.value.apiKey,
       }) })
-      notify('PT 站点测试通过并已安全保存', 'success')
+      notify('站点测试通过并已安全保存', 'success')
     }
     dialogOpen.value = false
     editing.value = null
@@ -285,7 +299,7 @@ onMounted(loadSites)
       <div>
         <p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Sites</p>
         <h1 class="mt-1 text-2xl font-800">站点管理</h1>
-        <p class="page-description mt-1">统一管理资源站点连接。Cookie 与 passkey 只加密保存在 Server，不会回显到浏览器。</p>
+        <p class="page-description mt-1">统一管理 PT、公开 BT 与 Torznab 连接。Cookie、passkey 与 API Key 只加密保存在 Server。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn-secondary" type="button" @click="openCookieCloud">CookieCloud</button>
@@ -299,23 +313,23 @@ onMounted(loadSites)
     </div>
     <div v-else-if="!sites.length" class="panel py-12 text-center">
       <h2 class="m-0 text-lg">尚未添加站点</h2>
-      <p class="page-description mt-2">当前首批支持 PT 站点；以后其他类型也会通过相同入口添加。</p>
+      <p class="page-description mt-2">可添加内建 PT、公开 BT，或连接 Jackett/Prowlarr 的 Torznab API。</p>
       <button class="btn-primary mt-4" @click="openCreate">添加第一个站点</button>
     </div>
     <div v-else class="site-grid">
       <article v-for="site in sites" :key="site.id" class="panel flex min-h-72 flex-col">
         <header class="flex items-start justify-between gap-3">
           <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2"><h2 class="m-0 truncate text-lg">{{ site.name }}</h2><span class="status-chip">PT</span></div>
+            <div class="flex flex-wrap items-center gap-2"><h2 class="m-0 truncate text-lg">{{ site.name }}</h2><span class="status-chip">{{ site.site_type.toUpperCase() }}</span></div>
             <p class="text-subtle mt-1 truncate font-mono text-xs" :title="site.base_url">{{ site.base_url }}</p>
           </div>
           <span :class="site.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ site.enabled ? '已启用' : '已停用' }}</span>
         </header>
         <dl class="mt-5 grid grid-cols-2 gap-3 text-sm">
           <div><dt class="text-subtle text-xs">连接状态</dt><dd class="m-0 mt-1">{{ healthLabel(site) }}</dd></div>
-          <div><dt class="text-subtle text-xs">凭据</dt><dd class="m-0 mt-1">{{ site.credential_configured ? '已安全配置' : '未配置' }}</dd></div>
+          <div><dt class="text-subtle text-xs">凭据</dt><dd class="m-0 mt-1">{{ site.credential_kind === 'none' ? '无需凭据' : site.credential_configured ? '已安全配置' : '未配置' }}</dd></div>
           <div><dt class="text-subtle text-xs">请求策略</dt><dd class="m-0 mt-1">{{ site.rate_limit_per_minute }} 次/分钟</dd></div>
-          <div><dt class="text-subtle text-xs">浏览器仿真</dt><dd class="m-0 mt-1">{{ site.browser_emulation ? '已启用' : '未启用' }}</dd></div>
+          <div><dt class="text-subtle text-xs">连接方式</dt><dd class="m-0 mt-1">{{ site.kind === 'torznab' ? 'Torznab API' : site.browser_emulation ? '浏览器仿真' : '原生适配' }}</dd></div>
         </dl>
         <p v-if="site.health.error_code" class="semantic-warning mt-4 p-3 text-xs">最近检测：<span class="font-mono">{{ site.health.error_code }}</span>。更新候选凭据失败时原配置会保留。</p>
         <div class="mt-auto flex flex-wrap gap-2 pt-5">
@@ -333,32 +347,38 @@ onMounted(loadSites)
           <div><h2 id="site-type-title" class="m-0 text-xl">添加站点</h2><p class="page-description mt-1 text-sm">先选择要连接的站点类型。连接能力会持续扩展。</p></div>
           <button class="btn-secondary" type="button" @click="closeDialog">关闭</button>
         </div>
-        <button class="type-card mt-5 w-full text-left" type="button" @click="selectPTType">
+        <button class="type-card mt-5 w-full text-left" type="button" @click="selectSiteType('pt')">
           <span class="type-card__icon">PT</span>
           <span><strong class="block">PT 站点</strong><span class="text-subtle mt-1 block text-sm">从内建站点目录选择，标准 NexusPHP 站点复用通用解析引擎。</span></span>
           <span class="ml-auto text-subtle">下一步 →</span>
         </button>
-        <p class="text-subtle mb-0 mt-4 text-xs">后续可在这里增加其他资源站点类型，不会把所有站点强制归类为 PT。</p>
+        <button class="type-card mt-3 w-full text-left" type="button" @click="selectSiteType('bt')">
+          <span class="type-card__icon">BT</span>
+          <span><strong class="block">公开 BT / Torznab</strong><span class="text-subtle mt-1 block text-sm">选择 Nyaa 等内建公开索引，或连接 Jackett/Prowlarr。</span></span>
+          <span class="ml-auto text-subtle">下一步 →</span>
+        </button>
       </section>
 
       <form v-else class="panel max-h-[92vh] w-full max-w-2xl overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="site-dialog-title" @submit.prevent="save">
         <div class="flex items-start justify-between gap-3">
-          <div><h2 id="site-dialog-title" class="m-0 text-xl">{{ title }}</h2><p class="page-description mt-1 text-sm">{{ editing ? '敏感字段留空会继续使用原凭据；保存前会测试完整候选配置。' : '请配置已登录账号的 Cookie，或先在 CookieCloud 中统一同步。' }}</p></div>
+          <div><h2 id="site-dialog-title" class="m-0 text-xl">{{ title }}</h2><p class="page-description mt-1 text-sm">{{ editing ? '敏感字段留空会继续使用原凭据；保存前会测试完整候选配置。' : credentialKind === 'cookie' ? '请配置已登录账号的 Cookie，或先在 CookieCloud 中统一同步。' : credentialKind === 'api_key' ? '请填写 Torznab API 地址与 API Key。' : '公开 BT 索引无需登录凭据，Server 会使用受控内建地址。' }}</p></div>
           <button class="btn-secondary" type="button" :disabled="saving" @click="closeDialog">关闭</button>
         </div>
         <button v-if="!editing" class="link-button mt-4" type="button" @click="dialogStep = 'type'">← 返回选择类型</button>
         <div class="mt-5 grid gap-4 sm:grid-cols-2">
-          <div class="sm:col-span-2"><label class="label" for="site-catalog">站点适配</label><select id="site-catalog" v-model="form.kind" class="input" :disabled="Boolean(editing)" @change="applyCatalogSelection"><option v-for="item in siteCatalog" :key="item.key" :value="item.key">{{ item.name }} · {{ item.engine === 'nexusphp' ? 'NexusPHP' : item.engine }}</option></select><p class="text-subtle mb-0 mt-1 text-xs">没有收录时可选择“通用 NexusPHP”并填写地址；特殊架构站点会使用独立适配器，不会伪装成 NexusPHP。</p></div>
+          <div class="sm:col-span-2"><label class="label" for="site-catalog">站点适配</label><select id="site-catalog" v-model="form.kind" class="input" :disabled="Boolean(editing)" @change="applyCatalogSelection"><option v-for="item in filteredCatalog" :key="item.key" :value="item.key">{{ item.name }} · {{ item.engine === 'nexusphp' ? 'NexusPHP' : item.engine.toUpperCase() }}</option></select><p class="text-subtle mb-0 mt-1 text-xs">公开 RSS 索引固定使用内建受控地址；自定义聚合器请使用 Torznab。</p></div>
           <div><label class="label" for="site-name">显示名称</label><input id="site-name" v-model="form.name" class="input" maxlength="128" required /></div>
-          <div><label class="label" for="site-url">HTTPS 根地址</label><input id="site-url" v-model="form.baseURL" class="input font-mono" type="url" placeholder="https://pt.example.test" required autocomplete="off" /></div>
-          <div class="sm:col-span-2"><label class="label" for="site-cookie">Cookie{{ editing ? '（留空不修改）' : '' }}</label><textarea id="site-cookie" v-model="form.cookie" class="input min-h-24 font-mono text-xs" :required="!editing" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">CookieCloud 同步成功后也可在此继续手动更新，不会写入日志或普通任务字段。</p></div>
-          <div class="sm:col-span-2"><label class="label" for="site-passkey">Passkey（可选，{{ editing ? '留空不修改' : '仅在站点下载接口需要时使用' }}）</label><input id="site-passkey" v-model="form.passkey" class="input font-mono" type="password" autocomplete="new-password" /></div>
-          <label v-if="editing" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.clearPasskey" type="checkbox" />清除已保存的 passkey</label>
+          <div><label class="label" for="site-url">HTTPS 根地址</label><input id="site-url" v-model="form.baseURL" class="input font-mono" type="url" placeholder="https://example.test" required autocomplete="off" :readonly="selectedCatalog?.engine === 'rss'" /></div>
+          <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-cookie">Cookie{{ editing ? '（留空不修改）' : '' }}</label><textarea id="site-cookie" v-model="form.cookie" class="input min-h-24 font-mono text-xs" :required="!editing" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">CookieCloud 同步成功后也可在此继续手动更新，不会写入日志或普通任务字段。</p></div>
+          <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-passkey">Passkey（可选，{{ editing ? '留空不修改' : '仅在站点下载接口需要时使用' }}）</label><input id="site-passkey" v-model="form.passkey" class="input font-mono" type="password" autocomplete="new-password" /></div>
+          <label v-if="editing && credentialKind === 'cookie'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.clearPasskey" type="checkbox" />清除已保存的 passkey</label>
+          <div v-if="credentialKind === 'api_key'" class="sm:col-span-2"><label class="label" for="site-api-key">Torznab API Key{{ editing ? '（留空不修改）' : '' }}</label><input id="site-api-key" v-model="form.apiKey" class="input font-mono" type="password" :required="!editing" autocomplete="new-password" /></div>
+          <label v-if="editing && credentialKind === 'api_key'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.clearAPIKey" type="checkbox" />清除已保存的 API Key</label>
           <div><label class="label" for="site-priority">优先级</label><input id="site-priority" v-model.number="form.priority" class="input" type="number" min="1" max="999" required /></div>
           <div><label class="label" for="site-rate">每分钟请求上限</label><input id="site-rate" v-model.number="form.rateLimitPerMinute" class="input" type="number" min="1" max="120" required /></div>
           <div><label class="label" for="site-timeout">请求超时（秒）</label><input id="site-timeout" v-model.number="form.timeoutSeconds" class="input" type="number" min="3" max="30" required /></div>
           <div><label class="label" for="site-ua">自定义 User-Agent（可选）</label><input id="site-ua" v-model="form.userAgent" class="input font-mono" maxlength="256" autocomplete="off" /></div>
-          <label class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.browserEmulation" type="checkbox" />启用浏览器模拟登录 / 反爬兼容</label>
+          <label v-if="credentialKind === 'cookie'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.browserEmulation" type="checkbox" />启用浏览器模拟登录 / 反爬兼容</label>
           <div v-if="form.browserEmulation" class="semantic-warning p-4 sm:col-span-2">
             <label class="label" for="site-browser-service">FlareSolverr 服务地址</label>
             <input id="site-browser-service" v-model="form.browserServiceURL" class="input font-mono" type="url" placeholder="http://127.0.0.1:8191" required autocomplete="off" />

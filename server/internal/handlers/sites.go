@@ -19,6 +19,7 @@ type siteWritePayload struct {
 	BaseURL            string `json:"base_url"`
 	Cookie             string `json:"cookie"`
 	Passkey            string `json:"passkey"`
+	APIKey             string `json:"api_key"`
 	UserAgent          string `json:"user_agent"`
 	BrowserEmulation   bool   `json:"browser_emulation"`
 	BrowserServiceURL  string `json:"browser_service_url"`
@@ -53,14 +54,14 @@ func (a *API) CreateSite(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 	var payload siteWritePayload
 	if err := strictJSON(c, &payload); err != nil {
-		writeError(c, a.log, invalid("PT 站点配置无效", err))
+		writeError(c, a.log, invalid("站点配置无效", err))
 		return
 	}
 	enabled := true
 	if payload.Enabled != nil {
 		enabled = *payload.Enabled
 	}
-	item, err := a.sites.Create(c.Request.Context(), actor, services.SiteInput{Name: payload.Name, Kind: payload.Kind, BaseURL: payload.BaseURL, Cookie: payload.Cookie, Passkey: payload.Passkey, UserAgent: payload.UserAgent, BrowserEmulation: payload.BrowserEmulation, BrowserServiceURL: payload.BrowserServiceURL, Enabled: enabled, Priority: payload.Priority, TimeoutSeconds: payload.TimeoutSeconds, RateLimitPerMinute: payload.RateLimitPerMinute}, middleware.RequestContextFrom(c))
+	item, err := a.sites.Create(c.Request.Context(), actor, services.SiteInput{Name: payload.Name, Kind: payload.Kind, BaseURL: payload.BaseURL, Cookie: payload.Cookie, Passkey: payload.Passkey, APIKey: payload.APIKey, UserAgent: payload.UserAgent, BrowserEmulation: payload.BrowserEmulation, BrowserServiceURL: payload.BrowserServiceURL, Enabled: enabled, Priority: payload.Priority, TimeoutSeconds: payload.TimeoutSeconds, RateLimitPerMinute: payload.RateLimitPerMinute}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -81,6 +82,8 @@ func (a *API) UpdateSite(c *gin.Context) {
 		Cookie             *string `json:"cookie"`
 		Passkey            *string `json:"passkey"`
 		ClearPasskey       bool    `json:"clear_passkey"`
+		APIKey             *string `json:"api_key"`
+		ClearAPIKey        bool    `json:"clear_api_key"`
 		UserAgent          *string `json:"user_agent"`
 		BrowserEmulation   *bool   `json:"browser_emulation"`
 		BrowserServiceURL  *string `json:"browser_service_url"`
@@ -91,10 +94,10 @@ func (a *API) UpdateSite(c *gin.Context) {
 		Revision           uint64  `json:"revision"`
 	}
 	if err := strictJSON(c, &payload); err != nil {
-		writeError(c, a.log, invalid("PT 站点配置无效", err))
+		writeError(c, a.log, invalid("站点配置无效", err))
 		return
 	}
-	item, err := a.sites.Update(c.Request.Context(), actor, id, services.SiteUpdateInput{Name: payload.Name, BaseURL: payload.BaseURL, Cookie: payload.Cookie, Passkey: payload.Passkey, ClearPasskey: payload.ClearPasskey, UserAgent: payload.UserAgent, BrowserEmulation: payload.BrowserEmulation, BrowserServiceURL: payload.BrowserServiceURL, Enabled: payload.Enabled, Priority: payload.Priority, TimeoutSeconds: payload.TimeoutSeconds, RateLimitPerMinute: payload.RateLimitPerMinute, Revision: payload.Revision}, middleware.RequestContextFrom(c))
+	item, err := a.sites.Update(c.Request.Context(), actor, id, services.SiteUpdateInput{Name: payload.Name, BaseURL: payload.BaseURL, Cookie: payload.Cookie, Passkey: payload.Passkey, ClearPasskey: payload.ClearPasskey, APIKey: payload.APIKey, ClearAPIKey: payload.ClearAPIKey, UserAgent: payload.UserAgent, BrowserEmulation: payload.BrowserEmulation, BrowserServiceURL: payload.BrowserServiceURL, Enabled: payload.Enabled, Priority: payload.Priority, TimeoutSeconds: payload.TimeoutSeconds, RateLimitPerMinute: payload.RateLimitPerMinute, Revision: payload.Revision}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -141,21 +144,21 @@ func parsePTSearch(c *gin.Context) (services.SiteSearchInput, error) {
 	if value := strings.TrimSpace(c.Query("page")); value != "" {
 		page, err := strconv.Atoi(value)
 		if err != nil {
-			return input, invalid("PT 搜索页码无效", err)
+			return input, invalid("种子资源搜索页码无效", err)
 		}
 		input.Page = page
 	}
 	if value := strings.TrimSpace(c.Query("year")); value != "" {
 		year, err := strconv.Atoi(value)
 		if err != nil || year < 1880 || year > 2200 {
-			return input, invalid("PT 搜索年份无效", err)
+			return input, invalid("种子资源搜索年份无效", err)
 		}
 		input.Year = &year
 	}
 	if value := strings.TrimSpace(c.Query("site_id")); value != "" {
 		id, err := strconv.ParseUint(value, 10, 32)
 		if err != nil || id == 0 {
-			return input, invalid("PT 站点筛选无效", err)
+			return input, invalid("站点筛选无效", err)
 		}
 		value := uint(id)
 		input.SiteID = &value
@@ -178,6 +181,8 @@ func (a *API) PTSearch(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"groups": items})
 }
 
+func (a *API) TorrentSearch(c *gin.Context) { a.PTSearch(c) }
+
 func (a *API) PTSearchStream(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	input, err := parsePTSearch(c)
@@ -187,7 +192,7 @@ func (a *API) PTSearchStream(c *gin.Context) {
 	}
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		writeError(c, a.log, &services.AppError{Code: services.CodeSiteUnavailable, Message: "当前 HTTP 服务不支持流式 PT 搜索"})
+		writeError(c, a.log, &services.AppError{Code: services.CodeSiteUnavailable, Message: "当前 HTTP 服务不支持流式种子资源搜索"})
 		return
 	}
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
@@ -216,7 +221,7 @@ func (a *API) PTSearchStream(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		payload, _ := json.Marshal(gin.H{"code": services.ErrorCode(err), "message": "PT 搜索失败"})
+		payload, _ := json.Marshal(gin.H{"code": services.ErrorCode(err), "message": "种子资源搜索失败"})
 		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload)
 		flusher.Flush()
 		return
@@ -224,6 +229,8 @@ func (a *API) PTSearchStream(c *gin.Context) {
 	_, _ = fmt.Fprint(c.Writer, "event: done\ndata: {}\n\n")
 	flusher.Flush()
 }
+
+func (a *API) TorrentSearchStream(c *gin.Context) { a.PTSearchStream(c) }
 
 func (a *API) CreateDiscoveryDownload(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
@@ -236,7 +243,7 @@ func (a *API) CreateDiscoveryDownload(c *gin.Context) {
 		Priority       int    `json:"priority"`
 	}
 	if err := strictJSON(c, &payload); err != nil {
-		writeError(c, a.log, invalid("PT 下载参数无效", err))
+		writeError(c, a.log, invalid("种子资源下载参数无效", err))
 		return
 	}
 	item, err := a.sites.Download(c.Request.Context(), actor, services.SiteDownloadInput{ResultToken: payload.ResultToken, DownloaderID: payload.DownloaderID, MediaLibraryID: payload.MediaLibraryID, ProfileID: payload.ProfileID, Priority: payload.Priority}, middleware.RequestContextFrom(c))
@@ -254,7 +261,7 @@ func (a *API) RecognizePTResult(c *gin.Context) {
 		ResultToken string `json:"result_token"`
 	}
 	if err := strictJSON(c, &payload); err != nil {
-		writeError(c, a.log, invalid("PT 识别参数无效", err))
+		writeError(c, a.log, invalid("种子资源识别参数无效", err))
 		return
 	}
 	item, err := a.sites.RecognizeResult(c.Request.Context(), actor, payload.ResultToken)
@@ -264,3 +271,5 @@ func (a *API) RecognizePTResult(c *gin.Context) {
 	}
 	success(c, http.StatusOK, item)
 }
+
+func (a *API) RecognizeTorrentResult(c *gin.Context) { a.RecognizePTResult(c) }

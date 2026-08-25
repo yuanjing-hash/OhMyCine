@@ -55,6 +55,7 @@ type siteLimiter struct {
 type siteCredentialEnvelope struct {
 	Cookie  string `json:"cookie"`
 	Passkey string `json:"passkey,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
 }
 type siteResultClaim struct {
 	ActorID, SiteID  uint
@@ -64,18 +65,19 @@ type siteResultClaim struct {
 }
 
 type SiteInput struct {
-	Name, Kind, BaseURL, Cookie, Passkey, UserAgent, BrowserServiceURL string
-	Enabled                                                            bool
-	BrowserEmulation                                                   bool
-	Priority, TimeoutSeconds, RateLimitPerMinute                       int
+	Name, Kind, BaseURL, Cookie, Passkey, APIKey, UserAgent, BrowserServiceURL string
+	Enabled                                                                    bool
+	BrowserEmulation                                                           bool
+	Priority, TimeoutSeconds, RateLimitPerMinute                               int
 }
 type SiteUpdateInput struct {
-	Name, BaseURL, Cookie, Passkey, UserAgent, BrowserServiceURL *string
-	ClearPasskey                                                 bool
-	Enabled                                                      *bool
-	BrowserEmulation                                             *bool
-	Priority, TimeoutSeconds, RateLimitPerMinute                 *int
-	Revision                                                     uint64
+	Name, BaseURL, Cookie, Passkey, APIKey, UserAgent, BrowserServiceURL *string
+	ClearPasskey                                                         bool
+	ClearAPIKey                                                          bool
+	Enabled                                                              *bool
+	BrowserEmulation                                                     *bool
+	Priority, TimeoutSeconds, RateLimitPerMinute                         *int
+	Revision                                                             uint64
 }
 type SiteHealthSummary struct {
 	Status    string     `json:"status"`
@@ -87,6 +89,8 @@ type SiteSummary struct {
 	ID                   uint              `json:"id"`
 	Name                 string            `json:"name"`
 	Kind                 string            `json:"kind"`
+	SiteType             string            `json:"site_type"`
+	CredentialKind       string            `json:"credential_kind"`
 	BaseURL              string            `json:"base_url"`
 	UserAgent            string            `json:"user_agent"`
 	BrowserEmulation     bool              `json:"browser_emulation"`
@@ -102,11 +106,13 @@ type SiteSummary struct {
 	UpdatedAt            time.Time         `json:"updated_at"`
 }
 type SiteCatalogSummary struct {
-	Key          string   `json:"key"`
-	Name         string   `json:"name"`
-	Engine       string   `json:"engine"`
-	BaseURLs     []string `json:"base_urls"`
-	AutoDiscover bool     `json:"auto_discover"`
+	Key            string   `json:"key"`
+	Name           string   `json:"name"`
+	Engine         string   `json:"engine"`
+	BaseURLs       []string `json:"base_urls"`
+	AutoDiscover   bool     `json:"auto_discover"`
+	SiteType       string   `json:"site_type"`
+	CredentialKind string   `json:"credential_kind"`
 }
 type SiteSearchInput struct {
 	Keyword, MediaType, SearchBy string
@@ -132,6 +138,7 @@ type SiteSearchResult struct {
 type SiteSearchGroup struct {
 	SiteID    uint               `json:"site_id"`
 	SiteName  string             `json:"site_name"`
+	SiteType  string             `json:"site_type"`
 	Status    string             `json:"status"`
 	ErrorCode string             `json:"error_code,omitempty"`
 	Page      int                `json:"page"`
@@ -182,7 +189,7 @@ func (s *SiteService) SetMetadataSettings(service *MetadataSettingsService) { s.
 
 func (s *SiteService) List(actor Actor) ([]SiteSummary, error) {
 	if !actor.IsSystemAdmin() {
-		return nil, appError(CodePermissionDenied, "仅管理员可以管理 PT 站点", nil)
+		return nil, appError(CodePermissionDenied, "仅管理员可以管理站点", nil)
 	}
 	var records []models.Site
 	if err := s.db.Order("priority ASC, id ASC").Find(&records).Error; err != nil {
@@ -197,7 +204,7 @@ func (s *SiteService) List(actor Actor) ([]SiteSummary, error) {
 
 func (s *SiteService) Catalog(actor Actor) ([]SiteCatalogSummary, error) {
 	if !actor.IsSystemAdmin() {
-		return nil, appError(CodePermissionDenied, "仅管理员可以查看 PT 站点目录", nil)
+		return nil, appError(CodePermissionDenied, "仅管理员可以查看站点目录", nil)
 	}
 	definitions := builtin.Definitions()
 	items := make([]SiteCatalogSummary, 0, len(definitions))
@@ -205,14 +212,14 @@ func (s *SiteService) Catalog(actor Actor) ([]SiteCatalogSummary, error) {
 		if s.adapters[definition.Key] == nil {
 			continue
 		}
-		items = append(items, SiteCatalogSummary{Key: definition.Key, Name: definition.Name, Engine: definition.Engine, BaseURLs: append([]string(nil), definition.BaseURLs...), AutoDiscover: definition.AutoDiscover})
+		items = append(items, SiteCatalogSummary{Key: definition.Key, Name: definition.Name, Engine: definition.Engine, BaseURLs: append([]string(nil), definition.BaseURLs...), AutoDiscover: definition.AutoDiscover, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind})
 	}
 	return items, nil
 }
 
 func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, request RequestContext) (SiteSummary, error) {
 	if !actor.IsSystemAdmin() {
-		return SiteSummary{}, appError(CodePermissionDenied, "仅管理员可以添加 PT 站点", nil)
+		return SiteSummary{}, appError(CodePermissionDenied, "仅管理员可以添加站点", nil)
 	}
 	name, normalized, err := normalizeSiteName(input.Name)
 	if err != nil {
@@ -221,13 +228,17 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 	kind := strings.ToLower(strings.TrimSpace(input.Kind))
 	adapter := s.adapters[kind]
 	if adapter == nil {
-		return SiteSummary{}, appError(CodeSiteKindUnsupported, "当前 Server 不支持该 PT 站点类型", nil)
+		return SiteSummary{}, appError(CodeSiteKindUnsupported, "当前 Server 不支持该站点类型", nil)
 	}
 	baseURL, err := normalizeSiteBaseURL(input.BaseURL)
 	if err != nil {
 		return SiteSummary{}, err
 	}
-	credential, err := normalizeSiteCredential(input.Cookie, input.Passkey)
+	if err := validateCatalogSiteBaseURL(kind, baseURL); err != nil {
+		return SiteSummary{}, err
+	}
+	definition, _ := builtin.DefinitionForKey(kind)
+	credential, err := normalizeSiteCredential(definition.CredentialKind, input.Cookie, input.Passkey, input.APIKey)
 	if err != nil {
 		return SiteSummary{}, err
 	}
@@ -239,7 +250,7 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 	if err != nil {
 		return SiteSummary{}, err
 	}
-	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: baseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: input.BrowserEmulation, BrowserServiceURL: browserURL})
+	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: baseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: input.BrowserEmulation, BrowserServiceURL: browserURL})
 	if err != nil {
 		return SiteSummary{}, siteAdapterError(err, "站点连接测试失败，未保存配置")
 	}
@@ -288,7 +299,7 @@ func (s *SiteService) createFromCookieCloud(ctx context.Context, name, kind, bas
 	if err != nil {
 		return SiteSummary{}, err
 	}
-	credential, err := normalizeSiteCredential(cookie, "")
+	credential, err := normalizeSiteCredential(builtin.CredentialCookie, cookie, "", "")
 	if err != nil {
 		return SiteSummary{}, err
 	}
@@ -333,7 +344,7 @@ func (s *SiteService) createFromCookieCloud(ctx context.Context, name, kind, bas
 
 func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input SiteUpdateInput, request RequestContext) (SiteSummary, error) {
 	if !actor.IsSystemAdmin() {
-		return SiteSummary{}, appError(CodePermissionDenied, "仅管理员可以编辑 PT 站点", nil)
+		return SiteSummary{}, appError(CodePermissionDenied, "仅管理员可以编辑站点", nil)
 	}
 	var record models.Site
 	if err := s.db.First(&record, id).Error; err != nil {
@@ -385,6 +396,9 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 		if err != nil {
 			return SiteSummary{}, err
 		}
+		if err := validateCatalogSiteBaseURL(record.Kind, record.BaseURL); err != nil {
+			return SiteSummary{}, err
+		}
 	}
 	if input.Cookie != nil && strings.TrimSpace(*input.Cookie) != "" {
 		credential.Cookie = *input.Cookie
@@ -395,7 +409,14 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 	if input.ClearPasskey {
 		credential.Passkey = ""
 	}
-	credential, err = normalizeSiteCredential(credential.Cookie, credential.Passkey)
+	if input.APIKey != nil && strings.TrimSpace(*input.APIKey) != "" {
+		credential.APIKey = *input.APIKey
+	}
+	if input.ClearAPIKey {
+		credential.APIKey = ""
+	}
+	definition, _ := builtin.DefinitionForKey(record.Kind)
+	credential, err = normalizeSiteCredential(definition.CredentialKind, credential.Cookie, credential.Passkey, credential.APIKey)
 	if err != nil {
 		return SiteSummary{}, err
 	}
@@ -432,7 +453,7 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 		record.Enabled = *input.Enabled
 	}
 	adapter := s.adapters[record.Kind]
-	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: browserEmulation, BrowserServiceURL: browserURL})
+	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: browserEmulation, BrowserServiceURL: browserURL})
 	if err != nil {
 		return SiteSummary{}, siteAdapterError(err, "候选站点配置测试失败，原配置已保留")
 	}
@@ -468,14 +489,14 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 
 func siteUpdateDisablesOnly(input SiteUpdateInput) bool {
 	return input.Enabled != nil && !*input.Enabled &&
-		input.Name == nil && input.BaseURL == nil && input.Cookie == nil && input.Passkey == nil &&
-		!input.ClearPasskey && input.UserAgent == nil && input.Priority == nil &&
+		input.Name == nil && input.BaseURL == nil && input.Cookie == nil && input.Passkey == nil && input.APIKey == nil &&
+		!input.ClearPasskey && !input.ClearAPIKey && input.UserAgent == nil && input.Priority == nil &&
 		input.TimeoutSeconds == nil && input.RateLimitPerMinute == nil && input.BrowserEmulation == nil && input.BrowserServiceURL == nil
 }
 
 func (s *SiteService) Test(ctx context.Context, actor Actor, id uint, request RequestContext) (SiteSummary, error) {
 	if !actor.IsSystemAdmin() {
-		return SiteSummary{}, appError(CodePermissionDenied, "仅管理员可以测试 PT 站点", nil)
+		return SiteSummary{}, appError(CodePermissionDenied, "仅管理员可以测试站点", nil)
 	}
 	record, config, adapter, err := s.runtimeConfig(id)
 	if err != nil {
@@ -505,7 +526,7 @@ func (s *SiteService) Test(ctx context.Context, actor Actor, id uint, request Re
 
 func (s *SiteService) Delete(actor Actor, id uint, request RequestContext) error {
 	if !actor.IsSystemAdmin() {
-		return appError(CodePermissionDenied, "仅管理员可以删除 PT 站点", nil)
+		return appError(CodePermissionDenied, "仅管理员可以删除站点", nil)
 	}
 	var record models.Site
 	if err := s.db.First(&record, id).Error; err != nil {
@@ -533,7 +554,7 @@ func (s *SiteService) Search(ctx context.Context, actor Actor, input SiteSearchI
 
 func (s *SiteService) SearchEach(ctx context.Context, actor Actor, input SiteSearchInput, emit func(SiteSearchGroup)) error {
 	if !actor.Can(authz.PermissionDiscoveryRead) {
-		return appError(CodePermissionDenied, "无权搜索 PT 资源", nil)
+		return appError(CodePermissionDenied, "无权搜索种子资源", nil)
 	}
 	keyword := strings.TrimSpace(input.Keyword)
 	input.SearchBy = strings.ToLower(strings.TrimSpace(input.SearchBy))
@@ -565,7 +586,7 @@ func (s *SiteService) SearchEach(ctx context.Context, actor Actor, input SiteSea
 		input.Page = 1
 	}
 	if input.Page < 1 || input.Page > 20 {
-		return appError(CodeInvalidRequest, "PT 搜索页码无效", nil)
+		return appError(CodeInvalidRequest, "种子资源搜索页码无效", nil)
 	}
 	var records []models.Site
 	query := s.db.Where("enabled = ?", true).Order("priority ASC,id ASC")
@@ -600,13 +621,14 @@ func (s *SiteService) SearchEach(ctx context.Context, actor Actor, input SiteSea
 	}
 	wait.Wait()
 	if ctx.Err() != nil {
-		return appError(CodeSiteUnavailable, "PT 搜索已取消", nil)
+		return appError(CodeSiteUnavailable, "种子资源搜索已取消", nil)
 	}
 	return nil
 }
 
 func (s *SiteService) searchSite(ctx context.Context, actor Actor, record models.Site, input SiteSearchInput) SiteSearchGroup {
-	group := SiteSearchGroup{SiteID: record.ID, SiteName: record.Name, Status: "success", Page: input.Page, Items: []SiteSearchResult{}}
+	definition, _ := builtin.DefinitionForKey(record.Kind)
+	group := SiteSearchGroup{SiteID: record.ID, SiteName: record.Name, SiteType: definition.SiteType, Status: "success", Page: input.Page, Items: []SiteSearchResult{}}
 	config, err := s.config(record)
 	if err != nil {
 		group.Status, group.ErrorCode = "error", CodeSiteCredentialInvalid
@@ -630,7 +652,7 @@ func (s *SiteService) searchSite(ctx context.Context, actor Actor, record models
 		}
 		group.Items = append(group.Items, SiteSearchResult{Token: token, Title: item.Title, Subtitle: item.Subtitle, SizeBytes: item.SizeBytes, Published: item.Published, Seeders: item.Seeders, Leechers: item.Leechers, Completed: item.Completed, Promotion: item.Promotion, Quality: item.Quality, Tags: item.Tags, ExpiresAt: expires})
 	}
-	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Int("results", len(group.Items)).Int("skipped", group.Skipped).Msg(serverlog.OperationDiscoverySearch.Message("PT 站点搜索完成"))
+	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Str("site_type", group.SiteType).Int("results", len(group.Items)).Int("skipped", group.Skipped).Msg(serverlog.OperationDiscoverySearch.Message("站点种子资源搜索完成"))
 	return group
 }
 
@@ -639,7 +661,7 @@ func (s *SiteService) searchSite(ctx context.Context, actor Actor, record models
 // submit a download task.
 func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultToken string) (SiteRecognitionSummary, error) {
 	if !actor.Can(authz.PermissionDiscoveryRead) {
-		return SiteRecognitionSummary{}, appError(CodePermissionDenied, "无权识别 PT 资源", nil)
+		return SiteRecognitionSummary{}, appError(CodePermissionDenied, "无权识别种子资源", nil)
 	}
 	claim, err := s.resolveClaim(strings.TrimSpace(resultToken), actor.User.ID)
 	if err != nil {
@@ -713,7 +735,7 @@ func (s *SiteService) logRecognitionSummary(siteID uint, summary SiteRecognition
 	if summary.ErrorCode != "" {
 		event = event.Str("error_code", summary.ErrorCode)
 	}
-	event.Msg(serverlog.OperationDiscoverySearch.Message("PT 搜索结果识别完成"))
+	event.Msg(serverlog.OperationDiscoverySearch.Message("种子资源搜索结果识别完成"))
 	return summary
 }
 
@@ -789,22 +811,41 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 		return DownloadTaskSummary{}, err
 	}
 	if !record.Enabled {
-		return DownloadTaskSummary{}, appError(CodeSiteUnavailable, "PT 站点已停用", nil)
+		return DownloadTaskSummary{}, appError(CodeSiteUnavailable, "站点已停用", nil)
 	}
 	if err := s.waitLimit(ctx, record); err != nil {
 		return DownloadTaskSummary{}, err
 	}
-	torrent, filename, err := adapter.Download(ctx, config, claim.TorrentID)
-	if err != nil {
-		return DownloadTaskSummary{}, siteAdapterError(err, "无法获取种子文件")
+	var source DownloadSourceInput
+	if resolver, ok := adapter.(sitepkg.SourceResolver); ok {
+		resolved, resolveErr := resolver.ResolveSource(ctx, config, claim.TorrentID)
+		if resolveErr != nil {
+			return DownloadTaskSummary{}, siteAdapterError(resolveErr, "无法解析下载来源")
+		}
+		hasMagnet := strings.TrimSpace(resolved.Magnet) != ""
+		hasTorrent := len(resolved.Torrent) > 0
+		if hasMagnet == hasTorrent {
+			return DownloadTaskSummary{}, siteAdapterError(sitepkg.ErrInvalidReply, "下载来源响应无效")
+		}
+		if hasMagnet {
+			source = DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: resolved.Magnet}
+		} else {
+			source = DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: resolved.Torrent, Filename: resolved.Filename}
+		}
+	} else {
+		torrent, filename, downloadErr := adapter.Download(ctx, config, claim.TorrentID)
+		if downloadErr != nil {
+			return DownloadTaskSummary{}, siteAdapterError(downloadErr, "无法获取种子文件")
+		}
+		source = DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: torrent, Filename: filename}
 	}
-	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: torrent, Filename: filename}}, request)
+	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: source}, request)
 	if err != nil {
 		return DownloadTaskSummary{}, err
 	}
 	completed = true
 	_ = s.audit.Record(s.db, &actor.User.ID, "site.download", "site", uintID(record.ID), "success", map[string]any{"download_task_id": result.ID}, request)
-	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Str("download_task_id", result.ID).Msg(serverlog.OperationDiscoverySearch.Message("PT 搜索结果已提交下载"))
+	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Str("download_task_id", result.ID).Msg(serverlog.OperationDiscoverySearch.Message("种子资源搜索结果已提交下载"))
 	return result, nil
 }
 
@@ -825,7 +866,7 @@ func (s *SiteService) config(record models.Site) (sitepkg.Config, error) {
 	if err != nil {
 		return sitepkg.Config{}, appError(CodeSiteCredentialInvalid, "站点凭据不可用", nil)
 	}
-	return sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, UserAgent: record.UserAgent, Timeout: time.Duration(record.TimeoutSeconds) * time.Second, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL}, nil
+	return sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: record.UserAgent, Timeout: time.Duration(record.TimeoutSeconds) * time.Second, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL}, nil
 }
 func (s *SiteService) encryptCredential(id uint, kind string, value siteCredentialEnvelope) (string, error) {
 	payload, err := json.Marshal(value)
@@ -857,7 +898,7 @@ func (s *SiteService) waitLimit(ctx context.Context, record models.Site) error {
 	}
 	s.limitMu.Unlock()
 	if err := item.limiter.Wait(ctx); err != nil {
-		return appError(CodeSiteRateLimited, "PT 站点请求受到限速", nil)
+		return appError(CodeSiteRateLimited, "站点请求受到限速", nil)
 	}
 	return nil
 }
@@ -891,27 +932,27 @@ func (s *SiteService) issueClaim(claim siteResultClaim) (string, error) {
 }
 func (s *SiteService) resolveClaim(token string, actorID uint) (siteResultClaim, error) {
 	if len(token) != 43 {
-		return siteResultClaim{}, appError(CodeSiteResultExpired, "PT 搜索结果已过期，请重新搜索", nil)
+		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
 	}
 	s.vaultMu.Lock()
 	defer s.vaultMu.Unlock()
 	s.purgeClaimsLocked()
 	claim, ok := s.vault[token]
 	if !ok || claim.ActorID != actorID || !claim.ExpiresAt.After(s.now()) {
-		return siteResultClaim{}, appError(CodeSiteResultExpired, "PT 搜索结果已过期，请重新搜索", nil)
+		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
 	}
 	return claim, nil
 }
 func (s *SiteService) reserveClaim(token string, actorID uint) (siteResultClaim, error) {
 	if len(token) != 43 {
-		return siteResultClaim{}, appError(CodeSiteResultExpired, "PT 搜索结果已过期，请重新搜索", nil)
+		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
 	}
 	s.vaultMu.Lock()
 	defer s.vaultMu.Unlock()
 	s.purgeClaimsLocked()
 	claim, ok := s.vault[token]
 	if !ok || claim.ActorID != actorID || claim.InFlight || !claim.ExpiresAt.After(s.now()) {
-		return siteResultClaim{}, appError(CodeSiteResultExpired, "PT 搜索结果已过期，请重新搜索", nil)
+		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
 	}
 	claim.InFlight = true
 	s.vault[token] = claim
@@ -962,13 +1003,26 @@ func normalizeSiteName(value string) (string, string, error) {
 func normalizeSiteBaseURL(value string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(value), "/"))
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", appError(CodeSiteURLInvalid, "PT 站点地址必须是 HTTPS 根地址", nil)
+		return "", appError(CodeSiteURLInvalid, "站点地址必须是 HTTPS 根地址", nil)
 	}
 	return parsed.String(), nil
 }
-func normalizeSiteCredential(cookie, passkey string) (siteCredentialEnvelope, error) {
+func normalizeSiteCredential(kind, cookie, passkey, apiKey string) (siteCredentialEnvelope, error) {
 	cookie = strings.TrimSpace(cookie)
 	passkey = strings.TrimSpace(passkey)
+	apiKey = strings.TrimSpace(apiKey)
+	switch kind {
+	case builtin.CredentialNone:
+		return siteCredentialEnvelope{}, nil
+	case builtin.CredentialAPIKey:
+		if apiKey == "" || len(apiKey) > 2048 || strings.ContainsAny(apiKey, "\x00\r\n") {
+			return siteCredentialEnvelope{}, appError(CodeSiteCredentialInvalid, "Torznab API Key 无效", nil)
+		}
+		return siteCredentialEnvelope{APIKey: apiKey}, nil
+	case builtin.CredentialCookie:
+	default:
+		return siteCredentialEnvelope{}, appError(CodeSiteCredentialInvalid, "站点凭据类型无效", nil)
+	}
 	if cookie == "" || len(cookie) > 32<<10 || strings.ContainsAny(cookie, "\x00\r\n") {
 		return siteCredentialEnvelope{}, appError(CodeSiteCredentialInvalid, "PT Cookie 无效", nil)
 	}
@@ -999,11 +1053,25 @@ func normalizeBrowserService(enabled bool, raw string) (string, error) {
 	return parsed.String(), nil
 }
 func siteSummary(record models.Site) SiteSummary {
-	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: record.CredentialCiphertext != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	definition, _ := builtin.DefinitionForKey(record.Kind)
+	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+}
+
+func validateCatalogSiteBaseURL(kind, baseURL string) error {
+	definition, ok := builtin.DefinitionForKey(kind)
+	if !ok || definition.Engine != "rss" {
+		return nil
+	}
+	for _, allowed := range definition.BaseURLs {
+		if strings.EqualFold(strings.TrimRight(allowed, "/"), strings.TrimRight(baseURL, "/")) {
+			return nil
+		}
+	}
+	return appError(CodeSiteURLInvalid, "公开 BT 站点地址必须使用内建受控地址", nil)
 }
 func siteNotFound(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return appError(CodeNotFound, "PT 站点不存在", nil)
+		return appError(CodeNotFound, "站点不存在", nil)
 	}
 	return err
 }

@@ -72,7 +72,7 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] Docker 构建 CI: `docker build`
 - [ ] Docker 镜像推送: GHCR / Docker Hub
-- [~] Release CI: Player 已支持 tag/manual GitHub Release、Beta/Stable 渠道、签名 NSIS updater artifact、`latest.json`、安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；待配置 GitHub updater 私钥 Secret 并完成首个实机更新发布
+- [~] Release CI: Player 已支持 tag/manual GitHub Release、Beta/Stable 渠道、签名 NSIS updater artifact、`latest.json`、安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；Server Beta 可在同版本 prerelease 追加内嵌 WebUI 的 Windows/Linux 包与校验清单；待配置 GitHub updater 私钥 Secret 并完成首个实机更新发布
 - [x] 自动生成 changelog/release notes：Player Release 工作流可从 tag/commit 生成分组说明，并按 `beta` / `stable` 通道分别发布 prerelease 或最新正式版
 - [ ] 自动上传正式安装包和二进制文件
 
@@ -645,13 +645,13 @@ Phase 4: 生态系统           ████████████████
 
 ## Phase 3: 核心功能增强 (Week 15-22)
 
-> 补全核心功能 — 在 Server 刚需闭环稳定后，继续实现发现页、PT聚合搜索、追更、AI助手、网盘增强、Cinema OS UI 等完整产品能力
+> 补全核心功能 — 在 Server 刚需闭环稳定后，继续实现发现页、PT/BT 聚合搜索、追更、AI助手、网盘增强、Cinema OS UI 等完整产品能力
 
-### Sprint 3.1: 发现页 + PT站点实现 (Week 15-17)
+### Sprint 3.1: 发现页 + PT/BT 站点实现 (Week 15-17)
 
-**目标**: 发现页可用，主流 PT 站点接入，聚合搜索 + 一键下载
+**目标**: 发现页可用，主流 PT 与公开 BT 站点接入，聚合搜索 + 一键下载
 
-#### PT 站点框架
+#### PT/BT 站点框架
 
 - [x] 定义版本化 `Site` adapter 接口与统一搜索 DTO (`pkg/site`)
 - [x] 定义 `Config`, `Query`, `Page`, `Result` 与稳定错误分类
@@ -670,6 +670,10 @@ Phase 4: 生态系统           ████████████████
   - [x] NexusPHP 兼容分页搜索和脱敏 fixture 解析
   - [x] 受控种子获取、大小/类型边界和错误分类
   - [~] 媒体类型候选已进入统一查询 DTO；真实站点分类 ID 映射待账户联调后固化在 adapter 内
+- [x] SewerPT（下水道）内建 NexusPHP 适配与 CookieCloud 自动发现
+- [x] PandaPT（熊猫高清）内建 NexusPHP 适配与 CookieCloud 自动发现
+  - [x] 嵌套标题表格去重并保留外层大小、做种、下载与完成统计
+  - [x] 普通视频 `torrents.php` 搜索；音频 `special.php` 专区仍待独立契约
 
 - [ ] M-Team (馒头) 站点适配器
   - [ ] Cookie 认证
@@ -683,10 +687,23 @@ Phase 4: 生态系统           ████████████████
   - [ ] Cookie 认证
   - [ ] 搜索 API 解析
 
+#### 公开 BT 与聚合索引
+
+- [x] Nyaa 内建 RSS 适配器
+- [x] AnimeTosho 内建 RSS 适配器
+- [x] Tokyo Toshokan 内建 RSS 适配器
+- [x] Mikan 内建 RSS 适配器
+- [x] AniDex 内建 RSS 适配器
+- [x] 通用 Torznab 连接（Jackett/Prowlarr）
+  - [x] API Key 使用站点专用 AES-GCM envelope 加密保存
+  - [x] HTTPS、同源 torrent 与受控重定向约束
+- [x] BT torrent/magnet 仅在 Server 内解析并复用既有下载、整理和入库流水线
+- [x] 通用 `/api/v1/discovery/torrent-search*` 搜索/识别路由，保留旧 PT 路由兼容
+
 #### 发现页聚合搜索
 
 - [x] 推荐 `DiscoveryService`：TMDB + 豆瓣栏目、缓存和来源级降级
-- [x] PT `SiteService`：有界并发搜索所有已启用站点 (`goroutine` + `channel`)
+- [x] PT/BT `SiteService`：有界并发搜索所有已启用站点 (`goroutine` + `channel`)
 - [x] SSE 按站渐进结果、普通 JSON 回退、单站重试与分页
 - [ ] 结果聚合 + 去重
 - [ ] TMDB 自动匹配 (IMDB ID 优先, 标题+年份兜底)

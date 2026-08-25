@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, siteCatalogPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, siteCatalogPath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
-const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
+const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, site_type: 'pt', status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
 describe('PT discovery contracts', () => {
   it('builds bounded public search parameters without credential fields', () => {
@@ -26,6 +26,9 @@ describe('PT discovery contracts', () => {
     expect(cookieCloudSyncPath).toBe('/api/v1/settings/sites/cookiecloud/sync')
     expect(siteCatalogPath).toBe('/api/v1/sites/catalog')
     expect(ptRecognitionPath).toBe('/api/v1/discovery/pt-results/recognize')
+    expect(torrentSearchPath).toBe('/api/v1/discovery/torrent-search')
+    expect(torrentSearchStreamPath).toBe('/api/v1/discovery/torrent-search/stream')
+    expect(torrentRecognitionPath).toBe('/api/v1/discovery/torrent-results/recognize')
   })
 
   it('presents shared recognition specifications without accepting a raw title or torrent URL', () => {

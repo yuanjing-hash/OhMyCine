@@ -2,6 +2,7 @@ package pttime
 
 import (
 	"bytes"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -15,14 +16,37 @@ func parseTorrentPage(body []byte) ([]site.Result, int, bool, error) {
 	if err != nil {
 		return nil, 0, false, site.ErrInvalidReply
 	}
-	rows := findNodes(document, "tr")
-	items, skipped := make([]site.Result, 0), 0
-	for _, row := range rows {
-		result, ok := parseRow(row)
+	type candidate struct {
+		anchor *html.Node
+		row    *html.Node
+		score  int
+	}
+	candidates := make(map[string]candidate)
+	order := make([]string, 0)
+	for _, anchor := range findNodes(document, "a") {
+		id, ok := torrentAnchorID(anchor)
 		if !ok {
 			continue
 		}
-		if result.TorrentID == "" || result.Title == "" {
+		row, score := bestTorrentRow(anchor)
+		if row == nil {
+			continue
+		}
+		current, exists := candidates[id]
+		title := torrentAnchorTitle(anchor)
+		currentTitle := torrentAnchorTitle(current.anchor)
+		if !exists {
+			order = append(order, id)
+		}
+		if !exists || score > current.score || score == current.score && currentTitle == "" && title != "" {
+			candidates[id] = candidate{anchor: anchor, row: row, score: score}
+		}
+	}
+	items, skipped := make([]site.Result, 0), 0
+	for _, id := range order {
+		selected := candidates[id]
+		result := parseTorrentResult(id, selected.anchor, selected.row)
+		if result.Title == "" {
 			skipped++
 			continue
 		}
@@ -40,35 +64,8 @@ func parseTorrentPage(body []byte) ([]site.Result, int, bool, error) {
 	return items, skipped, hasNext, nil
 }
 
-func parseRow(row *html.Node) (site.Result, bool) {
-	var result site.Result
-	anchors := findNodes(row, "a")
-	for _, anchor := range anchors {
-		// NexusPHP titles may contain nested tables. Only let the closest row
-		// own an anchor; otherwise both the outer and nested row become the
-		// same torrent and the result list contains duplicates.
-		if nearestAncestor(anchor.Parent, "tr") != row {
-			continue
-		}
-		href := attr(anchor, "href")
-		parsed, err := urlParseRelative(href)
-		if err != nil || !strings.HasSuffix(parsed.Path, "details.php") {
-			continue
-		}
-		id := parsed.Query().Get("id")
-		if !numericID(id) {
-			continue
-		}
-		result.TorrentID = id
-		result.Title = clean(strings.TrimSpace(attr(anchor, "title")), 512)
-		if result.Title == "" {
-			result.Title = clean(nodeText(anchor), 512)
-		}
-		break
-	}
-	if result.TorrentID == "" {
-		return result, false
-	}
+func parseTorrentResult(id string, anchor, row *html.Node) site.Result {
+	result := site.Result{TorrentID: id, Title: torrentAnchorTitle(anchor)}
 	text := clean(nodeText(row), 4096)
 	result.SizeBytes = parseSize(text)
 	result.Quality = qualitySummary(result.Title)
@@ -95,22 +92,79 @@ func parseRow(row *html.Node) (site.Result, bool) {
 			result.Seeders = &value
 		}
 	}
-	if strings.Contains(strings.ToLower(text), "free") || strings.Contains(text, "免费") {
+	if hasFreePromotion(row, text) {
 		result.Promotion = "free"
 	}
-	if published := parsePublished(text); published != nil {
+	if published := parsePublishedFromRow(row, text); published != nil {
 		result.Published = published
 	}
-	return result, true
+	return result
 }
 
-func nearestAncestor(node *html.Node, tag string) *html.Node {
-	for current := node; current != nil; current = current.Parent {
-		if current.Type == html.ElementNode && current.Data == tag {
-			return current
+func torrentAnchorID(anchor *html.Node) (string, bool) {
+	parsed, err := urlParseRelative(attr(anchor, "href"))
+	if err != nil || !strings.EqualFold(path.Base(parsed.Path), "details.php") {
+		return "", false
+	}
+	id := parsed.Query().Get("id")
+	return id, numericID(id)
+}
+
+func torrentAnchorTitle(anchor *html.Node) string {
+	if anchor == nil {
+		return ""
+	}
+	if title := clean(attr(anchor, "title"), 512); title != "" {
+		return title
+	}
+	return clean(nodeText(anchor), 512)
+}
+
+// NexusPHP variants such as PandaPT put the title anchor in an inner
+// table.torrentname while size and peer columns live on the outer torrent
+// row. Select the ancestor row with the richest set of direct cells; ties
+// deliberately keep the nearest row. Torrent ID de-duplication in the caller
+// prevents the outer/nested markup from producing duplicate results.
+func bestTorrentRow(anchor *html.Node) (*html.Node, int) {
+	var best *html.Node
+	bestScore := -1
+	for current := anchor.Parent; current != nil; current = current.Parent {
+		if current.Type != html.ElementNode || current.Data != "tr" {
+			continue
+		}
+		score := len(directChildren(current, "td"))
+		if score > bestScore {
+			best, bestScore = current, score
 		}
 	}
-	return nil
+	return best, bestScore
+}
+
+func hasFreePromotion(row *html.Node, text string) bool {
+	if strings.Contains(strings.ToLower(text), "free") || strings.Contains(text, "免费") {
+		return true
+	}
+	for _, node := range findNodes(row, "*") {
+		for _, className := range strings.Fields(strings.ToLower(attr(node, "class"))) {
+			if strings.HasPrefix(className, "pro_free") {
+				return true
+			}
+		}
+		label := strings.ToLower(attr(node, "title") + " " + attr(node, "alt"))
+		if strings.Contains(label, "free") || strings.Contains(label, "免费") {
+			return true
+		}
+	}
+	return false
+}
+
+func parsePublishedFromRow(row *html.Node, text string) *time.Time {
+	for _, span := range findNodes(row, "span") {
+		if value := parsePublished(attr(span, "title")); value != nil {
+			return value
+		}
+	}
+	return parsePublished(text)
 }
 
 func directChildren(root *html.Node, tag string) []*html.Node {
@@ -127,7 +181,7 @@ func findNodes(root *html.Node, tag string) []*html.Node {
 	items := []*html.Node{}
 	var walk func(*html.Node)
 	walk = func(node *html.Node) {
-		if node.Type == html.ElementNode && node.Data == tag {
+		if node.Type == html.ElementNode && (tag == "*" || node.Data == tag) {
 			items = append(items, node)
 		}
 		for child := node.FirstChild; child != nil; child = child.NextSibling {

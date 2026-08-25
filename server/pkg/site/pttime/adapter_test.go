@@ -107,6 +107,29 @@ func TestAdapterClassifiesLoginAndInvalidTorrent(t *testing.T) {
 	})
 }
 
+func TestAdapterRequiresPositiveAuthenticatedProof(t *testing.T) {
+	t.Run("logout link", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `<html><body><a href="logout.php">退出</a></body></html>`)
+		}))
+		defer server.Close()
+		health, err := NewForTest(server.Client()).Test(context.Background(), site.Config{BaseURL: server.URL, Cookie: "uid=1"})
+		if err != nil || health.Status != "online" {
+			t.Fatalf("health=%+v err=%v", health, err)
+		}
+	})
+	t.Run("unproven landing", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `<html><body><!-- logout.php --><script>const path = "logout.php"</script><h1>NexusPHP Tracker</h1></body></html>`)
+		}))
+		defer server.Close()
+		_, err := NewForTest(server.Client()).Test(context.Background(), site.Config{BaseURL: server.URL, Cookie: "expired=1"})
+		if !errors.Is(err, site.ErrAuthentication) {
+			t.Fatalf("err=%v", err)
+		}
+	})
+}
+
 func TestControlledClientRejectsCrossOriginRedirect(t *testing.T) {
 	client, base, err := controlledClient(site.Config{BaseURL: "https://pt.example.test", Timeout: 5 * time.Second})
 	if err != nil {
@@ -181,5 +204,27 @@ func TestParserDoesNotDuplicateNestedNexusPHPRows(t *testing.T) {
 	items, skipped, _, err := parseTorrentPage(body)
 	if err != nil || skipped != 0 || len(items) != 1 || items[0].TorrentID != "77" {
 		t.Fatalf("items=%+v skipped=%d err=%v", items, skipped, err)
+	}
+}
+
+func TestParserSupportsSewerPTStandardMetadata(t *testing.T) {
+	items, skipped, _, err := parseTorrentPage(fixture(t, "sewerpt-torrents.html"))
+	if err != nil || skipped != 0 || len(items) != 1 {
+		t.Fatalf("items=%+v skipped=%d err=%v", items, skipped, err)
+	}
+	result := items[0]
+	if result.TorrentID != "8102" || result.Title != "Shichinin.no.Samurai.1954.1080p.BluRay.x265" || result.SizeBytes != 16106127360 || result.Promotion != "free" || result.Published == nil || result.Seeders == nil || *result.Seeders != 23 || result.Leechers == nil || *result.Leechers != 2 || result.Completed == nil || *result.Completed != 51 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestParserUsesPandaOuterRowAndAnchorTextFallback(t *testing.T) {
+	items, skipped, _, err := parseTorrentPage(fixture(t, "panda-torrents.html"))
+	if err != nil || skipped != 0 || len(items) != 1 {
+		t.Fatalf("items=%+v skipped=%d err=%v", items, skipped, err)
+	}
+	result := items[0]
+	if result.TorrentID != "9207" || result.Title != "Seven.Samurai.1954.2160p.UHD.BluRay.REMUX" || result.SizeBytes != 64424509440 || result.Promotion != "free" || result.Published == nil || result.Seeders == nil || *result.Seeders != 88 || result.Leechers == nil || *result.Leechers != 4 || result.Completed == nil || *result.Completed != 137 {
+		t.Fatalf("result=%+v", result)
 	}
 }

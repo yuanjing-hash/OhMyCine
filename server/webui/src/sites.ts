@@ -9,6 +9,8 @@ export interface SiteSummary {
   id: number
   name: string
   kind: string
+  site_type: 'pt' | 'bt'
+  credential_kind: 'cookie' | 'api_key' | 'none'
   base_url: string
   user_agent: string
   enabled: boolean
@@ -30,6 +32,8 @@ export interface SiteCatalogItem {
   engine: string
   base_urls: string[]
   auto_discover: boolean
+  site_type: 'pt' | 'bt'
+  credential_kind: 'cookie' | 'api_key' | 'none'
 }
 
 export type CookieCloudMode = 'disabled' | 'remote' | 'local'
@@ -82,6 +86,7 @@ export interface PTSearchResult {
 export interface PTSearchGroup {
   site_id: number
   site_name: string
+  site_type: 'pt' | 'bt'
   status: 'success' | 'error'
   error_code?: string
   page: number
@@ -118,6 +123,9 @@ export const siteCatalogPath = `${sitesPath}/catalog`
 export const ptSearchPath = '/api/v1/discovery/pt-search'
 export const ptSearchStreamPath = '/api/v1/discovery/pt-search/stream'
 export const ptRecognitionPath = '/api/v1/discovery/pt-results/recognize'
+export const torrentSearchPath = '/api/v1/discovery/torrent-search'
+export const torrentSearchStreamPath = '/api/v1/discovery/torrent-search/stream'
+export const torrentRecognitionPath = '/api/v1/discovery/torrent-results/recognize'
 export const discoveryDownloadsPath = '/api/v1/discovery/downloads'
 export const cookieCloudSettingsPath = '/api/v1/settings/sites/cookiecloud'
 export const cookieCloudSyncPath = `${cookieCloudSettingsPath}/sync`
@@ -179,3 +187,11 @@ export function upsertPTGroup(groups: PTSearchGroup[], incoming: PTSearchGroup, 
     : incoming
   return next
 }
+
+export type TorrentSearchResult = PTSearchResult
+export type TorrentSearchGroup = PTSearchGroup
+export type TorrentSearchResponse = PTSearchResponse
+export type TorrentRecognitionResult = PTRecognitionResult
+export const buildTorrentSearchQuery = buildPTSearchQuery
+export const torrentSearchURL = ptSearchURL
+export const upsertTorrentGroup = upsertPTGroup

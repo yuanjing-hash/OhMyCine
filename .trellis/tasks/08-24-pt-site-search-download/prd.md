@@ -1,4 +1,4 @@
-# PT 站点连接与搜索下载
+# PT / BT 站点连接与搜索下载
 
 ## Goal
 
@@ -29,6 +29,11 @@
 - 每条 PT 搜索结果提供不触发下载的“识别”操作。Server 只从 actor 绑定的不透明结果令牌读取服务端标题 claim，复用共享名称识别器与 TMDB，返回中文规范标题、年份、媒体类型、同源海报和分辨率/来源/视频编码/音频编码/HDR 等发行规格。TMDB 未配置、不可用或无匹配时仍返回可读的本地解析摘要。
 - CookieCloud 同步摘要必须用计数解释静默跳过：分别报告 CookieCloud 中当前不是受支持站点的其他域名，以及受支持候选缺少有效登录 Cookie 的数量；不得返回原始域名或 Cookie 名称。
 - 站点支持必须采用“内建站点目录 → 通用解析引擎 → 特殊站点覆盖”的结构。标准 NexusPHP 站点共享请求与解析实现，CookieCloud 按目录域名一次发现多个站点；未收录的标准 NexusPHP 站点允许管理员手动接入，非 NexusPHP 站点不能假装兼容。
+- 首批真实多站回归必须包含 PTTime、下水道（SewerPT，`https://sewerpt.com`）和熊猫高清（PandaPT，`https://pandapt.net`）。三者共享受控 NexusPHP 引擎，但保持独立稳定键、目录身份和 CookieCloud 发现候选；PandaPT 首轮覆盖普通视频 `torrents.php`，不把尚未实现的 `special.php` 音频专区伪装成已支持。
+- 站点管理同时支持 PT 与公开 BT 索引，首批 BT 目录包含 Nyaa、AnimeTosho、Tokyo Toshokan、Mikan 与 AniDex；另提供通用 Torznab 入口以连接 Jackett/Prowlarr。
+- BT 站点不伪造 PT Cookie/passkey 语义：公开 RSS 站点默认无凭据，Torznab API Key 使用同一站点 AES-GCM envelope 但单独命名。CookieCloud 只发现和更新声明支持 Cookie 的 PT 站点。
+- BT RSS/Torznab 结果可在 Server 内解析为受控 `.torrent` 或规范化 magnet，但浏览器仍只收到 actor 绑定的短期结果令牌；确认后复用现有 DownloadService 和后续识别/整理/入库链路。
+- 搜索 API 新增通用 torrent 路由并保留旧 PT 路由兼容；管理端使用通用路由、站点类型标签与 PT/BT 分步添加向导。
 
 ## Acceptance Criteria
 
@@ -49,6 +54,11 @@
 - [ ] AC15: CookieCloud 同步 UI 能以不含域名和 Cookie 的计数说明为何只发现部分站点，并明确其它域名不代表已支持的 PT 站点。
 - [ ] AC16: 内建站点目录至少覆盖首批常见 NexusPHP 站点，目录键、适配器和 CookieCloud 发现保持一致；一次同步含多个已支持域名时分别验证并创建多个站点。
 - [ ] AC17: 站点管理新增目录选择与通用 NexusPHP 入口；NexusPHP 嵌套表格不会把同一种子重复解析为多条结果。
+- [ ] AC18: CookieCloud 同批包含 PTTime、SewerPT 和 PandaPT Cookie 时会分别验证并创建三个站点；PandaPT 嵌套标题表格仍从外层种子行取得大小和做种统计，且标题链接缺少 `title` 属性时回退到可见文本。
+- [ ] AC19: 站点向导可分别选择 PT 和 BT；目录/API/卡片显示稳定 `site_type`，且旧 PT 记录无需数据迁移即可正确派生类型。
+- [ ] AC20: Nyaa 的 RSS fixture 可解析标题、大小、时间、做种/下载/完成数与同源 torrent；AnimeTosho、Tokyo Toshokan、Mikan、AniDex 具有独立目录 profile 和受控查询合同。
+- [ ] AC21: Torznab 使用加密 API Key 执行 caps/search，能从 namespaced attr/enclosure 解析 torrent 或 magnet；API Key、magnet 和 torrent URL 不进入 REST/SSE/日志/审计。
+- [ ] AC22: 通用 torrent 搜索端点同时渐进返回 PT/BT 分组，旧 `pt-search` 兼容端点仍可用；BT 确认下载复用现有下载器、媒体库和整理队列。
 
 ## Out of Scope
 

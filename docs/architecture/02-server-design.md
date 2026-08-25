@@ -3,7 +3,7 @@
 ## 1. 概述
 
 OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负责：
-- **发现** — 聚合PT站点搜索，自动匹配元数据
+- **发现** — 聚合 PT/BT 站点搜索，自动匹配元数据
 - **下载** — 管理qBittorrent/Transmission下载任务
 - **转移** — 下载完成后自动转移到分类目录（本地/网盘）
 - **入库** — 自动生成STRM文件，通知Emby/Jellyfin刷新媒体库
@@ -14,7 +14,7 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 ### 1.1 当前实现状态（2026-08）
 
-发现阶段现已同时上线推荐与首个内建 PT 站点纵向切片。推荐页使用统一 provider DTO，首版提供 TMDB 趋势/上映/高分栏目和豆瓣热门/TOP250，按 provider/栏目缓存 24 小时并允许 7 天旧快照降级；首次或手动刷新最多四栏目并发，单个来源失败不拖垮其它栏目。PTTime 通过版本化 `pkg/site` adapter 接入 NexusPHP 兼容的登录态检测、分页搜索、结果解析和种子获取；管理员保存的 Cookie/passkey 使用站点 ID 与类型绑定的 AES-GCM purpose 加密，候选编辑只有在连接测试成功后才以 revision CAS 原子替换，纯停用操作则无需再次向故障站点发送凭据。多站搜索执行每站限速和四站有界并发，通过 SSE 按站渐进输出并保留普通 JSON 降级接口；浏览器只得到绑定当前用户、站点和 torrent 身份的 15 分钟 256-bit 不透明令牌。下载确认会原子 reserve 令牌、在失败时于原到期时间内恢复、成功后单次销毁，再把 Server 获取的受限 `.torrent` 交给既有 `DownloadService`，继续走统一媒体库排序/选择、分类、整理和入库流水线。参考 MoviePilot 的是推荐与搜索分层、按站渐进结果和统一下载闭环；实现不复制其 GPL 代码、选择器、内置密钥、签名或凭据。
+发现阶段现已同时上线推荐与内建 PT/BT 站点纵向切片。推荐页使用统一 provider DTO，首版提供 TMDB 趋势/上映/高分栏目和豆瓣热门/TOP250，按 provider/栏目缓存 24 小时并允许 7 天旧快照降级；首次或手动刷新最多四栏目并发，单个来源失败不拖垮其它栏目。PTTime、SewerPT 与 PandaPT 通过版本化 `pkg/site` adapter 和共享 NexusPHP 引擎接入登录态检测、分页搜索、结果解析和受控种子获取；管理员保存的 Cookie/passkey 使用站点 ID 与类型绑定的 AES-GCM purpose 加密，候选编辑只有在连接测试成功后才以 revision CAS 原子替换，纯停用操作则无需再次向故障站点发送凭据。公开 BT 首批内建 Nyaa、AnimeTosho、Tokyo Toshokan、Mikan 与 AniDex 固定 RSS profile，并提供通用 Torznab 连接 Jackett/Prowlarr；Torznab API Key 使用同一站点凭据 envelope 加密，但与 PT Cookie 语义严格分离。多站搜索执行每站限速和四站有界并发，通过 SSE 按站渐进输出并保留普通 JSON 降级接口；浏览器只得到绑定当前用户、站点和 torrent 身份的 15 分钟 256-bit 不透明令牌。下载确认会原子 reserve 令牌、在失败时于原到期时间内恢复、成功后单次销毁，再由 Server 将受控 `.torrent` 或规范 magnet 交给既有 `DownloadService`，继续走统一媒体库排序/选择、分类、整理和入库流水线。参考 MoviePilot 的是推荐与搜索分层、按站渐进结果和统一下载闭环；实现不复制其 GPL 代码、选择器、内置密钥、签名或凭据。
 
 下载预分类完成后 Server 不只设置 qBittorrent Category，还必须显式调用 `setLocation(暂存目录/分类)` 后才恢复下载；因为用户关闭 Automatic Torrent Management 时，单独修改 Category 不会改变保存位置。入库源解析仅对旧任务兼容查找暂存根目录，新任务的正常路线始终是分类目录。`copy|symlink` 入库后进入独立做种管理，按任务快照的时长/分享率条件采样；`copy` 达标后删任务与暂存源数据，`symlink` 只删任务并永久保留链接源，`move` 入库后以 `deleteData=false` 清理 qBittorrent 任务。自动清理默认关闭。
 

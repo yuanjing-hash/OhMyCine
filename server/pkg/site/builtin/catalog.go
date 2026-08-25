@@ -6,36 +6,66 @@ import (
 	"strings"
 
 	"github.com/yuanjing-hash/ohmycine/server/pkg/site"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/site/btrss"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/site/pttime"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/site/torznab"
+)
+
+const (
+	SiteTypePT       = "pt"
+	SiteTypeBT       = "bt"
+	CredentialCookie = "cookie"
+	CredentialAPIKey = "api_key"
+	CredentialNone   = "none"
 )
 
 // Definition separates a concrete tracker identity from the parser engine.
 // Most entries currently share the standard NexusPHP engine; exceptional
 // trackers can later replace only their adapter without changing SiteService.
 type Definition struct {
-	Key          string
-	Name         string
-	Engine       string
-	BaseURLs     []string
-	AutoDiscover bool
+	Key            string
+	Name           string
+	Engine         string
+	BaseURLs       []string
+	AutoDiscover   bool
+	SiteType       string
+	CredentialKind string
+	ptProfile      pttime.Profile
+	btProfile      btrss.Profile
 }
 
 var definitions = []Definition{
-	{Key: "pttime", Name: "PTTime", Engine: "nexusphp", BaseURLs: []string{"https://www.pttime.org", "https://www.pttime.me"}, AutoDiscover: true},
-	{Key: "hdsky", Name: "HDSky", Engine: "nexusphp", BaseURLs: []string{"https://hdsky.me"}, AutoDiscover: true},
-	{Key: "ourbits", Name: "OurBits", Engine: "nexusphp", BaseURLs: []string{"https://ourbits.club"}, AutoDiscover: true},
-	{Key: "pterclub", Name: "PTerClub", Engine: "nexusphp", BaseURLs: []string{"https://pterclub.com"}, AutoDiscover: true},
-	{Key: "audiences", Name: "Audiences", Engine: "nexusphp", BaseURLs: []string{"https://audiences.me"}, AutoDiscover: true},
-	{Key: "hdhome", Name: "HDHome", Engine: "nexusphp", BaseURLs: []string{"https://hdhome.org"}, AutoDiscover: true},
-	{Key: "hdfans", Name: "HDFans", Engine: "nexusphp", BaseURLs: []string{"https://hdfans.org"}, AutoDiscover: true},
-	{Key: "hdarea", Name: "HDArea", Engine: "nexusphp", BaseURLs: []string{"https://hdarea.club"}, AutoDiscover: true},
-	{Key: "chdbits", Name: "CHDBits", Engine: "nexusphp", BaseURLs: []string{"https://chdbits.co"}, AutoDiscover: true},
-	{Key: "hdchina", Name: "HDChina", Engine: "nexusphp", BaseURLs: []string{"https://hdchina.org"}, AutoDiscover: true},
-	{Key: "lemonhd", Name: "LemonHD", Engine: "nexusphp", BaseURLs: []string{"https://lemonhd.org"}, AutoDiscover: true},
-	{Key: "springsunday", Name: "SpringSunday", Engine: "nexusphp", BaseURLs: []string{"https://springsunday.net"}, AutoDiscover: true},
-	{Key: "u2", Name: "U2", Engine: "nexusphp", BaseURLs: []string{"https://u2.dmhy.org"}, AutoDiscover: true},
-	{Key: "hhanclub", Name: "HhanClub", Engine: "nexusphp", BaseURLs: []string{"https://hhanclub.net"}, AutoDiscover: true},
-	{Key: "nexusphp", Name: "通用 NexusPHP", Engine: "nexusphp"},
+	nexusDefinition("pttime", "PTTime", true, "https://www.pttime.org", "https://www.pttime.me"),
+	nexusDefinition("sewerpt", "下水道 · SewerPT", true, "https://sewerpt.com"),
+	nexusDefinition("panda", "熊猫高清 · PandaPT", true, "https://pandapt.net"),
+	nexusDefinition("hdsky", "HDSky", true, "https://hdsky.me"),
+	nexusDefinition("ourbits", "OurBits", true, "https://ourbits.club"),
+	nexusDefinition("pterclub", "PTerClub", true, "https://pterclub.com"),
+	nexusDefinition("audiences", "Audiences", true, "https://audiences.me"),
+	nexusDefinition("hdhome", "HDHome", true, "https://hdhome.org"),
+	nexusDefinition("hdfans", "HDFans", true, "https://hdfans.org"),
+	nexusDefinition("hdarea", "HDArea", true, "https://hdarea.club"),
+	nexusDefinition("chdbits", "CHDBits", true, "https://chdbits.co"),
+	nexusDefinition("hdchina", "HDChina", true, "https://hdchina.org"),
+	nexusDefinition("lemonhd", "LemonHD", true, "https://lemonhd.org"),
+	nexusDefinition("springsunday", "SpringSunday", true, "https://springsunday.net"),
+	nexusDefinition("u2", "U2", true, "https://u2.dmhy.org"),
+	nexusDefinition("hhanclub", "HhanClub", true, "https://hhanclub.net"),
+	nexusDefinition("nexusphp", "通用 NexusPHP", false),
+	btDefinition("nyaa", "Nyaa", "https://nyaa.si", btrss.NyaaProfile()),
+	btDefinition("animetosho", "AnimeTosho", "https://feed.animetosho.org", btrss.AnimeToshoProfile()),
+	btDefinition("tokyotoshokan", "Tokyo Toshokan", "https://www.tokyotosho.info", btrss.TokyoToshokanProfile()),
+	btDefinition("mikan", "Mikan", "https://mikanani.me", btrss.MikanProfile()),
+	btDefinition("anidex", "AniDex", "https://anidex.info", btrss.AniDexProfile()),
+	{Key: torznab.Kind, Name: "Torznab · Jackett/Prowlarr", Engine: "torznab", SiteType: SiteTypeBT, CredentialKind: CredentialAPIKey},
+}
+
+func nexusDefinition(key, name string, autoDiscover bool, baseURLs ...string) Definition {
+	return Definition{Key: key, Name: name, Engine: "nexusphp", BaseURLs: baseURLs, AutoDiscover: autoDiscover, SiteType: SiteTypePT, CredentialKind: CredentialCookie, ptProfile: pttime.NexusPHPProfile()}
+}
+
+func btDefinition(key, name, baseURL string, profile btrss.Profile) Definition {
+	return Definition{Key: key, Name: name, Engine: "rss", BaseURLs: []string{baseURL}, SiteType: SiteTypeBT, CredentialKind: CredentialNone, btProfile: profile}
 }
 
 func Definitions() []Definition {
@@ -50,7 +80,14 @@ func Definitions() []Definition {
 func Adapters() []site.Adapter {
 	items := make([]site.Adapter, 0, len(definitions))
 	for _, definition := range definitions {
-		items = append(items, pttime.NewForKind(definition.Key))
+		switch definition.Engine {
+		case "nexusphp":
+			items = append(items, pttime.NewForProfile(definition.Key, definition.ptProfile))
+		case "rss":
+			items = append(items, btrss.NewForProfile(definition.Key, definition.btProfile))
+		case "torznab":
+			items = append(items, torznab.New())
+		}
 	}
 	return items
 }
