@@ -1,0 +1,167 @@
+name: Server Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing Player beta release tag, for example v1.1.21"
+        required: true
+        default: "v1.1.21"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and attach Server beta assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Checkout latest develop
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate beta source and existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_name="${WORKFLOW_INPUT_VERSION:-}"
+          if [[ ! "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like v1.1.21."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/develop" ]]; then
+            echo "::error::Server beta must be dispatched from develop."
+            exit 1
+          fi
+
+          git fetch --force origin develop --tags
+          remote_develop="$(git rev-parse refs/remotes/origin/develop)"
+          if [[ "$GITHUB_SHA" != "$remote_develop" ]]; then
+            echo "::error::Server beta source must equal the latest origin/develop commit."
+            exit 1
+          fi
+          if ! tag_commit="$(git rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null)"; then
+            echo "::error::The matching Player beta tag does not exist yet."
+            exit 1
+          fi
+          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::The beta tag must point to the latest origin/develop commit."
+            exit 1
+          fi
+          if [[ "$(gh release view "$tag_name" --json isPrerelease --jq '.isPrerelease')" != "true" ]]; then
+            echo "::error::The matching GitHub Release must already exist as a prerelease."
+            exit 1
+          fi
+
+          echo "TAG_NAME=$tag_name" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/webui/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: |
+            server/go.sum
+            server/webui/go.sum
+
+      - name: Build embedded Web UI
+        working-directory: server/webui
+        run: |
+          npm ci
+          npm run permissions:check
+          npm run test
+          npm run lint
+          npm run build
+
+      - name: Verify Server
+        run: |
+          go mod verify
+          go vet ./...
+          go test ./...
+          cd webui
+          go mod verify
+          go test .
+
+      - name: Build and package Windows and Linux
+        env:
+          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
+          OHMYCINE_TMDB_API_KEY: ${{ secrets.OHMYCINE_TMDB_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" && -n "${OHMYCINE_TMDB_API_KEY:-}" ]]; then
+            echo "::error::Configure only one TMDB credential Secret for official Server artifacts."
+            exit 1
+          fi
+          if [[ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" && -z "${OHMYCINE_TMDB_API_KEY:-}" ]]; then
+            echo "::error::A TMDB credential GitHub Secret is required for official Server artifacts."
+            exit 1
+          fi
+          if [[ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]]; then
+            if (( ${#OHMYCINE_TMDB_READ_ACCESS_TOKEN} > 4096 )) || [[ ! "$OHMYCINE_TMDB_READ_ACCESS_TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+              echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN contains unsupported characters."
+              exit 1
+            fi
+            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinReadAccessToken=${OHMYCINE_TMDB_READ_ACCESS_TOKEN}"
+          else
+            if (( ${#OHMYCINE_TMDB_API_KEY} > 4096 )) || [[ ! "$OHMYCINE_TMDB_API_KEY" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+              echo "::error::OHMYCINE_TMDB_API_KEY contains unsupported characters."
+              exit 1
+            fi
+            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinAPIKey=${OHMYCINE_TMDB_API_KEY}"
+          fi
+
+          release_root="../dist/server-beta"
+          windows_dir="${release_root}/OhMyCine-Server-${TAG_NAME}-windows-x64"
+          linux_dir="${release_root}/OhMyCine-Server-${TAG_NAME}-linux-x64"
+          rm -rf "$release_root"
+          mkdir -p "$windows_dir" "$linux_dir"
+
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags webui -trimpath -ldflags "${tmdb_ldflags} -s -w" -o "${windows_dir}/ohmycine-server.exe" ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags webui -trimpath -ldflags "${tmdb_ldflags} -s -w" -o "${linux_dir}/ohmycine-server" ./cmd/server
+          cp README.md "${windows_dir}/README.md"
+          cp README.md "${linux_dir}/README.md"
+          cp ../LICENSE "${windows_dir}/LICENSE"
+          cp ../LICENSE "${linux_dir}/LICENSE"
+
+          windows_asset="OhMyCine-Server-${TAG_NAME}-windows-x64.zip"
+          linux_asset="OhMyCine-Server-${TAG_NAME}-linux-x64.tar.gz"
+          checksums_asset="OhMyCine-Server-${TAG_NAME}-SHA256SUMS.txt"
+          (
+            cd "$release_root"
+            zip -qr "$windows_asset" "$(basename "$windows_dir")"
+            tar -czf "$linux_asset" "$(basename "$linux_dir")"
+            sha256sum "$windows_asset" "$linux_asset" > "$checksums_asset"
+          )
+
+          echo "WINDOWS_ASSET=${release_root}/${windows_asset}" >> "$GITHUB_ENV"
+          echo "LINUX_ASSET=${release_root}/${linux_asset}" >> "$GITHUB_ENV"
+          echo "CHECKSUMS_ASSET=${release_root}/${checksums_asset}" >> "$GITHUB_ENV"
+
+      - name: Attach Server assets to beta release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG_NAME" "$WINDOWS_ASSET" "$LINUX_ASSET" "$CHECKSUMS_ASSET" --clobber
