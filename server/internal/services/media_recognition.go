@@ -255,6 +255,8 @@ type mediaRecognitionQuery struct {
 	Title     string
 	MediaType string
 	Year      *int
+	Language  string
+	Phase     string
 	Order     int
 }
 
@@ -270,7 +272,11 @@ func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionL
 			return nil
 		}
 		searchCount++
-		items, err := candidateLookup.SearchCandidates(ctx, query.MediaType, query.Title, query.Year, language, region, 10)
+		queryLanguage := language
+		if query.Language != "" {
+			queryLanguage = query.Language
+		}
+		items, err := candidateLookup.SearchCandidates(ctx, query.MediaType, query.Title, query.Year, queryLanguage, region, 10)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
@@ -299,6 +305,25 @@ func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionL
 		return nil
 	}
 	for _, query := range queries {
+		if query.Phase == "year_fallback" {
+			continue
+		}
+		if err := search(query); err != nil {
+			return tmdb.Match{}, err
+		}
+	}
+	if len(candidates) == 0 {
+		for _, query := range domainLatinTokenRecallQueries(parsed, queries, language, mediaRecognitionMaxQueries-searchCount) {
+			queries = append(queries, query)
+			if err := search(query); err != nil {
+				return tmdb.Match{}, err
+			}
+		}
+	}
+	for _, query := range queries {
+		if query.Phase != "year_fallback" {
+			continue
+		}
 		if err := search(query); err != nil {
 			return tmdb.Match{}, err
 		}
@@ -457,7 +482,7 @@ func domainEnrichmentShortlist(candidates map[string]tmdb.Candidate, queryKeys [
 func domainRecognitionSearchQueries(parsed mediarecognition.ParsedFacts) []mediaRecognitionQuery {
 	queries := make([]mediaRecognitionQuery, 0, mediaRecognitionMaxQueries)
 	seen := make(map[string]struct{})
-	add := func(title string, mediaType mediarecognition.MediaType, year *int) {
+	add := func(title string, mediaType mediarecognition.MediaType, year *int, phase string) {
 		if len(queries) >= mediaRecognitionMaxQueries {
 			return
 		}
@@ -472,21 +497,15 @@ func domainRecognitionSearchQueries(parsed mediarecognition.ParsedFacts) []media
 			return
 		}
 		seen[key] = struct{}{}
-		queries = append(queries, mediaRecognitionQuery{Title: title, MediaType: string(mediaType), Year: cloneInt(year), Order: len(queries)})
-	}
-	typesFor := func(preferred mediarecognition.MediaType) []mediarecognition.MediaType {
-		if preferred == mediarecognition.MediaTypeTV {
-			return []mediarecognition.MediaType{mediarecognition.MediaTypeTV, mediarecognition.MediaTypeMovie}
-		}
-		return []mediarecognition.MediaType{mediarecognition.MediaTypeMovie, mediarecognition.MediaTypeTV}
+		queries = append(queries, mediaRecognitionQuery{Title: title, MediaType: string(mediaType), Year: cloneInt(year), Phase: phase, Order: len(queries)})
 	}
 	variants := prioritizedDomainQueryVariants(parsed.Queries, 3)
 	for index, variant := range variants {
 		if index >= 3 {
 			break
 		}
-		for _, mediaType := range typesFor(variant.SuggestedType) {
-			add(variant.Title, mediaType, variant.Year)
+		for _, mediaType := range domainRecognitionTypesFor(variant.SuggestedType) {
+			add(variant.Title, mediaType, variant.Year, "primary")
 		}
 		if len(queries) >= mediaRecognitionMaxQueries {
 			break
@@ -497,13 +516,63 @@ func domainRecognitionSearchQueries(parsed mediarecognition.ParsedFacts) []media
 			continue
 		}
 		previous, next := *variant.Year-1, *variant.Year+1
-		for _, mediaType := range typesFor(variant.SuggestedType) {
-			add(variant.Title, mediaType, &previous)
-			add(variant.Title, mediaType, &next)
-			add(variant.Title, mediaType, nil)
+		for _, mediaType := range domainRecognitionTypesFor(variant.SuggestedType) {
+			add(variant.Title, mediaType, &previous, "year_fallback")
+			add(variant.Title, mediaType, &next, "year_fallback")
+			add(variant.Title, mediaType, nil, "year_fallback")
 		}
 	}
 	return queries
+}
+
+func domainLatinTokenRecallQueries(parsed mediarecognition.ParsedFacts, existing []mediaRecognitionQuery, language string, maximum int) []mediaRecognitionQuery {
+	if maximum <= 0 {
+		return nil
+	}
+	fallbackLanguage := strings.TrimSpace(language)
+	if !strings.HasPrefix(strings.ToLower(fallbackLanguage), "en") {
+		fallbackLanguage = "en-US"
+	}
+	seen := make(map[string]struct{}, len(existing)+maximum)
+	keyFor := func(mediaType, title, queryLanguage string, year *int) string {
+		key := mediaType + "\x00" + strings.ToLower(strings.TrimSpace(title)) + "\x00" + strings.ToLower(strings.TrimSpace(queryLanguage)) + "\x00"
+		if year != nil {
+			key += fmt.Sprint(*year)
+		}
+		return key
+	}
+	for _, query := range existing {
+		queryLanguage := query.Language
+		if queryLanguage == "" {
+			queryLanguage = language
+		}
+		seen[keyFor(query.MediaType, query.Title, queryLanguage, query.Year)] = struct{}{}
+	}
+	result := make([]mediaRecognitionQuery, 0, maximum)
+	for _, variant := range parsed.Queries {
+		if variant.Reason != "latin_token_fallback" {
+			continue
+		}
+		for _, mediaType := range domainRecognitionTypesFor(variant.SuggestedType) {
+			key := keyFor(string(mediaType), variant.Title, fallbackLanguage, variant.Year)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, mediaRecognitionQuery{Title: variant.Title, MediaType: string(mediaType), Year: cloneInt(variant.Year), Language: fallbackLanguage, Order: len(existing) + len(result)})
+			if len(result) == maximum {
+				return result
+			}
+		}
+	}
+	return result
+}
+
+func domainRecognitionTypesFor(preferred mediarecognition.MediaType) []mediarecognition.MediaType {
+	if preferred == mediarecognition.MediaTypeTV {
+		return []mediarecognition.MediaType{mediarecognition.MediaTypeTV, mediarecognition.MediaTypeMovie}
+	}
+	return []mediarecognition.MediaType{mediarecognition.MediaTypeMovie, mediarecognition.MediaTypeTV}
 }
 
 func prioritizedDomainQueryVariants(variants []mediarecognition.QueryVariant, maximum int) []mediarecognition.QueryVariant {
@@ -533,7 +602,7 @@ func prioritizedDomainQueryVariants(variants []mediarecognition.QueryVariant, ma
 		}
 	}
 	for _, variant := range variants {
-		if variant.Reason != "canonical" {
+		if variant.Reason != "canonical" && variant.Reason != "latin_token_fallback" {
 			add(variant)
 		}
 	}

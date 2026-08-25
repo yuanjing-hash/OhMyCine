@@ -1,9 +1,13 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,7 +139,7 @@ func TestPlayerLocalSeriesProjectsPlayableSeasonsAndEpisodes(t *testing.T) {
 	if err != nil || len(page.List) != 1 || page.List[0].SeasonCount != 1 || page.List[0].EpisodeCount != 2 {
 		t.Fatalf("series page=%+v err=%v", page, err)
 	}
-	detail, err := service.PlayerCatalogDetail(actor, library.ID, page.List[0].ID)
+	detail, err := service.PlayerCatalogDetail(context.Background(), actor, library.ID, page.List[0].ID)
 	if err != nil || len(detail.Versions) != 2 {
 		t.Fatalf("series detail=%+v err=%v", detail, err)
 	}
@@ -256,7 +260,7 @@ func TestPlayerCatalogRejectsDisabledLibraryAndStorage(t *testing.T) {
 	if _, err := service.PlayerCatalog(actor, library.ID, MediaPageQuery{Page: 1, PageSize: 20}); ErrorCode(err) != CodeNotFound {
 		t.Fatalf("disabled library code=%q err=%v", ErrorCode(err), err)
 	}
-	if _, err := service.PlayerCatalogDetail(actor, library.ID, workToken); ErrorCode(err) != CodeNotFound {
+	if _, err := service.PlayerCatalogDetail(context.Background(), actor, library.ID, workToken); ErrorCode(err) != CodeNotFound {
 		t.Fatalf("disabled library detail code=%q err=%v", ErrorCode(err), err)
 	}
 	if err := service.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("enabled", true).Error; err != nil {
@@ -268,8 +272,154 @@ func TestPlayerCatalogRejectsDisabledLibraryAndStorage(t *testing.T) {
 	if _, err := service.PlayerCatalog(actor, library.ID, MediaPageQuery{Page: 1, PageSize: 20}); ErrorCode(err) != CodeNotFound {
 		t.Fatalf("disabled storage code=%q err=%v", ErrorCode(err), err)
 	}
-	if _, err := service.PlayerCatalogDetail(actor, library.ID, workToken); ErrorCode(err) != CodeNotFound {
+	if _, err := service.PlayerCatalogDetail(context.Background(), actor, library.ID, workToken); ErrorCode(err) != CodeNotFound {
 		t.Fatalf("disabled storage detail code=%q err=%v", ErrorCode(err), err)
+	}
+}
+
+func TestPlayerSeriesRepairsLegacyEpisodeFactsAndCachesTMDBEpisodeMetadata(t *testing.T) {
+	requests := 0
+	tmdbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/3/tv/100/season/1" {
+			t.Fatalf("unexpected TMDB path=%q", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"season_number":1,"episodes":[{"id":1001,"name":"改稻为桑","overview":"第一集简介","episode_number":1,"season_number":1,"runtime":47,"still_path":"/e01.jpg"},{"id":1002,"name":"国策与家事","overview":"第二集简介","episode_number":2,"season_number":1,"runtime":46,"still_path":"/e02.jpg"},{"id":1046,"name":"落幕","overview":"第四十六集简介","episode_number":46,"season_number":1,"runtime":49,"still_path":"/e46.jpg"},{"id":1047,"name":"新入库分集","overview":"后续新增分集简介","episode_number":47,"season_number":1,"runtime":48,"still_path":"/e47.jpg"}]}`)
+	}))
+	defer tmdbServer.Close()
+
+	service, library, actor := createCatalogTestLibrary(t)
+	if err := service.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Updates(map[string]any{"enabled": true, "metadata_language": "zh-CN"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	metadata := NewMetadataSettingsService(service.db, NewAuditService(service.db), nil, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
+	metadata.clientFactory = func(credential tmdb.Credential, _, imageBase string) (*tmdb.Client, error) {
+		return tmdb.NewForTest(credential.Value, tmdbServer.URL+"/3", tmdbServer.Client())
+	}
+	service.SetMetadataSettingsService(metadata)
+
+	var storage models.Storage
+	if err := service.db.First(&storage, library.StorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	snapshot := tmdb.Snapshot{Version: 1, TMDBID: 100, MediaType: "tv", Title: "大明王朝1566", Overview: "全剧简介", BackdropPath: "/series.jpg"}
+	metadataJSON, err := marshalRecognitionMetadata(MediaRecognitionResult{Snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recognition := models.MediaLibraryRecognition{LibraryID: library.ID, SourceKey: "ming-1566", InputFingerprint: "fingerprint", ProfileID: library.ProfileID, ProfileRevision: library.ProfileRevision, Status: "matched", MediaType: "tv", Title: snapshot.Title, TMDBID: &snapshot.TMDBID, MetadataJSON: metadataJSON, LastGeneration: 1, CreatedAt: now, UpdatedAt: now}
+	if err := service.db.Create(&recognition).Error; err != nil {
+		t.Fatal(err)
+	}
+	staleEpisode := 1
+	season := 1
+	for _, episode := range []int{1, 2, 3, 46} {
+		relative := fmt.Sprintf("/大明王朝1566 (2007)/Season 01/大明王朝1566 - S01E%02d.mkv", episode)
+		target := filepath.Join(storage.RootPath, filepath.FromSlash(strings.TrimPrefix(relative, "/")))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("episode"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entry := models.MediaLibraryEntry{LibraryID: library.ID, RelativePath: relative, ProviderID: fmt.Sprintf("episode-%d", episode), RecognitionID: &recognition.ID, Size: 7, ModifiedAt: now, MediaType: "tv", Title: snapshot.Title, SeriesTitle: snapshot.Title, WorkKey: "series:tmdb:100", Season: &season, Episode: &staleEpisode, MatchStatus: "matched", TMDBID: &snapshot.TMDBID, CategoryName: "电视剧", LastGeneration: 1, CreatedAt: now, UpdatedAt: now}
+		if err := service.db.Create(&entry).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	detail, err := service.PlayerCatalogDetail(context.Background(), actor, library.ID, encodeCatalogToken("series:tmdb:100"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || len(detail.Versions) != 4 {
+		t.Fatalf("requests=%d versions=%+v", requests, detail.Versions)
+	}
+	for index, expectedEpisode := range []int{1, 2, 3, 46} {
+		version := detail.Versions[index]
+		if version.Episode == nil || *version.Episode != expectedEpisode || version.Season == nil || *version.Season != 1 {
+			t.Fatalf("version[%d]=%+v", index, version)
+		}
+	}
+	if detail.Versions[0].Title != "改稻为桑" || detail.Versions[0].Overview != "第一集简介" || detail.Versions[0].StillPath != "/e01.jpg" || detail.Versions[0].RuntimeMinutes != 47 {
+		t.Fatalf("episode one=%+v", detail.Versions[0])
+	}
+	if detail.Versions[1].Title != "国策与家事" || detail.Versions[3].Title != "落幕" || detail.Versions[3].StillPath != "/e46.jpg" {
+		t.Fatalf("episode metadata=%+v", detail.Versions)
+	}
+	if detail.Versions[2].Overview != "" || detail.Versions[2].StillPath != "" || !strings.Contains(detail.Versions[2].Title, "S01E03") {
+		t.Fatalf("missing metadata fallback reused series data=%+v", detail.Versions[2])
+	}
+
+	newEpisode := 47
+	newRelative := "/大明王朝1566 (2007)/Season 01/大明王朝1566 - S01E47.mkv"
+	newTarget := filepath.Join(storage.RootPath, filepath.FromSlash(strings.TrimPrefix(newRelative, "/")))
+	if err := os.WriteFile(newTarget, []byte("episode"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newEntry := models.MediaLibraryEntry{LibraryID: library.ID, RelativePath: newRelative, ProviderID: "episode-47", RecognitionID: &recognition.ID, Size: 7, ModifiedAt: now, MediaType: "tv", Title: snapshot.Title, SeriesTitle: snapshot.Title, WorkKey: "series:tmdb:100", Season: &season, Episode: &newEpisode, MatchStatus: "matched", TMDBID: &snapshot.TMDBID, CategoryName: "电视剧", LastGeneration: 2, CreatedAt: now, UpdatedAt: now}
+	if err := service.db.Create(&newEntry).Error; err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := service.PlayerCatalogDetail(context.Background(), actor, library.ID, encodeCatalogToken("series:tmdb:100"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || len(refreshed.Versions) != 5 || refreshed.Versions[4].Title != "新入库分集" || refreshed.Versions[4].Overview != "后续新增分集简介" || refreshed.Versions[4].StillPath != "/e47.jpg" {
+		t.Fatalf("incremental episode cache requests=%d versions=%+v", requests, refreshed.Versions)
+	}
+	if requests != 1 {
+		t.Fatalf("episode metadata was not cached, requests=%d", requests)
+	}
+	if err := service.db.First(&recognition, recognition.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, stored, err := decodeRecognitionMetadata(recognition.MetadataJSON)
+	if err != nil || len(stored.EpisodeSnapshots) != 4 || len(stored.EpisodeSeasons) != 1 || stored.EpisodeSeasons[0] != 1 {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+}
+
+func TestRecognitionEpisodeHintsNeverOverwritePerFileFacts(t *testing.T) {
+	seasonOne, episodeOne, episodeTwo := 1, 1, 2
+	entry := models.MediaLibraryEntry{Season: &seasonOne, Episode: &episodeTwo}
+	applyRecognitionEpisodeHints(&entry, MediaRecognitionResult{SeasonHint: &seasonOne, EpisodeHint: &episodeOne}, false)
+	if entry.Episode == nil || *entry.Episode != 2 {
+		t.Fatalf("multi-file hint overwrote file episode: %+v", entry)
+	}
+	empty := models.MediaLibraryEntry{}
+	applyRecognitionEpisodeHints(&empty, MediaRecognitionResult{SeasonHint: &seasonOne, EpisodeHint: &episodeOne}, false)
+	if empty.Season == nil || *empty.Season != 1 || empty.Episode != nil {
+		t.Fatalf("multi-file projection=%+v", empty)
+	}
+	applyRecognitionEpisodeHints(&empty, MediaRecognitionResult{EpisodeHint: &episodeOne}, true)
+	if empty.Episode == nil || *empty.Episode != 1 {
+		t.Fatalf("single-file projection=%+v", empty)
+	}
+}
+
+func TestRecognitionRefreshPreservesOnlyMatchingEpisodeMetadata(t *testing.T) {
+	storedJSON, err := marshalRecognitionMetadata(MediaRecognitionResult{Snapshot: tmdb.Snapshot{
+		Version: 1, TMDBID: 100, MediaType: "tv",
+		EpisodeSnapshots: []tmdb.EpisodeSnapshot{{SeasonNumber: 1, EpisodeNumber: 46, Name: "落幕"}},
+		EpisodeSeasons:   []int{1},
+		EpisodeLanguage:  "zh-CN",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preserved := preservePlayerEpisodeMetadata(MediaRecognitionResult{Snapshot: tmdb.Snapshot{Version: 1, TMDBID: 100, MediaType: "tv", Title: "大明王朝1566"}}, storedJSON, "zh-CN")
+	if len(preserved.Snapshot.EpisodeSnapshots) != 1 || preserved.Snapshot.EpisodeSnapshots[0].EpisodeNumber != 46 || len(preserved.Snapshot.EpisodeSeasons) != 1 {
+		t.Fatalf("preserved=%+v", preserved.Snapshot)
+	}
+	changedIdentity := preservePlayerEpisodeMetadata(MediaRecognitionResult{Snapshot: tmdb.Snapshot{Version: 1, TMDBID: 200, MediaType: "tv"}}, storedJSON, "zh-CN")
+	if len(changedIdentity.Snapshot.EpisodeSnapshots) != 0 || len(changedIdentity.Snapshot.EpisodeSeasons) != 0 {
+		t.Fatalf("cross-identity metadata leaked=%+v", changedIdentity.Snapshot)
+	}
+	changedLanguage := preservePlayerEpisodeMetadata(MediaRecognitionResult{Snapshot: tmdb.Snapshot{Version: 1, TMDBID: 100, MediaType: "tv"}}, storedJSON, "en-US")
+	if len(changedLanguage.Snapshot.EpisodeSnapshots) != 0 || len(changedLanguage.Snapshot.EpisodeSeasons) != 0 || changedLanguage.Snapshot.EpisodeLanguage != "" {
+		t.Fatalf("cross-language metadata leaked=%+v", changedLanguage.Snapshot)
 	}
 }
 
@@ -308,7 +458,6 @@ func TestPlayerSearchPagesThroughEveryEnabledLibrary(t *testing.T) {
 		t.Fatalf("huge player search page=%+v", page)
 	}
 }
-
 
 func TestPlayerMediaPeopleProjectsSafeProfileIdentities(t *testing.T) {
 	people := playerMediaPeople(tmdb.Snapshot{

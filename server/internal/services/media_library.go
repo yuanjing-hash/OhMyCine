@@ -1339,9 +1339,10 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			delete(assetsByPath, source.RelativePath)
 		}
 		type recognitionProjection struct {
-			ID        uint
-			SourceKey string
-			Result    MediaRecognitionResult
+			ID         uint
+			SourceKey  string
+			Result     MediaRecognitionResult
+			SingleFile bool
 		}
 		byFile := make(map[string]recognitionProjection, len(result.Files))
 		seenRecognitionIDs := make([]uint, 0, len(recognizedUnits))
@@ -1352,6 +1353,8 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 				record = models.MediaLibraryRecognition{LibraryID: id, SourceKey: recognized.Unit.SourceKey, CreatedAt: now}
 			} else if findErr != nil {
 				return findErr
+			} else {
+				recognized.Result = preservePlayerEpisodeMetadata(recognized.Result, record.MetadataJSON, library.MetadataLanguage)
 			}
 			metadataJSON, marshalErr := marshalRecognitionMetadata(recognized.Result)
 			if marshalErr != nil {
@@ -1369,7 +1372,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 				return err
 			}
 			seenRecognitionIDs = append(seenRecognitionIDs, record.ID)
-			projection := recognitionProjection{ID: record.ID, SourceKey: record.SourceKey, Result: recognized.Result}
+			projection := recognitionProjection{ID: record.ID, SourceKey: record.SourceKey, Result: recognized.Result, SingleFile: len(recognized.Unit.Files) == 1}
 			for _, file := range recognized.Unit.Files {
 				byFile[file.RelativePath] = projection
 			}
@@ -1416,12 +1419,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 				if entry.MediaType == "tv" {
 					entry.SeriesTitle = entry.Title
 				}
-				if recognized.SeasonHint != nil {
-					entry.Season = cloneInt(recognized.SeasonHint)
-				}
-				if recognized.EpisodeHint != nil {
-					entry.Episode = cloneInt(recognized.EpisodeHint)
-				}
+				applyRecognitionEpisodeHints(&entry, recognized, projection.SingleFile)
 				entry.MatchStatus, entry.RecognitionErrorCode = recognized.Status, recognized.ErrorCode
 				entry.WorkKey = recognitionWorkKey(recognized, projection.SourceKey)
 				entry.CategoryName, entry.MatchedRuleID = recognized.CategoryName, recognized.MatchedRuleID
@@ -1513,6 +1511,19 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		}
 	}
 	return run, nil
+}
+
+// applyRecognitionEpisodeHints preserves file-level season/episode facts. A
+// work/package recognition may use E01 as a representative query hint even
+// when the unit contains E01..E46, so an episode hint is valid only for a
+// single-file unit and may only fill a missing value.
+func applyRecognitionEpisodeHints(entry *models.MediaLibraryEntry, recognized MediaRecognitionResult, singleFile bool) {
+	if entry.Season == nil && recognized.SeasonHint != nil {
+		entry.Season = cloneInt(recognized.SeasonHint)
+	}
+	if entry.Episode == nil && singleFile && recognized.EpisodeHint != nil {
+		entry.Episode = cloneInt(recognized.EpisodeHint)
+	}
 }
 
 func mediaLibraryScanOperation(kind string) serverlog.Operation {

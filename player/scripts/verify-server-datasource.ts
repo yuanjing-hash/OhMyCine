@@ -30,8 +30,9 @@ const bridge = {
             ? {
                 item: seriesItem(),
                 versions: [
-                  { id: 201, title: '第一集', season: 1, episode: 1, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
-                  { id: 202, title: '第二集', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:202' },
+                  { id: 201, title: '改稻为桑', season: 1, episode: 1, overview: '第一集简介', still_path: '/episode-1.jpg', runtime_minutes: 47, rating: 8.2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
+                  { id: 202, title: '示例剧 - S01E02', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:202' },
+                  { id: 246, title: '落幕', season: 1, episode: 46, overview: '第四十六集简介', still_path: '/episode-46.jpg', runtime_minutes: 49, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/246/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:246' },
                 ],
               }
             : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${legacyArtworkItem().id}`)
@@ -113,7 +114,15 @@ assert.equal(detail.stills?.length, 2)
 const seriesSeasons = await source.list(`work|9|${seriesItem().id}`)
 assert.deepEqual(seriesSeasons.map(item => [item.type, item.seasonNumber]), [['season', 1]])
 const seriesDetail = await source.getDetail(`work|9|${seriesItem().id}`)
-assert.deepEqual(seriesDetail.children?.map(item => [item.type, item.seasonNumber, item.episodeNumber]), [['episode', 1, 1], ['episode', 1, 2]])
+assert.deepEqual(seriesDetail.children?.map(item => [item.type, item.seasonNumber, item.episodeNumber]), [['episode', 1, 1], ['episode', 1, 2], ['episode', 1, 46]])
+assert.equal(seriesDetail.children?.[0]?.name, '改稻为桑')
+assert.equal(seriesDetail.children?.[0]?.overview, '第一集简介')
+assert.match(seriesDetail.children?.[0]?.backdropUrl ?? '', /episode-1\.jpg$/)
+assert.equal(seriesDetail.children?.[0]?.duration, 47 * 60)
+assert.equal(seriesDetail.children?.[1]?.overview, undefined)
+assert.equal(seriesDetail.children?.[1]?.backdropUrl, undefined)
+assert.equal(seriesDetail.children?.[2]?.name, '落幕')
+assert.match(seriesDetail.children?.[2]?.backdropUrl ?? '', /episode-46\.jpg$/)
 assert.equal(seriesDetail.mediaSources?.[0]?.isStrm, undefined)
 assert.equal(seriesDetail.mediaSources?.[0]?.deliveryKind, 'server_stream')
 assert.equal(describeMediaSource(seriesDetail.mediaSources![0]!), '2.0 KB · 来自 家庭 Server · 文件流')
@@ -342,9 +351,9 @@ function seriesItem() {
     work_identity: { scheme: 'tmdb', media_type: 'series', value: '100' },
     tmdb_id: 100,
     imdb_id: 'tt0000100',
-    file_count: 2,
+    file_count: 3,
     season_count: 1,
-    episode_count: 2,
+    episode_count: 3,
   }
 }
 

@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // DefaultScoreConfig is versioned with the frozen v1 corpus. The defaults are
@@ -24,7 +25,9 @@ func DefaultScoreConfig() ScoreConfig {
 		UniquenessWeight:    .05,
 		PopularityWeight:    .01,
 		MatchThreshold:      .78,
-		ExactTitleThreshold: .72,
+		ExactTitleThreshold: .68,
+		TypoTitleThreshold:  .90,
+		TypoMatchThreshold:  .64,
 		ConflictMargin:      .06,
 		HanEquivalence:      BuiltInHanEquivalence,
 	}
@@ -80,15 +83,19 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		decision.RunnerUpGap = clamp01(best.Score.Total - decision.Ranked[1].Score.Total)
 	}
 	threshold := config.MatchThreshold
-	if best.Score.TitleSimilarity == 1 && config.ExactTitleThreshold > 0 && config.ExactTitleThreshold < threshold {
+	exactIdentity := best.Score.TitleSimilarity == 1
+	typoIdentity := !exactIdentity && best.Score.TitleSimilarity >= config.TypoTitleThreshold && conservativeLatinTypoMatch(parsed, best.Candidate, config.HanEquivalence)
+	if exactIdentity && config.ExactTitleThreshold > 0 && config.ExactTitleThreshold < threshold {
 		threshold = config.ExactTitleThreshold
+	} else if typoIdentity && config.TypoMatchThreshold > 0 && config.TypoMatchThreshold < threshold {
+		threshold = config.TypoMatchThreshold
 	}
 	if best.Score.Total < threshold {
 		decision.Reason = ReasonLowConfidence
 		addDiagnostic(&decision.Diagnostics, "automatic_threshold_not_met", "warning", "best candidate did not meet the corpus-calibrated automatic threshold")
 		return decision
 	}
-	if len(decision.Ranked) > 1 && decision.RunnerUpGap < config.ConflictMargin && decision.Ranked[1].Score.Total >= config.MatchThreshold-config.ConflictMargin {
+	if len(decision.Ranked) > 1 && decision.RunnerUpGap < config.ConflictMargin && decision.Ranked[1].Score.Total >= threshold-config.ConflictMargin && (!exactIdentity || decision.Ranked[1].Score.TitleSimilarity == 1) {
 		decision.Reason = ReasonCandidateConflict
 		addDiagnostic(&decision.Diagnostics, "candidate_margin_too_small", "warning", "top candidates remain too close after all bounded evidence")
 		return decision
@@ -172,6 +179,9 @@ func scoreCandidate(parsed ParsedFacts, candidate RemoteCandidate, config ScoreC
 	bestSimilarity := 0.0
 	strongVariantMatches := 0
 	for _, query := range parsed.Queries {
+		if recallOnlyQuery(query) {
+			continue
+		}
 		queryBest := 0.0
 		for _, alias := range aliases {
 			queryBest = maxFloat(queryBest, TitleSimilarity(query.Title, alias, config.HanEquivalence))
@@ -237,6 +247,62 @@ func scoreCandidate(parsed ParsedFacts, candidate RemoteCandidate, config ScoreC
 	}
 	updateTotal(&ranked.Score)
 	return ranked
+}
+
+func recallOnlyQuery(query QueryVariant) bool {
+	return query.Reason == "latin_token_fallback"
+}
+
+func conservativeLatinTypoMatch(parsed ParsedFacts, candidate RemoteCandidate, han HanEquivalence) bool {
+	queries := parsed.Queries
+	if len(queries) == 0 && parsed.CanonicalTitle != "" {
+		queries = []QueryVariant{{Title: parsed.CanonicalTitle}}
+	}
+	for _, query := range queries {
+		if recallOnlyQuery(query) {
+			continue
+		}
+		for _, alias := range candidateNames(candidate) {
+			if boundedLatinTypoPair(query.Title, alias, han) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func boundedLatinTypoPair(left, right string, han HanEquivalence) bool {
+	leftKey, rightKey := comparisonKeyWith(left, han), comparisonKeyWith(right, han)
+	leftRunes, rightRunes := []rune(leftKey), []rune(rightKey)
+	if leftKey == rightKey || len(leftRunes) < 10 || len(rightRunes) < 10 || absoluteInt(len(leftRunes)-len(rightRunes)) > 1 {
+		return false
+	}
+	for _, values := range [][]rune{leftRunes, rightRunes} {
+		for _, r := range values {
+			if unicode.IsDigit(r) {
+				continue
+			}
+			if !unicode.IsLetter(r) || !unicode.In(r, unicode.Latin) {
+				return false
+			}
+		}
+	}
+	if levenshteinRunes(leftRunes, rightRunes) == 1 {
+		return true
+	}
+	if len(leftRunes) != len(rightRunes) {
+		return false
+	}
+	differences := make([]int, 0, 2)
+	for index := range leftRunes {
+		if leftRunes[index] != rightRunes[index] {
+			differences = append(differences, index)
+			if len(differences) > 2 {
+				return false
+			}
+		}
+	}
+	return len(differences) == 2 && differences[1] == differences[0]+1 && leftRunes[differences[0]] == rightRunes[differences[1]] && leftRunes[differences[1]] == rightRunes[differences[0]]
 }
 
 func scoreYearEvidence(ranked *RankedCandidate, parsedYear, candidateYear int, config ScoreConfig, prefix string) {

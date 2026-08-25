@@ -2,10 +2,13 @@ package services
 
 import (
 	"encoding/base64"
+	"path"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"gorm.io/gorm"
 )
@@ -168,11 +171,26 @@ func (s *MediaLibraryService) CatalogDetail(actor Actor, libraryID uint, token s
 		}
 		return detail, nil
 	}
-	seasonIndexes := make(map[int]int)
+	episodes := make([]MediaCatalogEpisode, 0, len(entries))
 	for _, entry := range entries {
+		episodes = append(episodes, catalogEpisode(entry))
+	}
+	sort.SliceStable(episodes, func(i, j int) bool {
+		leftSeason, rightSeason := pointerIntValue(episodes[i].Season), pointerIntValue(episodes[j].Season)
+		if leftSeason != rightSeason {
+			return leftSeason < rightSeason
+		}
+		leftEpisode, rightEpisode := pointerIntValue(episodes[i].Episode), pointerIntValue(episodes[j].Episode)
+		if leftEpisode != rightEpisode {
+			return leftEpisode < rightEpisode
+		}
+		return episodes[i].RelativePath < episodes[j].RelativePath
+	})
+	seasonIndexes := make(map[int]int)
+	for _, episode := range episodes {
 		number := 0
-		if entry.Season != nil {
-			number = *entry.Season
+		if episode.Season != nil {
+			number = *episode.Season
 		}
 		index, exists := seasonIndexes[number]
 		if !exists {
@@ -180,7 +198,7 @@ func (s *MediaLibraryService) CatalogDetail(actor Actor, libraryID uint, token s
 			seasonIndexes[number] = index
 			detail.Seasons = append(detail.Seasons, MediaCatalogSeason{Number: number, Episodes: make([]MediaCatalogEpisode, 0)})
 		}
-		detail.Seasons[index].Episodes = append(detail.Seasons[index].Episodes, catalogEpisode(entry))
+		detail.Seasons[index].Episodes = append(detail.Seasons[index].Episodes, episode)
 	}
 	return detail, nil
 }
@@ -287,7 +305,31 @@ func parseCatalogTime(value string) time.Time {
 }
 
 func catalogEpisode(entry models.MediaLibraryEntry) MediaCatalogEpisode {
-	return MediaCatalogEpisode{ID: entry.ID, Title: entry.Title, Season: entry.Season, Episode: entry.Episode, RelativePath: entry.RelativePath, Size: entry.Size, ModifiedAt: entry.ModifiedAt}
+	season, episode := resolvedCatalogEpisodeFacts(entry)
+	return MediaCatalogEpisode{ID: entry.ID, Title: entry.Title, Season: season, Episode: episode, RelativePath: entry.RelativePath, Size: entry.Size, ModifiedAt: entry.ModifiedAt}
+}
+
+// resolvedCatalogEpisodeFacts repairs legacy projections at the read boundary
+// without trusting arbitrary client input. A provider-relative filename is a
+// stronger per-file fact than a work-level recognition hint persisted by an
+// older scanner.
+func resolvedCatalogEpisodeFacts(entry models.MediaLibraryEntry) (*int, *int) {
+	season, episode := cloneInt(entry.Season), cloneInt(entry.Episode)
+	parsed := medialibrary.ParseMedia(path.Base(strings.ReplaceAll(entry.RelativePath, "\\", "/")), entry.RelativePath)
+	if parsed.Season != nil {
+		season = cloneInt(parsed.Season)
+	}
+	if parsed.Episode != nil {
+		episode = cloneInt(parsed.Episode)
+	}
+	return season, episode
+}
+
+func pointerIntValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func encodeCatalogToken(workKey string) string {

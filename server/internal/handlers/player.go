@@ -180,7 +180,7 @@ func (a *API) PlayerMediaLibraryDetail(c *gin.Context) {
 	if !ok {
 		return
 	}
-	detail, err := a.libraries.PlayerCatalogDetail(mustActor(c), id, c.Param("work"))
+	detail, err := a.libraries.PlayerCatalogDetail(c.Request.Context(), mustActor(c), id, c.Param("work"))
 	if err != nil {
 		writeError(c, a.log, err)
 		return

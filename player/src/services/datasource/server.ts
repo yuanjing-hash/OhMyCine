@@ -114,6 +114,11 @@ interface ServerVersionRecord {
   title: string
   season?: number
   episode?: number
+  overview?: string
+  still_path?: string
+  air_date?: string
+  runtime_minutes?: number
+  rating?: number
   size: number
   modified_at: string
   playable: boolean
@@ -719,21 +724,24 @@ export class ServerDataSource implements DataSource {
 
   private mapVersion(item: ServerItemRecord, version: ServerVersionRecord, work: WorkItemID): MediaItem {
     const id = createEntryItemID(work.libraryId, work.workId, version.id)
+    const isEpisode = item.kind === 'series'
+    const episodeArtwork = isEpisode ? artwork(version.still_path, 'w1280') : undefined
+    const runtimeMinutes = isEpisode ? version.runtime_minutes : item.runtime_minutes
     return {
       id,
       sourceId: this.id,
       originType: 'server',
       libraryId: work.libraryId,
       name: version.title,
-      originalTitle: item.original_title,
-      type: item.kind === 'series' ? 'episode' : 'movie',
-      posterUrl: artwork(item.poster_path, 'w500'),
-      backdropUrl: artwork(item.backdrop_path, 'w1280'),
+      originalTitle: isEpisode ? undefined : item.original_title,
+      type: isEpisode ? 'episode' : 'movie',
+      posterUrl: isEpisode ? episodeArtwork : artwork(item.poster_path, 'w500'),
+      backdropUrl: isEpisode ? episodeArtwork : artwork(item.backdrop_path, 'w1280'),
       year: item.release_year,
-      rating: item.rating,
-      overview: item.overview,
-      tagline: item.tagline,
-      duration: item.runtime_minutes ? item.runtime_minutes * 60 : undefined,
+      rating: isEpisode ? version.rating : item.rating,
+      overview: isEpisode ? version.overview : item.overview,
+      tagline: isEpisode ? undefined : item.tagline,
+      duration: runtimeMinutes ? runtimeMinutes * 60 : undefined,
       size: version.size,
       modified: version.modified_at,
       path: '',
@@ -1047,6 +1055,11 @@ function parseVersion(value: unknown): ServerVersionRecord | null {
     title: value.title,
     season: numberValue(value.season),
     episode: numberValue(value.episode),
+    overview: optionalString(value.overview),
+    still_path: optionalImagePath(value.still_path),
+    air_date: optionalString(value.air_date),
+    runtime_minutes: boundedNumber(value.runtime_minutes, 1, 24 * 60),
+    rating: boundedNumber(value.rating, 0, 10),
     size: numberValue(value.size) ?? 0,
     modified_at: optionalString(value.modified_at) ?? '',
     playable: value.playable,

@@ -47,6 +47,73 @@ type cancelingCandidateLookupFake struct {
 	calls int
 }
 
+type productionEdgeRecognitionLookupFake struct {
+	searches []string
+}
+
+func (f *productionEdgeRecognitionLookupFake) Search(context.Context, string, string, *int, string, string) (tmdb.Match, error) {
+	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+}
+
+func (f *productionEdgeRecognitionLookupFake) SearchCandidates(_ context.Context, mediaType, title string, year *int, language, _ string, _ int) ([]tmdb.Candidate, error) {
+	yearText := ""
+	if year != nil {
+		yearText = fmt.Sprint(*year)
+	}
+	f.searches = append(f.searches, language+":"+mediaType+":"+title+":"+yearText)
+	switch {
+	case title == "迪迦·奥特曼" && mediaType == "movie":
+		return []tmdb.Candidate{
+			{ID: 113094, Title: "迪迦奥特曼 剧场版：最终圣战", MediaType: "movie", Popularity: 3.46},
+			{ID: 318718, Title: "迪迦奥特曼·戴拿奥特曼&盖亚奥特曼 剧场版：超时空大决战", MediaType: "movie", Popularity: 2.53},
+		}, nil
+	case title == "迪迦·奥特曼" && mediaType == "tv":
+		return []tmdb.Candidate{{ID: 2253, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", MediaType: "tv", Popularity: 23.74}}, nil
+	case title == "The Final Odyssey" && mediaType == "movie":
+		return []tmdb.Candidate{
+			{ID: 113094, Title: "迪迦奥特曼 剧场版：最终圣战", OriginalTitle: "ウルトラマンティガ THE FINAL ODYSSEY", MediaType: "movie", Popularity: 3.46},
+			{ID: 1559261, Title: "银河交响曲：终极奥德赛", OriginalTitle: "Galaxymphony - The Final Odyssey", MediaType: "movie", Popularity: .95},
+		}, nil
+	case strings.EqualFold(title, "tiga") && language == "en-US" && mediaType == "movie":
+		return []tmdb.Candidate{{ID: 1377374, Title: "Tiga", MediaType: "movie", ReleaseYear: intPointerTest(1996)}}, nil
+	case strings.EqualFold(title, "tiga") && language == "en-US" && mediaType == "tv":
+		return []tmdb.Candidate{
+			{ID: 2253, Title: "Ultraman Tiga", OriginalTitle: "ウルトラマンティガ", MediaType: "tv", ReleaseYear: intPointerTest(1996), Popularity: 23.74},
+			{ID: 123417, Title: "Ultraman Trigger: New Generation Tiga", MediaType: "tv", ReleaseYear: intPointerTest(2021), Popularity: 8.87},
+		}, nil
+	default:
+		return nil, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+	}
+}
+
+func (f *productionEdgeRecognitionLookupFake) EnrichCandidates(_ context.Context, candidates []tmdb.Candidate, _ string, limit int) ([]tmdb.Candidate, error) {
+	result := append([]tmdb.Candidate(nil), candidates...)
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	for index := range result {
+		switch result[index].ID {
+		case 113094:
+			result[index].AlternativeTitles = []string{"Ultraman Tiga The Final Odyssey"}
+			result[index].Translations = []string{"Ultraman Tiga: The Final Odyssey"}
+		case 2253:
+			result[index].AlternativeTitles = []string{"Ultraman Tiga"}
+		}
+	}
+	return result, nil
+}
+
+func (f *productionEdgeRecognitionLookupFake) GetByID(_ context.Context, mediaType string, id int64, _ string) (tmdb.Match, error) {
+	switch id {
+	case 2253:
+		return tmdb.Match{ID: id, Title: "迪迦奥特曼", MediaType: mediaType, ReleaseYear: intPointerTest(1996), Snapshot: tmdb.Snapshot{TMDBID: id, Title: "迪迦奥特曼", MediaType: mediaType}}, nil
+	case 113094:
+		return tmdb.Match{ID: id, Title: "迪迦奥特曼 剧场版：最终圣战", MediaType: mediaType, ReleaseYear: intPointerTest(2000), Snapshot: tmdb.Snapshot{TMDBID: id, Title: "迪迦奥特曼 剧场版：最终圣战", MediaType: mediaType}}, nil
+	default:
+		return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+	}
+}
+
 func (f *cancelingCandidateLookupFake) Search(context.Context, string, string, *int, string, string) (tmdb.Match, error) {
 	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
 }
@@ -324,6 +391,34 @@ func TestRecognizeMediaRecallsProductionEnglishAndPinyinAliasesAfterSpecificatio
 			}
 			if !found {
 				t.Fatalf("clean query %q missing from %v", test.query, lookup.searches)
+			}
+		})
+	}
+}
+
+func TestRecognizeMediaHandlesRealTMDBFranchiseOrderingAndBoundedTypoFallback(t *testing.T) {
+	tests := []struct {
+		name         string
+		release      string
+		expectedID   int64
+		expectedType string
+	}{
+		{name: "punctuated chinese series", release: "迪迦·奥特曼 1080p", expectedID: 2253, expectedType: "tv"},
+		{name: "standalone franchise movie subtitle", release: "The Final Odyssey 1080p WEB-DL H264 AAC-Side", expectedID: 113094, expectedType: "movie"},
+		{name: "one missing latin letter", release: "ULRAMAN+TIGA 1996 BluRay X264 1080p", expectedID: 2253, expectedType: "tv"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := &productionEdgeRecognitionLookupFake{}
+			result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{PackageName: test.release, SourceKind: mediarecognition.SourceDownload, BuiltinPackCodes: mediarecognition.DefaultPackCodes(), Classification: classification.DefaultRules(), Language: "zh-CN", Region: "CN"})
+			if result.Status != mediaRecognitionStatusMatched || result.TMDBID == nil || *result.TMDBID != test.expectedID || result.MediaType != test.expectedType {
+				t.Fatalf("result=%+v searches=%v", result, lookup.searches)
+			}
+			if len(lookup.searches) > mediaRecognitionMaxQueries {
+				t.Fatalf("request budget exceeded: %v", lookup.searches)
+			}
+			if strings.Contains(test.release, "ULRAMAN") && !containsTestString(lookup.searches, "en-US:tv:tiga:1996") {
+				t.Fatalf("bounded English token fallback missing: %v", lookup.searches)
 			}
 		})
 	}

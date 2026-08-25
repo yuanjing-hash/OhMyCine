@@ -101,16 +101,21 @@ type PlayerMediaItemPage struct {
 }
 
 type PlayerMediaVersion struct {
-	ID            uint      `json:"id"`
-	Title         string    `json:"title"`
-	Season        *int      `json:"season,omitempty"`
-	Episode       *int      `json:"episode,omitempty"`
-	Size          int64     `json:"size"`
-	ModifiedAt    time.Time `json:"modified_at"`
-	Playable      bool      `json:"playable"`
-	StreamPath    string    `json:"stream_path,omitempty"`
-	DeliveryKind  string    `json:"delivery_kind,omitempty"`
-	ExactIdentity string    `json:"exact_identity"`
+	ID             uint      `json:"id"`
+	Title          string    `json:"title"`
+	Season         *int      `json:"season,omitempty"`
+	Episode        *int      `json:"episode,omitempty"`
+	Overview       string    `json:"overview,omitempty"`
+	StillPath      string    `json:"still_path,omitempty"`
+	AirDate        string    `json:"air_date,omitempty"`
+	RuntimeMinutes int       `json:"runtime_minutes,omitempty"`
+	Rating         float64   `json:"rating,omitempty"`
+	Size           int64     `json:"size"`
+	ModifiedAt     time.Time `json:"modified_at"`
+	Playable       bool      `json:"playable"`
+	StreamPath     string    `json:"stream_path,omitempty"`
+	DeliveryKind   string    `json:"delivery_kind,omitempty"`
+	ExactIdentity  string    `json:"exact_identity"`
 }
 
 type PlayerMediaDetail struct {
@@ -278,7 +283,7 @@ func (s *MediaLibraryService) PlayerCatalog(actor Actor, libraryID uint, query M
 	return PlayerMediaItemPage{List: items, Total: int(page.Total), Page: page.Page, PageSize: page.PageSize}, nil
 }
 
-func (s *MediaLibraryService) PlayerCatalogDetail(actor Actor, libraryID uint, token string) (PlayerMediaDetail, error) {
+func (s *MediaLibraryService) PlayerCatalogDetail(ctx context.Context, actor Actor, libraryID uint, token string) (PlayerMediaDetail, error) {
 	if err := s.ensurePlayerMediaLibraryReadable(actor, libraryID); err != nil {
 		return PlayerMediaDetail{}, err
 	}
@@ -302,8 +307,21 @@ func (s *MediaLibraryService) PlayerCatalogDetail(actor Actor, libraryID uint, t
 	if err := s.db.Where("library_id = ? AND work_key = ?", libraryID, workKey).Order("COALESCE(season, 0), COALESCE(episode, 0), relative_path").Find(&entries).Error; err != nil {
 		return PlayerMediaDetail{}, err
 	}
+	episodeMetadata := map[playerEpisodeKey]tmdb.EpisodeSnapshot{}
+	if item.Kind == "series" {
+		episodeMetadata = s.playerEpisodeMetadata(ctx, libraryID, workKey, entries)
+	}
 	versions := make([]PlayerMediaVersion, 0, len(entries))
 	for _, entry := range entries {
+		season, episode := resolvedCatalogEpisodeFacts(entry)
+		episodeSnapshot := tmdb.EpisodeSnapshot{}
+		if episode != nil {
+			key := playerEpisodeKey{episode: *episode}
+			if season != nil {
+				key.season = *season
+			}
+			episodeSnapshot = episodeMetadata[key]
+		}
 		playable := false
 		deliveryKind := ""
 		exactIdentity := "server:entry:" + strconv.FormatUint(uint64(entry.ID), 10)
@@ -332,8 +350,26 @@ func (s *MediaLibraryService) PlayerCatalogDetail(actor Actor, libraryID uint, t
 		if playable {
 			streamPath = "/api/v1/player/media-entries/" + strconv.FormatUint(uint64(entry.ID), 10) + "/stream"
 		}
-		versions = append(versions, PlayerMediaVersion{ID: entry.ID, Title: entry.Title, Season: entry.Season, Episode: entry.Episode, Size: entry.Size, ModifiedAt: entry.ModifiedAt, Playable: playable, StreamPath: streamPath, DeliveryKind: deliveryKind, ExactIdentity: exactIdentity})
+		title := entry.Title
+		if item.Kind == "series" {
+			title = strings.TrimSpace(episodeSnapshot.Name)
+			if title == "" {
+				title = playerEpisodeFallbackTitle(entry, episode)
+			}
+		}
+		versions = append(versions, PlayerMediaVersion{ID: entry.ID, Title: title, Season: season, Episode: episode, Overview: episodeSnapshot.Overview, StillPath: safeTMDBImagePath(episodeSnapshot.StillPath), AirDate: episodeSnapshot.AirDate, RuntimeMinutes: episodeSnapshot.RuntimeMinutes, Rating: episodeSnapshot.VoteAverage, Size: entry.Size, ModifiedAt: entry.ModifiedAt, Playable: playable, StreamPath: streamPath, DeliveryKind: deliveryKind, ExactIdentity: exactIdentity})
 	}
+	sort.SliceStable(versions, func(i, j int) bool {
+		leftSeason, rightSeason := pointerIntValue(versions[i].Season), pointerIntValue(versions[j].Season)
+		if leftSeason != rightSeason {
+			return leftSeason < rightSeason
+		}
+		leftEpisode, rightEpisode := pointerIntValue(versions[i].Episode), pointerIntValue(versions[j].Episode)
+		if leftEpisode != rightEpisode {
+			return leftEpisode < rightEpisode
+		}
+		return versions[i].ID < versions[j].ID
+	})
 	return PlayerMediaDetail{Item: item, Versions: versions}, nil
 }
 

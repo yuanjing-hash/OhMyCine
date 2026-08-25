@@ -4,7 +4,7 @@ import (
 	"errors"
 )
 
-const EngineVersion = "nextgen-domain-v5"
+const EngineVersion = "nextgen-domain-v6"
 
 const (
 	MaxPackageRunes     = 512
@@ -211,6 +211,8 @@ type ScoreConfig struct {
 	PopularityWeight    float64
 	MatchThreshold      float64
 	ExactTitleThreshold float64
+	TypoTitleThreshold  float64
+	TypoMatchThreshold  float64
 	ConflictMargin      float64
 	HanEquivalence      HanEquivalence
 }

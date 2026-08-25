@@ -297,6 +297,37 @@ func TestParseProductionEnglishAndPinyinReleaseNamesKeepSearchableWorkTitles(t *
 	}
 }
 
+func TestParseAddsOnlyBoundedLatinTokenFallbacksForMultiwordTypoRecovery(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "ULRAMAN+TIGA 1996 BluRay 1080p", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbacks := make([]string, 0, 2)
+	for _, query := range parsed.Queries {
+		if query.Reason == "latin_token_fallback" {
+			fallbacks = append(fallbacks, query.Title)
+			if query.Year == nil || *query.Year != 1996 {
+				t.Fatalf("fallback lost bounded year evidence: %+v", query)
+			}
+		}
+	}
+	if len(fallbacks) != 2 || fallbacks[0] != "ulraman" || fallbacks[1] != "tiga" {
+		t.Fatalf("fallbacks=%v queries=%+v", fallbacks, parsed.Queries)
+	}
+
+	for _, title := range []string{"TIGA 1080p", "A Very Long 中文 Title 1080p", "Spider-Man 2002 1080p"} {
+		negative, parseErr := Parse(InputFacts{PackageName: title, SourceKind: SourceDownload})
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		for _, query := range negative.Queries {
+			if query.Reason == "latin_token_fallback" {
+				t.Fatalf("unsafe token fallback for %q: %+v", title, query)
+			}
+		}
+	}
+}
+
 func TestBuildQueryVariantsPrioritizesCanonicalTitlesAcrossSources(t *testing.T) {
 	parsed, err := Parse(InputFacts{PreparedNames: []PreparedName{
 		{Value: "Wrong.Title.1080p-GRP", Source: "filename"},

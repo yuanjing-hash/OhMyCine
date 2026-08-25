@@ -875,7 +875,12 @@ function trackLabel(track: AudioTrack | SubtitleTrack): string {
 }
 
 function episodeTitle(item: MediaItem): string {
-  return item.episodeNumber == null ? item.name : `第 ${item.episodeNumber} 集 · ${item.name}`
+  if (item.episodeNumber == null)
+    return item.name
+  const prefix = `第 ${item.episodeNumber} 集`
+  const compactPrefix = `第${item.episodeNumber}集`
+  const name = item.name.trim()
+  return !name || name === prefix || name === compactPrefix ? prefix : `${prefix} · ${name}`
 }
 
 function itemRuntime(item: MediaItem): string {

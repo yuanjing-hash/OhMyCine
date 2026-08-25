@@ -1003,6 +1003,14 @@ func buildQueryVariants(names []parsedName, year, seasonYear *int, mediaType Med
 	for _, item := range names {
 		add(item.raw, item, "raw", year)
 	}
+	for _, item := range names {
+		for _, token := range distinctiveLatinRecallTokens(item.canonical) {
+			// A single distinctive token is retrieval-only evidence. Rank must
+			// still compare the complete title so a broad token such as "Tiga"
+			// cannot become an automatic identity by itself.
+			add(token, item, "latin_token_fallback", year)
+		}
+	}
 	return result
 }
 
@@ -1029,6 +1037,61 @@ func splitAliasTitles(value string) []splitTitle {
 		part = cleanTitleSurface(part)
 		if meaningfulTitle(part) && comparisonKey(part) != comparisonKey(value) {
 			result = append(result, splitTitle{title: part, reason: "multilingual_alias"})
+		}
+	}
+	return result
+}
+
+func distinctiveLatinRecallTokens(value string) []string {
+	tokens := comparisonTokens(value, nil)
+	fullKey := []rune(comparisonKeyWith(value, nil))
+	if len(tokens) < 2 || len(fullKey) < 10 {
+		return nil
+	}
+	for _, r := range fullKey {
+		if unicode.IsDigit(r) {
+			continue
+		}
+		if !unicode.IsLetter(r) || !unicode.In(r, unicode.Latin) {
+			return nil
+		}
+	}
+	type tokenCandidate struct {
+		value  string
+		length int
+		order  int
+	}
+	candidates := make([]tokenCandidate, 0, len(tokens))
+	for order, token := range tokens {
+		runes := []rune(token)
+		if len(runes) < 4 {
+			continue
+		}
+		hasLetter, valid := false, true
+		for _, r := range runes {
+			switch {
+			case unicode.IsDigit(r):
+			case unicode.IsLetter(r) && unicode.In(r, unicode.Latin):
+				hasLetter = true
+			default:
+				valid = false
+			}
+		}
+		if valid && hasLetter {
+			candidates = append(candidates, tokenCandidate{value: token, length: len(runes), order: order})
+		}
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		if candidates[left].length != candidates[right].length {
+			return candidates[left].length > candidates[right].length
+		}
+		return candidates[left].order < candidates[right].order
+	})
+	result := make([]string, 0, 2)
+	for _, candidate := range candidates {
+		result = append(result, candidate.value)
+		if len(result) == 2 {
+			break
 		}
 	}
 	return result

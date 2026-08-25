@@ -132,6 +132,71 @@ func TestRankUsesExplicitFranchiseSubtitleAliasButNotOneWordSuffix(t *testing.T)
 	}
 }
 
+func TestRankPrefersUniqueExactIdentityAmongRelatedFranchiseResults(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "迪迦·奥特曼 1080p", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Rank(parsed, []RemoteCandidate{
+		{ID: 113094, MediaType: MediaTypeMovie, Title: "迪迦奥特曼 剧场版：最终圣战", Popularity: 3.46},
+		{ID: 318718, MediaType: MediaTypeMovie, Title: "迪迦奥特曼·戴拿奥特曼&盖亚奥特曼 剧场版：超时空大决战", Popularity: 2.53},
+		{ID: 2253, MediaType: MediaTypeTV, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", Popularity: 23.74},
+	})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 2253 {
+		t.Fatalf("decision=%+v", decision)
+	}
+
+	conflict := Rank(parsed, []RemoteCandidate{
+		{ID: 2253, MediaType: MediaTypeTV, Title: "迪迦奥特曼"},
+		{ID: 9999, MediaType: MediaTypeMovie, Title: "迪迦·奥特曼"},
+	})
+	if conflict.Status != DecisionUnrecognized || conflict.Reason != ReasonCandidateConflict {
+		t.Fatalf("duplicate exact identities were not rejected: %+v", conflict)
+	}
+}
+
+func TestRankFranchiseDecisionIsStableAcrossRemoteCandidateOrder(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "迪迦·奥特曼 1080p", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := []RemoteCandidate{
+		{ID: 113094, MediaType: MediaTypeMovie, Title: "迪迦奥特曼 剧场版：最终圣战", Popularity: 3.46},
+		{ID: 318718, MediaType: MediaTypeMovie, Title: "迪迦奥特曼·戴拿奥特曼&盖亚奥特曼 剧场版：超时空大决战", Popularity: 2.53},
+		{ID: 2253, MediaType: MediaTypeTV, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", Popularity: 23.74},
+	}
+	for _, input := range [][]RemoteCandidate{candidates, {candidates[2], candidates[1], candidates[0]}} {
+		decision := Rank(parsed, input)
+		if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 2253 {
+			t.Fatalf("order-dependent decision=%+v input=%+v", decision, input)
+		}
+	}
+}
+
+func TestRankAcceptsOneBoundedLatinTypoButIgnoresRecallOnlyTokenIdentity(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "ULRAMAN+TIGA 1996 1080p", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	year := 1996
+	decision := Rank(parsed, []RemoteCandidate{
+		{ID: 1377374, MediaType: MediaTypeMovie, Title: "Tiga", ReleaseYear: &year},
+		{ID: 2253, MediaType: MediaTypeTV, Title: "Ultraman Tiga", ReleaseYear: &year, Popularity: 23.74},
+		{ID: 123417, MediaType: MediaTypeTV, Title: "Ultraman Trigger: New Generation Tiga", ReleaseYear: intRef(2021), Popularity: 8.87},
+	})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 2253 {
+		t.Fatalf("decision=%+v queries=%+v", decision, parsed.Queries)
+	}
+
+	short, shortErr := Parse(InputFacts{PackageName: "STREM 1080p", SourceKind: SourceDownload})
+	if shortErr != nil {
+		t.Fatal(shortErr)
+	}
+	if unsafe := Rank(short, []RemoteCandidate{{ID: 1, MediaType: MediaTypeMovie, Title: "Stream"}}); unsafe.Status != DecisionUnrecognized {
+		t.Fatalf("short one-token typo was accepted: %+v", unsafe)
+	}
+}
+
 func TestRankUsesSeasonAirYearWithoutConflictingWithSeriesPremiereYear(t *testing.T) {
 	parsed, err := Parse(InputFacts{PackageName: "Ai qing gong yu 2012 S03 2160p WEB-DL H.265", SourceKind: SourceDownload})
 	if err != nil {
