@@ -146,7 +146,7 @@
 | A stored completion manifest is oversized, incomplete, duplicated, absolute, traversal-dependent, or otherwise non-canonical | Fail closed with `download_completion_manifest_invalid`; create no TransferTask and mutate no source/target file |
 | 115 rejects an invalid link or reports exhausted offline quota | Mark a safe actionable terminal failure; do not schedule a ten-second retry loop |
 | A 115 offline directory reaches parent ID `0` | Accept and verify it when the bound Storage root is `0`; otherwise reject as `downloader_storage_unavailable` before provider submission |
-| 115 download targets a local/cross-account/symlink library or a target without live mutation capability | Reject before enqueue; explicit selection never redirects and automatic selection skips it |
+| 115 download targets a local/cross-account/symlink library or a target without live mutation capability | Reject before enqueue with `media_library_storage_unavailable`; explicit selection never redirects and automatic selection skips it |
 | HTTP submits `provider_item`, or submits `115_share` to a non-115 downloader | Reject with `download_source_invalid`; create no Job or DownloadTask |
 | Share target is absent/incompatible or its intake directory moved outside the current Storage root | Reject before receive with a safe target/storage error; never fall back to the downloader default directory |
 | Share is invalid, empty, over the bounded top-level limit, or provider result remains ambiguous after directory reconciliation | Return a stable `pan115_share_*` error without logging the link, code, IDs or response body |

@@ -155,6 +155,127 @@
       "policy":"must_reject"
     },
     {
+      "id":"tv-long-running-anime-absolute-episode",
+      "input":{"package_name":"[银色子弹字幕组][名侦探柯南][第1210集 被诅咒的邻居][WEBRIP][简日双语MP4][1080P]","source_kind":"download"},
+      "candidates":[
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1,"popularity":150},
+        {"id":90001,"media_type":"movie","title":"名侦探柯南","popularity":300},
+        {"id":917496,"media_type":"movie","title":"名侦探柯南：唐红的恋歌","popularity":50}
+      ],
+      "expected":{"media_type":"tv","canonical_title":"名侦探柯南","remote_id":30983},
+      "policy":"must_match"
+    },
+    {
+      "id":"tv-long-running-anime-bilingual-parenthesized-episode",
+      "input":{"package_name":"[黒ネズミたち] 名侦探柯南 / Detective Conan - 1210 (CR 1920x1080 AVC AAC MKV)","source_kind":"download"},
+      "candidates":[
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","alternative_titles":["Detective Conan"],"season_count":1},
+        {"id":90001,"media_type":"movie","title":"Detective Conan"}
+      ],
+      "expected":{"media_type":"tv","canonical_title":"名侦探柯南 / Detective Conan","remote_id":30983},
+      "policy":"must_match"
+    },
+    {
+      "id":"tv-long-running-anime-remastered-split-part",
+      "input":{"package_name":"[银色子弹字幕组][名侦探柯南][数码重映第118-2集 浪花连续杀人事件（后篇）][字幕仅重映片头片尾][TVRIP][简繁日多语MKV][1080P]","source_kind":"download"},
+      "candidates":[
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1},
+        {"id":90001,"media_type":"movie","title":"名侦探柯南"}
+      ],
+      "expected":{"media_type":"tv","canonical_title":"名侦探柯南","remote_id":30983},
+      "policy":"must_match"
+    },
+    {
+      "id":"tv-long-running-anime-plain-absolute-episode",
+      "input":{"package_name":"[Doomdos] - 名侦探柯南 - 第1266话 - [1080p]","source_kind":"download"},
+      "candidates":[
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1},
+        {"id":90001,"media_type":"movie","title":"名侦探柯南"}
+      ],
+      "expected":{"media_type":"tv","canonical_title":"名侦探柯南","remote_id":30983},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-anime-franchise-index-m21",
+      "input":{"package_name":"[银色子弹字幕组&VCB-Studio] 名侦探柯南M21 唐红的恋歌 / Detective Conan M21: The Crimson Love Letter 10-bit 1080p HEVC BDRip [MOVIE Fin]","source_kind":"download"},
+      "candidates":[
+        {"id":917496,"media_type":"movie","title":"名侦探柯南：唐红的恋歌","alternative_titles":["Detective Conan: The Crimson Love Letter"]},
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1}
+      ],
+      "expected":{"media_type":"movie","canonical_title":"名侦探柯南 唐红的恋歌 / Detective Conan : The Crimson Love Letter","remote_id":917496},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-anime-franchise-index-m28",
+      "input":{"package_name":"[VCB-Studio] 名侦探柯南M28 独眼的残像 / Detective Conan M28: One-eyed Flashback 10-bit 1080p HEVC BDRip [MOVIE Fin]","source_kind":"download"},
+      "candidates":[
+        {"id":1297122,"media_type":"movie","title":"名侦探柯南：独眼的残像","alternative_titles":["Detective Conan: One-eyed Flashback"]},
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1}
+      ],
+      "expected":{"media_type":"movie","canonical_title":"名侦探柯南 独眼的残像 / Detective Conan : One-eyed Flashback","remote_id":1297122},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-multi-audio-channel-layout-noise",
+      "input":{"package_name":"Lupin III vs Detective Conan 2009 1080p BluRay HEVC FLAC 2.0 3Audios-ADE","source_kind":"download"},
+      "candidates":[
+        {"id":251768,"media_type":"movie","title":"Lupin III vs Detective Conan","release_year":2009},
+        {"id":30983,"media_type":"tv","title":"Detective Conan","release_year":1996,"season_count":1}
+      ],
+      "expected":{"canonical_title":"Lupin III vs Detective Conan","year":2009,"remote_id":251768},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-long-english-title-multi-audio",
+      "input":{"package_name":"Detective Conan Love Story at Police Headquarters Wedding Eve 2022 1080p BluRay x265 10bit FLAC 2.0 2Audios-ADE","source_kind":"download"},
+      "candidates":[
+        {"id":1013675,"media_type":"movie","title":"Detective Conan: Love Story at Police Headquarters, Wedding Eve","alternative_titles":["Detective Conan Love Story at Police Headquarters Wedding Eve"],"release_year":2022},
+        {"id":30983,"media_type":"tv","title":"Detective Conan","release_year":1996,"season_count":1}
+      ],
+      "expected":{"canonical_title":"Detective Conan Love Story at Police Headquarters Wedding Eve","year":2022,"remote_id":1013675},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-scarlet-alibi-multi-audio",
+      "input":{"package_name":"Detective Conan The Scarlet Alibi 2021 1080p BluRay x265 10bit DTS 5.1 2Audios-ADE","source_kind":"download"},
+      "candidates":[
+        {"id":805058,"media_type":"movie","title":"Detective Conan: The Scarlet Alibi","alternative_titles":["Detective Conan The Scarlet Alibi"],"release_year":2021},
+        {"id":30983,"media_type":"tv","title":"Detective Conan","release_year":1996,"season_count":1}
+      ],
+      "expected":{"canonical_title":"Detective Conan The Scarlet Alibi","year":2021,"remote_id":805058},
+      "policy":"must_match"
+    },
+    {
+      "id":"movie-lupin-crossover-title-token",
+      "input":{"package_name":"Lupin the 3rd vs Detective Conan The Movie 2013 1080p BluRay x265 10bit DTS 5.1 3Audios-ADE","source_kind":"download"},
+      "candidates":[
+        {"id":248409,"media_type":"movie","title":"Lupin the 3rd vs Detective Conan: The Movie","alternative_titles":["Lupin the 3rd vs Detective Conan The Movie"],"release_year":2013},
+        {"id":251768,"media_type":"movie","title":"Lupin III vs Detective Conan","release_year":2009}
+      ],
+      "expected":{"canonical_title":"Lupin the 3rd vs Detective Conan The Movie","year":2013,"remote_id":248409},
+      "policy":"must_match"
+    },
+    {
+      "id":"negative-untyped-cross-type-exact-title",
+      "input":{"package_name":"Detective Conan The Scarlet School Trip 2019 1080p BluRay HEVC FLAC 2.0 2Audios-ADE","source_kind":"download"},
+      "candidates":[
+        {"id":1,"media_type":"movie","title":"Detective Conan The Scarlet School Trip","release_year":2019},
+        {"id":2,"media_type":"tv","title":"Detective Conan The Scarlet School Trip","release_year":2019}
+      ],
+      "expected":{"canonical_title":"Detective Conan The Scarlet School Trip","year":2019},
+      "policy":"must_reject"
+    },
+    {
+      "id":"movie-legal-title-containing-movie-token",
+      "input":{"package_name":"Scary Movie 2000 1080p BluRay","source_kind":"download"},
+      "candidates":[
+        {"id":4247,"media_type":"movie","title":"Scary Movie","release_year":2000},
+        {"id":99999,"media_type":"movie","title":"Scary","release_year":2000}
+      ],
+      "expected":{"canonical_title":"Scary Movie","year":2000,"remote_id":4247},
+      "policy":"must_match"
+    },
+    {
       "id":"movie-legal-release-like-title-suffix",
       "input":{"package_name":"Tinker-Tailor-Soldier-Spy.2011.1080p","media_type_hint":"movie"},
       "candidates":[{"id":49517,"media_type":"movie","title":"Tinker Tailor Soldier Spy","release_year":2011}],

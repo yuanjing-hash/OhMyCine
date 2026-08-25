@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, filterAndSortTorrentResults, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, site_type: 'pt', status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -12,10 +13,25 @@ describe('PT discovery contracts', () => {
     expect(query.toString()).not.toContain('passkey')
   })
 
-  it('replaces streaming site groups and appends explicit next pages', () => {
+  it('replaces one site with its requested page without disturbing other site pages', () => {
     expect(upsertPTGroup([group(1)], group(2))).toHaveLength(2)
-    const appended = upsertPTGroup([group(1)], group(1, 2), true)
-    expect(appended[0].items.map(item => item.token)).toEqual(['token-1-1', 'token-1-2'])
+    const replaced = upsertPTGroup([group(1), group(2)], group(1, 2))
+    expect(replaced.map(item => [item.site_id, item.page, item.items[0]?.token])).toEqual([
+      [1, 2, 'token-1-2'],
+      [2, 1, 'token-2-1'],
+    ])
+  })
+
+  it('filters current-site cards with AND rules and defaults to seeder-descending order', () => {
+    const pt = group(1, 2)
+    pt.items = [
+      { token: 'low', title: 'Low', seeders: 4, completed: 9, promotion: 'free', quality: '1080p', specifications: { resolution: '1080p' }, expires_at: '2026-08-25T00:10:00Z' },
+      { token: 'high', title: 'High', seeders: 80, completed: 20, promotion: 'free', quality: '2160p', specifications: { resolution: '2160p' }, expires_at: '2026-08-25T00:10:00Z' },
+      { token: 'mid', title: 'Mid', seeders: 20, completed: 15, promotion: 'free', quality: '2160p', specifications: { resolution: '2160p' }, expires_at: '2026-08-25T00:10:00Z' },
+    ]
+    const bt = { ...group(2), site_type: 'bt' as const, items: [{ token: 'bt', title: 'BT', seeders: 200, quality: '2160p', specifications: { resolution: '2160p' }, expires_at: '2026-08-25T00:10:00Z' }] }
+    const values = filterAndSortTorrentResults([pt, bt], { activeChannel: 1, enabledSiteTypes: ['pt'], resolution: '2160p', promotion: 'free', minimumSeeders: 10, sort: 'seeders' })
+    expect(values.map(entry => entry.item.token)).toEqual(['high', 'mid'])
   })
 
   it('keeps TMDB identity search and CookieCloud management on explicit server routes', () => {
@@ -29,6 +45,8 @@ describe('PT discovery contracts', () => {
     expect(torrentSearchPath).toBe('/api/v1/discovery/torrent-search')
     expect(torrentSearchStreamPath).toBe('/api/v1/discovery/torrent-search/stream')
     expect(torrentRecognitionPath).toBe('/api/v1/discovery/torrent-results/recognize')
+    expect(torrentRecognitionCandidatesPath).toBe('/api/v1/discovery/torrent-results/tmdb-candidates')
+    expect(torrentRecognitionOverridePath).toBe('/api/v1/discovery/torrent-results/recognition-override')
   })
 
   it('presents shared recognition specifications without accepting a raw title or torrent URL', () => {
@@ -49,6 +67,21 @@ describe('PT discovery contracts', () => {
     expect(cookieCloudErrorLabel('future_safe_code')).toBe('future_safe_code')
   })
 
+  it('keeps manual recognition explicit and binds only a verified TMDB identity before download', () => {
+    const source = readFileSync(new URL('./views/ExploreView.vue', import.meta.url), 'utf8')
+    expect(source).toContain('手动识别')
+    expect(source).toContain('自动识别失败也可以在这里修改关键词')
+    expect(source).toContain('torrentRecognitionCandidatesPath')
+    expect(source).toContain('torrentRecognitionOverridePath')
+    expect(source).toContain('result_token: item.token')
+    expect(source).toContain('tmdb_id: candidate.id')
+    expect(source).toContain('media_type: candidate.media_type')
+    expect(source).not.toContain('torrent_id')
+    expect(source).toContain("'检测'")
+    expect(source).toContain('>手动检测</button>')
+    expect(source).toContain('>入库</button>')
+  })
+
   it('keeps the latest unexpired search in session storage without retaining stale claims', () => {
     const values = new Map<string, string>()
     const storage = {
@@ -64,7 +97,7 @@ describe('PT discovery contracts', () => {
     saveTorrentSearchSession(storage, {
       input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title' },
       groups: [fresh, stale],
-      recognitions: { [fresh.items[0].token]: { engine_version: ptRecognitionEngineVersion, status: 'matched', title: '迪迦奥特曼', media_type: 'tv', episodes: { episode_min: 1, episode_max: 52, count: 52 }, specifications: {} } },
+      recognitions: { [fresh.items[0].token]: { engine_version: ptRecognitionEngineVersion, status: 'matched', manual_override: true, title: '迪迦奥特曼', media_type: 'tv', episodes: { episode_min: 1, episode_max: 52, count: 52 }, specifications: {} } },
       searched: true,
       savedAt: now,
     })
@@ -73,6 +106,7 @@ describe('PT discovery contracts', () => {
     expect(restored?.groups[0].items).toHaveLength(1)
     expect(restored?.groups[1].items).toHaveLength(0)
     expect(restored?.recognitions[fresh.items[0].token]?.status).toBe('matched')
+    expect(restored?.recognitions[fresh.items[0].token]?.manual_override).toBe(true)
     expect(restored?.recognitions[fresh.items[0].token]?.episodes?.episode_max).toBe(52)
     expect(values.has(torrentSearchSessionKey)).toBe(true)
   })

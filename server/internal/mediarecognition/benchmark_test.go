@@ -86,6 +86,17 @@ func TestBenchmarkMarkdownMatchesFrozenReports(t *testing.T) {
 	}
 }
 
+func TestWebUIRecognitionSessionVersionMatchesDomainEngine(t *testing.T) {
+	frontend, err := os.ReadFile("../../webui/src/sites.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "export const ptRecognitionEngineVersion = '" + EngineVersion + "'"
+	if !strings.Contains(string(frontend), expected) {
+		t.Fatalf("WebUI recognition session version drifted from %s", EngineVersion)
+	}
+}
+
 func findCaseResult(report BenchmarkReport, id string) *BenchmarkCaseResult {
 	for index := range report.Cases {
 		if report.Cases[index].ID == id {

@@ -135,3 +135,22 @@
 - 显式 ID 是失败后的高级逃生通道，不是正常步骤。
 - 先用 benchmark 证明“更强”，不以规则数量或宣传用语证明。
 - 只借鉴公开行为和测试思想，保持许可证边界清晰。
+
+## 10. 搜索、目录与失败任务重选目标
+
+- Explore 保留每个站点自己的 `page/has_next/items/status`，顶部 tab 只切可见渠道；翻页替换当前页，不把第 N 页追加到第 1 页。
+- 预识别事实与最终 manifest 识别分别标注；自动匹配只有在 Server 通过可信详情接口验证后才写入 claim。
+- 媒体库配置继续存 provider-relative 根；WebUI 额外组合 Storage 可读根与相对根，`/` 显示为“数据源根目录”，不改变安全路径契约。
+- `PUT /api/v1/downloads/:id/import-target` 只接受失败 Transfer 的新媒体库 ID。服务在事务内锁定 DownloadTask、TransferTask 和 Job，验证没有部分写入/checkpoint/cleanup，再重建完整目标与 Profile 快照、清理旧计划并将原 Transfer Job 重新入队。已完成 manifest 和验证身份保持不变，不调用 downloader。
+
+## 11. Player 独立识别同步
+
+- Player 使用自己的 `player-nextgen-v3` 实现版本并声明共享 contract；Local/OpenList 等原始源消费同步后的通用解析事实和冻结语料。
+- ServerDataSource、Emby/Jellyfin 继续消费权威 DTO，不进入 Player 本地 parser/TMDB/cache。
+- Player cache identity 之外再比较数据源配置根；同一 source ID 修改物理根时先删除旧 raw scan cache，再创建新运行时源。
+
+## 12. 敏感输入组件
+
+- Server WebUI 与 Player 各自提供同契约 `SecretInput`，支持单行/多行、`configured` 安全布尔、默认遮挡和可访问的眼睛按钮。
+- `configured && modelValue === ''` 只显示星号占位；已保存凭据永不进入 DOM。用户输入替换值后，眼睛只切换该内存值。
+- 静态 inventory 测试扫描全部 Vue 文件，拒绝原生 `type="password"` 和敏感 `v-model` 绕过共享组件。

@@ -155,6 +155,22 @@ npm run lint
 - 完成清单恢复不重新 Submit/Get/Pause/Resume 下载器；legacy 最多补取一次 Manifest。普通完成与人工恢复路径都保留真实 Transfer 错误，`transfer_media_unrecognized` 不再显示为 `downloader_unavailable`。点击重试后旧错误立即替换为“正在重试…”。
 - 最终门禁：`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag 两种 Server build、WebUI 23 files/121 tests、permissions check、vue-tsc、ESLint、Vite build 与 `git diff --check` 全部通过；仅保留既有 Vite chunk-size 警告。
 
+## 2026-08-25 115 单集与跨 Provider 路由复核
+
+- 真实运行数据确认截图任务已正确保存 `TMDB 2253`、`media_type=tv` 与 `episode=6`，完整 4 项 manifest 经包选择器只保留 1 个主视频；单集本身不是失败原因。
+- 根因是 `pan115_offline -> local Storage + move` 被提交服务错误放行，随后因云端任务没有本地 `staging_absolute_path` 才退化成笼统的 `transfer_plan_invalid`。
+- 提交目标校验现在拒绝 115 原生离线到本地媒体库，自动目标按顺序跳过本地库并选择同账号、支持 move/copy 的 115 库；历史/在途非法快照重试返回 `transfer_route_unsupported`，不会伪装成路径计划损坏，也不会移动或删除云端数据。
+- 回归证明单视频 `【迪迦奥特曼】【06】` 使用持久化集数事实生成 `S01E06` 云端目标；提交边界、自动选择、legacy Transfer 错误和完成 manifest 恢复定向测试通过。
+
+## 2026-08-25 MoviePilot/Anitopy/GuessIt 调研与 v8 复核
+
+- 通过浏览器核对 MoviePilot v2 的 `MetaVideo` / `MetaAnime`：普通影视与动漫分流，动漫在预处理前后使用 Anitopy，标题、年份、季集、字幕组、音视频规格与多语言名称保持结构化字段。公开 Anitopy 与 GuessIt 示例同样输出字段化结果；OhMyCine 只采用可观察架构思想，不复制 GPL/LGPL 源码。
+- 将用户截图中的银色子弹、黑ネズミたち、M21/M28、多音轨柯南电影、Doomdos E1266 与 `数码重映第118-2集` 原串纳入冻结 corpus，并增加 `Scary Movie` 与跨类型同名冲突反例。
+- `第118-2集` 作为原第 118 集的分段而非 2–118 范围；当前模型安全保留 Episode 118。引擎升级为 `nextgen-domain-v8`，WebUI session 常量同步，并由跨层测试防止未来漂移。
+- 站点 claim 不再丢弃 adapter subtitle 与搜索媒体类型：二者作为有界弱事实进入同一共享识别器。URL/path-like subtitle 与非 `movie|tv` 提示被忽略，不能覆盖主发行名或强制身份。
+- 冻结 candidate 报告：Parser/Top-1/Top-3 均为 100%，False-match/Unrecognized 均为 0；legacy proxy Top-1 为 5%、Unrecognized 为 95%。这是离线 corpus 指标，不宣称覆盖互联网所有命名。
+- 最终门禁：`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag 两种 Server build、WebUI 23 files/122 tests、permissions check、vue-tsc、ESLint、Vite build 与 benchmark 可重复性均通过；Vite 仅保留既有 chunk-size 警告。
+
 ## 开始实现前检查
 
 - [x] 用户批准本次最终规划摘要。
@@ -162,3 +178,21 @@ npm run lint
 - [x] 读取 backend、web-admin、database、quality 和 security 相关 Trellis specs。
 - [x] 确认当前 52 项未提交改动的所有权，避免覆盖其他任务正在修改的文件。
 - [x] 确认 Player/Emby 通知任务的接口边界，仅复用其 Notify 契约，不在本任务重复实现通知功能。
+
+## 2026-08-25 搜索页、目标恢复、Player v3 与敏感输入
+
+- [x] Explore 改为顶部渠道 tabs、每站替换分页、卡片、组合筛选和做种人数默认降序；卡片动作固定为检测、手动检测、入库。
+- [x] 自动快速识别成功后通过 `GetByID` 验证并绑定 claim；人工 override 继续安全贯穿下载与入库。
+- [x] 媒体库相对根 `/` 显示 Storage 实际可读根和“数据源根目录”语义，保留 provider-relative 持久契约。
+- [x] 新增失败已完成任务修改目标 API 与 Downloads/Organization 入口；复用 manifest，只重排 Transfer → Import，部分写入安全拒绝。
+- [x] Player 升级 `player-nextgen-v3` 并通过共享 corpus；同一 source ID 修改物理根时清理旧 raw scan cache，ServerDataSource/Emby/Jellyfin 不二次识别。
+- [x] Server/Player 全部敏感输入切换到统一 `SecretInput`；已配置显示星号，眼睛仅查看当前替换值，多行 Cookie 同样遮挡，旧明文不回传。
+- [x] 独立 Trellis check 与最终全量 Go/WebUI/Player/build 门禁；发布门禁由 `develop` 推送后的 Beta 工作流继续验证。
+
+### 最终验证（2026-08-25）
+
+- `go test ./... -count=1`、`go vet ./...`、普通与 `webui` tag 两种 Server 构建全部通过；`internal/services` 全量用例耗时约 120 秒。
+- Server WebUI 24 个测试文件、126 条测试全部通过；permissions check、Vue typecheck、ESLint 与 Vite production build 通过。
+- Player `verify:secret-inputs`、nextgen recognition、raw scan cache、ServerDataSource 边界验证，以及 Vue typecheck、ESLint、Vite production build全部通过。
+- 独立 check 补齐入库目标重选服务/路由回归、下载器零调用、部分写入拒绝、自动 claim 绑定、Explore 分页筛选与插件凭据漏网检查。
+- `git diff --check` 通过；Vite 仅保留既有 chunk-size 警告。

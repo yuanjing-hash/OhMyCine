@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
+import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -30,6 +30,12 @@ const submitting = ref(false)
 const recognitions = ref<Record<string, TorrentRecognitionResult>>({})
 const recognitionErrors = ref<Record<string, string>>({})
 const recognizingTokens = ref<string[]>([])
+const manualDialog = ref<TorrentSearchResult | null>(null)
+const manualForm = ref<{ keyword: string; mediaType: '' | 'movie' | 'tv'; year?: number }>({ keyword: '', mediaType: '' })
+const manualCandidates = ref<PTRecognitionCandidate[]>([])
+const selectedManualCandidate = ref<PTRecognitionCandidate | null>(null)
+const manualSearching = ref(false)
+const manualSaving = ref(false)
 let source: EventSource | null = null
 let streamTimeout: number | undefined
 
@@ -37,6 +43,24 @@ const enabledDownloaders = computed(() => downloaders.value.filter(item => item.
 const selectedDownloader = computed(() => enabledDownloaders.value.find(item => item.id === downloadForm.value.downloaderID) ?? null)
 const compatibleLibraries = computed(() => compatibleDownloadLibraries(libraries.value, storages.value, selectedDownloader.value, false))
 const selectedLibrary = computed(() => downloadForm.value.mediaLibraryID === 0 ? compatibleLibraries.value[0] ?? null : compatibleLibraries.value.find(item => item.id === downloadForm.value.mediaLibraryID) ?? null)
+const activeChannel = ref<'all' | number>('all')
+const enabledSiteTypes = ref<Array<'pt' | 'bt'>>(['pt', 'bt'])
+const resolutionFilter = ref('')
+const promotionFilter = ref('')
+const minimumSeeders = ref<number | undefined>()
+const resultSort = ref<'seeders' | 'published' | 'size'>('seeders')
+
+const orderedGroups = computed(() => [...groups.value].sort((left, right) => left.site_id - right.site_id))
+const activeGroup = computed(() => typeof activeChannel.value === 'number' ? groups.value.find(group => group.site_id === activeChannel.value) ?? null : null)
+const resolutionOptions = computed(() => [...new Set(groups.value.flatMap(group => group.items.map(item => item.specifications?.resolution || item.quality || '').filter(Boolean)))].sort())
+const visibleResults = computed(() => filterAndSortTorrentResults(groups.value, {
+  activeChannel: activeChannel.value,
+  enabledSiteTypes: enabledSiteTypes.value,
+  resolution: resolutionFilter.value,
+  promotion: promotionFilter.value,
+  minimumSeeders: minimumSeeders.value,
+  sort: resultSort.value,
+}))
 
 function searchInput(siteID?: number, page = 1) {
   return { keyword: keyword.value, mediaType: mediaType.value || undefined, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, page, siteID }
@@ -49,10 +73,10 @@ function stopStream() {
   streamTimeout = undefined
 }
 
-async function searchJSON(siteID?: number, page = 1, append = false) {
+async function searchJSON(siteID?: number, page = 1) {
   try {
     const response = await api<TorrentSearchResponse>(torrentSearchURL(torrentSearchPath, searchInput(siteID, page)))
-    for (const group of response.groups) groups.value = upsertTorrentGroup(groups.value, group, append)
+    for (const group of response.groups) groups.value = upsertTorrentGroup(groups.value, group)
     searched.value = true
   } catch (reason) { searchError.value = message(reason) }
   finally { searching.value = false }
@@ -63,6 +87,7 @@ function search() {
   if (searchBy.value === 'tmdb_id' && (!tmdbID.value || !mediaType.value)) { notify('TMDB ID 搜索需要有效 ID 与媒体类型', 'warning'); return }
   stopStream()
   groups.value = []
+  activeChannel.value = 'all'
   recognitions.value = {}
   recognitionErrors.value = {}
   searchError.value = ''
@@ -105,7 +130,13 @@ async function retrySite(group: TorrentSearchGroup) {
 
 async function nextPage(group: TorrentSearchGroup) {
   searching.value = true
-  await searchJSON(group.site_id, group.page + 1, true)
+  await searchJSON(group.site_id, group.page + 1)
+}
+
+async function previousPage(group: TorrentSearchGroup) {
+  if (group.page <= 1) return
+  searching.value = true
+  await searchJSON(group.site_id, group.page - 1)
 }
 
 async function loadDownloadOptions() {
@@ -162,6 +193,53 @@ function currentSearchInput() {
   return { keyword: keyword.value, mediaType: mediaType.value, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value }
 }
 
+async function openManualRecognition(item: TorrentSearchResult) {
+  const recognized = recognitions.value[item.token]
+  manualDialog.value = item
+  manualForm.value = {
+    keyword: recognized?.title?.trim() || item.title,
+    mediaType: recognized?.media_type || '',
+    year: recognized?.year,
+  }
+  manualCandidates.value = []
+  selectedManualCandidate.value = null
+  await searchManualCandidates()
+}
+
+async function searchManualCandidates() {
+  const item = manualDialog.value
+  if (!item || !manualForm.value.keyword.trim()) { notify('请输入用于 TMDB 搜索的作品名', 'warning'); return }
+  manualSearching.value = true
+  selectedManualCandidate.value = null
+  try {
+    const result = await api<ListResponse<PTRecognitionCandidate>>(torrentRecognitionCandidatesPath, {
+      method: 'POST',
+      body: JSON.stringify({ result_token: item.token, title: manualForm.value.keyword, media_type: manualForm.value.mediaType, year: manualForm.value.year || undefined }),
+    })
+    manualCandidates.value = result.list
+  } catch (reason) {
+    manualCandidates.value = []
+    notify(message(reason), 'error')
+  } finally { manualSearching.value = false }
+}
+
+async function confirmManualRecognition() {
+  const item = manualDialog.value
+  const candidate = selectedManualCandidate.value
+  if (!item || !candidate) { notify('请先选择一个 TMDB 作品', 'warning'); return }
+  manualSaving.value = true
+  try {
+    const result = await api<TorrentRecognitionResult>(torrentRecognitionOverridePath, {
+      method: 'PUT',
+      body: JSON.stringify({ result_token: item.token, tmdb_id: candidate.id, media_type: candidate.media_type }),
+    })
+    recognitions.value = { ...recognitions.value, [item.token]: result }
+    manualDialog.value = null
+    notify(`已确认：${result.title}，创建下载任务时将沿用此身份`, 'success')
+  } catch (reason) { notify(message(reason), 'error') }
+  finally { manualSaving.value = false }
+}
+
 function sameSearchInput(left: ReturnType<typeof currentSearchInput>, right: TorrentSearchSession['input']) {
   return left.keyword.trim() === right.keyword.trim() && left.mediaType === right.mediaType && left.year === right.year && left.tmdbID === right.tmdbID && left.searchBy === right.searchBy
 }
@@ -209,31 +287,66 @@ onBeforeUnmount(stopStream)
     <div v-if="searching && !groups.length" class="panel py-10 text-center text-muted">正在按站点限速并行搜索，结果会渐进出现…</div>
     <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT/BT 站点，或当前关键词暂无结果。可以先到“站点管理”添加站点。</div>
 
-    <article v-for="group in groups" :key="group.site_id" class="panel overflow-hidden p-0">
-      <header class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4"><div class="flex flex-wrap items-center gap-2"><h2 class="m-0 text-lg">{{ group.site_name }}</h2><span class="status-chip">{{ group.site_type?.toUpperCase() || 'PT' }}</span><span :class="group.status === 'success' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ group.status === 'success' ? `${group.items.length} 条结果` : '搜索失败' }}</span><span v-if="group.skipped" class="status-chip">跳过 {{ group.skipped }} 条畸形数据</span></div><button v-if="group.status === 'error'" class="btn-secondary" :disabled="searching" @click="retrySite(group)">只重试此站</button></header>
-      <div v-if="group.status === 'error'" class="p-5 text-sm text-muted">该站点暂时不可用（<span class="font-mono">{{ group.error_code || 'site_unavailable' }}</span>），不影响其它站点结果。</div>
-      <div v-else-if="!group.items.length" class="p-5 text-sm text-muted">此页没有匹配结果。</div>
-      <div v-else class="divide-y divide-[var(--border)]">
-        <article v-for="item in group.items" :key="item.token" class="grid gap-4 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2"><strong class="break-words">{{ item.title }}</strong><span v-if="item.promotion" class="status-chip status-chip--ready">{{ item.promotion.toUpperCase() }}</span><span v-if="item.quality" class="status-chip">{{ item.quality }}</span></div><p v-if="item.subtitle" class="text-subtle mb-0 mt-1 text-xs">{{ item.subtitle }}</p><div class="text-subtle mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"><span>{{ formatBytes(item.size_bytes ?? null) }}</span><span>{{ formatTime(item.published_at) }}</span><span>做种 {{ count(item.seeders) }}</span><span>下载 {{ count(item.leechers) }}</span><span>完成 {{ count(item.completed) }}</span></div>
-            <div v-if="recognitions[item.token]" class="semantic-inset mt-3 flex gap-3 p-3">
-              <img v-if="recognitions[item.token].poster_url" :src="recognitions[item.token].poster_url" :alt="`${recognitions[item.token].title} 海报`" class="h-24 w-16 shrink-0 rounded object-cover" loading="lazy" />
-              <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2"><strong>{{ recognitions[item.token].title }}</strong><span :class="recognitions[item.token].status === 'matched' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ recognitions[item.token].status === 'matched' ? '已识别' : '未识别' }}</span><span class="status-chip">{{ mediaTypeLabel(recognitions[item.token].media_type) }}</span><span v-if="recognitions[item.token].year" class="status-chip">{{ recognitions[item.token].year }}</span></div>
-                <p v-if="recognitions[item.token].original_title && recognitions[item.token].original_title !== recognitions[item.token].title" class="text-subtle mb-0 mt-1 text-xs">{{ recognitions[item.token].original_title }}</p>
-                <p v-if="ptRecognitionEpisodeLabel(recognitions[item.token])" class="mb-0 mt-2 text-sm font-650 text-[var(--text)]">季集：{{ ptRecognitionEpisodeLabel(recognitions[item.token]) }}</p>
-                <div v-if="ptRecognitionSpecLabels(recognitions[item.token].specifications).length" class="mt-2 flex flex-wrap gap-1.5"><span v-for="label in ptRecognitionSpecLabels(recognitions[item.token].specifications)" :key="label" class="status-chip">{{ label }}</span></div>
-                <p v-if="recognitions[item.token].error_code" class="text-subtle mb-0 mt-2 text-xs">{{ ptRecognitionErrorLabel(recognitions[item.token].error_code) }} <span class="font-mono">（{{ recognitions[item.token].error_code }}）</span></p>
-              </div>
+    <template v-if="groups.length">
+      <nav class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索渠道">
+        <button class="management-tab shrink-0" :class="activeChannel === 'all' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === 'all'" @click="activeChannel = 'all'">全部渠道</button>
+        <button v-for="group in orderedGroups" :key="group.site_id" class="management-tab shrink-0" :class="activeChannel === group.site_id ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === group.site_id" @click="activeChannel = group.site_id">{{ group.site_name }} <small>{{ group.site_type.toUpperCase() }}</small></button>
+      </nav>
+
+      <form class="panel grid gap-3 md:grid-cols-2 xl:grid-cols-[auto_auto_11rem_11rem_9rem_12rem_auto] xl:items-end" @submit.prevent>
+        <fieldset class="flex gap-3"><legend class="label">站点类型</legend><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="pt" /> PT</label><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="bt" /> BT</label></fieldset>
+        <label><span class="label">分辨率</span><select v-model="resolutionFilter" class="input"><option value="">全部</option><option v-for="value in resolutionOptions" :key="value" :value="value">{{ value }}</option></select></label>
+        <label><span class="label">优惠</span><select v-model="promotionFilter" class="input"><option value="">全部</option><option value="free">FREE</option><option value="2xfree">2X FREE</option><option value="2x">2X</option></select></label>
+        <label><span class="label">最低做种</span><input v-model.number="minimumSeeders" class="input" type="number" min="0" placeholder="不限" /></label>
+        <label><span class="label">排序</span><select v-model="resultSort" class="input"><option value="seeders">做种数从高到低</option><option value="published">发布时间从新到旧</option><option value="size">体积从大到小</option></select></label>
+        <p class="text-subtle mb-0 text-xs xl:col-span-2">不同筛选项之间为 AND；同类标签按任一匹配。排序只针对已经取回的当前页结果。</p>
+      </form>
+
+      <div v-if="activeGroup?.status === 'error'" class="semantic-warning flex flex-wrap items-center justify-between gap-3 p-4"><span>{{ activeGroup.site_name }} 暂时不可用（{{ activeGroup.error_code || 'site_unavailable' }}）。</span><button class="btn-secondary" :disabled="searching" @click="retrySite(activeGroup)">重试此站</button></div>
+      <div v-if="!visibleResults.length" class="panel py-10 text-center text-muted">当前渠道和筛选条件下没有结果。</div>
+      <div v-else class="grid gap-4 xl:grid-cols-2">
+        <article v-for="entry in visibleResults" :key="entry.item.token" class="panel flex min-h-72 flex-col">
+          <div class="flex min-w-0 flex-1 gap-4">
+            <div class="flex h-32 w-22 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--surface-subtle)] text-center text-xs text-subtle">
+              <img v-if="recognitions[entry.item.token]?.poster_url" :src="recognitions[entry.item.token].poster_url" :alt="`${recognitions[entry.item.token].title} 海报`" class="h-full w-full object-cover" loading="lazy" />
+              <span v-else>{{ entry.group.site_name }}<br />{{ entry.group.site_type.toUpperCase() }}</span>
             </div>
-            <p v-if="recognitionErrors[item.token]" class="semantic-warning mb-0 mt-3 p-3 text-xs">{{ recognitionErrors[item.token] }}</p>
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap gap-1.5"><span class="status-chip">{{ entry.group.site_name }}</span><span class="status-chip">{{ entry.group.site_type.toUpperCase() }}</span><span v-if="entry.item.promotion" class="status-chip status-chip--ready">{{ entry.item.promotion.toUpperCase() }}</span><span v-for="label in ptRecognitionSpecLabels(entry.item.specifications || {})" :key="label" class="status-chip">{{ label }}</span><span v-if="entry.item.quality" class="status-chip">{{ entry.item.quality }}</span><span v-for="tag in entry.item.tags || []" :key="tag" class="status-chip">{{ tag }}</span></div>
+              <h2 class="mt-3 break-words text-base font-750">{{ entry.item.title }}</h2>
+              <p v-if="entry.item.subtitle" class="text-subtle mb-0 mt-1 line-clamp-2 text-xs">{{ entry.item.subtitle }}</p>
+              <div class="text-subtle mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"><span>{{ formatBytes(entry.item.size_bytes ?? null) }}</span><span>{{ formatTime(entry.item.published_at) }}</span><strong>做种 {{ count(entry.item.seeders) }}</strong><span>下载 {{ count(entry.item.leechers) }}</span><span>完成 {{ count(entry.item.completed) }}</span></div>
+              <div v-if="recognitions[entry.item.token]" class="semantic-inset mt-3 p-3 text-sm"><div class="flex flex-wrap items-center gap-2"><strong>{{ recognitions[entry.item.token].title }}</strong><span :class="recognitions[entry.item.token].status === 'matched' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ recognitions[entry.item.token].manual_override ? '已人工确认' : recognitions[entry.item.token].status === 'matched' ? '标题预识别成功' : '标题预识别未命中' }}</span><span class="status-chip">{{ mediaTypeLabel(recognitions[entry.item.token].media_type) }}</span><span v-if="recognitions[entry.item.token].year" class="status-chip">{{ recognitions[entry.item.token].year }}</span></div><p v-if="ptRecognitionEpisodeLabel(recognitions[entry.item.token])" class="mb-0 mt-2">{{ ptRecognitionEpisodeLabel(recognitions[entry.item.token]) }}</p><p v-if="recognitions[entry.item.token].error_code" class="text-subtle mb-0 mt-2 text-xs">{{ ptRecognitionErrorLabel(recognitions[entry.item.token].error_code) }}</p></div>
+              <p v-if="recognitionErrors[entry.item.token]" class="semantic-warning mb-0 mt-3 p-3 text-xs">{{ recognitionErrors[entry.item.token] }}</p>
+            </div>
           </div>
-          <div class="flex flex-wrap gap-2 lg:justify-end"><button class="btn-secondary" :disabled="recognizingTokens.includes(item.token)" @click="recognizeResult(item)">{{ recognizingTokens.includes(item.token) ? '识别中…' : recognitions[item.token] ? '重新识别' : '识别' }}</button><button class="btn-primary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openDownload(item)">选择下载器并入队</button></div>
+          <footer class="mt-4 flex flex-wrap justify-end gap-2 border-t border-[var(--border)] pt-4"><button class="btn-secondary" :disabled="recognizingTokens.includes(entry.item.token)" @click="recognizeResult(entry.item)">{{ recognizingTokens.includes(entry.item.token) ? '检测中…' : '检测' }}</button><button class="btn-secondary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openManualRecognition(entry.item)">手动检测</button><button class="btn-primary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openDownload(entry.item)">入库</button></footer>
         </article>
       </div>
-      <footer v-if="group.status === 'success' && group.has_next" class="border-t border-[var(--border)] p-4 text-center"><button class="btn-secondary" :disabled="searching" @click="nextPage(group)">加载此站下一页</button></footer>
-    </article>
+      <footer v-if="activeGroup?.status === 'success'" class="panel flex items-center justify-center gap-3"><button class="btn-secondary" :disabled="searching || activeGroup.page <= 1" @click="previousPage(activeGroup)">上一页</button><span class="text-sm">{{ activeGroup.site_name }} · 第 {{ activeGroup.page }} 页</span><button class="btn-secondary" :disabled="searching || !activeGroup.has_next" @click="nextPage(activeGroup)">下一页</button></footer>
+      <p v-else-if="activeChannel === 'all'" class="text-subtle text-center text-xs">“全部渠道”聚合显示各站点当前页；切换到单个站点后可独立翻页。</p>
+    </template>
+
+    <div v-if="manualDialog" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="!manualSaving && (manualDialog = null)">
+      <form class="panel max-h-[90vh] w-full max-w-3xl overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="manual-recognition-title" @submit.prevent="searchManualCandidates">
+        <div class="flex items-start justify-between gap-3"><div><h2 id="manual-recognition-title" class="m-0 text-xl">手动识别作品</h2><p class="page-description mt-1 line-clamp-2 text-sm">{{ manualDialog.title }}</p></div><button class="btn-secondary" type="button" :disabled="manualSaving" @click="manualDialog = null">关闭</button></div>
+        <p class="semantic-inset mt-4 p-3 text-sm">自动识别失败也可以在这里修改关键词。候选只用于选择 TMDB 身份；Server 会重新读取 TMDB 详情并把验证结果绑定到当前短期搜索令牌。</p>
+        <div class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_9rem_8rem_auto] md:items-end">
+          <div><label class="label" for="manual-recognition-keyword">作品关键词</label><input id="manual-recognition-keyword" v-model="manualForm.keyword" class="input" maxlength="256" placeholder="中文、英文、原名或拼音" required /></div>
+          <div><label class="label" for="manual-recognition-type">媒体类型</label><select id="manual-recognition-type" v-model="manualForm.mediaType" class="input"><option value="">电影 + 剧集</option><option value="movie">电影</option><option value="tv">剧集</option></select></div>
+          <div><label class="label" for="manual-recognition-year">年份</label><input id="manual-recognition-year" v-model.number="manualForm.year" class="input" type="number" min="1888" max="2200" placeholder="可选" /></div>
+          <button class="btn-secondary" :disabled="manualSearching">{{ manualSearching ? '搜索中…' : '搜索 TMDB' }}</button>
+        </div>
+        <div v-if="manualCandidates.length" class="mt-4 grid gap-3 sm:grid-cols-2">
+          <button v-for="candidate in manualCandidates" :key="`${candidate.media_type}-${candidate.id}`" class="semantic-list-item flex min-h-32 gap-3 p-3 text-left" :class="{ 'semantic-list-item--selected': selectedManualCandidate?.id === candidate.id && selectedManualCandidate?.media_type === candidate.media_type }" type="button" @click="selectedManualCandidate = candidate">
+            <img v-if="candidate.poster_url" :src="candidate.poster_url" :alt="`${candidate.title} 海报`" class="h-28 w-19 shrink-0 rounded object-cover" loading="lazy" />
+            <div class="min-w-0"><strong class="break-words">{{ candidate.title }}</strong><small v-if="candidate.original_title && candidate.original_title !== candidate.title" class="text-subtle mt-1 block break-words">{{ candidate.original_title }}</small><div class="mt-2 flex flex-wrap gap-1.5"><span class="status-chip">{{ mediaTypeLabel(candidate.media_type) }}</span><span v-if="candidate.release_year" class="status-chip">{{ candidate.release_year }}</span><span v-if="candidate.original_language" class="status-chip">{{ candidate.original_language.toUpperCase() }}</span></div><small class="text-subtle mt-2 block">TMDB {{ candidate.id }} · 搜索相似度 {{ Math.round(candidate.confidence * 100) }}%</small></div>
+          </button>
+        </div>
+        <p v-else-if="!manualSearching" class="text-subtle mt-4 text-sm">修改关键词并搜索，然后选择正确作品。没有候选不会改变当前识别结果。</p>
+        <div class="mt-5 flex justify-end gap-3"><button class="btn-secondary" type="button" :disabled="manualSaving" @click="manualDialog = null">取消</button><button class="btn-primary" type="button" :disabled="manualSaving || !selectedManualCandidate" @click="confirmManualRecognition">{{ manualSaving ? '正在验证身份…' : '确认此身份' }}</button></div>
+      </form>
+    </div>
 
     <div v-if="downloadDialog" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="!submitting && (downloadDialog = null)">
       <form class="panel w-full max-w-xl" role="dialog" aria-modal="true" aria-labelledby="pt-download-title" @submit.prevent="submitDownload">

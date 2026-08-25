@@ -268,6 +268,9 @@ func TestParseProductionEnglishAndPinyinReleaseNamesKeepSearchableWorkTitles(t *
 		{name: "pinyin season", input: "Ai qing gong yu 2012 S03 2160p WEB-DL H.265 AAC-ZmWeb", canonical: "Ai qing gong yu", query: "Ai qing gong yu", mediaType: MediaTypeTV, season: intRef(3), seasonYear: intRef(2012)},
 		{name: "localized english alias", input: "Apartment of Love 2018 2160p WEB-DL H.265 AAC-AilMWeb", canonical: "Apartment of Love", query: "Apartment of Love", year: intRef(2018)},
 		{name: "official english alias", input: "Ipartment S05 2020 2160p WEB-DL H.265 DDP2.0-CSWEB", canonical: "Ipartment", query: "Ipartment", mediaType: MediaTypeTV, season: intRef(5), seasonYear: intRef(2020)},
+		{name: "pinyin season with aac channels", input: "Wan Gu Long Shen S01 2022 2160p WEB-DL H265 10bit HDR10 AAC 2.0-CSWEB", canonical: "Wan Gu Long Shen", query: "Wan Gu Long Shen", mediaType: MediaTypeTV, season: intRef(1), seasonYear: intRef(2022)},
+		{name: "franchise movie with aac channels", input: "Ultraman Tiga & Ultraman Dyna & Ultraman Gaia: Battle in Hyperspace 1999 2160p WEB-DL H.265 AAC 2.0-CSWEB", canonical: "Ultraman Tiga & Ultraman Dyna & Ultraman Gaia: Battle in Hyperspace", query: "Ultraman Tiga & Ultraman Dyna & Ultraman Gaia: Battle in Hyperspace", year: intRef(1999)},
+		{name: "pinyin donghua with aac channels", input: "Du Shi Zui Qiang Fang Dong S01 2024 1080p WEB-DL H264 AAC 2.0-CSWEB", canonical: "Du Shi Zui Qiang Fang Dong", query: "Du Shi Zui Qiang Fang Dong", mediaType: MediaTypeTV, season: intRef(1), seasonYear: intRef(2024)},
 		{name: "frame rate specification", input: "Apartment of Love 2018 1080p WEB-DL 60fps H.265 DDP5.1-AilMWeb", canonical: "Apartment of Love", query: "Apartment of Love", year: intRef(2018)},
 		{name: "bit depth specification", input: "Ipartment 2018 2160p WEB-DL H.265 10bit AAC-UBWEB", canonical: "Ipartment", query: "Ipartment", year: intRef(2018)},
 	}
@@ -325,6 +328,117 @@ func TestParseAddsOnlyBoundedLatinTokenFallbacksForMultiwordTypoRecovery(t *test
 				t.Fatalf("unsafe token fallback for %q: %+v", title, query)
 			}
 		}
+	}
+}
+
+func TestParseLongRunningAnimeReleaseMatrixKeepsIdentityAndStructureSeparate(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		canonical string
+		queries   []string
+		mediaType MediaType
+		season    *int
+		episode   *int
+		spec      string
+	}{
+		{
+			name:      "parenthesized absolute episode with bilingual aliases",
+			input:     "[黒ネズミたち] 名侦探柯南 / Detective Conan - 1210 (CR 1920x1080 AVC AAC MKV)",
+			canonical: "名侦探柯南 / Detective Conan",
+			queries:   []string{"名侦探柯南", "Detective Conan"},
+			mediaType: MediaTypeTV,
+			season:    intRef(1),
+			episode:   intRef(1210),
+		},
+		{
+			name:      "franchise movie index and bilingual subtitle",
+			input:     "[银色子弹字幕组&VCB-Studio] 名侦探柯南M21 唐红的恋歌 / Detective Conan M21: The Crimson Love Letter 10-bit 1080p HEVC BDRip [MOVIE Fin]",
+			canonical: "名侦探柯南 唐红的恋歌 / Detective Conan : The Crimson Love Letter",
+			queries:   []string{"名侦探柯南 唐红的恋歌", "Detective Conan : The Crimson Love Letter"},
+			mediaType: MediaTypeMovie,
+			spec:      "10-BIT",
+		},
+		{
+			name:      "another franchise movie number uses the same rule",
+			input:     "[VCB-Studio] 名侦探柯南M28 独眼的残像 / Detective Conan M28: One-eyed Flashback 10-bit 1080p HEVC BDRip [MOVIE Fin]",
+			canonical: "名侦探柯南 独眼的残像 / Detective Conan : One-eyed Flashback",
+			queries:   []string{"名侦探柯南 独眼的残像", "Detective Conan : One-eyed Flashback"},
+			mediaType: MediaTypeMovie,
+			spec:      "10-BIT",
+		},
+		{
+			name:      "dub qualifier stays out of the title",
+			input:     "[Doomdos] - 名侦探柯南（中配） - 第1262话 - [1080p]",
+			canonical: "名侦探柯南",
+			queries:   []string{"名侦探柯南"},
+			mediaType: MediaTypeTV,
+			episode:   intRef(1262),
+			spec:      "中配",
+		},
+		{
+			name:      "remastered split part keeps the original absolute episode",
+			input:     "[银色子弹字幕组][名侦探柯南][数码重映第118-2集 浪花连续杀人事件（后篇）][字幕仅重映片头片尾][TVRIP][简繁日多语MKV][1080P]",
+			canonical: "名侦探柯南",
+			queries:   []string{"名侦探柯南"},
+			mediaType: MediaTypeTV,
+			episode:   intRef(118),
+		},
+		{
+			name:      "plural audio count and channel layout are release noise",
+			input:     "Lupin III vs Detective Conan 2009 1080p BluRay HEVC FLAC 2.0 3Audios-ADE",
+			canonical: "Lupin III vs Detective Conan",
+			queries:   []string{"Lupin III vs Detective Conan"},
+		},
+		{
+			name:      "police headquarters special keeps full english identity",
+			input:     "Detective Conan Love Story at Police Headquarters Wedding Eve 2022 1080p BluRay x265 10bit FLAC 2.0 2Audios-ADE",
+			canonical: "Detective Conan Love Story at Police Headquarters Wedding Eve",
+			queries:   []string{"Detective Conan Love Story at Police Headquarters Wedding Eve"},
+		},
+		{
+			name:      "scarlet alibi keeps full english identity",
+			input:     "Detective Conan The Scarlet Alibi 2021 1080p BluRay x265 10bit DTS 5.1 2Audios-ADE",
+			canonical: "Detective Conan The Scarlet Alibi",
+			queries:   []string{"Detective Conan The Scarlet Alibi"},
+		},
+		{
+			name:      "lupin crossover movie keeps title movie token",
+			input:     "Lupin the 3rd vs Detective Conan The Movie 2013 1080p BluRay x265 10bit DTS 5.1 3Audios-ADE",
+			canonical: "Lupin the 3rd vs Detective Conan The Movie",
+			queries:   []string{"Lupin the 3rd vs Detective Conan The Movie"},
+		},
+		{
+			name:      "unknown feature remains untyped",
+			input:     "Detective Conan The Scarlet Alibi 2021 1080p BluRay HEVC DTS 5.1 2Audios-ADE",
+			canonical: "Detective Conan The Scarlet Alibi",
+			queries:   []string{"Detective Conan The Scarlet Alibi"},
+			mediaType: MediaTypeUnknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := Parse(InputFacts{PackageName: test.input, SourceKind: SourceDownload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.CanonicalTitle != test.canonical || parsed.SuggestedType != test.mediaType || !sameOptionalInt(parsed.Season, test.season) || !sameOptionalInt(parsed.Episodes.EpisodeMax, test.episode) {
+				t.Fatalf("parsed=%+v", parsed)
+			}
+			for _, expected := range test.queries {
+				if !queryContains(parsed.Queries, expected) {
+					t.Fatalf("missing query %q in %+v", expected, parsed.Queries)
+				}
+			}
+			if test.spec != "" && !containsFold(parsed.Specifications, test.spec) {
+				t.Fatalf("missing specification %q in %v", test.spec, parsed.Specifications)
+			}
+		})
+	}
+
+	legal, err := Parse(InputFacts{PackageName: "Scary Movie 2000 1080p BluRay", SourceKind: SourceDownload})
+	if err != nil || legal.CanonicalTitle != "Scary Movie" {
+		t.Fatalf("legal movie title was stripped: parsed=%+v err=%v", legal, err)
 	}
 }
 

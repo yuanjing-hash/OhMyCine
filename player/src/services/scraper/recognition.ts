@@ -3,7 +3,11 @@ import type { RawMediaCandidate } from './types'
 import { cleanMediaTitle, extractMediaSearchTitles } from './parser'
 import { splitProviderPath, stripFileExtension } from './pathUtils'
 
-export const PLAYER_RECOGNITION_ENGINE_VERSION = 'player-nextgen-v2'
+// Independent Player implementation of the provider-neutral v8 behavior
+// contract. Server/Emby/Jellyfin DataSources remain authoritative and never
+// enter this local raw-source recognizer.
+export const PLAYER_RECOGNITION_ENGINE_VERSION = 'player-nextgen-v3'
+export const PLAYER_RECOGNITION_CONTRACT_VERSION = 'media-recognition-contract-v2'
 export const MAX_TMDB_RECOGNITION_SEARCHES = 10
 export const MAX_TMDB_RECOGNITION_DETAILS = 3
 

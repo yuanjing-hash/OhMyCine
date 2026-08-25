@@ -4,6 +4,7 @@ import QRCode from 'qrcode'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import PluginSettingsForm from '@/components/PluginSettingsForm.vue'
+import SecretInput from '@/components/SecretInput.vue'
 import {
   buildPluginRepositoryCreatePayload,
   buildPluginRepositoryDeletePayload,
@@ -701,7 +702,7 @@ onMounted(() => { void loadAll() })
                 <div><label class="label">认证方式</label><select v-model="connectionCredentialMode" class="input"><option value="none">匿名 / 不使用凭据</option><option v-if="credentialScopes(plugin).length" value="cookie">Cookie</option><option v-if="credentialScopes(plugin).length" value="bearer">Bearer Token</option></select></div>
                 <div v-if="connectionCredentialMode !== 'none'"><label class="label">凭据范围</label><select v-model="connectionCredentialScope" class="input" required><option v-for="scope in credentialScopes(plugin)" :key="scope" :value="scope">{{ scope }}</option></select></div>
               </div>
-              <div v-if="!pluginQRCodeAuthScope(plugin) && connectionCredentialMode !== 'none'"><label class="label">凭据{{ connectionCredentialMode === 'cookie' ? '（可留空后扫码登录）' : '' }}</label><textarea v-model="connectionCredential" class="input min-h-20 font-mono text-xs" :required="connectionCredentialMode === 'bearer'" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">手动填写的凭据保存后不会再次回显明文，日志、普通 API 和 Player 都不会收到它。</p></div>
+              <div v-if="!pluginQRCodeAuthScope(plugin) && connectionCredentialMode !== 'none'"><label class="label">凭据{{ connectionCredentialMode === 'cookie' ? '（可留空后扫码登录）' : '' }}</label><SecretInput v-model="connectionCredential" class="input min-h-20 font-mono text-xs" multiline :required="connectionCredentialMode === 'bearer'" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">手动填写的凭据保存后不会再次回显明文，日志、普通 API 和 Player 都不会收到它。</p></div>
               <button class="btn-primary" :disabled="connectionBusyID !== '' || !connectionName.trim()">{{ connectionBusyID === `new:${plugin.id}` ? '正在创建…' : pluginQRCodeAuthScope(plugin) ? '创建连接并扫码登录' : '创建连接' }}</button>
             </form>
           </section>

@@ -218,6 +218,7 @@ type Candidate struct {
 	SeasonYears       map[int]int `json:"-"`
 	Popularity        float64     `json:"-"`
 	VoteCount         int         `json:"-"`
+	PosterPath        string      `json:"-"`
 }
 
 // DiscoveryPage is the bounded, credential-free projection returned by TMDB
@@ -1097,6 +1098,7 @@ func (c *Client) SearchCandidates(ctx context.Context, mediaType, title string, 
 			FirstAirDate     string  `json:"first_air_date"`
 			Popularity       float64 `json:"popularity"`
 			VoteCount        int     `json:"vote_count"`
+			PosterPath       string  `json:"poster_path"`
 		} `json:"results"`
 	}
 	if err := c.get(ctx, "/search/"+mediaType, values, &response); err != nil {
@@ -1114,7 +1116,7 @@ func (c *Client) SearchCandidates(ctx context.Context, mediaType, title string, 
 		if result.ID <= 0 || strings.TrimSpace(candidateTitle) == "" {
 			continue
 		}
-		items = append(items, Candidate{ID: result.ID, Title: cleanText(candidateTitle, 512), OriginalTitle: cleanText(originalTitle, 512), MediaType: mediaType, OriginalLanguage: strings.ToLower(cleanCode(result.OriginalLanguage)), ReleaseYear: parseYear(date), Confidence: max(titleConfidence(title, candidateTitle), titleConfidence(title, originalTitle)), Popularity: boundedPopularity(result.Popularity), VoteCount: boundedCount(result.VoteCount)})
+		items = append(items, Candidate{ID: result.ID, Title: cleanText(candidateTitle, 512), OriginalTitle: cleanText(originalTitle, 512), MediaType: mediaType, OriginalLanguage: strings.ToLower(cleanCode(result.OriginalLanguage)), ReleaseYear: parseYear(date), Confidence: max(titleConfidence(title, candidateTitle), titleConfidence(title, originalTitle)), Popularity: boundedPopularity(result.Popularity), VoteCount: boundedCount(result.VoteCount), PosterPath: cleanImagePath(result.PosterPath)})
 		if len(items) == limit {
 			break
 		}

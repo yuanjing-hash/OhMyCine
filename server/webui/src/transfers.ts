@@ -134,6 +134,11 @@ export function formatTransferProgress(item: TransferSummary): string {
 export const listTransfers = (query: URLSearchParams) => api<TransferPage>(`/api/v1/transfers?${query}`)
 export const getTransfer = (id: string) => api<TransferDetail>(`/api/v1/transfers/${encodeURIComponent(id)}`)
 export const deleteTransfer = (id: string) => api<{ deleted: boolean }>(`/api/v1/transfers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export const retargetCompletedImport = (downloadTaskID: string, mediaLibraryID: number) => api(`/api/v1/downloads/${encodeURIComponent(downloadTaskID)}/import-target`, { method: 'PUT', body: JSON.stringify({ media_library_id: mediaLibraryID }) })
+
+export function canRetargetTransfer(item: TransferSummary): boolean {
+  return item.job_status === 'failed' && item.phase === 'failed' && item.processed_files === 0 && item.cleanup_removed === 0 && item.cleanup_status === 'pending'
+}
 
 export function canDeleteTransferRecord(item: TransferSummary): boolean {
   return item.job_status === 'failed' || item.job_status === 'cancelled' || item.job_status === 'completed'

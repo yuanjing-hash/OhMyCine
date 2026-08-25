@@ -437,6 +437,22 @@ func TestPan115DownloadTargetRequiresSameConnectionAndWritableMode(t *testing.T)
 		t.Fatal(err)
 	}
 	provider := models.Downloader{ID: "pan115-target", Name: "115 Offline", NameNormalized: "115-offline-target", Type: models.DownloaderTypePan115Offline, StorageID: &sourceStorage.ID, Enabled: true, CapabilitiesJSON: `{}`}
+	localRoot := t.TempDir()
+	localStorage := models.Storage{Name: "Local Target", NameNormalized: "local-target-" + strings.ToLower(filepath.Base(localRoot)), Type: models.StorageTypeLocal, RootPath: localRoot, RootPathNormalized: strings.ToLower(localRoot), Enabled: true, Capabilities: `{}`}
+	if err := queue.db.Create(&localStorage).Error; err != nil {
+		t.Fatal(err)
+	}
+	localLibrary := models.MediaLibrary{Name: "Local First", NameNormalized: "local-first-" + strings.ToLower(filepath.Base(localRoot)), StorageID: localStorage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", SortOrder: 0, TransferMode: models.MediaLibraryTransferMove, ConflictPolicy: models.MediaLibraryConflictAsk, Enabled: true, Recursive: true, VideoExtensionsJSON: `[]`, IgnorePatternsJSON: `[]`}
+	if err := queue.db.Create(&localLibrary).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, localLibrary); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+		t.Fatalf("pan115 local-target error=%v", err)
+	}
+	automatic, _, err := downloads.resolveDownloadTarget(context.Background(), provider, 0, downloadpkg.SourceURL)
+	if err != nil || automatic.LibraryID != library.ID || automatic.StorageType != models.StorageTypePan115 {
+		t.Fatalf("automatic pan115 target=%+v err=%v", automatic, err)
+	}
 	target, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, library)
 	if err != nil || target.ConnectionID == nil || *target.ConnectionID != connectionA.ID || target.ProviderRootID != "library-a" || target.StorageType != models.StorageTypePan115 {
 		t.Fatalf("target=%+v err=%v", target, err)

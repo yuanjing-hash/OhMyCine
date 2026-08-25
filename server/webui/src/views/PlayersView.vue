@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
+import SecretInput from '@/components/SecretInput.vue'
 import {
   buildEmbyGatewayUpdatePayload,
   canEnableEmbyGateway,
@@ -421,7 +422,7 @@ onMounted(() => {
       <div><label class="label">类型</label><select v-model="createDraft.provider" class="input"><option value="emby">Emby</option><option value="jellyfin">Jellyfin</option></select></div>
       <div><label class="label">名称</label><input v-model="createDraft.name" class="input" required maxlength="128" :placeholder="`家庭 ${providerLabel(createDraft.provider)}`" /></div>
       <div><label class="label">服务地址</label><input v-model="createDraft.endpoint" class="input" required type="url" placeholder="http://127.0.0.1:8096" /></div>
-      <div class="md:col-span-2"><label class="label">API Key</label><input v-model="createDraft.apiKey" class="input font-mono" required type="password" autocomplete="new-password" spellcheck="false" /></div>
+      <div class="md:col-span-2"><label class="label">API Key</label><SecretInput v-model="createDraft.apiKey" class="input font-mono" required autocomplete="new-password" spellcheck="false" /></div>
       <label class="text-muted flex items-center gap-3 text-sm"><input v-model="createDraft.enabled" type="checkbox" />添加后启用</label>
       <button class="btn-primary md:col-span-2" :disabled="creating || !createDraft.name.trim() || !createDraft.endpoint.trim() || !createDraft.apiKey.trim()">添加 {{ providerLabel(createDraft.provider) }}</button>
     </form>
@@ -486,7 +487,7 @@ onMounted(() => {
         <form v-if="editingID === connection.id" class="semantic-inset mt-5 grid gap-4 p-4 md:grid-cols-2" @submit.prevent="saveEmby(connection)">
           <div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" /></div>
           <div><label class="label">服务地址</label><input v-model="editDraft.endpoint" class="input" required type="url" /></div>
-          <div class="md:col-span-2"><label class="label">更换 API Key（可选）</label><input v-model="editDraft.apiKey" class="input font-mono" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空表示继续使用已保存的 API Key" /><p class="text-subtle mb-0 mt-2 text-xs">API Key 永不回填；保存或取消后都会清空输入框。</p></div>
+          <div class="md:col-span-2"><label class="label">更换 API Key（可选）</label><SecretInput v-model="editDraft.apiKey" class="input font-mono" :configured="connection.credential_configured" autocomplete="new-password" spellcheck="false" placeholder="留空表示继续使用已保存的 API Key" /><p class="text-subtle mb-0 mt-2 text-xs">星号表示已有 API Key；仅当前新输入可通过眼睛查看，保存或取消后会清空。</p></div>
           <label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" />启用连接</label>
           <div class="text-subtle self-center text-xs">凭据：{{ connection.credential_configured ? '已安全配置' : '未配置' }}</div>
           <div class="md:col-span-2 flex gap-3"><button class="btn-primary" :disabled="cardBusy(connection.id)">保存连接</button><button type="button" class="btn-secondary" @click="cancelEdit">取消</button></div>

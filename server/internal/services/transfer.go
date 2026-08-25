@@ -112,6 +112,9 @@ func (s *TransferService) EnqueuePackage(download models.DownloadTask, manifest,
 	if download.TargetLibraryID == nil || download.TargetStorageID == nil {
 		return nil
 	}
+	if err := validateTransferRouteSnapshot(download); err != nil {
+		return appError(CodeTransferRouteUnsupported, "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库", err)
+	}
 	if err := validateAutomaticTransferSnapshot(download, manifest); err != nil {
 		return appError(CodeTransferMediaUnrecognized, "媒体识别结果不可信，未创建自动入库任务", err)
 	}
@@ -205,6 +208,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	var download models.DownloadTask
 	if err := w.service.db.First(&download, "id = ?", task.DownloadTaskID).Error; err != nil {
 		return w.fail(task, "transfer_download_missing", "原下载任务不存在")
+	}
+	if err := validateTransferRouteSnapshot(download); err != nil {
+		return w.fail(task, CodeTransferRouteUnsupported, "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库")
 	}
 	var manifest downloadpkg.Manifest
 	if err := json.Unmarshal([]byte(task.ManifestJSON), &manifest); err != nil || len(manifest.Files) == 0 {
@@ -378,6 +384,13 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	serverlog.OperationMediaTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("transfer_mode", download.TransferMode).Int("files", len(plan)).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationMediaTransfer.Message("完成"))
 	task.Phase = models.TransferTaskStatusCompleted
 	return w.finishCompletedTransfer(ctx, task)
+}
+
+func validateTransferRouteSnapshot(download models.DownloadTask) error {
+	if download.ProviderType == models.DownloaderTypePan115Offline && download.TargetStorageType != models.StorageTypePan115 {
+		return errors.New("pan115 offline output requires a pan115 target storage")
+	}
+	return nil
 }
 
 func newTransferPlanSummary(plan []transferPlanItem) (TransferPlanSummary, error) {

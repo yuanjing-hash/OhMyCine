@@ -67,6 +67,7 @@ The media organization page represents only automatic post-download TransferTask
 | Transfer Job is not failed, cancelled, or completed | Reject deletion with `queue_state_conflict`; retain every record and file. |
 | Terminal transfer record is deleted | Cascade its Job attempts/timeline/actions, retain DownloadTask/provider/source/library/seeding state, and emit a refresh event after commit. |
 | Source/target Connection or provider-root ancestry cannot be proven | Fail closed with a stable safe code; perform no mutation. |
+| A legacy/in-flight `pan115_offline` snapshot targets local Storage | Fail before local planning with `transfer_route_unsupported`; retain the completed provider data and instruct the user to use a same-account 115 library. |
 | Metadata snapshot is unrecognized/incomplete or a movie manifest still contains multiple videos | Reject before planning/ensure-directory; perform no local or provider mutation. |
 | 115 move succeeded but rename/checkpoint did not | Retry by stable item ID from the exact target parent; do not require it to remain under the source root. |
 | Copy result has zero / one / multiple matching candidates | Retry / persist and continue / non-retryable ambiguity while retaining all data. |

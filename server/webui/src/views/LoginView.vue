@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import AuthShell from '@/components/AuthShell.vue'
+import SecretInput from '@/components/SecretInput.vue'
 
 const auth = useAuthStore(); const route = useRoute(); const router = useRouter()
 const username = ref(''); const password = ref(''); const loading = ref(false); const error = ref('')
@@ -19,7 +20,7 @@ async function submit() {
     <div class="mb-7 flex items-center gap-3"><span class="brand-badge">O</span><div><h1 class="m-0 text-2xl font-800">Server 管理端</h1><p class="text-subtle m-0 text-xs">OhMyCine</p></div></div>
     <form class="space-y-4" @submit.prevent="submit">
       <div><label class="label" for="login-user">用户名</label><input id="login-user" v-model="username" class="input" autocomplete="username" required autofocus /></div>
-      <div><label class="label" for="login-password">密码</label><input id="login-password" v-model="password" class="input" type="password" autocomplete="current-password" required /></div>
+      <div><label class="label" for="login-password">密码</label><SecretInput id="login-password" v-model="password" class="input" autocomplete="current-password" required /></div>
       <p v-if="error" class="semantic-error px-3 py-2 text-sm" role="alert">{{ error }}</p>
       <button class="btn-primary w-full" :disabled="loading">{{ loading ? '正在验证…' : '登录' }}</button>
     </form>

@@ -51,6 +51,7 @@ const (
 	CodeDownloadSourceInvalid          = "download_source_invalid"
 	CodeDownloadTorrentInvalid         = "download_torrent_invalid"
 	CodeTransferMediaUnrecognized      = "transfer_media_unrecognized"
+	CodeTransferRouteUnsupported       = "transfer_route_unsupported"
 	CodeTMDBTokenInvalid               = "tmdb_token_invalid"
 	CodeTMDBUnavailable                = "tmdb_unavailable"
 	CodeConnectionProviderUnsupported  = "connection_provider_unsupported"

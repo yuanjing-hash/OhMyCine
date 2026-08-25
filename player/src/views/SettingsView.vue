@@ -17,6 +17,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch 
 import { useRoute, useRouter } from 'vue-router'
 import tmdbLogoUrl from '@/assets/brands/tmdb-blue-short.svg'
 import DanmakuProviderSettings from '@/components/player/DanmakuProviderSettings.vue'
+import SecretInput from '@/components/SecretInput.vue'
 import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
@@ -247,6 +248,12 @@ const isNativeAndroid = isNativeAndroidRuntime()
 
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
+const sourceCredentialConfigured = computed(() => {
+  if (!isEditing.value || !form.id)
+    return false
+  const source = store.configs.find(config => config.id === form.id)
+  return source != null && credentialRefFromConfig(source) != null
+})
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
 const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
@@ -2896,13 +2903,13 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 <label v-if="subtitleForm.openSubtitlesAuthMode === 'apiKey'" class="block">
                   <span class="block text-xs font-semibold text-white/72">OpenSubtitles API Key</span>
                   <span class="mt-1 block text-xs leading-5 text-white/38">通过 OpenSubtitles.com REST API 搜索和下载字幕。</span>
-                  <input
+                  <SecretInput
                     v-model="subtitleForm.apiKey"
                     class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                    type="password"
+                    :configured="openSubtitlesConfiguredAuthMode === 'apiKey'"
                     autocomplete="off"
                     :placeholder="openSubtitlesConfiguredAuthMode === 'apiKey' ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
-                  >
+                  />
                 </label>
                 <div v-else>
                   <span class="block text-xs font-semibold text-white/72">OpenSubtitles 账号登录</span>
@@ -2920,13 +2927,13 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                     </label>
                     <label>
                       <span class="text-xs font-semibold text-white/42">密码</span>
-                      <input
+                      <SecretInput
                         v-model="subtitleForm.password"
                         class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                        type="password"
+                        :configured="openSubtitlesConfiguredAuthMode === 'account'"
                         autocomplete="current-password"
                         :placeholder="openSubtitlesConfiguredAuthMode === 'account' ? '留空表示保留当前密码' : 'OpenSubtitles 密码'"
-                      >
+                      />
                     </label>
                   </div>
                 </div>
@@ -3084,13 +3091,13 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 
             <label class="rounded-2xl bg-black/16 p-4">
               <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ tmdbCredentialInputLabel }}</span>
-              <input
+              <SecretInput
                 v-model="tmdbForm.credential"
                 class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                type="password"
+                :configured="tmdbCredentialConfigured"
                 autocomplete="off"
                 :placeholder="tmdbCredentialPlaceholder"
-              >
+              />
               <p class="mt-2 text-xs leading-5 text-white/38">
                 自定义凭据保存在安全凭证边界中且不会显示；未填写时使用内置通道。
               </p>
@@ -3653,13 +3660,13 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 
           <label v-if="isApiTokenForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ isCloudDrive2Form ? 'API Token' : '访问令牌' }}</span>
-            <input
+            <SecretInput
               v-model="form.apiToken"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :configured="sourceCredentialConfigured"
               :placeholder="isEditing ? '留空则保留当前登录凭据' : isCloudDrive2Form ? '粘贴 CloudDrive2 中创建的只读 API Token' : '粘贴 123 云盘访问令牌'"
-              type="password"
               autocomplete="off"
-            >
+            />
             <span v-if="isCloudDrive2Form" class="mt-2 block text-xs leading-5 text-white/42">
               请先在 CloudDrive2 中创建应用 API Token。
             </span>
@@ -3729,9 +3736,11 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 
             <label v-else class="mt-4 block">
               <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">手动导入 Cookie</span>
-              <textarea
+              <SecretInput
                 v-model="form.cookie"
                 class="mt-2 min-h-28 w-full resize-y rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+                multiline
+                :configured="sourceCredentialConfigured"
                 :placeholder="isEditing ? '留空则保留当前 Cookie' : '粘贴已登录 pan.quark.cn 后的完整 Cookie'"
                 autocomplete="off"
                 spellcheck="false"
@@ -3753,13 +3762,13 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
 
           <label v-if="isAccountPasswordForm" class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
-            <input
+            <SecretInput
               v-model="form.password"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
+              :configured="sourceCredentialConfigured"
               :placeholder="isEditing ? '留空则不重新登录' : '输入登录密码'"
-              type="password"
               autocomplete="current-password"
-            >
+            />
           </label>
 
           <div v-if="isLocalForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">

@@ -273,3 +273,44 @@ func (a *API) RecognizePTResult(c *gin.Context) {
 }
 
 func (a *API) RecognizeTorrentResult(c *gin.Context) { a.RecognizePTResult(c) }
+
+func (a *API) PTResultRecognitionCandidates(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 8<<10)
+	var payload struct {
+		ResultToken string `json:"result_token"`
+		Title       string `json:"title"`
+		MediaType   string `json:"media_type"`
+		Year        *int   `json:"year"`
+	}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("TMDB 候选搜索参数无效", err))
+		return
+	}
+	items, err := a.sites.RecognitionCandidates(c.Request.Context(), actor, payload.ResultToken, payload.Title, payload.MediaType, payload.Year)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+
+func (a *API) OverridePTResultRecognition(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+	var payload struct {
+		ResultToken string `json:"result_token"`
+		TMDBID      int64  `json:"tmdb_id"`
+		MediaType   string `json:"media_type"`
+	}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("种子资源人工识别参数无效", err))
+		return
+	}
+	item, err := a.sites.OverrideResultRecognition(c.Request.Context(), actor, services.SiteManualRecognitionInput{ResultToken: payload.ResultToken, TMDBID: payload.TMDBID, MediaType: payload.MediaType})
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}

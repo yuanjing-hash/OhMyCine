@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,10 +59,15 @@ type siteCredentialEnvelope struct {
 	APIKey  string `json:"api_key,omitempty"`
 }
 type siteResultClaim struct {
-	ActorID, SiteID  uint
-	TorrentID, Title string
-	ExpiresAt        time.Time
-	InFlight         bool
+	ActorID, SiteID   uint
+	TorrentID, Title  string
+	Subtitle          string
+	MediaTypeHint     string
+	ExpiresAt         time.Time
+	InFlight          bool
+	ManualTMDBID      *int64
+	ManualMediaType   string
+	RecognitionManual bool
 }
 
 type SiteInput struct {
@@ -122,18 +128,19 @@ type SiteSearchInput struct {
 	SiteID                       *uint
 }
 type SiteSearchResult struct {
-	Token     string     `json:"token"`
-	Title     string     `json:"title"`
-	Subtitle  string     `json:"subtitle,omitempty"`
-	SizeBytes int64      `json:"size_bytes,omitempty"`
-	Published *time.Time `json:"published_at,omitempty"`
-	Seeders   *int       `json:"seeders,omitempty"`
-	Leechers  *int       `json:"leechers,omitempty"`
-	Completed *int       `json:"completed,omitempty"`
-	Promotion string     `json:"promotion,omitempty"`
-	Quality   string     `json:"quality,omitempty"`
-	Tags      []string   `json:"tags,omitempty"`
-	ExpiresAt time.Time  `json:"expires_at"`
+	Token          string                        `json:"token"`
+	Title          string                        `json:"title"`
+	Subtitle       string                        `json:"subtitle,omitempty"`
+	SizeBytes      int64                         `json:"size_bytes,omitempty"`
+	Published      *time.Time                    `json:"published_at,omitempty"`
+	Seeders        *int                          `json:"seeders,omitempty"`
+	Leechers       *int                          `json:"leechers,omitempty"`
+	Completed      *int                          `json:"completed,omitempty"`
+	Promotion      string                        `json:"promotion,omitempty"`
+	Quality        string                        `json:"quality,omitempty"`
+	Tags           []string                      `json:"tags,omitempty"`
+	Specifications SiteRecognitionSpecifications `json:"specifications"`
+	ExpiresAt      time.Time                     `json:"expires_at"`
 }
 type SiteSearchGroup struct {
 	SiteID    uint               `json:"site_id"`
@@ -151,6 +158,21 @@ type SiteDownloadInput struct {
 	MediaLibraryID            *uint
 	ProfileID                 uint
 	Priority                  int
+}
+type SiteManualRecognitionInput struct {
+	ResultToken string
+	TMDBID      int64
+	MediaType   string
+}
+type SiteRecognitionCandidate struct {
+	ID               int64   `json:"id"`
+	Title            string  `json:"title"`
+	OriginalTitle    string  `json:"original_title,omitempty"`
+	MediaType        string  `json:"media_type"`
+	OriginalLanguage string  `json:"original_language,omitempty"`
+	ReleaseYear      *int    `json:"release_year,omitempty"`
+	Confidence       float64 `json:"confidence"`
+	PosterURL        string  `json:"poster_url,omitempty"`
 }
 type SiteRecognitionSpecifications struct {
 	Resolution   string `json:"resolution,omitempty"`
@@ -170,6 +192,7 @@ type SiteRecognitionEpisodeFacts struct {
 type SiteRecognitionSummary struct {
 	EngineVersion  string                        `json:"engine_version"`
 	Status         string                        `json:"status"`
+	ManualOverride bool                          `json:"manual_override,omitempty"`
 	ErrorCode      string                        `json:"error_code,omitempty"`
 	Title          string                        `json:"title"`
 	OriginalTitle  string                        `json:"original_title,omitempty"`
@@ -655,11 +678,23 @@ func (s *SiteService) searchSite(ctx context.Context, actor Actor, record models
 	group.HasNext, group.Skipped = page.HasNext, page.Skipped
 	expires := s.now().Add(ptResultTTL)
 	for _, item := range page.Items {
-		token, tokenErr := s.issueClaim(siteResultClaim{ActorID: actor.User.ID, SiteID: record.ID, TorrentID: item.TorrentID, Title: item.Title, ExpiresAt: expires})
+		token, tokenErr := s.issueClaim(siteResultClaim{
+			ActorID:       actor.User.ID,
+			SiteID:        record.ID,
+			TorrentID:     item.TorrentID,
+			Title:         item.Title,
+			Subtitle:      safeRecognitionClaimSubtitle(item.Subtitle),
+			MediaTypeHint: safeRecognitionMediaTypeHint(input.MediaType),
+			ExpiresAt:     expires,
+		})
 		if tokenErr != nil {
 			continue
 		}
-		group.Items = append(group.Items, SiteSearchResult{Token: token, Title: item.Title, Subtitle: item.Subtitle, SizeBytes: item.SizeBytes, Published: item.Published, Seeders: item.Seeders, Leechers: item.Leechers, Completed: item.Completed, Promotion: item.Promotion, Quality: item.Quality, Tags: item.Tags, ExpiresAt: expires})
+		specifications := SiteRecognitionSpecifications{}
+		if parsed, parseErr := mediarecognition.Parse(mediarecognition.InputFacts{PackageName: item.Title, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: mediarecognition.MediaType(safeRecognitionMediaTypeHint(input.MediaType))}); parseErr == nil {
+			specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
+		}
+		group.Items = append(group.Items, SiteSearchResult{Token: token, Title: item.Title, Subtitle: item.Subtitle, SizeBytes: item.SizeBytes, Published: item.Published, Seeders: item.Seeders, Leechers: item.Leechers, Completed: item.Completed, Promotion: item.Promotion, Quality: item.Quality, Tags: item.Tags, Specifications: specifications, ExpiresAt: expires})
 	}
 	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Str("site_type", group.SiteType).Int("results", len(group.Items)).Int("skipped", group.Skipped).Msg(serverlog.OperationDiscoverySearch.Message("站点种子资源搜索完成"))
 	return group
@@ -672,11 +707,11 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 	if !actor.Can(authz.PermissionDiscoveryRead) {
 		return SiteRecognitionSummary{}, appError(CodePermissionDenied, "无权识别种子资源", nil)
 	}
-	claim, err := s.resolveClaim(strings.TrimSpace(resultToken), actor.User.ID)
+	claim, err := s.resolveAvailableClaim(strings.TrimSpace(resultToken), actor.User.ID)
 	if err != nil {
 		return SiteRecognitionSummary{}, err
 	}
-	input := mediarecognition.InputFacts{PackageName: claim.Title, SourceKind: mediarecognition.SourceDownload}
+	input := mediarecognition.InputFacts{PackageName: claim.Title, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: mediarecognition.MediaType(claim.MediaTypeHint)}
 	parsed, parseErr := mediarecognition.Parse(input)
 	summary := SiteRecognitionSummary{EngineVersion: mediarecognition.EngineVersion, Status: mediaRecognitionStatusUnrecognized, Title: claim.Title}
 	if parseErr == nil {
@@ -700,7 +735,9 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 
 	result := recognizeMedia(ctx, client, MediaRecognitionRequest{
 		PackageName:      claim.Title,
+		AuxiliaryNames:   []string{claim.Subtitle},
 		SourceKind:       mediarecognition.SourceDownload,
+		MediaTypeHint:    claim.MediaTypeHint,
 		BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
 		Classification:   classification.DefaultRules(),
 		Language:         "zh-CN",
@@ -740,8 +777,157 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 				summary.PosterURL = proxyDiscoveryImage("tmdb", upstream)
 			}
 		}
+		// A successful automatic preview has already passed the shared ranker and
+		// GetByID verification. Bind that verified identity to the opaque claim so
+		// the eventual download cannot regress to a weaker title-only decision.
+		if result.TMDBID != nil && result.MediaType != "" {
+			if bindErr := s.bindClaimRecognition(strings.TrimSpace(resultToken), actor.User.ID, *result.TMDBID, result.MediaType, false); bindErr != nil {
+				return SiteRecognitionSummary{}, bindErr
+			}
+		}
 	}
 	return s.logRecognitionSummary(claim.SiteID, summary), nil
+}
+
+// RecognitionCandidates is an explicit recovery tool for one actor-bound
+// search result. It searches from a user-editable keyword but never accepts a
+// torrent/provider identity from the browser.
+func (s *SiteService) RecognitionCandidates(ctx context.Context, actor Actor, resultToken, title, mediaType string, year *int) ([]SiteRecognitionCandidate, error) {
+	if !actor.Can(authz.PermissionDiscoveryRead) {
+		return nil, appError(CodePermissionDenied, "无权识别种子资源", nil)
+	}
+	claim, err := s.resolveAvailableClaim(strings.TrimSpace(resultToken), actor.User.ID)
+	if err != nil {
+		return nil, err
+	}
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		title = claim.Title
+	}
+	if title == "" || len([]rune(title)) > 256 {
+		return nil, appError(CodeInvalidRequest, "TMDB 搜索关键词无效", nil)
+	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType != "" && mediaType != "movie" && mediaType != "tv" {
+		return nil, appError(CodeInvalidRequest, "媒体类型无效", nil)
+	}
+	if year != nil && (*year < 1888 || *year > 2200) {
+		return nil, appError(CodeInvalidRequest, "媒体年份无效", nil)
+	}
+	if s.metadata == nil {
+		return nil, appError(CodeTMDBUnavailable, "TMDB 未配置", nil)
+	}
+	client, err := s.metadata.Client()
+	if err != nil {
+		return nil, err
+	}
+	types := []string{mediaType}
+	if mediaType == "" {
+		types = []string{"movie", "tv"}
+	}
+	items := make([]SiteRecognitionCandidate, 0, 10)
+	seen := make(map[string]struct{}, 10)
+	var firstFailure error
+	for _, kind := range types {
+		candidates, searchErr := client.SearchCandidates(ctx, kind, title, year, "zh-CN", "CN", 10)
+		if searchErr != nil {
+			if tmdb.ErrorCode(searchErr) != tmdb.ErrorNoMatch && firstFailure == nil {
+				firstFailure = searchErr
+			}
+			continue
+		}
+		for _, candidate := range candidates {
+			key := candidate.MediaType + ":" + strconv.FormatInt(candidate.ID, 10)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			item := SiteRecognitionCandidate{ID: candidate.ID, Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, MediaType: candidate.MediaType, OriginalLanguage: candidate.OriginalLanguage, ReleaseYear: cloneInt(candidate.ReleaseYear), Confidence: candidate.Confidence}
+			if candidate.PosterPath != "" {
+				if upstream, imageErr := client.ImageURL(candidate.PosterPath, "w300"); imageErr == nil {
+					item.PosterURL = proxyDiscoveryImage("tmdb", upstream)
+				}
+			}
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		if firstFailure != nil {
+			return nil, appError(tmdb.ErrorCode(firstFailure), classificationFallbackMessage(tmdb.ErrorCode(firstFailure)), nil)
+		}
+		return nil, appError(tmdb.ErrorNoMatch, "没有找到匹配的 TMDB 项目，请调整关键词后重试", nil)
+	}
+	sort.SliceStable(items, func(left, right int) bool {
+		if items[left].Confidence != items[right].Confidence {
+			return items[left].Confidence > items[right].Confidence
+		}
+		if items[left].ReleaseYear != nil && items[right].ReleaseYear != nil && *items[left].ReleaseYear != *items[right].ReleaseYear {
+			return *items[left].ReleaseYear > *items[right].ReleaseYear
+		}
+		if items[left].MediaType != items[right].MediaType {
+			return items[left].MediaType < items[right].MediaType
+		}
+		return items[left].ID < items[right].ID
+	})
+	if len(items) > 10 {
+		items = items[:10]
+	}
+	// Candidate lookup is intentionally read-only, but the result is useful
+	// only while the same actor-bound claim can still be corrected. Recheck
+	// after the upstream request so a concurrent download reservation cannot
+	// leave the browser choosing an identity that can no longer be bound.
+	if _, err := s.resolveAvailableClaim(strings.TrimSpace(resultToken), actor.User.ID); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// OverrideResultRecognition verifies the selected identity with TMDB before it
+// is bound to the opaque claim. The browser-provided title, poster and category
+// never enter the trusted download pipeline.
+func (s *SiteService) OverrideResultRecognition(ctx context.Context, actor Actor, input SiteManualRecognitionInput) (SiteRecognitionSummary, error) {
+	if !actor.Can(authz.PermissionDiscoveryRead) || !actor.Can(authz.PermissionDownloadsCreate) {
+		return SiteRecognitionSummary{}, appError(CodePermissionDenied, "无权修正种子资源识别", nil)
+	}
+	token := strings.TrimSpace(input.ResultToken)
+	claim, err := s.resolveAvailableClaim(token, actor.User.ID)
+	if err != nil {
+		return SiteRecognitionSummary{}, err
+	}
+	input.MediaType = strings.ToLower(strings.TrimSpace(input.MediaType))
+	if input.TMDBID <= 0 || (input.MediaType != "movie" && input.MediaType != "tv") {
+		return SiteRecognitionSummary{}, appError(CodeInvalidRequest, "TMDB 匹配选择无效", nil)
+	}
+	if s.metadata == nil {
+		return SiteRecognitionSummary{}, appError(CodeTMDBUnavailable, "TMDB 未配置", nil)
+	}
+	client, err := s.metadata.Client()
+	if err != nil {
+		return SiteRecognitionSummary{}, err
+	}
+	verified, err := client.GetByID(ctx, input.MediaType, input.TMDBID, "zh-CN")
+	if err != nil {
+		return SiteRecognitionSummary{}, appError(tmdb.ErrorCode(err), "TMDB 项目验证失败", nil)
+	}
+	if verified.ID != input.TMDBID || verified.MediaType != input.MediaType {
+		return SiteRecognitionSummary{}, appError(CodeInvalidRequest, "TMDB 项目身份不一致", nil)
+	}
+	if err := s.bindClaimRecognition(token, actor.User.ID, verified.ID, verified.MediaType, true); err != nil {
+		return SiteRecognitionSummary{}, err
+	}
+	parsed, parseErr := mediarecognition.Parse(mediarecognition.InputFacts{PackageName: claim.Title, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: mediarecognition.MediaType(claim.MediaTypeHint)})
+	summary := SiteRecognitionSummary{EngineVersion: mediarecognition.EngineVersion, Status: mediaRecognitionStatusMatched, ManualOverride: true, Title: verified.Title, OriginalTitle: verified.Snapshot.OriginalTitle, MediaType: verified.MediaType, Year: cloneInt(verified.ReleaseYear), TMDBID: cloneInt64(&verified.ID)}
+	if parseErr == nil {
+		summary.Episodes = siteRecognitionEpisodeFacts(parsed, verified.MediaType)
+		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
+	}
+	if verified.Snapshot.PosterPath != "" {
+		if upstream, imageErr := client.ImageURL(verified.Snapshot.PosterPath, "w500"); imageErr == nil {
+			summary.PosterURL = proxyDiscoveryImage("tmdb", upstream)
+		}
+	}
+	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", claim.SiteID).Str("media_type", verified.MediaType).Int64("tmdb_id", verified.ID).Msg(serverlog.OperationDiscoverySearch.Message("种子资源搜索结果已人工确认媒体身份"))
+	return summary, nil
 }
 
 func siteRecognitionEpisodeFacts(parsed mediarecognition.ParsedFacts, mediaType string) *SiteRecognitionEpisodeFacts {
@@ -758,6 +944,18 @@ func siteRecognitionEpisodeFacts(parsed mediarecognition.ParsedFacts, mediaType 
 		EpisodeMax: cloneInt(parsed.Episodes.EpisodeMax),
 		Count:      parsed.Episodes.Count,
 	}
+}
+
+func safeRecognitionClaimSubtitle(value string) string {
+	return safeRecognitionAuxiliaryName(value)
+}
+
+func safeRecognitionMediaTypeHint(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "movie" || value == "tv" {
+		return value
+	}
+	return ""
 }
 
 func (s *SiteService) logRecognitionSummary(siteID uint, summary SiteRecognitionSummary) SiteRecognitionSummary {
@@ -869,7 +1067,11 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 		}
 		source = DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: torrent, Filename: filename}
 	}
-	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: source}, request)
+	var recognitionOverride *DownloadRecognitionIdentity
+	if claim.ManualTMDBID != nil && claim.ManualMediaType != "" {
+		recognitionOverride = &DownloadRecognitionIdentity{TMDBID: *claim.ManualTMDBID, MediaType: claim.ManualMediaType}
+	}
+	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: source, RecognitionOverride: recognitionOverride}, request)
 	if err != nil {
 		return DownloadTaskSummary{}, err
 	}
@@ -973,6 +1175,19 @@ func (s *SiteService) resolveClaim(token string, actorID uint) (siteResultClaim,
 	}
 	return claim, nil
 }
+func (s *SiteService) resolveAvailableClaim(token string, actorID uint) (siteResultClaim, error) {
+	if len(token) != 43 {
+		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
+	}
+	s.vaultMu.Lock()
+	defer s.vaultMu.Unlock()
+	s.purgeClaimsLocked()
+	claim, ok := s.vault[token]
+	if !ok || claim.ActorID != actorID || claim.InFlight || !claim.ExpiresAt.After(s.now()) {
+		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
+	}
+	return claim, nil
+}
 func (s *SiteService) reserveClaim(token string, actorID uint) (siteResultClaim, error) {
 	if len(token) != 43 {
 		return siteResultClaim{}, appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
@@ -1001,6 +1216,20 @@ func (s *SiteService) finishClaim(token string, completed bool) {
 	}
 	claim.InFlight = false
 	s.vault[token] = claim
+}
+func (s *SiteService) bindClaimRecognition(token string, actorID uint, tmdbID int64, mediaType string, manual bool) error {
+	s.vaultMu.Lock()
+	defer s.vaultMu.Unlock()
+	s.purgeClaimsLocked()
+	claim, ok := s.vault[token]
+	if !ok || claim.ActorID != actorID || claim.InFlight || !claim.ExpiresAt.After(s.now()) {
+		return appError(CodeSiteResultExpired, "种子资源搜索结果已过期，请重新搜索", nil)
+	}
+	claim.ManualTMDBID = cloneInt64(&tmdbID)
+	claim.ManualMediaType = mediaType
+	claim.RecognitionManual = manual
+	s.vault[token] = claim
+	return nil
 }
 func (s *SiteService) purgeClaimsLocked() {
 	now := s.now()

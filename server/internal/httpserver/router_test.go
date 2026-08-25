@@ -854,6 +854,14 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	if status != http.StatusGone || !bytes.Contains(envelope.Data, []byte(services.CodeSiteResultExpired)) {
 		t.Fatalf("invalid recognition token status=%d data=%s", status, envelope.Data)
 	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/discovery/torrent-results/tmdb-candidates", map[string]any{"result_token": "invalid", "title": "Seven Samurai", "media_type": "movie"}, true)
+	if status != http.StatusGone || client.lastHeader.Get("Cache-Control") != "no-store" || !bytes.Contains(envelope.Data, []byte(services.CodeSiteResultExpired)) {
+		t.Fatalf("invalid manual candidate token status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPut, "/api/v1/discovery/torrent-results/recognition-override", map[string]any{"result_token": "invalid", "tmdb_id": 346, "media_type": "movie"}, true)
+	if status != http.StatusGone || client.lastHeader.Get("Cache-Control") != "no-store" || !bytes.Contains(envelope.Data, []byte(services.CodeSiteResultExpired)) {
+		t.Fatalf("invalid manual override token status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
 
 	streamRequest := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/pt-search/stream?keyword=Seven%20Samurai&page=1", nil)
 	streamRequest.Header.Set("Origin", "http://localhost:3000")
@@ -1023,6 +1031,10 @@ func TestDownloaderAndDownloadAPIRedactSensitiveSources(t *testing.T) {
 	status, envelope = client.request(t, http.MethodPost, "/api/v1/downloads", map[string]any{"downloader_id": downloader.ID, "source_kind": "url", "source_url": "file:///private/media"}, true)
 	if status != http.StatusBadRequest {
 		t.Fatalf("invalid source status=%d body=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPut, "/api/v1/downloads/missing/import-target", map[string]any{"media_library_id": 1}, true)
+	if status != http.StatusNotFound || !bytes.Contains(envelope.Data, []byte(services.CodeNotFound)) {
+		t.Fatalf("retarget route status=%d body=%s", status, envelope.Data)
 	}
 }
 

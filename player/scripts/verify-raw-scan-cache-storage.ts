@@ -1,7 +1,8 @@
-import assert from 'node:assert/strict'
-import { clearRawSourceScanCache, diffRawFileRecords, loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 import type { RawLocalScanCache } from '../src/services/scraper/localScanCache.ts'
 import type { RawFileRecord, RawMediaCandidate } from '../src/services/scraper/types.ts'
+import assert from 'node:assert/strict'
+import { changedRawSourceCacheTarget } from '../src/services/scraper/cacheInvalidation.ts'
+import { clearRawSourceScanCache, diffRawFileRecords, loadRawSourceScanCache, saveRawSourceScanCache } from '../src/services/scraper/localScanCache.ts'
 
 const restoreLocalStorage = installMockLocalStorage()
 
@@ -40,6 +41,31 @@ try {
   assert.equal((await loadRawSourceScanCache('alist-one', 'alist', '/影视库'))?.scanId, 'scan-two')
   assert.equal((await loadRawSourceScanCache('alist-one', 'alist', '/纪录片'))?.scanId, 'scan-documentary')
   assert.equal(await loadRawSourceScanCache('alist-two', 'alist', '/影视库'), null)
+
+  assert.deepEqual(changedRawSourceCacheTarget(
+    {
+      id: 'local-one',
+      type: 'local',
+      name: '本地媒体库',
+      url: '',
+      enabled: true,
+      order: 0,
+      extra: { rootPath: 'D:\\Media\\Old' },
+    },
+    {
+      id: 'local-one',
+      type: 'local',
+      name: '本地媒体库',
+      url: '',
+      enabled: true,
+      order: 0,
+      extra: { rootPath: 'E:\\Media\\New' },
+    },
+  ), {
+    sourceId: 'local-one',
+    sourceType: 'local',
+    rootPath: '/',
+  })
 
   const sensitiveCache = createCache({
     sourceId: 'alist-sensitive',

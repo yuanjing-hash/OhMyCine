@@ -23,14 +23,19 @@ var (
 	completeCountPattern            = regexp.MustCompile(`(?i)(?:\[|【)\s*0*([0-9]{1,5})\s*(?:全集|全)\s*(?:\]|】)`)
 	bracketEpisodePattern           = regexp.MustCompile(`(?:\[|【)\s*0*([0-9]{1,5})\s*(?:\]|】)`)
 	explicitTrailingEpisodePattern  = regexp.MustCompile(`(?i)-\s*ep?\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?(?:\s*(?:\[|【)|$)`)
-	bracketedTrailingEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?\s*(\[[^\]]{1,128}\]|【[^】]{1,128}】)`)
+	bracketedTrailingEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?\s*(\[[^\]]{1,128}\]|【[^】]{1,128}】|\([^)]{1,128}\))`)
+	chineseEpisodePartPattern       = regexp.MustCompile(`第\s*0*([0-9]{3,5})\s*[-‐‑‒–—]\s*0*([1-9])\s*[集话話](?:$|[^\p{L}\p{N}])`)
 	chineseEpisodePattern           = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*[集话話](?:$|[^\p{L}\p{N}])`)
 	chineseSeasonPattern            = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*季(?:$|[^\p{L}\p{N}])`)
 	numericEpisodePattern           = regexp.MustCompile(`^0*([0-9]{1,5})$`)
 	yearTokenPattern                = regexp.MustCompile(`\b((?:18|19|20)[0-9]{2})\b`)
-	techTokenPattern                = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|[0-9]{2,3}\s*fps|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng|zh(?:[- .]?(?:cn|tw|hk))?)\b`)
+	techTokenPattern                = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|[0-9]{2,3}\s*fps|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|avc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10[- .]?bit|8[- .]?bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng|zh(?:[- .]?(?:cn|tw|hk))?)\b`)
+	audioChannelPattern             = regexp.MustCompile(`(?i)\b(?:aac|flac|lpcm|pcm|truehd|dts(?:-hd)?|ddp?|eac3|ac3)\s*[0-9](?:\s*[. ]\s*[0-9])?\b`)
 	spacedTechPattern               = regexp.MustCompile(`(?i)\b(?:[hx]\s*26[45]|ddp?\s*[0-9](?:\s*[0-9])?|eac3|ac3|lpcm|flac|dvd\s*480p|hdtv\s*rip|bd\s*rip|web\s*rip|[0-9]{3,4}\s*x\s*[0-9]{3,4})\b`)
-	conditionalNoisePattern         = regexp.MustCompile(`(?i)\b(?:complete|edr|iq|[0-9]+\s*audio|iso\s*pack|ultra\s+resolution|remastered|version)\b|全集`)
+	conditionalNoisePattern         = regexp.MustCompile(`(?i)\b(?:complete|edr|iq|[0-9]+\s*audios?|iso\s*pack|ultra\s+resolution|remastered|version)\b|全集`)
+	franchiseMovieIndexPattern      = regexp.MustCompile(`(?i)\bm\s*0*([0-9]{1,3})\b`)
+	explicitMovieMarkerPattern      = regexp.MustCompile(`(?i)\bmovie(?:\s*(?:fin|end))?\b|剧场版|劇場版`)
+	languageQualifierPattern        = regexp.MustCompile(`(?:\(|（|\[|【)\s*(中配|国配|國配|国语|國語|粤配|粵配|台配|日配|英配|中英双语|中英雙語)\s*(?:\)|）|\]|】)`)
 	languageTrackOnlyPattern        = regexp.MustCompile(`(?i)^(?:[国國粤粵英日韩韓台中普话話語语一二三四五六七八九十0-9双雙多]+(?:音轨|音軌)?|(?:mandarin|cantonese|japanese|english|chinese)(?:dub|audio)?)$`)
 	subtitleTokenPattern            = regexp.MustCompile(`(?i)\b(?:chs|cht|gb|big5|subs?|multi[- .]?sub)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕`)
 	trailingGroupPattern            = regexp.MustCompile(`^(.*?)(\s*-\s*)([[:alnum:]][[:alnum:]-]{1,31})\s*$`)
@@ -64,6 +69,7 @@ type parsedName struct {
 	episode         *int
 	episodeMin      *int
 	episodeMax      *int
+	franchiseMovie  bool
 	directHint      *IdentityHint
 }
 
@@ -148,6 +154,9 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 	}
 	if hasNameEpisodeEvidence(parsed) {
 		result.TypeEvidence = append(result.TypeEvidence, Evidence{Code: "release_name_episode", Kind: "structure", Supports: MediaTypeTV, Strength: .94, Summary: "release title contains bounded season or episode structure"})
+	}
+	if hasFranchiseMovieEvidence(parsed) {
+		result.TypeEvidence = append(result.TypeEvidence, Evidence{Code: "franchise_movie_index", Kind: "structure", Supports: MediaTypeMovie, Strength: .96, Summary: "release title combines a bounded franchise movie index with an explicit movie marker"})
 	}
 	if seasonYearFromName && result.Year != nil {
 		result.SeasonYear = cloneDomainInt(result.Year)
@@ -307,6 +316,7 @@ func analyzeName(source namedSource, now time.Time) parsedName {
 	withoutHint, hint := extractTMDBHint(raw)
 	item.directHint = hint
 	withoutHint = strings.TrimSpace(withoutHint)
+	item.franchiseMovie = franchiseMovieIndexPattern.MatchString(withoutHint) && explicitMovieMarkerPattern.MatchString(withoutHint)
 	item.season, item.episode = firstSeasonEpisode(withoutHint)
 	item.episodeMin, item.episodeMax = episodeRangeFromName(withoutHint)
 	if item.episodeMin != nil {
@@ -342,9 +352,24 @@ func analyzeName(source namedSource, now time.Time) parsedName {
 		item.withoutGroup = cleanTitleSurface(recognitionSurface)
 	}
 
-	item.specifications = canonicalSpecifications(append(techTokenPattern.FindAllString(withoutHint, -1), spacedTechPattern.FindAllString(withoutHint, -1)...))
-	withoutSpecs := techTokenPattern.ReplaceAllString(item.withoutGroup, " ")
+	specifications := append(techTokenPattern.FindAllString(withoutHint, -1), spacedTechPattern.FindAllString(withoutHint, -1)...)
+	for _, match := range languageQualifierPattern.FindAllStringSubmatch(withoutHint, -1) {
+		if len(match) == 2 {
+			specifications = append(specifications, match[1])
+		}
+	}
+	item.specifications = canonicalSpecifications(specifications)
+	// Strip the audio codec together with its channel layout before the
+	// generic codec pass. Filename normalization turns `AAC 2.0` into
+	// `AAC 2 0`; removing only `AAC` would leak `2 0` into the work title.
+	withoutSpecs := audioChannelPattern.ReplaceAllString(item.withoutGroup, " ")
+	withoutSpecs = techTokenPattern.ReplaceAllString(withoutSpecs, " ")
 	withoutSpecs = spacedTechPattern.ReplaceAllString(withoutSpecs, " ")
+	withoutSpecs = languageQualifierPattern.ReplaceAllString(withoutSpecs, " ")
+	if item.franchiseMovie {
+		withoutSpecs = explicitMovieMarkerPattern.ReplaceAllString(withoutSpecs, " ")
+		withoutSpecs = franchiseMovieIndexPattern.ReplaceAllString(withoutSpecs, " ")
+	}
 	if hasTechnicalToken(item.withoutGroup) {
 		withoutSpecs = conditionalNoisePattern.ReplaceAllString(withoutSpecs, " ")
 	}
@@ -718,7 +743,14 @@ func firstSeasonEpisode(value string) (*int, *int) {
 		season = parseBoundedOrdinal(match[1], 200)
 	}
 	var episode *int
-	if match := chineseEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
+	if match := chineseEpisodePartPattern.FindStringSubmatch(value); len(match) == 3 {
+		// Long-running Chinese anime releases sometimes split one original
+		// episode into remastered parts such as `第118-2集`. The suffix is a
+		// part number, not an episode-range endpoint; use the stable original
+		// episode identity until the domain model grows an explicit part field.
+		parsed, _ := strconv.Atoi(match[1])
+		episode = cloneDomainInt(&parsed)
+	} else if match := chineseEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
 		episode = parseBoundedOrdinal(match[1], 100000)
 	} else if match := explicitTrailingEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
 		parsed, _ := strconv.Atoi(match[1])
@@ -787,6 +819,15 @@ func hasNameEpisodeEvidence(items []parsedName) bool {
 	return false
 }
 
+func hasFranchiseMovieEvidence(items []parsedName) bool {
+	for _, item := range items {
+		if item.franchiseMovie {
+			return true
+		}
+	}
+	return false
+}
+
 func parseBoundedOrdinal(value string, maximum int) *int {
 	value = strings.NewReplacer("两", "二", "兩", "二").Replace(strings.TrimSpace(value))
 	number, _, err := parseEpisodeNumber(value)
@@ -802,6 +843,7 @@ func removeSeasonEpisodeTokens(value string) string {
 	without = bracketRangePattern.ReplaceAllString(without, " ")
 	without = completeCountPattern.ReplaceAllString(without, " ")
 	without = episodeRangePattern.ReplaceAllString(without, " ")
+	without = chineseEpisodePartPattern.ReplaceAllString(without, " ")
 	without = explicitTrailingEpisodePattern.ReplaceAllString(without, " ")
 	without = bracketedTrailingEpisodePattern.ReplaceAllString(without, " ")
 	without = chineseEpisodePattern.ReplaceAllString(without, " ")

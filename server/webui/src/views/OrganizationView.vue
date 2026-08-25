@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { APIError } from '@/api/client'
+import { APIError, api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import { controlJob, respondAction } from '@/jobs'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
 import {
   canDeleteTransferRecord,
+  canRetargetTransfer,
   conflictPolicyLabels,
   deleteTransfer,
   formatTransferProgress,
   getTransfer,
   listTransfers,
+  retargetCompletedImport,
   shouldRefreshTransferEvent,
   transferModeLabels,
   transferStatusClass,
@@ -24,6 +26,7 @@ import {
   type TransferPage,
   type TransferSummary,
 } from '@/transfers'
+import type { ListResponse, MediaLibraryDetail } from '@/types/api'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -35,11 +38,14 @@ const total = ref(0)
 const stats = ref(emptyStats())
 const filterLibraries = ref<Array<{ id: number; name: string }>>([])
 const filterCategories = ref<string[]>([])
+const mediaLibraries = ref<MediaLibraryDetail[]>([])
 const loading = ref(true)
 const detailLoading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const selected = ref<TransferDetail | null>(null)
+const retargeting = ref<TransferSummary | null>(null)
+const retargetLibraryID = ref(0)
 const drawer = ref<HTMLElement | null>(null)
 const page = ref(readPositiveQuery('page', 1))
 const pageSize = 30
@@ -222,6 +228,24 @@ async function retry(item: TransferSummary) {
   }
 }
 
+function openRetarget(item: TransferSummary) {
+  retargeting.value = item
+  retargetLibraryID.value = mediaLibraries.value.find(library => library.enabled && library.id !== item.library_id)?.id ?? 0
+}
+
+async function confirmRetarget() {
+  if (!retargeting.value || !retargetLibraryID.value) return
+  saving.value = true
+  try {
+    await retargetCompletedImport(retargeting.value.download_task_id, retargetLibraryID.value)
+    notify('已更新目标媒体库，只重新执行入库阶段', 'success')
+    retargeting.value = null
+    await load(false, true)
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally { saving.value = false }
+}
+
 async function respond(response: string) {
   if (!selected.value?.job.action_request) return
   saving.value = true
@@ -306,6 +330,9 @@ function message(reason: unknown): string {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleEscape)
+  if (auth.can(Permissions.MediaLibrariesRead)) {
+    try { mediaLibraries.value = (await api<ListResponse<MediaLibraryDetail>>('/api/v1/media-libraries')).list } catch { mediaLibraries.value = [] }
+  }
   await load()
   startLiveUpdates()
 })
@@ -359,14 +386,16 @@ onBeforeUnmount(() => {
           <td><span :class="transferStatusClass(item)">{{ transferStatusLabel(item) }}</span><small v-if="isRateLimitedCloudTransfer(item)" class="text-subtle mt-1 block">115 风控限速处理中，多文件入库可能需要数分钟</small><small v-if="item.last_error_message" class="semantic-danger-text mt-1 block">{{ item.last_error_message }}</small></td>
           <td>{{ formatTransferProgress(item) }}</td>
           <td>{{ formatDate(item.updated_at) }}</td>
-          <td><div class="flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></td>
+          <td><div class="flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canControl(item) && canRetargetTransfer(item)" class="btn-secondary" type="button" :disabled="saving" @click="openRetarget(item)">修改入库目标</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></td>
         </tr></tbody>
       </table>
       <div v-if="!loading && items.length" class="organization-mobile-list p-3">
-        <article v-for="item in items" :key="item.id" class="semantic-inset p-3"><div class="flex items-start justify-between gap-3"><div><strong>{{ item.scrape_title || item.display_name }}</strong><small class="text-subtle mt-1 block">{{ item.library_name }} · {{ transferModeLabels[item.transfer_mode] }}</small></div><span :class="transferStatusClass(item)">{{ transferStatusLabel(item) }}</span></div><p class="text-subtle mb-0 mt-3 text-xs">{{ item.scrape_category || '未分类' }} · {{ formatTransferProgress(item) }} · {{ formatDate(item.updated_at) }}</p><div class="mt-3 flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></article>
+        <article v-for="item in items" :key="item.id" class="semantic-inset p-3"><div class="flex items-start justify-between gap-3"><div><strong>{{ item.scrape_title || item.display_name }}</strong><small class="text-subtle mt-1 block">{{ item.library_name }} · {{ transferModeLabels[item.transfer_mode] }}</small></div><span :class="transferStatusClass(item)">{{ transferStatusLabel(item) }}</span></div><p class="text-subtle mb-0 mt-3 text-xs">{{ item.scrape_category || '未分类' }} · {{ formatTransferProgress(item) }} · {{ formatDate(item.updated_at) }}</p><div class="mt-3 flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canControl(item) && canRetargetTransfer(item)" class="btn-secondary" type="button" :disabled="saving" @click="openRetarget(item)">修改入库目标</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></article>
       </div>
       <footer v-if="!loading && items.length" class="border-t border-[var(--border)] p-3 text-sm text-muted">显示 {{ items.length }} / {{ total }} 条 <span class="ml-4 inline-flex items-center gap-2"><button class="btn-secondary" type="button" :disabled="page === 1" @click="changePage(page - 1)">上一页</button><span>第 {{ page }} 页</span><button class="btn-secondary" type="button" :disabled="page * pageSize >= total" @click="changePage(page + 1)">下一页</button></span></footer>
     </div>
+
+    <div v-if="retargeting" class="modal-backdrop fixed inset-0 z-60 flex items-center justify-center p-4" @click.self="!saving && (retargeting = null)"><form class="panel w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="retarget-title" @submit.prevent="confirmRetarget"><h2 id="retarget-title" class="m-0 text-xl">修改入库目标</h2><p class="page-description mt-2">{{ retargeting.scrape_title || retargeting.display_name }}</p><p class="semantic-warning mt-4 p-3 text-sm">只会更换媒体库、分类规则和命名快照，并重新执行 Transfer → Import；不会重新下载。若已经产生目录规划、云端检查点或部分写入，Server 会拒绝操作。</p><label class="mt-4 block"><span class="label">新的目标媒体库</span><select v-model.number="retargetLibraryID" class="input" required><option :value="0" disabled>请选择</option><option v-for="library in mediaLibraries.filter(item => item.enabled && item.id !== retargeting?.library_id)" :key="library.id" :value="library.id">{{ library.name }} · {{ library.storage_name }} · {{ library.transfer_mode }}</option></select></label><div class="mt-5 flex justify-end gap-3"><button class="btn-secondary" type="button" :disabled="saving" @click="retargeting = null">取消</button><button class="btn-primary" :disabled="saving || !retargetLibraryID">{{ saving ? '正在校验并重排…' : '确认修改并重试入库' }}</button></div></form></div>
 
     <div v-if="selected || detailLoading" class="task-drawer-backdrop" @click.self="closeDrawer()">
       <aside ref="drawer" class="task-drawer organization-drawer" role="dialog" aria-modal="true" :aria-label="`${selected?.display_name ?? '媒体整理'}详情`" @keydown="trapDrawerFocus">

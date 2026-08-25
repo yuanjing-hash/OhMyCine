@@ -424,6 +424,89 @@ func TestRecognizeMediaHandlesRealTMDBFranchiseOrderingAndBoundedTypoFallback(t 
 	}
 }
 
+func TestRecognizeMediaLongRunningAnimeUsesStructureAndFullSubtitleSafely(t *testing.T) {
+	tests := []struct {
+		name          string
+		release       string
+		items         []tmdb.Candidate
+		expectedID    int64
+		expectedType  string
+		expectedError string
+	}{
+		{
+			name:    "exact series title beats same-title movie through TV structure",
+			release: "[银色子弹字幕组][名侦探柯南][第1210集 被诅咒的邻居][WEBRIP][简日双语MP4][1080P]",
+			items: []tmdb.Candidate{
+				{ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv", SeasonCount: 1, Popularity: 150},
+				{ID: 90001, Title: "名侦探柯南", MediaType: "movie", Popularity: 300},
+				{ID: 917496, Title: "名侦探柯南：唐红的恋歌", MediaType: "movie", Popularity: 50},
+			},
+			expectedID: 30983, expectedType: "tv",
+		},
+		{
+			name:    "franchise movie number keeps the distinctive bilingual subtitle",
+			release: "[银色子弹字幕组&VCB-Studio] 名侦探柯南M21 唐红的恋歌 / Detective Conan M21: The Crimson Love Letter 10-bit 1080p HEVC BDRip [MOVIE Fin]",
+			items: []tmdb.Candidate{
+				{ID: 917496, Title: "名侦探柯南：唐红的恋歌", AlternativeTitles: []string{"Detective Conan: The Crimson Love Letter"}, MediaType: "movie"},
+				{ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv", SeasonCount: 1},
+			},
+			expectedID: 917496, expectedType: "movie",
+		},
+		{
+			name:    "untyped exact cross-type identity remains manual",
+			release: "Detective Conan The Scarlet School Trip 2019 1080p BluRay HEVC FLAC 2.0 2Audios-ADE",
+			items: []tmdb.Candidate{
+				{ID: 1, Title: "Detective Conan The Scarlet School Trip", MediaType: "movie"},
+				{ID: 2, Title: "Detective Conan The Scarlet School Trip", MediaType: "tv"},
+			},
+			expectedError: mediaRecognitionCandidateConflict,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := &rankedRecognitionLookupFake{items: test.items}
+			result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
+				PackageName:      test.release,
+				SourceKind:       mediarecognition.SourceDownload,
+				BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
+				Classification:   classification.DefaultRules(),
+				Language:         "zh-CN",
+				Region:           "CN",
+			})
+			if test.expectedError != "" {
+				if result.Status != mediaRecognitionStatusUnrecognized || result.ErrorCode != test.expectedError || lookup.selectedID != 0 {
+					t.Fatalf("result=%+v selected=%d searches=%v", result, lookup.selectedID, lookup.searches)
+				}
+				return
+			}
+			if result.Status != mediaRecognitionStatusMatched || result.TMDBID == nil || *result.TMDBID != test.expectedID || result.MediaType != test.expectedType || lookup.selectedID != test.expectedID {
+				t.Fatalf("result=%+v selected=%d searches=%v", result, lookup.selectedID, lookup.searches)
+			}
+		})
+	}
+}
+
+func TestRecognizeMediaAuxiliaryRuleCannotPromoteDirectIdentity(t *testing.T) {
+	processor, err := mediarecognition.CompileWordProcessor([]string{
+		`Poison => Safe Title {[tmdbid=999;type=movie]}`,
+	}, mediarecognition.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := &rankedRecognitionLookupFake{items: []tmdb.Candidate{{ID: 1, Title: "Safe Title", MediaType: "movie"}}}
+	result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
+		PackageName:      "Safe Title 2024",
+		AuxiliaryNames:   []string{"Poison"},
+		BuiltinProcessor: processor,
+		Classification:   classification.DefaultRules(),
+		Language:         "zh-CN",
+		Region:           "CN",
+	})
+	if result.Status != mediaRecognitionStatusMatched || lookup.selectedID != 1 {
+		t.Fatalf("untrusted auxiliary direct hint escaped into lookup: result=%+v selected=%d searches=%v", result, lookup.selectedID, lookup.searches)
+	}
+}
+
 func TestRecognizeMediaBridgesPinyinThroughAuthoritativeCrossTypeTitle(t *testing.T) {
 	bridgeMovie := tmdb.Candidate{ID: 541781, Title: "爱情公寓", OriginalTitle: "爱情公寓", MediaType: "movie", ReleaseYear: intPointerTest(2018)}
 	series := tmdb.Candidate{ID: 68809, Title: "爱情公寓", OriginalTitle: "爱情公寓", MediaType: "tv", ReleaseYear: intPointerTest(2009)}

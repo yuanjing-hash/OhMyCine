@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import AuthShell from '@/components/AuthShell.vue'
+import SecretInput from '@/components/SecretInput.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -31,8 +32,8 @@ async function submit() {
     <form v-else class="mt-7 space-y-4" @submit.prevent="submit">
       <div><label class="label" for="username">用户名</label><input id="username" v-model="username" class="input" autocomplete="username" required minlength="3" maxlength="64" placeholder="owner" /></div>
       <div><label class="label" for="display">显示名称</label><input id="display" v-model="displayName" class="input" maxlength="128" placeholder="家庭影院管理员" /></div>
-      <div><label class="label" for="password">密码</label><input id="password" v-model="password" class="input" type="password" autocomplete="new-password" required minlength="12" maxlength="128" /></div>
-      <div><label class="label" for="confirm">确认密码</label><input id="confirm" v-model="confirmPassword" class="input" type="password" autocomplete="new-password" required minlength="12" maxlength="128" /></div>
+      <div><label class="label" for="password">密码</label><SecretInput id="password" v-model="password" class="input" autocomplete="new-password" required minlength="12" maxlength="128" /></div>
+      <div><label class="label" for="confirm">确认密码</label><SecretInput id="confirm" v-model="confirmPassword" class="input" autocomplete="new-password" required minlength="12" maxlength="128" /></div>
       <p v-if="error" class="semantic-error px-3 py-2 text-sm" role="alert">{{ error }}</p>
       <button class="btn-primary w-full" :disabled="loading">{{ loading ? '正在初始化…' : '创建 Owner 并进入管理端' }}</button>
     </form>

@@ -1,5 +1,40 @@
 # Bug Analysis: PT/Nyaa 发行名跨层失配与下载器能力边界
 
+## 2026-08-25 Follow-up: 系列副标题与识别上下文丢失
+
+### 1. Root Cause Category
+
+- **Category**: B / C / D — 跨层契约、变更传播失败、测试覆盖缺口。
+- **Specific Cause**: 站点 adapter 已返回标题、副标题，搜索请求也包含媒体类型，但 actor-bound claim 只保存发行标题。自动识别因而在进入共享 parser 前丢失 MoviePilot/Anitopy 风格解析所需的辅助标题事实，导致系列电影副标题、罗马音和错拼标题只能依赖人工介入。
+
+### 2. Why Fixes Failed
+
+1. 早期补词/正则只修 parser，无法恢复在 adapter → claim 边界已经丢弃的 subtitle/type facts。
+2. 直接在 ranker 为具体作品补别名会让冻结样例通过，却无法覆盖其他系列作品，并增加静默错配风险。
+3. 只测 parser 与 fake candidate 会跳过真实的 claim、查询预算和 TMDB 召回链。
+
+### 3. Prevention Mechanisms
+
+| Priority | Mechanism | Specific Action | Status |
+| --- | --- | --- | --- |
+| P0 | Architecture | claim 私有保存有界 subtitle 和 `movie|tv` 搜索提示，作为弱事实进入共享 recognizer | DONE |
+| P0 | Security | URL/path/NUL/反斜杠/超长辅助值在任何元数据请求前丢弃 | DONE |
+| P0 | Test Coverage | 使用本地 TMDB 假服务验证 subtitle 才能召回的完整 adapter → claim → service 流 | DONE |
+| P0 | Change Propagation | Go `EngineVersion` 与 WebUI session 版本用跨层测试绑定 | DONE |
+| P1 | Process | 每个生产失败原串进入冻结 corpus，并添加合法标题反例 | DONE |
+
+### 4. Systematic Expansion
+
+- **Similar Issues**: 本地/115/OpenList 的父目录与 manifest、站点 subtitle、搜索 media type、显式 TMDB ID 都是不同强度事实；任一层扁平化或丢失都会让后续 ranker 无法补救。
+- **Design Improvement**: 保持 `结构解析 → 有界召回 → 统一排名 → 失败恢复`，不引入作品字典或 provider-specific parser。
+- **Process Improvement**: 质量门同时覆盖 parser、共享 service、站点 claim、下载 override、benchmark 和 WebUI cache version。
+
+### 5. Knowledge Capture
+
+- [x] 更新 `.trellis/spec/backend/pt-discovery.md`。
+- [x] 更新 `.trellis/spec/guides/cross-layer-thinking-guide.md`。
+- [x] 仓库不存在 `src/templates/markdown/spec/` 镜像目录，无需同步模板。
+
 ## 1. Root Cause Category
 
 - **Category**: B / D / E — 跨层契约、测试覆盖缺口、隐式假设。
@@ -34,4 +69,3 @@
 - [x] 更新 `.trellis/spec/backend/pt-discovery.md`。
 - [x] 更新 `.trellis/spec/guides/cross-layer-thinking-guide.md`。
 - [x] 仓库不存在 `src/templates/markdown/spec/` 镜像目录，无需同步模板。
-

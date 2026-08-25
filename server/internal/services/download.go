@@ -148,6 +148,14 @@ type SubmitDownloadInput struct {
 	DisplayName    string
 	Priority       int
 	Source         DownloadSourceInput
+	// RecognitionOverride is an internal-only, already GetByID-verified media
+	// identity. Public download handlers never deserialize this field.
+	RecognitionOverride *DownloadRecognitionIdentity
+}
+
+type DownloadRecognitionIdentity struct {
+	TMDBID    int64
+	MediaType string
 }
 
 type downloadSourceEnvelope struct {
@@ -301,6 +309,12 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 	if input.Priority < -100 || input.Priority > 100 {
 		return DownloadTaskSummary{}, appError(CodeInvalidRequest, "下载优先级无效", nil)
 	}
+	if input.RecognitionOverride != nil {
+		input.RecognitionOverride.MediaType = strings.ToLower(strings.TrimSpace(input.RecognitionOverride.MediaType))
+		if input.RecognitionOverride.TMDBID <= 0 || (input.RecognitionOverride.MediaType != "movie" && input.RecognitionOverride.MediaType != "tv") {
+			return DownloadTaskSummary{}, appError(CodeInvalidRequest, "下载任务媒体身份无效", nil)
+		}
+	}
 	taskID := uuid.NewString()
 	rawSource, err := json.Marshal(source)
 	if err != nil {
@@ -323,6 +337,10 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		}
 	}
 	record := models.DownloadTask{ID: taskID, OwnerID: ownerID, DownloaderID: &downloaderRecord.ID, DownloaderName: downloaderRecord.Name, ProviderType: downloaderRecord.Type, ProviderTag: "omc-" + taskID, SourceCiphertext: encryptedSource, StagingAbsolutePath: staging.AbsolutePath, IngestSourceKey: strings.TrimSpace(ingestSourceKey), SourceOrigin: sourceOrigin, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: canonicalRules, ProfileBuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, ProfileRecognitionRulesJSON: organization.RecognitionRulesJSON, SeedingCleanupEnabled: seedingPolicy.CleanupEnabled, SeedingMinimumMinutes: seedingPolicy.MinimumSeedMinutes, SeedingMinimumRatio: seedingPolicy.MinimumRatio, SeedingCompletionMode: seedingPolicy.CompletionMode, DisplayName: displayName, Phase: models.DownloadTaskStatusQueued, CreatedAt: now, UpdatedAt: now}
+	if input.RecognitionOverride != nil {
+		record.RecognitionOverrideTMDBID = cloneInt64(&input.RecognitionOverride.TMDBID)
+		record.RecognitionOverrideMediaType = input.RecognitionOverride.MediaType
+	}
 	if downloaderRecord.Type == models.DownloaderTypePan115Offline {
 		record.StagingStorageID = downloaderRecord.StorageID
 		record.StagingRelativePath = "/"
@@ -476,6 +494,9 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 	providerRootID := ""
 	switch storage.Type {
 	case models.StorageTypeLocal:
+		if downloader.Type == models.DownloaderTypePan115Offline {
+			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 原生离线下载仅支持同账号的 115 媒体库", nil)
+		}
 		if _, err := medialibrary.ResolveRoot(storage.RootPath, library.RelativeRoot); err != nil {
 			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "目标媒体库目录不可用", err)
 		}

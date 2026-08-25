@@ -5,10 +5,10 @@ Corpus `provider-neutral-v1`; offline deterministic: `true`.
 | Metric | Value |
 |---|---:|
 | Parser accuracy | 0.0000 |
-| Top-1 accuracy | 0.1111 |
+| Top-1 accuracy | 0.0500 |
 | Top-3 recall | 1.0000 |
 | False-match rate | 0.0000 |
-| Unrecognized rate | 0.8889 |
+| Unrecognized rate | 0.9500 |
 | External requests | 0 |
 | Latency p50/p95/p99 (µs) | 0 / 0 / 0 |
 

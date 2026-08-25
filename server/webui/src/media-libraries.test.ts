@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { emptyMediaLibraryDraft, payloadFromDraft, presentLibraryStatus, supportsSTRM } from '@/media-libraries'
+import { draftFromLibrary, emptyMediaLibraryDraft, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSTRM } from '@/media-libraries'
 import type { StorageSummary } from '@/types/api'
 
 function storage(type: string, direct = false, signed = false): StorageSummary {
@@ -57,5 +57,20 @@ describe('media library form boundary', () => {
 
   it('presents initialization failure as an error state', () => {
     expect(presentLibraryStatus('initialization_failed')).toEqual({ label: '初始化失败', className: 'status-chip status-chip--error' })
+  })
+
+  it('shows persisted storage root and child roots as readable Windows locations', () => {
+    const local = { ...storage('local'), root_path: 'D:\\Downloads\\115\\媒体', root_display_path: 'D:\\Downloads\\115\\媒体' }
+    const rootLibrary = { relative_root: '/' } as Parameters<typeof mediaLibrarySourceDisplayPath>[0]
+    const childLibrary = { relative_root: '/电视剧/国产' } as Parameters<typeof mediaLibrarySourceDisplayPath>[0]
+    expect(mediaLibrarySourceDisplayPath(rootLibrary, local)).toBe('D:\\Downloads\\115\\媒体')
+    expect(mediaLibrarySourceDisplayPath(childLibrary, local)).toBe('D:\\Downloads\\115\\媒体\\电视剧\\国产')
+    expect(draftFromLibrary({
+      ...rootLibrary,
+      name: 'root',
+      video_extensions: [],
+      strm_asset_extra_extensions: [],
+      ignore_patterns: [],
+    } as never, local).source_path).toBe('D:\\Downloads\\115\\媒体')
   })
 })

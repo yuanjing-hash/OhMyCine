@@ -44,6 +44,7 @@
     "verify:stream-quality": "tsx scripts/verify-stream-quality-switch.ts",
     "verify:view-architecture": "tsx scripts/verify-view-architecture.ts",
     "verify:tmdb-auth": "tsx scripts/verify-tmdb-auth-routing.ts",
+    "verify:secret-inputs": "tsx scripts/verify-secret-inputs.ts",
     "verify:theme-controls": "tsx scripts/verify-theme-controls.ts",
     "verify:media-actions": "tsx scripts/verify-media-actions.ts",
     "verify:media-delete": "tsx scripts/verify-media-delete.ts",

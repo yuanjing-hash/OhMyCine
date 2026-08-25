@@ -46,7 +46,11 @@ const (
 // snapshots. Absolute paths, provider IDs and credentials never enter the
 // recognizer.
 type MediaRecognitionRequest struct {
-	PackageName      string
+	PackageName string
+	// AuxiliaryNames are bounded provider-neutral title facts such as a PT
+	// result subtitle. They improve recall but never carry provider identity,
+	// paths, URLs or credentials and never override the primary package name.
+	AuxiliaryNames   []string
 	Files            []recognitionSourceFile
 	SourceKind       mediarecognition.SourceKind
 	MediaTypeHint    string
@@ -116,21 +120,37 @@ func recognizeMedia(ctx context.Context, lookup mediaRecognitionLookup, request 
 		}
 	}
 	sources := recognitionSources(request.PackageName, request.Files)
-	processedSources := make([]string, 0, len(sources))
+	processedSources := make([]string, 0, len(sources)+len(request.AuxiliaryNames))
 	var directHint *mediarecognition.DirectTMDBHint
-	for _, source := range sources {
+	processSource := func(source string, acceptDirectHint bool) error {
 		processed, applyErr := processor.Apply(ctx, source)
 		if applyErr != nil {
+			return applyErr
+		}
+		processedSources = appendUniqueRecognitionSource(processedSources, processed.Title)
+		if acceptDirectHint && processed.Hint != nil {
+			if directHint != nil && !sameRecognitionHint(directHint, processed.Hint) {
+				return &mediarecognition.ProcessingError{Code: mediarecognition.ErrorInvalidDirectHint, PackCode: "processor", Err: errors.New("conflicting direct TMDB hints")}
+			}
+			directHint = processed.Hint
+		}
+		return nil
+	}
+	for _, source := range sources {
+		if applyErr := processSource(source, true); applyErr != nil {
 			result.ErrorCode = recognitionProcessorErrorCode(applyErr)
 			return result
 		}
-		processedSources = append(processedSources, processed.Title)
-		if processed.Hint != nil {
-			if directHint != nil && !sameRecognitionHint(directHint, processed.Hint) {
-				result.ErrorCode = string(mediarecognition.ErrorInvalidDirectHint)
+	}
+	for _, auxiliary := range request.AuxiliaryNames {
+		if auxiliary = safeRecognitionAuxiliaryName(auxiliary); auxiliary != "" {
+			// Site subtitles/descriptions are untrusted weak recall facts. They
+			// may improve title retrieval, but an embedded tmdb marker must never
+			// become a direct identity override.
+			if applyErr := processSource(auxiliary, false); applyErr != nil {
+				result.ErrorCode = recognitionProcessorErrorCode(applyErr)
 				return result
 			}
-			directHint = processed.Hint
 		}
 	}
 	parsed, parseErr := parseRecognitionFacts(request, processedSources, directHint)
@@ -207,6 +227,32 @@ func recognizeMedia(ctx context.Context, lookup mediaRecognitionLookup, request 
 	}
 	result.Status = mediaRecognitionStatusMatched
 	return result
+}
+
+func safeRecognitionAuxiliaryName(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" || len([]rune(value)) > mediarecognition.MaxPackageRunes || strings.ContainsAny(value, "\x00\\") {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "://") || strings.Contains(lower, "www.") || strings.HasPrefix(value, "/") ||
+		strings.Contains(lower, "authorization=") || strings.Contains(lower, "signature=") || strings.Contains(lower, "token=") ||
+		strings.Contains(lower, "api_key=") || strings.Contains(lower, "apikey=") || strings.Contains(lower, "cookie=") || strings.Contains(lower, "x-amz-") ||
+		strings.Contains(lower, "tmdbid") || strings.Contains(lower, "{tmdb-") || strings.Contains(lower, "[tmdb-") || strings.Contains(value, "{[") ||
+		len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && value[2] == '/' {
+		return ""
+	}
+	return value
+}
+
+func appendUniqueRecognitionSource(sources []string, value string) []string {
+	key := strings.ToLower(strings.TrimSpace(value))
+	for _, existing := range sources {
+		if strings.ToLower(strings.TrimSpace(existing)) == key {
+			return sources
+		}
+	}
+	return append(sources, value)
 }
 
 func recognizeDirectDomainHint(ctx context.Context, lookup mediaRecognitionLookup, parsed mediarecognition.ParsedFacts, hint mediarecognition.IdentityHint, language string) (tmdb.Match, error) {

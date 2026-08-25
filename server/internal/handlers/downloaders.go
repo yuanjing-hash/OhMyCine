@@ -229,6 +229,27 @@ func (a *API) OverrideDownloadRecognition(c *gin.Context) {
 	success(c, http.StatusOK, item)
 }
 
+func (a *API) RetargetDownloadImport(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := stringID(c)
+	if !ok {
+		return
+	}
+	var payload struct {
+		MediaLibraryID uint `json:"media_library_id"`
+	}
+	if err := strictJSON(c, &payload); err != nil || payload.MediaLibraryID == 0 {
+		writeError(c, a.log, invalid("目标媒体库无效", err))
+		return
+	}
+	item, err := a.downloads.RetargetCompletedImport(c.Request.Context(), actor, id, payload.MediaLibraryID, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}
+
 type downloadRecognitionOverridePayload struct {
 	TMDBID    int64  `json:"tmdb_id"`
 	MediaType string `json:"media_type"`

@@ -80,6 +80,7 @@ export interface PTSearchResult {
   promotion?: string
   quality?: string
   tags?: string[]
+  specifications?: PTRecognitionSpecifications
   expires_at: string
 }
 
@@ -112,11 +113,12 @@ export interface PTRecognitionEpisodeFacts {
   count?: number
 }
 
-export const ptRecognitionEngineVersion = 'nextgen-domain-v5'
+export const ptRecognitionEngineVersion = 'nextgen-domain-v8'
 
 export interface PTRecognitionResult {
   engine_version: string
   status: 'matched' | 'unrecognized'
+  manual_override?: boolean
   error_code?: string
   title: string
   original_title?: string
@@ -128,16 +130,46 @@ export interface PTRecognitionResult {
   specifications: PTRecognitionSpecifications
 }
 
+export interface PTRecognitionCandidate {
+  id: number
+  title: string
+  original_title?: string
+  media_type: 'movie' | 'tv'
+  original_language?: string
+  release_year?: number
+  confidence: number
+  poster_url?: string
+}
+
 export interface PTSearchResponse { groups: PTSearchGroup[] }
+
+export type TorrentResultSort = 'seeders' | 'published' | 'size'
+export interface TorrentResultFilters {
+  activeChannel: 'all' | number
+  enabledSiteTypes: ReadonlyArray<'pt' | 'bt'>
+  resolution?: string
+  promotion?: string
+  minimumSeeders?: number
+  sort: TorrentResultSort
+}
+
+export interface TorrentResultEntry {
+  group: PTSearchGroup
+  item: PTSearchResult
+}
 
 export const sitesPath = '/api/v1/sites'
 export const siteCatalogPath = `${sitesPath}/catalog`
 export const ptSearchPath = '/api/v1/discovery/pt-search'
 export const ptSearchStreamPath = '/api/v1/discovery/pt-search/stream'
 export const ptRecognitionPath = '/api/v1/discovery/pt-results/recognize'
+export const ptRecognitionCandidatesPath = '/api/v1/discovery/pt-results/tmdb-candidates'
+export const ptRecognitionOverridePath = '/api/v1/discovery/pt-results/recognition-override'
 export const torrentSearchPath = '/api/v1/discovery/torrent-search'
 export const torrentSearchStreamPath = '/api/v1/discovery/torrent-search/stream'
 export const torrentRecognitionPath = '/api/v1/discovery/torrent-results/recognize'
+export const torrentRecognitionCandidatesPath = '/api/v1/discovery/torrent-results/tmdb-candidates'
+export const torrentRecognitionOverridePath = '/api/v1/discovery/torrent-results/recognition-override'
 export const discoveryDownloadsPath = '/api/v1/discovery/downloads'
 export const cookieCloudSettingsPath = '/api/v1/settings/sites/cookiecloud'
 export const cookieCloudSyncPath = `${cookieCloudSettingsPath}/sync`
@@ -218,6 +250,33 @@ export interface TorrentSearchSession {
   recognitions: Record<string, TorrentRecognitionResult>
   searched: boolean
   savedAt: number
+}
+
+export function filterAndSortTorrentResults(groups: readonly PTSearchGroup[], filters: TorrentResultFilters): TorrentResultEntry[] {
+  const scoped = filters.activeChannel === 'all'
+    ? [...groups].sort((left, right) => left.site_id - right.site_id)
+    : groups.filter(group => group.site_id === filters.activeChannel)
+  const promotion = filters.promotion?.trim().toLowerCase() ?? ''
+  const resolution = filters.resolution?.trim() ?? ''
+  const timestamp = (value?: string) => {
+    const parsed = value ? Date.parse(value) : Number.NaN
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return scoped
+    .flatMap(group => group.status === 'success' ? group.items.map(item => ({ item, group })) : [])
+    .filter(({ group }) => filters.enabledSiteTypes.includes(group.site_type))
+    .filter(({ item }) => !resolution || item.specifications?.resolution === resolution || item.quality === resolution)
+    .filter(({ item }) => !promotion || item.promotion?.toLowerCase() === promotion)
+    .filter(({ item }) => filters.minimumSeeders == null || (item.seeders ?? -1) >= filters.minimumSeeders)
+    .sort((left, right) => {
+      if (filters.sort === 'published') return timestamp(right.item.published_at) - timestamp(left.item.published_at) || left.item.title.localeCompare(right.item.title)
+      if (filters.sort === 'size') return (right.item.size_bytes ?? -1) - (left.item.size_bytes ?? -1) || left.item.title.localeCompare(right.item.title)
+      return (right.item.seeders ?? -1) - (left.item.seeders ?? -1)
+        || (right.item.completed ?? -1) - (left.item.completed ?? -1)
+        || timestamp(right.item.published_at) - timestamp(left.item.published_at)
+        || left.group.site_id - right.group.site_id
+        || left.item.title.localeCompare(right.item.title)
+    })
 }
 
 export function ptRecognitionEpisodeLabel(value: PTRecognitionResult) {
@@ -311,7 +370,7 @@ function restoreTorrentRecognition(value: unknown): TorrentRecognitionResult | n
   const candidate = value as Partial<TorrentRecognitionResult>
   if (candidate.engine_version !== ptRecognitionEngineVersion || (candidate.status !== 'matched' && candidate.status !== 'unrecognized') || typeof candidate.title !== 'string' || !candidate.specifications || typeof candidate.specifications !== 'object') return null
   const episodes = restoreEpisodeFacts(candidate.episodes)
-  return { ...candidate, engine_version: candidate.engine_version, status: candidate.status, title: candidate.title.slice(0, 512), specifications: candidate.specifications, episodes } as TorrentRecognitionResult
+  return { ...candidate, engine_version: candidate.engine_version, status: candidate.status, manual_override: candidate.manual_override === true || undefined, title: candidate.title.slice(0, 512), specifications: candidate.specifications, episodes } as TorrentRecognitionResult
 }
 
 function restoreEpisodeFacts(value: unknown): PTRecognitionEpisodeFacts | undefined {

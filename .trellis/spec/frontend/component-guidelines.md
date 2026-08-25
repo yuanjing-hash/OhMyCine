@@ -293,3 +293,55 @@ return playbackStopPromise
 - Assuming every media item has poster/backdrop/overview.
 - Keeping controls permanently visible over poster art when hover reveal is more appropriate.
 - Hiding Server disconnected state instead of showing clear disabled/placeholder UI.
+
+## Scenario: Protected Credential Inputs
+
+### 1. Scope / Trigger
+
+- Trigger: any Player or Server Web UI field that accepts a password, cookie, token, passkey, API key, shared secret, or other credential.
+
+### 2. Signatures
+
+- Reusable Vue control: `SecretInput(modelValue: string, configured?: boolean, multiline?: boolean)`.
+- `configured` is a safe Boolean supplied by an existing DTO or local secure-store status. It is never the saved credential value.
+
+### 3. Contracts
+
+- Mask current input by default and provide a labelled eye button that toggles only the value typed during the current edit session.
+- When `configured=true` and `modelValue` is empty, render `••••••••（已配置）` so an edit form is not indistinguishable from an unconfigured form.
+- Server APIs and Player secure-storage boundaries must not return a saved password, cookie, token, passkey, or API key merely to support the eye button.
+- Multi-line Cookie inputs follow the same mask/reveal contract as single-line password fields.
+- Leaving a replacement value empty preserves the saved credential unless an explicit clear action is selected.
+
+### 4. Validation & Error Matrix
+
+- Configured + empty replacement -> show the configured mask; reveal remains disabled because no plaintext was returned.
+- New replacement entered -> eye reveals/hides that in-memory value.
+- Input disabled -> reveal button is also disabled.
+- Explicit clear selected -> existing mutation contract clears the secret; a blank edit field alone does not clear it.
+
+### 5. Good/Base/Bad Cases
+
+- Good: an edited qBittorrent password shows `••••••••（已配置）`; entering a replacement enables the eye.
+- Base: a new login password starts empty and masked, with the eye enabled after typing.
+- Bad: populate an edit form with a decrypted Server cookie or OS-secure-store token so the browser can reveal it.
+
+### 6. Tests Required
+
+- Inventory test fails when a raw `type="password"` or credential-bound `input`/`textarea` bypasses `SecretInput`.
+- Type-check and lint both reusable components and every changed form.
+- Assert configured mask copy, current-value reveal semantics, disabled behavior, and multi-line masking.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```vue
+<input v-model="draft.apiKey" type="password" placeholder="留空保留" />
+```
+
+Correct:
+
+```vue
+<SecretInput v-model="draft.apiKey" :configured="connection.credential_configured" />
+```

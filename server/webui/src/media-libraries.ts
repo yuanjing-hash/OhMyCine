@@ -25,10 +25,20 @@ export function emptyMediaLibraryDraft(storageID = 0, profileID = 0): MediaLibra
   }
 }
 
-export function draftFromLibrary(library: MediaLibraryDetail): MediaLibraryDraft {
+export function mediaLibrarySourceDisplayPath(library: Pick<MediaLibraryDetail, 'relative_root'>, storage?: Pick<StorageSummary, 'root_path' | 'root_display_path' | 'type'>): string {
+  const relative = library.relative_root || '/'
+  const root = storage?.root_display_path?.trim() || storage?.root_path?.trim() || ''
+  if (!root) return relative
+  if (relative === '/') return root
+  const windows = /^[A-Za-z]:[\\/]/.test(root) || root.includes('\\')
+  const separator = windows ? '\\' : '/'
+  return `${root.replace(/[\\/]+$/, '')}${separator}${relative.replace(/^[/\\]+/, '').replace(/[\\/]+/g, separator)}`
+}
+
+export function draftFromLibrary(library: MediaLibraryDetail, storage?: StorageSummary): MediaLibraryDraft {
   return {
     name: library.name, storage_id: library.storage_id, profile_id: library.profile_id, relative_root: library.relative_root,
-    relative_root_token: '', source_path: library.relative_root, enabled: library.enabled, recursive: library.recursive,
+    relative_root_token: '', source_path: mediaLibrarySourceDisplayPath(library, storage), enabled: library.enabled, recursive: library.recursive,
     full_scan_interval_hours: library.full_scan_interval_hours, incremental_minutes: library.incremental_minutes,
 	video_extensions_text: library.video_extensions.join(', '), strm_asset_extra_extensions_text: library.strm_asset_extra_extensions.join(', '), ignore_patterns_text: library.ignore_patterns.join('\n'),
     metadata_language: library.metadata_language, metadata_region: library.metadata_region, match_strategy: library.match_strategy,

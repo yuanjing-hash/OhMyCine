@@ -61,6 +61,76 @@ func TestRankBracketedFansubAbsoluteEpisodeAsConfidentTVMatch(t *testing.T) {
 	}
 }
 
+func TestRankLongRunningSeriesUsesStrongTVStructureWithoutTrustingLargeEpisodeNumber(t *testing.T) {
+	parsed, err := Parse(InputFacts{
+		PackageName: "[银色子弹字幕组][名侦探柯南][第1210集 被诅咒的邻居][WEBRIP][简日双语MP4][1080P]",
+		SourceKind:  SourceDownload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.SuggestedType != MediaTypeTV || parsed.TypeConfidence < .90 || parsed.Episodes.EpisodeMax == nil || *parsed.Episodes.EpisodeMax != 1210 {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+	candidates := []RemoteCandidate{
+		{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", SeasonCount: intRef(1), Popularity: 150},
+		{ID: 90001, MediaType: MediaTypeMovie, Title: "名侦探柯南", Popularity: 300},
+		{ID: 917496, MediaType: MediaTypeMovie, Title: "名侦探柯南：唐红的恋歌", Popularity: 50},
+	}
+	config := DefaultScoreConfig()
+	// Exercise the explicit structured-type tie breaker even when scoring
+	// weights leave the exact TV and movie identities inside conflict margin.
+	config.TypeWeight = .01
+	config.TypeConflict = 0
+	config.StructureWeight = .01
+	config.SeasonWeight = 0
+	config.UniquenessWeight = 0
+	config.PopularityWeight = 0
+	decision := RankWithConfig(parsed, candidates, config)
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 30983 {
+		t.Fatalf("decision=%+v", decision)
+	}
+
+	// The number 1210 itself is not an identity shortcut. Two exact TV
+	// identities with the same structure still require explicit correction.
+	ambiguous := Rank(parsed, []RemoteCandidate{
+		{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", SeasonCount: intRef(1)},
+		{ID: 99999, MediaType: MediaTypeTV, Title: "名侦探柯南", SeasonCount: intRef(1)},
+	})
+	if ambiguous.Status != DecisionUnrecognized || ambiguous.Reason != ReasonCandidateConflict {
+		t.Fatalf("same-type identity conflict was hidden: %+v", ambiguous)
+	}
+}
+
+func TestRankFranchiseMovieSubtitleWinsWhileUntypedExactConflictStaysManual(t *testing.T) {
+	movie, err := Parse(InputFacts{
+		PackageName: "[银色子弹字幕组&VCB-Studio] 名侦探柯南M21 唐红的恋歌 / Detective Conan M21: The Crimson Love Letter 10-bit 1080p HEVC BDRip [MOVIE Fin]",
+		SourceKind:  SourceDownload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Rank(movie, []RemoteCandidate{
+		{ID: 917496, MediaType: MediaTypeMovie, Title: "名侦探柯南：唐红的恋歌", AlternativeTitles: []string{"Detective Conan: The Crimson Love Letter"}},
+		{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン"},
+	})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 917496 {
+		t.Fatalf("movie decision=%+v parsed=%+v", decision, movie)
+	}
+
+	unknown, err := Parse(InputFacts{PackageName: "Detective Conan The Scarlet School Trip 2019 1080p BluRay HEVC FLAC 2.0 2Audios-ADE", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual := Rank(unknown, []RemoteCandidate{
+		{ID: 1, MediaType: MediaTypeMovie, Title: "Detective Conan The Scarlet School Trip"},
+		{ID: 2, MediaType: MediaTypeTV, Title: "Detective Conan The Scarlet School Trip"},
+	})
+	if manual.Status != DecisionUnrecognized || manual.Reason != ReasonCandidateConflict {
+		t.Fatalf("untyped exact conflict was silently selected: %+v", manual)
+	}
+}
+
 func TestRankReturnsStableUnrecognizedReasons(t *testing.T) {
 	year := 2024
 	parsed, err := Parse(InputFacts{PackageName: "Exact Title 2024", MediaTypeHint: MediaTypeMovie})

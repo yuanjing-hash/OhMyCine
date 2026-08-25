@@ -15,21 +15,26 @@ interface EpisodeMatch {
 const YEAR_PATTERN = '(?:18|19|20|21)\\d{2}'
 const BRACKETED_YEAR_TOKEN_RE = new RegExp(`[([【](${YEAR_PATTERN})[)\\]】]`)
 const LOOSE_YEAR_TOKEN_RE = new RegExp(`(?:^|[\\s._-])(${YEAR_PATTERN})(?=$|[\\s._-])`)
-const SXXEXX_RE = /\bS\s*0*(\d{1,2})\s*E\s*0*(\d{1,3})\b/i
-const ONE_X_EPISODE_RE = /\b0*(\d{1,2})x0*(\d{1,3})\b/i
+const SXXEXX_RE = /\bS\s*0*(\d{1,2})\s*E\s*0*(\d{1,5})\b/i
+const ONE_X_EPISODE_RE = /\b0*(\d{1,2})x0*(\d{1,5})\b/i
 const EAST_ASIAN_ORDINAL = '[0-9零〇一二三四五六七八九十百千两兩]+'
 const CHINESE_EPISODE_RE = new RegExp(`第\\s*(${EAST_ASIAN_ORDINAL})\\s*[集话話]`)
+const CHINESE_SEGMENTED_EPISODE_RE = new RegExp(`第\\s*(${EAST_ASIAN_ORDINAL})\\s*[-–—]\\s*${EAST_ASIAN_ORDINAL}\\s*[集话話]`)
 const EAST_ASIAN_EPISODE_RE = new RegExp(`[第제]?\\s*(${EAST_ASIAN_ORDINAL})\\s*[集话話화회]`)
-const EPISODE_ONLY_RE = /\b(?:E(?:P(?:ISODE)?)?|Épisode|Folge|Episodio|Episódio|Aflevering|Avsnitt|Jakso|Odcinek|Bölüm)\s*0*(\d{1,3})\b/iu
+const EPISODE_ONLY_RE = /\b(?:E(?:P(?:ISODE)?)?|Épisode|Folge|Episodio|Episódio|Aflevering|Avsnitt|Jakso|Odcinek|Bölüm)\s*0*(\d{1,5})\b/iu
+const BRACKETED_ABSOLUTE_EPISODE_RE = /[[(【]\s*0*(\d{1,5})(?:v\d+)?\s*[\])】]/iu
+const DASHED_ABSOLUTE_EPISODE_RE = /\s[-–—]\s*0*(\d{1,5})(?:v\d+)?(?=\s*(?:[[(【]|$))/iu
+const FRANCHISE_MOVIE_INDEX_RE = /\bM\s*0*\d{1,3}\b/iu
+const EXPLICIT_MOVIE_MARKER_RE = /\bMOVIE(?:\s+Fin)?\b/giu
 const SEASON_SEGMENT_RE = /^(?:Season|Seanson|Saison|Staffel|Temporada|Stagione|Seizoen|Säsong|Sesong|Kausi|Sezon|Série)\s*0*(\d{1,2})$/iu
 const S_SEASON_SEGMENT_RE = /^S\s*0*(\d{1,2})$/i
 const CHINESE_SEASON_RE = new RegExp(`第\\s*(${EAST_ASIAN_ORDINAL})\\s*季`)
 const EAST_ASIAN_SEASON_RE = new RegExp(`(?:第|제)?\\s*(${EAST_ASIAN_ORDINAL})\\s*(?:季|期|시즌)`)
 const SEASON_SUFFIX_RE = /^(\d{1,2})\s*시즌$/u
-const TECH_TOKEN_RE = /\b(?:2160p|1080p|720p|576p|480p|UHD|HQ|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|DV|10bit|8bit|Proper|Repack)\b/gi
+const TECH_TOKEN_RE = /\b(?:\d{3,4}x\d{3,4}|4320p|2160p|1080p|720p|576p|480p|8K|4K|UHD|HQ|Blu[- .]?Ray|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|AVC|HEVC|AV1|AAC|FLAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?|EAC3|AC3|LPCM|2Audios?|3Audios?|Dual[- .]?Audio|HDR10\+?|HDR|DoVi|Dolby[- .]?Vision|DV|10[- .]?bit|8[- .]?bit|Proper|Repack|MKV|MP4)\b/gi
 const SOURCE_TOKEN_RE = /\b(?:AMZN|Amazon|NF|Netflix|DSNP|Disney\+?|HMAX|HBO|Hulu|ATVP|AppleTV|iTunes|BiliBili|Baha|Crunchyroll|CR|Viu|U-?NEXT|ABEMA|TVING|PrimeVideo|MAX|Peacock|Paramount\+?)\b/g
 const RELEASE_GROUP_TOKEN_RE = /\b(?:GrassTV|BlackTV|GRP|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|YTS|MeGusta|VARYG|LoliHouse|ANi|Lilith|U3|CatWEB|MTeam|MWeb|Hares|SweetSub|MagicStar|Skymoon|XiaYong|Nekomoe|DBD-Raws|GM-Team|NC-Raws)\b/gi
-const SUBTITLE_TOKEN_RE = /\b(?:CHS|CHT|CHS&CHT|CHT&CHS|GB|BIG5|SUBS?|MULTI[- .]?SUB)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕/gi
+const SUBTITLE_TOKEN_RE = /\b(?:CHS|CHT|CHS&CHT|CHT&CHS|GB|BIG5|SUBS?|MULTI[- .]?SUB)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕|中配|国配|国语|粤语|台配|日语|英语/gi
 const HAN_TITLE_RE = /\p{Script_Extensions=Han}[\p{Script_Extensions=Han}\p{N}\p{M}\s·，：:“”"'’&.!?+\-—]*/gu
 const LATIN_TITLE_RE = /\p{Script_Extensions=Latin}[\p{Script_Extensions=Latin}\p{N}\p{M}\s'’:&.,!?+\-—]*/gu
 const MEANINGFUL_TITLE_RE = /[\p{L}\p{N}]/u
@@ -284,7 +289,15 @@ export function extractRawPathHints(record: RawFileRecord): RawPathHints {
 
 export function cleanMediaTitle(value: string): string {
   const normalized = value.normalize('NFC')
-  return removeYearTokensSafely(removeStructureTokensSafely(normalized))
+  const franchiseMovie = FRANCHISE_MOVIE_INDEX_RE.test(normalized) && EXPLICIT_MOVIE_MARKER_RE.test(normalized)
+  EXPLICIT_MOVIE_MARKER_RE.lastIndex = 0
+  let title = removeYearTokensSafely(removeStructureTokensSafely(normalized))
+  if (franchiseMovie) {
+    title = title
+      .replace(new RegExp(FRANCHISE_MOVIE_INDEX_RE.source, `${FRANCHISE_MOVIE_INDEX_RE.flags.replace('g', '')}g`), ' ')
+      .replace(EXPLICIT_MOVIE_MARKER_RE, ' ')
+  }
+  return title
     .replace(/\[([^\]]+)\]|\(([^)]*)\)|【([^】]+)】/g, (surface, square: string, round: string, corner: string) => {
       const content = square ?? round ?? corner ?? ''
       return isRemovableBracketToken(content) ? ' ' : surface
@@ -371,6 +384,12 @@ function parseEpisode(value: string): EpisodeMatch | null {
     }
   }
 
+  const segmentedChinese = CHINESE_SEGMENTED_EPISODE_RE.exec(value)
+  if (segmentedChinese) {
+    const episodeNumber = parseNumberText(segmentedChinese[1])
+    return episodeNumber == null ? null : { episodeNumber, chinese: true }
+  }
+
   const chinese = CHINESE_EPISODE_RE.exec(value)
   if (chinese) {
     const episodeNumber = parseNumberText(chinese[1])
@@ -386,6 +405,20 @@ function parseEpisode(value: string): EpisodeMatch | null {
   const episodeOnly = EPISODE_ONLY_RE.exec(value)
   if (episodeOnly)
     return { episodeNumber: Number(episodeOnly[1]), chinese: false }
+
+  const absolute = BRACKETED_ABSOLUTE_EPISODE_RE.exec(value)
+  if (absolute) {
+    const episodeNumber = Number(absolute[1])
+    if (episodeNumber > 0 && (episodeNumber < 1888 || episodeNumber > 2200))
+      return { episodeNumber, chinese: false }
+  }
+
+  const dashedAbsolute = DASHED_ABSOLUTE_EPISODE_RE.exec(value)
+  if (dashedAbsolute) {
+    const episodeNumber = Number(dashedAbsolute[1])
+    if (episodeNumber > 0 && (episodeNumber < 1888 || episodeNumber > 2200))
+      return { episodeNumber, chinese: false }
+  }
 
   return null
 }
@@ -624,6 +657,8 @@ function removeStructureTokensSafely(value: string): string {
     { pattern: SXXEXX_RE, preserveWholeTitle: false },
     { pattern: ONE_X_EPISODE_RE, preserveWholeTitle: false },
     { pattern: EPISODE_ONLY_RE, preserveWholeTitle: false },
+    { pattern: DASHED_ABSOLUTE_EPISODE_RE, preserveWholeTitle: false },
+    { pattern: CHINESE_SEGMENTED_EPISODE_RE, preserveWholeTitle: true },
     { pattern: CHINESE_EPISODE_RE, preserveWholeTitle: true },
     { pattern: EAST_ASIAN_EPISODE_RE, preserveWholeTitle: true },
   ]

@@ -14,6 +14,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	"gorm.io/gorm"
@@ -47,12 +48,16 @@ func TestDownloadRecognitionOverrideSearchesByKeywordAndRetriesExistingProviderT
 	if err := queue.db.Where("code = ?", "default-v1").First(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
-	targetRoot := t.TempDir()
-	storage := models.Storage{Name: "Recognition recovery", NameNormalized: strings.ToLower("Recognition recovery" + targetRoot), Type: models.StorageTypeLocal, RootPath: targetRoot, RootPathNormalized: strings.ToLower(targetRoot), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	now := time.Now().UTC()
+	connection := models.Connection{Name: "Recognition recovery", NameNormalized: "recognition-recovery", Provider: cloudpkg.ProviderPan115, CredentialCiphertext: "encrypted", Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if err := queue.db.Create(&connection).Error; err != nil {
+		t.Fatal(err)
+	}
+	storage := models.Storage{Name: "Recognition recovery", NameNormalized: "recognition-recovery", Type: models.StorageTypePan115, RootPath: "recognition-storage-root", RootPathNormalized: "pan115:recognition-recovery", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`, CreatedAt: now, UpdatedAt: now}
 	if err := queue.db.Create(&storage).Error; err != nil {
 		t.Fatal(err)
 	}
-	library := models.MediaLibrary{Name: "Recognition recovery", NameNormalized: strings.ToLower("Recognition recovery library" + targetRoot), StorageID: storage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", TransferMode: models.MediaLibraryTransferMove, ConflictPolicy: models.MediaLibraryConflictAsk, MovieDirectoryTemplate: "{category}/{title} ({year})", MovieFilenameTemplate: "{title} ({year})", TVDirectoryTemplate: "{category}/{title} ({year})/Season {season:02}", TVFilenameTemplate: "{title} - S{season:02}E{episode:02}", Enabled: false, VideoExtensionsJSON: `[".mkv"]`, IgnorePatternsJSON: `[]`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	library := models.MediaLibrary{Name: "Recognition recovery", NameNormalized: "recognition-recovery-library", StorageID: storage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", ProviderRootID: "recognition-library-root", TransferMode: models.MediaLibraryTransferMove, ConflictPolicy: models.MediaLibraryConflictAsk, MovieDirectoryTemplate: "{category}/{title} ({year})", MovieFilenameTemplate: "{title} ({year})", TVDirectoryTemplate: "{category}/{title} ({year})/Season {season:02}", TVFilenameTemplate: "{title} - S{season:02}E{episode:02}", Enabled: false, VideoExtensionsJSON: `[".mkv"]`, IgnorePatternsJSON: `[]`, CreatedAt: now, UpdatedAt: now}
 	if err := queue.db.Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +78,7 @@ func TestDownloadRecognitionOverrideSearchesByKeywordAndRetriesExistingProviderT
 			ProviderTaskID: "completed-provider-task", SourceCiphertext: "encrypted", DisplayName: releaseName,
 			Phase: models.DownloadTaskStatusFailed, ScrapeStatus: "completed_unrecognized", ScrapeTitle: "Ming Dynasty in 1566", ScrapeCategory: "未识别", StagingCategory: "未识别",
 			ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: string(rules), ProfileRecognitionRulesJSON: "[]", ProfileBuiltinRecognitionPacksJSON: "[]",
-			TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &storage.ID, TargetStorageType: models.StorageTypeLocal, TargetStorageRoot: targetRoot, TargetRelativeRoot: "/", TransferMode: library.TransferMode, ConflictPolicy: library.ConflictPolicy,
+			TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &storage.ID, TargetStorageType: models.StorageTypePan115, TargetConnectionID: &connection.ID, TargetProviderRootID: library.ProviderRootID, TargetStorageRoot: storage.RootPath, TargetRelativeRoot: "/", TransferMode: library.TransferMode, ConflictPolicy: library.ConflictPolicy,
 			MovieDirectoryTemplate: library.MovieDirectoryTemplate, MovieFilenameTemplate: library.MovieFilenameTemplate, TVDirectoryTemplate: library.TVDirectoryTemplate, TVFilenameTemplate: library.TVFilenameTemplate,
 			CompletedManifestJSON: completedManifest,
 			CreatedAt:             time.Now().UTC(), UpdatedAt: time.Now().UTC(),

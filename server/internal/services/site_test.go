@@ -32,6 +32,7 @@ type stubSiteAdapter struct {
 	downloadStarted chan struct{}
 	downloadRelease chan struct{}
 	searchTitle     string
+	searchSubtitle  string
 	lastConfig      sitepkg.Config
 }
 
@@ -115,7 +116,7 @@ func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query
 	if title == "" {
 		title = "Seven.Samurai.1954.1080p"
 	}
-	return sitepkg.Page{Page: query.Page, Items: []sitepkg.Result{{TorrentID: "42", Title: title, SizeBytes: 1024, Seeders: &seeders, Leechers: &leechers}}, HasNext: true}, nil
+	return sitepkg.Page{Page: query.Page, Items: []sitepkg.Result{{TorrentID: "42", Title: title, Subtitle: a.searchSubtitle, SizeBytes: 1024, Seeders: &seeders, Leechers: &leechers}}, HasNext: true}, nil
 }
 func (a *stubSiteAdapter) Download(_ context.Context, _ sitepkg.Config, torrentID string) ([]byte, string, error) {
 	if a.downloadStarted != nil {
@@ -318,6 +319,10 @@ func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDo
 	if _, err := service.resolveClaim(token, actor.User.ID); err != nil {
 		t.Fatalf("recognition consumed claim: %v", err)
 	}
+	claim, err := service.resolveClaim(token, actor.User.ID)
+	if err != nil || claim.ManualTMDBID == nil || *claim.ManualTMDBID != 346 || claim.ManualMediaType != "movie" || claim.RecognitionManual {
+		t.Fatalf("automatic verified identity was not bound to claim: claim=%+v err=%v", claim, err)
+	}
 	service.SetMetadataSettings(nil)
 	fallback, err := service.RecognizeResult(context.Background(), actor, token)
 	if err != nil || fallback.Status != mediaRecognitionStatusUnrecognized || fallback.ErrorCode != mediaRecognitionCredentialMissing || fallback.Title != "Seven Samurai" || fallback.Year == nil || *fallback.Year != 1954 || fallback.PosterURL != "" || fallback.Specifications.Resolution != "2160p" || fallback.Specifications.VideoCodec != "H.265/HEVC" {
@@ -366,6 +371,167 @@ func TestSiteResultRecognitionReturnsStructuredEpisodeFactsWithoutInventingSpeci
 	special := lookup("Ultraman Tiga Gaiden Revival of the Ancient Giant WEB-DL 2160P HEVC AAC-Side")
 	if special.Episodes != nil {
 		t.Fatalf("special feature was disguised as an ordinary episode: %+v", special)
+	}
+}
+
+func TestSiteResultRecognitionUsesBoundedSubtitleAndSearchTypeAsWeakContext(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query().Get("query")
+		switch request.URL.Path {
+		case "/search/movie":
+			if query != "Ultraman Tiga The Final Odyssey" {
+				_, _ = writer.Write([]byte(`{"results":[]}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"results":[{"id":58443,"title":"迪迦奥特曼：最终圣战","original_title":"Ultraman Tiga: The Final Odyssey","original_language":"ja","release_date":"2000-03-11","popularity":30}]}`))
+		case "/search/tv":
+			_, _ = writer.Write([]byte(`{"results":[]}`))
+		case "/movie/58443":
+			_, _ = writer.Write([]byte(`{"id":58443,"title":"迪迦奥特曼：最终圣战","original_title":"Ultraman Tiga: The Final Odyssey","original_language":"ja","release_date":"2000-03-11","genres":[{"id":878,"name":"科幻"}],"production_countries":[{"iso_3166_1":"JP"}]}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer upstream.Close()
+
+	service, adapter, actor, store, _, _ := siteFixture(t)
+	metadata := NewMetadataSettingsService(service.db, service.audit, store, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
+	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
+		return tmdb.NewForTest("test-token", upstream.URL, upstream.Client())
+	}
+	service.SetMetadataSettings(metadata)
+	adapter.searchTitle = "Final.Odyssey.1080p.WEB-DL.H264.AAC-Side"
+	adapter.searchSubtitle = "Ultraman Tiga The Final Odyssey"
+	created, err := service.Create(context.Background(), actor, validSiteInput("Context", "https://context.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Final Odyssey", MediaType: "movie", SiteID: &created.ID, Page: 1})
+	if err != nil || len(groups) != 1 || len(groups[0].Items) != 1 {
+		t.Fatalf("groups=%+v err=%v", groups, err)
+	}
+	claim, err := service.resolveClaim(groups[0].Items[0].Token, actor.User.ID)
+	if err != nil || claim.Subtitle != adapter.searchSubtitle || claim.MediaTypeHint != "movie" {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	result, err := service.RecognizeResult(context.Background(), actor, groups[0].Items[0].Token)
+	if err != nil || result.Status != mediaRecognitionStatusMatched || result.TMDBID == nil || *result.TMDBID != 58443 || result.MediaType != "movie" {
+		t.Fatalf("recognition=%+v err=%v", result, err)
+	}
+
+	if got := safeRecognitionClaimSubtitle("https://example.invalid/private"); got != "" {
+		t.Fatalf("URL-like subtitle entered recognition context: %q", got)
+	}
+	if got := safeRecognitionClaimSubtitle("C:/private/media/title.mkv"); got != "" {
+		t.Fatalf("path-like subtitle entered recognition context: %q", got)
+	}
+	if got := safeRecognitionClaimSubtitle("Title token=private"); got != "" {
+		t.Fatalf("credential-like subtitle entered recognition context: %q", got)
+	}
+	if got := safeRecognitionClaimSubtitle("Title [tmdbid=58443]"); got != "" {
+		t.Fatalf("untrusted direct hint entered recognition context: %q", got)
+	}
+	if got := safeRecognitionMediaTypeHint("anime"); got != "" {
+		t.Fatalf("unsupported media type entered recognition context: %q", got)
+	}
+}
+
+func TestSiteManualRecognitionSearchesSafeCandidatesAndBindsVerifiedIdentityToDownload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/search/movie":
+			if request.URL.Query().Get("query") != "The Final Odyssey" {
+				t.Fatalf("query=%q", request.URL.Query().Get("query"))
+			}
+			_, _ = writer.Write([]byte(`{"results":[{"id":58443,"title":"迪迦奥特曼：最终圣战","original_title":"Ultraman Tiga: The Final Odyssey","original_language":"ja","release_date":"2000-03-11","poster_path":"/final.jpg","popularity":30}]}`))
+		case "/movie/58443":
+			_, _ = writer.Write([]byte(`{"id":58443,"title":"迪迦奥特曼：最终圣战","original_title":"Ultraman Tiga: The Final Odyssey","original_language":"ja","release_date":"2000-03-11","poster_path":"/final.jpg","genres":[{"id":878,"name":"科幻"}],"production_countries":[{"iso_3166_1":"JP"}]}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer upstream.Close()
+
+	service, adapter, actor, store, _, downloaders := siteFixture(t)
+	metadata := NewMetadataSettingsService(service.db, service.audit, store, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
+	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
+		return tmdb.NewForTest("test-token", upstream.URL, upstream.Client())
+	}
+	service.SetMetadataSettings(metadata)
+	adapter.searchTitle = "The Final Odyssey 1080p WEB-DL H264 AAC-Side"
+	created, err := service.Create(context.Background(), actor, validSiteInput("PTTime", "https://one.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "The Final Odyssey", SiteID: &created.ID, Page: 1})
+	if err != nil || len(groups) != 1 || len(groups[0].Items) != 1 {
+		t.Fatalf("groups=%+v err=%v", groups, err)
+	}
+	token := groups[0].Items[0].Token
+	foreign := actor
+	foreign.User.ID++
+	if _, err := service.RecognitionCandidates(context.Background(), foreign, token, "The Final Odyssey", "movie", nil); ErrorCode(err) != CodeSiteResultExpired {
+		t.Fatalf("foreign candidate search err=%v", err)
+	}
+	candidates, err := service.RecognitionCandidates(context.Background(), actor, token, "The Final Odyssey", "movie", nil)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != 58443 || !strings.HasPrefix(candidates[0].PosterURL, "/api/v1/discovery/images/tmdb/") {
+		t.Fatalf("candidates=%+v err=%v", candidates, err)
+	}
+	verified, err := service.OverrideResultRecognition(context.Background(), actor, SiteManualRecognitionInput{ResultToken: token, TMDBID: 58443, MediaType: "movie"})
+	if err != nil || verified.Status != mediaRecognitionStatusMatched || !verified.ManualOverride || verified.TMDBID == nil || *verified.TMDBID != 58443 || verified.Title != "迪迦奥特曼：最终圣战" {
+		t.Fatalf("verified=%+v err=%v", verified, err)
+	}
+	claim, err := service.resolveClaim(token, actor.User.ID)
+	if err != nil || claim.ManualTMDBID == nil || *claim.ManualTMDBID != 58443 || claim.ManualMediaType != "movie" || claim.TorrentID != "42" {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+
+	downloader, err := downloaders.Create(actor, DownloaderInput{Name: "Manual PT qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Download(context.Background(), actor, SiteDownloadInput{ResultToken: token, DownloaderID: downloader.ID}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task models.DownloadTask
+	if err := service.db.First(&task, "id = ?", result.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.RecognitionOverrideTMDBID == nil || *task.RecognitionOverrideTMDBID != 58443 || task.RecognitionOverrideMediaType != "movie" {
+		t.Fatalf("manual identity did not cross the claim/download boundary: %+v", task)
+	}
+	encoded, _ := json.Marshal(candidates)
+	for _, forbidden := range []string{"torrent_id", "provider", "passkey", "final.jpg"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("candidate response leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestSiteRecognitionRejectsReservedClaimBeforeMetadataLookup(t *testing.T) {
+	service, _, actor, _, _, _ := siteFixture(t)
+	token, err := service.issueClaim(siteResultClaim{
+		ActorID:   actor.User.ID,
+		SiteID:    1,
+		TorrentID: "private-torrent-id",
+		Title:     "Reserved Result",
+		ExpiresAt: service.now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.reserveClaim(token, actor.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecognizeResult(context.Background(), actor, token); ErrorCode(err) != CodeSiteResultExpired {
+		t.Fatalf("quick recognition accepted an in-flight claim: %v", err)
+	}
+	if _, err := service.RecognitionCandidates(context.Background(), actor, token, "Reserved Result", "movie", nil); ErrorCode(err) != CodeSiteResultExpired {
+		t.Fatalf("candidate search accepted an in-flight claim: %v", err)
+	}
+	if _, err := service.OverrideResultRecognition(context.Background(), actor, SiteManualRecognitionInput{ResultToken: token, TMDBID: 1, MediaType: "movie"}); ErrorCode(err) != CodeSiteResultExpired {
+		t.Fatalf("manual override accepted an in-flight claim: %v", err)
 	}
 }
 

@@ -789,3 +789,83 @@ func TestTransferEpisodeFactsUsesPersistedScrapeFactsWithoutReusingSingleEpisode
 		t.Fatalf("persisted single episode leaked into multi-video package: %v", *multipleEpisode)
 	}
 }
+
+func TestPan115SingleEpisodeBuildsCloudTransferTargetFromPersistedEpisode(t *testing.T) {
+	episode := 6
+	tmdbID, confidence := int64(2253), .85
+	download := models.DownloadTask{
+		ProviderType:        models.DownloaderTypePan115Offline,
+		TargetStorageType:   models.StorageTypePan115,
+		ScrapeStatus:        "completed_verified",
+		ScrapeTitle:         "迪迦奥特曼",
+		ScrapeMediaType:     "tv",
+		ScrapeCategory:      "日本剧",
+		ScrapeTMDBID:        &tmdbID,
+		ScrapeConfidence:    &confidence,
+		ScrapeEpisode:       &episode,
+		TVDirectoryTemplate: "{category}/{title}/Season {season:02}",
+		TVFilenameTemplate:  "{title} - S{season:02}E{episode:02}",
+	}
+	manifest := downloadpkg.Manifest{Name: "迪迦奥特曼 06", Complete: true, Files: []downloadpkg.File{{
+		RelativePath: "【字幕组】【迪迦奥特曼】【06】【第二次接触】【BDrip】【X264(10-bit) PCM】【MKV】.mkv",
+		Size:         minimumAutomaticTransferVideoBytes,
+	}}}
+	targets, err := buildTransferTargets(download, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Relative != "日本剧/迪迦奥特曼/Season 01/迪迦奥特曼 - S01E06.mkv" {
+		t.Fatalf("targets=%+v", targets)
+	}
+}
+
+func TestTransferRejectsLegacyPan115ToLocalRouteWithStableError(t *testing.T) {
+	queue, _, download, _, _ := transferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	download.ProviderType = models.DownloaderTypePan115Offline
+	download.TargetStorageType = models.StorageTypeLocal
+	download.StagingAbsolutePath = ""
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", download.ID).Updates(map[string]any{
+		"provider_type":         download.ProviderType,
+		"target_storage_type":   download.TargetStorageType,
+		"staging_absolute_path": download.StagingAbsolutePath,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	manifest := downloadpkg.Manifest{Name: "Movie.2024", Complete: true, Files: []downloadpkg.File{{RelativePath: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes}}}
+	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
+	if err := service.Enqueue(download, manifest); ErrorCode(err) != CodeTransferRouteUnsupported {
+		t.Fatalf("enqueue error=%v", err)
+	}
+	var count int64
+	if err := queue.db.Model(&models.TransferTask{}).Where("download_task_id = ?", download.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("unexpected transfer rows=%d err=%v", count, err)
+	}
+
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := models.TransferTask{ID: "legacy-pan115-local", OwnerID: download.OwnerID, DownloadTaskID: download.ID, LibraryID: *download.TargetLibraryID, LibraryName: download.TargetLibraryName, ManifestJSON: string(raw), SourceManifestJSON: string(raw), Phase: models.TransferTaskStatusQueued, CleanupStatus: models.TransferCleanupPending, TotalFiles: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	_, err = queue.EnqueueWith(EnqueueJobInput{OwnerID: download.OwnerID, JobType: "transfer", DisplayName: "legacy route", Payload: transferJobPayload{TransferTaskID: legacy.ID}}, func(tx *gorm.DB, job models.Job) error {
+		legacy.JobID = job.ID
+		return tx.Create(&legacy).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := queue.Claim([]string{"transfer"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	result := NewTransferWorker(service).Run(context.Background(), workerRuntime{queue: queue, job: *claimed}, *claimed)
+	if result.ErrorCode != CodeTransferRouteUnsupported || result.ErrorMessage != "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库" {
+		t.Fatalf("result=%+v", result)
+	}
+	var persisted models.TransferTask
+	if err := queue.db.First(&persisted, "id = ?", legacy.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.LastErrorCode != CodeTransferRouteUnsupported || persisted.PlanSummaryJSON != "" || persisted.ProcessedFiles != 0 {
+		t.Fatalf("persisted=%+v", persisted)
+	}
+}

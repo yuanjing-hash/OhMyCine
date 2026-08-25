@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import DirectoryPickerDialog from '@/components/DirectoryPickerDialog.vue'
+import SecretInput from '@/components/SecretInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
 import { credentialKindLabel, credentialSourceLabel, defaultTMDBAPIBaseURL, defaultTMDBImageBaseURL } from '@/metadata-settings'
@@ -124,7 +125,7 @@ onMounted(load)
     </form>
     <form v-if="metadata" class="panel mt-6" @submit.prevent="saveMetadata(false)">
       <div class="flex flex-wrap items-start justify-between gap-4"><div><h2 class="m-0 text-lg">TMDB 元数据</h2><p class="text-subtle mb-0 mt-1 text-sm">用于磁力 metadata 到达后的轻量识别与完成后复核。自定义凭据加密保存，并优先于部署或内置通道。</p></div><div class="flex flex-wrap gap-2"><span :class="metadata.tmdb_configured ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ credentialSourceLabel(metadata.credential_source) }}</span><span v-if="metadata.tmdb_configured" class="status-chip">{{ credentialKindLabel(metadata.credential_kind) }}</span></div></div>
-      <div class="mt-5 grid gap-4 md:grid-cols-[minmax(12rem,.45fr)_minmax(20rem,1.55fr)]"><div><label class="label" for="tmdb-credential-kind">凭据类型</label><select id="tmdb-credential-kind" v-model="tmdbCredentialKind" class="input" :disabled="!canUpdate || clearTMDB"><option value="read_access_token">API 读访问令牌</option><option value="api_key">API 密钥</option></select></div><div><label class="label" for="tmdb-credential-value">{{ tmdbCredentialKind === 'api_key' ? 'TMDB API 密钥' : 'TMDB API 读访问令牌' }}</label><input id="tmdb-credential-value" v-model="tmdbToken" class="input" type="password" autocomplete="new-password" :placeholder="`留空保留现有${tmdbCredentialKind === 'api_key' ? '密钥' : '令牌'}`" :disabled="!canUpdate || clearTMDB" /></div></div>
+      <div class="mt-5 grid gap-4 md:grid-cols-[minmax(12rem,.45fr)_minmax(20rem,1.55fr)]"><div><label class="label" for="tmdb-credential-kind">凭据类型</label><select id="tmdb-credential-kind" v-model="tmdbCredentialKind" class="input" :disabled="!canUpdate || clearTMDB"><option value="read_access_token">API 读访问令牌</option><option value="api_key">API 密钥</option></select></div><div><label class="label" for="tmdb-credential-value">{{ tmdbCredentialKind === 'api_key' ? 'TMDB API 密钥' : 'TMDB API 读访问令牌' }}</label><SecretInput id="tmdb-credential-value" v-model="tmdbToken" class="input" :configured="metadata.custom_configured" autocomplete="new-password" :placeholder="`留空保留现有${tmdbCredentialKind === 'api_key' ? '密钥' : '令牌'}`" :disabled="!canUpdate || clearTMDB" /></div></div>
       <p class="text-subtle mb-0 mt-2 text-xs">API 密钥使用 v3 <code>api_key</code> 查询参数；API 读访问令牌使用 Bearer。类型由你明确选择，不会按内容猜测。</p>
       <label class="text-muted mt-3 flex items-center gap-2 text-xs"><input v-model="clearTMDB" type="checkbox" :disabled="!canUpdate || !metadata.custom_configured" />清除自定义凭据，并恢复使用下一级凭据</label>
       <div v-if="canUpdate" class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="saving">保存</button><button class="btn-secondary" type="button" :disabled="saving || clearTMDB || (!metadata.tmdb_configured && !tmdbToken)" @click="saveMetadata(true)">保存并测试</button></div>

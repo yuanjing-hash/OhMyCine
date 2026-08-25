@@ -95,7 +95,11 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		addDiagnostic(&decision.Diagnostics, "automatic_threshold_not_met", "warning", "best candidate did not meet the corpus-calibrated automatic threshold")
 		return decision
 	}
-	if len(decision.Ranked) > 1 && decision.RunnerUpGap < config.ConflictMargin && decision.Ranked[1].Score.Total >= threshold-config.ConflictMargin && (!exactIdentity || decision.Ranked[1].Score.TitleSimilarity == 1) {
+	identityConflict := len(decision.Ranked) > 1 && (!exactIdentity || decision.Ranked[1].Score.TitleSimilarity == 1)
+	if identityConflict && exactIdentity && strongStructuredTypeDisambiguation(parsed, best, decision.Ranked[1]) {
+		identityConflict = false
+	}
+	if identityConflict && decision.RunnerUpGap < config.ConflictMargin && decision.Ranked[1].Score.Total >= threshold-config.ConflictMargin {
 		decision.Reason = ReasonCandidateConflict
 		addDiagnostic(&decision.Diagnostics, "candidate_margin_too_small", "warning", "top candidates remain too close after all bounded evidence")
 		return decision
@@ -106,6 +110,11 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 	decision.Match = &match
 	addDiagnostic(&decision.Diagnostics, "automatic_match", "info", "one candidate passed both confidence and uniqueness gates")
 	return decision
+}
+
+func strongStructuredTypeDisambiguation(parsed ParsedFacts, best, runnerUp RankedCandidate) bool {
+	return parsed.SuggestedType != MediaTypeUnknown && parsed.TypeConfidence >= .80 &&
+		best.Candidate.MediaType == parsed.SuggestedType && runnerUp.Candidate.MediaType != parsed.SuggestedType
 }
 
 func validRemoteCandidate(candidate RemoteCandidate) bool {

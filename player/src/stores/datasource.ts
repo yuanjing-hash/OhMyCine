@@ -11,6 +11,7 @@ import { logoutServerBestEffort } from '@/services/datasource/server'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
 import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { changedRawSourceCacheTarget } from '@/services/scraper/cacheInvalidation'
 import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 import { dispatchServerLibraryRefresh } from '@/services/serverMediaChanges'
 
@@ -180,9 +181,12 @@ export const useDataSourceStore = defineStore('datasource', () => {
       return
     const previousConfigs = cloneConfigs(configs.value)
     try {
-      configs.value[idx] = sanitizePersistedConfig({ ...configs.value[idx], ...patch })
+      const previous = configs.value[idx]
+      const next = sanitizePersistedConfig({ ...previous, ...patch })
+      configs.value[idx] = next
       await saveConfigs()
       await syncManager()
+      await clearChangedRawSourceCache(previous, next)
       invalidateSourceRootSnapshot(id)
       invalidateHomeCache()
     }
@@ -719,15 +723,20 @@ function safeTimestamp(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
 }
 
-const RAW_FILE_SOURCE_TYPES = new Set<RawFileSourceType>(['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'])
-
 function isRawFileSourceType(type: DataSourceConfig['type']): type is RawFileSourceType {
-  return RAW_FILE_SOURCE_TYPES.has(type as RawFileSourceType)
+  return ['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'].includes(type)
 }
 
 function readConfiguredRootPath(config: DataSourceConfig): string {
   const rootPath = typeof config.extra?.rootPath === 'string' ? config.extra.rootPath.trim() : ''
   return rootPath || '/'
+}
+
+async function clearChangedRawSourceCache(previous: DataSourceConfig, next: DataSourceConfig): Promise<void> {
+  const target = changedRawSourceCacheTarget(previous, next)
+  if (!target)
+    return
+  await clearRawSourceScanCache(target.sourceId, target.sourceType, target.rootPath)
 }
 
 function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[]): HomeSection {
