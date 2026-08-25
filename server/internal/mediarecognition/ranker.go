@@ -72,6 +72,13 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		if decision.Ranked[left].Score.Total != decision.Ranked[right].Score.Total {
 			return decision.Ranked[left].Score.Total > decision.Ranked[right].Score.Total
 		}
+		// Several strong evidence terms can saturate Total at 1.0. Preserve the
+		// exact title identity before deterministic provider ID ordering so a
+		// near-title candidate cannot become the winner merely because it has a
+		// smaller remote ID.
+		if decision.Ranked[left].Score.TitleSimilarity != decision.Ranked[right].Score.TitleSimilarity {
+			return decision.Ranked[left].Score.TitleSimilarity > decision.Ranked[right].Score.TitleSimilarity
+		}
 		if decision.Ranked[left].Candidate.MediaType != decision.Ranked[right].Candidate.MediaType {
 			return decision.Ranked[left].Candidate.MediaType < decision.Ranked[right].Candidate.MediaType
 		}

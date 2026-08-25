@@ -34,6 +34,9 @@ export interface TmdbMetadata {
   readonly alternativeTitles?: string[]
   readonly translations?: string[]
   readonly seasonCount?: number
+  readonly episodeCount?: number
+  readonly popularity?: number
+  readonly voteCount?: number
   readonly imdbId?: string
   readonly tvdbId?: number
   readonly overview?: string
@@ -105,9 +108,12 @@ interface TmdbSearchResult {
   readonly mediaType: ScrapeMediaType
   readonly title: string
   readonly originalTitle?: string
+  readonly originalLanguage?: string
   readonly date?: string
   readonly year?: number
   readonly popularity?: number
+  readonly voteCount?: number
+  readonly posterPath?: string
 }
 
 const TMDB_SETTINGS_STORAGE_KEY = 'ohmycine-tmdb-settings-v1'
@@ -247,33 +253,55 @@ export class TmdbScraper {
     if (successfulSearches === 0 && lastFailure)
       throw lastFailure
 
-    const preliminary = decideRecognitionCandidate(candidate, titleVariants, [...summaries.values()])
+    const preliminary = decideRecognitionCandidate(candidate, titleVariants, [...summaries.values()].map(summary => ({
+      id: summary.id,
+      mediaType: summary.mediaType,
+      title: summary.title,
+      originalTitle: summary.originalTitle,
+      originalLanguage: summary.originalLanguage,
+      releaseYear: summary.year,
+      popularity: summary.popularity,
+      voteCount: summary.voteCount,
+      hasPoster: Boolean(summary.posterPath),
+    })))
     const detailIdentities = preliminary.ranked.slice(0, MAX_TMDB_RECOGNITION_DETAILS)
-    const details: TmdbMetadata[] = []
+    const details = new Map<string, TmdbMetadata>()
     for (const item of detailIdentities) {
       try {
-        details.push(await this.getDetail(item.candidate.mediaType, item.candidate.id))
+        const metadata = await this.getDetail(item.candidate.mediaType, item.candidate.id)
+        details.set(`${metadata.mediaType}:${metadata.tmdbId}`, metadata)
       }
       catch (error) {
         if (isFatalRecognitionRequestError(error))
           throw error
       }
     }
-    const decision = decideRecognitionCandidate(candidate, titleVariants, details.map(metadata => ({
-      id: metadata.tmdbId,
-      mediaType: metadata.mediaType,
-      title: metadata.title,
-      originalTitle: metadata.originalTitle,
-      alternativeTitles: metadata.alternativeTitles,
-      translations: metadata.translations,
-      releaseYear: metadata.releaseYear,
-      seasonCount: metadata.seasonCount,
-      popularity: summaries.get(`${metadata.mediaType}:${metadata.tmdbId}`)?.popularity,
-    })))
+    const decision = decideRecognitionCandidate(candidate, titleVariants, detailIdentities.map((item) => {
+      const identity = `${item.candidate.mediaType}:${item.candidate.id}`
+      const metadata = details.get(identity)
+      const summary = summaries.get(identity)
+      if (!metadata)
+        return item.candidate
+      return {
+        id: metadata.tmdbId,
+        mediaType: metadata.mediaType,
+        title: metadata.title,
+        originalTitle: metadata.originalTitle || summary?.originalTitle,
+        originalLanguage: metadata.originalLanguage || summary?.originalLanguage,
+        alternativeTitles: metadata.alternativeTitles,
+        translations: metadata.translations,
+        releaseYear: metadata.releaseYear ?? summary?.year,
+        seasonCount: metadata.seasonCount,
+        episodeCount: metadata.episodeCount,
+        popularity: metadata.popularity || summary?.popularity,
+        voteCount: metadata.voteCount || summary?.voteCount,
+        hasPoster: Boolean(metadata.posterPath || summary?.posterPath),
+      }
+    }))
     if (decision.reason !== 'matched' || !decision.match)
       return null
 
-    const metadata = details.find(item => item.tmdbId === decision.match?.id && item.mediaType === decision.match.mediaType)
+    const metadata = details.get(`${decision.match.mediaType}:${decision.match.id}`)
     if (!metadata)
       return null
     const aliases = [metadata.title, metadata.originalTitle, ...(metadata.alternativeTitles ?? []), ...(metadata.translations ?? [])]
@@ -670,9 +698,12 @@ function mapTmdbSearchResult(value: unknown, mediaType: ScrapeMediaType): TmdbSe
     mediaType,
     title,
     originalTitle: stringValue(mediaType === 'movie' ? value.original_title : value.original_name),
+    originalLanguage: boundedLanguageCodeValue(value.original_language),
     date,
     year: yearFromDate(date),
-    popularity: numberValue(value.popularity),
+    popularity: boundedPositiveNumberValue(value.popularity, 1_000_000),
+    voteCount: boundedPositiveIntegerValue(value.vote_count, 1_000_000_000),
+    posterPath: tmdbImagePathValue(value.poster_path),
   }
 }
 
@@ -686,8 +717,8 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: str
     throw new Error('TMDB detail response is incomplete.')
 
   const releaseDate = stringValue(mediaType === 'movie' ? value.release_date : value.first_air_date)
-  const posterPath = stringValue(value.poster_path)
-  const backdropPath = stringValue(value.backdrop_path)
+  const posterPath = tmdbImagePathValue(value.poster_path)
+  const backdropPath = tmdbImagePathValue(value.backdrop_path)
   const titleLogoPath = selectPreferredLogoPath(value.images, language)
   const externalIds = isRecord(value.external_ids) ? value.external_ids : undefined
 
@@ -699,6 +730,9 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: str
     alternativeTitles: alternativeTitlesFromDetail(value.alternative_titles, mediaType),
     translations: translationsFromDetail(value.translations, mediaType),
     seasonCount: mediaType === 'tv' ? nonNegativeIntegerValue(value.number_of_seasons) : undefined,
+    episodeCount: mediaType === 'tv' ? boundedPositiveIntegerValue(value.number_of_episodes, 1_000_000) : undefined,
+    popularity: boundedPositiveNumberValue(value.popularity, 1_000_000),
+    voteCount: boundedPositiveIntegerValue(value.vote_count, 1_000_000_000),
     imdbId: stringValue(externalIds?.imdb_id),
     tvdbId: numberValue(externalIds?.tvdb_id),
     overview: stringValue(value.overview),
@@ -707,7 +741,7 @@ function mapTmdbDetail(value: unknown, mediaType: ScrapeMediaType, language: str
     rating: numberValue(value.vote_average),
     genreIds: genreIdsFromDetail(value.genres),
     genres: genreNamesFromDetail(value.genres),
-    originalLanguage: stringValue(value.original_language),
+    originalLanguage: boundedLanguageCodeValue(value.original_language),
     originCountries: stringArray(value.origin_country),
     productionCountries: productionCountryCodes(value.production_countries),
     posterPath,
@@ -953,6 +987,26 @@ function positiveIntegerValue(value: unknown): number | undefined {
 function nonNegativeIntegerValue(value: unknown): number | undefined {
   const number = numberValue(value)
   return number != null && Number.isInteger(number) && number >= 0 ? number : undefined
+}
+
+function boundedPositiveNumberValue(value: unknown, maximum: number): number | undefined {
+  const number = nonNegativeNumberValue(value)
+  return number != null && number > 0 && number <= maximum ? number : undefined
+}
+
+function boundedPositiveIntegerValue(value: unknown, maximum: number): number | undefined {
+  const number = nonNegativeIntegerValue(value)
+  return number != null && number > 0 && number <= maximum ? number : undefined
+}
+
+function boundedLanguageCodeValue(value: unknown): string | undefined {
+  const code = stringValue(value)?.toLocaleLowerCase()
+  return code && code.length <= 16 && !/[\r\n\t /\\?#]/u.test(code) ? code : undefined
+}
+
+function tmdbImagePathValue(value: unknown): string | undefined {
+  const path = stringValue(value)
+  return path && path.length <= 512 && path.startsWith('/') && !/[?#\\\r\n]/u.test(path) && !path.includes('..') ? path : undefined
 }
 
 function alternativeTitlesFromDetail(value: unknown, mediaType: ScrapeMediaType): string[] {

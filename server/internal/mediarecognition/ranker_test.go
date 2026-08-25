@@ -223,6 +223,43 @@ func TestRankAuthorityTieBreakIsGenericAndCandidateOrderIndependent(t *testing.T
 	}
 }
 
+func TestRankPrefersExactTitleWhenScoresSaturate(t *testing.T) {
+	parsed, err := Parse(InputFacts{
+		PackageName: "A Very Long Shared Series Identity With Saturated Evidence 2024 S01E120",
+		SourceKind:  SourceDownload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	year := 2024
+	seasonCount := 1
+	episodeCount := 200
+	candidates := []RemoteCandidate{
+		{
+			ID: 1, MediaType: MediaTypeTV,
+			Title:        "A Very Long Shared Series Identitx With Saturated Evidence",
+			ReleaseYear:  &year,
+			SeasonCount:  &seasonCount,
+			EpisodeCount: &episodeCount,
+			Popularity:   1_000,
+		},
+		{
+			ID: 2, MediaType: MediaTypeTV,
+			Title:        "A Very Long Shared Series Identity With Saturated Evidence",
+			ReleaseYear:  &year,
+			SeasonCount:  &seasonCount,
+			EpisodeCount: &episodeCount,
+			Popularity:   1_000,
+		},
+	}
+	for _, ordered := range [][]RemoteCandidate{candidates, {candidates[1], candidates[0]}} {
+		decision := Rank(parsed, ordered)
+		if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 2 {
+			t.Fatalf("exact title lost after total-score saturation: %+v", decision)
+		}
+	}
+}
+
 func TestRankTreatsUnknownEpisodeCountAsNeutralAndKeepsWeakEvidenceSafe(t *testing.T) {
 	parsed, err := Parse(InputFacts{PackageName: "Example Series 第1206集", SourceKind: SourceDownload})
 	if err != nil {

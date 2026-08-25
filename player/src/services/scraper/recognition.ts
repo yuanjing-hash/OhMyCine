@@ -3,11 +3,11 @@ import type { RawMediaCandidate } from './types'
 import { cleanMediaTitle, extractMediaSearchTitles } from './parser'
 import { splitProviderPath, stripFileExtension } from './pathUtils'
 
-// Independent Player implementation of the provider-neutral v8 behavior
+// Independent Player implementation of the provider-neutral v10 behavior
 // contract. Server/Emby/Jellyfin DataSources remain authoritative and never
 // enter this local raw-source recognizer.
-export const PLAYER_RECOGNITION_ENGINE_VERSION = 'player-nextgen-v3'
-export const PLAYER_RECOGNITION_CONTRACT_VERSION = 'media-recognition-contract-v2'
+export const PLAYER_RECOGNITION_ENGINE_VERSION = 'player-nextgen-v4'
+export const PLAYER_RECOGNITION_CONTRACT_VERSION = 'media-recognition-contract-v3'
 export const MAX_TMDB_RECOGNITION_SEARCHES = 10
 export const MAX_TMDB_RECOGNITION_DETAILS = 3
 
@@ -31,17 +31,23 @@ export interface RecognitionRemoteCandidate {
   readonly mediaType: ScrapeMediaType
   readonly title: string
   readonly originalTitle?: string
+  readonly originalLanguage?: string
   readonly alternativeTitles?: readonly string[]
   readonly translations?: readonly string[]
   readonly releaseYear?: number
   readonly seasonCount?: number
+  readonly episodeCount?: number
   readonly popularity?: number
+  readonly voteCount?: number
+  readonly hasPoster?: boolean
 }
 
 export interface RecognitionRankedCandidate {
   readonly candidate: RecognitionRemoteCandidate
   readonly score: number
   readonly titleSimilarity: number
+  readonly authority: number
+  readonly hasStrongConflict: boolean
 }
 
 export interface RecognitionDecision {
@@ -54,6 +60,7 @@ export interface RecognitionDecision {
 
 const MATCH_THRESHOLD = 0.78
 const CONFLICT_MARGIN = 0.06
+const AUTHORITY_WEIGHT = 0.03
 const HAN_EQUIVALENCE: Readonly<Record<string, string>> = {
   後: '后',
   宮: '宫',
@@ -141,19 +148,23 @@ export function buildRecognitionSearchRequests(candidate: RawMediaCandidate): Re
 }
 
 export function decideRecognitionCandidate(
-  candidate: Pick<RawMediaCandidate, 'kind' | 'year' | 'seasonNumber'>,
+  candidate: Pick<RawMediaCandidate, 'kind' | 'year' | 'seasonNumber' | 'episodeNumber'>,
   titleVariants: readonly Pick<RecognitionTitleVariant, 'title'>[],
   remoteCandidates: readonly RecognitionRemoteCandidate[],
 ): RecognitionDecision {
   const identities = new Map<string, RecognitionRemoteCandidate>()
-  for (const remote of remoteCandidates) {
+  for (const input of remoteCandidates) {
+    const remote = boundedRemoteCandidate(input)
     if (!Number.isInteger(remote.id) || remote.id <= 0 || !comparisonKey(remote.title))
       continue
     identities.set(`${remote.mediaType}:${remote.id}`, remote)
   }
-  const ranked = [...identities.values()]
+  const scored = [...identities.values()]
     .map(remote => scoreRecognitionCandidate(candidate, titleVariants, remote))
+  applyAuthorityTieBreak(titleVariants, scored)
+  const ranked = scored
     .sort((left, right) => right.score - left.score
+      || right.titleSimilarity - left.titleSimilarity
       || left.candidate.mediaType.localeCompare(right.candidate.mediaType)
       || left.candidate.id - right.candidate.id)
 
@@ -163,13 +174,16 @@ export function decideRecognitionCandidate(
   const runnerUpGap = Math.max(0, best.score - (ranked[1]?.score ?? 0))
   if (best.score < MATCH_THRESHOLD)
     return { reason: 'low_confidence', ranked, confidence: best.score, runnerUpGap }
-  if (ranked[1] && runnerUpGap < CONFLICT_MARGIN && ranked[1].score >= MATCH_THRESHOLD - CONFLICT_MARGIN)
+  const exactIdentity = best.titleSimilarity === 1
+  const identityConflict = ranked[1] != null && (!exactIdentity || ranked[1].titleSimilarity === 1)
+  const authorityResolved = identityConflict && strongAuthorityDisambiguation(titleVariants, best, ranked[1])
+  if (ranked[1] && identityConflict && !authorityResolved && runnerUpGap < CONFLICT_MARGIN && ranked[1].score >= MATCH_THRESHOLD - CONFLICT_MARGIN)
     return { reason: 'candidate_conflict', ranked, confidence: best.score, runnerUpGap }
   return { reason: 'matched', match: best.candidate, ranked, confidence: best.score, runnerUpGap }
 }
 
 function scoreRecognitionCandidate(
-  parsed: Pick<RawMediaCandidate, 'kind' | 'year' | 'seasonNumber'>,
+  parsed: Pick<RawMediaCandidate, 'kind' | 'year' | 'seasonNumber' | 'episodeNumber'>,
   variants: readonly Pick<RecognitionTitleVariant, 'title'>[],
   remote: RecognitionRemoteCandidate,
 ): RecognitionRankedCandidate {
@@ -185,6 +199,7 @@ function scoreRecognitionCandidate(
   }
 
   let score = titleSimilarity * 0.68
+  let hasStrongConflict = false
   // A script-neutral exact/near-exact identity is strong evidence even when a
   // loose movie filename carries no year. Keep this bonus explicit instead of
   // weakening the global acceptance threshold.
@@ -193,22 +208,169 @@ function scoreRecognitionCandidate(
   if (parsed.year != null && remote.releaseYear != null) {
     const difference = Math.abs(parsed.year - remote.releaseYear)
     score += difference === 0 ? 0.12 : difference === 1 ? 0.06 : -0.24
+    hasStrongConflict ||= difference > 1
   }
   const expectedType = parsed.kind === 'episode' || parsed.kind === 'tv' ? 'tv' : parsed.kind === 'movie' ? 'movie' : undefined
   const typeStrength = parsed.kind === 'episode' ? 0.96 : parsed.kind === 'tv' ? 0.82 : parsed.kind === 'movie' ? 0.72 : 0
   if (expectedType) {
     score += remote.mediaType === expectedType ? 0.1 * typeStrength : typeStrength >= 0.8 ? -0.22 * typeStrength : 0
+    hasStrongConflict ||= remote.mediaType !== expectedType && typeStrength >= 0.8
     if (remote.mediaType === expectedType && typeStrength >= 0.8)
       score += 0.05 * typeStrength
   }
   if (parsed.seasonNumber != null && remote.mediaType === 'tv' && remote.seasonCount != null && parsed.seasonNumber <= remote.seasonCount)
     score += 0.03
+  if (expectedType === 'tv' && typeStrength >= 0.8 && remote.mediaType === 'tv' && parsed.episodeNumber != null && remote.episodeCount != null) {
+    if (parsed.episodeNumber <= remote.episodeCount) {
+      score += 0.04 * typeStrength
+    }
+    else {
+      score -= 0.2 * typeStrength
+      hasStrongConflict = true
+    }
+  }
   if (strongVariantMatches >= 2)
     score += 0.03 * Math.min(1, (strongVariantMatches - 1) / 3)
   if ((remote.popularity ?? 0) > 0)
     score += 0.01 * Math.min(1, Math.log1p(remote.popularity ?? 0) / Math.log(1001))
 
-  return { candidate: remote, titleSimilarity, score: clamp(score, 0, 1) }
+  return { candidate: remote, titleSimilarity, authority: 0, hasStrongConflict, score: clamp(score, 0, 1) }
+}
+
+interface AuthorityQuality {
+  readonly strength: number
+  readonly dimensions: number
+}
+
+// Provider authority is a bounded tie-break inside an identity that title and
+// structure have already established. It cannot create identity, cross media
+// types, or compensate for a strong year/type/episode conflict. Missing TMDB
+// fields stay neutral, while a nearly empty duplicate no longer permanently
+// ties a structurally complete candidate.
+function applyAuthorityTieBreak(
+  titleVariants: readonly Pick<RecognitionTitleVariant, 'title'>[],
+  ranked: RecognitionRankedCandidate[],
+): void {
+  if (AUTHORITY_WEIGHT <= 0 || ranked.length < 2)
+    return
+
+  const eligible = new Set<number>()
+  for (let left = 0; left < ranked.length; left += 1) {
+    for (let right = left + 1; right < ranked.length; right += 1) {
+      if (ranked[left].hasStrongConflict || ranked[right].hasStrongConflict)
+        continue
+      if (sameExactIdentitySurface(titleVariants, ranked[left], ranked[right])) {
+        eligible.add(left)
+        eligible.add(right)
+      }
+    }
+  }
+
+  for (const index of eligible) {
+    const quality = candidateAuthorityQuality(ranked[index].candidate)
+    if (quality.strength <= 0)
+      continue
+    const authority = AUTHORITY_WEIGHT * quality.strength
+    ranked[index] = {
+      ...ranked[index],
+      authority,
+      score: clamp(ranked[index].score + authority, 0, 1),
+    }
+  }
+}
+
+function strongAuthorityDisambiguation(
+  titleVariants: readonly Pick<RecognitionTitleVariant, 'title'>[],
+  best: RecognitionRankedCandidate,
+  runnerUp: RecognitionRankedCandidate,
+): boolean {
+  if (AUTHORITY_WEIGHT <= 0 || best.hasStrongConflict || runnerUp.hasStrongConflict || !sameExactIdentitySurface(titleVariants, best, runnerUp))
+    return false
+  const bestQuality = candidateAuthorityQuality(best.candidate)
+  const runnerQuality = candidateAuthorityQuality(runnerUp.candidate)
+  return bestQuality.dimensions >= 6
+    && bestQuality.dimensions - runnerQuality.dimensions >= 3
+    && bestQuality.strength >= 0.7
+    && bestQuality.strength - runnerQuality.strength >= 0.45
+}
+
+function sameExactIdentitySurface(
+  titleVariants: readonly Pick<RecognitionTitleVariant, 'title'>[],
+  left: RecognitionRankedCandidate,
+  right: RecognitionRankedCandidate,
+): boolean {
+  if (left.candidate.mediaType !== right.candidate.mediaType || left.titleSimilarity !== 1 || right.titleSimilarity !== 1)
+    return false
+  const queryKeys = new Set(titleVariants.map(item => comparisonKey(item.title)).filter(Boolean))
+  const leftKeys = new Set(candidateNames(left.candidate).map(comparisonKey).filter(Boolean))
+  return candidateNames(right.candidate).some((name) => {
+    const key = comparisonKey(name)
+    return key !== '' && leftKeys.has(key) && queryKeys.has(key)
+  })
+}
+
+function candidateAuthorityQuality(candidate: RecognitionRemoteCandidate): AuthorityQuality {
+  let strength = 0
+  let dimensions = 0
+  const add = (weight: number, present: boolean) => {
+    if (!present)
+      return
+    strength += weight
+    dimensions += 1
+  }
+  add(0.12, candidate.releaseYear != null)
+  add(0.08, Boolean(candidate.originalLanguage))
+  add(0.08, Boolean(comparisonKey(candidate.originalTitle ?? '')) && comparisonKey(candidate.originalTitle ?? '') !== comparisonKey(candidate.title))
+  add(0.08, candidate.seasonCount != null && candidate.seasonCount > 0)
+  add(0.12, candidate.episodeCount != null && candidate.episodeCount > 0)
+  const alternativeTitleCount = Math.min(candidate.alternativeTitles?.length ?? 0, 8)
+  if (alternativeTitleCount > 0) {
+    strength += 0.12 * alternativeTitleCount / 8
+    dimensions += 1
+  }
+  const translationCount = Math.min(candidate.translations?.length ?? 0, 8)
+  if (translationCount > 0) {
+    strength += 0.12 * translationCount / 8
+    dimensions += 1
+  }
+  add(0.08, candidate.hasPoster === true)
+  if ((candidate.voteCount ?? 0) > 0) {
+    strength += 0.1 * clamp(Math.log1p(candidate.voteCount ?? 0) / Math.log(1001), 0, 1)
+    dimensions += 1
+  }
+  if ((candidate.popularity ?? 0) > 0)
+    strength += 0.1 * clamp(Math.log1p(candidate.popularity ?? 0) / Math.log(1001), 0, 1)
+  return { strength: clamp(strength, 0, 1), dimensions }
+}
+
+function candidateNames(candidate: RecognitionRemoteCandidate): string[] {
+  return [candidate.title, candidate.originalTitle, ...(candidate.alternativeTitles ?? []), ...(candidate.translations ?? [])]
+    .filter((name): name is string => Boolean(name?.trim()))
+}
+
+function boundedRemoteCandidate(candidate: RecognitionRemoteCandidate): RecognitionRemoteCandidate {
+  const boundedInteger = (value: number | undefined, minimum: number, maximum: number): number | undefined =>
+    value != null && Number.isInteger(value) && value >= minimum && value <= maximum ? value : undefined
+  const boundedNumber = (value: number | undefined, maximum: number): number | undefined =>
+    value != null && Number.isFinite(value) && value > 0 ? Math.min(value, maximum) : undefined
+  const boundedTitles = (values: readonly string[] | undefined): string[] | undefined => values
+    ?.slice(0, 32)
+    .map(value => value.trim().slice(0, 256))
+    .filter(Boolean)
+  return {
+    ...candidate,
+    title: candidate.title.trim().slice(0, 256),
+    originalTitle: candidate.originalTitle?.trim().slice(0, 256) || undefined,
+    originalLanguage: candidate.originalLanguage?.trim().toLocaleLowerCase().slice(0, 16) || undefined,
+    alternativeTitles: boundedTitles(candidate.alternativeTitles),
+    translations: boundedTitles(candidate.translations),
+    releaseYear: boundedInteger(candidate.releaseYear, 1888, 2500),
+    seasonCount: boundedInteger(candidate.seasonCount, 0, 1000),
+    episodeCount: boundedInteger(candidate.episodeCount, 1, 1_000_000),
+    popularity: boundedNumber(candidate.popularity, 1_000_000),
+    voteCount: boundedInteger(candidate.voteCount, 1, 1_000_000_000),
+    hasPoster: candidate.hasPoster === true,
+  }
 }
 
 export function titleSimilarityScore(left: string, right: string): number {

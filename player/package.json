@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "verify:nextgen-recognition": "tsx scripts/verify-nextgen-recognition.ts",
     "verify:scraper": "tsx scripts/verify-scraper-title-classification.ts",
     "verify:alist-auth-recovery": "tsx scripts/verify-alist-auth-recovery.ts",
     "verify:home-fault-isolation": "tsx scripts/verify-home-source-fault-isolation.ts",

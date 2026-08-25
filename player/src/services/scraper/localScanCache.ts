@@ -688,6 +688,9 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     alternativeTitles: [...(metadata.alternativeTitles ?? [])],
     translations: [...(metadata.translations ?? [])],
     seasonCount: metadata.seasonCount,
+    episodeCount: boundedPositiveInteger(metadata.episodeCount, 1_000_000),
+    popularity: boundedPositiveNumber(metadata.popularity, 1_000_000),
+    voteCount: boundedPositiveInteger(metadata.voteCount, 1_000_000_000),
     imdbId: metadata.imdbId,
     tvdbId: metadata.tvdbId,
     overview: metadata.overview,
@@ -707,6 +710,14 @@ function sanitizeTmdbMetadata(metadata: TmdbMetadata | undefined): TmdbMetadata 
     titleLogoUrl: metadata.titleLogoPath ? tmdbArtworkUrl(metadata.titleLogoPath, 'w500') : sanitizeMetadataUrl(metadata.titleLogoUrl),
     scrapedAt: metadata.scrapedAt,
   }
+}
+
+function boundedPositiveInteger(value: number | undefined, maximum: number): number | undefined {
+  return value != null && Number.isInteger(value) && value > 0 && value <= maximum ? value : undefined
+}
+
+function boundedPositiveNumber(value: number | undefined, maximum: number): number | undefined {
+  return value != null && Number.isFinite(value) && value > 0 && value <= maximum ? value : undefined
 }
 
 function sanitizeTmdbEpisodeMetadata(metadata: TmdbEpisodeMetadata | undefined): TmdbEpisodeMetadata | undefined {

@@ -217,3 +217,11 @@ npm run lint
 - 独立 check 修复了 `AuthorityWeight=0` 时冲突解除仍可能生效的配置缺口，并新增通用非作品特定的三候选、候选顺序、空数据、纯热度/票数、错误标题/类型/年份/集数及同等完整候选回归。
 - 引擎升级为 `nextgen-domain-v10`，WebUI session 常量与冻结 benchmark 报告同步；E1200/E1201/E1204/E1206 在候选顺序反转时均稳定选择 `30983`。
 - 隔离 `TEMP/TMP/GOCACHE/GOMODCACHE` 后，`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag Server build、两个 Go module verify、WebUI Go test、24 files/132 tests、permissions、Vue typecheck、ESLint、Vite production build、benchmark 可重复性与 `git diff --check` 全部通过；Vite 仅保留既有 chunk-size 警告。
+
+## 2026-08-25 Player v4 同步与双端饱和排序复核
+
+- Player 原始文件源识别升级为 `player-nextgen-v4` / `media-recognition-contract-v3`，同步 Server v10 的原始语言、年份、季/集总数、别名/译名、热度、票数和海报存在性字段链，以及最多 `0.03` 的有界同身份权威消歧。ServerDataSource、Emby、Jellyfin 继续信任上游元数据，不进入本地二次识别。
+- Player TMDB search -> detail -> rank 保留安全摘要作为详情失败时的冲突证据；若权威候选详情暂时不可用则保持未识别，不会因删除候选而错误选择同名空壳。新增语言码、图片路径、数值边界和本地缓存往返白名单回归。
+- Player 与 Server 都修复总分饱和为 `1.0` 时按远端 ID 排序导致近似标题压过精确标题的问题：同分先按标题相似度排序，且唯一精确身份不会被近似候选拖入冲突。
+- Player 独立 check 通过 20 个 must-match、4 个 must-reject、21 个 authority 安全用例、真实 30983/318691 响应形状、详情降级、scraper、raw-cache、typecheck、ESLint 与 Vite build；仅保留既有大 chunk 警告。Server 分数饱和回归和 mediarecognition 定向测试同步通过。
+- 发布计划：所有最终门禁通过后提交并推送最新 `develop`，Player Release 先发布 `v1.1.25` Beta，再由 Server Release 向同一 prerelease 附加跨平台 Server 资产，最后核验 tag commit、Actions 与 Release 资产。

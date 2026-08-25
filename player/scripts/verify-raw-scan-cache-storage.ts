@@ -20,6 +20,54 @@ try {
   assert.equal(loadedFirst?.scanId, 'scan-one')
   assert.equal(loadedFirst?.scrapedItems?.[0]?.metadata?.title, 'First Movie')
 
+  const authorityBase = createCache({
+    sourceId: 'alist-authority',
+    rootPath: '/剧集',
+    scanId: 'scan-authority',
+    title: 'Authority Series',
+    posterUrl: 'https://image.tmdb.org/t/p/w500/authority.jpg',
+  })
+  const authorityItem = authorityBase.scrapedItems?.[0]
+  assert.ok(authorityItem?.metadata)
+  const authorityCache: RawLocalScanCache = {
+    ...authorityBase,
+    scrapedItems: [{
+      ...authorityItem,
+      mediaType: 'tv',
+      metadata: {
+        ...authorityItem.metadata,
+        mediaType: 'tv',
+        episodeCount: 1212,
+        popularity: 70.8752,
+        voteCount: 781,
+      },
+    }],
+  }
+  assert.equal(await saveRawSourceScanCache(authorityCache), true)
+  const loadedAuthority = await loadRawSourceScanCache('alist-authority', 'alist', '/剧集')
+  assert.equal(loadedAuthority?.scrapedItems?.[0]?.metadata?.episodeCount, 1212)
+  assert.equal(loadedAuthority?.scrapedItems?.[0]?.metadata?.popularity, 70.8752)
+  assert.equal(loadedAuthority?.scrapedItems?.[0]?.metadata?.voteCount, 781)
+
+  const invalidAuthorityCache: RawLocalScanCache = {
+    ...authorityCache,
+    scanId: 'scan-authority-invalid',
+    scrapedItems: [{
+      ...authorityCache.scrapedItems![0],
+      metadata: {
+        ...authorityCache.scrapedItems![0].metadata!,
+        episodeCount: 1_000_001,
+        popularity: Number.POSITIVE_INFINITY,
+        voteCount: -1,
+      },
+    }],
+  }
+  assert.equal(await saveRawSourceScanCache(invalidAuthorityCache), true)
+  const loadedInvalidAuthority = await loadRawSourceScanCache('alist-authority', 'alist', '/剧集')
+  assert.equal(loadedInvalidAuthority?.scrapedItems?.[0]?.metadata?.episodeCount, undefined)
+  assert.equal(loadedInvalidAuthority?.scrapedItems?.[0]?.metadata?.popularity, undefined)
+  assert.equal(loadedInvalidAuthority?.scrapedItems?.[0]?.metadata?.voteCount, undefined)
+
   const overwrittenCache = createCache({
     sourceId: 'alist-one',
     rootPath: '/影视库',

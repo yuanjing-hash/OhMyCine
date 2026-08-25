@@ -87,6 +87,7 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 - Scan outputs: raw file records, parsed media candidates, matched metadata records, logical category assignment, unresolved records, scan log entries, and local artwork cache references.
 - Rule-set shape: logical groups may be separated by media type internally, but the physical remote folder tree must not be required to contain fixed top-level names such as `movie`, `tv`, `Movies`, or `TV`.
 - Visible source-page MVP: raw sources may expose a local `media-library` view alongside the original `folders` view. The media-library view can be powered by a source/root-scoped local scan cache until the full SQLite scraper DB exists.
+- Recognition candidate contract: `RecognitionRemoteCandidate` carries bounded `id`, `mediaType`, localized/original title, `originalLanguage`, alternative titles, translations, release year, season/episode counts, popularity, vote count, and poster presence. Player `player-nextgen-v4` implements shared `media-recognition-contract-v3`; changing either constant requires an automatic-cache invalidation review.
 
 #### 3. Contracts
 - The scanner starts from the user's selected root and infers the structure below that root. Never reject or downgrade a library only because the root or first child is not named `movie`/`tv`/`Movies`/`TV`.
@@ -100,6 +101,10 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 - Raw-title parsing is Unicode-first: normalize to NFC and preserve Unicode letters, numbers, and marks without maintaining a script allowlist. Natural-language season/episode tokens may be removed only when a meaningful work title remains; machine tokens such as `S01E02` stay structural, while legal whole titles such as `第八集`, `[REC]`, `Spider-Man`, and `Tinker-Tailor-Soldier-Spy` must not be emptied or truncated. Keep fixtures for Chinese, English, Japanese, Korean, Latin diacritics, Cyrillic, Arabic, and Thai.
 - Automatic TMDB recall must give canonical file, parent, and grandparent sources an opportunity before consuming same-source fallback variants. Keep the order deterministic and bounded to at most 10 search requests and 3 detail enrichments per work. Rank the merged movie/TV identities using localized, original, alternative, and translated titles plus year, parsed type, season structure, and uniqueness; reject low-confidence and close-conflict decisions instead of accepting the provider's first result.
 - Player and Server recognition implementations must execute the same provider-neutral redacted corpus. A Player recognition engine version and `automatic` / `manual` match source belong in the local scan cache. Engine drift may invalidate and recompute automatic results, but valid manual identity and metadata/artwork overrides must be retained. Legacy matched records with no reliable source marker are preserved conservatively; legacy failures may be recomputed.
+- Provider authority is only a bounded same-identity tie-break. It may contribute at most `0.03`, and only when both candidates are exact-title, same-media-type, conflict-free matches. Releasing a close-candidate conflict additionally requires the winner to expose at least six independent completeness dimensions and to lead materially over the runner-up. Popularity and vote count may refine an already established identity, but must never establish identity or override a title, media-type, year, or known episode-count conflict. Missing provider fields are neutral.
+- TMDB search-to-detail mapping must preserve the complete safe authority field chain. Search summaries provide fallback `originalLanguage`, year, popularity, vote count, and poster presence; detail payloads enrich original/alternative/translated titles, season/episode counts, popularity, vote count, and poster presence before final ranking. Local scan cache sanitization must whitelist the same non-secret metadata fields so a cache round-trip cannot change the decision surface.
+- A non-fatal top-candidate detail failure must not silently remove that identity from final conflict evaluation. Keep its bounded search summary in the candidate set; if it remains the winner but its detail metadata is unavailable, return an unresolved result instead of selecting a lower-quality shell or fabricating detail metadata.
+- This local recognizer applies only to Player-scanned raw sources such as local files, OpenList/Alist, and CloudDrive2. `ServerDataSource`, Emby, and Jellyfin metadata remain authoritative and must not be routed through Player local recognition or reclassified by its engine version.
 - Classification rules are local logical grouping rules for poster walls, filters, library sections, AI/recommendation context, and future suggested organization. They must not mutate, validate, rename, move, delete, or upload files on the remote provider.
 - Classification matching may use TMDB detail fields such as `original_language`, `production_countries`, `origin_country`, `genre_ids`, `release_year`, and later top-level detail fields. Multiple fields are ANDed, comma values are ORed, and `!value` excludes a value.
 - User-provided TMDB credentials are an optional enhancement, not the only usable metadata path. If no user token/key is configured, raw-source scanning must still keep playable candidates, path recognition, fallback categories, and folder browsing available; future built-in/public metadata channels must not be represented by hard-coded secret keys in the client.
@@ -128,6 +133,11 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 | TMDB is unavailable, rate limited, or key is missing | Keep file browsing/playback available, keep unresolved candidates, and show a user-safe metadata-unavailable state |
 | TMDB matches a work to genre/country/language metadata | Use an explicit standard-directory path category first; when no clear path category exists, run configured classification rules on TMDB fields for poster-wall grouping |
 | Raw scraped item has missing match result or a non-`matched` TMDB status | Show it under visible category `未识别` while preserving parsed title/series/season/episode structure and playable provider path |
+| Exact same-title/same-type TMDB candidates include one complete work and one nearly empty shell | Use bounded authority only after title/type/structure establish the identity; the materially complete candidate may resolve the close conflict |
+| Candidate has more votes/popularity but a wrong title, type, year, or too-small known episode count | Keep the strong conflict and reject or choose the structurally compatible candidate; authority must not rescue it |
+| Authority fields are missing, zero, malformed, or outside configured bounds | Treat them as absent/neutral and keep deterministic title/structure ranking |
+| A shortlisted TMDB detail request fails transiently | Retain its safe search summary for conflict evaluation; never let the failed fetch delete the candidate and promote an empty duplicate |
+| Source is `server`, Emby, or Jellyfin | Trust source metadata; do not invoke Player raw-source recognition or invalidate it through Player engine drift |
 | Folder name looks like a work title plus release/source tags | Use it as a search-title source, not as a visible category name |
 | File path contains traversal, encoded traversal, unsafe joined name, or escapes the selected root | Reject/skip the path before browse/detail/stream/scrape work |
 | Provider item path is an HTTP/WebDAV/file URL or contains token/signature/password query keys | Reject/skip it before writing local scan cache |
@@ -142,17 +152,25 @@ Use this contract when adding Player-side scraping, metadata cache, classificati
 - Good: the selected root contains both `阿凡达.mp4` and `动漫/灵笼/Season 01/S01E01.mkv`; the movie is matched and displayed through movie/TMDB classification while the series keeps the `动漫` path category.
 - Good: `电影/阿凡达.mp4`, `华语电影/阿凡达.mp4`, and `电影/阿凡达/阿凡达.mp4` preserve the explicit category folder, but `阿凡达/阿凡达.mp4` does not show a category card named `阿凡达`.
 - Good: `机械之声的传奇 The Legend of Vox Machina AMZN GrassTV/Season 01/S01E01.mkv` is searched as `机械之声的传奇` / `The Legend of Vox Machina`, TMDB confirms TV animation from the US, and the poster wall groups it under the configured animation category such as `动漫`, not under the work-folder name.
+- Good: two exact `名侦探柯南` TV candidates tie on title, but the real work has year, Japanese original language, 1212 episodes, aliases/translations, poster, and votes while the duplicate is empty; the real work wins within the `0.03` authority bound.
 - Base: a messy folder of mixed files is scanned as non-standard, creates playable unresolved rows for misses, and groups successful TMDB matches through logical categories such as `华语电影`, `外语电影`, `综艺`, or `未分类`.
+- Base: a provider omits vote count, poster, language, or episode count; missing values neither reward nor penalize the candidate, so the existing title/type/year result remains stable.
 - Base: `sample.mp4`, `4K.mp4`, and `video.mp4` stay under unresolved/manual-identification flows instead of creating low-quality movie matches.
 - Bad: scanner code checks `root.children.Movies` and `root.children.TV`, then treats every other selected root as non-standard or invalid.
 - Bad: classification code creates or renames remote directories to match category names.
 - Bad: the media-library root shows a category card named after a release folder such as `The Legend of Vox Machina AMZN GrassTV`.
 - Bad: all matched items in a mixed root are displayed only under the first matched path category, so a root-level movie disappears when a sibling `动漫/...` series exists.
+- Bad: select the globally most popular same-name result, or add enough vote/popularity score to overturn a mismatched media type, year, or parsed episode number.
 
 #### 6. Tests Required
 - Unit tests for path normalization, selected-root containment, standard/non-standard detection, filename parsing, rule matching, and fallback classification.
 - Integration or service tests with representative OpenList/Alist-like trees: movie folders with title/year, TV series with seasons/episodes, mixed flat folders, Chinese category names, missing years, and unresolved files.
 - Parser/display regression tests must cover `阿凡达.mp4`, `阿凡达/阿凡达.mp4`, `电影/阿凡达.mp4`, `华语电影/阿凡达.mp4`, `电影/阿凡达/阿凡达.mp4`, sibling anime series folders, and noise files such as `sample.mp4`, `4K.mp4`, and `video.mp4`.
+- Shared Player/Server corpus tests must assert the same match/reject disposition for every redacted release fixture and verify the declared recognition contract versions stay synchronized.
+- Ranker tests must cover candidate-order invariance, three-candidate ties, empty/malformed authority fields, authority disabled, popularity/vote-only differences, wrong title/type/year, and known episode-count conflicts.
+- A real provider-payload-shaped test must exercise TMDB search -> detail -> rank for the complete and empty `名侦探柯南` candidates, assert the canonical identity wins for E1200/E1201/E1204/E1206, and assert search/detail request budgets remain bounded.
+- The provider-payload test must also fail the authoritative candidate's detail request and assert the result stays unresolved rather than returning the empty-shell candidate.
+- Cache tests must round-trip `originalLanguage`, season/episode counts, popularity, vote count, poster/artwork fields, engine version, and match source without persisting credentials or tokenized URLs.
 - Persistence tests verify local metadata/artwork/log cache is source-scoped and clearing it does not remove config or credentials.
 - UI review verifies poster-wall mode, folder-view fallback, unresolved items, scan status/logs, missing poster fallbacks, and no remote-write affordances.
 
@@ -188,6 +206,18 @@ await localScrapeDb.saveCategoryAssignment({
   categoryName,
   ruleSetVersion,
 })
+```
+
+Wrong:
+```ts
+const best = candidates.sort((a, b) => (b.voteCount ?? 0) - (a.voteCount ?? 0))[0]
+```
+
+Correct:
+```ts
+const decision = decideRecognitionCandidate(parsed, titleVariants, candidates)
+// Authority is bounded and can resolve only an already-established exact
+// same-title/same-type identity with no structural conflict.
 ```
 
 ### DataSource Implementations
