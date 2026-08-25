@@ -702,3 +702,26 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 27: 同步双端媒体识别 v10 并准备 Beta
+
+**Date**: 2026-08-25
+**Task**: 同步双端媒体识别 v10 并准备 Beta
+**Branch**: `develop`
+
+### Summary
+
+Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextgen v4/contract v3；双端补齐有界权威消歧、详情降级、缓存边界和分数饱和回归，完整门禁通过并准备 v1.1.25 Beta。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0c565df` | (see git log) |
+| `78497a3` | (see git log) |
+| `edce279` | (see git log) |
+
+### Status
+
+[OK] **Completed**
