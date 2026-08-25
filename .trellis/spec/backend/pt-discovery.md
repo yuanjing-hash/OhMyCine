@@ -33,8 +33,8 @@ POST   /api/v1/discovery/downloads
 - User-configured site roots require HTTPS with no userinfo, query, or fragment. Adapter clients set bounded timeout, redirect count, response size, and strict same-origin checks including port.
 - Multi-site search has a global concurrency bound and per-site rate limiter. One site failure produces only that site's error group. SSE group writes are serialized, and JSON fallback returns the same DTO.
 - Browser results contain a 256-bit opaque claim, not a torrent URL or provider identity. The claim binds actor, site, torrent identity, and a short expiry.
-- The Explore UI may restore the latest search within one browser tab through bounded `sessionStorage` only: at most 24 groups, 300 results and 512 KiB for 30 minutes. It stores search fields, safe result DTOs and quick-recognition summaries only; expired opaque claims are removed on restore, and Cookie/passkey/source URLs are never persisted. A new search clears old recognition summaries. `localStorage` is not used for this transient state.
-- Quick recognition accepts only that opaque claim, resolves its server-side title without reserving or consuming it, and never downloads the torrent. It reuses the shared media-recognition parser before optional TMDB enrichment. Missing/unavailable/no-match metadata returns HTTP 200 with `status=unrecognized`, a stable error code, and safe parsed title/year/specifications; only permission and invalid/expired claims are request errors.
+- The Explore UI may restore the latest search within one browser tab through bounded `sessionStorage` only: at most 24 groups, 300 results and 512 KiB for 30 minutes. It stores search fields, safe result DTOs and quick-recognition summaries only; expired opaque claims are removed on restore, and Cookie/passkey/source URLs are never persisted. Recognition summaries bind `engine_version`: restoring an older version keeps the safe search groups but discards stale matched/unrecognized decisions. A new search clears all recognition summaries. `localStorage` is not used for this transient state.
+- Quick recognition accepts only that opaque claim, resolves its server-side title without reserving or consuming it, and never downloads the torrent. It reuses the shared media-recognition parser before optional TMDB enrichment. Its safe DTO includes `engine_version` and optional structured episode facts (`season`, `season_year`, `episode_min`, `episode_max`, `count`); the UI derives single/range/multi labels from these facts and never reparses the release name. Missing/unavailable/no-match metadata returns HTTP 200 with `status=unrecognized`, a stable error code, and safe parsed title/year/specifications; only permission and invalid/expired claims are request errors.
 - Recognition posters use the existing authenticated same-origin Discovery image gateway. Raw TMDB image URLs are not a new browser contract.
 - Download confirmation atomically reserves a claim. Concurrent consumers receive the generic expired/unavailable result. Provider or `DownloadService` failure releases the reservation only until its original expiry; success permanently consumes it.
 - PT downloads call the existing `DownloadService.Submit` with a bounded torrent source. They do not create a parallel queue, transfer path, media-library selector, or naming implementation.
@@ -51,11 +51,13 @@ POST   /api/v1/discovery/downloads
 | Claim used by another actor, expired, or in-flight | Return the same generic expired result without revealing which check failed |
 | Provider/download handoff fails | Restore the claim only if its original TTL remains valid |
 | SSE client disconnects | Stop emitting and do not write provider errors or sensitive context |
+| Stored recognition uses an older engine version | Keep the bounded search results, discard only the stale recognition summary, and allow a fresh recognition request |
 
 ## Tests Required
 
 - Adapter fixtures cover authenticated page, login page, result parsing, malformed-row skip count, next page, FREE promotion, size/peer counts, valid torrent, and HTML/error response.
 - Service tests cover ciphertext/redaction, candidate-update preservation, site failure isolation, actor/expiry binding, atomic concurrent claim reservation, retry restoration, and normal `DownloadService` task creation.
+- Quick-recognition tests cover engine-version invalidation, single episode, episode range, multi-episode count, season-only/season-year display, and absence of episode labels for movies or untrusted facts.
 - HTTP tests cover authentication, CSRF, no-store, redacted CRUD responses, JSON/SSE result parity, and absence of torrent IDs/credentials.
 - Frontend tests cover public query construction, grouped result replacement, and explicit page append; run test, typecheck, lint, and build.
 

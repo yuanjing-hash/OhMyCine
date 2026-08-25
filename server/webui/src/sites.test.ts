@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, site_type: 'pt', status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -37,6 +37,10 @@ describe('PT discovery contracts', () => {
     expect(ptRecognitionPath).not.toContain('torrent')
     expect(ptRecognitionErrorLabel('tmdb_no_match')).toContain('未找到可信匹配')
     expect(ptRecognitionErrorLabel('tmdb_credential_unavailable')).toContain('仅显示本地解析结果')
+    expect(ptRecognitionEpisodeLabel({ engine_version: ptRecognitionEngineVersion, status: 'matched', title: '奥美迦奥特曼', media_type: 'tv', episodes: { season: 1, episode_min: 9, episode_max: 9, count: 1 }, specifications: {} })).toBe('第 1 季 · 第 9 集')
+    expect(ptRecognitionEpisodeLabel({ engine_version: ptRecognitionEngineVersion, status: 'matched', title: '迪迦奥特曼', media_type: 'tv', episodes: { season: 1, episode_min: 1, episode_max: 52, count: 52 }, specifications: {} })).toBe('第 1 季 · 第 1–52 集 · 多集（共 52 集）')
+    expect(ptRecognitionEpisodeLabel({ engine_version: ptRecognitionEngineVersion, status: 'matched', title: '爱情公寓', media_type: 'tv', episodes: { season: 3, season_year: 2012 }, specifications: {} })).toBe('第 3 季（2012）')
+    expect(ptRecognitionEpisodeLabel({ engine_version: ptRecognitionEngineVersion, status: 'matched', title: '外传', media_type: 'movie', episodes: { episode_min: 1 }, specifications: {} })).toBe('')
   })
 
   it('renders safe CookieCloud site failure codes as actionable Chinese text', () => {
@@ -60,7 +64,7 @@ describe('PT discovery contracts', () => {
     saveTorrentSearchSession(storage, {
       input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title' },
       groups: [fresh, stale],
-      recognitions: { [fresh.items[0].token]: { status: 'matched', title: '迪迦奥特曼', media_type: 'tv', specifications: {} } },
+      recognitions: { [fresh.items[0].token]: { engine_version: ptRecognitionEngineVersion, status: 'matched', title: '迪迦奥特曼', media_type: 'tv', episodes: { episode_min: 1, episode_max: 52, count: 52 }, specifications: {} } },
       searched: true,
       savedAt: now,
     })
@@ -69,7 +73,30 @@ describe('PT discovery contracts', () => {
     expect(restored?.groups[0].items).toHaveLength(1)
     expect(restored?.groups[1].items).toHaveLength(0)
     expect(restored?.recognitions[fresh.items[0].token]?.status).toBe('matched')
+    expect(restored?.recognitions[fresh.items[0].token]?.episodes?.episode_max).toBe(52)
     expect(values.has(torrentSearchSessionKey)).toBe(true)
+  })
+
+  it('keeps cached search results but drops recognition output from an older engine', () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    }
+    const now = Date.parse('2026-08-25T00:00:00Z')
+    const fresh = group(1)
+    fresh.items[0].expires_at = '2026-08-25T00:10:00Z'
+    values.set(torrentSearchSessionKey, JSON.stringify({
+      input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title' },
+      groups: [fresh],
+      recognitions: { [fresh.items[0].token]: { engine_version: 'older-engine', status: 'unrecognized', error_code: 'tmdb_no_match', title: 'Ultraman Tiga', specifications: {} } },
+      searched: true,
+      savedAt: now,
+    }))
+    const restored = readTorrentSearchSession(storage, now)
+    expect(restored?.groups[0].items).toHaveLength(1)
+    expect(restored?.recognitions).toEqual({})
   })
 
   it('caps restored search results across all groups', () => {

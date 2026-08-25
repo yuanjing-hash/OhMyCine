@@ -9,6 +9,7 @@ import (
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -17,6 +18,8 @@ import (
 type DownloadRecognitionOverrideInput struct {
 	TMDBID    int64
 	MediaType string
+	Season    *int
+	Episode   *int
 }
 
 func (s *DownloadService) RecognitionCandidates(ctx context.Context, actor Actor, id, title, mediaType string, year *int) ([]tmdb.Candidate, error) {
@@ -97,6 +100,13 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 	if input.TMDBID <= 0 || (input.MediaType != "movie" && input.MediaType != "tv") {
 		return DownloadTaskSummary{}, appError(CodeInvalidRequest, "TMDB 匹配选择无效", nil)
 	}
+	season, episode, err := validateDownloadRecognitionEpisodeOverride(input.MediaType, input.Season, input.Episode)
+	if err != nil {
+		return DownloadTaskSummary{}, err
+	}
+	if err := validateCompletedManifestEpisodeOverride(task.CompletedManifestJSON, episode); err != nil {
+		return DownloadTaskSummary{}, err
+	}
 	if s.metadata == nil {
 		return DownloadTaskSummary{}, appError(CodeTMDBUnavailable, "TMDB 未配置", nil)
 	}
@@ -129,6 +139,12 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 		if err := tx.Model(&lockedTask).Updates(map[string]any{
 			"recognition_override_tmdb_id":    verified.ID,
 			"recognition_override_media_type": verified.MediaType,
+			"recognition_override_season":     season,
+			"recognition_override_episode":    episode,
+			"phase":                           models.DownloadTaskStatusVerifying,
+			"last_error_code":                 "",
+			"last_error_message":              "",
+			"finished_at":                     nil,
 			"updated_at":                      now,
 		}).Error; err != nil {
 			return err
@@ -155,7 +171,14 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 		if err := recordJobEvent(tx, lockedJob.ID, "control.retry", from, lockedJob.Status, &actor.User.ID, "", now); err != nil {
 			return err
 		}
-		if err := s.audit.Record(tx, &actor.User.ID, "download.recognition_override", "download_task", lockedTask.ID, "success", map[string]any{"media_type": verified.MediaType, "tmdb_id": verified.ID}, request); err != nil {
+		auditMetadata := map[string]any{"media_type": verified.MediaType, "tmdb_id": verified.ID}
+		if season != nil {
+			auditMetadata["season"] = *season
+		}
+		if episode != nil {
+			auditMetadata["episode"] = *episode
+		}
+		if err := s.audit.Record(tx, &actor.User.ID, "download.recognition_override", "download_task", lockedTask.ID, "success", auditMetadata, request); err != nil {
 			return err
 		}
 		if err := s.audit.Record(tx, &actor.User.ID, "jobs.retry", "job", lockedJob.ID, "success", map[string]any{"from": from, "to": lockedJob.Status}, request); err != nil {
@@ -171,7 +194,59 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 	s.queue.publish(queuedJob, "job.status_changed")
 	task.RecognitionOverrideTMDBID = cloneInt64(&verified.ID)
 	task.RecognitionOverrideMediaType = verified.MediaType
+	task.RecognitionOverrideSeason = cloneInt(season)
+	task.RecognitionOverrideEpisode = cloneInt(episode)
+	task.Phase = models.DownloadTaskStatusVerifying
+	task.LastErrorCode, task.LastErrorMessage, task.FinishedAt = "", "", nil
 	return downloadTaskSummary(task, models.JobStatusQueued), nil
+}
+
+func validateDownloadRecognitionEpisodeOverride(mediaType string, season, episode *int) (*int, *int, error) {
+	if mediaType == "movie" {
+		if season != nil || episode != nil {
+			return nil, nil, appError(CodeInvalidRequest, "电影不能指定季数或集数", nil)
+		}
+		return nil, nil, nil
+	}
+	if season != nil && (*season < 0 || *season > 200) {
+		return nil, nil, appError(CodeInvalidRequest, "季数必须在 0 到 200 之间", nil)
+	}
+	if episode != nil && (*episode < 1 || *episode > 100000) {
+		return nil, nil, appError(CodeInvalidRequest, "集数必须在 1 到 100000 之间", nil)
+	}
+	normalizedSeason := cloneInt(season)
+	if episode != nil && normalizedSeason == nil {
+		defaultSeason := 1
+		normalizedSeason = &defaultSeason
+	}
+	return normalizedSeason, cloneInt(episode), nil
+}
+
+func completedManifestVideoCount(manifest downloadpkg.Manifest) int {
+	count := 0
+	for _, file := range manifest.Files {
+		if isVideoFile(file.RelativePath) {
+			count++
+		}
+	}
+	return count
+}
+
+func validateCompletedManifestEpisodeOverride(raw string, episode *int) error {
+	if episode == nil {
+		return nil
+	}
+	manifest, exists, err := completedDownloadManifest(raw)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return appError(CodeInvalidRequest, "旧任务尚无完成文件清单，请先重新识别一次后再指定集数", nil)
+	}
+	if completedManifestVideoCount(manifest) != 1 {
+		return appError(CodeInvalidRequest, "仅单集下载可以人工指定集数", nil)
+	}
+	return nil
 }
 
 func (s *DownloadService) downloadRecognitionRecoveryContext(actor Actor, id string, control bool) (models.DownloadTask, models.Job, error) {
@@ -190,7 +265,11 @@ func (s *DownloadService) downloadRecognitionRecoveryContext(actor Actor, id str
 	if err := s.db.First(&job, "id = ?", task.JobID).Error; err != nil {
 		return task, job, queueNotFound(err)
 	}
-	if job.Status != models.JobStatusFailed || task.ScrapeStatus != "completed_unrecognized" || task.ProviderTaskID == "" || task.TargetLibraryID == nil {
+	_, snapshotExists, snapshotErr := completedDownloadManifest(task.CompletedManifestJSON)
+	if snapshotErr != nil {
+		return task, job, snapshotErr
+	}
+	if job.Status != models.JobStatusFailed || task.ScrapeStatus != "completed_unrecognized" || (!snapshotExists && task.ProviderTaskID == "") || task.TargetLibraryID == nil {
 		return task, job, appError(CodeQueueStateConflict, "该任务不需要人工识别恢复", nil)
 	}
 	return task, job, nil

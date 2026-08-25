@@ -56,7 +56,8 @@ func TestDownloadRecognitionOverrideSearchesByKeywordAndRetriesExistingProviderT
 	if err := queue.db.Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
-	manifest := downloadpkg.Manifest{Name: "Ming Dynasty in 1566", Complete: true, Files: []downloadpkg.File{{RelativePath: "Ming Dynasty in 1566/Ming.Dynasty.in.1566.S01E01.mkv", Size: 2 * 1024 * 1024 * 1024}}}
+	releaseName := `[jibaketa合成&音频压制][ViuTV粤语]超人 / 超人力霸王奥米加 / 奥美迦奥特曼 / Ultraman Omega - 09 [粤语+无字幕] (WEB 1920x1080 AVC AAC YUE)`
+	manifest := downloadpkg.Manifest{Name: releaseName, Complete: true, Files: []downloadpkg.File{{RelativePath: releaseName + ".mkv", Size: 2 * 1024 * 1024 * 1024}}}
 	completedManifest, err := encodeCompletedDownloadManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +70,7 @@ func TestDownloadRecognitionOverrideSearchesByKeywordAndRetriesExistingProviderT
 	job, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: "大明王朝", Provider: models.DownloaderTypePan115Offline, ResourceKey: "provider:115", Payload: downloadJobPayload{DownloadTaskID: taskID}}, func(tx *gorm.DB, queued models.Job) error {
 		return tx.Create(&models.DownloadTask{
 			ID: taskID, OwnerID: actor.User.ID, JobID: queued.ID, DownloaderName: "115", ProviderType: models.DownloaderTypePan115Offline,
-			ProviderTaskID: "completed-provider-task", SourceCiphertext: "encrypted", DisplayName: "Ming Dynasty in 1566 HQ -BlackTV",
+			ProviderTaskID: "completed-provider-task", SourceCiphertext: "encrypted", DisplayName: releaseName,
 			Phase: models.DownloadTaskStatusFailed, ScrapeStatus: "completed_unrecognized", ScrapeTitle: "Ming Dynasty in 1566", ScrapeCategory: "未识别", StagingCategory: "未识别",
 			ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: string(rules), ProfileRecognitionRulesJSON: "[]", ProfileBuiltinRecognitionPacksJSON: "[]",
 			TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &storage.ID, TargetStorageType: models.StorageTypeLocal, TargetStorageRoot: targetRoot, TargetRelativeRoot: "/", TransferMode: library.TransferMode, ConflictPolicy: library.ConflictPolicy,
@@ -146,6 +147,10 @@ func TestDownloadRecognitionOverrideSearchesByKeywordAndRetriesExistingProviderT
 	if persisted.Phase != models.DownloadTaskStatusCompleted || persisted.ScrapeStatus != "completed_verified" || persisted.StagingCategory != "未识别" {
 		t.Fatalf("recovered task=%+v", persisted)
 	}
+	summary := downloadTaskSummary(persisted, models.JobStatusCompleted)
+	if summary.ScrapeSeason == nil || *summary.ScrapeSeason != 1 || summary.ScrapeEpisode == nil || *summary.ScrapeEpisode != 9 {
+		t.Fatalf("episode summary=%+v", summary)
+	}
 	var transferTasks []models.TransferTask
 	if err := queue.db.Where("download_task_id = ?", taskID).Find(&transferTasks).Error; err != nil || len(transferTasks) != 1 {
 		t.Fatalf("transfer tasks=%+v err=%v", transferTasks, err)
@@ -214,7 +219,7 @@ func TestCompletedRecognitionRecoveryBackfillsLegacyManifestOnlyOnce(t *testing.
 		t.Fatal(err)
 	}
 	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{
-		"provider_task_id": "completed-provider-task", "phase": models.DownloadTaskStatusFailed, "scrape_status": "completed_unrecognized", "scrape_category": "未识别", "staging_category": "未识别", "completed_manifest_json": "{}",
+		"provider_task_id": "completed-provider-task", "phase": models.DownloadTaskStatusFailed, "scrape_status": "completed_unrecognized", "scrape_category": "未识别", "staging_category": "未识别", "completed_manifest_json": "{}", "source_ciphertext": "legacy-source-no-longer-readable",
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -259,5 +264,44 @@ func TestCompletedRecognitionRecoveryBackfillsLegacyManifestOnlyOnce(t *testing.
 	client.mu.Unlock()
 	if manifestCalls != 1 {
 		t.Fatalf("persisted manifest was fetched again: calls=%d", manifestCalls)
+	}
+}
+
+func TestValidateDownloadRecognitionEpisodeOverrideBoundsAndDefaults(t *testing.T) {
+	episode := 9
+	season, normalizedEpisode, err := validateDownloadRecognitionEpisodeOverride("tv", nil, &episode)
+	if err != nil || season == nil || *season != 1 || normalizedEpisode == nil || *normalizedEpisode != 9 {
+		t.Fatalf("season=%v episode=%v err=%v", season, normalizedEpisode, err)
+	}
+	invalidSeason, invalidEpisode := 201, 100001
+	if _, _, err := validateDownloadRecognitionEpisodeOverride("tv", &invalidSeason, nil); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("invalid season err=%v", err)
+	}
+	if _, _, err := validateDownloadRecognitionEpisodeOverride("tv", nil, &invalidEpisode); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("invalid episode err=%v", err)
+	}
+	if _, _, err := validateDownloadRecognitionEpisodeOverride("movie", nil, &episode); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("movie episode err=%v", err)
+	}
+}
+
+func TestValidateCompletedManifestEpisodeOverrideRequiresExactlyOneVideo(t *testing.T) {
+	episode := 9
+	if err := validateCompletedManifestEpisodeOverride("{}", &episode); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("legacy manifest err=%v", err)
+	}
+	manifest := downloadpkg.Manifest{Name: "series", Complete: true, Files: []downloadpkg.File{
+		{RelativePath: "series/episode-1.mkv", Size: 100},
+		{RelativePath: "series/episode-2.mkv", Size: 100},
+	}}
+	raw, err := encodeCompletedDownloadManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCompletedManifestEpisodeOverride(raw, &episode); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("multi-video manifest err=%v", err)
+	}
+	if err := validateCompletedManifestEpisodeOverride(raw, nil); err != nil {
+		t.Fatalf("season-only correction should remain safe: %v", err)
 	}
 }

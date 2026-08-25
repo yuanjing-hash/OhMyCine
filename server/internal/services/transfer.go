@@ -574,7 +574,7 @@ func buildTransferTargets(download models.DownloadTask, manifest downloadpkg.Man
 			continue
 		}
 		normalizedSource := strings.ReplaceAll(file.RelativePath, "\\", "/")
-		_, _, season, episode := medialibrary.ParseFilename(pathpkg.Base(normalizedSource), "/"+normalizedSource)
+		season, episode := transferEpisodeFacts(download, normalizedSource, videoCount)
 		if download.ScrapeMediaType == "tv" && episode == nil {
 			return nil, errors.New("tv transfer item has no trustworthy episode number")
 		}
@@ -654,13 +654,17 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 	}
 	videoCount := 0
 	for _, file := range manifest.Files {
+		if isVideoFile(file.RelativePath) {
+			videoCount++
+		}
+	}
+	for _, file := range manifest.Files {
 		if !isVideoFile(file.RelativePath) {
 			continue
 		}
-		videoCount++
 		if download.ScrapeMediaType == "tv" {
 			normalized := strings.ReplaceAll(file.RelativePath, "\\", "/")
-			_, _, _, episode := medialibrary.ParseFilename(pathpkg.Base(normalized), "/"+normalized)
+			_, episode := transferEpisodeFacts(download, normalized, videoCount)
 			if episode == nil {
 				return errors.New("tv transfer item has no trustworthy episode number")
 			}
@@ -670,6 +674,31 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 		return errors.New("transfer manifest was not package-selected")
 	}
 	return nil
+}
+
+func transferEpisodeFacts(download models.DownloadTask, relativePath string, videoCount int) (*int, *int) {
+	_, _, season, episode := medialibrary.ParseFilename(pathpkg.Base(relativePath), "/"+relativePath)
+	if download.ScrapeMediaType == "tv" {
+		if download.ScrapeSeason != nil {
+			season = cloneInt(download.ScrapeSeason)
+		}
+		if download.ScrapeEpisode != nil && videoCount == 1 {
+			episode = cloneInt(download.ScrapeEpisode)
+		}
+	}
+	if download.RecognitionOverrideMediaType == "tv" {
+		if download.RecognitionOverrideSeason != nil {
+			season = cloneInt(download.RecognitionOverrideSeason)
+		}
+		if download.RecognitionOverrideEpisode != nil && videoCount == 1 {
+			episode = cloneInt(download.RecognitionOverrideEpisode)
+		}
+	}
+	if episode != nil && season == nil {
+		defaultSeason := 1
+		season = &defaultSeason
+	}
+	return season, episode
 }
 
 func sameAutomaticTransferFiles(left, right []downloadpkg.File) bool {

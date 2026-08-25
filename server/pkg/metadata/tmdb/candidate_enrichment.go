@@ -28,13 +28,17 @@ type candidateAlternativeTitle struct {
 }
 
 type candidateEnrichmentResponse struct {
-	ID                int64  `json:"id"`
-	Title             string `json:"title"`
-	OriginalTitle     string `json:"original_title"`
-	Name              string `json:"name"`
-	OriginalName      string `json:"original_name"`
-	NumberOfSeasons   int    `json:"number_of_seasons"`
-	NumberOfEpisodes  int    `json:"number_of_episodes"`
+	ID               int64  `json:"id"`
+	Title            string `json:"title"`
+	OriginalTitle    string `json:"original_title"`
+	Name             string `json:"name"`
+	OriginalName     string `json:"original_name"`
+	NumberOfSeasons  int    `json:"number_of_seasons"`
+	NumberOfEpisodes int    `json:"number_of_episodes"`
+	Seasons          []struct {
+		SeasonNumber int    `json:"season_number"`
+		AirDate      string `json:"air_date"`
+	} `json:"seasons"`
 	AlternativeTitles struct {
 		Titles  []candidateAlternativeTitle `json:"titles"`
 		Results []candidateAlternativeTitle `json:"results"`
@@ -140,6 +144,18 @@ func mergeCandidateEnrichment(candidate Candidate, detail candidateEnrichmentRes
 	if candidate.MediaType == "tv" {
 		candidate.SeasonCount = boundedCount(detail.NumberOfSeasons)
 		candidate.EpisodeCount = boundedCount(detail.NumberOfEpisodes)
+		seasonYears := make(map[int]int, min(len(detail.Seasons), 200))
+		for _, season := range detail.Seasons {
+			if len(seasonYears) == 200 || season.SeasonNumber < 0 || season.SeasonNumber > 200 {
+				continue
+			}
+			if year := parseYear(season.AirDate); year != nil {
+				seasonYears[season.SeasonNumber] = *year
+			}
+		}
+		if len(seasonYears) > 0 {
+			candidate.SeasonYears = seasonYears
+		}
 	}
 	return candidate
 }

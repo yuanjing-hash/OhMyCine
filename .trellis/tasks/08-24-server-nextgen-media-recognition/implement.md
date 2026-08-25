@@ -146,6 +146,15 @@ npm run lint
 - 115 原生离线支持站点 `.torrent`：对原始 bencoded `info` 字节计算 SHA-1 生成 BTIH magnet，保留有界 Tracker；畸形、重复 info、过深和尾随数据在 provider 调用前拒绝，私有 Tracker/passkey 仍只存在于加密 source。
 - WebUI 23 个测试文件、118 项测试通过；permissions check、Vue typecheck、ESLint、Vite build 纳入本轮门禁。Go 定向 parser/service/downloader/database 回归通过，全量结果记录在本轮最终验证中。
 
+## 2026-08-25 多语言季集与完成任务恢复复核
+
+- Explore 快速识别返回 `engine_version` 与结构化季集摘要；旧引擎识别缓存失效但搜索结果保留。单集、范围、多集、整季/季年份均由 Server 事实展示，不在 Vue 重新解析标题。
+- 英文、Pinyin/Romanized、TMDB alternative titles/translations 进入统一召回排名。真实 `Ai qing gong yu` 仅召回同名电影时，使用候选权威中文标题在剩余十次请求预算内桥接 TV；`Ipartment`、`Apartment of Love` 走相同通用链路，无单作品字典。
+- `S03 2012` 一类年份与 TMDB 季 `air_date` 和系列首播年分别核验，兼容发布组使用季年份或系列年份的两种习惯；旧负缓存通过 `nextgen-domain-v5` 失效。
+- v47 持久化自动/人工季集事实。人工恢复支持 S00..S200、E1..E100000；只填集号默认 S01，且仅完成清单恰好一个视频时允许覆盖。Transfer 使用持久化事实，`Ultraman Omega - 09 [粤语+无字幕]` 可安全恢复为 S01E09，多文件不会复用单集覆盖。
+- 完成清单恢复不重新 Submit/Get/Pause/Resume 下载器；legacy 最多补取一次 Manifest。普通完成与人工恢复路径都保留真实 Transfer 错误，`transfer_media_unrecognized` 不再显示为 `downloader_unavailable`。点击重试后旧错误立即替换为“正在重试…”。
+- 最终门禁：`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag 两种 Server build、WebUI 23 files/121 tests、permissions check、vue-tsc、ESLint、Vite build 与 `git diff --check` 全部通过；仅保留既有 Vite chunk-size 警告。
+
 ## 开始实现前检查
 
 - [x] 用户批准本次最终规划摘要。

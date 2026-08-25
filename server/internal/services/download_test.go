@@ -246,6 +246,22 @@ func TestDownloadFailureMessage(t *testing.T) {
 	}
 }
 
+func TestTransferEnqueueFailureDoesNotMasqueradeAsDownloaderUnavailable(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ID: "transfer-enqueue-failure", ProviderType: models.DownloaderTypePan115Offline}
+
+	terminal := worker.transferEnqueueFailure(task, appError(CodeTransferMediaUnrecognized, "媒体识别结果不可信", nil))
+	if terminal.ErrorCode != CodeTransferMediaUnrecognized || terminal.ErrorMessage != "媒体识别结果不可信" || terminal.RetryAt != nil {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+
+	retryable := worker.transferEnqueueFailure(task, errors.New("temporary queue write failure"))
+	if retryable.ErrorCode != "transfer_enqueue_failed" || retryable.RetryAt == nil || retryable.ErrorCode == CodeDownloaderUnavailable {
+		t.Fatalf("retryable=%+v", retryable)
+	}
+}
+
 func TestDownloadSnapshotsSeedingPolicy(t *testing.T) {
 	downloads, downloaders, queue, actor, _ := downloadFixture(t)
 	root := t.TempDir()

@@ -11,16 +11,21 @@ import (
 )
 
 var (
-	sxxexxPattern         = regexp.MustCompile(`(?i)(?:^|[. _-])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[. _-]|$)`)
-	oneXEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[. _-])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[. _-]|$)`)
-	episodeOnlyPattern    = regexp.MustCompile(`(?i)(?:^|[. _-])(?:EP?|Episode)\s*0*([0-9]{1,5})(?:[. _-]|$)`)
-	chineseEpisodePattern = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十百两〇零]+)\s*[集话話]`)
-	seasonFolderPattern   = regexp.MustCompile(`(?i)^(?:Season|Seanson|S)\s*0*([0-9]{1,2})$`)
-	chineseSeasonPattern  = regexp.MustCompile(`^第\s*([0-9一二三四五六七八九十百两〇零]+)\s*季$`)
-	yearPattern           = regexp.MustCompile(`(?:^|[\s._(（\[【-])((?:18|19|20|21)[0-9]{2})(?:$|[\s._)）\]】-])`)
-	bracketNoisePattern   = regexp.MustCompile(`\[[^\]]+\]|\([^)]*\)|【[^】]+】|（[^）]*）`)
-	technicalTokenPattern = regexp.MustCompile(`(?i)(?:^|[. _-])(?:2160p|1080p|720p|576p|480p|UHD|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|10bit|8bit|Proper|Repack)(?:$|[. _-])`)
-	spacePattern          = regexp.MustCompile(`\s+`)
+	sxxexxPattern      = regexp.MustCompile(`(?i)(?:^|[. _-])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[. _-]|$)`)
+	oneXEpisodePattern = regexp.MustCompile(`(?i)(?:^|[. _-])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[. _-]|$)`)
+	episodeOnlyPattern = regexp.MustCompile(`(?i)(?:^|[. _-])(?:EP?|Episode)\s*0*([0-9]{1,5})(?:[. _-]|$)`)
+	// A bare trailing number is only trusted when a following bracket carries
+	// release metadata. This covers common anime/PT names such as
+	// "Work - 09 [language] (WEB ...)" without turning titles such as
+	// "Catch-22 (2019)" into episodes.
+	trailingBracketEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})\s*(\[[^\]]{1,128}\]|【[^】]{1,128}】)`)
+	chineseEpisodePattern         = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十百两〇零]+)\s*[集话話]`)
+	seasonFolderPattern           = regexp.MustCompile(`(?i)^(?:Season|Seanson|S)\s*0*([0-9]{1,2})$`)
+	chineseSeasonPattern          = regexp.MustCompile(`^第\s*([0-9一二三四五六七八九十百两〇零]+)\s*季$`)
+	yearPattern                   = regexp.MustCompile(`(?:^|[\s._(（\[【-])((?:18|19|20|21)[0-9]{2})(?:$|[\s._)）\]】-])`)
+	bracketNoisePattern           = regexp.MustCompile(`\[[^\]]+\]|\([^)]*\)|【[^】]+】|（[^）]*）`)
+	technicalTokenPattern         = regexp.MustCompile(`(?i)(?:^|[. _-])(?:2160p|1080p|720p|576p|480p|UHD|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|HEVC|AV1|AAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?5(?:\.1)?|HDR10?|DoVi|10bit|8bit|Proper|Repack)(?:$|[. _-])`)
+	spacePattern                  = regexp.MustCompile(`\s+`)
 )
 
 var reservedStructureSegments = map[string]struct{}{
@@ -58,6 +63,10 @@ func ParseMedia(name, providerPath string) ParsedMedia {
 	}
 
 	if episode != nil {
+		if season == nil {
+			defaultSeason := 1
+			season = &defaultSeason
+		}
 		seriesTitle := ""
 		if seasonIndex >= 1 {
 			seriesTitle = cleanWorkTitle(parents[seasonIndex-1])
@@ -127,7 +136,16 @@ func parseEpisodeStem(stem string) (string, *int, *int) {
 		episode := atoiPointer(match[1])
 		return cleanMediaTitle(episodeOnlyPattern.ReplaceAllString(stem, " ")), nil, episode
 	}
+	if match := trailingBracketEpisodePattern.FindStringSubmatch(stem); len(match) == 3 && trailingEpisodeBracketHasReleaseEvidence(match[2]) {
+		episode := atoiPointer(match[1])
+		return cleanMediaTitle(trailingBracketEpisodePattern.ReplaceAllString(stem, " ")), nil, episode
+	}
 	return cleanMediaTitle(stem), nil, nil
+}
+
+func trailingEpisodeBracketHasReleaseEvidence(value string) bool {
+	return technicalTokenPattern.MatchString(value) ||
+		strings.ContainsAny(strings.ToLower(value), "字幕语語粤粵国國英日韩韓音轨軌")
 }
 
 func findSeasonFolder(segments []string) (int, *int) {

@@ -12,20 +12,21 @@ import (
 // a benchmark report instead of scattered magic confidence values.
 func DefaultScoreConfig() ScoreConfig {
 	return ScoreConfig{
-		TitleWeight:       .68,
-		YearExact:         .12,
-		YearNear:          .06,
-		YearConflict:      .24,
-		TypeWeight:        .10,
-		TypeConflict:      .22,
-		SeasonWeight:      .03,
-		StructureWeight:   .05,
-		ConsistencyWeight: .03,
-		UniquenessWeight:  .05,
-		PopularityWeight:  .01,
-		MatchThreshold:    .78,
-		ConflictMargin:    .06,
-		HanEquivalence:    BuiltInHanEquivalence,
+		TitleWeight:         .68,
+		YearExact:           .12,
+		YearNear:            .06,
+		YearConflict:        .24,
+		TypeWeight:          .10,
+		TypeConflict:        .22,
+		SeasonWeight:        .03,
+		StructureWeight:     .05,
+		ConsistencyWeight:   .03,
+		UniquenessWeight:    .05,
+		PopularityWeight:    .01,
+		MatchThreshold:      .78,
+		ExactTitleThreshold: .72,
+		ConflictMargin:      .06,
+		HanEquivalence:      BuiltInHanEquivalence,
 	}
 }
 
@@ -78,7 +79,11 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 	if len(decision.Ranked) > 1 {
 		decision.RunnerUpGap = clamp01(best.Score.Total - decision.Ranked[1].Score.Total)
 	}
-	if best.Score.Total < config.MatchThreshold {
+	threshold := config.MatchThreshold
+	if best.Score.TitleSimilarity == 1 && config.ExactTitleThreshold > 0 && config.ExactTitleThreshold < threshold {
+		threshold = config.ExactTitleThreshold
+	}
+	if best.Score.Total < threshold {
 		decision.Reason = ReasonLowConfidence
 		addDiagnostic(&decision.Diagnostics, "automatic_threshold_not_met", "warning", "best candidate did not meet the corpus-calibrated automatic threshold")
 		return decision
@@ -127,7 +132,24 @@ func boundedRemoteCandidate(candidate RemoteCandidate) RemoteCandidate {
 	} else {
 		candidate.SeasonCount = cloneDomainInt(candidate.SeasonCount)
 	}
+	candidate.SeasonYears = boundedSeasonYears(candidate.SeasonYears)
 	return candidate
+}
+
+func boundedSeasonYears(values map[int]int) map[int]int {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[int]int, minInt(len(values), 200))
+	for season, year := range values {
+		if len(result) == 200 {
+			break
+		}
+		if season >= 0 && season <= 200 && year >= 1888 && year <= 2200 {
+			result[season] = year
+		}
+	}
+	return result
 }
 
 func boundedStringSlice(values []string, maximum, runeLimit int) []string {
@@ -168,19 +190,24 @@ func scoreCandidate(parsed ParsedFacts, candidate RemoteCandidate, config ScoreC
 	ranked.Score.Title = config.TitleWeight * bestSimilarity
 	ranked.Evidence = append(ranked.Evidence, Evidence{Code: "best_title_similarity", Kind: "title", Strength: bestSimilarity, Summary: "best normalized localized/original/alternative/translation title similarity"})
 
-	if parsed.Year != nil && candidate.ReleaseYear != nil {
-		difference := absoluteInt(*parsed.Year - *candidate.ReleaseYear)
-		switch difference {
-		case 0:
-			ranked.Score.Year = config.YearExact
-			ranked.Evidence = append(ranked.Evidence, Evidence{Code: "year_exact", Kind: "year", Strength: 1, Summary: "release year exactly matches parsed facts"})
-		case 1:
-			ranked.Score.Year = config.YearNear
-			ranked.Evidence = append(ranked.Evidence, Evidence{Code: "year_near", Kind: "year", Strength: .5, Summary: "release year is within the bounded one-year tolerance"})
-		default:
-			ranked.Score.ConflictPenalty += config.YearConflict
-			ranked.Evidence = append(ranked.Evidence, Evidence{Code: "year_conflict", Kind: "year", Strength: 1, Conflict: true, Summary: "release year conflicts with parsed facts"})
+	if parsed.SeasonYear != nil && parsed.Season != nil && candidate.MediaType == MediaTypeTV {
+		// A year next to Sxx is ambiguous in real release names: some groups
+		// publish the season air year (Ai qing gong yu 2012 S03), while others
+		// keep the series premiere year (Game of Thrones 2011 S03). Accept the
+		// stronger matching interpretation and reject only when both known facts
+		// conflict, instead of hard-coding either naming convention.
+		if seasonYear, exists := candidate.SeasonYears[*parsed.Season]; exists {
+			seasonDifference := absoluteInt(*parsed.SeasonYear - seasonYear)
+			if candidate.ReleaseYear != nil && absoluteInt(*parsed.SeasonYear-*candidate.ReleaseYear) < seasonDifference {
+				scoreYearEvidence(&ranked, *parsed.SeasonYear, *candidate.ReleaseYear, config, "series_year_with_season")
+			} else {
+				scoreYearEvidence(&ranked, *parsed.SeasonYear, seasonYear, config, "season_year")
+			}
+		} else if candidate.ReleaseYear != nil {
+			scoreYearEvidence(&ranked, *parsed.SeasonYear, *candidate.ReleaseYear, config, "series_year_with_season")
 		}
+	} else if parsed.Year != nil && candidate.ReleaseYear != nil {
+		scoreYearEvidence(&ranked, *parsed.Year, *candidate.ReleaseYear, config, "year")
 	}
 	if parsed.SuggestedType != MediaTypeUnknown {
 		strength := clamp01(parsed.TypeConfidence)
@@ -210,6 +237,21 @@ func scoreCandidate(parsed ParsedFacts, candidate RemoteCandidate, config ScoreC
 	}
 	updateTotal(&ranked.Score)
 	return ranked
+}
+
+func scoreYearEvidence(ranked *RankedCandidate, parsedYear, candidateYear int, config ScoreConfig, prefix string) {
+	difference := absoluteInt(parsedYear - candidateYear)
+	switch difference {
+	case 0:
+		ranked.Score.Year = config.YearExact
+		ranked.Evidence = append(ranked.Evidence, Evidence{Code: prefix + "_exact", Kind: "year", Strength: 1, Summary: "release year exactly matches parsed facts"})
+	case 1:
+		ranked.Score.Year = config.YearNear
+		ranked.Evidence = append(ranked.Evidence, Evidence{Code: prefix + "_near", Kind: "year", Strength: .5, Summary: "release year is within the bounded one-year tolerance"})
+	default:
+		ranked.Score.ConflictPenalty += config.YearConflict
+		ranked.Evidence = append(ranked.Evidence, Evidence{Code: prefix + "_conflict", Kind: "year", Strength: 1, Conflict: true, Summary: "release year conflicts with parsed facts"})
+	}
 }
 
 func applyUniqueness(ranked []RankedCandidate, config ScoreConfig) {
@@ -244,9 +286,27 @@ func candidateNames(candidate RemoteCandidate) []string {
 		value = boundedText(value, MaxPackageRunes)
 		if strings.TrimSpace(value) != "" {
 			result = appendUniqueBounded(result, []string{value}, 64)
+			result = appendUniqueBounded(result, candidateSubtitleAliases(value), 64)
 		}
 	}
 	return result
+}
+
+// candidateSubtitleAliases exposes an explicit colon-delimited subtitle as a
+// ranking alias. TMDB commonly stores franchise films as "Series: Subtitle"
+// while a release site publishes only the distinctive subtitle. Requiring at
+// least two words prevents a broad one-token suffix from becoming an unsafe
+// automatic identity shortcut.
+func candidateSubtitleAliases(value string) []string {
+	for _, separator := range []string{":", "："} {
+		if index := strings.LastIndex(value, separator); index >= 0 {
+			suffix := boundedText(value[index+len(separator):], MaxPackageRunes)
+			if len(strings.Fields(suffix)) >= 2 && meaningfulTitle(suffix) {
+				return []string{suffix}
+			}
+		}
+	}
+	return nil
 }
 
 func absoluteInt(value int) int {

@@ -208,12 +208,13 @@ type Candidate struct {
 	// omitted from the administrator correction DTO: the browser needs only a
 	// safe identity summary, while the automatic recognizer may enrich a small
 	// shortlist with additional TMDB evidence.
-	AlternativeTitles []string `json:"-"`
-	Translations      []string `json:"-"`
-	SeasonCount       int      `json:"-"`
-	EpisodeCount      int      `json:"-"`
-	Popularity        float64  `json:"-"`
-	VoteCount         int      `json:"-"`
+	AlternativeTitles []string    `json:"-"`
+	Translations      []string    `json:"-"`
+	SeasonCount       int         `json:"-"`
+	EpisodeCount      int         `json:"-"`
+	SeasonYears       map[int]int `json:"-"`
+	Popularity        float64     `json:"-"`
+	VoteCount         int         `json:"-"`
 }
 
 // DiscoveryPage is the bounded, credential-free projection returned by TMDB

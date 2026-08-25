@@ -95,14 +95,14 @@
       "id":"tv-leading-number-title-3-body-problem",
       "input":{"package_name":"3.Body.Problem.S01.2024.1080p.NF-WEB","files":[{"relative_path":"3 Body Problem/Season 01/3.Body.Problem.S01E01.mkv"},{"relative_path":"3 Body Problem/Season 01/3.Body.Problem.S01E02.mkv"},{"relative_path":"3 Body Problem/Season 01/3.Body.Problem.S01E03.mkv"}]},
       "candidates":[{"id":108545,"media_type":"tv","title":"3 Body Problem","alternative_titles":["The Three-Body Problem"],"release_year":2024,"season_count":1},{"id":999,"media_type":"movie","title":"Body Problem","release_year":2024}],
-      "expected":{"media_type":"tv","canonical_title":"3 Body Problem","year":2024,"remote_id":108545},
+      "expected":{"media_type":"tv","canonical_title":"3 Body Problem","season_year":2024,"remote_id":108545},
       "policy":"must_match"
     },
     {
       "id":"tv-traditional-simplified-alternative-title",
       "input":{"package_name":"後宮甄嬛傳.2011.S01E01.1080p","media_type_hint":"tv"},
       "candidates":[{"id":321,"media_type":"tv","title":"Empresses in the Palace","alternative_titles":["后宫甄嬛传"],"translations":["The Legend of Zhen Huan"],"release_year":2011,"season_count":1}],
-      "expected":{"media_type":"tv","canonical_title":"後宮甄嬛傳","year":2011,"remote_id":321},
+      "expected":{"media_type":"tv","canonical_title":"後宮甄嬛傳","season_year":2011,"remote_id":321},
       "policy":"must_match"
     },
     {
@@ -137,7 +137,7 @@
       "id":"negative-two-identical-candidates",
       "input":{"package_name":"The Office.2005.S01E01","media_type_hint":"tv"},
       "candidates":[{"id":2316,"media_type":"tv","title":"The Office","release_year":2005},{"id":9999,"media_type":"tv","title":"The Office","release_year":2005}],
-      "expected":{"media_type":"tv","canonical_title":"The Office","year":2005},
+      "expected":{"media_type":"tv","canonical_title":"The Office","season_year":2005},
       "policy":"must_reject"
     },
     {

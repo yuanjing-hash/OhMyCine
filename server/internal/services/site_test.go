@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
@@ -326,6 +327,45 @@ func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDo
 	foreign.User.ID++
 	if _, err := service.RecognizeResult(context.Background(), foreign, token); ErrorCode(err) != CodeSiteResultExpired {
 		t.Fatalf("foreign recognition error=%v", err)
+	}
+}
+
+func TestSiteResultRecognitionReturnsStructuredEpisodeFactsWithoutInventingSpecialEpisodes(t *testing.T) {
+	service, adapter, actor, _, _, _ := siteFixture(t)
+	created, err := service.Create(context.Background(), actor, validSiteInput("Episode facts", "https://episodes.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(title string) SiteRecognitionSummary {
+		adapter.searchTitle = title
+		groups, searchErr := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Ultraman", SiteID: &created.ID, Page: 1})
+		if searchErr != nil || len(groups) != 1 || len(groups[0].Items) != 1 {
+			t.Fatalf("groups=%+v err=%v", groups, searchErr)
+		}
+		result, recognizeErr := service.RecognizeResult(context.Background(), actor, groups[0].Items[0].Token)
+		if recognizeErr != nil {
+			t.Fatal(recognizeErr)
+		}
+		return result
+	}
+
+	complete := lookup("[DBD-Raws][迪迦奥特曼/Ultraman Tiga/ウルトラマンティガ][01-52TV全集+剧场+OV+特典][1080P][BDRip][HEVC-10bit][简体字幕外挂][FLAC][MKV]")
+	if complete.EngineVersion != mediarecognition.EngineVersion || complete.MediaType != "tv" || complete.Episodes == nil || complete.Episodes.EpisodeMin == nil || *complete.Episodes.EpisodeMin != 1 || complete.Episodes.EpisodeMax == nil || *complete.Episodes.EpisodeMax != 52 || complete.Episodes.Count != 52 {
+		t.Fatalf("complete=%+v", complete)
+	}
+	payload, err := json.Marshal(complete)
+	if err != nil || !strings.Contains(string(payload), `"engine_version":"`+mediarecognition.EngineVersion+`"`) || !strings.Contains(string(payload), `"episode_min":1`) || !strings.Contains(string(payload), `"episode_max":52`) {
+		t.Fatalf("payload=%s err=%v", payload, err)
+	}
+
+	season := lookup("Ai qing gong yu 2012 S03 2160p WEB-DL H.265 AAC-ZmWeb")
+	if season.Episodes == nil || season.Episodes.Season == nil || *season.Episodes.Season != 3 || season.Episodes.SeasonYear == nil || *season.Episodes.SeasonYear != 2012 || season.Episodes.EpisodeMin != nil {
+		t.Fatalf("season=%+v", season)
+	}
+
+	special := lookup("Ultraman Tiga Gaiden Revival of the Ancient Giant WEB-DL 2160P HEVC AAC-Side")
+	if special.Episodes != nil {
+		t.Fatalf("special feature was disguised as an ordinary episode: %+v", special)
 	}
 }
 

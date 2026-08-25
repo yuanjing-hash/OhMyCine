@@ -23,14 +23,14 @@ var (
 	completeCountPattern            = regexp.MustCompile(`(?i)(?:\[|【)\s*0*([0-9]{1,5})\s*(?:全集|全)\s*(?:\]|】)`)
 	bracketEpisodePattern           = regexp.MustCompile(`(?:\[|【)\s*0*([0-9]{1,5})\s*(?:\]|】)`)
 	explicitTrailingEpisodePattern  = regexp.MustCompile(`(?i)-\s*ep?\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?(?:\s*(?:\[|【)|$)`)
-	bracketedTrailingEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?\s*(?:\[|【)`)
+	bracketedTrailingEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?\s*(\[[^\]]{1,128}\]|【[^】]{1,128}】)`)
 	chineseEpisodePattern           = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*[集话話](?:$|[^\p{L}\p{N}])`)
 	chineseSeasonPattern            = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*季(?:$|[^\p{L}\p{N}])`)
 	numericEpisodePattern           = regexp.MustCompile(`^0*([0-9]{1,5})$`)
 	yearTokenPattern                = regexp.MustCompile(`\b((?:18|19|20)[0-9]{2})\b`)
-	techTokenPattern                = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng)\b`)
+	techTokenPattern                = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|[0-9]{2,3}\s*fps|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng|zh(?:[- .]?(?:cn|tw|hk))?)\b`)
 	spacedTechPattern               = regexp.MustCompile(`(?i)\b(?:[hx]\s*26[45]|ddp?\s*[0-9](?:\s*[0-9])?|eac3|ac3|lpcm|flac|dvd\s*480p|hdtv\s*rip|bd\s*rip|web\s*rip|[0-9]{3,4}\s*x\s*[0-9]{3,4})\b`)
-	conditionalNoisePattern         = regexp.MustCompile(`(?i)\b(?:complete|edr|iq|[0-9]+\s*audio|iso\s*pack)\b|全集`)
+	conditionalNoisePattern         = regexp.MustCompile(`(?i)\b(?:complete|edr|iq|[0-9]+\s*audio|iso\s*pack|ultra\s+resolution|remastered|version)\b|全集`)
 	languageTrackOnlyPattern        = regexp.MustCompile(`(?i)^(?:[国國粤粵英日韩韓台中普话話語语一二三四五六七八九十0-9双雙多]+(?:音轨|音軌)?|(?:mandarin|cantonese|japanese|english|chinese)(?:dub|audio)?)$`)
 	subtitleTokenPattern            = regexp.MustCompile(`(?i)\b(?:chs|cht|gb|big5|subs?|multi[- .]?sub)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕`)
 	trailingGroupPattern            = regexp.MustCompile(`^(.*?)(\s*-\s*)([[:alnum:]][[:alnum:]-]{1,31})\s*$`)
@@ -99,6 +99,7 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 
 	sources := collectNamedSources(input)
 	parsed := make([]parsedName, 0, len(sources))
+	seasonYearFromName := false
 	for _, source := range sources {
 		item := analyzeName(source, now)
 		if item.directHint != nil && !validIdentityHint(item.directHint) {
@@ -108,6 +109,9 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 			continue
 		}
 		parsed = append(parsed, item)
+		if input.YearHint == nil && item.season != nil && item.year != nil {
+			seasonYearFromName = true
+		}
 	}
 	if len(parsed) == 0 {
 		addDiagnostic(&result.Diagnostics, "title_not_found", "warning", "no bounded source name produced a usable title")
@@ -145,6 +149,10 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 	if hasNameEpisodeEvidence(parsed) {
 		result.TypeEvidence = append(result.TypeEvidence, Evidence{Code: "release_name_episode", Kind: "structure", Supports: MediaTypeTV, Strength: .94, Summary: "release title contains bounded season or episode structure"})
 	}
+	if seasonYearFromName && result.Year != nil {
+		result.SeasonYear = cloneDomainInt(result.Year)
+		result.Year = nil
+	}
 	result.SuggestedType, result.TypeConfidence = decideMediaType(input.MediaTypeHint, result.Structure, result.TypeEvidence)
 	if input.DirectHint != nil {
 		if result.DirectHint != nil && !sameIdentityHint(result.DirectHint, input.DirectHint) {
@@ -152,7 +160,7 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 		}
 		result.DirectHint = cloneIdentityHint(input.DirectHint)
 	}
-	result.Queries = buildQueryVariants(parsed, result.Year, result.SuggestedType)
+	result.Queries = buildQueryVariants(parsed, result.Year, result.SeasonYear, result.SuggestedType)
 	addDiagnostic(&result.Diagnostics, "parser_complete", "info", fmt.Sprintf("parsed %d safe name sources into %d query variants", len(parsed), len(result.Queries)))
 	if result.ReleaseGroup != "" {
 		addDiagnostic(&result.Diagnostics, "release_group_observed", "info", "a bounded trailing release-group candidate was separated from the title")
@@ -400,6 +408,16 @@ func structuredReleaseTitle(value string) (string, string, bool) {
 	if technicalBracketOnly(group) {
 		return structuredReleaseTitle(remainder)
 	}
+	// Multiple leading release/language brackets may precede an unbracketed
+	// work title. Prefer that explicit title surface over treating the second
+	// bracket itself as the work name.
+	if unwrapped := trimLeadingBracketSegments(remainder); unwrapped != remainder {
+		if _, episode := firstSeasonEpisode(unwrapped); episode != nil {
+			if candidate := titlePrefixBeforeEpisode(unwrapped); meaningfulTitle(candidate) {
+				return candidate, cleanTitleSurface(group), true
+			}
+		}
+	}
 	_, episode := firstSeasonEpisode(remainder)
 	segments := bracketSegmentPattern.FindAllStringSubmatch(remainder, -1)
 	structured := episode != nil || techTokenPattern.MatchString(remainder) || subtitleTokenPattern.MatchString(remainder) || len(segments) >= 2
@@ -433,6 +451,21 @@ func structuredReleaseTitle(value string) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+func trimLeadingBracketSegments(value string) string {
+	trimmed := strings.TrimSpace(value)
+	for {
+		match := leadingBracketPattern.FindStringSubmatch(trimmed)
+		if len(match) != 4 {
+			return trimmed
+		}
+		next := strings.TrimSpace(match[3])
+		if next == "" || next == trimmed {
+			return trimmed
+		}
+		trimmed = next
+	}
 }
 
 func technicalBracketOnly(value string) bool {
@@ -692,13 +725,22 @@ func firstSeasonEpisode(value string) (*int, *int) {
 		if parsed < 1888 || parsed > maxRecognitionYear {
 			episode = cloneDomainInt(&parsed)
 		}
-	} else if match := bracketedTrailingEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
+	} else if match := bracketedTrailingEpisodePattern.FindStringSubmatch(value); len(match) == 3 && trailingEpisodeBracketHasEvidence(match[2]) {
 		parsed, _ := strconv.Atoi(match[1])
 		if parsed < 1888 || parsed > maxRecognitionYear {
 			episode = cloneDomainInt(&parsed)
+			if season == nil {
+				defaultSeason := 1
+				season = &defaultSeason
+			}
 		}
 	}
 	return season, episode
+}
+
+func trailingEpisodeBracketHasEvidence(value string) bool {
+	return techTokenPattern.MatchString(value) || spacedTechPattern.MatchString(value) || subtitleTokenPattern.MatchString(value) ||
+		strings.ContainsAny(strings.ToLower(value), "语語粤粵国國英日韩韓音轨軌")
 }
 
 func episodeRangeFromName(value string) (*int, *int) {
@@ -901,7 +943,7 @@ func decideMediaType(hint MediaType, structure StructureFacts, evidence []Eviden
 	return MediaTypeMovie, movie
 }
 
-func buildQueryVariants(names []parsedName, year *int, mediaType MediaType) []QueryVariant {
+func buildQueryVariants(names []parsedName, year, seasonYear *int, mediaType MediaType) []QueryVariant {
 	result := make([]QueryVariant, 0, MaxQueryVariants)
 	seen := make(map[string]struct{})
 	add := func(title string, item parsedName, reason string, candidateYear *int) {
@@ -917,7 +959,7 @@ func buildQueryVariants(names []parsedName, year *int, mediaType MediaType) []Qu
 			return
 		}
 		seen[key] = struct{}{}
-		result = append(result, QueryVariant{Title: title, Year: cloneDomainInt(candidateYear), SuggestedType: mediaType, Source: item.source, Reason: reason, Order: len(result)})
+		result = append(result, QueryVariant{Title: title, Year: cloneDomainInt(candidateYear), SeasonYear: cloneDomainInt(seasonYear), SuggestedType: mediaType, Source: item.source, Reason: reason, Order: len(result)})
 	}
 	// Give every bounded name source one canonical opportunity before adding
 	// noisier fallback stages from the first source. The service has a strict
@@ -946,7 +988,11 @@ func buildQueryVariants(names []parsedName, year *int, mediaType MediaType) []Qu
 	}
 	for _, item := range names {
 		if item.year != nil {
-			add(item.withoutYear, item, "without_year", item.year)
+			candidateYear := item.year
+			if seasonYear != nil {
+				candidateYear = nil
+			}
+			add(item.withoutYear, item, "without_year", candidateYear)
 		}
 	}
 	for _, item := range names {

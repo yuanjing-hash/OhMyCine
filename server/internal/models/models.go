@@ -1122,9 +1122,13 @@ type DownloadTask struct {
 	ScrapeCategory                     string     `gorm:"size:128;not null;default:''" json:"-"`
 	ScrapeTMDBID                       *int64     `json:"-"`
 	ScrapeYear                         *int       `json:"-"`
+	ScrapeSeason                       *int       `json:"-"`
+	ScrapeEpisode                      *int       `json:"-"`
 	ScrapeConfidence                   *float64   `json:"-"`
 	RecognitionOverrideTMDBID          *int64     `json:"-"`
 	RecognitionOverrideMediaType       string     `gorm:"size:16;not null;default:''" json:"-"`
+	RecognitionOverrideSeason          *int       `json:"-"`
+	RecognitionOverrideEpisode         *int       `json:"-"`
 	// CompletedManifestJSON is a private provider-relative snapshot captured
 	// after authoritative completion. It lets recognition recovery continue
 	// without resubmitting or re-polling an already completed download.

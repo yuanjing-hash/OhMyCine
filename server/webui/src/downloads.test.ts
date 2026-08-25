@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { compatibleDownloadLibraries, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
+import { beginDownloadRetry, compatibleDownloadLibraries, downloadErrorMessage, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
 import type { DownloaderSummary, DownloadTaskSummary, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const task = { job_status: 'queued' } as DownloadTaskSummary
@@ -22,6 +22,22 @@ describe('download presentation', () => {
     expect(downloadStatusLabel({ job_status: 'running', phase: 'metadata' } as DownloadTaskSummary)).toBe('获取 metadata')
     expect(downloadStatusLabel({ job_status: 'running', phase: 'classifying' } as DownloadTaskSummary)).toBe('轻量刮削')
 		expect(downloadStatusLabel({ job_status: 'waiting_user_action', phase: 'waiting_user_action' } as DownloadTaskSummary)).toBe('准备自动处理')
+  })
+  it('replaces a stale failure with a neutral retry presentation', () => {
+    const failed = { id: 'download-1', job_status: 'failed', lifecycle_scope: 'active', updated_at: '2026-08-25T05:00:00Z', last_error_code: 'downloader_rejected', last_error_message: '下载器拒绝了下载链接' } as DownloadTaskSummary
+
+    expect(downloadErrorMessage(failed)).toBe('下载器拒绝了下载链接')
+    expect(downloadErrorMessage(failed, true)).toBe('')
+    expect(downloadStatusLabel(failed, true)).toBe('正在重试…')
+    expect(downloadStatusClass(failed, true)).toBe('status-chip status-chip--planned')
+
+    const started = { [failed.id]: beginDownloadRetry(failed) }
+    expect(reconcileDownloadRetries(started, [failed])).toEqual(started)
+    const active = { ...failed, job_status: 'running', updated_at: '2026-08-25T05:00:01Z' }
+    const observed = reconcileDownloadRetries(started, [active])
+    expect(observed[failed.id]?.observedActive).toBe(true)
+    const failedAgain = { ...failed, updated_at: '2026-08-25T05:00:02Z', last_error_message: '本次重试仍失败' }
+    expect(reconcileDownloadRetries(observed, [failedAgain])).toEqual({})
   })
   it('aggregates only active tasks for downloader card telemetry', () => {
     const tasks = [
@@ -88,5 +104,16 @@ describe('115 offline downloader directory selection', () => {
     expect(source).toContain('/tmdb-candidates?')
     expect(source).toContain('/recognition-override')
     expect(source).toContain('验证并继续入库')
+    expect(source).toContain('markTaskRetrying(task)')
+    expect(source).toContain('isTaskRetrying(task)')
+    expect(source).toContain('正在重试…')
+    expect(source).toContain("recognitionForm.mediaType === 'tv'")
+    expect(source).toContain('v-model.number="recognitionForm.season"')
+    expect(source).toContain('v-model.number="recognitionForm.episode"')
+    expect(source).toContain('payload.season = season')
+    expect(source).toContain('payload.episode = episode')
+		expect(source).toContain('只在检测错误时修改')
+		expect(source).toContain('只填集号时按 S01 处理')
+		expect(source).toContain('task.scrape_episode !== null')
   })
 })

@@ -30,11 +30,12 @@ func TestSearchCandidatesKeepsInternalRankingEvidenceOutOfJSON(t *testing.T) {
 	}
 	items[0].AlternativeTitles = []string{"内部别名"}
 	items[0].SeasonCount = 1
+	items[0].SeasonYears = map[int]int{1: 2007}
 	payload, err := json.Marshal(items[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, private := range []string{"内部别名", "SeasonCount", "season_count", "Popularity", "popularity", "VoteCount", "vote_count"} {
+	for _, private := range []string{"内部别名", "SeasonCount", "season_count", "SeasonYears", "season_years", "Popularity", "popularity", "VoteCount", "vote_count"} {
 		if strings.Contains(string(payload), private) {
 			t.Fatalf("internal ranking evidence leaked: %s", payload)
 		}
@@ -50,7 +51,7 @@ func TestEnrichCandidatesAddsMovieAndTVAliasesWithinRequestBudget(t *testing.T) 
 		}
 		switch r.URL.Path {
 		case "/tv/5":
-			_, _ = io.WriteString(w, `{"id":5,"name":"大明王朝1566","original_name":"Ming Dynasty in 1566","number_of_seasons":1,"number_of_episodes":46,"alternative_titles":{"results":[{"title":"Da Ming Wang Chao 1566"}]},"translations":{"translations":[{"data":{"name":"The Ming Dynasty in 1566"}}]}}`)
+			_, _ = io.WriteString(w, `{"id":5,"name":"大明王朝1566","original_name":"Ming Dynasty in 1566","number_of_seasons":1,"number_of_episodes":46,"seasons":[{"season_number":0,"air_date":"2006-12-01"},{"season_number":1,"air_date":"2007-01-08"}],"alternative_titles":{"results":[{"title":"Da Ming Wang Chao 1566"}]},"translations":{"translations":[{"data":{"name":"The Ming Dynasty in 1566"}}]}}`)
 		case "/movie/6":
 			_, _ = io.WriteString(w, `{"id":6,"title":"一九一七","original_title":"1917","alternative_titles":{"titles":[{"title":"1917：逆战救兵"}]},"translations":{"translations":[{"data":{"title":"1917"}}]}}`)
 		case "/movie/7":
@@ -77,7 +78,7 @@ func TestEnrichCandidatesAddsMovieAndTVAliasesWithinRequestBudget(t *testing.T) 
 	if requests != DefaultCandidateEnrichmentLimit {
 		t.Fatalf("requests=%d", requests)
 	}
-	if items[0].SeasonCount != 1 || items[0].EpisodeCount != 46 || !containsString(items[0].AlternativeTitles, "Da Ming Wang Chao 1566") || !containsString(items[0].Translations, "The Ming Dynasty in 1566") {
+	if items[0].SeasonCount != 1 || items[0].EpisodeCount != 46 || items[0].SeasonYears[0] != 2006 || items[0].SeasonYears[1] != 2007 || !containsString(items[0].AlternativeTitles, "Da Ming Wang Chao 1566") || !containsString(items[0].Translations, "The Ming Dynasty in 1566") {
 		t.Fatalf("tv=%+v", items[0])
 	}
 	if !containsString(items[1].AlternativeTitles, "1917：逆战救兵") {

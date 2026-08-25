@@ -21,6 +21,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/database"
 	"github.com/yuanjing-hash/ohmycine/server/internal/handlers"
 	"github.com/yuanjing-hash/ohmycine/server/internal/logging"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/services"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
@@ -846,7 +847,7 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	}
 	client.sites.SetMetadataSettings(nil)
 	status, envelope = client.request(t, http.MethodPost, "/api/v1/discovery/pt-results/recognize", map[string]any{"result_token": searchResult.Groups[0].Items[0].Token}, true)
-	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"status":"unrecognized"`)) || !bytes.Contains(envelope.Data, []byte("tmdb_credential_unavailable")) {
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"engine_version":"`+mediarecognition.EngineVersion+`"`)) || !bytes.Contains(envelope.Data, []byte(`"status":"unrecognized"`)) || !bytes.Contains(envelope.Data, []byte("tmdb_credential_unavailable")) {
 		t.Fatalf("metadata-free recognition status=%d data=%s", status, envelope.Data)
 	}
 	status, envelope = client.request(t, http.MethodPost, "/api/v1/discovery/pt-results/recognize", map[string]any{"result_token": "invalid"}, true)

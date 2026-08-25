@@ -99,6 +99,70 @@ func TestRankUsesAlternativeTitlesTranslationsAndReplaceableHanLayer(t *testing.
 	}
 }
 
+func TestRankAcceptsOneExactOriginalAliasWithoutInventedYearOrTypeEvidence(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "ULTRAMAN TIGA", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Rank(parsed, []RemoteCandidate{{ID: 10820, MediaType: MediaTypeTV, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", AlternativeTitles: []string{"Ultraman Tiga"}, Popularity: 80}})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 10820 || decision.Confidence < DefaultScoreConfig().ExactTitleThreshold {
+		t.Fatalf("decision=%+v", decision)
+	}
+
+	conflict := Rank(parsed, []RemoteCandidate{
+		{ID: 10820, MediaType: MediaTypeTV, Title: "迪迦奥特曼", AlternativeTitles: []string{"Ultraman Tiga"}},
+		{ID: 99999, MediaType: MediaTypeMovie, Title: "Ultraman Tiga"},
+	})
+	if conflict.Status != DecisionUnrecognized || conflict.Match != nil {
+		t.Fatalf("exact identity conflict was silently accepted: %+v", conflict)
+	}
+}
+
+func TestRankUsesExplicitFranchiseSubtitleAliasButNotOneWordSuffix(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "The Final Odyssey 1080p WEB-DL", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Rank(parsed, []RemoteCandidate{{ID: 54321, MediaType: MediaTypeMovie, Title: "Ultraman Tiga: The Final Odyssey", Popularity: 30}})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 54321 {
+		t.Fatalf("decision=%+v", decision)
+	}
+	if aliases := candidateSubtitleAliases("Example: Finale"); len(aliases) != 0 {
+		t.Fatalf("one-word subtitle became broad alias: %v", aliases)
+	}
+}
+
+func TestRankUsesSeasonAirYearWithoutConflictingWithSeriesPremiereYear(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "Ai qing gong yu 2012 S03 2160p WEB-DL H.265", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Year != nil || parsed.SeasonYear == nil || *parsed.SeasonYear != 2012 || parsed.Season == nil || *parsed.Season != 3 {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+	seriesYear := 2009
+	matching := Rank(parsed, []RemoteCandidate{{ID: 12345, MediaType: MediaTypeTV, Title: "爱情公寓", AlternativeTitles: []string{"Ai qing gong yu"}, ReleaseYear: &seriesYear, SeasonCount: intRef(5), SeasonYears: map[int]int{3: 2012}}})
+	if matching.Status != DecisionMatched || matching.Match == nil || matching.Match.ID != 12345 {
+		t.Fatalf("season year was treated as series premiere conflict: %+v", matching)
+	}
+	conflicting := Rank(parsed, []RemoteCandidate{{ID: 12345, MediaType: MediaTypeTV, Title: "爱情公寓", AlternativeTitles: []string{"Ai qing gong yu"}, ReleaseYear: &seriesYear, SeasonCount: intRef(5), SeasonYears: map[int]int{3: 2015}}})
+	if conflicting.Status != DecisionUnrecognized || conflicting.Reason != ReasonLowConfidence {
+		t.Fatalf("known conflicting season year was ignored: %+v", conflicting)
+	}
+}
+
+func TestRankAcceptsSeriesPremiereYearBesideLaterSeasonWithoutTitleHardcoding(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "Example Series 2011 S03 1080p WEB-DL", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seriesYear := 2011
+	decision := Rank(parsed, []RemoteCandidate{{ID: 77, MediaType: MediaTypeTV, Title: "Example Series", ReleaseYear: &seriesYear, SeasonCount: intRef(8), SeasonYears: map[int]int{3: 2013}}})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 77 {
+		t.Fatalf("series premiere year beside season was rejected: %+v", decision)
+	}
+}
+
 func episodePath(episode int) string {
 	return "Ming Dynasty in 1566/Ming.Dynasty.in.1566.S01E" + twoDigits(episode) + ".mkv"
 }

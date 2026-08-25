@@ -44,6 +44,7 @@ type FixtureExpected struct {
 	MediaType      MediaType `json:"media_type,omitempty"`
 	CanonicalTitle string    `json:"canonical_title,omitempty"`
 	Year           *int      `json:"year,omitempty"`
+	SeasonYear     *int      `json:"season_year,omitempty"`
 	RemoteID       int64     `json:"remote_id,omitempty"`
 }
 
@@ -254,7 +255,7 @@ func RenderBenchmarkMarkdown(report BenchmarkReport) string {
 }
 
 func parserMatchesExpected(parsed ParsedFacts, expected FixtureExpected) bool {
-	return comparisonKey(parsed.CanonicalTitle) == comparisonKey(expected.CanonicalTitle) && parsed.SuggestedType == expected.MediaType && sameOptionalBenchmarkInt(parsed.Year, expected.Year)
+	return comparisonKey(parsed.CanonicalTitle) == comparisonKey(expected.CanonicalTitle) && parsed.SuggestedType == expected.MediaType && sameOptionalBenchmarkInt(parsed.Year, expected.Year) && sameOptionalBenchmarkInt(parsed.SeasonYear, expected.SeasonYear)
 }
 
 func sameOptionalBenchmarkInt(left, right *int) bool {

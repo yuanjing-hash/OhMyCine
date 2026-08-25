@@ -104,7 +104,18 @@ export interface PTRecognitionSpecifications {
   release_group?: string
 }
 
+export interface PTRecognitionEpisodeFacts {
+  season?: number
+  season_year?: number
+  episode_min?: number
+  episode_max?: number
+  count?: number
+}
+
+export const ptRecognitionEngineVersion = 'nextgen-domain-v5'
+
 export interface PTRecognitionResult {
+  engine_version: string
   status: 'matched' | 'unrecognized'
   error_code?: string
   title: string
@@ -113,6 +124,7 @@ export interface PTRecognitionResult {
   year?: number
   tmdb_id?: number
   poster_url?: string
+  episodes?: PTRecognitionEpisodeFacts
   specifications: PTRecognitionSpecifications
 }
 
@@ -208,6 +220,21 @@ export interface TorrentSearchSession {
   savedAt: number
 }
 
+export function ptRecognitionEpisodeLabel(value: PTRecognitionResult) {
+  if (value.media_type !== 'tv' || !value.episodes) return ''
+  const facts = value.episodes
+  const labels: string[] = []
+  if (Number.isInteger(facts.season) && (facts.season ?? -1) >= 0) {
+    labels.push(`第 ${facts.season} 季${facts.season_year ? `（${facts.season_year}）` : ''}`)
+  }
+  if (Number.isInteger(facts.episode_min) && (facts.episode_min ?? 0) > 0) {
+    const maximum = Number.isInteger(facts.episode_max) && (facts.episode_max ?? 0) >= (facts.episode_min ?? 0) ? facts.episode_max : facts.episode_min
+    labels.push(maximum === facts.episode_min ? `第 ${facts.episode_min} 集` : `第 ${facts.episode_min}–${maximum} 集`)
+  }
+  if ((facts.count ?? 0) > 1) labels.push(`多集（共 ${facts.count} 集）`)
+  return labels.join(' · ')
+}
+
 type SearchSessionStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 export function saveTorrentSearchSession(storage: SearchSessionStorage | undefined, state: TorrentSearchSession) {
@@ -257,7 +284,10 @@ export function readTorrentSearchSession(storage: SearchSessionStorage | undefin
         return { ...group, items }
       })
     const tokens = new Set(groups.flatMap(group => group.items.map(item => item.token)))
-    const recognitions = Object.fromEntries(Object.entries(value.recognitions).filter(([token]) => tokens.has(token)))
+    const recognitions = Object.fromEntries(Object.entries(value.recognitions)
+      .filter(([token]) => tokens.has(token))
+      .map(([token, recognition]) => [token, restoreTorrentRecognition(recognition)] as const)
+      .filter((entry): entry is readonly [string, TorrentRecognitionResult] => entry[1] !== null))
     return {
       input: {
         keyword: typeof value.input.keyword === 'string' ? value.input.keyword.slice(0, 160) : '',
@@ -274,4 +304,27 @@ export function readTorrentSearchSession(storage: SearchSessionStorage | undefin
   } catch {
     return null
   }
+}
+
+function restoreTorrentRecognition(value: unknown): TorrentRecognitionResult | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Partial<TorrentRecognitionResult>
+  if (candidate.engine_version !== ptRecognitionEngineVersion || (candidate.status !== 'matched' && candidate.status !== 'unrecognized') || typeof candidate.title !== 'string' || !candidate.specifications || typeof candidate.specifications !== 'object') return null
+  const episodes = restoreEpisodeFacts(candidate.episodes)
+  return { ...candidate, engine_version: candidate.engine_version, status: candidate.status, title: candidate.title.slice(0, 512), specifications: candidate.specifications, episodes } as TorrentRecognitionResult
+}
+
+function restoreEpisodeFacts(value: unknown): PTRecognitionEpisodeFacts | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const source = value as Record<string, unknown>
+  const integer = (key: string, minimum: number, maximum: number) => typeof source[key] === 'number' && Number.isInteger(source[key]) && (source[key] as number) >= minimum && (source[key] as number) <= maximum ? source[key] as number : undefined
+  const result: PTRecognitionEpisodeFacts = {
+    season: integer('season', 0, 200),
+    season_year: integer('season_year', 1888, 2200),
+    episode_min: integer('episode_min', 1, 100000),
+    episode_max: integer('episode_max', 1, 100000),
+    count: integer('count', 1, 100000),
+  }
+  if (result.episode_min !== undefined && result.episode_max !== undefined && result.episode_max < result.episode_min) return undefined
+  return Object.values(result).some(item => item !== undefined) ? result : undefined
 }

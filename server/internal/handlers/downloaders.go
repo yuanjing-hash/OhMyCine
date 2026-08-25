@@ -216,20 +216,32 @@ func (a *API) OverrideDownloadRecognition(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var payload struct {
-		TMDBID    int64  `json:"tmdb_id"`
-		MediaType string `json:"media_type"`
-	}
-	if err := strictJSON(c, &payload); err != nil {
+	input, err := decodeDownloadRecognitionOverride(c)
+	if err != nil {
 		writeError(c, a.log, invalid("TMDB 匹配选择无效", err))
 		return
 	}
-	item, err := a.downloads.OverrideRecognition(c.Request.Context(), actor, id, services.DownloadRecognitionOverrideInput{TMDBID: payload.TMDBID, MediaType: payload.MediaType}, middleware.RequestContextFrom(c))
+	item, err := a.downloads.OverrideRecognition(c.Request.Context(), actor, id, input, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
 	}
 	success(c, http.StatusOK, item)
+}
+
+type downloadRecognitionOverridePayload struct {
+	TMDBID    int64  `json:"tmdb_id"`
+	MediaType string `json:"media_type"`
+	Season    *int   `json:"season"`
+	Episode   *int   `json:"episode"`
+}
+
+func decodeDownloadRecognitionOverride(c *gin.Context) (services.DownloadRecognitionOverrideInput, error) {
+	var payload downloadRecognitionOverridePayload
+	if err := strictJSON(c, &payload); err != nil {
+		return services.DownloadRecognitionOverrideInput{}, err
+	}
+	return services.DownloadRecognitionOverrideInput{TMDBID: payload.TMDBID, MediaType: payload.MediaType, Season: payload.Season, Episode: payload.Episode}, nil
 }
 
 func stringID(c *gin.Context) (string, bool) {

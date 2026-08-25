@@ -261,24 +261,55 @@ type mediaRecognitionQuery struct {
 func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionLookup, candidateLookup mediaRecognitionCandidateLookup, parsed mediarecognition.ParsedFacts, language, region string) (tmdb.Match, error) {
 	queries := domainRecognitionSearchQueries(parsed)
 	candidates := make(map[string]tmdb.Candidate)
+	candidateOrder := make([]string, 0, 32)
+	queryCandidateKeys := make([][]string, 0, len(queries))
 	var firstFailure error
-	for _, query := range queries {
+	searchCount := 0
+	search := func(query mediaRecognitionQuery) error {
+		if searchCount >= mediaRecognitionMaxQueries {
+			return nil
+		}
+		searchCount++
 		items, err := candidateLookup.SearchCandidates(ctx, query.MediaType, query.Title, query.Year, language, region, 10)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			if tmdb.ErrorCode(err) == tmdb.ErrorNoMatch {
-				continue
+				return nil
 			}
 			if firstFailure == nil {
 				firstFailure = err
 			}
-			continue
+			return nil
 		}
+		batch := make([]string, 0, len(items))
 		for _, candidate := range items {
 			key := fmt.Sprintf("%s:%d", candidate.MediaType, candidate.ID)
+			batch = append(batch, key)
 			current, exists := candidates[key]
 			if !exists || candidate.Confidence > current.Confidence {
 				candidates[key] = candidate
 			}
+			if !exists {
+				candidateOrder = append(candidateOrder, key)
+			}
+		}
+		queryCandidateKeys = append(queryCandidateKeys, batch)
+		return nil
+	}
+	for _, query := range queries {
+		if err := search(query); err != nil {
+			return tmdb.Match{}, err
+		}
+	}
+	// TMDB can index a transliterated name only through a related item in the
+	// other media type. Re-query a bounded set of authoritative candidate titles
+	// in the structurally preferred type. This is generic alias bridging, not a
+	// title dictionary, and stays inside the same ten-request budget.
+	for _, query := range domainCandidateAliasRecallQueries(parsed, candidates, candidateOrder, queries, mediaRecognitionMaxQueries-searchCount) {
+		if err := search(query); err != nil {
+			return tmdb.Match{}, err
 		}
 	}
 	if len(candidates) == 0 {
@@ -287,22 +318,10 @@ func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionL
 		}
 		return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
 	}
-	remote := make([]mediarecognition.RemoteCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		remote = append(remote, remoteRecognitionCandidate(candidate))
-	}
+	remote := orderedRemoteRecognitionCandidates(candidates, candidateOrder)
 	decision := mediarecognition.Rank(parsed, remote)
 	if enricher, ok := candidateLookup.(mediaRecognitionCandidateEnricher); ok && len(decision.Ranked) > 0 {
-		shortlist := make([]tmdb.Candidate, 0, tmdb.DefaultCandidateEnrichmentLimit)
-		for _, ranked := range decision.Ranked {
-			key := fmt.Sprintf("%s:%d", ranked.Candidate.MediaType, ranked.Candidate.ID)
-			if candidate, exists := candidates[key]; exists {
-				shortlist = append(shortlist, candidate)
-			}
-			if len(shortlist) == tmdb.DefaultCandidateEnrichmentLimit {
-				break
-			}
-		}
+		shortlist := domainEnrichmentShortlist(candidates, queryCandidateKeys, decision.Ranked, tmdb.DefaultCandidateEnrichmentLimit)
 		enriched, enrichErr := enricher.EnrichCandidates(ctx, shortlist, language, tmdb.DefaultCandidateEnrichmentLimit)
 		if enrichErr != nil {
 			return tmdb.Match{}, enrichErr
@@ -310,10 +329,7 @@ func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionL
 		for _, candidate := range enriched {
 			candidates[fmt.Sprintf("%s:%d", candidate.MediaType, candidate.ID)] = candidate
 		}
-		remote = remote[:0]
-		for _, candidate := range candidates {
-			remote = append(remote, remoteRecognitionCandidate(candidate))
-		}
+		remote = orderedRemoteRecognitionCandidates(candidates, candidateOrder)
 		decision = mediarecognition.Rank(parsed, remote)
 	}
 	if decision.Status != mediarecognition.DecisionMatched || decision.Match == nil {
@@ -337,6 +353,105 @@ func recognizeFromDomainCandidates(ctx context.Context, lookup mediaRecognitionL
 	}
 	match.Confidence = decision.Confidence
 	return match, nil
+}
+
+func orderedRemoteRecognitionCandidates(candidates map[string]tmdb.Candidate, order []string) []mediarecognition.RemoteCandidate {
+	result := make([]mediarecognition.RemoteCandidate, 0, len(order))
+	for _, key := range order {
+		if candidate, exists := candidates[key]; exists {
+			result = append(result, remoteRecognitionCandidate(candidate))
+		}
+	}
+	return result
+}
+
+func domainCandidateAliasRecallQueries(parsed mediarecognition.ParsedFacts, candidates map[string]tmdb.Candidate, order []string, existing []mediaRecognitionQuery, maximum int) []mediaRecognitionQuery {
+	if maximum <= 0 {
+		return nil
+	}
+	keyFor := func(mediaType, title string) string {
+		return mediaType + "\x00" + strings.ToLower(strings.TrimSpace(title))
+	}
+	seen := make(map[string]struct{}, len(existing)+maximum)
+	for _, query := range existing {
+		seen[keyFor(query.MediaType, query.Title)] = struct{}{}
+	}
+	result := make([]mediaRecognitionQuery, 0, maximum)
+	for _, candidateKey := range order {
+		candidate, exists := candidates[candidateKey]
+		if !exists {
+			continue
+		}
+		targetType := string(parsed.SuggestedType)
+		if targetType != "movie" && targetType != "tv" {
+			if candidate.MediaType == "movie" {
+				targetType = "tv"
+			} else {
+				targetType = "movie"
+			}
+		}
+		for _, title := range []string{candidate.Title, candidate.OriginalTitle} {
+			title = strings.TrimSpace(title)
+			if title == "" || len(title) > mediarecognition.MaxPackageRunes*4 || strings.ContainsAny(title, "\x00\r\n") {
+				continue
+			}
+			key := keyFor(targetType, title)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, mediaRecognitionQuery{Title: title, MediaType: targetType, Order: len(existing) + len(result)})
+			if len(result) == maximum {
+				return result
+			}
+		}
+	}
+	return result
+}
+
+// domainEnrichmentShortlist preserves TMDB's per-query relevance without
+// allowing one movie or TV result page to consume the entire alias budget.
+// A round-robin first pass gives both cross-type recalls an enrichment chance;
+// the domain rank then fills any remaining slots deterministically.
+func domainEnrichmentShortlist(candidates map[string]tmdb.Candidate, queryKeys [][]string, ranked []mediarecognition.RankedCandidate, limit int) []tmdb.Candidate {
+	if limit <= 0 {
+		return nil
+	}
+	result := make([]tmdb.Candidate, 0, limit)
+	seen := make(map[string]struct{}, limit)
+	add := func(key string) {
+		if len(result) >= limit {
+			return
+		}
+		candidate, exists := candidates[key]
+		if !exists {
+			return
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, candidate)
+	}
+	for offset := 0; len(result) < limit; offset++ {
+		advanced := false
+		for _, keys := range queryKeys {
+			if offset < len(keys) {
+				add(keys[offset])
+				advanced = true
+			}
+			if len(result) == limit {
+				break
+			}
+		}
+		if !advanced {
+			break
+		}
+	}
+	for _, item := range ranked {
+		add(fmt.Sprintf("%s:%d", item.Candidate.MediaType, item.Candidate.ID))
+	}
+	return result
 }
 
 func domainRecognitionSearchQueries(parsed mediarecognition.ParsedFacts) []mediaRecognitionQuery {
@@ -469,11 +584,22 @@ func parseRecognitionFacts(request MediaRecognitionRequest, processedSources []s
 }
 
 func remoteRecognitionCandidate(candidate tmdb.Candidate) mediarecognition.RemoteCandidate {
-	remote := mediarecognition.RemoteCandidate{ID: candidate.ID, MediaType: mediarecognition.MediaType(candidate.MediaType), Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, AlternativeTitles: append([]string(nil), candidate.AlternativeTitles...), Translations: append([]string(nil), candidate.Translations...), ReleaseYear: cloneInt(candidate.ReleaseYear), Popularity: candidate.Popularity}
+	remote := mediarecognition.RemoteCandidate{ID: candidate.ID, MediaType: mediarecognition.MediaType(candidate.MediaType), Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, AlternativeTitles: append([]string(nil), candidate.AlternativeTitles...), Translations: append([]string(nil), candidate.Translations...), ReleaseYear: cloneInt(candidate.ReleaseYear), SeasonYears: cloneSeasonYears(candidate.SeasonYears), Popularity: candidate.Popularity}
 	if candidate.SeasonCount > 0 {
 		remote.SeasonCount = cloneInt(&candidate.SeasonCount)
 	}
 	return remote
+}
+
+func cloneSeasonYears(values map[int]int) map[int]int {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[int]int, len(values))
+	for season, year := range values {
+		result[season] = year
+	}
+	return result
 }
 
 func domainRecognitionErrorCode(reason mediarecognition.DecisionReason) string {

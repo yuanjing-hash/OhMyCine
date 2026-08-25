@@ -30,6 +30,19 @@ func TestParseMediaUsesTitleYearFolderForMovie(t *testing.T) {
 	}
 }
 
+func TestParseTrailingBracketEpisodeDefaultsToSeasonOne(t *testing.T) {
+	name := `[jibaketa合成&音频压制][ViuTV粤语]超人 / 超人力霸王奥米加 / 奥美迦奥特曼 / Ultraman Omega - 09 [粤语+无字幕] (WEB 1920x1080 AVC AAC YUE).mkv`
+	parsed := ParseMedia(name, "/"+name)
+	if parsed.MediaType != "tv" || parsed.Season == nil || *parsed.Season != 1 || parsed.Episode == nil || *parsed.Episode != 9 {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+
+	negative := ParseMedia("Catch-22 (2019).mkv", "/Catch-22 (2019).mkv")
+	if negative.MediaType != "movie" || negative.Episode != nil {
+		t.Fatalf("negative=%+v", negative)
+	}
+}
+
 func TestWorkKeyGroupsSeriesButKeepsMoviesByIdentity(t *testing.T) {
 	first := ParseMedia("Lycoris.Recoil.S01E01.mkv", "/Lycoris Recoil/Season 01/Lycoris.Recoil.S01E01.mkv")
 	second := ParseMedia("Lycoris.Recoil.S02E01.mkv", "/Lycoris Recoil/Season 02/Lycoris.Recoil.S02E01.mkv")

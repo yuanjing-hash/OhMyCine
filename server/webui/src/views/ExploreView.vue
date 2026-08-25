@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
+import { discoveryDownloadsPath, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -222,6 +222,7 @@ onBeforeUnmount(stopStream)
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2"><strong>{{ recognitions[item.token].title }}</strong><span :class="recognitions[item.token].status === 'matched' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ recognitions[item.token].status === 'matched' ? '已识别' : '未识别' }}</span><span class="status-chip">{{ mediaTypeLabel(recognitions[item.token].media_type) }}</span><span v-if="recognitions[item.token].year" class="status-chip">{{ recognitions[item.token].year }}</span></div>
                 <p v-if="recognitions[item.token].original_title && recognitions[item.token].original_title !== recognitions[item.token].title" class="text-subtle mb-0 mt-1 text-xs">{{ recognitions[item.token].original_title }}</p>
+                <p v-if="ptRecognitionEpisodeLabel(recognitions[item.token])" class="mb-0 mt-2 text-sm font-650 text-[var(--text)]">季集：{{ ptRecognitionEpisodeLabel(recognitions[item.token]) }}</p>
                 <div v-if="ptRecognitionSpecLabels(recognitions[item.token].specifications).length" class="mt-2 flex flex-wrap gap-1.5"><span v-for="label in ptRecognitionSpecLabels(recognitions[item.token].specifications)" :key="label" class="status-chip">{{ label }}</span></div>
                 <p v-if="recognitions[item.token].error_code" class="text-subtle mb-0 mt-2 text-xs">{{ ptRecognitionErrorLabel(recognitions[item.token].error_code) }} <span class="font-mono">（{{ recognitions[item.token].error_code }}）</span></p>
               </div>

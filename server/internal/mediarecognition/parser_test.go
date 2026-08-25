@@ -187,6 +187,16 @@ func TestParsePTAndNyaaReleaseShapesIntoCleanQueries(t *testing.T) {
 			query:        "ULTRAMAN TIGA",
 			releaseGroup: "LGGZS",
 		},
+		{
+			name:       "bare episode before language bracket",
+			input:      "[jibaketa合成&音频压制][ViuTV粤语]超人 / 超人力霸王奥米加 / 奥美迦奥特曼 / Ultraman Omega - 09 [粤语+无字幕] (WEB 1920x1080 AVC AAC YUE)",
+			canonical:  "超人 / 超人力霸王奥米加 / 奥美迦奥特曼 / Ultraman Omega",
+			query:      "Ultraman Omega",
+			mediaType:  MediaTypeTV,
+			season:     intRef(1),
+			episodeMin: intRef(9),
+			episodeMax: intRef(9),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -228,12 +238,62 @@ func TestParsePreservesTitlesThatAreEntireChineseOrdinals(t *testing.T) {
 }
 
 func TestParseDoesNotTreatLegalHyphenatedNumberTitleAsEpisode(t *testing.T) {
-	parsed, err := Parse(InputFacts{PackageName: "Catch-22.2019.1080p.WEB-DL", SourceKind: SourceDownload})
-	if err != nil {
-		t.Fatal(err)
+	for _, title := range []string{"Catch-22.2019.1080p.WEB-DL", "Catch-22 [Remastered]"} {
+		parsed, err := Parse(InputFacts{PackageName: title, SourceKind: SourceDownload})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if parsed.SuggestedType == MediaTypeTV || parsed.Episodes.EpisodeMin != nil {
+			t.Fatalf("title=%q parsed=%+v", title, parsed)
+		}
 	}
-	if parsed.CanonicalTitle != "Catch-22" || parsed.SuggestedType == MediaTypeTV || parsed.Episodes.EpisodeMin != nil {
-		t.Fatalf("parsed=%+v", parsed)
+}
+
+func TestParseProductionEnglishAndPinyinReleaseNamesKeepSearchableWorkTitles(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		canonical  string
+		query      string
+		mediaType  MediaType
+		season     *int
+		year       *int
+		seasonYear *int
+	}{
+		{name: "english original title", input: "ULTRAMAN TIGA", canonical: "ULTRAMAN TIGA", query: "ULTRAMAN TIGA"},
+		{name: "remastered edition noise", input: "Ultraman.Tiga.Ultra.Resolution.Remastered.Version.1997.BluRay.1080p.x264.AAC", canonical: "Ultraman Tiga", query: "Ultraman Tiga", year: intRef(1997)},
+		{name: "movie subtitle", input: "The Final Odyssey 1080p WEB-DL H264 AAC-Side", canonical: "The Final Odyssey", query: "The Final Odyssey"},
+		{name: "gaiden english title", input: "Ultraman Tiga Gaiden Revival of the Ancient Giant WEB-DL 2160P HEVC AAC-Side", canonical: "Ultraman Tiga Gaiden Revival of the Ancient Giant", query: "Ultraman Tiga Gaiden Revival of the Ancient Giant"},
+		{name: "zh language marker", input: "Ultraman Tiga 1996 WEB-DL 1080p H264 ZH-AAC-HDCTV", canonical: "Ultraman Tiga", query: "Ultraman Tiga", year: intRef(1996)},
+		{name: "pinyin season", input: "Ai qing gong yu 2012 S03 2160p WEB-DL H.265 AAC-ZmWeb", canonical: "Ai qing gong yu", query: "Ai qing gong yu", mediaType: MediaTypeTV, season: intRef(3), seasonYear: intRef(2012)},
+		{name: "localized english alias", input: "Apartment of Love 2018 2160p WEB-DL H.265 AAC-AilMWeb", canonical: "Apartment of Love", query: "Apartment of Love", year: intRef(2018)},
+		{name: "official english alias", input: "Ipartment S05 2020 2160p WEB-DL H.265 DDP2.0-CSWEB", canonical: "Ipartment", query: "Ipartment", mediaType: MediaTypeTV, season: intRef(5), seasonYear: intRef(2020)},
+		{name: "frame rate specification", input: "Apartment of Love 2018 1080p WEB-DL 60fps H.265 DDP5.1-AilMWeb", canonical: "Apartment of Love", query: "Apartment of Love", year: intRef(2018)},
+		{name: "bit depth specification", input: "Ipartment 2018 2160p WEB-DL H.265 10bit AAC-UBWEB", canonical: "Ipartment", query: "Ipartment", year: intRef(2018)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := Parse(InputFacts{PackageName: test.input, SourceKind: SourceDownload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.CanonicalTitle != test.canonical || !queryContains(parsed.Queries, test.query) {
+				t.Fatalf("canonical=%q queries=%+v", parsed.CanonicalTitle, parsed.Queries)
+			}
+			if test.mediaType != MediaTypeUnknown && parsed.SuggestedType != test.mediaType {
+				t.Fatalf("type=%q evidence=%+v", parsed.SuggestedType, parsed.TypeEvidence)
+			}
+			if !sameOptionalInt(parsed.Season, test.season) || !sameOptionalInt(parsed.Year, test.year) || !sameOptionalInt(parsed.SeasonYear, test.seasonYear) {
+				t.Fatalf("season/year/season_year=%v/%v/%v", parsed.Season, parsed.Year, parsed.SeasonYear)
+			}
+			if test.seasonYear != nil {
+				for _, query := range parsed.Queries {
+					if query.Year != nil || !sameOptionalInt(query.SeasonYear, test.seasonYear) {
+						t.Fatalf("season year leaked into work-year query: %+v", parsed.Queries)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -252,14 +312,15 @@ func TestBuildQueryVariantsPrioritizesCanonicalTitlesAcrossSources(t *testing.T)
 
 func TestParseProtectsNumericTitlesAndLegalHyphens(t *testing.T) {
 	cases := []struct {
-		name     string
-		input    string
-		expected string
-		year     *int
+		name       string
+		input      string
+		expected   string
+		year       *int
+		seasonYear *int
 	}{
 		{name: "numeric movie title", input: "1917", expected: "1917"},
 		{name: "numeric title plus release year", input: "1917.2019.2160p-GRP", expected: "1917", year: intRef(2019)},
-		{name: "leading number title", input: "3.Body.Problem.S01E01.2024.1080p-GRP", expected: "3 Body Problem", year: intRef(2024)},
+		{name: "leading number title", input: "3.Body.Problem.S01E01.2024.1080p-GRP", expected: "3 Body Problem", seasonYear: intRef(2024)},
 		{name: "historic number inside title", input: "Ming.Dynasty.in.1566.HQ-BlackTV", expected: "Ming Dynasty in 1566"},
 		{name: "edition and audio suffix", input: "Seven.Samurai.1954.CC.2160p.UHD.BluRay.x265.10bit.DTS-HD.MA.2.0-SONYHD", expected: "Seven Samurai", year: intRef(1954)},
 		{name: "legal single hyphen", input: "Spider-Man.2002.1080p-GRP", expected: "Spider-Man", year: intRef(2002)},
@@ -272,8 +333,8 @@ func TestParseProtectsNumericTitlesAndLegalHyphens(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if parsed.CanonicalTitle != test.expected || !sameOptionalInt(parsed.Year, test.year) {
-				t.Fatalf("title/year=%q/%v, want %q/%v", parsed.CanonicalTitle, parsed.Year, test.expected, test.year)
+			if parsed.CanonicalTitle != test.expected || !sameOptionalInt(parsed.Year, test.year) || !sameOptionalInt(parsed.SeasonYear, test.seasonYear) {
+				t.Fatalf("title/year/season_year=%q/%v/%v, want %q/%v/%v", parsed.CanonicalTitle, parsed.Year, parsed.SeasonYear, test.expected, test.year, test.seasonYear)
 			}
 			if test.input == "Tinker-Tailor-Soldier-Spy" && parsed.ReleaseGroup != "" {
 				t.Fatalf("legal title suffix was classified as release group: %+v", parsed)

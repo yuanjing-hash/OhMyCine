@@ -4,7 +4,7 @@ import (
 	"errors"
 )
 
-const EngineVersion = "nextgen-domain-v4"
+const EngineVersion = "nextgen-domain-v5"
 
 const (
 	MaxPackageRunes     = 512
@@ -79,6 +79,7 @@ type ParsedFacts struct {
 	Titles         []TitleFact    `json:"titles"`
 	Year           *int           `json:"year,omitempty"`
 	Season         *int           `json:"season,omitempty"`
+	SeasonYear     *int           `json:"season_year,omitempty"`
 	Episodes       EpisodeFacts   `json:"episodes"`
 	Specifications []string       `json:"specifications,omitempty"`
 	ReleaseGroup   string         `json:"release_group,omitempty"`
@@ -118,6 +119,7 @@ type StructureFacts struct {
 type QueryVariant struct {
 	Title         string    `json:"title"`
 	Year          *int      `json:"year,omitempty"`
+	SeasonYear    *int      `json:"season_year,omitempty"`
 	SuggestedType MediaType `json:"suggested_type,omitempty"`
 	Source        string    `json:"source"`
 	Reason        string    `json:"reason"`
@@ -140,15 +142,16 @@ type Diagnostic struct {
 }
 
 type RemoteCandidate struct {
-	ID                int64     `json:"id"`
-	MediaType         MediaType `json:"media_type"`
-	Title             string    `json:"title"`
-	OriginalTitle     string    `json:"original_title,omitempty"`
-	AlternativeTitles []string  `json:"alternative_titles,omitempty"`
-	Translations      []string  `json:"translations,omitempty"`
-	ReleaseYear       *int      `json:"release_year,omitempty"`
-	SeasonCount       *int      `json:"season_count,omitempty"`
-	Popularity        float64   `json:"popularity,omitempty"`
+	ID                int64       `json:"id"`
+	MediaType         MediaType   `json:"media_type"`
+	Title             string      `json:"title"`
+	OriginalTitle     string      `json:"original_title,omitempty"`
+	AlternativeTitles []string    `json:"alternative_titles,omitempty"`
+	Translations      []string    `json:"translations,omitempty"`
+	ReleaseYear       *int        `json:"release_year,omitempty"`
+	SeasonCount       *int        `json:"season_count,omitempty"`
+	SeasonYears       map[int]int `json:"season_years,omitempty"`
+	Popularity        float64     `json:"popularity,omitempty"`
 }
 
 type ScoreBreakdown struct {
@@ -195,18 +198,19 @@ type Decision struct {
 }
 
 type ScoreConfig struct {
-	TitleWeight       float64
-	YearExact         float64
-	YearNear          float64
-	YearConflict      float64
-	TypeWeight        float64
-	TypeConflict      float64
-	SeasonWeight      float64
-	StructureWeight   float64
-	ConsistencyWeight float64
-	UniquenessWeight  float64
-	PopularityWeight  float64
-	MatchThreshold    float64
-	ConflictMargin    float64
-	HanEquivalence    HanEquivalence
+	TitleWeight         float64
+	YearExact           float64
+	YearNear            float64
+	YearConflict        float64
+	TypeWeight          float64
+	TypeConflict        float64
+	SeasonWeight        float64
+	StructureWeight     float64
+	ConsistencyWeight   float64
+	UniquenessWeight    float64
+	PopularityWeight    float64
+	MatchThreshold      float64
+	ExactTitleThreshold float64
+	ConflictMargin      float64
+	HanEquivalence      HanEquivalence
 }

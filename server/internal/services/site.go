@@ -160,7 +160,15 @@ type SiteRecognitionSpecifications struct {
 	HDR          string `json:"hdr,omitempty"`
 	ReleaseGroup string `json:"release_group,omitempty"`
 }
+type SiteRecognitionEpisodeFacts struct {
+	Season     *int `json:"season,omitempty"`
+	SeasonYear *int `json:"season_year,omitempty"`
+	EpisodeMin *int `json:"episode_min,omitempty"`
+	EpisodeMax *int `json:"episode_max,omitempty"`
+	Count      int  `json:"count,omitempty"`
+}
 type SiteRecognitionSummary struct {
+	EngineVersion  string                        `json:"engine_version"`
 	Status         string                        `json:"status"`
 	ErrorCode      string                        `json:"error_code,omitempty"`
 	Title          string                        `json:"title"`
@@ -169,6 +177,7 @@ type SiteRecognitionSummary struct {
 	Year           *int                          `json:"year,omitempty"`
 	TMDBID         *int64                        `json:"tmdb_id,omitempty"`
 	PosterURL      string                        `json:"poster_url,omitempty"`
+	Episodes       *SiteRecognitionEpisodeFacts  `json:"episodes,omitempty"`
 	Specifications SiteRecognitionSpecifications `json:"specifications"`
 }
 
@@ -669,11 +678,12 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 	}
 	input := mediarecognition.InputFacts{PackageName: claim.Title, SourceKind: mediarecognition.SourceDownload}
 	parsed, parseErr := mediarecognition.Parse(input)
-	summary := SiteRecognitionSummary{Status: mediaRecognitionStatusUnrecognized, Title: claim.Title}
+	summary := SiteRecognitionSummary{EngineVersion: mediarecognition.EngineVersion, Status: mediaRecognitionStatusUnrecognized, Title: claim.Title}
 	if parseErr == nil {
 		summary.Title = parsed.CanonicalTitle
 		summary.MediaType = string(parsed.SuggestedType)
 		summary.Year = cloneInt(parsed.Year)
+		summary.Episodes = siteRecognitionEpisodeFacts(parsed, summary.MediaType)
 		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
 	} else {
 		summary.ErrorCode = tmdb.ErrorInvalidRequest
@@ -697,12 +707,13 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 		Region:           "CN",
 	})
 	summary = SiteRecognitionSummary{
-		Status:    result.Status,
-		ErrorCode: result.ErrorCode,
-		Title:     strings.TrimSpace(result.Title),
-		MediaType: result.MediaType,
-		Year:      cloneInt(result.ReleaseYear),
-		TMDBID:    cloneInt64(result.TMDBID),
+		EngineVersion: mediarecognition.EngineVersion,
+		Status:        result.Status,
+		ErrorCode:     result.ErrorCode,
+		Title:         strings.TrimSpace(result.Title),
+		MediaType:     result.MediaType,
+		Year:          cloneInt(result.ReleaseYear),
+		TMDBID:        cloneInt64(result.TMDBID),
 	}
 	if parseErr == nil {
 		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
@@ -719,6 +730,9 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 	if summary.Title == "" {
 		summary.Title = claim.Title
 	}
+	if parseErr == nil {
+		summary.Episodes = siteRecognitionEpisodeFacts(parsed, summary.MediaType)
+	}
 	if result.Status == mediaRecognitionStatusMatched {
 		summary.OriginalTitle = result.Snapshot.OriginalTitle
 		if result.Snapshot.PosterPath != "" {
@@ -728,6 +742,22 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 		}
 	}
 	return s.logRecognitionSummary(claim.SiteID, summary), nil
+}
+
+func siteRecognitionEpisodeFacts(parsed mediarecognition.ParsedFacts, mediaType string) *SiteRecognitionEpisodeFacts {
+	if mediaType != string(mediarecognition.MediaTypeTV) {
+		return nil
+	}
+	if parsed.Season == nil && parsed.Episodes.EpisodeMin == nil && parsed.Episodes.EpisodeMax == nil && parsed.Episodes.Count == 0 {
+		return nil
+	}
+	return &SiteRecognitionEpisodeFacts{
+		Season:     cloneInt(parsed.Season),
+		SeasonYear: cloneInt(parsed.SeasonYear),
+		EpisodeMin: cloneInt(parsed.Episodes.EpisodeMin),
+		EpisodeMax: cloneInt(parsed.Episodes.EpisodeMax),
+		Count:      parsed.Episodes.Count,
+	}
 }
 
 func (s *SiteService) logRecognitionSummary(siteID uint, summary SiteRecognitionSummary) SiteRecognitionSummary {

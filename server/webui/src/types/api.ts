@@ -267,8 +267,9 @@ export interface DownloadTaskSummary {
   bytes_completed: number | null; bytes_total: number | null; download_speed: number | null; upload_speed: number | null
   eta_seconds: number | null; last_sampled_at: string | null; last_error_code: string; last_error_message: string
   created_at: string; updated_at: string; finished_at: string | null
-  profile_id: number; profile_revision: number; scrape_status: string; scrape_title: string; scrape_media_type: string
-  scrape_category: string; scrape_tmdb_id: number | null; scrape_confidence: number | null; manifest_file_count: number
+	profile_id: number; profile_revision: number; scrape_status: string; scrape_title: string; scrape_media_type: string
+	scrape_category: string; scrape_tmdb_id: number | null; scrape_confidence: number | null
+	scrape_season: number | null; scrape_episode: number | null; manifest_file_count: number
   target_library_id: number | null; target_library_name: string; transfer_mode: string; conflict_policy: string; transfer_phase: string
   transfer_task_id: string; transfer_job_id: string; transfer_job_status: string
   seeding_task_id: string; seeding_job_id: string; seeding_job_status: string; seeding_phase: string

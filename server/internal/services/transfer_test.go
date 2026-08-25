@@ -755,3 +755,37 @@ func TestTransferRejectsSymlinkedTargetAncestor(t *testing.T) {
 		t.Fatalf("unsafe target was written outside the library: %v", err)
 	}
 }
+
+func TestTransferEpisodeFactsUsesValidatedManualSingleEpisodeOverride(t *testing.T) {
+	season, episode := 2, 9
+	download := models.DownloadTask{
+		RecognitionOverrideMediaType: "tv",
+		RecognitionOverrideSeason:    &season,
+		RecognitionOverrideEpisode:   &episode,
+	}
+	actualSeason, actualEpisode := transferEpisodeFacts(download, "Ultraman Omega.mkv", 1)
+	if actualSeason == nil || *actualSeason != 2 || actualEpisode == nil || *actualEpisode != 9 {
+		t.Fatalf("season=%v episode=%v", actualSeason, actualEpisode)
+	}
+	_, multipleEpisode := transferEpisodeFacts(download, "Ultraman Omega.mkv", 2)
+	if multipleEpisode != nil {
+		t.Fatalf("manual single episode override leaked into multi-video package: %v", *multipleEpisode)
+	}
+}
+
+func TestTransferEpisodeFactsUsesPersistedScrapeFactsWithoutReusingSingleEpisode(t *testing.T) {
+	season, episode := 1, 9
+	download := models.DownloadTask{
+		ScrapeMediaType: "tv",
+		ScrapeSeason:    &season,
+		ScrapeEpisode:   &episode,
+	}
+	actualSeason, actualEpisode := transferEpisodeFacts(download, "Ultraman Omega.mkv", 1)
+	if actualSeason == nil || *actualSeason != 1 || actualEpisode == nil || *actualEpisode != 9 {
+		t.Fatalf("season=%v episode=%v", actualSeason, actualEpisode)
+	}
+	_, multipleEpisode := transferEpisodeFacts(download, "Ultraman Omega.mkv", 2)
+	if multipleEpisode != nil {
+		t.Fatalf("persisted single episode leaked into multi-video package: %v", *multipleEpisode)
+	}
+}

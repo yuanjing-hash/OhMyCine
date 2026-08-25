@@ -198,6 +198,8 @@ type DownloadTaskSummary struct {
 	ScrapeCategory    string     `json:"scrape_category"`
 	ScrapeTMDBID      *int64     `json:"scrape_tmdb_id"`
 	ScrapeConfidence  *float64   `json:"scrape_confidence"`
+	ScrapeSeason      *int       `json:"scrape_season"`
+	ScrapeEpisode     *int       `json:"scrape_episode"`
 	ManifestFiles     int        `json:"manifest_file_count"`
 	TargetLibraryID   *uint      `json:"target_library_id"`
 	TargetLibraryName string     `json:"target_library_name"`
@@ -960,7 +962,7 @@ func normalizeDownloadDisplayName(requestedName, fallback string) (string, error
 func downloadSourcePurpose(id string) string { return "download-task:" + id + ":source" }
 
 func downloadTaskSummary(record models.DownloadTask, jobStatus string) DownloadTaskSummary {
-	return DownloadTaskSummary{ID: record.ID, JobID: record.JobID, OwnerID: record.OwnerID, DownloaderID: record.DownloaderID, DownloaderName: record.DownloaderName, ProviderType: record.ProviderType, DisplayName: record.DisplayName, JobStatus: jobStatus, ProviderStatus: record.ProviderStatus, Phase: record.Phase, Progress: record.Progress, BytesCompleted: record.BytesCompleted, BytesTotal: record.BytesTotal, DownloadSpeed: record.DownloadSpeed, UploadSpeed: record.UploadSpeed, ETASeconds: record.ETASeconds, LastSampledAt: record.LastSampledAt, LastErrorCode: record.LastErrorCode, LastErrorMessage: record.LastErrorMessage, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt, ProfileID: record.ProfileID, ProfileRevision: record.ProfileRevision, ScrapeStatus: record.ScrapeStatus, ScrapeTitle: record.ScrapeTitle, ScrapeMediaType: record.ScrapeMediaType, ScrapeCategory: record.ScrapeCategory, ScrapeTMDBID: record.ScrapeTMDBID, ScrapeConfidence: record.ScrapeConfidence, ManifestFiles: record.ManifestFileCount, TargetLibraryID: record.TargetLibraryID, TargetLibraryName: record.TargetLibraryName, TransferMode: record.TransferMode, ConflictPolicy: record.ConflictPolicy}
+	return DownloadTaskSummary{ID: record.ID, JobID: record.JobID, OwnerID: record.OwnerID, DownloaderID: record.DownloaderID, DownloaderName: record.DownloaderName, ProviderType: record.ProviderType, DisplayName: record.DisplayName, JobStatus: jobStatus, ProviderStatus: record.ProviderStatus, Phase: record.Phase, Progress: record.Progress, BytesCompleted: record.BytesCompleted, BytesTotal: record.BytesTotal, DownloadSpeed: record.DownloadSpeed, UploadSpeed: record.UploadSpeed, ETASeconds: record.ETASeconds, LastSampledAt: record.LastSampledAt, LastErrorCode: record.LastErrorCode, LastErrorMessage: record.LastErrorMessage, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt, ProfileID: record.ProfileID, ProfileRevision: record.ProfileRevision, ScrapeStatus: record.ScrapeStatus, ScrapeTitle: record.ScrapeTitle, ScrapeMediaType: record.ScrapeMediaType, ScrapeCategory: record.ScrapeCategory, ScrapeTMDBID: record.ScrapeTMDBID, ScrapeConfidence: record.ScrapeConfidence, ScrapeSeason: cloneInt(record.ScrapeSeason), ScrapeEpisode: cloneInt(record.ScrapeEpisode), ManifestFiles: record.ManifestFileCount, TargetLibraryID: record.TargetLibraryID, TargetLibraryName: record.TargetLibraryName, TransferMode: record.TransferMode, ConflictPolicy: record.ConflictPolicy}
 }
 
 type DownloadWorker struct {
@@ -992,6 +994,18 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		} else if exists {
 			return w.runCompletedRecognitionRecovery(ctx, runtime, recoveryTask, manifest)
 		}
+		manifestClient, clientErr := w.completedRecognitionManifestClient(recoveryTask)
+		if clientErr != nil {
+			return w.failure(recoveryTask, clientErr)
+		}
+		manifest, manifestErr := manifestClient.Manifest(ctx, recoveryTask.ProviderTaskID)
+		if manifestErr != nil {
+			return w.failure(recoveryTask, manifestErr)
+		}
+		if persistErr := w.persistCompletedManifest(&recoveryTask, manifest); persistErr != nil {
+			return w.failure(recoveryTask, persistErr)
+		}
+		return w.runCompletedRecognitionRecovery(ctx, runtime, recoveryTask, manifest)
 	}
 	started := time.Now()
 	task, downloaderRecord, client, source, savePath, err := w.load(ctx, job)
@@ -1112,7 +1126,7 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 					return w.failure(task, appError("transfer_manifest_unavailable", "下载完成但完整文件清单不可用", nil))
 				}
 				if err := w.service.transfers.EnqueuePackage(task, *completedManifest, *completedSourceManifest); err != nil {
-					return w.failureRetryable(task, err)
+					return w.transferEnqueueFailure(task, err)
 				}
 			}
 			now := time.Now().UTC()
@@ -1159,7 +1173,26 @@ func (w *DownloadWorker) completedRecognitionRecoveryTask(job ClaimedJob) (model
 }
 
 func isCompletedRecognitionRecovery(task models.DownloadTask) bool {
-	return task.ScrapeStatus == "completed_unrecognized" && task.ProviderTaskID != "" && task.TargetLibraryID != nil
+	hasSnapshot := strings.TrimSpace(task.CompletedManifestJSON) != "" && strings.TrimSpace(task.CompletedManifestJSON) != "{}"
+	return task.ScrapeStatus == "completed_unrecognized" && (hasSnapshot || task.ProviderTaskID != "") && task.TargetLibraryID != nil
+}
+
+func (w *DownloadWorker) completedRecognitionManifestClient(task models.DownloadTask) (downloadpkg.ManifestClient, error) {
+	if task.ProviderTaskID == "" || task.DownloaderID == nil {
+		return nil, appError("download_completion_manifest_unavailable", "已完成下载的文件清单不可用", nil)
+	}
+	record, client, err := w.service.downloader.client(*task.DownloaderID)
+	if err != nil {
+		return nil, err
+	}
+	if !record.Enabled {
+		return nil, appError(CodeDownloaderUnavailable, "下载器已停用", nil)
+	}
+	manifestClient, ok := client.(downloadpkg.ManifestClient)
+	if !ok {
+		return nil, appError("download_completion_manifest_unavailable", "已完成下载的文件清单不可用", nil)
+	}
+	return manifestClient, nil
 }
 
 func (w *DownloadWorker) runCompletedRecognitionRecovery(ctx context.Context, runtime JobRuntime, task models.DownloadTask, manifest downloadpkg.Manifest) WorkerResult {
@@ -1180,7 +1213,7 @@ func (w *DownloadWorker) runCompletedRecognitionRecovery(ctx context.Context, ru
 		return w.failure(task, appError("transfer_service_unavailable", "入库服务不可用", nil))
 	}
 	if err := w.service.transfers.EnqueuePackage(task, selected, manifest); err != nil {
-		return w.failureRetryable(task, err)
+		return w.transferEnqueueFailure(task, err)
 	}
 	now := time.Now().UTC()
 	if err := w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCompleted, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now}).Error; err != nil {
@@ -1413,6 +1446,8 @@ type scrapeMatch struct {
 	TMDBID           *int64
 	Confidence       *float64
 	Year             *int
+	Season           *int
+	Episode          *int
 	Confident        bool
 	CredentialSource string
 	CredentialKind   string
@@ -1469,6 +1504,16 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 		result.TMDBID = cloneInt64(&verified.ID)
 		result.Confidence = cloneFloat64(&verified.Confidence)
 		result.Year = cloneInt(verified.ReleaseYear)
+		result.Season = cloneInt(task.RecognitionOverrideSeason)
+		result.Episode = cloneInt(task.RecognitionOverrideEpisode)
+		if verified.MediaType == "tv" && result.Episode == nil && completedManifestVideoCount(manifest) == 1 {
+			for _, file := range manifest.Files {
+				if isVideoFile(file.RelativePath) {
+					result.Season, result.Episode = transferEpisodeFacts(task, strings.ReplaceAll(file.RelativePath, "\\", "/"), 1)
+					break
+				}
+			}
+		}
 		// A persisted override is not a fuzzy match: GetByID has just re-fetched
 		// and validated the authoritative identity. Require a complete verified
 		// projection instead of applying the automatic-ranking threshold again.
@@ -1486,6 +1531,7 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 	recognized := recognizeMedia(ctx, client, MediaRecognitionRequest{PackageName: manifest.Name, Files: files, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: task.ScrapeMediaType, YearHint: task.ScrapeYear, BuiltinPackCodes: packCodes, RecognitionRules: recognitionRules, Classification: rules, Language: language, Region: region})
 	result.Title, result.MediaType, result.Category = recognized.Title, recognized.MediaType, recognized.CategoryName
 	result.TMDBID, result.Confidence, result.Year = recognized.TMDBID, recognized.Confidence, recognized.ReleaseYear
+	result.Season, result.Episode = cloneInt(recognized.SeasonHint), cloneInt(recognized.EpisodeHint)
 	result.Confident = recognized.Status == mediaRecognitionStatusMatched && recognized.MatchedRuleID != nil && recognized.CategoryName != ""
 	if recognized.ErrorCode != "" {
 		return result, appError(recognized.ErrorCode, classificationFallbackMessage(recognized.ErrorCode), nil)
@@ -1494,7 +1540,7 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 }
 
 func (w *DownloadWorker) persistScrape(task *models.DownloadTask, match scrapeMatch, status string, files int) error {
-	updates := map[string]any{"scrape_status": status, "scrape_title": safeLabel(match.Title, 256), "scrape_media_type": safeLabel(match.MediaType, 16), "scrape_category": safeLabel(match.Category, 128), "scrape_tmdb_id": match.TMDBID, "scrape_confidence": match.Confidence, "scrape_year": match.Year, "manifest_file_count": files, "last_error_code": "", "last_error_message": "", "updated_at": time.Now().UTC()}
+	updates := map[string]any{"scrape_status": status, "scrape_title": safeLabel(match.Title, 256), "scrape_media_type": safeLabel(match.MediaType, 16), "scrape_category": safeLabel(match.Category, 128), "scrape_tmdb_id": match.TMDBID, "scrape_confidence": match.Confidence, "scrape_year": match.Year, "scrape_season": match.Season, "scrape_episode": match.Episode, "manifest_file_count": files, "last_error_code": "", "last_error_message": "", "updated_at": time.Now().UTC()}
 	if err := w.service.db.Model(task).Updates(updates).Error; err != nil {
 		return err
 	}
@@ -1505,6 +1551,8 @@ func (w *DownloadWorker) persistScrape(task *models.DownloadTask, match scrapeMa
 	task.ScrapeTMDBID = match.TMDBID
 	task.ScrapeConfidence = match.Confidence
 	task.ScrapeYear = match.Year
+	task.ScrapeSeason = match.Season
+	task.ScrapeEpisode = match.Episode
 	task.ManifestFileCount = files
 	task.LastErrorCode = ""
 	task.LastErrorMessage = ""
@@ -1764,6 +1812,29 @@ func (w *DownloadWorker) failureRetryable(task models.DownloadTask, err error) W
 	next := time.Now().UTC().Add(10 * time.Second)
 	operation := downloadOperation(task.ProviderType, task.SourceOrigin)
 	operation.Event(w.service.log.Warn()).Str("task_id", task.ID).Str("error_code", code).Time("retry_at", next).Msg(operation.Message("暂时失败，已安排自动重试"))
+	return WorkerResult{RetryAt: &next, ErrorCode: code, ErrorMessage: message}
+}
+
+// transferEnqueueFailure keeps transfer-domain failures out of the downloader
+// error mapper. A safe AppError is already classified by TransferService and
+// must remain terminal with its original code; only an unclassified database
+// or queue failure is retried as transfer_enqueue_failed.
+func (w *DownloadWorker) transferEnqueueFailure(task models.DownloadTask, err error) WorkerResult {
+	var applicationError *AppError
+	if errors.As(err, &applicationError) {
+		if applicationError.Code == CodeTransferMediaUnrecognized {
+			_ = w.service.db.Model(&task).Update("scrape_status", "completed_unrecognized").Error
+			task.ScrapeStatus = "completed_unrecognized"
+		}
+		_ = w.markFailure(task, applicationError.Code, applicationError.Message, true)
+		downloadOperation(task.ProviderType, task.SourceOrigin).Event(w.service.log.Error()).Str("task_id", task.ID).Str("error_code", applicationError.Code).Msg(serverlog.OperationDownloadClassification.Message("入库任务创建失败"))
+		return WorkerResult{ErrorCode: applicationError.Code, ErrorMessage: applicationError.Message}
+	}
+	const code = "transfer_enqueue_failed"
+	const message = "入库任务创建暂时失败，将自动重试"
+	next := time.Now().UTC().Add(10 * time.Second)
+	_ = w.markFailure(task, code, message, false)
+	downloadOperation(task.ProviderType, task.SourceOrigin).Event(w.service.log.Warn()).Str("task_id", task.ID).Str("error_code", code).Time("retry_at", next).Msg(serverlog.OperationDownloadClassification.Message("入库任务创建暂时失败，已安排自动重试"))
 	return WorkerResult{RetryAt: &next, ErrorCode: code, ErrorMessage: message}
 }
 

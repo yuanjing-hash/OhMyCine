@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
@@ -16,8 +18,10 @@ type recognitionLookupFake struct {
 }
 
 type rankedRecognitionLookupFake struct {
-	selectedID int64
-	items      []tmdb.Candidate
+	selectedID  int64
+	items       []tmdb.Candidate
+	searches    []string
+	searchItems map[string][]tmdb.Candidate
 }
 
 type enrichedRecognitionLookupFake struct {
@@ -37,6 +41,26 @@ type titleSensitiveRecognitionLookupFake struct {
 
 type nyaaRecognitionLookupFake struct {
 	searches []string
+}
+
+type cancelingCandidateLookupFake struct {
+	calls int
+}
+
+func (f *cancelingCandidateLookupFake) Search(context.Context, string, string, *int, string, string) (tmdb.Match, error) {
+	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+}
+
+func (f *cancelingCandidateLookupFake) SearchCandidates(context.Context, string, string, *int, string, string, int) ([]tmdb.Candidate, error) {
+	f.calls++
+	if f.calls == 1 {
+		return []tmdb.Candidate{{ID: 1, Title: "Example", MediaType: "movie"}}, nil
+	}
+	return nil, context.Canceled
+}
+
+func (f *cancelingCandidateLookupFake) GetByID(context.Context, string, int64, string) (tmdb.Match, error) {
+	return tmdb.Match{}, errors.New("GetByID must not run after cancellation")
 }
 
 func (f *nyaaRecognitionLookupFake) Search(context.Context, string, string, *int, string, string) (tmdb.Match, error) {
@@ -89,7 +113,12 @@ func (f *rankedRecognitionLookupFake) Search(context.Context, string, string, *i
 	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
 }
 
-func (f *rankedRecognitionLookupFake) SearchCandidates(context.Context, string, string, *int, string, string, int) ([]tmdb.Candidate, error) {
+func (f *rankedRecognitionLookupFake) SearchCandidates(_ context.Context, mediaType, title string, _ *int, _, _ string, _ int) ([]tmdb.Candidate, error) {
+	key := mediaType + ":" + title
+	f.searches = append(f.searches, key)
+	if f.searchItems != nil {
+		return append([]tmdb.Candidate(nil), f.searchItems[key]...), nil
+	}
 	return append([]tmdb.Candidate(nil), f.items...), nil
 }
 
@@ -257,6 +286,97 @@ func TestRecognizeMediaUsesBuiltinPacksAndDomainParserForNyaaCompleteSeries(t *t
 	}
 }
 
+func TestRecognizeMediaRecallsProductionEnglishAndPinyinAliasesAfterSpecificationCleanup(t *testing.T) {
+	tests := []struct {
+		name           string
+		release        string
+		query          string
+		candidate      tmdb.Candidate
+		enriched       tmdb.Candidate
+		expectedType   string
+		expectedSeason *int
+	}{
+		{name: "original english tv title", release: "ULTRAMAN TIGA", query: "ULTRAMAN TIGA", candidate: tmdb.Candidate{ID: 10820, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", MediaType: "tv", Popularity: 80}, enriched: tmdb.Candidate{ID: 10820, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", MediaType: "tv", AlternativeTitles: []string{"Ultraman Tiga"}, Popularity: 80}, expectedType: "tv"},
+		{name: "remastered version", release: "Ultraman.Tiga.Ultra.Resolution.Remastered.Version.1997.BluRay.1080p.x264.AAC", query: "Ultraman Tiga", candidate: tmdb.Candidate{ID: 10820, Title: "迪迦奥特曼", MediaType: "tv"}, enriched: tmdb.Candidate{ID: 10820, Title: "迪迦奥特曼", MediaType: "tv", AlternativeTitles: []string{"Ultraman Tiga"}}, expectedType: "tv"},
+		{name: "movie subtitle", release: "The Final Odyssey 1080p WEB-DL H264 AAC-Side", query: "The Final Odyssey", candidate: tmdb.Candidate{ID: 54321, Title: "Ultraman Tiga: The Final Odyssey", MediaType: "movie"}, enriched: tmdb.Candidate{ID: 54321, Title: "Ultraman Tiga: The Final Odyssey", MediaType: "movie"}, expectedType: "movie"},
+		{name: "gaiden movie", release: "Ultraman Tiga Gaiden Revival of the Ancient Giant WEB-DL 2160P HEVC AAC-Side", query: "Ultraman Tiga Gaiden Revival of the Ancient Giant", candidate: tmdb.Candidate{ID: 54322, Title: "迪迦奥特曼外传", MediaType: "movie"}, enriched: tmdb.Candidate{ID: 54322, Title: "迪迦奥特曼外传", MediaType: "movie", AlternativeTitles: []string{"Ultraman Tiga Gaiden Revival of the Ancient Giant"}}, expectedType: "movie"},
+		{name: "zh language marker", release: "Ultraman Tiga 1996 WEB-DL 1080p H264 ZH-AAC-HDCTV", query: "Ultraman Tiga", candidate: tmdb.Candidate{ID: 10820, Title: "迪迦奥特曼", MediaType: "tv"}, enriched: tmdb.Candidate{ID: 10820, Title: "迪迦奥特曼", MediaType: "tv", AlternativeTitles: []string{"Ultraman Tiga"}}, expectedType: "tv"},
+		{name: "pinyin season alias", release: "Ai qing gong yu 2012 S03 2160p WEB-DL H.265 AAC-ZmWeb", query: "Ai qing gong yu", candidate: tmdb.Candidate{ID: 12345, Title: "爱情公寓", MediaType: "tv", ReleaseYear: intPointerTest(2009)}, enriched: tmdb.Candidate{ID: 12345, Title: "爱情公寓", MediaType: "tv", ReleaseYear: intPointerTest(2009), AlternativeTitles: []string{"Ai qing gong yu"}, SeasonCount: 5, SeasonYears: map[int]int{3: 2012}}, expectedType: "tv", expectedSeason: intPointerTest(3)},
+		{name: "localized english alias", release: "Apartment of Love 2018 1080p WEB-DL 60fps H.265 DDP5.1-AilMWeb", query: "Apartment of Love", candidate: tmdb.Candidate{ID: 12345, Title: "爱情公寓", MediaType: "tv"}, enriched: tmdb.Candidate{ID: 12345, Title: "爱情公寓", MediaType: "tv", AlternativeTitles: []string{"Apartment of Love"}}, expectedType: "tv"},
+		{name: "official english alias", release: "Ipartment S05 2020 2160p WEB-DL H.265 DDP2.0-CSWEB", query: "Ipartment", candidate: tmdb.Candidate{ID: 12345, Title: "爱情公寓", MediaType: "tv", ReleaseYear: intPointerTest(2009)}, enriched: tmdb.Candidate{ID: 12345, Title: "爱情公寓", MediaType: "tv", ReleaseYear: intPointerTest(2009), AlternativeTitles: []string{"iPartment"}, SeasonCount: 5, SeasonYears: map[int]int{5: 2020}}, expectedType: "tv", expectedSeason: intPointerTest(5)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := &enrichedRecognitionLookupFake{
+				rankedRecognitionLookupFake: rankedRecognitionLookupFake{items: []tmdb.Candidate{test.candidate}},
+				enriched:                    map[int64]tmdb.Candidate{test.enriched.ID: test.enriched},
+			}
+			result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{PackageName: test.release, SourceKind: mediarecognition.SourceDownload, BuiltinPackCodes: mediarecognition.DefaultPackCodes(), Classification: classification.DefaultRules(), Language: "zh-CN", Region: "CN"})
+			if result.Status != mediaRecognitionStatusMatched || result.MediaType != test.expectedType || result.TMDBID == nil || *result.TMDBID != test.candidate.ID || !sameOptionalTestInt(result.SeasonHint, test.expectedSeason) {
+				t.Fatalf("result=%+v searches=%v", result, lookup.searches)
+			}
+			found := false
+			for _, search := range lookup.searches {
+				if strings.TrimPrefix(search, "movie:") == test.query || strings.TrimPrefix(search, "tv:") == test.query {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("clean query %q missing from %v", test.query, lookup.searches)
+			}
+		})
+	}
+}
+
+func TestRecognizeMediaBridgesPinyinThroughAuthoritativeCrossTypeTitle(t *testing.T) {
+	bridgeMovie := tmdb.Candidate{ID: 541781, Title: "爱情公寓", OriginalTitle: "爱情公寓", MediaType: "movie", ReleaseYear: intPointerTest(2018)}
+	series := tmdb.Candidate{ID: 68809, Title: "爱情公寓", OriginalTitle: "爱情公寓", MediaType: "tv", ReleaseYear: intPointerTest(2009)}
+	lookup := &enrichedRecognitionLookupFake{
+		rankedRecognitionLookupFake: rankedRecognitionLookupFake{searchItems: map[string][]tmdb.Candidate{
+			"movie:Ai qing gong yu": {bridgeMovie},
+			"tv:爱情公寓":               {series},
+		}},
+		enriched: map[int64]tmdb.Candidate{
+			541781: {ID: 541781, Title: "爱情公寓", MediaType: "movie", AlternativeTitles: []string{"Ai qing gong yu"}, ReleaseYear: intPointerTest(2018)},
+			68809:  {ID: 68809, Title: "爱情公寓", MediaType: "tv", AlternativeTitles: []string{"Ai qing gong yu", "iPartment"}, ReleaseYear: intPointerTest(2009), SeasonCount: 5, SeasonYears: map[int]int{3: 2012}},
+		},
+	}
+	result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{PackageName: "Ai qing gong yu 2012 S03 2160p WEB-DL H.265 AAC-ZmWeb", SourceKind: mediarecognition.SourceDownload, BuiltinPackCodes: mediarecognition.DefaultPackCodes(), Classification: classification.DefaultRules(), Language: "zh-CN", Region: "CN"})
+	if result.Status != mediaRecognitionStatusMatched || result.MediaType != "tv" || result.TMDBID == nil || *result.TMDBID != 68809 {
+		t.Fatalf("result=%+v searches=%v", result, lookup.searches)
+	}
+	if !containsTestString(lookup.searches, "movie:Ai qing gong yu") || !containsTestString(lookup.searches, "tv:爱情公寓") || len(lookup.searches) > mediaRecognitionMaxQueries {
+		t.Fatalf("bounded alias bridge searches=%v", lookup.searches)
+	}
+}
+
+func TestDomainCandidateRecallDoesNotAcceptPartialResultsAfterCancellation(t *testing.T) {
+	parsed, err := mediarecognition.Parse(mediarecognition.InputFacts{PackageName: "Example S01", SourceKind: mediarecognition.SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := &cancelingCandidateLookupFake{}
+	if _, err := recognizeFromDomainCandidates(context.Background(), lookup, lookup, parsed, "en-US", "US"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("partial candidate result swallowed cancellation: %v", err)
+	}
+}
+
+func containsTestString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func intPointerTest(value int) *int { return &value }
+
+func sameOptionalTestInt(left, right *int) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
 func TestDomainRecognitionSearchQueriesPrioritizeCanonicalVariantsAcrossSources(t *testing.T) {
 	parsed := mediarecognition.ParsedFacts{Queries: []mediarecognition.QueryVariant{
 		{Title: "Noisy Canonical", SuggestedType: mediarecognition.MediaTypeTV, Source: "filename", Reason: "canonical"},
@@ -285,8 +405,8 @@ func TestRecognizeMediaReranksBoundedEnrichedAliases(t *testing.T) {
 			{ID: 2, Title: "Empresses in the Palace", MediaType: "tv", ReleaseYear: &year2011},
 		}},
 		enriched: map[int64]tmdb.Candidate{
-			1: {ID: 1, Title: "後宮甄嬛傳", MediaType: "tv", ReleaseYear: &year1990},
-			2: {ID: 2, Title: "Empresses in the Palace", MediaType: "tv", ReleaseYear: &year2011, Translations: []string{"後宮甄嬛傳", "后宫甄嬛传"}, SeasonCount: 1},
+			1: {ID: 1, Title: "後宮甄嬛傳", MediaType: "tv", ReleaseYear: &year1990, SeasonCount: 1, SeasonYears: map[int]int{1: 1990}},
+			2: {ID: 2, Title: "Empresses in the Palace", MediaType: "tv", ReleaseYear: &year2011, Translations: []string{"後宮甄嬛傳", "后宫甄嬛传"}, SeasonCount: 1, SeasonYears: map[int]int{1: 2011}},
 		},
 	}
 	result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
