@@ -754,6 +754,149 @@ func TestDownloadWorkerPersistsTelemetryAndCancelDeletesProviderData(t *testing.
 	}
 }
 
+func TestExplicitRetryDurablyClearsDownloadErrorAndActiveTelemetryCannotResurrectIt(t *testing.T) {
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Retry staging", NameNormalized: "retry staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Retry qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, DisplayName: "Retry stale error", Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:retry-stale-error"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedAt := time.Now().UTC()
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{
+		"provider_task_id": "provider-hash", "provider_status": "checkingResumeData", "phase": models.DownloadTaskStatusFailed,
+		"last_error_code": "downloader_category_outside_staging", "last_error_message": "下载任务执行失败", "finished_at": failedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Updates(map[string]any{
+		"status": models.JobStatusFailed, "last_error_code": "downloader_category_outside_staging", "last_error_message": "下载任务执行失败", "finished_at": failedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := queue.Control(actor, created.JobID, "retry", RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	var job models.Job
+	if err := queue.db.First(&job, "id = ?", created.JobID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var task models.DownloadTask
+	if err := queue.db.First(&task, "id = ?", created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != models.JobStatusQueued || job.LastErrorCode != "" || job.LastErrorMessage != "" || job.FinishedAt != nil {
+		t.Fatalf("retry job state=%+v", job)
+	}
+	if task.LastErrorCode != "" || task.LastErrorMessage != "" || task.FinishedAt != nil {
+		t.Fatalf("retry download state=%+v", task)
+	}
+	listed, _, err := downloads.ListScoped(actor, DownloadListScopeActive, 10)
+	if err != nil || len(listed) != 1 || listed[0].LastErrorMessage != "" {
+		t.Fatalf("retry list=%+v err=%v", listed, err)
+	}
+
+	// Meaningful preclassification warnings remain visible while the provider
+	// is active; they are not stale terminal failures.
+	task.Phase, task.ScrapeStatus, task.LastErrorCode, task.LastErrorMessage, task.FinishedAt = models.DownloadTaskStatusDownloading, "fallback_unrecognized", "tmdb_no_match", "未识别，将在下载完成后复核", nil
+	if err := queue.db.Save(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	progress, completed, total, speed := 0.0, int64(0), int64(1024), int64(0)
+	if err := NewDownloadWorker(downloads).persistTelemetry(&task, downloadpkg.Task{ID: task.ProviderTaskID, Status: "stalledDL", Progress: &progress, BytesCompleted: &completed, BytesTotal: &total, DownloadSpeed: &speed}); err != nil {
+		t.Fatal(err)
+	}
+	if task.LastErrorCode != "tmdb_no_match" || task.LastErrorMessage != "未识别，将在下载完成后复核" {
+		t.Fatalf("active classification warning was cleared: %+v", task)
+	}
+
+	// An authoritative provider failure is the current error, never a stale
+	// terminal one, and therefore must not be cleared by telemetry persistence.
+	task.Phase, task.LastErrorCode, task.LastErrorMessage, task.FinishedAt = models.DownloadTaskStatusFailed, "downloader_provider_failed", "下载器报告任务失败", &failedAt
+	if err := queue.db.Save(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := NewDownloadWorker(downloads).persistTelemetry(&task, downloadpkg.Task{ID: task.ProviderTaskID, Status: "error", Failed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if task.Phase != models.DownloadTaskStatusFailed || task.LastErrorCode != "downloader_provider_failed" || task.LastErrorMessage != "下载器报告任务失败" || task.FinishedAt == nil {
+		t.Fatalf("current provider failure was cleared: %+v", task)
+	}
+
+	// Also converge legacy retries accepted before this fix: an authoritative
+	// active provider sample clears only a terminal DownloadTask error.
+	task.Phase, task.LastErrorCode, task.LastErrorMessage, task.FinishedAt = models.DownloadTaskStatusFailed, "old_terminal", "old terminal failure", &failedAt
+	if err := queue.db.Save(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := NewDownloadWorker(downloads).persistTelemetry(&task, downloadpkg.Task{ID: task.ProviderTaskID, Status: "stalledDL", Progress: &progress, BytesCompleted: &completed, BytesTotal: &total, DownloadSpeed: &speed}); err != nil {
+		t.Fatal(err)
+	}
+	if task.Phase != models.DownloadTaskStatusDownloading || task.ProviderStatus != "stalledDL" || task.LastErrorCode != "" || task.LastErrorMessage != "" || task.FinishedAt != nil {
+		t.Fatalf("active telemetry state=%+v", task)
+	}
+
+	if err := NewDownloadWorker(downloads).markFailure(task, "downloader_provider_failed", "本次重试仍失败", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Updates(map[string]any{"status": models.JobStatusFailed, "last_error_code": "downloader_provider_failed", "last_error_message": "本次重试仍失败"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	listed, _, err = downloads.ListScoped(actor, DownloadListScopeActive, 10)
+	if err != nil || len(listed) != 1 || listed[0].LastErrorCode != "downloader_provider_failed" || listed[0].LastErrorMessage != "本次重试仍失败" {
+		t.Fatalf("new failure list=%+v err=%v", listed, err)
+	}
+}
+
+func TestExplicitDownloadRetryRollsBackJobWhenDomainStateIsMissing(t *testing.T) {
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Retry rollback", NameNormalized: "retry rollback", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Rollback qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, DisplayName: "Retry rollback", Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:retry-rollback"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedAt := time.Now().UTC()
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Updates(map[string]any{
+		"status": models.JobStatusFailed, "last_error_code": "downloader_provider_failed", "last_error_message": "下载任务执行失败", "finished_at": failedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Delete(&models.DownloadTask{}, "id = ?", created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := queue.Control(actor, created.JobID, "retry", RequestContext{}); ErrorCode(err) != "download_state_persist_failed" {
+		t.Fatalf("retry error=%v code=%s", err, ErrorCode(err))
+	}
+	var job models.Job
+	if err := queue.db.First(&job, "id = ?", created.JobID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != models.JobStatusFailed || job.LastErrorCode != "downloader_provider_failed" || job.LastErrorMessage != "下载任务执行失败" || job.FinishedAt == nil {
+		t.Fatalf("retry transaction did not roll back: %+v", job)
+	}
+}
+
 func TestTorrentSourceValidation(t *testing.T) {
 	valid := []byte("d4:infod4:name4:testee")
 	source, name, err := normalizeDownloadSource(DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Filename: "movie.torrent", Torrent: valid}, "")
@@ -835,6 +978,10 @@ func TestDownloadWorkerExplicitRetryReplacesFailedPan115TaskWithoutDeletingFiles
 		t.Fatal(err)
 	}
 	worker := NewDownloadWorker(downloads)
+	failedProvider := downloadpkg.Task{ID: "old-provider-hash", Status: "failed", Failed: true}
+	client.mu.Lock()
+	client.seedTask = &failedProvider
+	client.mu.Unlock()
 	if err := worker.resetFailedPan115ForExplicitRetry(context.Background(), &task, client, models.DownloaderTypePan115Offline); err != nil {
 		t.Fatal(err)
 	}
@@ -858,6 +1005,10 @@ func TestDownloadWorkerExplicitRetryReplacesFailedPan115TaskWithoutDeletingFiles
 	persisted.Phase = models.DownloadTaskStatusFailed
 	persisted.ProviderTaskID = "completed-provider-hash"
 	persisted.LastErrorCode = CodeTransferMediaUnrecognized
+	completedProvider := downloadpkg.Task{ID: "completed-provider-hash", Status: "completed", Completed: true}
+	client.mu.Lock()
+	client.seedTask = &completedProvider
+	client.mu.Unlock()
 	if err := worker.resetFailedPan115ForExplicitRetry(context.Background(), &persisted, client, models.DownloaderTypePan115Offline); err != nil {
 		t.Fatal(err)
 	}
@@ -866,6 +1017,37 @@ func TestDownloadWorkerExplicitRetryReplacesFailedPan115TaskWithoutDeletingFiles
 	client.mu.Unlock()
 	if cancelled {
 		t.Fatal("recognition/import failure must not delete or resubmit a completed 115 task")
+	}
+
+	client.mu.Lock()
+	client.cancelled = false
+	client.seedTask = &downloadpkg.Task{ID: "active-provider-hash", Status: "running"}
+	client.mu.Unlock()
+	persisted.ProviderTaskID = "active-provider-hash"
+	if err := worker.resetFailedPan115ForExplicitRetry(context.Background(), &persisted, client, models.DownloaderTypePan115Offline); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	cancelled = client.cancelled
+	client.mu.Unlock()
+	if cancelled || persisted.ProviderTaskID != "active-provider-hash" {
+		t.Fatalf("healthy 115 provider task was replaced: cancelled=%v task=%+v", cancelled, persisted)
+	}
+
+	client.mu.Lock()
+	client.cancelled = false
+	client.seedTask = nil
+	client.getErr = downloadpkg.Error("downloader_task_not_found", false, nil)
+	client.mu.Unlock()
+	persisted.ProviderTaskID = "missing-provider-hash"
+	if err := worker.resetFailedPan115ForExplicitRetry(context.Background(), &persisted, client, models.DownloaderTypePan115Offline); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	cancelled = client.cancelled
+	client.mu.Unlock()
+	if cancelled || persisted.ProviderTaskID != "" || persisted.Phase != models.DownloadTaskStatusQueued {
+		t.Fatalf("missing 115 provider task did not reset safely: cancelled=%v task=%+v", cancelled, persisted)
 	}
 }
 

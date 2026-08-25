@@ -486,6 +486,44 @@ func TestRecognizeMediaLongRunningAnimeUsesStructureAndFullSubtitleSafely(t *tes
 	}
 }
 
+func TestRecognizeMediaUsesEnrichedEpisodeCountForUntouchedConanRelease(t *testing.T) {
+	lookup := &enrichedRecognitionLookupFake{
+		rankedRecognitionLookupFake: rankedRecognitionLookupFake{items: []tmdb.Candidate{
+			{ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv"},
+			{ID: 318691, Title: "名侦探柯南", MediaType: "tv"},
+		}},
+		enriched: map[int64]tmdb.Candidate{
+			30983:  {ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv", SeasonCount: 1, EpisodeCount: 1300},
+			318691: {ID: 318691, Title: "名侦探柯南", MediaType: "tv", SeasonCount: 1, EpisodeCount: 24},
+		},
+	}
+	result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
+		PackageName:      "[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
+		SourceKind:       mediarecognition.SourceDownload,
+		BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
+		Classification:   classification.DefaultRules(),
+		Language:         "zh-CN",
+		Region:           "CN",
+	})
+	if result.Status != mediaRecognitionStatusMatched || result.TMDBID == nil || *result.TMDBID != 30983 || lookup.selectedID != 30983 {
+		t.Fatalf("result=%+v selected=%d searches=%v", result, lookup.selectedID, lookup.searches)
+	}
+	if lookup.enrichmentCalls != 1 {
+		t.Fatalf("enrichment_calls=%d", lookup.enrichmentCalls)
+	}
+}
+
+func TestRemoteRecognitionCandidatePreservesOnlyPositiveEpisodeCount(t *testing.T) {
+	withCount := remoteRecognitionCandidate(tmdb.Candidate{ID: 1, Title: "Example", MediaType: "tv", EpisodeCount: 1206})
+	if withCount.EpisodeCount == nil || *withCount.EpisodeCount != 1206 {
+		t.Fatalf("candidate=%+v", withCount)
+	}
+	withoutCount := remoteRecognitionCandidate(tmdb.Candidate{ID: 2, Title: "Example", MediaType: "tv"})
+	if withoutCount.EpisodeCount != nil {
+		t.Fatalf("zero episode count must stay unknown: %+v", withoutCount)
+	}
+}
+
 func TestRecognizeMediaAuxiliaryRuleCannotPromoteDirectIdentity(t *testing.T) {
 	processor, err := mediarecognition.CompileWordProcessor([]string{
 		`Poison => Safe Title {[tmdbid=999;type=movie]}`,

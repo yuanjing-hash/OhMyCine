@@ -87,6 +87,25 @@ func TestParseBracketedFansubReleaseWithFourDigitAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestParseUntouchedConanEpisode1206Release(t *testing.T) {
+	parsed, err := Parse(InputFacts{
+		PackageName: "[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
+		SourceKind:  SourceDownload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.CanonicalTitle != "名侦探柯南" || parsed.SuggestedType != MediaTypeTV || parsed.TypeConfidence < .90 {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+	if parsed.Episodes.EpisodeMin == nil || *parsed.Episodes.EpisodeMin != 1206 || parsed.Episodes.EpisodeMax == nil || *parsed.Episodes.EpisodeMax != 1206 {
+		t.Fatalf("episodes=%+v", parsed.Episodes)
+	}
+	if len(parsed.Queries) == 0 || parsed.Queries[0].Title != "名侦探柯南" {
+		t.Fatalf("queries=%+v", parsed.Queries)
+	}
+}
+
 func TestParsePTAndNyaaReleaseShapesIntoCleanQueries(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -283,7 +283,14 @@ func recognizeDirectDomainHint(ctx context.Context, lookup mediaRecognitionLooku
 	}
 	remote := make([]mediarecognition.RemoteCandidate, 0, len(matches))
 	for _, match := range matches {
-		remote = append(remote, mediarecognition.RemoteCandidate{ID: match.ID, MediaType: mediarecognition.MediaType(match.MediaType), Title: match.Title, OriginalTitle: match.Snapshot.OriginalTitle, ReleaseYear: cloneInt(match.ReleaseYear)})
+		candidate := mediarecognition.RemoteCandidate{ID: match.ID, MediaType: mediarecognition.MediaType(match.MediaType), Title: match.Title, OriginalTitle: match.Snapshot.OriginalTitle, ReleaseYear: cloneInt(match.ReleaseYear)}
+		if match.Snapshot.SeasonCount > 0 {
+			candidate.SeasonCount = cloneInt(&match.Snapshot.SeasonCount)
+		}
+		if match.Snapshot.EpisodeCount > 0 {
+			candidate.EpisodeCount = cloneInt(&match.Snapshot.EpisodeCount)
+		}
+		remote = append(remote, candidate)
 	}
 	decision := mediarecognition.Rank(parsed, remote)
 	if decision.Status != mediarecognition.DecisionMatched || decision.Match == nil {
@@ -702,6 +709,9 @@ func remoteRecognitionCandidate(candidate tmdb.Candidate) mediarecognition.Remot
 	remote := mediarecognition.RemoteCandidate{ID: candidate.ID, MediaType: mediarecognition.MediaType(candidate.MediaType), Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, AlternativeTitles: append([]string(nil), candidate.AlternativeTitles...), Translations: append([]string(nil), candidate.Translations...), ReleaseYear: cloneInt(candidate.ReleaseYear), SeasonYears: cloneSeasonYears(candidate.SeasonYears), Popularity: candidate.Popularity}
 	if candidate.SeasonCount > 0 {
 		remote.SeasonCount = cloneInt(&candidate.SeasonCount)
+	}
+	if candidate.EpisodeCount > 0 {
+		remote.EpisodeCount = cloneInt(&candidate.EpisodeCount)
 	}
 	return remote
 }

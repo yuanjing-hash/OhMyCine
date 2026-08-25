@@ -20,6 +20,8 @@ func DefaultScoreConfig() ScoreConfig {
 		TypeWeight:          .10,
 		TypeConflict:        .22,
 		SeasonWeight:        .03,
+		EpisodeWeight:       .04,
+		EpisodeConflict:     .20,
 		StructureWeight:     .05,
 		ConsistencyWeight:   .03,
 		UniquenessWeight:    .05,
@@ -148,6 +150,11 @@ func boundedRemoteCandidate(candidate RemoteCandidate) RemoteCandidate {
 	} else {
 		candidate.SeasonCount = cloneDomainInt(candidate.SeasonCount)
 	}
+	if candidate.EpisodeCount != nil && (*candidate.EpisodeCount <= 0 || *candidate.EpisodeCount > 1_000_000) {
+		candidate.EpisodeCount = nil
+	} else {
+		candidate.EpisodeCount = cloneDomainInt(candidate.EpisodeCount)
+	}
 	candidate.SeasonYears = boundedSeasonYears(candidate.SeasonYears)
 	return candidate
 }
@@ -244,6 +251,16 @@ func scoreCandidate(parsed ParsedFacts, candidate RemoteCandidate, config ScoreC
 	if parsed.Season != nil && candidate.MediaType == MediaTypeTV && candidate.SeasonCount != nil && *parsed.Season <= *candidate.SeasonCount {
 		ranked.Score.Season = config.SeasonWeight
 		ranked.Evidence = append(ranked.Evidence, Evidence{Code: "season_available", Kind: "season", Supports: MediaTypeTV, Strength: 1, Summary: "parsed season exists in the candidate season range"})
+	}
+	if parsed.SuggestedType == MediaTypeTV && parsed.TypeConfidence >= .80 && candidate.MediaType == MediaTypeTV && parsed.Episodes.EpisodeMax != nil && candidate.EpisodeCount != nil {
+		strength := clamp01(parsed.TypeConfidence)
+		if *parsed.Episodes.EpisodeMax <= *candidate.EpisodeCount {
+			ranked.Score.Episode = config.EpisodeWeight * strength
+			ranked.Evidence = append(ranked.Evidence, Evidence{Code: "episode_available", Kind: "episode", Supports: MediaTypeTV, Strength: strength, Summary: "parsed episode exists within the candidate's known total episode range"})
+		} else {
+			ranked.Score.ConflictPenalty += config.EpisodeConflict * strength
+			ranked.Evidence = append(ranked.Evidence, Evidence{Code: "episode_outside_known_range", Kind: "episode", Supports: MediaTypeTV, Strength: strength, Conflict: true, Summary: "parsed episode exceeds the candidate's known total episode range"})
+		}
 	}
 	if strongVariantMatches >= 2 {
 		strength := clamp01(float64(strongVariantMatches-1) / 3)
@@ -348,7 +365,7 @@ func applyUniqueness(ranked []RankedCandidate, config ScoreConfig) {
 }
 
 func updateTotal(score *ScoreBreakdown) {
-	score.Total = clamp01(score.Title + score.Year + score.MediaType + score.Season + score.Structure + score.Consistency + score.Uniqueness + score.Popularity - score.ConflictPenalty)
+	score.Total = clamp01(score.Title + score.Year + score.MediaType + score.Season + score.Episode + score.Structure + score.Consistency + score.Uniqueness + score.Popularity - score.ConflictPenalty)
 }
 
 func candidateNames(candidate RemoteCandidate) []string {

@@ -106,6 +106,7 @@ disabled -> initializing -> attaching_listener
 - TMDB recall covers movie and TV with a maximum of ten search requests while reserving exact-year, `±1`, no-year and cross-type attempts. Within that budget, canonical variants from distinct filename/parent/package sources receive an opportunity before noisy fallback stages from one source, so a dirty primary filename cannot crowd out a clean parent title. Search summaries include localized/original titles; only the initial top three may be enriched with alternative titles, translations and season structure before final ranking. A single enrichment failure degrades to the original safe summary; caller cancellation remains terminal.
 - Romanized/Pinyin and official English release names use the same bounded recall and enrichment path as localized titles. Ranking compares enriched alternative titles/translations after normalization; it does not hard-code individual works. If TMDB indexes a romanized query only through a related cross-type result, the recognizer may spend the remaining ten-request budget on that candidate's bounded localized/original titles in the structurally preferred type, then apply the ordinary enrichment and ranking gate. Candidate order is stable and context cancellation terminates partial recall immediately. For a TV release that contains an explicit season, a nearby four-digit year is season-scoped but ambiguous across release-group conventions: compare it with both the season TMDB `air_date` and the series premiere year when known, use the stronger consistent interpretation, and reject only when every known interpretation conflicts. Missing year evidence remains neutral.
 - `mediarecognition.Rank` is the only automatic scoring/threshold owner. Services must not reintroduce first-result selection or local `.98/.82/.62` similarity constants. It compares Unicode NFC/case/punctuation/space/Han-equivalent titles plus year/type/season/structure/consistency/uniqueness and weak popularity evidence, then returns exactly one of `matched|no_match|low_confidence|candidate_conflict`. A matched winner is fetched again through `GetByID` before persistence.
+- TMDB enrichment's bounded `number_of_episodes` must survive `tmdb.Candidate -> mediarecognition.RemoteCandidate`. For a structurally strong TV input with parsed maximum episode `E`, a candidate with known `EpisodeCount >= E` receives bounded support and a candidate with known `EpisodeCount < E` receives a conflict penalty; a missing count is neutral. Episode evidence cannot establish identity by itself or override a bad title, media type, or year. Manual-search `98%` remains lexical query/title similarity and is never presented to the automatic ranker as final confidence.
 - An exact normalized official title, original title, alternative title, or translation is identity-strength evidence: unrelated approximate candidates must not lower that unique exact winner below the automatic threshold, while two distinct exact identities remain a conflict. Latin typo recovery is retrieval-only and bounded: only a multi-token Latin title of sufficient length may contribute at most two distinctive token searches, the global ten-search budget still applies, and the final decision must compare the complete title with at most one edit/transposition plus ordinary year/type/conflict evidence. A token hit alone never establishes identity.
 - Normal recognition remains fully automatic; internal Top-k exists only for ranking, diagnostics and benchmark metrics. Bounded TMDB keyword search and direct ID entry are recovery tools shown only after automatic recognition failed, and browser-provided title/year/category/artwork is never trusted.
 - TMDB network calls happen outside SQLite transactions. Before committing recognized results, the transaction reloads and verifies source identity, Profile ID/revision and dirty generation so stale network results cannot overwrite a changed library.
@@ -154,6 +155,8 @@ disabled -> initializing -> attaching_listener
 | TMDB is missing, unauthorized, unavailable, no-match, or below confidence threshold | Preserve facts and return an `unrecognized` item with a stable safe code |
 | Best candidate is below the corpus threshold | `tmdb_low_confidence`; do not call the winning `GetByID` path |
 | Top candidates remain inside the corpus conflict margin | `tmdb_candidate_conflict`; do not silently select the first result |
+| Two exact-title TV candidates differ by known total episode range | Use the parsed episode and enriched bounded `EpisodeCount`; reject the candidate whose known range cannot contain the episode, while missing counts stay neutral |
+| Only a high episode count supports an otherwise wrong title/type/year | Keep the item unrecognized; structural range evidence cannot create identity |
 | Provider-neutral facts contain an absolute/UNC/drive path, URL or credential marker | `tmdb_invalid_request`; run no TMDB request |
 | One top-three enrichment detail fails | Keep the original bounded candidate and continue ranking; never expand beyond the request budget |
 | Retry targets a manual override | Reject with conflict until the override is cleared |
@@ -173,6 +176,7 @@ disabled -> initializing -> attaching_listener
 - Good: `Ming Dynasty in 1566 HQ -BlackTV` with 49 episode files parses to the numeric-preserving title, strong TV evidence and the correct TMDB identity without user interaction.
 - Good: `Ai qing gong yu 2012 S03 ...`, `Ipartment S05 2020 ...`, and `Apartment of Love ...` recall the same series through TMDB aliases/translations; 2012 and 2020 validate the corresponding seasons instead of conflicting with the series premiere year.
 - Good: `迪迦·奥特曼` matches the unique punctuation-normalized TV identity; `The Final Odyssey` may match a movie only after its enriched official alias is compared; `ULRAMAN TIGA 1996` may use bounded token retrieval but still wins only by complete-title typo, year and type evidence.
+- Good: `[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]` selects the exact-title TMDB candidate whose enriched series range contains episode 1206 and rejects an exact-title candidate with a known 24-episode range; no title or ID dictionary is involved.
 - Base: create disabled, save the explicit `false`, and start no scan until a later update enables it.
 - Bad: accept `../`, reuse a token across Storages, start every 115 library at the Storage root, recognize every episode separately, let a provider adapter call TMDB, accept TMDB result zero, copy fuzzy thresholds into services, expose normal-flow Top-k selection, group episodes after pagination, persist an absolute source path in an entry, log `scanErr` containing a filesystem path, mark listening after failed catch-up, delete unseen entries from a partial scan, or retain recognitions/overrides from the old source identity.
 
@@ -192,6 +196,7 @@ disabled -> initializing -> attaching_listener
 - Recognition integration: local and fake provider facts share the exact recognizer; `Seven.Samurai.1954...` queries `Seven Samurai` and matches a localized TMDB response through original title plus year; a repeated unchanged scan asserts zero additional TMDB requests.
 - Next-generation corpus: offline fixtures cover numeric titles, legal hyphens/brackets, 49-episode TV structure, BDMV/VIDEO_TS, Chinese simplified/traditional, English/Japanese/Korean names, release/audio suffixes, close candidates and strong year conflicts. Golden baseline/candidate reports must be reproducible without live TMDB and must label synthetic/reference behavior honestly.
 - Ranking/retrieval: candidate input order does not change the decision; a unique exact normalized identity survives nearby approximate franchise candidates, duplicate exact identities conflict, and one-character Latin typo recovery cannot promote a token-only candidate. Exact/±1/no-year/cross-type/token requests remain within ten searches; detail enrichment remains within three candidates; alternative/translated titles can change the winner; no-match, low-confidence and conflict return distinct reason codes and never call `GetByID` for a rejected winner.
+- Episode-range ranking: the untouched E1206 release is covered at parser, shared service and frozen corpus layers; known containing/insufficient totals resolve the exact-title conflict in either candidate order, missing totals remain neutral, ordinary low episodes do not fabricate uniqueness, and a high total cannot promote an unrelated title/type/year.
 - Multilingual/season-year regression: Pinyin/Romanized, official English and localized aliases share one generic ranking path; a wrong-type romanized hit can bridge through its authoritative title within ten total searches; `SeasonYear` is separated from series `Year`, TMDB season air dates affect only the matching season, series-premiere-year naming remains accepted, unrelated year conflicts still reject unsafe matches, and context cancellation terminates partial recall.
 - Recognition failures/correction: missing credential, auth, network, no-match and low confidence preserve facts; retry, bounded candidate search, verified override, retained override and clear-then-auto behavior are covered with RBAC, strict JSON, no-store and safe DTO assertions.
 - v25 migration: fresh creation, v24 upgrade and repeated migration assert recognition/cache tables, entry/run additive columns, indexes/cascades, old entries retained as pending facts, and source replacement removing recognitions plus manual overrides.
@@ -261,6 +266,20 @@ if decision.Status == mediarecognition.DecisionMatched {
     verified := tmdb.GetByID(ctx, decision.Match.MediaType, decision.Match.ID)
     persist(verified)
 }
+```
+
+Wrong:
+
+```go
+remote := mediarecognition.RemoteCandidate{Title: candidate.Title} // drops enriched EpisodeCount
+if candidate.Confidence == .98 { persist(candidate) }              // lexical search similarity is not final confidence
+```
+
+Correct:
+
+```go
+remote := remoteRecognitionCandidate(candidate) // preserves bounded EpisodeCount
+decision := mediarecognition.Rank(parsed, []mediarecognition.RemoteCandidate{remote})
 ```
 
 Wrong:

@@ -4,7 +4,7 @@ import (
 	"errors"
 )
 
-const EngineVersion = "nextgen-domain-v8"
+const EngineVersion = "nextgen-domain-v9"
 
 const (
 	MaxPackageRunes     = 512
@@ -150,6 +150,7 @@ type RemoteCandidate struct {
 	Translations      []string    `json:"translations,omitempty"`
 	ReleaseYear       *int        `json:"release_year,omitempty"`
 	SeasonCount       *int        `json:"season_count,omitempty"`
+	EpisodeCount      *int        `json:"episode_count,omitempty"`
 	SeasonYears       map[int]int `json:"season_years,omitempty"`
 	Popularity        float64     `json:"popularity,omitempty"`
 }
@@ -160,6 +161,7 @@ type ScoreBreakdown struct {
 	Year            float64 `json:"year"`
 	MediaType       float64 `json:"media_type"`
 	Season          float64 `json:"season"`
+	Episode         float64 `json:"episode"`
 	Structure       float64 `json:"structure"`
 	Consistency     float64 `json:"consistency"`
 	Uniqueness      float64 `json:"uniqueness"`
@@ -205,6 +207,8 @@ type ScoreConfig struct {
 	TypeWeight          float64
 	TypeConflict        float64
 	SeasonWeight        float64
+	EpisodeWeight       float64
+	EpisodeConflict     float64
 	StructureWeight     float64
 	ConsistencyWeight   float64
 	UniquenessWeight    float64

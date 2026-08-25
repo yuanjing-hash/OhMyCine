@@ -6,6 +6,8 @@ export interface DownloaderTaskStats { active: number; total: number; downloadSp
 export interface DownloadRetryPresentationState { errorFingerprint: string; taskUpdatedAt: string; observedActive: boolean }
 export type DownloadRetryPresentations = Record<string, DownloadRetryPresentationState>
 
+const activeProviderStatuses = new Set(['allocating', 'checkingdl', 'checkingresumedata', 'downloading', 'forceddl', 'metadl', 'queueddl', 'stalleddl'])
+
 export function formatBytes(value: number | null, suffix = ''): string {
   if (value === null || !Number.isFinite(value) || value < 0) return '未知'
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
@@ -27,6 +29,7 @@ export function formatETA(value: number | null): string {
 
 export function downloadStatusLabel(task: DownloadTaskSummary, retrying = false): string {
 	if (retrying) return '正在重试…'
+	if (task.job_status === 'running' && normalizedProviderStatus(task.provider_status) === 'stalleddl') return '等待连接/暂无速度'
 	const phases: Record<string, string> = { submitting: '提交下载器', metadata: '获取 metadata', classifying: '轻量刮削', waiting_user_action: '准备自动归入未识别', categorized: '已指派分类', downloading: '正式下载', verifying: '完成后复核' }
 	if (task.job_status === 'running' && phases[task.phase]) return phases[task.phase]
   const labels: Record<string, string> = { queued: '排队中', running: '下载中', waiting_user_action: '准备自动处理', retry_wait: '等待重试', paused: '已暂停', completed: '已完成', failed: '失败', cancelled: '已取消' }
@@ -42,7 +45,36 @@ export function downloadStatusClass(task: DownloadTaskSummary, retrying = false)
 }
 
 export function downloadErrorMessage(task: DownloadTaskSummary, retrying = false): string {
-  return retrying || task.job_status === 'cancelled' ? '' : task.last_error_message
+  if (retrying || task.job_status === 'cancelled') return ''
+  // Preclassification deliberately keeps a safe TMDB warning visible while
+  // the provider continues downloading. Only a stale terminal downloader
+  // failure should be suppressed by authoritative active telemetry.
+  if (task.scrape_status === 'fallback_unrecognized' && task.last_error_code.startsWith('tmdb_')) return task.last_error_message
+  if ((task.job_status === 'queued' || task.job_status === 'running') && isActiveProviderStatus(task.provider_status)) return ''
+  return task.last_error_message
+}
+
+function normalizedProviderStatus(value: string): string {
+  return (value || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+}
+
+function isActiveProviderStatus(value: string): boolean {
+  return activeProviderStatuses.has(normalizedProviderStatus(value))
+}
+
+export function downloadProviderStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    allocating: '正在分配空间',
+    checkingdl: '正在校验',
+    checkingresumedata: '正在校验恢复数据',
+    downloading: '正在下载',
+    forceddl: '强制下载',
+    metadl: '正在获取元数据',
+    queueddl: '等待下载队列',
+    stalleddl: '等待连接/暂无速度',
+  }
+  const normalized = normalizedProviderStatus(value)
+  return labels[normalized] ?? (value || '尚未采样')
 }
 
 function retryErrorFingerprint(task: DownloadTaskSummary): string {
@@ -58,15 +90,28 @@ export function reconcileDownloadRetries(states: DownloadRetryPresentations, tas
   const next: DownloadRetryPresentations = {}
   for (const [taskID, previous] of Object.entries(states)) {
     const task = byID.get(taskID)
-    if (!task || task.lifecycle_scope === 'history' || ['completed', 'cancelled'].includes(task.job_status)) continue
-    if (task.job_status !== 'failed') {
-      next[taskID] = { ...previous, observedActive: true }
+    if (!task) continue
+    const ordering = compareTaskUpdate(task.updated_at, previous.taskUpdatedAt)
+    if (ordering < 0) {
+      next[taskID] = previous
       continue
     }
-    const newFailure = previous.observedActive || task.updated_at !== previous.taskUpdatedAt || retryErrorFingerprint(task) !== previous.errorFingerprint
+    if (task.lifecycle_scope === 'history' || ['completed', 'cancelled'].includes(task.job_status)) continue
+    if (task.job_status !== 'failed') {
+      next[taskID] = { ...previous, taskUpdatedAt: ordering > 0 ? task.updated_at : previous.taskUpdatedAt, observedActive: true }
+      continue
+    }
+    const newFailure = ordering > 0 || retryErrorFingerprint(task) !== previous.errorFingerprint
     if (!newFailure) next[taskID] = previous
   }
   return next
+}
+
+function compareTaskUpdate(value: string, baseline: string): number {
+  const current = Date.parse(value)
+  const previous = Date.parse(baseline)
+  if (Number.isFinite(current) && Number.isFinite(previous)) return Math.sign(current - previous)
+  return value === baseline ? 0 : value > baseline ? 1 : -1
 }
 
 export function torrentToBase64(bytes: Uint8Array): string {

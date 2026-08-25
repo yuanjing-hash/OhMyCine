@@ -64,6 +64,8 @@
 - Torrent submission uses same-origin JSON with bounded Base64. The decoded file must be a non-empty `.torrent`, start with a bencoded dictionary, and be at most 4 MiB. It remains in memory and is not written to a public temporary directory.
 - A downloader that accepts magnets but not `.torrent` bytes (currently `pan115_offline`) converts at the downloader capability boundary: parse bounded bencode, locate exactly one dictionary-valued `info`, SHA-1 the original raw encoded `info` bytes, and build a BTIH magnet. Never re-encode before hashing. Preserve at most 64 validated HTTP(S)/UDP/WS(S) announce trackers; private tracker passkeys remain only inside the existing encrypted source envelope and never enter DTOs, logs, audits or Jobs.
 - Unknown progress, byte counts, speeds, and ETA remain `null`. DownloadTask holds provider telemetry; Job holds scheduling progress and the REST fact remains authoritative over WebSocket deltas.
+- An accepted explicit retry clears `jobs.last_error_*` and the corresponding `download_tasks.last_error_*` plus terminal timestamps in one SQLite transaction before the worker can be claimed. The Queue publishes the same cleared in-memory Job snapshot after commit; browser-local retry masking is presentation only and can never be the durability boundary. If the domain reset is missing or fails, the complete retry transaction rolls back and the failed Job remains failed.
+- Authoritative provider telemetry may converge a legacy `DownloadTask.phase=failed` to active/completed only when the provider itself is not failed; this clears the stale terminal error without clearing a current provider failure or an active `fallback_unrecognized` classification warning. qBittorrent `stalledDL` is an active no-throughput state rendered as `等待连接/暂无速度`, not a Server execution failure. A later genuine worker/provider failure writes and displays its new safe error normally.
 - DownloadTask snapshots the selected MediaClassificationProfile ID, revision, and canonical rules at enqueue time. Preclassification reuses `medialibrary.ParseFilename` and `classification.Classify`; later Profile edits never alter an active task.
 - TMDB credential priority is custom AES-GCM credential, deployment credential, then linker-injected application credential, then unavailable. Each credential has an explicit `read_access_token|api_key` kind; Read Access Tokens use Bearer and API Keys use `api_key` query. APIs expose only `credential_source=custom|deployment|builtin|none`, `credential_kind`, configured flags, non-sensitive routes and revision; clearing custom falls through to the next source. Pre-v11 encrypted Token records default to `read_access_token` without rewriting their ciphertext.
 - Runtime deployment inputs are the mutually exclusive `OMC_TMDB_READ_ACCESS_TOKEN` / `OMC_TMDB_API_KEY`; build-only inputs are `OHMYCINE_TMDB_READ_ACCESS_TOKEN` / `OHMYCINE_TMDB_API_KEY` and must never become runtime overrides. Launchers capture the chosen build value into a non-exported local value and remove both inputs before npm/Vite or Server runtime starts. Validation accepts only bounded linker-safe characters and never prints the value.
@@ -128,6 +130,10 @@
 | A `.torrent` handed to 115 has missing/duplicate/non-dictionary `info`, malformed/deep bencode or trailing data | Reject terminally before any provider call; do not fall back to uploading bytes or treating the URL as public |
 | Downloader credentials or source contain passkeys/tokens | Persist only ciphertext; public DTO/log/audit/Job payload contains none of the plaintext |
 | Provider telemetry omits a value | Persist/return `null`, never manufacture zero |
+| Explicit retry is accepted for a failed download | Atomically queue the Job and clear both Job/DownloadTask terminal errors before claim; a refresh or WebSocket event must not resurrect the old error |
+| DownloadTask domain reset fails or its row is missing during retry | Roll back the Job retry and return a safe state-persistence error; never publish a queued Job with failed domain state |
+| qBittorrent reports `stalledDL` after retry | Keep the task active and show `等待连接/暂无速度`; do not display the previous terminal error |
+| The retried provider later reports a genuine failure | Persist and display the new failure; active-state suppression must not hide it |
 | Provider pause/cancel fails | Keep Job running, clear interrupt pending, record safe error, and do not claim the operation succeeded |
 | User confirms cancellation | Remove provider task and data with `deleteData=true`; then remove local DownloadTask/Job facts |
 | Provider task was already manually deleted | Treat explicit task-not-found as success and idempotently remove the terminal local record |
@@ -180,6 +186,8 @@
 - Base: qBittorrent CRUD and connection tests work before staging is configured, while task submission gives an actionable settings error.
 - Good: a running cancel displays a destructive confirmation, reaches qBittorrent with `deleteFiles=true`, then atomically removes the local task after provider acknowledgement.
 - Base: qBittorrent is temporarily offline; the worker writes a safe retry code, releases the slot, and later resumes by provider task ID/tag.
+- Good: a failed qBittorrent task is explicitly retried; Job and DownloadTask errors clear in one commit, `stalledDL` shows as an active wait after refresh, and a later real failure replaces it with the new error.
+- Bad: clear only `jobs.last_error_message`, depend on a Vue ref to hide `download_tasks.last_error_message`, or publish the pre-transaction Job object after retry.
 - Bad: storing magnet URLs in `jobs.payload_json`, returning encrypted credential blobs through API DTOs, or logging a qBittorrent response body.
 - Bad: marking a Job paused when the provider pause request failed, or using cancellation as an implicit delete-data operation.
 - Bad: putting a MediaLibrary selector on a downloader form, resolving staging from the current global setting after a task was queued, or storing an absolute path in Job payload.
@@ -203,6 +211,7 @@
 - TMDB tests cover explicit Bearer/query routing without secret-bearing errors, credential priority/clear fallback, linker/build-script contracts, v9→v10 route defaults, v10→v11 legacy Token kind compatibility, network-only official fallback, no HTTP fallback, custom single-route behavior, independent API/image CAS, redirect/content-type/size rejection and failed-probe preservation.
 - Service tests inspect raw SQLite rows and assert username/password/source plaintext and passkeys are absent from Downloader, DownloadTask, Job payload, public DTO, and audit metadata.
 - Worker tests cover submit-once, provider-task-ID promotion from tag, progress/upload/download/ETA persistence, completion, retry, pause/resume/destructive cancel, task-not-found reconciliation, local cascade cleanup, provider-failure retention, and restart reconciliation.
+- Retry-coherence tests assert atomic Job/DownloadTask error clearing before worker claim, rollback when the domain row cannot be reset, cleared Queue event snapshots, legacy failed-to-`stalledDL` convergence, preservation of provider failures and classification warnings, refresh-safe Web UI rendering, delayed-response ordering, and visibility of a later genuine failure.
 - 115 offline worker tests cover life-event fanout to multiple consumers/workers, missed-event fallback polling, queue lease heartbeat during event waits, authoritative task/manifest recheck before completion, same/cross-Connection target selection, qBittorrent-to-cloud rejection, immutable cloud target snapshots, and explicit provider-failure retry using `deleteFiles=false` without touching completed-task downstream failures.
 - 115 offline adapter tests cover a selected directory directly below account root `0`, the root itself, a normal non-zero Storage root, moved-outside-root rejection, parent cycles and depth limits; both `Test` and `Submit` must use the same result. They also cover hex/Base32 BTIH, duplicate adoption beyond page five, stale cached-page fallback, and terminal `downloader_task_exists` when bounded adoption fails.
 - 115 share/adoption tests cover link parsing and extraction code, bounded snap/receive, stable `omc-*` reconciliation after ambiguous success, invalid/empty/oversized/risk responses, moved intake roots, manifest and destructive cancel behavior, internal-source HTTP rejection, encrypted source round trip, Job/DTO/log absence, immutable staging snapshot, unique concurrent adoption, and reuse of the completion verifier/Transfer enqueue.
@@ -223,6 +232,7 @@ client.Cancel(ctx, providerID, false) // reports cancellation but leaves unwante
 task.TargetProviderRootID = request.ProviderRootID // trusts a client/provider identity directly
 sourceRoot := filepath.Join(task.StagingAbsolutePath, task.ScrapeCategory) // breaks after manual reclassification
 client.Resume(ctx, providerID) // wrong after editCategory success without re-reading category state
+queue.Control(actor, jobID, "retry", request) // wrong when only Job errors are cleared and DownloadTask keeps its terminal error
 
 if current == "" || current == "0" { // rejects valid descendants of account root 0
     return ErrOutsideStorage
@@ -253,6 +263,10 @@ task.StagingAbsolutePath = resolvedLegacySnapshot
 // Keep physical placement separate from classification. A later manual match
 // may change ScrapeCategory, but transfer and cleanup still use this snapshot.
 task.StagingCategory = assignedProviderCategory
+
+// An explicit retry changes the generic Job and its domain read model in one
+// transaction; the event snapshot is updated to the same cleared state.
+retryJobAndResetDownloadTask(tx, job, now)
 
 // Persist the bounded canonical provider-relative manifest before recognition.
 completedManifestJSON, err := encodeCompletedDownloadManifest(manifest)

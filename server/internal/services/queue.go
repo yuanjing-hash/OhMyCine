@@ -43,12 +43,16 @@ type QueueService struct {
 	notify                chan struct{}
 	interrupt             func(string, string)
 	interruptAcknowledged func(string, string) error
+	retryAccepted         func(*gorm.DB, models.Job, time.Time) error
 	events                *QueueEventHub
 }
 
 func (s *QueueService) SetInterrupt(fn func(string, string)) { s.interrupt = fn }
 func (s *QueueService) SetInterruptAcknowledged(fn func(string, string) error) {
 	s.interruptAcknowledged = fn
+}
+func (s *QueueService) SetRetryAccepted(fn func(*gorm.DB, models.Job, time.Time) error) {
+	s.retryAccepted = fn
 }
 func (s *QueueService) SetEventHub(hub *QueueEventHub) { s.events = hub }
 func (s *QueueService) publish(job models.Job, eventType string) {
@@ -604,6 +608,11 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 		if err := tx.Model(&job).Updates(updates).Error; err != nil {
 			return err
 		}
+		if action == "retry" && s.retryAccepted != nil {
+			if err := s.retryAccepted(tx, job, now); err != nil {
+				return err
+			}
+		}
 		if providerControl && from != models.JobStatusRunning && (action == "pause" || action == "cancel") {
 			checkpoint, checkpointErr := setProviderControlOrigin(job.CheckpointJSON, from)
 			if checkpointErr != nil {
@@ -619,6 +628,15 @@ func (s *QueueService) Control(actor Actor, id, action string, request RequestCo
 		}
 		job.Revision++
 		job.Status = updates["status"].(string)
+		if action == "retry" {
+			// Keep the in-memory post-commit snapshot consistent with the row that
+			// Control just persisted; no later consumer should observe the old
+			// terminal fields beside the new queued status.
+			job.NextAttemptAt = nil
+			job.FinishedAt = nil
+			job.LastErrorCode = ""
+			job.LastErrorMessage = ""
+		}
 		if pending, ok := updates["interrupt_status"].(string); ok {
 			job.InterruptStatus = pending
 		}

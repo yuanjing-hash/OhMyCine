@@ -199,3 +199,12 @@ npm run lint
 - 独立 check 补齐入库目标重选服务/路由回归、下载器零调用、部分写入拒绝、自动 claim 绑定、Explore 分页筛选与插件凭据漏网检查。
 - qBittorrent 分类路径更新、回读验证、缺失/legacy 暂存快照、限流/服务不可用和搜索双向排序定向回归全部通过。
 - `git diff --check` 通过；Vite 仅保留既有 chunk-size 警告。
+
+## 2026-08-25 下载重试状态与 E1206 候选消歧复核
+
+- 显式下载重试现在在同一 SQLite 事务内清空 Job 与 DownloadTask 的终态错误/完成时间；领域重置缺失或失败会回滚整个重试。Queue 发布的内存事件快照同步清错，刷新页面或 WebSocket 不会复活旧的“下载任务执行失败”。
+- qBittorrent `stalledDL` 作为活动无速度状态显示为“等待连接/暂无速度”。legacy failed→active telemetry 仅收敛旧终态错误，当前 provider failure、分类 warning 和后续新失败均保留并正常展示。
+- 115 显式重试不再依赖已被原子清除的本地错误码，而是读取 provider 权威状态：仅 failed/missing 旧任务会清理并重建，active/completed 任务继续复用，避免重复离线下载。
+- TMDB enrichment 已有的 `number_of_episodes` 现在完整进入 `RemoteCandidate`。强 TV 结构下，已知总集数覆盖 E1206 提供支持、已知不足提供冲突、未知保持中性；集数证据不能推翻错误标题/类型/年份。
+- 完整真实发行名 `[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]` 已加入 parser、共享 `recognizeMedia` 和冻结 corpus；正确 TMDB 30983 稳定胜过同名但已知仅 24 集的 318691。识别引擎升级为 `nextgen-domain-v9`，WebUI session 版本同步，旧负缓存失效。
+- 全量门禁通过：`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag Server build、WebUI 24 files/132 tests、permissions、Vue typecheck、ESLint、Vite production build 与 `git diff --check`；仅保留既有 Vite chunk-size 警告。测试未启动长期 Server，隔离缓存已清理。

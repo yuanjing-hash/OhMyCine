@@ -104,7 +104,32 @@ func (s *DownloadService) SubmitPluginDownload(ctx context.Context, actor Actor,
 func NewDownloadService(db *gorm.DB, audit *AuditService, credentials *credential.Store, downloader *DownloaderService, settings *DownloadSettingsService, queue *QueueService, log zerolog.Logger) *DownloadService {
 	service := &DownloadService{db: db, audit: audit, credentials: credentials, downloader: downloader, settings: settings, queue: queue, log: log, providerEvents: newProviderEventWakeHub()}
 	queue.SetInterruptAcknowledged(service.finalizeInterrupt)
+	queue.SetRetryAccepted(service.acceptRetry)
 	return service
+}
+
+// acceptRetry keeps the generic Job and its download-domain fact coherent in
+// the same transaction. The failed phase is deliberately retained until the
+// worker reconciles the provider: pan115 may need it to decide whether a
+// provider-side failed task must be replaced, while qBittorrent can resume an
+// existing active task without another submission.
+func (s *DownloadService) acceptRetry(tx *gorm.DB, job models.Job, now time.Time) error {
+	if job.JobType != "download" {
+		return nil
+	}
+	result := tx.Model(&models.DownloadTask{}).Where("job_id = ?", job.ID).Updates(map[string]any{
+		"last_error_code":    "",
+		"last_error_message": "",
+		"finished_at":        nil,
+		"updated_at":         now,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return appError("download_state_persist_failed", "下载任务重试状态保存失败", nil)
+	}
+	return nil
 }
 
 func (s *DownloadService) SetMetadataSettings(settings *MetadataSettingsService) {
@@ -1301,12 +1326,25 @@ func completedDownloadManifest(raw string) (downloadpkg.Manifest, bool, error) {
 }
 
 func (w *DownloadWorker) resetFailedPan115ForExplicitRetry(ctx context.Context, task *models.DownloadTask, client downloadpkg.Client, providerType string) error {
-	if providerType != models.DownloaderTypePan115Offline || task.Phase != models.DownloadTaskStatusFailed || task.LastErrorCode != "downloader_provider_failed" || task.ProviderTaskID == "" {
+	if providerType != models.DownloaderTypePan115Offline || task.Phase != models.DownloadTaskStatusFailed || task.ProviderTaskID == "" {
+		return nil
+	}
+	providerTask, err := client.Get(ctx, task.ProviderTaskID)
+	if err != nil {
+		if !providerTaskMissing(err) {
+			return err
+		}
+	} else if !providerTask.Failed {
+		// A Server-side failure can coexist with a healthy or already-completed
+		// 115 task. Keep that provider task and let the normal reconciliation
+		// path continue from it instead of creating a duplicate offline task.
 		return nil
 	}
 	serverlog.OperationPan115OfflineDownload.Event(w.service.log.Info()).Str("task_id", task.ID).Msg(serverlog.OperationPan115OfflineDownload.Message("用户重试失败的离线任务，正在清理旧任务记录"))
-	if err := client.Cancel(ctx, task.ProviderTaskID, false); err != nil && !providerTaskMissing(err) {
-		return err
+	if err == nil {
+		if err := client.Cancel(ctx, task.ProviderTaskID, false); err != nil && !providerTaskMissing(err) {
+			return err
+		}
 	}
 	updates := map[string]any{
 		"provider_task_id":   "",
@@ -1837,6 +1875,7 @@ func (w *DownloadWorker) load(ctx context.Context, job ClaimedJob) (models.Downl
 
 func (w *DownloadWorker) persistTelemetry(task *models.DownloadTask, provider downloadpkg.Task) error {
 	now := time.Now().UTC()
+	clearTerminalError := task.Phase == models.DownloadTaskStatusFailed && !provider.Failed
 	phase := models.DownloadTaskStatusDownloading
 	if provider.Completed {
 		phase = models.DownloadTaskStatusVerifying
@@ -1844,10 +1883,16 @@ func (w *DownloadWorker) persistTelemetry(task *models.DownloadTask, provider do
 		phase = models.DownloadTaskStatusFailed
 	}
 	updates := map[string]any{"provider_task_id": task.ProviderTaskID, "provider_output_id": safeLabel(provider.OutputItemID, 128), "provider_status": safeLabel(provider.Status, 64), "phase": phase, "progress": provider.Progress, "bytes_completed": provider.BytesCompleted, "bytes_total": provider.BytesTotal, "download_speed": provider.DownloadSpeed, "upload_speed": provider.UploadSpeed, "eta_seconds": provider.ETASeconds, "last_sampled_at": now, "updated_at": now}
+	if clearTerminalError {
+		updates["last_error_code"], updates["last_error_message"], updates["finished_at"] = "", "", nil
+	}
 	if err := w.service.db.Model(task).Updates(updates).Error; err != nil {
 		return err
 	}
 	task.Phase, task.ProviderStatus, task.ProviderOutputID, task.LastSampledAt = phase, provider.Status, provider.OutputItemID, &now
+	if clearTerminalError {
+		task.LastErrorCode, task.LastErrorMessage, task.FinishedAt = "", "", nil
+	}
 	return nil
 }
 

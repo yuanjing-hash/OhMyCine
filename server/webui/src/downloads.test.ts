@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { beginDownloadRetry, compatibleDownloadLibraries, downloadErrorMessage, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
+import { beginDownloadRetry, compatibleDownloadLibraries, downloadErrorMessage, downloadProviderStatusLabel, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
 import type { DownloaderSummary, DownloadTaskSummary, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const task = { job_status: 'queued' } as DownloadTaskSummary
@@ -23,6 +23,15 @@ describe('download presentation', () => {
     expect(downloadStatusLabel({ job_status: 'running', phase: 'classifying' } as DownloadTaskSummary)).toBe('轻量刮削')
 		expect(downloadStatusLabel({ job_status: 'waiting_user_action', phase: 'waiting_user_action' } as DownloadTaskSummary)).toBe('准备自动处理')
   })
+  it('renders stalled qBittorrent telemetry as an active wait without a stale terminal error', () => {
+    const stalled = { job_status: 'running', phase: 'downloading', provider_status: 'stalledDL', last_error_code: 'downloader_category_outside_staging', last_error_message: '下载任务执行失败' } as DownloadTaskSummary
+
+    expect(downloadStatusLabel(stalled)).toBe('等待连接/暂无速度')
+    expect(downloadProviderStatusLabel(stalled.provider_status)).toBe('等待连接/暂无速度')
+    expect(downloadErrorMessage(stalled)).toBe('')
+    expect(downloadErrorMessage({ ...stalled, job_status: 'failed', last_error_message: '本次重试仍失败' })).toBe('本次重试仍失败')
+    expect(downloadErrorMessage({ ...stalled, scrape_status: 'fallback_unrecognized', last_error_code: 'tmdb_no_match', last_error_message: '已自动归入未识别：TMDB 无匹配结果' })).toBe('已自动归入未识别：TMDB 无匹配结果')
+  })
   it('replaces a stale failure with a neutral retry presentation', () => {
     const failed = { id: 'download-1', job_status: 'failed', lifecycle_scope: 'active', updated_at: '2026-08-25T05:00:00Z', last_error_code: 'downloader_rejected', last_error_message: '下载器拒绝了下载链接' } as DownloadTaskSummary
 
@@ -36,6 +45,10 @@ describe('download presentation', () => {
     const active = { ...failed, job_status: 'running', updated_at: '2026-08-25T05:00:01Z' }
     const observed = reconcileDownloadRetries(started, [active])
     expect(observed[failed.id]?.observedActive).toBe(true)
+
+    const staleOutOfOrder = { ...failed, updated_at: '2026-08-25T05:00:00Z' }
+    expect(reconcileDownloadRetries(observed, [staleOutOfOrder])).toEqual(observed)
+
     const failedAgain = { ...failed, updated_at: '2026-08-25T05:00:02Z', last_error_message: '本次重试仍失败' }
     expect(reconcileDownloadRetries(observed, [failedAgain])).toEqual({})
   })

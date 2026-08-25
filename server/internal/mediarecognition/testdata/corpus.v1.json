@@ -136,7 +136,7 @@
     {
       "id":"negative-two-identical-candidates",
       "input":{"package_name":"The Office.2005.S01E01","media_type_hint":"tv"},
-      "candidates":[{"id":2316,"media_type":"tv","title":"The Office","release_year":2005},{"id":9999,"media_type":"tv","title":"The Office","release_year":2005}],
+      "candidates":[{"id":2316,"media_type":"tv","title":"The Office","release_year":2005,"episode_count":200},{"id":9999,"media_type":"tv","title":"The Office","release_year":2005}],
       "expected":{"media_type":"tv","canonical_title":"The Office","season_year":2005},
       "policy":"must_reject"
     },
@@ -155,12 +155,11 @@
       "policy":"must_reject"
     },
     {
-      "id":"tv-long-running-anime-absolute-episode",
-      "input":{"package_name":"[银色子弹字幕组][名侦探柯南][第1210集 被诅咒的邻居][WEBRIP][简日双语MP4][1080P]","source_kind":"download"},
+      "id":"tv-long-running-anime-episode-count-disambiguation",
+      "input":{"package_name":"[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]","source_kind":"download"},
       "candidates":[
-        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1,"popularity":150},
-        {"id":90001,"media_type":"movie","title":"名侦探柯南","popularity":300},
-        {"id":917496,"media_type":"movie","title":"名侦探柯南：唐红的恋歌","popularity":50}
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1,"episode_count":1300},
+        {"id":318691,"media_type":"tv","title":"名侦探柯南","season_count":1,"episode_count":24}
       ],
       "expected":{"media_type":"tv","canonical_title":"名侦探柯南","remote_id":30983},
       "policy":"must_match"

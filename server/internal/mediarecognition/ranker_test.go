@@ -102,6 +102,63 @@ func TestRankLongRunningSeriesUsesStrongTVStructureWithoutTrustingLargeEpisodeNu
 	}
 }
 
+func TestRankUsesKnownEpisodeRangeToResolveExactTVIdentityConflict(t *testing.T) {
+	parsed, err := Parse(InputFacts{
+		PackageName: "[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
+		SourceKind:  SourceDownload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := []RemoteCandidate{
+		{ID: 318691, MediaType: MediaTypeTV, Title: "名侦探柯南", EpisodeCount: intRef(24)},
+		{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", EpisodeCount: intRef(1300)},
+	}
+	for _, input := range [][]RemoteCandidate{candidates, {candidates[1], candidates[0]}} {
+		decision := Rank(parsed, input)
+		if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 30983 {
+			t.Fatalf("decision=%+v", decision)
+		}
+		if decision.RunnerUpGap < DefaultScoreConfig().ConflictMargin {
+			t.Fatalf("episode evidence did not resolve conflict: %+v", decision)
+		}
+	}
+}
+
+func TestRankTreatsUnknownEpisodeCountAsNeutralAndKeepsWeakEvidenceSafe(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "Example Series 第1206集", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := Rank(parsed, []RemoteCandidate{
+		{ID: 1, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(1300)},
+		{ID: 2, MediaType: MediaTypeTV, Title: "Example Series"},
+	})
+	if unknown.Status != DecisionUnrecognized || unknown.Reason != ReasonCandidateConflict {
+		t.Fatalf("missing episode count was treated as a conflict: %+v", unknown)
+	}
+
+	ordinary, ordinaryErr := Parse(InputFacts{PackageName: "Example Series 第2集", SourceKind: SourceDownload})
+	if ordinaryErr != nil {
+		t.Fatal(ordinaryErr)
+	}
+	ordinaryDecision := Rank(ordinary, []RemoteCandidate{
+		{ID: 3, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(12)},
+		{ID: 4, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(24)},
+	})
+	if ordinaryDecision.Status != DecisionUnrecognized || ordinaryDecision.Reason != ReasonCandidateConflict {
+		t.Fatalf("ordinary low episode evidence fabricated uniqueness: %+v", ordinaryDecision)
+	}
+
+	unsafe := Rank(parsed, []RemoteCandidate{
+		{ID: 5, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(24)},
+		{ID: 6, MediaType: MediaTypeTV, Title: "Completely Different", EpisodeCount: intRef(1300)},
+	})
+	if unsafe.Status == DecisionMatched || unsafe.Match != nil {
+		t.Fatalf("episode count overrode title identity: %+v", unsafe)
+	}
+}
+
 func TestRankFranchiseMovieSubtitleWinsWhileUntypedExactConflictStaysManual(t *testing.T) {
 	movie, err := Parse(InputFacts{
 		PackageName: "[银色子弹字幕组&VCB-Studio] 名侦探柯南M21 唐红的恋歌 / Detective Conan M21: The Crimson Love Letter 10-bit 1080p HEVC BDRip [MOVIE Fin]",
