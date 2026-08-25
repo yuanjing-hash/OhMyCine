@@ -77,3 +77,11 @@ Reviewers and check agents should verify:
 - State that SQLite is the default database; PostgreSQL is future optional only.
 - Keep PT search, follow tasks, AI, plugins, and multi-user permissions documented as planned scope even if phased later.
 - Use Windows-native PowerShell commands for local development; treat Linux/WSL commands as explicit compatibility, CI, or deployment paths rather than the default.
+
+## Scenario: Server Beta Release Packaging
+
+- Server Beta is dispatched only from the latest fetched `origin/develop` commit after the matching Player prerelease tag and GitHub Release already exist at that exact commit.
+- Official Server assets use `CGO_ENABLED=0`, build the Web UI first, and compile with `-tags webui`; a plain backend binary without the embedded administration UI is not a release artifact.
+- Publish Windows x64 ZIP, Linux x64 tar.gz and one SHA-256 manifest to the existing version prerelease. Do not create a competing same-tag release from a feature, fix or release branch.
+- The official read-only TMDB credential is required and injected only through one typed GitHub Secret and Go linker variable. Reject missing, simultaneous or linker-unsafe credential values without printing them.
+- The release workflow runs permission drift, Web UI test/lint/typecheck/build, Go module verification, vet and tests before packaging.
