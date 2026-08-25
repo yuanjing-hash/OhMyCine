@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 function vueFiles(directory: string): string[] {
@@ -12,7 +13,7 @@ function vueFiles(directory: string): string[] {
 describe('secret input policy', () => {
   it('routes every protected Server field through the shared reveal control', () => {
     const violations: string[] = []
-    for (const file of vueFiles(new URL('.', import.meta.url).pathname.slice(1))) {
+    for (const file of vueFiles(fileURLToPath(new URL('.', import.meta.url)))) {
       const source = readFileSync(file, 'utf8')
       for (const tag of source.match(/<(?:input|textarea)\b[\s\S]*?>/g) ?? []) {
         const model = /v-model=["']([^"']+)["']/.exec(tag)?.[1] ?? ''
