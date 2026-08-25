@@ -131,6 +131,7 @@ hub/.vitepress/cache/
 logs/
 server/.runtime/
 server/.tmp/
+.tmp/
 
 # ====================
 # Secrets / Credentials

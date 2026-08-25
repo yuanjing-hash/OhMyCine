@@ -531,8 +531,8 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45}) {
-		t.Fatalf("migration versions=%v, want [1..45]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46}) {
+		t.Fatalf("migration versions=%v, want [1..46]", versions)
 	}
 	if !db.Migrator().HasColumn(&models.DownloadTask{}, "provider_metadata_json") || !db.Migrator().HasColumn(&models.DownloadTask{}, "plugin_connection_id") {
 		t.Fatal("plugin managed import snapshot columns missing after upgrade")
@@ -1180,6 +1180,13 @@ func TestPersistentQueueMigrationPoliciesRBACAndForeignKeys(t *testing.T) {
 	if err := db.Model(&models.QueuePolicy{}).Count(&policies).Error; err != nil || policies != 10 {
 		t.Fatalf("policies=%d err=%v", policies, err)
 	}
+	var downloadPolicy models.QueuePolicy
+	if err := db.First(&downloadPolicy, "job_type = ?", "download").Error; err != nil {
+		t.Fatal(err)
+	}
+	if downloadPolicy.Concurrency != 64 || downloadPolicy.ResourceConcurrency != 1 {
+		t.Fatalf("download policy=%+v", downloadPolicy)
+	}
 	var operator models.Role
 	if err := db.Where("code = ?", authz.RoleOperator).First(&operator).Error; err != nil {
 		t.Fatal(err)
@@ -1208,6 +1215,44 @@ func TestPersistentQueueMigrationPoliciesRBACAndForeignKeys(t *testing.T) {
 	var count int64
 	if err := db.Model(&models.JobAttempt{}).Count(&count).Error; err != nil || count != 0 {
 		t.Fatalf("attempt cascade=%d err=%v", count, err)
+	}
+}
+
+func TestDownloaderQueueDelegationMigrationOnlyLiftsUntouchedDefault(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "download-queue-policy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.QueuePolicy{}).Where("job_type = ?", "download").Updates(map[string]any{"concurrency": 2, "resource_concurrency": 1, "revision": 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDownloaderQueueDelegation(db); err != nil {
+		t.Fatal(err)
+	}
+	var policy models.QueuePolicy
+	if err := db.First(&policy, "job_type = ?", "download").Error; err != nil {
+		t.Fatal(err)
+	}
+	if policy.Concurrency != 64 || policy.ResourceConcurrency != 1 || policy.Revision != 2 {
+		t.Fatalf("migrated policy=%+v", policy)
+	}
+
+	if err := db.Model(&models.QueuePolicy{}).Where("job_type = ?", "download").Updates(map[string]any{"concurrency": 2, "resource_concurrency": 1, "revision": 9}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDownloaderQueueDelegation(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&policy, "job_type = ?", "download").Error; err != nil {
+		t.Fatal(err)
+	}
+	if policy.Concurrency != 2 || policy.ResourceConcurrency != 1 || policy.Revision != 9 {
+		t.Fatalf("customized policy was overwritten: %+v", policy)
 	}
 }
 

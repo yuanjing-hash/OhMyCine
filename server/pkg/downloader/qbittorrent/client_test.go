@@ -233,7 +233,7 @@ func TestClientRejectsInvalidOrUnboundedSubmitBeforeLogin(t *testing.T) {
 		{Source: downloader.Source{Kind: downloader.SourceURL, URL: "file:///private/media"}, SavePath: `D:\Downloads`, Tag: "omc-test"},
 		{Source: downloader.Source{Kind: downloader.SourceURL, URL: "https://example.test/" + strings.Repeat("a", maxSourceURLBytes)}, SavePath: `D:\Downloads`, Tag: "omc-test"},
 		{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "movie.txt", Torrent: []byte("d1:ae")}, SavePath: `D:\Downloads`, Tag: "omc-test"},
-		{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "movie.torrent", Torrent: make([]byte, maxTorrentBytes+1)}, SavePath: `D:\Downloads`, Tag: "omc-test"},
+		{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "movie.torrent", Torrent: make([]byte, downloader.MaxTorrentBytes+1)}, SavePath: `D:\Downloads`, Tag: "omc-test"},
 		{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:abc"}, Tag: "omc-test"},
 	}
 	for index, request := range tests {

@@ -23,7 +23,6 @@ import (
 const (
 	maxResponseBytes  = 1 << 20
 	maxSourceURLBytes = 16 << 10
-	maxTorrentBytes   = 4 << 20
 	maxManifestFiles  = 2048
 )
 
@@ -392,7 +391,7 @@ func validateSource(source downloader.Source) error {
 		return nil
 	case downloader.SourceTorrent:
 		filename := path.Base(strings.ReplaceAll(strings.TrimSpace(source.Filename), "\\", "/"))
-		if len(source.Torrent) == 0 || len(source.Torrent) > maxTorrentBytes || source.Torrent[0] != 'd' || !strings.EqualFold(path.Ext(filename), ".torrent") {
+		if len(source.Torrent) == 0 || len(source.Torrent) > downloader.MaxTorrentBytes || source.Torrent[0] != 'd' || !strings.EqualFold(path.Ext(filename), ".torrent") {
 			return downloader.Error("downloader_source_invalid", false, nil)
 		}
 		return nil

@@ -15,27 +15,37 @@ import (
 )
 
 var (
-	videoExtensionPattern = regexp.MustCompile(`(?i)\.(mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|mts|webm|flv|iso|vob)$`)
-	episodePattern        = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[^[:alnum:]]|$)|(?:^|[^[:alnum:]])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[^[:alnum:]]|$)`)
-	seasonPattern         = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:season|s)\s*0*([0-9]{1,2})(?:[^[:alnum:]]|$)`)
-	chineseEpisodePattern = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*[集话話](?:$|[^\p{L}\p{N}])`)
-	chineseSeasonPattern  = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*季(?:$|[^\p{L}\p{N}])`)
-	numericEpisodePattern = regexp.MustCompile(`^0*([0-9]{1,5})$`)
-	yearTokenPattern      = regexp.MustCompile(`\b((?:18|19|20)[0-9]{2})\b`)
-	techTokenPattern      = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng)\b`)
-	subtitleTokenPattern  = regexp.MustCompile(`(?i)\b(?:chs|cht|gb|big5|subs?|multi[- .]?sub)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕`)
-	trailingGroupPattern  = regexp.MustCompile(`^(.*?)(\s*-\s*)([[:alnum:]][[:alnum:]-]{1,31})\s*$`)
-	trailingBracketGroup  = regexp.MustCompile(`^(.*?)\s*[\[【]([[:alnum:]][[:alnum:]-]{1,31})[\]】]\s*$`)
-	tmdbHintPattern       = regexp.MustCompile(`(?i)(?:\[|\{)(?:tmdbid\s*=\s*|tmdb-)([0-9]{1,12})(?:\]|\})`)
-	hanTitlePattern       = regexp.MustCompile(`[\p{Han}][\p{Han}\p{N}\s·・、，：:《》“”'’—-]*`)
-	latinTitlePattern     = regexp.MustCompile(`[\p{Latin}\p{N}][\p{Latin}\p{N}\s'’:&,+!?-]*[\p{Latin}\p{N}]`)
-	unsafeDrivePattern    = regexp.MustCompile(`(?i)^[a-z]:[\\/]`)
-	discStackPattern      = regexp.MustCompile(`^(?:disc|disk|cd)[ ._-]*[0-9]+$`)
-	structureNamePattern  = regexp.MustCompile(`^(?:season|s|disc|disk|cd)[ ._-]*[0-9]+$`)
-	emptyBracketPattern   = regexp.MustCompile(`\(\s*\)|\[\s*\]|\{\s*\}`)
-	leadingBracketPattern = regexp.MustCompile(`^(?:\[([^\]\r\n]{1,64})\]|【([^】\r\n]{1,64})】)(.*)$`)
-	bracketSegmentPattern = regexp.MustCompile(`(?:\[([^\]\r\n]{1,128})\]|【([^】\r\n]{1,128})】)`)
-	checksumSuffixPattern = regexp.MustCompile(`(?i)(?:\s*[\[(]?[0-9a-f]{8}[\])]?)\s*$`)
+	videoExtensionPattern           = regexp.MustCompile(`(?i)\.(mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|mts|webm|flv|iso|vob)$`)
+	episodePattern                  = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[^[:alnum:]]|$)|(?:^|[^[:alnum:]])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[^[:alnum:]]|$)`)
+	seasonPattern                   = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:season|s)\s*0*([0-9]{1,2})(?:[^[:alnum:]]|$)`)
+	episodeRangePattern             = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep?|episodes?)?\s*0*([0-9]{1,5})\s*[-~～—]\s*0*([0-9]{1,5})(?:\s*(?:tv)?(?:全集|全))?(?:[^[:alnum:]]|$)`)
+	bracketRangePattern             = regexp.MustCompile(`(?i)(?:\[|【)\s*(?:ep?|episodes?)?\s*0*([0-9]{1,5})\s*[-~～—]\s*0*([0-9]{1,5})[^\]】]{0,32}(?:\]|】)`)
+	completeCountPattern            = regexp.MustCompile(`(?i)(?:\[|【)\s*0*([0-9]{1,5})\s*(?:全集|全)\s*(?:\]|】)`)
+	bracketEpisodePattern           = regexp.MustCompile(`(?:\[|【)\s*0*([0-9]{1,5})\s*(?:\]|】)`)
+	explicitTrailingEpisodePattern  = regexp.MustCompile(`(?i)-\s*ep?\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?(?:\s*(?:\[|【)|$)`)
+	bracketedTrailingEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?\s*(?:\[|【)`)
+	chineseEpisodePattern           = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*[集话話](?:$|[^\p{L}\p{N}])`)
+	chineseSeasonPattern            = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*季(?:$|[^\p{L}\p{N}])`)
+	numericEpisodePattern           = regexp.MustCompile(`^0*([0-9]{1,5})$`)
+	yearTokenPattern                = regexp.MustCompile(`\b((?:18|19|20)[0-9]{2})\b`)
+	techTokenPattern                = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng)\b`)
+	spacedTechPattern               = regexp.MustCompile(`(?i)\b(?:[hx]\s*26[45]|ddp?\s*[0-9](?:\s*[0-9])?|eac3|ac3|lpcm|flac|dvd\s*480p|hdtv\s*rip|bd\s*rip|web\s*rip|[0-9]{3,4}\s*x\s*[0-9]{3,4})\b`)
+	conditionalNoisePattern         = regexp.MustCompile(`(?i)\b(?:complete|edr|iq|[0-9]+\s*audio|iso\s*pack)\b|全集`)
+	languageTrackOnlyPattern        = regexp.MustCompile(`(?i)^(?:[国國粤粵英日韩韓台中普话話語语一二三四五六七八九十0-9双雙多]+(?:音轨|音軌)?|(?:mandarin|cantonese|japanese|english|chinese)(?:dub|audio)?)$`)
+	subtitleTokenPattern            = regexp.MustCompile(`(?i)\b(?:chs|cht|gb|big5|subs?|multi[- .]?sub)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕`)
+	trailingGroupPattern            = regexp.MustCompile(`^(.*?)(\s*-\s*)([[:alnum:]][[:alnum:]-]{1,31})\s*$`)
+	trailingBracketGroup            = regexp.MustCompile(`^(.*?)\s*[\[【]([[:alnum:]][[:alnum:]-]{1,31})[\]】]\s*$`)
+	tmdbHintPattern                 = regexp.MustCompile(`(?i)(?:\[|\{)(?:tmdbid\s*=\s*|tmdb-)([0-9]{1,12})(?:\]|\})`)
+	hanTitlePattern                 = regexp.MustCompile(`[\p{Han}][\p{Han}\p{N}\s·・、，：:《》“”'’—-]*`)
+	latinTitlePattern               = regexp.MustCompile(`[\p{Latin}\p{N}][\p{Latin}\p{N}\s'’:&,+!?-]*[\p{Latin}\p{N}]`)
+	unsafeDrivePattern              = regexp.MustCompile(`(?i)^[a-z]:[\\/]`)
+	discStackPattern                = regexp.MustCompile(`^(?:disc|disk|cd)[ ._-]*[0-9]+$`)
+	structureNamePattern            = regexp.MustCompile(`^(?:season|s|disc|disk|cd)[ ._-]*[0-9]+$`)
+	emptyBracketPattern             = regexp.MustCompile(`\(\s*\)|\[\s*\]|\{\s*\}`)
+	leadingBracketPattern           = regexp.MustCompile(`^(?:\[([^\]\r\n]{1,64})\]|【([^】\r\n]{1,64})】)(.*)$`)
+	bracketSegmentPattern           = regexp.MustCompile(`(?:\[([^\]\r\n]{1,128})\]|【([^】\r\n]{1,128})】)`)
+	checksumSuffixPattern           = regexp.MustCompile(`(?i)(?:\s*[\[(]?[0-9a-f]{8}[\])]?)\s*$`)
+	aliasSeparatorPattern           = regexp.MustCompile(`\s*(?:/|／|\|)\s*`)
 )
 
 type parsedName struct {
@@ -52,6 +62,8 @@ type parsedName struct {
 	groupStrong     bool
 	season          *int
 	episode         *int
+	episodeMin      *int
+	episodeMax      *int
 	directHint      *IdentityHint
 }
 
@@ -79,7 +91,6 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 	}
 
 	result.Structure, result.Episodes, result.TypeEvidence = analyzeStructure(input)
-	result.SuggestedType, result.TypeConfidence = decideMediaType(input.MediaTypeHint, result.Structure, result.TypeEvidence)
 	result.Year = cloneDomainInt(input.YearHint)
 	result.Season = cloneDomainInt(input.SeasonHint)
 	if result.Season == nil && result.Episodes.SeasonMin != nil && equalDomainInt(result.Episodes.SeasonMin, result.Episodes.SeasonMax) {
@@ -112,6 +123,13 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 		if result.Season == nil && item.season != nil {
 			result.Season = cloneDomainInt(item.season)
 		}
+		if item.episodeMin != nil && item.episodeMax != nil {
+			updateMinMax(&result.Episodes.EpisodeMin, &result.Episodes.EpisodeMax, *item.episodeMin)
+			updateMinMax(&result.Episodes.EpisodeMin, &result.Episodes.EpisodeMax, *item.episodeMax)
+			if count := *item.episodeMax - *item.episodeMin + 1; count > result.Episodes.Count {
+				result.Episodes.Count = count
+			}
+		}
 		result.Specifications = appendUniqueBounded(result.Specifications, item.specifications, 32)
 		if result.ReleaseGroup == "" && item.groupStrong && item.releaseGroup != "" {
 			result.ReleaseGroup = item.releaseGroup
@@ -124,6 +142,10 @@ func parseAt(input InputFacts, now time.Time) (ParsedFacts, error) {
 		}
 		addTitleFact(&result.Titles, item.canonical, item.source, "canonical")
 	}
+	if hasNameEpisodeEvidence(parsed) {
+		result.TypeEvidence = append(result.TypeEvidence, Evidence{Code: "release_name_episode", Kind: "structure", Supports: MediaTypeTV, Strength: .94, Summary: "release title contains bounded season or episode structure"})
+	}
+	result.SuggestedType, result.TypeConfidence = decideMediaType(input.MediaTypeHint, result.Structure, result.TypeEvidence)
 	if input.DirectHint != nil {
 		if result.DirectHint != nil && !sameIdentityHint(result.DirectHint, input.DirectHint) {
 			return ParsedFacts{}, fmt.Errorf("%w: conflicting supplied identity hint", ErrUnsafeRecognitionInput)
@@ -145,7 +167,7 @@ func validateInput(input InputFacts, now time.Time) error {
 	if utf8.RuneCountInString(input.PackageName) > MaxPackageRunes || len(input.Files) > MaxInputFiles || len(input.PreparedNames) > 32 {
 		return ErrRecognitionInputBounds
 	}
-	if input.PackageName != "" && (strings.ContainsAny(input.PackageName, "/\\") || containsUnsafeLocator(input.PackageName)) {
+	if input.PackageName != "" && unsafeTitleLocator(input.PackageName) {
 		return ErrUnsafeRecognitionInput
 	}
 	if !validMediaType(input.MediaTypeHint) || input.SourceKind != "" && input.SourceKind != SourceUnknown && input.SourceKind != SourceDownload && input.SourceKind != SourceLibraryScan {
@@ -158,7 +180,7 @@ func validateInput(input InputFacts, now time.Time) error {
 		return ErrUnsafeRecognitionInput
 	}
 	for _, prepared := range input.PreparedNames {
-		if utf8.RuneCountInString(prepared.Value) > MaxPackageRunes || containsUnsafeLocator(prepared.Value) || strings.ContainsAny(prepared.Value, "/\\") {
+		if utf8.RuneCountInString(prepared.Value) > MaxPackageRunes || unsafeTitleLocator(prepared.Value) {
 			return ErrUnsafeRecognitionInput
 		}
 		if len(prepared.AppliedRules) > 64 {
@@ -196,6 +218,11 @@ func containsUnsafeLocator(value string) bool {
 	return strings.Contains(lower, "://") || strings.Contains(lower, "authorization=") || strings.Contains(lower, "signature=") ||
 		strings.Contains(lower, "token=") || strings.Contains(lower, "api_key=") || strings.Contains(lower, "apikey=") ||
 		strings.Contains(lower, "cookie=") || strings.Contains(lower, "x-amz-")
+}
+
+func unsafeTitleLocator(value string) bool {
+	value = strings.TrimSpace(value)
+	return containsUnsafeLocator(value) || unsafeDrivePattern.MatchString(value) || strings.Contains(value, "\\") || strings.HasPrefix(value, "/")
 }
 
 func validMediaType(value MediaType) bool {
@@ -273,15 +300,32 @@ func analyzeName(source namedSource, now time.Time) parsedName {
 	item.directHint = hint
 	withoutHint = strings.TrimSpace(withoutHint)
 	item.season, item.episode = firstSeasonEpisode(withoutHint)
+	item.episodeMin, item.episodeMax = episodeRangeFromName(withoutHint)
+	if item.episodeMin != nil {
+		item.episode = cloneDomainInt(item.episodeMin)
+	} else if item.episode != nil {
+		item.episodeMin, item.episodeMax = cloneDomainInt(item.episode), cloneDomainInt(item.episode)
+	}
 
 	recognitionSurface := withoutHint
 	if structuredTitle, leadingGroup, ok := structuredReleaseTitle(withoutHint); ok {
 		recognitionSurface = structuredTitle
 		item.releaseGroup = leadingGroup
 		item.groupStrong = true
+		if item.episode == nil && item.episodeMin == nil {
+			if episode := bracketEpisodeFromName(withoutHint); episode != nil {
+				item.episode = episode
+				item.episodeMin, item.episodeMax = cloneDomainInt(episode), cloneDomainInt(episode)
+			}
+		}
 	}
 
 	withoutGroup, group, strong := separateTrailingGroup(recognitionSurface)
+	if !strong {
+		if bareTitle, bareGroup, ok := separateBareTrailingGroup(recognitionSurface); ok {
+			withoutGroup, group, strong = bareTitle, bareGroup, true
+		}
+	}
 	item.withoutGroup = cleanTitleSurface(withoutGroup)
 	if item.releaseGroup == "" {
 		item.releaseGroup, item.groupStrong = group, strong
@@ -290,8 +334,12 @@ func analyzeName(source namedSource, now time.Time) parsedName {
 		item.withoutGroup = cleanTitleSurface(recognitionSurface)
 	}
 
-	item.specifications = canonicalSpecifications(techTokenPattern.FindAllString(withoutHint, -1))
+	item.specifications = canonicalSpecifications(append(techTokenPattern.FindAllString(withoutHint, -1), spacedTechPattern.FindAllString(withoutHint, -1)...))
 	withoutSpecs := techTokenPattern.ReplaceAllString(item.withoutGroup, " ")
+	withoutSpecs = spacedTechPattern.ReplaceAllString(withoutSpecs, " ")
+	if hasTechnicalToken(item.withoutGroup) {
+		withoutSpecs = conditionalNoisePattern.ReplaceAllString(withoutSpecs, " ")
+	}
 	withoutSpecs = subtitleTokenPattern.ReplaceAllString(withoutSpecs, " ")
 	withoutSpecs = stripTrailingReleaseNoise(withoutSpecs)
 	item.withoutSpecs = cleanTitleSurface(withoutSpecs)
@@ -317,12 +365,12 @@ func normalizeFilename(value string) string {
 		}
 		return r
 	}, value)
-	base := path.Base(strings.ReplaceAll(value, "\\", "/"))
+	base := value
 	if videoExtensionPattern.MatchString(base) {
 		base = base[:strings.LastIndex(base, ".")]
 	}
 	base = stripTrailingChecksum(base)
-	return cleanTitleSurface(strings.NewReplacer(".", " ", "_", " ", "\u00a0", " ").Replace(base))
+	return cleanTitleSurface(strings.NewReplacer(".", " ", "_", " ", "+", " ", "\u00a0", " ").Replace(base))
 }
 
 func stripTrailingChecksum(value string) string {
@@ -349,6 +397,9 @@ func structuredReleaseTitle(value string) (string, string, bool) {
 	}
 	group := firstNonEmptyDomain(match[1], match[2])
 	remainder := strings.TrimSpace(match[3])
+	if technicalBracketOnly(group) {
+		return structuredReleaseTitle(remainder)
+	}
 	_, episode := firstSeasonEpisode(remainder)
 	segments := bracketSegmentPattern.FindAllStringSubmatch(remainder, -1)
 	structured := episode != nil || techTokenPattern.MatchString(remainder) || subtitleTokenPattern.MatchString(remainder) || len(segments) >= 2
@@ -376,11 +427,29 @@ func structuredReleaseTitle(value string) (string, string, bool) {
 			return candidate, cleanTitleSurface(group), true
 		}
 	}
+	if !technicalBracketOnly(group) && !releaseGroupStyled(group) && !strings.Contains(group, "字幕组") && !strings.Contains(group, "字幕組") {
+		if candidate := cleanStructuredTitleSegment(group); candidate != "" {
+			return candidate, "", true
+		}
+	}
 	return "", "", false
 }
 
+func technicalBracketOnly(value string) bool {
+	cleaned := techTokenPattern.ReplaceAllString(value, " ")
+	cleaned = spacedTechPattern.ReplaceAllString(cleaned, " ")
+	cleaned = subtitleTokenPattern.ReplaceAllString(cleaned, " ")
+	return strings.TrimSpace(cleanTitleSurface(cleaned)) == ""
+}
+
 func cleanStructuredTitleSegment(value string) string {
-	if _, episode := firstSeasonEpisode(value); episode != nil {
+	if minimum, _ := episodeRangeFromName(value); minimum != nil || languageTrackOnlyPattern.MatchString(strings.TrimSpace(value)) {
+		return ""
+	}
+	if season, episode := firstSeasonEpisode(value); season != nil || episode != nil {
+		if prefix := titlePrefixBeforeEpisode(value); meaningfulTitle(prefix) {
+			return cleanTitleSurface(prefix)
+		}
 		return ""
 	}
 	value = techTokenPattern.ReplaceAllString(value, " ")
@@ -392,6 +461,19 @@ func cleanStructuredTitleSegment(value string) string {
 		return ""
 	}
 	return value
+}
+
+func titlePrefixBeforeEpisode(value string) string {
+	start := len(value)
+	for _, pattern := range []*regexp.Regexp{episodePattern, seasonPattern, chineseEpisodePattern, chineseSeasonPattern, explicitTrailingEpisodePattern, bracketedTrailingEpisodePattern} {
+		if index := pattern.FindStringIndex(value); index != nil && index[0] < start {
+			start = index[0]
+		}
+	}
+	if start == len(value) {
+		return ""
+	}
+	return cleanTitleSurface(value[:start])
 }
 
 func firstNonEmptyDomain(values ...string) string {
@@ -448,7 +530,7 @@ func stripTrailingReleaseNoise(value string) string {
 
 func separateTrailingGroup(value string) (string, string, bool) {
 	if match := trailingBracketGroup.FindStringSubmatch(value); len(match) == 3 && !strings.Contains(strings.ToLower(match[2]), "tmdb") {
-		strong := techTokenPattern.MatchString(match[1]) || releaseGroupStyled(match[2])
+		strong := hasTechnicalToken(match[1]) || releaseGroupStyled(match[2])
 		return match[1], match[2], strong
 	}
 	match := trailingGroupPattern.FindStringSubmatch(value)
@@ -461,15 +543,20 @@ func separateTrailingGroup(value string) (string, string, bool) {
 	// technical token such as DTS-HD or WEB-DL. Move only the leading group
 	// segments that complete a trailing technical token back to the release
 	// title; genuine group names such as GROUP-ABC stay intact.
-	for parts := strings.Split(group, "-"); len(parts) > 1; parts = strings.Split(group, "-") {
+	for parts := strings.Split(group, "-"); len(parts) > 0; parts = strings.Split(group, "-") {
 		candidate := left + "-" + parts[0]
 		if !endsWithTechnicalToken(candidate) {
 			break
 		}
 		left = candidate
 		group = strings.Join(parts[1:], "-")
+		if group == "" {
+			// The apparent delimiter belonged entirely to a resource token
+			// such as WEB-DL; there is no release group to remove.
+			return left, "", false
+		}
 	}
-	strong := techTokenPattern.MatchString(left)
+	strong := hasTechnicalToken(left)
 	if !strong && strings.Contains(match[2], " ") && releaseGroupStyled(group) {
 		// A spaced delimiter plus group-like casing is useful as a query
 		// variant, but is intentionally not destructive without a nearby
@@ -479,24 +566,55 @@ func separateTrailingGroup(value string) (string, string, bool) {
 	return left, group, strong
 }
 
+func separateBareTrailingGroup(value string) (string, string, bool) {
+	if !hasTechnicalToken(value) {
+		return value, "", false
+	}
+	fields := strings.Fields(value)
+	if len(fields) < 3 {
+		return value, "", false
+	}
+	group := strings.Trim(fields[len(fields)-1], "[]【】-:,. ")
+	if len(group) < 2 || len(group) > 31 || hasTechnicalToken(group) || subtitleTokenPattern.MatchString(group) || !releaseGroupStyled(group) {
+		return value, "", false
+	}
+	title := strings.TrimSpace(strings.TrimSuffix(value, fields[len(fields)-1]))
+	if !meaningfulTitle(title) {
+		return value, "", false
+	}
+	return title, group, true
+}
+
 func endsWithTechnicalToken(value string) bool {
-	indices := techTokenPattern.FindAllStringIndex(value, -1)
-	return len(indices) > 0 && indices[len(indices)-1][1] == len(value)
+	for _, pattern := range []*regexp.Regexp{techTokenPattern, spacedTechPattern} {
+		indices := pattern.FindAllStringIndex(value, -1)
+		if len(indices) > 0 && indices[len(indices)-1][1] == len(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTechnicalToken(value string) bool {
+	return techTokenPattern.MatchString(value) || spacedTechPattern.MatchString(value)
 }
 
 func releaseGroupStyled(value string) bool {
-	hasLower, upperAfterLower, hasDigit := false, false, false
+	hasLower, hasUpper, upperAfterLower, hasDigit := false, false, false, false
 	for _, r := range value {
 		switch {
 		case unicode.IsDigit(r):
 			hasDigit = true
 		case unicode.IsLower(r):
 			hasLower = true
-		case unicode.IsUpper(r) && hasLower:
-			upperAfterLower = true
+		case unicode.IsUpper(r):
+			hasUpper = true
+			if hasLower {
+				upperAfterLower = true
+			}
 		}
 	}
-	return hasDigit || upperAfterLower || value == strings.ToUpper(value)
+	return hasDigit || upperAfterLower || hasUpper && !hasLower
 }
 
 func canonicalSpecifications(values []string) []string {
@@ -569,8 +687,62 @@ func firstSeasonEpisode(value string) (*int, *int) {
 	var episode *int
 	if match := chineseEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
 		episode = parseBoundedOrdinal(match[1], 100000)
+	} else if match := explicitTrailingEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
+		parsed, _ := strconv.Atoi(match[1])
+		if parsed < 1888 || parsed > maxRecognitionYear {
+			episode = cloneDomainInt(&parsed)
+		}
+	} else if match := bracketedTrailingEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
+		parsed, _ := strconv.Atoi(match[1])
+		if parsed < 1888 || parsed > maxRecognitionYear {
+			episode = cloneDomainInt(&parsed)
+		}
 	}
 	return season, episode
+}
+
+func episodeRangeFromName(value string) (*int, *int) {
+	match := bracketRangePattern.FindStringSubmatch(value)
+	if len(match) == 0 {
+		match = episodeRangePattern.FindStringSubmatch(value)
+	}
+	if len(match) == 0 {
+		if complete := completeCountPattern.FindStringSubmatch(value); len(complete) == 2 {
+			maximum, err := strconv.Atoi(complete[1])
+			if err == nil && maximum > 0 && maximum <= 100000 && (maximum < 1888 || maximum > maxRecognitionYear) {
+				minimum := 1
+				return cloneDomainInt(&minimum), cloneDomainInt(&maximum)
+			}
+		}
+	}
+	if len(match) != 3 {
+		return nil, nil
+	}
+	minimum, minimumErr := strconv.Atoi(match[1])
+	maximum, maximumErr := strconv.Atoi(match[2])
+	if minimumErr != nil || maximumErr != nil || minimum < 0 || maximum < minimum || maximum > 100000 || minimum >= 1888 && maximum <= maxRecognitionYear {
+		return nil, nil
+	}
+	return cloneDomainInt(&minimum), cloneDomainInt(&maximum)
+}
+
+func bracketEpisodeFromName(value string) *int {
+	for _, match := range bracketEpisodePattern.FindAllStringSubmatch(value, -1) {
+		parsed, err := strconv.Atoi(match[1])
+		if err == nil && parsed >= 0 && parsed <= 100000 && (parsed < 1888 || parsed > maxRecognitionYear) {
+			return cloneDomainInt(&parsed)
+		}
+	}
+	return nil
+}
+
+func hasNameEpisodeEvidence(items []parsedName) bool {
+	for _, item := range items {
+		if item.season != nil || item.episode != nil || item.episodeMin != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func parseBoundedOrdinal(value string, maximum int) *int {
@@ -585,6 +757,11 @@ func parseBoundedOrdinal(value string, maximum int) *int {
 func removeSeasonEpisodeTokens(value string) string {
 	without := episodePattern.ReplaceAllString(value, " ")
 	without = seasonPattern.ReplaceAllString(without, " ")
+	without = bracketRangePattern.ReplaceAllString(without, " ")
+	without = completeCountPattern.ReplaceAllString(without, " ")
+	without = episodeRangePattern.ReplaceAllString(without, " ")
+	without = explicitTrailingEpisodePattern.ReplaceAllString(without, " ")
+	without = bracketedTrailingEpisodePattern.ReplaceAllString(without, " ")
 	without = chineseEpisodePattern.ReplaceAllString(without, " ")
 	without = chineseSeasonPattern.ReplaceAllString(without, " ")
 	cleaned := cleanTitleSurface(without)
@@ -750,6 +927,11 @@ func buildQueryVariants(names []parsedName, year *int, mediaType MediaType) []Qu
 		add(item.canonical, item, "canonical", year)
 	}
 	for _, item := range names {
+		for _, split := range splitAliasTitles(item.canonical) {
+			add(split.title, item, split.reason, year)
+		}
+	}
+	for _, item := range names {
 		if item.groupStrong && comparisonKey(item.withoutGroup) != comparisonKey(item.raw) {
 			add(item.withoutGroup, item, "without_release_group", year)
 		} else if item.releaseGroup != "" && !item.groupStrong {
@@ -787,6 +969,21 @@ func splitLanguageTitles(value string) []splitTitle {
 	}
 	if latin := cleanTitleSurface(latinTitlePattern.FindString(value)); meaningfulTitle(latin) && comparisonKey(latin) != comparisonKey(value) {
 		result = append(result, splitTitle{title: latin, reason: "latin_title"})
+	}
+	return result
+}
+
+func splitAliasTitles(value string) []splitTitle {
+	parts := aliasSeparatorPattern.Split(value, -1)
+	if len(parts) < 2 {
+		return nil
+	}
+	result := make([]splitTitle, 0, len(parts))
+	for _, part := range parts {
+		part = cleanTitleSurface(part)
+		if meaningfulTitle(part) && comparisonKey(part) != comparisonKey(value) {
+			result = append(result, splitTitle{title: part, reason: "multilingual_alias"})
+		}
 	}
 	return result
 }

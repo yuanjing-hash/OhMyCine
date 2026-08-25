@@ -51,17 +51,24 @@ func (c *Client) Submit(ctx context.Context, request downloader.SubmitRequest) (
 	if request.Source.Kind == downloader.SourceProviderItem {
 		return c.adoptProviderItem(ctx, request)
 	}
-	if request.Source.Kind != downloader.SourceURL || strings.TrimSpace(request.Source.URL) == "" {
+	sourceURL := strings.TrimSpace(request.Source.URL)
+	if request.Source.Kind == downloader.SourceTorrent {
+		magnet, err := downloader.TorrentMagnet(request.Source.Torrent)
+		if err != nil {
+			return downloader.Task{}, downloader.Error("downloader_source_invalid", false, err)
+		}
+		sourceURL = magnet
+	} else if request.Source.Kind != downloader.SourceURL || sourceURL == "" {
 		return downloader.Task{}, downloader.Error("downloader_source_unsupported", false, nil)
 	}
-	parsed, err := url.Parse(strings.TrimSpace(request.Source.URL))
+	parsed, err := url.Parse(sourceURL)
 	if err != nil || (parsed.Scheme != "magnet" && parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "ed2k") {
 		return downloader.Task{}, downloader.Error("downloader_source_invalid", false, err)
 	}
 	if _, err := c.validateTarget(ctx); err != nil {
 		return downloader.Task{}, err
 	}
-	task, err := c.driver.SubmitOffline(ctx, request.Source.URL, c.directoryID)
+	task, err := c.driver.SubmitOffline(ctx, sourceURL, c.directoryID)
 	if err != nil {
 		return downloader.Task{}, mapError(err)
 	}

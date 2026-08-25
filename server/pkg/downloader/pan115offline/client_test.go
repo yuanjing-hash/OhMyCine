@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +104,44 @@ func (f *fakeDriver) DirectURL(context.Context, cloud.DirectURLRequest) (cloud.T
 func (f *fakeDriver) SubmitOffline(_ context.Context, uri, directoryID string) (cloud.OfflineTask, error) {
 	f.submittedURI, f.directoryID = uri, directoryID
 	return f.task, f.submitErr
+}
+
+func TestNativeOfflineConvertsTorrentPayloadToMagnet(t *testing.T) {
+	driver := &fakeDriver{items: map[string]cloud.Item{
+		"root":   {ID: "root", ParentID: "0", Name: "root", IsDir: true},
+		"target": {ID: "target", ParentID: "root", Name: "target", IsDir: true},
+	}, task: cloud.OfflineTask{ID: "offline-task"}}
+	client, err := New(downloader.Config{CloudDriver: driver, ProviderStorageRootID: "root", ProviderDirectoryID: "target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := "https://tracker.example/pt"
+	raw := []byte("d8:announce" + strconv.Itoa(len(tracker)) + ":" + tracker + "4:infod4:name9:movie.mkvee")
+	if _, err := client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "movie.torrent", Torrent: raw}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(driver.submittedURI, "magnet:?") || !strings.Contains(driver.submittedURI, "xt=urn%3Abtih%3A") || !strings.Contains(driver.submittedURI, "tr=https%3A%2F%2Ftracker.example%2Fpt") {
+		t.Fatalf("submitted URI is not a tracker-preserving magnet: %q", driver.submittedURI)
+	}
+	if driver.directoryID != "target" {
+		t.Fatalf("directory=%q", driver.directoryID)
+	}
+}
+
+func TestNativeOfflineRejectsMalformedTorrentBeforeProviderSubmission(t *testing.T) {
+	driver := &fakeDriver{items: map[string]cloud.Item{
+		"root":   {ID: "root", ParentID: "0", Name: "root", IsDir: true},
+		"target": {ID: "target", ParentID: "root", Name: "target", IsDir: true},
+	}}
+	client, err := New(downloader.Config{CloudDriver: driver, ProviderStorageRootID: "root", ProviderDirectoryID: "target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "bad.torrent", Torrent: []byte("d4:infoi1ee")}})
+	code, retryable := downloader.ErrorInfo(err)
+	if code != "downloader_source_invalid" || retryable || driver.submittedURI != "" {
+		t.Fatalf("code=%q retryable=%v submitted=%q err=%v", code, retryable, driver.submittedURI, err)
+	}
 }
 
 func TestNativeOfflineRejectsUnavailableTargetBeforeProviderSubmission(t *testing.T) {

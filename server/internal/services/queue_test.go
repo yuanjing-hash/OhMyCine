@@ -88,6 +88,46 @@ func TestQueueLaneOrderingClaimCapacityAndLeaseGuard(t *testing.T) {
 	}
 }
 
+func TestDownloadQueueAllowsUnkeyedQBittorrentJobsWhileSerializingProviderKey(t *testing.T) {
+	service, actor, _ := queueFixture(t)
+	enqueue := func(name, resource string) JobDTO {
+		job, err := service.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: name, ResourceKey: resource, Payload: map[string]any{"step": 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return job
+	}
+	qbitA := enqueue("qbit-a", "")
+	qbitB := enqueue("qbit-b", "")
+	panA := enqueue("pan-a", "downloader:pan")
+	panB := enqueue("pan-b", "downloader:pan")
+	claimed := map[string]struct{}{}
+	for index := 0; index < 3; index++ {
+		job, err := service.Claim([]string{"download"})
+		if err != nil || job == nil {
+			t.Fatalf("claim %d=%+v err=%v", index, job, err)
+		}
+		claimed[job.Job.ID] = struct{}{}
+	}
+	for _, id := range []string{qbitA.ID, qbitB.ID} {
+		if _, ok := claimed[id]; !ok {
+			t.Fatalf("qBittorrent job %s remained serialized: claimed=%v", id, claimed)
+		}
+	}
+	panClaims := 0
+	for _, id := range []string{panA.ID, panB.ID} {
+		if _, ok := claimed[id]; ok {
+			panClaims++
+		}
+	}
+	if panClaims != 1 {
+		t.Fatalf("same 115 provider claims=%d, want 1", panClaims)
+	}
+	if next, err := service.Claim([]string{"download"}); err != nil || next != nil {
+		t.Fatalf("second 115 task bypassed resource limit: next=%+v err=%v", next, err)
+	}
+}
+
 func TestQueueActionRetryRecoveryCoalescingAndPrivateState(t *testing.T) {
 	service, actor, clock := queueFixture(t)
 	if _, err := service.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "fake", DisplayName: "Unsafe", Payload: map[string]any{"nested": map[string]any{"api_token": "secret"}}}); ErrorCode(err) != CodeInvalidRequest {

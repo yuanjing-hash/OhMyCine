@@ -87,6 +87,132 @@ func TestParseBracketedFansubReleaseWithFourDigitAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestParsePTAndNyaaReleaseShapesIntoCleanQueries(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		canonical    string
+		query        string
+		mediaType    MediaType
+		season       *int
+		episodeMin   *int
+		episodeMax   *int
+		releaseGroup string
+	}{
+		{
+			name:         "spaced codecs and audio channels",
+			input:        "Apartment of Love 2018 2160p WEB-DL H.265 DDP5.1-AilMWeb",
+			canonical:    "Apartment of Love",
+			query:        "Apartment of Love",
+			releaseGroup: "AilMWeb",
+		},
+		{
+			name:         "season complete pack",
+			input:        "The Lord of Losers 2023 S02 Complete WEB-DL 4K EDR HEVC AAC-CMCTV",
+			canonical:    "The Lord of Losers",
+			query:        "The Lord of Losers",
+			mediaType:    MediaTypeTV,
+			season:       intRef(2),
+			releaseGroup: "CMCTV",
+		},
+		{
+			name:         "multilingual bracketed complete series",
+			input:        "[DBD-Raws][迪迦奥特曼/Ultraman Tiga/ウルトラマンティガ][01-52TV全集+剧场+OV+特典][1080P][BDRip][HEVC-10bit][简体字幕外挂][FLAC][MKV]",
+			canonical:    "迪迦奥特曼/Ultraman Tiga/ウルトラマンティガ",
+			query:        "迪迦奥特曼",
+			mediaType:    MediaTypeTV,
+			episodeMin:   intRef(1),
+			episodeMax:   intRef(52),
+			releaseGroup: "DBD-Raws",
+		},
+		{
+			name:         "technical bracket before release group",
+			input:        "[1080P][DBD-Raws][迪迦奥特曼 OV 远古复苏的巨人/Ultraman Tiga Gaiden: Revival of the Ancient Giant/ウルトラマンティガ外伝 古代に蘇る巨人][普通版][HEVC-10bit][AC3][MKV]",
+			canonical:    "迪迦奥特曼 OV 远古复苏的巨人/Ultraman Tiga Gaiden: Revival of the Ancient Giant/ウルトラマンティガ外伝 古代に蘇る巨人",
+			query:        "迪迦奥特曼 OV 远古复苏的巨人",
+			releaseGroup: "DBD-Raws",
+		},
+		{
+			name:         "bracketed absolute episode",
+			input:        "[未央阁-爱之夏字幕组&魔星字幕组][迪迦奥特曼][06][第二次接触][BDrip][X264(10-bit) PCM][MKV]",
+			canonical:    "迪迦奥特曼",
+			query:        "迪迦奥特曼",
+			mediaType:    MediaTypeTV,
+			episodeMin:   intRef(6),
+			episodeMax:   intRef(6),
+			releaseGroup: "未央阁-爱之夏字幕组&魔星字幕组",
+		},
+		{
+			name:       "nyaa ep range",
+			input:      "Ultraman Tiga (960x720 BDRip) - EP26-52",
+			canonical:  "Ultraman Tiga",
+			query:      "Ultraman Tiga",
+			mediaType:  MediaTypeTV,
+			episodeMin: intRef(26),
+			episodeMax: intRef(52),
+		},
+		{
+			name:       "title first bracketed complete range",
+			input:      "【ウルトラマンティガ】【BDrip】【1-52】【1080p】【国台日三语】【简体字幕】",
+			canonical:  "ウルトラマンティガ",
+			query:      "ウルトラマンティガ",
+			mediaType:  MediaTypeTV,
+			episodeMin: intRef(1),
+			episodeMax: intRef(52),
+		},
+		{
+			name:         "fansub episode subtitle segment",
+			input:        "【奥盟字幕组】【奥特曼列传第3集：复活的迪迦!超古代的光之战士!!】【MKV】",
+			canonical:    "奥特曼列传",
+			query:        "奥特曼列传",
+			mediaType:    MediaTypeTV,
+			episodeMin:   intRef(3),
+			episodeMax:   intRef(3),
+			releaseGroup: "奥盟字幕组",
+		},
+		{
+			name:         "complete count and multilingual aliases",
+			input:        "[PorterRAWS]迪迦奥特曼 / 超人迪加 / Ultraman Tiga [52全][DVD480P][爱子粤语][未调轴中字]",
+			canonical:    "迪迦奥特曼 / 超人迪加 / Ultraman Tiga",
+			query:        "Ultraman Tiga",
+			mediaType:    MediaTypeTV,
+			episodeMin:   intRef(1),
+			episodeMax:   intRef(52),
+			releaseGroup: "PorterRAWS",
+		},
+		{
+			name:         "plus separated latin title",
+			input:        "ULTRAMAN+TIGA 1996 BluRay X264 3Audio 1080p LGGZS",
+			canonical:    "ULTRAMAN TIGA",
+			query:        "ULTRAMAN TIGA",
+			releaseGroup: "LGGZS",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := Parse(InputFacts{PackageName: test.input, SourceKind: SourceDownload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.CanonicalTitle != test.canonical {
+				t.Fatalf("canonical=%q queries=%+v", parsed.CanonicalTitle, parsed.Queries)
+			}
+			if test.query != "" && !queryContains(parsed.Queries, test.query) {
+				t.Fatalf("query %q missing from %+v", test.query, parsed.Queries)
+			}
+			if test.mediaType != MediaTypeUnknown && parsed.SuggestedType != test.mediaType {
+				t.Fatalf("type=%q evidence=%+v", parsed.SuggestedType, parsed.TypeEvidence)
+			}
+			if !sameOptionalInt(parsed.Season, test.season) || !sameOptionalInt(parsed.Episodes.EpisodeMin, test.episodeMin) || !sameOptionalInt(parsed.Episodes.EpisodeMax, test.episodeMax) {
+				t.Fatalf("season/episodes=%v/%+v", parsed.Season, parsed.Episodes)
+			}
+			if test.releaseGroup != "" && parsed.ReleaseGroup != test.releaseGroup {
+				t.Fatalf("release group=%q", parsed.ReleaseGroup)
+			}
+		})
+	}
+}
+
 func TestParsePreservesTitlesThatAreEntireChineseOrdinals(t *testing.T) {
 	for _, title := range []string{"第八集", "第2季", "第二十条"} {
 		t.Run(title, func(t *testing.T) {
@@ -98,6 +224,16 @@ func TestParsePreservesTitlesThatAreEntireChineseOrdinals(t *testing.T) {
 				t.Fatalf("parsed=%+v", parsed)
 			}
 		})
+	}
+}
+
+func TestParseDoesNotTreatLegalHyphenatedNumberTitleAsEpisode(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "Catch-22.2019.1080p.WEB-DL", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.CanonicalTitle != "Catch-22" || parsed.SuggestedType == MediaTypeTV || parsed.Episodes.EpisodeMin != nil {
+		t.Fatalf("parsed=%+v", parsed)
 	}
 }
 
@@ -199,6 +335,7 @@ func TestParseSupportsEmbyTMDBIdentitySyntaxWithoutTrustingMetadata(t *testing.T
 func TestParseRejectsPathsURLsAndUnboundedInputs(t *testing.T) {
 	unsafe := []InputFacts{
 		{PackageName: `C:\media\Movie`},
+		{PackageName: `Movie\Season 01`},
 		{PackageName: "https://example.invalid/movie"},
 		{PackageName: "Movie", Files: []FileFact{{RelativePath: "../Movie.mkv"}}},
 		{PackageName: "Movie", Files: []FileFact{{RelativePath: `C:\Movie.mkv`}}},
@@ -225,6 +362,15 @@ func TestParseDetectsDiscAndSeasonStructures(t *testing.T) {
 func containsFold(values []string, expected string) bool {
 	for _, value := range values {
 		if strings.EqualFold(value, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryContains(values []QueryVariant, expected string) bool {
+	for _, value := range values {
+		if value.Title == expected {
 			return true
 		}
 	}

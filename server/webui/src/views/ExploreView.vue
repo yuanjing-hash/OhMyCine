@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, ptRecognitionErrorLabel, ptRecognitionSpecLabels, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult } from '@/sites'
+import { discoveryDownloadsPath, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -63,6 +63,8 @@ function search() {
   if (searchBy.value === 'tmdb_id' && (!tmdbID.value || !mediaType.value)) { notify('TMDB ID 搜索需要有效 ID 与媒体类型', 'warning'); return }
   stopStream()
   groups.value = []
+  recognitions.value = {}
+  recognitionErrors.value = {}
   searchError.value = ''
   searched.value = false
   searching.value = true
@@ -156,7 +158,36 @@ function count(value?: number) { return value == null ? '—' : String(value) }
 function mediaTypeLabel(value?: string) { return value === 'movie' ? '电影' : value === 'tv' ? '剧集' : '类型待定' }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '种子搜索暂时不可用' }
 
-onMounted(() => { if (keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search() })
+function currentSearchInput() {
+  return { keyword: keyword.value, mediaType: mediaType.value, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value }
+}
+
+function sameSearchInput(left: ReturnType<typeof currentSearchInput>, right: TorrentSearchSession['input']) {
+  return left.keyword.trim() === right.keyword.trim() && left.mediaType === right.mediaType && left.year === right.year && left.tmdbID === right.tmdbID && left.searchBy === right.searchBy
+}
+
+watch([groups, recognitions, searched], () => {
+  saveTorrentSearchSession(typeof sessionStorage === 'undefined' ? undefined : sessionStorage, {
+    input: currentSearchInput(), groups: groups.value, recognitions: recognitions.value, searched: searched.value, savedAt: Date.now(),
+  })
+}, { deep: true })
+
+onMounted(() => {
+  const cached = readTorrentSearchSession(typeof sessionStorage === 'undefined' ? undefined : sessionStorage)
+  const hasRouteSearch = typeof route.query.title === 'string' || typeof route.query.tmdb_id === 'string'
+  if (cached && (!hasRouteSearch || sameSearchInput(currentSearchInput(), cached.input))) {
+    keyword.value = cached.input.keyword
+    mediaType.value = cached.input.mediaType
+    year.value = cached.input.year
+    tmdbID.value = cached.input.tmdbID
+    searchBy.value = cached.input.searchBy
+    groups.value = cached.groups
+    recognitions.value = cached.recognitions
+    searched.value = cached.searched
+    return
+  }
+  if (keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search()
+})
 onBeforeUnmount(stopStream)
 </script>
 

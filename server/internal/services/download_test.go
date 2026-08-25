@@ -156,6 +156,17 @@ func downloadFixture(t *testing.T) (*DownloadService, *DownloaderService, *Queue
 	return downloads, downloaders, queue, actor, client
 }
 
+func TestDownloadQueueResourceDelegatesQBittorrentConcurrency(t *testing.T) {
+	qbit := models.Downloader{ID: "qbit", Type: models.DownloaderTypeQBittorrent}
+	pan := models.Downloader{ID: "pan", Type: models.DownloaderTypePan115Offline}
+	if key := downloadQueueResourceKey(qbit); key != "" {
+		t.Fatalf("qBittorrent resource key=%q, want global guard only", key)
+	}
+	if key := downloadQueueResourceKey(pan); key != "downloader:pan" {
+		t.Fatalf("115 resource key=%q", key)
+	}
+}
+
 func TestPan115DownloadWaitBroadcastsLifeEventToAllWorkers(t *testing.T) {
 	service := &DownloadService{providerEvents: newProviderEventWakeHub()}
 	worker := &DownloadWorker{service: service, pan115PollInterval: time.Hour, heartbeatInterval: time.Hour}
@@ -690,7 +701,7 @@ func TestTorrentSourceValidation(t *testing.T) {
 	if _, _, err := normalizeDownloadSource(DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Filename: "movie.txt", Torrent: valid}, ""); ErrorCode(err) != CodeDownloadTorrentInvalid {
 		t.Fatalf("error=%v", err)
 	}
-	if _, _, err := normalizeDownloadSource(DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Filename: "movie.torrent", Torrent: make([]byte, maxTorrentBytes+1)}, ""); ErrorCode(err) != CodeDownloadTorrentInvalid {
+	if _, _, err := normalizeDownloadSource(DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Filename: "movie.torrent", Torrent: make([]byte, downloadpkg.MaxTorrentBytes+1)}, ""); ErrorCode(err) != CodeDownloadTorrentInvalid {
 		t.Fatalf("error=%v", err)
 	}
 }

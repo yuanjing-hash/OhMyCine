@@ -136,6 +136,16 @@ npm run lint
 - 数据库兼容：只新增可空/默认安全字段，不删除旧字段；回滚不需要降级迁移。
 - 恢复任务重复执行：使用现有持久任务幂等/租约机制，禁止重复创建下载任务。
 
+## 2026-08-25 PT/Nyaa、搜索恢复与下载器边界复核
+
+- 完整内置词包未删除：`tv-v1 -> anime-v1` 默认仍启用，冻结快照、固定 commit、SHA-256 和 322 条规则编译回归保持有效。
+- 领域解析器新增真实站点完整发行名回归：点号拆开的 codec/声道、`S02 Complete`、`EP26-52`、`[01-52TV全集]`、`[52全]`、绝对集号、标题/技术/压制组的不同括号顺序、多语言 `/` 别名和 `+` 分隔标题。季集事实在媒体类型决策前合并，不再出现已解析 `S02` 但“类型待定”。
+- 共享 `recognizeMedia` 回归使用默认内置 packs 和完整 DBD-Raws 多语言整季名，证明正式查询链产生干净 TV 标题，而非仅 parser 单测通过。引擎版本提升为 `nextgen-domain-v4`，旧负缓存失效。
+- Explore 搜索条件、分组结果和快速识别摘要使用有界 `sessionStorage` 恢复：30 分钟、512 KiB、24 组、300 条，过期 opaque claim 自动丢弃，新搜索清空旧识别结果。
+- qBittorrent Download Job 不再设置 per-downloader `resource_key`；全局默认 Worker 上限为 64，实际活动下载数交给 qBit。115 等原生 provider 仍使用 `downloader:<id>` 串行。v46 只更新 revision=1 的旧 `2/1` 默认策略，保留用户自定义策略。
+- 115 原生离线支持站点 `.torrent`：对原始 bencoded `info` 字节计算 SHA-1 生成 BTIH magnet，保留有界 Tracker；畸形、重复 info、过深和尾随数据在 provider 调用前拒绝，私有 Tracker/passkey 仍只存在于加密 source。
+- WebUI 23 个测试文件、118 项测试通过；permissions check、Vue typecheck、ESLint、Vite build 纳入本轮门禁。Go 定向 parser/service/downloader/database 回归通过，全量结果记录在本轮最终验证中。
+
 ## 开始实现前检查
 
 - [x] 用户批准本次最终规划摘要。

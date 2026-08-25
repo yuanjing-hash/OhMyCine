@@ -195,3 +195,83 @@ export type TorrentRecognitionResult = PTRecognitionResult
 export const buildTorrentSearchQuery = buildPTSearchQuery
 export const torrentSearchURL = ptSearchURL
 export const upsertTorrentGroup = upsertPTGroup
+
+export const torrentSearchSessionKey = 'omc:server:torrent-search:v1'
+const torrentSearchSessionMaxBytes = 512 * 1024
+const torrentSearchSessionMaxAgeMs = 30 * 60 * 1000
+
+export interface TorrentSearchSession {
+  input: { keyword: string; mediaType: string; year?: number; tmdbID?: number; searchBy: 'title' | 'tmdb_id' }
+  groups: TorrentSearchGroup[]
+  recognitions: Record<string, TorrentRecognitionResult>
+  searched: boolean
+  savedAt: number
+}
+
+type SearchSessionStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+
+export function saveTorrentSearchSession(storage: SearchSessionStorage | undefined, state: TorrentSearchSession) {
+  if (!storage) return
+  try {
+    const groups: TorrentSearchGroup[] = []
+    let itemCount = 0
+    for (const group of state.groups.slice(0, 24)) {
+      const remaining = Math.max(0, 300 - itemCount)
+      const items = group.items.slice(0, remaining)
+      itemCount += items.length
+      groups.push({ ...group, items })
+      if (itemCount >= 300) break
+    }
+    const allowedTokens = new Set(groups.flatMap(group => group.items.map(item => item.token)))
+    const recognitions = Object.fromEntries(Object.entries(state.recognitions).filter(([token]) => allowedTokens.has(token)))
+    const encoded = JSON.stringify({ ...state, groups, recognitions })
+    if (encoded.length > torrentSearchSessionMaxBytes) {
+      storage.removeItem(torrentSearchSessionKey)
+      return
+    }
+    storage.setItem(torrentSearchSessionKey, encoded)
+  } catch {
+    // Search remains usable when browser storage is blocked or full.
+  }
+}
+
+export function readTorrentSearchSession(storage: SearchSessionStorage | undefined, now = Date.now()): TorrentSearchSession | null {
+  if (!storage) return null
+  try {
+    const raw = storage.getItem(torrentSearchSessionKey)
+    if (!raw || raw.length > torrentSearchSessionMaxBytes) return null
+    const value = JSON.parse(raw) as Partial<TorrentSearchSession>
+    if (!value.input || !Array.isArray(value.groups) || !value.recognitions || typeof value.savedAt !== 'number' || now - value.savedAt < 0 || now - value.savedAt > torrentSearchSessionMaxAgeMs) {
+      storage.removeItem(torrentSearchSessionKey)
+      return null
+    }
+    if (value.input.searchBy !== 'title' && value.input.searchBy !== 'tmdb_id') return null
+    let remainingItems = 300
+    const groups = value.groups
+      .slice(0, 24)
+      .map((group) => {
+        const items = remainingItems > 0 && Array.isArray(group.items)
+          ? group.items.filter(item => typeof item?.token === 'string' && typeof item.title === 'string' && typeof item.expires_at === 'string' && Date.parse(item.expires_at) > now).slice(0, remainingItems)
+          : []
+        remainingItems -= items.length
+        return { ...group, items }
+      })
+    const tokens = new Set(groups.flatMap(group => group.items.map(item => item.token)))
+    const recognitions = Object.fromEntries(Object.entries(value.recognitions).filter(([token]) => tokens.has(token)))
+    return {
+      input: {
+        keyword: typeof value.input.keyword === 'string' ? value.input.keyword.slice(0, 160) : '',
+        mediaType: typeof value.input.mediaType === 'string' ? value.input.mediaType : '',
+        year: typeof value.input.year === 'number' ? value.input.year : undefined,
+        tmdbID: typeof value.input.tmdbID === 'number' ? value.input.tmdbID : undefined,
+        searchBy: value.input.searchBy,
+      },
+      groups,
+      recognitions,
+      searched: Boolean(value.searched),
+      savedAt: value.savedAt,
+    }
+  } catch {
+    return null
+  }
+}

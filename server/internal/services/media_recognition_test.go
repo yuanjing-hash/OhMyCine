@@ -35,6 +35,26 @@ type titleSensitiveRecognitionLookupFake struct {
 	selected int64
 }
 
+type nyaaRecognitionLookupFake struct {
+	searches []string
+}
+
+func (f *nyaaRecognitionLookupFake) Search(context.Context, string, string, *int, string, string) (tmdb.Match, error) {
+	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+}
+
+func (f *nyaaRecognitionLookupFake) SearchCandidates(_ context.Context, mediaType, title string, _ *int, _, _ string, _ int) ([]tmdb.Candidate, error) {
+	f.searches = append(f.searches, mediaType+":"+title)
+	if mediaType == "tv" && title == "迪迦奥特曼" {
+		return []tmdb.Candidate{{ID: 10820, Title: "迪迦奥特曼", OriginalTitle: "ウルトラマンティガ", MediaType: "tv", SeasonCount: 1, Popularity: 100}}, nil
+	}
+	return nil, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
+}
+
+func (f *nyaaRecognitionLookupFake) GetByID(_ context.Context, mediaType string, id int64, _ string) (tmdb.Match, error) {
+	return tmdb.Match{ID: id, Title: "迪迦奥特曼", MediaType: mediaType, Confidence: 1, Snapshot: tmdb.Snapshot{TMDBID: id, Title: "迪迦奥特曼", MediaType: mediaType}}, nil
+}
+
 func (f *titleSensitiveRecognitionLookupFake) Search(context.Context, string, string, *int, string, string) (tmdb.Match, error) {
 	return tmdb.Match{}, &tmdb.ClientError{Code: tmdb.ErrorNoMatch}
 }
@@ -209,6 +229,31 @@ func TestRecognizeMediaMatchesChineseEpisodeNamesFromLibraryScan(t *testing.T) {
 	})
 	if result.Status != mediaRecognitionStatusMatched || result.Title != "斗罗大陆" || result.MediaType != "tv" || result.TMDBID == nil || *result.TMDBID != 95557 || lookup.selected != 95557 {
 		t.Fatalf("result=%+v searches=%v selected=%d", result, lookup.searches, lookup.selected)
+	}
+}
+
+func TestRecognizeMediaUsesBuiltinPacksAndDomainParserForNyaaCompleteSeries(t *testing.T) {
+	lookup := &nyaaRecognitionLookupFake{}
+	result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
+		PackageName:      "[DBD-Raws][迪迦奥特曼/Ultraman Tiga/ウルトラマンティガ][01-52TV全集+剧场+OV+特典][1080P][BDRip][HEVC-10bit][简体字幕外挂][FLAC][MKV]",
+		Files:            []recognitionSourceFile{{RelativePath: "迪迦奥特曼/Ultraman.Tiga.EP01.mkv", Size: 10}},
+		BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
+		Classification:   classification.DefaultRules(),
+		Language:         "zh-CN",
+		Region:           "CN",
+	})
+	if result.Status != mediaRecognitionStatusMatched || result.MediaType != "tv" || result.Title != "迪迦奥特曼" || result.TMDBID == nil || *result.TMDBID != 10820 {
+		t.Fatalf("result=%+v searches=%v", result, lookup.searches)
+	}
+	found := false
+	for _, search := range lookup.searches {
+		if search == "tv:迪迦奥特曼" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("clean multilingual query missing: %v", lookup.searches)
 	}
 }
 

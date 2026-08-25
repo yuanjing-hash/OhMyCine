@@ -31,7 +31,6 @@ import (
 )
 
 const (
-	maxTorrentBytes                    = 4 << 20
 	maxCompletedManifestBytes          = 1 << 20
 	maxCompletedManifestFiles          = 5000
 	pan115DownloadFallbackPollInterval = 20 * time.Second
@@ -348,7 +347,7 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		record.TVDirectoryTemplate = organization.TVDirectoryTemplate
 		record.TVFilenameTemplate = organization.TVFilenameTemplate
 	}
-	job, err := s.queue.EnqueueWith(EnqueueJobInput{OwnerID: ownerID, JobType: "download", Priority: input.Priority, DisplayName: displayName, Provider: downloaderRecord.Type, ResourceKey: "downloader:" + downloaderRecord.ID, Payload: downloadJobPayload{DownloadTaskID: taskID}}, func(tx *gorm.DB, job models.Job) error {
+	job, err := s.queue.EnqueueWith(EnqueueJobInput{OwnerID: ownerID, JobType: "download", Priority: input.Priority, DisplayName: displayName, Provider: downloaderRecord.Type, ResourceKey: downloadQueueResourceKey(downloaderRecord), Payload: downloadJobPayload{DownloadTaskID: taskID}}, func(tx *gorm.DB, job models.Job) error {
 		record.JobID = job.ID
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -364,6 +363,15 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		return DownloadTaskSummary{}, err
 	}
 	return downloadTaskSummary(record, job.Status), nil
+}
+
+func downloadQueueResourceKey(record models.Downloader) string {
+	if record.Type == models.DownloaderTypeQBittorrent {
+		// Submission/monitoring workers remain bounded by the high global guard,
+		// while qBittorrent owns actual active-download and queue limits.
+		return ""
+	}
+	return "downloader:" + record.ID
 }
 
 // AdoptProviderItem creates one ordinary durable download task for a direct
@@ -912,7 +920,7 @@ func normalizeDownloadSource(input DownloadSourceInput, requestedName string) (d
 		source.URL = raw
 	case downloadpkg.SourceTorrent:
 		filename := filepath.Base(strings.ReplaceAll(strings.TrimSpace(input.Filename), "\\", "/"))
-		if len(input.Torrent) == 0 || len(input.Torrent) > maxTorrentBytes || !strings.EqualFold(filepath.Ext(filename), ".torrent") || input.Torrent[0] != 'd' {
+		if len(input.Torrent) == 0 || len(input.Torrent) > downloadpkg.MaxTorrentBytes || !strings.EqualFold(filepath.Ext(filename), ".torrent") || input.Torrent[0] != 'd' {
 			return source, "", appError(CodeDownloadTorrentInvalid, "种子文件必须是 4 MiB 以内的有效 .torrent 文件", nil)
 		}
 		source.Torrent = append([]byte(nil), input.Torrent...)

@@ -90,7 +90,9 @@ After implementation:
 - [ ] When a task's logical classification may change after bytes were placed, traced physical source identity separately from logical metadata (`staging_category` versus `scrape_category`); transfer, cleanup and recovery must use the immutable physical snapshot, while naming and destination routing use the verified logical result.
 - [ ] For completed-provider recovery, verified a bounded immutable manifest is persisted before recognition failure and that a retry cannot call submit/pause/resume/category APIs or depend on the provider still listing the completed task.
 - [ ] For production parsing bugs, copied the complete real input into a regression fixture, preserving folder prefixes, dots, spaces, brackets and hyphens instead of testing only a cleaned sample.
+- [ ] For PT/anime release parsing, covered the same untouched title at the pure parser and the shared service entry so built-in word packs, domain parsing, query budgeting and metadata lookup cannot drift. Include multilingual `/` aliases, bracket order, season/episode ranges and technical tokens from real search results; never patch one work name.
 - [ ] When several providers produce the same domain object, kept parsing/classification/naming before the provider adapter boundary so one fix covers every provider.
+- [ ] When one downloader protocol cannot consume the discovery artifact, converted it only at the downloader capability boundary (for example raw `.torrent` `info` bytes to BTIH magnet), preserving identity exactly and keeping passkeys in the encrypted source envelope.
 
 ### Native Playback Bridge Example
 

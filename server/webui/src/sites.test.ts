@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, siteCatalogPath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, site_type: 'pt', status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -43,5 +43,51 @@ describe('PT discovery contracts', () => {
     expect(cookieCloudErrorLabel('site_authentication_failed')).toBe('站点登录 Cookie 已失效或不完整')
     expect(cookieCloudErrorLabel('site_unavailable')).toBe('站点暂时不可用')
     expect(cookieCloudErrorLabel('future_safe_code')).toBe('future_safe_code')
+  })
+
+  it('keeps the latest unexpired search in session storage without retaining stale claims', () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    }
+    const now = Date.parse('2026-08-25T00:00:00Z')
+    const fresh = group(1)
+    fresh.items[0].expires_at = '2026-08-25T00:10:00Z'
+    const stale = group(2)
+    stale.items[0].expires_at = '2026-08-24T23:59:00Z'
+    saveTorrentSearchSession(storage, {
+      input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title' },
+      groups: [fresh, stale],
+      recognitions: { [fresh.items[0].token]: { status: 'matched', title: '迪迦奥特曼', media_type: 'tv', specifications: {} } },
+      searched: true,
+      savedAt: now,
+    })
+    const restored = readTorrentSearchSession(storage, now)
+    expect(restored?.input.keyword).toBe('迪迦奥特曼')
+    expect(restored?.groups[0].items).toHaveLength(1)
+    expect(restored?.groups[1].items).toHaveLength(0)
+    expect(restored?.recognitions[fresh.items[0].token]?.status).toBe('matched')
+    expect(values.has(torrentSearchSessionKey)).toBe(true)
+  })
+
+  it('caps restored search results across all groups', () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    }
+    const now = Date.parse('2026-08-25T00:00:00Z')
+    const groups = [1, 2].map(siteID => ({
+      ...group(siteID),
+      items: Array.from({ length: 200 }, (_, index) => ({ token: `${siteID}-${index}`, title: `Title ${index}`, expires_at: '2026-08-25T00:10:00Z' })),
+    }))
+    values.set(torrentSearchSessionKey, JSON.stringify({
+      input: { keyword: 'test', mediaType: '', searchBy: 'title' }, groups, recognitions: {}, searched: true, savedAt: now,
+    }))
+    const restored = readTorrentSearchSession(storage, now)
+    expect(restored?.groups.reduce((total, item) => total + item.items.length, 0)).toBe(300)
   })
 })
