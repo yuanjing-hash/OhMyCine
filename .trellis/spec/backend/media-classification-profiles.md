@@ -20,6 +20,24 @@ func EmptyRules() RulesV1
 func Classify(metadata ClassifiableMetadata, rules RulesV1) ClassificationResult
 ```
 
+Provider-neutral TMDB ranking boundary:
+
+```go
+type RemoteCandidate struct {
+    ID int64
+    MediaType MediaType
+    Title, OriginalTitle, OriginalLanguage string
+    AlternativeTitles, Translations []string
+    ReleaseYear, SeasonCount, EpisodeCount *int
+    SeasonYears map[int]int
+    Popularity float64
+    VoteCount int
+    HasPoster bool
+}
+
+func Rank(parsed ParsedFacts, candidates []RemoteCandidate) Decision
+```
+
 ```text
 GET    /api/v1/media-classification-profiles
 GET    /api/v1/media-classification-profiles/:id
@@ -81,6 +99,7 @@ Profile detail adds `builtin_recognition_packs`, `recognition_rules` and the fou
 - Real PT/Nyaa package titles may use `/`, `／`, or `|` as multilingual title separators. Package-title facts may preserve and split those separators into query variants, but must still reject leading-root forms, URLs, drive paths, every backslash, control data and unsafe file facts. A semantic package title is never reused as a filesystem path.
 - Domain parsing runs after the fixed `tv-v1 -> anime-v1 -> user` preprocessing chain and before media-type decision. Season/episode evidence found in release names must therefore participate in type selection instead of being removed after an earlier `unknown` decision.
 - Release parsing covers `S02 Complete`, `EP26-52`, `[01-52TV全集]`, `[1-52]`, `[52全]`, bracketed absolute episodes, title-first bracket packs, multilingual aliases and technical brackets before the release group. Technical/audio/language tokens and a defensible trailing group are removed without hard-coding a work title; full valid title counterexamples remain mandatory.
+- TMDB search summaries and bounded detail enrichment preserve credential-free authority facts through the shared recognition boundary: original language, release year, season/episode totals, aliases/translations, popularity, vote count and poster presence. Missing facts are neutral rather than conflicts. Authority completeness is only a bounded tie-break inside an already-established shared exact-title and same-media-type identity cluster with no strong title/type/year/episode conflict; it cannot establish identity or make one provider result win merely because it is popular. Releasing a new tie-break requires production-shaped fixtures that mirror the real provider payload, including absent fields on duplicate/shell records.
 - Router middleware and service policy both enforce permissions. Operator receives all four Profile permissions by default; viewer receives none.
 - Mutation audits contain actor, Profile ID, action, result, kind/revision and aggregate category counts only. Never log/audit `rules_json`, complete conditions, or future media paths.
 - A MediaLibrary reference checker is injected at the service boundary. Once MediaLibrary exists, referenced custom Profiles cannot be deleted; do not bypass this by querying from handlers.
@@ -98,6 +117,9 @@ Profile detail adds `builtin_recognition_packs`, `recognition_rules` and the fou
 | Built-in pack list is explicitly `[]` | Persist `[]`; do not silently restore defaults |
 | Embedded snapshot hash/count/manifest disagrees with the compiled rules | Fail tests/build verification; do not silently skip a rule |
 | Built-in regex times out, exceeds its application limit, or emits conflicting direct hints | Return a stable unrecognized error for that unit; do not block the supervisor or trust one conflicting hint |
+| Exact-title/same-type candidates are close, but one has only one or two extra authority fields | Keep `candidate_conflict`; one weak field is not identity evidence |
+| One exact-title/same-type candidate has a multi-dimensional bounded authority advantage and neither candidate has a strong conflict | Apply only the capped tie-break; match only when the configured confidence/uniqueness gates then pass |
+| Both exact-title/same-type candidates are equally complete, or any candidate has a strong title/type/year/episode conflict | Keep the normal ambiguity/conflict decision; authority must not suppress it |
 | Directory template is absolute/traversing or filename template contains a separator | Reject with the Profile validation error; persist no partial update |
 | Year outside 1888–2200 or `from > to` | Reject the write |
 | Duplicate normalized Profile name, including a race | Stable name-conflict response, never raw SQLite/500 |
@@ -112,10 +134,13 @@ Profile detail adds `builtin_recognition_packs`, `recognition_rules` and the fou
 - Good: MediaLibrary stores a Profile ID, obtains classification through the pure matcher, and marks itself for later reclassification after Profile revision changes without touching files.
 - Good: a download snapshots a Profile, applies `tv-v1`, then `anime-v1`, then its ordered user rules, queries TMDB with the clean title/year, classifies once, then lets local or cloud transfer execute the same safe plan.
 - Good: a direct ID hint from the embedded anime pack calls TMDB by type and ID, verifies the returned metadata, and only then applies the current classification rules.
+- Good: a long-running series candidate with year, original title/language, valid episode range, aliases/translations, votes and artwork may beat an otherwise exact-title duplicate whose TMDB detail is an empty shell, while the same input still rejects two equally complete records.
 - Base: an API client lists or copies the protected default Profile using dedicated Profile permissions.
+- Base: a candidate has no vote count, poster or episode total; those absent facts add no support and no penalty.
 - Bad: reusing `categories.*`, importing Player TypeScript, silently deleting unknown rule values, updating without revision CAS, retaining copied category IDs, or writing complete rules to audit metadata.
 - Bad: downloading word packs from GitHub at runtime, silently ignoring an unsupported line, trusting a direct hint without TMDB verification, or allowing a catastrophic regex to run without bounds.
 - Bad: putting recognition or naming inside qBittorrent/115 adapters, reading current Profile settings during a retry, or testing only `Seven Samurai CC MA 2 0 SONYHD` while production uses dots and `0-SONYHD`.
+- Bad: fabricate a low episode count for the losing fixture when the real TMDB duplicate omits that field, lower the global conflict margin to make one title pass, or let popularity/votes compensate for a different title/type/year.
 
 ## 6. Tests Required
 
@@ -130,6 +155,7 @@ Profile detail adds `builtin_recognition_packs`, `recognition_rules` and the fou
 - Profile tests cover built-in defaults, explicit empty selection, unknown/duplicate rejection, copy preservation, ordered/all/movie/TV user recognition, invalid RE2, capture replacement, template safety, deep-copy preservation and revision CAS. Download integration asserts the exact TMDB query title/year for a complete real release folder and file name.
 - Built-in pack tests verify the manifest and SHA-256, parse/precompile all 322 effective rules, and cover block, replacement, 38 episode offsets, lookaround, backreference, direct TMDB hints, conflicting hints, timeout/application bounds and fixed `tv-v1 -> anime-v1 -> user` order.
 - PT/Nyaa regressions use untouched production-shaped titles at both the pure parser and shared `recognizeMedia` service entry. They cover dotted codec/channel tokens, complete seasons, title-first and group-first brackets, Japanese/Chinese/English aliases, episode ranges/counts and release-group placement; a parser-only green test cannot prove the Profile packs and TMDB query budget compose correctly.
+- Same-name TMDB conflict regressions preserve the real search/detail response shape, exercise candidate-order reversal and multiple episode numbers, and assert that missing provider fields remain missing. They also prove that equally complete identities remain ambiguous and that extreme popularity/votes cannot overturn a different title, media type, strong year or known episode-range conflict. The ranking engine version, WebUI recognition-session version and frozen benchmark report must change together whenever this decision contract changes.
 - Migration tests preserve legacy library templates, split distinct combinations, reuse identical combinations and remain idempotent.
 - Full `server/test.ps1` plus isolated browser smoke for default read-only, copy, edit/revision and both themes.
 
@@ -178,6 +204,23 @@ Correct:
 processor := mediarecognition.NewBuiltinWordProcessor(profilePackSnapshot, limits)
 hint := processor.Apply(ctx, providerNeutralTitle)
 match := tmdb.GetByID(ctx, hint.MediaType, hint.TMDBID) // verify before classify
+```
+
+Wrong:
+
+```go
+// A made-up episode total makes a synthetic regression pass even though the
+// real duplicate has no episode data and remains tied in production.
+duplicate.EpisodeCount = ptr(24)
+config.ConflictMargin = .03
+```
+
+Correct:
+
+```go
+// Preserve the real provider shape. Completeness may break only this already
+// exact same-type tie; missing fields stay neutral and strong conflicts win.
+decision := Rank(parsed, []RemoteCandidate{enrichedPrimary, emptyShellDuplicate})
 ```
 
 Wrong:

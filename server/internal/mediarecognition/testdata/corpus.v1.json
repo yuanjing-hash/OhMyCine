@@ -158,8 +158,8 @@
       "id":"tv-long-running-anime-episode-count-disambiguation",
       "input":{"package_name":"[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]","source_kind":"download"},
       "candidates":[
-        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","season_count":1,"episode_count":1300},
-        {"id":318691,"media_type":"tv","title":"名侦探柯南","season_count":1,"episode_count":24}
+        {"id":30983,"media_type":"tv","title":"名侦探柯南","original_title":"名探偵コナン","original_language":"ja","alternative_titles":["Alias 01","Alias 02","Alias 03","Alias 04","Alias 05","Alias 06","Alias 07","Alias 08","Alias 09","Alias 10","Alias 11","Alias 12","Alias 13"],"translations":["Translation 01","Translation 02","Translation 03","Translation 04","Translation 05","Translation 06","Translation 07","Translation 08","Translation 09","Translation 10","Translation 11","Translation 12","Translation 13","Translation 14","Translation 15","Translation 16","Translation 17","Translation 18","Translation 19"],"release_year":1996,"season_count":1,"episode_count":1212,"popularity":70.8752,"vote_count":781,"has_poster":true},
+        {"id":318691,"media_type":"tv","title":"名侦探柯南","original_title":"名侦探柯南","original_language":"zh","popularity":0.741}
       ],
       "expected":{"media_type":"tv","canonical_title":"名侦探柯南","remote_id":30983},
       "policy":"must_match"

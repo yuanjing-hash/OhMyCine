@@ -4,7 +4,7 @@ import (
 	"errors"
 )
 
-const EngineVersion = "nextgen-domain-v9"
+const EngineVersion = "nextgen-domain-v10"
 
 const (
 	MaxPackageRunes     = 512
@@ -146,6 +146,7 @@ type RemoteCandidate struct {
 	MediaType         MediaType   `json:"media_type"`
 	Title             string      `json:"title"`
 	OriginalTitle     string      `json:"original_title,omitempty"`
+	OriginalLanguage  string      `json:"original_language,omitempty"`
 	AlternativeTitles []string    `json:"alternative_titles,omitempty"`
 	Translations      []string    `json:"translations,omitempty"`
 	ReleaseYear       *int        `json:"release_year,omitempty"`
@@ -153,6 +154,8 @@ type RemoteCandidate struct {
 	EpisodeCount      *int        `json:"episode_count,omitempty"`
 	SeasonYears       map[int]int `json:"season_years,omitempty"`
 	Popularity        float64     `json:"popularity,omitempty"`
+	VoteCount         int         `json:"vote_count,omitempty"`
+	HasPoster         bool        `json:"has_poster,omitempty"`
 }
 
 type ScoreBreakdown struct {
@@ -166,6 +169,7 @@ type ScoreBreakdown struct {
 	Consistency     float64 `json:"consistency"`
 	Uniqueness      float64 `json:"uniqueness"`
 	Popularity      float64 `json:"popularity"`
+	Authority       float64 `json:"authority"`
 	ConflictPenalty float64 `json:"conflict_penalty"`
 	Total           float64 `json:"total"`
 }
@@ -213,6 +217,7 @@ type ScoreConfig struct {
 	ConsistencyWeight   float64
 	UniquenessWeight    float64
 	PopularityWeight    float64
+	AuthorityWeight     float64
 	MatchThreshold      float64
 	ExactTitleThreshold float64
 	TypoTitleThreshold  float64

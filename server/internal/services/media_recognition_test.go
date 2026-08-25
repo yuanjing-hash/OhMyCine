@@ -486,42 +486,63 @@ func TestRecognizeMediaLongRunningAnimeUsesStructureAndFullSubtitleSafely(t *tes
 	}
 }
 
-func TestRecognizeMediaUsesEnrichedEpisodeCountForUntouchedConanRelease(t *testing.T) {
-	lookup := &enrichedRecognitionLookupFake{
-		rankedRecognitionLookupFake: rankedRecognitionLookupFake{items: []tmdb.Candidate{
-			{ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv"},
-			{ID: 318691, Title: "名侦探柯南", MediaType: "tv"},
-		}},
-		enriched: map[int64]tmdb.Candidate{
-			30983:  {ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv", SeasonCount: 1, EpisodeCount: 1300},
-			318691: {ID: 318691, Title: "名侦探柯南", MediaType: "tv", SeasonCount: 1, EpisodeCount: 24},
-		},
+func TestRecognizeMediaUsesRealTMDBAuthorityShapeForUntouchedConanReleases(t *testing.T) {
+	releases := []string{
+		"[银色子弹字幕组][名侦探柯南][第1200集 快递失窃频发中][WEBRIP][简日双语MP4][1080P]",
+		"[银色子弹字幕组][名侦探柯南][第1201集 我就是犯人][WEBRIP][简日双语MP4][1080P]",
+		"[银色子弹字幕组][名侦探柯南][第1204集 谁绑架了柯南和梓?][WEBRIP][简日双语MP4][1080P]",
+		"[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
 	}
-	result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
-		PackageName:      "[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
-		SourceKind:       mediarecognition.SourceDownload,
-		BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
-		Classification:   classification.DefaultRules(),
-		Language:         "zh-CN",
-		Region:           "CN",
-	})
-	if result.Status != mediaRecognitionStatusMatched || result.TMDBID == nil || *result.TMDBID != 30983 || lookup.selectedID != 30983 {
-		t.Fatalf("result=%+v selected=%d searches=%v", result, lookup.selectedID, lookup.searches)
+	correct := tmdb.Candidate{
+		ID: 30983, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", MediaType: "tv", OriginalLanguage: "ja",
+		ReleaseYear: intPointerTest(1996), SeasonCount: 1, EpisodeCount: 1212, Popularity: 70.8752, VoteCount: 781, PosterPath: "/poster.jpg",
+		AlternativeTitles: numberedCandidateNames("柯南别名", 13), Translations: numberedCandidateNames("Conan translation", 19),
 	}
-	if lookup.enrichmentCalls != 1 {
-		t.Fatalf("enrichment_calls=%d", lookup.enrichmentCalls)
+	emptyShell := tmdb.Candidate{ID: 318691, Title: "名侦探柯南", OriginalTitle: "名侦探柯南", MediaType: "tv", OriginalLanguage: "zh", Popularity: .741}
+	for _, release := range releases {
+		for _, searchItems := range [][]tmdb.Candidate{{correct, emptyShell}, {emptyShell, correct}} {
+			lookup := &enrichedRecognitionLookupFake{
+				rankedRecognitionLookupFake: rankedRecognitionLookupFake{items: searchItems},
+				enriched:                    map[int64]tmdb.Candidate{30983: correct, 318691: emptyShell},
+			}
+			result := recognizeMedia(context.Background(), lookup, MediaRecognitionRequest{
+				PackageName:      release,
+				SourceKind:       mediarecognition.SourceDownload,
+				BuiltinPackCodes: mediarecognition.DefaultPackCodes(),
+				Classification:   classification.DefaultRules(),
+				Language:         "zh-CN",
+				Region:           "CN",
+			})
+			if result.Status != mediaRecognitionStatusMatched || result.TMDBID == nil || *result.TMDBID != 30983 || lookup.selectedID != 30983 {
+				t.Fatalf("release=%q result=%+v selected=%d searches=%v", release, result, lookup.selectedID, lookup.searches)
+			}
+			if lookup.enrichmentCalls != 1 {
+				t.Fatalf("release=%q enrichment_calls=%d", release, lookup.enrichmentCalls)
+			}
+		}
 	}
 }
 
-func TestRemoteRecognitionCandidatePreservesOnlyPositiveEpisodeCount(t *testing.T) {
-	withCount := remoteRecognitionCandidate(tmdb.Candidate{ID: 1, Title: "Example", MediaType: "tv", EpisodeCount: 1206})
+func TestRemoteRecognitionCandidatePreservesBoundedAuthorityEvidence(t *testing.T) {
+	withCount := remoteRecognitionCandidate(tmdb.Candidate{ID: 1, Title: "Example", MediaType: "tv", OriginalLanguage: "ja", EpisodeCount: 1206, VoteCount: 781, PosterPath: "/poster.jpg"})
 	if withCount.EpisodeCount == nil || *withCount.EpisodeCount != 1206 {
 		t.Fatalf("candidate=%+v", withCount)
+	}
+	if withCount.OriginalLanguage != "ja" || withCount.VoteCount != 781 || !withCount.HasPoster {
+		t.Fatalf("authority evidence was dropped: %+v", withCount)
 	}
 	withoutCount := remoteRecognitionCandidate(tmdb.Candidate{ID: 2, Title: "Example", MediaType: "tv"})
 	if withoutCount.EpisodeCount != nil {
 		t.Fatalf("zero episode count must stay unknown: %+v", withoutCount)
 	}
+}
+
+func numberedCandidateNames(prefix string, count int) []string {
+	result := make([]string, 0, count)
+	for index := 1; index <= count; index++ {
+		result = append(result, fmt.Sprintf("%s %02d", prefix, index))
+	}
+	return result
 }
 
 func TestRecognizeMediaAuxiliaryRuleCannotPromoteDirectIdentity(t *testing.T) {

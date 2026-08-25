@@ -51,7 +51,7 @@ func TestEnrichCandidatesAddsMovieAndTVAliasesWithinRequestBudget(t *testing.T) 
 		}
 		switch r.URL.Path {
 		case "/tv/5":
-			_, _ = io.WriteString(w, `{"id":5,"name":"大明王朝1566","original_name":"Ming Dynasty in 1566","number_of_seasons":1,"number_of_episodes":46,"seasons":[{"season_number":0,"air_date":"2006-12-01"},{"season_number":1,"air_date":"2007-01-08"}],"alternative_titles":{"results":[{"title":"Da Ming Wang Chao 1566"}]},"translations":{"translations":[{"data":{"name":"The Ming Dynasty in 1566"}}]}}`)
+			_, _ = io.WriteString(w, `{"id":5,"name":"大明王朝1566","original_name":"Ming Dynasty in 1566","original_language":"zh","first_air_date":"2007-01-08","popularity":31.5,"vote_count":880,"poster_path":"/poster.jpg","number_of_seasons":1,"number_of_episodes":46,"seasons":[{"season_number":0,"air_date":"2006-12-01"},{"season_number":1,"air_date":"2007-01-08"}],"alternative_titles":{"results":[{"title":"Da Ming Wang Chao 1566"}]},"translations":{"translations":[{"data":{"name":"The Ming Dynasty in 1566"}}]}}`)
 		case "/movie/6":
 			_, _ = io.WriteString(w, `{"id":6,"title":"一九一七","original_title":"1917","alternative_titles":{"titles":[{"title":"1917：逆战救兵"}]},"translations":{"translations":[{"data":{"title":"1917"}}]}}`)
 		case "/movie/7":
@@ -66,7 +66,7 @@ func TestEnrichCandidatesAddsMovieAndTVAliasesWithinRequestBudget(t *testing.T) 
 		t.Fatal(err)
 	}
 	input := []Candidate{
-		{ID: 5, MediaType: "tv", Title: "大明王朝1566", OriginalTitle: "Ming Dynasty in 1566"},
+		{ID: 5, MediaType: "tv", Title: "大明王朝1566"},
 		{ID: 6, MediaType: "movie", Title: "一九一七", OriginalTitle: "1917"},
 		{ID: 7, MediaType: "movie", Title: "Unavailable"},
 		{ID: 8, MediaType: "movie", Title: "Outside budget"},
@@ -78,7 +78,7 @@ func TestEnrichCandidatesAddsMovieAndTVAliasesWithinRequestBudget(t *testing.T) 
 	if requests != DefaultCandidateEnrichmentLimit {
 		t.Fatalf("requests=%d", requests)
 	}
-	if items[0].SeasonCount != 1 || items[0].EpisodeCount != 46 || items[0].SeasonYears[0] != 2006 || items[0].SeasonYears[1] != 2007 || !containsString(items[0].AlternativeTitles, "Da Ming Wang Chao 1566") || !containsString(items[0].Translations, "The Ming Dynasty in 1566") {
+	if items[0].OriginalTitle != "Ming Dynasty in 1566" || items[0].OriginalLanguage != "zh" || items[0].ReleaseYear == nil || *items[0].ReleaseYear != 2007 || items[0].Popularity != 31.5 || items[0].VoteCount != 880 || items[0].PosterPath != "/poster.jpg" || items[0].SeasonCount != 1 || items[0].EpisodeCount != 46 || items[0].SeasonYears[0] != 2006 || items[0].SeasonYears[1] != 2007 || !containsString(items[0].AlternativeTitles, "Da Ming Wang Chao 1566") || !containsString(items[0].Translations, "The Ming Dynasty in 1566") {
 		t.Fatalf("tv=%+v", items[0])
 	}
 	if !containsString(items[1].AlternativeTitles, "1917：逆战救兵") {

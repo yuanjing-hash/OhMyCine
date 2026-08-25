@@ -283,7 +283,7 @@ func recognizeDirectDomainHint(ctx context.Context, lookup mediaRecognitionLooku
 	}
 	remote := make([]mediarecognition.RemoteCandidate, 0, len(matches))
 	for _, match := range matches {
-		candidate := mediarecognition.RemoteCandidate{ID: match.ID, MediaType: mediarecognition.MediaType(match.MediaType), Title: match.Title, OriginalTitle: match.Snapshot.OriginalTitle, ReleaseYear: cloneInt(match.ReleaseYear)}
+		candidate := mediarecognition.RemoteCandidate{ID: match.ID, MediaType: mediarecognition.MediaType(match.MediaType), Title: match.Title, OriginalTitle: match.Snapshot.OriginalTitle, OriginalLanguage: match.OriginalLanguage, ReleaseYear: cloneInt(match.ReleaseYear), VoteCount: match.Snapshot.VoteCount, HasPoster: strings.TrimSpace(match.Snapshot.PosterPath) != ""}
 		if match.Snapshot.SeasonCount > 0 {
 			candidate.SeasonCount = cloneInt(&match.Snapshot.SeasonCount)
 		}
@@ -706,7 +706,7 @@ func parseRecognitionFacts(request MediaRecognitionRequest, processedSources []s
 }
 
 func remoteRecognitionCandidate(candidate tmdb.Candidate) mediarecognition.RemoteCandidate {
-	remote := mediarecognition.RemoteCandidate{ID: candidate.ID, MediaType: mediarecognition.MediaType(candidate.MediaType), Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, AlternativeTitles: append([]string(nil), candidate.AlternativeTitles...), Translations: append([]string(nil), candidate.Translations...), ReleaseYear: cloneInt(candidate.ReleaseYear), SeasonYears: cloneSeasonYears(candidate.SeasonYears), Popularity: candidate.Popularity}
+	remote := mediarecognition.RemoteCandidate{ID: candidate.ID, MediaType: mediarecognition.MediaType(candidate.MediaType), Title: candidate.Title, OriginalTitle: candidate.OriginalTitle, OriginalLanguage: candidate.OriginalLanguage, AlternativeTitles: append([]string(nil), candidate.AlternativeTitles...), Translations: append([]string(nil), candidate.Translations...), ReleaseYear: cloneInt(candidate.ReleaseYear), SeasonYears: cloneSeasonYears(candidate.SeasonYears), Popularity: candidate.Popularity, VoteCount: candidate.VoteCount, HasPoster: strings.TrimSpace(candidate.PosterPath) != ""}
 	if candidate.SeasonCount > 0 {
 		remote.SeasonCount = cloneInt(&candidate.SeasonCount)
 	}

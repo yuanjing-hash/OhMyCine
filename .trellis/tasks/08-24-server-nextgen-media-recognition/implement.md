@@ -208,3 +208,12 @@ npm run lint
 - TMDB enrichment 已有的 `number_of_episodes` 现在完整进入 `RemoteCandidate`。强 TV 结构下，已知总集数覆盖 E1206 提供支持、已知不足提供冲突、未知保持中性；集数证据不能推翻错误标题/类型/年份。
 - 完整真实发行名 `[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]` 已加入 parser、共享 `recognizeMedia` 和冻结 corpus；正确 TMDB 30983 稳定胜过同名但已知仅 24 集的 318691。识别引擎升级为 `nextgen-domain-v9`，WebUI session 版本同步，旧负缓存失效。
 - 全量门禁通过：`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag Server build、WebUI 24 files/132 tests、permissions、Vue typecheck、ESLint、Vite production build 与 `git diff --check`；仅保留既有 Vite chunk-size 警告。测试未启动长期 Server，隔离缓存已清理。
+
+## 2026-08-25 真实空壳候选与 v10 复核
+
+- 复核真实 TMDB 响应形状后移除对错误候选 `318691` 的虚构 24 集数据：该候选保持年份、集数、海报、票数与别名缺失，缺失事实不再被当作冲突。
+- TMDB 搜索摘要和前三详情 enrichment 将原始语言、年份、季/集总数、别名/译名、流行度、票数与海报存在性完整传入 provider-neutral `RemoteCandidate`；浏览器候选 DTO 仍不返回内部排名证据。
+- 权威完整度只在共享精确标题、相同媒体类型且双方无强冲突的候选簇内提供最多 `0.03` 的有界先验。解除候选冲突还要求至少六个完整度维度、明显的维度差和强度差；纯热度/票数、错误标题、错误类型、强年份冲突或已知集数冲突均不能翻盘。
+- 独立 check 修复了 `AuthorityWeight=0` 时冲突解除仍可能生效的配置缺口，并新增通用非作品特定的三候选、候选顺序、空数据、纯热度/票数、错误标题/类型/年份/集数及同等完整候选回归。
+- 引擎升级为 `nextgen-domain-v10`，WebUI session 常量与冻结 benchmark 报告同步；E1200/E1201/E1204/E1206 在候选顺序反转时均稳定选择 `30983`。
+- 隔离 `TEMP/TMP/GOCACHE/GOMODCACHE` 后，`go test ./... -count=1`、`go vet ./...`、普通/WebUI tag Server build、两个 Go module verify、WebUI Go test、24 files/132 tests、permissions、Vue typecheck、ESLint、Vite production build、benchmark 可重复性与 `git diff --check` 全部通过；Vite 仅保留既有 chunk-size 警告。

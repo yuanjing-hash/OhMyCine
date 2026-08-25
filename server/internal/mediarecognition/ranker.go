@@ -26,6 +26,7 @@ func DefaultScoreConfig() ScoreConfig {
 		ConsistencyWeight:   .03,
 		UniquenessWeight:    .05,
 		PopularityWeight:    .01,
+		AuthorityWeight:     .03,
 		MatchThreshold:      .78,
 		ExactTitleThreshold: .68,
 		TypoTitleThreshold:  .90,
@@ -65,6 +66,7 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		return decision
 	}
 
+	applyAuthorityTieBreak(parsed, decision.Ranked, config)
 	applyUniqueness(decision.Ranked, config)
 	sort.SliceStable(decision.Ranked, func(left, right int) bool {
 		if decision.Ranked[left].Score.Total != decision.Ranked[right].Score.Total {
@@ -101,6 +103,9 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 	if identityConflict && exactIdentity && strongStructuredTypeDisambiguation(parsed, best, decision.Ranked[1]) {
 		identityConflict = false
 	}
+	if identityConflict && exactIdentity && strongAuthorityDisambiguation(parsed, best, decision.Ranked[1], config) {
+		identityConflict = false
+	}
 	if identityConflict && decision.RunnerUpGap < config.ConflictMargin && decision.Ranked[1].Score.Total >= threshold-config.ConflictMargin {
 		decision.Reason = ReasonCandidateConflict
 		addDiagnostic(&decision.Diagnostics, "candidate_margin_too_small", "warning", "top candidates remain too close after all bounded evidence")
@@ -132,6 +137,7 @@ func validRemoteCandidate(candidate RemoteCandidate) bool {
 func boundedRemoteCandidate(candidate RemoteCandidate) RemoteCandidate {
 	candidate.Title = boundedText(candidate.Title, 256)
 	candidate.OriginalTitle = boundedText(candidate.OriginalTitle, 256)
+	candidate.OriginalLanguage = strings.ToLower(strings.TrimSpace(boundedText(candidate.OriginalLanguage, 16)))
 	candidate.AlternativeTitles = boundedStringSlice(candidate.AlternativeTitles, 32, 256)
 	candidate.Translations = boundedStringSlice(candidate.Translations, 32, 256)
 	if math.IsNaN(candidate.Popularity) || math.IsInf(candidate.Popularity, 0) || candidate.Popularity < 0 {
@@ -139,6 +145,11 @@ func boundedRemoteCandidate(candidate RemoteCandidate) RemoteCandidate {
 	}
 	if candidate.Popularity > 1_000_000 {
 		candidate.Popularity = 1_000_000
+	}
+	if candidate.VoteCount < 0 {
+		candidate.VoteCount = 0
+	} else if candidate.VoteCount > 1_000_000_000 {
+		candidate.VoteCount = 1_000_000_000
 	}
 	if candidate.ReleaseYear != nil && (*candidate.ReleaseYear < 1888 || *candidate.ReleaseYear > 2500) {
 		candidate.ReleaseYear = nil
@@ -364,8 +375,142 @@ func applyUniqueness(ranked []RankedCandidate, config ScoreConfig) {
 	}
 }
 
+type authorityQuality struct {
+	strength   float64
+	dimensions int
+}
+
+// applyAuthorityTieBreak adds a deliberately small provider-authority prior
+// only inside an already-established exact-title, same-type identity cluster.
+// It cannot create a title identity, cross media types, or compensate for a
+// strong year/episode/type conflict. Missing fields remain neutral; the prior
+// only stops a nearly empty duplicate record from tying a well-supported one.
+func applyAuthorityTieBreak(parsed ParsedFacts, ranked []RankedCandidate, config ScoreConfig) {
+	if config.AuthorityWeight <= 0 || len(ranked) < 2 {
+		return
+	}
+	eligible := make([]bool, len(ranked))
+	for left := range ranked {
+		for right := left + 1; right < len(ranked); right++ {
+			if hasStrongCandidateConflict(ranked[left]) || hasStrongCandidateConflict(ranked[right]) {
+				continue
+			}
+			if sameExactIdentitySurface(parsed, ranked[left], ranked[right], config.HanEquivalence) {
+				eligible[left], eligible[right] = true, true
+			}
+		}
+	}
+	for index := range ranked {
+		if !eligible[index] {
+			continue
+		}
+		quality := candidateAuthorityQuality(ranked[index].Candidate)
+		if quality.strength <= 0 {
+			continue
+		}
+		ranked[index].Score.Authority = config.AuthorityWeight * quality.strength
+		ranked[index].Evidence = append(ranked[index].Evidence, Evidence{
+			Code:     "provider_authority_tiebreak",
+			Kind:     "authority",
+			Strength: quality.strength,
+			Summary:  "bounded metadata completeness supports this candidate inside an exact same-type identity tie",
+		})
+		updateTotal(&ranked[index].Score)
+	}
+}
+
+func strongAuthorityDisambiguation(parsed ParsedFacts, best, runnerUp RankedCandidate, config ScoreConfig) bool {
+	if config.AuthorityWeight <= 0 || hasStrongCandidateConflict(best) || hasStrongCandidateConflict(runnerUp) ||
+		!sameExactIdentitySurface(parsed, best, runnerUp, config.HanEquivalence) {
+		return false
+	}
+	bestQuality := candidateAuthorityQuality(best.Candidate)
+	runnerQuality := candidateAuthorityQuality(runnerUp.Candidate)
+	return bestQuality.dimensions >= 6 && bestQuality.dimensions-runnerQuality.dimensions >= 3 &&
+		bestQuality.strength >= .70 && bestQuality.strength-runnerQuality.strength >= .45
+}
+
+func sameExactIdentitySurface(parsed ParsedFacts, left, right RankedCandidate, han HanEquivalence) bool {
+	if left.Candidate.MediaType != right.Candidate.MediaType || left.Score.TitleSimilarity != 1 || right.Score.TitleSimilarity != 1 {
+		return false
+	}
+	queryKeys := make(map[string]struct{}, len(parsed.Queries)+1)
+	for _, query := range parsed.Queries {
+		if recallOnlyQuery(query) {
+			continue
+		}
+		if key := comparisonKeyWith(query.Title, han); key != "" {
+			queryKeys[key] = struct{}{}
+		}
+	}
+	if len(queryKeys) == 0 {
+		if key := comparisonKeyWith(parsed.CanonicalTitle, han); key != "" {
+			queryKeys[key] = struct{}{}
+		}
+	}
+	leftKeys := make(map[string]struct{}, len(candidateNames(left.Candidate)))
+	for _, name := range candidateNames(left.Candidate) {
+		if key := comparisonKeyWith(name, han); key != "" {
+			leftKeys[key] = struct{}{}
+		}
+	}
+	for _, name := range candidateNames(right.Candidate) {
+		key := comparisonKeyWith(name, han)
+		if _, shared := leftKeys[key]; !shared {
+			continue
+		}
+		if _, queried := queryKeys[key]; queried {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStrongCandidateConflict(candidate RankedCandidate) bool {
+	for _, evidence := range candidate.Evidence {
+		if evidence.Conflict {
+			return true
+		}
+	}
+	return false
+}
+
+func candidateAuthorityQuality(candidate RemoteCandidate) authorityQuality {
+	quality := authorityQuality{}
+	add := func(weight float64, present bool) {
+		if !present {
+			return
+		}
+		quality.strength += weight
+		quality.dimensions++
+	}
+	add(.12, candidate.ReleaseYear != nil)
+	add(.08, candidate.OriginalLanguage != "")
+	add(.08, comparisonKey(candidate.OriginalTitle) != "" && comparisonKey(candidate.OriginalTitle) != comparisonKey(candidate.Title))
+	add(.08, candidate.SeasonCount != nil && *candidate.SeasonCount > 0)
+	add(.12, candidate.EpisodeCount != nil && *candidate.EpisodeCount > 0)
+	if count := minInt(len(candidate.AlternativeTitles), 8); count > 0 {
+		quality.strength += .12 * float64(count) / 8
+		quality.dimensions++
+	}
+	if count := minInt(len(candidate.Translations), 8); count > 0 {
+		quality.strength += .12 * float64(count) / 8
+		quality.dimensions++
+	}
+	add(.08, candidate.HasPoster)
+	if candidate.VoteCount > 0 {
+		quality.strength += .10 * clamp01(math.Log1p(float64(candidate.VoteCount))/math.Log(1001))
+		quality.dimensions++
+	}
+	if candidate.Popularity > 0 {
+		quality.strength += .10 * clamp01(math.Log1p(candidate.Popularity)/math.Log(1001))
+	}
+	quality.strength = clamp01(quality.strength)
+	return quality
+}
+
 func updateTotal(score *ScoreBreakdown) {
-	score.Total = clamp01(score.Title + score.Year + score.MediaType + score.Season + score.Episode + score.Structure + score.Consistency + score.Uniqueness + score.Popularity - score.ConflictPenalty)
+	score.Total = clamp01(score.Title + score.Year + score.MediaType + score.Season + score.Episode + score.Structure + score.Consistency + score.Uniqueness + score.Popularity + score.Authority - score.ConflictPenalty)
 }
 
 func candidateNames(candidate RemoteCandidate) []string {

@@ -28,13 +28,19 @@ type candidateAlternativeTitle struct {
 }
 
 type candidateEnrichmentResponse struct {
-	ID               int64  `json:"id"`
-	Title            string `json:"title"`
-	OriginalTitle    string `json:"original_title"`
-	Name             string `json:"name"`
-	OriginalName     string `json:"original_name"`
-	NumberOfSeasons  int    `json:"number_of_seasons"`
-	NumberOfEpisodes int    `json:"number_of_episodes"`
+	ID               int64   `json:"id"`
+	Title            string  `json:"title"`
+	OriginalTitle    string  `json:"original_title"`
+	Name             string  `json:"name"`
+	OriginalName     string  `json:"original_name"`
+	OriginalLanguage string  `json:"original_language"`
+	ReleaseDate      string  `json:"release_date"`
+	FirstAirDate     string  `json:"first_air_date"`
+	Popularity       float64 `json:"popularity"`
+	VoteCount        int     `json:"vote_count"`
+	PosterPath       string  `json:"poster_path"`
+	NumberOfSeasons  int     `json:"number_of_seasons"`
+	NumberOfEpisodes int     `json:"number_of_episodes"`
 	Seasons          []struct {
 		SeasonNumber int    `json:"season_number"`
 		AirDate      string `json:"air_date"`
@@ -141,6 +147,32 @@ func mergeCandidateEnrichment(candidate Candidate, detail candidateEnrichmentRes
 	}
 	candidate.AlternativeTitles = alternatives
 	candidate.Translations = translations
+	if candidate.OriginalTitle == "" {
+		if candidate.MediaType == "tv" {
+			candidate.OriginalTitle = cleanText(detail.OriginalName, 512)
+		} else {
+			candidate.OriginalTitle = cleanText(detail.OriginalTitle, 512)
+		}
+	}
+	if candidate.OriginalLanguage == "" {
+		candidate.OriginalLanguage = strings.ToLower(cleanCode(detail.OriginalLanguage))
+	}
+	if candidate.ReleaseYear == nil {
+		if candidate.MediaType == "tv" {
+			candidate.ReleaseYear = parseYear(detail.FirstAirDate)
+		} else {
+			candidate.ReleaseYear = parseYear(detail.ReleaseDate)
+		}
+	}
+	if candidate.Popularity == 0 {
+		candidate.Popularity = boundedPopularity(detail.Popularity)
+	}
+	if candidate.VoteCount == 0 && detail.VoteCount > 0 {
+		candidate.VoteCount = boundedCount(detail.VoteCount)
+	}
+	if candidate.PosterPath == "" {
+		candidate.PosterPath = cleanImagePath(detail.PosterPath)
+	}
 	if candidate.MediaType == "tv" {
 		candidate.SeasonCount = boundedCount(detail.NumberOfSeasons)
 		candidate.EpisodeCount = boundedCount(detail.NumberOfEpisodes)

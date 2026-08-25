@@ -102,25 +102,123 @@ func TestRankLongRunningSeriesUsesStrongTVStructureWithoutTrustingLargeEpisodeNu
 	}
 }
 
-func TestRankUsesKnownEpisodeRangeToResolveExactTVIdentityConflict(t *testing.T) {
-	parsed, err := Parse(InputFacts{
-		PackageName: "[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
-		SourceKind:  SourceDownload,
-	})
+func TestRankRealConanAuthorityShapeResolvesEmptyShellAcrossEpisodesAndOrder(t *testing.T) {
+	releases := []string{
+		"[银色子弹字幕组][名侦探柯南][第1200集 快递失窃频发中][WEBRIP][简日双语MP4][1080P]",
+		"[银色子弹字幕组][名侦探柯南][第1201集 我就是犯人][WEBRIP][简日双语MP4][1080P]",
+		"[银色子弹字幕组][名侦探柯南][第1204集 谁绑架了柯南和梓?][WEBRIP][简日双语MP4][1080P]",
+		"[银色子弹字幕组][名侦探柯南][第1206集 摔落的男人][WEBRIP][简日双语MP4][1080P]",
+	}
+	correct := RemoteCandidate{
+		ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", OriginalLanguage: "ja",
+		ReleaseYear: intRef(1996), SeasonCount: intRef(1), EpisodeCount: intRef(1212), Popularity: 70.8752, VoteCount: 781,
+		HasPoster: true, AlternativeTitles: numberedAliases("柯南别名", 13), Translations: numberedAliases("Conan translation", 19),
+	}
+	emptyShell := RemoteCandidate{ID: 318691, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名侦探柯南", OriginalLanguage: "zh", Popularity: .741}
+	for _, release := range releases {
+		parsed, err := Parse(InputFacts{PackageName: release, SourceKind: SourceDownload})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, candidates := range [][]RemoteCandidate{{correct, emptyShell}, {emptyShell, correct}} {
+			decision := Rank(parsed, candidates)
+			if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 30983 {
+				t.Fatalf("release=%q decision=%+v", release, decision)
+			}
+			if len(decision.Ranked) < 2 || decision.Ranked[0].Score.Authority <= decision.Ranked[1].Score.Authority {
+				t.Fatalf("release=%q authority evidence did not preserve the real candidate: %+v", release, decision)
+			}
+		}
+	}
+}
+
+func TestRankAuthorityTieBreakKeepsAmbiguousAndConflictingCandidatesSafe(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "名侦探柯南 第1204集", SourceKind: SourceDownload})
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := []RemoteCandidate{
-		{ID: 318691, MediaType: MediaTypeTV, Title: "名侦探柯南", EpisodeCount: intRef(24)},
-		{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", EpisodeCount: intRef(1300)},
-	}
-	for _, input := range [][]RemoteCandidate{candidates, {candidates[1], candidates[0]}} {
-		decision := Rank(parsed, input)
-		if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 30983 {
-			t.Fatalf("decision=%+v", decision)
+	complete := func(id int64) RemoteCandidate {
+		return RemoteCandidate{
+			ID: id, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", OriginalLanguage: "ja",
+			ReleaseYear: intRef(1996), SeasonCount: intRef(1), EpisodeCount: intRef(1212), Popularity: 70, VoteCount: 700,
+			HasPoster: true, AlternativeTitles: numberedAliases("alias", 8), Translations: numberedAliases("translation", 8),
 		}
-		if decision.RunnerUpGap < DefaultScoreConfig().ConflictMargin {
-			t.Fatalf("episode evidence did not resolve conflict: %+v", decision)
+	}
+	emptyShell := RemoteCandidate{ID: 9, MediaType: MediaTypeTV, Title: "名侦探柯南"}
+	ambiguous := Rank(parsed, []RemoteCandidate{complete(1), emptyShell, complete(2)})
+	if ambiguous.Status != DecisionUnrecognized || ambiguous.Reason != ReasonCandidateConflict {
+		t.Fatalf("two equally authoritative same-name identities must remain a conflict in a three-candidate set: %+v", ambiguous)
+	}
+	popularityOnly := emptyShell
+	popularityOnly.ID = 10
+	popularityOnly.Popularity = 1_000_000
+	popularityOnly.VoteCount = 1_000_000_000
+	if decision := Rank(parsed, []RemoteCandidate{popularityOnly, emptyShell}); decision.Status != DecisionUnrecognized || decision.Reason != ReasonCandidateConflict {
+		t.Fatalf("popularity and votes alone must not resolve an exact identity conflict: %+v", decision)
+	}
+
+	wrongTitle := complete(3)
+	wrongTitle.Title, wrongTitle.OriginalTitle = "完全不同的作品", "Completely Different"
+	wrongTitle.Popularity, wrongTitle.VoteCount = 1_000_000, 1_000_000_000
+	correctTitle := RemoteCandidate{ID: 4, MediaType: MediaTypeTV, Title: "名侦探柯南", EpisodeCount: intRef(1212)}
+	if decision := Rank(parsed, []RemoteCandidate{wrongTitle, correctTitle}); decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 4 {
+		t.Fatalf("authority evidence overrode title identity: %+v", decision)
+	}
+
+	wrongType := complete(5)
+	wrongType.MediaType = MediaTypeMovie
+	if decision := Rank(parsed, []RemoteCandidate{wrongType, correctTitle}); decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 4 {
+		t.Fatalf("authority evidence overrode strong media type: %+v", decision)
+	}
+
+	yearParsed, yearErr := Parse(InputFacts{PackageName: "The Office 2005 S01E01", SourceKind: SourceDownload})
+	if yearErr != nil {
+		t.Fatal(yearErr)
+	}
+	wrongYear := complete(6)
+	wrongYear.Title, wrongYear.OriginalTitle, wrongYear.ReleaseYear = "The Office", "The Office", intRef(1995)
+	correctYear := RemoteCandidate{ID: 7, MediaType: MediaTypeTV, Title: "The Office", ReleaseYear: intRef(2005), EpisodeCount: intRef(20)}
+	if decision := Rank(yearParsed, []RemoteCandidate{wrongYear, correctYear}); decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 7 {
+		t.Fatalf("authority evidence overrode a strong year conflict: %+v", decision)
+	}
+
+	wrongEpisode := complete(8)
+	wrongEpisode.EpisodeCount = intRef(24)
+	if decision := Rank(parsed, []RemoteCandidate{wrongEpisode, correctTitle}); decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 4 {
+		t.Fatalf("authority evidence overrode a known episode-range conflict: %+v", decision)
+	}
+
+	disabledConfig := DefaultScoreConfig()
+	disabledConfig.AuthorityWeight = 0
+	if decision := RankWithConfig(parsed, []RemoteCandidate{complete(11), emptyShell}, disabledConfig); decision.Status != DecisionUnrecognized || decision.Reason != ReasonCandidateConflict {
+		t.Fatalf("disabled authority tie-break still suppressed the conflict: %+v", decision)
+	}
+}
+
+func TestRankAuthorityTieBreakIsGenericAndCandidateOrderIndependent(t *testing.T) {
+	parsed, err := Parse(InputFacts{PackageName: "Shared Series S01E120", SourceKind: SourceDownload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := RemoteCandidate{
+		ID: 21, MediaType: MediaTypeTV, Title: "Shared Series", OriginalTitle: "共有シリーズ", OriginalLanguage: "ja",
+		ReleaseYear: intRef(1998), SeasonCount: intRef(1), EpisodeCount: intRef(200), Popularity: 25, VoteCount: 500,
+		HasPoster: true, AlternativeTitles: numberedAliases("Shared alias", 8), Translations: numberedAliases("Shared translation", 8),
+	}
+	shell := RemoteCandidate{ID: 22, MediaType: MediaTypeTV, Title: "Shared Series"}
+	unrelated := primary
+	unrelated.ID = 23
+	unrelated.Title, unrelated.OriginalTitle = "Unrelated Popular Series", "Unrelated Popular Series"
+	unrelated.Popularity, unrelated.VoteCount = 1_000_000, 1_000_000_000
+	candidates := []RemoteCandidate{primary, shell, unrelated}
+	for iteration := 0; iteration < 20; iteration++ {
+		shuffled := append([]RemoteCandidate(nil), candidates...)
+		rand.New(rand.NewSource(int64(iteration))).Shuffle(len(shuffled), func(left, right int) {
+			shuffled[left], shuffled[right] = shuffled[right], shuffled[left]
+		})
+		decision := Rank(parsed, shuffled)
+		if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != primary.ID {
+			t.Fatalf("iteration=%d decision=%+v", iteration, decision)
 		}
 	}
 }
@@ -157,6 +255,14 @@ func TestRankTreatsUnknownEpisodeCountAsNeutralAndKeepsWeakEvidenceSafe(t *testi
 	if unsafe.Status == DecisionMatched || unsafe.Match != nil {
 		t.Fatalf("episode count overrode title identity: %+v", unsafe)
 	}
+}
+
+func numberedAliases(prefix string, count int) []string {
+	result := make([]string, 0, count)
+	for index := 1; index <= count; index++ {
+		result = append(result, prefix+" "+string(rune('A'+index-1)))
+	}
+	return result
 }
 
 func TestRankFranchiseMovieSubtitleWinsWhileUntypedExactConflictStaysManual(t *testing.T) {
