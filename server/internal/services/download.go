@@ -32,6 +32,8 @@ import (
 
 const (
 	maxTorrentBytes                    = 4 << 20
+	maxCompletedManifestBytes          = 1 << 20
+	maxCompletedManifestFiles          = 5000
 	pan115DownloadFallbackPollInterval = 20 * time.Second
 	pan115DownloadHeartbeatInterval    = 10 * time.Second
 )
@@ -974,6 +976,15 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 			}
 		}
 	}
+	if recoveryTask, recovery, recoveryErr := w.completedRecognitionRecoveryTask(job); recoveryErr != nil {
+		return w.failure(recoveryTask, recoveryErr)
+	} else if recovery {
+		if manifest, exists, snapshotErr := completedDownloadManifest(recoveryTask.CompletedManifestJSON); snapshotErr != nil {
+			return w.failure(recoveryTask, snapshotErr)
+		} else if exists {
+			return w.runCompletedRecognitionRecovery(ctx, runtime, recoveryTask, manifest)
+		}
+	}
 	started := time.Now()
 	task, downloaderRecord, client, source, savePath, err := w.load(ctx, job)
 	if err != nil {
@@ -981,6 +992,20 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	}
 	operation := downloadOperation(downloaderRecord.Type, task.SourceOrigin)
 	operation.Event(w.service.log.Info()).Str("task_id", task.ID).Str("downloader_id", downloaderRecord.ID).Str("provider_type", downloaderRecord.Type).Msg(operation.Message("开始执行"))
+	if isCompletedRecognitionRecovery(task) {
+		manifestClient, ok := client.(downloadpkg.ManifestClient)
+		if !ok {
+			return w.failure(task, appError("download_completion_manifest_unavailable", "已完成下载的文件清单不可用", nil))
+		}
+		manifest, manifestErr := manifestClient.Manifest(ctx, task.ProviderTaskID)
+		if manifestErr != nil {
+			return w.failure(task, manifestErr)
+		}
+		if persistErr := w.persistCompletedManifest(&task, manifest); persistErr != nil {
+			return w.failure(task, persistErr)
+		}
+		return w.runCompletedRecognitionRecovery(ctx, runtime, task, manifest)
+	}
 	if err := w.resetFailedPan115ForExplicitRetry(ctx, &task, client, downloaderRecord.Type); err != nil {
 		return w.failure(task, err)
 	}
@@ -1057,6 +1082,8 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 						return w.failureRetryable(task, manifestErr)
 					}
 					_ = w.service.db.Model(&task).Updates(map[string]any{"scrape_status": "completed_unverified", "last_error_code": "downloader_manifest_invalid", "last_error_message": "下载完成，但文件清单复核失败", "updated_at": time.Now().UTC()}).Error
+				} else if persistErr := w.persistCompletedManifest(&task, manifest); persistErr != nil {
+					return w.failure(task, persistErr)
 				} else if selectedManifest, verifyErr := w.verifyCompleted(ctx, &task, manifest); verifyErr != nil {
 					if task.TargetLibraryID != nil {
 						return w.failure(task, verifyErr)
@@ -1109,6 +1136,106 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		case <-time.After(w.pollInterval):
 		}
 	}
+}
+
+func (w *DownloadWorker) completedRecognitionRecoveryTask(job ClaimedJob) (models.DownloadTask, bool, error) {
+	var payload downloadJobPayload
+	if err := json.Unmarshal([]byte(job.Job.PayloadJSON), &payload); err != nil || payload.DownloadTaskID == "" {
+		return models.DownloadTask{}, false, appError(CodeInvalidRequest, "下载任务参数无效", err)
+	}
+	var task models.DownloadTask
+	if err := w.service.db.First(&task, "id = ?", payload.DownloadTaskID).Error; err != nil {
+		return task, false, err
+	}
+	return task, isCompletedRecognitionRecovery(task), nil
+}
+
+func isCompletedRecognitionRecovery(task models.DownloadTask) bool {
+	return task.ScrapeStatus == "completed_unrecognized" && task.ProviderTaskID != "" && task.TargetLibraryID != nil
+}
+
+func (w *DownloadWorker) runCompletedRecognitionRecovery(ctx context.Context, runtime JobRuntime, task models.DownloadTask, manifest downloadpkg.Manifest) WorkerResult {
+	if task.StagingCategory == "" && strings.TrimSpace(task.ScrapeCategory) != "" {
+		task.StagingCategory = task.ScrapeCategory
+		if err := w.service.db.Model(&task).Updates(map[string]any{"staging_category": task.StagingCategory, "updated_at": time.Now().UTC()}).Error; err != nil {
+			return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "下载完成目录快照保存失败"}
+		}
+	}
+	if err := runtime.Heartbeat(task.Progress, task.BytesCompleted, task.BytesTotal, nil, nil); err != nil {
+		return WorkerResult{ErrorCode: CodeQueueLeaseInvalid, ErrorMessage: "下载任务租约已失效"}
+	}
+	selected, err := w.verifyCompleted(ctx, &task, manifest)
+	if err != nil {
+		return w.failure(task, err)
+	}
+	if w.service.transfers == nil {
+		return w.failure(task, appError("transfer_service_unavailable", "入库服务不可用", nil))
+	}
+	if err := w.service.transfers.EnqueuePackage(task, selected, manifest); err != nil {
+		return w.failureRetryable(task, err)
+	}
+	now := time.Now().UTC()
+	if err := w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCompleted, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now}).Error; err != nil {
+		return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "识别恢复状态保存失败"}
+	}
+	serverlog.OperationDownloadClassification.Event(w.service.log.Info()).Str("task_id", task.ID).Int("manifest_files", len(manifest.Files)).Int("selected_files", len(selected.Files)).Msg(serverlog.OperationDownloadClassification.Message("已复用完成文件清单继续入库"))
+	return WorkerResult{}
+}
+
+func (w *DownloadWorker) persistCompletedManifest(task *models.DownloadTask, manifest downloadpkg.Manifest) error {
+	raw, err := encodeCompletedDownloadManifest(manifest)
+	if err != nil {
+		return err
+	}
+	if err := w.service.db.Model(task).Updates(map[string]any{"completed_manifest_json": raw, "updated_at": time.Now().UTC()}).Error; err != nil {
+		return appError("download_state_persist_failed", "下载完成文件清单保存失败", err)
+	}
+	task.CompletedManifestJSON = raw
+	return nil
+}
+
+func encodeCompletedDownloadManifest(manifest downloadpkg.Manifest) (string, error) {
+	if !manifest.Complete || len(manifest.Files) == 0 || len(manifest.Files) > maxCompletedManifestFiles {
+		return "", appError("download_completion_manifest_invalid", "下载完成文件清单无效", nil)
+	}
+	seen := make(map[string]struct{}, len(manifest.Files))
+	for _, file := range manifest.Files {
+		key := transferCleanupFileKey(file)
+		if file.Size < 0 || key == "" {
+			return "", appError("download_completion_manifest_invalid", "下载完成文件清单无效", nil)
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return "", appError("download_completion_manifest_invalid", "下载完成文件清单包含重复文件", nil)
+		}
+		seen[key] = struct{}{}
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil || len(raw) > maxCompletedManifestBytes {
+		return "", appError("download_completion_manifest_invalid", "下载完成文件清单过大", err)
+	}
+	return string(raw), nil
+}
+
+func completedDownloadManifest(raw string) (downloadpkg.Manifest, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return downloadpkg.Manifest{}, false, nil
+	}
+	if len(raw) > maxCompletedManifestBytes {
+		return downloadpkg.Manifest{}, true, appError("download_completion_manifest_invalid", "下载完成文件清单过大", nil)
+	}
+	var manifest downloadpkg.Manifest
+	if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
+		return manifest, true, appError("download_completion_manifest_invalid", "下载完成文件清单无效", err)
+	}
+	canonical, err := encodeCompletedDownloadManifest(manifest)
+	if err != nil {
+		return manifest, true, err
+	}
+	if canonical != raw {
+		return manifest, true, appError("download_completion_manifest_invalid", "下载完成文件清单不是规范格式", nil)
+	}
+	return manifest, true, nil
 }
 
 func (w *DownloadWorker) resetFailedPan115ForExplicitRetry(ctx context.Context, task *models.DownloadTask, client downloadpkg.Client, providerType string) error {
@@ -1415,8 +1542,8 @@ func (w *DownloadWorker) routeCategory(ctx context.Context, task *models.Downloa
 	if err := client.Resume(ctx, task.ProviderTaskID); err != nil {
 		return err
 	}
-	task.ScrapeStatus, task.ScrapeCategory, task.Phase = scrapeStatus, category, models.DownloadTaskStatusDownloading
-	return w.service.db.Model(task).Updates(map[string]any{"phase": task.Phase, "scrape_status": task.ScrapeStatus, "scrape_category": category, "last_error_code": safeLabel(errorCode, 96), "last_error_message": safeLabel(errorMessage, 512), "updated_at": time.Now().UTC()}).Error
+	task.ScrapeStatus, task.ScrapeCategory, task.StagingCategory, task.Phase = scrapeStatus, category, category, models.DownloadTaskStatusDownloading
+	return w.service.db.Model(task).Updates(map[string]any{"phase": task.Phase, "scrape_status": task.ScrapeStatus, "scrape_category": category, "staging_category": category, "last_error_code": safeLabel(errorCode, 96), "last_error_message": safeLabel(errorMessage, 512), "updated_at": time.Now().UTC()}).Error
 }
 
 func classificationFallbackCode(err error, match scrapeMatch) string {
@@ -1652,6 +1779,10 @@ func downloadFailureMessage(code string, retryable bool) string {
 		return "下载已完成，但媒体未识别，未自动入库；请修正识别条件后重试"
 	case "download_state_persist_failed":
 		return "下载完成后的识别结果保存失败，请重试"
+	case "download_completion_manifest_invalid":
+		return "下载已完成，但保存的文件清单无效，未执行入库"
+	case "download_completion_manifest_unavailable":
+		return "下载已完成，但暂时无法取得文件清单"
 	}
 	if retryable {
 		return "下载器暂时不可用，任务将自动重试"

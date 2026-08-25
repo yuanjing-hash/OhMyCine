@@ -11,6 +11,7 @@ func TestParseMediaGroupsPlayerCompatibleEpisodeLayouts(t *testing.T) {
 		{"EP02.mkv", "/Lycoris Recoil/S01/EP02.mkv", "Lycoris Recoil", 1, 2},
 		{"Lycoris.Recoil.2x03.mkv", "/Lycoris Recoil/Lycoris.Recoil.2x03.mkv", "Lycoris Recoil", 2, 3},
 		{"第十二话.mkv", "/动画/示例动画/第2季/第十二话.mkv", "示例动画", 2, 12},
+		{"名侦探柯南.S01E1210.mkv", "/名侦探柯南/Season 01/名侦探柯南.S01E1210.mkv", "名侦探柯南", 1, 1210},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

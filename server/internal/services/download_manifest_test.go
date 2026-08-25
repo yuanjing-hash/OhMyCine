@@ -79,6 +79,38 @@ func TestSelectDownloadPackageManifestRejectsAdvertisementVideos(t *testing.T) {
 	}
 }
 
+func TestCompletedDownloadManifestIsBoundedCanonicalAndPrivate(t *testing.T) {
+	valid := downloadpkg.Manifest{Name: "Series", Complete: true, Files: []downloadpkg.File{{RelativePath: "Series/Series.S01E1210.mkv", Size: 1024, ProviderItemID: "item-1"}}}
+	raw, err := encodeCompletedDownloadManifest(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, exists, err := completedDownloadManifest(raw)
+	if err != nil || !exists || len(decoded.Files) != 1 || decoded.Files[0].RelativePath != valid.Files[0].RelativePath {
+		t.Fatalf("decoded=%+v exists=%v err=%v", decoded, exists, err)
+	}
+	for _, manifest := range []downloadpkg.Manifest{
+		{Name: "unsafe", Complete: true, Files: []downloadpkg.File{{RelativePath: "../escape.mkv", Size: 1}}},
+		{Name: "duplicate", Complete: true, Files: []downloadpkg.File{{RelativePath: "same.mkv", Size: 1}, {RelativePath: "same.mkv", Size: 1}}},
+		{Name: "incomplete", Complete: false, Files: []downloadpkg.File{{RelativePath: "Movie.mkv", Size: 1}}},
+	} {
+		if _, err := encodeCompletedDownloadManifest(manifest); ErrorCode(err) != "download_completion_manifest_invalid" {
+			t.Fatalf("manifest=%+v error=%v code=%s", manifest, err, ErrorCode(err))
+		}
+	}
+	tooMany := downloadpkg.Manifest{Name: "too-many", Complete: true, Files: make([]downloadpkg.File, maxCompletedManifestFiles+1)}
+	if _, err := encodeCompletedDownloadManifest(tooMany); ErrorCode(err) != "download_completion_manifest_invalid" {
+		t.Fatalf("too-many error=%v code=%s", err, ErrorCode(err))
+	}
+	if _, exists, err := completedDownloadManifest(strings.Repeat("x", maxCompletedManifestBytes+1)); !exists || ErrorCode(err) != "download_completion_manifest_invalid" {
+		t.Fatalf("oversized exists=%v err=%v code=%s", exists, err, ErrorCode(err))
+	}
+	serialized, err := json.Marshal(models.DownloadTask{CompletedManifestJSON: raw, StagingCategory: "未识别"})
+	if err != nil || strings.Contains(string(serialized), "completed_manifest") || strings.Contains(string(serialized), "staging_category") || strings.Contains(string(serialized), "item-1") {
+		t.Fatalf("private fields leaked: %s err=%v", serialized, err)
+	}
+}
+
 func TestClassifyRealSevenSamuraiReleaseQueriesCleanTitleAndYear(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

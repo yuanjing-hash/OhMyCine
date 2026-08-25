@@ -103,6 +103,15 @@
 - 当前脏工作区的 `go test ./... -count=1` / `go vet ./...` 未通过，阻塞来自并行未完成的 CookieCloud 路由引用缺少 handler，以及 v43 已存在但旧迁移测试仍期待 v42；识别、媒体库、services、TMDB、Emby/Jellyfin 等已运行包均通过。不得将本次快照表述为 Server 全量门禁通过。
 - `git diff --check`：通过，仅有既存行尾转换提示。任务保持 `in_progress`，未 commit、push 或归档。
 
+### “银色子弹字幕组 / S01E1210”与完成任务恢复复核
+
+- 通用结构化发行名解析现在可从 `[发布组][作品名][季集][技术标签]` 与 `[发布组]作品名[SxxExxxx][技术标签]` 中分离发布组、标题、字幕/语言/封装标记和尾部 CRC；合法标题 `[REC]` 仍受反例保护，不对“银色子弹”写死。
+- 共享识别器与媒体库/Transfer 安全解析统一支持最多五位集号，`名侦探柯南.S01E1210.mkv` 保持 TV、Season 1、Episode 1210；引擎版本提升为 `nextgen-domain-v3`，旧负缓存自动失效。
+- v45 为 DownloadTask 增加私有 `completed_manifest_json` 与 `staging_category`。目标下载完成后先保存有界、规范、provider-relative 清单；人工 TMDB override 重排原 Job 后直接复用该清单执行 Recognition → Transfer，不再构造或调用下载器。旧任务无快照时只允许从已有 provider task 读取一次清单。
+- `staging_category` 固定下载器实际物理目录，`scrape_category` 保留识别后的逻辑分类；本地 Transfer 规划和安全垃圾清理都优先使用前者，避免“未识别”下载经人工分类后找错目录。
+- 回归断言完成清单恢复期间 `Submit/Get/Pause/Resume` 均为零调用、只创建一个 TransferTask、源清单不变；迁移、长集号、清理目录均有独立测试。
+- 隔离 `TEMP/TMP/GOCACHE/GOMODCACHE` 后 `go test ./... -count=1` 全量通过。首次运行遇到 Gin 模块下载 EOF，单独重试依赖下载后同一全量命令通过；这不是代码测试失败。
+
 ## 建议验证命令
 
 ```powershell

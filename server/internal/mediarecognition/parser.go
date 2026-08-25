@@ -16,13 +16,13 @@ import (
 
 var (
 	videoExtensionPattern = regexp.MustCompile(`(?i)\.(mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|mts|webm|flv|iso|vob)$`)
-	episodePattern        = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,3})(?:[^[:alnum:]]|$)|(?:^|[^[:alnum:]])0*([0-9]{1,2})x0*([0-9]{1,3})(?:[^[:alnum:]]|$)`)
+	episodePattern        = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[^[:alnum:]]|$)|(?:^|[^[:alnum:]])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[^[:alnum:]]|$)`)
 	seasonPattern         = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:season|s)\s*0*([0-9]{1,2})(?:[^[:alnum:]]|$)`)
 	chineseEpisodePattern = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*[集话話](?:$|[^\p{L}\p{N}])`)
 	chineseSeasonPattern  = regexp.MustCompile(`第\s*([0-9零〇一二两兩三四五六七八九十百千]{1,12})\s*季(?:$|[^\p{L}\p{N}])`)
-	numericEpisodePattern = regexp.MustCompile(`^0*([0-9]{1,3})$`)
+	numericEpisodePattern = regexp.MustCompile(`^0*([0-9]{1,5})$`)
 	yearTokenPattern      = regexp.MustCompile(`\b((?:18|19|20)[0-9]{2})\b`)
-	techTokenPattern      = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili)\b`)
+	techTokenPattern      = regexp.MustCompile(`(?i)\b(?:4320p|2160p|1080p|720p|576p|480p|8k|4k|uhd|hq|bluray|blu-ray|bdrip|bdremux|remux|web[- .]?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|av1|aac|dts(?:-hd)?|truehd|atmos|ddp?|hdr10\+?|hdr|dovi|dolby[ .]?vision|10bit|8bit|proper|repack|uncut|extended|director'?s[ .]?cut|amzn|netflix|nf|dsnp|hmax|atvp|itunes|bilibili|mkv|mp4|pgs|srt|ass|ssa|jpn?|eng)\b`)
 	subtitleTokenPattern  = regexp.MustCompile(`(?i)\b(?:chs|cht|gb|big5|subs?|multi[- .]?sub)\b|简繁|繁简|简中|繁中|简体|繁体|中文字幕|中字|中英双字|中英字幕|双语字幕|内封字幕|外挂字幕|字幕组|字幕`)
 	trailingGroupPattern  = regexp.MustCompile(`^(.*?)(\s*-\s*)([[:alnum:]][[:alnum:]-]{1,31})\s*$`)
 	trailingBracketGroup  = regexp.MustCompile(`^(.*?)\s*[\[【]([[:alnum:]][[:alnum:]-]{1,31})[\]】]\s*$`)
@@ -33,6 +33,9 @@ var (
 	discStackPattern      = regexp.MustCompile(`^(?:disc|disk|cd)[ ._-]*[0-9]+$`)
 	structureNamePattern  = regexp.MustCompile(`^(?:season|s|disc|disk|cd)[ ._-]*[0-9]+$`)
 	emptyBracketPattern   = regexp.MustCompile(`\(\s*\)|\[\s*\]|\{\s*\}`)
+	leadingBracketPattern = regexp.MustCompile(`^(?:\[([^\]\r\n]{1,64})\]|【([^】\r\n]{1,64})】)(.*)$`)
+	bracketSegmentPattern = regexp.MustCompile(`(?:\[([^\]\r\n]{1,128})\]|【([^】\r\n]{1,128})】)`)
+	checksumSuffixPattern = regexp.MustCompile(`(?i)(?:\s*[\[(]?[0-9a-f]{8}[\])]?)\s*$`)
 )
 
 type parsedName struct {
@@ -269,22 +272,33 @@ func analyzeName(source namedSource, now time.Time) parsedName {
 	withoutHint, hint := extractTMDBHint(raw)
 	item.directHint = hint
 	withoutHint = strings.TrimSpace(withoutHint)
+	item.season, item.episode = firstSeasonEpisode(withoutHint)
 
-	withoutGroup, group, strong := separateTrailingGroup(withoutHint)
-	item.withoutGroup, item.releaseGroup, item.groupStrong = cleanTitleSurface(withoutGroup), group, strong
-	if !strong {
-		item.withoutGroup = cleanTitleSurface(withoutHint)
+	recognitionSurface := withoutHint
+	if structuredTitle, leadingGroup, ok := structuredReleaseTitle(withoutHint); ok {
+		recognitionSurface = structuredTitle
+		item.releaseGroup = leadingGroup
+		item.groupStrong = true
 	}
 
-	item.specifications = canonicalSpecifications(techTokenPattern.FindAllString(item.withoutGroup, -1))
+	withoutGroup, group, strong := separateTrailingGroup(recognitionSurface)
+	item.withoutGroup = cleanTitleSurface(withoutGroup)
+	if item.releaseGroup == "" {
+		item.releaseGroup, item.groupStrong = group, strong
+	}
+	if !strong {
+		item.withoutGroup = cleanTitleSurface(recognitionSurface)
+	}
+
+	item.specifications = canonicalSpecifications(techTokenPattern.FindAllString(withoutHint, -1))
 	withoutSpecs := techTokenPattern.ReplaceAllString(item.withoutGroup, " ")
 	withoutSpecs = subtitleTokenPattern.ReplaceAllString(withoutSpecs, " ")
 	withoutSpecs = stripTrailingReleaseNoise(withoutSpecs)
 	item.withoutSpecs = cleanTitleSurface(withoutSpecs)
 
 	item.withoutEpisodes = removeSeasonEpisodeTokens(item.withoutSpecs)
-	if season, episode := firstSeasonEpisode(item.withoutSpecs); season != nil || episode != nil {
-		item.season, item.episode = season, episode
+	if item.season == nil && item.episode == nil {
+		item.season, item.episode = firstSeasonEpisode(item.withoutSpecs)
 	}
 
 	item.withoutYear, item.year = separatePlausibleYear(item.withoutEpisodes, now)
@@ -307,7 +321,86 @@ func normalizeFilename(value string) string {
 	if videoExtensionPattern.MatchString(base) {
 		base = base[:strings.LastIndex(base, ".")]
 	}
+	base = stripTrailingChecksum(base)
 	return cleanTitleSurface(strings.NewReplacer(".", " ", "_", " ", "\u00a0", " ").Replace(base))
+}
+
+func stripTrailingChecksum(value string) string {
+	match := checksumSuffixPattern.FindStringIndex(value)
+	if match == nil || match[0] == 0 {
+		return value
+	}
+	prefix := strings.TrimSpace(value[:match[0]])
+	if !meaningfulTitle(prefix) {
+		return value
+	}
+	return prefix
+}
+
+// structuredReleaseTitle recognizes the common release shape
+// "[group][work title][episode][technical tags]" and
+// "[group]work title[SxxExxxx][technical tags]". It only promotes a title
+// when the remainder also contains release structure, which protects legal
+// bracketed work titles such as [REC].
+func structuredReleaseTitle(value string) (string, string, bool) {
+	match := leadingBracketPattern.FindStringSubmatch(value)
+	if len(match) != 4 {
+		return "", "", false
+	}
+	group := firstNonEmptyDomain(match[1], match[2])
+	remainder := strings.TrimSpace(match[3])
+	_, episode := firstSeasonEpisode(remainder)
+	segments := bracketSegmentPattern.FindAllStringSubmatch(remainder, -1)
+	structured := episode != nil || techTokenPattern.MatchString(remainder) || subtitleTokenPattern.MatchString(remainder) || len(segments) >= 2
+	if !structured {
+		return "", "", false
+	}
+	if !strings.HasPrefix(remainder, "[") && !strings.HasPrefix(remainder, "【") {
+		// A leading bracket alone may be the legal work title ([REC]). Only
+		// treat it as a release group when an explicit episode marker or a
+		// second bracketed field proves that another title follows it.
+		if episode == nil && len(segments) == 0 {
+			return "", "", false
+		}
+		prefix := remainder
+		if index := strings.IndexAny(prefix, "[【"); index >= 0 {
+			prefix = prefix[:index]
+		}
+		if candidate := cleanStructuredTitleSegment(prefix); candidate != "" {
+			return candidate, cleanTitleSurface(group), true
+		}
+	}
+	for _, segment := range segments {
+		candidate := firstNonEmptyDomain(segment[1], segment[2])
+		if candidate = cleanStructuredTitleSegment(candidate); candidate != "" {
+			return candidate, cleanTitleSurface(group), true
+		}
+	}
+	return "", "", false
+}
+
+func cleanStructuredTitleSegment(value string) string {
+	if _, episode := firstSeasonEpisode(value); episode != nil {
+		return ""
+	}
+	value = techTokenPattern.ReplaceAllString(value, " ")
+	value = subtitleTokenPattern.ReplaceAllString(value, " ")
+	value = stripTrailingChecksum(value)
+	value, _ = separatePlausibleYear(value, time.Time{})
+	value = cleanTitleSurface(value)
+	if !meaningfulTitle(value) {
+		return ""
+	}
+	return value
+}
+
+func firstNonEmptyDomain(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func cleanTitleSurface(value string) string {
@@ -540,7 +633,7 @@ func analyzeStructure(input InputFacts) (StructureFacts, EpisodeFacts, []Evidenc
 		structure.VideoCount++
 		stem := videoExtensionPattern.ReplaceAllString(path.Base(normalized), "")
 		season, episode := firstSeasonEpisode(stem)
-		if episode == nil {
+		if episode == nil && !strings.Contains(lower, "/bdmv/") && !strings.Contains(lower, "/video_ts/") {
 			if match := numericEpisodePattern.FindStringSubmatch(stem); len(match) == 2 {
 				parsed, _ := strconv.Atoi(match[1])
 				episode = &parsed
@@ -574,6 +667,8 @@ func analyzeStructure(input InputFacts) (StructureFacts, EpisodeFacts, []Evidenc
 			strength = .97
 		}
 		evidence = append(evidence, Evidence{Code: "episode_sequence", Kind: "structure", Supports: MediaTypeTV, Strength: strength, Summary: fmt.Sprintf("%d distinct episode markers support television", facts.Count)})
+	} else if facts.Count == 1 {
+		evidence = append(evidence, Evidence{Code: "explicit_episode_marker", Kind: "structure", Supports: MediaTypeTV, Strength: .90, Summary: "one explicit season or episode marker strongly supports television"})
 	} else if structure.VideoCount >= 3 {
 		evidence = append(evidence, Evidence{Code: "multi_video_collection", Kind: "structure", Supports: MediaTypeTV, Strength: .35, Summary: "multiple video files weakly support television"})
 	}

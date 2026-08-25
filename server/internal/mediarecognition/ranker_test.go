@@ -43,6 +43,24 @@ func TestRankMingDynastySelectsOriginalTitleAcrossCandidateOrder(t *testing.T) {
 	}
 }
 
+func TestRankBracketedFansubAbsoluteEpisodeAsConfidentTVMatch(t *testing.T) {
+	parsed, err := Parse(InputFacts{
+		PackageName: "[银色子弹字幕组][名侦探柯南][第1210集 被诅咒的邻居家][WEBRIP][简繁日多语MKV][PGS][1080P]",
+		SourceKind:  SourceDownload,
+		Files: []FileFact{{
+			RelativePath: "[银色子弹]名侦探柯南[S01E1210][JP][PGS]E5B7FCE8.mkv",
+			Size:         427 << 20,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := Rank(parsed, []RemoteCandidate{{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", OriginalTitle: "名探偵コナン", SeasonCount: intRef(1), Popularity: 150}})
+	if decision.Status != DecisionMatched || decision.Match == nil || decision.Match.ID != 30983 || decision.Confidence < DefaultScoreConfig().MatchThreshold {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
 func TestRankReturnsStableUnrecognizedReasons(t *testing.T) {
 	year := 2024
 	parsed, err := Parse(InputFacts{PackageName: "Exact Title 2024", MediaTypeHint: MediaTypeMovie})

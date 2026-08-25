@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	sxxexxPattern         = regexp.MustCompile(`(?i)(?:^|[. _-])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,3})(?:[. _-]|$)`)
-	oneXEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[. _-])0*([0-9]{1,2})x0*([0-9]{1,3})(?:[. _-]|$)`)
-	episodeOnlyPattern    = regexp.MustCompile(`(?i)(?:^|[. _-])(?:EP?|Episode)\s*0*([0-9]{1,3})(?:[. _-]|$)`)
+	sxxexxPattern         = regexp.MustCompile(`(?i)(?:^|[. _-])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[. _-]|$)`)
+	oneXEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[. _-])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[. _-]|$)`)
+	episodeOnlyPattern    = regexp.MustCompile(`(?i)(?:^|[. _-])(?:EP?|Episode)\s*0*([0-9]{1,5})(?:[. _-]|$)`)
 	chineseEpisodePattern = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十百两〇零]+)\s*[集话話]`)
 	seasonFolderPattern   = regexp.MustCompile(`(?i)^(?:Season|Seanson|S)\s*0*([0-9]{1,2})$`)
 	chineseSeasonPattern  = regexp.MustCompile(`^第\s*([0-9一二三四五六七八九十百两〇零]+)\s*季$`)

@@ -511,7 +511,7 @@ func buildTransferPlan(download models.DownloadTask, manifest downloadpkg.Manife
 	if err != nil {
 		return nil, "", err
 	}
-	sourceRoot := filepath.Join(download.StagingAbsolutePath, download.ScrapeCategory)
+	sourceRoot := filepath.Join(download.StagingAbsolutePath, firstNonEmpty(download.StagingCategory, download.ScrapeCategory))
 	if download.ProviderType == models.DownloaderTypePluginHTTP {
 		sourceRoot = filepath.Join(download.StagingAbsolutePath, pluginDownloadRootName, download.ID)
 	}

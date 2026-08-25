@@ -16,6 +16,7 @@
 - Management routes: `GET/POST /api/v1/downloaders`, `PATCH/DELETE /api/v1/downloaders/:id`, and `POST /api/v1/downloaders/:id/test`.
 - Download routes: `GET /api/v1/downloads?scope=active|history|all`, `POST /api/v1/downloads`, and `DELETE /api/v1/downloads/:id`; public source kinds are `url`, `torrent`, and `115_share`. `provider_item` is an internal-only adoption source and HTTP must reject it.
 - Migration v26 adds `media_libraries.ingest_*`, `download_tasks.staging_provider_directory_id`, `download_tasks.ingest_source_key`, and `download_tasks.source_origin=user|share|provider_ingest`. The non-empty ingest key has a partial unique index and is never a public identifier.
+- Migration v45 adds private `download_tasks.completed_manifest_json` and `download_tasks.staging_category`. The former is the authoritative completed provider-relative package snapshot; the latter is the physical downloader category/location snapshot and is distinct from the later logical `scrape_category`.
 - Download settings route: `GET/PATCH /api/v1/settings/downloads`; PATCH accepts only a global `directory_token` and optimistic `revision`, never a client-authored absolute path or `storage_id` for new settings.
 - The authenticated, no-store `settings.read` response exposes the configured staging absolute path so administrators can verify it. `GET /api/v1/settings/downloads/directory` additionally requires `storages.browse` and opens the picker at that Server-owned path; it never accepts a client-authored path.
 - If the saved staging directory can no longer be opened, the Web UI keeps the safe error visible and falls back to the Server filesystem roots so an authorized administrator can repair the setting without recreating a Storage.
@@ -83,6 +84,8 @@
 - A `pan115_offline` worker subscribes to the Connection-scoped life-event broadcast after submission. Any durable allowlisted life-event batch wakes every waiting offline task on that Connection to re-read authoritative offline-task state and, on completion, its bounded manifest. Life events never directly mark a task complete because they do not carry a trustworthy task-to-output contract. A 20-second provider-state poll remains as missed/delayed-event compensation, while a separate 10-second queue heartbeat keeps the running Job lease valid without calling 115.
 - When an adopted 115 task itself reaches provider failure, persist terminal `downloader_provider_failed`. Only a later explicit user retry may delete that old 115 task record with `deleteFiles=false`, clear the local provider identity/telemetry, and submit once again. A completed provider task whose later recognition, manifest verification, or transfer failed is never deleted or resubmitted by download retry; the user retries the exact failed downstream stage.
 - A completed download with `scrape_status=completed_unrecognized` exposes `Re-recognize and import`, never `Retry download`. The automatic action keeps the provider task/output identity and reuses its completed manifest before continuing through Transfer → Import → Notify.
+- Every targeted completion persists the canonical complete manifest before recognition. It is limited to 1 MiB and 5,000 strict provider-relative entries, remains `json:"-"`, and never enters a Job payload, DTO, audit event, WebSocket event, or log. Recovery with this snapshot bypasses downloader construction and every `Submit/Get/Manifest/Pause/Resume/SetCategory` call; a legacy row without the snapshot may fetch `Manifest` exactly once, persist it, and then use the same recovery path.
+- `staging_category` is immutable physical placement once provider routing succeeds. `scrape_category` may change from `未识别` to the Profile's logical category after automatic retry or verified TMDB override. Transfer source resolution and post-import staging cleanup use `staging_category`, with `scrape_category` only as a pre-v45 compatibility fallback; naming/classification continue to use `scrape_category`.
 - Manual TMDB correction is an explicit recovery tool only after automatic recognition failed. Keyword search returns at most ten credential-free summaries; choosing a result only fills `media_type + tmdb_id`. The Server persists no browser-supplied title/year/category/artwork and must validate the identity with `GetByID` before queuing recovery and again before creating the verified transfer snapshot.
 - Running pause/cancel first persists an interrupt intent. An interrupt-capable worker calls the provider before acknowledging the queue interrupt. Provider failure clears the pending intent and leaves the Job running with a safe error.
 - The same provider-first rule covers queued, retry-wait, paused, failed, and legacy waiting-action qBittorrent Jobs. Queue control stores a restart-safe queued intent; Scheduler claims it, calls `Pause` or destructive `Cancel(..., true)`, and only then acknowledges the state. A failed provider call clears the intent and resumes or restores the original task instead of reporting false success.
@@ -130,6 +133,9 @@
 | 115 reports an existing task but bounded reconciliation cannot find it | Fail once with `downloader_task_exists`; tell the user to remove the stale 115 task record and retry, without deleting provider files automatically |
 | An adopted 115 task is in provider-failed state and the user explicitly retries | Delete only the old provider task record (`deleteFiles=false`), clear its local identity, then submit once; provider cleanup failure preserves the failed local task |
 | A completed 115 task later fails recognition/manifest/import | Keep its provider identity/output and retry only that failed stage; never delete or resubmit the completed offline download |
+| A completed-unrecognized task has a valid v45 manifest snapshot | Re-run recognition and enqueue at most one TransferTask without loading or calling the downloader; preserve the original `staging_category` |
+| A legacy completed-unrecognized task has no manifest snapshot | Read the existing provider task manifest once, persist the canonical snapshot, then recover; if unavailable, return `download_completion_manifest_unavailable` without submission |
+| A stored completion manifest is oversized, incomplete, duplicated, absolute, traversal-dependent, or otherwise non-canonical | Fail closed with `download_completion_manifest_invalid`; create no TransferTask and mutate no source/target file |
 | 115 rejects an invalid link or reports exhausted offline quota | Mark a safe actionable terminal failure; do not schedule a ten-second retry loop |
 | A 115 offline directory reaches parent ID `0` | Accept and verify it when the bound Storage root is `0`; otherwise reject as `downloader_storage_unavailable` before provider submission |
 | 115 download targets a local/cross-account/symlink library or a target without live mutation capability | Reject before enqueue; explicit selection never redirects and automatic selection skips it |
@@ -156,6 +162,7 @@
 - Good: a 115 Storage bound to account root `0` uses any validated descendant as its offline directory; downloader test and task submission both accept the same selection.
 - Good: 115 reports a duplicate completed magnet on a later page; the adapter adopts its hash/output and continues manifest verification without submitting again.
 - Good: an adopted failed 115 task remains terminal until the user clicks retry; that explicit retry removes only the stale task record and preserves provider files before one fresh submission.
+- Good: a qBittorrent task downloaded under `未识别`, then a verified override classifies it as `国产剧`; transfer and guarded cleanup still read `staging/未识别`, while destination naming uses the new logical category.
 - Base: qBittorrent CRUD and connection tests work before staging is configured, while task submission gives an actionable settings error.
 - Good: a running cancel displays a destructive confirmation, reaches qBittorrent with `deleteFiles=true`, then atomically removes the local task after provider acknowledgement.
 - Base: qBittorrent is temporarily offline; the worker writes a safe retry code, releases the slot, and later resumes by provider task ID/tag.
@@ -164,11 +171,13 @@
 - Bad: putting a MediaLibrary selector on a downloader form, resolving staging from the current global setting after a task was queued, or storing an absolute path in Job payload.
 - Bad: treating every parent ID `0` as outside the Storage before comparing it with a configured account root of `0`.
 - Bad: scanning only five fixed task pages, mapping `ErrOfflineTaskExisted` to retryable unavailability, and submitting the same magnet three times.
+- Bad: reusing `scrape_category` as both physical staging location and logical metadata category, or re-entering the normal downloader worker after a completed-manifest recovery is queued.
 
 ### 6. Tests Required
 
 - Credential tests assert key-file generation/reuse, AES-GCM round trip, purpose/AAD mismatch, and invalid key rejection.
 - Migration tests cover fresh/idempotent/previous-version upgrades, legacy staging adoption/detachment, staging snapshot columns, and v23 private cloud-target/checkpoint columns.
+- v45 migration tests assert both private completion-recovery columns and safe defaults. Recovery tests persist a complete manifest, make the downloader unavailable, apply a verified override, and assert zero downloader calls, one TransferTask, retained `staging_category`, and unchanged source-manifest identity; legacy fallback tests assert at most one manifest fetch.
 - Provider tests use local HTTP servers to assert legacy `SID` and modern port-scoped `QBT_SID_*` login flows, missing/invalid session cookie rejection, bounded URL/torrent submission, telemetry parsing, v4/v5 pause/resume fallback, and `deleteFiles=true` for destructive cancellation.
 - Provider tests also cover old/new add responses, tag adoption, metadata stop-condition fallback, bounded manifests, category list/create/set, explicit task location routing, and no duplicate submissions.
 - Service tests cover encrypted TMDB settings, Profile snapshots, automatic `未识别` fallback without ActionRequest, safe category boundaries, and completion verification summaries.
@@ -194,6 +203,7 @@ queue.Enqueue(EnqueueJobInput{Payload: map[string]any{
 }})
 client.Cancel(ctx, providerID, false) // reports cancellation but leaves unwanted provider data and local facts
 task.TargetProviderRootID = request.ProviderRootID // trusts a client/provider identity directly
+sourceRoot := filepath.Join(task.StagingAbsolutePath, task.ScrapeCategory) // breaks after manual reclassification
 
 if current == "" || current == "0" { // rejects valid descendants of account root 0
     return ErrOutsideStorage
@@ -215,6 +225,17 @@ queue.EnqueueWith(EnqueueJobInput{
 
 // Snapshot the validated global absolute staging directory at enqueue.
 task.StagingAbsolutePath = settings.AbsolutePath
+
+// Keep physical placement separate from classification. A later manual match
+// may change ScrapeCategory, but transfer and cleanup still use this snapshot.
+task.StagingCategory = assignedProviderCategory
+
+// Persist the bounded canonical provider-relative manifest before recognition.
+completedManifestJSON, err := encodeCompletedDownloadManifest(manifest)
+if err != nil {
+    return err
+}
+task.CompletedManifestJSON = completedManifestJSON
 
 // Resolve from the selected library and current driver; persist privately.
 target, err := downloads.snapshotDownloadTarget(ctx, downloader, library)

@@ -59,6 +59,34 @@ func TestParseChineseSeasonEpisodeNamesWithoutLosingTheWorkTitle(t *testing.T) {
 	}
 }
 
+func TestParseBracketedFansubReleaseWithFourDigitAbsoluteEpisode(t *testing.T) {
+	parsed, err := Parse(InputFacts{
+		PackageName: "[银色子弹字幕组][名侦探柯南][第1210集 被诅咒的邻居家][WEBRIP][简繁日多语MKV][PGS][1080P]",
+		SourceKind:  SourceDownload,
+		Files: []FileFact{{
+			RelativePath: "[银色子弹]名侦探柯南[S01E1210][JP][PGS]E5B7FCE8.mkv",
+			Size:         427 << 20,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.CanonicalTitle != "名侦探柯南" || len(parsed.Queries) == 0 || parsed.Queries[0].Title != "名侦探柯南" {
+		t.Fatalf("title=%q queries=%+v", parsed.CanonicalTitle, parsed.Queries)
+	}
+	if parsed.SuggestedType != MediaTypeTV || parsed.TypeConfidence < .90 || parsed.Episodes.Count != 1 || parsed.Episodes.EpisodeMax == nil || *parsed.Episodes.EpisodeMax != 1210 {
+		t.Fatalf("type=%q confidence=%f episodes=%+v", parsed.SuggestedType, parsed.TypeConfidence, parsed.Episodes)
+	}
+	if parsed.ReleaseGroup != "银色子弹字幕组" {
+		t.Fatalf("release group=%q", parsed.ReleaseGroup)
+	}
+	for _, query := range parsed.Queries {
+		if strings.Contains(query.Title, "E5B7FCE8") {
+			t.Fatalf("CRC leaked into query: %+v", parsed.Queries)
+		}
+	}
+}
+
 func TestParsePreservesTitlesThatAreEntireChineseOrdinals(t *testing.T) {
 	for _, title := range []string{"第八集", "第2季", "第二十条"} {
 		t.Run(title, func(t *testing.T) {

@@ -1125,10 +1125,15 @@ type DownloadTask struct {
 	ScrapeConfidence                   *float64   `json:"-"`
 	RecognitionOverrideTMDBID          *int64     `json:"-"`
 	RecognitionOverrideMediaType       string     `gorm:"size:16;not null;default:''" json:"-"`
-	ManifestFileCount                  int        `gorm:"not null;default:0" json:"-"`
-	CreatedAt                          time.Time  `json:"created_at"`
-	UpdatedAt                          time.Time  `json:"updated_at"`
-	FinishedAt                         *time.Time `json:"finished_at"`
+	// CompletedManifestJSON is a private provider-relative snapshot captured
+	// after authoritative completion. It lets recognition recovery continue
+	// without resubmitting or re-polling an already completed download.
+	CompletedManifestJSON string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	StagingCategory       string     `gorm:"size:128;not null;default:''" json:"-"`
+	ManifestFileCount     int        `gorm:"not null;default:0" json:"-"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	FinishedAt            *time.Time `json:"finished_at"`
 }
 
 const (

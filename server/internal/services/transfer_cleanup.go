@@ -201,7 +201,7 @@ func cleanupLocalStaging(download models.DownloadTask, extras []downloadpkg.File
 	if stagingRoot == "." || !filepath.IsAbs(stagingRoot) {
 		return 0, errors.New("download staging root is invalid")
 	}
-	categoryRoot := filepath.Join(stagingRoot, download.ScrapeCategory)
+	categoryRoot := filepath.Join(stagingRoot, firstNonEmpty(download.StagingCategory, download.ScrapeCategory))
 	if err := ensureWithin(stagingRoot, categoryRoot); err != nil {
 		return 0, err
 	}

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,6 +120,27 @@ func TestTransferCleanupRefusesIncompleteOrNonSubsetManifest(t *testing.T) {
 	sourceJSON, _ = json.Marshal(source)
 	if extras, err := transferCleanupDifference(models.TransferTask{ManifestJSON: string(selectedJSON), SourceManifestJSON: string(sourceJSON)}); err == nil || extras != nil {
 		t.Fatalf("partial source cleanup accepted: extras=%+v err=%v", extras, err)
+	}
+}
+
+func TestTransferCleanupUsesOriginalStagingCategoryAfterRecognitionRecovery(t *testing.T) {
+	_, _, download, _, _ := transferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	download.StagingCategory = "未识别"
+	download.ScrapeCategory = "华语电影"
+	extra := downloadpkg.File{RelativePath: "广告/promo.txt", Size: 5}
+	extraPath := filepath.Join(download.StagingAbsolutePath, download.StagingCategory, filepath.FromSlash(extra.RelativePath))
+	if err := os.MkdirAll(filepath.Dir(extraPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extraPath, []byte("promo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := cleanupLocalStaging(download, []downloadpkg.File{extra})
+	if err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	if _, err := os.Stat(extraPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging extra still exists: %v", err)
 	}
 }
 
