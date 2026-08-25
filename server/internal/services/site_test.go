@@ -195,6 +195,29 @@ func TestSiteCredentialsAreEncryptedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestSiteSummaryReportsExactCredentialFieldsAndFailsClosed(t *testing.T) {
+	service, _, actor, _, _, _ := siteFixture(t)
+	input := validSiteInput("Cookie only", "https://cookie-only.example.test")
+	input.Passkey = ""
+	created, err := service.Create(context.Background(), actor, input, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.CredentialConfigured || !created.CookieConfigured || created.PasskeyConfigured || created.APIKeyConfigured {
+		t.Fatalf("unexpected per-field flags: %+v", created)
+	}
+	if err := service.db.Model(&models.Site{}).Where("id = ?", created.ID).Update("credential_ciphertext", "not-a-valid-envelope").Error; err != nil {
+		t.Fatal(err)
+	}
+	items, err := service.List(actor)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	if !items[0].CredentialConfigured || items[0].CookieConfigured || items[0].PasskeyConfigured || items[0].APIKeyConfigured {
+		t.Fatalf("decrypt failure must keep aggregate presence but fail closed per field: %+v", items[0])
+	}
+}
+
 func TestSiteCandidateUpdateFailureRetainsOldCredential(t *testing.T) {
 	service, adapter, actor, _, _, _ := siteFixture(t)
 	created, err := service.Create(context.Background(), actor, validSiteInput("PTTime", "https://one.example.test"), RequestContext{})

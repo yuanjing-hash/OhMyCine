@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import PluginSettingsForm from '@/components/PluginSettingsForm.vue'
 import SecretInput from '@/components/SecretInput.vue'
+import { credentialLoader } from '@/credentials'
 import {
   buildPluginRepositoryCreatePayload,
   buildPluginRepositoryDeletePayload,
@@ -88,6 +89,7 @@ const connectionConfigText = ref('{\n  "homeRecommendationEnabled": true\n}')
 const connectionConfig = ref<Record<string, unknown>>({})
 const editingConnectionID = ref('')
 const connectionEditConfig = ref<Record<string, unknown>>({})
+const connectionEditCredential = ref('')
 const connectionCredentialMode = ref<PluginCredentialMode>('none')
 const connectionCredentialScope = ref('')
 const connectionCredential = ref('')
@@ -194,14 +196,20 @@ async function createConnection(plugin: InstalledPluginSummary) {
 function beginEditConnection(connection: PluginConnectionSummary) {
   editingConnectionID.value = connection.id
   connectionEditConfig.value = { ...connection.config }
+  connectionEditCredential.value = ''
+}
+
+function cancelEditConnection() {
+  editingConnectionID.value = ''
+  connectionEditCredential.value = ''
 }
 
 async function saveConnectionConfig(plugin: InstalledPluginSummary, connection: PluginConnectionSummary) {
   connectionBusyID.value = connection.id
   try {
-    await api(pluginConnectionPath(plugin.id, connection.id), { method: 'PATCH', body: JSON.stringify(buildPluginConnectionConfigPayload(connection, connectionEditConfig.value)) })
+    await api(pluginConnectionPath(plugin.id, connection.id), { method: 'PATCH', body: JSON.stringify(buildPluginConnectionConfigPayload(connection, connectionEditConfig.value, connectionEditCredential.value)) })
     notify('插件设置已保存', 'success')
-    editingConnectionID.value = ''
+    cancelEditConnection()
     await loadConnections(plugin)
   } catch (reason) {
     notify(message(reason), 'error')
@@ -680,11 +688,24 @@ onMounted(() => { void loadAll() })
                   disabled
                   @start-auth="startConnectionAuth(plugin, connection)"
                 />
+                <div v-if="editingConnectionID === connection.id && connection.credential_mode !== 'none'" class="mt-3">
+                  <label class="label">更换凭据（留空保留）</label>
+                  <SecretInput
+                    v-model="connectionEditCredential"
+                    class="input min-h-20 font-mono text-xs"
+                    multiline
+                    :configured="connection.credential_configured"
+                    :load-secret="auth.can(Permissions.ConnectionsSecretsExport) ? credentialLoader({ resourceType: 'plugin_connection', resourceID: connection.id, field: 'credential' }) : undefined"
+                    :reset-key="connection.id"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
                 <div v-if="canManage" class="mt-3 flex flex-wrap gap-2">
                   <template v-if="plugin.settings_page">
                     <button v-if="editingConnectionID !== connection.id" type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="beginEditConnection(connection)">编辑设置</button>
                     <button v-else type="button" class="btn-primary" :disabled="connectionBusyID !== ''" @click="saveConnectionConfig(plugin, connection)">保存设置</button>
-                    <button v-if="editingConnectionID === connection.id" type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="editingConnectionID = ''">取消</button>
+                    <button v-if="editingConnectionID === connection.id" type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="cancelEditConnection">取消</button>
                   </template>
                   <button type="button" class="btn-secondary" :disabled="connectionBusyID !== ''" @click="setConnectionEnabled(plugin, connection, !connection.enabled)">{{ connection.enabled ? '停用' : '启用' }}</button>
                   <button type="button" class="btn-danger" :disabled="connectionBusyID !== ''" @click="deleteConnection(plugin, connection)">删除</button>

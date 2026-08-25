@@ -46,6 +46,7 @@ type API struct {
 	discovery          *services.DiscoveryService
 	sites              *services.SiteService
 	cookieCloud        *services.CookieCloudService
+	credentialReveal   *services.CredentialRevealService
 	log                zerolog.Logger
 }
 
@@ -87,6 +88,9 @@ func (a *API) SetLibraryArtworkService(service *services.LibraryArtworkService) 
 func (a *API) SetDiscoveryService(service *services.DiscoveryService)     { a.discovery = service }
 func (a *API) SetSiteService(service *services.SiteService)               { a.sites = service }
 func (a *API) SetCookieCloudService(service *services.CookieCloudService) { a.cookieCloud = service }
+func (a *API) SetCredentialRevealService(service *services.CredentialRevealService) {
+	a.credentialReveal = service
+}
 
 func NewAPI(cfg config.Config, auth *services.AuthService, admin *services.AdminService, audit *services.AuditService, storage *services.StorageService, directory *services.DirectoryBrowserService, profiles *services.MediaClassificationProfileService, log zerolog.Logger) *API {
 	return &API{config: cfg, auth: auth, admin: admin, audit: audit, storage: storage, directory: directory, profiles: profiles, log: log}

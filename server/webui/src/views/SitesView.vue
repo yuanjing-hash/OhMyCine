@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
+import { Permissions } from '@/auth/generated-permissions'
 import SecretInput from '@/components/SecretInput.vue'
+import { credentialLoader } from '@/credentials'
 import { notify } from '@/toast'
 import {
   cookieCloudErrorLabel,
@@ -18,6 +20,7 @@ import {
   type SiteSummary,
 } from '@/sites'
 import type { ListResponse } from '@/types/api'
+import { useAuthStore } from '@/stores/auth'
 
 interface SiteForm {
   kind: string
@@ -47,6 +50,7 @@ interface CookieCloudForm {
   revision: number
 }
 
+const auth = useAuthStore()
 const sites = ref<SiteSummary[]>([])
 const siteCatalog = ref<SiteCatalogItem[]>([])
 const loading = ref(true)
@@ -370,10 +374,10 @@ onMounted(loadSites)
           <div class="sm:col-span-2"><label class="label" for="site-catalog">站点适配</label><select id="site-catalog" v-model="form.kind" class="input" :disabled="Boolean(editing)" @change="applyCatalogSelection"><option v-for="item in filteredCatalog" :key="item.key" :value="item.key">{{ item.name }} · {{ item.engine === 'nexusphp' ? 'NexusPHP' : item.engine.toUpperCase() }}</option></select><p class="text-subtle mb-0 mt-1 text-xs">公开 RSS 索引固定使用内建受控地址；自定义聚合器请使用 Torznab。</p></div>
           <div><label class="label" for="site-name">显示名称</label><input id="site-name" v-model="form.name" class="input" maxlength="128" required /></div>
           <div><label class="label" for="site-url">HTTPS 根地址</label><input id="site-url" v-model="form.baseURL" class="input font-mono" type="url" placeholder="https://example.test" required autocomplete="off" :readonly="selectedCatalog?.engine === 'rss'" /></div>
-          <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-cookie">Cookie{{ editing ? '（留空不修改）' : '' }}</label><SecretInput id="site-cookie" v-model="form.cookie" class="input min-h-24 font-mono text-xs" multiline :configured="Boolean(editing?.credential_configured)" :required="!editing" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">CookieCloud 同步成功后也可在此继续手动更新，不会写入日志或普通任务字段。</p></div>
-          <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-passkey">Passkey（可选，{{ editing ? '留空不修改' : '仅在站点下载接口需要时使用' }}）</label><SecretInput id="site-passkey" v-model="form.passkey" class="input font-mono" :configured="Boolean(editing?.credential_configured)" autocomplete="new-password" /></div>
+          <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-cookie">Cookie{{ editing ? '（留空不修改）' : '' }}</label><SecretInput id="site-cookie" v-model="form.cookie" class="input min-h-24 font-mono text-xs" multiline :configured="Boolean(editing?.cookie_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && editing?.cookie_configured ? credentialLoader({ resourceType: 'site', resourceID: editing.id, field: 'cookie' }) : undefined" :reset-key="editing?.id" :required="!editing" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">CookieCloud 同步成功后也可在此继续手动更新，不会写入日志或普通任务字段。</p></div>
+          <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-passkey">Passkey（可选，{{ editing ? '留空不修改' : '仅在站点下载接口需要时使用' }}）</label><SecretInput id="site-passkey" v-model="form.passkey" class="input font-mono" :configured="Boolean(editing?.passkey_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && editing?.passkey_configured ? credentialLoader({ resourceType: 'site', resourceID: editing.id, field: 'passkey' }) : undefined" :reset-key="editing?.id" autocomplete="new-password" /></div>
           <label v-if="editing && credentialKind === 'cookie'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.clearPasskey" type="checkbox" />清除已保存的 passkey</label>
-          <div v-if="credentialKind === 'api_key'" class="sm:col-span-2"><label class="label" for="site-api-key">Torznab API Key{{ editing ? '（留空不修改）' : '' }}</label><SecretInput id="site-api-key" v-model="form.apiKey" class="input font-mono" :configured="Boolean(editing?.credential_configured)" :required="!editing" autocomplete="new-password" /></div>
+          <div v-if="credentialKind === 'api_key'" class="sm:col-span-2"><label class="label" for="site-api-key">Torznab API Key{{ editing ? '（留空不修改）' : '' }}</label><SecretInput id="site-api-key" v-model="form.apiKey" class="input font-mono" :configured="Boolean(editing?.api_key_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && editing?.api_key_configured ? credentialLoader({ resourceType: 'site', resourceID: editing.id, field: 'api_key' }) : undefined" :reset-key="editing?.id" :required="!editing" autocomplete="new-password" /></div>
           <label v-if="editing && credentialKind === 'api_key'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.clearAPIKey" type="checkbox" />清除已保存的 API Key</label>
           <div><label class="label" for="site-priority">优先级</label><input id="site-priority" v-model.number="form.priority" class="input" type="number" min="1" max="999" required /></div>
           <div><label class="label" for="site-rate">每分钟请求上限</label><input id="site-rate" v-model.number="form.rateLimitPerMinute" class="input" type="number" min="1" max="120" required /></div>
@@ -403,9 +407,9 @@ onMounted(loadSites)
             <div class="sm:col-span-2"><label class="label" for="cookiecloud-mode">同步模式</label><select id="cookiecloud-mode" v-model="cookieCloudForm.mode" class="input"><option value="disabled">关闭</option><option value="remote">远程 CookieCloud 服务</option><option value="local">当前 Server 本地接收</option></select></div>
             <div v-if="cookieCloudForm.mode === 'remote'" class="sm:col-span-2"><label class="label" for="cookiecloud-url">CookieCloud 服务地址</label><input id="cookiecloud-url" v-model="cookieCloudForm.baseURL" class="input font-mono" type="url" placeholder="https://cookie.example.com" required autocomplete="off" /><p class="text-subtle mb-0 mt-1 text-xs">兼容 CookieCloud 的 <span class="font-mono">/get/{用户 KEY}</span> 接口，可填写公共服务或自己的服务器。</p></div>
             <template v-if="cookieCloudForm.mode !== 'disabled'">
-              <div><label class="label" for="cookiecloud-uuid">用户 KEY / UUID</label><SecretInput id="cookiecloud-uuid" v-model="cookieCloudForm.uuid" class="input font-mono" :configured="Boolean(cookieCloudSettings?.credential_configured)" :required="!cookieCloudSettings?.credential_configured" autocomplete="off" /></div>
-              <div><label class="label" for="cookiecloud-password">端到端加密密码</label><SecretInput id="cookiecloud-password" v-model="cookieCloudForm.password" class="input" :configured="Boolean(cookieCloudSettings?.credential_configured)" :required="!cookieCloudSettings?.credential_configured" autocomplete="new-password" /></div>
-              <div v-if="cookieCloudForm.mode === 'local'" class="sm:col-span-2"><label class="label" for="cookiecloud-auth">上传共享认证</label><SecretInput id="cookiecloud-auth" v-model="cookieCloudForm.authHeader" class="input font-mono" :configured="Boolean(cookieCloudSettings?.credential_configured)" minlength="12" :required="!cookieCloudSettings?.credential_configured" autocomplete="new-password" placeholder="至少 12 个字符" /><p class="text-subtle mb-0 mt-1 text-xs">浏览器扩展上传时必须携带相同的 <span class="font-mono">X-CookieCloud-Auth</span> 请求头。</p></div>
+              <div><label class="label" for="cookiecloud-uuid">用户 KEY / UUID</label><SecretInput id="cookiecloud-uuid" v-model="cookieCloudForm.uuid" class="input font-mono" :configured="Boolean(cookieCloudSettings?.uuid_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && cookieCloudSettings?.uuid_configured ? credentialLoader({ resourceType: 'cookiecloud', resourceID: 1, field: 'uuid' }) : undefined" :reset-key="cookieCloudSettings?.revision" :required="!cookieCloudSettings?.uuid_configured" autocomplete="off" /></div>
+              <div><label class="label" for="cookiecloud-password">端到端加密密码</label><SecretInput id="cookiecloud-password" v-model="cookieCloudForm.password" class="input" :configured="Boolean(cookieCloudSettings?.password_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && cookieCloudSettings?.password_configured ? credentialLoader({ resourceType: 'cookiecloud', resourceID: 1, field: 'password' }) : undefined" :reset-key="cookieCloudSettings?.revision" :required="!cookieCloudSettings?.password_configured" autocomplete="new-password" /></div>
+              <div v-if="cookieCloudForm.mode === 'local'" class="sm:col-span-2"><label class="label" for="cookiecloud-auth">上传共享认证</label><SecretInput id="cookiecloud-auth" v-model="cookieCloudForm.authHeader" class="input font-mono" :configured="Boolean(cookieCloudSettings?.auth_header_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && cookieCloudSettings?.auth_header_configured ? credentialLoader({ resourceType: 'cookiecloud', resourceID: 1, field: 'auth_header' }) : undefined" :reset-key="cookieCloudSettings?.revision" minlength="12" :required="!cookieCloudSettings?.auth_header_configured" autocomplete="new-password" placeholder="至少 12 个字符" /><p class="text-subtle mb-0 mt-1 text-xs">浏览器扩展上传时必须携带相同的 <span class="font-mono">X-CookieCloud-Auth</span> 请求头。</p></div>
               <div><label class="label" for="cookiecloud-interval">自动同步</label><select id="cookiecloud-interval" v-model.number="cookieCloudForm.autoSyncMinutes" class="input"><option :value="0">仅手动</option><option :value="60">每小时</option><option :value="360">每 6 小时</option><option :value="720">每 12 小时</option><option :value="1440">每天</option><option :value="10080">每周</option><option :value="43200">每 30 天</option></select></div>
             </template>
           </div>

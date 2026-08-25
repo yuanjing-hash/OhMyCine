@@ -62,6 +62,9 @@ type CookieCloudSettingsSummary struct {
 	BaseURL              string     `json:"base_url"`
 	AutoSyncMinutes      int        `json:"auto_sync_minutes"`
 	CredentialConfigured bool       `json:"credential_configured"`
+	UUIDConfigured       bool       `json:"uuid_configured"`
+	PasswordConfigured   bool       `json:"password_configured"`
+	AuthHeaderConfigured bool       `json:"auth_header_configured"`
 	LocalUploadPath      string     `json:"local_upload_path,omitempty"`
 	LastSyncStatus       string     `json:"last_sync_status"`
 	LastSyncErrorCode    string     `json:"last_sync_error_code"`
@@ -129,7 +132,7 @@ func (s *CookieCloudService) Get(actor Actor) (CookieCloudSettingsSummary, error
 	if err != nil {
 		return CookieCloudSettingsSummary{}, err
 	}
-	return cookieCloudSummary(record), nil
+	return s.cookieCloudSummary(record), nil
 }
 
 func (s *CookieCloudService) Update(ctx context.Context, actor Actor, input CookieCloudSettingsInput, request RequestContext) (CookieCloudSettingsSummary, error) {
@@ -207,7 +210,7 @@ func (s *CookieCloudService) Update(ctx context.Context, actor Actor, input Cook
 	if err != nil {
 		return CookieCloudSettingsSummary{}, err
 	}
-	return cookieCloudSummary(updated), nil
+	return s.cookieCloudSummary(updated), nil
 }
 
 func (s *CookieCloudService) Sync(ctx context.Context, actor Actor, request RequestContext) (CookieCloudSyncSummary, error) {
@@ -519,8 +522,9 @@ func (s *CookieCloudService) recordSync(record models.CookieCloudSettings, statu
 	_ = s.db.Model(&models.CookieCloudSettings{}).Where("id = ?", 1).Updates(map[string]any{"last_sync_status": status, "last_sync_error_code": code, "last_sync_at": now, "updated_at": now}).Error
 }
 
-func cookieCloudSummary(record models.CookieCloudSettings) CookieCloudSettingsSummary {
-	return CookieCloudSettingsSummary{Mode: record.Mode, BaseURL: record.BaseURL, AutoSyncMinutes: record.AutoSyncMinutes, CredentialConfigured: record.CredentialCiphertext != "", LocalUploadPath: func() string {
+func (s *CookieCloudService) cookieCloudSummary(record models.CookieCloudSettings) CookieCloudSettingsSummary {
+	configured, _ := s.decryptCredential(record)
+	return CookieCloudSettingsSummary{Mode: record.Mode, BaseURL: record.BaseURL, AutoSyncMinutes: record.AutoSyncMinutes, CredentialConfigured: record.CredentialCiphertext != "", UUIDConfigured: configured.UUID != "", PasswordConfigured: configured.Password != "", AuthHeaderConfigured: configured.AuthHeader != "", LocalUploadPath: func() string {
 		if record.Mode == "local" {
 			return "/cookiecloud"
 		}

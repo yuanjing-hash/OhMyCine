@@ -35,13 +35,16 @@ type stubDownloadClient struct {
 
 type metadataDownloadClient struct {
 	*stubDownloadClient
-	metadataOnly   bool
-	manifestCalls  int
-	category       string
-	categoryPath   string
-	routedPath     string
-	categories     []downloadpkg.Category
-	setCategoryErr error
+	metadataOnly      bool
+	manifestCalls     int
+	category          string
+	categoryPath      string
+	routedPath        string
+	categories        []downloadpkg.Category
+	categoryCalls     []string
+	keepCategoryPath  bool
+	updateCategoryErr error
+	setCategoryErr    error
 }
 
 type providerWakeRuntime struct {
@@ -73,18 +76,42 @@ func (c *metadataDownloadClient) Manifest(context.Context, string) (downloadpkg.
 	return downloadpkg.Manifest{Name: "Example.Show.S01E01", Complete: true, Files: []downloadpkg.File{{RelativePath: "Example.Show.S01E01/Example.Show.S01E01.mkv", Size: 2 * 1024 * 1024 * 1024}}}, nil
 }
 func (c *metadataDownloadClient) Categories(context.Context) ([]downloadpkg.Category, error) {
+	c.categoryCalls = append(c.categoryCalls, "categories")
 	return append([]downloadpkg.Category(nil), c.categories...), nil
 }
 func (c *metadataDownloadClient) EnsureCategory(_ context.Context, name, savePath string) error {
+	c.categoryCalls = append(c.categoryCalls, "create")
 	c.category, c.categoryPath = name, savePath
+	c.categories = append(c.categories, downloadpkg.Category{Name: name, SavePath: savePath})
+	return nil
+}
+func (c *metadataDownloadClient) UpdateCategory(_ context.Context, name, savePath string) error {
+	c.categoryCalls = append(c.categoryCalls, "update")
+	if c.updateCategoryErr != nil {
+		return c.updateCategoryErr
+	}
+	c.category, c.categoryPath = name, savePath
+	if !c.keepCategoryPath {
+		for index := range c.categories {
+			if strings.EqualFold(c.categories[index].Name, name) {
+				c.categories[index].SavePath = savePath
+			}
+		}
+	}
 	return nil
 }
 func (c *metadataDownloadClient) SetCategory(_ context.Context, _ string, category, savePath string) error {
+	c.categoryCalls = append(c.categoryCalls, "set")
 	if c.setCategoryErr != nil {
 		return c.setCategoryErr
 	}
 	c.category, c.routedPath = category, savePath
 	return nil
+}
+
+func (c *metadataDownloadClient) Resume(ctx context.Context, id string) error {
+	c.categoryCalls = append(c.categoryCalls, "resume")
+	return c.stubDownloadClient.Resume(ctx, id)
 }
 
 func (c *stubDownloadClient) Test(context.Context) (downloadpkg.Health, error) {
@@ -234,6 +261,9 @@ func TestDownloadFailureMessage(t *testing.T) {
 		{name: "storage unavailable", code: "downloader_storage_unavailable", want: "下载目标目录不存在或已移动，请重新选择目录"},
 		{name: "quota exhausted", code: "downloader_quota_exhausted", want: "115 离线下载配额已耗尽，请检查账号权益后重试"},
 		{name: "response invalid", code: "downloader_response_invalid", want: "下载器返回了无法识别的响应，请重新测试连接"},
+		{name: "category update unsupported", code: "downloader_category_update_unsupported", want: "当前 qBittorrent 版本不支持更新分类目录，请升级后重试"},
+		{name: "category update retryable", code: "downloader_category_update_failed", retryable: true, want: "qBittorrent 分类目录更新暂时失败，任务将自动重试"},
+		{name: "category boundary mismatch", code: "downloader_category_outside_staging", want: "qBittorrent 分类目录与该任务的暂存目录不一致，已阻止下载"},
 		{name: "generic retryable", code: "downloader_unavailable", retryable: true, want: "下载器暂时不可用，任务将自动重试"},
 		{name: "generic terminal", code: "download_failed", want: "下载任务执行失败"},
 	}
@@ -919,17 +949,202 @@ func TestProviderPathComparisonIsCrossPlatformAndRejectsDifferentTargets(t *test
 	}
 }
 
-func TestRouteCategoryRejectsExistingCategoryOutsideExpectedStagingPath(t *testing.T) {
+func TestRouteCategoryUpdatesExistingCategoryToTaskStagingSnapshotBeforeResume(t *testing.T) {
 	downloads, _, _, _, _ := downloadFixture(t)
 	root := t.TempDir()
 	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}, categories: []downloadpkg.Category{{Name: "电影", SavePath: filepath.Join(root, "outside")}}}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ID: "route-update", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(root, "电影")
+	if !providerPathsEqual(client.categoryPath, expected) || !providerPathsEqual(client.routedPath, expected) || !client.resumed {
+		t.Fatalf("categoryPath=%q routedPath=%q resumed=%v", client.categoryPath, client.routedPath, client.resumed)
+	}
+	if got := strings.Join(client.categoryCalls, ","); got != "categories,update,categories,set,resume" {
+		t.Fatalf("category call order=%q", got)
+	}
+}
+
+func TestRouteCategoryRepairsExistingCategoryWithEmptySavePath(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	root := t.TempDir()
+	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}, categories: []downloadpkg.Category{{Name: "电影"}}}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ID: "route-empty-path", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(client.categoryCalls, ","); got != "categories,update,categories,set,resume" {
+		t.Fatalf("category call order=%q", got)
+	}
+}
+
+func TestRouteCategoryCreatesAndVerifiesNewCategoryBeforeResume(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	root := t.TempDir()
+	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ID: "route-create", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	if err := worker.routeCategory(context.Background(), &task, client, root, "剧集", "classified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(client.categoryCalls, ","); got != "categories,create,categories,set,resume" {
+		t.Fatalf("category call order=%q", got)
+	}
+}
+
+func TestRouteCategoryRejectsProviderThatIgnoresCategoryUpdate(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	root := t.TempDir()
+	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}, categories: []downloadpkg.Category{{Name: "电影", SavePath: filepath.Join(root, "old")}}, keepCategoryPath: true}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); codeOfProviderError(err) != "downloader_category_outside_staging" {
+		t.Fatalf("route error=%v", err)
+	}
+	if client.resumed || client.routedPath != "" {
+		t.Fatalf("unverified category was routed/resumed: routedPath=%q resumed=%v", client.routedPath, client.resumed)
+	}
+	if got := strings.Join(client.categoryCalls, ","); got != "categories,update,categories" {
+		t.Fatalf("category call order=%q", got)
+	}
+}
+
+func TestRouteCategoryDoesNotResumeWhenCategoryUpdateFails(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	root := t.TempDir()
+	client := &metadataDownloadClient{
+		stubDownloadClient: &stubDownloadClient{},
+		categories:         []downloadpkg.Category{{Name: "电影", SavePath: filepath.Join(root, "old")}},
+		updateCategoryErr:  downloadpkg.Error("downloader_category_update_failed", true, errors.New("provider rejected update")),
+	}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", "")
+	code, retryable := downloadpkg.ErrorInfo(err)
+	if code != "downloader_category_update_failed" || !retryable {
+		t.Fatalf("code=%q retryable=%v err=%v", code, retryable, err)
+	}
+	if client.resumed || client.routedPath != "" {
+		t.Fatalf("failed category update was routed/resumed: routedPath=%q resumed=%v", client.routedPath, client.resumed)
+	}
+	if got := strings.Join(client.categoryCalls, ","); got != "categories,update" {
+		t.Fatalf("category call order=%q", got)
+	}
+}
+
+func TestRouteCategoryRetryReusesImmutableTaskStagingSnapshot(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	root := t.TempDir()
+	client := &metadataDownloadClient{
+		stubDownloadClient: &stubDownloadClient{},
+		categories:         []downloadpkg.Category{{Name: "电影", SavePath: filepath.Join(root, "old")}},
+		updateCategoryErr:  downloadpkg.Error("downloader_category_update_failed", true, errors.New("temporary failure")),
+	}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ID: "route-retry", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err == nil {
+		t.Fatal("first route unexpectedly succeeded")
+	}
+	client.updateCategoryErr = nil
+	client.categoryCalls = nil
+	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(root, "电影")
+	if !providerPathsEqual(client.categoryPath, expected) || !providerPathsEqual(client.routedPath, expected) || !client.resumed {
+		t.Fatalf("categoryPath=%q routedPath=%q resumed=%v", client.categoryPath, client.routedPath, client.resumed)
+	}
+	if got := strings.Join(client.categoryCalls, ","); got != "categories,update,categories,set,resume" {
+		t.Fatalf("retry call order=%q", got)
+	}
+}
+
+func TestRouteCategoryRejectsResolvedPathOutsideTaskSnapshot(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	snapshot := t.TempDir()
+	different := t.TempDir()
+	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}}
+	worker := NewDownloadWorker(downloads)
+	task := models.DownloadTask{ProviderTaskID: "provider-hash", StagingAbsolutePath: snapshot}
+	if err := worker.routeCategory(context.Background(), &task, client, different, "电影", "classified", "", ""); codeOfProviderError(err) != "downloader_category_outside_staging" {
+		t.Fatalf("route error=%v", err)
+	}
+	if len(client.categoryCalls) != 0 || client.resumed {
+		t.Fatalf("outside snapshot reached provider: calls=%v resumed=%v", client.categoryCalls, client.resumed)
+	}
+}
+
+func TestRouteCategoryRejectsMissingTaskStagingSnapshot(t *testing.T) {
+	downloads, _, _, _, _ := downloadFixture(t)
+	root := t.TempDir()
+	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}}
 	worker := NewDownloadWorker(downloads)
 	task := models.DownloadTask{ProviderTaskID: "provider-hash"}
 	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); codeOfProviderError(err) != "downloader_category_outside_staging" {
 		t.Fatalf("route error=%v", err)
 	}
-	if client.resumed || client.category != "" {
-		t.Fatalf("unsafe category was assigned/resumed: category=%q resumed=%v", client.category, client.resumed)
+	if len(client.categoryCalls) != 0 || client.resumed {
+		t.Fatalf("missing snapshot reached provider: calls=%v resumed=%v", client.categoryCalls, client.resumed)
+	}
+}
+
+func TestDownloadWorkerLoadPromotesValidatedLegacyStagingSnapshotForStrictRouting(t *testing.T) {
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
+	metadataClient := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}}
+	registry := downloadpkg.NewRegistry()
+	if err := registry.Register(models.DownloaderTypeQBittorrent, downloadpkg.Capabilities{}, func(downloadpkg.Config) (downloadpkg.Client, error) { return metadataClient, nil }); err != nil {
+		t.Fatal(err)
+	}
+	downloaders.registry = registry
+	root := t.TempDir()
+	storage := models.Storage{Name: "Legacy staging", NameNormalized: "legacy staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Legacy qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:legacy-staging"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job models.Job
+	if err := queue.db.First(&job, "id = ?", created.JobID).Error; err != nil {
+		t.Fatal(err)
+	}
+	worker := NewDownloadWorker(downloads)
+	claimed := ClaimedJob{Job: job}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{"staging_absolute_path": "", "staging_storage_id": nil, "staging_relative_path": "/"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, _, err := worker.load(context.Background(), claimed); ErrorCode(err) != CodeDownloadStagingRequired {
+		t.Fatalf("missing absolute and legacy snapshot error=%v code=%q", err, ErrorCode(err))
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{"staging_storage_id": storage.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	task, _, client, _, savePath, err := worker.load(context.Background(), claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !providerPathsEqual(task.StagingAbsolutePath, root) || !providerPathsEqual(savePath, root) {
+		t.Fatalf("promoted=%q savePath=%q root=%q", task.StagingAbsolutePath, savePath, root)
+	}
+	var persisted models.DownloadTask
+	if err := queue.db.First(&persisted, "id = ?", created.ID).Error; err != nil || persisted.StagingAbsolutePath != "" {
+		t.Fatalf("worker read persisted promoted path=%q err=%v", persisted.StagingAbsolutePath, err)
+	}
+	task.ProviderTaskID = "provider-hash"
+	if err := worker.routeCategory(context.Background(), &task, client.(downloadpkg.MetadataClient), savePath, "电影", "classified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !metadataClient.resumed || !providerPathsEqual(metadataClient.routedPath, filepath.Join(root, "电影")) {
+		t.Fatalf("resumed=%v routedPath=%q", metadataClient.resumed, metadataClient.routedPath)
 	}
 }
 

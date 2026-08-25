@@ -1585,8 +1585,15 @@ func (w *DownloadWorker) routeCategory(ctx context.Context, task *models.Downloa
 	if category == "" || len([]rune(category)) > 128 || strings.ContainsAny(category, `/\\:\r\n`) {
 		return downloadpkg.Error("downloader_category_invalid", false, nil)
 	}
-	categoryPath := filepath.Join(savePath, category)
-	relative, err := filepath.Rel(filepath.Clean(savePath), filepath.Clean(categoryPath))
+	snapshot := strings.TrimSpace(task.StagingAbsolutePath)
+	if snapshot == "" || !providerPathsEqual(snapshot, savePath) {
+		return downloadpkg.Error("downloader_category_outside_staging", false, nil)
+	}
+	// The task snapshot, rather than the mutable global setting or a provider
+	// category default, is the sole filesystem authority for this task.
+	stagingPath := filepath.Clean(snapshot)
+	categoryPath := filepath.Join(stagingPath, category)
+	relative, err := filepath.Rel(stagingPath, filepath.Clean(categoryPath))
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
 		return downloadpkg.Error("downloader_category_outside_staging", false, err)
 	}
@@ -1594,7 +1601,7 @@ func (w *DownloadWorker) routeCategory(ctx context.Context, task *models.Downloa
 		if !info.IsDir() {
 			return downloadpkg.Error("downloader_category_outside_staging", false, nil)
 		}
-		resolved, resolveErr := medialibrary.ResolveRoot(savePath, "/"+category)
+		resolved, resolveErr := medialibrary.ResolveRoot(stagingPath, "/"+category)
 		if resolveErr != nil || !providerPathsEqual(resolved, categoryPath) {
 			return downloadpkg.Error("downloader_category_outside_staging", false, resolveErr)
 		}
@@ -1605,13 +1612,40 @@ func (w *DownloadWorker) routeCategory(ctx context.Context, task *models.Downloa
 	if err != nil {
 		return err
 	}
+	found := false
 	for _, existing := range categories {
-		if strings.EqualFold(existing.Name, category) && (existing.SavePath == "" || !providerPathsEqual(existing.SavePath, categoryPath)) {
-			return downloadpkg.Error("downloader_category_outside_staging", false, nil)
+		if !strings.EqualFold(existing.Name, category) {
+			continue
+		}
+		found = true
+		if existing.SavePath == "" || !providerPathsEqual(existing.SavePath, categoryPath) {
+			if err := client.UpdateCategory(ctx, existing.Name, categoryPath); err != nil {
+				return err
+			}
+		}
+		break
+	}
+	if !found {
+		if err := client.EnsureCategory(ctx, category, categoryPath); err != nil {
+			return err
 		}
 	}
-	if err := client.EnsureCategory(ctx, category, categoryPath); err != nil {
+	// qBittorrent can return HTTP success while an old or incompatible API
+	// ignores the mutation. Re-read provider state and keep the immutable task
+	// staging snapshot as the only accepted boundary before setLocation.
+	categories, err = client.Categories(ctx)
+	if err != nil {
 		return err
+	}
+	verified := false
+	for _, existing := range categories {
+		if strings.EqualFold(existing.Name, category) && providerPathsEqual(existing.SavePath, categoryPath) {
+			verified = true
+			break
+		}
+	}
+	if !verified {
+		return downloadpkg.Error("downloader_category_outside_staging", false, nil)
 	}
 	if err := client.SetCategory(ctx, task.ProviderTaskID, category, categoryPath); err != nil {
 		return err
@@ -1783,6 +1817,13 @@ func (w *DownloadWorker) load(ctx context.Context, job ClaimedJob) (models.Downl
 	if err != nil {
 		return task, record, nil, downloadpkg.Source{}, "", err
 	}
+	if task.StagingAbsolutePath == "" && savePath != "" {
+		// Legacy tasks snapshot a Storage plus provider-relative path. Once that
+		// immutable pair has been resolved and root-constrained, promote the
+		// canonical result in memory so the strict routing boundary below remains
+		// identical for legacy and current tasks. Do not persist from a worker read.
+		task.StagingAbsolutePath = savePath
+	}
 	plaintext, err := w.service.credentials.Decrypt(downloadSourcePurpose(task.ID), task.SourceCiphertext)
 	if err != nil {
 		return task, record, nil, downloadpkg.Source{}, "", err
@@ -1875,6 +1916,15 @@ func downloadFailureMessage(code string, retryable bool) string {
 		return "115 已存在相同离线任务，但未能安全接管；请在 115 删除旧任务记录后重试"
 	case "downloader_response_invalid":
 		return "下载器返回了无法识别的响应，请重新测试连接"
+	case "downloader_category_update_unsupported":
+		return "当前 qBittorrent 版本不支持更新分类目录，请升级后重试"
+	case "downloader_category_update_failed":
+		if retryable {
+			return "qBittorrent 分类目录更新暂时失败，任务将自动重试"
+		}
+		return "qBittorrent 分类目录更新失败，请重新测试下载器连接"
+	case "downloader_category_outside_staging":
+		return "qBittorrent 分类目录与该任务的暂存目录不一致，已阻止下载"
 	case CodeTransferMediaUnrecognized:
 		return "下载已完成，但媒体未识别，未自动入库；请修正识别条件后重试"
 	case "download_state_persist_failed":

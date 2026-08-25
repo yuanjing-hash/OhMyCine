@@ -139,9 +139,11 @@
 ## 10. 搜索、目录与失败任务重选目标
 
 - Explore 保留每个站点自己的 `page/has_next/items/status`，顶部 tab 只切可见渠道；翻页替换当前页，不把第 N 页追加到第 1 页。
+- 搜索排序由独立 `sort=seeders|published|size` 与 `direction=asc|desc` 组合驱动，默认 `seeders+desc`；缺失数值/非法日期始终稳定置后，站点、标题和 opaque token 提供不随方向反转的确定性兜底顺序。
 - 预识别事实与最终 manifest 识别分别标注；自动匹配只有在 Server 通过可信详情接口验证后才写入 claim。
 - 媒体库配置继续存 provider-relative 根；WebUI 额外组合 Storage 可读根与相对根，`/` 显示为“数据源根目录”，不改变安全路径契约。
 - `PUT /api/v1/downloads/:id/import-target` 只接受失败 Transfer 的新媒体库 ID。服务在事务内锁定 DownloadTask、TransferTask 和 Job，验证没有部分写入/checkpoint/cleanup，再重建完整目标与 Profile 快照、清理旧计划并将原 Transfer Job 重新入队。已完成 manifest 和验证身份保持不变，不调用 downloader。
+- qBittorrent 分类路由以 DownloadTask 的 `staging_absolute_path` 为唯一当前任务边界；legacy Storage-relative 快照只在 `load()` 成功解析后提升为内存绝对快照。发现同名分类的路径为空或指向旧暂存根时，调用 `editCategory`，随后重新读取并比较规范化路径，验证成功后才能 `setCategory → setLocation → resume`。
 
 ## 11. Player 独立识别同步
 
@@ -152,5 +154,7 @@
 ## 12. 敏感输入组件
 
 - Server WebUI 与 Player 各自提供同契约 `SecretInput`，支持单行/多行、`configured` 安全布尔、默认遮挡和可访问的眼睛按钮。
-- `configured && modelValue === ''` 只显示星号占位；已保存凭据永不进入 DOM。用户输入替换值后，眼睛只切换该内存值。
+- `configured && modelValue === ''` 只显示星号占位。用户输入替换值后，眼睛切换该表单内存值；用户主动请求旧值时，组件调用 `loadSecret`，把结果放入独立的短生命周期 `revealedValue`，不触发 `update:modelValue`，隐藏、切换对象、卸载或竞态失效时立即清除。
+- Server 通过 `POST /api/v1/credentials/reveal` 按资源类型、资源 ID、字段三元组硬编码白名单读取；路由要求认证、CSRF、`connections.secrets.export` 和 `Cache-Control: no-store`，每次成功/失败均记录不含值的审计。普通 DTO 只返回逐字段 `configured` 布尔。
+- Player 直接读取本机 provider-specific 安全凭据 envelope；`omc_player_*` Server 设备访问令牌、OhMyCine 密码和内置 TMDB 凭据没有 loader，不能回显。
 - 静态 inventory 测试扫描全部 Vue 文件，拒绝原生 `type="password"` 和敏感 `v-model` 绕过共享组件。

@@ -106,6 +106,9 @@ type SiteSummary struct {
 	TimeoutSeconds       int               `json:"timeout_seconds"`
 	RateLimitPerMinute   int               `json:"rate_limit_per_minute"`
 	CredentialConfigured bool              `json:"credential_configured"`
+	CookieConfigured     bool              `json:"cookie_configured"`
+	PasskeyConfigured    bool              `json:"passkey_configured"`
+	APIKeyConfigured     bool              `json:"api_key_configured"`
 	Health               SiteHealthSummary `json:"health"`
 	Revision             uint64            `json:"revision"`
 	CreatedAt            time.Time         `json:"created_at"`
@@ -229,7 +232,7 @@ func (s *SiteService) List(actor Actor) ([]SiteSummary, error) {
 	}
 	items := make([]SiteSummary, 0, len(records))
 	for _, record := range records {
-		items = append(items, siteSummary(record))
+		items = append(items, s.siteSummary(record))
 	}
 	return items, nil
 }
@@ -314,7 +317,7 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 		return SiteSummary{}, err
 	}
 	serverlog.OperationPTSiteManagement.Event(s.log.Info()).Uint("site_id", record.ID).Str("kind", kind).Msg(serverlog.OperationPTSiteManagement.Message("站点连接已创建并通过测试"))
-	return siteSummary(record), nil
+	return s.siteSummary(record), nil
 }
 
 // createFromCookieCloud persists a site only after a supported adapter has
@@ -371,7 +374,7 @@ func (s *SiteService) createFromCookieCloud(ctx context.Context, name, kind, bas
 		return SiteSummary{}, err
 	}
 	serverlog.OperationPTSiteManagement.Event(s.log.Info()).Uint("site_id", record.ID).Str("kind", kind).Msg(serverlog.OperationPTSiteManagement.Message("CookieCloud 已发现并创建站点连接"))
-	return siteSummary(record), nil
+	return s.siteSummary(record), nil
 }
 
 func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input SiteUpdateInput, request RequestContext) (SiteSummary, error) {
@@ -390,7 +393,7 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 	// configuration change still pass through the candidate probe below.
 	if siteUpdateDisablesOnly(input) {
 		if !record.Enabled {
-			return siteSummary(record), nil
+			return s.siteSummary(record), nil
 		}
 		now := s.now()
 		nextRevision := record.Revision + 1
@@ -411,7 +414,7 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 		if err := s.db.First(&record, id).Error; err != nil {
 			return SiteSummary{}, err
 		}
-		return siteSummary(record), nil
+		return s.siteSummary(record), nil
 	}
 	credential, err := s.decryptCredential(record)
 	if err != nil {
@@ -516,7 +519,7 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 	if err := s.db.First(&record, id).Error; err != nil {
 		return SiteSummary{}, err
 	}
-	return siteSummary(record), nil
+	return s.siteSummary(record), nil
 }
 
 func siteUpdateDisablesOnly(input SiteUpdateInput) bool {
@@ -553,7 +556,7 @@ func (s *SiteService) Test(ctx context.Context, actor Actor, id uint, request Re
 	if err := s.db.First(&record, id).Error; err != nil {
 		return SiteSummary{}, err
 	}
-	return siteSummary(record), nil
+	return s.siteSummary(record), nil
 }
 
 func (s *SiteService) Delete(actor Actor, id uint, request RequestContext) error {
@@ -1311,9 +1314,15 @@ func normalizeBrowserService(enabled bool, raw string) (string, error) {
 	}
 	return parsed.String(), nil
 }
-func siteSummary(record models.Site) SiteSummary {
+func (s *SiteService) siteSummary(record models.Site) SiteSummary {
 	definition, _ := builtin.DefinitionForKey(record.Kind)
-	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	var configured siteCredentialEnvelope
+	if record.CredentialCiphertext != "" {
+		if raw, err := s.credentials.Decrypt(siteCredentialPurpose(record.ID, record.Kind), record.CredentialCiphertext); err == nil {
+			_ = json.Unmarshal([]byte(raw), &configured)
+		}
+	}
+	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", CookieConfigured: configured.Cookie != "", PasskeyConfigured: configured.Passkey != "", APIKeyConfigured: configured.APIKey != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 }
 
 func validateCatalogSiteBaseURL(kind, baseURL string) error {

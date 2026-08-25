@@ -179,6 +179,7 @@ func newTestClient(t *testing.T) *testClient {
 		t.Fatal(err)
 	}
 	connections := services.NewConnectionService(db, audit, credentialStore, cloudRegistry, log)
+	api.SetCredentialRevealService(services.NewCredentialRevealService(db, audit, credentialStore))
 	changes := services.NewMediaChangeService(db)
 	refresh := services.NewMediaServerRefreshService(db, queue, audit, connections)
 	changes.SetReadyHandler(refresh.EnqueueLibrary)
@@ -233,6 +234,61 @@ func newTestClient(t *testing.T) *testClient {
 	api.SetSeedingService(seeding)
 	api.SetPluginRepositoryService(services.NewPluginRepositoryService(db, audit, nil, log))
 	return &testClient{router: New(cfg, api, auth, log), queue: queue, db: db, connections: connections, signedProxy: signedProxy, embyGateway: embyGateway, changes: changes, sites: sites}
+}
+
+func TestCredentialRevealRouteIsNoStoreAuthorizedAndDoesNotChangeNormalDTOs(t *testing.T) {
+	owner := newTestClient(t)
+	owner.setup(t)
+	secret := "UID=100_A1; CID=cid-value; SEID=reveal-route-secret; KID=kid-value"
+	status, created := owner.request(t, http.MethodPost, "/api/v1/connections", map[string]any{
+		"name": "Reveal Route 115", "provider": "pan115", "cookie": secret, "enabled": true,
+	}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d message=%s", status, created.Message)
+	}
+	var connection struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(created.Data, &connection); err != nil {
+		t.Fatal(err)
+	}
+	status, list := owner.request(t, http.MethodGet, "/api/v1/connections?provider=pan115", nil, false)
+	if status != http.StatusOK || bytes.Contains(list.Data, []byte(secret)) {
+		t.Fatalf("normal DTO leaked credential status=%d data=%s", status, list.Data)
+	}
+
+	status, revealed := owner.request(t, http.MethodPost, "/api/v1/credentials/reveal", map[string]any{"resource_type": "connection", "resource_id": uintString(connection.ID), "field": "credential"}, true)
+	if status != http.StatusOK || owner.lastHeader.Get("Cache-Control") != "no-store" || !bytes.Contains(revealed.Data, []byte(secret)) {
+		t.Fatalf("reveal status=%d cache=%q data=%s", status, owner.lastHeader.Get("Cache-Control"), revealed.Data)
+	}
+
+	rolesStatus, rolesEnvelope := owner.request(t, http.MethodGet, "/api/v1/roles", nil, false)
+	if rolesStatus != http.StatusOK {
+		t.Fatal(rolesStatus)
+	}
+	var roles struct {
+		List []struct {
+			ID   uint   `json:"id"`
+			Code string `json:"code"`
+		} `json:"list"`
+	}
+	_ = json.Unmarshal(rolesEnvelope.Data, &roles)
+	var viewerID uint
+	for _, role := range roles.List {
+		if role.Code == authz.RoleViewer {
+			viewerID = role.ID
+		}
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "reveal-viewer", "password": "viewer-strong-password", "role_ids": []uint{viewerID}}, true)
+	if status != http.StatusCreated {
+		t.Fatal(status)
+	}
+	viewer := newTestClientWithRouter(owner.router)
+	viewer.login(t, "reveal-viewer", "viewer-strong-password")
+	status, denied := viewer.request(t, http.MethodPost, "/api/v1/credentials/reveal", map[string]any{"resource_type": "connection", "resource_id": uintString(connection.ID), "field": "credential"}, true)
+	if status != http.StatusForbidden || bytes.Contains(denied.Data, []byte(secret)) || viewer.lastHeader.Get("Cache-Control") != "no-store" {
+		t.Fatalf("denied status=%d cache=%q data=%s", status, viewer.lastHeader.Get("Cache-Control"), denied.Data)
+	}
 }
 
 func createRouterSignedArtifact(t *testing.T, client *testClient, actor services.Actor) string {

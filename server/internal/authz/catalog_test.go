@@ -8,7 +8,7 @@ func TestCatalogContainsStableImplementationCodes(t *testing.T) {
 		PermissionUsersRead, PermissionUsersCreate, PermissionUsersUpdate, PermissionUsersDisable, PermissionUsersDelete,
 		PermissionRolesRead, PermissionRolesCreate, PermissionRolesUpdate, PermissionRolesDelete, PermissionRolesAssign,
 		PermissionAuditRead,
-		PermissionConnectionsRead, PermissionConnectionsCreate, PermissionConnectionsUpdate, PermissionConnectionsDelete, PermissionConnectionsTest,
+		PermissionConnectionsRead, PermissionConnectionsCreate, PermissionConnectionsUpdate, PermissionConnectionsDelete, PermissionConnectionsTest, PermissionConnectionsSecretsExport,
 		PermissionStoragesRead, PermissionStoragesBrowse, PermissionStoragesCreate, PermissionStoragesUpdate, PermissionStoragesDelete, PermissionStoragesTest,
 		PermissionMediaClassificationProfilesRead, PermissionMediaClassificationProfilesCreate, PermissionMediaClassificationProfilesUpdate, PermissionMediaClassificationProfilesDelete,
 		PermissionTransfersReadOwn, PermissionTransfersReadAll,

@@ -90,6 +90,10 @@ type MetadataClient interface {
 	Manifest(context.Context, string) (Manifest, error)
 	Categories(context.Context) ([]Category, error)
 	EnsureCategory(context.Context, string, string) error
+	// UpdateCategory changes the provider-owned save path for an existing
+	// category. Callers must re-read Categories and verify the provider applied
+	// the requested path before routing or resuming a task.
+	UpdateCategory(context.Context, string, string) error
 	// SetCategory assigns the provider category and explicitly routes the task
 	// to savePath. Providers such as qBittorrent do not move a task merely
 	// because its category changed when automatic torrent management is off.

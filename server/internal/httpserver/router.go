@@ -161,6 +161,7 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	connectionAPI := v1.Group("")
 	connectionAPI.Use(middleware.NoStore(), middleware.Auth(auth, api.CookieName()), middleware.CSRF(auth))
 	connectionAPI.GET("/connections", middleware.RequirePermission(authz.PermissionConnectionsRead), api.Connections)
+	connectionAPI.POST("/credentials/reveal", middleware.RequirePermission(authz.PermissionConnectionsSecretsExport), api.RevealCredential)
 	connectionAPI.GET("/connections/:id/directories", middleware.RequirePermission(authz.PermissionConnectionsRead), middleware.RequirePermission(authz.PermissionStoragesBrowse), api.ConnectionDirectories)
 	connectionAPI.POST("/connections", middleware.RequirePermission(authz.PermissionConnectionsCreate), api.CreateConnection)
 	connectionAPI.PATCH("/connections/:id", middleware.RequirePermission(authz.PermissionConnectionsUpdate), api.UpdateConnection)

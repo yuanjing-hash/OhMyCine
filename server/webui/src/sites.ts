@@ -20,6 +20,9 @@ export interface SiteSummary {
   browser_emulation: boolean
   browser_service_url: string
   credential_configured: boolean
+  cookie_configured: boolean
+  passkey_configured: boolean
+  api_key_configured: boolean
   health: SiteHealth
   revision: number
   created_at: string
@@ -43,6 +46,9 @@ export interface CookieCloudSettings {
   base_url: string
   auto_sync_minutes: number
   credential_configured: boolean
+  uuid_configured: boolean
+  password_configured: boolean
+  auth_header_configured: boolean
   local_upload_path?: string
   last_sync_status: string
   last_sync_error_code: string
@@ -144,6 +150,7 @@ export interface PTRecognitionCandidate {
 export interface PTSearchResponse { groups: PTSearchGroup[] }
 
 export type TorrentResultSort = 'seeders' | 'published' | 'size'
+export type TorrentResultDirection = 'asc' | 'desc'
 export interface TorrentResultFilters {
   activeChannel: 'all' | number
   enabledSiteTypes: ReadonlyArray<'pt' | 'bt'>
@@ -151,6 +158,7 @@ export interface TorrentResultFilters {
   promotion?: string
   minimumSeeders?: number
   sort: TorrentResultSort
+  direction: TorrentResultDirection
 }
 
 export interface TorrentResultEntry {
@@ -258,10 +266,23 @@ export function filterAndSortTorrentResults(groups: readonly PTSearchGroup[], fi
     : groups.filter(group => group.site_id === filters.activeChannel)
   const promotion = filters.promotion?.trim().toLowerCase() ?? ''
   const resolution = filters.resolution?.trim() ?? ''
-  const timestamp = (value?: string) => {
+  const timestamp = (value?: string): number | undefined => {
     const parsed = value ? Date.parse(value) : Number.NaN
-    return Number.isFinite(parsed) ? parsed : 0
+    return Number.isFinite(parsed) ? parsed : undefined
   }
+  const compareOptionalNumber = (left?: number | null, right?: number | null) => {
+    const leftValue = typeof left === 'number' && Number.isFinite(left) ? left : undefined
+    const rightValue = typeof right === 'number' && Number.isFinite(right) ? right : undefined
+    if (leftValue === undefined || rightValue === undefined) {
+      if (leftValue === rightValue) return 0
+      return leftValue === undefined ? 1 : -1
+    }
+    const compared = leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0
+    return filters.direction === 'asc' ? compared : -compared
+  }
+  const stableTieBreak = (left: TorrentResultEntry, right: TorrentResultEntry) => left.group.site_id - right.group.site_id
+    || left.item.title.localeCompare(right.item.title)
+    || left.item.token.localeCompare(right.item.token)
   return scoped
     .flatMap(group => group.status === 'success' ? group.items.map(item => ({ item, group })) : [])
     .filter(({ group }) => filters.enabledSiteTypes.includes(group.site_type))
@@ -269,13 +290,12 @@ export function filterAndSortTorrentResults(groups: readonly PTSearchGroup[], fi
     .filter(({ item }) => !promotion || item.promotion?.toLowerCase() === promotion)
     .filter(({ item }) => filters.minimumSeeders == null || (item.seeders ?? -1) >= filters.minimumSeeders)
     .sort((left, right) => {
-      if (filters.sort === 'published') return timestamp(right.item.published_at) - timestamp(left.item.published_at) || left.item.title.localeCompare(right.item.title)
-      if (filters.sort === 'size') return (right.item.size_bytes ?? -1) - (left.item.size_bytes ?? -1) || left.item.title.localeCompare(right.item.title)
-      return (right.item.seeders ?? -1) - (left.item.seeders ?? -1)
-        || (right.item.completed ?? -1) - (left.item.completed ?? -1)
-        || timestamp(right.item.published_at) - timestamp(left.item.published_at)
-        || left.group.site_id - right.group.site_id
-        || left.item.title.localeCompare(right.item.title)
+      if (filters.sort === 'published') return compareOptionalNumber(timestamp(left.item.published_at), timestamp(right.item.published_at)) || stableTieBreak(left, right)
+      if (filters.sort === 'size') return compareOptionalNumber(left.item.size_bytes, right.item.size_bytes) || stableTieBreak(left, right)
+      return compareOptionalNumber(left.item.seeders, right.item.seeders)
+        || compareOptionalNumber(left.item.completed, right.item.completed)
+        || compareOptionalNumber(timestamp(left.item.published_at), timestamp(right.item.published_at))
+        || stableTieBreak(left, right)
     })
 }
 

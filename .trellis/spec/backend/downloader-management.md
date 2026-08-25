@@ -12,7 +12,7 @@
 - Environment: `OMC_CREDENTIAL_MASTER_KEY` is an optional Base64-encoded 32-byte key; `OMC_CREDENTIAL_KEY_FILE` is the explicit/generated key-file path. The generated default is `credentials.key` beside the SQLite database.
 - Tables: `downloaders`, singleton `download_settings`, `download_tasks`, and private `transfer_tasks`; every DownloadTask has exactly one durable download `jobs` row and at most one idempotent transfer task/job.
 - Migration v23 adds private `download_tasks.target_storage_type`, `target_connection_id`, `target_provider_root_id`, and `transfer_tasks.cloud_state_json`. The private 115 manifest file shape includes provider item/parent IDs and SHA1; no public DTO reuses that shape.
-- Provider contract: `Client.Test`, `Submit`, `Get`, `Pause`, `Resume`, and `Cancel(ctx, taskID, deleteData)` under `server/pkg/downloader`; capabilities include `native_offline` and `output_constraint=none|local_staging|provider_storage`.
+- Provider contract: `Client.Test`, `Submit`, `Get`, `Pause`, `Resume`, and `Cancel(ctx, taskID, deleteData)` under `server/pkg/downloader`; metadata-capable downloaders additionally implement `Categories`, `EnsureCategory`, `UpdateCategory(ctx, name, savePath)`, `SetCategory`, and `Manifest`. Capabilities include `native_offline` and `output_constraint=none|local_staging|provider_storage`.
 - Management routes: `GET/POST /api/v1/downloaders`, `PATCH/DELETE /api/v1/downloaders/:id`, and `POST /api/v1/downloaders/:id/test`.
 - Download routes: `GET /api/v1/downloads?scope=active|history|all`, `POST /api/v1/downloads`, and `DELETE /api/v1/downloads/:id`; public source kinds are `url`, `torrent`, and `115_share`. `provider_item` is an internal-only adoption source and HTTP must reject it.
 - Migration v26 adds `media_libraries.ingest_*`, `download_tasks.staging_provider_directory_id`, `download_tasks.ingest_source_key`, and `download_tasks.source_origin=user|share|provider_ingest`. The non-empty ingest key has a partial unique index and is never a public identifier.
@@ -74,7 +74,8 @@
 - A candidate credential or API route probe checks the submitted revision against the current row before any external request, then still uses revision CAS after the probe. A stale request must not send a candidate credential or the current effective credential to any metadata route.
 - Missing TMDB configuration, authentication/network failure, no match, ambiguity, low confidence, or fallback-only classification records an allowlisted reason, assigns the provider category `未识别`, and resumes automatically. Preclassification never creates `download_classification` ActionRequests or blocks later queue work.
 - Classification fallback runtime logs contain only the stable reason code plus allowlisted `credential_source` and `credential_kind`; they never contain credential values, query URLs, provider responses, filenames, or staging paths.
-- qBittorrent category names come from the snapshotted Profile result. Existing categories with an empty or mismatched save path are rejected; managed category paths must remain below unified staging. Routing must call both `setCategory` and `setLocation(staging/category)` before resume because category assignment alone does not change the task save path when qBittorrent Automatic Torrent Management is disabled.
+- qBittorrent category names come from the snapshotted Profile result. `routeCategory` accepts only the task's immutable `staging_absolute_path`; a safely resolved legacy `staging_storage_id + staging_relative_path` is promoted to that in-memory snapshot during task loading, while a task with neither form fails before a provider call. Changing the global staging setting never redirects an already-created task.
+- A same-name qBittorrent category may still contain the previous global staging path after an administrator changes the setting. For the new task, call `editCategory(name, taskSnapshot/category)`, then re-read `Categories` and require the normalized Windows/UNC/Unix path to equal the task snapshot target before `setCategory`, `setLocation`, or `resume`. Empty category paths use the same repair path. An unsupported endpoint, failed/ignored mutation, or post-update mismatch keeps the task paused with a stable safe error; never log either absolute path. Routing must call both `setCategory` and `setLocation(taskSnapshot/category)` before resume because category assignment alone does not change the task save path when qBittorrent Automatic Torrent Management is disabled.
 - New tasks use the exact managed `staging/category` boundary established during qBittorrent routing. Transfer source resolution checks that path first, then supports `staging/relative` only as a compatibility fallback for already-created tasks from versions that assigned a category without changing location. Every candidate and existing source/target ancestor is independently rechecked for symlink, Junction, mount-point or Reparse Point escape immediately before file access.
 - A successful metadata match may be persisted as an intermediate `matched` scrape state, but `classified` is written only after provider category assignment and resume both succeed. Provider routing failure must remain retryable and re-enter classification/routing instead of skipping directly to telemetry polling.
 - Completion retrieves the bounded provider manifest again and persists only an allowlisted scrape summary: title, media type, category, TMDB ID, confidence, match status, and file count. Provider raw bodies and paths are not public facts.
@@ -112,7 +113,10 @@
 | qBittorrent login returns 404/other 4xx or 5xx | Classify as request/configuration failure or retryable unavailability instead of blaming the saved credentials |
 | qBittorrent add returns modern JSON, an unknown success body, or a previous local failure already created the torrent | Bind `added_torrent_ids` when present and otherwise reconcile the stable tag; never blindly add twice |
 | Magnet metadata is ready but TMDB/Profile evidence is incomplete | Assign `未识别`, record only a safe reason code/message, resume, and create no ActionRequest |
-| Existing qBittorrent category points outside unified staging | Reject routing and keep the task paused; never silently reuse or overwrite it |
+| Same-name qBittorrent category still points to the previous global staging root, or has an empty path | Update it to `task.staging_absolute_path/category`, re-read and verify exact normalized equality, then set category/location and resume |
+| qBittorrent category update returns 404/405 | Return terminal `downloader_category_update_unsupported`; keep the task paused and recommend upgrading qBittorrent |
+| qBittorrent category update returns 401/403, 429, 5xx, `200 Fails.`, or success without applying the path | Preserve authentication semantics; treat 429/5xx as retryable `downloader_category_update_failed`; otherwise fail safely, never set location or resume |
+| Download task has neither an absolute staging snapshot nor a valid legacy Storage-relative snapshot | Fail before every qBittorrent category/location call; never fall back to the current global setting |
 | qBittorrent Automatic Torrent Management is disabled | Explicitly call `setLocation` after category assignment, then resume; never assume Category changes the save path |
 | Custom TMDB Token is cleared | Resolve deployment, then builtin; report `none` only when every source is absent |
 | Default short TMDB API has a network failure | Try the legacy official API once; do not fallback after any HTTP response |
@@ -171,6 +175,7 @@
 - Good: 115 reports a duplicate completed magnet on a later page; the adapter adopts its hash/output and continues manifest verification without submitting again.
 - Good: an adopted failed 115 task remains terminal until the user clicks retry; that explicit retry removes only the stale task record and preserves provider files before one fresh submission.
 - Good: a qBittorrent task downloaded under `未识别`, then a verified override classifies it as `国产剧`; transfer and guarded cleanup still read `staging/未识别`, while destination naming uses the new logical category.
+- Good: after the administrator changes staging from `D:\Old` to `E:\New`, a newly created task keeps `E:\New` as its snapshot, repairs qBittorrent category `剧集` to `E:\New\剧集`, verifies the provider state, and only then resumes; an older queued task continues to use its own `D:\Old` snapshot.
 - Good: an administrator selects the correct TV identity for one completed video, leaves season/episode empty when automatic S01E09 parsing is correct, or explicitly supplies S00/E01 for a special; recovery reuses the completed manifest and creates one TransferTask without touching the downloader.
 - Base: qBittorrent CRUD and connection tests work before staging is configured, while task submission gives an actionable settings error.
 - Good: a running cancel displays a destructive confirmation, reaches qBittorrent with `deleteFiles=true`, then atomically removes the local task after provider acknowledgement.
@@ -178,6 +183,7 @@
 - Bad: storing magnet URLs in `jobs.payload_json`, returning encrypted credential blobs through API DTOs, or logging a qBittorrent response body.
 - Bad: marking a Job paused when the provider pause request failed, or using cancellation as an implicit delete-data operation.
 - Bad: putting a MediaLibrary selector on a downloader form, resolving staging from the current global setting after a task was queued, or storing an absolute path in Job payload.
+- Bad: treating a stale same-name qBittorrent category as permanently unusable, trusting HTTP 200 without re-reading provider categories, or calling `resume` before the repaired path is verified.
 - Bad: treating every parent ID `0` as outside the Storage before comparing it with a configured account root of `0`.
 - Bad: scanning only five fixed task pages, mapping `ErrOfflineTaskExisted` to retryable unavailability, and submitting the same magnet three times.
 - Bad: reusing `scrape_category` as both physical staging location and logical metadata category, or re-entering the normal downloader worker after a completed-manifest recovery is queued.
@@ -191,8 +197,8 @@
 - Provider tests use local HTTP servers to assert legacy `SID` and modern port-scoped `QBT_SID_*` login flows, missing/invalid session cookie rejection, bounded URL/torrent submission, telemetry parsing, v4/v5 pause/resume fallback, and `deleteFiles=true` for destructive cancellation.
 - Torrent bridge tests hash the exact raw `info` slice, preserve/deduplicate bounded public and passkey-bearing trackers, reject duplicate/malformed/deep structures, and prove 115 receives a magnet without exposing it outside encrypted task source state.
 - Queue tests prove two same-qBittorrent Jobs can be claimed together, while two same-115 Jobs remain resource-serialized; migration tests prove the untouched default upgrades and a customized revision remains unchanged.
-- Provider tests also cover old/new add responses, tag adoption, metadata stop-condition fallback, bounded manifests, category list/create/set, explicit task location routing, and no duplicate submissions.
-- Service tests cover encrypted TMDB settings, Profile snapshots, automatic `未识别` fallback without ActionRequest, safe category boundaries, and completion verification summaries.
+- Provider tests also cover old/new add responses, tag adoption, metadata stop-condition fallback, bounded manifests, category list/create/update/set, legacy `Ok.` and modern empty action success, `200 Fails.`, 401/405/429/503 error semantics, explicit task location routing, and no duplicate submissions.
+- Service tests cover encrypted TMDB settings, Profile snapshots, automatic `未识别` fallback without ActionRequest, new/existing/empty/stale category paths, update failure or ignored-success no-resume behavior, immutable new and safely promoted legacy staging snapshots, Windows/UNC/Unix comparisons, and completion verification summaries.
 - Package-takeover tests cover a 28.5 GiB movie plus sub-megabyte advertisement videos, clean title extraction, multi-episode TV packs, related/unrelated sidecars, and the no-mutation unrecognized gate for local and cloud targets.
 - TMDB tests cover explicit Bearer/query routing without secret-bearing errors, credential priority/clear fallback, linker/build-script contracts, v9→v10 route defaults, v10→v11 legacy Token kind compatibility, network-only official fallback, no HTTP fallback, custom single-route behavior, independent API/image CAS, redirect/content-type/size rejection and failed-probe preservation.
 - Service tests inspect raw SQLite rows and assert username/password/source plaintext and passkeys are absent from Downloader, DownloadTask, Job payload, public DTO, and audit metadata.
@@ -216,6 +222,7 @@ queue.Enqueue(EnqueueJobInput{Payload: map[string]any{
 client.Cancel(ctx, providerID, false) // reports cancellation but leaves unwanted provider data and local facts
 task.TargetProviderRootID = request.ProviderRootID // trusts a client/provider identity directly
 sourceRoot := filepath.Join(task.StagingAbsolutePath, task.ScrapeCategory) // breaks after manual reclassification
+client.Resume(ctx, providerID) // wrong after editCategory success without re-reading category state
 
 if current == "" || current == "0" { // rejects valid descendants of account root 0
     return ErrOutsideStorage
@@ -237,6 +244,11 @@ queue.EnqueueWith(EnqueueJobInput{
 
 // Snapshot the validated global absolute staging directory at enqueue.
 task.StagingAbsolutePath = settings.AbsolutePath
+
+// A legacy task may promote only its own validated Storage-relative snapshot;
+// never substitute the current global default. Provider category repair is
+// followed by a fresh Categories read before SetCategory/SetLocation/Resume.
+task.StagingAbsolutePath = resolvedLegacySnapshot
 
 // Keep physical placement separate from classification. A later manual match
 // may change ScrapeCategory, but transfer and cleanup still use this snapshot.

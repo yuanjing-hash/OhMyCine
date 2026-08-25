@@ -343,6 +343,27 @@ func (c *Client) EnsureCategory(ctx context.Context, name, savePath string) erro
 	return c.action(ctx, "/api/v2/torrents/createCategory", url.Values{"category": {name}, "savePath": {savePath}})
 }
 
+func (c *Client) UpdateCategory(ctx context.Context, name, savePath string) error {
+	name = strings.TrimSpace(name)
+	savePath = strings.TrimSpace(savePath)
+	if name == "" || len(name) > 128 || strings.ContainsAny(name, "\r\n") || savePath == "" || strings.ContainsAny(savePath, "\r\n") {
+		return downloader.Error("downloader_category_invalid", false, nil)
+	}
+	err := c.action(ctx, "/api/v2/torrents/editCategory", url.Values{"category": {name}, "savePath": {savePath}})
+	if err == nil {
+		return nil
+	}
+	code, retryable := downloader.ErrorInfo(err)
+	if code == "downloader_auth_failed" {
+		return err
+	}
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && (statusErr.status == http.StatusNotFound || statusErr.status == http.StatusMethodNotAllowed) {
+		return downloader.Error("downloader_category_update_unsupported", false, statusErr)
+	}
+	return downloader.Error("downloader_category_update_failed", retryable, err)
+}
+
 func (c *Client) SetCategory(ctx context.Context, id, category, savePath string) error {
 	hash, err := c.resolveHash(ctx, id)
 	if err != nil {
@@ -477,12 +498,18 @@ func (c *Client) resolveHash(ctx context.Context, id string) (string, error) {
 func (c *Client) action(ctx context.Context, endpoint string, values url.Values) error {
 	return c.session(ctx, func(cookie string) error {
 		body := []byte(values.Encode())
-		_, status, err := c.do(ctx, cookie, http.MethodPost, endpoint, "application/x-www-form-urlencoded", body)
+		response, status, err := c.do(ctx, cookie, http.MethodPost, endpoint, "application/x-www-form-urlencoded", body)
 		if err != nil {
 			return err
 		}
 		if status != http.StatusOK {
 			return statusError(status)
+		}
+		// Legacy qBittorrent actions may answer "Ok." while modern versions
+		// normally return an empty body. Both are successful; the legacy
+		// "Fails." body is an explicit failure even though its status is 200.
+		if strings.EqualFold(strings.TrimSpace(string(response)), "Fails.") {
+			return downloader.Error("downloader_request_failed", false, nil)
 		}
 		return nil
 	})
@@ -572,6 +599,9 @@ func (e *httpStatusError) Error() string { return fmt.Sprintf("downloader return
 func statusError(status int) error {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return downloader.Error("downloader_auth_failed", false, nil)
+	}
+	if status == http.StatusTooManyRequests {
+		return downloader.Error("downloader_rate_limited", true, &httpStatusError{status: status})
 	}
 	if status >= 500 {
 		return downloader.Error("downloader_unavailable", true, &httpStatusError{status: status})

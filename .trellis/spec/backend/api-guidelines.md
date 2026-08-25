@@ -64,6 +64,9 @@ Use action routes only when the action is not a simple CRUD update, for example:
 - `POST /api/v1/strm/sync/incremental`
 - `POST /api/v1/follows/{id}/pause`
 - `POST /api/v1/downloads/{id}/resume`
+- `POST /api/v1/credentials/reveal` for an explicit, allowlisted saved third-party credential reveal.
+
+Credential reveal is not a normal detail response. It requires authentication, CSRF, `connections.secrets.export`, `Cache-Control: no-store`, a hard resource/field allowlist, and value-free success/failure audit. Login passwords, Server access/session/device tokens, master/signing secrets, and built-in/deployment credentials are permanently outside the allowlist.
 
 Server filesystem browsing uses these read-only management routes:
 

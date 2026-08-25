@@ -22,7 +22,18 @@ import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
 import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
 import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
-import { readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
+import {
+  readAlistCredential,
+  readCloudDrive2Credential,
+  readEmbyCredential,
+  readOpenSubtitlesCredential,
+  readPan123Credential,
+  readQuarkCredential,
+  readRawCredentialBackup,
+  readWebDavCredential,
+  removeCredential,
+  saveRawCredentialBackup,
+} from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
@@ -77,6 +88,7 @@ import { defaultDisplayName, isEditableDataSourceConfig, isEditableDataSourceTyp
 import {
   clearOpenSubtitlesCredentials,
   loadSubtitleSearchSettings,
+  OPENSUBTITLES_CREDENTIAL_REF,
   readOpenSubtitlesCredentials,
   saveOpenSubtitlesCredentials,
   saveSubtitleSearchSettings,
@@ -254,6 +266,7 @@ const sourceCredentialConfigured = computed(() => {
   const source = store.configs.find(config => config.id === form.id)
   return source != null && credentialRefFromConfig(source) != null
 })
+const editedSource = computed(() => form.id ? store.configs.find(config => config.id === form.id) ?? null : null)
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
 const isAlistForm = computed(() => form.type === 'alist')
 const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
@@ -310,6 +323,33 @@ const tmdbCredentialStatusLabel = computed(() => {
     return `已保存 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)}，当前类型未配置`
   return '当前构建未提供凭据'
 })
+
+async function loadStoredTmdbCredentialValue(): Promise<string> {
+  const credential = await readStoredTmdbCredential()
+  if (!credential || credential.authType !== tmdbForm.authType)
+    throw new Error('当前类型没有已保存的 TMDB 凭据。')
+  return credential.value
+}
+
+async function loadOpenSubtitlesCredentialField(field: 'apiKey' | 'password'): Promise<string> {
+  const credential = await readOpenSubtitlesCredential(OPENSUBTITLES_CREDENTIAL_REF)
+  const value = field === 'apiKey' && credential?.authMode === 'apiKey'
+    ? credential.apiKey
+    : field === 'password' && credential?.authMode === 'account'
+      ? credential.password
+      : undefined
+  if (!value)
+    throw new Error('当前登录方式没有已保存的 OpenSubtitles 凭据。')
+  return value
+}
+
+function showTmdbRevealError(message: string) {
+  scrapeFeedback.value = { type: 'error', message }
+}
+
+function showSubtitleRevealError(message: string) {
+  subtitleFeedback.value = { type: 'error', message }
+}
 const storageModeLabel = computed(() => storageInfo.value?.mode === 'portable' ? '便携模式' : '标准模式')
 const playbackEntryMeta = computed(() => `${subtitleForm.videoOutput} · ${subtitleForm.hardwareDecoder}`)
 const shortcutEntries = computed(() => [
@@ -1555,6 +1595,60 @@ async function restoreCredentialForConfig(config: DataSourceConfig, previousCred
 
 function credentialRefFromConfig(config: DataSourceConfig): string | null {
   return typeof config.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
+}
+
+type EditableSourceSecretField = 'apiToken' | 'cookie' | 'password'
+
+function sourceCredentialLoader(field: EditableSourceSecretField): (() => Promise<string>) | undefined {
+  const source = editedSource.value
+  if (!source || source.type === 'server' || source.type === 'local')
+    return undefined
+  const supported = field === 'apiToken'
+    ? source.type === 'clouddrive2' || source.type === '123'
+    : field === 'cookie'
+      ? source.type === 'quark'
+      : source.type === 'emby' || source.type === 'jellyfin' || source.type === 'alist' || source.type === 'webdav' || source.type === '123'
+  return supported ? () => loadEditedSourceCredentialField(source, field) : undefined
+}
+
+async function loadEditedSourceCredentialField(source: DataSourceConfig, field: EditableSourceSecretField): Promise<string> {
+  const credentialRef = credentialRefFromConfig(source)
+  if (!credentialRef)
+    throw new Error('该数据源没有已保存的登录凭据。')
+
+  let value: string | undefined
+  if (source.type === 'emby' || source.type === 'jellyfin') {
+    const credential = await readEmbyCredential(credentialRef)
+    value = field === 'password' ? credential?.password : undefined
+  }
+  else if (source.type === 'alist') {
+    const credential = await readAlistCredential(credentialRef)
+    value = field === 'password' ? credential?.password : undefined
+  }
+  else if (source.type === 'clouddrive2') {
+    const credential = await readCloudDrive2Credential(credentialRef)
+    value = field === 'apiToken' ? credential?.apiToken : undefined
+  }
+  else if (source.type === 'webdav') {
+    const credential = await readWebDavCredential(credentialRef)
+    value = field === 'password' ? credential?.password : undefined
+  }
+  else if (source.type === 'quark') {
+    const credential = await readQuarkCredential(credentialRef)
+    value = field === 'cookie' ? credential?.cookie : undefined
+  }
+  else if (source.type === '123') {
+    const credential = await readPan123Credential(credentialRef)
+    value = field === 'apiToken' ? credential?.accessToken : field === 'password' ? credential?.password : undefined
+  }
+
+  if (!value)
+    throw new Error('当前登录方式没有保存该项凭据。')
+  return value
+}
+
+function showSourceRevealError(message: string) {
+  feedback.value = { type: 'error', message }
 }
 
 function selectSourceType(type: EditableDataSourceType) {
@@ -2907,8 +3001,11 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                     v-model="subtitleForm.apiKey"
                     class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                     :configured="openSubtitlesConfiguredAuthMode === 'apiKey'"
+                    :load-secret="openSubtitlesConfiguredAuthMode === 'apiKey' ? () => loadOpenSubtitlesCredentialField('apiKey') : undefined"
+                    :reset-key="`opensubtitles:${openSubtitlesConfiguredAuthMode}:apiKey`"
                     autocomplete="off"
                     :placeholder="openSubtitlesConfiguredAuthMode === 'apiKey' ? '留空表示保留当前 API Key' : '粘贴 OpenSubtitles.com API Key'"
+                    @reveal-error="showSubtitleRevealError"
                   />
                 </label>
                 <div v-else>
@@ -2931,8 +3028,11 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                         v-model="subtitleForm.password"
                         class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                         :configured="openSubtitlesConfiguredAuthMode === 'account'"
+                        :load-secret="openSubtitlesConfiguredAuthMode === 'account' ? () => loadOpenSubtitlesCredentialField('password') : undefined"
+                        :reset-key="`opensubtitles:${openSubtitlesConfiguredAuthMode}:password`"
                         autocomplete="current-password"
                         :placeholder="openSubtitlesConfiguredAuthMode === 'account' ? '留空表示保留当前密码' : 'OpenSubtitles 密码'"
+                        @reveal-error="showSubtitleRevealError"
                       />
                     </label>
                   </div>
@@ -3095,11 +3195,14 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 v-model="tmdbForm.credential"
                 class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                 :configured="tmdbCredentialConfigured"
+                :load-secret="tmdbCredentialConfigured ? loadStoredTmdbCredentialValue : undefined"
+                :reset-key="`tmdb:${tmdbForm.authType}`"
                 autocomplete="off"
                 :placeholder="tmdbCredentialPlaceholder"
+                @reveal-error="showTmdbRevealError"
               />
               <p class="mt-2 text-xs leading-5 text-white/38">
-                自定义凭据保存在安全凭证边界中且不会显示；未填写时使用内置通道。
+                自定义凭据保存在安全凭证边界中；点击眼睛可临时查看用户自行保存的值，内置通道不会回显。
               </p>
             </label>
 
@@ -3664,8 +3767,11 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               v-model="form.apiToken"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
               :configured="sourceCredentialConfigured"
+              :load-secret="sourceCredentialLoader('apiToken')"
+              :reset-key="`${form.id ?? 'new'}:${form.type}:${pan123LoginMode}:apiToken`"
               :placeholder="isEditing ? '留空则保留当前登录凭据' : isCloudDrive2Form ? '粘贴 CloudDrive2 中创建的只读 API Token' : '粘贴 123 云盘访问令牌'"
               autocomplete="off"
+              @reveal-error="showSourceRevealError"
             />
             <span v-if="isCloudDrive2Form" class="mt-2 block text-xs leading-5 text-white/42">
               请先在 CloudDrive2 中创建应用 API Token。
@@ -3741,9 +3847,12 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 class="mt-2 min-h-28 w-full resize-y rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
                 multiline
                 :configured="sourceCredentialConfigured"
+                :load-secret="sourceCredentialLoader('cookie')"
+                :reset-key="`${form.id ?? 'new'}:${form.type}:cookie`"
                 :placeholder="isEditing ? '留空则保留当前 Cookie' : '粘贴已登录 pan.quark.cn 后的完整 Cookie'"
                 autocomplete="off"
                 spellcheck="false"
+                @reveal-error="showSourceRevealError"
               />
             </label>
 
@@ -3766,8 +3875,11 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               v-model="form.password"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
               :configured="sourceCredentialConfigured"
+              :load-secret="sourceCredentialLoader('password')"
+              :reset-key="`${form.id ?? 'new'}:${form.type}:${pan123LoginMode}:password`"
               :placeholder="isEditing ? '留空则不重新登录' : '输入登录密码'"
               autocomplete="current-password"
+              @reveal-error="showSourceRevealError"
             />
           </label>
 

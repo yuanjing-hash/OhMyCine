@@ -29,6 +29,7 @@ const (
 	PermissionConnectionsUpdate                 = "connections.update"
 	PermissionConnectionsDelete                 = "connections.delete"
 	PermissionConnectionsTest                   = "connections.test"
+	PermissionConnectionsSecretsExport          = "connections.secrets.export"
 	PermissionDownloadersRead                   = "downloaders.read"
 	PermissionDownloadersCreate                 = "downloaders.create"
 	PermissionDownloadersUpdate                 = "downloaders.update"

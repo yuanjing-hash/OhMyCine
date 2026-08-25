@@ -67,6 +67,7 @@ func main() {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "pan115_provider_registration_failed").Msg(logging.OperationServerLifecycle.Message("115 驱动注册失败"))
 	}
 	connections := services.NewConnectionService(db, audit, credentialStore, cloudRegistry, logManager.Logger("connection", "pan115"))
+	credentialReveal := services.NewCredentialRevealService(db, audit, credentialStore)
 	signedProxy, err := services.NewSignedProxyService(db, credentialStore, connections, cfg.PublicOrigin, logManager.Logger("proxy", "signed_strm"))
 	if err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "signed_proxy_initialization_failed").Msg(logging.OperationServerLifecycle.Message("302 代理初始化失败"))
@@ -156,6 +157,7 @@ func main() {
 	downloads.SetTransferService(transfers)
 	api := handlers.NewAPI(cfg, auth, admin, audit, storages, directories, profiles, log)
 	api.SetConnectionService(connections)
+	api.SetCredentialRevealService(credentialReveal)
 	api.SetSignedProxyService(signedProxy)
 	api.SetEmbyGatewayService(embyGateway)
 	api.SetProviderDirectoryService(providerDirectories)

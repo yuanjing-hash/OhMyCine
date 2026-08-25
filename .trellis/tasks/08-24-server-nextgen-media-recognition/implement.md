@@ -181,18 +181,21 @@ npm run lint
 
 ## 2026-08-25 搜索页、目标恢复、Player v3 与敏感输入
 
-- [x] Explore 改为顶部渠道 tabs、每站替换分页、卡片、组合筛选和做种人数默认降序；卡片动作固定为检测、手动检测、入库。
+- [x] Explore 改为顶部渠道 tabs、每站替换分页、卡片、组合筛选；做种人数、发布时间和体积均支持升降序，默认做种人数降序；卡片动作固定为检测、手动检测、入库。
 - [x] 自动快速识别成功后通过 `GetByID` 验证并绑定 claim；人工 override 继续安全贯穿下载与入库。
 - [x] 媒体库相对根 `/` 显示 Storage 实际可读根和“数据源根目录”语义，保留 provider-relative 持久契约。
 - [x] 新增失败已完成任务修改目标 API 与 Downloads/Organization 入口；复用 manifest，只重排 Transfer → Import，部分写入安全拒绝。
 - [x] Player 升级 `player-nextgen-v3` 并通过共享 corpus；同一 source ID 修改物理根时清理旧 raw scan cache，ServerDataSource/Emby/Jellyfin 不二次识别。
-- [x] Server/Player 全部敏感输入切换到统一 `SecretInput`；已配置显示星号，眼睛仅查看当前替换值，多行 Cookie 同样遮挡，旧明文不回传。
+- [x] Server/Player 全部敏感输入切换到统一 `SecretInput`；已配置显示星号，多行 Cookie 同样遮挡。眼睛可按需临时读取允许的用户自定义第三方凭据，但回显值与 `v-model` 分离，不会因直接保存而重写；OhMyCine 密码、Server 设备 token、内置/部署 TMDB 凭据保持不可回显。
+- [x] Server 新增 `POST /api/v1/credentials/reveal`，使用硬编码资源/字段白名单、`connections.secrets.export`、认证、CSRF、`no-store` 与无明文审计；站点和 CookieCloud DTO 返回逐字段 configured 状态，缺失可选 Passkey 不再显示为可回显。
+- [x] 修复全局暂存目录变化后 qBittorrent 同名分类仍指向旧路径：按任务快照调用 `editCategory`，回读验证后才设置任务目录并恢复；补齐 legacy Storage-relative 快照提升、旧/新响应、401/405/429/503、忽略更新和重试回归。
 - [x] 独立 Trellis check 与最终全量 Go/WebUI/Player/build 门禁；发布门禁由 `develop` 推送后的 Beta 工作流继续验证。
 
 ### 最终验证（2026-08-25）
 
 - `go test ./... -count=1`、`go vet ./...`、普通与 `webui` tag 两种 Server 构建全部通过；`internal/services` 全量用例耗时约 120 秒。
-- Server WebUI 24 个测试文件、126 条测试全部通过；permissions check、Vue typecheck、ESLint 与 Vite production build 通过。
+- Server WebUI 24 个测试文件、130 条测试全部通过；sites 定向最终为 15/15；permissions check、Vue typecheck、ESLint 与 Vite production build 通过。
 - Player `verify:secret-inputs`、nextgen recognition、raw scan cache、ServerDataSource 边界验证，以及 Vue typecheck、ESLint、Vite production build全部通过。
 - 独立 check 补齐入库目标重选服务/路由回归、下载器零调用、部分写入拒绝、自动 claim 绑定、Explore 分页筛选与插件凭据漏网检查。
+- qBittorrent 分类路径更新、回读验证、缺失/legacy 暂存快照、限流/服务不可用和搜索双向排序定向回归全部通过。
 - `git diff --check` 通过；Vite 仅保留既有 chunk-size 警告。

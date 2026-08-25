@@ -30,8 +30,49 @@ describe('PT discovery contracts', () => {
       { token: 'mid', title: 'Mid', seeders: 20, completed: 15, promotion: 'free', quality: '2160p', specifications: { resolution: '2160p' }, expires_at: '2026-08-25T00:10:00Z' },
     ]
     const bt = { ...group(2), site_type: 'bt' as const, items: [{ token: 'bt', title: 'BT', seeders: 200, quality: '2160p', specifications: { resolution: '2160p' }, expires_at: '2026-08-25T00:10:00Z' }] }
-    const values = filterAndSortTorrentResults([pt, bt], { activeChannel: 1, enabledSiteTypes: ['pt'], resolution: '2160p', promotion: 'free', minimumSeeders: 10, sort: 'seeders' })
+    const values = filterAndSortTorrentResults([pt, bt], { activeChannel: 1, enabledSiteTypes: ['pt'], resolution: '2160p', promotion: 'free', minimumSeeders: 10, sort: 'seeders', direction: 'desc' })
     expect(values.map(entry => entry.item.token)).toEqual(['high', 'mid'])
+  })
+
+  it.each([
+    { sort: 'seeders' as const, descending: ['large', 'middle', 'small'], ascending: ['small', 'middle', 'large'] },
+    { sort: 'size' as const, descending: ['large', 'middle', 'small'], ascending: ['small', 'middle', 'large'] },
+    { sort: 'published' as const, descending: ['large', 'middle', 'small'], ascending: ['small', 'middle', 'large'] },
+  ])('sorts $sort in either direction', ({ sort, descending, ascending }) => {
+    const values = group(1)
+    values.items = [
+      { token: 'middle', title: 'Middle', seeders: 20, size_bytes: 20, published_at: '2026-08-20T00:00:00Z', expires_at: '2026-08-25T00:10:00Z' },
+      { token: 'small', title: 'Small', seeders: 10, size_bytes: 10, published_at: '2026-08-10T00:00:00Z', expires_at: '2026-08-25T00:10:00Z' },
+      { token: 'large', title: 'Large', seeders: 30, size_bytes: 30, published_at: '2026-08-23T00:00:00Z', expires_at: '2026-08-25T00:10:00Z' },
+    ]
+    const filters = { activeChannel: 'all' as const, enabledSiteTypes: ['pt'] as const, sort }
+    expect(filterAndSortTorrentResults([values], { ...filters, direction: 'desc' }).map(entry => entry.item.token)).toEqual(descending)
+    expect(filterAndSortTorrentResults([values], { ...filters, direction: 'asc' }).map(entry => entry.item.token)).toEqual(ascending)
+  })
+
+  it('keeps deterministic tie breakers independent of sort direction', () => {
+    const first = group(2)
+    first.items = [{ token: 'z', title: 'Same', seeders: 10, completed: 5, published_at: '2026-08-20T00:00:00Z', expires_at: '2026-08-25T00:10:00Z' }]
+    const second = group(1)
+    second.items = [{ token: 'a', title: 'Same', seeders: 10, completed: 5, published_at: '2026-08-20T00:00:00Z', expires_at: '2026-08-25T00:10:00Z' }]
+    const filters = { activeChannel: 'all' as const, enabledSiteTypes: ['pt'] as const, sort: 'seeders' as const }
+    expect(filterAndSortTorrentResults([first, second], { ...filters, direction: 'desc' }).map(entry => entry.item.token)).toEqual(['a', 'z'])
+    expect(filterAndSortTorrentResults([first, second], { ...filters, direction: 'asc' }).map(entry => entry.item.token)).toEqual(['a', 'z'])
+  })
+
+  it('keeps missing or invalid sort values after known values in either direction', () => {
+    const values = group(1)
+    values.items = [
+      { token: 'missing', title: 'Missing', expires_at: '2026-08-25T00:10:00Z' },
+      { token: 'invalid', title: 'Invalid', published_at: 'not-a-date', expires_at: '2026-08-25T00:10:00Z' },
+      { token: 'known', title: 'Known', seeders: 0, size_bytes: 0, published_at: '2026-08-20T00:00:00Z', expires_at: '2026-08-25T00:10:00Z' },
+    ]
+    for (const sort of ['seeders', 'size', 'published'] as const) {
+      for (const direction of ['asc', 'desc'] as const) {
+        const tokens = filterAndSortTorrentResults([values], { activeChannel: 'all', enabledSiteTypes: ['pt'], sort, direction }).map(entry => entry.item.token)
+        expect(tokens[0]).toBe('known')
+      }
+    }
   })
 
   it('keeps TMDB identity search and CookieCloud management on explicit server routes', () => {
@@ -69,6 +110,10 @@ describe('PT discovery contracts', () => {
 
   it('keeps manual recognition explicit and binds only a verified TMDB identity before download', () => {
     const source = readFileSync(new URL('./views/ExploreView.vue', import.meta.url), 'utf8')
+    expect(source).toContain('>Search</p>')
+    expect(source).toContain('>资源搜索</h1>')
+    expect(source).toContain('v-model="resultDirection"')
+    expect(source).toContain('<option value="desc">降序</option><option value="asc">升序</option>')
     expect(source).toContain('手动识别')
     expect(source).toContain('自动识别失败也可以在这里修改关键词')
     expect(source).toContain('torrentRecognitionCandidatesPath')

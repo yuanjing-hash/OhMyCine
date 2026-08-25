@@ -27,12 +27,16 @@ describe('secret input policy', () => {
     expect(violations).toEqual([])
   })
 
-  it('shows configured state and exposes only the current replacement value', () => {
+  it('keeps revealed saved values transient and separate from the form model', () => {
     const source = readFileSync(new URL('./components/SecretInput.vue', import.meta.url), 'utf8')
     expect(source).toContain('••••••••（已配置）')
     expect(source).toContain("revealed ? 'text' : 'password'")
     expect(source).toContain('显示当前输入内容')
-    expect(source).toContain('已保存凭据不会回传')
+    expect(source).toContain('loadSecret?: () => Promise<string>')
+    expect(source).toContain('revealedValue')
+    expect(source).toContain('generation !== revealGeneration')
+    expect(source).toContain('onBeforeUnmount(clearReveal)')
+    expect(source).toContain("notify(reason instanceof Error ? reason.message : '读取已保存凭据失败', 'error')")
     expect(source).toContain("attrs.disabled !== undefined && attrs.disabled !== false")
     expect(source).toMatch(/if \(!value\)\s+revealed\.value = false/)
     expect(source).toContain("'secret-input--masked': !revealed")
@@ -40,5 +44,8 @@ describe('secret input policy', () => {
     const sites = readFileSync(new URL('./views/SitesView.vue', import.meta.url), 'utf8')
     expect(storage).toMatch(/<SecretInput[^>]+v-model="cloudEdit\.cookie"[^>]+multiline/)
     expect(sites).toMatch(/<SecretInput[^>]+v-model="form\.cookie"[^>]+multiline/)
+    expect(sites).toContain(':configured="Boolean(editing?.cookie_configured)"')
+    expect(sites).toContain(':configured="Boolean(editing?.passkey_configured)"')
+    expect(sites).toContain(':configured="Boolean(editing?.api_key_configured)"')
   })
 })

@@ -319,8 +319,8 @@ export function buildPluginConnectionCreatePayloadFromConfig(input: {
   }
 }
 
-export function buildPluginConnectionConfigPayload(connection: PluginConnectionSummary, config: Record<string, unknown>) {
-  return { config, revision: connection.revision }
+export function buildPluginConnectionConfigPayload(connection: PluginConnectionSummary, config: Record<string, unknown>, credential = '') {
+  return { config, revision: connection.revision, ...(credential ? { credential } : {}) }
 }
 
 export function pluginQRCodeAuthScope(plugin: Pick<InstalledPluginSummary, 'capabilities' | 'permissions' | 'settings_page'>) {

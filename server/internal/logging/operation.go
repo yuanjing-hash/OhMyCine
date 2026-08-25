@@ -61,7 +61,7 @@ var (
 	OperationPluginRepository          = Operation{"plugin_repository", "插件仓库"}
 	OperationPluginRuntime             = Operation{"plugin_runtime", "插件运行时"}
 	OperationDiscoveryRecommendation   = Operation{"discovery_recommendation", "影视推荐"}
-	OperationDiscoverySearch           = Operation{"discovery_search", "资源探索"}
+	OperationDiscoverySearch           = Operation{"discovery_search", "资源搜索"}
 	OperationPTSiteManagement          = Operation{"pt_site_management", "PT站点管理"}
 	OperationCookieCloud               = Operation{"cookiecloud_sync", "CookieCloud同步"}
 )

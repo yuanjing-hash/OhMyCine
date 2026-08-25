@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type TorrentRecognitionResult, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
+import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -49,6 +49,7 @@ const resolutionFilter = ref('')
 const promotionFilter = ref('')
 const minimumSeeders = ref<number | undefined>()
 const resultSort = ref<'seeders' | 'published' | 'size'>('seeders')
+const resultDirection = ref<TorrentResultDirection>('desc')
 
 const orderedGroups = computed(() => [...groups.value].sort((left, right) => left.site_id - right.site_id))
 const activeGroup = computed(() => typeof activeChannel.value === 'number' ? groups.value.find(group => group.site_id === activeChannel.value) ?? null : null)
@@ -60,6 +61,7 @@ const visibleResults = computed(() => filterAndSortTorrentResults(groups.value, 
   promotion: promotionFilter.value,
   minimumSeeders: minimumSeeders.value,
   sort: resultSort.value,
+  direction: resultDirection.value,
 }))
 
 function searchInput(siteID?: number, page = 1) {
@@ -271,7 +273,7 @@ onBeforeUnmount(stopStream)
 
 <template>
   <section class="space-y-5">
-    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Explore</p><h1 class="mt-1 text-2xl font-800">探索与种子搜索</h1><p class="page-description mt-1">聚合查询已启用的 PT 与公开 BT 站点；浏览器只收到 15 分钟有效的不透明结果令牌。</p></header>
+    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 class="mt-1 text-2xl font-800">资源搜索</h1><p class="page-description mt-1">聚合查询已启用的 PT 与公开 BT 站点；浏览器只收到 15 分钟有效的不透明结果令牌。</p></header>
     <form class="panel" @submit.prevent="search">
       <div class="mb-4 flex flex-wrap gap-2" role="group" aria-label="搜索方式"><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'title' }" @click="searchBy = 'title'">按标题</button><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'tmdb_id' }" @click="searchBy = 'tmdb_id'">按 TMDB ID</button></div>
       <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] md:items-end">
@@ -293,12 +295,13 @@ onBeforeUnmount(stopStream)
         <button v-for="group in orderedGroups" :key="group.site_id" class="management-tab shrink-0" :class="activeChannel === group.site_id ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === group.site_id" @click="activeChannel = group.site_id">{{ group.site_name }} <small>{{ group.site_type.toUpperCase() }}</small></button>
       </nav>
 
-      <form class="panel grid gap-3 md:grid-cols-2 xl:grid-cols-[auto_auto_11rem_11rem_9rem_12rem_auto] xl:items-end" @submit.prevent>
+      <form class="panel grid gap-3 md:grid-cols-2 xl:grid-cols-[auto_auto_11rem_11rem_9rem_10rem_9rem_auto] xl:items-end" @submit.prevent>
         <fieldset class="flex gap-3"><legend class="label">站点类型</legend><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="pt" /> PT</label><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="bt" /> BT</label></fieldset>
         <label><span class="label">分辨率</span><select v-model="resolutionFilter" class="input"><option value="">全部</option><option v-for="value in resolutionOptions" :key="value" :value="value">{{ value }}</option></select></label>
         <label><span class="label">优惠</span><select v-model="promotionFilter" class="input"><option value="">全部</option><option value="free">FREE</option><option value="2xfree">2X FREE</option><option value="2x">2X</option></select></label>
         <label><span class="label">最低做种</span><input v-model.number="minimumSeeders" class="input" type="number" min="0" placeholder="不限" /></label>
-        <label><span class="label">排序</span><select v-model="resultSort" class="input"><option value="seeders">做种数从高到低</option><option value="published">发布时间从新到旧</option><option value="size">体积从大到小</option></select></label>
+        <label><span class="label">排序字段</span><select v-model="resultSort" class="input"><option value="seeders">做种数</option><option value="published">发布时间</option><option value="size">体积</option></select></label>
+        <label><span class="label">排序方向</span><select v-model="resultDirection" class="input"><option value="desc">降序</option><option value="asc">升序</option></select></label>
         <p class="text-subtle mb-0 text-xs xl:col-span-2">不同筛选项之间为 AND；同类标签按任一匹配。排序只针对已经取回的当前页结果。</p>
       </form>
 

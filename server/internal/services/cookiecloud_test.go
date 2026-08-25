@@ -33,6 +33,9 @@ func TestCookieCloudLocalReceiveAndSyncUpdatesMatchingSite(t *testing.T) {
 	if !settings.CredentialConfigured || settings.LocalUploadPath != "/cookiecloud" {
 		t.Fatalf("settings=%+v", settings)
 	}
+	if !settings.UUIDConfigured || !settings.PasswordConfigured || !settings.AuthHeaderConfigured {
+		t.Fatalf("expected exact configured fields: %+v", settings)
+	}
 	payload := cryptoJSCookieCloudFixture(t, "fixture-user", "fixture-password", map[string]any{
 		"cookie_data": map[string]any{"pttime": []map[string]string{
 			{"domain": ".example.test", "name": "uid", "value": "2"},
@@ -65,6 +68,24 @@ func TestCookieCloudLocalReceiveAndSyncUpdatesMatchingSite(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("summary leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestCookieCloudSummaryCredentialFieldsFailClosedOnDecryptError(t *testing.T) {
+	sites, _, actor, store, _, _ := siteFixture(t)
+	service := NewCookieCloudService(sites.db, sites.audit, store, sites, zerolog.Nop())
+	if _, err := service.Update(context.Background(), actor, CookieCloudSettingsInput{Mode: "local", UUID: "fixture-user", Password: "fixture-password", AuthHeader: "fixture-shared-auth", Revision: 1}, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sites.db.Model(&models.CookieCloudSettings{}).Where("id = ?", 1).Update("credential_ciphertext", "not-a-valid-envelope").Error; err != nil {
+		t.Fatal(err)
+	}
+	summary, err := service.Get(actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !summary.CredentialConfigured || summary.UUIDConfigured || summary.PasswordConfigured || summary.AuthHeaderConfigured {
+		t.Fatalf("decrypt failure must keep aggregate presence but fail closed per field: %+v", summary)
 	}
 }
 

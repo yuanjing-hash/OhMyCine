@@ -326,6 +326,114 @@ func TestClientModernAddMetadataManifestCategoriesAndTagAdoption(t *testing.T) {
 	}
 }
 
+func TestClientCreatesAndUpdatesCategoriesAcrossLegacyAndModernSessions(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		modern     bool
+		actionBody string
+	}{
+		{name: "legacy Ok response", actionBody: "Ok."},
+		{name: "modern empty response", modern: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			categoryExists := false
+			created, updated := false, false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v2/auth/login" && r.Header.Get("Cookie") != "SID=session" && r.Header.Get("Cookie") != "QBT_SID_7864=session" {
+					http.Error(w, "missing session", http.StatusForbidden)
+					return
+				}
+				switch r.URL.Path {
+				case "/api/v2/auth/login":
+					if test.modern {
+						http.SetCookie(w, &http.Cookie{Name: "QBT_SID_7864", Value: "session"})
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+					http.SetCookie(w, &http.Cookie{Name: "SID", Value: "session"})
+					_, _ = io.WriteString(w, "Ok.")
+				case "/api/v2/torrents/categories":
+					if !categoryExists {
+						_, _ = io.WriteString(w, `{}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"电影":{"savePath":"D:\\New\\电影"}}`)
+				case "/api/v2/torrents/createCategory":
+					_ = r.ParseForm()
+					created = r.Form.Get("category") == "电影" && r.Form.Get("savePath") == `D:\New\电影`
+					categoryExists = true
+					_, _ = io.WriteString(w, test.actionBody)
+				case "/api/v2/torrents/editCategory":
+					_ = r.ParseForm()
+					updated = r.Form.Get("category") == "电影" && r.Form.Get("savePath") == `D:\Current\电影`
+					_, _ = io.WriteString(w, test.actionBody)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client, err := New(downloader.Config{BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.EnsureCategory(context.Background(), "电影", `D:\New\电影`); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.UpdateCategory(context.Background(), "电影", `D:\Current\电影`); err != nil {
+				t.Fatal(err)
+			}
+			if !created || !updated {
+				t.Fatalf("created=%v updated=%v", created, updated)
+			}
+		})
+	}
+}
+
+func TestClientReportsUnsupportedOrFailedCategoryUpdateSafely(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		status        int
+		body          string
+		wantCode      string
+		wantRetryable bool
+	}{
+		{name: "unsupported endpoint", status: http.StatusNotFound, wantCode: "downloader_category_update_unsupported"},
+		{name: "method unsupported", status: http.StatusMethodNotAllowed, wantCode: "downloader_category_update_unsupported"},
+		{name: "authentication expired", status: http.StatusUnauthorized, wantCode: "downloader_auth_failed"},
+		{name: "rate limited", status: http.StatusTooManyRequests, wantCode: "downloader_category_update_failed", wantRetryable: true},
+		{name: "provider unavailable", status: http.StatusServiceUnavailable, wantCode: "downloader_category_update_failed", wantRetryable: true},
+		{name: "legacy failure body", status: http.StatusOK, body: "Fails.", wantCode: "downloader_category_update_failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v2/auth/login":
+					http.SetCookie(w, &http.Cookie{Name: "SID", Value: "session"})
+					_, _ = io.WriteString(w, "Ok.")
+				case "/api/v2/torrents/editCategory":
+					w.WriteHeader(test.status)
+					_, _ = io.WriteString(w, test.body)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client, err := New(downloader.Config{BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.UpdateCategory(context.Background(), "电影", `D:\Current\电影`)
+			code, retryable := downloader.ErrorInfo(err)
+			if code != test.wantCode || retryable != test.wantRetryable {
+				t.Fatalf("code=%q retryable=%v err=%v", code, retryable, err)
+			}
+			if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), `D:\Current`) {
+				t.Fatalf("category update error leaked provider data: %v", err)
+			}
+		})
+	}
+}
+
 func TestClientFallsBackWhenMetadataStopConditionIsUnsupported(t *testing.T) {
 	addCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -47,7 +47,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     label: '发现',
     items: [
       { id: 'recommendations', label: '推荐', to: '/discovery/recommendations', permissionsAny: discoveryPermissions, description: '浏览 TMDB 与豆瓣真实推荐栏目，按来源刷新并查看缓存状态。' },
-      { id: 'explore', label: '探索', to: '/discovery/explore', permissionsAny: discoveryPermissions, description: '确认作品后按需聚合搜索已启用的 PT 站点并创建下载。' },
+      { id: 'explore', label: '搜索', to: '/discovery/explore', permissionsAny: discoveryPermissions, description: '确认作品后按需聚合搜索已启用的 PT 站点并创建下载。' },
     ],
   },
   {

@@ -302,35 +302,38 @@ return playbackStopPromise
 
 ### 2. Signatures
 
-- Reusable Vue control: `SecretInput(modelValue: string, configured?: boolean, multiline?: boolean)`.
+- Reusable Vue control: `SecretInput(modelValue: string, configured?: boolean, multiline?: boolean, loadSecret?: () => Promise<string>, resetKey?: string | number)`.
 - `configured` is a safe Boolean supplied by an existing DTO or local secure-store status. It is never the saved credential value.
 
 ### 3. Contracts
 
-- Mask current input by default and provide a labelled eye button that toggles only the value typed during the current edit session.
+- Mask current input by default. The labelled eye toggles the current replacement value, or explicitly invokes `loadSecret` for an allowlisted saved external credential.
 - When `configured=true` and `modelValue` is empty, render `••••••••（已配置）` so an edit form is not indistinguishable from an unconfigured form.
-- Server APIs and Player secure-storage boundaries must not return a saved password, cookie, token, passkey, or API key merely to support the eye button.
+- A loaded saved value lives only in a separate transient `revealedValue`; it must never emit `update:modelValue`. Hide, `resetKey` change, unmount, or stale async completion clears/ignores it.
+- Server saved-value loading uses only the dedicated authenticated, CSRF-protected, `no-store`, audited, permission-gated reveal endpoint and its hard field allowlist. Player reads only eligible external credentials from its local secure store. OhMyCine passwords, Server access/session/device tokens, master/signing secrets, and built-in/deployment credentials never receive `loadSecret`.
 - Multi-line Cookie inputs follow the same mask/reveal contract as single-line password fields.
 - Leaving a replacement value empty preserves the saved credential unless an explicit clear action is selected.
 
 ### 4. Validation & Error Matrix
 
-- Configured + empty replacement -> show the configured mask; reveal remains disabled because no plaintext was returned.
+- Configured + authorized loader -> show the configured mask; click loads and temporarily reveals without changing the replacement model.
+- Configured without an authorized loader -> show the configured mask and keep reveal disabled.
 - New replacement entered -> eye reveals/hides that in-memory value.
+- Loader failure -> keep the mask/model unchanged and show a global or page-level safe error.
 - Input disabled -> reveal button is also disabled.
 - Explicit clear selected -> existing mutation contract clears the secret; a blank edit field alone does not clear it.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: an edited qBittorrent password shows `••••••••（已配置）`; entering a replacement enables the eye.
+- Good: an edited qBittorrent password shows `••••••••（已配置）`; clicking the eye loads it transiently, while saving without edits sends no replacement.
 - Base: a new login password starts empty and masked, with the eye enabled after typing.
-- Bad: populate an edit form with a decrypted Server cookie or OS-secure-store token so the browser can reveal it.
+- Bad: assign a decrypted value to the form model, expose a Server device token, or let a stale loader result reveal the previous object's credential.
 
 ### 6. Tests Required
 
 - Inventory test fails when a raw `type="password"` or credential-bound `input`/`textarea` bypasses `SecretInput`.
 - Type-check and lint both reusable components and every changed form.
-- Assert configured mask copy, current-value reveal semantics, disabled behavior, and multi-line masking.
+- Assert configured mask copy, transient saved-value reveal, no model emission, async race cleanup, failure feedback, disabled behavior, and multi-line masking.
 
 ### 7. Wrong vs Correct
 
@@ -343,5 +346,10 @@ Wrong:
 Correct:
 
 ```vue
-<SecretInput v-model="draft.apiKey" :configured="connection.credential_configured" />
+<SecretInput
+  v-model="draft.apiKey"
+  :configured="connection.api_key_configured"
+  :load-secret="canExport ? () => revealAPIKey(connection.id) : undefined"
+  :reset-key="connection.id"
+/>
 ```

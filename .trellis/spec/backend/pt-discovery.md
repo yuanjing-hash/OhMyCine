@@ -29,7 +29,7 @@ POST   /api/v1/discovery/downloads
 ## Contracts
 
 - Keep provider paths, category mappings, login-page detection, HTML parsing, and torrent quirks inside the concrete adapter. Services depend only on `pkg/site.Adapter`.
-- Site Cookie/passkey are encrypted with AES-256-GCM using purpose/AAD bound to site ID and adapter kind. DTOs return only `credential_configured`; ciphertext and plaintext never enter REST, SSE, logs, audit details, or job payloads.
+- Site Cookie/passkey are encrypted with AES-256-GCM using purpose/AAD bound to site ID and adapter kind. Ordinary DTOs return only exact `cookie_configured` / `passkey_configured` booleans; ciphertext and plaintext never enter search REST, SSE, logs, audit details, or job payloads. Plaintext is available only through the dedicated authenticated, CSRF-protected, permission-gated, `no-store`, audited credential reveal action after an explicit administrator gesture.
 - Candidate create/update performs network validation outside a database transaction. Update replaces the stored credential and policy with revision CAS only after validation succeeds; failure preserves the old record.
 - A disable-only update is the deliberate exception to candidate probing: it uses revision CAS and audit locally so an expired Cookie or unavailable tracker cannot prevent an administrator from disabling the site. Re-enabling still requires a successful probe.
 - User-configured site roots require HTTPS with no userinfo, query, or fragment. Adapter clients set bounded timeout, redirect count, response size, and strict same-origin checks including port.

@@ -12,6 +12,7 @@ import {
   isLoopbackURL,
   type EmbyConnectionDraft,
 } from '@/connections'
+import { credentialLoader } from '@/credentials'
 import { playerClientLabel, playerDeviceConfirmation, playerDeviceListPath, playerDeviceRevokePath, playerDeviceTime } from '@/player-devices'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
@@ -487,7 +488,7 @@ onMounted(() => {
         <form v-if="editingID === connection.id" class="semantic-inset mt-5 grid gap-4 p-4 md:grid-cols-2" @submit.prevent="saveEmby(connection)">
           <div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" /></div>
           <div><label class="label">服务地址</label><input v-model="editDraft.endpoint" class="input" required type="url" /></div>
-          <div class="md:col-span-2"><label class="label">更换 API Key（可选）</label><SecretInput v-model="editDraft.apiKey" class="input font-mono" :configured="connection.credential_configured" autocomplete="new-password" spellcheck="false" placeholder="留空表示继续使用已保存的 API Key" /><p class="text-subtle mb-0 mt-2 text-xs">星号表示已有 API Key；仅当前新输入可通过眼睛查看，保存或取消后会清空。</p></div>
+          <div class="md:col-span-2"><label class="label">更换 API Key（可选）</label><SecretInput v-model="editDraft.apiKey" class="input font-mono" :configured="connection.credential_configured" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) ? credentialLoader({ resourceType: 'connection', resourceID: connection.id, field: 'credential' }) : undefined" :reset-key="connection.id" autocomplete="new-password" spellcheck="false" placeholder="留空表示继续使用已保存的 API Key" /><p class="text-subtle mb-0 mt-2 text-xs">星号表示已有 API Key；点击眼睛可临时查看，直接保存不会把回显值当作新凭据提交。</p></div>
           <label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" />启用连接</label>
           <div class="text-subtle self-center text-xs">凭据：{{ connection.credential_configured ? '已安全配置' : '未配置' }}</div>
           <div class="md:col-span-2 flex gap-3"><button class="btn-primary" :disabled="cardBusy(connection.id)">保存连接</button><button type="button" class="btn-secondary" @click="cancelEdit">取消</button></div>

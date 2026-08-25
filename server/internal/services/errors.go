@@ -129,6 +129,7 @@ const (
 	CodeCookieCloudAuthentication      = "cookiecloud_authentication_failed"
 	CodeCookieCloudUnavailable         = "cookiecloud_unavailable"
 	CodeCookieCloudResponseInvalid     = "cookiecloud_response_invalid"
+	CodeCredentialRevealUnavailable    = "credential_reveal_unavailable"
 )
 
 // AppError is a stable, client-safe domain error.
