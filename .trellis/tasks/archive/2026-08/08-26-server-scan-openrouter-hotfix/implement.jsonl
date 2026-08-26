@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"媒体库扫描、generation、reconcile 和持久化原子性契约"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"SQLite/GORM 事务、migration、外键及 Windows pure-Go 数据库约束"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"扫描事务阶段日志和敏感数据脱敏规范"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"内部错误传播与客户端安全错误映射规范"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"AI 自定义 Base URL、SSRF、安全日志与凭据边界"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Server 测试、lint、构建和回归覆盖门禁"}
+{"file":"docs/architecture/07-security-design.md","reason":"外部 HTTP、AI 凭据和运行日志的架构安全约束"}
