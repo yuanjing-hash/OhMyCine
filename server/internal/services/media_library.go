@@ -26,18 +26,19 @@ import (
 const maxSourceAssetExtraExtensions = 16
 
 type MediaLibraryService struct {
-	db          *gorm.DB
-	audit       *AuditService
-	log         zerolog.Logger
-	mu          sync.Mutex
-	supervisors map[uint]supervisorHandle
-	scanLocks   map[uint]*sync.Mutex
-	connections *ConnectionService
-	metadata    *MetadataSettingsService
-	ingest      MediaLibraryIngestEnqueuer
-	artifacts   *MediaArtifactService
-	changes     *MediaChangeService
-	closed      bool
+	db            *gorm.DB
+	audit         *AuditService
+	log           zerolog.Logger
+	mu            sync.Mutex
+	supervisors   map[uint]supervisorHandle
+	scanLocks     map[uint]*sync.Mutex
+	connections   *ConnectionService
+	metadata      *MetadataSettingsService
+	aiRecognition *AIRecognitionSettingsService
+	ingest        MediaLibraryIngestEnqueuer
+	artifacts     *MediaArtifactService
+	changes       *MediaChangeService
+	closed        bool
 }
 
 // MediaLibraryIngestEnqueuer is the narrow boundary from provider directory
@@ -113,6 +114,9 @@ func (s *MediaLibraryService) SetConnectionService(connections *ConnectionServic
 }
 func (s *MediaLibraryService) SetMetadataSettingsService(metadata *MetadataSettingsService) {
 	s.metadata = metadata
+}
+func (s *MediaLibraryService) SetAIRecognitionSettings(settings *AIRecognitionSettingsService) {
+	s.aiRecognition = settings
 }
 func (s *MediaLibraryService) SetIngestEnqueuer(ingest MediaLibraryIngestEnqueuer) {
 	s.ingest = ingest

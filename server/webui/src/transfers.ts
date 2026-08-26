@@ -28,6 +28,10 @@ export interface TransferSummary {
   scrape_tmdb_id: number | null
   scrape_year: number | null
   scrape_confidence: number | null
+  identity_source: 'manual' | 'direct_id' | 'automatic' | 'ai' | 'local_provisional' | ''
+  identity_status: 'verified' | 'provisional' | 'local_provisional' | ''
+  identity_locked: boolean
+  identity_revision: number
   profile_id: number
   profile_revision: number
   library_id: number
@@ -106,6 +110,50 @@ export const conflictPolicyLabels: Record<TransferSummary['conflict_policy'], st
   rename: '自动重命名',
 }
 
+export type TransferDeletionScope = 'record_only' | 'record_and_source' | 'record_and_library' | 'record_source_and_library'
+
+export interface TransferDeletionPreview {
+  scope: TransferDeletionScope
+  source_items: number
+  source_bytes: number
+  library_items: number
+  library_bytes: number
+  provider_type: string
+  source_storage_type: string
+  library_storage_type: string
+  source_missing: number
+  library_missing: number
+  blocked: boolean
+  blockers: string[]
+  requires_file_delete: boolean
+  warnings: string[]
+  confirmation_token: string
+  expires_at: string
+}
+
+export interface TransferDeletionResult {
+  deleted: boolean
+  scope: TransferDeletionScope
+  source_removed: number
+  library_removed: number
+}
+
+export const transferDeletionLabels: Record<TransferDeletionScope, string> = {
+  record_only: '仅删除转移记录',
+  record_and_source: '删除转移记录和源文件',
+  record_and_library: '删除转移记录和媒体库文件',
+  record_source_and_library: '删除转移记录、源文件和媒体库文件',
+}
+
+export function transferIdentityLabel(item: TransferSummary): string {
+  if (item.identity_locked || item.identity_source === 'manual') return `人工锁定 · r${item.identity_revision}`
+  if (item.identity_source === 'ai') return `AI 辅助 · r${item.identity_revision}`
+  if (item.identity_status === 'local_provisional') return `本地暂定 · r${item.identity_revision}`
+  if (item.identity_status === 'provisional') return `自动暂定 · r${item.identity_revision}`
+  if (item.identity_source === 'direct_id') return `TMDB ID 验证 · r${item.identity_revision}`
+  return item.identity_revision > 0 ? `自动识别 · r${item.identity_revision}` : '旧任务身份'
+}
+
 export function transferStatusClass(item: TransferSummary): string {
   if (item.job_status === 'failed') return 'status-chip status-chip--error'
   if (item.job_status === 'waiting_user_action' || item.job_status === 'retry_wait' || item.job_status === 'paused' || item.job_status === 'cancelled') return 'status-chip status-chip--warning'
@@ -134,6 +182,8 @@ export function formatTransferProgress(item: TransferSummary): string {
 export const listTransfers = (query: URLSearchParams) => api<TransferPage>(`/api/v1/transfers?${query}`)
 export const getTransfer = (id: string) => api<TransferDetail>(`/api/v1/transfers/${encodeURIComponent(id)}`)
 export const deleteTransfer = (id: string) => api<{ deleted: boolean }>(`/api/v1/transfers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export const previewTransferDeletion = (id: string, scope: TransferDeletionScope) => api<TransferDeletionPreview>(`/api/v1/transfers/${encodeURIComponent(id)}/deletion-preview`, { method: 'POST', body: JSON.stringify({ scope }) })
+export const confirmTransferDeletion = (id: string, token: string) => api<TransferDeletionResult>(`/api/v1/transfers/${encodeURIComponent(id)}/deletion-confirm`, { method: 'POST', body: JSON.stringify({ token }) })
 export const retargetCompletedImport = (downloadTaskID: string, mediaLibraryID: number) => api(`/api/v1/downloads/${encodeURIComponent(downloadTaskID)}/import-target`, { method: 'PUT', body: JSON.stringify({ media_library_id: mediaLibraryID }) })
 
 export function canRetargetTransfer(item: TransferSummary): boolean {

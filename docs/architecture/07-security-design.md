@@ -539,16 +539,24 @@ Server 运行日志在 stdout 与文件分流前执行同一套结构化脱敏�
 
 ## 12. AI 功能安全
 
-AI 功能默认在 Player 侧实现，使用用户自己的 API Key。
+AI 推荐默认在 Player 侧使用用户自己的 API Key；Server 只为管理员显式开启的低置信媒体识别提供独立 AI Provider 设置，两者不自动同步凭据或上下文。
 
-要求：
+共同要求：
 
-- AI API Key 保存到系统 Keychain，不进入普通配置文件
-- 发送给 LLM 的内容默认只包含媒体元数据，不包含本地绝对路径和凭据
-- 用户可选择是否允许发送简介、文件名、观看历史
+- Player AI API Key 保存到系统 Keychain；Server AI API Key 使用 AES-GCM 凭据 envelope，不进入普通配置、日志、审计详情或默认导出
+- 发送给 LLM 的内容默认只包含必要媒体元数据，不包含本地绝对路径、provider item ID、magnet/torrent URL、Cookie、token、下载器信息或其它凭据
+- 用户可选择是否允许 Player 发送简介、文件名、观看历史；Server 识别默认只发送相对 basename，并允许管理员进一步关闭
 - RAG 检索结果只包含用户库中已有媒体
-- 不允许 AI 直接执行删除、下载、改配置等操作
-- AI Provider Base URL 由用户配置，但需要明确提示风险
+- 不允许 AI 直接执行删除、下载、移动、覆盖、改配置或锁定媒体身份等操作
+- 自定义 AI Provider Base URL 使用受控 HTTP Client，执行 scheme、SSRF、重定向、超时和响应大小限制，并明确提示管理员风险
+
+Server 媒体识别额外要求：
+
+- 总开关默认关闭；关闭时下载、扫描、Transfer、重试和后台任务不得解密 API Key、构造 Provider 或产生 AI 网络请求。管理员显式“测试连接/获取模型”是独立配置动作
+- 仅支持版本化的候选仲裁与标题重写两种严格 Schema；原标题和文件名必须标记为不可信数据，模型不得把其中内容当作指令
+- 候选仲裁只能返回输入中的 `candidate_ref`；标题重写只产生结构化查询事实，仍须由 Server 重新搜索 TMDB 并复验
+- 每个 identity revision 最多一次候选仲裁和一次标题重写，禁止递归调用或无限重搜；模型自报 confidence 不参与安全授权
+- Provider 输出必须经过 JSON Schema、长度、枚举、候选引用及季集范围校验。非法、超大、非 JSON、超时或网络失败统一回到确定性的 provisional/local_provisional 兜底，不得阻塞队列或扩大文件操作权限
 
 ## 13. WebSocket 安全
 

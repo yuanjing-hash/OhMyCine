@@ -4,11 +4,12 @@ import { RouterLink } from 'vue-router'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import DirectoryPickerDialog from '@/components/DirectoryPickerDialog.vue'
+import MediaReorganizationDialog from '@/components/MediaReorganizationDialog.vue'
 import MediaLibrarySettingsFields from '@/components/MediaLibrarySettingsFields.vue'
 import { draftFromLibrary, emptyMediaLibraryDraft, isActiveLibraryStatus, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSidecarUpload, supportsSTRM, type MediaLibraryDraft } from '@/media-libraries'
 import { mediaCatalogDetailEndpoint, mediaCatalogEndpoint, mediaCatalogPageCount, mediaCatalogPageSizes, mediaCatalogVisibleRange, type MediaCatalogMatchFilter, type MediaCatalogPageSize, type MediaCatalogTypeFilter } from '@/media-catalog'
 import { useAuthStore } from '@/stores/auth'
-import type { DownloaderSummary, ListResponse, MediaCatalogDetail, MediaCatalogItem, MediaClassificationProfileSummary, MediaLibraryDetail, MediaLibraryScanRun, MediaRecognitionSummary, PageResponse, StorageSummary, TMDBCandidate } from '@/types/api'
+import type { DownloaderSummary, ListResponse, MediaCatalogDetail, MediaCatalogItem, MediaCatalogManagedTransfer, MediaClassificationProfileSummary, MediaLibraryDetail, MediaLibraryScanRun, MediaRecognitionSummary, PageResponse, StorageSummary, TMDBCandidate } from '@/types/api'
 
 type DetailTab = 'status' | 'runs' | 'entries' | 'settings'
 type PickerTarget = 'source' | 'strm' | 'ingest'
@@ -37,6 +38,7 @@ const candidates = ref<TMDBCandidate[]>([])
 const expandedWorkIDs = ref<string[]>([])
 const catalogDetails = ref<Record<string, MediaCatalogDetail>>({})
 const detailLoadingIDs = ref<string[]>([])
+const reorganizationTarget = ref<{ work: MediaCatalogItem; transfer: MediaCatalogManagedTransfer } | null>(null)
 const createOpen = ref(false)
 const createDraft = ref<MediaLibraryDraft>(emptyMediaLibraryDraft())
 const editDraft = ref<MediaLibraryDraft | null>(null)
@@ -229,7 +231,6 @@ async function changeCatalogPage(page: number) {
 }
 
 async function toggleCatalog(item: MediaCatalogItem) {
-  if (item.kind !== 'series') return
   if (expandedWorkIDs.value.includes(item.id)) {
     expandedWorkIDs.value = expandedWorkIDs.value.filter(id => id !== item.id)
     return
@@ -250,6 +251,17 @@ async function toggleCatalog(item: MediaCatalogItem) {
     if (detailRequests.get(item.id) === controller) detailRequests.delete(item.id)
     detailLoadingIDs.value = detailLoadingIDs.value.filter(id => id !== item.id)
   }
+}
+
+function openCatalogReorganization(work: MediaCatalogItem, transfer: MediaCatalogManagedTransfer) {
+  reorganizationTarget.value = { work, transfer }
+}
+
+async function catalogReorganizationQueued() {
+  if (!selectedID.value) return
+  catalogDetails.value = {}
+  expandedWorkIDs.value = []
+  await loadCatalog(selectedID.value)
 }
 
 function resetCatalog() {
@@ -446,7 +458,7 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
               <tbody>
                 <template v-for="work in catalog" :key="work.id">
                   <tr>
-                    <td><button v-if="work.kind === 'series'" type="button" class="btn-quiet px-2" :aria-label="expandedWorkIDs.includes(work.id) ? `收起${work.title}` : `展开${work.title}`" @click="toggleCatalog(work)">{{ expandedWorkIDs.includes(work.id) ? '−' : '+' }}</button></td>
+                    <td><button type="button" class="btn-quiet px-2" :aria-label="expandedWorkIDs.includes(work.id) ? `收起${work.title}` : `展开${work.title}`" @click="toggleCatalog(work)">{{ expandedWorkIDs.includes(work.id) ? '−' : '+' }}</button></td>
                     <td><strong>{{ work.title }}</strong></td><td>{{ work.kind === 'movie' ? '电影' : '剧集' }}</td>
                     <td>{{ work.kind === 'series' ? `${work.season_count} 季 / ${work.episode_count} 集 / ${work.file_count} 文件` : `${work.file_count} 文件` }}</td>
                     <td>{{ work.category_name || '未分类' }} · {{ work.match_status }}</td><td>{{ bytes(work.size) }}</td><td>{{ dateTime(work.modified_at) }}</td>
@@ -454,6 +466,7 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
                   <tr v-if="expandedWorkIDs.includes(work.id)"><td colspan="7" class="p-0">
                     <div class="semantic-inset m-2 p-3">
                       <p v-if="detailLoadingIDs.includes(work.id)" class="text-subtle m-0 text-sm">正在读取季度与分集…</p>
+                      <div v-if="catalogDetails[work.id]?.reorganizable_transfers.length" class="mb-4 flex flex-wrap items-center gap-2"><span class="text-subtle text-xs">OhMyCine 托管入库记录：</span><button v-for="transfer in catalogDetails[work.id].reorganizable_transfers" :key="transfer.transfer_task_id" type="button" class="btn-secondary" @click="openCatalogReorganization(work, transfer)">修正并整理 {{ transfer.file_count }} 个文件</button></div>
                       <div v-for="season in catalogDetails[work.id]?.seasons ?? []" :key="season.number" class="mb-3 last:mb-0">
                         <strong class="text-sm">{{ seasonLabel(season.number) }}</strong>
                         <div class="mt-2 grid gap-1">
@@ -462,6 +475,7 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
                           </div>
                         </div>
                       </div>
+                      <div v-if="catalogDetails[work.id]?.files.length" class="grid gap-1"><div v-for="file in catalogDetails[work.id].files" :key="file.id" class="grid gap-2 rounded-1 px-2 py-1.5 text-xs md:grid-cols-[minmax(0,1fr)_auto]"><span class="truncate font-mono" :title="file.relative_path">{{ file.relative_path }}</span><span>{{ bytes(file.size) }}</span></div></div>
                     </div>
                   </td></tr>
                 </template>
@@ -492,5 +506,6 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
     </div>
 
     <DirectoryPickerDialog :open="pickerOpen" :storage-id="pickerTarget === 'source' || pickerTarget === 'ingest' ? activeDraft?.storage_id : null" :restrict-to-storage="pickerTarget === 'source' || pickerTarget === 'ingest'" @close="pickerOpen = false" @select="directorySelected" />
+    <MediaReorganizationDialog v-if="reorganizationTarget" :open="true" :transfer-task-id="reorganizationTarget.transfer.transfer_task_id" :download-task-id="reorganizationTarget.transfer.download_task_id" :display-name="reorganizationTarget.work.title" :current-title="reorganizationTarget.work.title" :current-media-type="reorganizationTarget.work.kind === 'movie' ? 'movie' : 'tv'" @close="reorganizationTarget = null" @queued="catalogReorganizationQueued" />
   </section>
 </template>

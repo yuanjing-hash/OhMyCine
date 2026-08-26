@@ -1,6 +1,9 @@
 package builtin
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestCatalogKeysAndAdaptersStayAligned(t *testing.T) {
 	definitions := Definitions()
@@ -27,7 +30,7 @@ func TestCatalogKeysAndAdaptersStayAligned(t *testing.T) {
 			t.Fatalf("auto-discovery definition has no host: %+v", definition)
 		}
 	}
-	for _, key := range []string{"nyaa", "animetosho", "tokyotoshokan", "mikan", "anidex", "torznab"} {
+	for _, key := range []string{"nyaa", "animetosho", "tokyotoshokan", "mikan", "anidex", "dmhy", "acgrip", "yts", "eztv", "1337x", "thepiratebay", "extto", "limetorrents", "torznab"} {
 		definition, ok := DefinitionForKey(key)
 		if !ok || definition.SiteType != SiteTypeBT || definition.AutoDiscover {
 			t.Fatalf("BT definition %q=%+v", key, definition)
@@ -41,5 +44,43 @@ func TestCatalogKeysAndAdaptersStayAligned(t *testing.T) {
 		if !ok || !definition.AutoDiscover || len(definition.BaseURLs) != 1 || definition.BaseURLs[0] != expectedOrigin {
 			t.Fatalf("definition %q=%+v", key, definition)
 		}
+	}
+}
+
+func TestResolveBTBaseURLUsesExactOfficialHosts(t *testing.T) {
+	for raw, expected := range map[string]string{
+		"https://nyaa.si":          "nyaa",
+		"https://share.dmhy.org/":  "dmhy",
+		"https://acg.rip":          "acgrip",
+		"https://yts.mx":           "yts",
+		"https://eztvx.to":         "eztv",
+		"https://1337x.to":         "1337x",
+		"https://thepiratebay.org": "thepiratebay",
+		"https://ext.to":           "extto",
+		"https://limetorrents.lol": "limetorrents",
+	} {
+		definition, canonical, err := ResolveBTBaseURL(raw)
+		if err != nil || definition.Key != expected || canonical == "" || !definition.DiscoverableByURL || !definition.Search || !definition.Download {
+			t.Fatalf("resolve %q: definition=%+v canonical=%q err=%v", raw, definition, canonical, err)
+		}
+	}
+	for _, raw := range []string{"http://nyaa.si", "https://user@nyaa.si", "https://nyaa.si/search", "https://nyaa.si?q=x", "https://nyaa.si?", "https://nyaa.si#", "https://nyaa.si.evil.test", "https://mirror.example.test", "https://nyaa.si:8443"} {
+		if _, _, err := ResolveBTBaseURL(raw); err == nil {
+			t.Fatalf("unsafe or unknown BT origin accepted: %q", raw)
+		}
+	}
+	if _, _, err := ResolveBTBaseURL("https://mirror.example.test"); !errors.Is(err, ErrBTUnknown) {
+		t.Fatalf("unknown host error=%v", err)
+	}
+}
+
+func TestCatalogDefinitionsHideConcretePublicBTProviders(t *testing.T) {
+	for _, definition := range CatalogDefinitions() {
+		if definition.SiteType == SiteTypeBT && definition.DiscoverableByURL {
+			t.Fatalf("public BT shortcut leaked into catalog: %+v", definition)
+		}
+	}
+	if definition, ok := DefinitionForKey("nyaa"); !ok || !definition.DiscoverableByURL {
+		t.Fatal("internal public BT registry was removed together with catalog entry")
 	}
 }

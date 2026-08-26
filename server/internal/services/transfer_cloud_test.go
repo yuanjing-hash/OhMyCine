@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
@@ -18,13 +19,16 @@ import (
 )
 
 type fakeMutationCloudDriver struct {
-	items         map[string]cloudpkg.Item
-	nextID        int
-	recycled      []string
-	copyCalls     int
-	moveCalls     int
-	renameCalls   int
-	renameErrOnce bool
+	items                  map[string]cloudpkg.Item
+	nextID                 int
+	recycled               []string
+	copyCalls              int
+	moveCalls              int
+	renameCalls            int
+	renameErrOnce          bool
+	recycleFailID          string
+	statFailID             string
+	statFailAfterRecycleID string
 }
 
 func newFakeMutationCloudDriver() *fakeMutationCloudDriver {
@@ -57,6 +61,9 @@ func (f *fakeMutationCloudDriver) List(_ context.Context, parentID string, reque
 	return cloudpkg.Page{Items: items[start:end], Offset: request.Offset, HasMore: end < len(items)}, nil
 }
 func (f *fakeMutationCloudDriver) Stat(_ context.Context, itemID string) (cloudpkg.Item, error) {
+	if f.statFailID == itemID {
+		return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeUnavailable, true, errors.New("temporary stat failure"))
+	}
 	if item, ok := f.items[itemID]; ok {
 		return item, nil
 	}
@@ -107,6 +114,12 @@ func (f *fakeMutationCloudDriver) Rename(_ context.Context, itemID, name string)
 	return nil
 }
 func (f *fakeMutationCloudDriver) Recycle(_ context.Context, itemID string) error {
+	if f.recycleFailID == itemID {
+		if f.statFailAfterRecycleID == itemID {
+			f.statFailID = itemID
+		}
+		return cloudpkg.Error(cloudpkg.CodeUnavailable, true, errors.New("temporary recycle failure"))
+	}
 	if _, ok := f.items[itemID]; !ok {
 		return cloudpkg.Error(cloudpkg.CodeNotFound, false, nil)
 	}
@@ -162,8 +175,12 @@ func newCloudTransferFixture(t *testing.T, mode, policy string, conflict bool) c
 	}
 	year := 2024
 	tmdbID, confidence := int64(550), .98
-	download := models.DownloadTask{ID: "cloud-download-" + mode + "-" + policy, OwnerID: actor.User.ID, DownloaderName: "115 Offline", ProviderType: models.DownloaderTypePan115Offline, ProviderOutputID: "source-root", SourceCiphertext: "encrypted", StagingStorageID: &sourceStorage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: profile.RulesJSON, TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &targetStorage.ID, TargetStorageType: models.StorageTypePan115, TargetConnectionID: &connection.ID, TargetProviderRootID: "library-root", TransferMode: mode, ConflictPolicy: policy, MovieDirectoryTemplate: library.MovieDirectoryTemplate, MovieFilenameTemplate: library.MovieFilenameTemplate, TVDirectoryTemplate: library.TVDirectoryTemplate, TVFilenameTemplate: library.TVFilenameTemplate, DisplayName: "Movie", Phase: models.DownloadTaskStatusCompleted, ScrapeStatus: "completed_verified", ScrapeTitle: "Movie", ScrapeMediaType: "movie", ScrapeCategory: "电影", ScrapeTMDBID: &tmdbID, ScrapeConfidence: &confidence, ScrapeYear: &year, ManifestFileCount: 1, CreatedAt: now, UpdatedAt: now}
-	_, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: "Movie", Payload: downloadJobPayload{DownloadTaskID: download.ID}}, func(tx *gorm.DB, job models.Job) error {
+	identityRaw, err := json.Marshal(MediaIdentitySnapshot{Version: 1, Revision: 1, Source: mediaIdentitySourceAutomatic, Status: mediaIdentityStatusVerified, TMDBID: &tmdbID, MediaType: "movie", Title: "Movie", Year: &year, Category: "电影", Confidence: &confidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	download := models.DownloadTask{ID: "cloud-download-" + mode + "-" + policy, OwnerID: actor.User.ID, DownloaderName: "115 Offline", ProviderType: models.DownloaderTypePan115Offline, ProviderOutputID: "source-root", SourceCiphertext: "encrypted", StagingStorageID: &sourceStorage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: profile.RulesJSON, TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &targetStorage.ID, TargetStorageType: models.StorageTypePan115, TargetConnectionID: &connection.ID, TargetProviderRootID: "library-root", TransferMode: mode, ConflictPolicy: policy, MovieDirectoryTemplate: library.MovieDirectoryTemplate, MovieFilenameTemplate: library.MovieFilenameTemplate, TVDirectoryTemplate: library.TVDirectoryTemplate, TVFilenameTemplate: library.TVFilenameTemplate, DisplayName: "Movie", Phase: models.DownloadTaskStatusCompleted, ScrapeStatus: "completed_verified", ScrapeTitle: "Movie", ScrapeMediaType: "movie", ScrapeCategory: "电影", ScrapeTMDBID: &tmdbID, ScrapeConfidence: &confidence, ScrapeYear: &year, IdentitySource: mediaIdentitySourceAutomatic, IdentityStatus: mediaIdentityStatusVerified, IdentityRevision: 1, IdentitySnapshotJSON: string(identityRaw), ManifestFileCount: 1, CreatedAt: now, UpdatedAt: now}
+	_, err = queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: "Movie", Payload: downloadJobPayload{DownloadTaskID: download.ID}}, func(tx *gorm.DB, job models.Job) error {
 		download.JobID = job.ID
 		return tx.Create(&download).Error
 	})

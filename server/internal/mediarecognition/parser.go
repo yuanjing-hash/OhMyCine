@@ -17,11 +17,12 @@ import (
 var (
 	videoExtensionPattern           = regexp.MustCompile(`(?i)\.(mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|mts|webm|flv|iso|vob)$`)
 	episodePattern                  = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])S\s*0*([0-9]{1,2})\s*E\s*0*([0-9]{1,5})(?:[^[:alnum:]]|$)|(?:^|[^[:alnum:]])0*([0-9]{1,2})x0*([0-9]{1,5})(?:[^[:alnum:]]|$)`)
+	standaloneEpisodePattern        = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode)\s*0*([0-9]{1,5})(?:[^[:alnum:]]|$)`)
 	seasonPattern                   = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:season|s)\s*0*([0-9]{1,2})(?:[^[:alnum:]]|$)`)
 	episodeRangePattern             = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep?|episodes?)?\s*0*([0-9]{1,5})\s*[-~～—]\s*0*([0-9]{1,5})(?:\s*(?:tv)?(?:全集|全))?(?:[^[:alnum:]]|$)`)
 	bracketRangePattern             = regexp.MustCompile(`(?i)(?:\[|【)\s*(?:ep?|episodes?)?\s*0*([0-9]{1,5})\s*[-~～—]\s*0*([0-9]{1,5})[^\]】]{0,32}(?:\]|】)`)
 	completeCountPattern            = regexp.MustCompile(`(?i)(?:\[|【)\s*0*([0-9]{1,5})\s*(?:全集|全)\s*(?:\]|】)`)
-	bracketEpisodePattern           = regexp.MustCompile(`(?:\[|【)\s*0*([0-9]{1,5})\s*(?:\]|】)`)
+	bracketEpisodePattern           = regexp.MustCompile(`(?i)(?:\[|【)\s*0*([0-9]{1,5})\s*(?:v[0-9]{1,3})?\s*(?:\]|】)`)
 	explicitTrailingEpisodePattern  = regexp.MustCompile(`(?i)-\s*ep?\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?(?:\s*(?:\[|【)|$)`)
 	bracketedTrailingEpisodePattern = regexp.MustCompile(`(?i)-\s*0*([0-9]{1,5})(?:\s*(?:end|fin))?\s*(\[[^\]]{1,128}\]|【[^】]{1,128}】|\([^)]{1,128}\))`)
 	chineseEpisodePartPattern       = regexp.MustCompile(`第\s*0*([0-9]{3,5})\s*[-‐‑‒–—]\s*0*([1-9])\s*[集话話](?:$|[^\p{L}\p{N}])`)
@@ -752,6 +753,11 @@ func firstSeasonEpisode(value string) (*int, *int) {
 		episode = cloneDomainInt(&parsed)
 	} else if match := chineseEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
 		episode = parseBoundedOrdinal(match[1], 100000)
+	} else if match := standaloneEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
+		parsed, _ := strconv.Atoi(match[1])
+		if parsed < 1888 || parsed > maxRecognitionYear {
+			episode = cloneDomainInt(&parsed)
+		}
 	} else if match := explicitTrailingEpisodePattern.FindStringSubmatch(value); len(match) == 2 {
 		parsed, _ := strconv.Atoi(match[1])
 		if parsed < 1888 || parsed > maxRecognitionYear {
@@ -839,6 +845,7 @@ func parseBoundedOrdinal(value string, maximum int) *int {
 
 func removeSeasonEpisodeTokens(value string) string {
 	without := episodePattern.ReplaceAllString(value, " ")
+	without = standaloneEpisodePattern.ReplaceAllString(without, " ")
 	without = seasonPattern.ReplaceAllString(without, " ")
 	without = bracketRangePattern.ReplaceAllString(without, " ")
 	without = completeCountPattern.ReplaceAllString(without, " ")

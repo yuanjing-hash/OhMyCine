@@ -212,6 +212,7 @@ func newTestClient(t *testing.T) *testClient {
 	downloadSettings := services.NewDownloadSettingsService(db, audit)
 	seedingSettings := services.NewSeedingSettingsService(db, audit)
 	metadataSettings := services.NewMetadataSettingsService(db, audit, credentialStore)
+	aiRecognitionSettings := services.NewAIRecognitionSettingsService(db, audit, credentialStore)
 	discovery := services.NewDiscoveryService(db, metadataSettings, log)
 	api.SetDiscoveryService(discovery)
 	libraries.SetMetadataSettingsService(metadataSettings)
@@ -231,6 +232,7 @@ func newTestClient(t *testing.T) *testClient {
 	api.SetTransferService(transfers)
 	api.SetDownloadSettingsService(downloadSettings)
 	api.SetMetadataSettingsService(metadataSettings)
+	api.SetAIRecognitionSettingsService(aiRecognitionSettings)
 	api.SetSeedingSettingsService(seedingSettings)
 	api.SetSeedingService(seeding)
 	api.SetPluginRepositoryService(services.NewPluginRepositoryService(db, audit, nil, log))
@@ -1025,6 +1027,14 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"key":"pttime"`)) {
 		t.Fatalf("site catalog status=%d data=%s", status, envelope.Data)
 	}
+	status, _ = client.request(t, http.MethodPost, "/api/v1/sites/resolve", map[string]any{"site_type": "bt", "base_url": "https://nyaa.si"}, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("BT site resolve without csrf status=%d", status)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/sites/resolve", map[string]any{"site_type": "bt", "base_url": "https://nyaa.si.evil.test"}, true)
+	if status != http.StatusBadRequest || !bytes.Contains(envelope.Data, []byte(services.CodeSiteBTHostUnsupported)) {
+		t.Fatalf("BT lookalike host resolve status=%d data=%s", status, envelope.Data)
+	}
 	payload := map[string]any{"name": "PTTime", "kind": "pttime", "base_url": "https://pt.example.test", "cookie": "uid=1; token=router-secret", "passkey": "router-passkey", "enabled": true, "priority": 100, "timeout_seconds": 12, "rate_limit_per_minute": 120}
 	status, _ = client.request(t, http.MethodPost, "/api/v1/sites", payload, false)
 	if status != http.StatusForbidden {
@@ -1453,6 +1463,39 @@ func TestMetadataSettingsNeverEchoTMDBToken(t *testing.T) {
 	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/metadata", nil, false)
 	if status != http.StatusOK || strings.Contains(string(envelope.Data), token) {
 		t.Fatalf("metadata get status=%d data=%s", status, envelope.Data)
+	}
+}
+
+func TestAIRecognitionSettingsAreNoStoreOptInAndNeverEchoAPIKey(t *testing.T) {
+	client := newTestClient(t)
+	denied := httptest.NewRecorder()
+	client.router.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/v1/settings/ai-recognition", nil))
+	if denied.Code != http.StatusUnauthorized || denied.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("unauthenticated AI settings status=%d cache=%q", denied.Code, denied.Header().Get("Cache-Control"))
+	}
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodGet, "/api/v1/settings/ai-recognition", nil, false)
+	var initial struct {
+		Enabled    bool   `json:"enabled"`
+		Configured bool   `json:"api_key_configured"`
+		Provider   string `json:"provider_type"`
+		Revision   uint64 `json:"revision"`
+	}
+	if err := json.Unmarshal(envelope.Data, &initial); status != http.StatusOK || err != nil || initial.Enabled || initial.Configured || initial.Provider != "openai_compatible" || initial.Revision != 1 {
+		t.Fatalf("initial status=%d value=%+v err=%v", status, initial, err)
+	}
+	const secret = "router-ai-secret"
+	status, envelope = client.request(t, http.MethodPatch, "/api/v1/settings/ai-recognition", map[string]any{"enabled": false, "provider_type": "openai_compatible", "base_url": "https://api.example.com", "api_key": secret, "model": "fixture-model", "send_relative_basenames": false, "revision": 1}, true)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), secret) {
+		t.Fatalf("AI patch status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/settings/ai-recognition", nil, false)
+	if status != http.StatusOK || strings.Contains(string(envelope.Data), secret) || !bytes.Contains(envelope.Data, []byte(`"api_key_configured":true`)) || !bytes.Contains(envelope.Data, []byte(`"enabled":false`)) {
+		t.Fatalf("AI get status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/credentials/reveal", map[string]any{"resource_type": "ai_recognition", "resource_id": "1", "field": "api_key"}, true)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(secret)) || client.lastHeader.Get("Cache-Control") != "no-store" {
+		t.Fatalf("AI reveal status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
 	}
 }
 
@@ -2160,6 +2203,24 @@ func TestMediaClassificationProfileRequestsRejectUnknownFields(t *testing.T) {
 	status, _ = client.request(t, http.MethodPost, "/api/v1/media-classification-profiles/"+uintString(listData.List[0].ID)+"/copy", map[string]any{"mystery": true}, true)
 	if status != http.StatusBadRequest {
 		t.Fatalf("copy status=%d", status)
+	}
+}
+
+func TestTransferDeletionRequestsRejectUnknownFieldsAndDisableCaching(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	transferID := "00000000-0000-0000-0000-000000000001"
+	for _, test := range []struct {
+		path string
+		body map[string]any
+	}{
+		{path: "/api/v1/transfers/" + transferID + "/deletion-preview", body: map[string]any{"scope": models.TransferDeletionScopeRecordOnly, "mystery": true}},
+		{path: "/api/v1/transfers/" + transferID + "/deletion-confirm", body: map[string]any{"token": strings.Repeat("a", 43), "mystery": true}},
+	} {
+		status, _ := client.request(t, http.MethodPost, test.path, test.body, true)
+		if status != http.StatusBadRequest || client.lastHeader.Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s status=%d cache=%q", test.path, status, client.lastHeader.Get("Cache-Control"))
+		}
 	}
 }
 

@@ -32,6 +32,7 @@ func DefaultScoreConfig() ScoreConfig {
 		TypoTitleThreshold:  .90,
 		TypoMatchThreshold:  .64,
 		ConflictMargin:      .06,
+		ExtremeThreshold:    .35,
 		HanEquivalence:      BuiltInHanEquivalence,
 	}
 }
@@ -79,6 +80,12 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		if decision.Ranked[left].Score.TitleSimilarity != decision.Ranked[right].Score.TitleSimilarity {
 			return decision.Ranked[left].Score.TitleSimilarity > decision.Ranked[right].Score.TitleSimilarity
 		}
+		if decision.Ranked[left].Candidate.Popularity != decision.Ranked[right].Candidate.Popularity {
+			return decision.Ranked[left].Candidate.Popularity > decision.Ranked[right].Candidate.Popularity
+		}
+		if decision.Ranked[left].Candidate.VoteCount != decision.Ranked[right].Candidate.VoteCount {
+			return decision.Ranked[left].Candidate.VoteCount > decision.Ranked[right].Candidate.VoteCount
+		}
 		if decision.Ranked[left].Candidate.MediaType != decision.Ranked[right].Candidate.MediaType {
 			return decision.Ranked[left].Candidate.MediaType < decision.Ranked[right].Candidate.MediaType
 		}
@@ -93,6 +100,23 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 	if len(decision.Ranked) > 1 {
 		decision.RunnerUpGap = clamp01(best.Score.Total - decision.Ranked[1].Score.Total)
 	}
+	// The extreme floor separates a usable-but-risky identity from an
+	// unrelated result. Ordinary low scores remain actionable (and may be
+	// arbitrated by optional AI); only candidates below this centralized floor
+	// are withheld from automatic identity binding.
+	if best.Score.Total < config.ExtremeThreshold || best.Score.TitleSimilarity < config.ExtremeThreshold {
+		decision.Reason = ReasonExtremeLowConfidence
+		addDiagnostic(&decision.Diagnostics, "extreme_identity_floor_not_met", "warning", "best candidate did not meet the minimum identity similarity floor")
+		return decision
+	}
+	setProvisional := func(reason DecisionReason, code, summary string) Decision {
+		decision.Status = DecisionProvisional
+		decision.Reason = reason
+		match := best.Candidate
+		decision.Match = &match
+		addDiagnostic(&decision.Diagnostics, code, "warning", summary)
+		return decision
+	}
 	threshold := config.MatchThreshold
 	exactIdentity := best.Score.TitleSimilarity == 1
 	typoIdentity := !exactIdentity && best.Score.TitleSimilarity >= config.TypoTitleThreshold && conservativeLatinTypoMatch(parsed, best.Candidate, config.HanEquivalence)
@@ -102,9 +126,7 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		threshold = config.TypoMatchThreshold
 	}
 	if best.Score.Total < threshold {
-		decision.Reason = ReasonLowConfidence
-		addDiagnostic(&decision.Diagnostics, "automatic_threshold_not_met", "warning", "best candidate did not meet the corpus-calibrated automatic threshold")
-		return decision
+		return setProvisional(ReasonLowConfidence, "automatic_threshold_not_met", "best candidate is usable but below the corpus-calibrated verified threshold")
 	}
 	identityConflict := len(decision.Ranked) > 1 && (!exactIdentity || decision.Ranked[1].Score.TitleSimilarity == 1)
 	if identityConflict && exactIdentity && strongStructuredTypeDisambiguation(parsed, best, decision.Ranked[1]) {
@@ -114,9 +136,7 @@ func RankWithConfig(parsed ParsedFacts, candidates []RemoteCandidate, config Sco
 		identityConflict = false
 	}
 	if identityConflict && decision.RunnerUpGap < config.ConflictMargin && decision.Ranked[1].Score.Total >= threshold-config.ConflictMargin {
-		decision.Reason = ReasonCandidateConflict
-		addDiagnostic(&decision.Diagnostics, "candidate_margin_too_small", "warning", "top candidates remain too close after all bounded evidence")
-		return decision
+		return setProvisional(ReasonCandidateConflict, "candidate_margin_too_small", "top candidates remain close; the stable highest candidate is provisional")
 	}
 	decision.Status = DecisionMatched
 	decision.Reason = ReasonMatched

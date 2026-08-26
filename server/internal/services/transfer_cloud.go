@@ -280,6 +280,9 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 
 	now := time.Now().UTC()
 	err = w.service.db.Transaction(func(tx *gorm.DB) error {
+		if err := captureCloudManagedItems(tx, task, download, targets, state); err != nil {
+			return err
+		}
 		if err := tx.Model(&models.MediaLibrary{}).Where("id = ?", task.LibraryID).UpdateColumn("dirty_generation", gorm.Expr("dirty_generation + 1")).Error; err != nil {
 			return err
 		}

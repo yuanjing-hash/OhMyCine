@@ -170,22 +170,76 @@ cookie := mergeMatchingDomainsParentFirst(cookies, candidate.cookieHost)
 - A nested NexusPHP result fixture produces one result, not duplicate outer/inner rows.
 - Adapter fixtures cover positive login proof. SewerPT and PandaPT result fixtures cover standard and nested rows, Panda title-text fallback, outer peer statistics, `span[title]` publication time, and `pro_free*` promotion markers.
 
-## Scenario: Public BT RSS and Torznab
+## Scenario: Address-Driven Public BT and Per-Site Search
 
-### Contracts
+### 1. Scope / Trigger
 
-- Catalog and DTOs expose stable `site_type=pt|bt` and `credential_kind=cookie|api_key|none`. Existing PT rows derive these values from their catalog key without a destructive migration.
-- Built-in public BT RSS entries are Nyaa, AnimeTosho, Tokyo Toshokan, Mikan and AniDex. Their feed origin, query parameter and torrent download host/path are compile-time profiles; an administrator cannot turn a built-in key into an arbitrary HTTPS fetcher.
-- Fixed public RSS download origins accept only normal HTTPS ports unless the exact configured test origin is injected; matching a hostname alone must not authorize an arbitrary alternate port.
-- Torznab is the explicit custom Jackett/Prowlarr connection. Its API Key uses the Site AES-GCM envelope and is sent only to the configured same-origin HTTPS API. Cross-origin torrent links and redirects are rejected, and a feed-provided download URL cannot override the encrypted configured API Key.
-- CookieCloud considers only catalog entries whose credential kind is `cookie`. Public RSS and Torznab hosts remain unsupported CookieCloud domains and their encrypted envelopes are never updated from browser cookies.
-- RSS/Torznab adapters may implement `site.SourceResolver`. The resolver converts a server-only identity to a bounded torrent or canonical BTIH magnet, then `SiteService` reuses `DownloadService.Submit` and the existing classification/transfer pipeline.
-- REST/SSE results contain only actor-bound opaque tokens. API Keys, magnets, torrent URLs and provider response bodies never appear in DTOs, logs, audit metadata or job payloads.
-- `/discovery/torrent-search`, `/discovery/torrent-search/stream` and `/discovery/torrent-results/recognize` are the primary generic routes. Existing PT routes remain compatible aliases.
+- Trigger: adding/changing a built-in public BT adapter, resolving an administrator-entered official URL, exposing Site capabilities, or navigating from one Site card into fixed single-site search.
 
-### Tests Required
+### 2. Signatures
 
-- Each built-in profile asserts its feed path/query key and rejects foreign feed/download hosts.
-- Nyaa fixture covers title, size, publication time, seed/leech/completion counts and controlled torrent resolution.
-- AnimeTosho compatibility covers `torrent_url` and `magnet_uri`; Torznab covers caps, namespaced attrs, encrypted API Key and same-origin download.
-- Cross-layer tests prove a resolved magnet/torrent enters the normal DownloadService while public JSON/SSE contains no source or credential.
+```text
+POST /api/v1/sites/resolve
+  request:  { base_url: string }
+  response: { kind, name, base_url, site_type, credential_kind, capabilities }
+
+POST /api/v1/sites
+  kind="auto_bt" is a browser intent only; Server resolves base_url again.
+
+GET /api/v1/discovery/torrent-search?site_id=<configured-site-id>&...
+GET /api/v1/discovery/torrent-search/stream?site_id=<configured-site-id>&...
+```
+
+- Catalog and Site DTOs expose stable `site_type=pt|bt`, `credential_kind=cookie|api_key|none`, and Server-derived `capabilities.search/download`.
+- Built-in URL registry keys are `nyaa`, `animetosho`, `tokyotosho`, `mikan`, `anidex`, `dmhy`, `acgrip`, `yts`, `eztv`, `1337x`, `thepiratebay`, `extto`, and `limetorrents`; Torznab remains the explicit Jackett/Prowlarr option.
+
+### 3. Contracts
+
+- Public BT adapter code may ship with Server, but unconfigured adapters are absent from the public add catalog and produce zero probes/searches. A Site exists only after an administrator enters a supported official HTTPS origin, Server resolves it, tests it, and saves it.
+- URL resolution accepts an HTTPS root origin only: no userinfo, query, fragment, non-root path, abnormal port, similar-domain suffix, or unregistered subdomain. IDNA-normalized hosts match the versioned registry exactly; unknown mirrors are not trusted automatically.
+- `kind="auto_bt"` and any browser resolution preview are untrusted. Create resolves the submitted origin again and persists the registry's stable kind/canonical origin, never a client-selected adapter kind.
+- RSS/API/HTML parsing remains per-site and fixture-backed. Shared bounded HTTP machinery may be reused, but CSS/HTML selectors and download-host allowlists may not be generalized across unrelated sites.
+- Fixed single-site mode carries `site_id` through initial search, retry, pagination, recognition, download, and bounded session restoration. If that Site fails, return only that Site's error; never silently broaden to aggregate search.
+- Torznab API Key uses the Site AES-GCM envelope and same-origin API contract. CookieCloud considers only cookie-authenticated catalog entries and never creates or updates public BT/Torznab credentials.
+- A `SourceResolver` converts server-private result identity to one bounded torrent or canonical BTIH magnet. Browser/API/SSE/session storage/log/audit/Job payload never contains magnet, torrent URL/body, upstream HTML, passkey, API Key, or provider identity.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Supported exact HTTPS root origin | Return safe definition preview; create still repeats resolution and connection test |
+| HTTP, userinfo, path, query, fragment, abnormal port | Reject as invalid Site URL; persist nothing and send no adapter request |
+| Similar hostname, attacker suffix, unregistered subdomain/mirror | Return unsupported Site; never fall through to another parser |
+| Browser posts a forged stable kind with another origin | Ignore/reject the kind and resolve origin server-side |
+| Configured single Site is disabled/offline/not searchable | Disable the card action or return only that Site's stable error; never aggregate |
+| HTML/API structure changes or download source crosses allowlisted host | Fail only that Site and expose no upstream body/source URL |
+
+### 5. Good / Base / Bad Cases
+
+- Good: administrator enters `https://nyaa.si`, Server identifies and probes Nyaa, saves one Site, then card search keeps `site_id` through page 2 and one-click download.
+- Base: an unconfigured built-in adapter remains invisible and performs no network I/O; global PT/BT search continues over configured enabled Sites only.
+- Bad: display all public BT names by default, trust `kind="nyaa"` from the browser, accept `https://nyaa.si.attacker.example`, or drop `site_id` on retry and search every Site.
+
+### 6. Tests Required
+
+- Registry tests cover every official origin/alias and reject HTTP, userinfo, path/query/fragment, abnormal ports, similar domains, subdomain spoofing and unknown mirrors.
+- Adapter fixtures cover normal/empty/next-page/malformed/challenge responses, media-only result facts, and cross-host source/redirect rejection for every RSS/API/HTML implementation.
+- Service/HTTP tests prove create re-resolves `auto_bt`, unconfigured definitions make zero requests, PT/CookieCloud/Torznab remain compatible, capabilities are Server-derived, and public DTO/log/audit state is source-free.
+- Web tests prove the add form does not list concrete public BT Sites and single-site route/search/retry/pagination/session restoration retain the same `site_id`.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+adapter := registry[request.Kind]
+return adapter.Search(ctx, request.BaseURL, query) // client selects code + target
+```
+
+Correct:
+
+```go
+definition, err := builtin.ResolveOfficialOrigin(request.BaseURL)
+if err != nil { return ErrUnsupportedSite }
+// Create repeats this resolution, probes definition.CanonicalOrigin, then saves definition.Kind.
+```

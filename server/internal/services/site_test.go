@@ -107,6 +107,40 @@ func TestPublicBTAndTorznabCredentialContracts(t *testing.T) {
 		t.Fatalf("Torznab API key did not round-trip through the site AES-GCM envelope: %+v err=%v", credential, err)
 	}
 }
+
+func TestBTAddressResolutionDoesNotProbeAndCreateResolvesAgain(t *testing.T) {
+	service, _, actor, _, _, _ := siteFixture(t)
+	adapter := &stubSiteAdapter{kind: "nyaa", testErr: map[string]error{}, searchErr: map[string]error{}}
+	service.adapters["nyaa"] = adapter
+
+	resolved, err := service.ResolveBT(actor, "https://nyaa.si/")
+	if err != nil || resolved.Kind != "nyaa" || resolved.CanonicalBaseURL != "https://nyaa.si" || !resolved.Capabilities.Search {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	if adapter.lastConfig.BaseURL != "" {
+		t.Fatalf("resolve unexpectedly probed network with config=%+v", adapter.lastConfig)
+	}
+	groups, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "anime", Page: 1})
+	if err != nil || len(groups) != 0 || adapter.lastConfig.BaseURL != "" {
+		t.Fatalf("unconfigured built-in BT adapter was contacted: groups=%+v config=%+v err=%v", groups, adapter.lastConfig, err)
+	}
+	created, err := service.Create(context.Background(), actor, SiteInput{Name: "My Nyaa", Kind: "auto_bt", BaseURL: "https://nyaa.si", Enabled: true, Priority: 100, TimeoutSeconds: 12, RateLimitPerMinute: 12}, RequestContext{})
+	if err != nil || created.Kind != "nyaa" || created.BaseURL != "https://nyaa.si" || !created.Capabilities.Search || adapter.lastConfig.BaseURL != "https://nyaa.si" {
+		t.Fatalf("created=%+v config=%+v err=%v", created, adapter.lastConfig, err)
+	}
+	if _, err := service.ResolveBT(actor, "https://nyaa.si.evil.test"); ErrorCode(err) != CodeSiteBTHostUnsupported {
+		t.Fatalf("lookalike host error=%v", err)
+	}
+	catalog, err := service.Catalog(actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range catalog {
+		if item.Key == "nyaa" {
+			t.Fatal("concrete public BT provider leaked into add catalog")
+		}
+	}
+}
 func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query sitepkg.Query) (sitepkg.Page, error) {
 	if err := a.searchErr[config.BaseURL]; err != nil {
 		return sitepkg.Page{}, err
@@ -310,7 +344,7 @@ func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDo
 	}))
 	defer upstream.Close()
 
-	service, adapter, actor, store, _, _ := siteFixture(t)
+	service, adapter, actor, store, _, downloaders := siteFixture(t)
 	metadata := NewMetadataSettingsService(service.db, service.audit, store, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
 	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
 		return tmdb.NewForTest("test-token", upstream.URL, upstream.Client())
@@ -343,7 +377,7 @@ func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDo
 		t.Fatalf("recognition consumed claim: %v", err)
 	}
 	claim, err := service.resolveClaim(token, actor.User.ID)
-	if err != nil || claim.ManualTMDBID == nil || *claim.ManualTMDBID != 346 || claim.ManualMediaType != "movie" || claim.RecognitionManual {
+	if err != nil || claim.ManualTMDBID == nil || *claim.ManualTMDBID != 346 || claim.ManualMediaType != "movie" || claim.RecognitionManual || claim.RecognitionSource != mediaIdentitySourceAutomatic || claim.RecognitionStatus != mediaIdentityStatusVerified || claim.RecognitionLocked {
 		t.Fatalf("automatic verified identity was not bound to claim: claim=%+v err=%v", claim, err)
 	}
 	service.SetMetadataSettings(nil)
@@ -355,6 +389,21 @@ func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDo
 	foreign.User.ID++
 	if _, err := service.RecognizeResult(context.Background(), foreign, token); ErrorCode(err) != CodeSiteResultExpired {
 		t.Fatalf("foreign recognition error=%v", err)
+	}
+	downloader, err := downloaders.Create(actor, DownloaderInput{Name: "Automatic PT qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	download, err := service.Download(context.Background(), actor, SiteDownloadInput{ResultToken: token, DownloaderID: downloader.ID}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task models.DownloadTask
+	if err := service.db.First(&task, "id = ?", download.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.IdentitySource != mediaIdentitySourceAutomatic || task.IdentityStatus != mediaIdentityStatusVerified || task.IdentityLocked || task.IdentityRevision != 1 || task.RecognitionOverrideTMDBID != nil || !strings.Contains(task.IdentitySnapshotJSON, `"tmdb_id":346`) {
+		t.Fatalf("automatic identity was promoted to a manual override: %+v", task)
 	}
 }
 

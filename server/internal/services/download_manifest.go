@@ -6,11 +6,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 )
 
 const minimumAutomaticTransferVideoBytes int64 = 16 * 1024 * 1024
+
+var errPackageEpisodeUnrecognized = errors.New("tv package episodes are not fully recognized")
 
 // selectDownloadPackageManifest turns a provider's complete output into the
 // media package that is allowed to enter automatic organization. The same
@@ -49,17 +51,19 @@ func selectDownloadPackageManifestWithMinimum(manifest downloadpkg.Manifest, med
 		if minimumEpisodeBytes < minimumVideoBytes {
 			minimumEpisodeBytes = minimumVideoBytes
 		}
+		eligible := make([]mediarecognition.FileFact, 0, len(videos))
 		for _, file := range videos {
 			if file.Size < minimumEpisodeBytes {
 				continue
 			}
-			_, _, _, episode := medialibrary.ParseFilename(pathpkg.Base(normalizedManifestPath(file.RelativePath)), "/"+strings.TrimLeft(normalizedManifestPath(file.RelativePath), "/"))
-			if episode != nil {
-				accepted[normalizedManifestPath(file.RelativePath)] = struct{}{}
-			}
+			eligible = append(eligible, mediarecognition.FileFact{RelativePath: normalizedManifestPath(file.RelativePath), Size: file.Size})
 		}
-		if len(accepted) == 0 {
-			accepted[normalizedManifestPath(anchor.RelativePath)] = struct{}{}
+		resolved := mediarecognition.ResolvePackageEpisodes(eligible, mediarecognition.MediaTypeTV)
+		if !resolved.Complete {
+			return downloadpkg.Manifest{}, errPackageEpisodeUnrecognized
+		}
+		for _, fact := range resolved.Files {
+			accepted[normalizedManifestPath(fact.RelativePath)] = struct{}{}
 		}
 	default:
 		return downloadpkg.Manifest{}, errors.New("manifest media type is not trustworthy")

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import SecretInput from '@/components/SecretInput.vue'
@@ -10,6 +11,7 @@ import {
   cookieCloudSettingsPath,
   cookieCloudSyncPath,
   siteCatalogPath,
+  siteResolvePath,
   sitePath,
   sitesPath,
   siteTestPath,
@@ -17,6 +19,7 @@ import {
   type CookieCloudSettings,
   type CookieCloudSyncResult,
   type SiteCatalogItem,
+  type SiteResolution,
   type SiteSummary,
 } from '@/sites'
 import type { ListResponse } from '@/types/api'
@@ -51,6 +54,7 @@ interface CookieCloudForm {
 }
 
 const auth = useAuthStore()
+const router = useRouter()
 const sites = ref<SiteSummary[]>([])
 const siteCatalog = ref<SiteCatalogItem[]>([])
 const loading = ref(true)
@@ -62,6 +66,8 @@ const dialogStep = ref<'type' | 'form'>('type')
 const selectedType = ref<'pt' | 'bt'>('pt')
 const editing = ref<SiteSummary | null>(null)
 const form = ref<SiteForm>(emptyForm())
+const btResolution = ref<SiteResolution | null>(null)
+const resolvingBT = ref(false)
 const cookieCloudOpen = ref(false)
 const cookieCloudLoading = ref(false)
 const cookieCloudSaving = ref(false)
@@ -72,7 +78,7 @@ const cookieCloudForm = ref<CookieCloudForm>(emptyCookieCloudForm())
 const title = computed(() => editing.value ? `编辑 ${editing.value.name}` : `添加 ${selectedType.value.toUpperCase()} 站点`)
 const filteredCatalog = computed(() => siteCatalog.value.filter(item => item.site_type === selectedType.value))
 const selectedCatalog = computed(() => siteCatalog.value.find(item => item.key === form.value.kind))
-const credentialKind = computed(() => selectedCatalog.value?.credential_kind || editing.value?.credential_kind || 'cookie')
+const credentialKind = computed(() => form.value.kind === 'auto_bt' ? 'none' : selectedCatalog.value?.credential_kind || editing.value?.credential_kind || 'cookie')
 const cookieCloudEndpoint = computed(() => {
   const path = cookieCloudSettings.value?.local_upload_path || '/cookiecloud'
   return `${window.location.origin}${path}`
@@ -114,21 +120,51 @@ function openCreate() {
 
 function selectSiteType(type: 'pt' | 'bt') {
   selectedType.value = type
-  const first = siteCatalog.value.find(item => item.site_type === type)
-  if (first) form.value.kind = first.key
+  btResolution.value = null
+  if (type === 'bt') {
+    form.value.kind = 'auto_bt'
+    form.value.name = ''
+    form.value.baseURL = ''
+  } else {
+    const first = siteCatalog.value.find(item => item.site_type === type)
+    if (first) form.value.kind = first.key
+  }
   applyCatalogSelection()
   dialogStep.value = 'form'
 }
 
 function applyCatalogSelection() {
   if (editing.value) return
+  btResolution.value = null
+  if (form.value.kind === 'auto_bt') {
+    form.value.name = ''
+    form.value.baseURL = ''
+    return
+  }
   const selected = siteCatalog.value.find(item => item.key === form.value.kind)
   if (!selected) return
   form.value.name = selected.name
   form.value.baseURL = selected.base_urls[0] || ''
 }
 
+async function resolveBT() {
+  if (form.value.kind !== 'auto_bt' || !form.value.baseURL.trim()) return null
+  resolvingBT.value = true
+  try {
+    const result = await api<SiteResolution>(siteResolvePath, { method: 'POST', body: JSON.stringify({ site_type: 'bt', base_url: form.value.baseURL }) })
+    btResolution.value = result
+    form.value.baseURL = result.canonical_base_url
+    if (!form.value.name.trim()) form.value.name = result.name
+    return result
+  } catch (reason) {
+    btResolution.value = null
+    notify(message(reason), 'error')
+    return null
+  } finally { resolvingBT.value = false }
+}
+
 function openEdit(site: SiteSummary) {
+  btResolution.value = null
   editing.value = site
   form.value = {
     kind: site.kind, name: site.name, baseURL: site.base_url, cookie: '', passkey: '', apiKey: '', userAgent: site.user_agent,
@@ -146,11 +182,13 @@ function closeDialog() {
   dialogOpen.value = false
   editing.value = null
   form.value = emptyForm()
+  btResolution.value = null
 }
 
 async function save() {
   saving.value = true
   try {
+    if (!editing.value && form.value.kind === 'auto_bt' && !await resolveBT()) return
     const current = editing.value
     const common = {
       name: form.value.name,
@@ -183,6 +221,11 @@ async function save() {
     await loadSites()
   } catch (reason) { notify(message(reason), 'error') }
   finally { saving.value = false }
+}
+
+function searchSite(site: SiteSummary) {
+  if (!site.enabled || site.health.status === 'offline' || !site.capabilities.search) return
+  void router.push({ name: 'explore', query: { site_id: String(site.id) } })
 }
 
 async function openCookieCloud() {
@@ -338,7 +381,8 @@ onMounted(loadSites)
         </dl>
         <p v-if="site.health.error_code" class="semantic-warning mt-4 p-3 text-xs">最近检测：<span class="font-mono">{{ site.health.error_code }}</span>。更新候选凭据失败时原配置会保留。</p>
         <div class="mt-auto flex flex-wrap gap-2 pt-5">
-          <button class="btn-primary" :disabled="busyID !== null" @click="testSite(site)">{{ busyID === site.id ? '检测中…' : '测试连接' }}</button>
+          <button class="btn-primary" :disabled="busyID !== null || !site.enabled || site.health.status === 'offline' || !site.capabilities.search" :title="!site.enabled ? '启用站点后才能搜索' : site.health.status === 'offline' ? '请先修复连接并重新测试' : !site.capabilities.search ? '该适配器不支持搜索' : '只搜索此站点'" @click="searchSite(site)">搜索</button>
+          <button class="btn-secondary" :disabled="busyID !== null" @click="testSite(site)">{{ busyID === site.id ? '检测中…' : '测试连接' }}</button>
           <button class="btn-secondary" :disabled="busyID !== null" @click="openEdit(site)">编辑</button>
           <button class="btn-secondary" :disabled="busyID !== null" @click="toggleSite(site)">{{ site.enabled ? '停用' : '启用' }}</button>
           <button class="btn-danger" :disabled="busyID !== null" @click="deleteSite(site)">删除</button>
@@ -359,7 +403,7 @@ onMounted(loadSites)
         </button>
         <button class="type-card mt-3 w-full text-left" type="button" @click="selectSiteType('bt')">
           <span class="type-card__icon">BT</span>
-          <span><strong class="block">公开 BT / Torznab</strong><span class="text-subtle mt-1 block text-sm">选择 Nyaa 等内建公开索引，或连接 Jackett/Prowlarr。</span></span>
+          <span><strong class="block">公开 BT / Torznab</strong><span class="text-subtle mt-1 block text-sm">输入受支持站点的 HTTPS 官网，或连接 Jackett/Prowlarr；未添加的站点不会被访问。</span></span>
           <span class="ml-auto text-subtle">下一步 →</span>
         </button>
       </section>
@@ -371,9 +415,12 @@ onMounted(loadSites)
         </div>
         <button v-if="!editing" class="link-button mt-4" type="button" @click="dialogStep = 'type'">← 返回选择类型</button>
         <div class="mt-5 grid gap-4 sm:grid-cols-2">
-          <div class="sm:col-span-2"><label class="label" for="site-catalog">站点适配</label><select id="site-catalog" v-model="form.kind" class="input" :disabled="Boolean(editing)" @change="applyCatalogSelection"><option v-for="item in filteredCatalog" :key="item.key" :value="item.key">{{ item.name }} · {{ item.engine === 'nexusphp' ? 'NexusPHP' : item.engine.toUpperCase() }}</option></select><p class="text-subtle mb-0 mt-1 text-xs">公开 RSS 索引固定使用内建受控地址；自定义聚合器请使用 Torznab。</p></div>
+          <div v-if="selectedType === 'pt' || editing" class="sm:col-span-2"><label class="label" for="site-catalog">站点适配</label><select id="site-catalog" v-model="form.kind" class="input" :disabled="Boolean(editing)" @change="applyCatalogSelection"><option v-if="editing && !selectedCatalog" :value="editing.kind">{{ editing.name }} · 内建适配</option><option v-for="item in filteredCatalog" :key="item.key" :value="item.key">{{ item.name }} · {{ item.engine === 'nexusphp' ? 'NexusPHP' : item.engine.toUpperCase() }}</option></select></div>
+          <div v-else class="sm:col-span-2"><label class="label" for="site-bt-mode">BT 接入方式</label><select id="site-bt-mode" v-model="form.kind" class="input" @change="applyCatalogSelection"><option value="auto_bt">输入官网自动识别</option><option value="torznab">Torznab · Jackett/Prowlarr</option></select><p class="text-subtle mb-0 mt-1 text-xs">Server 内置适配器，但不会列出、探测或访问尚未由你添加的公共 BT 站点。</p></div>
           <div><label class="label" for="site-name">显示名称</label><input id="site-name" v-model="form.name" class="input" maxlength="128" required /></div>
-          <div><label class="label" for="site-url">HTTPS 根地址</label><input id="site-url" v-model="form.baseURL" class="input font-mono" type="url" placeholder="https://example.test" required autocomplete="off" :readonly="selectedCatalog?.engine === 'rss'" /></div>
+          <div><label class="label" for="site-url">HTTPS 根地址</label><input id="site-url" v-model="form.baseURL" class="input font-mono" type="url" placeholder="https://example.test" required autocomplete="off" :readonly="Boolean(editing && selectedCatalog?.engine === 'rss')" @input="btResolution = null" /></div>
+          <div v-if="!editing && form.kind === 'auto_bt'" class="flex items-end"><button class="btn-secondary w-full" type="button" :disabled="resolvingBT || !form.baseURL.trim()" @click="resolveBT">{{ resolvingBT ? '正在识别…' : '识别官网' }}</button></div>
+          <div v-if="btResolution" class="semantic-inset p-3 text-sm sm:col-span-2"><strong>已识别：{{ btResolution.name }}</strong><span class="text-subtle ml-2 font-mono text-xs">{{ btResolution.kind }}</span><p class="mb-0 mt-1 text-xs text-muted">保存时 Server 会再次按官网 host 解析，浏览器返回的类型不会被信任。</p></div>
           <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-cookie">Cookie{{ editing ? '（留空不修改）' : '' }}</label><SecretInput id="site-cookie" v-model="form.cookie" class="input min-h-24 font-mono text-xs" multiline :configured="Boolean(editing?.cookie_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && editing?.cookie_configured ? credentialLoader({ resourceType: 'site', resourceID: editing.id, field: 'cookie' }) : undefined" :reset-key="editing?.id" :required="!editing" autocomplete="off" spellcheck="false" /><p class="text-subtle mb-0 mt-1 text-xs">CookieCloud 同步成功后也可在此继续手动更新，不会写入日志或普通任务字段。</p></div>
           <div v-if="credentialKind === 'cookie'" class="sm:col-span-2"><label class="label" for="site-passkey">Passkey（可选，{{ editing ? '留空不修改' : '仅在站点下载接口需要时使用' }}）</label><SecretInput id="site-passkey" v-model="form.passkey" class="input font-mono" :configured="Boolean(editing?.passkey_configured)" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && editing?.passkey_configured ? credentialLoader({ resourceType: 'site', resourceID: editing.id, field: 'passkey' }) : undefined" :reset-key="editing?.id" autocomplete="new-password" /></div>
           <label v-if="editing && credentialKind === 'cookie'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.clearPasskey" type="checkbox" />清除已保存的 passkey</label>

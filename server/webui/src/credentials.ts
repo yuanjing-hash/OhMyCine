@@ -1,6 +1,6 @@
 import { api } from '@/api/client'
 
-export type RevealCredentialResource = 'connection' | 'downloader' | 'site' | 'cookiecloud' | 'metadata' | 'plugin_connection'
+export type RevealCredentialResource = 'connection' | 'downloader' | 'site' | 'cookiecloud' | 'metadata' | 'ai_recognition' | 'plugin_connection'
 
 export interface RevealCredentialRequest {
   resourceType: RevealCredentialResource

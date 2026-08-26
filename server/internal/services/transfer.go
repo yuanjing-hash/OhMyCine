@@ -19,6 +19,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	serverlog "github.com/yuanjing-hash/ohmycine/server/internal/logging"
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/contract"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
@@ -33,7 +34,9 @@ type TransferService struct {
 	queue                   *QueueService
 	log                     zerolog.Logger
 	seeding                 *SeedingService
+	downloader              *DownloaderService
 	connections             *ConnectionService
+	mediaChanges            *MediaChangeService
 	verifyCompletedManifest func(context.Context, *models.DownloadTask, downloadpkg.Manifest) (downloadpkg.Manifest, error)
 }
 
@@ -46,6 +49,12 @@ func NewTransferService(db *gorm.DB, audit *AuditService, queue *QueueService, l
 }
 
 func (s *TransferService) SetSeedingService(seeding *SeedingService) { s.seeding = seeding }
+func (s *TransferService) SetDownloaderService(downloader *DownloaderService) {
+	s.downloader = downloader
+}
+func (s *TransferService) SetMediaChangeService(changes *MediaChangeService) {
+	s.mediaChanges = changes
+}
 func (s *TransferService) SetConnectionService(connections *ConnectionService) {
 	s.connections = connections
 }
@@ -58,7 +67,7 @@ func (s *TransferService) SetCompletedManifestVerifier(verifier func(context.Con
 // Download/provider records and all source or library files remain untouched.
 func (s *TransferService) Delete(actor Actor, id string, request RequestContext) error {
 	id = strings.TrimSpace(id)
-	var deletedJob models.Job
+	deletedJobs := make([]models.Job, 0, 2)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var task models.TransferTask
 		if err := tx.First(&task, "id = ?", id).Error; err != nil {
@@ -84,19 +93,28 @@ func (s *TransferService) Delete(actor Actor, id string, request RequestContext)
 		}, request); err != nil {
 			return err
 		}
+		reorganizationJobs, err := cleanupTransferHistoryDependencies(tx, task.ID)
+		if err != nil {
+			return err
+		}
+		deletedJobs = append(deletedJobs, reorganizationJobs...)
 		if err := tx.Delete(&task).Error; err != nil {
 			return err
 		}
 		if err := tx.Delete(&job).Error; err != nil {
 			return err
 		}
-		deletedJob = job
+		deletedJobs = append(deletedJobs, job)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	s.queue.publish(deletedJob, "job.deleted")
+	if s.queue != nil {
+		for _, deletedJob := range deletedJobs {
+			s.queue.publish(deletedJob, "job.deleted")
+		}
+	}
 	return nil
 }
 
@@ -116,6 +134,9 @@ func (s *TransferService) EnqueuePackage(download models.DownloadTask, manifest,
 		return appError(CodeTransferRouteUnsupported, "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库", err)
 	}
 	if err := validateAutomaticTransferSnapshot(download, manifest); err != nil {
+		if errors.Is(err, errPackageEpisodeUnrecognized) {
+			return appError(CodeTransferEpisodeUnrecognized, "媒体身份已确认，但剧集集号无法完整确定，未创建自动入库任务", err)
+		}
 		return appError(CodeTransferMediaUnrecognized, "媒体识别结果不可信，未创建自动入库任务", err)
 	}
 	var existing models.TransferTask
@@ -218,6 +239,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	}
 	if err := validateAutomaticTransferSnapshot(download, manifest); err != nil {
 		if w.service.verifyCompletedManifest == nil {
+			if errors.Is(err, errPackageEpisodeUnrecognized) {
+				return w.fail(task, CodeTransferEpisodeUnrecognized, "媒体身份已确认，但剧集集号仍待整理")
+			}
 			return w.fail(task, CodeTransferMediaUnrecognized, "媒体未识别，未自动入库")
 		}
 		// A legacy/failed transfer may still carry a public plan projection and
@@ -241,6 +265,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		task.CloudStateJSON = ""
 		verifiedManifest, verifyErr := w.service.verifyCompletedManifest(ctx, &download, manifest)
 		if verifyErr != nil {
+			if ErrorCode(verifyErr) == CodeTransferEpisodeUnrecognized {
+				return w.fail(task, CodeTransferEpisodeUnrecognized, "媒体身份已确认，但剧集集号仍待整理")
+			}
 			return w.fail(task, CodeTransferMediaUnrecognized, "媒体未识别，未自动入库")
 		}
 		raw, marshalErr := json.Marshal(verifiedManifest)
@@ -370,6 +397,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	}
 	now := time.Now().UTC()
 	err = w.service.db.Transaction(func(tx *gorm.DB) error {
+		if err := captureLocalManagedItems(tx, task, download, summary); err != nil {
+			return err
+		}
 		if err := tx.Model(&models.MediaLibrary{}).Where("id = ?", task.LibraryID).UpdateColumn("dirty_generation", gorm.Expr("dirty_generation + 1")).Error; err != nil {
 			return err
 		}
@@ -564,9 +594,6 @@ type transferTargetItem struct {
 }
 
 func buildTransferTargets(download models.DownloadTask, manifest downloadpkg.Manifest) ([]transferTargetItem, error) {
-	if err := validateAutomaticTransferSnapshot(download, manifest); err != nil {
-		return nil, err
-	}
 	videoCount := 0
 	for _, file := range manifest.Files {
 		if isVideoFile(file.RelativePath) {
@@ -579,6 +606,7 @@ func buildTransferTargets(download models.DownloadTask, manifest downloadpkg.Man
 	if download.ScrapeMediaType == "movie" && videoCount != 1 {
 		return nil, errors.New("movie transfer manifest must contain exactly one primary video")
 	}
+	episodes := transferEpisodeFactsForManifest(download, manifest)
 	plan := make([]transferTargetItem, 0, len(manifest.Files))
 	targetByStem := map[string]transferTargetItem{}
 	usedTargets := map[string]struct{}{}
@@ -587,9 +615,10 @@ func buildTransferTargets(download models.DownloadTask, manifest downloadpkg.Man
 			continue
 		}
 		normalizedSource := strings.ReplaceAll(file.RelativePath, "\\", "/")
-		season, episode := transferEpisodeFacts(download, normalizedSource, videoCount)
+		fact := episodes[normalizedManifestPath(normalizedSource)]
+		season, episode := cloneInt(fact.Season), cloneInt(fact.Episode)
 		if download.ScrapeMediaType == "tv" && episode == nil {
-			return nil, errors.New("tv transfer item has no trustworthy episode number")
+			return nil, errPackageEpisodeUnrecognized
 		}
 		values := transferTemplateValues{Category: download.ScrapeCategory, Title: download.ScrapeTitle, Year: download.ScrapeYear, Version: releaseversion.Parse(normalizedSource), Season: season, Episode: episode}
 		dirTemplate, fileTemplate := download.MovieDirectoryTemplate, download.MovieFilenameTemplate
@@ -649,8 +678,13 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 			providerVerified = true
 		}
 	}
-	if download.ScrapeStatus != "completed_verified" || (!providerVerified && download.ScrapeTMDBID == nil) || download.ScrapeConfidence == nil || *download.ScrapeConfidence < .80 {
+	if download.ScrapeStatus != "completed_verified" || (!providerVerified && download.ScrapeTMDBID == nil) {
 		return errors.New("transfer requires a verified metadata snapshot")
+	}
+	if !providerVerified {
+		if err := validateTransferIdentitySnapshot(download); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(download.ScrapeTitle) == "" || strings.TrimSpace(download.ScrapeCategory) == "" || (download.ScrapeMediaType != "movie" && download.ScrapeMediaType != "tv") {
 		return errors.New("transfer metadata snapshot is incomplete")
@@ -662,10 +696,14 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 	if providerVerified {
 		selected, err = selectProviderDownloadPackageManifest(manifest, download.ScrapeMediaType)
 	}
+	if errors.Is(err, errPackageEpisodeUnrecognized) {
+		return errPackageEpisodeUnrecognized
+	}
 	if err != nil || !sameAutomaticTransferFiles(manifest.Files, selected.Files) {
 		return errors.New("transfer manifest was not package-selected")
 	}
 	videoCount := 0
+	episodes := transferEpisodeFactsForManifest(download, manifest)
 	for _, file := range manifest.Files {
 		if isVideoFile(file.RelativePath) {
 			videoCount++
@@ -677,9 +715,9 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 		}
 		if download.ScrapeMediaType == "tv" {
 			normalized := strings.ReplaceAll(file.RelativePath, "\\", "/")
-			_, episode := transferEpisodeFacts(download, normalized, videoCount)
-			if episode == nil {
-				return errors.New("tv transfer item has no trustworthy episode number")
+			fact := episodes[normalizedManifestPath(normalized)]
+			if fact.Episode == nil {
+				return errPackageEpisodeUnrecognized
 			}
 		}
 	}
@@ -690,7 +728,16 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 }
 
 func transferEpisodeFacts(download models.DownloadTask, relativePath string, videoCount int) (*int, *int) {
-	_, _, season, episode := medialibrary.ParseFilename(pathpkg.Base(relativePath), "/"+relativePath)
+	if download.ScrapeMediaType == "" && download.RecognitionOverrideMediaType == "tv" {
+		download.ScrapeMediaType = "tv"
+	}
+	if videoCount != 1 {
+		download.ScrapeEpisode = nil
+		download.RecognitionOverrideEpisode = nil
+	}
+	manifest := downloadpkg.Manifest{Complete: true, Files: []downloadpkg.File{{RelativePath: relativePath, Size: minimumAutomaticTransferVideoBytes}}}
+	fact := transferEpisodeFactsForManifest(download, manifest)[normalizedManifestPath(relativePath)]
+	season, episode := cloneInt(fact.Season), cloneInt(fact.Episode)
 	if download.ScrapeMediaType == "tv" {
 		if download.ScrapeSeason != nil {
 			season = cloneInt(download.ScrapeSeason)
@@ -712,6 +759,51 @@ func transferEpisodeFacts(download models.DownloadTask, relativePath string, vid
 		season = &defaultSeason
 	}
 	return season, episode
+}
+
+type transferEpisodeFact struct {
+	Season  *int
+	Episode *int
+}
+
+func transferEpisodeFactsForManifest(download models.DownloadTask, manifest downloadpkg.Manifest) map[string]transferEpisodeFact {
+	videoFiles := make([]mediarecognition.FileFact, 0, len(manifest.Files))
+	for _, file := range manifest.Files {
+		if isVideoFile(file.RelativePath) {
+			videoFiles = append(videoFiles, mediarecognition.FileFact{RelativePath: normalizedManifestPath(file.RelativePath), Size: file.Size})
+		}
+	}
+	resolved := mediarecognition.ResolvePackageEpisodes(videoFiles, mediarecognition.MediaType(download.ScrapeMediaType))
+	result := make(map[string]transferEpisodeFact, len(videoFiles))
+	for _, fact := range resolved.Files {
+		result[normalizedManifestPath(fact.RelativePath)] = transferEpisodeFact{Season: cloneInt(fact.Season), Episode: cloneInt(fact.Episode)}
+	}
+	for _, file := range videoFiles {
+		key := normalizedManifestPath(file.RelativePath)
+		fact := result[key]
+		if download.ScrapeMediaType == "tv" {
+			if download.ScrapeSeason != nil {
+				fact.Season = cloneInt(download.ScrapeSeason)
+			}
+			if download.ScrapeEpisode != nil && len(videoFiles) == 1 {
+				fact.Episode = cloneInt(download.ScrapeEpisode)
+			}
+		}
+		if download.RecognitionOverrideMediaType == "tv" {
+			if download.RecognitionOverrideSeason != nil {
+				fact.Season = cloneInt(download.RecognitionOverrideSeason)
+			}
+			if download.RecognitionOverrideEpisode != nil && len(videoFiles) == 1 {
+				fact.Episode = cloneInt(download.RecognitionOverrideEpisode)
+			}
+		}
+		if fact.Episode != nil && fact.Season == nil {
+			defaultSeason := 1
+			fact.Season = &defaultSeason
+		}
+		result[key] = fact
+	}
+	return result
 }
 
 func sameAutomaticTransferFiles(left, right []downloadpkg.File) bool {

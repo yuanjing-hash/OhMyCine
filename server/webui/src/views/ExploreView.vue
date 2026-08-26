@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
-import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
+import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, sitesPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type SiteSummary, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -17,6 +17,11 @@ const year = ref<number | undefined>(typeof route.query.year === 'string' ? Numb
 const tmdbID = ref<number | undefined>(typeof route.query.tmdb_id === 'string' ? Number(route.query.tmdb_id) || undefined : undefined)
 const searchBy = ref<'title' | 'tmdb_id'>(route.query.search_by === 'tmdb_id' ? 'tmdb_id' : 'title')
 const selectedTitle = computed(() => typeof route.query.title === 'string' ? route.query.title : '')
+const lockedSiteID = computed(() => {
+  const value = typeof route.query.site_id === 'string' ? Number(route.query.site_id) : 0
+  return Number.isInteger(value) && value > 0 ? value : undefined
+})
+const lockedSite = ref<SiteSummary | null>(null)
 const groups = ref<TorrentSearchGroup[]>([])
 const searching = ref(false)
 const searchError = ref('')
@@ -65,7 +70,7 @@ const visibleResults = computed(() => filterAndSortTorrentResults(groups.value, 
 }))
 
 function searchInput(siteID?: number, page = 1) {
-  return { keyword: keyword.value, mediaType: mediaType.value || undefined, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, page, siteID }
+  return { keyword: keyword.value, mediaType: mediaType.value || undefined, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, page, siteID: lockedSiteID.value ?? siteID }
 }
 
 function stopStream() {
@@ -95,6 +100,11 @@ function search() {
   searchError.value = ''
   searched.value = false
   searching.value = true
+  if (lockedSiteID.value) {
+    activeChannel.value = lockedSiteID.value
+    void searchJSON(lockedSiteID.value)
+    return
+  }
   if (typeof EventSource === 'undefined') { void searchJSON(); return }
   let delivered = false
   const eventSource = new EventSource(torrentSearchURL(torrentSearchStreamPath, searchInput()))
@@ -192,7 +202,7 @@ function mediaTypeLabel(value?: string) { return value === 'movie' ? '电影' : 
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '种子搜索暂时不可用' }
 
 function currentSearchInput() {
-  return { keyword: keyword.value, mediaType: mediaType.value, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value }
+  return { keyword: keyword.value, mediaType: mediaType.value, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, siteID: lockedSiteID.value }
 }
 
 async function openManualRecognition(item: TorrentSearchResult) {
@@ -243,7 +253,7 @@ async function confirmManualRecognition() {
 }
 
 function sameSearchInput(left: ReturnType<typeof currentSearchInput>, right: TorrentSearchSession['input']) {
-  return left.keyword.trim() === right.keyword.trim() && left.mediaType === right.mediaType && left.year === right.year && left.tmdbID === right.tmdbID && left.searchBy === right.searchBy
+  return left.keyword.trim() === right.keyword.trim() && left.mediaType === right.mediaType && left.year === right.year && left.tmdbID === right.tmdbID && left.searchBy === right.searchBy && left.siteID === right.siteID
 }
 
 watch([groups, recognitions, searched], () => {
@@ -252,7 +262,13 @@ watch([groups, recognitions, searched], () => {
   })
 }, { deep: true })
 
-onMounted(() => {
+onMounted(async () => {
+  if (lockedSiteID.value && auth.can(Permissions.SystemAdmin)) {
+    try {
+      const response = await api<ListResponse<SiteSummary>>(sitesPath)
+      lockedSite.value = response.list.find(item => item.id === lockedSiteID.value) ?? null
+    } catch { /* Search API remains the authority if the management summary cannot load. */ }
+  }
   const cached = readTorrentSearchSession(typeof sessionStorage === 'undefined' ? undefined : sessionStorage)
   const hasRouteSearch = typeof route.query.title === 'string' || typeof route.query.tmdb_id === 'string'
   if (cached && (!hasRouteSearch || sameSearchInput(currentSearchInput(), cached.input))) {
@@ -264,6 +280,7 @@ onMounted(() => {
     groups.value = cached.groups
     recognitions.value = cached.recognitions
     searched.value = cached.searched
+    if (lockedSiteID.value) activeChannel.value = lockedSiteID.value
     return
   }
   if (keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search()
@@ -273,7 +290,8 @@ onBeforeUnmount(stopStream)
 
 <template>
   <section class="space-y-5">
-    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 class="mt-1 text-2xl font-800">资源搜索</h1><p class="page-description mt-1">聚合查询已启用的 PT 与公开 BT 站点；浏览器只收到 15 分钟有效的不透明结果令牌。</p></header>
+    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 class="mt-1 text-2xl font-800">资源搜索</h1><p class="page-description mt-1">{{ lockedSiteID ? '当前处于单站搜索模式；请求、重试和翻页不会回退到其他站点。' : '聚合查询已启用的 PT 与公开 BT 站点；浏览器只收到 15 分钟有效的不透明结果令牌。' }}</p></header>
+    <div v-if="lockedSiteID" class="semantic-inset flex flex-wrap items-center justify-between gap-3 p-4"><div><span class="status-chip">仅搜索此站</span><strong class="ml-2">{{ lockedSite?.name || `站点 #${lockedSiteID}` }}</strong></div><RouterLink class="btn-secondary" to="/system/sites">返回站点管理</RouterLink></div>
     <form class="panel" @submit.prevent="search">
       <div class="mb-4 flex flex-wrap gap-2" role="group" aria-label="搜索方式"><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'title' }" @click="searchBy = 'title'">按标题</button><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'tmdb_id' }" @click="searchBy = 'tmdb_id'">按 TMDB ID</button></div>
       <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] md:items-end">
@@ -285,12 +303,12 @@ onBeforeUnmount(stopStream)
       </div>
     </form>
     <div v-if="selectedTitle" class="panel"><span class="status-chip">已选作品</span><h2 class="mt-3 text-xl font-750">{{ selectedTitle }}</h2><p class="mt-1 text-sm text-muted">推荐来源只帮助确认作品身份，真实种子搜索仍按站点分别执行。</p></div>
-    <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">重试全部站点</button></div>
+    <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">{{ lockedSiteID ? '重试此站' : '重试全部站点' }}</button></div>
     <div v-if="searching && !groups.length" class="panel py-10 text-center text-muted">正在按站点限速并行搜索，结果会渐进出现…</div>
     <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT/BT 站点，或当前关键词暂无结果。可以先到“站点管理”添加站点。</div>
 
     <template v-if="groups.length">
-      <nav class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索渠道">
+      <nav v-if="!lockedSiteID" class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索渠道">
         <button class="management-tab shrink-0" :class="activeChannel === 'all' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === 'all'" @click="activeChannel = 'all'">全部渠道</button>
         <button v-for="group in orderedGroups" :key="group.site_id" class="management-tab shrink-0" :class="activeChannel === group.site_id ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === group.site_id" @click="activeChannel = group.site_id">{{ group.site_name }} <small>{{ group.site_type.toUpperCase() }}</small></button>
       </nav>

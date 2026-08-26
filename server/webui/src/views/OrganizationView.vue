@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { APIError, api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
+import MediaReorganizationDialog from '@/components/MediaReorganizationDialog.vue'
+import TransferDeletionDialog from '@/components/TransferDeletionDialog.vue'
 import { controlJob, respondAction } from '@/jobs'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
@@ -10,13 +12,13 @@ import {
   canDeleteTransferRecord,
   canRetargetTransfer,
   conflictPolicyLabels,
-  deleteTransfer,
   formatTransferProgress,
   getTransfer,
   listTransfers,
   retargetCompletedImport,
   shouldRefreshTransferEvent,
   transferModeLabels,
+  transferIdentityLabel,
   transferStatusClass,
   transferStatusLabel,
   type TransferDetail,
@@ -45,6 +47,8 @@ const saving = ref(false)
 const error = ref('')
 const selected = ref<TransferDetail | null>(null)
 const retargeting = ref<TransferSummary | null>(null)
+const reorganizing = ref<TransferSummary | null>(null)
+const deleting = ref<TransferSummary | null>(null)
 const retargetLibraryID = ref(0)
 const drawer = ref<HTMLElement | null>(null)
 const page = ref(readPositiveQuery('page', 1))
@@ -196,22 +200,31 @@ function canDelete(item: TransferSummary): boolean {
   return canControl(item) && canDeleteTransferRecord(item)
 }
 
-async function remove(item: TransferSummary) {
-  if (!window.confirm(`确认删除“${item.display_name}”的媒体整理记录？\n\n只会清理整理任务和执行记录，不会删除下载内容、qBittorrent 任务或媒体库文件。`)) return
-  saving.value = true
-  try {
-    await deleteTransfer(item.id)
-    notify('媒体整理记录已删除', 'success')
-    if (selected.value?.id === item.id) {
-      selected.value = null
-      await syncRoute('')
-    }
-    await load(false, true)
-  } catch (reason) {
-    notify(message(reason), 'error')
-  } finally {
-    saving.value = false
+function canReorganize(item: TransferSummary): boolean {
+  return canControl(item) && item.phase === 'completed' && item.job_status === 'completed' && item.identity_revision > 0
+}
+
+function openReorganization(item: TransferSummary) {
+  reorganizing.value = item
+}
+
+async function reorganizationQueued() {
+  await load(false, true)
+  if (selected.value) await refreshDetail(selected.value.id)
+}
+
+function remove(item: TransferSummary) {
+  deleting.value = item
+}
+
+async function deletionCompleted() {
+  const deletedID = deleting.value?.id
+  deleting.value = null
+  if (selected.value?.id === deletedID) {
+    selected.value = null
+    await syncRoute('')
   }
+  await load(false, true)
 }
 
 async function retry(item: TransferSummary) {
@@ -386,16 +399,18 @@ onBeforeUnmount(() => {
           <td><span :class="transferStatusClass(item)">{{ transferStatusLabel(item) }}</span><small v-if="isRateLimitedCloudTransfer(item)" class="text-subtle mt-1 block">115 风控限速处理中，多文件入库可能需要数分钟</small><small v-if="item.last_error_message" class="semantic-danger-text mt-1 block">{{ item.last_error_message }}</small></td>
           <td>{{ formatTransferProgress(item) }}</td>
           <td>{{ formatDate(item.updated_at) }}</td>
-          <td><div class="flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canControl(item) && canRetargetTransfer(item)" class="btn-secondary" type="button" :disabled="saving" @click="openRetarget(item)">修改入库目标</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></td>
+          <td><div class="flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canReorganize(item)" class="btn-secondary" type="button" :disabled="saving" @click="openReorganization(item)">修正识别并重新整理</button><button v-if="canControl(item) && canRetargetTransfer(item)" class="btn-secondary" type="button" :disabled="saving" @click="openRetarget(item)">修改入库目标</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></td>
         </tr></tbody>
       </table>
       <div v-if="!loading && items.length" class="organization-mobile-list p-3">
-        <article v-for="item in items" :key="item.id" class="semantic-inset p-3"><div class="flex items-start justify-between gap-3"><div><strong>{{ item.scrape_title || item.display_name }}</strong><small class="text-subtle mt-1 block">{{ item.library_name }} · {{ transferModeLabels[item.transfer_mode] }}</small></div><span :class="transferStatusClass(item)">{{ transferStatusLabel(item) }}</span></div><p class="text-subtle mb-0 mt-3 text-xs">{{ item.scrape_category || '未分类' }} · {{ formatTransferProgress(item) }} · {{ formatDate(item.updated_at) }}</p><div class="mt-3 flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canControl(item) && canRetargetTransfer(item)" class="btn-secondary" type="button" :disabled="saving" @click="openRetarget(item)">修改入库目标</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></article>
+        <article v-for="item in items" :key="item.id" class="semantic-inset p-3"><div class="flex items-start justify-between gap-3"><div><strong>{{ item.scrape_title || item.display_name }}</strong><small class="text-subtle mt-1 block">{{ item.library_name }} · {{ transferModeLabels[item.transfer_mode] }}</small></div><span :class="transferStatusClass(item)">{{ transferStatusLabel(item) }}</span></div><p class="text-subtle mb-0 mt-3 text-xs">{{ item.scrape_category || '未分类' }} · {{ formatTransferProgress(item) }} · {{ formatDate(item.updated_at) }}</p><div class="mt-3 flex flex-wrap gap-2"><button class="btn-secondary" type="button" @click="open(item)">查看详情</button><button v-if="canReorganize(item)" class="btn-secondary" type="button" :disabled="saving" @click="openReorganization(item)">修正识别并重新整理</button><button v-if="canControl(item) && canRetargetTransfer(item)" class="btn-secondary" type="button" :disabled="saving" @click="openRetarget(item)">修改入库目标</button><button v-if="canControl(item) && item.job_status === 'failed'" class="btn-secondary" type="button" :disabled="saving" @click="retry(item)">重试入库</button><button v-if="canDelete(item)" class="btn-danger" type="button" :disabled="saving" @click="remove(item)">删除记录</button></div></article>
       </div>
       <footer v-if="!loading && items.length" class="border-t border-[var(--border)] p-3 text-sm text-muted">显示 {{ items.length }} / {{ total }} 条 <span class="ml-4 inline-flex items-center gap-2"><button class="btn-secondary" type="button" :disabled="page === 1" @click="changePage(page - 1)">上一页</button><span>第 {{ page }} 页</span><button class="btn-secondary" type="button" :disabled="page * pageSize >= total" @click="changePage(page + 1)">下一页</button></span></footer>
     </div>
 
     <div v-if="retargeting" class="modal-backdrop fixed inset-0 z-60 flex items-center justify-center p-4" @click.self="!saving && (retargeting = null)"><form class="panel w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="retarget-title" @submit.prevent="confirmRetarget"><h2 id="retarget-title" class="m-0 text-xl">修改入库目标</h2><p class="page-description mt-2">{{ retargeting.scrape_title || retargeting.display_name }}</p><p class="semantic-warning mt-4 p-3 text-sm">只会更换媒体库、分类规则和命名快照，并重新执行 Transfer → Import；不会重新下载。若已经产生目录规划、云端检查点或部分写入，Server 会拒绝操作。</p><label class="mt-4 block"><span class="label">新的目标媒体库</span><select v-model.number="retargetLibraryID" class="input" required><option :value="0" disabled>请选择</option><option v-for="library in mediaLibraries.filter(item => item.enabled && item.id !== retargeting?.library_id)" :key="library.id" :value="library.id">{{ library.name }} · {{ library.storage_name }} · {{ library.transfer_mode }}</option></select></label><div class="mt-5 flex justify-end gap-3"><button class="btn-secondary" type="button" :disabled="saving" @click="retargeting = null">取消</button><button class="btn-primary" :disabled="saving || !retargetLibraryID">{{ saving ? '正在校验并重排…' : '确认修改并重试入库' }}</button></div></form></div>
+    <MediaReorganizationDialog v-if="reorganizing" :open="true" :transfer-task-id="reorganizing.id" :download-task-id="reorganizing.download_task_id" :display-name="reorganizing.display_name" :current-title="reorganizing.scrape_title" :current-media-type="reorganizing.scrape_media_type" @close="reorganizing = null" @queued="reorganizationQueued" />
+    <TransferDeletionDialog v-if="deleting" :transfer="deleting" @close="deleting = null" @deleted="deletionCompleted" />
 
     <div v-if="selected || detailLoading" class="task-drawer-backdrop" @click.self="closeDrawer()">
       <aside ref="drawer" class="task-drawer organization-drawer" role="dialog" aria-modal="true" :aria-label="`${selected?.display_name ?? '媒体整理'}详情`" @keydown="trapDrawerFocus">
@@ -403,8 +418,8 @@ onBeforeUnmount(() => {
         <p v-if="detailLoading && !selected" class="p-5 text-muted">正在读取任务详情…</p>
         <template v-else-if="selected">
           <section v-if="selected.job.action_request" class="semantic-warning m-4 p-4"><strong>{{ selected.job.action_request.prompt }}</strong><dl class="mt-3 grid gap-2 text-sm"><div v-for="(value, key) in selected.job.action_request.preview" :key="key"><dt class="text-subtle">{{ key }}</dt><dd class="m-0">{{ value }}</dd></div></dl><div class="mt-3 flex flex-wrap gap-2"><button v-for="option in selected.job.action_request.options" :key="option" class="btn-primary" type="button" :disabled="saving || !canRespond" @click="respond(option)">{{ actionLabel(option) }}</button></div></section>
-          <section class="organization-detail-section"><div class="flex items-start justify-between gap-3"><div><h3>任务概览</h3><p class="text-subtle mt-1 text-sm">{{ selected.display_name }} · {{ selected.downloader_name }}</p></div><span :class="transferStatusClass(selected)">{{ transferStatusLabel(selected) }}</span></div><p v-if="isRateLimitedCloudTransfer(selected)" class="semantic-inset mt-4 p-3 text-sm">115 正按风控限速逐个准备目录并入库。集数较多时会持续数分钟，文件进度会在每个文件完成后更新。</p><dl class="organization-facts"><div><dt>目标媒体库</dt><dd>{{ selected.library_name }}</dd></div><div><dt>入库方式</dt><dd>{{ transferModeLabels[selected.transfer_mode] }}</dd></div><div><dt>冲突策略</dt><dd>{{ conflictPolicyLabels[selected.conflict_policy] }}</dd></div><div><dt>文件进度</dt><dd>{{ formatTransferProgress(selected) }}</dd></div><div><dt>暂存清理</dt><dd>{{ selected.cleanup_status === 'deferred' ? '等待做种结束' : selected.cleanup_status === 'completed' ? `已清理 ${selected.cleanup_removed} 项` : selected.cleanup_status === 'failed' ? `清理失败 · ${selected.cleanup_error_code}` : selected.cleanup_status === 'skipped' ? '旧任务不自动清理' : '待处理' }}</dd></div><div><dt>分类规则快照</dt><dd>Profile {{ selected.profile_id }} · r{{ selected.profile_revision }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(selected.created_at) }}</dd></div></dl><p v-if="selected.last_error_message" class="semantic-error mt-4 p-3"><strong>{{ selected.last_error_code || '整理失败' }}</strong><span class="mt-1 block">{{ selected.last_error_message }}</span></p><div class="mt-4 flex flex-wrap gap-2"><button v-if="canControl(selected) && selected.job_status === 'failed'" class="btn-primary" type="button" :disabled="saving" @click="retry(selected)">仅重试入库阶段</button><button v-if="canDelete(selected)" class="btn-danger" type="button" :disabled="saving" @click="remove(selected)">删除记录</button></div></section>
-          <section class="organization-detail-section"><h3>识别与命名</h3><dl class="organization-facts"><div><dt>识别标题</dt><dd>{{ selected.scrape_title || '未识别' }}</dd></div><div><dt>媒体类型</dt><dd>{{ selected.scrape_media_type || '未知' }}</dd></div><div><dt>分类</dt><dd>{{ selected.scrape_category || '未分类' }}</dd></div><div><dt>TMDB</dt><dd>{{ selected.scrape_tmdb_id ?? '未匹配' }}</dd></div><div><dt>年份</dt><dd>{{ selected.scrape_year ?? '未知' }}</dd></div><div><dt>置信度</dt><dd>{{ selected.scrape_confidence == null ? '未知' : selected.scrape_confidence.toFixed(2) }}</dd></div></dl><div v-if="selected.plan_summary?.items.length" class="mt-4"><h4>目标相对路径</h4><p v-if="selected.plan_summary.truncated" class="semantic-warning p-2 text-xs">文件较多，仅显示前 {{ selected.plan_summary.items.length }} / {{ selected.plan_summary.total_files }} 项。</p><ul class="organization-plan"><li v-for="item in selected.plan_summary.items" :key="`${item.relative_path}-${item.kind}`"><code>{{ item.relative_path }}</code><span>{{ item.kind === 'video' ? '视频' : '伴随文件' }} · {{ formatSize(item.size) }} · {{ resultLabel(item.result) }}</span></li></ul></div><p v-else class="text-subtle text-sm">历史任务或尚未进入规划阶段，暂无安全命名摘要。</p></section>
+          <section class="organization-detail-section"><div class="flex items-start justify-between gap-3"><div><h3>任务概览</h3><p class="text-subtle mt-1 text-sm">{{ selected.display_name }} · {{ selected.downloader_name }}</p></div><span :class="transferStatusClass(selected)">{{ transferStatusLabel(selected) }}</span></div><p v-if="isRateLimitedCloudTransfer(selected)" class="semantic-inset mt-4 p-3 text-sm">115 正按风控限速逐个准备目录并入库。集数较多时会持续数分钟，文件进度会在每个文件完成后更新。</p><dl class="organization-facts"><div><dt>目标媒体库</dt><dd>{{ selected.library_name }}</dd></div><div><dt>入库方式</dt><dd>{{ transferModeLabels[selected.transfer_mode] }}</dd></div><div><dt>冲突策略</dt><dd>{{ conflictPolicyLabels[selected.conflict_policy] }}</dd></div><div><dt>文件进度</dt><dd>{{ formatTransferProgress(selected) }}</dd></div><div><dt>暂存清理</dt><dd>{{ selected.cleanup_status === 'deferred' ? '等待做种结束' : selected.cleanup_status === 'completed' ? `已清理 ${selected.cleanup_removed} 项` : selected.cleanup_status === 'failed' ? `清理失败 · ${selected.cleanup_error_code}` : selected.cleanup_status === 'skipped' ? '旧任务不自动清理' : '待处理' }}</dd></div><div><dt>分类规则快照</dt><dd>Profile {{ selected.profile_id }} · r{{ selected.profile_revision }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(selected.created_at) }}</dd></div></dl><p v-if="selected.last_error_message" class="semantic-error mt-4 p-3"><strong>{{ selected.last_error_code || '整理失败' }}</strong><span class="mt-1 block">{{ selected.last_error_message }}</span></p><div class="mt-4 flex flex-wrap gap-2"><button v-if="canReorganize(selected)" class="btn-primary" type="button" :disabled="saving" @click="openReorganization(selected)">修正识别并重新整理</button><button v-if="canControl(selected) && selected.job_status === 'failed'" class="btn-primary" type="button" :disabled="saving" @click="retry(selected)">仅重试入库阶段</button><button v-if="canDelete(selected)" class="btn-danger" type="button" :disabled="saving" @click="remove(selected)">删除记录</button></div></section>
+          <section class="organization-detail-section"><h3>识别与命名</h3><dl class="organization-facts"><div><dt>身份状态</dt><dd>{{ transferIdentityLabel(selected) }}</dd></div><div><dt>识别标题</dt><dd>{{ selected.scrape_title || '未识别' }}</dd></div><div><dt>媒体类型</dt><dd>{{ selected.scrape_media_type || '未知' }}</dd></div><div><dt>分类</dt><dd>{{ selected.scrape_category || '未分类' }}</dd></div><div><dt>TMDB</dt><dd>{{ selected.scrape_tmdb_id ?? '未匹配' }}</dd></div><div><dt>年份</dt><dd>{{ selected.scrape_year ?? '未知' }}</dd></div><div><dt>置信度</dt><dd>{{ selected.scrape_confidence == null ? '未知' : selected.scrape_confidence.toFixed(2) }}</dd></div></dl><div v-if="selected.plan_summary?.items.length" class="mt-4"><h4>目标相对路径</h4><p v-if="selected.plan_summary.truncated" class="semantic-warning p-2 text-xs">文件较多，仅显示前 {{ selected.plan_summary.items.length }} / {{ selected.plan_summary.total_files }} 项。</p><ul class="organization-plan"><li v-for="item in selected.plan_summary.items" :key="`${item.relative_path}-${item.kind}`"><code>{{ item.relative_path }}</code><span>{{ item.kind === 'video' ? '视频' : '伴随文件' }} · {{ formatSize(item.size) }} · {{ resultLabel(item.result) }}</span></li></ul></div><p v-else class="text-subtle text-sm">历史任务或尚未进入规划阶段，暂无安全命名摘要。</p></section>
           <section class="organization-detail-section"><h3>执行记录</h3><h4>状态时间线</h4><ol class="task-timeline"><li v-for="event in selected.timeline" :key="event.id"><strong>{{ event.event_type }}</strong><span>{{ event.from_status || '开始' }} → {{ event.to_status || '—' }}</span><time>{{ formatDate(event.created_at) }}</time></li></ol><h4 class="mt-6">执行尝试</h4><ol class="task-timeline"><li v-for="attempt in selected.attempts" :key="attempt.id"><strong>第 {{ attempt.attempt_number }} 次 · {{ attempt.status }}</strong><span>{{ attempt.error_message || '无错误' }}</span><time>{{ formatDate(attempt.started_at) }}</time></li></ol></section>
         </template>
       </aside>

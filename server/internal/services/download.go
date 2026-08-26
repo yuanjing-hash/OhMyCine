@@ -84,6 +84,7 @@ type DownloadService struct {
 	queue           *QueueService
 	log             zerolog.Logger
 	metadata        *MetadataSettingsService
+	aiRecognition   *AIRecognitionSettingsService
 	transfers       *TransferService
 	seeding         *SeedingSettingsService
 	providerEvents  *providerEventWakeHub
@@ -136,6 +137,10 @@ func (s *DownloadService) SetMetadataSettings(settings *MetadataSettingsService)
 	s.metadata = settings
 }
 
+func (s *DownloadService) SetAIRecognitionSettings(settings *AIRecognitionSettingsService) {
+	s.aiRecognition = settings
+}
+
 func (s *DownloadService) SetTransferService(transfers *TransferService) {
 	s.transfers = transfers
 	if transfers != nil {
@@ -181,6 +186,9 @@ type SubmitDownloadInput struct {
 type DownloadRecognitionIdentity struct {
 	TMDBID    int64
 	MediaType string
+	Source    string
+	Status    string
+	Locked    bool
 }
 
 type downloadSourceEnvelope struct {
@@ -233,6 +241,10 @@ type DownloadTaskSummary struct {
 	ScrapeConfidence  *float64   `json:"scrape_confidence"`
 	ScrapeSeason      *int       `json:"scrape_season"`
 	ScrapeEpisode     *int       `json:"scrape_episode"`
+	IdentitySource    string     `json:"identity_source"`
+	IdentityStatus    string     `json:"identity_status"`
+	IdentityLocked    bool       `json:"identity_locked"`
+	IdentityRevision  uint64     `json:"identity_revision"`
 	ManifestFiles     int        `json:"manifest_file_count"`
 	TargetLibraryID   *uint      `json:"target_library_id"`
 	TargetLibraryName string     `json:"target_library_name"`
@@ -339,6 +351,17 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		if input.RecognitionOverride.TMDBID <= 0 || (input.RecognitionOverride.MediaType != "movie" && input.RecognitionOverride.MediaType != "tv") {
 			return DownloadTaskSummary{}, appError(CodeInvalidRequest, "下载任务媒体身份无效", nil)
 		}
+		input.RecognitionOverride.Source = strings.TrimSpace(input.RecognitionOverride.Source)
+		input.RecognitionOverride.Status = strings.TrimSpace(input.RecognitionOverride.Status)
+		if input.RecognitionOverride.Source == "" {
+			input.RecognitionOverride.Source = mediaIdentitySourceManual
+		}
+		if input.RecognitionOverride.Status == "" {
+			input.RecognitionOverride.Status = mediaIdentityStatusVerified
+		}
+		if !validDownloadIdentityBinding(*input.RecognitionOverride) {
+			return DownloadTaskSummary{}, appError(CodeInvalidRequest, "下载任务媒体身份来源无效", nil)
+		}
 	}
 	taskID := uuid.NewString()
 	rawSource, err := json.Marshal(source)
@@ -363,8 +386,18 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 	}
 	record := models.DownloadTask{ID: taskID, OwnerID: ownerID, DownloaderID: &downloaderRecord.ID, DownloaderName: downloaderRecord.Name, ProviderType: downloaderRecord.Type, ProviderTag: "omc-" + taskID, SourceCiphertext: encryptedSource, StagingAbsolutePath: staging.AbsolutePath, IngestSourceKey: strings.TrimSpace(ingestSourceKey), SourceOrigin: sourceOrigin, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: canonicalRules, ProfileBuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, ProfileRecognitionRulesJSON: organization.RecognitionRulesJSON, SeedingCleanupEnabled: seedingPolicy.CleanupEnabled, SeedingMinimumMinutes: seedingPolicy.MinimumSeedMinutes, SeedingMinimumRatio: seedingPolicy.MinimumRatio, SeedingCompletionMode: seedingPolicy.CompletionMode, DisplayName: displayName, Phase: models.DownloadTaskStatusQueued, CreatedAt: now, UpdatedAt: now}
 	if input.RecognitionOverride != nil {
-		record.RecognitionOverrideTMDBID = cloneInt64(&input.RecognitionOverride.TMDBID)
-		record.RecognitionOverrideMediaType = input.RecognitionOverride.MediaType
+		if input.RecognitionOverride.Locked {
+			record.RecognitionOverrideTMDBID = cloneInt64(&input.RecognitionOverride.TMDBID)
+			record.RecognitionOverrideMediaType = input.RecognitionOverride.MediaType
+		}
+		record.IdentitySource = input.RecognitionOverride.Source
+		record.IdentityStatus = input.RecognitionOverride.Status
+		record.IdentityLocked = input.RecognitionOverride.Locked
+		record.IdentityRevision = 1
+		identity := MediaIdentitySnapshot{Version: 1, Revision: 1, Source: input.RecognitionOverride.Source, Status: input.RecognitionOverride.Status, Locked: input.RecognitionOverride.Locked, TMDBID: cloneInt64(&input.RecognitionOverride.TMDBID), MediaType: input.RecognitionOverride.MediaType, Title: displayName}
+		if rawIdentity, marshalErr := json.Marshal(identity); marshalErr == nil {
+			record.IdentitySnapshotJSON = string(rawIdentity)
+		}
 	}
 	if downloaderRecord.Type == models.DownloaderTypePan115Offline {
 		record.StagingStorageID = downloaderRecord.StorageID
@@ -408,6 +441,19 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		return DownloadTaskSummary{}, err
 	}
 	return downloadTaskSummary(record, job.Status), nil
+}
+
+func validDownloadIdentityBinding(identity DownloadRecognitionIdentity) bool {
+	switch identity.Source {
+	case mediaIdentitySourceManual:
+		return identity.Locked && identity.Status == mediaIdentityStatusVerified
+	case mediaIdentitySourceDirectID:
+		return identity.Status == mediaIdentityStatusVerified || identity.Status == mediaIdentityStatusProvisional
+	case mediaIdentitySourceAutomatic, mediaIdentitySourceAI:
+		return !identity.Locked && (identity.Status == mediaIdentityStatusVerified || identity.Status == mediaIdentityStatusProvisional)
+	default:
+		return false
+	}
 }
 
 func downloadQueueResourceKey(record models.Downloader) string {
@@ -835,6 +881,11 @@ func (s *DownloadService) deleteCompletedHistoryRecord(actor Actor, taskID strin
 			return err
 		}
 		if transferFound {
+			reorganizationJobs, err := cleanupTransferHistoryDependencies(tx, transfer.ID)
+			if err != nil {
+				return err
+			}
+			deletedJobs = append(deletedJobs, reorganizationJobs...)
 			if err := tx.Delete(&transfer).Error; err != nil {
 				return err
 			}
@@ -1008,7 +1059,7 @@ func normalizeDownloadDisplayName(requestedName, fallback string) (string, error
 func downloadSourcePurpose(id string) string { return "download-task:" + id + ":source" }
 
 func downloadTaskSummary(record models.DownloadTask, jobStatus string) DownloadTaskSummary {
-	return DownloadTaskSummary{ID: record.ID, JobID: record.JobID, OwnerID: record.OwnerID, DownloaderID: record.DownloaderID, DownloaderName: record.DownloaderName, ProviderType: record.ProviderType, DisplayName: record.DisplayName, JobStatus: jobStatus, ProviderStatus: record.ProviderStatus, Phase: record.Phase, Progress: record.Progress, BytesCompleted: record.BytesCompleted, BytesTotal: record.BytesTotal, DownloadSpeed: record.DownloadSpeed, UploadSpeed: record.UploadSpeed, ETASeconds: record.ETASeconds, LastSampledAt: record.LastSampledAt, LastErrorCode: record.LastErrorCode, LastErrorMessage: record.LastErrorMessage, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt, ProfileID: record.ProfileID, ProfileRevision: record.ProfileRevision, ScrapeStatus: record.ScrapeStatus, ScrapeTitle: record.ScrapeTitle, ScrapeMediaType: record.ScrapeMediaType, ScrapeCategory: record.ScrapeCategory, ScrapeTMDBID: record.ScrapeTMDBID, ScrapeConfidence: record.ScrapeConfidence, ScrapeSeason: cloneInt(record.ScrapeSeason), ScrapeEpisode: cloneInt(record.ScrapeEpisode), ManifestFiles: record.ManifestFileCount, TargetLibraryID: record.TargetLibraryID, TargetLibraryName: record.TargetLibraryName, TransferMode: record.TransferMode, ConflictPolicy: record.ConflictPolicy}
+	return DownloadTaskSummary{ID: record.ID, JobID: record.JobID, OwnerID: record.OwnerID, DownloaderID: record.DownloaderID, DownloaderName: record.DownloaderName, ProviderType: record.ProviderType, DisplayName: record.DisplayName, JobStatus: jobStatus, ProviderStatus: record.ProviderStatus, Phase: record.Phase, Progress: record.Progress, BytesCompleted: record.BytesCompleted, BytesTotal: record.BytesTotal, DownloadSpeed: record.DownloadSpeed, UploadSpeed: record.UploadSpeed, ETASeconds: record.ETASeconds, LastSampledAt: record.LastSampledAt, LastErrorCode: record.LastErrorCode, LastErrorMessage: record.LastErrorMessage, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt, ProfileID: record.ProfileID, ProfileRevision: record.ProfileRevision, ScrapeStatus: record.ScrapeStatus, ScrapeTitle: record.ScrapeTitle, ScrapeMediaType: record.ScrapeMediaType, ScrapeCategory: record.ScrapeCategory, ScrapeTMDBID: record.ScrapeTMDBID, ScrapeConfidence: record.ScrapeConfidence, ScrapeSeason: cloneInt(record.ScrapeSeason), ScrapeEpisode: cloneInt(record.ScrapeEpisode), IdentitySource: record.IdentitySource, IdentityStatus: record.IdentityStatus, IdentityLocked: record.IdentityLocked, IdentityRevision: record.IdentityRevision, ManifestFiles: record.ManifestFileCount, TargetLibraryID: record.TargetLibraryID, TargetLibraryName: record.TargetLibraryName, TransferMode: record.TransferMode, ConflictPolicy: record.ConflictPolicy}
 }
 
 type DownloadWorker struct {
@@ -1510,6 +1561,8 @@ type scrapeMatch struct {
 	Confident        bool
 	CredentialSource string
 	CredentialKind   string
+	IdentityStatus   string
+	IdentitySource   string
 }
 
 var downloadYearPattern = regexp.MustCompile(`(?:^|[. _(-])((?:19|20)\d{2})(?:[. _)-]|$)`)
@@ -1539,23 +1592,47 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 			client = metadataClient
 		}
 	}
-	if task.RecognitionOverrideTMDBID != nil && task.RecognitionOverrideMediaType != "" {
+	boundTMDBID := cloneInt64(task.RecognitionOverrideTMDBID)
+	boundMediaType := strings.TrimSpace(task.RecognitionOverrideMediaType)
+	boundSeason := cloneInt(task.RecognitionOverrideSeason)
+	boundEpisode := cloneInt(task.RecognitionOverrideEpisode)
+	boundSource := mediaIdentitySourceManual
+	boundStatus := mediaIdentityStatusVerified
+	if boundTMDBID == nil && task.IdentityRevision > 0 && strings.TrimSpace(task.IdentitySnapshotJSON) != "" {
+		if identity, decodeErr := decodeMediaIdentity(task.IdentitySnapshotJSON); decodeErr == nil && identity.Revision == task.IdentityRevision && identity.TMDBID != nil && (identity.MediaType == "movie" || identity.MediaType == "tv") {
+			boundTMDBID = cloneInt64(identity.TMDBID)
+			boundMediaType = identity.MediaType
+			boundSeason = cloneInt(identity.Season)
+			boundEpisode = cloneInt(identity.Episode)
+			boundSource = firstNonEmpty(identity.Source, firstNonEmpty(task.IdentitySource, mediaIdentitySourceDirectID))
+			boundStatus = firstNonEmpty(identity.Status, firstNonEmpty(task.IdentityStatus, mediaIdentityStatusProvisional))
+		}
+	}
+	// v48 could recover the legacy identity columns without materializing the
+	// versioned JSON snapshot. Treat a previously selected automatic TMDB item
+	// as a one-time binding, revalidate it with GetByID, and let persistScrape
+	// write the complete snapshot. Never infer a locked/manual identity here.
+	if boundTMDBID == nil && task.RecognitionOverrideTMDBID == nil && !task.IdentityLocked && task.ScrapeTMDBID != nil && (task.ScrapeMediaType == "movie" || task.ScrapeMediaType == "tv") {
+		boundTMDBID = cloneInt64(task.ScrapeTMDBID)
+		boundMediaType = task.ScrapeMediaType
+		boundSeason = cloneInt(task.ScrapeSeason)
+		boundEpisode = cloneInt(task.ScrapeEpisode)
+		boundSource = mediaIdentitySourceAutomatic
+		boundStatus = task.IdentityStatus
+		if boundStatus != mediaIdentityStatusVerified && boundStatus != mediaIdentityStatusProvisional {
+			boundStatus = mediaIdentityStatusProvisional
+		}
+	}
+	if boundTMDBID != nil && boundMediaType != "" {
 		if client == nil {
 			return result, appError(mediaRecognitionCredentialMissing, classificationFallbackMessage(mediaRecognitionCredentialMissing), nil)
 		}
 		language, _ := w.service.downloadRecognitionLocale(task)
-		verified, verifyErr := client.GetByID(ctx, task.RecognitionOverrideMediaType, *task.RecognitionOverrideTMDBID, language)
+		verified, verifyErr := client.GetByID(ctx, boundMediaType, *boundTMDBID, language)
 		if verifyErr != nil {
-			return result, appError(tmdb.ErrorCode(verifyErr), "TMDB 人工匹配验证失败", nil)
+			return result, appError(tmdb.ErrorCode(verifyErr), "TMDB 媒体身份验证失败", nil)
 		}
-		metadata := classification.Metadata{
-			MediaType:           classification.MediaType(verified.MediaType),
-			GenreIDs:            append([]int(nil), verified.GenreIDs...),
-			OriginalLanguage:    verified.OriginalLanguage,
-			ProductionCountries: append([]string(nil), verified.ProductionCountries...),
-			OriginCountries:     append([]string(nil), verified.OriginCountries...),
-			ReleaseYear:         cloneInt(verified.ReleaseYear),
-		}
+		metadata := classificationMetadataForMatch(verified)
 		classified := classification.Classify(metadata, rules)
 		result.Title = verified.Title
 		result.MediaType = verified.MediaType
@@ -1563,8 +1640,8 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 		result.TMDBID = cloneInt64(&verified.ID)
 		result.Confidence = cloneFloat64(&verified.Confidence)
 		result.Year = cloneInt(verified.ReleaseYear)
-		result.Season = cloneInt(task.RecognitionOverrideSeason)
-		result.Episode = cloneInt(task.RecognitionOverrideEpisode)
+		result.Season = boundSeason
+		result.Episode = boundEpisode
 		if verified.MediaType == "tv" && result.Episode == nil && completedManifestVideoCount(manifest) == 1 {
 			for _, file := range manifest.Files {
 				if isVideoFile(file.RelativePath) {
@@ -1576,9 +1653,11 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 		// A persisted override is not a fuzzy match: GetByID has just re-fetched
 		// and validated the authoritative identity. Require a complete verified
 		// projection instead of applying the automatic-ranking threshold again.
-		result.Confident = verified.ID == *task.RecognitionOverrideTMDBID && verified.MediaType == task.RecognitionOverrideMediaType && strings.TrimSpace(result.Title) != "" && strings.TrimSpace(result.Category) != "" && result.Confidence != nil
+		result.Confident = verified.ID == *boundTMDBID && verified.MediaType == boundMediaType && strings.TrimSpace(result.Title) != "" && strings.TrimSpace(result.Category) != "" && result.Confidence != nil
+		result.IdentitySource = boundSource
+		result.IdentityStatus = boundStatus
 		if !result.Confident {
-			return result, appError(mediaRecognitionLowConfidence, "TMDB 人工匹配验证结果不完整", nil)
+			return result, appError(mediaRecognitionLowConfidence, "TMDB 媒体身份验证结果不完整", nil)
 		}
 		return result, nil
 	}
@@ -1587,10 +1666,12 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 		files = append(files, recognitionSourceFile{RelativePath: file.RelativePath, Size: file.Size})
 	}
 	language, region := w.service.downloadRecognitionLocale(task)
-	recognized := recognizeMedia(ctx, client, MediaRecognitionRequest{PackageName: manifest.Name, Files: files, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: task.ScrapeMediaType, YearHint: task.ScrapeYear, BuiltinPackCodes: packCodes, RecognitionRules: recognitionRules, Classification: rules, Language: language, Region: region})
+	recognized := recognizeMedia(ctx, client, MediaRecognitionRequest{PackageName: manifest.Name, Files: files, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: task.ScrapeMediaType, YearHint: task.ScrapeYear, BuiltinPackCodes: packCodes, RecognitionRules: recognitionRules, Classification: rules, Language: language, Region: region, AIAssist: w.service.aiRecognition})
 	result.Title, result.MediaType, result.Category = recognized.Title, recognized.MediaType, recognized.CategoryName
 	result.TMDBID, result.Confidence, result.Year = recognized.TMDBID, recognized.Confidence, recognized.ReleaseYear
 	result.Season, result.Episode = cloneInt(recognized.SeasonHint), cloneInt(recognized.EpisodeHint)
+	result.IdentityStatus = recognized.IdentityStatus
+	result.IdentitySource = recognized.IdentitySource
 	result.Confident = recognized.Status == mediaRecognitionStatusMatched && recognized.MatchedRuleID != nil && recognized.CategoryName != ""
 	if recognized.ErrorCode != "" {
 		return result, appError(recognized.ErrorCode, classificationFallbackMessage(recognized.ErrorCode), nil)
@@ -1600,6 +1681,26 @@ func (w *DownloadWorker) classify(ctx context.Context, task models.DownloadTask,
 
 func (w *DownloadWorker) persistScrape(task *models.DownloadTask, match scrapeMatch, status string, files int) error {
 	updates := map[string]any{"scrape_status": status, "scrape_title": safeLabel(match.Title, 256), "scrape_media_type": safeLabel(match.MediaType, 16), "scrape_category": safeLabel(match.Category, 128), "scrape_tmdb_id": match.TMDBID, "scrape_confidence": match.Confidence, "scrape_year": match.Year, "scrape_season": match.Season, "scrape_episode": match.Episode, "manifest_file_count": files, "last_error_code": "", "last_error_message": "", "updated_at": time.Now().UTC()}
+	identitySource := firstNonEmpty(match.IdentitySource, mediaIdentitySourceAutomatic)
+	identityStatus := firstNonEmpty(match.IdentityStatus, mediaIdentityStatusVerified)
+	identityLocked := task.IdentityLocked || task.RecognitionOverrideTMDBID != nil
+	if identityLocked {
+		identitySource = firstNonEmpty(task.IdentitySource, firstNonEmpty(match.IdentitySource, mediaIdentitySourceManual))
+		identityStatus = mediaIdentityStatusVerified
+	} else if match.TMDBID == nil {
+		identitySource, identityStatus = mediaIdentitySourceLocalProvisional, mediaIdentityStatusLocalProvisional
+	}
+	revision := task.IdentityRevision
+	if revision == 0 {
+		revision = 1
+	}
+	manifest, _, _ := completedDownloadManifest(task.CompletedManifestJSON)
+	_, snapshotJSON, snapshotErr := buildDownloadIdentitySnapshot(*task, match, manifest, identitySource, identityStatus, identityLocked, revision)
+	if snapshotErr != nil {
+		return snapshotErr
+	}
+	updates["identity_source"], updates["identity_status"], updates["identity_locked"] = identitySource, identityStatus, identityLocked
+	updates["identity_revision"], updates["identity_snapshot_json"] = revision, snapshotJSON
 	if err := w.service.db.Model(task).Updates(updates).Error; err != nil {
 		return err
 	}
@@ -1613,6 +1714,7 @@ func (w *DownloadWorker) persistScrape(task *models.DownloadTask, match scrapeMa
 	task.ScrapeSeason = match.Season
 	task.ScrapeEpisode = match.Episode
 	task.ManifestFileCount = files
+	task.IdentitySource, task.IdentityStatus, task.IdentityLocked, task.IdentityRevision, task.IdentitySnapshotJSON = identitySource, identityStatus, identityLocked, revision, snapshotJSON
 	task.LastErrorCode = ""
 	task.LastErrorMessage = ""
 	return nil
@@ -1771,8 +1873,15 @@ func (w *DownloadWorker) verifyCompleted(ctx context.Context, task *models.Downl
 	}
 	selected, err := selectDownloadPackageManifest(manifest, match.MediaType)
 	if err != nil {
-		if persistErr := w.persistScrape(task, match, "completed_unrecognized", len(manifest.Files)); persistErr != nil {
+		status := "completed_unrecognized"
+		if errors.Is(err, errPackageEpisodeUnrecognized) {
+			status = "completed_verified"
+		}
+		if persistErr := w.persistScrape(task, match, status, len(manifest.Files)); persistErr != nil {
 			return downloadpkg.Manifest{}, appError("download_state_persist_failed", "完成后刮削结果保存失败", persistErr)
+		}
+		if errors.Is(err, errPackageEpisodeUnrecognized) {
+			return downloadpkg.Manifest{}, appError(CodeTransferEpisodeUnrecognized, "媒体身份已确认，但无法完整确定每个视频的集号；已保留完整来源等待整理", nil)
 		}
 		return downloadpkg.Manifest{}, appError(CodeTransferMediaUnrecognized, "下载已完成，但没有找到可信主媒体，未自动入库", nil)
 	}
@@ -1972,6 +2081,8 @@ func downloadFailureMessage(code string, retryable bool) string {
 		return "qBittorrent 分类目录与该任务的暂存目录不一致，已阻止下载"
 	case CodeTransferMediaUnrecognized:
 		return "下载已完成，但媒体未识别，未自动入库；请修正识别条件后重试"
+	case CodeTransferEpisodeUnrecognized:
+		return "媒体身份已确认，但剧集集号仍待整理；完整来源不会被部分入库"
 	case "download_state_persist_failed":
 		return "下载完成后的识别结果保存失败，请重试"
 	case "download_completion_manifest_invalid":

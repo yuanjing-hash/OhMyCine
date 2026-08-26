@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, filterAndSortTorrentResults, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, filterAndSortTorrentResults, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, siteResolvePath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, site_type: 'pt', status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -82,12 +82,35 @@ describe('PT discovery contracts', () => {
     expect(cookieCloudSettingsPath).toBe('/api/v1/settings/sites/cookiecloud')
     expect(cookieCloudSyncPath).toBe('/api/v1/settings/sites/cookiecloud/sync')
     expect(siteCatalogPath).toBe('/api/v1/sites/catalog')
+    expect(siteResolvePath).toBe('/api/v1/sites/resolve')
     expect(ptRecognitionPath).toBe('/api/v1/discovery/pt-results/recognize')
     expect(torrentSearchPath).toBe('/api/v1/discovery/torrent-search')
     expect(torrentSearchStreamPath).toBe('/api/v1/discovery/torrent-search/stream')
     expect(torrentRecognitionPath).toBe('/api/v1/discovery/torrent-results/recognize')
     expect(torrentRecognitionCandidatesPath).toBe('/api/v1/discovery/torrent-results/tmdb-candidates')
     expect(torrentRecognitionOverridePath).toBe('/api/v1/discovery/torrent-results/recognition-override')
+  })
+
+  it('binds cached results to the fixed single-site scope', () => {
+    const values = new Map<string, string>()
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } }
+    const now = Date.parse('2026-08-25T00:00:00Z')
+    const scoped = group(7)
+    scoped.items[0].expires_at = '2026-08-25T00:10:00Z'
+    saveTorrentSearchSession(storage, { input: { keyword: 'anime', mediaType: 'tv', searchBy: 'title', siteID: 7 }, groups: [scoped], recognitions: {}, searched: true, savedAt: now })
+    expect(readTorrentSearchSession(storage, now)?.input.siteID).toBe(7)
+  })
+
+  it('uses address-driven BT adding and a fixed single-site search route', () => {
+    const sitesView = readFileSync(new URL('./views/SitesView.vue', import.meta.url), 'utf8')
+    const exploreView = readFileSync(new URL('./views/ExploreView.vue', import.meta.url), 'utf8')
+    expect(sitesView).toContain("form.value.kind = 'auto_bt'")
+    expect(sitesView).toContain('siteResolvePath')
+    expect(sitesView).toContain("query: { site_id: String(site.id) }")
+    expect(sitesView).not.toContain('选择 Nyaa 等内建公开索引')
+    expect(exploreView).toContain('lockedSiteID')
+    expect(exploreView).toContain('当前处于单站搜索模式')
+    expect(exploreView).toContain('void searchJSON(lockedSiteID.value)')
   })
 
   it('presents shared recognition specifications without accepting a raw title or torrent URL', () => {

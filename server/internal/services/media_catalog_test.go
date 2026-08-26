@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 )
 
@@ -50,6 +51,7 @@ func TestMediaLibraryEntryPageReturnsDatabaseTotalAndEmptyOutOfRangePage(t *test
 
 func TestMediaCatalogGroupsSeriesBeforePagingAndBuildsSeasonDetail(t *testing.T) {
 	service, library, actor := createCatalogTestLibrary(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
 	now := time.Now().UTC()
 	season1, season2, episode1, episode2 := 1, 2, 1, 2
 	entries := []models.MediaLibraryEntry{
@@ -79,6 +81,37 @@ func TestMediaCatalogGroupsSeriesBeforePagingAndBuildsSeasonDetail(t *testing.T)
 	}
 	if len(detail.Seasons) != 2 || detail.Seasons[0].Number != 1 || len(detail.Seasons[0].Episodes) != 2 || *detail.Seasons[0].Episodes[0].Episode != 1 || detail.Seasons[1].Number != 2 {
 		t.Fatalf("catalog detail=%+v", detail)
+	}
+	ownerID := actor.User.ID
+	jobs := []models.Job{
+		{ID: "catalog-download-job", OwnerID: &ownerID, JobType: "download", Status: models.JobStatusCompleted, DisplayName: "catalog download"},
+		{ID: "catalog-managed-job", OwnerID: &ownerID, JobType: "transfer", Status: models.JobStatusCompleted, DisplayName: "catalog transfer"},
+	}
+	if err := service.db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	download := models.DownloadTask{ID: "catalog-managed-download", OwnerID: ownerID, JobID: jobs[0].ID, DownloaderName: "fixture", ProviderType: "fixture", SourceCiphertext: "fixture", DisplayName: "catalog download", Phase: models.DownloadTaskStatusCompleted, IdentityRevision: 4}
+	if err := service.db.Create(&download).Error; err != nil {
+		t.Fatal(err)
+	}
+	transfer := models.TransferTask{ID: "catalog-managed-transfer", OwnerID: ownerID, JobID: jobs[1].ID, DownloadTaskID: download.ID, LibraryID: library.ID, LibraryName: library.Name, ManifestJSON: "{}", Phase: models.TransferTaskStatusCompleted}
+	if err := service.db.Create(&transfer).Error; err != nil {
+		t.Fatal(err)
+	}
+	managed := []models.MediaManagedItem{
+		{OpaqueID: "catalog-managed-one", LibraryID: library.ID, TransferTaskID: transfer.ID, DownloadTaskID: transfer.DownloadTaskID, IdentityRevision: 4, Kind: models.MediaManagedItemKindVideo, RelativePath: entries[1].RelativePath, Size: entries[1].Size, Managed: true, Active: true},
+		{OpaqueID: "catalog-managed-two", LibraryID: library.ID, TransferTaskID: transfer.ID, DownloadTaskID: transfer.DownloadTaskID, IdentityRevision: 4, Kind: models.MediaManagedItemKindVideo, RelativePath: entries[2].RelativePath, Size: entries[2].Size, Managed: true, Active: true},
+		{OpaqueID: "catalog-unmanaged", LibraryID: library.ID, TransferTaskID: transfer.ID, DownloadTaskID: transfer.DownloadTaskID, IdentityRevision: 4, Kind: models.MediaManagedItemKindVideo, RelativePath: "/not-in-work.mkv", Size: 1, Managed: false, Active: true},
+	}
+	if err := service.db.Create(&managed).Error; err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.CatalogDetail(actor, library.ID, seriesPage.List[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.ReorganizableTransfers) != 1 || detail.ReorganizableTransfers[0].TransferTaskID != transfer.ID || detail.ReorganizableTransfers[0].DownloadTaskID != transfer.DownloadTaskID || detail.ReorganizableTransfers[0].IdentityRevision != 4 || detail.ReorganizableTransfers[0].FileCount != 2 {
+		t.Fatalf("managed correction projection=%+v", detail.ReorganizableTransfers)
 	}
 	if _, err := service.Catalog(actor, library.ID, MediaPageQuery{Page: -1, PageSize: 50}); ErrorCode(err) != CodeInvalidRequest {
 		t.Fatalf("invalid page error=%v", err)

@@ -360,6 +360,10 @@ Phase 4: 生态系统           ████████████████
 - [x] Storage 管理页及 CRUD/test API；删除只删配置，Connection/Destination 保留规划状态
 - [x] 独立 `MediaClassificationProfile` v1：内置 Player-v1 等价默认规则、严格结构校验、纯 Go matcher、CRUD/copy/revision、独立权限与管理页；它不是流水线 `CategoryRule`
 - [x] Server 统一媒体识别核心：下载完成与 local/115 媒体库扫描共用 Profile 预处理、候选生成、TMDB 验证和分类；根电影/剧集季/BDMV 分组、持久缓存、v25 识别投影、未识别分页/重试/TMDB 人工匹配及目录变更清理已接入
+- [x] 权威媒体身份快照：下载前建立 identity，完成后只补全逐文件季集/版本事实，Transfer 仅执行安全校验；manual/direct_id/automatic/ai/local_provisional 来源、revision 与人工锁跨重试和后续阶段保持一致
+- [x] MP 式宽容识别与剧集包事实：普通低分/同分稳定选中最高候选并标记 provisional，极低/无候选进入可见待整理；`[01]` / `[01v2]` 等动漫集号按包级证据解析，无法确定的多视频包不再只选最大文件
+- [x] 可选 Server AI 识别辅助：默认关闭，支持 OpenAI-compatible 与 Google AI Studio；低分/冲突只仲裁既有候选，极低/无候选只重写查询，严格 Schema、单 revision 调用上限、AES-GCM API Key 和关闭时运行时零请求
+- [x] 修正识别并安全重新整理：下载历史、媒体整理和媒体详情支持预览/确认；只操作 Transfer 登记的 managed manifest，绑定 actor/identity/profile/manifest revision，并在本地或 115 重整后重建产物和刷新下游
 - [x] 内置预识别词包：固定离线内置 MoviePilot-Help TV/anime 共 322 条有效规则及 MIT/来源/commit/SHA-256，默认 TV→anime→用户规则，支持 Profile 关闭/复制/下载快照、直接 TMDB ID 复验和有界兼容正则
 - [x] MediaLibrary 本地只读索引基础：Storage 相对根 + Classification Profile 引用、自动首次全量、独立 watcher/catch-up、定时增量/全量、失败退避/立即重试、扫描记录与相对媒体清单，以及 `/system/media-libraries` 管理页
 - [x] Server 持久化任务队列基础：SQLite Job/Attempt/状态事件/ActionRequest/策略、type+priority lane 顺序、类型与资源并发、lease/heartbeat/checkpoint/recovery、控制与 RBAC API，以及真实 `/automation/tasks` 任务中心
@@ -694,6 +698,10 @@ Phase 4: 生态系统           ████████████████
 - [x] Tokyo Toshokan 内建 RSS 适配器
 - [x] Mikan 内建 RSS 适配器
 - [x] AniDex 内建 RSS 适配器
+- [x] 动漫花园（DMHY）、ACG.RIP、YTS、EZTV 内建适配器
+- [x] 1337x、The Pirate Bay、EXT.to、LimeTorrents 内建适配器
+- [x] 地址驱动添加：管理员输入规范 HTTPS 官网，Server 精确解析 host 并在创建时二次校验；未配置的公共 BT 站不展示、不探测、不搜索
+- [x] `POST /api/v1/sites/resolve`，拒绝 userinfo/query/fragment、非根路径、异常端口、相似域名、伪造子域和客户端伪造 kind
 - [x] 通用 Torznab 连接（Jackett/Prowlarr）
   - [x] API Key 使用站点专用 AES-GCM envelope 加密保存
   - [x] HTTPS、同源 torrent 与受控重定向约束
@@ -705,8 +713,9 @@ Phase 4: 生态系统           ████████████████
 - [x] 推荐 `DiscoveryService`：TMDB + 豆瓣栏目、缓存和来源级降级
 - [x] PT/BT `SiteService`：有界并发搜索所有已启用站点 (`goroutine` + `channel`)
 - [x] SSE 按站渐进结果、普通 JSON 回退、单站重试与分页
+- [x] 站点卡片单站搜索：固定 `site_id` 贯穿搜索、重试、分页、会话恢复、识别和入库，目标站失败不回退聚合搜索
 - [ ] 结果聚合 + 去重
-- [ ] TMDB 自动匹配 (IMDB ID 优先, 标题+年份兜底)
+- [x] 统一媒体身份匹配：结构化解析、TMDB 候选排序/复验、稳定 provisional 兜底及人工 locked identity
 - [ ] 结果排序 (相关度/做种数/大小)
 - [ ] 筛选/过滤 (分类/分辨率/大小范围/做种数)
 - [ ] 搜索 API
@@ -716,8 +725,8 @@ Phase 4: 生态系统           ████████████████
 
 #### 一键下载
 
-- [ ] 自动分类匹配 (站点分类 + 文件名解析 + TMDB)
-- [ ] 确定下载目录 (根据分类规则 → 存储目标)
+- [x] 自动分类匹配（站点结果 → 统一 identity → 目标媒体库 Profile）
+- [x] 确定下载目录（统一暂存目录 + 用户选择或媒体库排序 + Transfer 目标快照）
 - [x] 不透明结果令牌换取种子并提交到既有下载器服务
 - [x] 复用现有下载任务记录、用户归属、媒体库排序和后续整理入库
 - [ ] WebSocket 进度推送
@@ -739,9 +748,9 @@ Phase 4: 生态系统           ████████████████
 
 **产出**:
 
-- [ ] 能跨站点聚合搜索
-- [ ] 搜索结果自动匹配 TMDB 元数据
-- [ ] 一键下载 → 自动分类 → 自动转移 → 自动入库
+- [x] 能跨站点聚合搜索，并可从站点卡片固定单站搜索
+- [x] 搜索结果通过统一 identity service 自动匹配 TMDB 元数据或进入可见暂定状态
+- [x] 一键下载 → 自动分类 → 自动转移 → 自动入库
 
 ### Sprint 3.2: 追更 + 网盘增强 (Week 18-19)
 
@@ -753,11 +762,11 @@ Phase 4: 生态系统           ████████████████
 - [ ] 追更任务模型 (`follow_tasks` 表)
 - [ ] 创建追更任务
   - [ ] TMDB ID + 剧名 + 季号
-  - [ ] 站点过滤 (只在指定站点搜索)
+  - [x] 站点过滤（现有搜索合同支持固定 `site_id`；追更任务的筛选 UI/调度绑定仍待实现）
   - [ ] 质量偏好 (分辨率/编码/制作组)
   - [ ] Cron 表达式 (默认每天 3:00)
 - [ ] 定时执行逻辑
-  - [ ] 在指定站点搜索剧名/IMDB ID
+  - [~] 在指定站点搜索剧名/IMDB ID（单站搜索基础已完成；追更调度仍待实现）
   - [ ] 过滤缺少的集数 (对比 TMDB 总集数 vs 本地已有)
   - [ ] 匹配质量偏好
   - [ ] 选择最佳种子

@@ -75,15 +75,20 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 	preview.ProfileRulesJSON = canonicalRules
 	preview.ProfileBuiltinRecognitionPacksJSON = organization.BuiltinRecognitionPacksJSON
 	preview.ProfileRecognitionRulesJSON = organization.RecognitionRulesJSON
-	if preview.ScrapeTMDBID != nil && preview.ScrapeMediaType != "" {
-		preview.RecognitionOverrideTMDBID = cloneInt64(preview.ScrapeTMDBID)
-		preview.RecognitionOverrideMediaType = preview.ScrapeMediaType
-		preview.RecognitionOverrideSeason = cloneInt(preview.ScrapeSeason)
-		preview.RecognitionOverrideEpisode = cloneInt(preview.ScrapeEpisode)
-	}
 	match, err := NewDownloadWorker(s).classify(ctx, preview, selectedManifest)
 	if err != nil || !match.Confident {
 		return DownloadTaskSummary{}, appError(CodeTransferMediaUnrecognized, "新媒体库规则无法确认当前媒体身份，未修改目标", err)
+	}
+	identitySource := firstNonEmpty(match.IdentitySource, firstNonEmpty(task.IdentitySource, mediaIdentitySourceAutomatic))
+	identityStatus := firstNonEmpty(match.IdentityStatus, firstNonEmpty(task.IdentityStatus, mediaIdentityStatusProvisional))
+	identityLocked := task.IdentityLocked || identitySource == mediaIdentitySourceManual
+	identityRevision := task.IdentityRevision + 1
+	if identityRevision == 0 {
+		identityRevision = 1
+	}
+	_, identityJSON, err := buildDownloadIdentitySnapshot(preview, match, selectedManifest, identitySource, identityStatus, identityLocked, identityRevision)
+	if err != nil {
+		return DownloadTaskSummary{}, appError(CodeTransferMediaUnrecognized, "当前媒体身份快照无法更新，未修改目标", err)
 	}
 
 	now := time.Now().UTC()
@@ -115,7 +120,9 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 			"target_storage_root": target.StorageRoot, "target_relative_root": target.RelativeRoot, "transfer_mode": target.TransferMode,
 			"conflict_policy": target.ConflictPolicy, "movie_directory_template": organization.MovieDirectoryTemplate,
 			"movie_filename_template": organization.MovieFilenameTemplate, "tv_directory_template": organization.TVDirectoryTemplate,
-			"tv_filename_template": organization.TVFilenameTemplate, "scrape_category": safeLabel(match.Category, 128), "updated_at": now,
+			"tv_filename_template": organization.TVFilenameTemplate, "scrape_category": safeLabel(match.Category, 128),
+			"identity_source": identitySource, "identity_status": identityStatus, "identity_locked": identityLocked,
+			"identity_revision": identityRevision, "identity_snapshot_json": identityJSON, "updated_at": now,
 		}).Error; err != nil {
 			return err
 		}
@@ -159,5 +166,7 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 	task.TargetConnectionID, task.TargetProviderRootID = target.ConnectionID, target.ProviderRootID
 	task.TargetStorageRoot, task.TargetRelativeRoot = target.StorageRoot, target.RelativeRoot
 	task.TransferMode, task.ConflictPolicy, task.ScrapeCategory = target.TransferMode, target.ConflictPolicy, safeLabel(match.Category, 128)
+	task.IdentitySource, task.IdentityStatus, task.IdentityLocked = identitySource, identityStatus, identityLocked
+	task.IdentityRevision, task.IdentitySnapshotJSON = identityRevision, identityJSON
 	return downloadTaskSummary(task, models.JobStatusQueued), nil
 }

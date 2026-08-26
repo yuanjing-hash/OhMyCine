@@ -52,6 +52,10 @@ type TransferSummary struct {
 	ScrapeTMDBID     *int64     `json:"scrape_tmdb_id"`
 	ScrapeYear       *int       `json:"scrape_year"`
 	ScrapeConfidence *float64   `json:"scrape_confidence"`
+	IdentitySource   string     `json:"identity_source"`
+	IdentityStatus   string     `json:"identity_status"`
+	IdentityLocked   bool       `json:"identity_locked"`
+	IdentityRevision uint64     `json:"identity_revision"`
 	ProfileID        uint       `json:"profile_id"`
 	ProfileRevision  uint64     `json:"profile_revision"`
 	LibraryID        uint       `json:"library_id"`
@@ -110,7 +114,8 @@ const transferProjectionColumns = `
 	download.display_name, download.downloader_name, download.provider_type,
 	download.scrape_status, download.scrape_title, download.scrape_media_type,
 	download.scrape_category, download.scrape_tmdb_id, download.scrape_year,
-	download.scrape_confidence, download.profile_id, download.profile_revision,
+	download.scrape_confidence, download.identity_source, download.identity_status,
+	download.identity_locked, download.identity_revision, download.profile_id, download.profile_revision,
 	transfer.library_id, transfer.library_name, download.transfer_mode,
 	download.conflict_policy, transfer.phase, jobs.status AS job_status,
 	transfer.processed_files, transfer.total_files,

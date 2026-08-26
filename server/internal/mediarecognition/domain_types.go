@@ -185,12 +185,14 @@ type DecisionReason string
 
 const (
 	DecisionMatched      DecisionStatus = "matched"
+	DecisionProvisional  DecisionStatus = "provisional"
 	DecisionUnrecognized DecisionStatus = "unrecognized"
 
-	ReasonMatched           DecisionReason = "matched"
-	ReasonNoMatch           DecisionReason = "no_match"
-	ReasonLowConfidence     DecisionReason = "low_confidence"
-	ReasonCandidateConflict DecisionReason = "candidate_conflict"
+	ReasonMatched              DecisionReason = "matched"
+	ReasonNoMatch              DecisionReason = "no_match"
+	ReasonLowConfidence        DecisionReason = "low_confidence"
+	ReasonCandidateConflict    DecisionReason = "candidate_conflict"
+	ReasonExtremeLowConfidence DecisionReason = "extreme_low_confidence"
 )
 
 type Decision struct {
@@ -223,5 +225,6 @@ type ScoreConfig struct {
 	TypoTitleThreshold  float64
 	TypoMatchThreshold  float64
 	ConflictMargin      float64
+	ExtremeThreshold    float64
 	HanEquivalence      HanEquivalence
 }

@@ -114,6 +114,9 @@ func TestDownloadRecognitionOverrideSearchesByKeywordAndRetriesExistingProviderT
 	if persisted.RecognitionOverrideTMDBID == nil || *persisted.RecognitionOverrideTMDBID != 100 || persisted.RecognitionOverrideMediaType != "tv" || persisted.ProviderTaskID != "completed-provider-task" {
 		t.Fatalf("persisted=%+v", persisted)
 	}
+	if !persisted.IdentityLocked || persisted.IdentitySource != mediaIdentitySourceManual || persisted.IdentityStatus != mediaIdentityStatusVerified || persisted.IdentityRevision != 1 || !strings.Contains(persisted.IdentitySnapshotJSON, `"tmdb_id":100`) {
+		t.Fatalf("manual identity snapshot was not locked: %+v", persisted)
+	}
 	provider.mu.Lock()
 	submits := provider.submits
 	provider.mu.Unlock()

@@ -49,6 +49,25 @@ func (a *API) SiteCatalog(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }
 
+func (a *API) ResolveBTSite(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+	var payload struct {
+		SiteType string `json:"site_type"`
+		BaseURL  string `json:"base_url"`
+	}
+	if err := strictJSON(c, &payload); err != nil || strings.ToLower(strings.TrimSpace(payload.SiteType)) != "bt" {
+		writeError(c, a.log, invalid("BT 站点地址无效", err))
+		return
+	}
+	item, err := a.sites.ResolveBT(actor, payload.BaseURL)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}
+
 func (a *API) CreateSite(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)

@@ -11,6 +11,7 @@ export interface SiteSummary {
   kind: string
   site_type: 'pt' | 'bt'
   credential_kind: 'cookie' | 'api_key' | 'none'
+  capabilities: SiteCapabilities
   base_url: string
   user_agent: string
   enabled: boolean
@@ -29,6 +30,11 @@ export interface SiteSummary {
   updated_at: string
 }
 
+export interface SiteCapabilities {
+  search: boolean
+  download: boolean
+}
+
 export interface SiteCatalogItem {
   key: string
   name: string
@@ -37,6 +43,16 @@ export interface SiteCatalogItem {
   auto_discover: boolean
   site_type: 'pt' | 'bt'
   credential_kind: 'cookie' | 'api_key' | 'none'
+  capabilities: SiteCapabilities
+}
+
+export interface SiteResolution {
+  kind: string
+  name: string
+  site_type: 'bt'
+  credential_kind: 'none'
+  canonical_base_url: string
+  capabilities: SiteCapabilities
 }
 
 export type CookieCloudMode = 'disabled' | 'remote' | 'local'
@@ -168,6 +184,7 @@ export interface TorrentResultEntry {
 
 export const sitesPath = '/api/v1/sites'
 export const siteCatalogPath = `${sitesPath}/catalog`
+export const siteResolvePath = `${sitesPath}/resolve`
 export const ptSearchPath = '/api/v1/discovery/pt-search'
 export const ptSearchStreamPath = '/api/v1/discovery/pt-search/stream'
 export const ptRecognitionPath = '/api/v1/discovery/pt-results/recognize'
@@ -253,7 +270,7 @@ const torrentSearchSessionMaxBytes = 512 * 1024
 const torrentSearchSessionMaxAgeMs = 30 * 60 * 1000
 
 export interface TorrentSearchSession {
-  input: { keyword: string; mediaType: string; year?: number; tmdbID?: number; searchBy: 'title' | 'tmdb_id' }
+  input: { keyword: string; mediaType: string; year?: number; tmdbID?: number; searchBy: 'title' | 'tmdb_id'; siteID?: number }
   groups: TorrentSearchGroup[]
   recognitions: Record<string, TorrentRecognitionResult>
   searched: boolean
@@ -374,6 +391,7 @@ export function readTorrentSearchSession(storage: SearchSessionStorage | undefin
         year: typeof value.input.year === 'number' ? value.input.year : undefined,
         tmdbID: typeof value.input.tmdbID === 'number' ? value.input.tmdbID : undefined,
         searchBy: value.input.searchBy,
+        siteID: typeof value.input.siteID === 'number' && Number.isInteger(value.input.siteID) && value.input.siteID > 0 ? value.input.siteID : undefined,
       },
       groups,
       recognitions,

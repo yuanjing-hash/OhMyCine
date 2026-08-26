@@ -122,6 +122,16 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 	if verified.ID != input.TMDBID || verified.MediaType != input.MediaType {
 		return DownloadTaskSummary{}, appError(CodeInvalidRequest, "TMDB 项目身份不一致", nil)
 	}
+	manifest, _, manifestErr := completedDownloadManifest(task.CompletedManifestJSON)
+	if manifestErr != nil {
+		return DownloadTaskSummary{}, manifestErr
+	}
+	identityRevision := task.IdentityRevision + 1
+	identityMatch := scrapeMatch{Title: verified.Title, MediaType: verified.MediaType, Category: task.ScrapeCategory, TMDBID: &verified.ID, Confidence: &verified.Confidence, Year: verified.ReleaseYear, Season: season, Episode: episode, IdentityStatus: mediaIdentityStatusVerified}
+	_, identityJSON, identityErr := buildDownloadIdentitySnapshot(task, identityMatch, manifest, mediaIdentitySourceManual, mediaIdentityStatusVerified, true, identityRevision)
+	if identityErr != nil {
+		return DownloadTaskSummary{}, identityErr
+	}
 	now := time.Now().UTC()
 	var queuedJob models.Job
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -141,6 +151,11 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 			"recognition_override_media_type": verified.MediaType,
 			"recognition_override_season":     season,
 			"recognition_override_episode":    episode,
+			"identity_source":                 mediaIdentitySourceManual,
+			"identity_status":                 mediaIdentityStatusVerified,
+			"identity_locked":                 true,
+			"identity_revision":               identityRevision,
+			"identity_snapshot_json":          identityJSON,
 			"phase":                           models.DownloadTaskStatusVerifying,
 			"last_error_code":                 "",
 			"last_error_message":              "",
@@ -196,6 +211,8 @@ func (s *DownloadService) OverrideRecognition(ctx context.Context, actor Actor, 
 	task.RecognitionOverrideMediaType = verified.MediaType
 	task.RecognitionOverrideSeason = cloneInt(season)
 	task.RecognitionOverrideEpisode = cloneInt(episode)
+	task.IdentitySource, task.IdentityStatus, task.IdentityLocked = mediaIdentitySourceManual, mediaIdentityStatusVerified, true
+	task.IdentityRevision, task.IdentitySnapshotJSON = identityRevision, identityJSON
 	task.Phase = models.DownloadTaskStatusVerifying
 	task.LastErrorCode, task.LastErrorMessage, task.FinishedAt = "", "", nil
 	return downloadTaskSummary(task, models.JobStatusQueued), nil

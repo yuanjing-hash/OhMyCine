@@ -23,6 +23,7 @@ func TestOperationForHTTPRouteCoversImplementedModules(t *testing.T) {
 		"/api/v1/seeding-tasks/:id/stop":                             OperationSeedingManagement,
 		"/api/v1/settings/downloads":                                 OperationSystemSettings,
 		"/api/v1/settings/metadata/test":                             OperationMetadataConfiguration,
+		"/api/v1/settings/ai-recognition/test":                       OperationAIRecognitionConfiguration,
 		"/api/v1/settings/sites/cookiecloud/sync":                    OperationCookieCloud,
 		"/api/v1/runtime-logs/facets":                                OperationRuntimeLogging,
 		"/api/v1/plugin-repositories/:id/refresh":                    OperationPluginRepository,

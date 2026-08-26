@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDeleteTransferRecord, formatTransferProgress, shouldRefreshTransferEvent, transferStatusClass, transferStatusLabel, type TransferSummary } from '@/transfers'
+import { canDeleteTransferRecord, formatTransferProgress, shouldRefreshTransferEvent, transferDeletionLabels, transferIdentityLabel, transferStatusClass, transferStatusLabel, type TransferSummary } from '@/transfers'
 
 const summary = { phase: 'planning', job_status: 'running', processed_files: 0, total_files: 2 } as TransferSummary
 
@@ -22,6 +22,12 @@ describe('media organization presentation', () => {
     expect(transferStatusClass({ ...summary, phase: 'failed', job_status: 'failed' })).toContain('error')
   })
 
+  it('distinguishes locked, AI and provisional identities', () => {
+    expect(transferIdentityLabel({ ...summary, identity_locked: true, identity_source: 'manual', identity_status: 'verified', identity_revision: 3 })).toBe('人工锁定 · r3')
+    expect(transferIdentityLabel({ ...summary, identity_locked: false, identity_source: 'ai', identity_status: 'provisional', identity_revision: 2 })).toBe('AI 辅助 · r2')
+    expect(transferIdentityLabel({ ...summary, identity_locked: false, identity_source: 'automatic', identity_status: 'provisional', identity_revision: 1 })).toBe('自动暂定 · r1')
+  })
+
   it('refreshes only transfer or visible job events', () => {
     const visible = new Set(['visible-job'])
     expect(shouldRefreshTransferEvent(JSON.stringify({ data: { job_id: 'other', job_type: 'transfer' } }), visible)).toBe(true)
@@ -37,5 +43,11 @@ describe('media organization presentation', () => {
     for (const job_status of ['queued', 'running', 'waiting_user_action', 'retry_wait', 'paused'] as const) {
       expect(canDeleteTransferRecord({ ...summary, job_status })).toBe(false)
     }
+  })
+
+  it('exposes four explicit deletion scopes without collapsing destructive choices', () => {
+    expect(Object.keys(transferDeletionLabels)).toEqual(['record_only', 'record_and_source', 'record_and_library', 'record_source_and_library'])
+    expect(transferDeletionLabels.record_only).toBe('仅删除转移记录')
+    expect(transferDeletionLabels.record_source_and_library).toContain('源文件和媒体库文件')
   })
 })

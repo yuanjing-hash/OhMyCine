@@ -15,39 +15,41 @@ import (
 )
 
 type API struct {
-	config             config.Config
-	auth               *services.AuthService
-	admin              *services.AdminService
-	audit              *services.AuditService
-	connections        *services.ConnectionService
-	providerDirectory  *services.ProviderDirectoryService
-	storage            *services.StorageService
-	directory          *services.DirectoryBrowserService
-	profiles           *services.MediaClassificationProfileService
-	libraries          *services.MediaLibraryService
-	runtimeLogs        *services.RuntimeLogService
-	queue              *services.QueueService
-	queueEvents        *services.QueueEventHub
-	downloaders        *services.DownloaderService
-	downloads          *services.DownloadService
-	transfers          *services.TransferService
-	downloadSettings   *services.DownloadSettingsService
-	metadataSettings   *services.MetadataSettingsService
-	seedingSettings    *services.SeedingSettingsService
-	seeding            *services.SeedingService
-	signedProxy        *services.SignedProxyService
-	embyGateway        *services.EmbyGatewayService
-	strm               *services.STRMManagementService
-	mediaChanges       *services.MediaChangeService
-	mediaServerRefresh *services.MediaServerRefreshService
-	pluginRepositories *services.PluginRepositoryService
-	pluginAssets       pluginAssetGateway
-	libraryArtwork     *services.LibraryArtworkService
-	discovery          *services.DiscoveryService
-	sites              *services.SiteService
-	cookieCloud        *services.CookieCloudService
-	credentialReveal   *services.CredentialRevealService
-	log                zerolog.Logger
+	config                config.Config
+	auth                  *services.AuthService
+	admin                 *services.AdminService
+	audit                 *services.AuditService
+	connections           *services.ConnectionService
+	providerDirectory     *services.ProviderDirectoryService
+	storage               *services.StorageService
+	directory             *services.DirectoryBrowserService
+	profiles              *services.MediaClassificationProfileService
+	libraries             *services.MediaLibraryService
+	runtimeLogs           *services.RuntimeLogService
+	queue                 *services.QueueService
+	queueEvents           *services.QueueEventHub
+	downloaders           *services.DownloaderService
+	downloads             *services.DownloadService
+	transfers             *services.TransferService
+	reorganizations       *services.MediaReorganizationService
+	downloadSettings      *services.DownloadSettingsService
+	metadataSettings      *services.MetadataSettingsService
+	aiRecognitionSettings *services.AIRecognitionSettingsService
+	seedingSettings       *services.SeedingSettingsService
+	seeding               *services.SeedingService
+	signedProxy           *services.SignedProxyService
+	embyGateway           *services.EmbyGatewayService
+	strm                  *services.STRMManagementService
+	mediaChanges          *services.MediaChangeService
+	mediaServerRefresh    *services.MediaServerRefreshService
+	pluginRepositories    *services.PluginRepositoryService
+	pluginAssets          pluginAssetGateway
+	libraryArtwork        *services.LibraryArtworkService
+	discovery             *services.DiscoveryService
+	sites                 *services.SiteService
+	cookieCloud           *services.CookieCloudService
+	credentialReveal      *services.CredentialRevealService
+	log                   zerolog.Logger
 }
 
 func (a *API) SetRuntimeLogService(service *services.RuntimeLogService) { a.runtimeLogs = service }
@@ -61,11 +63,17 @@ func (a *API) SetQueueEventHub(hub *services.QueueEventHub)                 { a.
 func (a *API) SetDownloaderService(service *services.DownloaderService)     { a.downloaders = service }
 func (a *API) SetDownloadService(service *services.DownloadService)         { a.downloads = service }
 func (a *API) SetTransferService(service *services.TransferService)         { a.transfers = service }
+func (a *API) SetMediaReorganizationService(service *services.MediaReorganizationService) {
+	a.reorganizations = service
+}
 func (a *API) SetDownloadSettingsService(service *services.DownloadSettingsService) {
 	a.downloadSettings = service
 }
 func (a *API) SetMetadataSettingsService(service *services.MetadataSettingsService) {
 	a.metadataSettings = service
+}
+func (a *API) SetAIRecognitionSettingsService(service *services.AIRecognitionSettingsService) {
+	a.aiRecognitionSettings = service
 }
 func (a *API) SetSeedingSettingsService(service *services.SeedingSettingsService) {
 	a.seedingSettings = service

@@ -363,6 +363,112 @@ func TestTransferDeleteRejectsActiveStatesAndUnauthorizedOwner(t *testing.T) {
 	}
 }
 
+func TestTransferDeleteCleansTerminalOwnershipAndReorganizationHistory(t *testing.T) {
+	queue, actor, download, source, destination := transferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
+	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
+	manifest := downloadpkg.Manifest{Name: "Movie.2024", Complete: true, Files: []downloadpkg.File{{RelativePath: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes}}}
+	if err := service.Enqueue(download, manifest); err != nil {
+		t.Fatal(err)
+	}
+	var transfer models.TransferTask
+	if err := queue.db.Where("download_task_id = ?", download.ID).First(&transfer).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", transfer.JobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	managed := models.MediaManagedItem{OpaqueID: "managed-history", LibraryID: transfer.LibraryID, TransferTaskID: transfer.ID, DownloadTaskID: download.ID, IdentityRevision: 1, Kind: models.MediaManagedItemKindVideo, RelativePath: "managed/Movie.mkv", Size: 10, Managed: true, Active: true, CreatedAt: now, UpdatedAt: now}
+	if err := queue.db.Create(&managed).Error; err != nil {
+		t.Fatal(err)
+	}
+	preview := models.MediaReorganizationPreview{ID: "preview-history", TokenHash: strings.Repeat("a", 64), ActorID: actor.User.ID, LibraryID: transfer.LibraryID, TransferTaskID: transfer.ID, SourceIdentityRevision: 1, TargetIdentityJSON: `{}`, ManagedManifestDigest: strings.Repeat("b", 64), RuleRevision: 1, ConflictPolicy: models.MediaLibraryConflictRename, PlanJSON: `{}`, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
+	if err := queue.db.Create(&preview).Error; err != nil {
+		t.Fatal(err)
+	}
+	reorganization := models.MediaReorganizationTask{ID: "reorganization-history", OwnerID: actor.User.ID, LibraryID: transfer.LibraryID, TransferTaskID: transfer.ID, SourceIdentityRevision: 1, TargetIdentityRevision: 2, TargetIdentityJSON: `{}`, ManagedManifestDigest: strings.Repeat("b", 64), RuleRevision: 1, ConflictPolicy: models.MediaLibraryConflictRename, PlanJSON: `{}`, StateJSON: `{}`, Phase: models.MediaReorganizationPhaseCompleted, CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+	job, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: JobTypeMediaReorganization, DisplayName: "history", Payload: mediaReorganizationJobPayload{ReorganizationTaskID: reorganization.ID}}, func(tx *gorm.DB, job models.Job) error {
+		reorganization.JobID = job.ID
+		return tx.Create(&reorganization).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", job.ID).Update("status", models.JobStatusCompleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(actor, transfer.ID, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	for label, query := range map[string]*gorm.DB{
+		"managed":        queue.db.Model(&models.MediaManagedItem{}).Where("transfer_task_id = ?", transfer.ID),
+		"preview":        queue.db.Model(&models.MediaReorganizationPreview{}).Where("transfer_task_id = ?", transfer.ID),
+		"reorganization": queue.db.Model(&models.MediaReorganizationTask{}).Where("transfer_task_id = ?", transfer.ID),
+		"reorg job":      queue.db.Model(&models.Job{}).Where("id = ?", job.ID),
+	} {
+		var count int64
+		if err := query.Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("%s count=%d err=%v", label, count, err)
+		}
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("history cleanup changed source %q: %v", source, err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("history cleanup unexpectedly created target %q: %v", destination, err)
+	}
+}
+
+func TestTransferDeleteRejectsActiveReorganization(t *testing.T) {
+	queue, actor, download, _, _ := transferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
+	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
+	manifest := downloadpkg.Manifest{Name: "Movie.2024", Complete: true, Files: []downloadpkg.File{{RelativePath: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes}}}
+	if err := service.Enqueue(download, manifest); err != nil {
+		t.Fatal(err)
+	}
+	var transfer models.TransferTask
+	if err := queue.db.Where("download_task_id = ?", download.ID).First(&transfer).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", transfer.JobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reorganization := models.MediaReorganizationTask{ID: "reorganization-active", OwnerID: actor.User.ID, LibraryID: transfer.LibraryID, TransferTaskID: transfer.ID, SourceIdentityRevision: 1, TargetIdentityRevision: 2, TargetIdentityJSON: `{}`, ManagedManifestDigest: strings.Repeat("c", 64), RuleRevision: 1, ConflictPolicy: models.MediaLibraryConflictRename, PlanJSON: `{}`, StateJSON: `{}`, Phase: models.MediaReorganizationPhaseQueued, CreatedAt: now, UpdatedAt: now}
+	_, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: JobTypeMediaReorganization, DisplayName: "active", Payload: mediaReorganizationJobPayload{ReorganizationTaskID: reorganization.ID}}, func(tx *gorm.DB, job models.Job) error {
+		reorganization.JobID = job.ID
+		return tx.Create(&reorganization).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(actor, transfer.ID, RequestContext{}); ErrorCode(err) != CodeQueueStateConflict {
+		t.Fatalf("active reorganization delete error=%v", err)
+	}
+}
+
+func TestValidateAutomaticTransferSnapshotRejectsIdentityRevisionAndProjectionDrift(t *testing.T) {
+	_, _, download, _, _ := transferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
+	manifest := downloadpkg.Manifest{Name: "Movie.2024", Complete: true, Files: []downloadpkg.File{{RelativePath: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes}}}
+	if err := validateAutomaticTransferSnapshot(download, manifest); err != nil {
+		t.Fatalf("valid identity rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*models.DownloadTask){
+		"revision": func(task *models.DownloadTask) { task.IdentityRevision++ },
+		"snapshot": func(task *models.DownloadTask) { task.IdentitySnapshotJSON = `{}` },
+		"category": func(task *models.DownloadTask) { task.ScrapeCategory = "外语电影" },
+		"lock":     func(task *models.DownloadTask) { task.IdentityLocked = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := download
+			mutate(&changed)
+			if err := validateAutomaticTransferSnapshot(changed, manifest); err == nil {
+				t.Fatal("identity drift was accepted")
+			}
+		})
+	}
+}
+
 func TestTransferPlanSummaryBoundsAndRejectsUnsafePaths(t *testing.T) {
 	plan := make([]transferPlanItem, 0, maxTransferPlanSummaryItems+5)
 	for index := 0; index < maxTransferPlanSummaryItems+5; index++ {
@@ -417,8 +523,12 @@ func transferFixture(t *testing.T, mode, policy string, existingTarget bool) (*Q
 	}
 	year := 2024
 	tmdbID, confidence := int64(550), .98
-	task := models.DownloadTask{ID: "download-" + mode + "-" + policy, OwnerID: actor.User.ID, DownloaderName: "qBit", ProviderType: models.DownloaderTypeQBittorrent, SourceCiphertext: "encrypted", StagingAbsolutePath: staging, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: profile.RulesJSON, TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &storage.ID, TargetStorageRoot: target, TargetRelativeRoot: "/", TransferMode: mode, ConflictPolicy: policy, MovieDirectoryTemplate: library.MovieDirectoryTemplate, MovieFilenameTemplate: library.MovieFilenameTemplate, TVDirectoryTemplate: library.TVDirectoryTemplate, TVFilenameTemplate: library.TVFilenameTemplate, DisplayName: "Movie", Phase: models.DownloadTaskStatusCompleted, ScrapeStatus: "completed_verified", ScrapeTitle: "Movie", ScrapeMediaType: "movie", ScrapeCategory: category, ScrapeTMDBID: &tmdbID, ScrapeConfidence: &confidence, ScrapeYear: &year, ManifestFileCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	_, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: "Movie", Payload: downloadJobPayload{DownloadTaskID: task.ID}}, func(tx *gorm.DB, job models.Job) error {
+	identityRaw, err := json.Marshal(MediaIdentitySnapshot{Version: 1, Revision: 1, Source: mediaIdentitySourceAutomatic, Status: mediaIdentityStatusVerified, TMDBID: &tmdbID, MediaType: "movie", Title: "Movie", Year: &year, Category: category, Confidence: &confidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := models.DownloadTask{ID: "download-" + mode + "-" + policy, OwnerID: actor.User.ID, DownloaderName: "qBit", ProviderType: models.DownloaderTypeQBittorrent, SourceCiphertext: "encrypted", StagingAbsolutePath: staging, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: profile.RulesJSON, TargetLibraryID: &library.ID, TargetLibraryName: library.Name, TargetStorageID: &storage.ID, TargetStorageRoot: target, TargetRelativeRoot: "/", TransferMode: mode, ConflictPolicy: policy, MovieDirectoryTemplate: library.MovieDirectoryTemplate, MovieFilenameTemplate: library.MovieFilenameTemplate, TVDirectoryTemplate: library.TVDirectoryTemplate, TVFilenameTemplate: library.TVFilenameTemplate, DisplayName: "Movie", Phase: models.DownloadTaskStatusCompleted, ScrapeStatus: "completed_verified", ScrapeTitle: "Movie", ScrapeMediaType: "movie", ScrapeCategory: category, ScrapeTMDBID: &tmdbID, ScrapeConfidence: &confidence, ScrapeYear: &year, IdentitySource: mediaIdentitySourceAutomatic, IdentityStatus: mediaIdentityStatusVerified, IdentityRevision: 1, IdentitySnapshotJSON: string(identityRaw), ManifestFileCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	_, err = queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: "Movie", Payload: downloadJobPayload{DownloadTaskID: task.ID}}, func(tx *gorm.DB, job models.Job) error {
 		task.JobID = job.ID
 		return tx.Create(&task).Error
 	})

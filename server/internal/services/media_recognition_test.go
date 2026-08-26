@@ -453,13 +453,13 @@ func TestRecognizeMediaLongRunningAnimeUsesStructureAndFullSubtitleSafely(t *tes
 			expectedID: 917496, expectedType: "movie",
 		},
 		{
-			name:    "untyped exact cross-type identity remains manual",
+			name:    "untyped exact cross-type identity selects stable provisional winner",
 			release: "Detective Conan The Scarlet School Trip 2019 1080p BluRay HEVC FLAC 2.0 2Audios-ADE",
 			items: []tmdb.Candidate{
 				{ID: 1, Title: "Detective Conan The Scarlet School Trip", MediaType: "movie"},
 				{ID: 2, Title: "Detective Conan The Scarlet School Trip", MediaType: "tv"},
 			},
-			expectedError: mediaRecognitionCandidateConflict,
+			expectedID: 1, expectedType: "movie",
 		},
 	}
 	for _, test := range tests {
@@ -594,7 +594,7 @@ func TestDomainCandidateRecallDoesNotAcceptPartialResultsAfterCancellation(t *te
 		t.Fatal(err)
 	}
 	lookup := &cancelingCandidateLookupFake{}
-	if _, err := recognizeFromDomainCandidates(context.Background(), lookup, lookup, parsed, "en-US", "US"); !errors.Is(err, context.Canceled) {
+	if _, _, err := recognizeFromDomainCandidates(context.Background(), lookup, lookup, parsed, "en-US", "US"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("partial candidate result swallowed cancellation: %v", err)
 	}
 }
@@ -659,23 +659,28 @@ func TestRecognizeMediaReranksBoundedEnrichedAliases(t *testing.T) {
 	}
 }
 
-func TestRecognizeMediaReturnsDistinctAutomaticRejectionReasons(t *testing.T) {
+func TestRecognizeMediaUsesExtremeFloorAndProvisionalConflictWinner(t *testing.T) {
 	year2005 := 2005
 	files := []recognitionSourceFile{{RelativePath: "The Office/Season 01/The.Office.S01E01.mkv", Size: 10}}
 	request := MediaRecognitionRequest{PackageName: "The Office.2005.S01E01", Files: files, BuiltinPackCodes: mediarecognition.DefaultPackCodes(), Classification: classification.DefaultRules(), Language: "en-US", Region: "US"}
 	for _, test := range []struct {
-		name  string
-		items []tmdb.Candidate
-		code  string
+		name     string
+		items    []tmdb.Candidate
+		code     string
+		selected int64
 	}{
 		{name: "no match", items: nil, code: tmdb.ErrorNoMatch},
-		{name: "low confidence", items: []tmdb.Candidate{{ID: 10, Title: "Entirely Unrelated", MediaType: "tv", ReleaseYear: &year2005}}, code: mediaRecognitionLowConfidence},
-		{name: "candidate conflict", items: []tmdb.Candidate{{ID: 11, Title: "The Office", MediaType: "tv", ReleaseYear: &year2005}, {ID: 12, Title: "The Office", MediaType: "tv", ReleaseYear: &year2005}}, code: mediaRecognitionCandidateConflict},
+		{name: "extreme low confidence", items: []tmdb.Candidate{{ID: 10, Title: "Entirely Unrelated", MediaType: "tv", ReleaseYear: &year2005}}, code: tmdb.ErrorNoMatch},
+		{name: "candidate conflict", items: []tmdb.Candidate{{ID: 11, Title: "The Office", MediaType: "tv", ReleaseYear: &year2005}, {ID: 12, Title: "The Office", MediaType: "tv", ReleaseYear: &year2005}}, selected: 11},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lookup := &rankedRecognitionLookupFake{items: test.items}
 			result := recognizeMedia(context.Background(), lookup, request)
-			if result.Status != mediaRecognitionStatusUnrecognized || result.ErrorCode != test.code || lookup.selectedID != 0 {
+			if test.selected != 0 {
+				if result.Status != mediaRecognitionStatusMatched || result.ErrorCode != "" || lookup.selectedID != test.selected || result.IdentityStatus != mediaIdentityStatusProvisional {
+					t.Fatalf("result=%+v selected=%d", result, lookup.selectedID)
+				}
+			} else if result.Status != mediaRecognitionStatusUnrecognized || result.ErrorCode != test.code || lookup.selectedID != 0 {
 				t.Fatalf("result=%+v selected=%d", result, lookup.selectedID)
 			}
 		})

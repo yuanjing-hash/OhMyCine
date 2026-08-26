@@ -123,19 +123,27 @@ func main() {
 	downloadSettings := services.NewDownloadSettingsService(db, audit)
 	seedingSettings := services.NewSeedingSettingsService(db, audit)
 	metadataSettings := services.NewMetadataSettingsService(db, audit, credentialStore, tmdb.Credential{Kind: tmdb.CredentialKind(cfg.TMDBDeploymentCredentialKind), Value: cfg.TMDBDeploymentCredentialValue})
+	aiRecognitionSettings := services.NewAIRecognitionSettingsService(db, audit, credentialStore)
 	discoveryService := services.NewDiscoveryService(db, metadataSettings, logManager.Logger("discovery", "service"))
 	libraries.SetMetadataSettingsService(metadataSettings)
+	libraries.SetAIRecognitionSettings(aiRecognitionSettings)
 	artifacts.SetMetadataSettingsService(metadataSettings)
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, logManager.Logger("download", "service"))
 	sites := services.NewSiteService(db, audit, credentialStore, downloads, logManager.Logger("site", "service"))
 	sites.SetMetadataSettings(metadataSettings)
+	sites.SetAIRecognitionSettings(aiRecognitionSettings)
 	cookieCloud := services.NewCookieCloudService(db, audit, credentialStore, sites, logManager.Logger("site", "cookiecloud"))
 	downloads.SetMetadataSettings(metadataSettings)
+	downloads.SetAIRecognitionSettings(aiRecognitionSettings)
 	downloads.SetSeedingSettings(seedingSettings)
 	libraries.SetIngestEnqueuer(downloads)
 	transfers := services.NewTransferService(db, audit, queue, logManager.Logger("transfer", "service"))
 	transfers.SetConnectionService(connections)
+	transfers.SetDownloaderService(downloaders)
+	transfers.SetMediaChangeService(mediaChanges)
+	reorganizations := services.NewMediaReorganizationService(db, audit, queue, metadataSettings, connections, logManager.Logger("media_reorganization", "worker"))
+	reorganizations.SetMediaLibraryService(libraries)
 	seeding := services.NewSeedingService(db, audit, queue, downloaders, logManager.Logger("seeding", "service"))
 	pluginHost := pluginruntime.NewHost(context.Background())
 	pluginHostAPI := pluginhostapi.New(db, credentialStore, logManager.Logger("plugin", "host"))
@@ -178,6 +186,9 @@ func main() {
 	if err := registry.Register("transfer", services.NewTransferWorker(transfers)); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "transfer_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("媒体整理 Worker 注册失败"))
 	}
+	if err := registry.Register(services.JobTypeMediaReorganization, services.NewMediaReorganizationWorker(reorganizations)); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "media_reorganization_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("重新整理 Worker 注册失败"))
+	}
 	if err := registry.Register("seeding", services.NewSeedingWorker(seeding)); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "seeding_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("做种管理 Worker 注册失败"))
 	}
@@ -196,8 +207,10 @@ func main() {
 	api.SetDownloaderService(downloaders)
 	api.SetDownloadService(downloads)
 	api.SetTransferService(transfers)
+	api.SetMediaReorganizationService(reorganizations)
 	api.SetDownloadSettingsService(downloadSettings)
 	api.SetMetadataSettingsService(metadataSettings)
+	api.SetAIRecognitionSettingsService(aiRecognitionSettings)
 	api.SetSeedingSettingsService(seedingSettings)
 	api.SetSeedingService(seeding)
 	api.SetPluginRepositoryService(pluginRepositories)

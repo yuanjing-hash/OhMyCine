@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -86,10 +87,18 @@ func newRetargetImportFixture(t *testing.T) retargetImportFixture {
 		t.Fatal(err)
 	}
 	confidence, tmdbID, year := 1.0, int64(346), 1954
+	identityRaw, err := json.Marshal(MediaIdentitySnapshot{
+		Version: 1, Revision: 1, Source: mediaIdentitySourceAutomatic, Status: mediaIdentityStatusVerified,
+		TMDBID: &tmdbID, MediaType: "movie", Title: "七武士", Year: &year, Category: "外语电影", Confidence: &confidence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{
 		"phase": models.DownloadTaskStatusCompleted, "scrape_status": "completed_verified", "scrape_title": "七武士",
 		"scrape_media_type": "movie", "scrape_category": "外语电影", "scrape_tmdb_id": tmdbID,
-		"scrape_confidence": confidence, "scrape_year": year,
+		"scrape_confidence": confidence, "scrape_year": year, "identity_source": mediaIdentitySourceAutomatic,
+		"identity_status": mediaIdentityStatusVerified, "identity_revision": 1, "identity_snapshot_json": string(identityRaw),
 	}).Error; err != nil {
 		t.Fatal(err)
 	}

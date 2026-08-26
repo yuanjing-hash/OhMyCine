@@ -209,7 +209,8 @@ export interface MediaCatalogEpisode {
   id: number; title: string; season: number | null; episode: number | null; relative_path: string; size: number; modified_at: string
 }
 export interface MediaCatalogSeason { number: number; episodes: MediaCatalogEpisode[] }
-export interface MediaCatalogDetail { work: MediaCatalogItem; seasons: MediaCatalogSeason[]; files: MediaCatalogEpisode[] }
+export interface MediaCatalogManagedTransfer { transfer_task_id: string; download_task_id: string; identity_revision: number; file_count: number }
+export interface MediaCatalogDetail { work: MediaCatalogItem; seasons: MediaCatalogSeason[]; files: MediaCatalogEpisode[]; reorganizable_transfers: MediaCatalogManagedTransfer[] }
 export interface MediaRecognitionSummary {
   token: string; status: 'matched' | 'unrecognized'; error_code: string; title: string; media_type: 'movie' | 'tv' | ''
   release_year?: number; tmdb_id?: number; confidence?: number; category_name: string; manual_override: boolean
@@ -261,6 +262,12 @@ export interface MetadataSettings {
   credential_kind: 'read_access_token' | 'api_key' | ''
   api_base_url: string; image_base_url: string; revision: number; updated_at: string
 }
+export interface AIRecognitionSettings {
+  enabled: boolean; provider_type: 'openai_compatible' | 'google_ai_studio'; base_url: string
+  api_key_configured: boolean; model: string; send_relative_basenames: boolean
+  revision: number; updated_at: string
+}
+export interface AIProviderModel { id: string; display_name: string }
 export interface DownloadTaskSummary {
   id: string; job_id: string; owner_id: number; downloader_id: string | null; downloader_name: string; provider_type: string
   display_name: string; job_status: string; provider_status: string; phase: string; progress: number | null
@@ -270,6 +277,8 @@ export interface DownloadTaskSummary {
 	profile_id: number; profile_revision: number; scrape_status: string; scrape_title: string; scrape_media_type: string
 	scrape_category: string; scrape_tmdb_id: number | null; scrape_confidence: number | null
 	scrape_season: number | null; scrape_episode: number | null; manifest_file_count: number
+  identity_source: 'manual' | 'direct_id' | 'automatic' | 'ai' | 'local_provisional' | ''
+  identity_status: 'verified' | 'provisional' | 'local_provisional' | ''; identity_locked: boolean; identity_revision: number
   target_library_id: number | null; target_library_name: string; transfer_mode: string; conflict_policy: string; transfer_phase: string
   transfer_task_id: string; transfer_job_id: string; transfer_job_status: string
   seeding_task_id: string; seeding_job_id: string; seeding_job_status: string; seeding_phase: string

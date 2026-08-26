@@ -990,6 +990,22 @@ type MetadataSettings struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
+// AIRecognitionSettings is the singleton, opt-in Server media-recognition AI
+// configuration. APIKeyCiphertext is never serialized; runtime callers must go
+// through the settings service so disabled means no decryption or network use.
+type AIRecognitionSettings struct {
+	ID                    uint      `gorm:"primaryKey" json:"id"`
+	Enabled               bool      `gorm:"not null;default:false" json:"enabled"`
+	ProviderType          string    `gorm:"size:32;not null;default:'openai_compatible'" json:"provider_type"`
+	BaseURL               string    `gorm:"size:2048;not null;default:''" json:"base_url"`
+	APIKeyCiphertext      string    `gorm:"type:text;not null;default:''" json:"-"`
+	Model                 string    `gorm:"size:256;not null;default:''" json:"model"`
+	SendRelativeBasenames bool      `gorm:"not null;default:false" json:"send_relative_basenames"`
+	Revision              uint64    `gorm:"not null;default:1" json:"revision"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
 // DiscoveryCache stores only credential-free provider projections. Cached
 // upstream payloads, request URLs and headers are never persisted.
 type DiscoveryCache struct {
@@ -1129,6 +1145,11 @@ type DownloadTask struct {
 	RecognitionOverrideMediaType       string     `gorm:"size:16;not null;default:''" json:"-"`
 	RecognitionOverrideSeason          *int       `json:"-"`
 	RecognitionOverrideEpisode         *int       `json:"-"`
+	IdentitySource                     string     `gorm:"size:32;not null;default:''" json:"-"`
+	IdentityStatus                     string     `gorm:"size:32;not null;default:''" json:"-"`
+	IdentityLocked                     bool       `gorm:"not null;default:false" json:"-"`
+	IdentityRevision                   uint64     `gorm:"not null;default:0" json:"-"`
+	IdentitySnapshotJSON               string     `gorm:"type:text;not null;default:'{}'" json:"-"`
 	// CompletedManifestJSON is a private provider-relative snapshot captured
 	// after authoritative completion. It lets recognition recovery continue
 	// without resubmitting or re-polling an already completed download.
@@ -1179,6 +1200,116 @@ type TransferTask struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	FinishedAt         *time.Time `json:"finished_at"`
+}
+
+const (
+	MediaManagedItemKindVideo   = "video"
+	MediaManagedItemKindSidecar = "sidecar"
+
+	MediaReorganizationPhaseQueued      = "queued"
+	MediaReorganizationPhaseExecuting   = "executing"
+	MediaReorganizationPhaseReconciling = "reconciling"
+	MediaReorganizationPhaseCompleted   = "completed"
+	MediaReorganizationPhaseFailed      = "failed"
+)
+
+// MediaManagedItem is the durable ownership boundary for imported media.
+// Reorganization may only mutate active rows with Managed=true. Provider IDs
+// and transfer provenance are private and must never be returned by handlers.
+type MediaManagedItem struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	OpaqueID         string    `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	LibraryID        uint      `gorm:"not null;uniqueIndex:idx_media_managed_item_target;index" json:"library_id"`
+	TransferTaskID   string    `gorm:"size:36;not null;index" json:"-"`
+	DownloadTaskID   string    `gorm:"size:36;not null;index" json:"-"`
+	IdentityRevision uint64    `gorm:"not null" json:"identity_revision"`
+	Kind             string    `gorm:"size:16;not null" json:"kind"`
+	RelativePath     string    `gorm:"size:2048;not null;uniqueIndex:idx_media_managed_item_target" json:"relative_path"`
+	ProviderItemID   string    `gorm:"size:128;not null;default:''" json:"-"`
+	ProviderParentID string    `gorm:"size:128;not null;default:''" json:"-"`
+	Size             int64     `gorm:"not null;default:0" json:"size"`
+	Managed          bool      `gorm:"not null;default:true" json:"managed"`
+	Active           bool      `gorm:"not null;default:true;index" json:"active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// MediaReorganizationPreview stores the private, immutable plan behind an
+// opaque one-time token. PlanJSON may contain provider identities and paths and
+// therefore must never be serialized directly.
+type MediaReorganizationPreview struct {
+	ID                     string     `gorm:"primaryKey;size:36" json:"-"`
+	TokenHash              string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	ActorID                uint       `gorm:"not null;index" json:"-"`
+	LibraryID              uint       `gorm:"not null;index" json:"library_id"`
+	TransferTaskID         string     `gorm:"size:36;not null;index" json:"-"`
+	SourceIdentityRevision uint64     `gorm:"not null" json:"source_identity_revision"`
+	TargetIdentityJSON     string     `gorm:"type:text;not null" json:"-"`
+	ManagedManifestDigest  string     `gorm:"size:64;not null" json:"-"`
+	RuleRevision           uint64     `gorm:"not null" json:"rule_revision"`
+	ConflictPolicy         string     `gorm:"size:16;not null" json:"conflict_policy"`
+	PlanJSON               string     `gorm:"type:text;not null" json:"-"`
+	ExpiresAt              time.Time  `gorm:"not null;index" json:"expires_at"`
+	ConsumedAt             *time.Time `json:"-"`
+	CreatedAt              time.Time  `json:"-"`
+}
+
+// MediaReorganizationTask is restart-safe private worker state. The public API
+// exposes only relative plan projections and stable error codes.
+type MediaReorganizationTask struct {
+	ID                     string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID                uint       `gorm:"not null;index" json:"owner_id"`
+	JobID                  string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
+	LibraryID              uint       `gorm:"not null;index" json:"library_id"`
+	TransferTaskID         string     `gorm:"size:36;not null;index" json:"-"`
+	SourceIdentityRevision uint64     `gorm:"not null" json:"source_identity_revision"`
+	TargetIdentityRevision uint64     `gorm:"not null" json:"target_identity_revision"`
+	TargetIdentityJSON     string     `gorm:"type:text;not null" json:"-"`
+	ManagedManifestDigest  string     `gorm:"size:64;not null" json:"-"`
+	RuleRevision           uint64     `gorm:"not null" json:"rule_revision"`
+	ConflictPolicy         string     `gorm:"size:16;not null" json:"conflict_policy"`
+	PlanJSON               string     `gorm:"type:text;not null" json:"-"`
+	StateJSON              string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	Phase                  string     `gorm:"size:24;not null;index" json:"phase"`
+	TotalItems             int        `gorm:"not null;default:0" json:"total_items"`
+	ProcessedItems         int        `gorm:"not null;default:0" json:"processed_items"`
+	LastErrorCode          string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	FinishedAt             *time.Time `json:"finished_at"`
+}
+
+const (
+	TransferDeletionScopeRecordOnly             = "record_only"
+	TransferDeletionScopeRecordAndSource        = "record_and_source"
+	TransferDeletionScopeRecordAndLibrary       = "record_and_library"
+	TransferDeletionScopeRecordSourceAndLibrary = "record_source_and_library"
+)
+
+// TransferDeletionPreview binds one explicit destructive choice to the exact
+// pipeline and ownership facts observed during preview. Only TokenHash is
+// persisted; StateJSON is private recovery state for partial executions.
+type TransferDeletionPreview struct {
+	ID                    string     `gorm:"primaryKey;size:36" json:"-"`
+	TokenHash             string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	ActorID               uint       `gorm:"not null;index" json:"-"`
+	TransferTaskID        string     `gorm:"size:36;not null;index" json:"-"`
+	DownloadTaskID        string     `gorm:"size:36;not null;index" json:"-"`
+	LibraryID             uint       `gorm:"not null;index" json:"-"`
+	Scope                 string     `gorm:"size:40;not null" json:"-"`
+	IdentityRevision      uint64     `gorm:"not null" json:"-"`
+	SourceManifestDigest  string     `gorm:"size:64;not null" json:"-"`
+	ManagedManifestDigest string     `gorm:"size:64;not null" json:"-"`
+	TransferJobRevision   uint64     `gorm:"not null" json:"-"`
+	DownloadJobRevision   uint64     `gorm:"not null" json:"-"`
+	SeedingJobRevision    uint64     `gorm:"not null;default:0" json:"-"`
+	StateJSON             string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	LastErrorCode         string     `gorm:"size:96;not null;default:''" json:"-"`
+	ExpiresAt             time.Time  `gorm:"not null;index" json:"-"`
+	ConsumedAt            *time.Time `json:"-"`
+	CompletedAt           *time.Time `json:"-"`
+	CreatedAt             time.Time  `gorm:"not null" json:"-"`
+	UpdatedAt             time.Time  `gorm:"not null" json:"-"`
 }
 
 const (

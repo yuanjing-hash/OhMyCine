@@ -74,9 +74,20 @@ type MediaCatalogSeason struct {
 }
 
 type MediaCatalogDetail struct {
-	Work    MediaCatalogItem      `json:"work"`
-	Seasons []MediaCatalogSeason  `json:"seasons"`
-	Files   []MediaCatalogEpisode `json:"files"`
+	Work                   MediaCatalogItem              `json:"work"`
+	Seasons                []MediaCatalogSeason          `json:"seasons"`
+	Files                  []MediaCatalogEpisode         `json:"files"`
+	ReorganizableTransfers []MediaCatalogManagedTransfer `json:"reorganizable_transfers"`
+}
+
+// MediaCatalogManagedTransfer is a safe navigation projection into the
+// managed-only correction workflow. It intentionally exposes no provider ID,
+// physical root, manifest or credential-bearing source data.
+type MediaCatalogManagedTransfer struct {
+	TransferTaskID   string `json:"transfer_task_id"`
+	DownloadTaskID   string `json:"download_task_id"`
+	IdentityRevision uint64 `json:"identity_revision"`
+	FileCount        int64  `json:"file_count"`
 }
 
 type mediaCatalogRow struct {
@@ -164,7 +175,8 @@ func (s *MediaLibraryService) CatalogDetail(actor Actor, libraryID uint, token s
 	if err := s.db.Where("library_id = ? AND work_key = ?", libraryID, workKey).Order("COALESCE(season, 0), COALESCE(episode, 0), relative_path").Find(&entries).Error; err != nil {
 		return MediaCatalogDetail{}, err
 	}
-	detail := MediaCatalogDetail{Work: catalogItem(row), Seasons: make([]MediaCatalogSeason, 0), Files: make([]MediaCatalogEpisode, 0)}
+	detail := MediaCatalogDetail{Work: catalogItem(row), Seasons: make([]MediaCatalogSeason, 0), Files: make([]MediaCatalogEpisode, 0), ReorganizableTransfers: make([]MediaCatalogManagedTransfer, 0)}
+	detail.ReorganizableTransfers = s.catalogManagedTransfers(actor, libraryID, entries)
 	if row.Kind != "series" {
 		for _, entry := range entries {
 			detail.Files = append(detail.Files, catalogEpisode(entry))
@@ -201,6 +213,33 @@ func (s *MediaLibraryService) CatalogDetail(actor Actor, libraryID uint, token s
 		detail.Seasons[index].Episodes = append(detail.Seasons[index].Episodes, episode)
 	}
 	return detail, nil
+}
+
+func (s *MediaLibraryService) catalogManagedTransfers(actor Actor, libraryID uint, entries []models.MediaLibraryEntry) []MediaCatalogManagedTransfer {
+	if !actor.Can(authz.PermissionJobsControlAll) && !actor.Can(authz.PermissionJobsControlOwn) {
+		return []MediaCatalogManagedTransfer{}
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.RelativePath != "" {
+			paths = append(paths, entry.RelativePath)
+		}
+	}
+	if len(paths) == 0 {
+		return []MediaCatalogManagedTransfer{}
+	}
+	query := s.db.Table("media_managed_items AS managed").
+		Select("managed.transfer_task_id, managed.download_task_id, MAX(managed.identity_revision) AS identity_revision, COUNT(*) AS file_count").
+		Joins("JOIN transfer_tasks AS transfer ON transfer.id = managed.transfer_task_id").
+		Where("managed.library_id = ? AND managed.managed = ? AND managed.active = ? AND managed.relative_path IN ? AND transfer.phase = ?", libraryID, true, true, paths, models.TransferTaskStatusCompleted)
+	if !actor.Can(authz.PermissionJobsControlAll) {
+		query = query.Where("transfer.owner_id = ?", actor.User.ID)
+	}
+	items := make([]MediaCatalogManagedTransfer, 0)
+	if err := query.Group("managed.transfer_task_id, managed.download_task_id").Order("managed.transfer_task_id").Scan(&items).Error; err != nil {
+		return []MediaCatalogManagedTransfer{}
+	}
+	return items
 }
 
 func normalizeMediaPageQuery(query MediaPageQuery) (MediaPageQuery, error) {

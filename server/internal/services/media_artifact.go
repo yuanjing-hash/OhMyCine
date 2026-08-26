@@ -550,7 +550,7 @@ func (s *MediaArtifactService) artifactPolicySuperseded(policy mediaArtifactPoli
 
 func automaticCleanupScanKind(kind string) bool {
 	switch kind {
-	case "initial", "catch_up", "manual", "event", "incremental", "full", "strm_incremental_manual", "strm_full_manual":
+	case "initial", "catch_up", "manual", "event", "incremental", "full", "strm_incremental_manual", "strm_full_manual", "reorganization":
 		return true
 	default:
 		return false

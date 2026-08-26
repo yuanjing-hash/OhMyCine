@@ -149,3 +149,82 @@ deleteData := transferMode == "copy" && plan.ProtectedCount == 0
 // Re-evaluate the immutable plan again immediately before provider deletion.
 client.Cancel(ctx, torrentID, deleteData)
 ```
+
+## Scenario: Managed-Only Corrective Reorganization
+
+### 1. Scope / Trigger
+
+- Trigger: correcting a completed import's TMDB identity, previewing old-to-new paths, moving existing local/115 outputs, or rebuilding metadata/STRM after correction.
+
+### 2. Signatures
+
+```text
+DB migration v50:
+  media_managed_items
+  media_reorganization_previews
+  media_reorganization_tasks
+  queue policy media_reorganization
+
+POST /api/v1/media/reorganizations/preview
+  { transfer_task_id, tmdb_id, media_type, conflict_policy }
+POST /api/v1/media/reorganizations/confirm
+  { confirmation_token }
+GET  /api/v1/media/reorganizations/:id
+```
+
+- A preview token is a 256-bit opaque value; SQLite stores SHA-256 only. It binds actor, Transfer, library, source/target identity revisions, managed-manifest digest, current Profile/rule fingerprint, conflict policy and five-minute expiry.
+
+### 3. Contracts
+
+- Reorganization is available only for a completed Transfer with active `media_managed_items` recorded from actual successful transfer outputs. Never discover ownership by scanning a directory or matching filenames; pre-v50 imports without an ownership manifest fail closed.
+- Preview calls TMDB `GetByID`, loads the MediaLibrary's current Profile revision/rules, recomputes category from verified metadata, and then calculates destination-relative names using current library templates. It does not reuse the old identity category.
+- Confirmation consumes one actor-bound preview exactly once. Worker rechecks identity revision, rule fingerprint, manifest digest and every file/item boundary before each mutation.
+- Preview does not reserve a destination. Immediately before every local or 115 move/rename, the worker checks the exact planned target again; a newly occupied target that is not the same managed item fails with a stable conflict and requires a new preview, including for a previously generated rename target.
+- Local work uses canonical library root, per-component symlink/junction/Reparse Point rejection, `Lstat` type/size checks and root-confined rename. 115 work uses same-Connection stable item ID, root ancestry, exact parent/size and driver-native Move/Rename outside database transactions.
+- Failure preserves the old authoritative identity until every planned file is accounted for. Progress checkpoints make retry idempotent. Finalization uses compare-and-swap on the source identity revision, updates managed items, marks task complete, then invokes ordinary media-library reconciliation to rebuild NFO/JPG/STRM and downstream Player/Emby/Jellyfin changes.
+- Cleanup may remove only system-created empty directories after successful migration. It never deletes unmanaged siblings, scans for garbage, changes provider source data outside the manifest, or silently overwrites a conflict.
+- Explicit deletion of terminal Transfer/Download history removes ownership rows, expired/current previews and terminal reorganization records/jobs in one transaction, but never media/provider files. Any non-terminal reorganization job blocks history deletion with a queue-state conflict.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing/inactive/unmanaged ownership item or pre-v50 import | `media_reorganization_unavailable`; perform no mutation |
+| Actor does not own/control Transfer | `permission_denied`; disclose no paths/provider IDs |
+| Profile revision/rules, identity revision or manifest digest changed after preview | `media_reorganization_boundary_changed`; require a new preview |
+| Target conflict with `ask` | Return safe conflict count and require a new explicit policy/preview |
+| Local path escapes root or crosses reparse boundary | Fail before move and keep old identity |
+| 115 item/root/parent/size changed | Fail closed; do not locate a replacement by name |
+| Retry observes source missing but exact target exists with expected size/ID | Treat prior step as completed and continue idempotently |
+| All files moved but artifact reconciliation is temporarily unavailable | Keep managed identity/path commit and retry normal reconciliation without moving files again |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a wrongly matched Japanese movie under `华语电影` previews under current Profile `外语电影`, moves only its managed video/subtitles, locks revision 2, then rebuilds sidecars/STRM.
+- Base: a v49 historical import has no managed manifest; UI does not offer a false-safe automatic move and Server rejects direct requests.
+- Bad: update TMDB ID first then attempt file moves, recurse through the old directory, or infer 115 ownership from matching names.
+
+### 6. Tests Required
+
+- Migration tests cover v50 fresh/upgrade/repeat tables, indexes and queue policy.
+- Planner tests cover current-Profile reclassification, movie/TV templates, subtitles/sidecars, conflict policies, bounded items and destination-path validation.
+- Local tests cover idempotent retry, size/type/reparse/root changes, unmanaged siblings and identity CAS rollback.
+- 115 tests cover stable item/parent/root ancestry, move-then-rename restart, changed item rejection and absence of provider IDs in public DTO/log/audit.
+- HTTP/Web tests cover auth/CSRF/ownership, one-time expiry/replay, safe old/new relative paths, entry visibility only for completed managed Transfers, confirmation and status polling.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+files, _ := os.ReadDir(oldDirectory) // guesses ownership
+tx.Model(&download).Update("tmdb_id", selectedID) // commits before file moves
+```
+
+Correct:
+
+```go
+items := loadActiveManagedItems(transfer.ID)
+plan := preview(items, sourceIdentityRevision, currentProfileRevision)
+// Worker revalidates plan bindings; identity CAS occurs only after all managed items reconcile.
+```

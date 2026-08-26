@@ -92,3 +92,43 @@ func (a *API) DeleteTransfer(c *gin.Context) {
 	}
 	success(c, http.StatusOK, gin.H{"deleted": true})
 }
+
+func (a *API) PreviewTransferDeletion(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := stringID(c)
+	if !ok {
+		return
+	}
+	var input services.TransferDeletionPreviewInput
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("删除范围无效", err))
+		return
+	}
+	data, err := a.transfers.PreviewDeletion(c.Request.Context(), actor, id, input, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}
+
+func (a *API) ConfirmTransferDeletion(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := stringID(c)
+	if !ok {
+		return
+	}
+	var input services.TransferDeletionConfirmInput
+	if err := strictJSON(c, &input); err != nil {
+		writeError(c, a.log, invalid("删除确认无效", err))
+		return
+	}
+	// Transfer identity is bound inside the opaque token; the route ID is still
+	// checked explicitly so a token cannot be replayed on another visible row.
+	data, err := a.transfers.ConfirmDeletion(c.Request.Context(), actor, id, input.Token, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, data)
+}

@@ -286,3 +286,83 @@ if current == "" || (current == "0" && rootID != "0") {
     return ErrOutsideStorage
 }
 ```
+
+## Scenario: Authoritative Media Identity and Optional AI Adjudication
+
+### 1. Scope / Trigger
+
+- Trigger: changing download/search/library recognition, confidence behavior, manual TMDB correction, episode facts, AI recognition settings/providers, or any recognition-to-Transfer handoff.
+
+### 2. Signatures
+
+```text
+DB migration v48 DownloadTask:
+  identity_source, identity_status, identity_locked,
+  identity_revision, identity_snapshot_json
+
+MediaIdentitySnapshot v1:
+  revision, source, status, locked, tmdb_id, media_type, title, year,
+  category, confidence, season, episode, per-file episode facts
+
+GET/PATCH /api/v1/settings/ai-recognition
+POST      /api/v1/settings/ai-recognition/test
+POST      /api/v1/settings/ai-recognition/models
+```
+
+- `identity_source` is `manual|direct_id|automatic|ai|local_provisional`; status is `verified|provisional|local_provisional`.
+- The versioned score config owns all thresholds. `ExtremeThreshold=0.35` is the only floor that withholds an unrelated candidate; handlers, workers and Transfer must not add another confidence gate.
+
+### 3. Contracts
+
+- One download owns one advancing identity revision from search/preclassification through completion and Transfer. Completion may add immutable manifest/episode facts, but it does not run a third independent identity search.
+- Non-plugin Transfer must strictly decode the identity snapshot and require its revision, source/status/lock, TMDB ID, media type, title and category projection to match the DownloadTask columns. Legacy automatic tasks that have only the old scrape TMDB/type columns get one `GetByID`-verified automatic binding and a full snapshot on their next recognition pass; this migration fallback never creates a manual lock.
+- A manually selected `tmdb_id + movie|tv` is `GetByID`-verified, stored as `manual + verified + locked`, and cannot be replaced by automatic or AI work. An automatically/AI-bound Site result keeps its actual source/status and is never promoted to a manual lock merely because its TMDB ID crossed the opaque claim.
+- High-confidence results are verified. Ordinary low/conflict results deterministically select the stable top candidate and continue as provisional. AI disabled means zero runtime provider creation, key decryption and requests. With AI enabled, low/conflict may execute one candidate arbitration and extreme/no-candidate may execute one title rewrite per revision; failure falls back to deterministic top or local provisional.
+- AI arbitration may choose only an input `candidate_ref`. Rewrite may return at most five bounded TMDB queries and no TMDB ID/URL. Both protocols use strict schemas, reject unknown/trailing fields, and treat titles/basenames as untrusted data.
+- OpenAI-compatible Base URL uses the controlled HTTP client; Google AI Studio uses the fixed official origin. API Key is AES-GCM encrypted and ordinary settings responses expose configured state only. Relative basenames are sent only under the explicit setting; absolute paths, provider IDs, magnets, torrent URLs, credentials and download context are never sent.
+- TV package facts come from the shared episode resolver. `[01]`, `[01v2]`, `EP01`, `S01E01`, and package sequences are valid only with TV/release evidence; year, resolution and bit-depth tokens are not episodes. A multi-video TV package with unresolved episode mapping fails as `transfer_episode_unrecognized` and retains the complete source instead of selecting the largest video.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Manual locked identity exists | Revalidate the exact ID; preserve source/revision/lock and skip automatic/AI replacement |
+| Automatic Site identity is carried into DownloadTask | Preserve `automatic|ai` and verified/provisional with `locked=false`; do not populate legacy manual override fields |
+| Best candidate is above extreme floor but below normal threshold/tied | Select stable top, mark provisional, continue |
+| Candidate total/title similarity is below 0.35 or no candidates exist | AI rewrite once when enabled; otherwise create local provisional without blocking queue |
+| AI disabled | No key decryption, provider construction, model request, arbitration or rewrite |
+| AI output invents candidate, ID, URL, field or invalid episode range | Reject output and use deterministic safe fallback |
+| TV package has multiple videos and no trustworthy per-file episode facts | Return `transfer_episode_unrecognized`; create no partial Transfer |
+
+### 5. Good / Base / Bad Cases
+
+- Good: user manually identifies episode 6 once; retries and Transfer reuse that locked revision without downloader resubmission.
+- Good: Site quick recognition binds a verified automatic TMDB identity; DownloadTask keeps it unlocked and completion re-fetches that ID only to project current Profile category and episode facts.
+- Base: AI is off and two candidates tie; rank/popularity/votes/media type/stable TMDB ID select one provisional result deterministically.
+- Bad: `if confidence < .80 { fail }` in Transfer, treating an automatic Site match as manual, or sending a staging path/magnet to an AI provider.
+
+### 6. Tests Required
+
+- Migration tests cover v48/v49 fresh, upgrade and idempotent schema/defaults/backfill.
+- Ranker tests cover 0.35/0.64/0.68/0.78 boundaries, equal scores and input-order independence.
+- Cross-stage tests prove automatic versus manual source/lock semantics, one revision through retry/completion/Transfer, and no downloader call after manual completion recovery.
+- Transfer tests reject missing/corrupt snapshots, revision drift and projection drift; legacy automatic tests prove exact-ID backfill performs no new fuzzy search.
+- AI tests cover both protocols, disabled zero-call behavior, one arbitration/one rewrite limits, strict schema/candidate refs, SSRF/redirect/body limits, encrypted reveal permission and every fallback.
+- Episode tests cover positive anime/release patterns, year/resolution/bit-depth negatives, ten-episode package completeness and fail-closed unresolved multi-video TV.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+task.IdentityLocked = recognition.TMDBID != nil // automatic result becomes manual
+if task.ScrapeConfidence < .80 { return ErrUnrecognized }
+```
+
+Correct:
+
+```go
+task.IdentitySource = recognition.Source
+task.IdentityLocked = recognition.Source == "manual"
+// Confidence ranks and labels; only structural/file safety can stop Transfer.
+```

@@ -536,3 +536,61 @@ OperationPan115ShareIngest.Event(log.Error()).
     Str("task_id", task.ID).Str("error_code", safeCode).
     Msg(OperationPan115ShareIngest.Message("失败"))
 ```
+
+## Scenario: AI Recognition and Corrective-Reorganization Trust Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: configuring Server-side AI recognition, sending recognition evidence to an LLM, revealing its API Key, or moving already-imported media after an identity correction.
+
+### 2. Signatures
+
+- Credential purpose: `settings:ai-recognition:api-key:v1`; reveal uses the existing allowlisted `/api/v1/credentials/reveal` action and never an ordinary settings response.
+- Runtime AI gate: `RuntimeConfig() (Config, enabled, error)` returns before key decryption when disabled.
+- Reorganization preview/confirm/query routes and v50 tables follow the contracts in `downloader-management.md` and `transfer-organization.md`.
+
+### 3. Contracts
+
+- AI is advisory identity evidence only. It cannot submit downloads, mutate configuration, lock an unverified TMDB ID, choose paths, confirm conflicts, move/delete files or consume a reorganization token.
+- Prompt payloads contain only bounded normalized release text and opt-in relative basenames. Never send absolute paths, Cookie/token/passkey/API key, magnet/torrent URL, provider item ID, Connection/downloader/library identity, signed URLs or upstream bodies.
+- Custom OpenAI-compatible origins use the SSRF-safe client with allowed scheme, DNS/IP policy, redirect/timeout/body limits. Empty query/fragment delimiters are invalid, and this client disables environment proxies so its protected dial resolves and validates the actual configured origin rather than a proxy endpoint. Google native mode ignores custom origins and uses its fixed official API.
+- Reorganization authorization is ownership plus an opaque one-time actor-bound preview token. Database stores only its hash. File authority comes only from active managed-item manifests and revalidated configured roots/stable provider ancestry, never from an AI response or browser-authored path.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| AI feature disabled | Return before decrypt/provider/network; deterministic local recognition continues |
+| AI Base URL targets a denied scheme/address or redirects outside policy | Reject configuration/probe/request with safe code; expose no resolved address/body |
+| AI JSON is oversized, malformed, schema-invalid or references unknown candidate | Reject output and use safe deterministic fallback |
+| Preview token is expired/replayed/cross-actor or its bound revisions changed | Reject before any file/provider mutation |
+| Managed path/item no longer proves root ancestry, type and size | Stop at that item, retain identity and all unproven data |
+
+### 5. Good / Base / Bad Cases
+
+- Good: AI selects `c2`; Server validates it is in the supplied candidate set, performs `GetByID`, records provisional source, and does no file action.
+- Base: AI times out; the queue continues with deterministic provisional/local provisional behavior.
+- Bad: log prompts/responses, send `D:\Downloads\...`, let an LLM return a target path, or scan a corrected title directory to decide what to move.
+
+### 6. Tests Required
+
+- Assert disabled runtime performs zero decrypt/factory/HTTP calls and explicit admin probe remains separately permissioned/audited.
+- Assert custom-origin SSRF/redirect/timeout/size controls, fixed Google origin, strict response schemas, encrypted storage/reveal allowlist and log redaction.
+- Assert preview token hash/replay/expiry/actor/revision bindings plus local/115 root/item revalidation and unmanaged-file preservation.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+prompt.Files = absolutePaths
+os.Rename(model.OldPath, model.NewPath)
+```
+
+Correct:
+
+```go
+result := provider.Adjudicate(boundedRelativeEvidence)
+identity := validateCandidateRefAndGetByID(result)
+plan := managedManifestPlanner.Preview(actor, identity)
+```

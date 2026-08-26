@@ -152,6 +152,7 @@ func (s *MediaLibraryService) recognizeLibraryUnits(ctx context.Context, library
 			Classification:   rules,
 			Language:         library.MetadataLanguage,
 			Region:           library.MetadataRegion,
+			AIAssist:         s.aiRecognition,
 		})
 		<-mediaRecognitionGlobalGate
 		_ = s.storeRecognitionCache(workerCtx, cacheKey, result)

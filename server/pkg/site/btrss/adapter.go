@@ -43,16 +43,22 @@ func NyaaProfile() Profile {
 	return Profile{SearchPath: "/", QueryParameter: "q", FixedQuery: map[string]string{"page": "rss", "c": "0_0", "f": "0"}, AllowedFeedHosts: []string{"nyaa.si"}, AllowedDownloadHosts: []string{"nyaa.si"}, AllowedPathPrefixes: []string{"/download/"}}
 }
 func AnimeToshoProfile() Profile {
-	return Profile{SearchPath: "/rss2", QueryParameter: "q", FixedQuery: map[string]string{"only_tor": "1"}, AllowedFeedHosts: []string{"feed.animetosho.org"}, AllowedDownloadHosts: []string{"feed.animetosho.org", "animetosho.org"}, AllowedPathPrefixes: []string{"/storage/", "/torrent/", "/download/"}}
+	return Profile{SearchPath: "/rss2", QueryParameter: "q", FixedQuery: map[string]string{"only_tor": "1"}, AllowedFeedHosts: []string{"feed.animetosho.org", "animetosho.org"}, AllowedDownloadHosts: []string{"feed.animetosho.org", "animetosho.org"}, AllowedPathPrefixes: []string{"/storage/", "/torrent/", "/download/"}}
 }
 func TokyoToshokanProfile() Profile {
-	return Profile{SearchPath: "/rss.php", QueryParameter: "terms", FixedQuery: map[string]string{"filter": "1"}, AllowedFeedHosts: []string{"www.tokyotosho.info"}, AllowedDownloadHosts: []string{"www.tokyotosho.info", "tokyotosho.info"}, AllowedPathPrefixes: []string{"/download.php", "/torrent/"}}
+	return Profile{SearchPath: "/rss.php", QueryParameter: "terms", FixedQuery: map[string]string{"filter": "1"}, AllowedFeedHosts: []string{"www.tokyotosho.info", "tokyotosho.info"}, AllowedDownloadHosts: []string{"www.tokyotosho.info", "tokyotosho.info"}, AllowedPathPrefixes: []string{"/download.php", "/torrent/"}}
 }
 func MikanProfile() Profile {
 	return Profile{SearchPath: "/RSS/Search", QueryParameter: "searchstr", AllowedFeedHosts: []string{"mikanani.me"}, AllowedDownloadHosts: []string{"mikanani.me"}, AllowedPathPrefixes: []string{"/Download/"}}
 }
 func AniDexProfile() Profile {
 	return Profile{SearchPath: "/rss/", QueryParameter: "q", AllowedFeedHosts: []string{"anidex.info"}, AllowedDownloadHosts: []string{"anidex.info"}, AllowedPathPrefixes: []string{"/torrent/", "/dl/"}}
+}
+func DMHYProfile() Profile {
+	return Profile{SearchPath: "/topics/rss/rss.xml", QueryParameter: "keyword", AllowedFeedHosts: []string{"share.dmhy.org"}, AllowedDownloadHosts: []string{"share.dmhy.org"}, AllowedPathPrefixes: []string{"/topics/view/", "/topics/download/", "/torrent/"}}
+}
+func ACGRipProfile() Profile {
+	return Profile{SearchPath: "/feed.xml", QueryParameter: "term", AllowedFeedHosts: []string{"acg.rip"}, AllowedDownloadHosts: []string{"acg.rip"}, AllowedPathPrefixes: []string{"/t/", "/torrent/"}}
 }
 
 func NewForProfile(kind string, profile Profile) *Adapter {
@@ -292,8 +298,9 @@ func DecodeIdentity(value string) (string, string, bool) {
 }
 
 func controlledClient(config site.Config) (*http.Client, *url.URL, error) {
-	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"))
-	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+	rawBase := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
+	base, err := url.Parse(rawBase)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" || strings.Contains(rawBase, "#") {
 		return nil, nil, site.ErrUnavailable
 	}
 	timeout := config.Timeout

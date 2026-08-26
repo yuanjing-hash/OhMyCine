@@ -34,14 +34,15 @@ const (
 )
 
 type SiteService struct {
-	db          *gorm.DB
-	audit       *AuditService
-	credentials *credential.Store
-	downloads   *DownloadService
-	adapters    map[string]sitepkg.Adapter
-	log         zerolog.Logger
-	now         func() time.Time
-	metadata    *MetadataSettingsService
+	db            *gorm.DB
+	audit         *AuditService
+	credentials   *credential.Store
+	downloads     *DownloadService
+	adapters      map[string]sitepkg.Adapter
+	log           zerolog.Logger
+	now           func() time.Time
+	metadata      *MetadataSettingsService
+	aiRecognition *AIRecognitionSettingsService
 
 	limitMu sync.Mutex
 	limits  map[uint]*siteLimiter
@@ -68,6 +69,9 @@ type siteResultClaim struct {
 	ManualTMDBID      *int64
 	ManualMediaType   string
 	RecognitionManual bool
+	RecognitionSource string
+	RecognitionStatus string
+	RecognitionLocked bool
 }
 
 type SiteInput struct {
@@ -97,6 +101,7 @@ type SiteSummary struct {
 	Kind                 string            `json:"kind"`
 	SiteType             string            `json:"site_type"`
 	CredentialKind       string            `json:"credential_kind"`
+	Capabilities         SiteCapabilities  `json:"capabilities"`
 	BaseURL              string            `json:"base_url"`
 	UserAgent            string            `json:"user_agent"`
 	BrowserEmulation     bool              `json:"browser_emulation"`
@@ -114,14 +119,27 @@ type SiteSummary struct {
 	CreatedAt            time.Time         `json:"created_at"`
 	UpdatedAt            time.Time         `json:"updated_at"`
 }
+type SiteCapabilities struct {
+	Search   bool `json:"search"`
+	Download bool `json:"download"`
+}
 type SiteCatalogSummary struct {
-	Key            string   `json:"key"`
-	Name           string   `json:"name"`
-	Engine         string   `json:"engine"`
-	BaseURLs       []string `json:"base_urls"`
-	AutoDiscover   bool     `json:"auto_discover"`
-	SiteType       string   `json:"site_type"`
-	CredentialKind string   `json:"credential_kind"`
+	Key            string           `json:"key"`
+	Name           string           `json:"name"`
+	Engine         string           `json:"engine"`
+	BaseURLs       []string         `json:"base_urls"`
+	AutoDiscover   bool             `json:"auto_discover"`
+	SiteType       string           `json:"site_type"`
+	CredentialKind string           `json:"credential_kind"`
+	Capabilities   SiteCapabilities `json:"capabilities"`
+}
+type SiteResolutionSummary struct {
+	Kind             string           `json:"kind"`
+	Name             string           `json:"name"`
+	SiteType         string           `json:"site_type"`
+	CredentialKind   string           `json:"credential_kind"`
+	CanonicalBaseURL string           `json:"canonical_base_url"`
+	Capabilities     SiteCapabilities `json:"capabilities"`
 }
 type SiteSearchInput struct {
 	Keyword, MediaType, SearchBy string
@@ -195,6 +213,9 @@ type SiteRecognitionEpisodeFacts struct {
 type SiteRecognitionSummary struct {
 	EngineVersion  string                        `json:"engine_version"`
 	Status         string                        `json:"status"`
+	IdentitySource string                        `json:"identity_source,omitempty"`
+	IdentityStatus string                        `json:"identity_status,omitempty"`
+	Confidence     *float64                      `json:"confidence,omitempty"`
 	ManualOverride bool                          `json:"manual_override,omitempty"`
 	ErrorCode      string                        `json:"error_code,omitempty"`
 	Title          string                        `json:"title"`
@@ -221,6 +242,9 @@ func NewSiteServiceWithAdapters(db *gorm.DB, audit *AuditService, credentials *c
 }
 
 func (s *SiteService) SetMetadataSettings(service *MetadataSettingsService) { s.metadata = service }
+func (s *SiteService) SetAIRecognitionSettings(service *AIRecognitionSettingsService) {
+	s.aiRecognition = service
+}
 
 func (s *SiteService) List(actor Actor) ([]SiteSummary, error) {
 	if !actor.IsSystemAdmin() {
@@ -241,15 +265,32 @@ func (s *SiteService) Catalog(actor Actor) ([]SiteCatalogSummary, error) {
 	if !actor.IsSystemAdmin() {
 		return nil, appError(CodePermissionDenied, "仅管理员可以查看站点目录", nil)
 	}
-	definitions := builtin.Definitions()
+	definitions := builtin.CatalogDefinitions()
 	items := make([]SiteCatalogSummary, 0, len(definitions))
 	for _, definition := range definitions {
 		if s.adapters[definition.Key] == nil {
 			continue
 		}
-		items = append(items, SiteCatalogSummary{Key: definition.Key, Name: definition.Name, Engine: definition.Engine, BaseURLs: append([]string(nil), definition.BaseURLs...), AutoDiscover: definition.AutoDiscover, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind})
+		items = append(items, SiteCatalogSummary{Key: definition.Key, Name: definition.Name, Engine: definition.Engine, BaseURLs: append([]string(nil), definition.BaseURLs...), AutoDiscover: definition.AutoDiscover, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, Capabilities: capabilitiesForDefinition(definition)})
 	}
 	return items, nil
+}
+
+func (s *SiteService) ResolveBT(actor Actor, raw string) (SiteResolutionSummary, error) {
+	if !actor.IsSystemAdmin() {
+		return SiteResolutionSummary{}, appError(CodePermissionDenied, "仅管理员可以识别 BT 站点", nil)
+	}
+	definition, canonical, err := builtin.ResolveBTBaseURL(raw)
+	if err != nil {
+		if errors.Is(err, builtin.ErrBTUnknown) {
+			return SiteResolutionSummary{}, appError(CodeSiteBTHostUnsupported, "该 BT 官网暂未被当前 Server 原生支持", nil)
+		}
+		return SiteResolutionSummary{}, appError(CodeSiteURLInvalid, "BT 站点必须填写受支持的 HTTPS 官网根地址", nil)
+	}
+	if s.adapters[definition.Key] == nil {
+		return SiteResolutionSummary{}, appError(CodeSiteKindUnsupported, "当前 Server 缺少该站点适配器", nil)
+	}
+	return SiteResolutionSummary{Kind: definition.Key, Name: definition.Name, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, CanonicalBaseURL: canonical, Capabilities: capabilitiesForDefinition(definition)}, nil
 }
 
 func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, request RequestContext) (SiteSummary, error) {
@@ -261,6 +302,16 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 		return SiteSummary{}, err
 	}
 	kind := strings.ToLower(strings.TrimSpace(input.Kind))
+	if kind == "auto_bt" {
+		definition, canonical, resolveErr := builtin.ResolveBTBaseURL(input.BaseURL)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, builtin.ErrBTUnknown) {
+				return SiteSummary{}, appError(CodeSiteBTHostUnsupported, "该 BT 官网暂未被当前 Server 原生支持", nil)
+			}
+			return SiteSummary{}, appError(CodeSiteURLInvalid, "BT 站点必须填写受支持的 HTTPS 官网根地址", nil)
+		}
+		kind, input.BaseURL = definition.Key, canonical
+	}
 	adapter := s.adapters[kind]
 	if adapter == nil {
 		return SiteSummary{}, appError(CodeSiteKindUnsupported, "当前 Server 不支持该站点类型", nil)
@@ -273,6 +324,9 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 		return SiteSummary{}, err
 	}
 	definition, _ := builtin.DefinitionForKey(kind)
+	if definition.DiscoverableByURL {
+		_, baseURL, _ = builtin.ResolveBTBaseURL(baseURL)
+	}
 	credential, err := normalizeSiteCredential(definition.CredentialKind, input.Cookie, input.Passkey, input.APIKey)
 	if err != nil {
 		return SiteSummary{}, err
@@ -433,6 +487,9 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 		}
 		if err := validateCatalogSiteBaseURL(record.Kind, record.BaseURL); err != nil {
 			return SiteSummary{}, err
+		}
+		if definition, ok := builtin.DefinitionForKey(record.Kind); ok && definition.DiscoverableByURL {
+			_, record.BaseURL, _ = builtin.ResolveBTBaseURL(record.BaseURL)
 		}
 	}
 	if input.Cookie != nil && strings.TrimSpace(*input.Cookie) != "" {
@@ -745,15 +802,19 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 		Classification:   classification.DefaultRules(),
 		Language:         "zh-CN",
 		Region:           "CN",
+		AIAssist:         s.aiRecognition,
 	})
 	summary = SiteRecognitionSummary{
-		EngineVersion: mediarecognition.EngineVersion,
-		Status:        result.Status,
-		ErrorCode:     result.ErrorCode,
-		Title:         strings.TrimSpace(result.Title),
-		MediaType:     result.MediaType,
-		Year:          cloneInt(result.ReleaseYear),
-		TMDBID:        cloneInt64(result.TMDBID),
+		EngineVersion:  mediarecognition.EngineVersion,
+		Status:         result.Status,
+		IdentitySource: result.IdentitySource,
+		IdentityStatus: result.IdentityStatus,
+		Confidence:     cloneFloat64(result.Confidence),
+		ErrorCode:      result.ErrorCode,
+		Title:          strings.TrimSpace(result.Title),
+		MediaType:      result.MediaType,
+		Year:           cloneInt(result.ReleaseYear),
+		TMDBID:         cloneInt64(result.TMDBID),
 	}
 	if parseErr == nil {
 		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
@@ -784,7 +845,7 @@ func (s *SiteService) RecognizeResult(ctx context.Context, actor Actor, resultTo
 		// GetByID verification. Bind that verified identity to the opaque claim so
 		// the eventual download cannot regress to a weaker title-only decision.
 		if result.TMDBID != nil && result.MediaType != "" {
-			if bindErr := s.bindClaimRecognition(strings.TrimSpace(resultToken), actor.User.ID, *result.TMDBID, result.MediaType, false); bindErr != nil {
+			if bindErr := s.bindClaimRecognition(strings.TrimSpace(resultToken), actor.User.ID, *result.TMDBID, result.MediaType, result.IdentitySource, result.IdentityStatus, false); bindErr != nil {
 				return SiteRecognitionSummary{}, bindErr
 			}
 		}
@@ -915,11 +976,11 @@ func (s *SiteService) OverrideResultRecognition(ctx context.Context, actor Actor
 	if verified.ID != input.TMDBID || verified.MediaType != input.MediaType {
 		return SiteRecognitionSummary{}, appError(CodeInvalidRequest, "TMDB 项目身份不一致", nil)
 	}
-	if err := s.bindClaimRecognition(token, actor.User.ID, verified.ID, verified.MediaType, true); err != nil {
+	if err := s.bindClaimRecognition(token, actor.User.ID, verified.ID, verified.MediaType, mediaIdentitySourceManual, mediaIdentityStatusVerified, true); err != nil {
 		return SiteRecognitionSummary{}, err
 	}
 	parsed, parseErr := mediarecognition.Parse(mediarecognition.InputFacts{PackageName: claim.Title, SourceKind: mediarecognition.SourceDownload, MediaTypeHint: mediarecognition.MediaType(claim.MediaTypeHint)})
-	summary := SiteRecognitionSummary{EngineVersion: mediarecognition.EngineVersion, Status: mediaRecognitionStatusMatched, ManualOverride: true, Title: verified.Title, OriginalTitle: verified.Snapshot.OriginalTitle, MediaType: verified.MediaType, Year: cloneInt(verified.ReleaseYear), TMDBID: cloneInt64(&verified.ID)}
+	summary := SiteRecognitionSummary{EngineVersion: mediarecognition.EngineVersion, Status: mediaRecognitionStatusMatched, IdentitySource: mediaIdentitySourceManual, IdentityStatus: mediaIdentityStatusVerified, ManualOverride: true, Title: verified.Title, OriginalTitle: verified.Snapshot.OriginalTitle, MediaType: verified.MediaType, Year: cloneInt(verified.ReleaseYear), TMDBID: cloneInt64(&verified.ID)}
 	if parseErr == nil {
 		summary.Episodes = siteRecognitionEpisodeFacts(parsed, verified.MediaType)
 		summary.Specifications = siteRecognitionSpecifications(parsed.Specifications, parsed.ReleaseGroup)
@@ -1072,7 +1133,7 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 	}
 	var recognitionOverride *DownloadRecognitionIdentity
 	if claim.ManualTMDBID != nil && claim.ManualMediaType != "" {
-		recognitionOverride = &DownloadRecognitionIdentity{TMDBID: *claim.ManualTMDBID, MediaType: claim.ManualMediaType}
+		recognitionOverride = &DownloadRecognitionIdentity{TMDBID: *claim.ManualTMDBID, MediaType: claim.ManualMediaType, Source: claim.RecognitionSource, Status: claim.RecognitionStatus, Locked: claim.RecognitionLocked}
 	}
 	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: source, RecognitionOverride: recognitionOverride}, request)
 	if err != nil {
@@ -1220,7 +1281,7 @@ func (s *SiteService) finishClaim(token string, completed bool) {
 	claim.InFlight = false
 	s.vault[token] = claim
 }
-func (s *SiteService) bindClaimRecognition(token string, actorID uint, tmdbID int64, mediaType string, manual bool) error {
+func (s *SiteService) bindClaimRecognition(token string, actorID uint, tmdbID int64, mediaType, source, status string, locked bool) error {
 	s.vaultMu.Lock()
 	defer s.vaultMu.Unlock()
 	s.purgeClaimsLocked()
@@ -1230,7 +1291,10 @@ func (s *SiteService) bindClaimRecognition(token string, actorID uint, tmdbID in
 	}
 	claim.ManualTMDBID = cloneInt64(&tmdbID)
 	claim.ManualMediaType = mediaType
-	claim.RecognitionManual = manual
+	claim.RecognitionManual = locked && source == mediaIdentitySourceManual
+	claim.RecognitionSource = source
+	claim.RecognitionStatus = status
+	claim.RecognitionLocked = locked
 	s.vault[token] = claim
 	return nil
 }
@@ -1322,18 +1386,21 @@ func (s *SiteService) siteSummary(record models.Site) SiteSummary {
 			_ = json.Unmarshal([]byte(raw), &configured)
 		}
 	}
-	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", CookieConfigured: configured.Cookie != "", PasskeyConfigured: configured.Passkey != "", APIKeyConfigured: configured.APIKey != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, Capabilities: capabilitiesForDefinition(definition), BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", CookieConfigured: configured.Cookie != "", PasskeyConfigured: configured.Passkey != "", APIKeyConfigured: configured.APIKey != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+}
+
+func capabilitiesForDefinition(definition builtin.Definition) SiteCapabilities {
+	return SiteCapabilities{Search: definition.Search, Download: definition.Download}
 }
 
 func validateCatalogSiteBaseURL(kind, baseURL string) error {
 	definition, ok := builtin.DefinitionForKey(kind)
-	if !ok || definition.Engine != "rss" {
+	if !ok || !definition.DiscoverableByURL {
 		return nil
 	}
-	for _, allowed := range definition.BaseURLs {
-		if strings.EqualFold(strings.TrimRight(allowed, "/"), strings.TrimRight(baseURL, "/")) {
-			return nil
-		}
+	resolved, canonical, err := builtin.ResolveBTBaseURL(baseURL)
+	if err == nil && resolved.Key == kind && strings.EqualFold(canonical, strings.TrimRight(baseURL, "/")) {
+		return nil
 	}
 	return appError(CodeSiteURLInvalid, "公开 BT 站点地址必须使用内建受控地址", nil)
 }

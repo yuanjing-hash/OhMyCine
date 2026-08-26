@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -149,6 +150,46 @@ func TestClassifyRealSevenSamuraiReleaseQueriesCleanTitleAndYear(t *testing.T) {
 	}
 }
 
+func TestClassifyBackfillsLegacyAutomaticIdentityWithoutFuzzyResearch(t *testing.T) {
+	searchCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/search/") {
+			searchCalls++
+			http.Error(w, "unexpected fuzzy search", http.StatusInternalServerError)
+			return
+		}
+		if request.URL.Path != "/movie/346" {
+			http.NotFound(w, request)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":346,"title":"Seven Samurai","original_title":"七人の侍","original_language":"ja","release_date":"1954-04-26","genres":[{"id":18,"name":"Drama"}],"production_countries":[{"iso_3166_1":"JP"}]}`))
+	}))
+	defer server.Close()
+	downloads, _, queue, _, _ := downloadFixture(t)
+	metadata := NewMetadataSettingsService(queue.db, queue.audit, downloads.credentials, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
+	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
+		return tmdb.NewForTest("test-token", server.URL, server.Client())
+	}
+	downloads.SetMetadataSettings(metadata)
+	rules, _ := json.Marshal(classification.DefaultRules())
+	id := int64(346)
+	year := 1954
+	task := models.DownloadTask{ID: "legacy-automatic-backfill", ProfileRulesJSON: string(rules), ProfileRecognitionRulesJSON: "[]", ScrapeTMDBID: &id, ScrapeMediaType: "movie", ScrapeYear: &year, IdentitySource: mediaIdentitySourceAutomatic, IdentityStatus: mediaIdentityStatusVerified, IdentityRevision: 1, IdentitySnapshotJSON: `{}`}
+	manifest := downloadpkg.Manifest{Name: "unparseable legacy label", Complete: true, Files: []downloadpkg.File{{RelativePath: "opaque-video.mkv", Size: 2 * 1024 * 1024 * 1024}}}
+	worker := NewDownloadWorker(downloads)
+	match, err := worker.classify(context.Background(), task, manifest)
+	if err != nil || match.TMDBID == nil || *match.TMDBID != id || match.IdentitySource != mediaIdentitySourceAutomatic || searchCalls != 0 {
+		t.Fatalf("match=%+v searchCalls=%d err=%v", match, searchCalls, err)
+	}
+	if err := worker.persistScrape(&task, match, "completed_verified", len(manifest.Files)); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := decodeMediaIdentity(task.IdentitySnapshotJSON)
+	if err != nil || identity.Revision != 1 || identity.TMDBID == nil || *identity.TMDBID != id || identity.Locked {
+		t.Fatalf("backfilled identity=%+v err=%v raw=%s", identity, err, task.IdentitySnapshotJSON)
+	}
+}
+
 func TestRecognitionUsesMeaningfulPackageFolderForGenericDiscFilename(t *testing.T) {
 	folder := "【高清影视之家发布 www.HDBTHD.com】七武士[简繁英字幕].Seven.Samurai.1954.CC.2160p.UHD.BluRay.x265.10bit.DTS-HD.MA.2.0-SONYHD"
 	manifest := downloadpkg.Manifest{Name: folder, Complete: true, Files: []downloadpkg.File{{RelativePath: folder + "/BDMV/STREAM/00000.m2ts", Size: 285 * 1024 * 1024 * 1024 / 10}}}
@@ -196,6 +237,27 @@ func TestSelectDownloadPackageManifestKeepsTVEpisodesAndDropsTinySample(t *testi
 		if strings.Contains(strings.ToLower(file.RelativePath), "sample") {
 			t.Fatalf("sample entered transfer manifest: %+v", selected.Files)
 		}
+	}
+}
+
+func TestSelectDownloadPackageManifestKeepsAllBracketedAnimeEpisodes(t *testing.T) {
+	manifest := downloadpkg.Manifest{Name: "Megami-ryou no Ryoubo-kun", Complete: true}
+	for episode := 1; episode <= 10; episode++ {
+		manifest.Files = append(manifest.Files, downloadpkg.File{RelativePath: fmt.Sprintf("Megami-ryou/[Lilith-Raws] Megami-ryou no Ryoubo-kun. [%02d][Baha][WEB-DL][1080p][AVC AAC][BIG5][MP4].mp4", episode), Size: 400 << 20})
+	}
+	selected, err := selectDownloadPackageManifest(manifest, "tv")
+	if err != nil || len(selected.Files) != 10 {
+		t.Fatalf("selected=%+v err=%v", selected.Files, err)
+	}
+}
+
+func TestSelectDownloadPackageManifestDoesNotFallbackToLargestUnknownTVVideo(t *testing.T) {
+	manifest := downloadpkg.Manifest{Name: "Unknown Series", Complete: true, Files: []downloadpkg.File{
+		{RelativePath: "Unknown Series/video-a.mkv", Size: 500 << 20},
+		{RelativePath: "Unknown Series/video-b.mkv", Size: 400 << 20},
+	}}
+	if _, err := selectDownloadPackageManifest(manifest, "tv"); !errors.Is(err, errPackageEpisodeUnrecognized) {
+		t.Fatalf("err=%v", err)
 	}
 }
 

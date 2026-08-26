@@ -22,6 +22,7 @@ const (
 	CredentialResourceSite             = "site"
 	CredentialResourceCookieCloud      = "cookiecloud"
 	CredentialResourceMetadata         = "metadata"
+	CredentialResourceAIRecognition    = "ai_recognition"
 	CredentialResourcePluginConnection = "plugin_connection"
 )
 
@@ -192,6 +193,15 @@ func (s *CredentialRevealService) reveal(input CredentialRevealInput) (string, e
 		// Only a user-supplied encrypted value is revealable. Deployment and
 		// built-in credentials never enter this branch and cannot be requested.
 		return s.decrypt(tmdbTokenPurpose, record.TMDBTokenCiphertext)
+	case CredentialResourceAIRecognition:
+		if input.ResourceID != "1" || input.Field != "api_key" {
+			return "", revealInvalid()
+		}
+		var record models.AIRecognitionSettings
+		if err := s.db.First(&record, 1).Error; err != nil {
+			return "", revealNotFound(err)
+		}
+		return s.decrypt(aiRecognitionAPIKeyPurpose, record.APIKeyCiphertext)
 	case CredentialResourcePluginConnection:
 		if input.ResourceID == "" || len(input.ResourceID) > 64 || input.Field != "credential" {
 			return "", revealInvalid()

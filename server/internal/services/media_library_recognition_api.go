@@ -177,7 +177,7 @@ func (s *MediaLibraryService) OverrideRecognition(ctx context.Context, actor Act
 	if err != nil {
 		return MediaRecognitionSummary{}, err
 	}
-	metadata := classification.Metadata{MediaType: classification.MediaType(match.MediaType), GenreIDs: match.GenreIDs, OriginalLanguage: match.OriginalLanguage, ProductionCountries: match.ProductionCountries, OriginCountries: match.OriginCountries, ReleaseYear: match.ReleaseYear}
+	metadata := classificationMetadataForMatch(match)
 	classified := classification.Classify(metadata, rules)
 	result := MediaRecognitionResult{Status: mediaRecognitionStatusMatched, Title: match.Title, MediaType: match.MediaType, CategoryName: classified.CategoryName, MatchedRuleID: classified.MatchedRuleID, TMDBID: cloneInt64(&match.ID), ReleaseYear: cloneInt(match.ReleaseYear), Confidence: cloneFloat64(&match.Confidence), Metadata: metadata, Snapshot: match.Snapshot}
 	if err := s.persistRecognitionResult(record, profile, result, true); err != nil {
@@ -267,7 +267,7 @@ func (s *MediaLibraryService) recognizeStoredUnit(ctx context.Context, library m
 	if len(entries) > 0 {
 		mediaTypeHint = entries[0].MediaType
 	}
-	return recognizeMedia(ctx, lookup, MediaRecognitionRequest{PackageName: packageName, Files: files, SourceKind: mediarecognition.SourceLibraryScan, MediaTypeHint: mediaTypeHint, BuiltinPackCodes: organization.BuiltinRecognitionPacks, BuiltinProcessor: processor, RecognitionRules: organization.RecognitionRules, Classification: rules, Language: library.MetadataLanguage, Region: library.MetadataRegion}), nil
+	return recognizeMedia(ctx, lookup, MediaRecognitionRequest{PackageName: packageName, Files: files, SourceKind: mediarecognition.SourceLibraryScan, MediaTypeHint: mediaTypeHint, BuiltinPackCodes: organization.BuiltinRecognitionPacks, BuiltinProcessor: processor, RecognitionRules: organization.RecognitionRules, Classification: rules, Language: library.MetadataLanguage, Region: library.MetadataRegion, AIAssist: s.aiRecognition}), nil
 }
 
 func (s *MediaLibraryService) persistRecognitionResult(record models.MediaLibraryRecognition, profile models.MediaClassificationProfile, result MediaRecognitionResult, manual bool) error {

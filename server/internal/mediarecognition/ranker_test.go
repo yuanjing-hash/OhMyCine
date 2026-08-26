@@ -97,7 +97,7 @@ func TestRankLongRunningSeriesUsesStrongTVStructureWithoutTrustingLargeEpisodeNu
 		{ID: 30983, MediaType: MediaTypeTV, Title: "名侦探柯南", SeasonCount: intRef(1)},
 		{ID: 99999, MediaType: MediaTypeTV, Title: "名侦探柯南", SeasonCount: intRef(1)},
 	})
-	if ambiguous.Status != DecisionUnrecognized || ambiguous.Reason != ReasonCandidateConflict {
+	if ambiguous.Status != DecisionProvisional || ambiguous.Reason != ReasonCandidateConflict || ambiguous.Match == nil || ambiguous.Match.ID != 30983 {
 		t.Fatalf("same-type identity conflict was hidden: %+v", ambiguous)
 	}
 }
@@ -146,14 +146,14 @@ func TestRankAuthorityTieBreakKeepsAmbiguousAndConflictingCandidatesSafe(t *test
 	}
 	emptyShell := RemoteCandidate{ID: 9, MediaType: MediaTypeTV, Title: "名侦探柯南"}
 	ambiguous := Rank(parsed, []RemoteCandidate{complete(1), emptyShell, complete(2)})
-	if ambiguous.Status != DecisionUnrecognized || ambiguous.Reason != ReasonCandidateConflict {
+	if ambiguous.Status != DecisionProvisional || ambiguous.Reason != ReasonCandidateConflict || ambiguous.Match == nil || ambiguous.Match.ID != 1 {
 		t.Fatalf("two equally authoritative same-name identities must remain a conflict in a three-candidate set: %+v", ambiguous)
 	}
 	popularityOnly := emptyShell
 	popularityOnly.ID = 10
 	popularityOnly.Popularity = 1_000_000
 	popularityOnly.VoteCount = 1_000_000_000
-	if decision := Rank(parsed, []RemoteCandidate{popularityOnly, emptyShell}); decision.Status != DecisionUnrecognized || decision.Reason != ReasonCandidateConflict {
+	if decision := Rank(parsed, []RemoteCandidate{popularityOnly, emptyShell}); decision.Status != DecisionProvisional || decision.Reason != ReasonCandidateConflict || decision.Match == nil || decision.Match.ID != 10 {
 		t.Fatalf("popularity and votes alone must not resolve an exact identity conflict: %+v", decision)
 	}
 
@@ -190,7 +190,7 @@ func TestRankAuthorityTieBreakKeepsAmbiguousAndConflictingCandidatesSafe(t *test
 
 	disabledConfig := DefaultScoreConfig()
 	disabledConfig.AuthorityWeight = 0
-	if decision := RankWithConfig(parsed, []RemoteCandidate{complete(11), emptyShell}, disabledConfig); decision.Status != DecisionUnrecognized || decision.Reason != ReasonCandidateConflict {
+	if decision := RankWithConfig(parsed, []RemoteCandidate{complete(11), emptyShell}, disabledConfig); decision.Status != DecisionProvisional || decision.Reason != ReasonCandidateConflict || decision.Match == nil {
 		t.Fatalf("disabled authority tie-break still suppressed the conflict: %+v", decision)
 	}
 }
@@ -269,7 +269,7 @@ func TestRankTreatsUnknownEpisodeCountAsNeutralAndKeepsWeakEvidenceSafe(t *testi
 		{ID: 1, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(1300)},
 		{ID: 2, MediaType: MediaTypeTV, Title: "Example Series"},
 	})
-	if unknown.Status != DecisionUnrecognized || unknown.Reason != ReasonCandidateConflict {
+	if unknown.Status != DecisionProvisional || unknown.Reason != ReasonCandidateConflict || unknown.Match == nil {
 		t.Fatalf("missing episode count was treated as a conflict: %+v", unknown)
 	}
 
@@ -281,7 +281,7 @@ func TestRankTreatsUnknownEpisodeCountAsNeutralAndKeepsWeakEvidenceSafe(t *testi
 		{ID: 3, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(12)},
 		{ID: 4, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(24)},
 	})
-	if ordinaryDecision.Status != DecisionUnrecognized || ordinaryDecision.Reason != ReasonCandidateConflict {
+	if ordinaryDecision.Status != DecisionProvisional || ordinaryDecision.Reason != ReasonCandidateConflict || ordinaryDecision.Match == nil {
 		t.Fatalf("ordinary low episode evidence fabricated uniqueness: %+v", ordinaryDecision)
 	}
 
@@ -289,7 +289,7 @@ func TestRankTreatsUnknownEpisodeCountAsNeutralAndKeepsWeakEvidenceSafe(t *testi
 		{ID: 5, MediaType: MediaTypeTV, Title: "Example Series", EpisodeCount: intRef(24)},
 		{ID: 6, MediaType: MediaTypeTV, Title: "Completely Different", EpisodeCount: intRef(1300)},
 	})
-	if unsafe.Status == DecisionMatched || unsafe.Match != nil {
+	if unsafe.Status != DecisionProvisional || unsafe.Match == nil || unsafe.Match.ID != 5 {
 		t.Fatalf("episode count overrode title identity: %+v", unsafe)
 	}
 }
@@ -326,7 +326,7 @@ func TestRankFranchiseMovieSubtitleWinsWhileUntypedExactConflictStaysManual(t *t
 		{ID: 1, MediaType: MediaTypeMovie, Title: "Detective Conan The Scarlet School Trip"},
 		{ID: 2, MediaType: MediaTypeTV, Title: "Detective Conan The Scarlet School Trip"},
 	})
-	if manual.Status != DecisionUnrecognized || manual.Reason != ReasonCandidateConflict {
+	if manual.Status != DecisionProvisional || manual.Reason != ReasonCandidateConflict || manual.Match == nil || manual.Match.ID != 1 {
 		t.Fatalf("untyped exact conflict was silently selected: %+v", manual)
 	}
 }
@@ -340,14 +340,14 @@ func TestRankReturnsStableUnrecognizedReasons(t *testing.T) {
 	if decision := Rank(parsed, nil); decision.Reason != ReasonNoMatch {
 		t.Fatalf("no candidates reason=%q", decision.Reason)
 	}
-	if decision := Rank(parsed, []RemoteCandidate{{ID: 1, MediaType: MediaTypeMovie, Title: "Completely Different", ReleaseYear: &year}}); decision.Reason != ReasonLowConfidence {
+	if decision := Rank(parsed, []RemoteCandidate{{ID: 1, MediaType: MediaTypeMovie, Title: "Completely Different", ReleaseYear: &year}}); decision.Reason != ReasonExtremeLowConfidence || decision.Match != nil {
 		t.Fatalf("low-confidence decision=%+v", decision)
 	}
 	conflict := Rank(parsed, []RemoteCandidate{
 		{ID: 2, MediaType: MediaTypeMovie, Title: "Exact Title", ReleaseYear: &year},
 		{ID: 3, MediaType: MediaTypeMovie, Title: "Exact Title", ReleaseYear: &year},
 	})
-	if conflict.Reason != ReasonCandidateConflict || conflict.Status != DecisionUnrecognized {
+	if conflict.Reason != ReasonCandidateConflict || conflict.Status != DecisionProvisional || conflict.Match == nil || conflict.Match.ID != 2 {
 		t.Fatalf("conflict decision=%+v", conflict)
 	}
 	wrongYear := 1990
@@ -383,7 +383,7 @@ func TestRankAcceptsOneExactOriginalAliasWithoutInventedYearOrTypeEvidence(t *te
 		{ID: 10820, MediaType: MediaTypeTV, Title: "迪迦奥特曼", AlternativeTitles: []string{"Ultraman Tiga"}},
 		{ID: 99999, MediaType: MediaTypeMovie, Title: "Ultraman Tiga"},
 	})
-	if conflict.Status != DecisionUnrecognized || conflict.Match != nil {
+	if conflict.Status != DecisionProvisional || conflict.Match == nil || conflict.Match.ID != 99999 {
 		t.Fatalf("exact identity conflict was silently accepted: %+v", conflict)
 	}
 }
@@ -420,7 +420,7 @@ func TestRankPrefersUniqueExactIdentityAmongRelatedFranchiseResults(t *testing.T
 		{ID: 2253, MediaType: MediaTypeTV, Title: "迪迦奥特曼"},
 		{ID: 9999, MediaType: MediaTypeMovie, Title: "迪迦·奥特曼"},
 	})
-	if conflict.Status != DecisionUnrecognized || conflict.Reason != ReasonCandidateConflict {
+	if conflict.Status != DecisionProvisional || conflict.Reason != ReasonCandidateConflict || conflict.Match == nil || conflict.Match.ID != 9999 {
 		t.Fatalf("duplicate exact identities were not rejected: %+v", conflict)
 	}
 }
@@ -462,7 +462,7 @@ func TestRankAcceptsOneBoundedLatinTypoButIgnoresRecallOnlyTokenIdentity(t *test
 	if shortErr != nil {
 		t.Fatal(shortErr)
 	}
-	if unsafe := Rank(short, []RemoteCandidate{{ID: 1, MediaType: MediaTypeMovie, Title: "Stream"}}); unsafe.Status != DecisionUnrecognized {
+	if unsafe := Rank(short, []RemoteCandidate{{ID: 1, MediaType: MediaTypeMovie, Title: "Stream"}}); unsafe.Status != DecisionProvisional || unsafe.Match == nil {
 		t.Fatalf("short one-token typo was accepted: %+v", unsafe)
 	}
 }
@@ -481,7 +481,7 @@ func TestRankUsesSeasonAirYearWithoutConflictingWithSeriesPremiereYear(t *testin
 		t.Fatalf("season year was treated as series premiere conflict: %+v", matching)
 	}
 	conflicting := Rank(parsed, []RemoteCandidate{{ID: 12345, MediaType: MediaTypeTV, Title: "爱情公寓", AlternativeTitles: []string{"Ai qing gong yu"}, ReleaseYear: &seriesYear, SeasonCount: intRef(5), SeasonYears: map[int]int{3: 2015}}})
-	if conflicting.Status != DecisionUnrecognized || conflicting.Reason != ReasonLowConfidence {
+	if conflicting.Status != DecisionProvisional || conflicting.Reason != ReasonLowConfidence || conflicting.Match == nil {
 		t.Fatalf("known conflicting season year was ignored: %+v", conflicting)
 	}
 }
