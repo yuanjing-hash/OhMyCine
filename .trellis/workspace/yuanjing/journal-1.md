@@ -839,3 +839,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 32: 完成Player下载管理与完整离线播放
+
+**Date**: 2026-08-27
+**Task**: 完成Player下载管理与完整离线播放
+**Branch**: `develop`
+
+### Summary
+
+完成下载中心、可恢复调度、稳定身份解析、完整离线包、OfflineDataSource、本地优先播放、下载徽标与桌面/Android构建门禁；修复Android异步SQLite跨await问题，并保持Server并行任务隔离。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e898d45` | (see git log) |
+
+### Status
+
+[OK] **Completed**

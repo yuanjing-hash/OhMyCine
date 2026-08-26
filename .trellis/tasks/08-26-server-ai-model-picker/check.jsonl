@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"复核模型列表上限放宽未影响结构化生成、SSRF 和凭据保护"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"复核模型选择窗口的键盘、焦点、状态反馈和响应式行为"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"复核模型列表错误与结构化生成错误对用户可区分且不泄密"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"复核后端与 Web UI 全量质量门禁"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"复核 Vue 模态组件和主题语义一致性"}
