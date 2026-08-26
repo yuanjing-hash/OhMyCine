@@ -764,3 +764,36 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Next Steps
 
 - 在真实 115、qBittorrent、Emby/Jellyfin 与多台 Player 环境执行操作员联调
+
+
+## Session 29: 归档已完成历史任务
+
+**Date**: 2026-08-26
+**Task**: 归档已完成历史任务
+**Branch**: `develop`
+
+### Summary
+
+按项目实际完成情况归档除 PT 站点工作外的 40 个历史任务，仅保留站点发现、PT 搜索下载和推荐聚合三个任务。
+
+### Main Changes
+
+- 归档 40 个已完成的 Server、Player、存储、下载、115、媒体整理与识别任务
+- 保留 3 个 PT 相关任务等待按站点管理内搜索入口重新收敛
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] 确认活跃任务目录只剩 3 个 PT 相关任务
+- [OK] 确认归档后工作区干净
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 重新规划站点管理卡片内的单站点搜索入口
