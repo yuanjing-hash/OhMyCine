@@ -19,7 +19,7 @@ func validateOpenAIBaseURL(raw string) (string, error) {
 		return "", wrapInvalidConfig("base URL too long")
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#") {
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#") {
 		return "", wrapInvalidConfig("base URL must be an HTTPS origin")
 	}
 	if port := parsed.Port(); port != "" && port != "443" {
@@ -28,15 +28,47 @@ func validateOpenAIBaseURL(raw string) (string, error) {
 	if ip := net.ParseIP(strings.TrimSuffix(parsed.Hostname(), ".")); ip != nil && !publicIP(ip) {
 		return "", wrapInvalidConfig("base URL address is not public")
 	}
-	cleanPath := strings.TrimSuffix(parsed.EscapedPath(), "/")
-	if cleanPath != "" && cleanPath != "/v1" {
-		return "", wrapInvalidConfig("base URL path must be empty or /v1")
+	cleanPath, err := normalizeOpenAIBasePath(parsed.EscapedPath())
+	if err != nil {
+		return "", err
 	}
 	parsed.Path = cleanPath
 	parsed.RawPath = ""
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimSuffix(parsed.String(), "/"), nil
+}
+
+// normalizeOpenAIBasePath permits a bounded, unambiguous API prefix such as
+// /v1 or /api/v1. Percent encoding, dot segments and duplicate separators are
+// rejected so validation and the eventual HTTP request cannot interpret the
+// same administrator-supplied URL differently.
+func normalizeOpenAIBasePath(value string) (string, error) {
+	if value == "" || value == "/" {
+		return "", nil
+	}
+	if len(value) > 256 || strings.ContainsAny(value, `%\\`) || strings.Contains(value, "//") || !strings.HasPrefix(value, "/") {
+		return "", wrapInvalidConfig("base URL path is ambiguous")
+	}
+	value = strings.TrimSuffix(value, "/")
+	segments := strings.Split(strings.TrimPrefix(value, "/"), "/")
+	if len(segments) == 0 || len(segments) > 8 {
+		return "", wrapInvalidConfig("base URL path is invalid")
+	}
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." || len(segment) > 64 {
+			return "", wrapInvalidConfig("base URL path is invalid")
+		}
+		for _, character := range segment {
+			if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("-._~", character)) {
+				return "", wrapInvalidConfig("base URL path is invalid")
+			}
+		}
+	}
+	if segments[len(segments)-1] != "v1" {
+		return "", wrapInvalidConfig("base URL path must end in /v1")
+	}
+	return value, nil
 }
 
 func newSafeHTTPClient() *http.Client {
@@ -80,8 +112,10 @@ func publicIP(ip net.IP) bool {
 }
 
 func endpoint(base, path string) string {
+	base = strings.TrimSuffix(base, "/")
+	path = "/" + strings.TrimLeft(path, "/")
 	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
 		return base + strings.TrimPrefix(path, "/v1")
 	}
-	return strings.TrimSuffix(base, "/") + path
+	return base + path
 }

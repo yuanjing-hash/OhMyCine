@@ -51,7 +51,15 @@ func (s *MediaChangeService) RecordTx(tx *gorm.DB, libraryID uint, generation ui
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&library, libraryID).Error; err != nil {
 		return models.MediaLibraryChange{}, err
 	}
-	library.ContentRevision++
+	// Older builds could reset content_revision while retaining outbox rows
+	// when a media library was edited. Derive the next cursor from both sources
+	// so affected databases heal on their next committed change.
+	var lastPersistedRevision uint64
+	if err := tx.Model(&models.MediaLibraryChange{}).Where("library_id = ?", libraryID).
+		Select("COALESCE(MAX(revision), 0)").Scan(&lastPersistedRevision).Error; err != nil {
+		return models.MediaLibraryChange{}, err
+	}
+	library.ContentRevision = max(library.ContentRevision, lastPersistedRevision) + 1
 	if err := tx.Model(&library).Update("content_revision", library.ContentRevision).Error; err != nil {
 		return models.MediaLibraryChange{}, err
 	}

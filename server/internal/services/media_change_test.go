@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +41,88 @@ func TestMediaChangeReadyCommitAdvancesRevisionAndTargets(t *testing.T) {
 	}
 	if err := db.First(&target, target.ID).Error; err != nil || target.DesiredRevision != 1 {
 		t.Fatalf("target desired=%d err=%v", target.DesiredRevision, err)
+	}
+}
+
+func TestMediaChangeRecordTxRepairsRegressedContentRevision(t *testing.T) {
+	management, _, _, library, _ := strmManagementFixture(t)
+	db := management.db
+	changes := NewMediaChangeService(db)
+	var first, repaired models.MediaLibraryChange
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		first, err = changes.RecordTx(tx, library.ID, 1, models.MediaLibraryChangeCatalog, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("content_revision", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		repaired, err = changes.RecordTx(tx, library.ID, 2, models.MediaLibraryChangeMetadata, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != 1 || repaired.Revision != 2 {
+		t.Fatalf("first revision=%d repaired revision=%d", first.Revision, repaired.Revision)
+	}
+	if err := db.First(&library, library.ID).Error; err != nil || library.ContentRevision != 2 {
+		t.Fatalf("library revision=%d err=%v", library.ContentRevision, err)
+	}
+}
+
+func TestMediaChangeRecordTxKeepsConcurrentRevisionsMonotonic(t *testing.T) {
+	management, _, _, library, _ := strmManagementFixture(t)
+	db := management.db
+	changes := NewMediaChangeService(db)
+	const writers = 4
+	start := make(chan struct{})
+	revisions := make(chan uint64, writers)
+	errorsFound := make(chan error, writers)
+	var wait sync.WaitGroup
+	for writer := 0; writer < writers; writer++ {
+		wait.Add(1)
+		go func(generation uint64) {
+			defer wait.Done()
+			<-start
+			var change models.MediaLibraryChange
+			err := db.Transaction(func(tx *gorm.DB) error {
+				var recordErr error
+				change, recordErr = changes.RecordTx(tx, library.ID, generation, models.MediaLibraryChangeCatalog, true)
+				return recordErr
+			})
+			if err != nil {
+				errorsFound <- err
+				return
+			}
+			revisions <- change.Revision
+		}(uint64(writer + 1))
+	}
+	close(start)
+	wait.Wait()
+	close(errorsFound)
+	close(revisions)
+	for err := range errorsFound {
+		t.Fatal(err)
+	}
+	actual := make([]uint64, 0, writers)
+	for revision := range revisions {
+		actual = append(actual, revision)
+	}
+	sort.Slice(actual, func(left, right int) bool { return actual[left] < actual[right] })
+	if len(actual) != writers {
+		t.Fatalf("revisions=%v", actual)
+	}
+	for index, revision := range actual {
+		if revision != uint64(index+1) {
+			t.Fatalf("revisions=%v", actual)
+		}
+	}
+	if err := db.First(&library, library.ID).Error; err != nil || library.ContentRevision != writers {
+		t.Fatalf("library revision=%d err=%v", library.ContentRevision, err)
 	}
 }
 

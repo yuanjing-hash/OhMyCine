@@ -269,7 +269,14 @@ func (s *MediaLibraryService) Update(ctx context.Context, actor Actor, id uint, 
 				return err
 			}
 		}
-		if err := tx.Save(&record).Error; err != nil {
+		// ContentRevision is the monotonic cursor for the durable media-change
+		// outbox. It is not an editable field and may advance while input
+		// validation is running, so omit it instead of writing the stale snapshot
+		// loaded at the beginning of Update.
+		if err := tx.Omit("content_revision").Save(&record).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.MediaLibrary{}).Where("id = ?", id).Select("content_revision").Scan(&record.ContentRevision).Error; err != nil {
 			return err
 		}
 		return s.audit.Record(tx, &actor.User.ID, "media_library.update", "media_library", uintID(id), "success", map[string]any{"storage_id": record.StorageID, "profile_id": record.ProfileID, "relative_root": record.RelativeRoot, "enabled": record.Enabled}, request)
@@ -1300,18 +1307,18 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 	transactionErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var currentLibrary models.MediaLibrary
 		if err := tx.First(&currentLibrary, id).Error; err != nil {
-			return err
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageConfiguration, err)
 		}
 		var currentProfile models.MediaClassificationProfile
 		if err := tx.First(&currentProfile, currentLibrary.ProfileID).Error; err != nil {
-			return err
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageConfiguration, err)
 		}
 		if mediaLibrarySourceChanged(library, currentLibrary) || currentLibrary.ProfileID != profile.ID || currentProfile.Revision != profile.Revision || currentLibrary.DirtyGeneration != library.DirtyGeneration {
-			return errors.New("media library configuration changed during recognition")
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageConfiguration, errMediaLibraryConfigurationChanged)
 		}
 		var existing []models.MediaLibraryEntry
 		if err := tx.Where("library_id = ?", id).Find(&existing).Error; err != nil {
-			return err
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageLoadEntries, err)
 		}
 		byPath := map[string]models.MediaLibraryEntry{}
 		byProvider := map[string]models.MediaLibraryEntry{}
@@ -1324,7 +1331,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		now := time.Now().UTC()
 		var existingAssets []models.MediaLibrarySourceAsset
 		if err := tx.Where("library_id = ?", id).Find(&existingAssets).Error; err != nil {
-			return err
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageSourceAssets, err)
 		}
 		assetsByPath := make(map[string]models.MediaLibrarySourceAsset, len(existingAssets))
 		for _, asset := range existingAssets {
@@ -1339,7 +1346,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			asset.Name, asset.Extension, asset.Size = source.Name, source.Extension, source.Size
 			asset.ModifiedAt, asset.HashHint, asset.Active, asset.UpdatedAt = source.ModifiedAt, source.HashHint, true, now
 			if err := tx.Save(&asset).Error; err != nil {
-				return err
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageSourceAssets, err)
 			}
 			delete(assetsByPath, source.RelativePath)
 		}
@@ -1358,13 +1365,13 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			if errors.Is(findErr, gorm.ErrRecordNotFound) {
 				record = models.MediaLibraryRecognition{LibraryID: id, SourceKey: recognized.Unit.SourceKey, CreatedAt: now}
 			} else if findErr != nil {
-				return findErr
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageRecognition, findErr)
 			} else {
 				recognized.Result = preservePlayerEpisodeMetadata(recognized.Result, record.MetadataJSON, library.MetadataLanguage)
 			}
 			metadataJSON, marshalErr := marshalRecognitionMetadata(recognized.Result)
 			if marshalErr != nil {
-				return marshalErr
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageRecognition, marshalErr)
 			}
 			if recordExisted && mediaRecognitionProjectionChanged(record, recognized.Result, string(metadataJSON), recognized.Manual) {
 				metadataProjectionChanged = true
@@ -1378,7 +1385,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			record.MetadataJSON, record.ManualOverride = metadataJSON, recognized.Manual
 			record.LastGeneration, record.UpdatedAt = generation, now
 			if err := tx.Save(&record).Error; err != nil {
-				return err
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageRecognition, err)
 			}
 			seenRecognitionIDs = append(seenRecognitionIDs, record.ID)
 			projection := recognitionProjection{ID: record.ID, SourceKey: record.SourceKey, Result: recognized.Result, SingleFile: len(recognized.Unit.Files) == 1}
@@ -1440,7 +1447,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 				run.Updated++
 			}
 			if err := tx.Save(&entry).Error; err != nil {
-				return err
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageEntries, err)
 			}
 			delete(byPath, oldPath)
 			delete(byPath, file.RelativePath)
@@ -1452,7 +1459,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			for _, entry := range byPath {
 				run.Removed++
 				if err := tx.Delete(&entry).Error; err != nil {
-					return err
+					return wrapMediaLibraryPersistence(mediaLibraryPersistenceStagePrune, err)
 				}
 			}
 			deleteQuery := tx.Where("library_id = ?", id)
@@ -1460,22 +1467,22 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 				deleteQuery = deleteQuery.Where("id NOT IN ?", seenRecognitionIDs)
 			}
 			if err := deleteQuery.Delete(&models.MediaLibraryRecognition{}).Error; err != nil {
-				return err
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStagePrune, err)
 			}
 			for _, asset := range assetsByPath {
 				if err := tx.Delete(&asset).Error; err != nil {
-					return err
+					return wrapMediaLibraryPersistence(mediaLibraryPersistenceStagePrune, err)
 				}
 			}
 		}
 		updates := map[string]any{"dirty_generation": generation, "baseline_generation": generation, "last_scan_at": finished, "last_successful_scan_at": finished, "profile_revision": profile.Revision, "reclassification_due": false, "status_error_code": "", "next_retry_at": nil}
 		if err := tx.Model(&models.MediaLibrary{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-			return err
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageGeneration, err)
 		}
 		run.Status = "success"
 		run.FinishedAt = &finished
 		if err := tx.Save(&run).Error; err != nil {
-			return err
+			return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageScanRun, err)
 		}
 		if s.changes != nil && !run.Partial && (run.Added > 0 || run.Updated > 0 || run.Removed > 0 || metadataProjectionChanged) {
 			kind := models.MediaLibraryChangeCatalog
@@ -1487,7 +1494,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			requiresArtifacts := mediaLibraryRequiresArtifacts(storage.Type, currentLibrary, s.artifacts != nil)
 			change, err := s.changes.RecordTx(tx, id, generation, kind, !requiresArtifacts)
 			if err != nil {
-				return err
+				return wrapMediaLibraryPersistence(mediaLibraryPersistenceStageChange, err)
 			}
 			committedChange = change
 		}
@@ -1499,8 +1506,9 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		run.ErrorCode = CodeMediaLibraryScanFailed
 		run.FinishedAt = &finished
 		_ = s.db.Save(&run).Error
-		operation.Event(s.log.Error()).Str("error_code", CodeMediaLibraryScanFailed).Uint("library_id", id).Uint("scan_run_id", run.ID).Str("scan_kind", kind).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(operation.Message("结果入库失败"))
-		return run, transactionErr
+		persistenceStage, databaseErrorClass := mediaLibraryPersistenceDiagnostics(transactionErr)
+		operation.Event(s.log.Error()).Str("error_code", CodeMediaLibraryScanFailed).Str("persistence_stage", persistenceStage).Str("database_error_class", databaseErrorClass).Uint("library_id", id).Uint("scan_run_id", run.ID).Uint64("generation", generation).Str("scan_kind", kind).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(operation.Message("结果入库失败"))
+		return run, appError(CodeMediaLibraryScanFailed, "扫描结果提交失败", transactionErr)
 	}
 	if committedChange.State == models.MediaLibraryChangeReady && s.changes != nil {
 		s.changes.NotifyCommitted(committedChange.LibraryID, committedChange.Revision)

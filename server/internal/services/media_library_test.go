@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -193,6 +194,147 @@ func TestMediaLibraryScanUsesSharedTMDBRecognitionAndPersistentCache(t *testing.
 	cleared, err := service.ClearRecognitionOverride(context.Background(), actor, created.ID, page.List[0].Token, RequestContext{})
 	if err != nil || cleared.ManualOverride || cleared.Status != "matched" {
 		t.Fatalf("cleared=%+v err=%v", cleared, err)
+	}
+}
+
+func TestMediaLibraryTenEpisodeScanRepairsRegressedChangeRevision(t *testing.T) {
+	service, db, actor, storage, profile := mediaLibraryTestService(t)
+	changes := NewMediaChangeService(db)
+	service.SetMediaChangeService(changes)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/search/tv":
+			_, _ = response.Write([]byte(`{"results":[{"id":1001,"name":"Example Show","original_name":"Example Show","original_language":"en","genre_ids":[18],"first_air_date":"2024-01-01","origin_country":["US"]}]}`))
+		case "/tv/1001":
+			_, _ = response.Write([]byte(`{"id":1001,"name":"Example Show","original_name":"Example Show","original_language":"en","first_air_date":"2024-01-01","genres":[{"id":18}],"origin_country":["US"],"number_of_seasons":1,"number_of_episodes":10,"seasons":[{"season_number":1,"episode_count":10,"air_date":"2024-01-01"}]}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer upstream.Close()
+	client, err := tmdb.NewForTest("test-token", upstream.URL, upstream.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := NewMetadataSettingsService(db, NewAuditService(db), nil, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "deployment-token"})
+	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) { return client, nil }
+	service.SetMetadataSettingsService(metadata)
+
+	input := testLibraryInput("Ten episode revision repair", storage, profile, false)
+	created, err := service.Create(context.Background(), actor, input, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		_, recordErr := changes.RecordTx(tx, created.ID, 0, models.MediaLibraryChangeCatalog, true)
+		return recordErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the durable state produced by older Update code: an existing
+	// revision-1 outbox row while media_libraries.content_revision was reset.
+	if err := db.Model(&models.MediaLibrary{}).Where("id = ?", created.ID).Update("content_revision", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(storage.RootPath, "Example.Show.S01.2024")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for episode := 1; episode <= 10; episode++ {
+		name := fmt.Sprintf("Example.Show.S01E%02d.1080p.mkv", episode)
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run, err := service.reconcile(context.Background(), created.ID, "event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "success" || run.Added != 10 || run.Matched != 1 || run.Generation != 1 {
+		t.Fatalf("event run=%+v", run)
+	}
+	var entryCount, recognitionCount int64
+	if err := db.Model(&models.MediaLibraryEntry{}).Where("library_id = ?", created.ID).Count(&entryCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.MediaLibraryRecognition{}).Where("library_id = ?", created.ID).Count(&recognitionCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	var library models.MediaLibrary
+	if err := db.First(&library, created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if entryCount != 10 || recognitionCount != 1 || library.DirtyGeneration != 1 || library.BaselineGeneration != 1 || library.ContentRevision != 2 {
+		t.Fatalf("entries=%d recognitions=%d library=%+v", entryCount, recognitionCount, library)
+	}
+
+	input.IncrementalMinutes = 20
+	const callbackName = "test:advance_content_revision_before_library_update"
+	injectedRevisionAdvance := false
+	if err := db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if injectedRevisionAdvance || tx.Statement.Schema == nil || tx.Statement.Schema.Table != "media_libraries" {
+			return
+		}
+		injectedRevisionAdvance = true
+		tx.Exec("UPDATE media_libraries SET content_revision = ? WHERE id = ?", 9, created.ID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(callbackName) })
+	updated, err := service.Update(context.Background(), actor, created.ID, input, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !injectedRevisionAdvance || updated.MediaLibrary.ContentRevision != 9 {
+		t.Fatalf("revision advance injected=%v response revision=%d", injectedRevisionAdvance, updated.MediaLibrary.ContentRevision)
+	}
+	if err := db.First(&library, created.ID).Error; err != nil || library.ContentRevision != 9 {
+		t.Fatalf("updated library revision=%d err=%v", library.ContentRevision, err)
+	}
+}
+
+func TestMediaLibraryPersistenceFailureLogsSafeStageAndRollsBack(t *testing.T) {
+	service, db, actor, storage, profile := mediaLibraryTestService(t)
+	var logs bytes.Buffer
+	service.log = zerolog.New(&logs)
+	const secretTitle = "SECRET-MEDIA-TITLE"
+	if err := os.WriteFile(filepath.Join(storage.RootPath, secretTitle+".mkv"), []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), actor, testLibraryInput("Persistence failure", storage, profile, false), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TRIGGER fail_media_entry_insert BEFORE INSERT ON media_library_entries BEGIN SELECT RAISE(ABORT, 'SECRET SQL path'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	run, err := service.ScanNow(context.Background(), actor, created.ID)
+	if ErrorCode(err) != CodeMediaLibraryScanFailed || run.Status != "failed" {
+		t.Fatalf("run=%+v code=%q err=%v", run, ErrorCode(err), err)
+	}
+	var entries, recognitions int64
+	if err := db.Model(&models.MediaLibraryEntry{}).Where("library_id = ?", created.ID).Count(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.MediaLibraryRecognition{}).Where("library_id = ?", created.ID).Count(&recognitions).Error; err != nil {
+		t.Fatal(err)
+	}
+	var library models.MediaLibrary
+	if err := db.First(&library, created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if entries != 0 || recognitions != 0 || library.DirtyGeneration != 0 || library.BaselineGeneration != 0 {
+		t.Fatalf("partial commit: entries=%d recognitions=%d library=%+v", entries, recognitions, library)
+	}
+	text := logs.String()
+	if !strings.Contains(text, `"persistence_stage":"persist_entries"`) || !strings.Contains(text, `"database_error_class":"constraint"`) {
+		t.Fatalf("missing safe diagnostics: %s", text)
+	}
+	if strings.Contains(text, secretTitle) || strings.Contains(text, "SECRET SQL path") || strings.Contains(text, storage.RootPath) {
+		t.Fatalf("sensitive persistence cause leaked: %s", text)
 	}
 }
 

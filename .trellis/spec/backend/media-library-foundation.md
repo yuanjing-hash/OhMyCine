@@ -410,7 +410,8 @@ atomicWriteArtifact(root, target, rendered)
 
 ```text
 media_libraries.content_revision
-media_library_changes(sequence, library_id, content_revision, kind, state, generation)
+media_library_changes(sequence, library_id, revision, kind, state, generation)
+next content revision = max(media_libraries.content_revision, MAX(media_library_changes.revision)) + 1
 media_server_refresh_targets(desired_revision, successful_revision, manual_generation, successful_manual_generation)
 media_server_refresh_runs(target_id, requested_revision, job_id, status, error_code)
 
@@ -426,6 +427,8 @@ POST /api/v1/media-server-refresh-targets/:id/retry
 ### 3. Contracts
 
 - A complete authoritative reconciliation increments `content_revision` once and writes its change in the same transaction. No-op, failed, partial, superseded, stale-generation, or conflict-waiting work does not publish a ready change.
+- `content_revision` is a database-owned monotonic cursor, not an editable MediaLibrary field. Create/update validation may rebuild an input record, but update SQL must omit this column and read the authoritative value inside the transaction; copying a pre-validation snapshot back can overwrite a revision committed concurrently.
+- Change creation derives its next revision from the larger of the library cursor and the latest persisted change revision. This preserves monotonicity under concurrent writers and self-heals databases written by older builds that reset the library cursor while retaining outbox rows; it must not delete, renumber, or overwrite an existing change.
 - A change that requires STRM/NFO/JPG or cleanup is persisted as pending. The matching current artifact generation and cleanup must succeed before it becomes ready. Manual metadata override uses the same new-generation barrier when sidecars are enabled.
 - Artifact coalescing may finish a newer complete no-op generation that has no change row. That generation carries forward the newest older pending change represented by its completed projection and supersedes only the remaining older pending rows. A matching generation with its own change supersedes all older pending rows. Partial artifact generations never publish or discard pending authoritative changes.
 - Artifact readiness uses one storage-aware predicate across reconciliation and manual-recognition paths: local libraries wait only when local metadata artifacts are enabled; cloud libraries wait only for an enabled signed STRM projection. Cloud metadata-upload policy without STRM must not create a pending change when no artifact producer can satisfy it.
@@ -449,17 +452,24 @@ POST /api/v1/media-server-refresh-targets/:id/retry
 | Desired/manual generation advances while a worker runs | Reconcile the latest generation before terminal success |
 | Player token is revoked or user loses access | Reject/re-filter the next poll; cursor never authorizes access |
 | Player cursor predates retained history | Return `resync_required=true` and a current cursor |
+| MediaLibrary edit overlaps a committed media change | Omit `content_revision` from the edit and return the authoritative post-transaction value; never regress the cursor |
+| Library cursor is lower than an existing outbox revision | Allocate from the persisted maximum plus one in the same transaction; commit one new unique monotonic change |
+| Scan projection persistence fails | Roll back entries, recognitions, generations, scan success and outbox together; log only a stable persistence stage and safe database error class |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: a 115 scan commits catalog state, finishes STRM/sidecar generation and cleanup, then independently refreshes every enabled media-server target and wakes eligible Players.
 - Base: no refresh target is configured; ready changes still reach Player and the administration UI shows a truthful empty state.
-- Bad: emit from downloader completion, put API keys/upstream library IDs in Job payloads, or mark a manual metadata change ready before its replacement sidecars exist.
+- Good: edit a library while another transaction advances its change cursor; the edit response and stored library retain the newest cursor.
+- Base: an older database has library revision zero and outbox revision one; the next scan writes revision two and continues normally without destructive repair.
+- Bad: emit from downloader completion, put API keys/upstream library IDs in Job payloads, mark a manual metadata change ready before its replacement sidecars exist, or persist an editable-record snapshot over `content_revision`.
 
 ### 6. Tests Required
 
 - Migration tests cover fresh/upgrade/repeat application, defaults, indexes, foreign keys, revision zero, and queue policy registration.
 - Media-change tests cover ready/pending/no-op carry-forward/partial/stale/superseded transitions, artifact recovery, manual metadata barrier, latest-per-library retention, and `resync_required`.
+- Regression tests cover MediaLibrary update omission/readback, deterministic edit-versus-change concurrency, legacy regressed-cursor self-healing, concurrent `RecordTx` uniqueness/monotonicity, and a multi-episode scan committing one recognition plus every linked entry.
+- Persistence failure injection asserts the transaction leaves no partial projections/generation/outbox and that runtime logs contain only the stable stage/error class, never SQL, paths, filenames, metadata JSON or provider identity.
 - Refresh tests cover Emby and Jellyfin prefixes/auth/response bounds/redirect rejection, revision-zero manual refresh, atomic create and re-enable catch-up, explicit target test/retry, bounded transient retry, terminal-failure restart suppression, coalescing generation, target isolation, restart recovery, target-referenced connection deletion, deleted targets, and secret-free payloads/DTOs.
 - Router tests use device Bearer, verify revocation/visibility, and assert no path/provider/credential leakage.
 
@@ -469,6 +479,8 @@ Wrong:
 
 ```go
 onDownloadComplete(func() { refreshAllServers(); broadcastToPlayers(entry) })
+editable.ContentRevision = snapshot.ContentRevision
+tx.Save(&editable) // may regress a concurrently advanced cursor
 ```
 
 Correct:
@@ -476,4 +488,8 @@ Correct:
 ```go
 change := recordPendingOrReadyInCatalogTransaction(tx, library, generation)
 afterCommit(func() { wakeReadyConsumers(change.LibraryID) })
+
+tx.Omit("content_revision").Save(&editable)
+next := max(authoritativeLibraryRevision(tx), latestPersistedChangeRevision(tx)) + 1
+tx.Create(&MediaLibraryChange{Revision: next})
 ```

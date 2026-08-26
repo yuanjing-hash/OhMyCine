@@ -63,6 +63,33 @@ func TestOpenAICompatibleModelsAndStructuredSchemaFallback(t *testing.T) {
 	}
 }
 
+func TestOpenRouterPrefixIsUsedForModelsTestAndStructuredGeneration(t *testing.T) {
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		if request.Header.Get("Authorization") != "Bearer fixture-key" {
+			t.Fatalf("authorization header was not applied")
+		}
+		if request.Method == http.MethodGet {
+			return jsonResponse(http.StatusOK, `{"data":[{"id":"fixture/model"}]}`), nil
+		}
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"action\":\"unknown\"}"}}]}`), nil
+	})}
+	provider, err := newWithClient(Config{ProviderType: ProviderOpenAICompatible, BaseURL: "https://openrouter.ai/api/v1/", APIKey: "fixture-key", Model: "fixture/model"}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Test(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.GenerateStructured(context.Background(), StructuredRequest{SystemPrompt: "return JSON", Payload: map[string]string{"title": "fixture"}, SchemaName: "fixture", Schema: map[string]any{"type": "object"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || paths[0] != "/api/v1/models" || paths[1] != "/api/v1/chat/completions" {
+		t.Fatalf("OpenRouter request paths=%v", paths)
+	}
+}
+
 func TestGoogleAIStudioUsesNativeProtocolAndFiltersModels(t *testing.T) {
 	var generated map[string]any
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {

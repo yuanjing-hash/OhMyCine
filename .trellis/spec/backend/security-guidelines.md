@@ -547,13 +547,14 @@ OperationPan115ShareIngest.Event(log.Error()).
 
 - Credential purpose: `settings:ai-recognition:api-key:v1`; reveal uses the existing allowlisted `/api/v1/credentials/reveal` action and never an ordinary settings response.
 - Runtime AI gate: `RuntimeConfig() (Config, enabled, error)` returns before key decryption when disabled.
+- OpenAI-compatible Base URL is a public HTTPS/443 API prefix ending in `/v1`, including origin + `/v1` and bounded prefixes such as `/api/v1`; provider endpoints append `models` or `chat/completions` exactly once.
 - Reorganization preview/confirm/query routes and v50 tables follow the contracts in `downloader-management.md` and `transfer-organization.md`.
 
 ### 3. Contracts
 
 - AI is advisory identity evidence only. It cannot submit downloads, mutate configuration, lock an unverified TMDB ID, choose paths, confirm conflicts, move/delete files or consume a reorganization token.
 - Prompt payloads contain only bounded normalized release text and opt-in relative basenames. Never send absolute paths, Cookie/token/passkey/API key, magnet/torrent URL, provider item ID, Connection/downloader/library identity, signed URLs or upstream bodies.
-- Custom OpenAI-compatible origins use the SSRF-safe client with allowed scheme, DNS/IP policy, redirect/timeout/body limits. Empty query/fragment delimiters are invalid, and this client disables environment proxies so its protected dial resolves and validates the actual configured origin rather than a proxy endpoint. Google native mode ignores custom origins and uses its fixed official API.
+- Custom OpenAI-compatible origins use the SSRF-safe client with allowed scheme, DNS/IP policy, redirect/timeout/body limits. Empty query/fragment delimiters are invalid, and this client disables environment proxies so its protected dial resolves and validates the actual configured origin rather than a proxy endpoint. A non-empty API prefix must use bounded unescaped path segments, end in `/v1`, and reject percent encoding, dot segments, duplicate separators and backslashes. Endpoint joining removes a duplicated leading `/v1` from the resource path only when the validated base already ends in `/v1`. Google native mode ignores custom origins and uses its fixed official API.
 - Reorganization authorization is ownership plus an opaque one-time actor-bound preview token. Database stores only its hash. File authority comes only from active managed-item manifests and revalidated configured roots/stable provider ancestry, never from an AI response or browser-authored path.
 
 ### 4. Validation & Error Matrix
@@ -562,6 +563,8 @@ OperationPan115ShareIngest.Event(log.Error()).
 | --- | --- |
 | AI feature disabled | Return before decrypt/provider/network; deterministic local recognition continues |
 | AI Base URL targets a denied scheme/address or redirects outside policy | Reject configuration/probe/request with safe code; expose no resolved address/body |
+| AI Base URL is `https://host/api/v1/` | Normalize to `https://host/api/v1`; probe `/api/v1/models` and generate at `/api/v1/chat/completions` |
+| AI Base path contains `%`, `..`, `//`, `\\`, too many/long segments, or does not end in `/v1` | Reject as invalid configuration before network access |
 | AI JSON is oversized, malformed, schema-invalid or references unknown candidate | Reject output and use safe deterministic fallback |
 | Preview token is expired/replayed/cross-actor or its bound revisions changed | Reject before any file/provider mutation |
 | Managed path/item no longer proves root ancestry, type and size | Stop at that item, retain identity and all unproven data |
@@ -569,13 +572,15 @@ OperationPan115ShareIngest.Event(log.Error()).
 ### 5. Good / Base / Bad Cases
 
 - Good: AI selects `c2`; Server validates it is in the supplied candidate set, performs `GetByID`, records provisional source, and does no file action.
+- Good: an OpenRouter-compatible `/api/v1` prefix uses the same controlled client and reaches each endpoint without a duplicated `/v1`.
 - Base: AI times out; the queue continues with deterministic provisional/local provisional behavior.
-- Bad: log prompts/responses, send `D:\Downloads\...`, let an LLM return a target path, or scan a corrected title directory to decide what to move.
+- Bad: log prompts/responses, send `D:\Downloads\...`, let an LLM return a target path, scan a corrected title directory to decide what to move, or special-case one provider hostname while accepting ambiguous paths elsewhere.
 
 ### 6. Tests Required
 
 - Assert disabled runtime performs zero decrypt/factory/HTTP calls and explicit admin probe remains separately permissioned/audited.
 - Assert custom-origin SSRF/redirect/timeout/size controls, fixed Google origin, strict response schemas, encrypted storage/reveal allowlist and log redaction.
+- Assert empty-prefix, `/v1` and `/api/v1` models/test/structured-generation request paths, plus rejection of encoded/dotted/duplicate/backslash prefixes without making a request.
 - Assert preview token hash/replay/expiry/actor/revision bindings plus local/115 root/item revalidation and unmanaged-file preservation.
 
 ### 7. Wrong vs Correct
@@ -585,6 +590,7 @@ Wrong:
 ```go
 prompt.Files = absolutePaths
 os.Rename(model.OldPath, model.NewPath)
+requestURL := base + "/v1/chat/completions" // duplicates /v1 for /api/v1 bases
 ```
 
 Correct:
@@ -593,4 +599,7 @@ Correct:
 result := provider.Adjudicate(boundedRelativeEvidence)
 identity := validateCandidateRefAndGetByID(result)
 plan := managedManifestPlanner.Preview(actor, identity)
+
+base := validatePublicHTTPSVersionedPrefix(config.BaseURL)
+requestURL := appendOpenAIResource(base, "/v1/chat/completions")
 ```
