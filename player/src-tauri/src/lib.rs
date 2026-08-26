@@ -13,8 +13,11 @@ use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::danmaku::{danmaku_comments, danmaku_match, danmaku_search};
 use commands::downloads::{
     player_download_cancel, player_download_default_directory, player_download_enqueue,
-    player_download_list, player_download_pick_directory, player_download_retry,
-    player_download_set_default_directory, DownloadQueueState,
+    player_download_list, player_download_offline_asset, player_download_offline_detail,
+    player_download_offline_list, player_download_pause, player_download_pick_directory,
+    player_download_remove, player_download_resolve_local, player_download_resume,
+    player_download_retry, player_download_set_default_directory, player_download_settings,
+    player_download_sync_attachments, player_download_update_settings, DownloadQueueState,
 };
 use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
@@ -109,10 +112,20 @@ pub fn run() {
             player_download_default_directory,
             player_download_set_default_directory,
             player_download_list,
+            player_download_offline_list,
+            player_download_offline_detail,
+            player_download_offline_asset,
+            player_download_sync_attachments,
             player_download_pick_directory,
             player_download_enqueue,
             player_download_cancel,
+            player_download_pause,
+            player_download_resume,
             player_download_retry,
+            player_download_resolve_local,
+            player_download_remove,
+            player_download_settings,
+            player_download_update_settings,
             clouddrive2_list,
             clouddrive2_search,
             clouddrive2_get_stream,

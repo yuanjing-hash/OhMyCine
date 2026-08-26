@@ -95,6 +95,11 @@ async function navigateHistory() {
   await router.push({ name: 'history' })
 }
 
+async function navigateDownloads() {
+  closeSheet()
+  await router.push({ name: 'downloads' })
+}
+
 async function navigateSource(sourceId: string) {
   closeSheet()
   await router.push({ name: 'source', params: { sourceId } })
@@ -326,6 +331,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
                 </span>
                 <strong>观看历史</strong>
                 <small>分页查看本机与在线来源记录</small>
+              </button>
+
+              <button type="button" class="mobile-quick-action" @click="navigateDownloads">
+                <span class="mobile-quick-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16" /></svg>
+                </span>
+                <strong>下载管理</strong>
+                <small>查看进度与离线内容</small>
               </button>
 
               <button type="button" class="mobile-quick-action" @click="handleThemeToggle">

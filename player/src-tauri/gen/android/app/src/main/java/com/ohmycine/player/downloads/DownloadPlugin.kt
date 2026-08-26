@@ -20,6 +20,7 @@ import java.security.MessageDigest
 @InvokeArg class WriteArgs { lateinit var documentUri: String; lateinit var data: String; var truncate: Boolean = false }
 @InvokeArg class ReadArgs { lateinit var rootUri: String; lateinit var path: String; var offset: Long = 0; var length: Int = 0 }
 @InvokeArg class FinalizeArgs { lateinit var partialUri: String; lateinit var destinationName: String }
+@InvokeArg class OwnedDocumentArgs { lateinit var directoryUri: String; lateinit var destinationName: String }
 @InvokeArg class ProgressArgs {
     lateinit var taskId: String
     lateinit var title: String
@@ -117,6 +118,37 @@ class DownloadPlugin(private val activity: Activity) : Plugin(activity) {
         DocumentsContract.renameDocument(activity.contentResolver, partial, targetName)
             ?: error("Android 下载文件完成命名失败。")
         mapOf("completed" to true)
+    }
+
+    @Command fun resolveCompletedDocument(invoke: Invoke) = resolve(invoke) {
+        val args = invoke.parseArgs(OwnedDocumentArgs::class.java)
+        val root = requireReadableTree(args.directoryUri)
+        val document = findChild(root, safeName(args.destinationName))
+        val size = document?.let { documentSize(it) }
+        mapOf(
+            "uri" to document?.toString(),
+            "size" to size,
+            "entityHash" to document?.let { documentEntityHash(it, size ?: 0) },
+        )
+    }
+
+    @Command fun deleteCompletedDocument(invoke: Invoke) = resolve(invoke) {
+        val args = invoke.parseArgs(OwnedDocumentArgs::class.java)
+        val root = requireWritableTree(args.directoryUri)
+        val document = findChild(root, safeName(args.destinationName))
+        if (document != null && !DocumentsContract.deleteDocument(activity.contentResolver, document))
+            error("Android 离线文件删除失败。")
+        mapOf("deleted" to (document != null))
+    }
+
+    @Command fun deletePartialDocument(invoke: Invoke) = resolve(invoke) {
+        val args = invoke.parseArgs(OwnedDocumentArgs::class.java)
+        val root = requireWritableTree(args.directoryUri)
+        val name = ".${safeName(args.destinationName)}.ohmycine-part"
+        val document = findChild(root, name)
+        if (document != null && !DocumentsContract.deleteDocument(activity.contentResolver, document))
+            error("Android 下载临时文件删除失败。")
+        mapOf("deleted" to (document != null))
     }
 
     @Command fun updateForeground(invoke: Invoke) = progress(invoke, false)

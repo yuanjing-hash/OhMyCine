@@ -21,6 +21,7 @@ const sourceIcons: Record<string, string> = {
   115: '1',
   123: '2',
   quark: 'Q',
+  offline: '↓',
 }
 
 function getSourceIcon(type: string) {

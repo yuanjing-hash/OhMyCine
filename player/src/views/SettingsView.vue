@@ -41,7 +41,6 @@ import { createAuthenticatedPan123SetupSource, loginPan123AndCreateConfig, norma
 import { cancelQuarkLogin, createAuthenticatedQuarkSetupSource, normalizeQuarkRootPath, pollQuarkAccountLogin, pollQuarkQrLogin, QUARK_PROVIDER_URL, QuarkDataSource, readQuarkRootPath, saveQuarkCookieAndCreateConfig, startQuarkAccountLogin, startQuarkQrLogin } from '@/services/datasource/quark'
 import { loginServerAndCreateConfig, logoutServerBestEffort } from '@/services/datasource/server'
 import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
-import { getDefaultDownloadDirectory, pickAndroidDownloadDirectory, setDefaultDownloadDirectory } from '@/services/downloads'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
 import {
   loadNavigationShortcutBindings,
@@ -253,9 +252,6 @@ const imageCacheForm = reactive(loadImageCacheSettings())
 const imageCacheStats = ref<ImageCacheStats | null>(null)
 const imageCacheFeedback = ref<{ type: 'success' | 'error', message: string } | null>(null)
 const isSavingImageCache = ref(false)
-const downloadDirectory = ref('')
-const downloadDirectoryFeedback = ref<{ type: 'success' | 'error', message: string } | null>(null)
-const isSavingDownloadDirectory = ref(false)
 const isNativeAndroid = isNativeAndroidRuntime()
 
 const configuredSources = computed(() => store.orderedConfigs)
@@ -526,7 +522,6 @@ onMounted(() => {
   void refreshTmdbCredentialState()
   void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
-  void refreshDownloadDirectory()
   void updaterStore.initialize().then(syncUpdaterForm)
   syncModeFromRoute()
 })
@@ -1737,35 +1732,6 @@ async function chooseLocalRootPath() {
   }
 }
 
-async function refreshDownloadDirectory() {
-  try {
-    downloadDirectory.value = await getDefaultDownloadDirectory()
-  }
-  catch {
-    downloadDirectory.value = ''
-  }
-}
-
-async function chooseDefaultDownloadDirectory() {
-  downloadDirectoryFeedback.value = null
-  try {
-    const selected = isNativeAndroid
-      ? await pickAndroidDownloadDirectory(true)
-      : await open({ directory: true, multiple: false, defaultPath: downloadDirectory.value || undefined })
-    if (typeof selected !== 'string')
-      return
-    isSavingDownloadDirectory.value = true
-    downloadDirectory.value = isNativeAndroid ? selected : await setDefaultDownloadDirectory(selected)
-    downloadDirectoryFeedback.value = { type: 'success', message: '默认下载目录已保存。' }
-  }
-  catch (error) {
-    downloadDirectoryFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '默认下载目录保存失败。') }
-  }
-  finally {
-    isSavingDownloadDirectory.value = false
-  }
-}
-
 async function loadAlistRootBrowser() {
   await loadAlistDirectory('/')
 }
@@ -2526,29 +2492,6 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
       </section>
 
       <section v-else-if="mode === 'diagnostics'" class="space-y-5">
-        <div class="glass-panel rounded-[1.5rem] p-6">
-          <p class="text-xs uppercase tracking-[0.2em] text-white/36">
-            Downloads
-          </p>
-          <h2 class="mt-2 text-xl font-bold text-white">
-            默认下载目录
-          </h2>
-          <p class="mt-2 text-sm leading-6 text-white/48">
-            “下载”使用此目录；“下载到…”只对当前任务生效，不会更改这里的默认值。
-          </p>
-          <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <code class="min-w-0 flex-1 break-all rounded-2xl bg-black/18 px-4 py-3 text-sm text-white/58">{{ downloadDirectory || (isNativeAndroid ? '尚未选择 SAF 下载目录' : '系统 Downloads') }}</code>
-            <button type="button" class="rounded-2xl bg-primary/80 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" :disabled="isSavingDownloadDirectory" @click="chooseDefaultDownloadDirectory()">
-              {{ isSavingDownloadDirectory ? '保存中…' : '选择目录' }}
-            </button>
-          </div>
-          <p v-if="isNativeAndroid" class="mt-3 text-xs leading-5 text-white/42">
-            Android 会持久保存所选 SAF 文档树的读写授权；系统撤销授权或目录不可写时，下载会停止并要求重新选择。
-          </p>
-          <p v-if="downloadDirectoryFeedback" class="mt-3 text-sm" :class="downloadDirectoryFeedback.type === 'success' ? 'text-emerald-200' : 'text-red-200'">
-            {{ downloadDirectoryFeedback.message }}
-          </p>
-        </div>
         <div class="glass-panel rounded-[1.5rem] p-6">
           <div class="flex flex-wrap items-start justify-between gap-4 border-b border-white/8 pb-5">
             <div>

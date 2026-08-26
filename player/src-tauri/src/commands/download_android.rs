@@ -106,6 +106,21 @@ struct FinalizePayload<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct OwnedDocumentPayload<'a> {
+    directory_uri: &'a str,
+    destination_name: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedOwnedDocument {
+    uri: Option<String>,
+    size: Option<u64>,
+    entity_hash: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ProgressPayload<'a> {
     task_id: &'a str,
     title: &'a str,
@@ -233,6 +248,66 @@ pub async fn finalize_document(
             "finalizeDocument",
             FinalizePayload {
                 partial_uri,
+                destination_name,
+            },
+        )
+        .await
+        .map(|_| ())
+}
+
+pub async fn resolve_completed_document(
+    app: &AppHandle,
+    directory_uri: &str,
+    destination_name: &str,
+) -> Result<Option<(String, u64, String)>, String> {
+    let result = state(app)?
+        .run::<ResolvedOwnedDocument>(
+            "resolveCompletedDocument",
+            OwnedDocumentPayload {
+                directory_uri,
+                destination_name,
+            },
+        )
+        .await?;
+    match (result.uri, result.size, result.entity_hash) {
+        (None, None, None) => Ok(None),
+        (Some(uri), Some(size), Some(entity_hash))
+            if entity_hash.len() == 64
+                && entity_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            Ok(Some((uri, size, entity_hash)))
+        }
+        _ => Err("Android 离线文件返回了无效实体信息。".to_string()),
+    }
+}
+
+pub async fn delete_completed_document(
+    app: &AppHandle,
+    directory_uri: &str,
+    destination_name: &str,
+) -> Result<(), String> {
+    state(app)?
+        .run::<serde_json::Value>(
+            "deleteCompletedDocument",
+            OwnedDocumentPayload {
+                directory_uri,
+                destination_name,
+            },
+        )
+        .await
+        .map(|_| ())
+}
+
+pub async fn delete_partial_document(
+    app: &AppHandle,
+    directory_uri: &str,
+    destination_name: &str,
+) -> Result<(), String> {
+    state(app)?
+        .run::<serde_json::Value>(
+            "deletePartialDocument",
+            OwnedDocumentPayload {
+                directory_uri,
                 destination_name,
             },
         )

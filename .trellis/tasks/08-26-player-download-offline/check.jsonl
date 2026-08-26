@@ -1,0 +1,11 @@
+{"file":".trellis/tasks/08-26-player-download-offline/research/current-state.md","reason":"对照真实旧行为确认取消、版本选择、Server/Emby解析和缓存缺口全部关闭"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查typecheck、lint、build、专项脚本和Windows/Android真实运行覆盖"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"检查稳定descriptor、DataSource可选能力、运行时DTO和无敏感字段持久化"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"检查下载/离线store单一真相、事件清理、设置迁移和N+1避免"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"检查下载中心、悬浮入口、移动端操作、徽标可访问性和明暗主题"}
+{"file":".trellis/spec/frontend/danmaku.md","reason":"检查离线弹幕不泄露Provider URL且能在离线播放恢复"}
+{"file":".trellis/spec/frontend/server-online-media.md","reason":"检查Server物理/在线媒体版本身份和Player离线下载不混入Server入库动作"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"检查302刷新、Range、Header剥离、device token和日志脱敏"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"检查可能新增Server端点的鉴权、错误、GET/HEAD/Range响应"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"执行真实端到端302/Range/续传/取消/离线回退验证，捕获层间漂移"}
+{"file":".trellis/tasks/08-26-player-download-offline/research/file-ownership.md","reason":"确认提交不夹带或覆盖并行 Player 任务文件"}

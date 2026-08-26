@@ -93,7 +93,7 @@ function navigateToShortcutTarget(target: NavigationShortcutTarget) {
     return
   }
   const sourceId = target.slice('source:'.length)
-  const source = store.configs.find(config => config.id === sourceId)
+  const source = store.orderedConfigs.find(config => config.id === sourceId)
   if (source && source.enabled !== false)
     void router.push({ name: 'source', params: { sourceId } })
 }

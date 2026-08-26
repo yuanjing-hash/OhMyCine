@@ -5,6 +5,7 @@ import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, moveMediaActionLongPress, openMediaActionContextMenu, openMediaActionMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { getPlaybackProgress, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { useDataSourceStore } from '@/stores/datasource'
+import { useDownloadStore } from '@/stores/downloads'
 import CachedImage from './CachedImage.vue'
 
 const props = defineProps<{
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useDataSourceStore()
+const downloads = useDownloadStore()
 const locallyPlayed = ref(false)
 
 const isMediaItem = computed(() => hasMediaPath(props.item))
@@ -85,6 +87,7 @@ const imageCacheKey = computed(() => artworkCacheKey(
 ))
 const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series' && props.item.type !== 'season')
 const isPlayed = computed(() => hasMediaPath(props.item) && (props.item.played === true || locallyPlayed.value))
+const offlineBadge = computed(() => hasMediaPath(props.item) ? downloads.badgeFor(props.item) : null)
 
 onMounted(() => {
   window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshPlayedState)
@@ -265,6 +268,11 @@ function handleKeydown(event: KeyboardEvent) {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.4 3.4 7.6-8" /></svg>
       </span>
 
+      <span v-if="offlineBadge" class="media-card-downloaded" :aria-label="offlineBadge.label" :title="offlineBadge.label">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10m0 0 4-4m-4 4L8 9M5 19h14" /></svg>
+        <b v-if="offlineBadge.state === 'partial'">{{ offlineBadge.label }}</b>
+      </span>
+
       <button
         v-if="canPlay"
         class="media-card-play absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-2xl transition-all duration-200 hover:scale-110 group-hover:opacity-100"
@@ -399,6 +407,9 @@ function handleKeydown(event: KeyboardEvent) {
 
 .media-card-played { position: absolute; right: .55rem; bottom: .55rem; z-index: 2; display: flex; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; color: #fff; background: rgba(34,197,94,.88); box-shadow: 0 8px 18px rgba(0,0,0,.3); }
 .media-card-played svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.media-card-downloaded { position:absolute; left:.55rem; top:.55rem; z-index:3; display:flex; min-height:1.75rem; align-items:center; gap:.3rem; border:1px solid rgba(255,255,255,.24); border-radius:.65rem; color:#fff; background:rgba(37,99,235,.9); padding:.32rem .45rem; box-shadow:0 8px 18px rgba(0,0,0,.3); }
+.media-card-downloaded svg { width:1rem; height:1rem; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.media-card-downloaded b { font-size:.62rem; line-height:1; }
 
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   .media-card,

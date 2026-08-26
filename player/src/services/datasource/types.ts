@@ -33,6 +33,9 @@ export interface MediaItem {
   workIdentity?: MediaIdentity
   /** Exact playable artifact/version identity when the provider can prove it. */
   exactIdentity?: string
+  /** Original stable history identity for Player-owned offline projections. */
+  offlineOriginSourceId?: string
+  offlineOriginItemId?: string
   /** Alternate provider routes retained when aggregate cards are merged. */
   playbackTargets?: MediaPlaybackTarget[]
   siteActions?: readonly SiteActionDescriptor[]
@@ -217,7 +220,7 @@ export interface AudioTrack {
   isDefault: boolean
 }
 
-export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'server' | '115' | '123' | 'quark' | 'local'
+export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'server' | '115' | '123' | 'quark' | 'local' | 'offline'
 
 export interface DataSourceConfig {
   id: string

@@ -37,6 +37,10 @@ export interface MediaItemActionTarget {
   readonly sourceId: string
   readonly sourceType?: DataSourceType
   readonly itemId: string
+  /** Stable version selected by the user in the detail/player UI. */
+  readonly mediaSourceId?: string
+  /** Stable quality variant selected inside mediaSourceId. */
+  readonly variantId?: string
   readonly libraryId?: string
   readonly mediaType: MediaItem['type']
   readonly played?: boolean

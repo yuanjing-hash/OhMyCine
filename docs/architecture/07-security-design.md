@@ -464,7 +464,17 @@ Server 运行日志在 stdout 与文件分流前执行同一套结构化脱敏�
 - 射手网和迅雷返回的下载 URL 不进入 Vue 状态、设置或日志。Rust 使用有数量和时间上限的短期不透明引用映射，并在下载时再次校验提供器和域名。
 - 所有字幕下载限制响应大小、重定向次数和 `srt/ass/ssa/vtt/sub` 扩展名，拒绝未知压缩包，并写入当前存储模式下按来源和媒体身份哈希隔离的 `cache/subtitles` 子目录。
 
-### 10.5 Player 更新信任根
+### 10.5 Player 下载与离线媒体包边界
+
+- Player 下载任务只持久化稳定的 `sourceId/itemId/mediaSourceId/variantId`、可选 Server 在线作品身份、目标目录引用、受控文件名、字节 checkpoint 和安全状态。临时 URL、302 Location、Authorization、Cookie、API Key、Server device token、Provider Header 与签名参数只允许存在于单次 Rust 解析内存中，禁止进入 SQLite、Tauri 事件、Vue Router、日志和诊断。
+- 下载地址每次从稳定身份重新解析；跨源重定向必须清空 Provider Header，HTTPS 不得降级到 HTTP。续传必须同时证明正确的 `206 Content-Range` 与同一媒体实体（强 ETag，或 Last-Modified + 总大小）；不可信 Range、身份变化或分段覆盖不完整时只删除当前任务精确拥有的 partial/checkpoint 并从零开始。
+- 桌面目标目录在入队、写入、重命名、解析和删除时都重新约束到用户选择的 root，并拒绝 traversal、符号链接、junction 与 Windows reparse point；Android 只在持久 SAF tree grant 内按任务拥有的文档名操作。取消后用户任务立即消失，暂时失败的清理只进入内部 cleanup 表，不得成为可重试下载。
+- 离线包数据库只保存包内受控相对资产路径。海报/背景/still、字幕和弹幕分别执行类型、魔数或 UTF-8/JSON 结构及大小限制；弹幕最多 20 万条。远程附件命令最多接受 32 个 Header、单值 4 KiB、合计 16 KiB，并拒绝 Host、Range、Content-Length、hop-by-hop 和 request-shaping Header。
+- 附件替换必须先把新内容写入同目录临时文件，`sync_all`、原子重命名并成功登记数据库，再清理旧文件。网络、校验或数据库失败不得删除已有完整资产，也不得把完整视频降级为失败。
+- 本地优先播放前由 Rust 重验 root/SAF 所有权、存在性、大小与实体指纹；文件缺失或被同大小替换时删除错误离线事实，并仅在原来源可用时在线回退。离线历史和进度仍使用原来源媒体身份，不使用离线数据库行 ID。
+- Server 在线插件没有用途受限、稳定可重新解析的离线流契约时必须禁用 Player 离线下载；禁止复用只为播放设计的短期 URL 绕过设备令牌、媒体权限或下载限制。
+
+### 10.6 Player 更新信任根
 
 - Player updater 公钥可以提交到仓库和打包进应用；私钥不得提交、打印、写入 Release notes 或普通构建产物。
 - 本地私钥默认位于 `~/.config/ohmycine/updater/ohmycine-updater.key`，权限必须为 `0600`，并在首次正式发布前做离线备份。

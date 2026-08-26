@@ -1,0 +1,15 @@
+{"file":".trellis/tasks/08-26-player-download-offline/research/current-state.md","reason":"现有下载、Server/Emby resolver、取消缺陷、离线缓存缺口和可复用代码锚点"}
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Player/Tauri目录边界、DataSource抽象、原生下载与本地媒体安全约束"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"右侧悬浮入口、下载中心、移动端触控、媒体卡徽标和自适应主题规范"}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Tauri命令与事件订阅、组合式生命周期和跨层错误处理"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Pinia下载/离线索引、SQLite设置、缓存与凭据边界"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"DataSource、MediaDetail、PlaybackRequest、stream variant和运行时校验契约"}
+{"file":".trellis/spec/frontend/danmaku.md","reason":"离线弹幕的Provider边界、规范化格式与播放生命周期"}
+{"file":".trellis/spec/frontend/server-online-media.md","reason":"Server在线插件的稳定媒体身份、版本/清晰度和播放方案边界"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player TypeScript、Rust、Windows和Android验证门禁"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"如需最小Server下载解析契约时的device API、响应与Range规则"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"302、device token、临时URL、凭据脱敏和本地文件边界"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"可选Server契约变更的Go测试和质量门禁"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"下载贯穿Vue、Pinia、Tauri、SQLite、Provider、文件系统与播放解析"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有媒体操作、播放解析、凭据、图片缓存和Provider resolver"}
+{"file":".trellis/tasks/08-26-player-download-offline/research/file-ownership.md","reason":"用户要求与其它 Player 任务严格隔离；按切片领取文件并避让共享 UI/DataSource"}

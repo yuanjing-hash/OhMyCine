@@ -40,6 +40,7 @@ Before changing frontend code or Player design:
 | [Server Admin Web UI](./server-admin-ui.md) | Server console theme, tokens, accessibility, and visual verification | Active |
 | [Danmaku Contract](./danmaku.md) | API, privacy, lifecycle, rendering, and cross-platform controls | Active |
 | [Server Online Media](./server-online-media.md) | Generic online libraries, paged history, progress sync, stream variants, and plugin danmaku priority | Active |
+| [Player Download and Offline Media](./download-offline.md) | Stable download identity, scheduler, offline package, attachment, local-first playback, and deletion contracts | Active |
 
 ---
 

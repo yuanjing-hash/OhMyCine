@@ -25,6 +25,7 @@ import { useMpv } from '@/composables/useMpv'
 import { searchDanmaku } from '@/services/danmaku/client'
 import { resolveDanmakuMediaIdentity } from '@/services/danmaku/identity'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
+import { resolveCompletedDownload } from '@/services/downloads'
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
@@ -827,6 +828,17 @@ async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStre
   const itemId = queryStringValue(route.query.itemId) || context?.itemId || ''
   const locator = context?.locator
 
+  if (sourceId && itemId && sourceId !== 'local-file') {
+    const localDownload = await resolveCompletedDownload({
+      sourceId,
+      itemId,
+      mediaSourceId: currentMediaSourceId(),
+      variantId,
+    }).catch(() => undefined)
+    if (localDownload)
+      return { url: localDownload, mediaSourceId: currentMediaSourceId(), variantId }
+  }
+
   if (locator?.kind === 'localPath' && context?.sourceId === sourceId && context.itemId === itemId)
     return { url: locator.path }
 
@@ -854,14 +866,21 @@ function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'me
     return null
 
   const context = currentPlaybackContext()
-  const sourceId = activeSourceId.value || context?.sourceId || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID
-  const itemId = activeItemId.value || context?.itemId || currentQueueItem.value?.id || ''
+  const playbackItem = currentPlaybackItem()
+  const sourceId = playbackItem?.offlineOriginSourceId || activeSourceId.value || context?.sourceId || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID
+  const itemId = currentOriginItemId()
   const mediaIdentity = itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
 
   if (!sourceId || !mediaIdentity)
     return null
 
   return { sourceId, mediaIdentity }
+}
+
+function currentOriginItemId(): string {
+  const context = currentPlaybackContext()
+  const playbackItem = currentPlaybackItem()
+  return playbackItem?.offlineOriginItemId || activeItemId.value || context?.itemId || currentQueueItem.value?.id || ''
 }
 
 function currentMediaPreferenceIdentity(): MediaPlaybackPreferenceIdentity | null {
@@ -1185,7 +1204,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
 
   const context = currentPlaybackContext()
   const queueItem = currentQueueItem.value
-  const itemId = activeItemId.value || context?.itemId || queueItem?.id || undefined
+  const itemId = currentOriginItemId() || undefined
   const libraryId = activeLibraryId.value || queueItem?.libraryId
   const mediaType = activeMediaType.value ?? queueItem?.type
   const position = effectivePlaybackPosition()

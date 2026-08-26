@@ -18,6 +18,8 @@ export interface PlaybackQueueItem {
   seasonNumber?: number
   episodeNumber?: number
   resumePosition?: number
+  offlineOriginSourceId?: string
+  offlineOriginItemId?: string
 }
 
 export interface PlaybackQueueState {
@@ -89,6 +91,8 @@ export interface PlaybackQueueItemInput {
   seasonNumber?: number
   episodeNumber?: number
   resumePosition?: number
+  offlineOriginSourceId?: string
+  offlineOriginItemId?: string
 }
 
 const MAX_CONTEXTS = 20
@@ -175,6 +179,8 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
     resumePosition: item.resumePosition,
+    offlineOriginSourceId: item.offlineOriginSourceId,
+    offlineOriginItemId: item.offlineOriginItemId,
   })
 }
 
@@ -222,6 +228,8 @@ function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
     resumePosition: item.resumePosition,
+    offlineOriginSourceId: item.offlineOriginSourceId,
+    offlineOriginItemId: item.offlineOriginItemId,
   }
 }
 

@@ -7,6 +7,7 @@ import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSe
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { rememberPlaybackTargetsForItems } from '@/services/datasource/identityMerge'
 import { dataSourceManager } from '@/services/datasource/manager'
+import { OFFLINE_SOURCE_CONFIG } from '@/services/datasource/offline'
 import { logoutServerBestEffort } from '@/services/datasource/server'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
@@ -61,7 +62,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const mediaChangeWatchers = new Map<string, { source: DataSource, stop: () => void }>()
 
   const orderedConfigs = computed(() =>
-    [...configs.value].sort((a, b) => a.order - b.order),
+    [OFFLINE_SOURCE_CONFIG, ...configs.value].sort((a, b) => a.order - b.order),
   )
 
   const activeSource = computed(() =>

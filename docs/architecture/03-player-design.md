@@ -2752,3 +2752,26 @@ Bilibili 是首个真实在线插件，用它验证声明式导航、主页推�
 | 通知 | Windows 通知 | 后续 macOS 通知 | 后续 libnotify | 后台播放媒体通知与系统控制已接入，待真机复验 |
 | 快捷键 | 全局快捷键 | 后续全局快捷键 | 后续全局快捷键 | 触摸手势已接入，待真机验证 |
 | 文件关联 | .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 .mkv/.mp4 等 | 后续 Intent Filter |
+
+## 14. Player 下载管理与完整离线播放
+
+Player 下载是独立本机能力，不等同于 Server 的“下载入库”。媒体详情、剧集和播放上下文统一通过媒体操作系统建立只含 `sourceId + itemId + mediaSourceId + variantId` 等稳定身份的任务；临时播放 URL、302 Location、Authorization、Cookie、API Key、Server device token 和 Provider Header 仅在 Rust 单次解析内存中存在，不进入任务 SQLite、事件、路由或日志。
+
+```text
+MediaAction / 当前版本与静态清晰度
+  → Pinia Download Store / 下载中心
+  → Tauri 常驻调度器
+  → 稳定身份重新解析 → Range/单流传输 → 原子完成
+  → offline_media.sqlite + data/offline/<package>/assets
+  → OfflineDataSource → 本地优先播放 → 在线回退
+```
+
+下载中心提供进行中、已完成、失败和设置分页；同时任务数、单任务桌面分段数与全局限速分别配置。调度器公平领取队列，用户暂停不占槽且重启后保持暂停；进程中断任务按安全 checkpoint 恢复。取消不是失败状态：worker 收敛后删除精确拥有的 partial/segment/task 并从 UI 消失，暂时无法清理的路径只进入内部 cleanup 队列。
+
+桌面仅在总长度、`206 Content-Range` 与实体身份可信时使用随机写分段；其它情况退化为安全单流。续传以强 ETag，或 Last-Modified + 总大小证明同一实体；身份变化、Range 不可信或区间覆盖不完整时只清除当前任务残片并从零开始。跨源重定向清空 Provider Header，HTTPS 不允许降级到 HTTP。Android 通过 SAF 持久树授权写入并保持单流，但复用同一并发、限速、暂停、取消与恢复语义。
+
+视频原子完成并写入离线索引后即为可播放；海报、背景、单集图、外置字幕和 Provider 弹幕保存到不受普通 LRU 影响的包资产目录，并允许独立重试。附件先完整校验并原子登记新文件，再回收旧文件；失败重试不得删除已有有效资产。离线资源的路径为包内受控相对路径，写入、读取和删除都拒绝 traversal、符号链接、junction 与 Windows reparse point 逃逸。
+
+内置 `OfflineDataSource` 使用 `__offline__` 路由身份，在全部远程来源不可用时仍能按作品、季、集展示快照和资产。播放前先按原来源精确媒体版本查询本地文件，由 Rust 复验 root/SAF 所有权、大小与指纹；有效时始终本地优先，缺失或被替换时纠正离线索引并在来源可用时在线回退。离线播放的历史、进度与完成状态仍写回原 `sourceId + itemId`。当前跨 Provider 父剧集稳定 ID 尚未进入公共 `MediaItem`，因此离线剧集层级只在同一来源内按剧名/季号投影，不能把显示标题宣称为全局稳定身份。
+
+Server 物理媒体与 Emby/Jellyfin 可以按稳定 entry/item/media-source 身份重新解析短期地址。Server 在线插件在缺少用途受限、可重复解析的离线流契约时保持禁用，不以播放专用 URL 绕过权限或临时地址边界。

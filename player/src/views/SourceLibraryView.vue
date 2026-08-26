@@ -32,7 +32,7 @@ let unregisterLayoutBackHandler: (() => void) | undefined
 
 const sourceId = computed(() => route.params.sourceId as string)
 const sourceConfig = computed(() =>
-  store.configs.find(c => c.id === sourceId.value),
+  store.orderedConfigs.find(c => c.id === sourceId.value),
 )
 const isSourceDisabled = computed(() => sourceConfig.value?.enabled === false)
 interface BreadcrumbNode {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaPerson, SubtitleTrack } from '@/services/datasource/types'
+import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, MediaPerson, StreamVariant, SubtitleTrack } from '@/services/datasource/types'
 import type { PlaybackQueueInput } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
@@ -8,6 +8,8 @@ import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { describeMediaSource, hasMeaningfulMediaSource } from '@/services/datasource/mediaSourceDisplay'
+import { toOfflineMediaDetail } from '@/services/datasource/offline'
+import { getOfflineDetail } from '@/services/downloads'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
@@ -36,6 +38,10 @@ const isSeriesContentLoading = ref(false)
 const isPlaying = ref(false)
 const isEnqueueingOnlineDownload = ref(false)
 const downloadFeedback = ref<string | null>(null)
+const downloadVariantDialogOpen = ref(false)
+const downloadVariants = ref<StreamVariant[]>([])
+const selectedDownloadVariantId = ref('')
+const isPreparingOfflineDownload = ref(false)
 const errorMessage = ref<string | null>(null)
 const seriesErrorMessage = ref<string | null>(null)
 const isEpisodeSearchOpen = ref(false)
@@ -107,12 +113,68 @@ async function enqueueOnlineDownload() {
   }
 }
 
-function detailActionTarget() {
+function detailActionTarget(variantId?: string) {
   const current = detail.value
   if (!current)
     return null
   const source = store.configs.find(config => config.id === current.sourceId)
-  return createMediaActionTarget({ ...current, played: detailPlayed.value }, source?.type, source?.displayName ?? source?.name)
+  const target = createMediaActionTarget({ ...current, played: detailPlayed.value }, source?.type, source?.displayName ?? source?.name)
+  if (target.kind !== 'media')
+    return target
+  const selected = (current.mediaSources ?? []).find(candidate => candidate.id === selectedMediaSourceId.value)
+    ?? current.mediaSources?.[0]
+  return {
+    ...target,
+    mediaSourceId: selected?.providerMediaSourceId ?? selected?.id,
+    variantId,
+  }
+}
+
+async function openOfflineDownload() {
+  const current = detail.value
+  if (!current || ['series', 'season', 'folder'].includes(current.type) || isPreparingOfflineDownload.value)
+    return
+  isPreparingOfflineDownload.value = true
+  errorMessage.value = null
+  try {
+    const source = await resolveSource()
+    const selected = (current.mediaSources ?? []).find(candidate => candidate.id === selectedMediaSourceId.value)
+      ?? current.mediaSources?.[0]
+    const request = await source.getStreamRequest?.({
+      itemId: selected?.itemId ?? current.id,
+      mediaSourceId: selected?.providerMediaSourceId ?? selected?.id,
+    })
+    const variants = (request?.variants ?? []).filter(variant => variant.available)
+    if (variants.length > 1) {
+      downloadVariants.value = variants
+      selectedDownloadVariantId.value = request?.variantId && variants.some(item => item.id === request.variantId)
+        ? request.variantId
+        : variants[0].id
+      downloadVariantDialogOpen.value = true
+      return
+    }
+    await submitOfflineDownload(request?.variantId ?? variants[0]?.id)
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, '无法准备离线下载。')
+  }
+  finally {
+    isPreparingOfflineDownload.value = false
+  }
+}
+
+async function submitOfflineDownload(variantId?: string) {
+  const target = detailActionTarget(variantId)
+  if (!target)
+    return
+  const outcome = await getMediaActionController().execute(target, 'download')
+  if (outcome.status === 'completed') {
+    downloadVariantDialogOpen.value = false
+    downloadFeedback.value = variantId ? '已按所选清晰度加入 Player 离线下载队列。' : '已加入 Player 离线下载队列。'
+  }
+  else if (outcome.message) {
+    errorMessage.value = outcome.message
+  }
 }
 
 function beginDetailActionLongPress(event: PointerEvent) {
@@ -143,6 +205,11 @@ const visibleTitleLogoUrl = computed(() => {
 })
 const isSeriesDetail = computed(() => detail.value?.type === 'series')
 const isPlayableDetail = computed(() => detail.value != null && !['series', 'season', 'folder'].includes(detail.value.type))
+const canStartOfflineDownload = computed(() => {
+  const current = detail.value
+  const sourceType = store.configs.find(config => config.id === current?.sourceId)?.type
+  return Boolean(isPlayableDetail.value && sourceType && sourceType !== 'offline' && sourceType !== '115')
+})
 const mediaSources = computed(() => detail.value?.mediaSources ?? [])
 const visibleMediaSources = computed(() => isSeriesDetail.value ? [] : mediaSources.value.filter(hasMeaningfulMediaSource))
 const selectedMediaSource = computed(() => visibleMediaSources.value.find(source => source.id === selectedMediaSourceId.value) ?? visibleMediaSources.value[0])
@@ -319,6 +386,15 @@ async function loadDetail() {
       await refreshPlaybackProgress([nextDetail])
   }
   catch (error) {
+    const offline = await getOfflineDetail(sourceId.value, itemId.value).catch(() => undefined)
+    if (offline) {
+      const offlineDetail = await toOfflineMediaDetail(offline)
+      detail.value = offlineDetail
+      selectedMediaSourceId.value = offlineDetail.mediaSources?.[0]?.id ?? ''
+      await refreshPlaybackProgress([offlineDetail])
+      errorMessage.value = null
+      return
+    }
     errorMessage.value = toSafeErrorMessage(error, '媒体详情加载失败。')
   }
   finally {
@@ -964,6 +1040,9 @@ function markTitleLogoFailed(url: string) {
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z" /></svg>
                 {{ primaryPlayLabel }}
               </button>
+              <button v-if="canStartOfflineDownload" type="button" class="rounded-full border border-white/16 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/16 disabled:opacity-50" :disabled="isPreparingOfflineDownload" @click="openOfflineDownload">
+                {{ isPreparingOfflineDownload ? '正在读取清晰度…' : '离线下载' }}
+              </button>
               <button
                 v-if="canEnqueueOnlineDownload"
                 type="button"
@@ -1348,6 +1427,31 @@ function markTitleLogoFailed(url: string) {
         </section>
       </main>
     </template>
+
+    <div v-if="downloadVariantDialogOpen" class="fixed inset-0 z-[1250] flex items-center justify-center bg-black/65 p-5 backdrop-blur-md" role="presentation" @pointerdown.self="downloadVariantDialogOpen = false">
+      <section class="w-full max-w-lg rounded-3xl border border-white/14 bg-[#111]/95 p-6 text-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="download-quality-title">
+        <h2 id="download-quality-title" class="text-xl font-bold">
+          选择离线下载清晰度
+        </h2>
+        <p class="mt-2 text-sm leading-6 text-white/55">
+          这里只列出来源明确提供的静态版本，不会创建转码清晰度。
+        </p>
+        <div class="mt-5 space-y-2">
+          <label v-for="variant in downloadVariants" :key="variant.id" class="flex cursor-pointer items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 hover:bg-white/10">
+            <span><b class="block text-sm">{{ variant.label }}</b><small class="mt-1 block text-xs text-white/45">{{ variant.width && variant.height ? `${variant.width}×${variant.height}` : '来源提供' }}<template v-if="variant.bitrate"> · {{ Math.round(variant.bitrate / 1000) }} Kbps</template></small></span>
+            <input v-model="selectedDownloadVariantId" type="radio" name="download-quality" :value="variant.id">
+          </label>
+        </div>
+        <div class="mt-6 flex justify-end gap-3">
+          <button type="button" class="rounded-xl bg-white/8 px-4 py-2.5 text-sm text-white/65" @click="downloadVariantDialogOpen = false">
+            取消
+          </button>
+          <button type="button" class="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white" @click="submitOfflineDownload(selectedDownloadVariantId)">
+            确认下载
+          </button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 

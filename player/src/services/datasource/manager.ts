@@ -7,6 +7,7 @@ import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
 import { forgetPlaybackTargetsForSource, prunePlaybackTargets } from './identityMerge'
 import { LocalFileDataSource } from './local'
+import { OFFLINE_SOURCE_CONFIG, OfflineDataSource } from './offline'
 import { Pan123DataSource } from './pan123'
 import { QuarkDataSource } from './quark'
 import { searchAcrossDataSources } from './searchAggregation'
@@ -18,7 +19,10 @@ export class DataSourceManager {
   private readonly configSignatures = new Map<string, string>()
 
   async syncConfigs(configs: readonly DataSourceConfig[]): Promise<void> {
-    const enabledConfigs = configs.filter(config => config.enabled !== false)
+    const enabledConfigs = [
+      OFFLINE_SOURCE_CONFIG,
+      ...configs.filter(config => config.type !== 'offline' && config.enabled !== false),
+    ]
     const nextIds = new Set(enabledConfigs.map(config => config.id))
     configureOhMyCineServerOrigins(enabledConfigs.filter(config => config.type === 'server').map(config => config.url))
     prunePlaybackTargets(nextIds)
@@ -140,6 +144,8 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new LocalFileDataSource()
     case 'server':
       return new ServerDataSource()
+    case 'offline':
+      return new OfflineDataSource()
     default:
       throw new Error(`${type} data source is not implemented yet.`)
   }
