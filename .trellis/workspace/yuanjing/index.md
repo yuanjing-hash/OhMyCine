@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
-- **Last Active**: 2026-08-25
+- **Total Sessions**: 28
+- **Last Active**: 2026-08-26
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~727 | Active |
+| `journal-1.md` | ~766 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-08-26 | 完成媒体入库通知闭环 | `f9496d8`, `f23b055`, `6a2bf5b` | `develop` |
 | 27 | 2026-08-25 | 同步双端媒体识别 v10 并准备 Beta | `0c565df`, `78497a3`, `edce279` | `develop` |
 | 26 | 2026-08-24 | 发布 Player 下一代多语言识别器 Beta | `8b7c56ad9a5f988be5c87a72e0f79a3163e0f270` | `codex/player-nextgen-media-recognition-beta` |
 | 25 | 2026-08-24 | 修复分类封面候选与少海报构图 | `d7b9a68` | `develop` |

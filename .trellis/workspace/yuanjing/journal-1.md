@@ -725,3 +725,42 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 28: 完成媒体入库通知闭环
+
+**Date**: 2026-08-26
+**Task**: 完成媒体入库通知闭环
+**Branch**: `develop`
+
+### Summary
+
+补齐权威媒体变更、Emby/Jellyfin 持久刷新、Player 安全增量收敛，并完成跨端回归与安全检查。
+
+### Main Changes
+
+- 修复 artifact readiness、刷新目标恢复重试与管理操作
+- 实现 Player 多设备安全长轮询和媒体库级无干扰刷新
+- 补齐本地 watcher 与 fake 115 双消费者闭环回归
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f9496d8` | (see git log) |
+| `f23b055` | (see git log) |
+| `6a2bf5b` | (see git log) |
+
+### Testing
+
+- [OK] Server 全量测试、vet、普通与 WebUI 构建通过
+- [OK] WebUI 133 项测试及 Player 验证、类型检查、Lint、构建通过
+- [OK] Rust 92 项测试和 Clippy -D warnings 通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 在真实 115、qBittorrent、Emby/Jellyfin 与多台 Player 环境执行操作员联调
