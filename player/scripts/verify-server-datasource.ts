@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { getAppSetting, setAppSetting } from '../src/services/appSettings.ts'
 import { readServerCredential, removeCredential } from '../src/services/datasource/credentialStore.ts'
 import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrustedOhMyCineArtifactIdentity, namesByPersonType } from '../src/services/datasource/emby.ts'
 import { forgetPlaybackTargetsForSource, mergeMediaItemsByIdentity, prunePlaybackTargets, rememberPlaybackTargetsForItems } from '../src/services/datasource/identityMerge.ts'
@@ -76,6 +77,20 @@ assert.equal(libraries[0].artworkSource, 'fallback')
 assert.equal(libraries[0].artworkCandidates, undefined)
 assert.equal(libraries[0].itemCount, 101)
 assert.equal(libraries[1].backdropUrl, undefined)
+const partialLibrarySource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      if (request.path === '/api/v1/player/media-libraries')
+        return { status: 503, body: { code: 'UPSTREAM_UNAVAILABLE', message: 'physical catalog unavailable', data: {} } }
+      return { status: 200, body: { code: 0, message: 'success', data: { list: [], total: 0 } } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await partialLibrarySource.init({ id: 'server-partial-library', type: 'server', name: '部分可用', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-partial-library-credential', deviceId: 'device-partial-library' } })
+assert.deepEqual(await partialLibrarySource.listLibraries(), [])
+await assert.rejects(partialLibrarySource.listLibrariesForMediaChangeRefresh(), /physical catalog unavailable/)
+partialLibrarySource.destroy()
 const categories = await source.list('9')
 assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '外语电影']])
 assert.equal(categories[0].posterUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
@@ -148,7 +163,7 @@ const changeSource = new ServerDataSource({
   bridge: {
     async request(request) {
       changeCalls.push(request.path)
-      return { status: 200, body: { code: 0, message: 'success', data: { cursor: '8', resync_required: false, changes: [{ library_id: 9, revision: 3, kind: 'catalog' }] } } }
+      return { status: 200, body: { code: 0, message: 'success', data: { cursor: '8', resync_required: false, changes: [{ library_id: 9, content_revision: 3, kind: 'catalog', changed_at: '2026-08-26T00:00:00Z' }] } } }
     },
   },
   readCredential: async () => ({ accessToken: token }),
@@ -161,9 +176,114 @@ const observedChange = await new Promise<{ sourceId: string, libraryIds: string[
     resolve(change)
   })
 })
-assert.deepEqual(observedChange, { sourceId: 'server-change', libraryIds: ['9'], resyncRequired: false })
+assert.deepEqual(observedChange, { sourceId: 'server-change', libraryIds: ['9'], libraryRevisions: { 9: 3 }, resyncRequired: false })
 assert.match(changeCalls[0] ?? '', /\/api\/v1\/player\/media-changes\?cursor=0&wait_seconds=12/)
 changeSource.destroy()
+
+let unsupportedCalls = 0
+const unsupportedCursorKey = `ohmycine:server-media-change-cursor:server-unsupported:${encodeURIComponent('http://127.0.0.1:3000')}`
+await setAppSetting(unsupportedCursorKey, '18446744073709551616')
+const unsupportedSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      unsupportedCalls += 1
+      assert.match(request.path, /cursor=0&wait_seconds=12/)
+      return { status: 404, body: { code: 'NOT_FOUND', message: 'endpoint unavailable', data: {} } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await unsupportedSource.init({ id: 'server-unsupported', type: 'server', name: '旧版 Server', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-unsupported-credential', deviceId: 'device-unsupported' } })
+const stopUnsupportedWatch = unsupportedSource.watchMediaChanges(() => assert.fail('unsupported Server emitted a media change'))
+await delay(40)
+assert.equal(unsupportedCalls, 1)
+await delay(300)
+assert.equal(unsupportedCalls, 1)
+stopUnsupportedWatch()
+unsupportedSource.destroy()
+
+let invalidPageCalls = 0
+const invalidPageSource = new ServerDataSource({
+  bridge: {
+    async request() {
+      invalidPageCalls += 1
+      return { status: 200, body: { code: 0, message: 'success', data: { cursor: '1', resync_required: false, changes: [{ library_id: 9, content_revision: 4, kind: 'metadata', changed_at: 'not-a-time' }] } } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await invalidPageSource.init({ id: 'server-invalid-page', type: 'server', name: '无效响应', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-invalid-page-credential', deviceId: 'device-invalid-page' } })
+const stopInvalidPageWatch = invalidPageSource.watchMediaChanges(() => assert.fail('invalid response emitted a media change'))
+await delay(350)
+assert.equal(invalidPageCalls, 1)
+stopInvalidPageWatch()
+invalidPageSource.destroy()
+
+const resyncSourceId = 'server-resync'
+const resyncCursorKey = `ohmycine:server-media-change-cursor:${resyncSourceId}:${encodeURIComponent('http://127.0.0.1:3000')}`
+await setAppSetting(resyncCursorKey, '8')
+let resyncCalls = 0
+const resyncSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      resyncCalls += 1
+      if (resyncCalls === 1) {
+        assert.match(request.path, /cursor=8&wait_seconds=12/)
+        return { status: 200, body: { code: 0, message: 'success', data: { cursor: '2', resync_required: true, changes: [] } } }
+      }
+      return { status: 404, body: { code: 'NOT_FOUND', message: 'endpoint unavailable', data: {} } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await resyncSource.init({ id: resyncSourceId, type: 'server', name: '重同步', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-resync-credential', deviceId: 'device-resync' } })
+const observedResync = await new Promise<{ resyncRequired: boolean }>((resolve) => {
+  resyncSource.watchMediaChanges(resolve)
+})
+assert.equal(observedResync.resyncRequired, true)
+await delay(40)
+assert.equal(getAppSetting(resyncCursorKey), '2')
+assert.equal(resyncCalls, 2)
+resyncSource.destroy()
+
+const staleCursorSourceId = 'server-stale-cursor'
+const staleCursorKey = `ohmycine:server-media-change-cursor:${staleCursorSourceId}:${encodeURIComponent('http://127.0.0.1:3000')}`
+await setAppSetting(staleCursorKey, '8')
+let staleCursorCalls = 0
+const staleCursorSource = new ServerDataSource({
+  bridge: {
+    async request() {
+      staleCursorCalls += 1
+      return { status: 200, body: { code: 0, message: 'success', data: { cursor: '7', resync_required: false, changes: [] } } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await staleCursorSource.init({ id: staleCursorSourceId, type: 'server', name: '游标回退', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-stale-cursor-credential', deviceId: 'device-stale-cursor' } })
+const stopStaleCursorWatch = staleCursorSource.watchMediaChanges(() => assert.fail('stale cursor emitted a media change'))
+await delay(350)
+assert.equal(staleCursorCalls, 1)
+assert.equal(getAppSetting(staleCursorKey), '8')
+stopStaleCursorWatch()
+staleCursorSource.destroy()
+
+let revokedCalls = 0
+const revokedSource = new ServerDataSource({
+  bridge: {
+    async request() {
+      revokedCalls += 1
+      return { status: 401, body: { code: 'NOT_AUTHENTICATED', message: 'device revoked', data: {} } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await revokedSource.init({ id: 'server-revoked', type: 'server', name: '凭据撤销', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'server-revoked-credential', deviceId: 'device-revoked' } })
+const stopRevokedWatch = revokedSource.watchMediaChanges(() => assert.fail('revoked source emitted a media change'))
+await delay(40)
+assert.equal(revokedCalls, 1)
+assert.equal(revokedSource.isConnected, false)
+stopRevokedWatch()
+revokedSource.destroy()
 
 const logoutCalls: Array<{ path: string, accessToken?: string }> = []
 await logoutServerBestEffort(source.exportConfig(), {
@@ -371,4 +491,8 @@ function noPlayableItem() {
     id: 'movie-no-playable',
     title: '无可播放版本',
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
 }

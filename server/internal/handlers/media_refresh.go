@@ -12,12 +12,17 @@ import (
 )
 
 func (a *API) PlayerMediaChanges(c *gin.Context) {
-	actor := mustActor(c)
-	if !actor.Can(authz.PermissionMediaLibrariesRead) {
+	initialActor := mustActor(c)
+	if !initialActor.Can(authz.PermissionMediaLibrariesRead) {
 		writeError(c, a.log, &services.AppError{Code: services.CodePermissionDenied, Message: "无权查看媒体库变更"})
 		return
 	}
-	cursor, err := strconv.ParseUint(c.DefaultQuery("cursor", "0"), 10, 64)
+	cursorValue := c.DefaultQuery("cursor", "0")
+	if len(cursorValue) == 0 || len(cursorValue) > 20 {
+		writeError(c, a.log, invalid("媒体变更游标无效", nil))
+		return
+	}
+	cursor, err := strconv.ParseUint(cursorValue, 10, 64)
 	if err != nil {
 		writeError(c, a.log, invalid("媒体变更游标无效", err))
 		return
@@ -27,6 +32,9 @@ func (a *API) PlayerMediaChanges(c *gin.Context) {
 		writeError(c, a.log, invalid("媒体变更等待时间无效", err))
 		return
 	}
+	// Subscribe before reading SQLite. If a commit races with the initial read,
+	// either the read observes it or this generation channel is closed.
+	wakeup := a.mediaChanges.Wakeups()
 	page, err := a.mediaChanges.ReadyAfter(cursor, 256)
 	if err != nil {
 		writeError(c, a.log, err)
@@ -38,7 +46,7 @@ func (a *API) PlayerMediaChanges(c *gin.Context) {
 		select {
 		case <-c.Request.Context().Done():
 			return
-		case <-a.mediaChanges.Wakeups():
+		case <-wakeup:
 		case <-timer.C:
 		}
 		page, err = a.mediaChanges.ReadyAfter(cursor, 256)
@@ -47,13 +55,37 @@ func (a *API) PlayerMediaChanges(c *gin.Context) {
 			return
 		}
 	}
+	// A long poll can span device revocation, password reset, user disablement,
+	// role changes, or media-library disablement. Never answer from the actor
+	// snapshot installed by middleware before the wait.
+	actor, _, err := a.auth.AuthenticateDevice(middleware.DeviceTokenFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	if !actor.Can(authz.PermissionMediaLibrariesRead) {
+		writeError(c, a.log, &services.AppError{Code: services.CodePermissionDenied, Message: "无权查看媒体库变更"})
+		return
+	}
+	visibleLibraries, err := a.libraries.PlayerLibraries(actor)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	visible := make(map[uint]struct{}, len(visibleLibraries))
+	for _, library := range visibleLibraries {
+		visible[library.ID] = struct{}{}
+	}
 	next := page.LatestSequence
 	if len(page.Changes) > 0 {
 		next = page.Changes[len(page.Changes)-1].Sequence
 	}
 	items := make([]gin.H, 0, len(page.Changes))
 	for _, change := range page.Changes {
-		items = append(items, gin.H{"library_id": change.LibraryID, "revision": change.Revision, "kind": change.Kind})
+		if _, ok := visible[change.LibraryID]; !ok {
+			continue
+		}
+		items = append(items, gin.H{"library_id": change.LibraryID, "content_revision": change.Revision, "kind": change.Kind, "changed_at": change.ReadyAt})
 	}
 	success(c, http.StatusOK, gin.H{"cursor": strconv.FormatUint(next, 10), "resync_required": page.ResyncRequired, "changes": items})
 }

@@ -182,6 +182,7 @@ function handleKeydown(event: KeyboardEvent) {
     class="media-card group overflow-hidden rounded-[1.4rem] border transition-all duration-300"
     :class="[cardClass, disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:-translate-y-1 hover:border-white/24']"
     data-media-action-target
+    :data-media-card-id="item.id"
     :tabindex="disabled ? -1 : 0"
     @pointerdown="handlePointerDown"
     @pointermove="handlePointerMove"

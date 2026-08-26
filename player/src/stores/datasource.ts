@@ -20,6 +20,15 @@ const DISPLAY_CACHE_KEY = 'ohmycine-media-display-cache-v1'
 const HOME_CACHE_TTL_MS = 5 * 60 * 1000
 const SOURCE_ROOT_CACHE_TTL_MS = 5 * 60 * 1000
 
+export interface PendingServerMediaUpdate {
+  sourceId: string
+  libraryIds: string[]
+  libraryRevisions: Record<string, number>
+  resyncRequired: boolean
+  resyncVersion: number
+  version: number
+}
+
 export interface SourceRootSnapshot {
   libraries: MediaLibrary[]
   homeSections: HomeSection[]
@@ -45,9 +54,10 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const sourceRootSnapshots = ref<Record<string, SourceRootSnapshot>>({})
   const isLoading = ref(false)
   const lastError = ref<string | null>(null)
-  const pendingServerUpdateSourceIds = ref<string[]>([])
+  const pendingServerUpdates = ref<Record<string, PendingServerMediaUpdate>>({})
   let homeLoadId = 0
   let displayCacheHydrated = false
+  let serverHomeRefreshTimer: ReturnType<typeof setTimeout> | undefined
   const mediaChangeWatchers = new Map<string, { source: DataSource, stop: () => void }>()
 
   const orderedConfigs = computed(() =>
@@ -58,7 +68,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     configs.value.find(c => c.id === activeSourceId.value) ?? null,
   )
 
-  const hasServerLibraryUpdates = computed(() => pendingServerUpdateSourceIds.value.length > 0)
+  const hasServerLibraryUpdates = computed(() => Object.keys(pendingServerUpdates.value).length > 0)
 
   function loadConfigs() {
     hydrateDisplayCache()
@@ -125,6 +135,10 @@ export const useDataSourceStore = defineStore('datasource', () => {
         mediaChangeWatchers.delete(sourceId)
       }
     }
+    for (const sourceId of Object.keys(pendingServerUpdates.value)) {
+      if (!activeServerIds.has(sourceId))
+        removePendingServerUpdate(sourceId)
+    }
     for (const sourceId of activeServerIds) {
       const source = dataSourceManager.getSource(sourceId)
       if (!source?.watchMediaChanges || mediaChangeWatchers.has(sourceId))
@@ -134,26 +148,84 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function handleServerMediaChange(change: DataSourceMediaChange) {
-    if (!pendingServerUpdateSourceIds.value.includes(change.sourceId))
-      pendingServerUpdateSourceIds.value = [...pendingServerUpdateSourceIds.value, change.sourceId]
+    const previous = pendingServerUpdates.value[change.sourceId]
+    const version = (previous?.version ?? 0) + 1
+    const libraryRevisions = { ...(previous?.libraryRevisions ?? {}) }
+    for (const [libraryId, revision] of Object.entries(change.libraryRevisions))
+      libraryRevisions[libraryId] = Math.max(libraryRevisions[libraryId] ?? 0, revision)
+    const update: PendingServerMediaUpdate = {
+      sourceId: change.sourceId,
+      libraryIds: Object.keys(libraryRevisions),
+      libraryRevisions,
+      resyncRequired: Boolean(previous?.resyncRequired || change.resyncRequired),
+      resyncVersion: change.resyncRequired ? version : (previous?.resyncVersion ?? 0),
+      version,
+    }
+    pendingServerUpdates.value = { ...pendingServerUpdates.value, [change.sourceId]: update }
     dataSourceManager.clearSourceCache(change.sourceId)
     invalidateSourceRootSnapshot(change.sourceId)
     invalidateHomeCache()
-    void loadHomeSections({ force: true, background: true })
+    scheduleServerHomeRefresh()
+    dispatchServerLibraryRefresh(update)
   }
 
-  function applyServerLibraryUpdates() {
-    const sourceIds = pendingServerUpdateSourceIds.value
-    if (sourceIds.length === 0)
+  function scheduleServerHomeRefresh() {
+    if (serverHomeRefreshTimer != null)
       return
-    pendingServerUpdateSourceIds.value = []
-    dispatchServerLibraryRefresh(sourceIds)
+    serverHomeRefreshTimer = globalThis.setTimeout(() => {
+      serverHomeRefreshTimer = undefined
+      void loadHomeSections({ force: true, background: true })
+    }, 120)
+  }
+
+  function getPendingServerUpdate(sourceId: string): PendingServerMediaUpdate | null {
+    const update = pendingServerUpdates.value[sourceId]
+    return update ? clonePendingServerUpdate(update) : null
+  }
+
+  function acknowledgeServerUpdate(snapshot: PendingServerMediaUpdate, libraryIds?: readonly string[]) {
+    const current = pendingServerUpdates.value[snapshot.sourceId]
+    if (!current)
+      return
+    const remainingRevisions = { ...current.libraryRevisions }
+    const consumedLibraryIds = libraryIds ?? snapshot.libraryIds
+    for (const libraryId of consumedLibraryIds) {
+      const consumedRevision = snapshot.libraryRevisions[libraryId]
+      if (consumedRevision != null && (remainingRevisions[libraryId] ?? 0) <= consumedRevision)
+        delete remainingRevisions[libraryId]
+    }
+    const resyncRequired = current.resyncRequired && !(snapshot.resyncRequired && current.resyncVersion <= snapshot.version)
+    if (!resyncRequired && Object.keys(remainingRevisions).length === 0) {
+      removePendingServerUpdate(snapshot.sourceId)
+      return
+    }
+    pendingServerUpdates.value = {
+      ...pendingServerUpdates.value,
+      [snapshot.sourceId]: {
+        ...current,
+        libraryIds: Object.keys(remainingRevisions),
+        libraryRevisions: remainingRevisions,
+        resyncRequired,
+      },
+    }
+  }
+
+  function removePendingServerUpdate(sourceId: string) {
+    if (!pendingServerUpdates.value[sourceId])
+      return
+    const next = { ...pendingServerUpdates.value }
+    delete next[sourceId]
+    pendingServerUpdates.value = next
   }
 
   function stopMediaChangeWatchers() {
     for (const watcher of mediaChangeWatchers.values())
       watcher.stop()
     mediaChangeWatchers.clear()
+    if (serverHomeRefreshTimer != null) {
+      globalThis.clearTimeout(serverHomeRefreshTimer)
+      serverHomeRefreshTimer = undefined
+    }
   }
 
   async function addConfig(config: Omit<DataSourceConfig, 'id' | 'order'> & Partial<Pick<DataSourceConfig, 'id' | 'order'>>) {
@@ -214,7 +286,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
       await logoutServerBestEffort(config)
     mediaChangeWatchers.get(id)?.stop()
     mediaChangeWatchers.delete(id)
-    pendingServerUpdateSourceIds.value = pendingServerUpdateSourceIds.value.filter(sourceId => sourceId !== id)
+    removePendingServerUpdate(id)
     dataSourceManager.removeSource(id)
     invalidateSourceRootSnapshot(id)
     invalidateHomeCache()
@@ -474,7 +546,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     isLoading,
     lastError,
     hasServerLibraryUpdates,
-    pendingServerUpdateSourceIds,
+    pendingServerUpdates,
     loadConfigs,
     addConfig,
     replaceConfig,
@@ -494,10 +566,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
     searchAllSources,
     getSource,
     syncManager,
-    applyServerLibraryUpdates,
+    getPendingServerUpdate,
+    acknowledgeServerUpdate,
     stopMediaChangeWatchers,
   }
 })
+
+function clonePendingServerUpdate(update: PendingServerMediaUpdate): PendingServerMediaUpdate {
+  return {
+    ...update,
+    libraryIds: [...update.libraryIds],
+    libraryRevisions: { ...update.libraryRevisions },
+  }
+}
 
 function sanitizePersistedDisplayCache(value: unknown): PersistedDisplayCache {
   if (!isRecord(value))

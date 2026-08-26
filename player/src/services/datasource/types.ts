@@ -354,6 +354,8 @@ export interface DataSource {
 
   list: (path?: string) => Promise<MediaItem[]>
   listLibraries?: () => Promise<MediaLibrary[]>
+  /** Server change acknowledgement may require a stricter physical-library read than normal partial-failure browsing. */
+  listLibrariesForMediaChangeRefresh?: () => Promise<MediaLibrary[]>
   getHomeSections?: () => Promise<HomeSection[]>
   refreshHomeSection?: (refreshKey: string) => Promise<HomeSection[]>
   enqueueOnlineDownload?: (request: PlaybackRequest & { readonly mediaLibraryId?: number }) => Promise<void>
@@ -396,5 +398,6 @@ export interface DataSource {
 export interface DataSourceMediaChange {
   sourceId: string
   libraryIds: string[]
+  libraryRevisions: Record<string, number>
   resyncRequired: boolean
 }

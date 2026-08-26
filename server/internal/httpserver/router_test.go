@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -681,9 +682,26 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 		t.Fatal(err)
 	}
 	client.changes.NotifyCommitted(library.ID, readyChange.Revision)
-	status, changesEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=0", login.AccessToken, nil)
-	if status != http.StatusOK || !bytes.Contains(changesEnvelope.Data, []byte(`"library_id":`+uintString(library.ID))) || bytes.Contains(changesEnvelope.Data, []byte("relative_root")) {
+	status, changesEnvelope, changeHeaders := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=0", login.AccessToken, nil)
+	if status != http.StatusOK || changeHeaders.Get("Cache-Control") != "no-store" || !bytes.Contains(changesEnvelope.Data, []byte(`"library_id":`+uintString(library.ID))) || bytes.Contains(changesEnvelope.Data, []byte("relative_root")) {
 		t.Fatalf("Player changes status=%d data=%s", status, changesEnvelope.Data)
+	}
+	var changePage struct {
+		Changes []struct {
+			ContentRevision uint64    `json:"content_revision"`
+			ChangedAt       time.Time `json:"changed_at"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal(changesEnvelope.Data, &changePage); err != nil || len(changePage.Changes) != 1 || changePage.Changes[0].ContentRevision != readyChange.Revision || changePage.Changes[0].ChangedAt.IsZero() {
+		t.Fatalf("Player change DTO invalid err=%v data=%s", err, changesEnvelope.Data)
+	}
+	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor=18446744073709551616&wait_seconds=0", login.AccessToken, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("overflow Player change cursor status=%d", status)
+	}
+	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor="+strings.Repeat("1", 128)+"&wait_seconds=0", login.AccessToken, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("oversized Player change cursor status=%d", status)
 	}
 	status, catalogEnvelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-libraries/"+uintString(library.ID)+"/catalog?page=1&page_size=20", login.AccessToken, nil)
 	if status != http.StatusOK || bytes.Contains(catalogEnvelope.Data, []byte("/Movie.mkv")) || bytes.Contains(catalogEnvelope.Data, []byte("video-1")) {
@@ -837,6 +855,144 @@ func TestPlayerDeviceAuthenticationIsRevocableAndIsolatedFromBrowserAdmin(t *tes
 	status, _, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/bootstrap", second.AccessToken, nil)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("revoked Player token status=%d", status)
+	}
+}
+
+func TestPlayerMediaChangesRevalidatesDeviceAfterWake(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	status, loginEnvelope, _ := client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/login", "", map[string]any{
+		"username": "owner", "password": "strong-owner-password",
+		"device_id": "wake-revalidation-device", "device_name": "Wake Revalidation Player",
+	})
+	var login struct {
+		AccessToken string `json:"access_token"`
+		Device      struct {
+			ID string `json:"id"`
+		} `json:"device"`
+	}
+	if err := json.Unmarshal(loginEnvelope.Data, &login); status != http.StatusOK || err != nil || login.AccessToken == "" || login.Device.ID == "" {
+		t.Fatalf("login status=%d err=%v data=%s", status, err, loginEnvelope.Data)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=12", nil)
+	request.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		client.router.ServeHTTP(response, request)
+		close(done)
+	}()
+
+	// Give the request time to finish its initial empty query and enter the
+	// broadcast wait. The explicit wake below keeps the test bounded.
+	time.Sleep(50 * time.Millisecond)
+	now := time.Now().UTC()
+	if err := client.db.Model(&models.DeviceToken{}).Where("id = ?", login.Device.ID).Update("revoked_at", now).Error; err != nil {
+		t.Fatal(err)
+	}
+	client.changes.NotifyCommitted(1, 1)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("revoked long poll did not stop after wake")
+	}
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Cache-Control") != "no-store" || strings.Contains(response.Body.String(), login.AccessToken) {
+		t.Fatalf("status=%d cache=%q body=%q", response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+	}
+}
+
+func TestPlayerMediaChangesRevalidatesDisabledUserAfterWake(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	status, loginEnvelope, _ := client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/login", "", map[string]any{
+		"username": "owner", "password": "strong-owner-password",
+		"device_id": "wake-disabled-user-device", "device_name": "Disabled User Player",
+	})
+	var login struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginEnvelope.Data, &login); status != http.StatusOK || err != nil || login.AccessToken == "" {
+		t.Fatalf("login status=%d err=%v data=%s", status, err, loginEnvelope.Data)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=12", nil)
+	request.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		client.router.ServeHTTP(response, request)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if err := client.db.Model(&models.User{}).Where("username_normalized = ?", "owner").Update("status", models.UserStatusDisabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	client.changes.NotifyCommitted(1, 1)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("disabled-user long poll did not stop after wake")
+	}
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Cache-Control") != "no-store" || strings.Contains(response.Body.String(), login.AccessToken) {
+		t.Fatalf("status=%d cache=%q body=%q", response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+	}
+}
+
+func TestPlayerMediaChangesFiltersLibrariesDisabledBeforeResponse(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	var owner models.User
+	if err := client.db.Where("username_normalized = ?", "owner").First(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	createRouterSignedArtifact(t, client, services.Actor{User: owner, Permissions: map[string]struct{}{
+		authz.PermissionConnectionsCreate: {}, authz.PermissionConnectionsRead: {},
+	}})
+	status, loginEnvelope, _ := client.playerRequest(t, http.MethodPost, "/api/v1/player/auth/login", "", map[string]any{
+		"username": "owner", "password": "strong-owner-password",
+		"device_id": "visibility-filter-device", "device_name": "Visibility Filter Player",
+	})
+	var login struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginEnvelope.Data, &login); status != http.StatusOK || err != nil {
+		t.Fatalf("login status=%d err=%v", status, err)
+	}
+	var library models.MediaLibrary
+	if err := client.db.Where("name_normalized = ?", "proxy-route-library").First(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	var change models.MediaLibraryChange
+	if err := client.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		change, err = client.changes.RecordTx(tx, library.ID, library.DirtyGeneration, models.MediaLibraryChangeCatalog, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	status, envelope, _ := client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=0", login.AccessToken, nil)
+	var page struct {
+		Cursor  string            `json:"cursor"`
+		Changes []json.RawMessage `json:"changes"`
+	}
+	if err := json.Unmarshal(envelope.Data, &page); status != http.StatusOK || err != nil || len(page.Changes) != 0 || page.Cursor != strconv.FormatUint(change.Sequence, 10) {
+		t.Fatalf("status=%d page=%+v err=%v data=%s", status, page, err, envelope.Data)
+	}
+	if err := client.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := client.db.Model(&models.Storage{}).Where("id = ?", library.StorageID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	status, envelope, _ = client.playerRequest(t, http.MethodGet, "/api/v1/player/media-changes?cursor=0&wait_seconds=0", login.AccessToken, nil)
+	if err := json.Unmarshal(envelope.Data, &page); status != http.StatusOK || err != nil || len(page.Changes) != 0 || page.Cursor != strconv.FormatUint(change.Sequence, 10) {
+		t.Fatalf("disabled storage status=%d page=%+v err=%v data=%s", status, page, err, envelope.Data)
 	}
 }
 

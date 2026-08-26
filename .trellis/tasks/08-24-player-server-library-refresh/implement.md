@@ -52,3 +52,11 @@ git diff --check
 - Disable controller startup to return to existing TTL/manual refresh without altering credentials or content.
 - Remove route registration while leaving additive change history for media-server refresh use.
 - Never recover by clearing normal/portable Player profiles, removing ServerDataSource credentials or resetting media libraries.
+
+## 2026-08-26 independent acceptance
+
+- Replaced the single-consumer wake channel with a broadcast generation channel and re-authenticate the device/user after every long-poll wake or timeout before filtering currently visible enabled libraries.
+- Player now preserves HTTP status, stops on `401/403/404`, validates bounded monotonic cursor/change DTOs, isolates cursors by source and Server origin, and uses cancellable bounded jittered retry for transient failures.
+- Pending updates are merged by Server source, library and content revision; Home refresh is coalesced, current unrelated libraries are not prompted, and explicit refresh preserves scroll, focus, navigation and playback context.
+- Added revocation, user/storage disablement, multiple waiter, retention/resync, malformed/overflow/stale cursor, source lifecycle and cache-isolation regression coverage.
+- Server full tests/vet/builds and Player ServerDataSource/online-library/navigation/Home/playback verification, typecheck, ESLint, production build and `git diff --check` passed. `verify:view-architecture` still reports only the pre-existing oversized `SettingsView.vue`, which this task did not modify.

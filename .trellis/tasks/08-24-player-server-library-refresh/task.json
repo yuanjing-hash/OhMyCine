@@ -3,7 +3,7 @@
   "name": "player-server-library-refresh",
   "title": "Player Server 媒体库实时刷新",
   "description": "为 Player device token 建立安全媒体变更事件与断线补偿，并实现无跳动刷新体验。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

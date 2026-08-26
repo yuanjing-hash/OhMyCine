@@ -24,7 +24,7 @@ type MediaChangeService struct {
 }
 
 func NewMediaChangeService(db *gorm.DB) *MediaChangeService {
-	return &MediaChangeService{db: db, wake: make(chan struct{}, 1), retained: defaultMediaChangeRetention}
+	return &MediaChangeService{db: db, wake: make(chan struct{}), retained: defaultMediaChangeRetention}
 }
 
 func (s *MediaChangeService) SetReadyHandler(handler func(uint, uint64)) {
@@ -33,7 +33,15 @@ func (s *MediaChangeService) SetReadyHandler(handler func(uint, uint64)) {
 	s.mu.Unlock()
 }
 
-func (s *MediaChangeService) Wakeups() <-chan struct{} { return s.wake }
+// Wakeups returns a broadcast generation channel. Callers must capture it
+// before querying SQLite so a commit cannot be lost between the query and the
+// wait registration. NotifyCommitted closes the captured generation for every
+// waiter and immediately replaces it for future requests.
+func (s *MediaChangeService) Wakeups() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wake
+}
 
 func (s *MediaChangeService) RecordTx(tx *gorm.DB, libraryID uint, generation uint64, kind string, ready bool) (models.MediaLibraryChange, error) {
 	if kind != models.MediaLibraryChangeCatalog && kind != models.MediaLibraryChangeMetadata && kind != models.MediaLibraryChangeRemoval {
@@ -118,11 +126,9 @@ func (s *MediaChangeService) advanceTargetsTx(tx *gorm.DB, libraryID uint, revis
 // NotifyCommitted must be called only after the transaction that wrote or
 // readied the change has committed.
 func (s *MediaChangeService) NotifyCommitted(libraryID uint, revision uint64) {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
 	s.mu.Lock()
+	close(s.wake)
+	s.wake = make(chan struct{})
 	handler := s.onReady
 	s.mu.Unlock()
 	if handler != nil {
@@ -161,9 +167,23 @@ func (s *MediaChangeService) ReadyAfter(cursor uint64, limit int) (MediaChangePa
 	if err := s.db.Model(&models.MediaLibraryChange{}).Where("state = ?", models.MediaLibraryChangeReady).Select("COALESCE(MIN(sequence),0), COALESCE(MAX(sequence),0)").Row().Scan(&page.OldestSequence, &page.LatestSequence); err != nil {
 		return page, err
 	}
-	if cursor > 0 && page.OldestSequence > 0 && cursor+1 < page.OldestSequence {
-		page.ResyncRequired = true
-		return page, nil
+	if cursor > 0 {
+		if cursor > page.LatestSequence {
+			page.ResyncRequired = true
+			return page, nil
+		}
+		if cursor < page.LatestSequence {
+			var retainedCursor int64
+			if err := s.db.Model(&models.MediaLibraryChange{}).Where("state = ? AND sequence = ?", models.MediaLibraryChangeReady, cursor).Count(&retainedCursor).Error; err != nil {
+				return page, err
+			}
+			if retainedCursor == 0 {
+				// A cursor is issued only for a committed ready row. If it is no
+				// longer present while newer rows exist, retention has crossed it.
+				page.ResyncRequired = true
+				return page, nil
+			}
+		}
 	}
 	err := s.db.Where("state = ? AND sequence > ?", models.MediaLibraryChangeReady, cursor).Order("sequence").Limit(limit).Find(&page.Changes).Error
 	return page, err

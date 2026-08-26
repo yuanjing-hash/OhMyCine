@@ -3,10 +3,12 @@ import type { DataSource, HomeSection, MediaDetail, MediaItem, MediaLibrary } fr
 import type { RawFileSourceType, RawLocalScanCache, RawLocalScanLogEntry, RawMediaCandidate, RawScrapedMediaItem, RawSourceIndexStatus, RawSourceIndexTarget, RawSourceScanKind, ScrapeMediaType, TmdbImageCandidate, TmdbImageKind, TmdbMetadata } from '@/services/scraper'
 import type { ServerLibraryRefreshDetail } from '@/services/serverMediaChanges'
 import type { ScannedCategory, ScannedDisplayItem, ScannedSeriesWork, ScannedWorkItem } from '@/services/sourceLibraryScannedMedia'
+import type { PendingServerMediaUpdate } from '@/stores/datasource'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
+import ServerLibraryUpdateNotice from '@/components/media/ServerLibraryUpdateNotice.vue'
 import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { readLocalRootPath } from '@/services/datasource/local'
@@ -94,6 +96,9 @@ let unsubscribeRawIndexStatus: (() => void) | undefined
 let identificationSearchRequestId = 0
 let rawIndexGeneration = 0
 let sourceRootLoadGeneration = 0
+let serverViewRefreshGeneration = 0
+const isApplyingServerUpdate = ref(false)
+const observedServerUpdateVersion = ref(0)
 
 const rawSourceType = computed<RawFileSourceType | null>(() => {
   const type = sourceConfig.value?.type
@@ -107,6 +112,18 @@ const isMediaLibraryView = computed(() => activeViewMode.value === 'media-librar
 const isFolderView = computed(() => activeViewMode.value === 'folders')
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
+const pendingServerViewUpdate = computed<PendingServerMediaUpdate | null>(() => {
+  void observedServerUpdateVersion.value
+  if (sourceConfig.value?.type !== 'server')
+    return null
+  const update = store.getPendingServerUpdate(sourceId.value)
+  if (!update || currentNode.value?.isSearch)
+    return null
+  if (update.resyncRequired || !selectedLibrary.value)
+    return update
+  const libraryId = /^\d+$/.test(selectedLibrary.value.id) ? selectedLibrary.value.id : null
+  return libraryId && update.libraryIds.includes(libraryId) ? update : null
+})
 const sourceTypeLabel = computed(() => sourceConfig.value ? labelForSourceType(sourceConfig.value.type) : 'Data')
 const pageTitle = computed(() => {
   if (isMediaLibraryView.value)
@@ -377,6 +394,7 @@ onBeforeUnmount(() => {
   unregisterLayoutBackHandler?.()
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
+  serverViewRefreshGeneration += 1
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener(SERVER_LIBRARY_REFRESH_EVENT, handleServerLibraryRefresh)
   unsubscribeRawIndexStatus?.()
@@ -384,49 +402,92 @@ onBeforeUnmount(() => {
   clearLayoutContextActions(layoutContextOwner)
 })
 
-async function handleServerLibraryRefresh(event: Event) {
+function handleServerLibraryRefresh(event: Event) {
   const detail = (event as CustomEvent<ServerLibraryRefreshDetail>).detail
-  if (sourceConfig.value?.type !== 'server' || !detail?.sourceIds.includes(sourceId.value) || !source.value)
+  if (sourceConfig.value?.type !== 'server' || detail?.sourceId !== sourceId.value)
+    return
+  // The pending update is held source/library-scoped in Pinia. This typed
+  // event only nudges an already-mounted view; it never reloads the current
+  // list or touches playback without the user's explicit action.
+  observedServerUpdateVersion.value = Math.max(observedServerUpdateVersion.value, detail.version)
+}
+
+async function refreshCurrentServerView() {
+  const snapshot = pendingServerViewUpdate.value
+  const currentSource = source.value
+  if (!snapshot || !currentSource || isApplyingServerUpdate.value)
     return
 
   const scrollRoot = document.querySelector<HTMLElement>('main.cinema-scrollbar')
   const scrollTop = scrollRoot?.scrollTop ?? 0
-  source.value.clearCache?.()
-  store.invalidateSourceRootSnapshot(sourceId.value)
+  const focusedCardId = document.activeElement instanceof HTMLElement
+    ? document.activeElement.closest<HTMLElement>('[data-media-card-id]')?.dataset.mediaCardId
+    : undefined
+  const refreshGeneration = ++serverViewRefreshGeneration
+  const loadingSourceId = sourceId.value
+  const selectedLibraryId = selectedLibrary.value?.id
+  const parentId = currentNode.value?.id ?? selectedLibraryId
+  const keyword = searchKeyword.value.trim()
+  let refreshed = false
+  isApplyingServerUpdate.value = true
+  currentSource.clearCache?.()
+  store.invalidateSourceRootSnapshot(loadingSourceId)
 
-  if (!selectedLibrary.value) {
-    await loadSourceRoot({ force: true })
-  }
-  else if (searchKeyword.value.trim()) {
-    await runSearch()
-  }
-  else {
-    const loadingSourceId = sourceId.value
-    const parentId = currentNode.value?.id ?? selectedLibrary.value.id
-    isLoading.value = true
-    errorMessage.value = null
-    try {
-      const nextItems = await source.value.list(parentId)
-      if (sourceId.value === loadingSourceId)
-        items.value = nextItems
+  try {
+    if (!selectedLibrary.value) {
+      refreshed = await loadSourceRoot({ force: true })
     }
-    catch (error) {
+    else {
+      isLoading.value = true
+      errorMessage.value = null
+      const nextItems = await currentSource.list(parentId ?? selectedLibrary.value.id)
+      if (serverViewRefreshGeneration !== refreshGeneration
+        || sourceId.value !== loadingSourceId
+        || source.value !== currentSource
+        || selectedLibrary.value?.id !== selectedLibraryId
+        || searchKeyword.value.trim() !== keyword) {
+        return
+      }
+      items.value = nextItems
+      refreshed = true
+    }
+    if (refreshed) {
+      const libraryIds = selectedLibraryId && /^\d+$/.test(selectedLibraryId)
+        ? [selectedLibraryId]
+        : undefined
+      store.acknowledgeServerUpdate(snapshot, libraryIds)
+    }
+  }
+  catch (error) {
+    if (serverViewRefreshGeneration === refreshGeneration && sourceId.value === loadingSourceId)
       errorMessage.value = toSafeErrorMessage(error, '媒体条目刷新失败。')
-    }
-    finally {
-      if (sourceId.value === loadingSourceId)
-        isLoading.value = false
+  }
+  finally {
+    if (serverViewRefreshGeneration === refreshGeneration && sourceId.value === loadingSourceId) {
+      isLoading.value = false
+      isApplyingServerUpdate.value = false
     }
   }
 
+  if (!refreshed)
+    return
   await nextTick()
-  window.requestAnimationFrame(() => scrollRoot?.scrollTo({ top: scrollTop, left: 0, behavior: 'auto' }))
+  window.requestAnimationFrame(() => {
+    scrollRoot?.scrollTo({ top: scrollTop, left: 0, behavior: 'auto' })
+    if (!focusedCardId)
+      return
+    const card = [...document.querySelectorAll<HTMLElement>('[data-media-card-id]')]
+      .find(element => element.dataset.mediaCardId === focusedCardId)
+    card?.focus({ preventScroll: true })
+  })
 }
 
 watch(sourceId, async () => {
   unregisterMaintenanceHandler?.()
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
+  serverViewRefreshGeneration += 1
+  isApplyingServerUpdate.value = false
   isLoading.value = false
   selectedLibrary.value = null
   navigationStack.value = []
@@ -491,28 +552,34 @@ async function ensureSource() {
   errorMessage.value = null
 }
 
-async function loadSourceRoot(options: { force?: boolean } = {}) {
+async function loadSourceRoot(options: { force?: boolean } = {}): Promise<boolean> {
   if (!source.value)
-    return
+    return false
 
   const loadGeneration = ++sourceRootLoadGeneration
   const loadingSourceId = sourceId.value
+  const pendingUpdate = sourceConfig.value?.type === 'server' ? store.getPendingServerUpdate(loadingSourceId) : null
   const cachedSnapshot = store.getSourceRootSnapshot(loadingSourceId)
   if (cachedSnapshot)
     applySourceRootSnapshot(cachedSnapshot)
   if (cachedSnapshot && !options.force && store.isSourceRootSnapshotFresh(loadingSourceId))
-    return
+    return true
 
   const showLoading = cachedSnapshot == null
   if (showLoading)
     isLoading.value = true
   errorMessage.value = null
+  const libraryRequest = pendingUpdate && source.value.listLibrariesForMediaChangeRefresh
+    ? source.value.listLibrariesForMediaChangeRefresh()
+    : source.value.listLibraries
+      ? source.value.listLibraries()
+      : Promise.resolve([])
   const [librariesResult, homeResult] = await Promise.allSettled([
-    source.value.listLibraries ? source.value.listLibraries() : Promise.resolve([]),
+    libraryRequest,
     source.value.getHomeSections ? source.value.getHomeSections() : Promise.resolve([]),
   ] as const)
   if (loadGeneration !== sourceRootLoadGeneration || loadingSourceId !== sourceId.value)
-    return
+    return false
 
   if (librariesResult.status === 'rejected')
     errorMessage.value = toSafeErrorMessage(librariesResult.reason, '媒体库加载失败。')
@@ -524,8 +591,12 @@ async function loadSourceRoot(options: { force?: boolean } = {}) {
   applySourceRootSnapshot(nextSnapshot)
   if (librariesResult.status === 'fulfilled' || homeResult.status === 'fulfilled')
     store.setSourceRootSnapshot(loadingSourceId, nextSnapshot)
+  const succeeded = librariesResult.status === 'fulfilled'
+  if (librariesResult.status === 'fulfilled' && pendingUpdate)
+    store.acknowledgeServerUpdate(pendingUpdate)
   if (showLoading)
     isLoading.value = false
+  return succeeded
 }
 
 function applySourceRootSnapshot(snapshot: { libraries: MediaLibrary[], homeSections: HomeSection[] }) {
@@ -565,8 +636,11 @@ async function loadLibrary(library: MediaLibrary) {
   searchKeyword.value = ''
   isLoading.value = true
   errorMessage.value = null
+  const pendingUpdate = sourceConfig.value?.type === 'server' ? store.getPendingServerUpdate(sourceId.value) : null
   try {
     items.value = await source.value.list(library.id)
+    if (pendingUpdate && /^\d+$/.test(library.id))
+      store.acknowledgeServerUpdate(pendingUpdate, [library.id])
   }
   catch (error) {
     items.value = []
@@ -727,8 +801,12 @@ async function loadNestedItems(parentId: string) {
   requestAppScrollTop()
   isLoading.value = true
   errorMessage.value = null
+  const pendingUpdate = sourceConfig.value?.type === 'server' ? store.getPendingServerUpdate(sourceId.value) : null
   try {
     items.value = await source.value.list(parentId)
+    const libraryId = selectedLibrary.value?.id
+    if (pendingUpdate && libraryId && /^\d+$/.test(libraryId))
+      store.acknowledgeServerUpdate(pendingUpdate, [libraryId])
   }
   catch (error) {
     items.value = []
@@ -1495,6 +1573,11 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
 
 <template>
   <div class="source-view theme-adaptive relative min-h-full">
+    <ServerLibraryUpdateNotice
+      :visible="pendingServerViewUpdate != null"
+      :busy="isApplyingServerUpdate"
+      @refresh="refreshCurrentServerView"
+    />
     <div class="source-page-content mobile-nav-safe space-y-8 px-4 pb-6 pt-20 sm:p-6 sm:pl-20 sm:pt-20">
       <div v-if="!sourceConfig" class="flex flex-col items-center justify-center py-24">
         <p class="text-lg text-white/40">

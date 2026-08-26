@@ -136,6 +136,15 @@ interface ServerMediaChangePage {
   cursor: string
   resyncRequired: boolean
   libraryIds: string[]
+  libraryRevisions: Record<string, number>
+  changeCount: number
+}
+
+class ServerRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message)
+    this.name = 'ServerRequestError'
+  }
 }
 
 export interface ServerLoginInput {
@@ -229,11 +238,19 @@ export class ServerDataSource implements DataSource {
   }
 
   async listLibraries(): Promise<MediaLibrary[]> {
+    return this.loadLibraries(false)
+  }
+
+  async listLibrariesForMediaChangeRefresh(): Promise<MediaLibrary[]> {
+    return this.loadLibraries(true)
+  }
+
+  private async loadLibraries(requirePhysical: boolean): Promise<MediaLibrary[]> {
     const [physicalResult, onlineResult] = await Promise.allSettled([
       this.request('/api/v1/player/media-libraries'),
       this.request('/api/v1/player/online-libraries'),
     ])
-    if (physicalResult.status === 'rejected' && onlineResult.status === 'rejected')
+    if (physicalResult.status === 'rejected' && (requirePhysical || onlineResult.status === 'rejected'))
       throw physicalResult.reason
     const physicalData = physicalResult.status === 'fulfilled' ? recordData(physicalResult.value) : {}
     const physicalList = Array.isArray(physicalData.list) ? physicalData.list : []
@@ -761,17 +778,19 @@ export class ServerDataSource implements DataSource {
       const envelope = isRecord(response.body) ? response.body : {}
       if (response.status < 200 || response.status >= 300 || envelope.code !== 0) {
         const message = typeof envelope.message === 'string' ? envelope.message : `Server 请求失败（HTTP ${response.status}）`
-        throw new Error(message)
+        throw new ServerRequestError(redactSensitiveText(message), response.status, typeof envelope.code === 'string' ? envelope.code : undefined)
       }
       return envelope.data
     }
     catch (error) {
+      if (error instanceof ServerRequestError)
+        throw error
       throw new Error(redactSensitiveText(error))
     }
   }
 
   private async runMediaChangeWatch(generation: number, listener: (change: DataSourceMediaChange) => void): Promise<void> {
-    const cursorKey = `ohmycine:server-media-change-cursor:${this.id}`
+    const cursorKey = `ohmycine:server-media-change-cursor:${this.id}:${encodeURIComponent(this.baseUrl)}`
     let cursor = safeServerChangeCursor(getAppSetting(cursorKey))
     let retryDelay = 1_000
     while (this.connected && this.mediaChangeWatchGeneration === generation) {
@@ -779,17 +798,29 @@ export class ServerDataSource implements DataSource {
         const page = parseServerMediaChangePage(await this.request(`/api/v1/player/media-changes?cursor=${encodeURIComponent(cursor)}&wait_seconds=12`))
         if (this.mediaChangeWatchGeneration !== generation)
           return
+        if (!page.resyncRequired && compareServerChangeCursors(page.cursor, cursor) < 0)
+          throw new Error('Server 媒体变更游标发生了无效回退。')
+        if (page.changeCount > 0 && page.cursor === cursor)
+          throw new Error('Server 媒体变更响应未推进游标。')
+        if (page.resyncRequired || page.libraryIds.length > 0) {
+          listener({ sourceId: this.id, libraryIds: page.libraryIds, libraryRevisions: page.libraryRevisions, resyncRequired: page.resyncRequired })
+        }
+        if (this.mediaChangeWatchGeneration !== generation)
+          return
         if (page.cursor !== cursor) {
           cursor = page.cursor
           await setAppSetting(cursorKey, cursor)
         }
-        if (page.resyncRequired || page.libraryIds.length > 0) {
-          listener({ sourceId: this.id, libraryIds: page.libraryIds, resyncRequired: page.resyncRequired })
-        }
         retryDelay = 1_000
       }
-      catch {
-        await waitForMediaChangeRetry(retryDelay)
+      catch (error) {
+        if (error instanceof ServerRequestError && (error.status === 401 || error.status === 403)) {
+          this.connected = false
+          return
+        }
+        if (error instanceof ServerRequestError && error.status === 404)
+          return
+        await waitForMediaChangeRetry(withMediaChangeJitter(retryDelay), () => this.connected && this.mediaChangeWatchGeneration === generation)
         retryDelay = Math.min(retryDelay * 2, 15_000)
       }
     }
@@ -819,27 +850,79 @@ export class ServerDataSource implements DataSource {
 }
 
 function safeServerChangeCursor(value: string | null): string {
-  return value && /^\d{1,20}$/.test(value) ? value : '0'
+  return value && isServerChangeCursor(value) ? value : '0'
 }
 
 function parseServerMediaChangePage(value: unknown): ServerMediaChangePage {
-  const record = isRecord(value) ? value : {}
-  const cursor = typeof record.cursor === 'string' && /^\d{1,20}$/.test(record.cursor) ? record.cursor : '0'
-  const changes = Array.isArray(record.changes) ? record.changes : []
+  if (!isRecord(value)
+    || typeof value.cursor !== 'string'
+    || !isServerChangeCursor(value.cursor)
+    || typeof value.resync_required !== 'boolean'
+    || !Array.isArray(value.changes)
+    || value.changes.length > 256) {
+    throw new Error('Server 媒体变更响应无效。')
+  }
+  const libraryRevisions: Record<string, number> = {}
+  for (const item of value.changes) {
+    if (!isRecord(item))
+      throw new Error('Server 媒体变更响应无效。')
+    const libraryId = item.library_id
+    const revision = item.content_revision
+    if (!Number.isSafeInteger(libraryId) || Number(libraryId) <= 0
+      || !Number.isSafeInteger(revision) || Number(revision) <= 0
+      || typeof item.kind !== 'string'
+      || !['catalog', 'metadata', 'removal'].includes(item.kind)
+      || typeof item.changed_at !== 'string'
+      || item.changed_at.length === 0
+      || item.changed_at.length > 64
+      || !Number.isFinite(Date.parse(item.changed_at))) {
+      throw new Error('Server 媒体变更响应无效。')
+    }
+    const key = String(Number(libraryId))
+    libraryRevisions[key] = Math.max(libraryRevisions[key] ?? 0, Number(revision))
+  }
   return {
-    cursor,
-    resyncRequired: record.resync_required === true,
-    libraryIds: [...new Set(changes.flatMap((item) => {
-      if (!isRecord(item))
-        return []
-      const libraryId = Number(item.library_id)
-      return Number.isSafeInteger(libraryId) && libraryId > 0 ? [String(libraryId)] : []
-    }))],
+    cursor: value.cursor,
+    resyncRequired: value.resync_required,
+    libraryIds: Object.keys(libraryRevisions),
+    libraryRevisions,
+    changeCount: value.changes.length,
   }
 }
 
-function waitForMediaChangeRetry(delay: number): Promise<void> {
-  return new Promise(resolve => window.setTimeout(resolve, delay))
+function isServerChangeCursor(value: string): boolean {
+  if (!/^\d{1,20}$/.test(value))
+    return false
+  try {
+    return BigInt(value) <= 18_446_744_073_709_551_615n
+  }
+  catch {
+    return false
+  }
+}
+
+function compareServerChangeCursors(left: string, right: string): number {
+  const leftValue = BigInt(left)
+  const rightValue = BigInt(right)
+  return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0
+}
+
+function withMediaChangeJitter(delay: number): number {
+  return Math.max(250, Math.round(delay * (0.85 + Math.random() * 0.3)))
+}
+
+function waitForMediaChangeRetry(delay: number, isActive: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now()
+    const check = () => {
+      if (!isActive() || Date.now() - startedAt >= delay) {
+        resolve()
+        return
+      }
+      globalThis.setTimeout(check, Math.min(250, delay - (Date.now() - startedAt)))
+    }
+    check()
+  })
 }
 
 function onlineProgressContextKey(itemId: string, mediaSourceId: string | undefined): string {

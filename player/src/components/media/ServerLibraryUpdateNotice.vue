@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { useDataSourceStore } from '@/stores/datasource'
-
-const store = useDataSourceStore()
+defineProps<{ visible: boolean, busy?: boolean }>()
+defineEmits<{ refresh: [] }>()
 </script>
 
 <template>
   <Transition name="server-library-update">
     <button
-      v-if="store.hasServerLibraryUpdates"
+      v-if="visible"
       type="button"
       class="server-library-update-notice"
       aria-live="polite"
-      @click="store.applyServerLibraryUpdates"
+      :disabled="busy"
+      @click="$emit('refresh')"
     >
       <strong>媒体库已更新</strong>
-      <span>点击刷新当前列表</span>
+      <span>{{ busy ? '正在刷新当前列表…' : '点击刷新当前列表' }}</span>
     </button>
   </Transition>
 </template>

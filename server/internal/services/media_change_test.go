@@ -42,6 +42,28 @@ func TestMediaChangeReadyCommitAdvancesRevisionAndTargets(t *testing.T) {
 	}
 }
 
+func TestMediaChangeWakeupsBroadcastToEveryCapturedWaiter(t *testing.T) {
+	management, _, _, library, _ := strmManagementFixture(t)
+	changes := NewMediaChangeService(management.db)
+	first := changes.Wakeups()
+	second := changes.Wakeups()
+
+	changes.NotifyCommitted(library.ID, 1)
+
+	for index, waiter := range []<-chan struct{}{first, second} {
+		select {
+		case <-waiter:
+		case <-time.After(time.Second):
+			t.Fatalf("waiter %d was not broadcast", index)
+		}
+	}
+	select {
+	case <-changes.Wakeups():
+		t.Fatal("new waiter inherited a stale wakeup")
+	default:
+	}
+}
+
 func TestManualMetadataChangeWaitsForRegeneratedArtifacts(t *testing.T) {
 	libraries, db, actor, storage, profile := mediaLibraryTestService(t)
 	metadataArtifacts := true
@@ -255,5 +277,32 @@ func TestMediaChangePruningRetainsLatestReadyRevisionPerLibrary(t *testing.T) {
 	var retained int64
 	if err := db.Model(&models.MediaLibraryChange{}).Where("library_id = ? AND state = ?", firstLibrary.ID, models.MediaLibraryChangeReady).Count(&retained).Error; err != nil || retained != 1 {
 		t.Fatalf("quiet library retained changes=%d err=%v", retained, err)
+	}
+}
+
+func TestMediaChangeReadyAfterRequiresResyncForPrunedOrFutureCursor(t *testing.T) {
+	management, _, _, library, _ := strmManagementFixture(t)
+	db := management.db
+	changes := NewMediaChangeService(db)
+	var first, second models.MediaLibraryChange
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		first, err = changes.RecordTx(tx, library.ID, 1, models.MediaLibraryChangeCatalog, true)
+		if err != nil {
+			return err
+		}
+		second, err = changes.RecordTx(tx, library.ID, 2, models.MediaLibraryChangeMetadata, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&models.MediaLibraryChange{}, "sequence = ?", first.Sequence).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, cursor := range []uint64{first.Sequence, second.Sequence + 100} {
+		page, err := changes.ReadyAfter(cursor, 10)
+		if err != nil || !page.ResyncRequired || len(page.Changes) != 0 || page.LatestSequence != second.Sequence {
+			t.Fatalf("cursor=%d page=%+v err=%v", cursor, page, err)
+		}
 	}
 }
