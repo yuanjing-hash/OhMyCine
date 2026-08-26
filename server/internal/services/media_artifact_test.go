@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
+	"gorm.io/gorm"
 )
 
 type recordingArtifactCleanup struct {
@@ -125,6 +127,10 @@ func TestMediaArtifactWorkerGeneratesManagedSTRMAndPreservesUnmanagedFile(t *tes
 	}
 	artifacts := NewMediaArtifactService(db, queue, proxy, zerolog.Nop())
 	artifacts.SetConnectionService(connections)
+	changes := NewMediaChangeService(db)
+	artifacts.SetMediaChangeService(changes)
+	var notifiedRevision atomic.Uint64
+	changes.SetReadyHandler(func(_ uint, revision uint64) { notifiedRevision.Store(revision) })
 	cleanup := &recordingArtifactCleanup{}
 	artifacts.SetCleanupService(cleanup)
 	scanFinished := time.Now().UTC()
@@ -135,6 +141,21 @@ func TestMediaArtifactWorkerGeneratesManagedSTRMAndPreservesUnmanagedFile(t *tes
 	scan := models.MediaLibraryScanRun{LibraryID: library.ID, Kind: "full", Status: "success", Generation: 2, StartedAt: now, FinishedAt: &scanFinished}
 	if err := db.Create(&scan).Error; err != nil {
 		t.Fatal(err)
+	}
+	target := models.MediaServerRefreshTarget{LibraryID: library.ID, ConnectionID: connection.ID, UpstreamLibraryID: "upstream-library", UpstreamLibraryName: "电影", Enabled: true, LastStatus: "idle", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	var pendingChange models.MediaLibraryChange
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var recordErr error
+		pendingChange, recordErr = changes.RecordTx(tx, library.ID, 2, models.MediaLibraryChangeCatalog, false)
+		return recordErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pendingChange.State != models.MediaLibraryChangePending || notifiedRevision.Load() != 0 {
+		t.Fatalf("change was published before STRM readiness: change=%+v notified_revision=%d", pendingChange, notifiedRevision.Load())
 	}
 	if err := artifacts.ScheduleGeneration(library.ID, 1); err != nil {
 		t.Fatal(err)
@@ -210,6 +231,12 @@ func TestMediaArtifactWorkerGeneratesManagedSTRMAndPreservesUnmanagedFile(t *tes
 	var refreshed models.MediaLibrary
 	if err := db.First(&refreshed, library.ID).Error; err != nil || refreshed.ArtifactAppliedGeneration != 2 || refreshed.ArtifactStatus != models.MediaArtifactStatusCompleted {
 		t.Fatalf("library artifact state=%+v err=%v", refreshed, err)
+	}
+	if err := db.First(&pendingChange, "sequence = ?", pendingChange.Sequence).Error; err != nil || pendingChange.State != models.MediaLibraryChangeReady || pendingChange.ReadyAt == nil {
+		t.Fatalf("ready change=%+v err=%v", pendingChange, err)
+	}
+	if err := db.First(&target, target.ID).Error; err != nil || target.DesiredRevision != pendingChange.Revision || notifiedRevision.Load() != pendingChange.Revision {
+		t.Fatalf("target=%+v change_revision=%d notified_revision=%d err=%v", target, pendingChange.Revision, notifiedRevision.Load(), err)
 	}
 }
 

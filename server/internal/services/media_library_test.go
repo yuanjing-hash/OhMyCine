@@ -314,6 +314,10 @@ func TestMediaLibraryAutomaticallyBuildsBaselineThenListens(t *testing.T) {
 
 func TestDisabledLibraryWaitsUntilEnabledAndWatcherReconcilesChanges(t *testing.T) {
 	service, db, actor, storage, profile := mediaLibraryTestService(t)
+	changes := NewMediaChangeService(db)
+	service.SetMediaChangeService(changes)
+	var notifiedRevision atomic.Uint64
+	changes.SetReadyHandler(func(_ uint, revision uint64) { notifiedRevision.Store(revision) })
 	input := testLibraryInput("Deferred library", storage, profile, false)
 	created, err := service.Create(context.Background(), actor, input, RequestContext{})
 	if err != nil {
@@ -336,15 +340,29 @@ func TestDisabledLibraryWaitsUntilEnabledAndWatcherReconcilesChanges(t *testing.
 	}
 	waitForLibrary(t, db, created.ID, func(models.MediaLibrary) bool {
 		var count int64
-		return db.Model(&models.MediaLibraryEntry{}).Where("library_id = ? AND relative_path = ?", created.ID, "/Arrived.S02E03.mp4").Count(&count).Error == nil && count == 1
+		return db.Model(&models.MediaLibraryEntry{}).Where("library_id = ? AND relative_path = ?", created.ID, "/Arrived.S02E03.mp4").Count(&count).Error == nil && count == 1 && notifiedRevision.Load() > 0
 	})
+	var addedChange models.MediaLibraryChange
+	if err := db.Where("library_id = ? AND state = ?", created.ID, models.MediaLibraryChangeReady).Order("revision DESC").First(&addedChange).Error; err != nil {
+		t.Fatal(err)
+	}
+	if addedChange.Kind != models.MediaLibraryChangeCatalog || addedChange.ReadyAt == nil || notifiedRevision.Load() != addedChange.Revision {
+		t.Fatalf("added change=%+v notified_revision=%d", addedChange, notifiedRevision.Load())
+	}
 	if err := os.Remove(mediaPath); err != nil {
 		t.Fatal(err)
 	}
 	waitForLibrary(t, db, created.ID, func(models.MediaLibrary) bool {
 		var count int64
-		return db.Model(&models.MediaLibraryEntry{}).Where("library_id = ? AND relative_path = ?", created.ID, "/Arrived.S02E03.mp4").Count(&count).Error == nil && count == 0
+		return db.Model(&models.MediaLibraryEntry{}).Where("library_id = ? AND relative_path = ?", created.ID, "/Arrived.S02E03.mp4").Count(&count).Error == nil && count == 0 && notifiedRevision.Load() > addedChange.Revision
 	})
+	var removedChange models.MediaLibraryChange
+	if err := db.Where("library_id = ? AND state = ?", created.ID, models.MediaLibraryChangeReady).Order("revision DESC").First(&removedChange).Error; err != nil {
+		t.Fatal(err)
+	}
+	if removedChange.Kind != models.MediaLibraryChangeRemoval || removedChange.Revision <= addedChange.Revision || removedChange.ReadyAt == nil || notifiedRevision.Load() != removedChange.Revision {
+		t.Fatalf("removed change=%+v added_revision=%d notified_revision=%d", removedChange, addedChange.Revision, notifiedRevision.Load())
+	}
 }
 
 func TestMediaLibrarySourceChangeClearsOldCatalogAndBuildsNewBaseline(t *testing.T) {
