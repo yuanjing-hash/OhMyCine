@@ -797,3 +797,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Next Steps
 
 - 重新规划站点管理卡片内的单站点搜索入口
+
+
+## Session 30: 完成 Server 站点识别与安全整理
+
+**Date**: 2026-08-26
+**Task**: 完成 Server 站点识别与安全整理
+**Branch**: `develop`
+
+### Summary
+
+完成地址驱动 BT 站点与单站搜索、统一媒体身份和可选 AI 识别、修正识别重新整理，以及本地/115 四档安全删除；全量 Go/Web UI 门禁通过，准备发布 Server Beta。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0cca9b4` | (see git log) |
+
+### Status
+
+[OK] **Completed**
