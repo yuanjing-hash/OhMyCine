@@ -62,3 +62,11 @@ git diff --check
 - Migration is additive; route/worker registration can be disabled while leaving rows unused.
 - Producer integration must remain behind one service boundary so it can be disabled without modifying media/artifacts.
 - Target deletion/disable never calls deletion APIs on Emby/Jellyfin and never changes media files.
+
+## 2026-08-26 independent acceptance
+
+- Fixed artifact generation carry-forward so a newer no-op generation cannot discard an older pending ready change; partial generations never publish or supersede pending changes.
+- Refresh target creation and re-enable reconcile to the latest ready revision, while terminal authentication/configuration failures stay failed until an explicit retry or configuration correction.
+- Transient refresh failures honor the queue maximum attempts with bounded backoff and expose `retry_wait` truthfully.
+- Added explicit target test/retry operations, joint UI permission gating, safe `CONNECTION_IN_USE` handling, v39 upgrade coverage, and metadata-only projection change coverage.
+- Full `go test ./...`, `go vet ./...`, normal/WebUI-tag builds, WebUI 25-file/133-test suite, typecheck, ESLint, Vite build, and `git diff --check` passed in isolated Windows test directories.

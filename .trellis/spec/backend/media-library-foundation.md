@@ -418,24 +418,33 @@ GET /api/v1/player/media-changes?cursor=<uint>&wait_seconds=<0..12>
 Authorization: Bearer omc_player_...
 
 media_server_refresh Job payload = { "target_id": <uint> }
+
+POST /api/v1/media-server-refresh-targets/:id/test
+POST /api/v1/media-server-refresh-targets/:id/retry
 ```
 
 ### 3. Contracts
 
 - A complete authoritative reconciliation increments `content_revision` once and writes its change in the same transaction. No-op, failed, partial, superseded, stale-generation, or conflict-waiting work does not publish a ready change.
 - A change that requires STRM/NFO/JPG or cleanup is persisted as pending. The matching current artifact generation and cleanup must succeed before it becomes ready. Manual metadata override uses the same new-generation barrier when sidecars are enabled.
+- Artifact coalescing may finish a newer complete no-op generation that has no change row. That generation carries forward the newest older pending change represented by its completed projection and supersedes only the remaining older pending rows. A matching generation with its own change supersedes all older pending rows. Partial artifact generations never publish or discard pending authoritative changes.
+- Artifact readiness uses one storage-aware predicate across reconciliation and manual-recognition paths: local libraries wait only when local metadata artifacts are enabled; cloud libraries wait only for an enabled signed STRM projection. Cloud metadata-upload policy without STRM must not create a pending change when no artifact producer can satisfy it.
 - Marking a change ready advances every enabled refresh target's desired revision and wakes Player waiters only after commit. Emby/Jellyfin and Player consume the same ready revision independently.
 - Refresh jobs coalesce by target and store only `target_id`; workers reload encrypted Connection credentials and the latest desired/manual generation at execution time. Manual refresh at content revision zero still executes once without fabricating a content revision.
+- Target creation snapshots the latest ready revision atomically with insertion. Re-enabling a target catches its desired revision up to the latest ready library revision before enqueueing, so changes committed while disabled are not lost. Target testing revalidates the saved stable upstream library ID; retry is available only for an enabled terminally failed target with outstanding work.
 - The Player endpoint authenticates every bounded poll with device Bearer, filters libraries through current visibility, and returns only logical library ID, revision, controlled kind, time, cursor, and `resync_required`. It never returns paths, provider/upstream IDs, credentials, signed URLs, or raw upstream bodies.
-- Ready history is bounded. A cursor older than retained history receives `resync_required` and a new safe baseline instead of an unbounded per-device queue.
+- Ready history is bounded globally, but pruning always retains the latest ready row for every library. A cursor older than retained history receives `resync_required` and a new safe baseline instead of an unbounded per-device queue.
 
 ### 4. Validation & Error Matrix
 
 | Condition | Required behavior |
 |---|---|
 | Artifact generation is pending, failed, or superseded | Keep the change non-ready; do not advance targets or Player visibility |
+| A complete no-op artifact generation supersedes an older pending generation | Publish the newest represented pending change once; discard only older pending projections |
+| Artifact enumeration is partial | Do not publish or supersede any pending authoritative change |
 | Emby/Jellyfin authentication or target configuration is invalid | Persist a safe terminal error; do not retry as transient |
-| Upstream is unavailable or rate-limited | Use the queue's bounded retry policy without blocking other targets or Player |
+| Upstream is unavailable or rate-limited | Use the queue's bounded retry policy without blocking other targets or Player; after the final attempt keep the target terminally failed until explicit retry/configuration correction |
+| A disabled target is re-enabled after ready changes | Atomically catch up desired revision and enqueue the target |
 | Target is deleted while an old Job remains | Worker exits as a safe no-op |
 | Desired/manual generation advances while a worker runs | Reconcile the latest generation before terminal success |
 | Player token is revoked or user loses access | Reject/re-filter the next poll; cursor never authorizes access |
@@ -450,8 +459,8 @@ media_server_refresh Job payload = { "target_id": <uint> }
 ### 6. Tests Required
 
 - Migration tests cover fresh/upgrade/repeat application, defaults, indexes, foreign keys, revision zero, and queue policy registration.
-- Media-change tests cover ready/pending/no-op/partial/stale/superseded transitions, artifact recovery, manual metadata barrier, retention, and `resync_required`.
-- Refresh tests cover Emby and Jellyfin prefixes/auth/response bounds/redirect rejection, revision-zero manual refresh, coalescing generation, target isolation, auth versus transient retry, restart recovery, deleted targets, and secret-free payloads/DTOs.
+- Media-change tests cover ready/pending/no-op carry-forward/partial/stale/superseded transitions, artifact recovery, manual metadata barrier, latest-per-library retention, and `resync_required`.
+- Refresh tests cover Emby and Jellyfin prefixes/auth/response bounds/redirect rejection, revision-zero manual refresh, atomic create and re-enable catch-up, explicit target test/retry, bounded transient retry, terminal-failure restart suppression, coalescing generation, target isolation, restart recovery, target-referenced connection deletion, deleted targets, and secret-free payloads/DTOs.
 - Router tests use device Bearer, verify revocation/visibility, and assert no path/provider/credential leakage.
 
 ### 7. Wrong vs Correct

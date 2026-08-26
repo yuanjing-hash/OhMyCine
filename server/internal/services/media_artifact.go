@@ -482,7 +482,23 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 			return WorkerResult{ErrorCode: cleanup.ErrorCode, ErrorMessage: "媒体产物清理失败，媒体变更尚未发布"}
 		}
 	}
+	if policy.ScanPartial {
+		// A partial provider enumeration cannot prove that the completed artifact
+		// projection contains the authoritative library state. It must neither
+		// publish nor supersede an older pending content change.
+		return WorkerResult{}
+	}
 	return s.publishGenerationReady(run.LibraryID, run.Generation)
+}
+
+func mediaLibraryRequiresArtifacts(storageType string, library models.MediaLibrary, available bool) bool {
+	if !available {
+		return false
+	}
+	if storageType == models.StorageTypeLocal {
+		return library.MetadataArtifactsEnabled
+	}
+	return library.STRMEnabled && library.SignedProxyEnabled
 }
 
 func (s *MediaArtifactService) publishGenerationReady(libraryID uint, generation uint64) WorkerResult {

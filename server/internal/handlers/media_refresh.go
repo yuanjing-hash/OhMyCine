@@ -88,7 +88,7 @@ func (a *API) CreateMediaServerRefreshTarget(c *gin.Context) {
 		UpstreamLibraryID string `json:"upstream_library_id" binding:"required"`
 		Enabled           bool   `json:"enabled"`
 	}
-	if err := c.ShouldBindJSON(&payload); err != nil {
+	if err := strictJSON(c, &payload); err != nil || payload.LibraryID == 0 || payload.ConnectionID == 0 || payload.UpstreamLibraryID == "" {
 		writeError(c, a.log, invalid("媒体服务器刷新目标无效", err))
 		return
 	}
@@ -110,7 +110,7 @@ func (a *API) UpdateMediaServerRefreshTarget(c *gin.Context) {
 		Enabled  bool   `json:"enabled"`
 		Revision uint64 `json:"revision" binding:"required"`
 	}
-	if err := c.ShouldBindJSON(&payload); err != nil {
+	if err := strictJSON(c, &payload); err != nil || payload.Revision == 0 {
 		writeError(c, a.log, invalid("媒体服务器刷新目标无效", err))
 		return
 	}
@@ -142,6 +142,34 @@ func (a *API) RefreshMediaServerTarget(c *gin.Context) {
 		return
 	}
 	job, err := a.mediaServerRefresh.ManualRefresh(mustActor(c), uint(id), middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusAccepted, job)
+}
+
+func (a *API) TestMediaServerRefreshTarget(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		writeError(c, a.log, invalid("刷新目标标识无效", err))
+		return
+	}
+	result, err := a.mediaServerRefresh.TestTarget(c.Request.Context(), mustActor(c), uint(id), middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, result)
+}
+
+func (a *API) RetryMediaServerRefreshTarget(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		writeError(c, a.log, invalid("刷新目标标识无效", err))
+		return
+	}
+	job, err := a.mediaServerRefresh.Retry(mustActor(c), uint(id), middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return

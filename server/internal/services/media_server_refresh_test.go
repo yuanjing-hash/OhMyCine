@@ -12,6 +12,7 @@ import (
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"gorm.io/gorm"
 )
 
 type mediaServerRefreshFixture struct {
@@ -175,7 +176,74 @@ func TestRefreshWorkerClassifiesAuthenticationAndRateLimit(t *testing.T) {
 			if strings.Contains(result.ErrorMessage, "private upstream response") {
 				t.Fatal("worker result leaked upstream response")
 			}
+			if err := fixture.service.db.First(&target, target.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			wantStatus := models.JobStatusFailed
+			if test.wantRetry {
+				wantStatus = models.JobStatusRetryWait
+			}
+			if target.LastStatus != wantStatus {
+				t.Fatalf("target status=%q want=%q", target.LastStatus, wantStatus)
+			}
+			var run models.MediaServerRefreshRun
+			if err := fixture.service.db.Where("target_id = ?", target.ID).Order("started_at DESC").First(&run).Error; err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != wantStatus {
+				t.Fatalf("run status=%q want=%q", run.Status, wantStatus)
+			}
 		})
+	}
+}
+
+func TestRefreshWorkerStopsTransientRetriesAtQueuePolicyLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "private upstream response", http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+	fixture := newMediaServerRefreshFixture(t)
+	if err := fixture.service.db.Model(&models.QueuePolicy{}).Where("job_type = ?", JobTypeMediaServerRefresh).Update("max_attempts", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	target := fixture.createTarget(t, fixture.createConnection(t, upstream.URL), 1)
+	if err := fixture.service.EnqueueTarget(target.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, result := runRefreshJob(t, fixture)
+	if result.ErrorCode != "media_server_unavailable" || result.RetryAt != nil {
+		t.Fatalf("final transient result=%+v", result)
+	}
+	if err := fixture.service.db.First(&target, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.LastStatus != models.JobStatusFailed || target.LastErrorCode != "media_server_unavailable" {
+		t.Fatalf("terminal target=%+v", target)
+	}
+	var run models.MediaServerRefreshRun
+	if err := fixture.service.db.Where("target_id = ?", target.ID).Order("started_at DESC").First(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != models.JobStatusFailed {
+		t.Fatalf("terminal run=%+v", run)
+	}
+}
+
+func TestMediaServerRefreshRetryDelayIsBounded(t *testing.T) {
+	for _, test := range []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 0, want: time.Minute},
+		{attempt: 1, want: time.Minute},
+		{attempt: 2, want: 2 * time.Minute},
+		{attempt: 4, want: 8 * time.Minute},
+		{attempt: 5, want: 15 * time.Minute},
+		{attempt: 20, want: 15 * time.Minute},
+	} {
+		if got := mediaServerRefreshRetryDelay(test.attempt); got != test.want {
+			t.Fatalf("attempt=%d delay=%s want=%s", test.attempt, got, test.want)
+		}
 	}
 }
 
@@ -344,6 +412,119 @@ func TestCreateUsesLatestReadyRevisionAndRedactsUpstreamIdentity(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "stable-library-id") || strings.Contains(string(encoded), "upstream_library_id") {
 		t.Fatalf("target DTO leaked upstream identity: %s", encoded)
+	}
+}
+
+func TestEnablingTargetCatchesUpReadyChangesCommittedWhileDisabled(t *testing.T) {
+	fixture := newMediaServerRefreshFixture(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer upstream.Close()
+	target := fixture.createTarget(t, fixture.createConnection(t, upstream.URL), 0)
+	if err := fixture.service.db.Model(&target).Updates(map[string]any{"enabled": false, "desired_revision": 0}).Error; err != nil {
+		t.Fatal(err)
+	}
+	changes := NewMediaChangeService(fixture.service.db)
+	if err := fixture.service.db.Transaction(func(tx *gorm.DB) error {
+		_, err := changes.RecordTx(tx, fixture.library.ID, 1, models.MediaLibraryChangeCatalog, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.service.db.First(&target, target.ID).Error; err != nil || target.DesiredRevision != 0 {
+		t.Fatalf("disabled target advanced desired revision: %+v err=%v", target, err)
+	}
+	updated, err := fixture.service.Update(fixture.actor, target.ID, MediaServerRefreshTargetInput{Enabled: true, Revision: target.Revision}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DesiredRevision != 1 || !updated.Enabled {
+		t.Fatalf("updated target=%+v", updated)
+	}
+	var jobs int64
+	if err := fixture.service.db.Model(&models.Job{}).Where("job_type = ?", JobTypeMediaServerRefresh).Count(&jobs).Error; err != nil || jobs != 1 {
+		t.Fatalf("catch-up jobs=%d err=%v", jobs, err)
+	}
+}
+
+func TestTargetTestVerifiesExactUpstreamLibraryWithoutLeakingIdentity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Library/VirtualFolders" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"ItemId":"private-library-id","Name":"家庭电影","CollectionType":"movies"}]`))
+	}))
+	defer upstream.Close()
+	fixture := newMediaServerRefreshFixture(t)
+	now := time.Now().UTC()
+	target := models.MediaServerRefreshTarget{LibraryID: fixture.library.ID, ConnectionID: fixture.createConnection(t, upstream.URL), UpstreamLibraryID: "private-library-id", UpstreamLibraryName: "家庭电影", Enabled: false, LastStatus: "idle", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if err := fixture.service.db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.service.TestTarget(context.Background(), fixture.actor, target.ID, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UpstreamLibraryName != "家庭电影" || result.ContentType != "movies" || result.CheckedAt.IsZero() {
+		t.Fatalf("test result=%+v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private-library-id") {
+		t.Fatalf("test result leaked upstream identity: %s", encoded)
+	}
+}
+
+func TestFailedTargetRetryReusesOutstandingRevisionWithoutManualGeneration(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "private upstream error", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+	fixture := newMediaServerRefreshFixture(t)
+	target := fixture.createTarget(t, fixture.createConnection(t, upstream.URL), 2)
+	if err := fixture.service.EnqueueTarget(target.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, result := runRefreshJob(t, fixture)
+	if result.ErrorCode != "media_server_unauthorized" {
+		t.Fatalf("worker result=%+v", result)
+	}
+	if err := fixture.queue.Fail(claimed.Job.ID, claimed.LeaseToken, result.ErrorCode, result.ErrorMessage); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.EnqueueLibrary(target.LibraryID, target.DesiredRevision+1)
+	if err := fixture.service.RecoverPending(); err != nil {
+		t.Fatal(err)
+	}
+	var beforeRetry int64
+	if err := fixture.service.db.Model(&models.Job{}).Where("job_type = ?", JobTypeMediaServerRefresh).Count(&beforeRetry).Error; err != nil || beforeRetry != 1 {
+		t.Fatalf("terminal target was automatically requeued: jobs=%d err=%v", beforeRetry, err)
+	}
+	job, err := fixture.service.Retry(fixture.actor, target.ID, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != models.JobStatusQueued {
+		t.Fatalf("retry job=%+v", job)
+	}
+	if err := fixture.service.db.First(&target, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.ManualGeneration != 0 || target.DesiredRevision != 2 || target.LastStatus != models.JobStatusQueued || target.LastErrorCode != "" {
+		t.Fatalf("retried target=%+v", target)
+	}
+}
+
+func TestConnectionDeleteReportsRefreshTargetReference(t *testing.T) {
+	fixture := newMediaServerRefreshFixture(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer upstream.Close()
+	connectionID := fixture.createConnection(t, upstream.URL)
+	fixture.createTarget(t, connectionID, 0)
+	if err := fixture.connections.Delete(fixture.actor, connectionID, RequestContext{}); ErrorCode(err) != CodeConnectionInUse {
+		t.Fatalf("refresh target reference delete code=%q err=%v", ErrorCode(err), err)
 	}
 }
 

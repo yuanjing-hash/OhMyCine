@@ -14,6 +14,7 @@ import {
 } from '@/connections'
 import { credentialLoader } from '@/credentials'
 import { playerClientLabel, playerDeviceConfirmation, playerDeviceListPath, playerDeviceRevokePath, playerDeviceTime } from '@/player-devices'
+import { canTestMediaServerRefreshTarget } from '@/media-server-refresh'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
 import type { ConnectionSummary, EmbyGatewaySummary, EmbyManagementSummary, ListResponse, MediaLibraryDetail, MediaServerLibrarySummary, MediaServerRefreshTargetSummary, PlayerDeviceSummary } from '@/types/api'
@@ -367,6 +368,31 @@ async function runRefreshTarget(target: MediaServerRefreshTargetSummary) {
   }
 }
 
+async function testRefreshTarget(target: MediaServerRefreshTargetSummary) {
+  refreshBusy.value = true
+  try {
+    await api(`/api/v1/media-server-refresh-targets/${target.id}/test`, { method: 'POST', body: '{}' })
+    notify('媒体服务器刷新目标测试成功', 'success')
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    refreshBusy.value = false
+  }
+}
+
+async function retryRefreshTarget(target: MediaServerRefreshTargetSummary) {
+  refreshBusy.value = true
+  try {
+    await api(`/api/v1/media-server-refresh-targets/${target.id}/retry`, { method: 'POST', body: '{}' })
+    notify('失败的媒体服务器刷新已重新入队', 'success')
+    await loadRefreshTargets()
+  } catch (reason) {
+    notify(message(reason), 'error')
+  } finally {
+    refreshBusy.value = false
+  }
+}
+
 async function deleteRefreshTarget(target: MediaServerRefreshTargetSummary) {
   if (!window.confirm(`确认删除刷新绑定“${target.upstream_library_name}”？`)) return
   refreshBusy.value = true
@@ -386,6 +412,19 @@ function libraryName(id: number) {
 
 function connectionName(id: number) {
   return connections.value.find(item => item.id === id)?.name ?? `连接 #${id}`
+}
+
+function refreshStatusLabel(target: MediaServerRefreshTargetSummary) {
+  if (!target.enabled) return '已停用'
+  const labels: Record<string, string> = {
+    idle: '等待变化',
+    queued: '等待刷新',
+    running: '刷新中',
+    retry_wait: '等待自动重试',
+    completed: '已完成',
+    failed: '刷新失败',
+  }
+  return labels[target.last_status] ?? '状态未知'
 }
 
 async function revokeDevice(device: PlayerDeviceSummary) {
@@ -520,10 +559,10 @@ onMounted(() => {
       <p v-if="refreshTargets.length === 0" class="text-subtle mb-0 mt-5 text-sm">尚未配置刷新绑定。没有绑定时 Server 不会伪造刷新成功。</p>
       <div v-else class="mt-5 grid gap-4 lg:grid-cols-2">
         <article v-for="target in refreshTargets" :key="target.id" class="semantic-inset p-4">
-          <div class="flex items-start justify-between gap-4"><div><h3 class="m-0 text-base">{{ libraryName(target.library_id) }} → {{ target.upstream_library_name }}</h3><p class="text-subtle mb-0 mt-1 text-xs">{{ connectionName(target.connection_id) }}</p></div><span :class="target.last_status === 'failed' ? 'status-chip status-chip--error' : target.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ target.enabled ? target.last_status : '已停用' }}</span></div>
+          <div class="flex items-start justify-between gap-4"><div><h3 class="m-0 text-base">{{ libraryName(target.library_id) }} → {{ target.upstream_library_name }}</h3><p class="text-subtle mb-0 mt-1 text-xs">{{ connectionName(target.connection_id) }}</p></div><span :class="target.last_status === 'failed' ? 'status-chip status-chip--error' : target.last_status === 'retry_wait' ? 'status-chip status-chip--warning' : target.enabled ? 'status-chip status-chip--ready' : 'status-chip'">{{ refreshStatusLabel(target) }}</span></div>
           <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><dt class="text-subtle text-xs">待刷新版本</dt><dd class="m-0 mt-1">{{ target.desired_revision }}</dd></div><div><dt class="text-subtle text-xs">成功版本</dt><dd class="m-0 mt-1">{{ target.successful_revision }}</dd></div><div><dt class="text-subtle text-xs">最近尝试</dt><dd class="m-0 mt-1">{{ checkedAt(target.last_attempt_at) }}</dd></div><div><dt class="text-subtle text-xs">最近成功</dt><dd class="m-0 mt-1">{{ checkedAt(target.last_successful_at) }}</dd></div></dl>
           <p v-if="target.last_error_code" class="semantic-warning mb-0 mt-4 p-3 text-xs">刷新失败：{{ target.last_error_code }}</p>
-          <div class="mt-4 flex flex-wrap gap-2"><button v-if="auth.can(Permissions.MediaServersRefresh)" type="button" class="btn-primary" :disabled="refreshBusy || !target.enabled" @click="runRefreshTarget(target)">立即刷新</button><button v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" type="button" class="btn-secondary" :disabled="refreshBusy" @click="toggleRefreshTarget(target)">{{ target.enabled ? '停用' : '启用' }}</button><button v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" type="button" class="btn-danger" :disabled="refreshBusy" @click="deleteRefreshTarget(target)">删除</button></div>
+          <div class="mt-4 flex flex-wrap gap-2"><button v-if="canTestMediaServerRefreshTarget(auth.can(Permissions.ConnectionsTest), auth.can(Permissions.MediaLibrariesRead))" type="button" class="btn-secondary" :disabled="refreshBusy" @click="testRefreshTarget(target)">测试目标</button><button v-if="auth.can(Permissions.MediaServersRefresh) && target.last_status === 'failed'" type="button" class="btn-primary" :disabled="refreshBusy || !target.enabled" @click="retryRefreshTarget(target)">重试</button><button v-if="auth.can(Permissions.MediaServersRefresh)" type="button" class="btn-primary" :disabled="refreshBusy || !target.enabled" @click="runRefreshTarget(target)">立即刷新</button><button v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" type="button" class="btn-secondary" :disabled="refreshBusy" @click="toggleRefreshTarget(target)">{{ target.enabled ? '停用' : '启用' }}</button><button v-if="auth.can(Permissions.ConnectionsUpdate) && auth.can(Permissions.MediaLibrariesUpdate)" type="button" class="btn-danger" :disabled="refreshBusy" @click="deleteRefreshTarget(target)">删除</button></div>
         </article>
       </div>
     </section>

@@ -1292,6 +1292,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 	run.Partial = result.Partial
 	finished = time.Now().UTC()
 	var committedChange models.MediaLibraryChange
+	metadataProjectionChanged := false
 	transactionErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var currentLibrary models.MediaLibrary
 		if err := tx.First(&currentLibrary, id).Error; err != nil {
@@ -1349,6 +1350,7 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		for _, recognized := range recognizedUnits {
 			var record models.MediaLibraryRecognition
 			findErr := tx.Where("library_id = ? AND source_key = ?", id, recognized.Unit.SourceKey).First(&record).Error
+			recordExisted := findErr == nil
 			if errors.Is(findErr, gorm.ErrRecordNotFound) {
 				record = models.MediaLibraryRecognition{LibraryID: id, SourceKey: recognized.Unit.SourceKey, CreatedAt: now}
 			} else if findErr != nil {
@@ -1359,6 +1361,9 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			metadataJSON, marshalErr := marshalRecognitionMetadata(recognized.Result)
 			if marshalErr != nil {
 				return marshalErr
+			}
+			if recordExisted && mediaRecognitionProjectionChanged(record, recognized.Result, string(metadataJSON), recognized.Manual) {
+				metadataProjectionChanged = true
 			}
 			record.InputFingerprint = recognized.Unit.InputFingerprint
 			record.ProfileID, record.ProfileRevision = profile.ID, profile.Revision
@@ -1385,13 +1390,13 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 					entry, exists, oldPath = providerEntry, true, providerEntry.RelativePath
 				}
 			}
+			before := entry
+			physicalChanged := exists && (oldPath != file.RelativePath || entry.Size != file.Size || !entry.ModifiedAt.Equal(file.ModifiedAt))
 			projection, hasRecognition := byFile[file.RelativePath]
 			parsed := medialibrary.ParseMedia(filepath.Base(file.RelativePath), file.RelativePath)
 			if !exists {
 				run.Added++
 				entry = models.MediaLibraryEntry{LibraryID: id, RelativePath: file.RelativePath, CreatedAt: now}
-			} else if oldPath != file.RelativePath || entry.Size != file.Size || !entry.ModifiedAt.Equal(file.ModifiedAt) {
-				run.Updated++
 			}
 			entry.RelativePath = file.RelativePath
 			entry.ProviderID = file.ProviderID
@@ -1427,6 +1432,9 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 			}
 			entry.LastGeneration = generation
 			entry.UpdatedAt = now
+			if exists && (physicalChanged || mediaLibraryEntryProjectionChanged(before, entry)) {
+				run.Updated++
+			}
 			if err := tx.Save(&entry).Error; err != nil {
 				return err
 			}
@@ -1465,12 +1473,14 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		if err := tx.Save(&run).Error; err != nil {
 			return err
 		}
-		if s.changes != nil && !run.Partial && (run.Added > 0 || run.Updated > 0 || run.Removed > 0) {
+		if s.changes != nil && !run.Partial && (run.Added > 0 || run.Updated > 0 || run.Removed > 0 || metadataProjectionChanged) {
 			kind := models.MediaLibraryChangeCatalog
-			if run.Removed > 0 && run.Added == 0 && run.Updated == 0 {
+			if run.Added == 0 && run.Updated == 0 && run.Removed == 0 {
+				kind = models.MediaLibraryChangeMetadata
+			} else if run.Removed > 0 && run.Added == 0 && run.Updated == 0 {
 				kind = models.MediaLibraryChangeRemoval
 			}
-			requiresArtifacts := currentLibrary.STRMEnabled || currentLibrary.MetadataArtifactsEnabled
+			requiresArtifacts := mediaLibraryRequiresArtifacts(storage.Type, currentLibrary, s.artifacts != nil)
 			change, err := s.changes.RecordTx(tx, id, generation, kind, !requiresArtifacts)
 			if err != nil {
 				return err
@@ -1524,6 +1534,27 @@ func applyRecognitionEpisodeHints(entry *models.MediaLibraryEntry, recognized Me
 	if entry.Episode == nil && singleFile && recognized.EpisodeHint != nil {
 		entry.Episode = cloneInt(recognized.EpisodeHint)
 	}
+}
+
+func mediaRecognitionProjectionChanged(record models.MediaLibraryRecognition, result MediaRecognitionResult, metadataJSON string, manual bool) bool {
+	return record.Status != result.Status || record.ErrorCode != result.ErrorCode || record.MediaType != result.MediaType || record.Title != result.Title ||
+		!sameOptional(record.ReleaseYear, result.ReleaseYear) || !sameOptional(record.TMDBID, result.TMDBID) || !sameOptional(record.Confidence, result.Confidence) ||
+		record.CategoryName != result.CategoryName || !sameOptional(record.MatchedRuleID, result.MatchedRuleID) || record.MetadataJSON != metadataJSON || record.ManualOverride != manual
+}
+
+func mediaLibraryEntryProjectionChanged(before, after models.MediaLibraryEntry) bool {
+	return before.MediaType != after.MediaType || before.Title != after.Title || before.SeriesTitle != after.SeriesTitle ||
+		!sameOptional(before.Season, after.Season) || !sameOptional(before.Episode, after.Episode) || before.WorkKey != after.WorkKey ||
+		before.MatchStatus != after.MatchStatus || !sameOptional(before.TMDBID, after.TMDBID) || !sameOptional(before.ReleaseYear, after.ReleaseYear) ||
+		!sameOptional(before.MatchConfidence, after.MatchConfidence) || before.RecognitionErrorCode != after.RecognitionErrorCode ||
+		before.CategoryName != after.CategoryName || !sameOptional(before.MatchedRuleID, after.MatchedRuleID)
+}
+
+func sameOptional[T comparable](left, right *T) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func mediaLibraryScanOperation(kind string) serverlog.Operation {

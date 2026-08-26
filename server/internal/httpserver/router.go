@@ -175,7 +175,9 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	connectionAPI.POST("/media-server-refresh-targets", middleware.RequirePermission(authz.PermissionConnectionsUpdate), middleware.RequirePermission(authz.PermissionMediaLibrariesUpdate), api.CreateMediaServerRefreshTarget)
 	connectionAPI.PATCH("/media-server-refresh-targets/:id", middleware.RequirePermission(authz.PermissionConnectionsUpdate), middleware.RequirePermission(authz.PermissionMediaLibrariesUpdate), api.UpdateMediaServerRefreshTarget)
 	connectionAPI.DELETE("/media-server-refresh-targets/:id", middleware.RequirePermission(authz.PermissionConnectionsUpdate), middleware.RequirePermission(authz.PermissionMediaLibrariesUpdate), api.DeleteMediaServerRefreshTarget)
+	connectionAPI.POST("/media-server-refresh-targets/:id/test", middleware.RequirePermission(authz.PermissionConnectionsTest), middleware.RequirePermission(authz.PermissionMediaLibrariesRead), api.TestMediaServerRefreshTarget)
 	connectionAPI.POST("/media-server-refresh-targets/:id/refresh", middleware.RequirePermission(authz.PermissionMediaServersRefresh), api.RefreshMediaServerTarget)
+	connectionAPI.POST("/media-server-refresh-targets/:id/retry", middleware.RequirePermission(authz.PermissionMediaServersRefresh), api.RetryMediaServerRefreshTarget)
 
 	ptAPI := v1.Group("")
 	ptAPI.Use(middleware.NoStore(), middleware.Auth(auth, api.CookieName()), middleware.CSRF(auth))

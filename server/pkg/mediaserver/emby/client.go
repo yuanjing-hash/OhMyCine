@@ -130,6 +130,9 @@ func (c *Client) ListLibraries(ctx context.Context) ([]Library, error) {
 	if err := c.getJSON(ctx, "/Library/VirtualFolders", &payload); err != nil {
 		return nil, err
 	}
+	if payload == nil {
+		return nil, mediaserver.NewError(mediaserver.ErrorInvalidResponse, nil)
+	}
 	result := make([]Library, 0, len(payload))
 	for _, item := range payload {
 		id, name, contentType := strings.TrimSpace(item.ItemID), strings.TrimSpace(item.Name), strings.TrimSpace(item.CollectionType)

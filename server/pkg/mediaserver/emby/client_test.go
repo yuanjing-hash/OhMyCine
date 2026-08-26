@@ -184,6 +184,21 @@ func TestListLibrariesAndRefreshUseStableItemID(t *testing.T) {
 	}
 }
 
+func TestListLibrariesRejectsNullSuccessfulPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`null`))
+	}))
+	defer server.Close()
+	client, err := New(Config{Endpoint: server.URL, APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ListLibraries(context.Background()); mediaserver.ErrorCode(err) != mediaserver.ErrorInvalidResponse {
+		t.Fatalf("null payload error=%v code=%q", err, mediaserver.ErrorCode(err))
+	}
+}
+
 func TestRefreshRejectsOversizedSuccessResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

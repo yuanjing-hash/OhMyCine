@@ -27,6 +27,12 @@ type MediaServerRefreshTargetInput struct {
 	Revision            uint64
 }
 
+type MediaServerRefreshTargetTestResult struct {
+	UpstreamLibraryName string    `json:"upstream_library_name"`
+	ContentType         string    `json:"content_type"`
+	CheckedAt           time.Time `json:"checked_at"`
+}
+
 type mediaServerRefreshJobPayload struct {
 	TargetID uint `json:"target_id"`
 }
@@ -68,6 +74,47 @@ func (s *MediaServerRefreshService) ListUpstreamLibraries(ctx context.Context, a
 	return items, nil
 }
 
+func (s *MediaServerRefreshService) TestTarget(ctx context.Context, actor Actor, id uint, request RequestContext) (MediaServerRefreshTargetTestResult, error) {
+	if !actor.Can(authz.PermissionConnectionsTest) || !actor.Can(authz.PermissionMediaLibrariesRead) {
+		return MediaServerRefreshTargetTestResult{}, appError(CodePermissionDenied, "无权测试媒体服务器刷新目标", nil)
+	}
+	var target models.MediaServerRefreshTarget
+	if err := s.db.First(&target, id).Error; err != nil {
+		return MediaServerRefreshTargetTestResult{}, mediaServerRefreshTargetNotFound(err)
+	}
+	checkedAt := time.Now().UTC()
+	client, _, probeErr := s.connections.mediaServerClient(target.ConnectionID)
+	var matched mediaserverpkg.Library
+	if probeErr == nil {
+		callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		var items []mediaserverpkg.Library
+		items, probeErr = client.ListLibraries(callCtx)
+		cancel()
+		if probeErr == nil {
+			for _, item := range items {
+				if item.ID == target.UpstreamLibraryID {
+					matched = item
+					break
+				}
+			}
+			if matched.ID == "" {
+				probeErr = mediaserverpkg.NewError(mediaserverpkg.ErrorLibraryMissing, nil)
+			}
+		}
+	}
+	code, outcome := "", "success"
+	if probeErr != nil {
+		code, outcome = mediaServerRefreshErrorCode(probeErr), "failure"
+	}
+	if err := s.audit.Record(s.db, &actor.User.ID, "media_server_refresh_target.test", "media_server_refresh_target", uintID(id), outcome, map[string]any{"library_id": target.LibraryID, "connection_id": target.ConnectionID, "error_code": code}, request); err != nil {
+		return MediaServerRefreshTargetTestResult{}, err
+	}
+	if probeErr != nil {
+		return MediaServerRefreshTargetTestResult{}, appError(code, "媒体服务器刷新目标测试失败", probeErr)
+	}
+	return MediaServerRefreshTargetTestResult{UpstreamLibraryName: safeLabel(matched.Name, 256), ContentType: safeLabel(matched.ContentType, 64), CheckedAt: checkedAt}, nil
+}
+
 func (s *MediaServerRefreshService) Create(ctx context.Context, actor Actor, input MediaServerRefreshTargetInput, request RequestContext) (models.MediaServerRefreshTarget, error) {
 	if !actor.Can(authz.PermissionConnectionsUpdate) || !actor.Can(authz.PermissionMediaLibrariesUpdate) {
 		return models.MediaServerRefreshTarget{}, appError(CodePermissionDenied, "无权创建媒体服务器刷新目标", nil)
@@ -94,13 +141,17 @@ func (s *MediaServerRefreshService) Create(ctx context.Context, actor Actor, inp
 	if name == "" {
 		return models.MediaServerRefreshTarget{}, appError(mediaserverpkg.ErrorLibraryMissing, "所选上游媒体库不存在", nil)
 	}
-	var readyRevision uint64
-	if err := s.db.Model(&models.MediaLibraryChange{}).Where("library_id = ? AND state = ?", library.ID, models.MediaLibraryChangeReady).Select("COALESCE(MAX(revision), 0)").Scan(&readyRevision).Error; err != nil {
-		return models.MediaServerRefreshTarget{}, err
-	}
 	now := time.Now().UTC()
-	target := models.MediaServerRefreshTarget{LibraryID: library.ID, ConnectionID: input.ConnectionID, UpstreamLibraryID: upstreamID, UpstreamLibraryName: safeLabel(name, 256), Enabled: input.Enabled, DesiredRevision: readyRevision, SuccessfulRevision: 0, LastStatus: "idle", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	target := models.MediaServerRefreshTarget{LibraryID: library.ID, ConnectionID: input.ConnectionID, UpstreamLibraryID: upstreamID, UpstreamLibraryName: safeLabel(name, 256), Enabled: input.Enabled, SuccessfulRevision: 0, LastStatus: "idle", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&models.MediaLibrary{}, library.ID).Error; err != nil {
+			return mediaLibraryNotFound(err)
+		}
+		readyRevision, err := latestReadyMediaRevision(tx, library.ID)
+		if err != nil {
+			return err
+		}
+		target.DesiredRevision = readyRevision
 		if err := tx.Create(&target).Error; err != nil {
 			return err
 		}
@@ -123,7 +174,17 @@ func (s *MediaServerRefreshService) Update(actor Actor, id uint, input MediaServ
 		return target, mediaServerRefreshTargetNotFound(err)
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&models.MediaServerRefreshTarget{}).Where("id = ? AND revision = ?", id, input.Revision).Updates(map[string]any{"enabled": input.Enabled, "revision": input.Revision + 1, "updated_at": time.Now().UTC()})
+		updates := map[string]any{"enabled": input.Enabled, "revision": input.Revision + 1, "updated_at": time.Now().UTC()}
+		if input.Enabled {
+			readyRevision, err := latestReadyMediaRevision(tx, target.LibraryID)
+			if err != nil {
+				return err
+			}
+			if readyRevision > target.DesiredRevision {
+				updates["desired_revision"] = readyRevision
+			}
+		}
+		result := tx.Model(&models.MediaServerRefreshTarget{}).Where("id = ? AND revision = ?", id, input.Revision).Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -189,9 +250,29 @@ func (s *MediaServerRefreshService) ManualRefresh(actor Actor, id uint, request 
 	return s.enqueue(target)
 }
 
+func (s *MediaServerRefreshService) Retry(actor Actor, id uint, request RequestContext) (JobDTO, error) {
+	if !actor.Can(authz.PermissionMediaServersRefresh) {
+		return JobDTO{}, appError(CodePermissionDenied, "无权重试媒体服务器刷新", nil)
+	}
+	var target models.MediaServerRefreshTarget
+	if err := s.db.First(&target, id).Error; err != nil {
+		return JobDTO{}, mediaServerRefreshTargetNotFound(err)
+	}
+	if !target.Enabled {
+		return JobDTO{}, appError(CodeConnectionUnavailable, "媒体服务器刷新目标已停用", nil)
+	}
+	if target.LastStatus != models.JobStatusFailed || (target.DesiredRevision <= target.SuccessfulRevision && target.ManualGeneration <= target.SuccessfulManualGeneration) {
+		return JobDTO{}, appError(CodeConflict, "当前没有可重试的媒体服务器刷新", nil)
+	}
+	if err := s.audit.Record(s.db, &actor.User.ID, "media_server_refresh.retry", "media_server_refresh_target", uintID(id), "success", nil, request); err != nil {
+		return JobDTO{}, err
+	}
+	return s.enqueue(target)
+}
+
 func (s *MediaServerRefreshService) EnqueueLibrary(libraryID uint, _ uint64) {
 	var targets []models.MediaServerRefreshTarget
-	if err := s.db.Where("library_id = ? AND enabled = ? AND desired_revision > successful_revision", libraryID, true).Find(&targets).Error; err != nil {
+	if err := s.db.Where("library_id = ? AND enabled = ? AND last_status <> ? AND desired_revision > successful_revision", libraryID, true, models.JobStatusFailed).Find(&targets).Error; err != nil {
 		return
 	}
 	for _, target := range targets {
@@ -201,7 +282,7 @@ func (s *MediaServerRefreshService) EnqueueLibrary(libraryID uint, _ uint64) {
 
 func (s *MediaServerRefreshService) RecoverPending() error {
 	var targets []models.MediaServerRefreshTarget
-	if err := s.db.Where("enabled = ? AND (desired_revision > successful_revision OR manual_generation > successful_manual_generation)", true).Find(&targets).Error; err != nil {
+	if err := s.db.Where("enabled = ? AND last_status <> ? AND (desired_revision > successful_revision OR manual_generation > successful_manual_generation)", true, models.JobStatusFailed).Find(&targets).Error; err != nil {
 		return err
 	}
 	for _, target := range targets {
@@ -226,7 +307,13 @@ func (s *MediaServerRefreshService) enqueue(target models.MediaServerRefreshTarg
 	if err != nil {
 		return JobDTO{}, err
 	}
-	_ = s.db.Model(&models.MediaServerRefreshTarget{}).Where("id = ?", target.ID).Updates(map[string]any{"last_job_id": job.ID, "last_status": models.JobStatusQueued, "updated_at": time.Now().UTC()}).Error
+	result := s.db.Model(&models.MediaServerRefreshTarget{}).Where("id = ?", target.ID).Updates(map[string]any{"last_job_id": job.ID, "last_status": models.JobStatusQueued, "last_error_code": "", "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return JobDTO{}, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return JobDTO{}, appError(CodeNotFound, "媒体服务器刷新目标不存在", nil)
+	}
 	return job, nil
 }
 
@@ -270,21 +357,26 @@ func (w *MediaServerRefreshWorker) Run(ctx context.Context, _ JobRuntime, job Cl
 	}
 	finished := time.Now().UTC()
 	if err != nil {
-		code := ErrorCode(err)
-		var providerError *mediaserverpkg.Error
-		if errors.As(err, &providerError) {
-			code = providerError.Code
-		} else if code == "INTERNAL_ERROR" {
-			code = "media_server_configuration_invalid"
+		code := mediaServerRefreshErrorCode(err)
+		retryable := code == mediaserverpkg.ErrorUnavailable || code == mediaserverpkg.ErrorRateLimited
+		if retryable {
+			var policy models.QueuePolicy
+			if policyErr := w.service.db.First(&policy, "job_type = ?", JobTypeMediaServerRefresh).Error; policyErr != nil || job.Job.AttemptCount >= policy.MaxAttempts {
+				retryable = false
+			}
+		}
+		lastStatus := models.JobStatusFailed
+		if retryable {
+			lastStatus = models.JobStatusRetryWait
 		}
 		_ = w.service.db.Transaction(func(tx *gorm.DB) error {
-			if updateErr := tx.Model(&models.MediaServerRefreshRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": models.JobStatusFailed, "error_code": code, "finished_at": finished}).Error; updateErr != nil {
+			if updateErr := tx.Model(&models.MediaServerRefreshRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": lastStatus, "error_code": code, "finished_at": finished}).Error; updateErr != nil {
 				return updateErr
 			}
-			return tx.Model(&models.MediaServerRefreshTarget{}).Where("id = ?", target.ID).Updates(map[string]any{"last_status": models.JobStatusFailed, "last_error_code": code, "updated_at": finished}).Error
+			return tx.Model(&models.MediaServerRefreshTarget{}).Where("id = ?", target.ID).Updates(map[string]any{"last_status": lastStatus, "last_error_code": code, "updated_at": finished}).Error
 		})
-		if code == mediaserverpkg.ErrorUnavailable || code == mediaserverpkg.ErrorRateLimited {
-			next := finished.Add(time.Minute)
+		if retryable {
+			next := finished.Add(mediaServerRefreshRetryDelay(job.Job.AttemptCount))
 			return WorkerResult{RetryAt: &next, ErrorCode: code, ErrorMessage: "媒体服务器暂时不可用，将自动重试"}
 		}
 		return WorkerResult{ErrorCode: code, ErrorMessage: "媒体服务器刷新失败，请检查连接与目标配置"}
@@ -317,4 +409,35 @@ func mediaServerRefreshTargetNotFound(err error) error {
 		return appError(CodeNotFound, "媒体服务器刷新目标不存在", err)
 	}
 	return err
+}
+
+func latestReadyMediaRevision(tx *gorm.DB, libraryID uint) (uint64, error) {
+	var revision uint64
+	err := tx.Model(&models.MediaLibraryChange{}).
+		Where("library_id = ? AND state = ?", libraryID, models.MediaLibraryChangeReady).
+		Select("COALESCE(MAX(revision), 0)").Scan(&revision).Error
+	return revision, err
+}
+
+func mediaServerRefreshErrorCode(err error) string {
+	var providerError *mediaserverpkg.Error
+	if errors.As(err, &providerError) {
+		return providerError.Code
+	}
+	code := ErrorCode(err)
+	if code == "INTERNAL_ERROR" {
+		return "media_server_configuration_invalid"
+	}
+	return code
+}
+
+func mediaServerRefreshRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := time.Minute << min(attempt-1, 4)
+	if delay > 15*time.Minute {
+		return 15 * time.Minute
+	}
+	return delay
 }

@@ -299,7 +299,7 @@ func (s *MediaLibraryService) persistRecognitionResult(record models.MediaLibrar
 		if err := tx.First(&storage, library.StorageID).Error; err != nil {
 			return err
 		}
-		requiresArtifacts := s.artifacts != nil && ((storage.Type == models.StorageTypeLocal && library.MetadataArtifactsEnabled) || (storage.Type != models.StorageTypeLocal && library.STRMEnabled && library.SignedProxyEnabled))
+		requiresArtifacts := mediaLibraryRequiresArtifacts(storage.Type, library, s.artifacts != nil)
 		if requiresArtifacts {
 			generation = max(max(library.DirtyGeneration, library.ArtifactGeneration), current.LastGeneration) + 1
 			artifactGeneration = generation

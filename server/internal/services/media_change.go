@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -65,18 +66,34 @@ func (s *MediaChangeService) RecordTx(tx *gorm.DB, libraryID uint, generation ui
 }
 
 func (s *MediaChangeService) MarkGenerationReadyTx(tx *gorm.DB, libraryID uint, generation uint64) ([]models.MediaLibraryChange, error) {
-	// A newer artifact generation supersedes older pending projections. Those
-	// rows never become public ready changes and therefore cannot cause a stale
-	// refresh after the latest projection has committed.
-	if err := tx.Where("library_id = ? AND generation < ? AND state = ?", libraryID, generation, models.MediaLibraryChangePending).Delete(&models.MediaLibraryChange{}).Error; err != nil {
-		return nil, err
-	}
 	var changes []models.MediaLibraryChange
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("library_id = ? AND generation = ? AND state = ?", libraryID, generation, models.MediaLibraryChangePending).Order("revision").Find(&changes).Error; err != nil {
 		return nil, err
 	}
 	if len(changes) == 0 {
-		return nil, nil
+		// Artifact jobs intentionally coalesce to the newest complete generation.
+		// A no-op scan can therefore finish a newer artifact generation without
+		// owning a change row of its own. In that case the newest older pending
+		// change is still represented by the completed artifacts and must not be
+		// deleted silently. Older pending rows are superseded by that projection.
+		var carried models.MediaLibraryChange
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("library_id = ? AND generation < ? AND state = ?", libraryID, generation, models.MediaLibraryChangePending).
+			Order("revision DESC").First(&carried).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		changes = []models.MediaLibraryChange{carried}
+		if err := tx.Where("library_id = ? AND generation < ? AND state = ? AND sequence <> ?", libraryID, generation, models.MediaLibraryChangePending, carried.Sequence).Delete(&models.MediaLibraryChange{}).Error; err != nil {
+			return nil, err
+		}
+	} else if err := tx.Where("library_id = ? AND generation < ? AND state = ?", libraryID, generation, models.MediaLibraryChangePending).Delete(&models.MediaLibraryChange{}).Error; err != nil {
+		// A change in the completed generation supersedes every older pending
+		// projection; only this generation is externally observable.
+		return nil, err
 	}
 	now := time.Now().UTC()
 	for index := range changes {
@@ -123,7 +140,10 @@ func (s *MediaChangeService) prune() {
 		Order("sequence DESC").Offset(s.retained).Limit(1).Pluck("sequence", &cutoff).Error; err != nil || cutoff == 0 {
 		return
 	}
-	_ = s.db.Where("state = ? AND sequence <= ?", models.MediaLibraryChangeReady, cutoff).Delete(&models.MediaLibraryChange{}).Error
+	latestPerLibrary := s.db.Model(&models.MediaLibraryChange{}).
+		Select("MAX(sequence)").Where("state = ?", models.MediaLibraryChangeReady).Group("library_id")
+	_ = s.db.Where("state = ? AND sequence <= ? AND sequence NOT IN (?)", models.MediaLibraryChangeReady, cutoff, latestPerLibrary).
+		Delete(&models.MediaLibraryChange{}).Error
 }
 
 type MediaChangePage struct {

@@ -441,6 +441,12 @@ func (s *ConnectionService) Delete(actor Actor, id uint, request RequestContext)
 		if references > 0 {
 			return appError(CodeConnectionInUse, "连接仍被 Storage 使用", nil)
 		}
+		if err := tx.Model(&models.MediaServerRefreshTarget{}).Where("connection_id = ?", id).Count(&references).Error; err != nil {
+			return err
+		}
+		if references > 0 {
+			return appError(CodeConnectionInUse, "连接仍被媒体服务器刷新绑定使用", nil)
+		}
 		if err := tx.Delete(&record).Error; err != nil {
 			return err
 		}

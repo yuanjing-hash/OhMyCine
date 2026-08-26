@@ -78,6 +78,44 @@ func TestNormalizeSourceAssetExtraExtensions(t *testing.T) {
 	}
 }
 
+func TestMediaRecognitionProjectionChangedTracksUserVisibleMetadata(t *testing.T) {
+	year, tmdbID, confidence, rule := 2024, int64(42), 0.91, "rule-1"
+	record := models.MediaLibraryRecognition{
+		Status: "matched", MediaType: "movie", Title: "Example", ReleaseYear: &year,
+		TMDBID: &tmdbID, Confidence: &confidence, CategoryName: "Movies", MatchedRuleID: &rule,
+		MetadataJSON: `{"title":"Example"}`,
+	}
+	result := MediaRecognitionResult{
+		Status: "matched", MediaType: "movie", Title: "Example", ReleaseYear: &year,
+		TMDBID: &tmdbID, Confidence: &confidence, CategoryName: "Movies", MatchedRuleID: &rule,
+	}
+	if mediaRecognitionProjectionChanged(record, result, record.MetadataJSON, false) {
+		t.Fatal("identical recognition projection must remain unchanged")
+	}
+	if !mediaRecognitionProjectionChanged(record, result, `{"title":"Example","overview":"updated"}`, false) {
+		t.Fatal("metadata-only changes must be observable")
+	}
+}
+
+func TestMediaLibraryEntryProjectionChangedIgnoresPhysicalFacts(t *testing.T) {
+	season, episode, tmdbID, year, confidence, rule := 1, 2, int64(42), 2024, 0.91, "rule-1"
+	before := models.MediaLibraryEntry{
+		MediaType: "series", Title: "Episode", SeriesTitle: "Example", Season: &season, Episode: &episode,
+		WorkKey: "tmdb:tv:42", MatchStatus: "matched", TMDBID: &tmdbID, ReleaseYear: &year,
+		MatchConfidence: &confidence, CategoryName: "TV", MatchedRuleID: &rule,
+	}
+	after := before
+	after.Size++
+	after.ModifiedAt = time.Now().UTC()
+	if mediaLibraryEntryProjectionChanged(before, after) {
+		t.Fatal("physical file facts are counted separately from catalog projection")
+	}
+	after.Title = "Updated episode title"
+	if !mediaLibraryEntryProjectionChanged(before, after) {
+		t.Fatal("entry metadata changes must be observable")
+	}
+}
+
 func TestMediaLibraryScanUsesSharedTMDBRecognitionAndPersistentCache(t *testing.T) {
 	service, db, actor, storage, profile := mediaLibraryTestService(t)
 	if err := os.WriteFile(filepath.Join(storage.RootPath, "Seven.Samurai.1954.1080p.BluRay.mkv"), []byte("media"), 0o600); err != nil {

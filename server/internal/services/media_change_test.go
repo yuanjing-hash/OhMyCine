@@ -148,3 +148,112 @@ func TestMediaChangePendingWaitsForMatchingArtifactGeneration(t *testing.T) {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
 }
+
+func TestNewerCompleteArtifactGenerationCarriesLatestOlderPendingChange(t *testing.T) {
+	management, _, _, library, _ := strmManagementFixture(t)
+	db := management.db
+	changes := NewMediaChangeService(db)
+	var first, latest models.MediaLibraryChange
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		first, err = changes.RecordTx(tx, library.ID, 4, models.MediaLibraryChangeCatalog, false)
+		if err != nil {
+			return err
+		}
+		latest, err = changes.RecordTx(tx, library.ID, 5, models.MediaLibraryChangeMetadata, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		ready, err := changes.MarkGenerationReadyTx(tx, library.ID, 6)
+		if err != nil {
+			return err
+		}
+		if len(ready) != 1 || ready[0].Sequence != latest.Sequence || ready[0].State != models.MediaLibraryChangeReady {
+			t.Fatalf("carried ready=%+v latest=%+v", ready, latest)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var obsoleteCount int64
+	if err := db.Model(&models.MediaLibraryChange{}).Where("sequence = ?", first.Sequence).Count(&obsoleteCount).Error; err != nil || obsoleteCount != 0 {
+		t.Fatalf("obsolete pending count=%d err=%v", obsoleteCount, err)
+	}
+}
+
+func TestMatchingArtifactGenerationSupersedesOlderPendingChange(t *testing.T) {
+	management, _, _, library, _ := strmManagementFixture(t)
+	db := management.db
+	changes := NewMediaChangeService(db)
+	var old, current models.MediaLibraryChange
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		old, err = changes.RecordTx(tx, library.ID, 4, models.MediaLibraryChangeCatalog, false)
+		if err != nil {
+			return err
+		}
+		current, err = changes.RecordTx(tx, library.ID, 5, models.MediaLibraryChangeRemoval, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		ready, err := changes.MarkGenerationReadyTx(tx, library.ID, 5)
+		if err != nil {
+			return err
+		}
+		if len(ready) != 1 || ready[0].Sequence != current.Sequence {
+			t.Fatalf("ready=%+v current=%+v", ready, current)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var obsoleteCount int64
+	if err := db.Model(&models.MediaLibraryChange{}).Where("sequence = ?", old.Sequence).Count(&obsoleteCount).Error; err != nil || obsoleteCount != 0 {
+		t.Fatalf("obsolete pending count=%d err=%v", obsoleteCount, err)
+	}
+}
+
+func TestMediaChangePruningRetainsLatestReadyRevisionPerLibrary(t *testing.T) {
+	management, _, _, firstLibrary, _ := strmManagementFixture(t)
+	db := management.db
+	secondLibrary := firstLibrary
+	secondLibrary.ID = 0
+	secondLibrary.Name = "Quiet refresh library"
+	secondLibrary.NameNormalized = "quiet refresh library"
+	secondLibrary.ContentRevision = 0
+	secondLibrary.CreatedAt = time.Now().UTC()
+	secondLibrary.UpdatedAt = secondLibrary.CreatedAt
+	if err := db.Create(&secondLibrary).Error; err != nil {
+		t.Fatal(err)
+	}
+	changes := NewMediaChangeService(db)
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		_, err := changes.RecordTx(tx, firstLibrary.ID, 1, models.MediaLibraryChangeCatalog, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for generation := uint64(1); generation <= 4; generation++ {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			_, err := changes.RecordTx(tx, secondLibrary.ID, generation, models.MediaLibraryChangeCatalog, true)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changes.retained = 2
+	changes.prune()
+	readyRevision, err := latestReadyMediaRevision(db, firstLibrary.ID)
+	if err != nil || readyRevision != 1 {
+		t.Fatalf("quiet library ready revision=%d err=%v", readyRevision, err)
+	}
+	var retained int64
+	if err := db.Model(&models.MediaLibraryChange{}).Where("library_id = ? AND state = ?", firstLibrary.ID, models.MediaLibraryChangeReady).Count(&retained).Error; err != nil || retained != 1 {
+		t.Fatalf("quiet library retained changes=%d err=%v", retained, err)
+	}
+}
