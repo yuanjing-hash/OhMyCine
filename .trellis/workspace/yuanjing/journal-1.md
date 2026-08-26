@@ -818,3 +818,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 31: Server 扫描与 OpenRouter 热修
+
+**Date**: 2026-08-26
+**Task**: Server 扫描与 OpenRouter 热修
+**Branch**: `develop`
+
+### Summary
+
+修复媒体库编辑导致内容修订游标回退和扫描提交唯一键冲突，增加旧库自愈、并发与十集扫描回归、安全持久化诊断，并兼容 OpenRouter /api/v1。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `599ec2f` | (see git log) |
+
+### Status
+
+[OK] **Completed**
