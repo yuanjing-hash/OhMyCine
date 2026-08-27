@@ -17,6 +17,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
+	"gorm.io/gorm"
 )
 
 func TestDownloadSearchTitlesStripsReleaseSuffixFromSevenSamurai(t *testing.T) {
@@ -165,7 +166,7 @@ func TestClassifyBackfillsLegacyAutomaticIdentityWithoutFuzzyResearch(t *testing
 		_, _ = w.Write([]byte(`{"id":346,"title":"Seven Samurai","original_title":"七人の侍","original_language":"ja","release_date":"1954-04-26","genres":[{"id":18,"name":"Drama"}],"production_countries":[{"iso_3166_1":"JP"}]}`))
 	}))
 	defer server.Close()
-	downloads, _, queue, _, _ := downloadFixture(t)
+	downloads, _, queue, actor, _ := downloadFixture(t)
 	metadata := NewMetadataSettingsService(queue.db, queue.audit, downloads.credentials, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
 	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
 		return tmdb.NewForTest("test-token", server.URL, server.Client())
@@ -174,7 +175,14 @@ func TestClassifyBackfillsLegacyAutomaticIdentityWithoutFuzzyResearch(t *testing
 	rules, _ := json.Marshal(classification.DefaultRules())
 	id := int64(346)
 	year := 1954
-	task := models.DownloadTask{ID: "legacy-automatic-backfill", ProfileRulesJSON: string(rules), ProfileRecognitionRulesJSON: "[]", ScrapeTMDBID: &id, ScrapeMediaType: "movie", ScrapeYear: &year, IdentitySource: mediaIdentitySourceAutomatic, IdentityStatus: mediaIdentityStatusVerified, IdentityRevision: 1, IdentitySnapshotJSON: `{}`}
+	task := models.DownloadTask{ID: "legacy-automatic-backfill", OwnerID: actor.User.ID, ProfileRulesJSON: string(rules), ProfileRecognitionRulesJSON: "[]", ScrapeTMDBID: &id, ScrapeMediaType: "movie", ScrapeYear: &year, IdentitySource: mediaIdentitySourceAutomatic, IdentityStatus: mediaIdentityStatusVerified, IdentityRevision: 1, IdentitySnapshotJSON: `{}`}
+	_, err := queue.EnqueueWith(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "download", DisplayName: "legacy automatic backfill", Payload: downloadJobPayload{DownloadTaskID: task.ID}}, func(tx *gorm.DB, job models.Job) error {
+		task.JobID = job.ID
+		return tx.Create(&task).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifest := downloadpkg.Manifest{Name: "unparseable legacy label", Complete: true, Files: []downloadpkg.File{{RelativePath: "opaque-video.mkv", Size: 2 * 1024 * 1024 * 1024}}}
 	worker := NewDownloadWorker(downloads)
 	match, err := worker.classify(context.Background(), task, manifest)

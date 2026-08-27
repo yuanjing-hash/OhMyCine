@@ -44,6 +44,7 @@ type DownloaderInput struct {
 	Enabled                bool
 	StorageID              *uint
 	ProviderDirectoryToken string
+	AutoListenLifeEvents   bool
 }
 
 type UpdateDownloaderInput struct {
@@ -56,6 +57,7 @@ type UpdateDownloaderInput struct {
 	Enabled                *bool
 	StorageID              *uint
 	ProviderDirectoryToken *string
+	AutoListenLifeEvents   *bool
 }
 
 type DownloaderHealth struct {
@@ -80,6 +82,7 @@ type DownloaderSummary struct {
 	StorageID             *uint                    `json:"storage_id"`
 	StorageName           string                   `json:"storage_name"`
 	ProviderDirectoryPath string                   `json:"provider_directory_path"`
+	AutoListenLifeEvents  bool                     `json:"auto_listen_life_events"`
 }
 
 func (s *DownloaderService) List(actor Actor) ([]DownloaderSummary, error) {
@@ -126,6 +129,12 @@ func (s *DownloaderService) CreateContext(ctx context.Context, actor Actor, inpu
 		}
 		providerDirectoryID, providerDirectoryPath = selection.ProviderID, selection.RelativeRoot
 	}
+	autoListen := input.AutoListenLifeEvents && providerType == models.DownloaderTypePan115Offline
+	if input.Enabled && autoListen {
+		if err := s.validateLifeEventDirectory(ctx, "", storage, providerDirectoryID); err != nil {
+			return DownloaderSummary{}, err
+		}
+	}
 	id := uuid.NewString()
 	username, err := s.credentials.Encrypt(downloaderPurpose(id, "username"), input.Username)
 	if err != nil {
@@ -137,7 +146,7 @@ func (s *DownloaderService) CreateContext(ctx context.Context, actor Actor, inpu
 	}
 	capabilitiesJSON, _ := json.Marshal(capabilities)
 	now := time.Now().UTC()
-	record := models.Downloader{ID: id, Name: name, NameNormalized: normalized, Type: providerType, BaseURL: baseURL, UsernameCiphertext: username, PasswordCiphertext: password, StorageID: storage, ProviderDirectoryID: providerDirectoryID, ProviderDirectoryPath: providerDirectoryPath, Enabled: input.Enabled, CapabilitiesJSON: string(capabilitiesJSON), LastHealthStatus: "unknown", CreatedAt: now, UpdatedAt: now}
+	record := models.Downloader{ID: id, OwnerID: actor.User.ID, Name: name, NameNormalized: normalized, Type: providerType, BaseURL: baseURL, UsernameCiphertext: username, PasswordCiphertext: password, StorageID: storage, ProviderDirectoryID: providerDirectoryID, ProviderDirectoryPath: providerDirectoryPath, AutoListenLifeEvents: autoListen, Enabled: input.Enabled, CapabilitiesJSON: string(capabilitiesJSON), LastHealthStatus: "unknown", CreatedAt: now, UpdatedAt: now}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -181,6 +190,12 @@ func (s *DownloaderService) UpdateContext(ctx context.Context, actor Actor, id s
 	if input.Enabled != nil {
 		record.Enabled = *input.Enabled
 	}
+	if input.AutoListenLifeEvents != nil {
+		record.AutoListenLifeEvents = record.Type == models.DownloaderTypePan115Offline && *input.AutoListenLifeEvents
+		if record.AutoListenLifeEvents && record.OwnerID == 0 {
+			record.OwnerID = actor.User.ID
+		}
+	}
 	if record.Type == models.DownloaderTypePan115Offline && (input.StorageID != nil || input.ProviderDirectoryToken != nil) {
 		if input.StorageID == nil || input.ProviderDirectoryToken == nil {
 			return DownloaderSummary{}, appError(CodeDownloaderStorageRequired, "请选择完整的 115 离线下载目录", nil)
@@ -218,6 +233,11 @@ func (s *DownloaderService) UpdateContext(ctx context.Context, actor Actor, id s
 	record.BaseURL, _, err = s.validateDownloaderConfig(record.Type, record.BaseURL, username, password, record.StorageID)
 	if err != nil {
 		return DownloaderSummary{}, err
+	}
+	if record.Enabled && record.AutoListenLifeEvents {
+		if err := s.validateLifeEventDirectory(ctx, record.ID, record.StorageID, record.ProviderDirectoryID); err != nil {
+			return DownloaderSummary{}, err
+		}
 	}
 	record.UsernameCiphertext, err = s.credentials.Encrypt(downloaderPurpose(record.ID, "username"), username)
 	if err != nil {
@@ -397,6 +417,83 @@ func (s *DownloaderService) validateDownloaderConfig(providerType, rawURL, usern
 	return baseURL, nil, nil
 }
 
+// validateLifeEventDirectory proves that one enabled 115 life-event listener
+// owns a disjoint provider subtree. A listener must never observe another
+// listener's work or a final MediaLibrary root, otherwise the same provider
+// item could be claimed or organized through two routes.
+func (s *DownloaderService) validateLifeEventDirectory(ctx context.Context, excludeDownloaderID string, storageID *uint, directoryID string) error {
+	if storageID == nil || strings.TrimSpace(directoryID) == "" || s.connections == nil {
+		return appError(CodeDownloaderStorageUnavailable, "115 自动监听目录不可用", nil)
+	}
+	var storage models.Storage
+	if err := s.db.WithContext(ctx).First(&storage, *storageID).Error; err != nil || !storage.Enabled || storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil {
+		return appError(CodeDownloaderStorageUnavailable, "115 自动监听目录不可用", err)
+	}
+	_, driver, err := s.connections.driver(*storage.ConnectionID)
+	if err != nil {
+		return appError(CodeDownloaderStorageUnavailable, "115 自动监听目录不可用", err)
+	}
+	directory, err := providerItemWithinRoot(ctx, driver, strings.TrimSpace(directoryID), strings.TrimSpace(storage.RootPath))
+	if err != nil || !directory.IsDir {
+		return appError(CodeDownloaderStorageUnavailable, "115 自动监听目录不在所属 Storage 内", err)
+	}
+
+	var downloaderRoots []string
+	downloaderQuery := s.db.WithContext(ctx).Table("downloaders").
+		Select("downloaders.provider_directory_id").
+		Joins("JOIN storages ON storages.id = downloaders.storage_id").
+		Where("downloaders.enabled = ? AND downloaders.auto_listen_life_events = ? AND downloaders.type = ? AND storages.enabled = ? AND storages.type = ? AND storages.connection_id = ?", true, true, models.DownloaderTypePan115Offline, true, models.StorageTypePan115, *storage.ConnectionID)
+	if excludeDownloaderID != "" {
+		downloaderQuery = downloaderQuery.Where("downloaders.id <> ?", excludeDownloaderID)
+	}
+	if err := downloaderQuery.Scan(&downloaderRoots).Error; err != nil {
+		return err
+	}
+	for _, otherRootID := range downloaderRoots {
+		otherRootID = strings.TrimSpace(otherRootID)
+		if otherRootID == "" {
+			continue
+		}
+		overlaps, overlapErr := providerDirectoriesOverlap(ctx, driver, directory.ID, otherRootID)
+		if overlapErr != nil {
+			return appError(CodeDownloaderStorageUnavailable, "无法验证现有 115 自动监听目录边界", overlapErr)
+		}
+		if overlaps {
+			return appError(CodeMediaLibraryOverlap, "115 自动监听目录与同账号的其它监听目录重叠", nil)
+		}
+	}
+
+	type libraryRoot struct {
+		ProviderRootID string
+		StorageRootID  string
+	}
+	var libraryRoots []libraryRoot
+	if err := s.db.WithContext(ctx).Table("media_libraries").
+		Select("media_libraries.provider_root_id, storages.root_path AS storage_root_id").
+		Joins("JOIN storages ON storages.id = media_libraries.storage_id").
+		Where("media_libraries.enabled = ? AND storages.enabled = ? AND storages.type = ? AND storages.connection_id = ?", true, true, models.StorageTypePan115, *storage.ConnectionID).
+		Scan(&libraryRoots).Error; err != nil {
+		return err
+	}
+	for _, root := range libraryRoots {
+		rootID := strings.TrimSpace(root.ProviderRootID)
+		if rootID == "" {
+			rootID = strings.TrimSpace(root.StorageRootID)
+		}
+		if rootID == "" {
+			return appError(CodeDownloaderStorageUnavailable, "现有 115 媒体库目录边界不完整", nil)
+		}
+		overlaps, overlapErr := providerDirectoriesOverlap(ctx, driver, directory.ID, rootID)
+		if overlapErr != nil {
+			return appError(CodeDownloaderStorageUnavailable, "无法验证现有 115 媒体库目录边界", overlapErr)
+		}
+		if overlaps {
+			return appError(CodeMediaLibraryOverlap, "115 自动监听目录不能与最终媒体库目录重叠", nil)
+		}
+	}
+	return nil
+}
+
 func (s *DownloaderService) resolveProviderDirectory(ctx context.Context, actor Actor, storageID *uint, token string) (ProviderDirectorySelection, error) {
 	if storageID == nil || strings.TrimSpace(token) == "" {
 		return ProviderDirectorySelection{}, appError(CodeDownloaderStorageRequired, "请浏览并选择 115 离线下载目录", nil)
@@ -437,7 +534,7 @@ func (s *DownloaderService) summary(record models.Downloader) DownloaderSummary 
 			name = storage.Name
 		}
 	}
-	return DownloaderSummary{ID: record.ID, Name: record.Name, Type: record.Type, BaseURL: record.BaseURL, Enabled: record.Enabled, UsernameConfigured: record.UsernameCiphertext != "", PasswordConfigured: record.PasswordCiphertext != "", Capabilities: capabilities, Health: DownloaderHealth{Status: record.LastHealthStatus, Version: record.LastHealthVersion, ErrorCode: record.LastHealthErrorCode, LastChecked: record.LastHealthCheckedAt}, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, StorageID: record.StorageID, StorageName: name, ProviderDirectoryPath: record.ProviderDirectoryPath}
+	return DownloaderSummary{ID: record.ID, Name: record.Name, Type: record.Type, BaseURL: record.BaseURL, Enabled: record.Enabled, UsernameConfigured: record.UsernameCiphertext != "", PasswordConfigured: record.PasswordCiphertext != "", Capabilities: capabilities, Health: DownloaderHealth{Status: record.LastHealthStatus, Version: record.LastHealthVersion, ErrorCode: record.LastHealthErrorCode, LastChecked: record.LastHealthCheckedAt}, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, StorageID: record.StorageID, StorageName: name, ProviderDirectoryPath: record.ProviderDirectoryPath, AutoListenLifeEvents: record.AutoListenLifeEvents}
 }
 
 func downloaderTestMessage(providerType, code string) string {

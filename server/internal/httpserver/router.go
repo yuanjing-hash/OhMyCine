@@ -238,6 +238,7 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	downloadAPI.GET("/downloads/:id/tmdb-candidates", middleware.RequireAnyPermission(authz.PermissionDownloadsReadOwn, authz.PermissionDownloadsReadAll), api.DownloadRecognitionCandidates)
 	downloadAPI.PUT("/downloads/:id/recognition-override", middleware.RequireAnyPermission(authz.PermissionJobsControlOwn, authz.PermissionJobsControlAll), api.OverrideDownloadRecognition)
 	downloadAPI.PUT("/downloads/:id/import-target", middleware.RequireAnyPermission(authz.PermissionJobsControlOwn, authz.PermissionJobsControlAll), api.RetargetDownloadImport)
+	downloadAPI.POST("/downloads/:id/cancel", middleware.RequireAnyPermission(authz.PermissionJobsControlOwn, authz.PermissionJobsControlAll, authz.PermissionDownloadsManageAll), api.CancelDownloadPipeline)
 	downloadAPI.DELETE("/downloads/:id", middleware.RequireAnyPermission(authz.PermissionJobsControlOwn, authz.PermissionDownloadsManageAll), api.DeleteDownload)
 	downloadAPI.GET("/seeding-tasks", middleware.RequireAnyPermission(authz.PermissionDownloadsReadOwn, authz.PermissionDownloadsReadAll), api.SeedingTasks)
 	downloadAPI.POST("/seeding-tasks/:id/stop", middleware.RequireAnyPermission(authz.PermissionJobsControlOwn, authz.PermissionDownloadsManageAll), api.StopSeedingTask)

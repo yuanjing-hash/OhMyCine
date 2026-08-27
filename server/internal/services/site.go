@@ -1107,6 +1107,21 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 	}
 	completed := false
 	defer func() { s.finishClaim(token, completed) }()
+	var selectedDownloader models.Downloader
+	if err := s.db.First(&selectedDownloader, "id = ?", strings.TrimSpace(input.DownloaderID)).Error; err != nil {
+		return DownloadTaskSummary{}, downloaderNotFound(err)
+	}
+	if !selectedDownloader.Enabled {
+		return DownloadTaskSummary{}, appError(CodeDownloaderUnavailable, "下载器已停用", nil)
+	}
+	var claimedSite models.Site
+	if err := s.db.Select("id", "kind", "enabled").First(&claimedSite, claim.SiteID).Error; err != nil {
+		return DownloadTaskSummary{}, siteNotFound(err)
+	}
+	definition, definitionFound := builtin.DefinitionForKey(claimedSite.Kind)
+	if selectedDownloader.Type == models.DownloaderTypePan115Offline && (!definitionFound || definition.SiteType != builtin.SiteTypeBT) {
+		return DownloadTaskSummary{}, appError(CodeDownloadSourceInvalid, "只有已确认的公开 BT 资源可以提交到 115 离线下载", nil)
+	}
 	record, config, adapter, err := s.runtimeConfig(claim.SiteID)
 	if err != nil {
 		return DownloadTaskSummary{}, err
@@ -1131,14 +1146,20 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 		if hasMagnet {
 			source = DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: resolved.Magnet}
 		} else {
-			source = DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: resolved.Torrent, Filename: resolved.Filename}
+			source, err = siteTorrentDownloadSource(definition, definitionFound, selectedDownloader.Type, resolved.Torrent, resolved.Filename)
+			if err != nil {
+				return DownloadTaskSummary{}, err
+			}
 		}
 	} else {
 		torrent, filename, downloadErr := adapter.Download(ctx, config, claim.TorrentID)
 		if downloadErr != nil {
 			return DownloadTaskSummary{}, siteAdapterError(downloadErr, "无法获取种子文件")
 		}
-		source = DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: torrent, Filename: filename}
+		source, err = siteTorrentDownloadSource(definition, definitionFound, selectedDownloader.Type, torrent, filename)
+		if err != nil {
+			return DownloadTaskSummary{}, err
+		}
 	}
 	var recognitionOverride *DownloadRecognitionIdentity
 	if claim.ManualTMDBID != nil && claim.ManualMediaType != "" {
@@ -1157,6 +1178,24 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 	_ = s.audit.Record(s.db, &actor.User.ID, "site.download", "site", uintID(record.ID), "success", map[string]any{"download_task_id": result.ID}, request)
 	serverlog.OperationDiscoverySearch.Event(s.log.Info()).Uint("site_id", record.ID).Str("download_task_id", result.ID).Msg(serverlog.OperationDiscoverySearch.Message("种子资源搜索结果已提交下载"))
 	return result, nil
+}
+
+// siteTorrentDownloadSource bridges only a torrent whose authoritative Site
+// definition declares BT. Site provenance is authoritative here: torrent
+// bytes alone can never prove that a result is public, while every PT result
+// remains blocked before provider access.
+func siteTorrentDownloadSource(definition builtin.Definition, definitionFound bool, downloaderType string, torrent []byte, filename string) (DownloadSourceInput, error) {
+	if downloaderType != models.DownloaderTypePan115Offline {
+		return DownloadSourceInput{Kind: downloadpkg.SourceTorrent, Torrent: torrent, Filename: filename}, nil
+	}
+	if !definitionFound || definition.SiteType != builtin.SiteTypeBT {
+		return DownloadSourceInput{}, appError(CodeDownloadSourceInvalid, "该资源来源不能转换后提交到 115 离线下载", nil)
+	}
+	magnet, err := downloadpkg.TorrentMagnet(torrent)
+	if err != nil {
+		return DownloadSourceInput{}, appError(CodeSiteResponseInvalid, "公开 BT 站点返回的种子文件无效", err)
+	}
+	return DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: magnet}, nil
 }
 
 func (s *SiteService) runtimeConfig(id uint) (models.Site, sitepkg.Config, sitepkg.Adapter, error) {

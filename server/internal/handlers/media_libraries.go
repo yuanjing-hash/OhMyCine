@@ -428,30 +428,24 @@ func (a *API) mediaLibraryInput(c *gin.Context, actor services.Actor, libraryID 
 	} else if p.STRMLocalRootToken != "" {
 		return services.MediaLibraryInput{}, invalid("未启用 STRM 时不能选择本地投影目录", nil)
 	}
-	ingestRelative, ingestProviderRootID := "", ""
-	if p.IngestEnabled {
-		if storage.Type != "pan115" {
-			return services.MediaLibraryInput{}, invalid("只有 115 媒体库可以启用自动摄取", nil)
+	// MediaLibrary-level intake is a legacy read/worker contract. New writes
+	// configure manual 115 adoption on the Downloader instead. Preserve an
+	// existing snapshot verbatim so editing an unrelated library setting cannot
+	// silently disable an in-flight legacy route; ignore legacy intake fields
+	// supplied by new create/update payloads.
+	legacyIngestEnabled, legacyIngestDownloaderID := false, ""
+	legacyIngestProviderRootID, legacyIngestRelativeRoot := "", ""
+	if libraryID != 0 {
+		existing, err := a.libraries.Get(actor, libraryID)
+		if err != nil {
+			return services.MediaLibraryInput{}, err
 		}
-		if p.IngestRelativeRootToken != "" {
-			selection, err := a.providerDirectory.ResolveStorageSelection(c.Request.Context(), actor, p.StorageID, p.IngestRelativeRootToken)
-			if err != nil {
-				return services.MediaLibraryInput{}, err
-			}
-			ingestRelative, ingestProviderRootID = selection.RelativeRoot, selection.ProviderID
-		} else {
-			if libraryID == 0 {
-				return services.MediaLibraryInput{}, invalid("必须通过 115 目录选择器选择自动摄取中转目录", nil)
-			}
-			existing, err := a.libraries.Get(actor, libraryID)
-			if err != nil {
-				return services.MediaLibraryInput{}, err
-			}
-			if !existing.IngestEnabled || p.StorageID != existing.StorageID || (p.IngestRelativeRoot != "" && p.IngestRelativeRoot != existing.IngestRelativeRoot) {
-				return services.MediaLibraryInput{}, invalid("启用或更改中转目录必须重新使用 115 目录选择器", nil)
-			}
-			ingestRelative, ingestProviderRootID = existing.IngestRelativeRoot, existing.IngestProviderRootID
+		legacyIngestEnabled = existing.IngestEnabled
+		if existing.IngestDownloaderID != nil {
+			legacyIngestDownloaderID = *existing.IngestDownloaderID
 		}
+		legacyIngestProviderRootID = existing.IngestProviderRootID
+		legacyIngestRelativeRoot = existing.IngestRelativeRoot
 	}
-	return services.MediaLibraryInput{Name: p.Name, StorageID: p.StorageID, ProfileID: p.ProfileID, RelativeRoot: relative, ProviderRootID: providerRootID, Enabled: enabled, Recursive: recursive, FullScanIntervalHours: p.FullScanIntervalHours, IncrementalMinutes: p.IncrementalMinutes, VideoExtensions: p.VideoExtensions, STRMAssetExtraExtensions: p.STRMAssetExtraExtensions, IgnorePatterns: p.IgnorePatterns, MetadataLanguage: p.MetadataLanguage, MetadataRegion: p.MetadataRegion, MatchStrategy: p.MatchStrategy, ProviderRatePerSecond: p.ProviderRatePerSecond, ProviderConcurrency: p.ProviderConcurrency, MetadataRatePerSecond: p.MetadataRatePerSecond, MetadataConcurrency: p.MetadataConcurrency, STRMEnabled: p.STRMEnabled, STRMLocalRoot: strmLocalRoot, MetadataArtifactsEnabled: p.MetadataArtifactsEnabled, UploadSidecars: p.UploadSidecars, TransferMode: p.TransferMode, ConflictPolicy: p.ConflictPolicy, MovieDirectoryTemplate: p.MovieDirectoryTemplate, MovieFilenameTemplate: p.MovieFilenameTemplate, TVDirectoryTemplate: p.TVDirectoryTemplate, TVFilenameTemplate: p.TVFilenameTemplate, IngestEnabled: p.IngestEnabled, IngestDownloaderID: p.IngestDownloaderID, IngestProviderRootID: ingestProviderRootID, IngestRelativeRoot: ingestRelative}, nil
+	return services.MediaLibraryInput{Name: p.Name, StorageID: p.StorageID, ProfileID: p.ProfileID, RelativeRoot: relative, ProviderRootID: providerRootID, Enabled: enabled, Recursive: recursive, FullScanIntervalHours: p.FullScanIntervalHours, IncrementalMinutes: p.IncrementalMinutes, VideoExtensions: p.VideoExtensions, STRMAssetExtraExtensions: p.STRMAssetExtraExtensions, IgnorePatterns: p.IgnorePatterns, MetadataLanguage: p.MetadataLanguage, MetadataRegion: p.MetadataRegion, MatchStrategy: p.MatchStrategy, ProviderRatePerSecond: p.ProviderRatePerSecond, ProviderConcurrency: p.ProviderConcurrency, MetadataRatePerSecond: p.MetadataRatePerSecond, MetadataConcurrency: p.MetadataConcurrency, STRMEnabled: p.STRMEnabled, STRMLocalRoot: strmLocalRoot, MetadataArtifactsEnabled: p.MetadataArtifactsEnabled, UploadSidecars: p.UploadSidecars, TransferMode: p.TransferMode, ConflictPolicy: p.ConflictPolicy, MovieDirectoryTemplate: p.MovieDirectoryTemplate, MovieFilenameTemplate: p.MovieFilenameTemplate, TVDirectoryTemplate: p.TVDirectoryTemplate, TVFilenameTemplate: p.TVFilenameTemplate, IngestEnabled: legacyIngestEnabled, IngestDownloaderID: legacyIngestDownloaderID, IngestProviderRootID: legacyIngestProviderRootID, IngestRelativeRoot: legacyIngestRelativeRoot}, nil
 }

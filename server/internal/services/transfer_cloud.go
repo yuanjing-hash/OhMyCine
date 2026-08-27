@@ -280,6 +280,9 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 
 	now := time.Now().UTC()
 	err = w.service.db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureDownloadPipelineActive(tx, task.DownloadTaskID); err != nil {
+			return err
+		}
 		if err := captureCloudManagedItems(tx, task, download, targets, state); err != nil {
 			return err
 		}
@@ -291,6 +294,9 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		}
 		return w.service.audit.Record(tx, &task.OwnerID, "transfer.complete", "transfer_task", task.ID, "success", map[string]any{"download_task_id": task.DownloadTaskID, "media_library_id": task.LibraryID, "mode": download.TransferMode, "files": len(targets), "provider": cloudpkg.ProviderPan115}, RequestContext{})
 	})
+	if errors.Is(err, context.Canceled) {
+		return WorkerResult{}
+	}
 	if err != nil {
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
@@ -711,6 +717,9 @@ func taskJobCheckpoint(db *gorm.DB, jobID string) string {
 }
 
 func (w *TransferWorker) cloudFailure(task models.TransferTask, err error) WorkerResult {
+	if activeErr := ensureDownloadPipelineActive(w.service.db, task.DownloadTaskID); errors.Is(activeErr, context.Canceled) {
+		return WorkerResult{}
+	}
 	code, retryable := cloudpkg.ErrorInfo(err)
 	var failure *cloudTransferFailure
 	if errors.As(err, &failure) {

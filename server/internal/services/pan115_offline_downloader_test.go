@@ -14,7 +14,8 @@ import (
 
 func TestPan115OfflineDownloaderReusesConnectionStorage(t *testing.T) {
 	driver := &fakeCloudDriver{
-		nativeOffline: true,
+		nativeOffline:   true,
+		createDirectory: true,
 		items: map[string]cloud.Item{
 			"offline-root": {ID: "offline-root", ParentID: "0", Name: "离线下载", IsDir: true},
 			"movies":       {ID: "movies", ParentID: "offline-root", Name: "电影", IsDir: true},
@@ -69,11 +70,11 @@ func TestPan115OfflineDownloaderReusesConnectionStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}}); err != nil {
+	if _, err := client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"}); err != nil {
 		t.Fatal(err)
 	}
-	if driver.offlineDirectory != "movies" {
-		t.Fatalf("submitted directory=%q, want movies", driver.offlineDirectory)
+	if driver.offlineDirectory != "fake-dir-1" {
+		t.Fatalf("submitted directory=%q, want omc task directory", driver.offlineDirectory)
 	}
 	rootToken := listing.CurrentSelectionToken
 	updated, err := service.UpdateContext(context.Background(), actor, created.ID, UpdateDownloaderInput{StorageID: &storage.ID, ProviderDirectoryToken: &rootToken}, RequestContext{})

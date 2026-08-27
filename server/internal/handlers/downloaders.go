@@ -22,6 +22,7 @@ type downloaderPayload struct {
 	ClearPassword          bool    `json:"clear_password"`
 	StorageID              *uint   `json:"storage_id"`
 	ProviderDirectoryToken *string `json:"provider_directory_token"`
+	AutoListenLifeEvents   *bool   `json:"auto_listen_life_events"`
 	Enabled                *bool   `json:"enabled"`
 }
 
@@ -58,7 +59,8 @@ func (a *API) CreateDownloader(c *gin.Context) {
 	if payload.ProviderDirectoryToken != nil {
 		token = *payload.ProviderDirectoryToken
 	}
-	item, err := a.downloaders.CreateContext(c.Request.Context(), actor, services.DownloaderInput{Name: payload.Name, Type: payload.Type, BaseURL: payload.BaseURL, Username: username, Password: password, Enabled: enabled, StorageID: payload.StorageID, ProviderDirectoryToken: token}, middleware.RequestContextFrom(c))
+	autoListen := payload.AutoListenLifeEvents != nil && *payload.AutoListenLifeEvents
+	item, err := a.downloaders.CreateContext(c.Request.Context(), actor, services.DownloaderInput{Name: payload.Name, Type: payload.Type, BaseURL: payload.BaseURL, Username: username, Password: password, Enabled: enabled, StorageID: payload.StorageID, ProviderDirectoryToken: token, AutoListenLifeEvents: autoListen}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -85,7 +87,7 @@ func (a *API) UpdateDownloader(c *gin.Context) {
 	if payload.BaseURL != "" {
 		baseURL = &payload.BaseURL
 	}
-	item, err := a.downloaders.UpdateContext(c.Request.Context(), actor, id, services.UpdateDownloaderInput{Name: name, BaseURL: baseURL, Username: payload.Username, Password: payload.Password, ClearUsername: payload.ClearUsername, ClearPassword: payload.ClearPassword, Enabled: payload.Enabled, StorageID: payload.StorageID, ProviderDirectoryToken: payload.ProviderDirectoryToken}, middleware.RequestContextFrom(c))
+	item, err := a.downloaders.UpdateContext(c.Request.Context(), actor, id, services.UpdateDownloaderInput{Name: name, BaseURL: baseURL, Username: payload.Username, Password: payload.Password, ClearUsername: payload.ClearUsername, ClearPassword: payload.ClearPassword, Enabled: payload.Enabled, StorageID: payload.StorageID, ProviderDirectoryToken: payload.ProviderDirectoryToken, AutoListenLifeEvents: payload.AutoListenLifeEvents}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -180,11 +182,33 @@ func (a *API) DeleteDownload(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := a.downloads.Delete(c.Request.Context(), actor, id, middleware.RequestContextFrom(c)); err != nil {
+	deleteData := false
+	if raw := strings.TrimSpace(c.Query("delete_data")); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(c, a.log, invalid("删除数据选项无效", err))
+			return
+		}
+		deleteData = value
+	}
+	if err := a.downloads.Delete(c.Request.Context(), actor, id, deleteData, middleware.RequestContextFrom(c)); err != nil {
 		writeError(c, a.log, err)
 		return
 	}
 	success(c, http.StatusOK, gin.H{"deleted": true})
+}
+
+func (a *API) CancelDownloadPipeline(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := stringID(c)
+	if !ok {
+		return
+	}
+	if err := a.downloads.CancelPipeline(c.Request.Context(), actor, id, middleware.RequestContextFrom(c)); err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"cancelled": true, "provider_data_retained": true})
 }
 
 func (a *API) DownloadRecognitionCandidates(c *gin.Context) {

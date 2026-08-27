@@ -29,8 +29,12 @@ type stubDownloadClient struct {
 	cancelled  bool
 	deleteData bool
 	cancelErr  error
+	cancelIDs  []string
+	cancelHook func(string)
 	getErr     error
 	seedTask   *downloadpkg.Task
+	submitWait <-chan struct{}
+	submitSeen chan<- struct{}
 }
 
 type metadataDownloadClient struct {
@@ -118,6 +122,15 @@ func (c *stubDownloadClient) Test(context.Context) (downloadpkg.Health, error) {
 	return downloadpkg.Health{Version: "stub-v1"}, nil
 }
 func (c *stubDownloadClient) Submit(_ context.Context, request downloadpkg.SubmitRequest) (downloadpkg.Task, error) {
+	if c.submitSeen != nil {
+		select {
+		case c.submitSeen <- struct{}{}:
+		default:
+		}
+	}
+	if c.submitWait != nil {
+		<-c.submitWait
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.submits++
@@ -153,11 +166,16 @@ func (c *stubDownloadClient) Resume(context.Context, string) error {
 	c.resumed = true
 	return nil
 }
-func (c *stubDownloadClient) Cancel(_ context.Context, _ string, deleteData bool) error {
+func (c *stubDownloadClient) Cancel(_ context.Context, id string, deleteData bool) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.cancelled, c.deleteData = true, deleteData
-	return c.cancelErr
+	c.cancelIDs = append(c.cancelIDs, id)
+	err, hook := c.cancelErr, c.cancelHook
+	c.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return err
 }
 
 func downloadFixture(t *testing.T) (*DownloadService, *DownloaderService, *QueueService, Actor, *stubDownloadClient) {
@@ -702,7 +720,7 @@ func TestDeleteTerminalDownloadRemovesProviderDataAndAllLocalQueueFacts(t *testi
 	if err := queue.db.Create(&models.JobActionRequest{JobID: created.JobID, Version: 1, ActionType: "legacy", Prompt: "legacy", OptionsJSON: `[]`, CreatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := downloads.Delete(context.Background(), actor, created.ID, RequestContext{}); err != nil {
+	if err := downloads.Delete(context.Background(), actor, created.ID, true, RequestContext{}); err != nil {
 		t.Fatal(err)
 	}
 	client.mu.Lock()
@@ -734,6 +752,89 @@ func TestDeleteTerminalDownloadRemovesProviderDataAndAllLocalQueueFacts(t *testi
 	}
 }
 
+func TestDeleteTerminalDownloadDefaultsToRemovingProviderTaskAndRetainingData(t *testing.T) {
+	downloads, downloaders, queue, actor, client := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Default delete staging", NameNormalized: "default delete staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Default delete qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:default-delete"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{"provider_task_id": "provider-hash", "phase": models.DownloadTaskStatusFailed}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Update("status", models.JobStatusFailed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := downloads.Delete(context.Background(), actor, created.ID, false, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	cancelled, deleteData := client.cancelled, client.deleteData
+	client.mu.Unlock()
+	if !cancelled || deleteData {
+		t.Fatalf("provider cleanup cancelled=%v deleteData=%v", cancelled, deleteData)
+	}
+	var count int64
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("local record count=%d err=%v", count, err)
+	}
+}
+
+func TestDeleteTerminalDownloadWithoutProviderIdentityIsSafeByDefaultAndDestructiveModeFailsClosed(t *testing.T) {
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Unsubmitted delete staging", NameNormalized: "unsubmitted delete staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Unsubmitted delete qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createFailed := func(name, hash string) DownloadTaskSummary {
+		created, submitErr := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, DisplayName: name, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:" + hash}}, RequestContext{})
+		if submitErr != nil {
+			t.Fatal(submitErr)
+		}
+		if updateErr := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Update("phase", models.DownloadTaskStatusFailed).Error; updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		if updateErr := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Update("status", models.JobStatusFailed).Error; updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		return created
+	}
+
+	destructive := createFailed("Unsubmitted destructive", "unsubmitted-destructive")
+	if err := downloads.Delete(context.Background(), actor, destructive.ID, true, RequestContext{}); ErrorCode(err) != CodeDownloaderUnavailable {
+		t.Fatalf("destructive delete without provider identity error=%v", err)
+	}
+	var count int64
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", destructive.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("destructive local record count=%d err=%v", count, err)
+	}
+
+	ordinary := createFailed("Unsubmitted ordinary", "unsubmitted-ordinary")
+	if err := downloads.Delete(context.Background(), actor, ordinary.ID, false, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", ordinary.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("ordinary local record count=%d err=%v", count, err)
+	}
+}
+
 func TestDeleteTerminalDownloadRetainsLocalRecordWhenProviderCleanupCannotBeConfirmed(t *testing.T) {
 	downloads, downloaders, queue, actor, client := downloadFixture(t)
 	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
@@ -758,7 +859,7 @@ func TestDeleteTerminalDownloadRetainsLocalRecordWhenProviderCleanupCannotBeConf
 		t.Fatal(err)
 	}
 	client.cancelErr = downloadpkg.Error("downloader_unavailable", true, errors.New("offline"))
-	if err := downloads.Delete(context.Background(), actor, created.ID, RequestContext{}); ErrorCode(err) != CodeDownloaderUnavailable {
+	if err := downloads.Delete(context.Background(), actor, created.ID, false, RequestContext{}); ErrorCode(err) != CodeDownloaderUnavailable {
 		t.Fatalf("provider failure error=%v", err)
 	}
 	var count int64
@@ -768,15 +869,66 @@ func TestDeleteTerminalDownloadRetainsLocalRecordWhenProviderCleanupCannotBeConf
 	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Update("downloader_id", nil).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := downloads.Delete(context.Background(), actor, created.ID, RequestContext{}); ErrorCode(err) != CodeDownloaderUnavailable {
+	if err := downloads.Delete(context.Background(), actor, created.ID, false, RequestContext{}); ErrorCode(err) != CodeDownloaderUnavailable {
 		t.Fatalf("missing downloader reference should retain provider-backed record: %v", err)
 	}
 	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Update("downloader_id", provider.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	client.cancelErr = downloadpkg.Error("downloader_task_not_found", false, errors.New("missing"))
-	if err := downloads.Delete(context.Background(), actor, created.ID, RequestContext{}); err != nil {
+	if err := downloads.Delete(context.Background(), actor, created.ID, false, RequestContext{}); err != nil {
 		t.Fatalf("manual provider deletion was not idempotent: %v", err)
+	}
+}
+
+func TestDeleteCompletedDownloadPreflightsUnfinishedTransferBeforeProviderCleanup(t *testing.T) {
+	downloads, downloaders, queue, actor, client := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Delete composite staging", NameNormalized: "delete composite staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Delete composite qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:delete-composite"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{"provider_task_id": "provider-must-remain", "phase": models.DownloadTaskStatusCompleted, "finished_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Updates(map[string]any{"status": models.JobStatusCompleted, "finished_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	transferJob, err := queue.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "transfer", DisplayName: "Unfinished transfer", Payload: map[string]any{"transfer_task_id": "delete-composite-transfer"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", transferJob.ID).Updates(map[string]any{"status": models.JobStatusFailed, "finished_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	transfer := models.TransferTask{ID: "delete-composite-transfer", OwnerID: actor.User.ID, JobID: transferJob.ID, DownloadTaskID: created.ID, LibraryID: 1, LibraryName: "Target", ManifestJSON: `{}`, SourceManifestJSON: `{}`, Phase: models.TransferTaskStatusFailed, CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+	if err := queue.db.Create(&transfer).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := downloads.Delete(context.Background(), actor, created.ID, false, RequestContext{}); ErrorCode(err) != CodeQueueStateConflict {
+		t.Fatalf("unfinished composite delete err=%v", err)
+	}
+	client.mu.Lock()
+	cancelCalls := len(client.cancelIDs)
+	client.mu.Unlock()
+	if cancelCalls != 0 {
+		t.Fatalf("provider was touched before composite preflight: cancel calls=%d", cancelCalls)
+	}
+	var count int64
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("local task count=%d err=%v", count, err)
 	}
 }
 
@@ -800,7 +952,7 @@ func TestDownloaderRejectsAmbiguousCredentialClearAndOversizedConfig(t *testing.
 	}
 }
 
-func TestDownloadWorkerPersistsTelemetryAndCancelDeletesProviderData(t *testing.T) {
+func TestDownloadWorkerPersistsTelemetryAndCancelRetainsProviderData(t *testing.T) {
 	downloads, downloaders, queue, actor, client := downloadFixture(t)
 	root := t.TempDir()
 	storage := models.Storage{Name: "Staging", NameNormalized: "staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
@@ -837,7 +989,7 @@ func TestDownloadWorkerPersistsTelemetryAndCancelDeletesProviderData(t *testing.
 		t.Fatalf("task=%+v", task)
 	}
 
-	// Cancellation is destructive by explicit product contract.
+	// Pipeline cancellation is non-destructive: provider work and files remain.
 	task.FinishedAt, task.Phase = nil, models.DownloadTaskStatusDownloading
 	if err := queue.db.Save(&task).Error; err != nil {
 		t.Fatal(err)
@@ -848,8 +1000,213 @@ func TestDownloadWorkerPersistsTelemetryAndCancelDeletesProviderData(t *testing.
 	client.mu.Lock()
 	cancelled, deleteData := client.cancelled, client.deleteData
 	client.mu.Unlock()
-	if !cancelled || !deleteData {
+	if !cancelled || deleteData {
 		t.Fatalf("cancelled=%v deleteData=%v", cancelled, deleteData)
+	}
+	if err := queue.db.First(&task, "id = ?", created.ID).Error; err != nil || task.Phase != models.DownloadTaskStatusCancelled {
+		t.Fatalf("cancelled task=%+v err=%v", task, err)
+	}
+}
+
+func TestCancelPipelineAfterProviderCompletionRetainsFilesAndReleasesFollowClaim(t *testing.T) {
+	downloads, downloaders, queue, actor, client := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Pipeline cancel staging", NameNormalized: "pipeline cancel staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Pipeline cancel qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, DisplayName: "Completed provider, failed import", Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:pipeline-cancel"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{"provider_task_id": "provider-output-retained", "phase": models.DownloadTaskStatusCompleted, "finished_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Updates(map[string]any{"status": models.JobStatusCompleted, "finished_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	transferJob, err := queue.Enqueue(EnqueueJobInput{OwnerID: actor.User.ID, JobType: "transfer", DisplayName: "Failed import", Payload: map[string]any{"transfer_task_id": "pipeline-cancel-transfer"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", transferJob.ID).Updates(map[string]any{"status": models.JobStatusFailed, "finished_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	transfer := models.TransferTask{ID: "pipeline-cancel-transfer", OwnerID: actor.User.ID, JobID: transferJob.ID, DownloadTaskID: created.ID, LibraryID: 1, LibraryName: "Failed target", ManifestJSON: `{}`, SourceManifestJSON: `{}`, Phase: models.TransferTaskStatusFailed, CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+	if err := queue.db.Create(&transfer).Error; err != nil {
+		t.Fatal(err)
+	}
+	subscription := models.FollowSubscription{ID: "pipeline-cancel-follow", OwnerID: actor.User.ID, MediaType: "tv", TMDBID: 1, Title: "Pipeline cancel show", Status: models.FollowStatusActive, Revision: 1, LifecycleRevision: 1, ExecutionSnapshotJSON: `{}`, CreatedAt: now, UpdatedAt: now}
+	if err := queue.db.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	claim := models.FollowEpisodeClaim{SubscriptionID: "pipeline-cancel-follow", SeasonNumber: 1, EpisodeNumber: 2, State: "downloading", DownloadTaskID: &created.ID, ResourceFingerprint: "pipeline-cancel-resource", UpdatedAt: now}
+	if err := queue.db.Create(&claim).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := downloads.CancelPipeline(context.Background(), actor, created.ID, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	client.cancelErr = downloadpkg.Error("downloader_task_not_found", false, errors.New("already removed"))
+	if err := downloads.CancelPipeline(context.Background(), actor, created.ID, RequestContext{}); err != nil {
+		t.Fatalf("repeat cancel after provider task-not-found must be idempotent: %v", err)
+	}
+	var task models.DownloadTask
+	var downloadJob, persistedTransferJob models.Job
+	if err := queue.db.First(&task, "id = ?", created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = queue.db.First(&downloadJob, "id = ?", created.JobID).Error
+	_ = queue.db.First(&persistedTransferJob, "id = ?", transferJob.ID).Error
+	if task.Phase != models.DownloadTaskStatusCancelled || downloadJob.Status != models.JobStatusCancelled || persistedTransferJob.Status != models.JobStatusCancelled {
+		t.Fatalf("task=%+v downloadJob=%+v transferJob=%+v", task, downloadJob, persistedTransferJob)
+	}
+	if err := queue.db.First(&claim, "subscription_id = ? AND season_number = ? AND episode_number = ?", claim.SubscriptionID, 1, 2).Error; err != nil || claim.State != "failed" || claim.DownloadTaskID != nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	client.mu.Lock()
+	providerCancelled, deleteData := client.cancelled, client.deleteData
+	client.mu.Unlock()
+	if !providerCancelled || deleteData {
+		t.Fatalf("pipeline cancel touched provider: cancelled=%v deleteData=%v", providerCancelled, deleteData)
+	}
+	items, _, err := downloads.ListScoped(actor, DownloadListScopeHistory, 20)
+	if err != nil || len(items) != 1 || items[0].ID != created.ID {
+		t.Fatalf("history=%+v err=%v", items, err)
+	}
+}
+
+func TestCancelPipelineCleansUpProviderTaskThatArrivesAfterSubmitRace(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		cancelErr       error
+		wantResultError string
+		wantTaskError   string
+	}{
+		{name: "provider cancel succeeds"},
+		{name: "provider cancel fails", cancelErr: downloadpkg.Error("downloader_unavailable", true, errors.New("offline")), wantResultError: "downloader_control_failed", wantTaskError: "downloader_control_failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			downloads, downloaders, queue, actor, client := downloadFixture(t)
+			actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+			root := t.TempDir()
+			storage := models.Storage{Name: "Submit race " + test.name, NameNormalized: "submit race " + test.name, Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			if err := queue.db.Create(&storage).Error; err != nil {
+				t.Fatal(err)
+			}
+			configureDownloadStaging(t, queue, storage.ID)
+			provider, err := downloaders.Create(actor, DownloaderInput{Name: "Submit race qBit " + test.name, Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, DisplayName: "Submit race", Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:submit-race"}}, RequestContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := queue.Claim([]string{"download"})
+			if err != nil || claimed == nil {
+				t.Fatalf("claim=%+v err=%v", claimed, err)
+			}
+			submitSeen := make(chan struct{}, 1)
+			submitWait := make(chan struct{})
+			client.submitSeen = submitSeen
+			client.submitWait = submitWait
+			client.cancelErr = test.cancelErr
+			worker := NewDownloadWorker(downloads)
+			resultCh := make(chan WorkerResult, 1)
+			go func() {
+				resultCh <- worker.Run(context.Background(), workerRuntime{queue: queue, job: *claimed}, *claimed)
+			}()
+			select {
+			case <-submitSeen:
+			case <-time.After(2 * time.Second):
+				t.Fatal("provider submit did not start")
+			}
+			if err := downloads.CancelPipeline(context.Background(), actor, created.ID, RequestContext{}); err != nil {
+				t.Fatal(err)
+			}
+			close(submitWait)
+			result := <-resultCh
+			if result.ErrorCode != test.wantResultError {
+				t.Fatalf("worker result=%+v", result)
+			}
+			client.mu.Lock()
+			cancelled, deleteData := client.cancelled, client.deleteData
+			client.mu.Unlock()
+			if !cancelled || deleteData {
+				t.Fatalf("late provider cleanup cancelled=%v deleteData=%v", cancelled, deleteData)
+			}
+			var task models.DownloadTask
+			if err := queue.db.First(&task, "id = ?", created.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if task.Phase != models.DownloadTaskStatusCancelled || task.ProviderTaskID != "provider-hash" || task.LastErrorCode != test.wantTaskError {
+				t.Fatalf("task=%+v", task)
+			}
+		})
+	}
+}
+
+func TestCancelPipelineRetriesProviderCleanupWhenIdentityChangesAfterCleanup(t *testing.T) {
+	downloads, downloaders, queue, actor, client := downloadFixture(t)
+	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}
+	root := t.TempDir()
+	storage := models.Storage{Name: "Provider identity race", NameNormalized: "provider identity race", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Provider identity race qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, DisplayName: "Provider identity race", Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:provider-identity-race"}}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Updates(map[string]any{"provider_task_id": "provider-old", "phase": models.DownloadTaskStatusDownloading}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Update("status", models.JobStatusRunning).Error; err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	client.cancelHook = func(id string) {
+		once.Do(func() {
+			if id != "provider-old" {
+				t.Errorf("first cleanup id=%q", id)
+				return
+			}
+			if updateErr := queue.db.Model(&models.DownloadTask{}).Where("id = ?", created.ID).Update("provider_task_id", "provider-new").Error; updateErr != nil {
+				t.Errorf("persist raced provider identity: %v", updateErr)
+			}
+		})
+	}
+
+	if err := downloads.CancelPipeline(context.Background(), actor, created.ID, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	cancelIDs := append([]string(nil), client.cancelIDs...)
+	deleteData := client.deleteData
+	client.mu.Unlock()
+	if len(cancelIDs) != 2 || cancelIDs[0] != "provider-old" || cancelIDs[1] != "provider-new" || deleteData {
+		t.Fatalf("provider cleanup calls=%v deleteData=%v", cancelIDs, deleteData)
+	}
+	var task models.DownloadTask
+	if err := queue.db.First(&task, "id = ?", created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.ProviderTaskID != "provider-new" || task.Phase != models.DownloadTaskStatusCancelled {
+		t.Fatalf("final task=%+v", task)
 	}
 }
 
@@ -945,8 +1302,20 @@ func TestExplicitRetryDurablyClearsDownloadErrorAndActiveTelemetryCannotResurrec
 		t.Fatalf("active telemetry state=%+v", task)
 	}
 
+	now := time.Now().UTC()
+	subscription := models.FollowSubscription{ID: "follow-download-terminal-sync", OwnerID: actor.User.ID, MediaType: "tv", TMDBID: 100, Title: "Terminal sync", Status: models.FollowStatusActive, Revision: 1, LifecycleRevision: 1, ExecutionSnapshotJSON: `{}`, CreatedAt: now, UpdatedAt: now}
+	if err := queue.db.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	claim := models.FollowEpisodeClaim{SubscriptionID: subscription.ID, SeasonNumber: 1, EpisodeNumber: 1, State: "downloading", DownloadTaskID: &task.ID, ResourceFingerprint: "terminal-sync", UpdatedAt: now}
+	if err := queue.db.Create(&claim).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := NewDownloadWorker(downloads).markFailure(task, "downloader_provider_failed", "本次重试仍失败", true); err != nil {
 		t.Fatal(err)
+	}
+	if err := queue.db.First(&claim, "subscription_id = ? AND season_number = ? AND episode_number = ?", subscription.ID, 1, 1).Error; err != nil || claim.State != "failed" || claim.DownloadTaskID != nil {
+		t.Fatalf("terminal follow claim=%+v err=%v", claim, err)
 	}
 	if err := queue.db.Model(&models.Job{}).Where("id = ?", created.JobID).Updates(map[string]any{"status": models.JobStatusFailed, "last_error_code": "downloader_provider_failed", "last_error_message": "本次重试仍失败"}).Error; err != nil {
 		t.Fatal(err)
@@ -1235,7 +1604,7 @@ func TestRouteCategoryUpdatesExistingCategoryToTaskStagingSnapshotBeforeResume(t
 	root := t.TempDir()
 	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}, categories: []downloadpkg.Category{{Name: "电影", SavePath: filepath.Join(root, "outside")}}}
 	worker := NewDownloadWorker(downloads)
-	task := models.DownloadTask{ID: "route-update", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	task := persistedRouteTask(t, downloads, "route-update", root)
 	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1253,7 +1622,7 @@ func TestRouteCategoryRepairsExistingCategoryWithEmptySavePath(t *testing.T) {
 	root := t.TempDir()
 	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}, categories: []downloadpkg.Category{{Name: "电影"}}}
 	worker := NewDownloadWorker(downloads)
-	task := models.DownloadTask{ID: "route-empty-path", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	task := persistedRouteTask(t, downloads, "route-empty-path", root)
 	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1267,7 +1636,7 @@ func TestRouteCategoryCreatesAndVerifiesNewCategoryBeforeResume(t *testing.T) {
 	root := t.TempDir()
 	client := &metadataDownloadClient{stubDownloadClient: &stubDownloadClient{}}
 	worker := NewDownloadWorker(downloads)
-	task := models.DownloadTask{ID: "route-create", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	task := persistedRouteTask(t, downloads, "route-create", root)
 	if err := worker.routeCategory(context.Background(), &task, client, root, "剧集", "classified", "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1325,7 +1694,7 @@ func TestRouteCategoryRetryReusesImmutableTaskStagingSnapshot(t *testing.T) {
 		updateCategoryErr:  downloadpkg.Error("downloader_category_update_failed", true, errors.New("temporary failure")),
 	}
 	worker := NewDownloadWorker(downloads)
-	task := models.DownloadTask{ID: "route-retry", ProviderTaskID: "provider-hash", StagingAbsolutePath: root}
+	task := persistedRouteTask(t, downloads, "route-retry", root)
 	if err := worker.routeCategory(context.Background(), &task, client, root, "电影", "classified", "", ""); err == nil {
 		t.Fatal("first route unexpectedly succeeded")
 	}
@@ -1341,6 +1710,19 @@ func TestRouteCategoryRetryReusesImmutableTaskStagingSnapshot(t *testing.T) {
 	if got := strings.Join(client.categoryCalls, ","); got != "categories,update,categories,set,resume" {
 		t.Fatalf("retry call order=%q", got)
 	}
+}
+
+func persistedRouteTask(t *testing.T, downloads *DownloadService, id, root string) models.DownloadTask {
+	t.Helper()
+	task := models.DownloadTask{ID: id, OwnerID: 1, ProviderTaskID: "provider-hash", StagingAbsolutePath: root, Phase: models.DownloadTaskStatusClassifying, SourceCiphertext: "encrypted", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	_, err := downloads.queue.EnqueueWith(EnqueueJobInput{OwnerID: task.OwnerID, JobType: "download", DisplayName: id, Payload: downloadJobPayload{DownloadTaskID: id}}, func(tx *gorm.DB, job models.Job) error {
+		task.JobID = job.ID
+		return tx.Create(&task).Error
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
 }
 
 func TestRouteCategoryRejectsResolvedPathOutsideTaskSnapshot(t *testing.T) {
@@ -1476,12 +1858,13 @@ func codeOfProviderError(err error) string {
 
 func TestSchedulerReconcilesWaitingDownloadCancelBeforeFinalJobState(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		cancelErr  error
-		wantStatus string
+		name           string
+		cancelErr      error
+		wantJobStatus  string
+		wantTaskStatus string
 	}{
-		{name: "provider confirms cancel", wantStatus: "deleted"},
-		{name: "provider rejects cancel", cancelErr: downloadpkg.Error("downloader_unavailable", true, errors.New("offline")), wantStatus: models.JobStatusFailed},
+		{name: "provider available", wantJobStatus: models.JobStatusCancelled, wantTaskStatus: models.DownloadTaskStatusCancelled},
+		{name: "provider unavailable", cancelErr: downloadpkg.Error("downloader_unavailable", true, errors.New("offline")), wantJobStatus: models.JobStatusFailed, wantTaskStatus: models.DownloadTaskStatusWaiting},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			downloads, downloaders, queue, actor, client := downloadFixture(t)
@@ -1536,10 +1919,7 @@ func TestSchedulerReconcilesWaitingDownloadCancelBeforeFinalJobState(t *testing.
 			var final JobDTO
 			for time.Now().Before(deadline) {
 				final, err = queue.Get(actor, claimed.Job.ID)
-				if test.wantStatus == "deleted" && ErrorCode(err) == CodeNotFound {
-					break
-				}
-				if err == nil && final.Status == test.wantStatus {
+				if err == nil && final.Status == test.wantJobStatus && final.InterruptPending == "" {
 					break
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -1547,19 +1927,15 @@ func TestSchedulerReconcilesWaitingDownloadCancelBeforeFinalJobState(t *testing.
 			client.mu.Lock()
 			providerCancelled, deleteData := client.cancelled, client.deleteData
 			client.mu.Unlock()
-			deleted := test.wantStatus == "deleted" && ErrorCode(err) == CodeNotFound
-			if (!deleted && final.Status != test.wantStatus) || !providerCancelled || !deleteData || (!deleted && (final.InterruptPending != "" || final.CancellationRequested)) {
+			if final.Status != test.wantJobStatus || !providerCancelled || deleteData || final.InterruptPending != "" || final.CancellationRequested {
 				var attempts []models.JobAttempt
 				_ = queue.db.Where("job_id = ?", claimed.Job.ID).Order("attempt_number").Find(&attempts).Error
 				t.Fatalf("final=%+v cancelled=%v deleteData=%v err=%v attempts=%+v", final, providerCancelled, deleteData, err, attempts)
 			}
 			var task models.DownloadTask
 			taskErr := queue.db.First(&task, "id = ?", created.ID).Error
-			if test.cancelErr == nil && !errors.Is(taskErr, gorm.ErrRecordNotFound) {
-				t.Fatalf("cancelled provider task remained locally: task=%+v err=%v", task, taskErr)
-			}
-			if test.cancelErr != nil && (taskErr != nil || task.Phase == models.DownloadTaskStatusCancelled) {
-				t.Fatalf("failed provider cancellation lost/changed local task: task=%+v err=%v", task, taskErr)
+			if taskErr != nil || task.Phase != test.wantTaskStatus {
+				t.Fatalf("unexpected retained pipeline state: task=%+v err=%v", task, taskErr)
 			}
 		})
 	}

@@ -928,6 +928,7 @@ const (
 // allowlisted DTO and never serialize this model directly.
 type Downloader struct {
 	ID                    string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID               uint       `gorm:"not null;default:0;index" json:"-"`
 	Name                  string     `gorm:"size:128;not null" json:"name"`
 	NameNormalized        string     `gorm:"size:128;not null;uniqueIndex" json:"-"`
 	Type                  string     `gorm:"size:32;not null;index" json:"type"`
@@ -937,6 +938,7 @@ type Downloader struct {
 	StorageID             *uint      `gorm:"index" json:"storage_id"`
 	ProviderDirectoryID   string     `gorm:"size:128;not null;default:''" json:"-"`
 	ProviderDirectoryPath string     `gorm:"size:2048;not null;default:''" json:"-"`
+	AutoListenLifeEvents  bool       `gorm:"not null;default:false" json:"auto_listen_life_events"`
 	Enabled               bool       `gorm:"not null;default:true" json:"enabled"`
 	CapabilitiesJSON      string     `gorm:"type:text;not null" json:"-"`
 	LastHealthStatus      string     `gorm:"size:24;not null;default:'unknown'" json:"-"`

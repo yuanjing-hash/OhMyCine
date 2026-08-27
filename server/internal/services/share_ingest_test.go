@@ -79,7 +79,7 @@ func newShareIngestFixture(t *testing.T) shareIngestFixture {
 		t.Fatal(err)
 	}
 	permissions := map[string]struct{}{}
-	for _, code := range []string{authz.PermissionConnectionsRead, authz.PermissionConnectionsCreate, authz.PermissionStoragesCreate, authz.PermissionStoragesRead, authz.PermissionMediaLibrariesRead, authz.PermissionMediaLibrariesCreate, authz.PermissionMediaLibrariesUpdate, authz.PermissionDownloadersDelete, authz.PermissionDownloadsCreate} {
+	for _, code := range []string{authz.PermissionConnectionsRead, authz.PermissionConnectionsCreate, authz.PermissionStoragesCreate, authz.PermissionStoragesRead, authz.PermissionMediaLibrariesRead, authz.PermissionMediaLibrariesCreate, authz.PermissionMediaLibrariesUpdate, authz.PermissionDownloadersUpdate, authz.PermissionDownloadersDelete, authz.PermissionDownloadsCreate} {
 		permissions[code] = struct{}{}
 	}
 	actor := Actor{User: user, Permissions: permissions}
@@ -124,10 +124,18 @@ func newShareIngestFixture(t *testing.T) shareIngestFixture {
 	return shareIngestFixture{db: db, store: store, actor: actor, storage: storage, profile: profile, downloader: downloader, driver: driver, libraries: libraries, downloads: downloads}
 }
 
-type recordingIngestEnqueuer struct{ items []string }
+type recordingIngestEnqueuer struct {
+	items           []string
+	downloaderItems []string
+}
 
 func (r *recordingIngestEnqueuer) AdoptProviderItem(_ context.Context, _ uint, itemID, _ string) (bool, error) {
 	r.items = append(r.items, itemID)
+	return true, nil
+}
+
+func (r *recordingIngestEnqueuer) AdoptDownloaderProviderItem(_ context.Context, downloaderID string, _ uint, itemID, _ string) (bool, error) {
+	r.downloaderItems = append(r.downloaderItems, downloaderID+":"+itemID)
 	return true, nil
 }
 
@@ -273,4 +281,139 @@ func TestMediaLibraryIngestSweepUsesDirectChildrenAndSkipsSystemFolders(t *testi
 	if len(recorder.items) != 1 || recorder.items[0] != "manual" {
 		t.Fatalf("adopted items=%v, want [manual]", recorder.items)
 	}
+}
+
+func TestDownloaderLifeEventSweepUsesDownloaderDirectoryAndSkipsOMCTasks(t *testing.T) {
+	fixture := newShareIngestFixture(t)
+	library := fixture.createLibrary(t, "电影", "library", "intake", "/中转")
+	if err := fixture.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Updates(map[string]any{"enabled": true, "ingest_enabled": false, "ingest_downloader_id": nil, "ingest_owner_id": nil, "ingest_provider_root_id": "", "ingest_relative_root": ""}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Downloader{}).Where("id = ?", fixture.downloader.ID).Updates(map[string]any{"owner_id": fixture.actor.User.ID, "auto_listen_life_events": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.children["intake"] = []cloudpkg.Item{
+		{ID: "system", ParentID: "intake", Name: "omc-task-id", IsDir: true},
+		{ID: "manual", ParentID: "intake", Name: "Seven.Samurai.1954", IsDir: true},
+	}
+	recorder := &recordingIngestEnqueuer{}
+	fixture.libraries.SetIngestEnqueuer(recorder)
+	if fixture.storage.ConnectionID == nil {
+		t.Fatal("fixture connection missing")
+	}
+	observedAt := time.Now().UTC()
+	if err := fixture.libraries.sweepDownloaderLifeEventsAt(context.Background(), *fixture.storage.ConnectionID, observedAt); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.downloaderItems) != 0 {
+		t.Fatalf("unstable downloader items adopted=%v", recorder.downloaderItems)
+	}
+	fixture.driver.children["manual"] = []cloudpkg.Item{{ID: "episode", ParentID: "manual", Name: "Seven.Samurai.1954.mkv", Size: 1024}}
+	if err := fixture.libraries.sweepDownloaderLifeEventsAt(context.Background(), *fixture.storage.ConnectionID, observedAt.Add(downloaderLifeEventStableWindow+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.downloaderItems) != 0 {
+		t.Fatalf("changed downloader manifest adopted=%v", recorder.downloaderItems)
+	}
+	if err := fixture.libraries.sweepDownloaderLifeEventsAt(context.Background(), *fixture.storage.ConnectionID, observedAt.Add(2*(downloaderLifeEventStableWindow+time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.downloaderItems) != 1 || recorder.downloaderItems[0] != fixture.downloader.ID+":manual" {
+		t.Fatalf("adopted downloader items=%v", recorder.downloaderItems)
+	}
+	fixture.driver.children["manual"] = append(fixture.driver.children["manual"], cloudpkg.Item{ID: "subtitle", ParentID: "manual", Name: "Seven.Samurai.1954.zh.srt", Size: 256})
+	if err := fixture.libraries.sweepDownloaderLifeEventsAt(context.Background(), *fixture.storage.ConnectionID, observedAt.Add(3*(downloaderLifeEventStableWindow+time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.downloaderItems) != 1 {
+		t.Fatalf("claimed provider identity was adopted again: %v", recorder.downloaderItems)
+	}
+}
+
+func TestDownloaderLifeEventPeriodicSweepFindsMissedEvents(t *testing.T) {
+	fixture := newShareIngestFixture(t)
+	library := fixture.createLibrary(t, "电影", "library", "intake", "/中转")
+	if err := fixture.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Updates(map[string]any{"enabled": true, "ingest_enabled": false}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Downloader{}).Where("id = ?", fixture.downloader.ID).Updates(map[string]any{"owner_id": fixture.actor.User.ID, "auto_listen_life_events": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.children["intake"] = []cloudpkg.Item{{ID: "manual", ParentID: "intake", Name: "Seven.Samurai.1954", IsDir: true}}
+	recorder := &recordingIngestEnqueuer{}
+	fixture.libraries.SetIngestEnqueuer(recorder)
+	observedAt := time.Now().UTC()
+	if err := fixture.libraries.sweepAllDownloaderLifeEvents(context.Background(), observedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.libraries.sweepAllDownloaderLifeEvents(context.Background(), observedAt.Add(downloaderLifeEventStableWindow+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.downloaderItems) != 1 || recorder.downloaderItems[0] != fixture.downloader.ID+":manual" {
+		t.Fatalf("periodic adopted downloader items=%v", recorder.downloaderItems)
+	}
+}
+
+func TestDownloaderLifeEventDelayedRecheckCoalescesPerConnection(t *testing.T) {
+	service := NewMediaLibraryService(nil, nil, zerolog.Nop())
+	ctx, cancel := context.WithCancel(context.Background())
+	service.lifeEventCtx = ctx
+	service.scheduleDownloaderLifeEventRecheck(115)
+	service.scheduleDownloaderLifeEventRecheck(115)
+	service.mu.Lock()
+	scheduled := len(service.lifeEventRechecks)
+	service.mu.Unlock()
+	if scheduled != 1 {
+		t.Fatalf("scheduled rechecks=%d, want 1", scheduled)
+	}
+	cancel()
+	service.lifeEventWG.Wait()
+	service.mu.Lock()
+	scheduled = len(service.lifeEventRechecks)
+	service.mu.Unlock()
+	if scheduled != 0 {
+		t.Fatalf("scheduled rechecks after cancellation=%d, want 0", scheduled)
+	}
+}
+
+func TestDownloaderLifeEventDirectoryRejectsOverlappingRoutes(t *testing.T) {
+	t.Run("another listener", func(t *testing.T) {
+		fixture := newShareIngestFixture(t)
+		other := fixture.downloader
+		other.ID, other.Name, other.NameNormalized = "other-listener", "另一个监听器", "另一个监听器"
+		other.ProviderDirectoryID, other.ProviderDirectoryPath = "nested", "/中转/中转子目录"
+		other.OwnerID, other.AutoListenLifeEvents = fixture.actor.User.ID, true
+		if err := fixture.db.Create(&other).Error; err != nil {
+			t.Fatal(err)
+		}
+		enabled := true
+		_, err := fixture.downloads.downloader.UpdateContext(context.Background(), fixture.actor, fixture.downloader.ID, UpdateDownloaderInput{AutoListenLifeEvents: &enabled}, RequestContext{})
+		if ErrorCode(err) != CodeMediaLibraryOverlap {
+			t.Fatalf("overlapping listener error=%v", err)
+		}
+	})
+
+	t.Run("final media library", func(t *testing.T) {
+		fixture := newShareIngestFixture(t)
+		library := fixture.createLibrary(t, "电影", "library", "intake", "/中转")
+		if err := fixture.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Updates(map[string]any{"enabled": true, "provider_root_id": "nested", "ingest_enabled": false}).Error; err != nil {
+			t.Fatal(err)
+		}
+		enabled := true
+		_, err := fixture.downloads.downloader.UpdateContext(context.Background(), fixture.actor, fixture.downloader.ID, UpdateDownloaderInput{AutoListenLifeEvents: &enabled}, RequestContext{})
+		if ErrorCode(err) != CodeMediaLibraryOverlap {
+			t.Fatalf("overlapping media library error=%v", err)
+		}
+	})
+
+	t.Run("media library saved after listener", func(t *testing.T) {
+		fixture := newShareIngestFixture(t)
+		if err := fixture.db.Model(&models.Downloader{}).Where("id = ?", fixture.downloader.ID).Updates(map[string]any{"owner_id": fixture.actor.User.ID, "auto_listen_life_events": true}).Error; err != nil {
+			t.Fatal(err)
+		}
+		_, err := fixture.libraries.Create(context.Background(), fixture.actor, MediaLibraryInput{Name: "冲突媒体库", StorageID: fixture.storage.ID, ProfileID: fixture.profile.ID, RelativeRoot: "/冲突媒体库", ProviderRootID: "nested", Enabled: true, Recursive: true, TransferMode: models.MediaLibraryTransferCopy}, RequestContext{})
+		if ErrorCode(err) != CodeMediaLibraryOverlap {
+			t.Fatalf("media library overlap after listener error=%v", err)
+		}
+	})
 }

@@ -726,13 +726,14 @@ func mapOfflineTask(task *pan115sdk.OfflineTask) cloud.OfflineTask {
 		progress = 1
 	}
 	total, eta := task.Size, task.LeftTime
-	status, completed, failed := "queued", task.Status == 2, task.Status == 1 || task.Status == -1
-	if task.Status == 0 || task.Status == 3 {
+	status, completed, failed := "queued", false, false
+	switch task.Status {
+	case 1:
 		status = "downloading"
-	} else if completed {
-		status = "completed"
-	} else if failed {
-		status = "failed"
+	case 2:
+		status, completed = "completed", true
+	case -1:
+		status, failed = "failed", true
 	}
 	outputID := strings.TrimSpace(task.DelFileId)
 	if outputID == "" {

@@ -215,7 +215,7 @@ func TestDownloadAndTransferLifecycleScopesMoveSettledWorkIntoHistory(t *testing
 		t.Fatalf("settled seeding history=%+v total=%d err=%v", history, historyTotal, err)
 	}
 
-	if err := downloads.Delete(context.Background(), actor, download.ID, RequestContext{RequestID: "history-delete"}); err != nil {
+	if err := downloads.Delete(context.Background(), actor, download.ID, false, RequestContext{RequestID: "history-delete"}); err != nil {
 		t.Fatal(err)
 	}
 	for label, model := range map[string]any{"download": &models.DownloadTask{}, "transfer": &models.TransferTask{}, "seeding": &models.SeedingTask{}, "job": &models.Job{}} {
@@ -240,7 +240,7 @@ func TestDownloadAndTransferLifecycleScopesMoveSettledWorkIntoHistory(t *testing
 		}
 	}
 	var audit models.AuditLog
-	if err := queue.db.Where("action = ? AND target_id = ?", "download.history_delete", download.ID).First(&audit).Error; err != nil || !strings.Contains(audit.Metadata, `"cleanup":"history_only"`) || strings.Contains(audit.Metadata, source) {
+	if err := queue.db.Where("action = ? AND target_id = ?", "download.history_delete", download.ID).First(&audit).Error; err != nil || !strings.Contains(audit.Metadata, `"cleanup":"not_submitted"`) || strings.Contains(audit.Metadata, source) {
 		t.Fatalf("audit=%+v err=%v", audit, err)
 	}
 }

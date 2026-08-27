@@ -24,6 +24,22 @@ func (w *TransferWorker) finishCompletedTransfer(ctx context.Context, task model
 	if err := w.service.db.First(&download, "id = ?", task.DownloadTaskID).Error; err != nil {
 		return WorkerResult{ErrorCode: "transfer_download_missing", ErrorMessage: "原下载任务不存在"}
 	}
+	if err := w.service.db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureDownloadPipelineActive(tx, task.DownloadTaskID); err != nil {
+			return err
+		}
+		return tx.Model(&models.FollowEpisodeClaim{}).Where("download_task_id = ?", task.DownloadTaskID).Updates(map[string]any{"state": "imported", "updated_at": time.Now().UTC()}).Error
+	}); errors.Is(err, context.Canceled) {
+		return WorkerResult{}
+	} else if err != nil {
+		next := time.Now().UTC().Add(time.Minute)
+		return WorkerResult{RetryAt: &next, ErrorCode: "follow_claim_sync_failed", ErrorMessage: "入库已完成，订阅状态同步将自动重试"}
+	}
+	if err := ensureDownloadPipelineActive(w.service.db, task.DownloadTaskID); errors.Is(err, context.Canceled) {
+		return WorkerResult{}
+	} else if err != nil {
+		return WorkerResult{ErrorCode: "transfer_download_missing", ErrorMessage: "原下载任务不存在"}
+	}
 	if download.TargetStorageType != models.StorageTypePan115 && w.service.seeding != nil {
 		if err := w.service.seeding.AfterTransfer(ctx, download); err != nil {
 			next := time.Now().UTC().Add(time.Minute)
@@ -52,6 +68,11 @@ func (w *TransferWorker) finishCompletedTransfer(ctx context.Context, task model
 	}
 	if task.CleanupStatus == models.TransferCleanupCompleted || task.CleanupStatus == models.TransferCleanupSkipped {
 		return WorkerResult{}
+	}
+	if err := ensureDownloadPipelineActive(w.service.db, task.DownloadTaskID); errors.Is(err, context.Canceled) {
+		return WorkerResult{}
+	} else if err != nil {
+		return WorkerResult{ErrorCode: "transfer_download_missing", ErrorMessage: "原下载任务不存在"}
 	}
 	if _, err := w.service.cleanupTransferStaging(ctx, task, download); err != nil {
 		next := time.Now().UTC().Add(time.Minute)

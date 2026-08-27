@@ -2,11 +2,14 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,19 +29,26 @@ import (
 const maxSourceAssetExtraExtensions = 16
 
 type MediaLibraryService struct {
-	db            *gorm.DB
-	audit         *AuditService
-	log           zerolog.Logger
-	mu            sync.Mutex
-	supervisors   map[uint]supervisorHandle
-	scanLocks     map[uint]*sync.Mutex
-	connections   *ConnectionService
-	metadata      *MetadataSettingsService
-	aiRecognition *AIRecognitionSettingsService
-	ingest        MediaLibraryIngestEnqueuer
-	artifacts     *MediaArtifactService
-	changes       *MediaChangeService
-	closed        bool
+	db                *gorm.DB
+	audit             *AuditService
+	log               zerolog.Logger
+	mu                sync.Mutex
+	supervisors       map[uint]supervisorHandle
+	scanLocks         map[uint]*sync.Mutex
+	connections       *ConnectionService
+	metadata          *MetadataSettingsService
+	aiRecognition     *AIRecognitionSettingsService
+	ingest            MediaLibraryIngestEnqueuer
+	artifacts         *MediaArtifactService
+	changes           *MediaChangeService
+	closed            bool
+	lifeEventCtx      context.Context
+	lifeEventStop     context.CancelFunc
+	lifeEventDone     <-chan struct{}
+	lifeEventWG       sync.WaitGroup
+	lifeEventRechecks map[uint]struct{}
+	lifeEventMu       sync.Mutex
+	lifeEvents        map[string]downloaderLifeEventCandidate
 }
 
 // MediaLibraryIngestEnqueuer is the narrow boundary from provider directory
@@ -47,10 +57,20 @@ type MediaLibraryIngestEnqueuer interface {
 	AdoptProviderItem(context.Context, uint, string, string) (bool, error)
 }
 
+type downloaderLifeEventIngestEnqueuer interface {
+	AdoptDownloaderProviderItem(context.Context, string, uint, string, string) (bool, error)
+}
+
 type supervisorHandle struct {
 	cancel context.CancelFunc
 	done   <-chan struct{}
 	wake   chan struct{}
+}
+
+type downloaderLifeEventCandidate struct {
+	Snapshot  [sha256.Size]byte
+	FirstSeen time.Time
+	Claimed   bool
 }
 
 type MediaLibraryInput struct {
@@ -107,7 +127,7 @@ type MediaLibraryDetail struct {
 }
 
 func NewMediaLibraryService(db *gorm.DB, audit *AuditService, log zerolog.Logger) *MediaLibraryService {
-	return &MediaLibraryService{db: db, audit: audit, log: log, supervisors: map[uint]supervisorHandle{}, scanLocks: map[uint]*sync.Mutex{}}
+	return &MediaLibraryService{db: db, audit: audit, log: log, supervisors: map[uint]supervisorHandle{}, scanLocks: map[uint]*sync.Mutex{}, lifeEventRechecks: map[uint]struct{}{}, lifeEvents: map[string]downloaderLifeEventCandidate{}}
 }
 func (s *MediaLibraryService) SetConnectionService(connections *ConnectionService) {
 	s.connections = connections
@@ -135,6 +155,7 @@ func (s *MediaLibraryService) Start(ctx context.Context) error {
 	for _, library := range libraries {
 		s.startSupervisor(ctx, library.ID)
 	}
+	s.startDownloaderLifeEventSupervisor(ctx)
 	serverlog.OperationLibraryEventScan.Event(s.log.Info()).Int("library_count", len(libraries)).Msg(serverlog.OperationLibraryEventScan.Message("媒体库监听已启动"))
 	return nil
 }
@@ -147,10 +168,19 @@ func (s *MediaLibraryService) Close() {
 		handles = append(handles, handle)
 	}
 	s.supervisors = map[uint]supervisorHandle{}
+	lifeEventStop, lifeEventDone := s.lifeEventStop, s.lifeEventDone
+	if lifeEventStop != nil {
+		lifeEventStop()
+	}
+	s.lifeEventStop, s.lifeEventDone, s.lifeEventCtx = nil, nil, nil
 	s.mu.Unlock()
 	for _, handle := range handles {
 		<-handle.done
 	}
+	if lifeEventDone != nil {
+		<-lifeEventDone
+	}
+	s.lifeEventWG.Wait()
 }
 
 func (s *MediaLibraryService) List(actor Actor) ([]MediaLibraryDetail, error) {
@@ -501,6 +531,11 @@ func (s *MediaLibraryService) validateInput(ctx context.Context, id uint, actor 
 	if input.MetadataArtifactsEnabled != nil {
 		metadataArtifactsEnabled = *input.MetadataArtifactsEnabled
 	}
+	if input.Enabled && storage.Type == models.StorageTypePan115 {
+		if err := s.validateMediaLibraryLifeEventOverlap(ctx, storage, strings.TrimSpace(input.ProviderRootID)); err != nil {
+			return models.MediaLibrary{}, err
+		}
+	}
 	strmLocalRoot := ""
 	if storage.Type == models.StorageTypeLocal {
 		if input.UploadSidecars {
@@ -775,6 +810,45 @@ func providerDirectoriesOverlap(ctx context.Context, driver cloudpkg.Driver, lef
 		return true, nil
 	}
 	return providerDirectoryWithin(ctx, driver, rightID, leftID)
+}
+
+func (s *MediaLibraryService) validateMediaLibraryLifeEventOverlap(ctx context.Context, storage models.Storage, finalRootID string) error {
+	if storage.ConnectionID == nil || s.connections == nil || finalRootID == "" {
+		return appError(CodeMediaLibraryStorageUnavailable, "115 媒体库目录不可用", nil)
+	}
+	var listenerRoots []string
+	if err := s.db.WithContext(ctx).Table("downloaders").
+		Select("downloaders.provider_directory_id").
+		Joins("JOIN storages ON storages.id = downloaders.storage_id").
+		Where("downloaders.enabled = ? AND downloaders.auto_listen_life_events = ? AND downloaders.type = ? AND storages.enabled = ? AND storages.type = ? AND storages.connection_id = ?", true, true, models.DownloaderTypePan115Offline, true, models.StorageTypePan115, *storage.ConnectionID).
+		Scan(&listenerRoots).Error; err != nil {
+		return err
+	}
+	if len(listenerRoots) == 0 {
+		return nil
+	}
+	_, driver, err := s.connections.driver(*storage.ConnectionID)
+	if err != nil {
+		return appError(CodeMediaLibraryStorageUnavailable, "115 连接不可用", err)
+	}
+	finalRoot, err := providerItemWithinRoot(ctx, driver, finalRootID, strings.TrimSpace(storage.RootPath))
+	if err != nil || !finalRoot.IsDir {
+		return appError(CodeMediaLibraryPathInvalid, "115 媒体库目录不可用", err)
+	}
+	for _, listenerRootID := range listenerRoots {
+		listenerRootID = strings.TrimSpace(listenerRootID)
+		if listenerRootID == "" {
+			return appError(CodeDownloaderStorageUnavailable, "现有 115 自动监听目录边界不完整", nil)
+		}
+		overlaps, overlapErr := providerDirectoriesOverlap(ctx, driver, finalRoot.ID, listenerRootID)
+		if overlapErr != nil {
+			return appError(CodeMediaLibraryStorageUnavailable, "无法验证现有 115 自动监听目录边界", overlapErr)
+		}
+		if overlaps {
+			return appError(CodeMediaLibraryOverlap, "115 媒体库目录不能与自动监听目录重叠", nil)
+		}
+	}
+	return nil
 }
 
 func validateImportTemplate(value string, directory bool) error {
@@ -1104,7 +1178,6 @@ func (s *MediaLibraryService) ProviderEventsChanged(ctx context.Context, connect
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, id := range ids {
 		if handle, ok := s.supervisors[id]; ok {
 			select {
@@ -1113,7 +1186,313 @@ func (s *MediaLibraryService) ProviderEventsChanged(ctx context.Context, connect
 			}
 		}
 	}
-	return nil
+	s.mu.Unlock()
+	err := s.sweepDownloaderLifeEvents(ctx, connectionID)
+	if err == nil {
+		// The first event normally arrives while 115 is still changing the
+		// provider item. Recheck once after the stability window even when no
+		// second life event is emitted.
+		s.scheduleDownloaderLifeEventRecheck(connectionID)
+	}
+	return err
+}
+
+// scheduleDownloaderLifeEventRecheck coalesces event storms per Connection.
+// One provider event batch may contain many entries for the same transfer; a
+// bounded delayed sweep is sufficient to obtain the second stable snapshot.
+func (s *MediaLibraryService) scheduleDownloaderLifeEventRecheck(connectionID uint) {
+	s.mu.Lock()
+	supervisorCtx := s.lifeEventCtx
+	if s.closed || supervisorCtx == nil {
+		s.mu.Unlock()
+		return
+	}
+	if _, scheduled := s.lifeEventRechecks[connectionID]; scheduled {
+		s.mu.Unlock()
+		return
+	}
+	s.lifeEventRechecks[connectionID] = struct{}{}
+	s.lifeEventWG.Add(1)
+	s.mu.Unlock()
+
+	go func() {
+		defer s.lifeEventWG.Done()
+		defer func() {
+			s.mu.Lock()
+			delete(s.lifeEventRechecks, connectionID)
+			s.mu.Unlock()
+		}()
+		timer := time.NewTimer(downloaderLifeEventStableWindow + time.Second)
+		defer timer.Stop()
+		select {
+		case <-supervisorCtx.Done():
+			return
+		case <-timer.C:
+			_ = s.sweepDownloaderLifeEvents(supervisorCtx, connectionID)
+		}
+	}()
+}
+
+const (
+	downloaderLifeEventStableWindow  = 30 * time.Second
+	downloaderLifeEventSweepInterval = 5 * time.Minute
+)
+
+func (s *MediaLibraryService) startDownloaderLifeEventSupervisor(parent context.Context) {
+	s.mu.Lock()
+	if s.closed || s.lifeEventStop != nil {
+		s.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	s.lifeEventCtx, s.lifeEventStop, s.lifeEventDone = ctx, cancel, done
+	s.mu.Unlock()
+	go func() {
+		defer close(done)
+		_ = s.sweepAllDownloaderLifeEvents(ctx, time.Now().UTC())
+		ticker := time.NewTicker(downloaderLifeEventSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				_ = s.sweepAllDownloaderLifeEvents(ctx, now.UTC())
+			}
+		}
+	}()
+}
+
+// sweepAllDownloaderLifeEvents is the bounded periodic compensation path for
+// missing provider events. It discovers only Connections that currently own
+// an enabled 115 listener and lets the same authoritative sweep handle each.
+func (s *MediaLibraryService) sweepAllDownloaderLifeEvents(ctx context.Context, now time.Time) error {
+	var connectionIDs []uint
+	if err := s.db.WithContext(ctx).Table("downloaders").
+		Distinct("storages.connection_id").
+		Joins("JOIN storages ON storages.id = downloaders.storage_id").
+		Where("downloaders.enabled = ? AND downloaders.auto_listen_life_events = ? AND downloaders.type = ? AND storages.enabled = ? AND storages.type = ? AND storages.connection_id IS NOT NULL", true, true, models.DownloaderTypePan115Offline, true, models.StorageTypePan115).
+		Order("storages.connection_id").
+		Pluck("storages.connection_id", &connectionIDs).Error; err != nil {
+		return err
+	}
+	var firstErr error
+	for _, connectionID := range connectionIDs {
+		if err := s.sweepDownloaderLifeEventsAt(ctx, connectionID, now); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// sweepDownloaderLifeEvents treats each enabled 115 downloader directory as
+// the only manual-ingest boundary. OMC-owned task directories are excluded so
+// the durable Download Worker and the life-event listener cannot claim the
+// same provider content.
+func (s *MediaLibraryService) sweepDownloaderLifeEvents(ctx context.Context, connectionID uint) error {
+	return s.sweepDownloaderLifeEventsAt(ctx, connectionID, time.Now().UTC())
+}
+
+func (s *MediaLibraryService) sweepDownloaderLifeEventsAt(ctx context.Context, connectionID uint, now time.Time) error {
+	ingest, ok := s.ingest.(downloaderLifeEventIngestEnqueuer)
+	if !ok || s.connections == nil || connectionID == 0 {
+		return nil
+	}
+	var downloaders []models.Downloader
+	if err := s.db.WithContext(ctx).Table("downloaders").Select("downloaders.*").Joins("JOIN storages ON storages.id = downloaders.storage_id").Where("downloaders.enabled = ? AND downloaders.auto_listen_life_events = ? AND downloaders.type = ? AND storages.enabled = ? AND storages.type = ? AND storages.connection_id = ?", true, true, models.DownloaderTypePan115Offline, true, models.StorageTypePan115, connectionID).Order("downloaders.created_at,downloaders.id").Scan(&downloaders).Error; err != nil {
+		return err
+	}
+	if len(downloaders) == 0 {
+		return nil
+	}
+	_, driver, err := s.connections.driver(connectionID)
+	if err != nil {
+		return err
+	}
+	var library models.MediaLibrary
+	if err := s.db.WithContext(ctx).Table("media_libraries").Select("media_libraries.*").Joins("JOIN storages ON storages.id = media_libraries.storage_id").Where("media_libraries.enabled = ? AND storages.enabled = ? AND storages.type = ? AND storages.connection_id = ? AND media_libraries.transfer_mode IN ?", true, true, models.StorageTypePan115, connectionID, []string{models.MediaLibraryTransferMove, models.MediaLibraryTransferCopy}).Order("media_libraries.sort_order,media_libraries.id").First(&library).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, downloader := range downloaders {
+		rootID := strings.TrimSpace(downloader.ProviderDirectoryID)
+		if rootID == "" {
+			continue
+		}
+		seen := make(map[string]struct{})
+		complete := false
+		for offset := int64(0); offset < maxMediaLibraryIngestChildren; offset += 200 {
+			page, listErr := driver.List(ctx, rootID, cloudpkg.PageRequest{Offset: offset, Limit: 200})
+			if listErr != nil {
+				if firstErr == nil {
+					firstErr = listErr
+				}
+				break
+			}
+			for _, item := range page.Items {
+				name := strings.TrimSpace(item.Name)
+				itemID := strings.TrimSpace(item.ID)
+				if itemID == "" || strings.TrimSpace(item.ParentID) != rootID {
+					continue
+				}
+				candidateKey := downloaderLifeEventCandidateKey(connectionID, downloader.ID, itemID)
+				seen[candidateKey] = struct{}{}
+				if strings.HasPrefix(strings.ToLower(name), "omc-") {
+					if s.rememberReservedDownloaderLifeEventCandidate(candidateKey) {
+						serverlog.OperationPan115ShareIngest.Event(s.log.Warn()).Uint("connection_id", connectionID).Str("downloader_id", downloader.ID).Str("error_code", "reserved_prefix_skipped").Msg(serverlog.OperationPan115ShareIngest.Message("跳过 OMC 保留目录"))
+					}
+					continue
+				}
+				snapshot, snapshotErr := snapshotDownloaderLifeEventItem(ctx, driver, item)
+				if snapshotErr != nil {
+					if firstErr == nil {
+						firstErr = snapshotErr
+					}
+					continue
+				}
+				if !s.downloaderLifeEventCandidateReady(candidateKey, snapshot, item.ModifiedAt, now) {
+					continue
+				}
+				if _, adoptErr := ingest.AdoptDownloaderProviderItem(ctx, downloader.ID, library.ID, itemID, name); adoptErr != nil && firstErr == nil {
+					firstErr = adoptErr
+				} else if adoptErr == nil {
+					s.markDownloaderLifeEventCandidateClaimed(candidateKey)
+				}
+			}
+			if !page.HasMore {
+				complete = true
+				break
+			}
+		}
+		if complete {
+			s.pruneDownloaderLifeEventCandidates(connectionID, downloader.ID, seen)
+		} else if firstErr == nil {
+			firstErr = errors.New("115 downloader directory exceeds the bounded life-event scan")
+		}
+	}
+	return firstErr
+}
+
+func downloaderLifeEventCandidateKey(connectionID uint, downloaderID, itemID string) string {
+	return strconv.FormatUint(uint64(connectionID), 10) + "\x00" + downloaderID + "\x00" + itemID
+}
+
+func downloaderLifeEventCandidatePrefix(connectionID uint, downloaderID string) string {
+	return strconv.FormatUint(uint64(connectionID), 10) + "\x00" + downloaderID + "\x00"
+}
+
+func (s *MediaLibraryService) downloaderLifeEventCandidateReady(key string, snapshot [sha256.Size]byte, modifiedAt, now time.Time) bool {
+	s.lifeEventMu.Lock()
+	defer s.lifeEventMu.Unlock()
+	candidate, exists := s.lifeEvents[key]
+	if exists && candidate.Claimed {
+		return false
+	}
+	if !exists || candidate.Snapshot != snapshot {
+		s.lifeEvents[key] = downloaderLifeEventCandidate{Snapshot: snapshot, FirstSeen: now}
+		return false
+	}
+	if now.Sub(candidate.FirstSeen) < downloaderLifeEventStableWindow {
+		return false
+	}
+	return modifiedAt.IsZero() || now.Sub(modifiedAt) >= downloaderLifeEventStableWindow
+}
+
+func (s *MediaLibraryService) markDownloaderLifeEventCandidateClaimed(key string) {
+	s.lifeEventMu.Lock()
+	candidate, exists := s.lifeEvents[key]
+	if exists {
+		candidate.Claimed = true
+		s.lifeEvents[key] = candidate
+	}
+	s.lifeEventMu.Unlock()
+}
+
+func (s *MediaLibraryService) rememberReservedDownloaderLifeEventCandidate(key string) bool {
+	s.lifeEventMu.Lock()
+	defer s.lifeEventMu.Unlock()
+	if _, exists := s.lifeEvents[key]; exists {
+		return false
+	}
+	s.lifeEvents[key] = downloaderLifeEventCandidate{Claimed: true}
+	return true
+}
+
+func (s *MediaLibraryService) pruneDownloaderLifeEventCandidates(connectionID uint, downloaderID string, seen map[string]struct{}) {
+	prefix := downloaderLifeEventCandidatePrefix(connectionID, downloaderID)
+	s.lifeEventMu.Lock()
+	for key := range s.lifeEvents {
+		if strings.HasPrefix(key, prefix) {
+			if _, exists := seen[key]; !exists {
+				delete(s.lifeEvents, key)
+			}
+		}
+	}
+	s.lifeEventMu.Unlock()
+}
+
+// snapshotDownloaderLifeEventItem builds a bounded recursive provider
+// manifest. Stable top-level metadata alone is insufficient for a directory:
+// a 115 transfer may still be adding nested files without changing its name.
+func snapshotDownloaderLifeEventItem(ctx context.Context, driver cloudpkg.Driver, root cloudpkg.Item) ([sha256.Size]byte, error) {
+	facts := []string{downloaderLifeEventItemFact(root)}
+	if root.IsDir {
+		queue := []string{strings.TrimSpace(root.ID)}
+		visited := make(map[string]struct{})
+		itemCount := 0
+		for len(queue) > 0 {
+			parentID := queue[0]
+			queue = queue[1:]
+			if _, exists := visited[parentID]; exists {
+				return [sha256.Size]byte{}, errors.New("provider directory cycle in life-event candidate")
+			}
+			visited[parentID] = struct{}{}
+			complete := false
+			for offset := int64(0); offset < maxMediaLibraryIngestChildren; offset += 200 {
+				page, err := driver.List(ctx, parentID, cloudpkg.PageRequest{Offset: offset, Limit: 200})
+				if err != nil {
+					return [sha256.Size]byte{}, err
+				}
+				for _, item := range page.Items {
+					if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.ParentID) != parentID {
+						return [sha256.Size]byte{}, errors.New("provider returned an invalid life-event candidate child")
+					}
+					itemCount++
+					if itemCount > maxMediaLibraryIngestChildren {
+						return [sha256.Size]byte{}, errors.New("life-event candidate manifest exceeds the bounded item limit")
+					}
+					facts = append(facts, downloaderLifeEventItemFact(item))
+					if item.IsDir {
+						queue = append(queue, strings.TrimSpace(item.ID))
+					}
+				}
+				if !page.HasMore {
+					complete = true
+					break
+				}
+			}
+			if !complete {
+				return [sha256.Size]byte{}, errors.New("life-event candidate directory exceeds the bounded page limit")
+			}
+		}
+	}
+	sort.Strings(facts)
+	return sha256.Sum256([]byte(strings.Join(facts, "\n"))), nil
+}
+
+func downloaderLifeEventItemFact(item cloudpkg.Item) string {
+	return strings.Join([]string{
+		strings.TrimSpace(item.ID),
+		strings.TrimSpace(item.ParentID),
+		strings.TrimSpace(item.Name),
+		strconv.FormatBool(item.IsDir),
+		strconv.FormatInt(item.Size, 10),
+		strings.TrimSpace(item.SHA1),
+		item.ModifiedAt.UTC().Format(time.RFC3339Nano),
+	}, "\x00")
 }
 func (s *MediaLibraryService) listen(ctx context.Context, id uint, watcher *fsnotify.Watcher) {
 	var library models.MediaLibrary

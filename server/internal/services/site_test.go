@@ -20,6 +20,7 @@ import (
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	sitepkg "github.com/yuanjing-hash/ohmycine/server/pkg/site"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/site/builtin"
 )
 
 type stubSiteAdapter struct {
@@ -445,7 +446,7 @@ func TestMediaIdentitySearchAggregatesAliasesDeduplicatesAndBindsVerifiedIdentit
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(callbackOrder) != 2 || callbackOrder[0] != "media" || callbackOrder[1] != "site" || streamedMetadata.TMDBID != 346 || len(streamedGroups) != 1 || len(streamedGroups[0].Items) != 1 {
+	if len(callbackOrder) != 2 || callbackOrder[0] != "media" || callbackOrder[1] != "site" || streamedMetadata.TMDBID != 346 || len(streamedGroups) != 1 || streamedGroups[0].Items == nil || len(streamedGroups[0].Items) != 1 {
 		t.Fatalf("stream metadata=%+v groups=%+v order=%v", streamedMetadata, streamedGroups, callbackOrder)
 	}
 	result, err := service.SearchMediaIdentity(context.Background(), actor, MediaIdentitySearchInput{MediaType: "movie", TMDBID: 346, SiteID: &created.ID, Page: 1})
@@ -786,6 +787,36 @@ func TestBTResolverUsesExistingDownloadPipelineWithoutPublicSourceLeak(t *testin
 	adapter.resolved = sitepkg.Source{Magnet: magnet, Torrent: []byte("d4:infod4:name7:samuraiee"), Filename: "both.torrent"}
 	if _, err := service.Download(context.Background(), actor, SiteDownloadInput{ResultToken: groups[0].Items[0].Token, DownloaderID: downloader.ID}, RequestContext{}); ErrorCode(err) != CodeSiteResponseInvalid {
 		t.Fatalf("ambiguous resolver source err=%v", err)
+	}
+}
+
+func TestPublicBTTorrentBridgeUsesTrustedSiteProvenance(t *testing.T) {
+	torrent := []byte("d4:infod4:name4:testee")
+	wantMagnet, err := downloadpkg.TorrentMagnet(torrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mikan, found := builtin.DefinitionForKey("mikan")
+	if !found {
+		t.Fatal("Mikan definition missing")
+	}
+	source, err := siteTorrentDownloadSource(mikan, true, models.DownloaderTypePan115Offline, torrent, "mikan.torrent")
+	if err != nil || source.Kind != downloadpkg.SourceURL || source.URL != wantMagnet || len(source.Torrent) != 0 {
+		t.Fatalf("Mikan bridge source=%+v err=%v", source, err)
+	}
+
+	pt, _ := builtin.DefinitionForKey("pttime")
+	if _, err := siteTorrentDownloadSource(pt, true, models.DownloaderTypePan115Offline, torrent, "private.torrent"); ErrorCode(err) != CodeDownloadSourceInvalid {
+		t.Fatalf("private PT torrent bridge err=%v", err)
+	}
+	torznab, _ := builtin.DefinitionForKey("torznab")
+	torznabSource, err := siteTorrentDownloadSource(torznab, true, models.DownloaderTypePan115Offline, torrent, "mixed.torrent")
+	if err != nil || torznabSource.Kind != downloadpkg.SourceURL || torznabSource.URL != wantMagnet {
+		t.Fatalf("Torznab BT bridge source=%+v err=%v", torznabSource, err)
+	}
+	qbitSource, err := siteTorrentDownloadSource(pt, true, models.DownloaderTypeQBittorrent, torrent, "private.torrent")
+	if err != nil || qbitSource.Kind != downloadpkg.SourceTorrent || string(qbitSource.Torrent) != string(torrent) {
+		t.Fatalf("qBittorrent source=%+v err=%v", qbitSource, err)
 	}
 }
 

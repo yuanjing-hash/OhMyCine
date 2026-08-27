@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -83,7 +81,7 @@ func newFakeShareDriver() *fakeShareDriver {
 
 func (f *fakeDriver) Provider() string { return cloud.ProviderPan115 }
 func (f *fakeDriver) Capabilities() cloud.Capabilities {
-	return cloud.Capabilities{NativeOfflineDownload: true}
+	return cloud.Capabilities{NativeOfflineDownload: true, CreateDirectory: true, Move: true, Copy: true, Rename: true, Recycle: true}
 }
 func (f *fakeDriver) Probe(context.Context) (cloud.Account, error) { return cloud.Account{}, nil }
 func (f *fakeDriver) List(context.Context, string, cloud.PageRequest) (cloud.Page, error) {
@@ -101,12 +99,24 @@ func (f *fakeDriver) Stat(_ context.Context, id string) (cloud.Item, error) {
 func (f *fakeDriver) DirectURL(context.Context, cloud.DirectURLRequest) (cloud.TemporaryURL, error) {
 	return cloud.TemporaryURL{Headers: http.Header{}, ExpiresAt: time.Now()}, nil
 }
+func (f *fakeDriver) CreateDirectory(_ context.Context, parent, name string) (cloud.Item, error) {
+	item := cloud.Item{ID: "offline-task-root", ParentID: parent, Name: name, IsDir: true}
+	if f.items == nil {
+		f.items = map[string]cloud.Item{}
+	}
+	f.items[item.ID] = item
+	return item, nil
+}
+func (f *fakeDriver) Move(context.Context, string, string) error   { return nil }
+func (f *fakeDriver) Copy(context.Context, string, string) error   { return nil }
+func (f *fakeDriver) Rename(context.Context, string, string) error { return nil }
+func (f *fakeDriver) Recycle(context.Context, string) error        { return nil }
 func (f *fakeDriver) SubmitOffline(_ context.Context, uri, directoryID string) (cloud.OfflineTask, error) {
 	f.submittedURI, f.directoryID = uri, directoryID
 	return f.task, f.submitErr
 }
 
-func TestNativeOfflineConvertsTorrentPayloadToMagnet(t *testing.T) {
+func TestNativeOfflineRejectsTorrentPayload(t *testing.T) {
 	driver := &fakeDriver{items: map[string]cloud.Item{
 		"root":   {ID: "root", ParentID: "0", Name: "root", IsDir: true},
 		"target": {ID: "target", ParentID: "root", Name: "target", IsDir: true},
@@ -115,16 +125,10 @@ func TestNativeOfflineConvertsTorrentPayloadToMagnet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tracker := "https://tracker.example/pt"
-	raw := []byte("d8:announce" + strconv.Itoa(len(tracker)) + ":" + tracker + "4:infod4:name9:movie.mkvee")
-	if _, err := client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "movie.torrent", Torrent: raw}}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(driver.submittedURI, "magnet:?") || !strings.Contains(driver.submittedURI, "xt=urn%3Abtih%3A") || !strings.Contains(driver.submittedURI, "tr=https%3A%2F%2Ftracker.example%2Fpt") {
-		t.Fatalf("submitted URI is not a tracker-preserving magnet: %q", driver.submittedURI)
-	}
-	if driver.directoryID != "target" {
-		t.Fatalf("directory=%q", driver.directoryID)
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "movie.torrent", Torrent: []byte("d4:infoe")}})
+	code, retryable := downloader.ErrorInfo(err)
+	if code != "downloader_source_unsupported" || retryable || driver.submittedURI != "" {
+		t.Fatalf("code=%q retryable=%v submitted=%q err=%v", code, retryable, driver.submittedURI, err)
 	}
 }
 
@@ -139,7 +143,7 @@ func TestNativeOfflineRejectsMalformedTorrentBeforeProviderSubmission(t *testing
 	}
 	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceTorrent, Filename: "bad.torrent", Torrent: []byte("d4:infoi1ee")}})
 	code, retryable := downloader.ErrorInfo(err)
-	if code != "downloader_source_invalid" || retryable || driver.submittedURI != "" {
+	if code != "downloader_source_unsupported" || retryable || driver.submittedURI != "" {
 		t.Fatalf("code=%q retryable=%v submitted=%q err=%v", code, retryable, driver.submittedURI, err)
 	}
 }
@@ -150,7 +154,7 @@ func TestNativeOfflineRejectsUnavailableTargetBeforeProviderSubmission(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}})
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"})
 	code, retryable := downloader.ErrorInfo(err)
 	if code != "downloader_storage_unavailable" || retryable || driver.submittedURI != "" {
 		t.Fatalf("code=%q retryable=%v submitted=%q err=%v", code, retryable, driver.submittedURI, err)
@@ -165,7 +169,7 @@ func TestNativeOfflineRejectsTargetMovedOutsideStorageRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}})
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"})
 	code, retryable := downloader.ErrorInfo(err)
 	if code != "downloader_storage_unavailable" || retryable || driver.submittedURI != "" {
 		t.Fatalf("code=%q retryable=%v submitted=%q err=%v", code, retryable, driver.submittedURI, err)
@@ -184,8 +188,8 @@ func TestNativeOfflineAcceptsTargetBelowAccountRoot(t *testing.T) {
 	if err != nil || health.Version != "115 原生离线" {
 		t.Fatalf("health=%+v err=%v", health, err)
 	}
-	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}})
-	if err != nil || driver.submittedURI == "" || driver.directoryID != "target" {
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"})
+	if err != nil || driver.submittedURI == "" || driver.directoryID != "offline-task-root" {
 		t.Fatalf("submit err=%v uri=%q directory=%q", err, driver.submittedURI, driver.directoryID)
 	}
 }
@@ -199,8 +203,8 @@ func TestNativeOfflineAcceptsAccountRootAsTarget(t *testing.T) {
 	if _, err := client.Test(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}})
-	if err != nil || driver.directoryID != "0" {
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"})
+	if err != nil || driver.directoryID != "offline-task-root" {
 		t.Fatalf("submit err=%v directory=%q", err, driver.directoryID)
 	}
 }
@@ -211,7 +215,7 @@ func TestNativeOfflinePreservesProviderErrorClassification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}})
+	_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"})
 	code, retryable := downloader.ErrorInfo(err)
 	if code != "downloader_response_invalid" || retryable {
 		t.Fatalf("code=%q retryable=%v err=%v", code, retryable, err)
@@ -233,7 +237,7 @@ func TestNativeOfflineMapsPermanentProviderSubmissionErrors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}})
+		_, err = client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"}, Tag: "omc-test"})
 		code, retryable := downloader.ErrorInfo(err)
 		if code != item.wantCode || retryable {
 			t.Fatalf("provider code %q mapped to %q, %t", item.providerCode, code, retryable)
@@ -262,11 +266,11 @@ func TestNativeOfflineMapsProviderStorageTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:abc"}})
+	task, err := client.Submit(context.Background(), downloader.SubmitRequest{Source: downloader.Source{Kind: downloader.SourceURL, URL: "magnet:?xt=urn:btih:abc"}, Tag: "omc-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver.directoryID != "target-id" || task.ID != "hash" || task.OutputItemID != "file-id" || task.BytesCompleted == nil || *task.BytesCompleted != 100 {
+	if driver.directoryID != "offline-task-root" || task.ID != "hash" || task.OutputItemID != "file-id" || task.BytesCompleted == nil || *task.BytesCompleted != 100 {
 		t.Fatalf("unexpected task mapping: %#v", task)
 	}
 	if err := client.Cancel(context.Background(), task.ID, true); err != nil || !driver.cancelFiles {

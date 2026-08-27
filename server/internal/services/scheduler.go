@@ -129,6 +129,10 @@ func (s *Scheduler) interrupt(jobID, action string) {
 	if !ok {
 		return
 	}
+	if action == "cancel_pipeline" {
+		running.cancel()
+		return
+	}
 	interruptible, ok := running.worker.(InterruptibleWorker)
 	if !ok {
 		running.cancel()

@@ -147,7 +147,7 @@ func (s *SiteService) searchMediaIdentitySite(ctx context.Context, actor Actor, 
 		group := s.searchSite(ctx, actor, record, SiteSearchInput{Keyword: name.Value, MediaType: input.MediaType, SearchBy: "title", Year: verified.ReleaseYear, TMDBID: &input.TMDBID, Page: input.Page, SiteID: &record.ID})
 		if target == nil {
 			copy := group
-			copy.Items = nil
+			copy.Items = []SiteSearchResult{}
 			copy.Skipped = 0
 			copy.HasNext = false
 			target = &copy

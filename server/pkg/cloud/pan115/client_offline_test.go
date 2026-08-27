@@ -101,7 +101,7 @@ func TestSubmitOfflineRecoversProviderDuplicateBeyondLegacyFivePageWindow(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.ID != testOfflineHash || task.Status != "downloading" || sdk.addCalls != 1 || sdk.listCalls != 8 {
+	if task.ID != testOfflineHash || task.Status != "queued" || sdk.addCalls != 1 || sdk.listCalls != 8 {
 		t.Fatalf("task=%+v add=%d list=%d", task, sdk.addCalls, sdk.listCalls)
 	}
 }
@@ -168,10 +168,10 @@ func TestMapOfflineTaskUsesCurrentProviderStatusSemantics(t *testing.T) {
 		completed      bool
 		failed         bool
 	}{
-		{providerStatus: 0, status: "downloading"},
-		{providerStatus: 1, status: "failed", failed: true},
+		{providerStatus: 0, status: "queued"},
+		{providerStatus: 1, status: "downloading"},
 		{providerStatus: 2, status: "completed", completed: true},
-		{providerStatus: 3, status: "downloading"},
+		{providerStatus: 3, status: "queued"},
 		{providerStatus: -1, status: "failed", failed: true},
 	}
 	for _, item := range tests {

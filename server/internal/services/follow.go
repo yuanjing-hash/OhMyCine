@@ -11,7 +11,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/site/builtin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -56,16 +58,21 @@ type FollowExecutionSnapshot struct {
 }
 
 type FollowOption struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	ConnectionID *uint  `json:"connection_id,omitempty"`
 }
 type FollowSiteOption struct {
-	ID   uint   `json:"id"`
-	Name string `json:"name"`
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	SiteType string `json:"site_type"`
 }
 type FollowLibraryOption struct {
-	ID   uint   `json:"id"`
-	Name string `json:"name"`
+	ID           uint   `json:"id"`
+	Name         string `json:"name"`
+	StorageType  string `json:"storage_type"`
+	ConnectionID *uint  `json:"connection_id,omitempty"`
 }
 
 type FollowDefaults struct {
@@ -75,6 +82,7 @@ type FollowDefaults struct {
 	MediaLibraries    []FollowLibraryOption   `json:"media_libraries"`
 	SubscribedSeasons []int                   `json:"subscribed_seasons"`
 	Coverage          MediaCoverage           `json:"coverage"`
+	UnavailableReason string                  `json:"unavailable_reason,omitempty"`
 }
 
 type CreateFollowInput struct {
@@ -222,24 +230,56 @@ func (s *FollowService) Defaults(ctx context.Context, actor Actor, tmdbID int64)
 		return FollowDefaults{}, err
 	}
 	for _, item := range sites {
-		result.Sites = append(result.Sites, FollowSiteOption{ID: item.ID, Name: item.Name})
-		result.Snapshot.SiteIDs = append(result.Snapshot.SiteIDs, item.ID)
+		definition, found := builtin.DefinitionForKey(item.Kind)
+		if !found {
+			continue
+		}
+		result.Sites = append(result.Sites, FollowSiteOption{ID: item.ID, Name: item.Name, SiteType: definition.SiteType})
 	}
 	for _, item := range downloaders {
-		result.Downloaders = append(result.Downloaders, FollowOption{ID: item.ID, Name: item.Name})
+		var connectionID *uint
+		if item.StorageID != nil {
+			var storage models.Storage
+			if s.db.Select("connection_id").First(&storage, *item.StorageID).Error == nil {
+				connectionID = storage.ConnectionID
+			}
+		}
+		result.Downloaders = append(result.Downloaders, FollowOption{ID: item.ID, Name: item.Name, Type: item.Type, ConnectionID: connectionID})
 	}
 	for _, item := range libraries {
-		result.MediaLibraries = append(result.MediaLibraries, FollowLibraryOption{ID: item.ID, Name: item.Name})
+		var storage models.Storage
+		if s.db.Select("type", "connection_id", "enabled").First(&storage, item.StorageID).Error == nil && storage.Enabled {
+			result.MediaLibraries = append(result.MediaLibraries, FollowLibraryOption{ID: item.ID, Name: item.Name, StorageType: storage.Type, ConnectionID: storage.ConnectionID})
+		}
 	}
 	result.Snapshot.Version = 1
 	result.Snapshot.Schedule = FollowSchedule{Kind: "interval", Minutes: 360}
 	result.Snapshot.MaxResourcesPerRun = 3
 	result.Snapshot.Filters = FollowFilters{Resolutions: []string{}, VideoCodecs: []string{}, Qualities: []string{}, IncludeKeywords: []string{}, ExcludeKeywords: []string{}, ReleaseGroups: []string{}, ExcludeReleaseGroups: []string{}, MinSeeders: 1}
-	if len(downloaders) > 0 {
-		result.Snapshot.DownloaderID = downloaders[0].ID
+	foundTuple := false
+	for _, library := range libraries {
+		for _, downloader := range downloaders {
+			compatibleSiteIDs := make([]uint, 0, len(sites))
+			for _, site := range sites {
+				if s.validateFollowRoute(downloader, library, []models.Site{site}) == nil {
+					compatibleSiteIDs = append(compatibleSiteIDs, site.ID)
+				}
+			}
+			if len(compatibleSiteIDs) == 0 {
+				continue
+			}
+			result.Snapshot.MediaLibraryID = library.ID
+			result.Snapshot.DownloaderID = downloader.ID
+			result.Snapshot.SiteIDs = compatibleSiteIDs
+			foundTuple = true
+			break
+		}
+		if foundTuple {
+			break
+		}
 	}
-	if len(libraries) > 0 {
-		result.Snapshot.MediaLibraryID = libraries[0].ID
+	if !foundTuple {
+		result.UnavailableReason = "没有可用的站点、下载器与目标媒体库组合；115 只能选择公开 BT 站点和同账号 115 媒体库"
 	}
 	return result, nil
 }
@@ -587,9 +627,12 @@ func (s *FollowService) validateSnapshot(actor Actor, tmdbID int64, input Follow
 	if err := s.db.Where("id = ? AND enabled = ?", input.MediaLibraryID, true).First(&library).Error; err != nil {
 		return input, nil, appError(CodeFollowConfigurationInvalid, "订阅目标媒体库不存在或已停用", err)
 	}
-	var count int64
-	if err := s.db.Model(&models.Site{}).Where("id IN ? AND enabled = ?", input.SiteIDs, true).Count(&count).Error; err != nil || count != int64(len(input.SiteIDs)) {
+	var sites []models.Site
+	if err := s.db.Where("id IN ? AND enabled = ?", input.SiteIDs, true).Find(&sites).Error; err != nil || len(sites) != len(input.SiteIDs) {
 		return input, nil, appError(CodeFollowConfigurationInvalid, "订阅站点不存在或已停用", err)
+	}
+	if err := s.validateFollowRoute(downloader, library, sites); err != nil {
+		return input, nil, err
 	}
 	var err error
 	for _, values := range []*[]string{&input.Filters.Resolutions, &input.Filters.VideoCodecs, &input.Filters.Qualities, &input.Filters.IncludeKeywords, &input.Filters.ExcludeKeywords, &input.Filters.ReleaseGroups, &input.Filters.ExcludeReleaseGroups} {
@@ -613,6 +656,53 @@ func (s *FollowService) validateSnapshot(actor Actor, tmdbID int64, input Follow
 	}
 	_ = tmdbID
 	return input, raw, nil
+}
+
+// validateFollowRoute applies the authoritative Site -> Downloader -> target
+// matrix used by defaults, saves, and every worker run. 115 rejects only an
+// authoritative PT site; all authoritative BT sites remain eligible and the
+// SiteService rechecks the resolved source immediately before submission.
+func (s *FollowService) validateFollowRoute(downloader models.Downloader, library models.MediaLibrary, sites []models.Site) error {
+	if !downloader.Enabled {
+		return appError(CodeFollowConfigurationInvalid, "订阅下载器不存在或已停用", nil)
+	}
+	if !library.Enabled {
+		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库不存在或已停用", nil)
+	}
+	var storage models.Storage
+	if err := s.db.First(&storage, library.StorageID).Error; err != nil || !storage.Enabled {
+		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库 Storage 不可用", err)
+	}
+	if downloader.Type == models.DownloaderTypePan115Offline {
+		for _, site := range sites {
+			definition, found := builtin.DefinitionForKey(site.Kind)
+			if !found || definition.SiteType != builtin.SiteTypeBT {
+				return appError(CodeFollowConfigurationInvalid, "订阅包含 PT 或未知来源站点，不能使用 115 离线下载", nil)
+			}
+		}
+		if downloader.StorageID == nil || storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil {
+			return appError(CodeFollowConfigurationInvalid, "115 订阅只能进入同账号的 115 媒体库", nil)
+		}
+		var downloaderStorage models.Storage
+		if err := s.db.First(&downloaderStorage, *downloader.StorageID).Error; err != nil || !downloaderStorage.Enabled || downloaderStorage.Type != models.StorageTypePan115 || downloaderStorage.ConnectionID == nil || *downloaderStorage.ConnectionID != *storage.ConnectionID {
+			return appError(CodeFollowConfigurationInvalid, "115 下载器与目标媒体库不属于同一 115 账号", err)
+		}
+		if library.TransferMode != models.MediaLibraryTransferMove && library.TransferMode != models.MediaLibraryTransferCopy {
+			return appError(CodeFollowConfigurationInvalid, "115 订阅目标媒体库只支持移动或复制入库", nil)
+		}
+	} else {
+		if storage.Type != models.StorageTypeLocal {
+			return appError(CodeFollowConfigurationInvalid, "非网盘 BT 下载器的订阅当前只能进入本地媒体库", nil)
+		}
+		if _, err := medialibrary.ResolveRoot(storage.RootPath, library.RelativeRoot); err != nil {
+			return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库目录不可用", err)
+		}
+	}
+	var profile models.MediaClassificationProfile
+	if err := s.db.First(&profile, library.ProfileID).Error; err != nil {
+		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库分类规则不可用", err)
+	}
+	return nil
 }
 
 func validateFollowSeasons(coverage MediaCoverage, seasons []int) error {

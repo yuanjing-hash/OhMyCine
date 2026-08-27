@@ -61,6 +61,18 @@ func (s *QueueService) publish(job models.Job, eventType string) {
 	}
 }
 
+// interruptLocally stops in-process worker execution after a domain service
+// has already persisted a cancellation. It never invokes a provider control
+// method; provider tasks and files remain untouched.
+func (s *QueueService) interruptLocally(jobIDs []string) {
+	for _, id := range jobIDs {
+		if s.interrupt != nil {
+			s.interrupt(id, "cancel_pipeline")
+		}
+	}
+	s.wake()
+}
+
 func NewQueueService(db *gorm.DB, audit *AuditService) *QueueService {
 	return &QueueService{db: db, audit: audit, clock: realClock{}, notify: make(chan struct{}, 1)}
 }

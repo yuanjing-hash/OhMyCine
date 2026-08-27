@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
@@ -290,7 +291,7 @@ func TestTransferCleanupPan115RequiresExactPackageRoot(t *testing.T) {
 }
 
 func TestTransferCleanupDefersQBittorrentCopyUntilSeedingCleanup(t *testing.T) {
-	queue, _, download, selectedPath, _ := transferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
+	queue, actor, download, selectedPath, _ := transferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
 	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
 	extraPath := filepath.Join(download.StagingAbsolutePath, download.ScrapeCategory, "promo.txt")
 	if err := os.WriteFile(extraPath, []byte("spam"), 0o600); err != nil {
@@ -309,9 +310,21 @@ func TestTransferCleanupDefersQBittorrentCopyUntilSeedingCleanup(t *testing.T) {
 	if err := queue.db.Model(&task).Update("phase", models.TransferTaskStatusCompleted).Error; err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	subscription := models.FollowSubscription{ID: "follow-transfer-terminal-sync", OwnerID: actor.User.ID, MediaType: "tv", TMDBID: 100, Title: "Transfer sync", Status: models.FollowStatusActive, Revision: 1, LifecycleRevision: 1, ExecutionSnapshotJSON: `{}`, CreatedAt: now, UpdatedAt: now}
+	if err := queue.db.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	claim := models.FollowEpisodeClaim{SubscriptionID: subscription.ID, SeasonNumber: 1, EpisodeNumber: 1, State: "downloading", DownloadTaskID: &download.ID, ResourceFingerprint: "transfer-sync", UpdatedAt: now}
+	if err := queue.db.Create(&claim).Error; err != nil {
+		t.Fatal(err)
+	}
 	task.Phase = models.TransferTaskStatusCompleted
 	if result := NewTransferWorker(service).finishCompletedTransfer(context.Background(), task); result.ErrorCode != "" || result.RetryAt != nil {
 		t.Fatalf("finish result=%+v", result)
+	}
+	if err := queue.db.First(&claim, "subscription_id = ? AND season_number = ? AND episode_number = ?", subscription.ID, 1, 1).Error; err != nil || claim.State != "imported" {
+		t.Fatalf("completed follow claim=%+v err=%v", claim, err)
 	}
 	if err := queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupDeferred {
 		t.Fatalf("deferred task=%+v err=%v", task, err)
@@ -326,6 +339,41 @@ func TestTransferCleanupDefersQBittorrentCopyUntilSeedingCleanup(t *testing.T) {
 	}
 	if err := queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupCompleted || task.CleanupRemoved != 1 {
 		t.Fatalf("completed task=%+v err=%v", task, err)
+	}
+}
+
+func TestFinishCompletedTransferDoesNotAdvanceFollowOrCleanupAfterPipelineCancel(t *testing.T) {
+	queue, actor, download, _, _ := transferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
+	manifest := downloadpkg.Manifest{Name: "Movie.2024", Complete: true, Files: []downloadpkg.File{{RelativePath: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes}}}
+	if err := service.Enqueue(download, manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := queue.db.First(&task, "download_task_id = ?", download.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	subscription := models.FollowSubscription{ID: "follow-transfer-cancelled", OwnerID: actor.User.ID, MediaType: "tv", TMDBID: 101, Title: "Cancelled transfer", Status: models.FollowStatusActive, Revision: 1, LifecycleRevision: 1, ExecutionSnapshotJSON: `{}`, CreatedAt: now, UpdatedAt: now}
+	if err := queue.db.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	claim := models.FollowEpisodeClaim{SubscriptionID: subscription.ID, SeasonNumber: 1, EpisodeNumber: 1, State: "downloading", DownloadTaskID: &download.ID, ResourceFingerprint: "cancelled-transfer", UpdatedAt: now}
+	if err := queue.db.Create(&claim).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", download.ID).Update("phase", models.DownloadTaskStatusCancelled).Error; err != nil {
+		t.Fatal(err)
+	}
+	task.Phase = models.TransferTaskStatusCompleted
+	if result := NewTransferWorker(service).finishCompletedTransfer(context.Background(), task); result.ErrorCode != "" || result.RetryAt != nil {
+		t.Fatalf("cancelled finish result=%+v", result)
+	}
+	if err := queue.db.First(&claim, "subscription_id = ? AND season_number = ? AND episode_number = ?", subscription.ID, 1, 1).Error; err != nil || claim.State != "downloading" {
+		t.Fatalf("cancelled follow claim=%+v err=%v", claim, err)
+	}
+	if err := queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupPending {
+		t.Fatalf("cancelled cleanup task=%+v err=%v", task, err)
 	}
 }
 

@@ -163,6 +163,9 @@ func (s *TransferService) EnqueuePackage(download models.DownloadTask, manifest,
 		resourceKey = "connection:" + strconv.FormatUint(uint64(*download.TargetConnectionID), 10)
 	}
 	_, err = s.queue.EnqueueWith(EnqueueJobInput{OwnerID: download.OwnerID, JobType: "transfer", DisplayName: "入库：" + download.DisplayName, Provider: provider, ResourceKey: resourceKey, Payload: transferJobPayload{TransferTaskID: id}}, func(tx *gorm.DB, job models.Job) error {
+		if err := ensureDownloadPipelineActive(tx, download.ID); err != nil {
+			return err
+		}
 		record.JobID = job.ID
 		return tx.Create(&record).Error
 	})
@@ -176,6 +179,19 @@ func (s *TransferService) EnqueuePackage(download models.DownloadTask, manifest,
 		serverlog.OperationMediaTransfer.Event(s.log.Info()).Str("task_id", record.ID).Str("download_task_id", download.ID).Uint("library_id", record.LibraryID).Int("files", len(manifest.Files)).Msg(serverlog.OperationMediaTransfer.Message("已进入整理队列"))
 	}
 	return err
+}
+
+func ensureDownloadPipelineActive(db *gorm.DB, downloadTaskID string) error {
+	var task struct {
+		Phase string
+	}
+	if err := db.Model(&models.DownloadTask{}).Select("phase").First(&task, "id = ?", downloadTaskID).Error; err != nil {
+		return err
+	}
+	if task.Phase == models.DownloadTaskStatusCancelled {
+		return context.Canceled
+	}
+	return nil
 }
 
 type TransferWorker struct {
@@ -229,6 +245,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	var download models.DownloadTask
 	if err := w.service.db.First(&download, "id = ?", task.DownloadTaskID).Error; err != nil {
 		return w.fail(task, "transfer_download_missing", "原下载任务不存在")
+	}
+	if download.Phase == models.DownloadTaskStatusCancelled {
+		return WorkerResult{}
 	}
 	if err := validateTransferRouteSnapshot(download); err != nil {
 		return w.fail(task, CodeTransferRouteUnsupported, "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库")
@@ -397,6 +416,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	}
 	now := time.Now().UTC()
 	err = w.service.db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureDownloadPipelineActive(tx, task.DownloadTaskID); err != nil {
+			return err
+		}
 		if err := captureLocalManagedItems(tx, task, download, summary); err != nil {
 			return err
 		}
@@ -408,6 +430,9 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		}
 		return w.service.audit.Record(tx, &task.OwnerID, "transfer.complete", "transfer_task", task.ID, "success", map[string]any{"download_task_id": task.DownloadTaskID, "media_library_id": task.LibraryID, "mode": download.TransferMode, "files": len(plan)}, RequestContext{})
 	})
+	if errors.Is(err, context.Canceled) {
+		return WorkerResult{}
+	}
 	if err != nil {
 		return w.fail(task, "transfer_state_persist_failed", "入库结果保存失败")
 	}
@@ -528,6 +553,9 @@ func sanitizeTransferRelativePath(value string) (string, error) {
 }
 
 func (w *TransferWorker) fail(task models.TransferTask, code, message string) WorkerResult {
+	if err := ensureDownloadPipelineActive(w.service.db, task.DownloadTaskID); errors.Is(err, context.Canceled) {
+		return WorkerResult{}
+	}
 	_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.TransferTaskStatusFailed, "last_error_code": code, "updated_at": time.Now().UTC()}).Error
 	serverlog.OperationMediaTransfer.Event(w.service.log.Error()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("error_code", code).Msg(serverlog.OperationMediaTransfer.Message("失败"))
 	return WorkerResult{ErrorCode: code, ErrorMessage: message}

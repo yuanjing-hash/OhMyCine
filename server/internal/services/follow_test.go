@@ -49,6 +49,50 @@ func TestFollowSnapshotValidationAndRunSnapshotAreStable(t *testing.T) {
 	if normalized.Version != 1 || len(normalized.Seasons) != 2 || normalized.Seasons[0] != 1 || len(normalized.SiteIDs) != 1 || len(normalized.Filters.IncludeKeywords) != 1 {
 		t.Fatalf("normalized=%+v", normalized)
 	}
+	pan115Downloader := models.Downloader{ID: "follow-pan115", Name: "115", NameNormalized: "follow-pan115", Type: models.DownloaderTypePan115Offline, Enabled: true, CapabilitiesJSON: `{}`}
+	if err := queue.db.Create(&pan115Downloader).Error; err != nil {
+		t.Fatal(err)
+	}
+	pan115Snapshot := snapshot
+	pan115Snapshot.DownloaderID = pan115Downloader.ID
+	if _, _, err := service.validateSnapshot(actor, 100, pan115Snapshot); ErrorCode(err) != CodeFollowConfigurationInvalid {
+		t.Fatalf("115 downloader accepted for PT follow: %v", err)
+	}
+	connection := models.Connection{Name: "Follow 115", NameNormalized: "follow-115", Provider: models.ConnectionProviderPan115, CredentialCiphertext: "encrypted", Enabled: true, Revision: 1}
+	if err := queue.db.Create(&connection).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourceStorage := models.Storage{Name: "Follow 115 downloads", NameNormalized: "follow-115-downloads", Type: models.StorageTypePan115, RootPath: "downloads", RootPathNormalized: "pan115:follow-downloads", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`}
+	targetStorage := models.Storage{Name: "Follow 115 TV", NameNormalized: "follow-115-tv", Type: models.StorageTypePan115, RootPath: "tv", RootPathNormalized: "pan115:follow-tv", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`}
+	if err := queue.db.Create(&sourceStorage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Create(&targetStorage).Error; err != nil {
+		t.Fatal(err)
+	}
+	pan115Downloader.StorageID = &sourceStorage.ID
+	if err := queue.db.Save(&pan115Downloader).Error; err != nil {
+		t.Fatal(err)
+	}
+	pan115Library := models.MediaLibrary{Name: "Follow 115 library", NameNormalized: "follow-115-library", StorageID: targetStorage.ID, ProfileID: profile.ID, ProfileRevision: 1, RelativeRoot: "/", ProviderRootID: "tv", TransferMode: models.MediaLibraryTransferMove, Enabled: true, Status: models.MediaLibraryStatusListening, VideoExtensionsJSON: `[]`, STRMAssetExtraExtensionsJSON: `[]`, IgnorePatternsJSON: `[]`}
+	if err := queue.db.Create(&pan115Library).Error; err != nil {
+		t.Fatal(err)
+	}
+	btSite := models.Site{Name: "Follow Mikan", NameNormalized: "follow-mikan", Kind: "mikan", BaseURL: "https://mikanani.me", Enabled: true, Priority: 2, TimeoutSeconds: 12, RateLimitPerMinute: 12, Revision: 1}
+	if err := queue.db.Create(&btSite).Error; err != nil {
+		t.Fatal(err)
+	}
+	bt115Snapshot := snapshot
+	bt115Snapshot.SiteIDs = []uint{btSite.ID}
+	bt115Snapshot.DownloaderID = pan115Downloader.ID
+	bt115Snapshot.MediaLibraryID = pan115Library.ID
+	if _, _, err := service.validateSnapshot(actor, 100, bt115Snapshot); err != nil {
+		t.Fatalf("115 downloader rejected authoritative BT follow: %v", err)
+	}
+	bt115Snapshot.SiteIDs = []uint{btSite.ID, site.ID}
+	if _, _, err := service.validateSnapshot(actor, 100, bt115Snapshot); ErrorCode(err) != CodeFollowConfigurationInvalid {
+		t.Fatalf("115 downloader accepted mixed BT/PT follow: %v", err)
+	}
 	now := clock.Now()
 	record := models.FollowSubscription{ID: "follow-stable", OwnerID: actor.User.ID, MediaType: "tv", TMDBID: 100, Title: "Stable", Status: models.FollowStatusActive, Revision: 1, ExecutionSnapshotJSON: string(raw), NextRunAt: &now, CreatedAt: now, UpdatedAt: now}
 	if err := queue.db.Create(&record).Error; err != nil {

@@ -52,13 +52,7 @@ func (c *Client) Submit(ctx context.Context, request downloader.SubmitRequest) (
 		return c.adoptProviderItem(ctx, request)
 	}
 	sourceURL := strings.TrimSpace(request.Source.URL)
-	if request.Source.Kind == downloader.SourceTorrent {
-		magnet, err := downloader.TorrentMagnet(request.Source.Torrent)
-		if err != nil {
-			return downloader.Task{}, downloader.Error("downloader_source_invalid", false, err)
-		}
-		sourceURL = magnet
-	} else if request.Source.Kind != downloader.SourceURL || sourceURL == "" {
+	if request.Source.Kind != downloader.SourceURL || sourceURL == "" {
 		return downloader.Task{}, downloader.Error("downloader_source_unsupported", false, nil)
 	}
 	parsed, err := url.Parse(sourceURL)
@@ -68,7 +62,19 @@ func (c *Client) Submit(ctx context.Context, request downloader.SubmitRequest) (
 	if _, err := c.validateTarget(ctx); err != nil {
 		return downloader.Task{}, err
 	}
-	task, err := c.driver.SubmitOffline(ctx, sourceURL, c.directoryID)
+	mutations, ok := c.driver.(cloud.MutationDriver)
+	if !ok || !mutations.Capabilities().CreateDirectory {
+		return downloader.Task{}, downloader.Error("downloader_unavailable", false, nil)
+	}
+	tag := strings.TrimSpace(request.Tag)
+	if !validTaskTag(tag) {
+		return downloader.Task{}, downloader.Error("downloader_source_invalid", false, errors.New("offline task tag is invalid"))
+	}
+	taskRoot, err := c.ensureTaskDirectory(ctx, mutations, c.directoryID, tag)
+	if err != nil {
+		return downloader.Task{}, err
+	}
+	task, err := c.driver.SubmitOffline(ctx, sourceURL, taskRoot.ID)
 	if err != nil {
 		return downloader.Task{}, mapError(err)
 	}
@@ -97,7 +103,7 @@ func (c *Client) submitShare(ctx context.Context, request downloader.SubmitReque
 		return downloader.Task{}, err
 	}
 	tag := strings.TrimSpace(request.Tag)
-	if !strings.HasPrefix(tag, "omc-") || len(tag) > 64 || strings.ContainsAny(tag, "/\\\x00\r\n") {
+	if !validTaskTag(tag) {
 		return downloader.Task{}, downloader.Error("downloader_source_invalid", false, errors.New("share task tag is invalid"))
 	}
 	taskRoot, err := c.ensureTaskDirectory(ctx, mutations, directoryID, tag)
@@ -129,6 +135,10 @@ func (c *Client) submitShare(ctx context.Context, request downloader.SubmitReque
 		}
 	}
 	return completedDirectoryTask(shareTaskPrefix, taskRoot), nil
+}
+
+func validTaskTag(tag string) bool {
+	return strings.HasPrefix(tag, "omc-") && len(tag) <= 64 && !strings.ContainsAny(tag, "/\\\x00\r\n")
 }
 
 func (c *Client) adoptProviderItem(ctx context.Context, request downloader.SubmitRequest) (downloader.Task, error) {

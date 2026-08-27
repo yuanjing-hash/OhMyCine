@@ -1399,7 +1399,11 @@ func TestTerminalDownloadCanBeDeletedAndActiveDownloadIsRetained(t *testing.T) {
 	if err := client.queue.Fail(failed.JobID, claimed.LeaseToken, "download_failed", "下载任务执行失败"); err != nil {
 		t.Fatal(err)
 	}
-	status, envelope = client.request(t, http.MethodDelete, "/api/v1/downloads/"+failed.ID, map[string]any{}, true)
+	status, envelope = client.request(t, http.MethodDelete, "/api/v1/downloads/"+failed.ID+"?delete_data=maybe", map[string]any{}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid delete_data status=%d data=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodDelete, "/api/v1/downloads/"+failed.ID+"?delete_data=false", map[string]any{}, true)
 	if status != http.StatusOK || strings.Contains(string(envelope.Data), "magnet") {
 		t.Fatalf("delete status=%d data=%s", status, envelope.Data)
 	}
@@ -1420,6 +1424,45 @@ func TestTerminalDownloadCanBeDeletedAndActiveDownloadIsRetained(t *testing.T) {
 	status, envelope = client.request(t, http.MethodGet, "/api/v1/downloads", nil, false)
 	if status != http.StatusOK || !strings.Contains(string(envelope.Data), active.ID) {
 		t.Fatalf("active task was removed status=%d data=%s", status, envelope.Data)
+	}
+}
+
+func TestDownloadPipelineCancelIsRetainedAndIdempotentlyDeletable(t *testing.T) {
+	client := newTestClient(t)
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/downloaders", map[string]any{"name": "Pipeline cancel fake", "type": "fake", "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create downloader status=%d body=%s", status, envelope.Data)
+	}
+	var provider struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(envelope.Data, &provider); err != nil || provider.ID == "" {
+		t.Fatalf("provider=%+v err=%v", provider, err)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/downloads", map[string]any{"downloader_id": provider.ID, "display_name": "Cancel without cleanup", "source_kind": "url", "source_url": "magnet:?xt=urn:btih:cancel-without-cleanup"}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create download status=%d body=%s", status, envelope.Data)
+	}
+	var task services.DownloadTaskSummary
+	if err := json.Unmarshal(envelope.Data, &task); err != nil || task.ID == "" {
+		t.Fatalf("task=%+v err=%v", task, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		status, envelope = client.request(t, http.MethodPost, "/api/v1/downloads/"+task.ID+"/cancel", map[string]any{}, true)
+		if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"provider_data_retained":true`)) {
+			t.Fatalf("cancel attempt=%d status=%d body=%s", attempt, status, envelope.Data)
+		}
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/downloads?scope=history", nil, false)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(task.ID)) || !bytes.Contains(envelope.Data, []byte(`"job_status":"cancelled"`)) {
+		t.Fatalf("cancelled history status=%d body=%s", status, envelope.Data)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		status, envelope = client.request(t, http.MethodDelete, "/api/v1/downloads/"+task.ID, map[string]any{}, true)
+		if status != http.StatusOK {
+			t.Fatalf("delete attempt=%d status=%d body=%s", attempt, status, envelope.Data)
+		}
 	}
 }
 

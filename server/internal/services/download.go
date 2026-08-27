@@ -28,6 +28,7 @@ import (
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -35,7 +36,10 @@ const (
 	maxCompletedManifestFiles          = 5000
 	pan115DownloadFallbackPollInterval = 20 * time.Second
 	pan115DownloadHeartbeatInterval    = 10 * time.Second
+	lateSubmissionCancelTimeout        = 15 * time.Second
 )
+
+var errDownloadProviderIdentityChanged = errors.New("download provider identity changed during cleanup")
 
 type providerEventWakeState struct {
 	generation uint64
@@ -329,6 +333,9 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 	if source.Kind == downloadpkg.SourceProviderItem && sourceOrigin != models.DownloadSourceOriginProviderIngest {
 		return DownloadTaskSummary{}, appError(CodeDownloadSourceInvalid, "内部摄取来源不能由用户提交", nil)
 	}
+	if source.Kind == downloadpkg.SourceTorrent && downloaderRecord.Type == models.DownloaderTypePan115Offline {
+		return DownloadTaskSummary{}, appError(CodeDownloadSourceInvalid, "种子文件只能提交到非网盘 BT 下载器", nil)
+	}
 	if source.Kind == downloadpkg.SourcePan115Share {
 		sourceOrigin = models.DownloadSourceOriginShare
 	}
@@ -563,6 +570,56 @@ func (s *DownloadService) AdoptProviderItem(ctx context.Context, libraryID uint,
 	return true, nil
 }
 
+// AdoptDownloaderProviderItem claims one direct child of a 115 downloader's
+// configured directory. The downloader, rather than a media-library intake
+// directory, owns the event-listening boundary.
+func (s *DownloadService) AdoptDownloaderProviderItem(ctx context.Context, downloaderID string, libraryID uint, providerItemID, displayName string) (bool, error) {
+	downloaderID = strings.TrimSpace(downloaderID)
+	providerItemID = strings.TrimSpace(providerItemID)
+	if downloaderID == "" || libraryID == 0 || providerItemID == "" || len(providerItemID) > 128 || strings.ContainsAny(providerItemID, "\x00\r\n") {
+		return false, appError(CodeDownloadSourceInvalid, "115 生活事件接管来源无效", nil)
+	}
+	var downloader models.Downloader
+	if err := s.db.WithContext(ctx).Where("id = ? AND enabled = ? AND auto_listen_life_events = ?", downloaderID, true, true).First(&downloader).Error; err != nil || downloader.Type != models.DownloaderTypePan115Offline || downloader.StorageID == nil || downloader.OwnerID == 0 || strings.TrimSpace(downloader.ProviderDirectoryID) == "" {
+		return false, appError(CodeDownloaderUnavailable, "115 自动监听下载器不存在或配置不完整", err)
+	}
+	var sourceStorage models.Storage
+	if err := s.db.WithContext(ctx).First(&sourceStorage, *downloader.StorageID).Error; err != nil || sourceStorage.Type != models.StorageTypePan115 || sourceStorage.ConnectionID == nil {
+		return false, appError(CodeDownloaderStorageUnavailable, "115 自动监听下载目录不可用", err)
+	}
+	var library models.MediaLibrary
+	if err := s.db.WithContext(ctx).Where("id = ? AND enabled = ?", libraryID, true).First(&library).Error; err != nil {
+		return false, appError(CodeMediaLibraryStorageUnavailable, "自动监听目标媒体库不存在或已停用", err)
+	}
+	var targetStorage models.Storage
+	if err := s.db.WithContext(ctx).First(&targetStorage, library.StorageID).Error; err != nil || targetStorage.Type != models.StorageTypePan115 || targetStorage.ConnectionID == nil || *targetStorage.ConnectionID != *sourceStorage.ConnectionID {
+		return false, appError(CodeMediaLibraryStorageUnavailable, "自动监听目标媒体库与下载器不属于同一 115", err)
+	}
+	keyBytes := sha256.Sum256([]byte(fmt.Sprintf("pan115:%d:%s:%s", *sourceStorage.ConnectionID, downloader.ID, providerItemID)))
+	ingestKey := fmt.Sprintf("%x", keyBytes[:])
+	var existing int64
+	if err := s.db.WithContext(ctx).Model(&models.DownloadTask{}).Where("ingest_source_key = ?", ingestKey).Count(&existing).Error; err != nil {
+		return false, err
+	}
+	if existing > 0 {
+		return false, nil
+	}
+	name, err := normalizeDownloadDisplayName(displayName, "115 生活事件接管")
+	if err != nil {
+		return false, err
+	}
+	targetID := library.ID
+	createdTask, err := s.submit(ctx, downloader.OwnerID, SubmitDownloadInput{DownloaderID: downloader.ID, MediaLibraryID: &targetID, DisplayName: name, Source: DownloadSourceInput{Kind: downloadpkg.SourceProviderItem}}, RequestContext{}, models.DownloadSourceOriginProviderIngest, ingestKey, providerItemID)
+	if err != nil {
+		if queryErr := s.db.WithContext(ctx).Model(&models.DownloadTask{}).Where("ingest_source_key = ?", ingestKey).Count(&existing).Error; queryErr == nil && existing > 0 {
+			return false, nil
+		}
+		return false, err
+	}
+	serverlog.OperationPan115ShareIngest.Event(s.log.Info()).Str("task_id", createdTask.ID).Str("downloader_id", downloader.ID).Uint("library_id", library.ID).Uint("connection_id", *sourceStorage.ConnectionID).Msg(serverlog.OperationPan115ShareIngest.Message("已创建生活事件接管任务"))
+	return true, nil
+}
+
 type downloadTargetSnapshot struct {
 	LibraryID              uint
 	LibraryName            string
@@ -614,6 +671,7 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 	}
 	var connectionID *uint
 	providerRootID := ""
+	ingestProviderRootID := strings.TrimSpace(library.IngestProviderRootID)
 	switch storage.Type {
 	case models.StorageTypeLocal:
 		if downloader.Type == models.DownloaderTypePan115Offline {
@@ -658,12 +716,13 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 		value := *storage.ConnectionID
 		connectionID, providerRootID = &value, strings.TrimSpace(library.ProviderRootID)
 		if sourceKind == downloadpkg.SourcePan115Share || sourceKind == downloadpkg.SourceProviderItem {
-			if !library.IngestEnabled || library.IngestDownloaderID == nil || *library.IngestDownloaderID != downloader.ID || library.IngestOwnerID == nil || strings.TrimSpace(library.IngestProviderRootID) == "" {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "目标媒体库未启用与当前下载器绑定的 115 自动摄取", nil)
+			ingestProviderRootID = strings.TrimSpace(downloader.ProviderDirectoryID)
+			if ingestProviderRootID == "" {
+				return nil, models.MediaClassificationProfile{}, appError(CodeDownloaderStorageUnavailable, "115 下载器目录不可用", nil)
 			}
-			ingestRoot, err := providerItemWithinRoot(ctx, driver, library.IngestProviderRootID, storage.RootPath)
+			ingestRoot, err := providerItemWithinRoot(ctx, driver, ingestProviderRootID, storage.RootPath)
 			if err != nil || !ingestRoot.IsDir {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 中转目录不可用", err)
+				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 下载目录不可用", err)
 			}
 		}
 	default:
@@ -677,7 +736,7 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 	if err != nil {
 		return nil, models.MediaClassificationProfile{}, appError(CodeProfileValidation, "目标媒体库识别与命名配置无效", err)
 	}
-	return &downloadTargetSnapshot{LibraryID: library.ID, LibraryName: library.Name, StorageID: storage.ID, StorageType: storage.Type, ConnectionID: connectionID, ProviderRootID: providerRootID, StorageRoot: storage.RootPath, RelativeRoot: library.RelativeRoot, TransferMode: library.TransferMode, ConflictPolicy: library.ConflictPolicy, MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate, TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate, IngestProviderRootID: strings.TrimSpace(library.IngestProviderRootID)}, profile, nil
+	return &downloadTargetSnapshot{LibraryID: library.ID, LibraryName: library.Name, StorageID: storage.ID, StorageType: storage.Type, ConnectionID: connectionID, ProviderRootID: providerRootID, StorageRoot: storage.RootPath, RelativeRoot: library.RelativeRoot, TransferMode: library.TransferMode, ConflictPolicy: library.ConflictPolicy, MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate, TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate, IngestProviderRootID: ingestProviderRootID}, profile, nil
 }
 
 func (s *DownloadService) List(actor Actor, limit int) ([]DownloadTaskSummary, error) {
@@ -824,53 +883,253 @@ func downloadLifecycleScope(item DownloadTaskSummary) string {
 	return DownloadListScopeHistory
 }
 
-// Delete removes a terminal OhMyCine record. If the provider task still
-// exists, provider data deletion must succeed first. A later database failure
-// leaves the terminal local fact available for an idempotent retry.
-func (s *DownloadService) Delete(ctx context.Context, actor Actor, id string, request RequestContext) error {
+// Delete removes a terminal OhMyCine record. The provider task must be removed
+// first; deleteData controls whether its source/temporary files are removed as
+// well. A later database failure leaves the terminal local fact available for
+// an idempotent retry.
+func (s *DownloadService) Delete(ctx context.Context, actor Actor, id string, deleteData bool, request RequestContext) error {
 	var task models.DownloadTask
 	if err := s.db.First(&task, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
 		return downloadTaskNotFound(err)
 	}
 	var job models.Job
 	if err := s.db.First(&job, "id = ?", task.JobID).Error; err != nil {
 		return queueNotFound(err)
 	}
-	if !actor.Can(authz.PermissionDownloadsManageAll) && (task.OwnerID != actor.User.ID || !actor.Can(authz.PermissionJobsControlOwn)) {
+	if !actor.Can(authz.PermissionDownloadsManageAll) && !actor.Can(authz.PermissionJobsControlAll) && (task.OwnerID != actor.User.ID || !actor.Can(authz.PermissionJobsControlOwn)) {
 		return appError(CodePermissionDenied, "无权删除该下载任务", nil)
 	}
-	if job.Status == models.JobStatusCompleted {
-		return s.deleteCompletedHistoryRecord(actor, task.ID, request)
-	}
-	if job.Status != models.JobStatusFailed && job.Status != models.JobStatusCancelled {
+	completedHistory := job.Status == models.JobStatusCompleted
+	if !completedHistory && job.Status != models.JobStatusFailed && job.Status != models.JobStatusCancelled {
 		return appError(CodeQueueStateConflict, "仅失败、已取消或完整收口的下载历史可以删除", nil)
 	}
-	providerCleanup := "not_required"
-	if task.ProviderType == models.DownloaderTypePluginHTTP {
-		if _, err := cleanupPluginDownloadOutput(task); err != nil {
-			return appError("plugin_download_cleanup_failed", "站点下载暂存清理失败，本地任务记录已保留", nil)
+	// A completed provider download may still have an unfinished transfer or
+	// seeding stage. Validate the whole composite before touching the provider;
+	// deleteCompletedHistoryRecord repeats this check transactionally before it
+	// removes the local facts.
+	if completedHistory {
+		if err := s.preflightCompletedHistoryDelete(task.ID); err != nil {
+			return err
 		}
-		providerCleanup = "plugin_managed_output"
 	}
-	if task.ProviderTaskID != "" && task.DownloaderID != nil {
-		_, client, err := s.downloader.client(*task.DownloaderID)
-		if err != nil {
-			return appError(CodeDownloaderUnavailable, "无法连接原下载器，未删除本地任务记录", nil)
-		}
-		if err := client.Cancel(ctx, task.ProviderTaskID, true); err != nil && !providerTaskMissing(err) {
-			return appError(CodeDownloaderUnavailable, "下载器未能删除任务与下载数据，本地记录已保留", nil)
-		}
-		providerCleanup = "confirmed"
-	} else if task.ProviderTaskID != "" {
-		return appError(CodeDownloaderUnavailable, "原下载器配置已不存在，无法确认删除下载数据，本地记录已保留", nil)
+	providerCleanup, err := s.removeProviderTask(ctx, task, deleteData)
+	if err != nil {
+		return err
+	}
+	if completedHistory {
+		return s.deleteCompletedHistoryRecord(actor, task.ID, providerCleanup, request)
 	}
 	return s.deleteLocalRecord(task.ID, job.ID, &actor.User.ID, "download.delete", providerCleanup, request)
 }
 
-// deleteCompletedHistoryRecord removes only durable pipeline history after all
-// downstream jobs have completed. It deliberately performs no provider or file
-// operation; qBittorrent, staging content and library media remain untouched.
-func (s *DownloadService) deleteCompletedHistoryRecord(actor Actor, taskID string, request RequestContext) error {
+// CancelPipeline first removes the provider task while retaining its files,
+// then stops OhMyCine orchestration. It applies after any stage (download,
+// recognition, transfer, import, retry/wait) and deliberately turns the parent
+// download into retained cancelled history so a later explicit DELETE remains
+// a separate, idempotent record operation.
+func (s *DownloadService) CancelPipeline(ctx context.Context, actor Actor, id string, request RequestContext) error {
+	return s.cancelPipeline(ctx, actor, id, request, 0)
+}
+
+func (s *DownloadService) cancelPipeline(ctx context.Context, actor Actor, id string, request RequestContext, providerIdentityRetries int) error {
+	id = strings.TrimSpace(id)
+	var task models.DownloadTask
+	if err := s.db.First(&task, "id = ?", id).Error; err != nil {
+		return downloadTaskNotFound(err)
+	}
+	if !actor.Can(authz.PermissionDownloadsManageAll) && !actor.Can(authz.PermissionJobsControlAll) && (task.OwnerID != actor.User.ID || !actor.Can(authz.PermissionJobsControlOwn)) {
+		return appError(CodePermissionDenied, "无权取消该下载流水线", nil)
+	}
+	providerCleanup, err := s.removeProviderTask(ctx, task, false)
+	if err != nil {
+		return err
+	}
+	cleanedProviderTaskID := strings.TrimSpace(task.ProviderTaskID)
+
+	now := time.Now().UTC()
+	runningJobIDs := make([]string, 0, 3)
+	changedJobs := make([]models.Job, 0, 3)
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&task, "id = ?", id).Error; err != nil {
+			return downloadTaskNotFound(err)
+		}
+		// Submit may have returned after the provider cleanup snapshot was read.
+		// Never persist a false cancellation for that interleaving. The caller
+		// retries provider-first cleanup against the newly discovered identity.
+		if strings.TrimSpace(task.ProviderTaskID) != cleanedProviderTaskID {
+			return errDownloadProviderIdentityChanged
+		}
+		var downloadJob models.Job
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&downloadJob, "id = ?", task.JobID).Error; err != nil {
+			return queueNotFound(err)
+		}
+		jobs := []models.Job{downloadJob}
+		var transfer models.TransferTask
+		if err := tx.Where("download_task_id = ?", task.ID).First(&transfer).Error; err == nil {
+			var job models.Job
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&job, "id = ?", transfer.JobID).Error; err != nil {
+				return err
+			}
+			jobs = append(jobs, job)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var seeding models.SeedingTask
+		if err := tx.Where("download_task_id = ?", task.ID).First(&seeding).Error; err == nil {
+			var job models.Job
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&job, "id = ?", seeding.JobID).Error; err != nil {
+				return err
+			}
+			jobs = append(jobs, job)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		for index := range jobs {
+			job := &jobs[index]
+			if job.Status == models.JobStatusCancelled {
+				continue
+			}
+			// A completed downstream stage is immutable history. The parent is
+			// always cancelled so the complete pipeline has one clear terminal
+			// presentation even when provider download already completed.
+			if index > 0 && job.Status == models.JobStatusCompleted {
+				continue
+			}
+			if job.Status == models.JobStatusRunning {
+				runningJobIDs = append(runningJobIDs, job.ID)
+			}
+			from := job.Status
+			updates := map[string]any{
+				"status":             models.JobStatusCancelled,
+				"interrupt_status":   "",
+				"cancellation_asked": true,
+				"next_attempt_at":    nil,
+				"finished_at":        now,
+				"revision":           job.Revision + 1,
+				"updated_at":         now,
+			}
+			releaseLease(updates)
+			if err := tx.Model(job).Updates(updates).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.JobActionRequest{}).Where("job_id = ? AND response = ''", job.ID).Updates(map[string]any{"response": "closed_by_control", "responded_by": actor.User.ID, "responded_at": now}).Error; err != nil {
+				return err
+			}
+			if err := closeAttempt(tx, *job, models.JobStatusCancelled, "", "", now); err != nil {
+				return err
+			}
+			if err := recordJobEvent(tx, job.ID, "control.cancel_pipeline", from, models.JobStatusCancelled, &actor.User.ID, "", now); err != nil {
+				return err
+			}
+			job.Status = models.JobStatusCancelled
+			job.Revision++
+			job.UpdatedAt = now
+			changedJobs = append(changedJobs, *job)
+		}
+
+		if err := tx.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCancelled, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if err := syncFailedFollowClaims(tx, task.ID, now); err != nil {
+			return err
+		}
+		return s.audit.Record(tx, &actor.User.ID, "download.pipeline_cancel", "download_task", task.ID, "success", map[string]any{"provider_cleanup": providerCleanup}, request)
+	})
+	if errors.Is(err, errDownloadProviderIdentityChanged) {
+		if providerIdentityRetries >= 3 {
+			return appError("download_provider_identity_unstable", "下载器任务身份持续变化，未取消本地流水线，请稍后重试", err)
+		}
+		return s.cancelPipeline(ctx, actor, id, request, providerIdentityRetries+1)
+	}
+	if err != nil {
+		return err
+	}
+	for _, job := range changedJobs {
+		s.queue.publish(job, "job.status_changed")
+	}
+	s.queue.interruptLocally(runningJobIDs)
+	return nil
+}
+
+func (s *DownloadService) preflightCompletedHistoryDelete(taskID string) error {
+	var task models.DownloadTask
+	if err := s.db.First(&task, "id = ?", taskID).Error; err != nil {
+		return downloadTaskNotFound(err)
+	}
+	var downloadJob models.Job
+	if err := s.db.First(&downloadJob, "id = ?", task.JobID).Error; err != nil {
+		return queueNotFound(err)
+	}
+	if downloadJob.Status != models.JobStatusCompleted {
+		return appError(CodeQueueStateConflict, "下载流水线尚未完整收口，不能删除历史记录", nil)
+	}
+	var transfer models.TransferTask
+	if err := s.db.Where("download_task_id = ?", task.ID).First(&transfer).Error; err == nil {
+		var transferJob models.Job
+		if err := s.db.First(&transferJob, "id = ?", transfer.JobID).Error; err != nil {
+			return err
+		}
+		if transferJob.Status != models.JobStatusCompleted {
+			return appError(CodeQueueStateConflict, "媒体整理尚未成功完成，不能删除下载历史记录", nil)
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	var seeding models.SeedingTask
+	if err := s.db.Where("download_task_id = ?", task.ID).First(&seeding).Error; err == nil {
+		var seedingJob models.Job
+		if err := s.db.First(&seedingJob, "id = ?", seeding.JobID).Error; err != nil {
+			return err
+		}
+		if seedingJob.Status != models.JobStatusCompleted {
+			return appError(CodeQueueStateConflict, "做种管理尚未成功完成，不能删除下载历史记录", nil)
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return nil
+}
+
+func (s *DownloadService) removeProviderTask(ctx context.Context, task models.DownloadTask, deleteData bool) (string, error) {
+	if strings.TrimSpace(task.ProviderTaskID) == "" {
+		if !deleteData {
+			return "not_submitted", nil
+		}
+		if task.ProviderType == models.DownloaderTypePluginHTTP {
+			if _, err := cleanupPluginDownloadOutput(task); err != nil {
+				return "", appError("plugin_download_cleanup_failed", "站点下载暂存清理失败，本地任务记录已保留", nil)
+			}
+			return "owned_output_deleted", nil
+		}
+		return "", appError(CodeDownloaderUnavailable, "任务没有可验证的下载器任务身份，无法安全删除源文件", nil)
+	}
+	if task.DownloaderID == nil {
+		return "", appError(CodeDownloaderUnavailable, "原下载器配置已不存在，无法确认删除下载器任务", nil)
+	}
+	_, client, err := s.downloader.client(*task.DownloaderID)
+	if err != nil {
+		return "", appError(CodeDownloaderUnavailable, "无法连接原下载器，本地任务记录已保留", nil)
+	}
+	if err := client.Cancel(ctx, task.ProviderTaskID, deleteData); err != nil {
+		if providerTaskMissing(err) {
+			return "already_missing", nil
+		}
+		return "", appError(CodeDownloaderUnavailable, "下载器未能删除任务，本地任务记录已保留", nil)
+	}
+	if deleteData {
+		return "task_and_data_deleted", nil
+	}
+	return "task_deleted_data_retained", nil
+}
+
+// deleteCompletedHistoryRecord removes durable pipeline history after the
+// caller has already completed the requested provider cleanup. It never
+// performs an additional provider or file operation itself.
+func (s *DownloadService) deleteCompletedHistoryRecord(actor Actor, taskID, providerCleanup string, request RequestContext) error {
 	deletedJobs := make([]models.Job, 0, 3)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var task models.DownloadTask
@@ -924,7 +1183,7 @@ func (s *DownloadService) deleteCompletedHistoryRecord(actor Actor, taskID strin
 			}
 		}
 
-		metadata := map[string]any{"cleanup": "history_only", "transfer_history": transferFound, "seeding_history": seedingFound}
+		metadata := map[string]any{"cleanup": providerCleanup, "transfer_history": transferFound, "seeding_history": seedingFound}
 		if task.TargetLibraryID != nil {
 			metadata["media_library_id"] = *task.TargetLibraryID
 		}
@@ -984,21 +1243,13 @@ func (s *DownloadService) finalizeInterrupt(jobID, action string) error {
 		}
 		return err
 	}
-	if task.ProviderType == models.DownloaderTypePluginHTTP && s.pluginDownloads != nil {
-		root, err := s.pluginDownloads.taskRoot(task)
-		if err != nil {
+	now := time.Now().UTC()
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCancelled, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now}).Error; err != nil {
 			return err
 		}
-		if err := removeManagedTaskRoot(task.StagingAbsolutePath, root); err != nil {
-			return err
-		}
-	}
-	var event models.JobStatusEvent
-	var actorID *uint
-	if err := s.db.Where("job_id = ? AND event_type = ?", jobID, "control.cancel").Order("id DESC").First(&event).Error; err == nil {
-		actorID = event.ActorID
-	}
-	return s.deleteLocalRecord(task.ID, jobID, actorID, "download.cancel_delete", "confirmed", RequestContext{})
+		return syncFailedFollowClaims(tx, task.ID, now)
+	})
 }
 
 func (s *DownloadService) deleteLocalRecord(taskID, jobID string, actorID *uint, action, providerCleanup string, request RequestContext) error {
@@ -1137,6 +1388,9 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	if recoveryTask, recovery, recoveryErr := w.completedRecognitionRecoveryTask(job); recoveryErr != nil {
 		return w.failure(recoveryTask, recoveryErr)
 	} else if recovery {
+		if recoveryTask.Phase == models.DownloadTaskStatusCancelled {
+			return WorkerResult{}
+		}
 		if manifest, exists, snapshotErr := completedDownloadManifest(recoveryTask.CompletedManifestJSON); snapshotErr != nil {
 			return w.failure(recoveryTask, snapshotErr)
 		} else if exists {
@@ -1159,6 +1413,9 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	task, downloaderRecord, client, source, savePath, err := w.load(ctx, job)
 	if err != nil {
 		return w.failure(task, err)
+	}
+	if task.Phase == models.DownloadTaskStatusCancelled {
+		return WorkerResult{}
 	}
 	operation := downloadOperation(downloaderRecord.Type, task.SourceOrigin)
 	operation.Event(w.service.log.Info()).Str("task_id", task.ID).Str("downloader_id", downloaderRecord.ID).Str("provider_type", downloaderRecord.Type).Msg(operation.Message("开始执行"))
@@ -1186,7 +1443,14 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	}
 	if task.ProviderTaskID == "" {
 		operation.Event(w.service.log.Info()).Str("task_id", task.ID).Str("downloader_id", downloaderRecord.ID).Msg(operation.Message("正在提交到下载器"))
-		_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusSubmitting, "updated_at": time.Now().UTC()}).Error
+		active, persistErr := w.updateActiveTask(&task, map[string]any{"phase": models.DownloadTaskStatusSubmitting, "updated_at": time.Now().UTC()})
+		if persistErr != nil {
+			return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "下载任务状态保存失败"}
+		}
+		if !active {
+			return WorkerResult{}
+		}
+		task.Phase = models.DownloadTaskStatusSubmitting
 		metadataOnly := downloaderRecord.Type == models.DownloaderTypeQBittorrent && source.Kind == downloadpkg.SourceURL && strings.HasPrefix(strings.ToLower(strings.TrimSpace(source.URL)), "magnet:")
 		providerTask, err := client.Submit(ctx, downloadpkg.SubmitRequest{Source: source, SavePath: savePath, Tag: task.ProviderTag, MetadataOnly: metadataOnly, ProviderDirectoryID: task.StagingProviderDirectoryID})
 		if err != nil {
@@ -1201,8 +1465,15 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 			phase = models.DownloadTaskStatusMetadata
 		}
 		task.Phase = phase
-		if err := w.service.db.Model(&task).Updates(map[string]any{"provider_task_id": task.ProviderTaskID, "phase": phase, "provider_status": providerTask.Status, "updated_at": time.Now().UTC()}).Error; err != nil {
+		active, persistErr = w.persistSubmittedTask(&task, phase, providerTask.Status)
+		if persistErr != nil {
 			return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "下载任务状态保存失败"}
+		}
+		if !active {
+			if cleanupErr := w.cancelLateSubmittedProvider(ctx, &task, client); cleanupErr != nil {
+				return WorkerResult{ErrorCode: "downloader_control_failed", ErrorMessage: "下载器任务取消失败，请在下载历史中重试删除"}
+			}
+			return WorkerResult{}
 		}
 		operation.Event(w.service.log.Info()).Str("task_id", task.ID).Str("downloader_id", downloaderRecord.ID).Str("provider_status", providerTask.Status).Msg(operation.Message("已提交到下载器"))
 	}
@@ -1229,6 +1500,9 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 			task.ProviderTaskID = providerTask.ID
 		}
 		if err := w.persistTelemetry(&task, providerTask); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return WorkerResult{}
+			}
 			return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "下载任务状态保存失败"}
 		}
 		progress := providerTask.Progress
@@ -1245,13 +1519,13 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 			var completedManifest *downloadpkg.Manifest
 			var completedSourceManifest *downloadpkg.Manifest
 			if manifestClient, ok := client.(downloadpkg.ManifestClient); ok {
-				_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusVerifying, "updated_at": time.Now().UTC()}).Error
+				_, _ = w.updateActiveTask(&task, map[string]any{"phase": models.DownloadTaskStatusVerifying, "updated_at": time.Now().UTC()})
 				manifest, manifestErr := manifestClient.Manifest(ctx, task.ProviderTaskID)
 				if manifestErr != nil {
 					if _, retryable := downloadpkg.ErrorInfo(manifestErr); retryable {
 						return w.failureRetryable(task, manifestErr)
 					}
-					_ = w.service.db.Model(&task).Updates(map[string]any{"scrape_status": "completed_unverified", "last_error_code": "downloader_manifest_invalid", "last_error_message": "下载完成，但文件清单复核失败", "updated_at": time.Now().UTC()}).Error
+					_, _ = w.updateActiveTask(&task, map[string]any{"scrape_status": "completed_unverified", "last_error_code": "downloader_manifest_invalid", "last_error_message": "下载完成，但文件清单复核失败", "updated_at": time.Now().UTC()})
 				} else if persistErr := w.persistCompletedManifest(&task, manifest); persistErr != nil {
 					return w.failure(task, persistErr)
 				} else if selectedManifest, verifyErr := w.verifyCompleted(ctx, &task, manifest); verifyErr != nil {
@@ -1264,6 +1538,9 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 				}
 			}
 			if task.TargetLibraryID != nil {
+				if w.pipelineCancelled(task.ID) {
+					return WorkerResult{}
+				}
 				if completedManifest == nil {
 					return w.failure(task, appError("transfer_manifest_unavailable", "下载完成但无法取得入库文件清单", nil))
 				}
@@ -1274,11 +1551,14 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 					return w.failure(task, appError("transfer_manifest_unavailable", "下载完成但完整文件清单不可用", nil))
 				}
 				if err := w.service.transfers.EnqueuePackage(task, *completedManifest, *completedSourceManifest); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return WorkerResult{}
+					}
 					return w.transferEnqueueFailure(task, err)
 				}
 			}
 			now := time.Now().UTC()
-			_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCompleted, "finished_at": now, "updated_at": now}).Error
+			_, _ = w.updateActiveTask(&task, map[string]any{"phase": models.DownloadTaskStatusCompleted, "finished_at": now, "updated_at": now})
 			operation.Event(w.service.log.Info()).Str("task_id", task.ID).Str("downloader_id", downloaderRecord.ID).Bool("transfer_enqueued", task.TargetLibraryID != nil).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(operation.Message("完成"))
 			return WorkerResult{}
 		}
@@ -1346,8 +1626,12 @@ func (w *DownloadWorker) completedRecognitionManifestClient(task models.Download
 func (w *DownloadWorker) runCompletedRecognitionRecovery(ctx context.Context, runtime JobRuntime, task models.DownloadTask, manifest downloadpkg.Manifest) WorkerResult {
 	if task.StagingCategory == "" && strings.TrimSpace(task.ScrapeCategory) != "" {
 		task.StagingCategory = task.ScrapeCategory
-		if err := w.service.db.Model(&task).Updates(map[string]any{"staging_category": task.StagingCategory, "updated_at": time.Now().UTC()}).Error; err != nil {
+		active, err := w.updateActiveTask(&task, map[string]any{"staging_category": task.StagingCategory, "updated_at": time.Now().UTC()})
+		if err != nil {
 			return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "下载完成目录快照保存失败"}
+		}
+		if !active {
+			return WorkerResult{}
 		}
 	}
 	if err := runtime.Heartbeat(task.Progress, task.BytesCompleted, task.BytesTotal, nil, nil); err != nil {
@@ -1360,12 +1644,22 @@ func (w *DownloadWorker) runCompletedRecognitionRecovery(ctx context.Context, ru
 	if w.service.transfers == nil {
 		return w.failure(task, appError("transfer_service_unavailable", "入库服务不可用", nil))
 	}
+	if w.pipelineCancelled(task.ID) {
+		return WorkerResult{}
+	}
 	if err := w.service.transfers.EnqueuePackage(task, selected, manifest); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return WorkerResult{}
+		}
 		return w.transferEnqueueFailure(task, err)
 	}
 	now := time.Now().UTC()
-	if err := w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCompleted, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now}).Error; err != nil {
+	active, err := w.updateActiveTask(&task, map[string]any{"phase": models.DownloadTaskStatusCompleted, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now})
+	if err != nil {
 		return WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "识别恢复状态保存失败"}
+	}
+	if !active {
+		return WorkerResult{}
 	}
 	serverlog.OperationDownloadClassification.Event(w.service.log.Info()).Str("task_id", task.ID).Int("manifest_files", len(manifest.Files)).Int("selected_files", len(selected.Files)).Msg(serverlog.OperationDownloadClassification.Message("已复用完成文件清单继续入库"))
 	return WorkerResult{}
@@ -1376,8 +1670,12 @@ func (w *DownloadWorker) persistCompletedManifest(task *models.DownloadTask, man
 	if err != nil {
 		return err
 	}
-	if err := w.service.db.Model(task).Updates(map[string]any{"completed_manifest_json": raw, "updated_at": time.Now().UTC()}).Error; err != nil {
-		return appError("download_state_persist_failed", "下载完成文件清单保存失败", err)
+	active, persistErr := w.updateActiveTask(task, map[string]any{"completed_manifest_json": raw, "updated_at": time.Now().UTC()})
+	if persistErr != nil {
+		return appError("download_state_persist_failed", "下载完成文件清单保存失败", persistErr)
+	}
+	if !active {
+		return context.Canceled
 	}
 	task.CompletedManifestJSON = raw
 	return nil
@@ -1465,8 +1763,12 @@ func (w *DownloadWorker) resetFailedPan115ForExplicitRetry(ctx context.Context, 
 		"finished_at":        nil,
 		"updated_at":         time.Now().UTC(),
 	}
-	if err := w.service.db.Model(task).Updates(updates).Error; err != nil {
-		return appError("download_state_persist_failed", "下载任务重试状态保存失败", err)
+	active, persistErr := w.updateActiveTask(task, updates)
+	if persistErr != nil {
+		return appError("download_state_persist_failed", "下载任务重试状态保存失败", persistErr)
+	}
+	if !active {
+		return context.Canceled
 	}
 	task.ProviderTaskID, task.ProviderOutputID, task.ProviderStatus = "", "", ""
 	task.Phase, task.Progress, task.BytesCompleted, task.BytesTotal = models.DownloadTaskStatusQueued, nil, nil, nil
@@ -1548,7 +1850,15 @@ func (w *DownloadWorker) prepareClassification(ctx context.Context, runtime JobR
 				result := w.failure(*task, err)
 				return &result
 			}
-			_ = w.service.db.Model(task).Updates(map[string]any{"phase": models.DownloadTaskStatusClassifying, "manifest_file_count": len(manifest.Files), "updated_at": time.Now().UTC()}).Error
+			active, persistErr := w.updateActiveTask(task, map[string]any{"phase": models.DownloadTaskStatusClassifying, "manifest_file_count": len(manifest.Files), "updated_at": time.Now().UTC()})
+			if persistErr != nil {
+				result := WorkerResult{ErrorCode: "download_state_persist_failed", ErrorMessage: "下载任务状态保存失败"}
+				return &result
+			}
+			if !active {
+				result := WorkerResult{}
+				return &result
+			}
 			match, matchErr := w.classify(ctx, *task, manifest)
 			if matchErr == nil && match.Confident {
 				// Persist the match before provider routing, but do not mark it as
@@ -1752,8 +2062,12 @@ func (w *DownloadWorker) persistScrape(task *models.DownloadTask, match scrapeMa
 	}
 	updates["identity_source"], updates["identity_status"], updates["identity_locked"] = identitySource, identityStatus, identityLocked
 	updates["identity_revision"], updates["identity_snapshot_json"] = revision, snapshotJSON
-	if err := w.service.db.Model(task).Updates(updates).Error; err != nil {
+	active, err := w.updateActiveTask(task, updates)
+	if err != nil {
 		return err
+	}
+	if !active {
+		return context.Canceled
 	}
 	task.ScrapeStatus = status
 	task.ScrapeTitle = safeLabel(match.Title, 256)
@@ -1844,8 +2158,15 @@ func (w *DownloadWorker) routeCategory(ctx context.Context, task *models.Downloa
 	if err := client.Resume(ctx, task.ProviderTaskID); err != nil {
 		return err
 	}
+	active, err := w.updateActiveTask(task, map[string]any{"phase": models.DownloadTaskStatusDownloading, "scrape_status": scrapeStatus, "scrape_category": category, "staging_category": category, "last_error_code": safeLabel(errorCode, 96), "last_error_message": safeLabel(errorMessage, 512), "updated_at": time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	if !active {
+		return context.Canceled
+	}
 	task.ScrapeStatus, task.ScrapeCategory, task.StagingCategory, task.Phase = scrapeStatus, category, category, models.DownloadTaskStatusDownloading
-	return w.service.db.Model(task).Updates(map[string]any{"phase": task.Phase, "scrape_status": task.ScrapeStatus, "scrape_category": category, "staging_category": category, "last_error_code": safeLabel(errorCode, 96), "last_error_message": safeLabel(errorMessage, 512), "updated_at": time.Now().UTC()}).Error
+	return nil
 }
 
 func classificationFallbackCode(err error, match scrapeMatch) string {
@@ -1976,10 +2297,15 @@ func (w *DownloadWorker) Interrupt(ctx context.Context, job ClaimedJob, action s
 			err = w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusPaused, "updated_at": time.Now().UTC()}).Error
 		}
 	case "cancel":
-		err = client.Cancel(ctx, task.ProviderTaskID, true)
+		err = client.Cancel(ctx, task.ProviderTaskID, false)
 		if err == nil || providerTaskMissing(err) {
 			now := time.Now().UTC()
-			err = w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCancelled, "last_error_code": "", "last_error_message": "", "scrape_status": "", "finished_at": now, "updated_at": now}).Error
+			err = w.service.db.Transaction(func(tx *gorm.DB) error {
+				if updateErr := tx.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusCancelled, "last_error_code": "", "last_error_message": "", "finished_at": now, "updated_at": now}).Error; updateErr != nil {
+					return updateErr
+				}
+				return syncFailedFollowClaims(tx, task.ID, now)
+			})
 		}
 	default:
 		err = appError(CodeInvalidRequest, "未知下载控制操作", nil)
@@ -2033,6 +2359,61 @@ func (w *DownloadWorker) load(ctx context.Context, job ClaimedJob) (models.Downl
 	return task, record, client, downloadpkg.Source{Kind: source.Kind, URL: source.URL, Torrent: source.Torrent, Filename: source.Filename, ProviderItemID: source.ProviderItemID}, savePath, nil
 }
 
+// updateActiveTask is the worker-side cancellation barrier. Pipeline cancel
+// persists DownloadTask.phase=cancelled before interrupting in-process workers,
+// so every later worker write that could advance or decorate the task must be
+// conditional on that terminal fact still being absent.
+func (w *DownloadWorker) updateActiveTask(task *models.DownloadTask, updates map[string]any) (bool, error) {
+	result := w.service.db.Model(&models.DownloadTask{}).
+		Where("id = ? AND phase <> ?", task.ID, models.DownloadTaskStatusCancelled).
+		Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// persistSubmittedTask retains the provider identity if cancellation wins
+// while Submit is in flight, but never advances a cancelled task back to an
+// active phase. The caller must then remove that late provider task.
+func (w *DownloadWorker) persistSubmittedTask(task *models.DownloadTask, phase, providerStatus string) (bool, error) {
+	now := time.Now().UTC()
+	active, err := w.updateActiveTask(task, map[string]any{"provider_task_id": task.ProviderTaskID, "phase": phase, "provider_status": providerStatus, "updated_at": now})
+	if err != nil || active {
+		if active {
+			task.Phase, task.ProviderStatus = phase, providerStatus
+		}
+		return active, err
+	}
+	result := w.service.db.Model(&models.DownloadTask{}).
+		Where("id = ? AND phase = ?", task.ID, models.DownloadTaskStatusCancelled).
+		Updates(map[string]any{"provider_task_id": task.ProviderTaskID, "provider_status": providerStatus, "updated_at": now})
+	return false, result.Error
+}
+
+func (w *DownloadWorker) cancelLateSubmittedProvider(ctx context.Context, task *models.DownloadTask, client downloadpkg.Client) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lateSubmissionCancelTimeout)
+	defer cancel()
+	err := client.Cancel(cleanupCtx, task.ProviderTaskID, false)
+	if err == nil || providerTaskMissing(err) {
+		serverlog.OperationDownloadTask.Event(w.service.log.Info()).Str("task_id", task.ID).Msg(serverlog.OperationDownloadTask.Message("已移除取消竞态中迟到的下载器任务并保留文件"))
+		return nil
+	}
+	now := time.Now().UTC()
+	persistErr := w.service.db.Model(&models.DownloadTask{}).
+		Where("id = ? AND phase = ?", task.ID, models.DownloadTaskStatusCancelled).
+		Updates(map[string]any{
+			"last_error_code":    "downloader_control_failed",
+			"last_error_message": "下载器任务取消失败，请重试删除该下载记录",
+			"updated_at":         now,
+		}).Error
+	serverlog.OperationDownloadTask.Event(w.service.log.Warn()).Str("task_id", task.ID).Str("error_code", "downloader_control_failed").Msg(serverlog.OperationDownloadTask.Message("取消竞态中的下载器任务移除失败"))
+	if persistErr != nil {
+		return appError("download_state_persist_failed", "下载器任务取消失败且诊断状态保存失败", persistErr)
+	}
+	return appError(CodeDownloaderUnavailable, "下载器任务取消失败，请重试删除该下载记录", nil)
+}
+
 func (w *DownloadWorker) persistTelemetry(task *models.DownloadTask, provider downloadpkg.Task) error {
 	now := time.Now().UTC()
 	clearTerminalError := task.Phase == models.DownloadTaskStatusFailed && !provider.Failed
@@ -2046,8 +2427,12 @@ func (w *DownloadWorker) persistTelemetry(task *models.DownloadTask, provider do
 	if clearTerminalError {
 		updates["last_error_code"], updates["last_error_message"], updates["finished_at"] = "", "", nil
 	}
-	if err := w.service.db.Model(task).Updates(updates).Error; err != nil {
-		return err
+	result := w.service.db.Model(task).Where("phase <> ?", models.DownloadTaskStatusCancelled).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return context.Canceled
 	}
 	task.Phase, task.ProviderStatus, task.ProviderOutputID, task.LastSampledAt = phase, provider.Status, provider.OutputItemID, &now
 	if clearTerminalError {
@@ -2090,8 +2475,9 @@ func (w *DownloadWorker) transferEnqueueFailure(task models.DownloadTask, err er
 	var applicationError *AppError
 	if errors.As(err, &applicationError) {
 		if applicationError.Code == CodeTransferMediaUnrecognized {
-			_ = w.service.db.Model(&task).Update("scrape_status", "completed_unrecognized").Error
-			task.ScrapeStatus = "completed_unrecognized"
+			if active, updateErr := w.updateActiveTask(&task, map[string]any{"scrape_status": "completed_unrecognized", "updated_at": time.Now().UTC()}); updateErr == nil && active {
+				task.ScrapeStatus = "completed_unrecognized"
+			}
 		}
 		_ = w.markFailure(task, applicationError.Code, applicationError.Message, true)
 		downloadOperation(task.ProviderType, task.SourceOrigin).Event(w.service.log.Error()).Str("task_id", task.ID).Str("error_code", applicationError.Code).Msg(serverlog.OperationDownloadClassification.Message("入库任务创建失败"))
@@ -2163,5 +2549,28 @@ func (w *DownloadWorker) markFailure(task models.DownloadTask, code, message str
 	if finished {
 		updates["phase"], updates["finished_at"] = models.DownloadTaskStatusFailed, now
 	}
-	return w.service.db.Model(&task).Updates(updates).Error
+	return w.service.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&task).Where("phase <> ?", models.DownloadTaskStatusCancelled).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		if finished {
+			return syncFailedFollowClaims(tx, task.ID, now)
+		}
+		return nil
+	})
+}
+
+func (w *DownloadWorker) pipelineCancelled(taskID string) bool {
+	var count int64
+	return w.service.db.Model(&models.DownloadTask{}).Where("id = ? AND phase = ?", taskID, models.DownloadTaskStatusCancelled).Count(&count).Error == nil && count == 1
+}
+
+func syncFailedFollowClaims(tx *gorm.DB, downloadTaskID string, now time.Time) error {
+	return tx.Model(&models.FollowEpisodeClaim{}).
+		Where("download_task_id = ?", downloadTaskID).
+		Updates(map[string]any{"state": "failed", "download_task_id": nil, "updated_at": now}).Error
 }
