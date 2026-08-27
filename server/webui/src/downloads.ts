@@ -140,11 +140,14 @@ export function isDownloadHistoryTask(task: DownloadTaskSummary): boolean {
   return task.lifecycle_scope === 'history'
 }
 
+export function canCancelDownloadPipeline(task: DownloadTaskSummary): boolean {
+  return task.lifecycle_scope === 'active' && task.job_status !== 'cancelled'
+}
+
 export function compatibleDownloadLibraries(
   libraries: MediaLibraryDetail[],
   storages: StorageSummary[],
   downloader: DownloaderSummary | null,
-  requireIngest = false,
 ): MediaLibraryDetail[] {
   if (!downloader) return []
   const storageByID = new Map(storages.map(storage => [storage.id, storage]))
@@ -159,7 +162,6 @@ export function compatibleDownloadLibraries(
     return target?.type === 'pan115'
       && target.connection_id === source.connection_id
       && library.transfer_mode !== 'symlink'
-      && (!requireIngest || (library.ingest_enabled && library.ingest_downloader_id === downloader.id))
   })
 }
 

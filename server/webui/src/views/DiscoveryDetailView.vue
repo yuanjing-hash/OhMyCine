@@ -83,7 +83,7 @@ watch(() => route.fullPath, load)
             <p class="mb-0 mt-3 text-sm text-muted">{{ [detail.work.year, detail.runtime_minutes ? `${detail.runtime_minutes} 分钟` : '', ...detail.genres].filter(Boolean).join(' · ') }}</p>
             <p v-if="detail.tagline" class="mb-0 mt-3 font-650">{{ detail.tagline }}</p>
             <p class="mb-0 mt-3 max-w-3xl text-sm leading-6 text-muted">{{ detail.work.overview || '暂无简介。' }}</p>
-            <div class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="!detail.work.tmdb_id" @click="searchResources">多语言聚合搜索资源</button><button v-if="detail.work.media_type === 'tv' && auth.can(Permissions.FollowsCreate)" class="btn-secondary" :disabled="!detail.work.tmdb_id || coverageLoading" @click="subscribe">自动追更</button></div>
+            <div class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="!detail.work.tmdb_id" @click="searchResources">搜索</button><button v-if="detail.work.media_type === 'tv' && auth.can(Permissions.FollowsCreate)" class="btn-secondary" :disabled="!detail.work.tmdb_id || coverageLoading" @click="subscribe">订阅</button></div>
           </div>
         </div>
       </article>

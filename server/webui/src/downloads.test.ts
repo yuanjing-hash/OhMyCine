@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { beginDownloadRetry, compatibleDownloadLibraries, downloadErrorMessage, downloadProviderStatusLabel, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
+import { beginDownloadRetry, canCancelDownloadPipeline, compatibleDownloadLibraries, downloadErrorMessage, downloadProviderStatusLabel, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
 import type { DownloaderSummary, DownloadTaskSummary, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const task = { job_status: 'queued' } as DownloadTaskSummary
@@ -65,6 +65,23 @@ describe('download presentation', () => {
     expect(isDownloadHistoryTask({ lifecycle_scope: 'history' } as DownloadTaskSummary)).toBe(true)
     expect(isDownloadHistoryTask({ lifecycle_scope: 'active' } as DownloadTaskSummary)).toBe(false)
   })
+
+  it('offers pipeline-only cancellation throughout every active stage', () => {
+    expect(canCancelDownloadPipeline({ lifecycle_scope: 'active', job_status: 'completed', transfer_job_status: 'failed' } as DownloadTaskSummary)).toBe(true)
+    expect(canCancelDownloadPipeline({ lifecycle_scope: 'active', job_status: 'waiting_user_action' } as DownloadTaskSummary)).toBe(true)
+    expect(canCancelDownloadPipeline({ lifecycle_scope: 'history', job_status: 'completed' } as DownloadTaskSummary)).toBe(false)
+    expect(canCancelDownloadPipeline({ lifecycle_scope: 'history', job_status: 'cancelled' } as DownloadTaskSummary)).toBe(false)
+
+    const source = readFileSync(new URL('./views/DownloadsView.vue', import.meta.url), 'utf8')
+    expect(source).toContain("canCancelDownloadPipeline(task)")
+    expect(source).toContain("/downloads/${task.id}/cancel")
+    expect(source).toContain('从下载器删除任务但保留已下载文件')
+    expect(source).toContain('const deleteSourceData = ref(false)')
+    expect(source).toContain('v-model="deleteSourceData"')
+    expect(source).toContain('完全删除下载任务及源/临时文件')
+    expect(source).toContain('?delete_data=${deleteSourceData.value}')
+    expect(source).not.toContain('取消并删除数据')
+  })
 })
 
 describe('115 offline downloader directory selection', () => {
@@ -98,15 +115,18 @@ describe('115 offline downloader directory selection', () => {
 
     expect(compatibleDownloadLibraries(libraries, storages, qbit).map(item => item.id)).toEqual([1])
     expect(compatibleDownloadLibraries(libraries, storages, pan115).map(item => item.id)).toEqual([2])
-    expect(compatibleDownloadLibraries(libraries, storages, pan115, true).map(item => item.id)).toEqual([2])
-    expect(compatibleDownloadLibraries(libraries, storages, { ...pan115, id: 'other' }, true)).toEqual([])
+    expect(compatibleDownloadLibraries(libraries, storages, { ...pan115, id: 'other' }).map(item => item.id)).toEqual([2])
   })
 
   it('renders separate native-offline and 115-share source entries', () => {
     const source = readFileSync(new URL('./views/DownloadsView.vue', import.meta.url), 'utf8')
     expect(source).toContain('value="share"')
     expect(source).toContain("source_kind: sourceMode.value === 'share' ? '115_share' : 'url'")
-    expect(source).toContain('selectedTarget?.ingest_relative_root')
+    expect(source).toContain("? '离线下载' : '磁力 / URL'")
+    expect(source).toContain('分享转存')
+    expect(source).toContain('selectedDownloader.provider_directory_path')
+    expect(source).toContain('createForm.autoListenLifeEvents')
+    expect(source).toContain('editForm.autoListenLifeEvents')
   })
 
   it('recovers completed recognition failures without presenting another download', () => {

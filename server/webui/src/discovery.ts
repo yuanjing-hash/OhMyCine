@@ -115,6 +115,7 @@ export function mediaIdentitySearchURL(mediaType: DiscoveryMediaType, tmdbID: nu
 export function discoveryResourceRoute(work: DiscoveryWork) {
   const query = discoveryWorkQuery(work)
   query.mode = 'resources'
+  query.identity = 'tmdb'
   return { path: '/discovery/explore', query }
 }
 

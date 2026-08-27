@@ -34,6 +34,13 @@ describe('PT discovery contracts', () => {
     expect(values.map(entry => entry.item.token)).toEqual(['high', 'mid'])
   })
 
+  it('normalizes null result items at the wire boundary', () => {
+    const nullItems = { ...group(1), items: null } as unknown as PTSearchGroup
+    const normalized = upsertPTGroup([], nullItems)
+    expect(normalized[0]?.items).toEqual([])
+    expect(() => filterAndSortTorrentResults(normalized, { activeChannel: 'all', enabledSiteTypes: ['pt'], sort: 'seeders', direction: 'desc' })).not.toThrow()
+  })
+
   it.each([
     { sort: 'seeders' as const, descending: ['large', 'middle', 'small'], ascending: ['small', 'middle', 'large'] },
     { sort: 'size' as const, descending: ['large', 'middle', 'small'], ascending: ['small', 'middle', 'large'] },
@@ -134,7 +141,7 @@ describe('PT discovery contracts', () => {
   it('keeps manual recognition explicit and binds only a verified TMDB identity before download', () => {
     const source = readFileSync(new URL('./views/ExploreView.vue', import.meta.url), 'utf8')
     expect(source).toContain('>Search</p>')
-    expect(source).toContain('>资源搜索</h1>')
+    expect(source).toContain('>直接搜索</h1>')
     expect(source).toContain('v-model="resultDirection"')
     expect(source).toContain('<option value="desc">降序</option><option value="asc">升序</option>')
     expect(source).toContain('手动识别')

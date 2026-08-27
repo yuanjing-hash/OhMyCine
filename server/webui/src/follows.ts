@@ -12,12 +12,12 @@ export interface FollowExecutionSnapshot {
   version: 1; seasons: number[]; site_ids: number[]; downloader_id: string; media_library_id: number
   schedule: FollowSchedule; filters: FollowFilters; max_resources_per_run: number; download_priority: number
 }
-export interface FollowOption { id: string; name: string }
-export interface FollowSiteOption { id: number; name: string }
-export interface FollowLibraryOption { id: number; name: string }
+export interface FollowOption { id: string; name: string; type: string; connection_id?: number }
+export interface FollowSiteOption { id: number; name: string; site_type: 'pt' | 'bt' }
+export interface FollowLibraryOption { id: number; name: string; storage_type: string; connection_id?: number }
 export interface FollowDefaults {
   snapshot: FollowExecutionSnapshot; sites: FollowSiteOption[]; downloaders: FollowOption[]
-  media_libraries: FollowLibraryOption[]; subscribed_seasons: number[]; coverage: MediaCoverage
+  media_libraries: FollowLibraryOption[]; subscribed_seasons: number[]; coverage: MediaCoverage; unavailable_reason?: string
 }
 export type FollowStatus = 'active' | 'paused' | 'completed' | 'blocked'
 export interface FollowSummary {
@@ -40,7 +40,23 @@ export function followDefaultsPath(tmdbID: number) { return `/api/v1/follows/def
 export function followPath(id: string) { return `/api/v1/follows/${encodeURIComponent(id)}` }
 export function splitRuleText(value: string) { return [...new Set(value.split(/[,，\n]/).map(item => item.trim()).filter(Boolean))].slice(0, 16) }
 export function cloneFollowSnapshot(snapshot: FollowExecutionSnapshot): FollowExecutionSnapshot { return JSON.parse(JSON.stringify(snapshot)) as FollowExecutionSnapshot }
-export function canSubmitFollow(defaults: FollowDefaults | null, snapshot: FollowExecutionSnapshot | null) { return Boolean(defaults && snapshot && snapshot.seasons.length && snapshot.site_ids.length && snapshot.downloader_id && snapshot.media_library_id) }
+export function compatibleFollowDownloaders(defaults: FollowDefaults, libraryID: number) {
+  const library = defaults.media_libraries.find(item => item.id === libraryID)
+  if (!library) return []
+  return defaults.downloaders.filter(item => item.type === 'pan115_offline'
+    ? library.storage_type === 'pan115' && item.connection_id != null && item.connection_id === library.connection_id
+    : library.storage_type === 'local')
+}
+export function compatibleFollowSites(defaults: FollowDefaults, libraryID: number, downloaderID: string) {
+  const downloader = compatibleFollowDownloaders(defaults, libraryID).find(item => item.id === downloaderID)
+  if (!downloader) return []
+  return defaults.sites.filter(item => downloader.type !== 'pan115_offline' || item.site_type === 'bt')
+}
+export function canSubmitFollow(defaults: FollowDefaults | null, snapshot: FollowExecutionSnapshot | null) {
+  if (!defaults || !snapshot || !snapshot.seasons.length || !snapshot.site_ids.length || !snapshot.downloader_id || !snapshot.media_library_id) return false
+  const siteIDs = new Set(compatibleFollowSites(defaults, snapshot.media_library_id, snapshot.downloader_id).map(item => item.id))
+  return snapshot.site_ids.every(id => siteIDs.has(id))
+}
 export function followStatusLabel(status: FollowStatus) { return ({ active: '追更中', paused: '已暂停', completed: '当前已补齐', blocked: '需要处理' } as const)[status] }
 export function followRunStatusLabel(status: FollowRunSummary['status']) { return ({ queued: '等待执行', running: '正在搜索', no_match: '暂无匹配', submitted: '已提交下载', completed: '本次已补齐', failed: '执行受阻', cancelled: '已取消', stale: '已失效' } as const)[status] }
 export function isFollowRevisionConflict(reason: unknown) { return reason instanceof APIError && reason.errorCode === 'follow_revision_conflict' }

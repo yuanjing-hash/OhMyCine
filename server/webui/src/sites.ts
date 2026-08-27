@@ -248,14 +248,19 @@ export function ptRecognitionErrorLabel(code?: string) {
 }
 
 export function upsertPTGroup(groups: PTSearchGroup[], incoming: PTSearchGroup, append = false) {
-  const index = groups.findIndex(group => group.site_id === incoming.site_id)
-  if (index < 0) return [...groups, incoming]
+  const normalized = normalizePTSearchGroup(incoming)
+  const index = groups.findIndex(group => group.site_id === normalized.site_id)
+  if (index < 0) return [...groups, normalized]
   const next = [...groups]
-  const previous = next[index]
-  next[index] = append && incoming.status === 'success'
-    ? { ...incoming, items: [...previous.items, ...incoming.items.filter(item => !previous.items.some(existing => existing.token === item.token))] }
-    : incoming
+  const previous = normalizePTSearchGroup(next[index])
+  next[index] = append && normalized.status === 'success'
+    ? { ...normalized, items: [...previous.items, ...normalized.items.filter(item => !previous.items.some(existing => existing.token === item.token))] }
+    : normalized
   return next
+}
+
+export function normalizePTSearchGroup(group: PTSearchGroup): PTSearchGroup {
+  return { ...group, items: Array.isArray(group.items) ? group.items : [] }
 }
 
 export type TorrentSearchResult = PTSearchResult
@@ -339,7 +344,8 @@ export function saveTorrentSearchSession(storage: SearchSessionStorage | undefin
   try {
     const groups: TorrentSearchGroup[] = []
     let itemCount = 0
-    for (const group of state.groups.slice(0, 24)) {
+    for (const rawGroup of state.groups.slice(0, 24)) {
+      const group = normalizePTSearchGroup(rawGroup)
       const remaining = Math.max(0, 300 - itemCount)
       const items = group.items.slice(0, remaining)
       itemCount += items.length

@@ -59,7 +59,7 @@ let mediaSearchRequest: AbortController | null = null
 
 const enabledDownloaders = computed(() => downloaders.value.filter(item => item.enabled))
 const selectedDownloader = computed(() => enabledDownloaders.value.find(item => item.id === downloadForm.value.downloaderID) ?? null)
-const compatibleLibraries = computed(() => compatibleDownloadLibraries(libraries.value, storages.value, selectedDownloader.value, false))
+const compatibleLibraries = computed(() => compatibleDownloadLibraries(libraries.value, storages.value, selectedDownloader.value))
 const selectedLibrary = computed(() => downloadForm.value.mediaLibraryID === 0 ? compatibleLibraries.value[0] ?? null : compatibleLibraries.value.find(item => item.id === downloadForm.value.mediaLibraryID) ?? null)
 const activeChannel = ref<'all' | number>('all')
 const enabledSiteTypes = ref<Array<'pt' | 'bt'>>(['pt', 'bt'])
@@ -81,7 +81,7 @@ const visibleResults = computed(() => filterAndSortTorrentResults(groups.value, 
   sort: resultSort.value,
   direction: resultDirection.value,
 }))
-const trustedIdentity = computed(() => mode.value === 'resources' && (mediaType.value === 'movie' || mediaType.value === 'tv') && tmdbID.value != null && tmdbID.value > 0
+const trustedIdentity = computed(() => mode.value === 'resources' && route.query.identity === 'tmdb' && (mediaType.value === 'movie' || mediaType.value === 'tv') && tmdbID.value != null && tmdbID.value > 0
   ? { mediaType: mediaType.value as DiscoveryMediaType, tmdbID: tmdbID.value }
   : null)
 
@@ -366,14 +366,14 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="space-y-5">
-    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 v-if="mode === 'media'" class="mt-1 text-2xl font-800">搜索影视</h1><h1 v-else class="mt-1 text-2xl font-800">资源搜索</h1><p class="page-description mt-1">{{ mode === 'media' ? '先从 TMDB 海报确认作品，再进入统一详情、媒体库覆盖率和多语言资源聚合。' : lockedSiteID ? '当前处于单站搜索模式；请求、重试和翻页不会回退到其他站点。' : '高级模式按原始关键词直接查询 PT/BT；稳定作品身份请从海报或详情进入。' }}</p></header>
-    <nav class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索模式"><button class="management-tab shrink-0" :class="mode === 'media' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="mode === 'media'" @click="switchMode('media')">影视海报</button><button class="management-tab shrink-0" :class="mode === 'resources' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="mode === 'resources'" @click="switchMode('resources')">高级资源</button></nav>
+    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 v-if="mode === 'media'" class="mt-1 text-2xl font-800">搜索</h1><h1 v-else class="mt-1 text-2xl font-800">直接搜索</h1><p class="page-description mt-1">{{ mode === 'media' ? '先从 TMDB 海报确认作品，再进入统一详情、媒体库覆盖率和多语言资源聚合。' : lockedSiteID ? '当前处于单站搜索模式；请求、重试和翻页不会回退到其他站点。' : '按原始关键词、标题或 TMDB ID 直接查询 PT/BT 资源。' }}</p></header>
+    <nav class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索模式"><button class="management-tab shrink-0" :class="mode === 'media' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="mode === 'media'" @click="switchMode('media')">搜索</button><button class="management-tab shrink-0" :class="mode === 'resources' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="mode === 'resources'" @click="switchMode('resources')">直接搜索</button></nav>
 
     <template v-if="mode === 'media'">
-      <form class="panel" @submit.prevent="searchMedia(1)"><div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end"><div><label class="label" for="media-search-query">电影或剧集名称</label><input id="media-search-query" v-model="mediaQuery" class="input" maxlength="256" placeholder="三体 / Three-Body" required /></div><div><label class="label" for="media-search-type">媒体类型</label><select id="media-search-type" v-model="mediaFilter" class="input"><option value="all">电影 + 剧集</option><option value="movie">电影</option><option value="tv">剧集</option></select></div><button class="btn-primary" :disabled="mediaSearching">{{ mediaSearching ? '搜索中…' : '搜索海报' }}</button></div></form>
+      <form class="panel" @submit.prevent="searchMedia(1)"><div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end"><div><label class="label" for="media-search-query">电影或剧集名称</label><input id="media-search-query" v-model="mediaQuery" class="input" maxlength="256" placeholder="三体 / Three-Body" required /></div><div><label class="label" for="media-search-type">媒体类型</label><select id="media-search-type" v-model="mediaFilter" class="input"><option value="all">电影 + 剧集</option><option value="movie">电影</option><option value="tv">剧集</option></select></div><button class="btn-primary" :disabled="mediaSearching">{{ mediaSearching ? '搜索中…' : '搜索' }}</button></div></form>
       <div v-if="mediaError" class="semantic-error p-4"><strong>影视搜索失败</strong><p class="mt-1 text-sm">{{ mediaError }}</p><button class="btn-secondary mt-3" @click="searchMedia(mediaPage)">重试</button></div>
       <div v-if="mediaSearching" class="panel py-10 text-center text-muted">正在通过 TMDB 搜索电影和剧集海报…</div>
-      <div v-else-if="mediaSearched && !mediaResults.length && !mediaError" class="panel py-10 text-center text-muted">没有找到匹配作品。可以尝试原名、英文名，或切换到高级资源搜索。</div>
+      <div v-else-if="mediaSearched && !mediaResults.length && !mediaError" class="panel py-10 text-center text-muted">没有找到匹配作品。可以尝试原名、英文名，或切换到直接搜索。</div>
       <div v-if="mediaResults.length" class="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5"><button v-for="work in mediaResults" :key="`${work.media_type}:${work.tmdb_id}`" class="discovery-poster text-left" @click="openMedia(work)"><div class="discovery-poster__image"><img v-if="work.poster_url" :src="work.poster_url" :alt="`${work.title} 海报`" loading="lazy" /><span v-else>暂无海报</span></div><strong :title="work.title">{{ work.title }}</strong><small>{{ work.media_type === 'tv' ? '剧集' : '电影' }} · {{ work.year || '年份未知' }}<template v-if="work.rating != null"> · {{ work.rating.toFixed(1) }}</template></small><small v-if="work.original_title && work.original_title !== work.title" :title="work.original_title">{{ work.original_title }}</small></button></div>
       <footer v-if="mediaResults.length" class="panel flex items-center justify-center gap-3"><button class="btn-secondary" :disabled="mediaSearching || mediaPage <= 1" @click="searchMedia(mediaPage - 1)">上一页</button><span class="text-sm">第 {{ mediaPage }} / {{ mediaTotalPages }} 页</span><button class="btn-secondary" :disabled="mediaSearching || mediaPage >= mediaTotalPages" @click="searchMedia(mediaPage + 1)">下一页</button></footer>
     </template>
@@ -387,7 +387,7 @@ onBeforeUnmount(() => {
           <div v-else><label class="label" for="discovery-tmdb">TMDB ID</label><input id="discovery-tmdb" v-model.number="tmdbID" class="input font-mono" type="number" min="1" placeholder="346" required /></div>
           <div><label class="label" for="discovery-kind">媒体类型</label><select id="discovery-kind" v-model="mediaType" class="input"><option value="">自动</option><option value="movie">电影</option><option value="tv">剧集</option></select></div>
           <div><label class="label" for="discovery-year">年份</label><input id="discovery-year" v-model.number="year" class="input" type="number" min="1880" max="2200" placeholder="可选" /></div>
-          <button class="btn-primary" :disabled="searching">{{ searching ? '搜索中…' : '搜索种子资源' }}</button>
+          <button class="btn-primary" :disabled="searching">{{ searching ? '搜索中…' : '搜索' }}</button>
         </div>
       </form>
       <div v-if="selectedTitle" class="panel"><span class="status-chip">已确认作品身份</span><h2 class="mt-3 text-xl font-750">{{ selectedTitle }}</h2><p class="mt-1 text-sm text-muted">Server 会重新验证 TMDB 身份，并按受限的中文名、地区别名、原名和英文名聚合搜索。</p><div v-if="identityNames.length" class="mt-3 flex flex-wrap gap-2"><span v-for="name in identityNames" :key="`${name.kind}:${name.locale}:${name.value}`" class="status-chip">{{ name.value }}<template v-if="name.locale"> · {{ name.locale }}</template></span></div></div>

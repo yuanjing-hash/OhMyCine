@@ -229,7 +229,7 @@ export interface MediaLibraryWritePayload {
   transfer_mode: 'move' | 'copy' | 'symlink'; conflict_policy: 'ask' | 'overwrite' | 'skip' | 'rename'
   movie_directory_template: string; movie_filename_template: string
   tv_directory_template: string; tv_filename_template: string
-  ingest_enabled: boolean; ingest_downloader_id?: string; ingest_relative_root?: string; ingest_relative_root_token?: string
+  ingest_enabled?: boolean; ingest_downloader_id?: string; ingest_relative_root?: string; ingest_relative_root_token?: string
 }
 
 export interface RuntimeLogEntry {
@@ -250,6 +250,7 @@ export interface DownloaderCapabilities {
 export interface DownloaderSummary {
   id: string; name: string; type: 'fake' | 'qbittorrent' | 'pan115_offline'; base_url: string; enabled: boolean
   storage_id: number | null; storage_name: string; provider_directory_path: string
+  auto_listen_life_events: boolean
   username_configured: boolean; password_configured: boolean; capabilities: DownloaderCapabilities
   health: { status: 'unknown' | 'online' | 'offline'; version: string; error_code: string; last_checked_at: string | null }
   created_at: string; updated_at: string

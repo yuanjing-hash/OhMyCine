@@ -40,18 +40,20 @@ describe('media library form boundary', () => {
     expect(payloadFromDraft(draft, storage('pan115')).transfer_mode).toBe('move')
   })
 
-  it('submits the 115 intake token only while intake is enabled', () => {
+  it('omits legacy media-library intake writes in favor of downloader life-event listening', () => {
     const draft = emptyMediaLibraryDraft(1, 2)
     draft.ingest_enabled = true
     draft.ingest_downloader_id = 'downloader-115'
     draft.ingest_relative_root_token = 'opaque-intake'
     draft.ingest_path = '/中转'
     const payload = payloadFromDraft(draft, storage('pan115'))
-    expect(payload).toMatchObject({ ingest_enabled: true, ingest_downloader_id: 'downloader-115', ingest_relative_root_token: 'opaque-intake' })
+    expect(payload).not.toHaveProperty('ingest_enabled')
+    expect(payload).not.toHaveProperty('ingest_downloader_id')
+    expect(payload).not.toHaveProperty('ingest_relative_root_token')
     expect(JSON.stringify(payload)).not.toContain('ingest_path')
 
     draft.ingest_enabled = false
-    expect(payloadFromDraft(draft, storage('pan115'))).toMatchObject({ ingest_enabled: false })
+    expect(payloadFromDraft(draft, storage('pan115'))).not.toHaveProperty('ingest_enabled')
     expect(payloadFromDraft(draft, storage('pan115'))).not.toHaveProperty('ingest_relative_root_token')
   })
 

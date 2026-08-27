@@ -9,17 +9,16 @@ import MediaLibrarySettingsFields from '@/components/MediaLibrarySettingsFields.
 import { draftFromLibrary, emptyMediaLibraryDraft, isActiveLibraryStatus, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSidecarUpload, supportsSTRM, type MediaLibraryDraft } from '@/media-libraries'
 import { mediaCatalogDetailEndpoint, mediaCatalogEndpoint, mediaCatalogPageCount, mediaCatalogPageSizes, mediaCatalogVisibleRange, type MediaCatalogMatchFilter, type MediaCatalogPageSize, type MediaCatalogTypeFilter } from '@/media-catalog'
 import { useAuthStore } from '@/stores/auth'
-import type { DownloaderSummary, ListResponse, MediaCatalogDetail, MediaCatalogItem, MediaCatalogManagedTransfer, MediaClassificationProfileSummary, MediaLibraryDetail, MediaLibraryScanRun, MediaRecognitionSummary, PageResponse, StorageSummary, TMDBCandidate } from '@/types/api'
+import type { ListResponse, MediaCatalogDetail, MediaCatalogItem, MediaCatalogManagedTransfer, MediaClassificationProfileSummary, MediaLibraryDetail, MediaLibraryScanRun, MediaRecognitionSummary, PageResponse, StorageSummary, TMDBCandidate } from '@/types/api'
 
 type DetailTab = 'status' | 'runs' | 'entries' | 'settings'
-type PickerTarget = 'source' | 'strm' | 'ingest'
+type PickerTarget = 'source' | 'strm'
 type CatalogMatchView = MediaCatalogMatchFilter | 'manual'
 
 const auth = useAuthStore()
 const libraries = ref<MediaLibraryDetail[]>([])
 const storages = ref<StorageSummary[]>([])
 const profiles = ref<MediaClassificationProfileSummary[]>([])
-const downloaders = ref<DownloaderSummary[]>([])
 const selectedID = ref<number | null>(null)
 const runs = ref<MediaLibraryScanRun[]>([])
 const catalog = ref<MediaCatalogItem[]>([])
@@ -66,12 +65,6 @@ const selectedSourceDisplay = computed(() => selected.value ? mediaLibrarySource
 const shouldPoll = computed(() => activeTab.value !== 'settings' && !editDirty.value && (libraries.value.some(item => isActiveLibraryStatus(item.status) || (item.enabled && item.status === 'initialization_failed')) || runs.value.some(run => run.status === 'running')))
 const catalogPages = computed(() => mediaCatalogPageCount(catalogTotal.value, catalogPageSize.value))
 const catalogRange = computed(() => mediaCatalogVisibleRange(catalogPage.value, catalogPageSize.value, catalogTotal.value))
-
-function ingestDownloaders(storage: StorageSummary | undefined) {
-  if (storage?.type !== 'pan115' || storage.connection_id == null) return []
-  const storageByID = new Map(storages.value.map(item => [item.id, item]))
-  return downloaders.value.filter(item => item.enabled && item.type === 'pan115_offline' && item.storage_id != null && storageByID.get(item.storage_id)?.connection_id === storage.connection_id)
-}
 
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '请求失败' }
 function dateTime(value: string | null) { return value ? new Date(value).toLocaleString() : '尚无记录' }
@@ -121,16 +114,14 @@ async function load(options: { quiet?: boolean; preferred?: number } = {}) {
   refreshing.value = true
   if (!options.quiet) error.value = ''
   try {
-    const [libraryData, storageData, profileData, downloaderData] = await Promise.all([
+    const [libraryData, storageData, profileData] = await Promise.all([
       api<ListResponse<MediaLibraryDetail>>('/api/v1/media-libraries'),
       auth.can(Permissions.StoragesRead) ? api<ListResponse<StorageSummary>>('/api/v1/storages') : Promise.resolve({ list: [], total: 0 }),
       auth.can(Permissions.MediaClassificationProfilesRead) ? api<ListResponse<MediaClassificationProfileSummary>>('/api/v1/media-classification-profiles') : Promise.resolve({ list: [], total: 0 }),
-      auth.can(Permissions.DownloadersRead) ? api<ListResponse<DownloaderSummary>>('/api/v1/downloaders') : Promise.resolve({ list: [], total: 0 }),
     ])
     libraries.value = libraryData.list
     storages.value = storageData.list.filter(item => item.enabled)
     profiles.value = profileData.list
-    downloaders.value = downloaderData.list
     const preferred = options.preferred ?? selectedID.value
     selectedID.value = libraries.value.some(item => item.id === preferred) ? preferred : libraries.value[0]?.id ?? null
     if (selected.value) await loadActivity(selected.value.id)
@@ -301,7 +292,6 @@ function directorySelected(value: { path: string; token: string }) {
   const draft = activeDraft.value
   if (!draft) return
   if (pickerTarget.value === 'source') { draft.source_path = value.path; draft.relative_root_token = value.token; if (pickerMode.value === 'edit') editDirty.value = true }
-  else if (pickerTarget.value === 'ingest') { draft.ingest_path = value.path; draft.ingest_relative_root = value.path; draft.ingest_relative_root_token = value.token; if (pickerMode.value === 'edit') editDirty.value = true }
   else { draft.strm_local_path = value.path; draft.strm_local_root_token = value.token }
   pickerOpen.value = false
 }
@@ -398,8 +388,8 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
         <template v-if="supportsSTRM(createStorage)"><label class="text-muted flex items-center gap-3 text-sm"><input v-model="createDraft.strm_enabled" type="checkbox" @change="normalizeSTRM(createDraft, createStorage)" />启用 signed 302 / STRM</label><div v-if="createDraft.strm_enabled" class="md:col-span-2 xl:col-span-3"><label class="label">本地 STRM 输出目录</label><div class="flex gap-2"><input class="input" :value="createDraft.strm_local_path" readonly required /><button type="button" class="btn-secondary" @click="openPicker('create', 'strm')">选择目录</button></div><p class="text-subtle mb-0 mt-2 text-xs">视频生成 STRM；NFO、海报、字幕和图片按同一目录结构生成在这里，不上传到网盘。</p></div></template>
         <label v-if="supportsSidecarUpload(createStorage) && !createDraft.strm_enabled" class="text-muted flex items-center gap-3 text-sm"><input v-model="createDraft.upload_sidecars" type="checkbox" :disabled="!createDraft.metadata_artifacts_enabled" />将 NFO / JPG 上传到云端媒体旁</label>
       </div>
-      <details class="semantic-inset mt-5 p-4"><summary class="cursor-pointer font-650">扫描、限速与匹配配置</summary><MediaLibrarySettingsFields v-model="createDraft" class="mt-4" :storage-type="createStorage?.type" :ingest-downloaders="ingestDownloaders(createStorage)" @browse-ingest="openPicker('create', 'ingest')" /></details>
-      <button class="btn-primary mt-5" :disabled="saving || !createStorage || !createDraft.relative_root_token || (createDraft.strm_enabled && !createDraft.strm_local_path) || (createDraft.ingest_enabled && (!createDraft.ingest_downloader_id || !createDraft.ingest_path))">创建媒体库</button>
+      <details class="semantic-inset mt-5 p-4"><summary class="cursor-pointer font-650">扫描、限速与匹配配置</summary><MediaLibrarySettingsFields v-model="createDraft" class="mt-4" :storage-type="createStorage?.type" /></details>
+      <button class="btn-primary mt-5" :disabled="saving || !createStorage || !createDraft.relative_root_token || (createDraft.strm_enabled && !createDraft.strm_local_path)">创建媒体库</button>
     </form>
 
     <div v-if="loading" class="panel mt-7">正在加载媒体库…</div>
@@ -501,11 +491,11 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
             <div class="flex items-center gap-2"><button type="button" class="btn-secondary" :disabled="catalogLoading || catalogPage <= 1" @click="changeCatalogPage(catalogPage - 1)">上一页</button><span>第 {{ catalogPage }} / {{ catalogPages }} 页</span><button type="button" class="btn-secondary" :disabled="catalogLoading || catalogPage >= catalogPages" @click="changeCatalogPage(catalogPage + 1)">下一页</button></div>
           </footer>
         </section>
-        <form v-else-if="editDraft" id="library-panel-settings" class="panel mt-4" role="tabpanel" aria-labelledby="library-tab-settings" @submit.prevent="saveLibrary"><div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"><div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" /></div><div><label class="label">来源 Storage</label><select v-model.number="editDraft.storage_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="storage in storages" :key="storage.id" :value="storage.id">{{ storage.name }}</option></select></div><div><label class="label">分类 Profile</label><select v-model.number="editDraft.profile_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · r{{ profile.revision }}</option></select></div><div class="md:col-span-2 xl:col-span-3"><label class="label">来源目录</label><div class="flex gap-2"><input class="input font-mono" :value="editDraft.source_path" readonly /><button v-if="editStorage && auth.can(Permissions.MediaLibrariesUpdate) && auth.can(Permissions.StoragesBrowse)" type="button" class="btn-secondary" @click="openPicker('edit', 'source')">重新选择</button></div><p v-if="editDraft.source_path" class="text-subtle mb-0 mt-2 text-xs">实际可读位置如上；数据库保存 Storage 相对根 {{ editDraft.relative_root || '/' }}，其中 / 表示该 Storage 根目录。</p><p v-else class="semantic-warning-text mb-0 mt-2 text-xs">更换 Storage 后必须通过目录选择器重新选择其范围内的来源根。</p></div><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />启用媒体库</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.recursive" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />递归扫描</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.metadata_artifacts_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />生成 NFO / 图片元数据</label><template v-if="supportsSTRM(editStorage)"><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.strm_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @change="normalizeSTRM(editDraft!, editStorage)" />启用 signed 302 / STRM</label><div v-if="editDraft.strm_enabled" class="md:col-span-2 xl:col-span-3"><label class="label">本地 STRM 输出目录</label><div class="flex gap-2"><input class="input" :value="editDraft.strm_local_path" readonly required /><button type="button" class="btn-secondary" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @click="openPicker('edit', 'strm')">重新选择</button></div></div></template><label v-if="supportsSidecarUpload(editStorage) && !editDraft.strm_enabled" class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.upload_sidecars" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate) || !editDraft.metadata_artifacts_enabled" />将 NFO / JPG 上传到云端媒体旁</label></div><MediaLibrarySettingsFields v-model="editDraft" class="mt-5" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" :storage-type="editStorage?.type" :ingest-downloaders="ingestDownloaders(editStorage)" @browse-ingest="openPicker('edit', 'ingest')" /><div class="mt-5 flex flex-wrap gap-2"><button v-if="auth.can(Permissions.MediaLibrariesUpdate)" class="btn-primary" :disabled="saving || !editDraft.source_path || (editDraft.strm_enabled && !editDraft.strm_local_path) || (editDraft.ingest_enabled && (!editDraft.ingest_downloader_id || !editDraft.ingest_path))">保存配置</button><RouterLink class="btn-secondary" to="/system/media-rules">管理分类规则</RouterLink></div></form>
+        <form v-else-if="editDraft" id="library-panel-settings" class="panel mt-4" role="tabpanel" aria-labelledby="library-tab-settings" @submit.prevent="saveLibrary"><div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"><div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" /></div><div><label class="label">来源 Storage</label><select v-model.number="editDraft.storage_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="storage in storages" :key="storage.id" :value="storage.id">{{ storage.name }}</option></select></div><div><label class="label">分类 Profile</label><select v-model.number="editDraft.profile_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · r{{ profile.revision }}</option></select></div><div class="md:col-span-2 xl:col-span-3"><label class="label">来源目录</label><div class="flex gap-2"><input class="input font-mono" :value="editDraft.source_path" readonly /><button v-if="editStorage && auth.can(Permissions.MediaLibrariesUpdate) && auth.can(Permissions.StoragesBrowse)" type="button" class="btn-secondary" @click="openPicker('edit', 'source')">重新选择</button></div><p v-if="editDraft.source_path" class="text-subtle mb-0 mt-2 text-xs">实际可读位置如上；数据库保存 Storage 相对根 {{ editDraft.relative_root || '/' }}，其中 / 表示该 Storage 根目录。</p><p v-else class="semantic-warning-text mb-0 mt-2 text-xs">更换 Storage 后必须通过目录选择器重新选择其范围内的来源根。</p></div><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />启用媒体库</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.recursive" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />递归扫描</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.metadata_artifacts_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />生成 NFO / 图片元数据</label><template v-if="supportsSTRM(editStorage)"><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.strm_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @change="normalizeSTRM(editDraft!, editStorage)" />启用 signed 302 / STRM</label><div v-if="editDraft.strm_enabled" class="md:col-span-2 xl:col-span-3"><label class="label">本地 STRM 输出目录</label><div class="flex gap-2"><input class="input" :value="editDraft.strm_local_path" readonly required /><button type="button" class="btn-secondary" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @click="openPicker('edit', 'strm')">重新选择</button></div></div></template><label v-if="supportsSidecarUpload(editStorage) && !editDraft.strm_enabled" class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.upload_sidecars" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate) || !editDraft.metadata_artifacts_enabled" />将 NFO / JPG 上传到云端媒体旁</label></div><MediaLibrarySettingsFields v-model="editDraft" class="mt-5" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" :storage-type="editStorage?.type" /><div class="mt-5 flex flex-wrap gap-2"><button v-if="auth.can(Permissions.MediaLibrariesUpdate)" class="btn-primary" :disabled="saving || !editDraft.source_path || (editDraft.strm_enabled && !editDraft.strm_local_path)">保存配置</button><RouterLink class="btn-secondary" to="/system/media-rules">管理分类规则</RouterLink></div></form>
       </main>
     </div>
 
-    <DirectoryPickerDialog :open="pickerOpen" :storage-id="pickerTarget === 'source' || pickerTarget === 'ingest' ? activeDraft?.storage_id : null" :restrict-to-storage="pickerTarget === 'source' || pickerTarget === 'ingest'" @close="pickerOpen = false" @select="directorySelected" />
+    <DirectoryPickerDialog :open="pickerOpen" :storage-id="pickerTarget === 'source' ? activeDraft?.storage_id : null" :restrict-to-storage="pickerTarget === 'source'" @close="pickerOpen = false" @select="directorySelected" />
     <MediaReorganizationDialog v-if="reorganizationTarget" :open="true" :transfer-task-id="reorganizationTarget.transfer.transfer_task_id" :download-task-id="reorganizationTarget.transfer.download_task_id" :display-name="reorganizationTarget.work.title" :current-title="reorganizationTarget.work.title" :current-media-type="reorganizationTarget.work.kind === 'movie' ? 'movie' : 'tv'" @close="reorganizationTarget = null" @queued="catalogReorganizationQueued" />
   </section>
 </template>

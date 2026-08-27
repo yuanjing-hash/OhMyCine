@@ -45,7 +45,7 @@ export function draftFromLibrary(library: MediaLibraryDetail, storage?: StorageS
     provider_rate_per_second: library.provider_rate_per_second, provider_concurrency: library.provider_concurrency,
     metadata_rate_per_second: library.metadata_rate_per_second, metadata_concurrency: library.metadata_concurrency,
     strm_enabled: library.strm_enabled, strm_local_root_token: '', strm_local_path: library.strm_local_path || '', metadata_artifacts_enabled: library.metadata_artifacts_enabled, upload_sidecars: library.upload_sidecars,
-    ingest_enabled: library.ingest_enabled, ingest_downloader_id: library.ingest_downloader_id ?? '', ingest_relative_root: library.ingest_relative_root || '', ingest_relative_root_token: '', ingest_path: library.ingest_relative_root || '',
+    ingest_enabled: false, ingest_downloader_id: '', ingest_relative_root: '', ingest_relative_root_token: '', ingest_path: '',
     transfer_mode: library.transfer_mode, conflict_policy: library.conflict_policy,
     movie_directory_template: library.movie_directory_template, movie_filename_template: library.movie_filename_template,
     tv_directory_template: library.tv_directory_template, tv_filename_template: library.tv_filename_template,
@@ -79,16 +79,10 @@ export function payloadFromDraft(draft: MediaLibraryDraft, storage: StorageSumma
     conflict_policy: draft.conflict_policy,
     movie_directory_template: draft.movie_directory_template, movie_filename_template: draft.movie_filename_template,
     tv_directory_template: draft.tv_directory_template, tv_filename_template: draft.tv_filename_template,
-    ingest_enabled: storage?.type === 'pan115' && draft.ingest_enabled,
-    ingest_downloader_id: storage?.type === 'pan115' && draft.ingest_enabled ? draft.ingest_downloader_id : undefined,
   }
   if (draft.relative_root_token) payload.relative_root_token = draft.relative_root_token
   else payload.relative_root = draft.relative_root || '/'
   if (payload.strm_enabled && draft.strm_local_root_token) payload.strm_local_root_token = draft.strm_local_root_token
-  if (payload.ingest_enabled) {
-    if (draft.ingest_relative_root_token) payload.ingest_relative_root_token = draft.ingest_relative_root_token
-    else payload.ingest_relative_root = draft.ingest_relative_root || '/'
-  }
   return payload
 }
 

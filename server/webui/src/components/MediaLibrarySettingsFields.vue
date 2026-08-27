@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { MediaLibraryDraft } from '@/media-libraries'
-import type { DownloaderSummary } from '@/types/api'
 
-const props = defineProps<{ disabled?: boolean; storageType?: string; ingestDownloaders?: DownloaderSummary[] }>()
-const emit = defineEmits<{ browseIngest: [] }>()
+const props = defineProps<{ disabled?: boolean; storageType?: string }>()
 const model = defineModel<MediaLibraryDraft>({ required: true })
 
 const cloud115 = computed(() => props.storageType === 'pan115')
@@ -22,18 +20,6 @@ const cloud115 = computed(() => props.storageType === 'pan115')
       <p class="text-subtle mb-0 mt-4 text-sm">识别预处理、电影命名和剧集命名由当前媒体库选择的规则 Profile 统一提供。<RouterLink class="semantic-link ml-1" to="/system/media-rules">打开规则管理</RouterLink></p>
       <p v-if="model.transfer_mode === 'symlink'" class="semantic-warning mb-0 mt-4 p-3 text-sm">软链接依赖暂存源，Server 不会自动清理对应下载数据；Windows 还需要允许创建符号链接。</p>
       <p v-if="model.conflict_policy === 'overwrite'" class="semantic-error mb-0 mt-4 p-3 text-sm">{{ cloud115 ? '覆盖会先把媒体库中的同名目标送入 115 回收站，再放置新文件。' : '覆盖会直接替换媒体库中的同名目标文件。' }}</p>
-    </section>
-    <section v-if="cloud115" class="semantic-inset mb-5 p-4">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div><h3 class="m-0 text-base">115 分享与转存接管</h3><p class="text-subtle mb-0 mt-1 text-sm">分享链接和 115 App 手工转存内容先进入独立中转目录，再复用统一识别、命名和云端整理流水线。</p></div>
-        <label class="text-muted flex items-center gap-3 text-sm"><input v-model="model.ingest_enabled" type="checkbox" :disabled="disabled" />启用自动摄取</label>
-      </div>
-      <div v-if="model.ingest_enabled" class="mt-4 grid gap-4 md:grid-cols-2">
-        <div><label class="label">绑定 115 下载器</label><select v-model="model.ingest_downloader_id" class="input" :disabled="disabled" required><option value="" disabled>请选择同账号下载器</option><option v-for="item in ingestDownloaders ?? []" :key="item.id" :value="item.id">{{ item.name }} · {{ item.provider_directory_path || '/' }}</option></select></div>
-        <div><label class="label">中转目录</label><div class="flex gap-2"><input class="input font-mono" :value="model.ingest_path" readonly placeholder="请选择独立于最终媒体库的目录" /><button class="btn-secondary" type="button" :disabled="disabled" @click="emit('browseIngest')">浏览</button></div></div>
-      </div>
-      <p v-if="model.ingest_enabled && (ingestDownloaders ?? []).length === 0" class="semantic-warning mb-0 mt-3 p-3 text-xs">没有同一 115 账号下已启用的原生离线下载器，请先在下载管理中创建。</p>
-      <p v-if="model.ingest_enabled" class="text-subtle mb-0 mt-3 text-xs">中转目录不能与最终媒体库目录或其它媒体库中转目录重叠。生活事件只负责唤醒，Server 会重新扫描目录事实并自动去重。</p>
     </section>
     <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div><label class="label">周期全量间隔（小时）</label><input v-model.number="model.full_scan_interval_hours" class="input" type="number" min="1" max="720" :disabled="disabled" /></div>
