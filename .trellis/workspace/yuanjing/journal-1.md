@@ -881,3 +881,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 34: 修复 Player 下载入口与操作菜单
+
+**Date**: 2026-08-27
+**Task**: 修复 Player 下载入口与操作菜单
+**Branch**: `develop`
+
+### Summary
+
+移除重复离线下载入口，统一应用内下载确认，修复媒体操作菜单越界，并补充已下载徽标回归验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ec29b0f` | (see git log) |
+
+### Status
+
+[OK] **Completed**

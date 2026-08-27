@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 33
+- **Total Sessions**: 34
 - **Last Active**: 2026-08-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~883 | Active |
+| `journal-1.md` | ~904 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 34 | 2026-08-27 | 修复 Player 下载入口与操作菜单 | `ec29b0f` | `develop` |
 | 33 | 2026-08-27 | 发布 Server AI 模型选择 Beta | `ada3077` | `develop` |
 | 32 | 2026-08-27 | 完成Player下载管理与完整离线播放 | `e898d45` | `develop` |
 | 31 | 2026-08-26 | Server 扫描与 OpenRouter 热修 | `599ec2f` | `develop` |
