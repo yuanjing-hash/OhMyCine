@@ -21,7 +21,7 @@ import { synchronizeOfflineAttachments } from '@/services/offlineAttachments'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const DEFAULT_SETTINGS: DownloadSettings = {
-  concurrentTasks: 2,
+  concurrentTasks: 1,
   segmentsPerTask: 1,
 }
 
@@ -162,8 +162,14 @@ export const useDownloadStore = defineStore('downloads', () => {
   async function remove(taskId: string, deleteFile: boolean) {
     await removeDownload(taskId, deleteFile)
     removeFromIndex(taskId)
-    if (deleteFile)
-      await refreshOfflineItems()
+    if (deleteFile) {
+      // The backend removes the offline row with the task id. Reflect that ownership
+      // immediately so a successful file deletion cannot leave a stale badge merely
+      // because the follow-up index read is temporarily unavailable.
+      offlineItems.value = offlineItems.value.filter(item => item.id !== taskId)
+      useDataSourceStore().pruneOfflineProjection()
+      void refreshOfflineItems().catch(() => undefined)
+    }
   }
 
   async function saveSettings(next: DownloadSettings) {
@@ -180,6 +186,7 @@ export const useDownloadStore = defineStore('downloads', () => {
 
   async function refreshOfflineItems() {
     offlineItems.value = await listOfflineItems()
+    useDataSourceStore().pruneOfflineProjection()
   }
 
   return {

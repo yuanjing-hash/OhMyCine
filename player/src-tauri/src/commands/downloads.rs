@@ -40,7 +40,7 @@ const MAX_OFFLINE_DANMAKU_ENTRIES: usize = 200_000;
 const MAX_OFFLINE_ATTACHMENT_HEADERS: usize = 32;
 const MAX_OFFLINE_ATTACHMENT_HEADER_BYTES: usize = 16 * 1024;
 const MAX_OFFLINE_ATTACHMENT_HEADER_VALUE_BYTES: usize = 4 * 1024;
-const DEFAULT_CONCURRENT_TASKS: u8 = 2;
+const DEFAULT_CONCURRENT_TASKS: u8 = 1;
 const DEFAULT_SEGMENTS_PER_TASK: u8 = 1;
 const MAX_CONCURRENT_TASKS: u8 = 8;
 const MAX_SEGMENTS_PER_TASK: u8 = 16;
@@ -1886,11 +1886,17 @@ fn prepare_segment_transfer(
             .map(|metadata| metadata.is_file() && metadata.len() == probe.total_bytes)
             .unwrap_or(false);
 
+    let planned = plan_segments(probe.total_bytes, requested_segments)?;
     let segments = if reusable {
-        existing
+        if same_segment_layout(&existing, &planned) {
+            existing
+        } else {
+            let replanned = reproject_segment_prefixes(&existing, planned);
+            storage.replace_segments(&task.id, &replanned)?;
+            replanned
+        }
     } else {
         remove_partial(partial_path)?;
-        let planned = plan_segments(probe.total_bytes, requested_segments)?;
         storage.replace_segments(&task.id, &planned)?;
         planned
     };
@@ -2087,6 +2093,59 @@ fn plan_segments(total_bytes: u64, requested: u8) -> Result<Vec<DownloadSegment>
     }
     validate_segment_coverage(&segments, total_bytes, false)?;
     Ok(segments)
+}
+
+fn same_segment_layout(existing: &[DownloadSegment], planned: &[DownloadSegment]) -> bool {
+    existing.len() == planned.len()
+        && existing.iter().zip(planned).all(|(left, right)| {
+            left.range_start == right.range_start && left.range_end == right.range_end
+        })
+}
+
+fn reproject_segment_prefixes(
+    existing: &[DownloadSegment],
+    mut planned: Vec<DownloadSegment>,
+) -> Vec<DownloadSegment> {
+    let mut completed = existing
+        .iter()
+        .filter(|segment| segment.completed_bytes > 0)
+        .map(|segment| {
+            (
+                segment.range_start,
+                segment
+                    .range_start
+                    .saturating_add(segment.completed_bytes.saturating_sub(1))
+                    .min(segment.range_end),
+            )
+        })
+        .collect::<Vec<_>>();
+    completed.sort_unstable_by_key(|range| range.0);
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(completed.len());
+    for (start, end) in completed {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1.saturating_add(1) {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    for segment in &mut planned {
+        let prefix_end = merged
+            .iter()
+            .find(|(start, end)| *start <= segment.range_start && *end >= segment.range_start)
+            .map(|(_, end)| (*end).min(segment.range_end));
+        segment.completed_bytes = prefix_end
+            .map(|end| end.saturating_sub(segment.range_start).saturating_add(1))
+            .unwrap_or(0);
+        segment.status = if segment.completed_bytes == segment.length() {
+            "completed".to_string()
+        } else {
+            "queued".to_string()
+        };
+    }
+    planned
 }
 
 fn validate_segment_coverage(
@@ -5371,6 +5430,8 @@ mod tests {
 
     #[test]
     fn settings_enforce_separate_task_segment_and_rate_limits() {
+        assert_eq!(DownloadSettings::default().concurrent_tasks, 1);
+        assert_eq!(DownloadSettings::default().segments_per_task, 1);
         assert!(validate_download_settings(&DownloadSettings {
             concurrent_tasks: 2,
             segments_per_task: 4,
@@ -5404,6 +5465,54 @@ mod tests {
         assert!(validate_segment_coverage(&segments, 10_003, true).is_ok());
         segments[1].range_start += 1;
         assert!(validate_segment_coverage(&segments, 10_003, true).is_err());
+    }
+
+    #[test]
+    fn segment_reprojection_uses_latest_worker_count_and_only_safe_prefixes() {
+        let mut existing = plan_segments(100, 4).unwrap();
+        existing[0].completed_bytes = existing[0].length();
+        existing[0].status = "completed".to_string();
+        existing[1].completed_bytes = 10;
+        existing[1].status = "running".to_string();
+        existing[2].completed_bytes = 5;
+        existing[2].status = "running".to_string();
+
+        let single = reproject_segment_prefixes(&existing, plan_segments(100, 1).unwrap());
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].completed_bytes, 35);
+        assert_eq!(single[0].status, "queued");
+
+        let two = reproject_segment_prefixes(&existing, plan_segments(100, 2).unwrap());
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].completed_bytes, 35);
+        assert_eq!(two[1].completed_bytes, 5);
+        assert!(two.iter().all(|segment| segment.status == "queued"));
+        assert!(!same_segment_layout(&existing, &two));
+        assert!(same_segment_layout(&two, &plan_segments(100, 2).unwrap()));
+    }
+
+    #[test]
+    fn segment_reprojection_increases_workers_without_inventing_completed_ranges() {
+        let mut existing = plan_segments(100, 1).unwrap();
+        existing[0].completed_bytes = 40;
+        existing[0].status = "running".to_string();
+
+        let four = reproject_segment_prefixes(&existing, plan_segments(100, 4).unwrap());
+        assert_eq!(four.len(), 4);
+        assert_eq!(
+            four.iter()
+                .map(|segment| segment.completed_bytes)
+                .collect::<Vec<_>>(),
+            vec![25, 15, 0, 0]
+        );
+        assert_eq!(four[0].status, "completed");
+        assert!(four[1..].iter().all(|segment| segment.status == "queued"));
+
+        let mut with_hole = plan_segments(100, 4).unwrap();
+        with_hole[1].completed_bytes = 10;
+        let single = reproject_segment_prefixes(&with_hole, plan_segments(100, 1).unwrap());
+        assert_eq!(single[0].completed_bytes, 0);
+        assert_eq!(single[0].status, "queued");
     }
 
     #[test]

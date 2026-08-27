@@ -4,7 +4,6 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { OFFLINE_SOURCE_ID } from '@/services/datasource/offline'
 import { pickAndroidDownloadDirectory, resolveCompletedDownload } from '@/services/downloads'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
@@ -118,7 +117,7 @@ async function playOffline(task: DownloadTask) {
 }
 
 async function openOfflineDetail(task: DownloadTask) {
-  await router.push({ name: 'media-detail', params: { sourceId: OFFLINE_SOURCE_ID, itemId: task.id } })
+  await router.push({ name: 'media-detail', params: { sourceId: task.sourceId, itemId: task.itemId } })
 }
 
 async function openDownloadLocation(task: DownloadTask) {
@@ -206,7 +205,7 @@ async function openDownloadLocation(task: DownloadTask) {
             离线播放
           </button>
           <button v-if="task.status === 'completed'" type="button" class="task-button" :disabled="busyId === task.id" @click="openOfflineDetail(task)">
-            打开离线详情
+            查看媒体详情
           </button>
           <button v-if="task.status === 'completed' && !isNativeAndroidRuntime()" type="button" class="task-button" :disabled="busyId === task.id" @click="openDownloadLocation(task)">
             打开文件位置

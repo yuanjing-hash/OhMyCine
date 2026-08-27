@@ -7,7 +7,8 @@ import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSe
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { rememberPlaybackTargetsForItems } from '@/services/datasource/identityMerge'
 import { dataSourceManager } from '@/services/datasource/manager'
-import { OFFLINE_SOURCE_CONFIG } from '@/services/datasource/offline'
+import { OFFLINE_SOURCE_ID } from '@/services/datasource/offline'
+import { stripOfflineProjectionSections } from '@/services/datasource/offlineProjection'
 import { logoutServerBestEffort } from '@/services/datasource/server'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
@@ -61,9 +62,9 @@ export const useDataSourceStore = defineStore('datasource', () => {
   let serverHomeRefreshTimer: ReturnType<typeof setTimeout> | undefined
   const mediaChangeWatchers = new Map<string, { source: DataSource, stop: () => void }>()
 
-  const orderedConfigs = computed(() =>
-    [OFFLINE_SOURCE_CONFIG, ...configs.value].sort((a, b) => a.order - b.order),
-  )
+  const orderedConfigs = computed(() => configs.value
+    .filter(config => config.id !== OFFLINE_SOURCE_ID && config.type !== 'offline')
+    .sort((a, b) => a.order - b.order))
 
   const activeSource = computed(() =>
     configs.value.find(c => c.id === activeSourceId.value) ?? null,
@@ -459,6 +460,22 @@ export const useDataSourceStore = defineStore('datasource', () => {
     void persistDisplayCache()
   }
 
+  function pruneOfflineProjection() {
+    homeSections.value = stripOfflineProjectionSections(homeSections.value)
+    homeLoadedAt.value = 0
+    sourceRootSnapshots.value = Object.fromEntries(
+      Object.entries(sourceRootSnapshots.value).flatMap(([sourceId, snapshot]) => sourceId === OFFLINE_SOURCE_ID
+        ? []
+        : [[sourceId, {
+            ...snapshot,
+            libraries: snapshot.libraries.filter(library => library.sourceId !== OFFLINE_SOURCE_ID),
+            homeSections: stripOfflineProjectionSections(snapshot.homeSections),
+          }] as const]),
+    )
+    dataSourceManager.clearSourceCache(OFFLINE_SOURCE_ID)
+    void persistDisplayCache()
+  }
+
   async function searchAllSources(keyword: string, limit = 60, sourceIds?: readonly string[]): Promise<MediaItem[]> {
     await syncManager()
     return dataSourceManager.searchAcrossSources(orderedConfigs.value, keyword, { limit, sourceIds })
@@ -480,11 +497,15 @@ export const useDataSourceStore = defineStore('datasource', () => {
         ...cache.homeSections.flatMap(section => section.items),
         ...Object.values(cache.sourceRootSnapshots).flatMap(snapshot => snapshot.homeSections.flatMap(section => section.items)),
       ])
+      const sanitized = JSON.stringify(cache)
+      if (sanitized !== raw)
+        void setAppSetting(DISPLAY_CACHE_KEY, sanitized).catch(() => undefined)
     }
     catch {
       homeSections.value = []
       homeLoadedAt.value = 0
       sourceRootSnapshots.value = {}
+      void removeAppSetting(DISPLAY_CACHE_KEY).catch(() => undefined)
     }
   }
 
@@ -564,6 +585,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     setSourceRootSnapshot,
     invalidateSourceRootSnapshot,
     invalidateHomeCache,
+    pruneOfflineProjection,
     searchAllSources,
     getSource,
     syncManager,
@@ -586,17 +608,19 @@ function sanitizePersistedDisplayCache(value: unknown): PersistedDisplayCache {
     return { homeSections: [], homeLoadedAt: 0, sourceRootSnapshots: {} }
 
   const homeSections = Array.isArray(value.homeSections)
-    ? value.homeSections.map(sanitizeDisplayHomeSection).filter(section => section.items.length > 0)
+    ? stripOfflineProjectionSections(value.homeSections.map(sanitizeDisplayHomeSection))
     : []
   const sourceRootSnapshots = isRecord(value.sourceRootSnapshots)
     ? Object.fromEntries(
         Object.entries(value.sourceRootSnapshots).flatMap(([sourceId, snapshot]) => {
-          if (!isRecord(snapshot))
+          if (sourceId === OFFLINE_SOURCE_ID || !isRecord(snapshot))
             return []
           return [[sourceId, {
-            libraries: Array.isArray(snapshot.libraries) ? snapshot.libraries.map(sanitizeDisplayLibrary) : [],
+            libraries: Array.isArray(snapshot.libraries)
+              ? snapshot.libraries.map(sanitizeDisplayLibrary).filter(library => library.sourceId !== OFFLINE_SOURCE_ID)
+              : [],
             homeSections: Array.isArray(snapshot.homeSections)
-              ? snapshot.homeSections.map(sanitizeDisplayHomeSection).filter(section => section.items.length > 0)
+              ? stripOfflineProjectionSections(snapshot.homeSections.map(sanitizeDisplayHomeSection))
               : [],
             updatedAt: 0,
           }] as const]
@@ -926,6 +950,7 @@ function sanitizeConfigs(value: unknown): DataSourceConfig[] {
         && typeof record.url === 'string'
     })
     .map(sanitizePersistedConfig)
+    .filter(config => config.id !== OFFLINE_SOURCE_ID && config.type !== 'offline')
 }
 
 function sanitizePersistedConfig(config: DataSourceConfig): DataSourceConfig {

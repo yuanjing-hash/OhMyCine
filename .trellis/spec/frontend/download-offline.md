@@ -59,6 +59,8 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 ### Scheduling and state
 
 - Settings validate `concurrentTasks` in `1..=8`, `segmentsPerTask` in `1..=16`, and an optional positive global bytes-per-second limit.
+- Fresh installations default both `concurrentTasks` and `segmentsPerTask` to `1`; an existing saved value is authoritative and must not be overwritten by a default migration.
+- New tasks read the latest saved settings. Resume and retry also read the latest `segmentsPerTask`; if the stored checkpoint topology differs, rebuild the segment layout and retain only entity-validated continuous completed prefixes that begin at each new segment boundary. Saving settings does not interrupt an active transfer.
 - Product UI exposes one `下载` concept: it creates the complete offline package, including the video, detail snapshot, artwork, subtitles, and danmaku. Do not add a parallel `离线下载` entry for the same operation.
 - Download confirmation must use the shared `MediaActionController` confirmation runtime and `MediaActionConfirmationDialog`. Do not call Tauri dialog `ask`/`message` for the core download path; capability ACL differences must not make Download unusable.
 - Desktop media-action popovers must clamp both position and maximum height to the live viewport. Keep the header fixed and make the action-group region independently scrollable so every download and management action remains reachable.
@@ -84,7 +86,9 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 ### Offline package and local-first playback
 
 - A video becomes offline-ready only after atomic finalization and the offline item transaction. Attachment failure does not downgrade the video.
-- `OfflineDataSource` owns route identity under `__offline__`; original source identity stays in the offline record for progress/history and exact online fallback.
+- `OfflineDataSource` may remain registered internally under `__offline__` for cold-start package/detail/asset resolution, but it is not a user-visible source. It must be excluded from source ordering, navigation, Home aggregation, global search, settings, and persisted display snapshots.
+- A completed offline item is a local-availability state of the original `sourceId/itemId`, not a second library or media card. Detail navigation, progress/history, badges, and exact online fallback all retain original source identity.
+- Startup cache hydration must strip legacy `__offline__` sections, items, libraries, and source snapshots and persist the sanitized cache. Successful `deleteFile` removal must immediately drop the owned offline index entry and legacy projection before best-effort background reconciliation, so a temporary list failure cannot leave a stale downloaded badge.
 - Playback asks `player_download_resolve_local` before online resolution. Rust validates root/SAF ownership, existence, size, and stored fingerprint. Invalid local facts are removed and online resolution may continue.
 - Offline history, progress sync, and completion events use the original source/item identity, never the offline row ID.
 - Series hierarchy is source-scoped until the public `MediaItem` contract provides a cross-provider stable `seriesIdentity`; display title must not be represented as globally stable identity.
@@ -116,6 +120,9 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 | User pauses | Preserve checkpoints and show Resume, not Retry |
 | User cancels | Remove task/UI fact and exact owned temporary file; keep only internal cleanup fact on cleanup failure |
 | Completed local file is missing or fingerprint differs | Remove stale offline fact and fall back online when available |
+| Legacy display cache contains `__offline__` rows or source snapshots | Remove them during hydration and persist the sanitized cache; never expose them in navigation, Home, or search |
+| User removes a completed download with `deleteFile=true` | Immediately remove the owned offline badge/projection, then reconcile the full offline index in the background |
+| Resume/retry uses a different segment count | Replan from the latest setting and preserve only entity-valid continuous prefixes; never infer completed bytes across a gap |
 | Attachment URL/Header/MIME/size/content is invalid | Mark attachment partial with safe error; keep video and any previous complete asset |
 | Source/Server is unavailable at cold start | OfflineDataSource still lists and opens persisted snapshots/assets/video |
 | Server online plugin lacks an offline resolver | Disable Player offline download with a clear reason; do not reuse a playback-only stream unsafely |
@@ -124,6 +131,8 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 ## 5. Good / Base / Bad Cases
 
 - Good: a four-segment desktop transfer resumes after an expired 302 only after the same entity is proven, then atomically creates an offline item.
+- Good: a paused one-segment task resumes after the user selects four threads; the new layout reuses only verified contiguous prefixes and starts four workers without discarding safe bytes.
+- Good: a completed episode keeps one original-source card with a downloaded badge; deleting its local file removes the badge and online playback remains available.
 - Good: the single Download action opens the in-app summary confirmation, enqueues the complete offline package, and later exposes the separate downloaded badge.
 - Good: a poster refresh fails after the old poster was downloaded; the old complete poster remains visible and attachment state becomes partial only for missing work.
 - Base: a provider does not support trustworthy Range; Player downloads one stream with the same global task/rate controls.
@@ -131,14 +140,14 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 - Good: Android cancellation loads the owned document name, drops the SQLite connection, awaits SAF deletion, then opens a new connection to clear or retain the cleanup fact.
 - Bad: store the final CDN URL in `download_tasks`, forward Authorization to a CDN redirect, append bytes after ETag changed, or expose `cancelled` as Retry.
 - Bad: keep a `rusqlite::Connection`, prepared statement, row iterator, or transaction guard alive while awaiting an Android plugin call.
-- Bad: add a second Offline Download button for the same queue operation, or depend on Tauri dialog `ask`/`message` ACL for the only Download path.
+- Bad: add a second Offline Download button, publish `__offline__` as a library/search source, or depend on Tauri dialog `ask`/`message` ACL for the only Download path.
 - Bad: delete the package directory when removing one episode, use a title as global series identity, or delete an existing asset before replacement bytes are validated and registered.
 
 ## 6. Tests Required
 
-- Rust: schema migration/idempotency, stable task serialization, scheduler fairness, pause/recovery, cancellation races, exact cleanup, segment coverage, Content-Range parsing, entity change, shared live rate-limit update, and local fingerprint correction.
+- Rust: schema migration/idempotency, stable task serialization, scheduler fairness, pause/recovery, cancellation races, exact cleanup, segment coverage and segment-topology reprojection in both directions, Content-Range parsing, entity change, shared live rate-limit update, and local fingerprint correction.
 - Rust security: traversal/symlink/reparse rejection, redirect downgrade/origin behavior, visible error redaction, attachment Header/MIME/size/JSON bounds, cascade ownership, and failed retry preservation.
-- TypeScript: current media version/static variant selection, grouped plan behavior, the single Download entry, in-app confirmation without native dialog ACL, viewport-bounded media actions, download-center controls/settings, offline route ownership, badge aggregation/removal, local-first playback/history identity, and mobile entry points.
+- TypeScript: current media version/static variant selection, grouped plan behavior, the single Download entry, in-app confirmation without native dialog ACL, viewport-bounded media actions, download-center controls/settings, hidden internal offline source, legacy projection cache sanitization/persistence, original-source detail routing, badge aggregation/removal, local-first playback/history identity, and mobile entry points.
 - Integration fixture: local HTTP Range, ignored Range, expiring 302, 401/403, early EOF, entity change, and final checksum. Do not mark this complete from static source assertions alone.
 - Platform compile: compile the Rust crate for `aarch64-linux-android` and assemble the universal debug APK so non-`Send` async futures and Android-only bindings are checked in addition to desktop Rust gates.
 - Manual: Windows interruption/limit/302/offline cold-start and Android SAF/notification/cancel/restart/offline playback. Use isolated profiles and preserve owner data.
@@ -149,6 +158,10 @@ Wrong:
 
 ```ts
 await enqueueDownload({ ...media, url: stream.url, headers: stream.headers })
+```
+
+```ts
+const orderedConfigs = [OFFLINE_SOURCE_CONFIG, ...configuredSources] // exposes a duplicate library
 ```
 
 ```ts
@@ -167,6 +180,11 @@ await enqueueDownload(target, {
   variantId: selectedVariantId,
   detailSnapshot,
 })
+```
+
+```ts
+const orderedConfigs = configuredSources.filter(source => source.id !== OFFLINE_SOURCE_ID)
+// OfflineDataSource stays inside the manager only for internal local resolution.
 ```
 
 ```ts
