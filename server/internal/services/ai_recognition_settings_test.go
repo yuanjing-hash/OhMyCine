@@ -17,11 +17,15 @@ type fakeAIProvider struct {
 	lists     int
 	generates int
 	response  []byte
+	listErr   error
 }
 
 func (p *fakeAIProvider) Test(context.Context) error { p.tests++; return nil }
 func (p *fakeAIProvider) ListModels(context.Context) ([]aiprovider.Model, error) {
 	p.lists++
+	if p.listErr != nil {
+		return nil, p.listErr
+	}
 	return []aiprovider.Model{{ID: "fixture-model", DisplayName: "Fixture"}}, nil
 }
 func (p *fakeAIProvider) GenerateStructured(context.Context, aiprovider.StructuredRequest) ([]byte, error) {
@@ -112,6 +116,34 @@ func TestAIRecognitionExplicitProbeWorksWhileRuntimeDisabled(t *testing.T) {
 	}
 	if record.Enabled || record.APIKeyCiphertext != "" || record.Revision != 1 {
 		t.Fatalf("probe persisted settings: %+v", record)
+	}
+}
+
+func TestAIRecognitionModelListErrorsUseListSpecificSafeMessages(t *testing.T) {
+	queue, actor, _ := queueFixture(t)
+	actor.Permissions[authz.PermissionSettingsUpdate] = struct{}{}
+	service := NewAIRecognitionSettingsService(queue.db, queue.audit, nil)
+	input := AIProviderProbeInput{ProviderType: aiprovider.ProviderOpenAICompatible, APIKey: "probe-key", BaseURL: "https://api.example.com", Revision: 1}
+
+	for _, test := range []struct {
+		name    string
+		code    string
+		message string
+	}{
+		{name: "too large", code: aiprovider.ErrorResponseTooLarge, message: "AI Provider 模型列表响应过大"},
+		{name: "invalid", code: aiprovider.ErrorResponseInvalid, message: "AI Provider 返回的模型列表响应无效"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &fakeAIProvider{listErr: &aiprovider.Error{Code: test.code, Cause: context.DeadlineExceeded}}
+			service.providerFactory = func(aiprovider.Config) (aiprovider.Provider, error) { return provider, nil }
+			_, err := service.ListModels(context.Background(), actor, input, RequestContext{})
+			if ErrorCode(err) != CodeAIResponseInvalid || ErrorMessage(err) != test.message {
+				t.Fatalf("code=%q message=%q err=%v", ErrorCode(err), ErrorMessage(err), err)
+			}
+			if strings.Contains(ErrorMessage(err), "结构化") || strings.Contains(ErrorMessage(err), "probe-key") {
+				t.Fatalf("unsafe model-list message=%q", ErrorMessage(err))
+			}
+		})
 	}
 }
 

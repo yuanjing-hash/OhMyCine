@@ -22,6 +22,7 @@ const (
 	RewritePromptVersion     = "media-title-rewrite-v1"
 
 	maxStructuredResponseBytes = 256 << 10
+	maxModelListResponseBytes  = 4 << 20
 	maxStructuredRequestBytes  = 512 << 10
 )
 

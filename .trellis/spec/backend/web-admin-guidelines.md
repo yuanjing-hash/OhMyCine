@@ -42,6 +42,7 @@
 - Authentication/setup responses use `Cache-Control: no-store`. Password reset requires the actor's current password; password changes and account disablement revoke affected sessions.
 - Production Web UI assets are built before `go build -tags webui`. Default Go builds/tests must not require `dist` to exist. SPA fallback applies only to explicit HTML navigation. Exact or nested `/api`, `/ws`, `/proxy`, and `/assets` paths, file-like paths with extensions, non-HTML clients, and non-`GET`/`HEAD` requests return real 404 responses instead of `index.html`.
 - The root Server module and `server/webui` module must each keep a tidy `go.mod`/`go.sum`. The root module's Go directive must satisfy dependency minimums; currently this is Go 1.23+.
+- AI Provider 模型读取成功后使用可搜索的管理端模态选择器展示全部规范化 ID/显示名称；整行选择只回填表单，不自动保存。列表读取失败必须保持当前模型和关闭状态，列表过大/响应无效显示列表语义的安全错误，并保留手动输入能力。
 
 ### 4. Validation & Error Matrix
 

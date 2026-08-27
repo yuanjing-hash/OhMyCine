@@ -580,6 +580,7 @@ OperationPan115ShareIngest.Event(log.Error()).
 
 - Assert disabled runtime performs zero decrypt/factory/HTTP calls and explicit admin probe remains separately permissioned/audited.
 - Assert custom-origin SSRF/redirect/timeout/size controls, fixed Google origin, strict response schemas, encrypted storage/reveal allowlist and log redaction.
+- AI Provider 模型目录和结构化生成使用彼此独立的响应边界：OpenAI-compatible/Google 模型列表最多读取 4 MiB，结构化生成响应及其最终内容继续限制为 256 KiB。模型列表过大或无效必须映射为列表语义的安全错误，禁止返回或记录上游正文、API Key、Authorization 或 Google API Key header。
 - Assert empty-prefix, `/v1` and `/api/v1` models/test/structured-generation request paths, plus rejection of encoded/dotted/duplicate/backslash prefixes without making a request.
 - Assert preview token hash/replay/expiry/actor/revision bindings plus local/115 root/item revalidation and unmanaged-file preservation.
 

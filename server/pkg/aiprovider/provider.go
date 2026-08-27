@@ -62,17 +62,22 @@ func (p *openAIProvider) ListModels(ctx context.Context) ([]Model, error) {
 	p.authorize(request)
 	var response struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
 		} `json:"data"`
 	}
-	if err := p.doJSON(request, &response); err != nil {
+	if err := p.doModelListJSON(request, &response); err != nil {
 		return nil, err
 	}
 	models := make([]Model, 0, len(response.Data))
 	for _, item := range response.Data {
 		id := cleanModelID(item.ID)
 		if id != "" {
-			models = append(models, Model{ID: id, DisplayName: id})
+			name := strings.TrimSpace(item.Name)
+			if name == "" || len([]rune(name)) > 256 {
+				name = id
+			}
+			models = append(models, Model{ID: id, DisplayName: name})
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
@@ -119,7 +124,7 @@ func (p *openAIProvider) generate(ctx context.Context, structured StructuredRequ
 		return nil, &Error{Code: ErrorUnavailable, Cause: err}
 	}
 	defer response.Body.Close()
-	responseBody, err := readBounded(response.Body)
+	responseBody, err := readBounded(response.Body, maxStructuredResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -151,13 +156,13 @@ func (p *openAIProvider) authorize(request *http.Request) {
 	request.Header.Set("Accept", "application/json")
 }
 
-func (p *openAIProvider) doJSON(request *http.Request, target any) error {
+func (p *openAIProvider) doModelListJSON(request *http.Request, target any) error {
 	response, err := p.http.Do(request)
 	if err != nil {
 		return &Error{Code: ErrorUnavailable, Cause: err}
 	}
 	defer response.Body.Close()
-	body, err := readBounded(response.Body)
+	body, err := readBounded(response.Body, maxModelListResponseBytes)
 	if err != nil {
 		return err
 	}
@@ -190,7 +195,7 @@ func (p *googleProvider) ListModels(ctx context.Context) ([]Model, error) {
 			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 		} `json:"models"`
 	}
-	if err := p.doJSON(request, &response); err != nil {
+	if err := p.doModelListJSON(request, &response); err != nil {
 		return nil, err
 	}
 	models := make([]Model, 0, len(response.Models))
@@ -240,7 +245,7 @@ func (p *googleProvider) GenerateStructured(ctx context.Context, structured Stru
 		return nil, &Error{Code: ErrorUnavailable, Cause: err}
 	}
 	defer response.Body.Close()
-	responseBody, err := readBounded(response.Body)
+	responseBody, err := readBounded(response.Body, maxStructuredResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -271,13 +276,13 @@ func (p *googleProvider) authorize(request *http.Request) {
 	request.Header.Set("Accept", "application/json")
 }
 
-func (p *googleProvider) doJSON(request *http.Request, target any) error {
+func (p *googleProvider) doModelListJSON(request *http.Request, target any) error {
 	response, err := p.http.Do(request)
 	if err != nil {
 		return &Error{Code: ErrorUnavailable, Cause: err}
 	}
 	defer response.Body.Close()
-	body, err := readBounded(response.Body)
+	body, err := readBounded(response.Body, maxModelListResponseBytes)
 	if err != nil {
 		return err
 	}
@@ -287,12 +292,12 @@ func (p *googleProvider) doJSON(request *http.Request, target any) error {
 	return decodeEnvelope(body, target)
 }
 
-func readBounded(reader io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(reader, maxStructuredResponseBytes+1))
+func readBounded(reader io.Reader, maximum int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maximum+1))
 	if err != nil {
 		return nil, &Error{Code: ErrorResponseInvalid, Cause: err}
 	}
-	if len(body) > maxStructuredResponseBytes {
+	if int64(len(body)) > maximum {
 		return nil, &Error{Code: ErrorResponseTooLarge}
 	}
 	return body, nil

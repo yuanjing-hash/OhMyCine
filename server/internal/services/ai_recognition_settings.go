@@ -166,7 +166,7 @@ func (s *AIRecognitionSettingsService) ListModels(ctx context.Context, actor Act
 	}
 	models, err := provider.ListModels(ctx)
 	if err != nil {
-		mapped := mapAIProviderError(err)
+		mapped := mapAIModelListError(err)
 		s.auditProbe(actor, "models", config.ProviderType, "failure", ErrorCode(mapped), request)
 		return nil, mapped
 	}
@@ -347,6 +347,20 @@ func mapAIProviderError(err error) error {
 		return appError(CodeAIResponseInvalid, "AI Provider 返回了无效的结构化结果", err)
 	default:
 		return appError(CodeAIUnavailable, "AI Provider 暂时不可用", err)
+	}
+}
+
+func mapAIModelListError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch aiprovider.ErrorCode(err) {
+	case aiprovider.ErrorResponseTooLarge:
+		return appError(CodeAIResponseInvalid, "AI Provider 模型列表响应过大", err)
+	case aiprovider.ErrorResponseInvalid, aiprovider.ErrorSchemaUnsupported:
+		return appError(CodeAIResponseInvalid, "AI Provider 返回的模型列表响应无效", err)
+	default:
+		return mapAIProviderError(err)
 	}
 }
 

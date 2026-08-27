@@ -30,6 +30,7 @@ toggleTheme(): void
 - Colors and elevation use semantic CSS variables such as canvas, surface, border, text, accent, status, focus, and shadow tokens. Page templates may use layout utilities but must not assemble dark-only palettes from `bg-white/*`, `border-white/*`, `text-slate-*`, gradients, glow, or backdrop blur.
 - Both palettes use a conventional administration style: opaque surfaces, clear 1px borders, compact spacing, small radii, restrained shadows, stable blue emphasis, and Chinese-first information hierarchy.
 - Player-only Cinema OS rules (artwork-first layout, liquid glass, dark-only chrome) do not apply to `server/webui`.
+- AI 模型列表使用页面内模态选择器：成功读取后才打开，搜索覆盖模型 ID/显示名称，整行选择只回填而不自动保存；失败保留当前模型。选择器必须使用语义主题 token，并覆盖加载、空列表、无匹配、当前选择、Escape/遮罩/关闭按钮、焦点约束和关闭后焦点恢复。
 
 ## Validation and Error Matrix
 

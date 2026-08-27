@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
+import AIModelPickerDialog from '@/components/AIModelPickerDialog.vue'
 import DirectoryPickerDialog from '@/components/DirectoryPickerDialog.vue'
 import SecretInput from '@/components/SecretInput.vue'
 import { credentialLoader } from '@/credentials'
@@ -23,7 +24,9 @@ const aiAPIKey = ref('')
 const clearAIAPIKey = ref(false)
 const aiModel = ref('')
 const aiModels = ref<AIProviderModel[]>([])
-const aiProbing = ref(false)
+const aiModelPickerOpen = ref(false)
+const aiTesting = ref(false)
+const aiModelsLoading = ref(false)
 const tmdbToken = ref('')
 const tmdbCredentialKind = ref<'read_access_token' | 'api_key'>('read_access_token')
 const clearTMDB = ref(false)
@@ -36,12 +39,14 @@ const loading = ref(true)
 const saving = ref(false)
 const canUpdate = computed(() => auth.can(Permissions.SettingsUpdate))
 const canBrowse = computed(() => auth.can(Permissions.StoragesBrowse))
+const aiProbing = computed(() => aiTesting.value || aiModelsLoading.value)
 
 watch(clearTMDB, value => { if (value) tmdbToken.value = '' })
 watch(clearAIAPIKey, value => { if (value) aiAPIKey.value = '' })
 watch(aiProvider, value => {
   aiBaseURL.value = effectiveAIBaseURL(value, value === 'openai_compatible' ? aiBaseURL.value : '')
   aiModels.value = []
+  aiModelPickerOpen.value = false
 })
 
 async function load() {
@@ -109,23 +114,30 @@ function aiProbePayload() {
 async function loadAIModels() {
   const payload = aiProbePayload()
   if (!payload) return
-  aiProbing.value = true
+  aiModelPickerOpen.value = false
+  aiModelsLoading.value = true
   try {
     const result = await api<{ list: AIProviderModel[]; total: number }>('/api/v1/settings/ai-recognition/models', { method: 'POST', body: JSON.stringify(payload) })
     aiModels.value = result.list
-    if (!aiModel.value && result.list.length) aiModel.value = result.list[0].id
-    notify(result.list.length ? `已读取 ${result.list.length} 个可用模型` : '连接成功，但 Provider 没有返回可用模型；可手动填写', result.list.length ? 'success' : 'warning')
-  } catch (reason) { notify(message(reason), 'error') } finally { aiProbing.value = false }
+    aiModelPickerOpen.value = true
+    notify(result.list.length ? `已读取 ${result.list.length} 个可用模型，请选择后再保存` : '连接成功，但 Provider 没有返回可用模型；仍可手动填写', result.list.length ? 'success' : 'warning')
+  } catch (reason) { notify(message(reason), 'error') } finally { aiModelsLoading.value = false }
+}
+
+function chooseAIModel(modelID: string) {
+  aiModel.value = modelID
+  aiModelPickerOpen.value = false
+  notify('模型 ID 已回填，尚未保存', 'success')
 }
 
 async function testAIConnection() {
   const payload = aiProbePayload()
   if (!payload) return
-  aiProbing.value = true
+  aiTesting.value = true
   try {
     await api('/api/v1/settings/ai-recognition/test', { method: 'POST', body: JSON.stringify(payload) })
     notify('AI Provider 连接成功', 'success')
-  } catch (reason) { notify(message(reason), 'error') } finally { aiProbing.value = false }
+  } catch (reason) { notify(message(reason), 'error') } finally { aiTesting.value = false }
 }
 
 async function saveAISettings() {
@@ -222,11 +234,12 @@ onMounted(load)
       </div>
       <div class="mt-4 grid gap-4 md:grid-cols-2">
         <div><label class="label" for="ai-api-key">API Key</label><SecretInput id="ai-api-key" v-model="aiAPIKey" class="input" :configured="aiSettings.api_key_configured" :load-secret="auth.can(Permissions.ConnectionsSecretsExport) && aiSettings.api_key_configured ? credentialLoader({ resourceType: 'ai_recognition', resourceID: 1, field: 'api_key' }) : undefined" :reset-key="aiSettings.revision" autocomplete="new-password" placeholder="留空保留已加密保存的 API Key" :disabled="!canUpdate || clearAIAPIKey" /><label class="text-muted mt-2 flex items-center gap-2 text-xs"><input v-model="clearAIAPIKey" type="checkbox" :disabled="!canUpdate || !aiSettings.api_key_configured" />清除已保存 API Key</label></div>
-        <div><label class="label" for="ai-model">模型</label><input id="ai-model" v-model="aiModel" class="input font-mono text-xs" list="ai-model-options" placeholder="可读取列表或手动填写模型名" :disabled="!canUpdate" /><datalist id="ai-model-options"><option v-for="item in aiModels" :key="item.id" :value="item.id">{{ item.display_name }}</option></datalist><p class="text-subtle mb-0 mt-2 text-xs">模型列表获取失败不影响手动填写。</p></div>
+        <div><label class="label" for="ai-model">模型</label><input id="ai-model" v-model="aiModel" class="input font-mono text-xs" placeholder="可读取列表或手动填写模型 ID" :disabled="!canUpdate" /><p class="text-subtle mb-0 mt-2 text-xs">模型列表获取失败不影响当前值或手动填写；选择模型后仍需保存 AI 设置。</p></div>
       </div>
       <label class="text-muted mt-4 flex items-start gap-3 text-sm"><input v-model="aiSettings.send_relative_basenames" type="checkbox" :disabled="!canUpdate" /><span><strong class="text-normal block">允许发送清理后的相对文件名 basename</strong><span class="text-subtle text-xs">默认关闭。绝对路径、Cookie、Token、磁力链接、下载器和云盘内部 ID 永远不会发送。</span></span></label>
-      <div v-if="canUpdate" class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="saving">保存 AI 设置</button><button class="btn-secondary" type="button" :disabled="aiProbing || clearAIAPIKey || (!aiAPIKey && !aiSettings.api_key_configured)" @click="testAIConnection">{{ aiProbing ? '正在连接…' : '测试连接' }}</button><button class="btn-secondary" type="button" :disabled="aiProbing || clearAIAPIKey || (!aiAPIKey && !aiSettings.api_key_configured)" @click="loadAIModels">获取模型列表</button></div>
+      <div v-if="canUpdate" class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="saving">保存 AI 设置</button><button class="btn-secondary" type="button" :disabled="aiProbing || clearAIAPIKey || (!aiAPIKey && !aiSettings.api_key_configured)" @click="testAIConnection">{{ aiTesting ? '正在连接…' : '测试连接' }}</button><button class="btn-secondary" type="button" :disabled="aiProbing || clearAIAPIKey || (!aiAPIKey && !aiSettings.api_key_configured)" @click="loadAIModels">{{ aiModelsLoading ? '正在获取模型…' : '获取模型列表' }}</button></div>
     </form>
     <DirectoryPickerDialog :open="pickerOpen" :restrict-to-storage="false" :initial-endpoint="DOWNLOAD_STAGING_DIRECTORY_ENDPOINT" @close="pickerOpen = false" @select="chooseDirectory" />
+    <AIModelPickerDialog :open="aiModelPickerOpen" :models="aiModels" :selected-model="aiModel" :loading="aiModelsLoading" @close="aiModelPickerOpen = false" @select="chooseAIModel" />
   </section>
 </template>

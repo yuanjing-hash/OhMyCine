@@ -132,6 +132,117 @@ func TestGoogleAIStudioUsesNativeProtocolAndFiltersModels(t *testing.T) {
 	}
 }
 
+func TestModelListsUseIndependentFourMiBResponseLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     Config
+		validBody  string
+		expectedID string
+	}{
+		{
+			name:       "OpenAI-compatible",
+			config:     Config{ProviderType: ProviderOpenAICompatible, BaseURL: "https://api.example.com/v1", APIKey: "secret-key", Model: "gpt-test"},
+			validBody:  `{"data":[{"id":"fixture/model","name":"Fixture Model"}]}`,
+			expectedID: "fixture/model",
+		},
+		{
+			name:       "Google AI Studio",
+			config:     Config{ProviderType: ProviderGoogleAIStudio, APIKey: "google-key", Model: "gemini-flash"},
+			validBody:  `{"models":[{"name":"models/gemini-flash","displayName":"Gemini Flash","supportedGenerationMethods":["generateContent"]}]}`,
+			expectedID: "gemini-flash",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" accepts a list at exactly four MiB", func(t *testing.T) {
+			body := padJSONBody(t, test.validBody, maxModelListResponseBytes)
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, body), nil
+			})}
+			provider, err := newWithClient(test.config, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			models, err := provider.ListModels(context.Background())
+			if err != nil || len(models) != 1 || models[0].ID != test.expectedID {
+				t.Fatalf("models=%+v err=%v body_size=%d", models, err, len(body))
+			}
+			if test.config.ProviderType == ProviderOpenAICompatible && models[0].DisplayName != "Fixture Model" {
+				t.Fatalf("OpenAI-compatible display name=%q", models[0].DisplayName)
+			}
+		})
+		t.Run(test.name+" rejects a list at four MiB plus one byte", func(t *testing.T) {
+			body := padJSONBody(t, test.validBody, maxModelListResponseBytes) + " "
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, body), nil
+			})}
+			provider, err := newWithClient(test.config, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.ListModels(context.Background()); ErrorCode(err) != ErrorResponseTooLarge {
+				t.Fatalf("error_code=%q err=%v body_size=%d", ErrorCode(err), err, len(body))
+			}
+		})
+	}
+}
+
+func TestStructuredGenerationRemainsLimitedTo256KiB(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		body   string
+	}{
+		{
+			name:   "OpenAI-compatible",
+			config: Config{ProviderType: ProviderOpenAICompatible, BaseURL: "https://api.example.com/v1", APIKey: "secret-key", Model: "gpt-test"},
+			body:   `{"choices":[{"message":{"content":"{\"action\":\"unknown\"}"}}]}`,
+		},
+		{
+			name:   "Google AI Studio",
+			config: Config{ProviderType: ProviderGoogleAIStudio, APIKey: "google-key", Model: "gemini-flash"},
+			body:   `{"candidates":[{"content":{"parts":[{"text":"{\"action\":\"unknown\"}"}]}}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" accepts a response at exactly 256 KiB", func(t *testing.T) {
+			body := padJSONBody(t, test.body, maxStructuredResponseBytes)
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, body), nil
+			})}
+			provider, err := newWithClient(test.config, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.GenerateStructured(context.Background(), StructuredRequest{SystemPrompt: "return JSON", Payload: map[string]string{"title": "fixture"}, SchemaName: "fixture", Schema: map[string]any{"type": "object"}})
+			if err != nil || string(result) != `{"action":"unknown"}` {
+				t.Fatalf("result=%q err=%v body_size=%d", result, err, len(body))
+			}
+		})
+		t.Run(test.name+" rejects a response at 256 KiB plus one byte", func(t *testing.T) {
+			body := padJSONBody(t, test.body, maxStructuredResponseBytes) + " "
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, body), nil
+			})}
+			provider, err := newWithClient(test.config, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.GenerateStructured(context.Background(), StructuredRequest{SystemPrompt: "return JSON", Payload: map[string]string{"title": "fixture"}, SchemaName: "fixture", Schema: map[string]any{"type": "object"}})
+			if ErrorCode(err) != ErrorResponseTooLarge {
+				t.Fatalf("error_code=%q err=%v body_size=%d", ErrorCode(err), err, len(body))
+			}
+		})
+	}
+}
+
+func padJSONBody(t *testing.T, body string, size int) string {
+	t.Helper()
+	if len(body) > size {
+		t.Fatalf("fixture body size %d exceeds requested size %d", len(body), size)
+	}
+	return body + strings.Repeat(" ", size-len(body))
+}
+
 func TestStrictDomainResultsRejectInventedCandidatesExtraFieldsAndRanges(t *testing.T) {
 	payload := CandidateArbitrationPayload{Release: ArbitrationRelease{Title: "Fixture"}, Candidates: []ArbitrationCandidate{{CandidateRef: "c1", Title: "Fixture", MediaType: "tv"}}}
 	valid := `{"action":"select","candidate_ref":"c1","normalized_title":"Fixture","media_type":"tv","year":2026,"season":1,"episode_start":1,"episode_end":2,"confidence":0.9,"reason_code":"title_alias_match"}`
