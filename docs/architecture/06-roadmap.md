@@ -763,28 +763,28 @@ Phase 4: 生态系统           ████████████████
 
 #### 追更引擎
 
-- [ ] `FollowService` (`internal/services/follow.go`)
-- [ ] 追更任务模型 (`follow_tasks` 表)
-- [ ] 创建追更任务
-  - [ ] TMDB ID + 剧名 + 季号
-  - [x] 站点过滤（现有搜索合同支持固定 `site_id`；追更任务的筛选 UI/调度绑定仍待实现）
-  - [ ] 质量偏好 (分辨率/编码/制作组)
-  - [ ] Cron 表达式 (默认每天 3:00)
-- [ ] 定时执行逻辑
-  - [~] 在指定站点搜索剧名/IMDB ID（单站搜索基础已完成；追更调度仍待实现）
-  - [~] 过滤缺少的集数（跨媒体库只读覆盖率已完成；订阅调度中的季选择、缺集 claim、筛选与自动下载仍待实现）
-  - [ ] 匹配质量偏好
-  - [ ] 选择最佳种子
-  - [ ] 提交下载
-- [ ] 追更状态管理 (active/paused/completed)
-- [ ] 追更 API
-  - [ ] `POST /api/v1/follows` — 创建追更
-  - [ ] `GET /api/v1/follows` — 追更列表 (用户隔离)
-  - [ ] `PUT /api/v1/follows/{id}` — 更新
-  - [ ] `DELETE /api/v1/follows/{id}` — 删除
-  - [ ] `POST /api/v1/follows/{id}/pause` — 暂停
-  - [ ] `POST /api/v1/follows/{id}/resume` — 恢复
-  - [ ] `POST /api/v1/follows/{id}/execute` — 立即执行
+- [x] `FollowService` (`internal/services/follow.go`)
+- [x] 追更订阅、季、运行与逐集 claim 模型（v52）
+- [x] 创建/编辑追更任务
+  - [x] 稳定 TMDB 身份 + 多季选择（Season 0 显式选择）
+  - [x] 有序站点、下载器和目标媒体库快照
+  - [x] 分辨率/编码/来源/制作组及包含、排除、做种、年龄、大小过滤
+  - [x] 30 分钟至 7 天的 interval 检查周期
+- [x] 持久队列定时执行逻辑
+  - [x] 按指定站点复用多语言媒体身份搜索
+  - [x] 仅选择明确已播的缺集，future/unknown 安全跳过
+  - [x] 确定性质量排序与单集/多集/整季集合覆盖
+  - [x] 逐集 claim 与 DownloadService 幂等提交
+- [x] 追更状态管理 (`active|paused|completed|blocked`) 与运行历史
+- [x] 追更 API
+  - [x] `GET /api/v1/follows/defaults` — 表单默认值与覆盖率
+  - [x] `POST /api/v1/follows` — 创建追更
+  - [x] `GET /api/v1/follows` / `GET /api/v1/follows/{id}` — 用户隔离列表/详情
+  - [x] `PUT /api/v1/follows/{id}` — revision CAS 更新
+  - [x] `DELETE /api/v1/follows/{id}` — 删除
+  - [x] `POST /api/v1/follows/{id}/pause` / `resume` — 暂停/恢复
+  - [x] `POST /api/v1/follows/{id}/search` — 入队立即搜索
+  - [x] `GET /api/v1/follows/{id}/runs` — 安全运行记录
 
 #### 网盘驱动增强
 
@@ -800,12 +800,13 @@ Phase 4: 生态系统           ████████████████
 - [ ] URL 健康检查 (定期验证缓存的 URL 是否有效)
 - [ ] 自动故障转移 (一个驱动失败 → 尝试备用驱动)
 
-#### Player 端 UI
+#### Server 管理端 UI
 
-- [ ] `FollowView.vue` — 追更管理页面
-  - [ ] 追更列表 (剧名/当前进度/站点/下次检查)
-  - [ ] 操作按钮 (暂停/恢复/编辑/删除/立即执行)
-  - [ ] 追更详情 (已追集数/缺少集数/下载历史)
+- [x] `FollowsView.vue` — 追更管理页面
+  - [x] 追更列表 (剧名/当前覆盖进度/站点/下次检查)
+  - [x] 操作按钮 (暂停/恢复/编辑/删除/立即搜索)
+  - [x] 安全运行历史与最近错误
+- [x] 电视剧详情多季订阅入口与完整策略编辑对话框
 - [ ] 网盘文件浏览器
   - [ ] 目录树导航
   - [ ] 文件列表 (名称/大小/修改时间)
@@ -813,7 +814,7 @@ Phase 4: 生态系统           ████████████████
 
 **产出**:
 
-- [ ] 能追更剧集，自动下载缺少的集数
+- [x] 能追更剧集，自动下载缺少的集数
 - [ ] 7+ 个网盘驱动可用
 - [ ] 302 播放稳定可靠
 

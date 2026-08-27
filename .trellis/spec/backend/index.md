@@ -48,6 +48,7 @@ Before changing backend code or API documentation:
 | [Downloader Management](./downloader-management.md) | Encrypted downloader config/source, qBittorrent adapters, download jobs, telemetry, recovery and safe controls | Active |
 | [PT Discovery](./pt-discovery.md) | Built-in PT adapters, encrypted site credentials, progressive search, opaque result claims, and download-pipeline handoff | Active |
 | [Media Identity Discovery](./media-identity-discovery.md) | TMDB-first poster search, bounded multi-name resource aggregation, and actor-scoped movie/episode coverage | Active |
+| [Automatic TV Follow](./automatic-tv-follow.md) | Versioned TV subscriptions, definite-missing reconciliation, deterministic resource selection, claims, and normal pipeline handoff | Active |
 | [Transfer Organization](./transfer-organization.md) | Automatic post-download transfer read model, safe naming summaries, RBAC, retry and conflict UI | Active |
 | [Logging Guidelines](./logging-guidelines.md) | zerolog conventions and redaction rules | Active |
 | [Plugin Repository & Lifecycle](./plugin-repository-discovery.md) | Pinned GitHub Registry discovery, verified package extraction, permission preview, WASM lifecycle, compensation, and cleanup | Active |

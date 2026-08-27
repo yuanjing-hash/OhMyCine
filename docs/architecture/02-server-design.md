@@ -16,7 +16,9 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 发现阶段现已同时上线推荐与内建 PT/BT 站点纵向切片。推荐页使用统一 provider DTO，首版提供 TMDB 趋势/上映/高分栏目和豆瓣热门/TOP250，按 provider/栏目缓存 24 小时并允许 7 天旧快照降级；首次或手动刷新最多四栏目并发，单个来源失败不拖垮其它栏目。PTTime、SewerPT 与 PandaPT 通过版本化 `pkg/site` adapter 和共享 NexusPHP 引擎接入登录态检测、分页搜索、结果解析和受控种子获取；管理员保存的 Cookie/passkey 使用站点 ID 与类型绑定的 AES-GCM purpose 加密，候选编辑只有在连接测试成功后才以 revision CAS 原子替换，纯停用操作则无需再次向故障站点发送凭据。公开 BT 适配器随 Server 内建，但只有管理员输入受支持的 HTTPS 官网、经 `/api/v1/sites/resolve` 精确识别并测试保存后才创建和访问；未配置站点不展示、不探测、不搜索。首批覆盖 Nyaa、AnimeTosho、Tokyo Toshokan、Mikan、AniDex、动漫花园、ACG.RIP、YTS、EZTV、1337x、The Pirate Bay、EXT.to 与 LimeTorrents，并保留通用 Torznab 连接 Jackett/Prowlarr。Server 拒绝 userinfo、query、fragment、非根路径、异常端口、相似域和伪造子域，创建时重新解析官网而不信任浏览器提交的 kind。多站搜索执行每站限速和四站有界并发，通过 SSE 按站渐进输出并保留普通 JSON 降级接口；站点卡片可进入固定 `site_id` 的单站搜索，搜索、重试、分页、识别和入库均不会静默回退全站聚合。浏览器只得到绑定当前用户、站点和 torrent 身份的 15 分钟 256-bit 不透明令牌。下载确认会原子 reserve 令牌、在失败时于原到期时间内恢复、成功后单次销毁，再由 Server 将受控 `.torrent` 或规范 magnet 交给既有 `DownloadService`，继续走统一媒体库排序/选择、分类、整理和入库流水线。参考 MoviePilot 的是推荐与搜索分层、按站渐进结果和统一下载闭环；实现不复制其 GPL 代码、选择器、内置密钥、签名或凭据。
 
-发现搜索现已采用与 MoviePilot v3 产品流一致、但按 OhMyCine 安全边界独立实现的两层入口：探索页与 `Ctrl/⌘ K` 全局搜索默认通过 `GET /api/v1/discovery/media-search` 先用关键词搜索 TMDB 电影/剧集海报，推荐、海报搜索、相关作品和类似作品都以 `media_type + tmdb_id` 进入同一详情页；原始 PT/BT 标题搜索作为“高级资源”入口继续保留。详情页发起资源搜索时，Server 会重新读取 TMDB 身份，按本地化名、中文地区别名、原名、英文名和其它翻译构建有序、去重且有硬上限的名称集合，再通过 `/api/v1/discovery/media/{mediaType}/{tmdbID}/torrent-search*` 复用现有站点并发、限速、识别和 opaque claim 边界进行聚合；同站同一真实 torrent 身份跨名称只返回一次，浏览器只看到命中名称和安全资源字段。`/coverage` 同时要求 `discovery.read` 与 `media_libraries.read`，仅聚合启用且可读媒体库的可信 catalog 事实：电影返回 `present|missing|unknown`，剧集按 TMDB 默认季序显示逐季逐集的 `present|missing|future|unknown`，跨库重复只算一个逻辑集，Season 0 可见但不计普通缺集；扫描事实不完整时只承认 catalog 已能证明的 `present`，其余缺口与缺少播出日期、TMDB 季读取不完整的集均保守为 `unknown`。该覆盖率目前是后续订阅引擎的只读事实基础，不代表自动订阅、调度或缺集下载已经完成。
+发现搜索现已采用与 MoviePilot v3 产品流一致、但按 OhMyCine 安全边界独立实现的两层入口：探索页与 `Ctrl/⌘ K` 全局搜索默认通过 `GET /api/v1/discovery/media-search` 先用关键词搜索 TMDB 电影/剧集海报，推荐、海报搜索、相关作品和类似作品都以 `media_type + tmdb_id` 进入同一详情页；原始 PT/BT 标题搜索作为“高级资源”入口继续保留。详情页发起资源搜索时，Server 会重新读取 TMDB 身份，按本地化名、中文地区别名、原名、英文名和其它翻译构建有序、去重且有硬上限的名称集合，再通过 `/api/v1/discovery/media/{mediaType}/{tmdbID}/torrent-search*` 复用现有站点并发、限速、识别和 opaque claim 边界进行聚合；同站同一真实 torrent 身份跨名称只返回一次，浏览器只看到命中名称和安全资源字段。`/coverage` 同时要求 `discovery.read` 与 `media_libraries.read`，仅聚合启用且可读媒体库的可信 catalog 事实：电影返回 `present|missing|unknown`，剧集按 TMDB 默认季序显示逐季逐集的 `present|missing|future|unknown`，跨库重复只算一个逻辑集，Season 0 可见但不计普通缺集；扫描事实不完整时只承认 catalog 已能证明的 `present`，其余缺口与缺少播出日期、TMDB 季读取不完整的集均保守为 `unknown`。同一覆盖率服务已作为自动追更的权威只读事实，只有明确已播且为 `missing` 的剧集才会进入自动搜索。
+
+电视剧详情现已提供 MoviePilot 风格的多季订阅入口，并在创建前展示站点顺序、下载器、目标媒体库、检查周期、分辨率/编码/来源/发布组、包含与排除词、做种/年龄/大小、单次资源上限和下载优先级。保存后形成版本化、无凭据的执行快照；以后修改全局配置不会漂移旧订阅，编辑通过 revision CAS 生成下一版。到期订阅只创建持久 `follow-search` Job，Worker 重新验证 owner 权限和配置，复用 `MediaCoverageService`、多语言身份搜索、SiteService opaque result claim 与 DownloadService；它不持久化真实 torrent/magnet URL，也不直接调用下载器或移动文件。明确缺集先建立逐集 claim，再由稳定排序与集合覆盖选择单集、多集或整季资源；下载仍沿用 Download → Transfer → Import → STRM/refresh/notify 流水线。`active|paused|completed|blocked` 状态、运行记录和安全错误可在订阅管理页查看，`completed` 仍会按周期低成本复核，发现新已播缺集后重新进入追更。
 
 下载预分类完成后 Server 不只设置 qBittorrent Category，还必须显式调用 `setLocation(暂存目录/分类)` 后才恢复下载；因为用户关闭 Automatic Torrent Management 时，单独修改 Category 不会改变保存位置。入库源解析仅对旧任务兼容查找暂存根目录，新任务的正常路线始终是分类目录。`copy|symlink` 入库后进入独立做种管理，按任务快照的时长/分享率条件采样；`copy` 达标后删任务与暂存源数据，`symlink` 只删任务并永久保留链接源，`move` 入库后以 `deleteData=false` 清理 qBittorrent 任务。自动清理默认关闭。
 
@@ -883,106 +885,23 @@ func (d *DiscoveryService) Download(ctx context.Context, userID int64, torrent *
 
 ### 10.4 追更 (Follow/Subscribe)
 
-```go
-// internal/services/follow.go
-
-type FollowService struct {
-    siteMgr    *SiteManager
-    tmdb       *TmdbScraper
-    downloader *DownloadService
-    category   *CategoryService
-    scheduler  *cron.Cron
-}
-
-// Follow 创建追更任务
-func (f *FollowService) Follow(ctx context.Context, userID int64, req *FollowRequest) error {
-    // 1. 查询TMDB获取剧集信息
-    tmdbInfo, err := f.tmdb.GetDetail(ctx, req.TMDBID)
-    if err != nil {
-        return err
-    }
-
-    // 2. 创建追更记录
-    follow := &FollowTask{
-        UserID:       userID,
-        TMDBID:       req.TMDBID,
-        Title:        tmdbInfo.Title,
-        IMDBID:       tmdbInfo.IMDBID,
-        Season:       req.Season,
-        TotalEpisodes: tmdbInfo.NumberOfEpisodes,
-        // 匹配规则
-        SiteFilter:   req.SiteFilter,    // 只在指定站点搜索
-        QualityFilter: req.QualityFilter, // 质量偏好: "1080p以上, H265"
-        GroupFilter:  req.GroupFilter,    // 制作组偏好
-        // 搜索间隔
-        CronExpr:     req.CronExpr,      // 默认每天3:00
-        // 状态
-        Status:       "active",
-        LastEpisode:  req.StartEpisode,   // 从第几集开始追
-    }
-
-    return f.saveFollowTask(follow)
-}
-
-// ExecuteFollow 执行追更 — 定时调用
-func (f *FollowService) ExecuteFollow(ctx context.Context, task *FollowTask) error {
-    // 1. 在指定站点搜索剧名
-    searchReq := &SearchRequest{
-        IMDBID:   task.IMDBID,
-        Keyword:  task.Title,
-        Category: "TV",
-    }
-
-    sites := f.getSites(task.SiteFilter)
-    var allTorrents []*Torrent
-    for _, site := range sites {
-        torrents, _ := site.Search(ctx, searchReq)
-        allTorrents = append(allTorrents, torrents...)
-    }
-
-    // 2. 过滤: 只要缺少的集数
-    missing := f.getMissingEpisodes(task)
-    matched := f.filterTorrents(allTorrents, missing, task)
-
-    // 3. 匹配质量偏好
-    best := f.selectBest(matched, task.QualityFilter, task.GroupFilter)
-
-    // 4. 下载
-    for _, torrent := range best {
-        rule := f.category.AutoClassify(torrent, parseFilename(torrent.Title))
-        f.downloader.AddTorrent(ctx, &AddRequest{
-            TorrentURL: torrent.DownloadURL,
-            SavePath:   getDownloadPath(rule),
-            Category:   "tv",
-            Name:       torrent.Title,
-        })
-    }
-
-    // 5. 更新追更状态
-    task.LastCheck = time.Now()
-    f.saveFollowTask(task)
-
-    return nil
-}
-
-// getMissingEpisodes 获取缺少的集数
-// 对比 TMDB 上的总集数和本地已有集数
-func (f *FollowService) getMissingEpisodes(task *FollowTask) []int {
-    // 查询本地已有集数 (从媒体库记录中获取)
-    local := f.getExistingEpisodes(task.TMDBID, task.Season)
-
-    // TMDB 上的总集数
-    total := task.TotalEpisodes
-
-    var missing []int
-    for ep := 1; ep <= total; ep++ {
-        if !local[ep] {
-            missing = append(missing, ep)
-        }
-    }
-    return missing
-}
+```text
+电视剧详情选择一个或多个季
+  → 保存版本化 execution snapshot
+  → Scheduler / “立即搜索”只入队 follow-search Job
+  → Worker 读取该 run 的不可变 snapshot
+  → 复验 TMDB 身份、owner 权限及站点/下载器/媒体库引用
+  → MediaCoverage 对账 present / missing / future / unknown
+  → 只搜索明确已播 missing，Season 0 必须显式选择
+  → 共享多语言 identity search + 过滤 + 稳定集合覆盖
+  → 逐集 claim + SiteService 私有结果解析
+  → DownloadService 幂等提交
+  → 既有 Download → Transfer → Import → Notify 流水线
 ```
+
+`follow_subscriptions` 保存当前 revision、生命周期 revision 和无敏感值策略；`follow_runs` 在入队时复制完整快照，因此普通编辑不会改变已经开始的运行。暂停与恢复都会推进生命周期 revision，即使快速暂停后恢复，旧队列任务也不能复活；旧运行只有在配置与生命周期 revision 均匹配时才能回写订阅最终状态。`follow_subscription_seasons` 通过 `(owner_id, tmdb_id, season_number)` 唯一约束阻止同一用户重复订阅同一季；`follow_episode_claims` 将集号关联到 run、稳定资源指纹和下载任务，避免重启、重试或整季包产生重复提交。暂停或删除不会取消已经提交的下载，但 Worker 在每次外部调用和下载交接前都会重新检查订阅是否仍可执行，并在创建 DownloadTask 的同一写事务内执行最后状态校验，关闭检查与持久化之间的竞态窗口。
+
+过滤和选择顺序是确定性的：先证明作品与季集覆盖，再应用包含/排除、分辨率、编码、来源、发布组、大小、做种和资源年龄；随后优先覆盖更多仍缺集数，再按用户站点顺序、质量偏好、做种数、发布时间和稳定资源指纹裁决。`future` 与 `unknown` 永不下载；无合格候选为可重试 `no_match`，身份/覆盖率或配置不确定则进入 `blocked`。所有公开 API、Job payload、事件和运行摘要都不包含站点凭据、真实下载地址、绝对路径或上游响应体。
 
 ## 11. 文件转移引擎 (Transfer Engine)
 
@@ -1356,13 +1275,16 @@ GET    /api/v1/discovery/trending            # 热门资源
 GET    /api/v1/discovery/latest              # 最新资源
 
 # ====== 追更 ======
+GET    /api/v1/follows/defaults              # 当前媒体身份的安全表单默认值和覆盖率
 GET    /api/v1/follows                       # 追更列表 (用户隔离)
 POST   /api/v1/follows                       # 创建追更
+GET    /api/v1/follows/{id}                  # 追更详情
 PUT    /api/v1/follows/{id}                  # 更新追更
 DELETE /api/v1/follows/{id}                  # 删除追更
 POST   /api/v1/follows/{id}/pause            # 暂停追更
 POST   /api/v1/follows/{id}/resume           # 恢复追更
-POST   /api/v1/follows/{id}/execute          # 立即执行追更
+POST   /api/v1/follows/{id}/search            # 入队立即搜索
+GET    /api/v1/follows/{id}/runs             # 安全运行记录
 
 # ====== 下载任务 ======
 GET    /api/v1/downloads                     # 下载任务列表 (用户隔离)
@@ -1635,25 +1557,25 @@ CREATE TABLE transfer_tasks (
 -- 追更任务
 -- ========================================
 
-CREATE TABLE follow_tasks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id         INTEGER NOT NULL,             -- 创建者
-    tmdb_id         INTEGER NOT NULL,
-    title           TEXT NOT NULL,
-    imdb_id         TEXT,
-    season          INTEGER DEFAULT 1,
-    total_episodes  INTEGER,
-    last_episode    INTEGER DEFAULT 0,            -- 已追到第几集
-    site_filter     TEXT,                         -- JSON: 指定站点列表
-    quality_filter  TEXT,                         -- 质量偏好: "1080p+, H265"
-    group_filter    TEXT,                         -- 制作组偏好
-    cron_expr       TEXT DEFAULT '0 3 * * *',     -- 默认每天3:00
-    status          TEXT DEFAULT 'active',        -- active/paused/completed
-    last_check      DATETIME,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-);
+follow_subscriptions
+  id / owner_id / tmdb_id / title / year / poster_ref
+  status active|paused|completed|blocked
+  revision / lifecycle_revision / execution_snapshot_json
+  progress_target / progress_present / progress_missing
+  last_run_id / last_run_at / next_run_at / safe last_error
+
+follow_subscription_seasons
+  PRIMARY KEY(subscription_id, season_number)
+  UNIQUE(owner_id, tmdb_id, season_number)
+
+follow_runs
+  subscription_id / owner_id / subscription_revision / lifecycle_revision / job_id
+  execution_snapshot_json / missing_snapshot_json
+  trigger / status / safe filter summary / safe error / timestamps
+
+follow_episode_claims
+  PRIMARY KEY(subscription_id, season_number, episode_number)
+  state / run_id / download_task_id / resource_fingerprint / updated_at
 
 -- ========================================
 -- 媒体库
