@@ -992,3 +992,25 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 39: 修复多季整理与受控站点搜索并发布 Server Beta
+
+**Date**: 2026-08-28
+**Task**: 修复多季整理与受控站点搜索并发布 Server Beta
+**Branch**: `codex/unified-media-search-subscription`
+
+### Summary
+
+修复多季逐文件季集覆盖、115 操作节流和删除预览收敛；完善公开 BT 适配、多站范围选择及 CloakBrowser/FlareSolverr 安全边界；新增独立 Server-only Beta 发布工作流并通过全量质量门。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `703b048` | (see git log) |
+| `2e3c83a` | (see git log) |
+
+### Status
+
+[OK] **Completed**
