@@ -860,3 +860,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 33: 发布 Server AI 模型选择 Beta
+
+**Date**: 2026-08-27
+**Task**: 发布 Server AI 模型选择 Beta
+**Branch**: `develop`
+
+### Summary
+
+完成 Server AI 模型选择窗口、独立响应上限和安全错误映射，新增精确边界与真实 DOM 交互测试；完整 Server/WebUI 门禁通过，准备从最新 develop 发布匹配 Beta。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ada3077` | (see git log) |
+
+### Status
+
+[OK] **Completed**
