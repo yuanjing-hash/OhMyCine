@@ -383,7 +383,7 @@ Phase 4: 生态系统           ████████████████
 - [x] MediaLibrary 作品目录：文件事实索引、真实服务端分页/筛选，以及 Movie / Series -> Season -> Episode 聚合详情
 - [x] 115 原生离线下载器：复用 Connection Cookie、在所选 115 Storage 根内自由选择下载子目录、生活事件广播立即唤醒完成复核并由低频任务查询补漏、统一任务遥测/取消与完成 manifest 分类；不声明暂停、恢复或做种能力
 - [x] 115 云端自动整理：下载时选择同 Connection 的目标 MediaLibrary，完成后按分类与模板执行云端移动/复制/改名，复用四种冲突策略、持久化幂等 checkpoint，并通过 dirty generation 唤醒增量对账
-- [x] 115 分享与手工转存接管：媒体库绑定独立中转目录和同账号原生下载器，分享链接转存到稳定任务目录；生活事件只唤醒直接子项 sweep，启动/周期 reconciliation 补漏，并复用统一识别、广告过滤和云端 Transfer
+- [x] 115 分享与手工转存接管：离线、分享转存和 115 App 手工内容共用 Downloader 下载目录；OMC 任务使用 `omc-*` 稳定子目录并由 Worker 独占，自动监听生活事件只接管普通直接子项，周期 reconciliation 补漏，并复用统一识别、广告过滤和云端 Transfer
 - [ ] 115 STRM 投影、signed 302、文件树差异同步和关联 sidecar 下载；云盘无 STRM 时提供默认关闭的 NFO/JPG 旁挂上传策略
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）
@@ -510,13 +510,13 @@ Phase 4: 生态系统           ████████████████
   - [x] Cookie-based 认证与受控 HTTP client
   - [x] magnet/HTTP(S) URL 与内存 `.torrent` 提交
   - [x] task/tag 查询、进度/上下行速度/ETA telemetry
-  - [x] pause/resume/cancel；取消经二次确认后固定 `deleteFiles=true`，provider 确认后清理本地任务事实
+  - [x] pause/resume 与全阶段流水线取消；取消先以 `deleteData=false` 删除 provider 任务并保留文件，再停止 OhMyCine 后续 job/retry；DELETE 默认同样保留文件，显式完全删除才移除源/临时数据
   - [x] 持久 Job worker、lease 恢复和 provider reconciliation
 - [ ] 实现 `TransmissionClient` (`pkg/downloader/transmission/`)
   - [ ] RPC 认证
   - [ ] 同上接口实现
 - [x] 下载器 CRUD/test API 与独立 RBAC (`internal/handlers/downloaders.go`)
-- [x] `POST/GET/DELETE /api/v1/downloads` 与磁力、URL、4 MiB 种子上传管理页；failed/cancelled 可安全删除，provider 已手动删除时幂等清理
+- [x] `POST/GET/DELETE /api/v1/downloads` 与磁力、URL、4 MiB 种子上传管理页；failed/cancelled/completed 终态默认删除 provider 任务并保留文件，显式 `delete_data=true` 才完全删除，provider 已手动删除时幂等清理
 
 #### 302代理引擎
 

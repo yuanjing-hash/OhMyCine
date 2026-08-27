@@ -42,7 +42,7 @@ media_libraries.storage_id -> storages.id (ON DELETE RESTRICT)
 media_libraries.profile_id -> media_classification_profiles.id (ON DELETE RESTRICT)
 
 media_libraries.provider_root_id                         # private stable provider directory ID
-media_libraries.ingest_enabled                          # 115 share/manual-transfer intake switch
+media_libraries.ingest_enabled                          # legacy read compatibility only; new intake is downloader-scoped
 media_libraries.ingest_downloader_id                    # same-Connection pan115_offline downloader
 media_libraries.ingest_owner_id                         # owner of internally adopted tasks
 media_libraries.ingest_provider_root_id                 # private stable intake directory ID

@@ -46,6 +46,7 @@ Before changing backend code or API documentation:
 | [Media Library Foundation](./media-library-foundation.md) | Storage-relative configuration, automatic baseline, watchers, reconciliation, path safety, and MediaLibrary API contracts | Active |
 | [Persistent Task Queue](./persistent-task-queue.md) | SQLite jobs, lanes, leases, actions, recovery, safe DTOs, scheduler and task center | Active |
 | [Downloader Management](./downloader-management.md) | Encrypted downloader config/source, qBittorrent adapters, download jobs, telemetry, recovery and safe controls | Active |
+| [Download Route Selection](./download-route-selection.md) | Source/site compatibility, 115 Downloader directory ownership, life-event adoption, and target MediaLibrary contracts | Active |
 | [PT Discovery](./pt-discovery.md) | Built-in PT adapters, encrypted site credentials, progressive search, opaque result claims, and download-pipeline handoff | Active |
 | [Media Identity Discovery](./media-identity-discovery.md) | TMDB-first poster search, bounded multi-name resource aggregation, and actor-scoped movie/episode coverage | Active |
 | [Automatic TV Follow](./automatic-tv-follow.md) | Versioned TV subscriptions, definite-missing reconciliation, deterministic resource selection, claims, and normal pipeline handoff | Active |

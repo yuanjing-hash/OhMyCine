@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"加载 Server 后端预开发清单与服务层约束。"}
+{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"保持详情身份聚合搜索与直接搜索合同。"}
+{"file":".trellis/spec/backend/automatic-tv-follow.md","reason":"遵守订阅快照、Worker 和逐集 claim 契约。"}
+{"file":".trellis/spec/backend/download-route-selection.md","reason":"执行来源兼容、115 Downloader 统一目录所有权、生活事件接管和目标媒体库合同。"}
+{"file":".trellis/spec/backend/pt-discovery.md","reason":"保持 PT 私有种子、result token 和站点边界。"}
+{"file":".trellis/spec/frontend/index.md","reason":"加载 WebUI 预开发清单。"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"保持 Server 管理端交互、错误和异步状态约定。"}
+{"file":".trellis/tasks/08-27-fix-search-entry-blank-page/research/root-cause.md","reason":"提供搜索白屏、路由劫持、PT→115 与状态映射的已验证根因。"}
