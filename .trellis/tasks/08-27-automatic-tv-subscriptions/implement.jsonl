@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"复用 queue policy、lease、coalescing、恢复和安全任务投影实现 follow-search。"}
+{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"订阅缺集对账和资源搜索必须复用已落地的 MediaCoverage 与 identity-search 契约。"}
+{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/ohmycine-current-contracts.md","reason":"自动提交复用当前 DownloadService owner、target、identity 和恢复边界。"}
+{"file":".trellis/spec/backend/pt-discovery.md","reason":"订阅搜索复用媒体身份站点搜索、私有结果 claim 和受控资源解析。"}
+{"file":".trellis/spec/backend/transfer-organization.md","reason":"确保自动下载后继续走既有 Transfer、入库、冲突和刷新语义。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"设计 SQLite additive migration、短事务、owner unique season claim 和幂等记录。"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"补 follows REST/action API、owner/RBAC、认证、CSRF 和安全错误边界。"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"实现订阅配置对话框和管理页的统一视觉、状态和可访问性。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"贯通 snapshot revision→Job→搜索→download task→catalog progress 的跨层契约。"}
+{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/moviepilot-v3-analysis.md","reason":"以实际 MP v3 季选择、配置编辑、lack_episode 和 Search/Download 复用为产品证据。"}

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查订阅没有复制媒体搜索、覆盖率、下载、Transfer 或入库实现。"}
+{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/ohmycine-current-contracts.md","reason":"按当前实现契约执行凭据、下载地址、路径、owner 和事件隔离复核。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行最终 Server 全量质量门和失败路径检查。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"执行最终 Web UI test/typecheck/lint/build 和交互检查。"}
+{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/moviepilot-v3-analysis.md","reason":"确认最终默认流、详情覆盖与订阅 UX 符合已分析的 MP 行为。"}
