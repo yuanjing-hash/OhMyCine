@@ -946,3 +946,26 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 37: 完成统一媒体搜索与自动电视剧订阅
+
+**Date**: 2026-08-27
+**Task**: 完成统一媒体搜索与自动电视剧订阅
+**Branch**: `codex/unified-media-search-subscription`
+
+### Summary
+
+基于 MoviePilot v3 产品流程完成 TMDB 海报搜索、多语言资源聚合、跨库覆盖率和可配置电视剧订阅；订阅通过持久队列自动识别明确缺集、确定性选种并复用下载转移入库管线，同时补齐 RBAC、竞态防护、安全快照、管理界面、测试与架构规范。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ef9ed65` | (see git log) |
+| `ca8df52` | (see git log) |
+| `d5a2f9d` | (see git log) |
+
+### Status
+
+[OK] **Completed**
