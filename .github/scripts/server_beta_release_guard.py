@@ -89,7 +89,7 @@ def verify_workflow(
                 "golangci-lint-action",
             )
         ),
-        "lint version is pinned": "version: v2.4.0" in text and "version: latest" not in text,
+        "lint action supports v2 and version is pinned": "golangci/golangci-lint-action@v7" in text and "version: v2.4.0" in text and "version: latest" not in text,
         "idempotent asset upload": 'gh release upload "$TAG_NAME"' in text and "--clobber" in text,
         "publish follows packaging": text.find("Build and package embedded-WebUI Server archives")
         < text.find("Revalidate latest develop and publish Server-only prerelease"),

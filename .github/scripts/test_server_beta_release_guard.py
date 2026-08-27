@@ -43,8 +43,16 @@ class WorkflowTests(unittest.TestCase):
             path = Path(directory) / "workflow.yml"
             path.write_text(source, encoding="utf-8")
             failures = guard.verify_workflow(path)
-            self.assertIn("lint version is pinned", failures)
+            self.assertIn("lint action supports v2 and version is pinned", failures)
             self.assertIn("release identity and title are checked", failures)
+
+    def test_detects_lint_action_without_v2_support(self) -> None:
+        source = guard.DEFAULT_WORKFLOW.read_text(encoding="utf-8")
+        source = source.replace("golangci/golangci-lint-action@v7", "golangci/golangci-lint-action@v6")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workflow.yml"
+            path.write_text(source, encoding="utf-8")
+            self.assertIn("lint action supports v2 and version is pinned", guard.verify_workflow(path))
 
     def test_server_tag_cannot_match_player_tag_trigger(self) -> None:
         source = guard.DEFAULT_PLAYER_WORKFLOW.read_text(encoding="utf-8")

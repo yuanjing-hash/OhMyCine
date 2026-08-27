@@ -101,7 +101,7 @@ Assets are exactly `OhMyCine-Server-vX.Y.Z-windows-x64.zip`, `OhMyCine-Server-vX
 - A pre-existing Server tag must resolve to that exact commit. A pre-existing Release must use the exact tag/title, be published, and be a prerelease. The same tag/commit may be rerun idempotently.
 - Build the WebUI first and compile both binaries with `CGO_ENABLED=0` and `-tags webui`; a plain backend binary is not an official release artifact.
 - Scope `contents: write` to the publishing job. Inject only the official read-only TMDB token through its typed Secret and linker variable; reject missing, oversized, or linker-unsafe values without printing them.
-- Run permission drift, all 158 WebUI tests, typecheck, ESLint, WebUI build, Go module verification, build, vet, tests, and `golangci-lint` v2.4.0 before packaging.
+- Run permission drift, all 158 WebUI tests, typecheck, ESLint, WebUI build, Go module verification, build, vet, tests, and `golangci-lint` v2.4.0 through `golangci-lint-action@v7` or a newer v2-compatible action before packaging.
 
 ### 4. Validation & Error Matrix
 
