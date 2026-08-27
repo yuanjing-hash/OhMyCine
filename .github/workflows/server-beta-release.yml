@@ -1,74 +1,102 @@
-name: Server Release
+name: Server Beta Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Existing Player beta release tag, for example v1.1.21"
+        description: "Server semantic version (X.Y.Z or vX.Y.Z)"
         required: true
-        default: "v1.1.21"
 
 permissions:
   contents: read
 
-concurrency:
-  group: server-release-${{ inputs.version }}
-  cancel-in-progress: false
-
 jobs:
-  release:
-    name: Build and attach Server beta assets
+  resolve:
+    name: Validate Server beta request
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    defaults:
-      run:
-        working-directory: server
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
 
     steps:
-      - name: Checkout latest develop
+      - name: Checkout requested develop commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate beta source and existing release
+      - name: Resolve namespaced Server version
+        id: version
+        env:
+          WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+        run: python3 .github/scripts/server_beta_release_guard.py resolve-version "$WORKFLOW_INPUT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Server-only release workflow contract
+        run: |
+          python3 .github/scripts/server_beta_release_guard.py check-workflow
+          python3 .github/scripts/test_server_beta_release_guard.py
+
+      - name: Validate source, tag and release state
         env:
           GH_TOKEN: ${{ github.token }}
-          WORKFLOW_INPUT_VERSION: ${{ inputs.version }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
 
-          tag_name="${WORKFLOW_INPUT_VERSION:-}"
-          if [[ ! "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Version must look like v1.1.21."
-            exit 1
-          fi
           if [[ "$GITHUB_REF" != "refs/heads/develop" ]]; then
-            echo "::error::Server beta must be dispatched from develop."
+            echo "::error::Server Beta Release must be dispatched from develop."
             exit 1
           fi
 
-          git fetch --force origin develop --tags
+          git fetch --force --prune origin develop
           remote_develop="$(git rev-parse refs/remotes/origin/develop)"
           if [[ "$GITHUB_SHA" != "$remote_develop" ]]; then
             echo "::error::Server beta source must equal the latest origin/develop commit."
             exit 1
           fi
-          if ! tag_commit="$(git rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null)"; then
-            echo "::error::The matching Player beta tag does not exist yet."
-            exit 1
-          fi
-          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
-            echo "::error::The beta tag must point to the latest origin/develop commit."
-            exit 1
-          fi
-          if [[ "$(gh release view "$tag_name" --json isPrerelease --jq '.isPrerelease')" != "true" ]]; then
-            echo "::error::The matching GitHub Release must already exist as a prerelease."
-            exit 1
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            git fetch --force origin "+refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+            tag_commit="$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Existing Server tag does not point to the selected origin/develop tip."
+              exit 1
+            fi
           fi
 
-          echo "TAG_NAME=$tag_name" >> "$GITHUB_ENV"
+          release_title="OhMyCine Server v${VERSION} Beta"
+          if release_json="$(gh release view "$TAG_NAME" --json tagName,name,isPrerelease,isDraft 2>/dev/null)"; then
+            if [[ "$(jq -r '.tagName' <<<"$release_json")" != "$TAG_NAME" ]] ||
+               [[ "$(jq -r '.name' <<<"$release_json")" != "$release_title" ]] ||
+               [[ "$(jq -r '.isPrerelease' <<<"$release_json")" != "true" ]] ||
+               [[ "$(jq -r '.isDraft' <<<"$release_json")" != "false" ]]; then
+              echo "::error::Existing Server release must have the exact Server tag/title and be a published prerelease."
+              exit 1
+            fi
+          fi
+
+  release:
+    name: Build and publish Server beta assets
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: server-release-${{ needs.resolve.outputs.tag_name }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: server
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG_NAME: ${{ needs.resolve.outputs.tag_name }}
+
+    steps:
+      - name: Checkout selected develop commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -91,52 +119,46 @@ jobs:
           npm ci
           npm run permissions:check
           npm run test
+          npm run typecheck
           npm run lint
           npm run build
 
       - name: Verify Server
         run: |
           go mod verify
+          go build ./...
           go vet ./...
           go test ./...
           cd webui
           go mod verify
           go test .
 
-      - name: Build and package Windows and Linux
+      - name: Lint Server
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.4.0
+          working-directory: server
+
+      - name: Build and package embedded-WebUI Server archives
         env:
           OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
-          OHMYCINE_TMDB_API_KEY: ${{ secrets.OHMYCINE_TMDB_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" && -n "${OHMYCINE_TMDB_API_KEY:-}" ]]; then
-            echo "::error::Configure only one TMDB credential Secret for official Server artifacts."
+          if [[ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]]; then
+            echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN is required for official Server artifacts."
             exit 1
           fi
-          if [[ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" && -z "${OHMYCINE_TMDB_API_KEY:-}" ]]; then
-            echo "::error::A TMDB credential GitHub Secret is required for official Server artifacts."
+          if (( ${#OHMYCINE_TMDB_READ_ACCESS_TOKEN} > 4096 )) || [[ ! "$OHMYCINE_TMDB_READ_ACCESS_TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+            echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN contains unsupported characters."
             exit 1
-          fi
-          if [[ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]]; then
-            if (( ${#OHMYCINE_TMDB_READ_ACCESS_TOKEN} > 4096 )) || [[ ! "$OHMYCINE_TMDB_READ_ACCESS_TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-              echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN contains unsupported characters."
-              exit 1
-            fi
-            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinReadAccessToken=${OHMYCINE_TMDB_READ_ACCESS_TOKEN}"
-          else
-            if (( ${#OHMYCINE_TMDB_API_KEY} > 4096 )) || [[ ! "$OHMYCINE_TMDB_API_KEY" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-              echo "::error::OHMYCINE_TMDB_API_KEY contains unsupported characters."
-              exit 1
-            fi
-            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinAPIKey=${OHMYCINE_TMDB_API_KEY}"
           fi
 
-          release_root="../dist/server-beta"
-          windows_dir="${release_root}/OhMyCine-Server-${TAG_NAME}-windows-x64"
-          linux_dir="${release_root}/OhMyCine-Server-${TAG_NAME}-linux-x64"
-          rm -rf "$release_root"
+          tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinReadAccessToken=${OHMYCINE_TMDB_READ_ACCESS_TOKEN}"
+          release_root="../dist/server-beta/${TAG_NAME}"
+          windows_dir="${release_root}/OhMyCine-Server-v${VERSION}-windows-x64"
+          linux_dir="${release_root}/OhMyCine-Server-v${VERSION}-linux-x64"
           mkdir -p "$windows_dir" "$linux_dir"
 
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags webui -trimpath -ldflags "${tmdb_ldflags} -s -w" -o "${windows_dir}/ohmycine-server.exe" ./cmd/server
@@ -146,9 +168,9 @@ jobs:
           cp ../LICENSE "${windows_dir}/LICENSE"
           cp ../LICENSE "${linux_dir}/LICENSE"
 
-          windows_asset="OhMyCine-Server-${TAG_NAME}-windows-x64.zip"
-          linux_asset="OhMyCine-Server-${TAG_NAME}-linux-x64.tar.gz"
-          checksums_asset="OhMyCine-Server-${TAG_NAME}-SHA256SUMS.txt"
+          windows_asset="OhMyCine-Server-v${VERSION}-windows-x64.zip"
+          linux_asset="OhMyCine-Server-v${VERSION}-linux-x64.tar.gz"
+          checksums_asset="OhMyCine-Server-v${VERSION}-SHA256SUMS.txt"
           (
             cd "$release_root"
             zip -qr "$windows_asset" "$(basename "$windows_dir")"
@@ -160,8 +182,80 @@ jobs:
           echo "LINUX_ASSET=${release_root}/${linux_asset}" >> "$GITHUB_ENV"
           echo "CHECKSUMS_ASSET=${release_root}/${checksums_asset}" >> "$GITHUB_ENV"
 
-      - name: Attach Server assets to beta release
+      - name: Revalidate latest develop and publish Server-only prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/develop" ]]; then
+            echo "::error::Server Beta Release must still be running from develop."
+            exit 1
+          fi
+
+          # Re-fetch immediately before the first remote mutation so a stale
+          # queued build cannot publish after develop has advanced.
+          git fetch --force --prune origin develop
+          remote_develop="$(git rev-parse refs/remotes/origin/develop)"
+          if [[ "$GITHUB_SHA" != "$remote_develop" ]]; then
+            echo "::error::origin/develop advanced while Server assets were building; dispatch again from the new tip."
+            exit 1
+          fi
+
+          tag_exists=false
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            tag_exists=true
+            git fetch --force origin "+refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+            tag_commit="$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Existing Server tag does not point to the latest origin/develop commit."
+              exit 1
+            fi
+          fi
+
+          release_exists=false
+          release_title="OhMyCine Server v${VERSION} Beta"
+          if release_json="$(gh release view "$TAG_NAME" --json tagName,name,isPrerelease,isDraft 2>/dev/null)"; then
+            release_exists=true
+            if [[ "$(jq -r '.tagName' <<<"$release_json")" != "$TAG_NAME" ]] ||
+               [[ "$(jq -r '.name' <<<"$release_json")" != "$release_title" ]] ||
+               [[ "$(jq -r '.isPrerelease' <<<"$release_json")" != "true" ]] ||
+               [[ "$(jq -r '.isDraft' <<<"$release_json")" != "false" ]]; then
+              echo "::error::Existing Server release must have the exact Server tag/title and be a published prerelease."
+              exit 1
+            fi
+          fi
+
+          if [[ "$release_exists" == "false" ]]; then
+            create_args=(
+              "$TAG_NAME"
+              --title "$release_title"
+              --notes "OhMyCine Server v${VERSION} Beta. Server-only archives include the embedded Web management UI."
+              --prerelease
+              --latest=false
+            )
+            if [[ "$tag_exists" == "true" ]]; then
+              create_args+=(--verify-tag)
+            else
+              create_args+=(--target "$GITHUB_SHA")
+            fi
+            gh release create "${create_args[@]}"
+          fi
+
+          git fetch --force origin "+refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+          tag_commit="$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")"
+          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::Published Server tag does not point to the verified develop commit."
+            exit 1
+          fi
+          release_json="$(gh release view "$TAG_NAME" --json tagName,name,isPrerelease,isDraft)"
+          if [[ "$(jq -r '.tagName' <<<"$release_json")" != "$TAG_NAME" ]] ||
+             [[ "$(jq -r '.name' <<<"$release_json")" != "$release_title" ]] ||
+             [[ "$(jq -r '.isPrerelease' <<<"$release_json")" != "true" ]] ||
+             [[ "$(jq -r '.isDraft' <<<"$release_json")" != "false" ]]; then
+            echo "::error::Server prerelease verification failed."
+            exit 1
+          fi
+
           gh release upload "$TAG_NAME" "$WINDOWS_ASSET" "$LINUX_ASSET" "$CHECKSUMS_ASSET" --clobber

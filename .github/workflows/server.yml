@@ -6,11 +6,17 @@ on:
     paths:
       - "server/**"
       - ".github/workflows/server.yml"
+      - ".github/workflows/server-beta-release.yml"
+      - ".github/scripts/server_beta_release_guard.py"
+      - ".github/scripts/test_server_beta_release_guard.py"
   pull_request:
     branches: [main, develop]
     paths:
       - "server/**"
       - ".github/workflows/server.yml"
+      - ".github/workflows/server-beta-release.yml"
+      - ".github/scripts/server_beta_release_guard.py"
+      - ".github/scripts/test_server_beta_release_guard.py"
 
 jobs:
   build:
@@ -21,6 +27,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify Server-only beta release contract
+        run: |
+          python3 .github/scripts/server_beta_release_guard.py check-workflow
+          python3 .github/scripts/test_server_beta_release_guard.py
 
       - name: Check Server scaffold
         id: scaffold
@@ -49,9 +60,13 @@ jobs:
         if: steps.scaffold.outputs.ready == 'true'
         run: go test ./...
 
+      - name: Vet
+        if: steps.scaffold.outputs.ready == 'true'
+        run: go vet ./...
+
       - name: Lint
         if: steps.scaffold.outputs.ready == 'true'
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.4.0
           working-directory: server

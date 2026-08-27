@@ -72,7 +72,7 @@ Phase 4: 生态系统           ████████████████
 
 - [ ] Docker 构建 CI: `docker build`
 - [ ] Docker 镜像推送: GHCR / Docker Hub
-- [~] Release CI: Player 已支持 tag/manual GitHub Release、Beta/Stable 渠道、签名 NSIS updater artifact、`latest.json`、安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；Server Beta 可在同版本 prerelease 追加内嵌 WebUI 的 Windows/Linux 包与校验清单；待配置 GitHub updater 私钥 Secret 并完成首个实机更新发布
+- [~] Release CI: Player 已支持 tag/manual GitHub Release、Beta/Stable 渠道、签名 NSIS updater artifact、`latest.json`、安装包、标准免安装 ZIP、便携 ZIP 和 SHA-256；Server Beta 使用独立 `server-v*.*.*` prerelease，从最新 `develop` 构建内嵌 WebUI 的 Windows/Linux 包与校验清单，不触发或改写 Player 发布；待配置 GitHub updater 私钥 Secret 并完成首个实机更新发布
 - [x] 自动生成 changelog/release notes：Player Release 工作流可从 tag/commit 生成分组说明，并按 `beta` / `stable` 通道分别发布 prerelease 或最新正式版
 - [ ] 自动上传正式安装包和二进制文件
 
@@ -701,6 +701,9 @@ Phase 4: 生态系统           ████████████████
 - [x] AniDex 内建 RSS 适配器
 - [x] 动漫花园（DMHY）、ACG.RIP、YTS、EZTV 内建适配器
 - [x] 1337x、The Pirate Bay、EXT.to、LimeTorrents 内建适配器
+- [x] ACG.RIP 当前 `/.xml` RSS、EZTV 数字字符串大小和 LimeTorrents 精确 `.fun/.lol` host 集合修复
+- [x] 1337x / EXT.to 受控页面渲染：用户安装的 loopback CloakBrowser companion 优先，站点 FlareSolverr 回退；不随 OhMyCine 分发 CloakBrowser 二进制
+- [x] 渲染 SSRF/凭据边界：仅 profile 精确 HTTPS/443 host、限制超时/响应/最终跳转，PT Cookie/passkey 不进入 Cloak/Flare 请求
 - [x] 地址驱动添加：管理员输入规范 HTTPS 官网，Server 精确解析 host 并在创建时二次校验；未配置的公共 BT 站不展示、不探测、不搜索
 - [x] `POST /api/v1/sites/resolve`，拒绝 userinfo/query/fragment、非根路径、异常端口、相似域名、伪造子域和客户端伪造 kind
 - [x] 通用 Torznab 连接（Jackett/Prowlarr）
@@ -719,6 +722,7 @@ Phase 4: 生态系统           ████████████████
 - [x] PT/BT `SiteService`：有界并发搜索所有已启用站点 (`goroutine` + `channel`)
 - [x] SSE 按站渐进结果、普通 JSON 回退、单站重试与分页
 - [x] 站点卡片单站搜索：固定 `site_id` 贯穿搜索、重试、分页、会话恢复、识别和入库，目标站失败不回退聚合搜索
+- [x] 普通搜索和海报详情资源搜索在请求前选择站点；`site_ids` 绑定 JSON/SSE/多语言搜索、重试与分页，首次全选并按浏览器恢复上次选择
 - [ ] 结果聚合 + 去重
 - [x] 统一媒体身份匹配：结构化解析、TMDB 候选排序/复验、稳定 provisional 兜底及人工 locked identity
 - [ ] 结果排序 (相关度/做种数/大小)

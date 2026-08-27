@@ -854,7 +854,7 @@ tag push 始终发布 Beta，因此 tag 必须精确指向远端 `develop` 最�
 
 不要从 `feature/*`、`fix/*`、`release/*`、旧版 `develop`/`main` 提交或本地未推送提交发布。即使提交属于正确分支的历史，或是正确分支最新提交的本地后继提交，workflow 也会因其不等于对应远端分支 tip 而拒绝。
 
-Server Beta 复用同一版本的 Player prerelease。先从最新远端 `develop` 手动运行 `Player Release` 并确认发布成功，再从同一 `develop` 提交运行 `Server Release`，输入相同版本。Server 工作流会再次校验远端 `develop`、tag 和 prerelease 均指向当前提交，然后构建内嵌 Web 管理端且注入官方只读 TMDB 凭据的 Windows x64 ZIP、Linux x64 tar.gz 与 SHA-256 清单，并追加到现有 Release。工作流不会从功能分支创建第二个同版本 Release，也不会发布不含 WebUI 的普通 `go build` 产物。
+Server Beta 使用独立的 `server-vMAJOR.MINOR.PATCH` tag 和 prerelease，不再依赖或修改 Player prerelease。选择最新远端 `develop` 手动运行 `Server Beta Release`，输入 `MAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH`；工作流会规范化为 Server tag，在测试、WebUI 构建和 Server 校验全部通过后再次拉取并确认 `origin/develop` 未前进。缺失的 tag/Release 只会在该提交创建为 `OhMyCine Server vMAJOR.MINOR.PATCH Beta`，已存在时必须仍指向同一提交且为 prerelease。工作流只上传注入官方只读 TMDB Read Access Token、内嵌 Web 管理端的 Windows x64 ZIP、Linux x64 tar.gz 与 SHA-256 清单；不会构建、上传或触发 Player 发布，也不会重写历史共享 Release。
 
 当前普通 `Player CI` 会先编译和测试 Linux 原生 Rust target 与 Windows MSVC 原生 Rust target，再通过 Windows GNU target 生成安装包。`Manual Build` 和 beta release 仍只发布 Windows GNU 包；Linux/macOS Player 渲染器和打包链路完成前，不发布 Linux/macOS Player 包。
 

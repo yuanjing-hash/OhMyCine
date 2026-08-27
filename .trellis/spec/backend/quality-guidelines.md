@@ -80,8 +80,61 @@ Reviewers and check agents should verify:
 
 ## Scenario: Server Beta Release Packaging
 
-- Server Beta is dispatched only from the latest fetched `origin/develop` commit after the matching Player prerelease tag and GitHub Release already exist at that exact commit.
-- Official Server assets use `CGO_ENABLED=0`, build the Web UI first, and compile with `-tags webui`; a plain backend binary without the embedded administration UI is not a release artifact.
-- Publish Windows x64 ZIP, Linux x64 tar.gz and one SHA-256 manifest to the existing version prerelease. Do not create a competing same-tag release from a feature, fix or release branch.
-- The official read-only TMDB credential is required and injected only through one typed GitHub Secret and Go linker variable. Reject missing, simultaneous or linker-unsafe credential values without printing them.
-- The release workflow runs permission drift, Web UI test/lint/typecheck/build, Go module verification, vet and tests before packaging.
+### 1. Scope / Trigger
+
+Apply this contract whenever `.github/workflows/server-beta-release.yml`, Server release assets, tags, or the official TMDB build credential change. Server Beta is independent from Player Release and must never create, require, update, or trigger a Player `v*.*.*` tag/release.
+
+### 2. Signatures
+
+```text
+workflow_dispatch.version = X.Y.Z | vX.Y.Z
+normalized tag            = server-vX.Y.Z
+release title             = OhMyCine Server vX.Y.Z Beta
+required secret           = OHMYCINE_TMDB_READ_ACCESS_TOKEN
+```
+
+Assets are exactly `OhMyCine-Server-vX.Y.Z-windows-x64.zip`, `OhMyCine-Server-vX.Y.Z-linux-x64.tar.gz`, and `OhMyCine-Server-vX.Y.Z-SHA256SUMS.txt`.
+
+### 3. Contracts
+
+- Dispatch only from `develop`; fetch `origin/develop` before validation and again immediately before the first remote mutation. `GITHUB_SHA` must equal the fetched tip both times.
+- A pre-existing Server tag must resolve to that exact commit. A pre-existing Release must use the exact tag/title, be published, and be a prerelease. The same tag/commit may be rerun idempotently.
+- Build the WebUI first and compile both binaries with `CGO_ENABLED=0` and `-tags webui`; a plain backend binary is not an official release artifact.
+- Scope `contents: write` to the publishing job. Inject only the official read-only TMDB token through its typed Secret and linker variable; reject missing, oversized, or linker-unsafe values without printing them.
+- Run permission drift, all 158 WebUI tests, typecheck, ESLint, WebUI build, Go module verification, build, vet, tests, and `golangci-lint` v2.4.0 before packaging.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Version is not strict `X.Y.Z`/`vX.Y.Z` | Fail before building or writing remote state. |
+| Ref is not `develop`, or fetched tip differs | Fail without creating a tag/release. |
+| Existing tag points elsewhere | Fail; never move or overwrite the tag. |
+| Existing release has wrong tag/title, is draft, or is not prerelease | Fail; never rewrite it. |
+| TMDB Secret is missing or unsafe for linker injection | Fail without echoing the value. |
+| Same version and commit are rerun | Reuse the prerelease and replace only the three same-name Server assets. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: latest `origin/develop`, missing `server-vX.Y.Z`, all gates pass -> create the namespaced prerelease and upload the three Server assets.
+- Base: exact tag/release already exist at the same commit -> verify them and idempotently refresh the same assets.
+- Bad: use a Player `vX.Y.Z` release, an older develop commit, or a plain non-WebUI binary -> reject before publication.
+
+### 6. Tests Required
+
+- `server_beta_release_guard.py` tests strict normalization and rejects Player-style input outside the accepted version field.
+- Static workflow guard asserts manual-only dispatch, two develop-tip checks, exact tag/release identity and title, scoped write permission, pinned linter, embedded WebUI builds, and only Server asset names.
+- `actionlint` validates both Server workflows. Local/CI quality gates must build `-tags webui` for Windows amd64 and Linux amd64.
+- Read-only preflight verifies the selected namespaced tag/release does not already point elsewhere before the main session dispatches the release.
+
+### 7. Wrong vs Correct
+
+```yaml
+# Wrong: couples Server to Player and can trigger Player Release.
+tag: v1.2.3
+release: existing-player-prerelease
+
+# Correct: isolated Server namespace and prerelease.
+tag: server-v1.2.3
+release: OhMyCine Server v1.2.3 Beta
+```
