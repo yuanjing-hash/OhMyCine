@@ -407,6 +407,86 @@ func TestSiteResultRecognitionUsesServerClaimSharedRecognizerAndDoesNotConsumeDo
 	}
 }
 
+func TestMediaIdentitySearchAggregatesAliasesDeduplicatesAndBindsVerifiedIdentity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/movie/346" {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write([]byte(`{"id":346,"title":"七武士","original_title":"Seven Samurai","original_language":"ja","release_date":"1954-04-26","alternative_titles":{"titles":[{"iso_3166_1":"TW","title":"七武士"},{"iso_3166_1":"US","title":"Seven Samurai"}]},"translations":{"translations":[{"iso_639_1":"en","iso_3166_1":"US","data":{"title":"Seven Samurai"}}]}}`))
+	}))
+	defer upstream.Close()
+
+	service, adapter, actor, store, _, _ := siteFixture(t)
+	metadata := NewMetadataSettingsService(service.db, service.audit, store, tmdb.Credential{Kind: tmdb.CredentialKindReadAccessToken, Value: "test-token"})
+	metadata.clientFactory = func(tmdb.Credential, string, string) (*tmdb.Client, error) {
+		return tmdb.NewForTest("test-token", upstream.URL, upstream.Client())
+	}
+	service.SetMetadataSettings(metadata)
+	adapter.searchTitle = "Seven.Samurai.1954.1080p.BluRay.x265-GROUP"
+	created, err := service.Create(context.Background(), actor, validSiteInput("PTTime", "https://identity.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamedMetadata MediaIdentitySearchResult
+	streamedGroups := []SiteSearchGroup{}
+	callbackOrder := []string{}
+	if err := service.SearchMediaIdentityEach(context.Background(), actor, MediaIdentitySearchInput{MediaType: "movie", TMDBID: 346, SiteID: &created.ID, Page: 1}, func(metadata MediaIdentitySearchResult) {
+		streamedMetadata = metadata
+		callbackOrder = append(callbackOrder, "media")
+	}, func(group SiteSearchGroup) {
+		streamedGroups = append(streamedGroups, group)
+		callbackOrder = append(callbackOrder, "site")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(callbackOrder) != 2 || callbackOrder[0] != "media" || callbackOrder[1] != "site" || streamedMetadata.TMDBID != 346 || len(streamedGroups) != 1 || len(streamedGroups[0].Items) != 1 {
+		t.Fatalf("stream metadata=%+v groups=%+v order=%v", streamedMetadata, streamedGroups, callbackOrder)
+	}
+	result, err := service.SearchMediaIdentity(context.Background(), actor, MediaIdentitySearchInput{MediaType: "movie", TMDBID: 346, SiteID: &created.ID, Page: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Title != "七武士" || len(result.QueryNames) != 2 || len(result.Groups) != 1 || len(result.Groups[0].Items) != 1 || result.Groups[0].Items[0].MatchedName == "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if streamedMetadata.QueryNames[0] != result.QueryNames[0] || streamedGroups[0].Items[0].Title != result.Groups[0].Items[0].Title || streamedGroups[0].Items[0].MatchedName != result.Groups[0].Items[0].MatchedName {
+		t.Fatalf("JSON/SSE service projections diverged: stream=%+v json=%+v", streamedGroups, result.Groups)
+	}
+	claim, err := service.resolveClaim(result.Groups[0].Items[0].Token, actor.User.ID)
+	if err != nil || claim.ManualTMDBID == nil || *claim.ManualTMDBID != 346 || claim.ManualMediaType != "movie" || claim.RecognitionSource != mediaIdentitySourceDirectID || claim.RecognitionStatus != mediaIdentityStatusVerified || claim.RecognitionLocked {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, forbidden := range []string{"passkey-server-only", "token=server-only-secret", "https://identity.example.test", `"torrent_id"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("identity search leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestMediaIdentityResultMatchesMultilingualReleaseTitle(t *testing.T) {
+	names := []tmdb.SearchName{
+		{Value: "迪迦奥特曼", Locale: "zh-CN", Kind: "localized"},
+		{Value: "Ultraman Tiga", Locale: "en", Kind: "english"},
+		{Value: "ウルトラマンティガ", Locale: "ja", Kind: "original"},
+	}
+	title := "[DBD-Raws][迪迦奥特曼/Ultraman Tiga/ウルトラマンティガ][01-52TV全集+剧场+OV+特典][1080P][BDRip][HEVC-10bit][FLAC][MKV]"
+	if !mediaIdentityResultMatches(title, names, nil, nil) {
+		t.Fatalf("multilingual release title was filtered: %q", title)
+	}
+	if mediaIdentityResultMatches("[DBD-Raws][戴拿奥特曼][01-51][1080P]", names, nil, nil) {
+		t.Fatal("unrelated release title matched the verified identity")
+	}
+	seasonTwo := 2
+	if mediaIdentityResultMatches("Ultraman Tiga 1080p WEB-DL", names, nil, &seasonTwo) || mediaIdentityResultMatches("Ultraman Tiga S01 1080p WEB-DL", names, nil, &seasonTwo) {
+		t.Fatal("season-scoped identity search accepted a release without the exact season")
+	}
+	if !mediaIdentityResultMatches("Ultraman Tiga S02 1080p WEB-DL", names, nil, &seasonTwo) {
+		t.Fatal("season-scoped identity search rejected the exact season")
+	}
+}
+
 func TestSiteResultRecognitionReturnsStructuredEpisodeFactsWithoutInventingSpecialEpisodes(t *testing.T) {
 	service, adapter, actor, _, _, _ := siteFixture(t)
 	created, err := service.Create(context.Background(), actor, validSiteInput("Episode facts", "https://episodes.example.test"), RequestContext{})

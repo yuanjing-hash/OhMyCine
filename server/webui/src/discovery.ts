@@ -31,6 +31,33 @@ export interface DiscoverySection extends DiscoverySectionDefinition {
 }
 export interface DiscoveryOverview { providers: DiscoveryProviderSummary[]; sections: DiscoverySection[]; updated_at: string }
 
+export type DiscoveryMediaSearchFilter = 'all' | DiscoveryMediaType
+export interface DiscoveryMediaSearch {
+  query: string
+  media_type: DiscoveryMediaSearchFilter
+  page: number
+  total_pages: number
+  items: DiscoveryWork[]
+}
+
+export interface DiscoverySearchName { value: string; locale?: string; kind: 'localized' | 'alias' | 'original' | 'english' | 'translation' }
+export type MediaCoverageEpisodeStatus = 'present' | 'missing' | 'future' | 'unknown'
+export type MediaCoverageStatus = 'present' | 'partial' | 'missing' | 'future_or_incomplete' | 'unknown'
+export interface MediaCoverageCounts { total: number; present: number; missing: number; future: number; unknown: number }
+export interface MediaCoverageLibrary { id: number; name: string; scan_state: 'complete' | 'partial' | 'unscanned'; last_successful_at?: string; content_revision: number }
+export interface MediaCoverageEpisode { episode_number: number; name?: string; air_date?: string; status: MediaCoverageEpisodeStatus; library_ids: number[] }
+export interface MediaCoverageSeason { season_number: number; name: string; poster_url?: string; special: boolean; status: MediaCoverageStatus; counts: MediaCoverageCounts; episodes: MediaCoverageEpisode[] }
+export interface MediaCoverage {
+  media_type: DiscoveryMediaType
+  tmdb_id: number
+  title: string
+  status: MediaCoverageStatus | 'present'
+  libraries: MediaCoverageLibrary[]
+  freshness: { checked_at: string; library_scan_state: 'complete' | 'partial' | 'unscanned'; tmdb_state: 'complete' | 'partial' }
+  movie?: { present: boolean; library_ids: number[] }
+  tv?: { counts: MediaCoverageCounts; seasons: MediaCoverageSeason[] }
+}
+
 export interface DiscoveryPerson { tmdb_id?: number; name: string; role?: string; character?: string; profile_url?: string }
 export interface DiscoveryDetail {
   work: DiscoveryWork
@@ -55,6 +82,7 @@ export interface DiscoveryDetail {
 
 export const discoveryRecommendationsPath = '/api/v1/discovery/recommendations'
 export const discoveryRefreshPath = '/api/v1/discovery/recommendations/refresh'
+export const discoveryMediaSearchPath = '/api/v1/discovery/media-search'
 
 export function discoveryDetailPath(work: Pick<DiscoveryWork, 'provider' | 'media_type' | 'provider_id'>) {
   return `/api/v1/discovery/details/${encodeURIComponent(work.provider)}/${encodeURIComponent(work.media_type)}/${encodeURIComponent(work.provider_id)}`
@@ -62,6 +90,36 @@ export function discoveryDetailPath(work: Pick<DiscoveryWork, 'provider' | 'medi
 
 export function discoveryDetailRoute(work: Pick<DiscoveryWork, 'provider' | 'media_type' | 'provider_id'>) {
   return `/discovery/details/${encodeURIComponent(work.provider)}/${encodeURIComponent(work.media_type)}/${encodeURIComponent(work.provider_id)}`
+}
+
+export function buildDiscoveryMediaSearchPath(query: string, mediaType: DiscoveryMediaSearchFilter = 'all', page = 1) {
+  const params = new URLSearchParams({ query: query.trim(), media_type: mediaType, page: String(Math.max(1, Math.min(500, page))) })
+  return `${discoveryMediaSearchPath}?${params}`
+}
+
+export function discoveryCoveragePath(mediaType: DiscoveryMediaType, tmdbID: number) {
+  return `/api/v1/discovery/media/${encodeURIComponent(mediaType)}/${encodeURIComponent(String(tmdbID))}/coverage`
+}
+
+export function mediaIdentitySearchPath(mediaType: DiscoveryMediaType, tmdbID: number, stream = false) {
+  return `/api/v1/discovery/media/${encodeURIComponent(mediaType)}/${encodeURIComponent(String(tmdbID))}/torrent-search${stream ? '/stream' : ''}`
+}
+
+export function mediaIdentitySearchURL(mediaType: DiscoveryMediaType, tmdbID: number, options: { season?: number; page?: number; siteID?: number } = {}, stream = false) {
+  const query = new URLSearchParams({ page: String(Math.max(1, Math.min(20, options.page ?? 1))) })
+  if (options.season != null) query.set('season', String(options.season))
+  if (options.siteID) query.set('site_id', String(options.siteID))
+  return `${mediaIdentitySearchPath(mediaType, tmdbID, stream)}?${query}`
+}
+
+export function discoveryResourceRoute(work: DiscoveryWork) {
+  const query = discoveryWorkQuery(work)
+  query.mode = 'resources'
+  return { path: '/discovery/explore', query }
+}
+
+export function coverageStatusLabel(status: MediaCoverageStatus | MediaCoverageEpisodeStatus) {
+  return ({ present: '已入库', partial: '部分入库', missing: '缺失', future: '未播', future_or_incomplete: '待更新', unknown: '未知 / 待扫描' } as const)[status]
 }
 
 export function buildDiscoveryPath(provider: '' | DiscoveryProviderCode = '', page = 1) {

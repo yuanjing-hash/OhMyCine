@@ -125,6 +125,7 @@ func main() {
 	metadataSettings := services.NewMetadataSettingsService(db, audit, credentialStore, tmdb.Credential{Kind: tmdb.CredentialKind(cfg.TMDBDeploymentCredentialKind), Value: cfg.TMDBDeploymentCredentialValue})
 	aiRecognitionSettings := services.NewAIRecognitionSettingsService(db, audit, credentialStore)
 	discoveryService := services.NewDiscoveryService(db, metadataSettings, logManager.Logger("discovery", "service"))
+	mediaCoverage := services.NewMediaCoverageService(db, metadataSettings)
 	libraries.SetMetadataSettingsService(metadataSettings)
 	libraries.SetAIRecognitionSettings(aiRecognitionSettings)
 	artifacts.SetMetadataSettingsService(metadataSettings)
@@ -217,6 +218,7 @@ func main() {
 	api.SetPluginAssetGateway(pluginHostAPI)
 	api.SetLibraryArtworkService(libraryArtwork)
 	api.SetDiscoveryService(discoveryService)
+	api.SetMediaCoverageService(mediaCoverage)
 	api.SetSiteService(sites)
 	api.SetCookieCloudService(cookieCloud)
 	if err := cookieCloud.Start(context.Background()); err != nil {

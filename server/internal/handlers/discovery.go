@@ -26,9 +26,39 @@ func (a *API) DiscoveryRecommendations(c *gin.Context) {
 	success(c, http.StatusOK, result)
 }
 
+func (a *API) DiscoveryMediaSearch(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		writeError(c, a.log, &services.AppError{Code: services.CodeInvalidRequest, Message: "影视搜索页码无效", Cause: err})
+		return
+	}
+	result, err := a.discovery.MediaSearch(c.Request.Context(), actor, c.Query("query"), c.DefaultQuery("media_type", "all"), page)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, result)
+}
+
 func (a *API) DiscoveryDetail(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	result, err := a.discovery.Detail(c.Request.Context(), actor, c.Param("provider"), c.Param("mediaType"), c.Param("providerID"))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, result)
+}
+
+func (a *API) DiscoveryMediaCoverage(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("tmdbID")), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, a.log, &services.AppError{Code: services.CodeInvalidRequest, Message: "媒体覆盖率身份无效", Cause: err})
+		return
+	}
+	result, err := a.mediaCoverage.Coverage(c.Request.Context(), actor, c.Param("mediaType"), id)
 	if err != nil {
 		writeError(c, a.log, err)
 		return

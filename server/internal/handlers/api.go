@@ -46,6 +46,7 @@ type API struct {
 	pluginAssets          pluginAssetGateway
 	libraryArtwork        *services.LibraryArtworkService
 	discovery             *services.DiscoveryService
+	mediaCoverage         *services.MediaCoverageService
 	sites                 *services.SiteService
 	cookieCloud           *services.CookieCloudService
 	credentialReveal      *services.CredentialRevealService
@@ -93,7 +94,10 @@ func (a *API) SetPluginAssetGateway(gateway pluginAssetGateway) { a.pluginAssets
 func (a *API) SetLibraryArtworkService(service *services.LibraryArtworkService) {
 	a.libraryArtwork = service
 }
-func (a *API) SetDiscoveryService(service *services.DiscoveryService)     { a.discovery = service }
+func (a *API) SetDiscoveryService(service *services.DiscoveryService) { a.discovery = service }
+func (a *API) SetMediaCoverageService(service *services.MediaCoverageService) {
+	a.mediaCoverage = service
+}
 func (a *API) SetSiteService(service *services.SiteService)               { a.sites = service }
 func (a *API) SetCookieCloudService(service *services.CookieCloudService) { a.cookieCloud = service }
 func (a *API) SetCredentialRevealService(service *services.CredentialRevealService) {

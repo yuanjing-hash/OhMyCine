@@ -92,6 +92,7 @@ export interface CookieCloudSyncIssue {
 
 export interface PTSearchResult {
   token: string
+  matched_name?: string
   title: string
   subtitle?: string
   size_bytes?: number

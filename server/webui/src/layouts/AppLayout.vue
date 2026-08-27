@@ -18,6 +18,7 @@ const panelElement = ref<HTMLElement | null>(null)
 const drawerElement = ref<HTMLElement | null>(null)
 const menuButton = ref<HTMLButtonElement | null>(null)
 const searchButton = ref<HTMLButtonElement | null>(null)
+const globalSearchQuery = ref('')
 const lastTrigger = ref<HTMLElement | null>(null)
 const compactNavigation = ref(window.matchMedia('(max-width: 1023px)').matches)
 const expandedGroups = reactive<Record<NavigationGroupID, boolean>>({ discovery: true, subscriptions: true, automation: true, system: true })
@@ -136,6 +137,13 @@ async function navigateFromPanel(path: string) {
   closePanel()
 }
 
+async function submitGlobalMediaSearch() {
+  const query = globalSearchQuery.value.trim()
+  if (!query || !auth.can(Permissions.DiscoveryRead)) return
+  await router.push({ path: '/discovery/explore', query: { query } })
+  closePanel()
+}
+
 watch(() => route.fullPath, () => { activePanel.value = null; mobileDrawerOpen.value = false })
 watch([mobileDrawerOpen, activePanel], ([drawer, panel]) => { document.body.style.overflow = drawer || panel ? 'hidden' : '' })
 onMounted(() => {
@@ -204,7 +212,7 @@ onBeforeUnmount(() => {
           <ThemeToggle />
           <button ref="searchButton" class="search-trigger" type="button" :aria-expanded="activePanel === 'search'" aria-controls="global-tool-panel" @click="togglePanel('search', $event)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>
-            <span>搜索媒体、任务、设置…</span><kbd>Ctrl/⌘ K</kbd>
+            <span>搜索电影和剧集…</span><kbd>Ctrl/⌘ K</kbd>
           </button>
           <button class="icon-button" type="button" aria-label="日志中心" :aria-expanded="activePanel === 'logs'" aria-controls="global-tool-panel" @click="togglePanel('logs', $event)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg>
@@ -221,9 +229,13 @@ onBeforeUnmount(() => {
           <header class="tool-panel__header"><h2>{{ panelTitle }}</h2><button class="icon-button" type="button" aria-label="关闭" @click="closePanel(true)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>
 
           <div v-if="activePanel === 'search'" class="tool-panel__body">
-            <label class="label" for="global-search-preview">搜索范围</label>
-            <input id="global-search-preview" class="input" value="" readonly placeholder="全局搜索服务尚未实现" aria-describedby="search-state" />
-            <p id="search-state" class="tool-empty">当前没有搜索索引或聚合 API。未来仅搜索当前账户有权读取的媒体、任务、订阅、连接和设置，不会生成模拟结果。</p>
+            <form v-if="auth.can(Permissions.DiscoveryRead)" class="space-y-3" @submit.prevent="submitGlobalMediaSearch">
+              <label class="label" for="global-media-search">搜索电影或剧集</label>
+              <input id="global-media-search" v-model="globalSearchQuery" class="input" maxlength="256" required placeholder="三体 / Three-Body" aria-describedby="search-state" />
+              <p id="search-state" class="tool-empty">先搜索 TMDB 海报确认作品身份，再进入统一详情、媒体库覆盖率和多语言资源聚合。</p>
+              <button class="btn-primary w-full" type="submit">搜索影视海报</button>
+            </form>
+            <p v-else class="tool-empty">当前账户没有影视发现读取权限。</p>
           </div>
 
           <div v-else-if="activePanel === 'logs'" class="tool-panel__body space-y-3">

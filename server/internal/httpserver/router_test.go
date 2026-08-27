@@ -215,6 +215,7 @@ func newTestClient(t *testing.T) *testClient {
 	aiRecognitionSettings := services.NewAIRecognitionSettingsService(db, audit, credentialStore)
 	discovery := services.NewDiscoveryService(db, metadataSettings, log)
 	api.SetDiscoveryService(discovery)
+	api.SetMediaCoverageService(services.NewMediaCoverageService(db, metadataSettings))
 	libraries.SetMetadataSettingsService(metadataSettings)
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, log)
@@ -1102,6 +1103,79 @@ func TestPTSiteAndDiscoveryRoutesAreProtectedRedactedAndStreamSafe(t *testing.T)
 	status, _ = client.request(t, http.MethodDelete, "/api/v1/sites/"+uintString(created.ID), map[string]any{}, true)
 	if status != http.StatusOK {
 		t.Fatalf("delete site status=%d", status)
+	}
+}
+
+func TestMediaIdentityDiscoveryRoutesValidateInputAndEnforceCoveragePermissions(t *testing.T) {
+	owner := newTestClient(t)
+	unauthenticated := httptest.NewRecorder()
+	owner.router.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/v1/discovery/media-search?query=Seven%20Samurai", nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated media search status=%d", unauthenticated.Code)
+	}
+
+	owner.setup(t)
+	for _, path := range []string{
+		"/api/v1/discovery/media-search",
+		"/api/v1/discovery/media-search?query=Seven%20Samurai&media_type=person",
+		"/api/v1/discovery/media-search?query=Seven%20Samurai&page=invalid",
+		"/api/v1/discovery/media/tv/invalid/coverage",
+		"/api/v1/discovery/media/person/100/torrent-search",
+		"/api/v1/discovery/media/tv/100/torrent-search?page=invalid",
+		"/api/v1/discovery/media/movie/100/torrent-search?season=1",
+		"/api/v1/discovery/media/tv/100/torrent-search/stream?site_id=invalid",
+	} {
+		status, envelope := owner.request(t, http.MethodGet, path, nil, false)
+		if status != http.StatusBadRequest || !bytes.Contains(envelope.Data, []byte(services.CodeInvalidRequest)) || owner.lastHeader.Get("Cache-Control") != "no-store" {
+			t.Fatalf("invalid identity route %q status=%d cache=%q data=%s", path, status, owner.lastHeader.Get("Cache-Control"), envelope.Data)
+		}
+	}
+
+	for _, path := range []string{
+		"/api/v1/discovery/media-search?query=Seven%20Samurai&media_type=movie&page=1",
+		"/api/v1/discovery/media/movie/346/coverage",
+		"/api/v1/discovery/media/movie/346/torrent-search",
+		"/api/v1/discovery/media/movie/346/torrent-search/stream",
+	} {
+		status, envelope := owner.request(t, http.MethodGet, path, nil, false)
+		if status != http.StatusServiceUnavailable || owner.lastHeader.Get("Cache-Control") != "no-store" {
+			t.Fatalf("metadata-unavailable identity route %q status=%d cache=%q data=%s", path, status, owner.lastHeader.Get("Cache-Control"), envelope.Data)
+		}
+		body := string(envelope.Data)
+		for _, forbidden := range []string{"torrent_id", "magnet:", "passkey", "cookie", "relative_path", "provider_id", "root_path"} {
+			if strings.Contains(strings.ToLower(body), forbidden) {
+				t.Fatalf("identity route %q leaked %q: %s", path, forbidden, body)
+			}
+		}
+	}
+
+	status, roleEnvelope := owner.request(t, http.MethodPost, "/api/v1/roles", map[string]any{"code": "discovery_only", "name": "Discovery only", "permissions": []string{authz.PermissionDiscoveryRead}}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create discovery role status=%d data=%s", status, roleEnvelope.Data)
+	}
+	var role struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(roleEnvelope.Data, &role); err != nil || role.ID == 0 {
+		t.Fatalf("discovery role=%+v err=%v", role, err)
+	}
+	status, userEnvelope := owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "discovery-user", "display_name": "Discovery User", "password": "discovery-user-strong-password", "role_ids": []uint{role.ID}}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create discovery user status=%d data=%s", status, userEnvelope.Data)
+	}
+	discoveryOnly := newTestClientWithRouter(owner.router)
+	discoveryOnly.login(t, "discovery-user", "discovery-user-strong-password")
+	status, _ = discoveryOnly.request(t, http.MethodGet, "/api/v1/discovery/media/movie/346/coverage", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("coverage without media_libraries.read status=%d", status)
+	}
+	status, _ = discoveryOnly.request(t, http.MethodGet, "/api/v1/discovery/media-search?query=Seven%20Samurai", nil, false)
+	if status == http.StatusForbidden {
+		t.Fatalf("discovery-only media search was incorrectly denied")
+	}
+	status, _ = discoveryOnly.request(t, http.MethodGet, "/api/v1/discovery/media/movie/346/torrent-search", nil, false)
+	if status == http.StatusForbidden {
+		t.Fatalf("discovery-only identity torrent search was incorrectly denied")
 	}
 }
 

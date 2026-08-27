@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
-import { discoveryDetailPath, discoveryDetailRoute, providerLabel, type DiscoveryDetail, type DiscoveryMediaType, type DiscoveryProviderCode, type DiscoveryWork } from '@/discovery'
+import { coverageStatusLabel, discoveryCoveragePath, discoveryDetailPath, discoveryDetailRoute, discoveryResourceRoute, providerLabel, type DiscoveryDetail, type DiscoveryMediaType, type DiscoveryProviderCode, type DiscoveryWork, type MediaCoverage } from '@/discovery'
 import { notify } from '@/toast'
 
 const route = useRoute()
@@ -10,6 +10,10 @@ const router = useRouter()
 const loading = ref(true)
 const error = ref('')
 const detail = ref<DiscoveryDetail | null>(null)
+const coverage = ref<MediaCoverage | null>(null)
+const coverageLoading = ref(false)
+const coverageError = ref('')
+const expandedSeasons = ref<number[]>([])
 
 const identity = computed(() => ({
   provider: String(route.params.provider) as DiscoveryProviderCode,
@@ -20,24 +24,36 @@ const identity = computed(() => ({
 async function load() {
   loading.value = true
   error.value = ''
-  try { detail.value = await api<DiscoveryDetail>(discoveryDetailPath(identity.value)) }
+  coverage.value = null
+  coverageError.value = ''
+  expandedSeasons.value = []
+  try {
+    detail.value = await api<DiscoveryDetail>(discoveryDetailPath(identity.value))
+    void loadCoverage()
+  }
   catch (reason) { error.value = message(reason) }
   finally { loading.value = false }
 }
 
-function searchBy(mode: 'title' | 'tmdb_id') {
+async function loadCoverage() {
   const work = detail.value?.work
-  if (!work) return
-  const query: Record<string, string> = { title: work.title, media_type: work.media_type, search_by: mode }
-  if (work.year) query.year = String(work.year)
-  if (work.tmdb_id) query.tmdb_id = String(work.tmdb_id)
-  void router.push({ path: '/discovery/explore', query })
+  if (!work?.tmdb_id) return
+  coverageLoading.value = true
+  coverageError.value = ''
+  try { coverage.value = await api<MediaCoverage>(discoveryCoveragePath(work.media_type, work.tmdb_id)) }
+  catch (reason) { coverageError.value = reason instanceof Error ? reason.message : '媒体库覆盖率加载失败' }
+  finally { coverageLoading.value = false }
 }
+
+function searchResources() { if (detail.value) void router.push(discoveryResourceRoute(detail.value.work)) }
+function toggleSeason(season: number) { expandedSeasons.value = expandedSeasons.value.includes(season) ? expandedSeasons.value.filter(item => item !== season) : [...expandedSeasons.value, season] }
+function libraryNames(ids: number[]) { return ids.map(id => coverage.value?.libraries.find(item => item.id === id)?.name).filter(Boolean).join('、') }
 
 function subscribe() { notify('订阅能力将在下一阶段接入；当前不会创建任何订阅任务。', 'info') }
 function openWork(work: DiscoveryWork) { void router.push(discoveryDetailRoute(work)) }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '作品详情加载失败' }
 onMounted(load)
+watch(() => route.fullPath, load)
 </script>
 
 <template>
@@ -56,9 +72,26 @@ onMounted(load)
             <p class="mb-0 mt-3 text-sm text-muted">{{ [detail.work.year, detail.runtime_minutes ? `${detail.runtime_minutes} 分钟` : '', ...detail.genres].filter(Boolean).join(' · ') }}</p>
             <p v-if="detail.tagline" class="mb-0 mt-3 font-650">{{ detail.tagline }}</p>
             <p class="mb-0 mt-3 max-w-3xl text-sm leading-6 text-muted">{{ detail.work.overview || '暂无简介。' }}</p>
-            <div class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" @click="searchBy('title')">按标题搜索资源</button><button class="btn-secondary" :disabled="!detail.work.tmdb_id" @click="searchBy('tmdb_id')">按 TMDB ID 搜索</button><button class="btn-secondary" @click="subscribe">订阅（即将支持）</button></div>
+            <div class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="!detail.work.tmdb_id" @click="searchResources">多语言聚合搜索资源</button><button class="btn-secondary" @click="subscribe">订阅（即将支持）</button></div>
           </div>
         </div>
+      </article>
+
+      <article class="panel" aria-labelledby="media-coverage-title">
+        <header class="flex flex-wrap items-center justify-between gap-3"><div><h2 id="media-coverage-title" class="m-0 text-lg">媒体库覆盖率</h2><p class="page-description mt-1 text-sm">按当前可读媒体库中的可信 TMDB 身份对账；未播或日期未知不会计为缺失。</p></div><button v-if="coverageError" class="btn-secondary" @click="loadCoverage">重试</button></header>
+        <div v-if="coverageLoading" class="py-8 text-center text-muted">正在对账媒体库与 TMDB 季集信息…</div>
+        <div v-else-if="coverageError" class="semantic-warning mt-4 p-4"><strong>覆盖率暂时不可用</strong><p class="mb-0 mt-1 text-sm">{{ coverageError }}</p></div>
+        <template v-else-if="coverage">
+          <div class="mt-4 flex flex-wrap items-center gap-2"><span :class="coverage.status === 'present' ? 'status-chip status-chip--ready' : coverage.status === 'missing' ? 'status-chip status-chip--warning' : 'status-chip'">{{ coverageStatusLabel(coverage.status) }}</span><span class="text-subtle text-xs">{{ coverage.libraries.length }} 个可读媒体库 · {{ coverage.freshness.library_scan_state === 'complete' ? '扫描事实完整' : coverage.freshness.library_scan_state === 'partial' ? '扫描事实不完整' : '尚未完成扫描' }}</span></div>
+          <div v-if="coverage.movie" class="semantic-inset mt-4 p-4"><strong>{{ coverage.movie.present ? '这部电影已经入库' : coverage.status === 'missing' ? '这部电影尚未入库' : '暂时无法确认是否入库' }}</strong><p v-if="coverage.movie.library_ids.length" class="mb-0 mt-1 text-sm text-muted">存在于：{{ libraryNames(coverage.movie.library_ids) }}</p></div>
+          <div v-else-if="coverage.tv" class="mt-4 space-y-3">
+            <div class="grid gap-2 sm:grid-cols-5"><div v-for="item in [['总集数', coverage.tv.counts.total], ['已入库', coverage.tv.counts.present], ['已播缺失', coverage.tv.counts.missing], ['未播', coverage.tv.counts.future], ['未知', coverage.tv.counts.unknown]]" :key="String(item[0])" class="semantic-inset p-3"><span class="text-subtle block text-xs">{{ item[0] }}</span><strong class="mt-1 block text-lg">{{ item[1] }}</strong></div></div>
+            <section v-for="season in coverage.tv.seasons" :key="season.season_number" class="semantic-list-item overflow-hidden">
+              <button class="flex w-full items-center gap-4 p-4 text-left" :aria-expanded="expandedSeasons.includes(season.season_number)" @click="toggleSeason(season.season_number)"><img v-if="season.poster_url" :src="season.poster_url" :alt="`${season.name} 海报`" class="h-20 w-14 shrink-0 rounded object-cover" loading="lazy" /><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><strong>{{ season.name || `第 ${season.season_number} 季` }}</strong><span v-if="season.special" class="status-chip">特别篇 · 不计普通缺集</span><span :class="season.status === 'present' ? 'status-chip status-chip--ready' : season.status === 'missing' || season.status === 'partial' ? 'status-chip status-chip--warning' : 'status-chip'">{{ coverageStatusLabel(season.status) }}</span></div><p class="mb-0 mt-2 text-xs text-muted">共 {{ season.counts.total }} · 已入库 {{ season.counts.present }} · 已播缺失 {{ season.counts.missing }} · 未播 {{ season.counts.future }} · 未知 {{ season.counts.unknown }}</p></div><span aria-hidden="true">{{ expandedSeasons.includes(season.season_number) ? '收起' : '展开' }}</span></button>
+              <div v-if="expandedSeasons.includes(season.season_number)" class="border-t border-[var(--border)] p-4"><div v-if="season.episodes.length" class="grid gap-2 md:grid-cols-2"><div v-for="episode in season.episodes" :key="episode.episode_number" class="semantic-inset flex items-start justify-between gap-3 p-3"><div><strong>E{{ String(episode.episode_number).padStart(2, '0') }} · {{ episode.name || '名称未知' }}</strong><p class="mb-0 mt-1 text-xs text-muted">{{ episode.air_date || '播出日期未知' }}<template v-if="episode.library_ids.length"> · {{ libraryNames(episode.library_ids) }}</template></p></div><span :class="episode.status === 'present' ? 'status-chip status-chip--ready' : episode.status === 'missing' ? 'status-chip status-chip--warning' : 'status-chip'">{{ coverageStatusLabel(episode.status) }}</span></div></div><p v-else class="mb-0 text-sm text-muted">该季 TMDB 集信息暂时不可用，因此不会推断缺集。</p></div>
+            </section>
+          </div>
+        </template>
       </article>
 
       <div class="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">

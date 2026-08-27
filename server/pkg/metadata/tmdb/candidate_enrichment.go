@@ -17,14 +17,17 @@ const (
 )
 
 type candidateTranslation struct {
-	Data struct {
+	ISO6391  string `json:"iso_639_1"`
+	ISO31661 string `json:"iso_3166_1"`
+	Data     struct {
 		Title string `json:"title"`
 		Name  string `json:"name"`
 	} `json:"data"`
 }
 
 type candidateAlternativeTitle struct {
-	Title string `json:"title"`
+	ISO31661 string `json:"iso_3166_1"`
+	Title    string `json:"title"`
 }
 
 type candidateEnrichmentResponse struct {

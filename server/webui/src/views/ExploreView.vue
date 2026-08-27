@@ -1,21 +1,33 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
 import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
+import { buildDiscoveryMediaSearchPath, discoveryDetailRoute, mediaIdentitySearchURL, type DiscoveryMediaSearch, type DiscoveryMediaSearchFilter, type DiscoveryMediaType, type DiscoverySearchName, type DiscoveryWork } from '@/discovery'
 import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, sitesPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type SiteSummary, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
+const mode = ref<'media' | 'resources'>(route.query.mode === 'resources' || typeof route.query.site_id === 'string' ? 'resources' : 'media')
+const mediaQuery = ref(typeof route.query.query === 'string' ? route.query.query : '')
+const mediaFilter = ref<DiscoveryMediaSearchFilter>(route.query.media_type === 'movie' || route.query.media_type === 'tv' ? route.query.media_type : 'all')
+const mediaResults = ref<DiscoveryWork[]>([])
+const mediaPage = ref(1)
+const mediaTotalPages = ref(1)
+const mediaSearching = ref(false)
+const mediaSearched = ref(false)
+const mediaError = ref('')
 const keyword = ref(typeof route.query.title === 'string' ? route.query.title : '')
 const mediaType = ref(typeof route.query.media_type === 'string' ? route.query.media_type : '')
 const year = ref<number | undefined>(typeof route.query.year === 'string' ? Number(route.query.year) || undefined : undefined)
 const tmdbID = ref<number | undefined>(typeof route.query.tmdb_id === 'string' ? Number(route.query.tmdb_id) || undefined : undefined)
 const searchBy = ref<'title' | 'tmdb_id'>(route.query.search_by === 'tmdb_id' ? 'tmdb_id' : 'title')
+const identityNames = ref<DiscoverySearchName[]>([])
 const selectedTitle = computed(() => typeof route.query.title === 'string' ? route.query.title : '')
 const lockedSiteID = computed(() => {
   const value = typeof route.query.site_id === 'string' ? Number(route.query.site_id) : 0
@@ -43,6 +55,7 @@ const manualSearching = ref(false)
 const manualSaving = ref(false)
 let source: EventSource | null = null
 let streamTimeout: number | undefined
+let mediaSearchRequest: AbortController | null = null
 
 const enabledDownloaders = computed(() => downloaders.value.filter(item => item.enabled))
 const selectedDownloader = computed(() => enabledDownloaders.value.find(item => item.id === downloadForm.value.downloaderID) ?? null)
@@ -68,6 +81,49 @@ const visibleResults = computed(() => filterAndSortTorrentResults(groups.value, 
   sort: resultSort.value,
   direction: resultDirection.value,
 }))
+const trustedIdentity = computed(() => mode.value === 'resources' && (mediaType.value === 'movie' || mediaType.value === 'tv') && tmdbID.value != null && tmdbID.value > 0
+  ? { mediaType: mediaType.value as DiscoveryMediaType, tmdbID: tmdbID.value }
+  : null)
+
+async function searchMedia(page = 1) {
+  const query = mediaQuery.value.trim()
+  if (!query) { notify('请输入电影或剧集名称', 'warning'); return }
+  mediaSearchRequest?.abort()
+  const controller = new AbortController()
+  mediaSearchRequest = controller
+  mediaSearching.value = true
+  mediaError.value = ''
+  try {
+    const result = await api<DiscoveryMediaSearch>(buildDiscoveryMediaSearchPath(query, mediaFilter.value, page), { signal: controller.signal })
+    mediaResults.value = result.items
+    mediaPage.value = result.page
+    mediaTotalPages.value = result.total_pages
+    mediaSearched.value = true
+    await router.replace({ path: '/discovery/explore', query: { query, media_type: mediaFilter.value === 'all' ? undefined : mediaFilter.value } })
+  } catch (reason) {
+    if (!controller.signal.aborted) mediaError.value = message(reason)
+  } finally {
+    if (mediaSearchRequest === controller) {
+      mediaSearchRequest = null
+      mediaSearching.value = false
+    }
+  }
+}
+
+function openMedia(work: DiscoveryWork) { void router.push(discoveryDetailRoute(work)) }
+function switchMode(value: 'media' | 'resources') {
+  if (value === 'media') {
+    stopStream()
+    searching.value = false
+  } else {
+    mediaSearchRequest?.abort()
+    mediaSearchRequest = null
+    mediaSearching.value = false
+  }
+  mode.value = value
+  if (value === 'media') void router.replace({ path: '/discovery/explore' })
+  else void router.replace({ path: '/discovery/explore', query: { mode: 'resources' } })
+}
 
 function searchInput(siteID?: number, page = 1) {
   return { keyword: keyword.value, mediaType: mediaType.value || undefined, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, page, siteID: lockedSiteID.value ?? siteID }
@@ -82,7 +138,12 @@ function stopStream() {
 
 async function searchJSON(siteID?: number, page = 1) {
   try {
-    const response = await api<TorrentSearchResponse>(torrentSearchURL(torrentSearchPath, searchInput(siteID, page)))
+    const identity = trustedIdentity.value
+    const path = identity
+      ? mediaIdentitySearchURL(identity.mediaType, identity.tmdbID, { page, siteID: lockedSiteID.value ?? siteID })
+      : torrentSearchURL(torrentSearchPath, searchInput(siteID, page))
+    const response = await api<TorrentSearchResponse & { query_names?: DiscoverySearchName[] }>(path)
+    identityNames.value = response.query_names ?? identityNames.value
     for (const group of response.groups) groups.value = upsertTorrentGroup(groups.value, group)
     searched.value = true
   } catch (reason) { searchError.value = message(reason) }
@@ -90,13 +151,14 @@ async function searchJSON(siteID?: number, page = 1) {
 }
 
 function search() {
-  if (searchBy.value === 'title' && !keyword.value.trim()) { notify('请输入作品或发行标题', 'warning'); return }
-  if (searchBy.value === 'tmdb_id' && (!tmdbID.value || !mediaType.value)) { notify('TMDB ID 搜索需要有效 ID 与媒体类型', 'warning'); return }
+  if (!trustedIdentity.value && searchBy.value === 'title' && !keyword.value.trim()) { notify('请输入作品或发行标题', 'warning'); return }
+  if (!trustedIdentity.value && searchBy.value === 'tmdb_id' && (!tmdbID.value || !mediaType.value)) { notify('TMDB ID 搜索需要有效 ID 与媒体类型', 'warning'); return }
   stopStream()
   groups.value = []
   activeChannel.value = 'all'
   recognitions.value = {}
   recognitionErrors.value = {}
+  identityNames.value = []
   searchError.value = ''
   searched.value = false
   searching.value = true
@@ -107,7 +169,10 @@ function search() {
   }
   if (typeof EventSource === 'undefined') { void searchJSON(); return }
   let delivered = false
-  const eventSource = new EventSource(torrentSearchURL(torrentSearchStreamPath, searchInput()))
+  const identity = trustedIdentity.value
+  const eventSource = new EventSource(identity
+    ? mediaIdentitySearchURL(identity.mediaType, identity.tmdbID, { siteID: lockedSiteID.value }, true)
+    : torrentSearchURL(torrentSearchStreamPath, searchInput()))
   source = eventSource
   eventSource.addEventListener('site', event => {
     try {
@@ -116,6 +181,10 @@ function search() {
       delivered = true
       searched.value = true
     } catch { /* malformed events are ignored; JSON fallback remains available */ }
+  })
+  eventSource.addEventListener('media', event => {
+    try { identityNames.value = (JSON.parse((event as MessageEvent<string>).data) as { query_names?: DiscoverySearchName[] }).query_names ?? [] }
+    catch { /* safe metadata is optional */ }
   })
   eventSource.addEventListener('done', () => {
     stopStream()
@@ -131,7 +200,7 @@ function search() {
     stopStream()
     if (!delivered) void searchJSON()
     else searching.value = false
-  }, 30_000)
+  }, identity ? 120_000 : 30_000)
 }
 
 async function retrySite(group: TorrentSearchGroup) {
@@ -263,6 +332,10 @@ watch([groups, recognitions, searched], () => {
 }, { deep: true })
 
 onMounted(async () => {
+  if (mode.value === 'media') {
+    if (mediaQuery.value.trim()) await searchMedia()
+    return
+  }
   if (lockedSiteID.value && auth.can(Permissions.SystemAdmin)) {
     try {
       const response = await api<ListResponse<SiteSummary>>(sitesPath)
@@ -283,69 +356,86 @@ onMounted(async () => {
     if (lockedSiteID.value) activeChannel.value = lockedSiteID.value
     return
   }
-  if (keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search()
+  if (trustedIdentity.value || keyword.value.trim() || (searchBy.value === 'tmdb_id' && tmdbID.value)) search()
 })
-onBeforeUnmount(stopStream)
+onBeforeUnmount(() => {
+  stopStream()
+  mediaSearchRequest?.abort()
+})
 </script>
 
 <template>
   <section class="space-y-5">
-    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 class="mt-1 text-2xl font-800">资源搜索</h1><p class="page-description mt-1">{{ lockedSiteID ? '当前处于单站搜索模式；请求、重试和翻页不会回退到其他站点。' : '聚合查询已启用的 PT 与公开 BT 站点；浏览器只收到 15 分钟有效的不透明结果令牌。' }}</p></header>
-    <div v-if="lockedSiteID" class="semantic-inset flex flex-wrap items-center justify-between gap-3 p-4"><div><span class="status-chip">仅搜索此站</span><strong class="ml-2">{{ lockedSite?.name || `站点 #${lockedSiteID}` }}</strong></div><RouterLink class="btn-secondary" to="/system/sites">返回站点管理</RouterLink></div>
-    <form class="panel" @submit.prevent="search">
-      <div class="mb-4 flex flex-wrap gap-2" role="group" aria-label="搜索方式"><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'title' }" @click="searchBy = 'title'">按标题</button><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'tmdb_id' }" @click="searchBy = 'tmdb_id'">按 TMDB ID</button></div>
-      <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] md:items-end">
-        <div v-if="searchBy === 'title'"><label class="label" for="discovery-keyword">作品或发行标题</label><input id="discovery-keyword" v-model="keyword" class="input" maxlength="160" placeholder="七武士 / Seven Samurai" required /></div>
-        <div v-else><label class="label" for="discovery-tmdb">TMDB ID</label><input id="discovery-tmdb" v-model.number="tmdbID" class="input font-mono" type="number" min="1" placeholder="346" required /></div>
-        <div><label class="label" for="discovery-kind">媒体类型</label><select id="discovery-kind" v-model="mediaType" class="input"><option value="">自动</option><option value="movie">电影</option><option value="tv">剧集</option></select></div>
-        <div><label class="label" for="discovery-year">年份</label><input id="discovery-year" v-model.number="year" class="input" type="number" min="1880" max="2200" placeholder="可选" /></div>
-        <button class="btn-primary" :disabled="searching">{{ searching ? '搜索中…' : '搜索种子资源' }}</button>
-      </div>
-    </form>
-    <div v-if="selectedTitle" class="panel"><span class="status-chip">已选作品</span><h2 class="mt-3 text-xl font-750">{{ selectedTitle }}</h2><p class="mt-1 text-sm text-muted">推荐来源只帮助确认作品身份，真实种子搜索仍按站点分别执行。</p></div>
-    <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">{{ lockedSiteID ? '重试此站' : '重试全部站点' }}</button></div>
-    <div v-if="searching && !groups.length" class="panel py-10 text-center text-muted">正在按站点限速并行搜索，结果会渐进出现…</div>
-    <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT/BT 站点，或当前关键词暂无结果。可以先到“站点管理”添加站点。</div>
+    <header><p class="text-xs font-700 uppercase tracking-widest text-[var(--text-subtle)]">Search</p><h1 v-if="mode === 'media'" class="mt-1 text-2xl font-800">搜索影视</h1><h1 v-else class="mt-1 text-2xl font-800">资源搜索</h1><p class="page-description mt-1">{{ mode === 'media' ? '先从 TMDB 海报确认作品，再进入统一详情、媒体库覆盖率和多语言资源聚合。' : lockedSiteID ? '当前处于单站搜索模式；请求、重试和翻页不会回退到其他站点。' : '高级模式按原始关键词直接查询 PT/BT；稳定作品身份请从海报或详情进入。' }}</p></header>
+    <nav class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索模式"><button class="management-tab shrink-0" :class="mode === 'media' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="mode === 'media'" @click="switchMode('media')">影视海报</button><button class="management-tab shrink-0" :class="mode === 'resources' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="mode === 'resources'" @click="switchMode('resources')">高级资源</button></nav>
 
-    <template v-if="groups.length">
-      <nav v-if="!lockedSiteID" class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索渠道">
-        <button class="management-tab shrink-0" :class="activeChannel === 'all' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === 'all'" @click="activeChannel = 'all'">全部渠道</button>
-        <button v-for="group in orderedGroups" :key="group.site_id" class="management-tab shrink-0" :class="activeChannel === group.site_id ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === group.site_id" @click="activeChannel = group.site_id">{{ group.site_name }} <small>{{ group.site_type.toUpperCase() }}</small></button>
-      </nav>
+    <template v-if="mode === 'media'">
+      <form class="panel" @submit.prevent="searchMedia(1)"><div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_auto] md:items-end"><div><label class="label" for="media-search-query">电影或剧集名称</label><input id="media-search-query" v-model="mediaQuery" class="input" maxlength="256" placeholder="三体 / Three-Body" required /></div><div><label class="label" for="media-search-type">媒体类型</label><select id="media-search-type" v-model="mediaFilter" class="input"><option value="all">电影 + 剧集</option><option value="movie">电影</option><option value="tv">剧集</option></select></div><button class="btn-primary" :disabled="mediaSearching">{{ mediaSearching ? '搜索中…' : '搜索海报' }}</button></div></form>
+      <div v-if="mediaError" class="semantic-error p-4"><strong>影视搜索失败</strong><p class="mt-1 text-sm">{{ mediaError }}</p><button class="btn-secondary mt-3" @click="searchMedia(mediaPage)">重试</button></div>
+      <div v-if="mediaSearching" class="panel py-10 text-center text-muted">正在通过 TMDB 搜索电影和剧集海报…</div>
+      <div v-else-if="mediaSearched && !mediaResults.length && !mediaError" class="panel py-10 text-center text-muted">没有找到匹配作品。可以尝试原名、英文名，或切换到高级资源搜索。</div>
+      <div v-if="mediaResults.length" class="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5"><button v-for="work in mediaResults" :key="`${work.media_type}:${work.tmdb_id}`" class="discovery-poster text-left" @click="openMedia(work)"><div class="discovery-poster__image"><img v-if="work.poster_url" :src="work.poster_url" :alt="`${work.title} 海报`" loading="lazy" /><span v-else>暂无海报</span></div><strong :title="work.title">{{ work.title }}</strong><small>{{ work.media_type === 'tv' ? '剧集' : '电影' }} · {{ work.year || '年份未知' }}<template v-if="work.rating != null"> · {{ work.rating.toFixed(1) }}</template></small><small v-if="work.original_title && work.original_title !== work.title" :title="work.original_title">{{ work.original_title }}</small></button></div>
+      <footer v-if="mediaResults.length" class="panel flex items-center justify-center gap-3"><button class="btn-secondary" :disabled="mediaSearching || mediaPage <= 1" @click="searchMedia(mediaPage - 1)">上一页</button><span class="text-sm">第 {{ mediaPage }} / {{ mediaTotalPages }} 页</span><button class="btn-secondary" :disabled="mediaSearching || mediaPage >= mediaTotalPages" @click="searchMedia(mediaPage + 1)">下一页</button></footer>
+    </template>
 
-      <form class="panel grid gap-3 md:grid-cols-2 xl:grid-cols-[auto_auto_11rem_11rem_9rem_10rem_9rem_auto] xl:items-end" @submit.prevent>
-        <fieldset class="flex gap-3"><legend class="label">站点类型</legend><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="pt" /> PT</label><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="bt" /> BT</label></fieldset>
-        <label><span class="label">分辨率</span><select v-model="resolutionFilter" class="input"><option value="">全部</option><option v-for="value in resolutionOptions" :key="value" :value="value">{{ value }}</option></select></label>
-        <label><span class="label">优惠</span><select v-model="promotionFilter" class="input"><option value="">全部</option><option value="free">FREE</option><option value="2xfree">2X FREE</option><option value="2x">2X</option></select></label>
-        <label><span class="label">最低做种</span><input v-model.number="minimumSeeders" class="input" type="number" min="0" placeholder="不限" /></label>
-        <label><span class="label">排序字段</span><select v-model="resultSort" class="input"><option value="seeders">做种数</option><option value="published">发布时间</option><option value="size">体积</option></select></label>
-        <label><span class="label">排序方向</span><select v-model="resultDirection" class="input"><option value="desc">降序</option><option value="asc">升序</option></select></label>
-        <p class="text-subtle mb-0 text-xs xl:col-span-2">不同筛选项之间为 AND；同类标签按任一匹配。排序只针对已经取回的当前页结果。</p>
+    <template v-else>
+      <div v-if="lockedSiteID" class="semantic-inset flex flex-wrap items-center justify-between gap-3 p-4"><div><span class="status-chip">仅搜索此站</span><strong class="ml-2">{{ lockedSite?.name || `站点 #${lockedSiteID}` }}</strong></div><RouterLink class="btn-secondary" to="/system/sites">返回站点管理</RouterLink></div>
+      <form class="panel" @submit.prevent="search">
+        <div class="mb-4 flex flex-wrap gap-2" role="group" aria-label="搜索方式"><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'title' }" @click="searchBy = 'title'">按标题</button><button type="button" class="btn-secondary" :class="{ '!border-[var(--accent)] !bg-[var(--accent-soft)] !text-[var(--accent)]': searchBy === 'tmdb_id' }" @click="searchBy = 'tmdb_id'">按 TMDB ID</button></div>
+        <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] md:items-end">
+          <div v-if="searchBy === 'title'"><label class="label" for="discovery-keyword">作品或发行标题</label><input id="discovery-keyword" v-model="keyword" class="input" maxlength="160" placeholder="七武士 / Seven Samurai" required /></div>
+          <div v-else><label class="label" for="discovery-tmdb">TMDB ID</label><input id="discovery-tmdb" v-model.number="tmdbID" class="input font-mono" type="number" min="1" placeholder="346" required /></div>
+          <div><label class="label" for="discovery-kind">媒体类型</label><select id="discovery-kind" v-model="mediaType" class="input"><option value="">自动</option><option value="movie">电影</option><option value="tv">剧集</option></select></div>
+          <div><label class="label" for="discovery-year">年份</label><input id="discovery-year" v-model.number="year" class="input" type="number" min="1880" max="2200" placeholder="可选" /></div>
+          <button class="btn-primary" :disabled="searching">{{ searching ? '搜索中…' : '搜索种子资源' }}</button>
+        </div>
       </form>
+      <div v-if="selectedTitle" class="panel"><span class="status-chip">已确认作品身份</span><h2 class="mt-3 text-xl font-750">{{ selectedTitle }}</h2><p class="mt-1 text-sm text-muted">Server 会重新验证 TMDB 身份，并按受限的中文名、地区别名、原名和英文名聚合搜索。</p><div v-if="identityNames.length" class="mt-3 flex flex-wrap gap-2"><span v-for="name in identityNames" :key="`${name.kind}:${name.locale}:${name.value}`" class="status-chip">{{ name.value }}<template v-if="name.locale"> · {{ name.locale }}</template></span></div></div>
+      <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">{{ lockedSiteID ? '重试此站' : '重试全部站点' }}</button></div>
+      <div v-if="searching && !groups.length" class="panel py-10 text-center text-muted">正在按站点限速并行搜索，结果会渐进出现…</div>
+      <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT/BT 站点，或当前关键词暂无结果。可以先到“站点管理”添加站点。</div>
 
-      <div v-if="activeGroup?.status === 'error'" class="semantic-warning flex flex-wrap items-center justify-between gap-3 p-4"><span>{{ activeGroup.site_name }} 暂时不可用（{{ activeGroup.error_code || 'site_unavailable' }}）。</span><button class="btn-secondary" :disabled="searching" @click="retrySite(activeGroup)">重试此站</button></div>
-      <div v-if="!visibleResults.length" class="panel py-10 text-center text-muted">当前渠道和筛选条件下没有结果。</div>
-      <div v-else class="grid gap-4 xl:grid-cols-2">
-        <article v-for="entry in visibleResults" :key="entry.item.token" class="panel flex min-h-72 flex-col">
-          <div class="flex min-w-0 flex-1 gap-4">
-            <div class="flex h-32 w-22 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--surface-subtle)] text-center text-xs text-subtle">
-              <img v-if="recognitions[entry.item.token]?.poster_url" :src="recognitions[entry.item.token].poster_url" :alt="`${recognitions[entry.item.token].title} 海报`" class="h-full w-full object-cover" loading="lazy" />
-              <span v-else>{{ entry.group.site_name }}<br />{{ entry.group.site_type.toUpperCase() }}</span>
+      <template v-if="groups.length">
+        <nav v-if="!lockedSiteID" class="management-tabs overflow-x-auto" role="tablist" aria-label="搜索渠道">
+          <button class="management-tab shrink-0" :class="activeChannel === 'all' ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === 'all'" @click="activeChannel = 'all'">全部渠道</button>
+          <button v-for="group in orderedGroups" :key="group.site_id" class="management-tab shrink-0" :class="activeChannel === group.site_id ? 'management-tab--active' : ''" type="button" role="tab" :aria-selected="activeChannel === group.site_id" @click="activeChannel = group.site_id">{{ group.site_name }} <small>{{ group.site_type.toUpperCase() }}</small></button>
+        </nav>
+
+        <form class="panel grid gap-3 md:grid-cols-2 xl:grid-cols-[auto_auto_11rem_11rem_9rem_10rem_9rem_auto] xl:items-end" @submit.prevent>
+          <fieldset class="flex gap-3"><legend class="label">站点类型</legend><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="pt" /> PT</label><label class="text-sm"><input v-model="enabledSiteTypes" type="checkbox" value="bt" /> BT</label></fieldset>
+          <label><span class="label">分辨率</span><select v-model="resolutionFilter" class="input"><option value="">全部</option><option v-for="value in resolutionOptions" :key="value" :value="value">{{ value }}</option></select></label>
+          <label><span class="label">优惠</span><select v-model="promotionFilter" class="input"><option value="">全部</option><option value="free">FREE</option><option value="2xfree">2X FREE</option><option value="2x">2X</option></select></label>
+          <label><span class="label">最低做种</span><input v-model.number="minimumSeeders" class="input" type="number" min="0" placeholder="不限" /></label>
+          <label><span class="label">排序字段</span><select v-model="resultSort" class="input"><option value="seeders">做种数</option><option value="published">发布时间</option><option value="size">体积</option></select></label>
+          <label><span class="label">排序方向</span><select v-model="resultDirection" class="input"><option value="desc">降序</option><option value="asc">升序</option></select></label>
+          <p class="text-subtle mb-0 text-xs xl:col-span-2">不同筛选项之间为 AND；同类标签按任一匹配。排序只针对已经取回的当前页结果。</p>
+        </form>
+
+        <div v-if="activeGroup?.status === 'error'" class="semantic-warning flex flex-wrap items-center justify-between gap-3 p-4"><span>{{ activeGroup.site_name }} 暂时不可用（{{ activeGroup.error_code || 'site_unavailable' }}）。</span><button class="btn-secondary" :disabled="searching" @click="retrySite(activeGroup)">重试此站</button></div>
+        <div v-if="!visibleResults.length" class="panel py-10 text-center text-muted">当前渠道和筛选条件下没有结果。</div>
+        <div v-else class="grid gap-4 xl:grid-cols-2">
+          <article v-for="entry in visibleResults" :key="entry.item.token" class="panel flex min-h-72 flex-col">
+            <div class="flex min-w-0 flex-1 gap-4">
+              <div class="flex h-32 w-22 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--surface-subtle)] text-center text-xs text-subtle">
+                <img v-if="recognitions[entry.item.token]?.poster_url" :src="recognitions[entry.item.token].poster_url" :alt="`${recognitions[entry.item.token].title} 海报`" class="h-full w-full object-cover" loading="lazy" />
+                <span v-else>{{ entry.group.site_name }}<br />{{ entry.group.site_type.toUpperCase() }}</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap gap-1.5"><span class="status-chip">{{ entry.group.site_name }}</span><span class="status-chip">{{ entry.group.site_type.toUpperCase() }}</span><span v-if="entry.item.matched_name" class="status-chip status-chip--ready">命中 {{ entry.item.matched_name }}</span><span v-if="entry.item.promotion" class="status-chip status-chip--ready">{{ entry.item.promotion.toUpperCase() }}</span><span v-for="label in ptRecognitionSpecLabels(entry.item.specifications || {})" :key="label" class="status-chip">{{ label }}</span><span v-if="entry.item.quality" class="status-chip">{{ entry.item.quality }}</span><span v-for="tag in entry.item.tags || []" :key="tag" class="status-chip">{{ tag }}</span></div>
+                <h2 class="mt-3 break-words text-base font-750">{{ entry.item.title }}</h2>
+                <p v-if="entry.item.subtitle" class="text-subtle mb-0 mt-1 line-clamp-2 text-xs">{{ entry.item.subtitle }}</p>
+                <div class="text-subtle mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"><span>{{ formatBytes(entry.item.size_bytes ?? null) }}</span><span>{{ formatTime(entry.item.published_at) }}</span><strong>做种 {{ count(entry.item.seeders) }}</strong><span>下载 {{ count(entry.item.leechers) }}</span><span>完成 {{ count(entry.item.completed) }}</span></div>
+                <div v-if="recognitions[entry.item.token]" class="semantic-inset mt-3 p-3 text-sm"><div class="flex flex-wrap items-center gap-2"><strong>{{ recognitions[entry.item.token].title }}</strong><span :class="recognitions[entry.item.token].status === 'matched' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ recognitions[entry.item.token].manual_override ? '已人工确认' : recognitions[entry.item.token].status === 'matched' ? '标题预识别成功' : '标题预识别未命中' }}</span><span class="status-chip">{{ mediaTypeLabel(recognitions[entry.item.token].media_type) }}</span><span v-if="recognitions[entry.item.token].year" class="status-chip">{{ recognitions[entry.item.token].year }}</span></div><p v-if="ptRecognitionEpisodeLabel(recognitions[entry.item.token])" class="mb-0 mt-2">{{ ptRecognitionEpisodeLabel(recognitions[entry.item.token]) }}</p><p v-if="recognitions[entry.item.token].error_code" class="text-subtle mb-0 mt-2 text-xs">{{ ptRecognitionErrorLabel(recognitions[entry.item.token].error_code) }}</p></div>
+                <p v-if="recognitionErrors[entry.item.token]" class="semantic-warning mb-0 mt-3 p-3 text-xs">{{ recognitionErrors[entry.item.token] }}</p>
+              </div>
             </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap gap-1.5"><span class="status-chip">{{ entry.group.site_name }}</span><span class="status-chip">{{ entry.group.site_type.toUpperCase() }}</span><span v-if="entry.item.promotion" class="status-chip status-chip--ready">{{ entry.item.promotion.toUpperCase() }}</span><span v-for="label in ptRecognitionSpecLabels(entry.item.specifications || {})" :key="label" class="status-chip">{{ label }}</span><span v-if="entry.item.quality" class="status-chip">{{ entry.item.quality }}</span><span v-for="tag in entry.item.tags || []" :key="tag" class="status-chip">{{ tag }}</span></div>
-              <h2 class="mt-3 break-words text-base font-750">{{ entry.item.title }}</h2>
-              <p v-if="entry.item.subtitle" class="text-subtle mb-0 mt-1 line-clamp-2 text-xs">{{ entry.item.subtitle }}</p>
-              <div class="text-subtle mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs"><span>{{ formatBytes(entry.item.size_bytes ?? null) }}</span><span>{{ formatTime(entry.item.published_at) }}</span><strong>做种 {{ count(entry.item.seeders) }}</strong><span>下载 {{ count(entry.item.leechers) }}</span><span>完成 {{ count(entry.item.completed) }}</span></div>
-              <div v-if="recognitions[entry.item.token]" class="semantic-inset mt-3 p-3 text-sm"><div class="flex flex-wrap items-center gap-2"><strong>{{ recognitions[entry.item.token].title }}</strong><span :class="recognitions[entry.item.token].status === 'matched' ? 'status-chip status-chip--ready' : 'status-chip status-chip--warning'">{{ recognitions[entry.item.token].manual_override ? '已人工确认' : recognitions[entry.item.token].status === 'matched' ? '标题预识别成功' : '标题预识别未命中' }}</span><span class="status-chip">{{ mediaTypeLabel(recognitions[entry.item.token].media_type) }}</span><span v-if="recognitions[entry.item.token].year" class="status-chip">{{ recognitions[entry.item.token].year }}</span></div><p v-if="ptRecognitionEpisodeLabel(recognitions[entry.item.token])" class="mb-0 mt-2">{{ ptRecognitionEpisodeLabel(recognitions[entry.item.token]) }}</p><p v-if="recognitions[entry.item.token].error_code" class="text-subtle mb-0 mt-2 text-xs">{{ ptRecognitionErrorLabel(recognitions[entry.item.token].error_code) }}</p></div>
-              <p v-if="recognitionErrors[entry.item.token]" class="semantic-warning mb-0 mt-3 p-3 text-xs">{{ recognitionErrors[entry.item.token] }}</p>
-            </div>
-          </div>
-          <footer class="mt-4 flex flex-wrap justify-end gap-2 border-t border-[var(--border)] pt-4"><button class="btn-secondary" :disabled="recognizingTokens.includes(entry.item.token)" @click="recognizeResult(entry.item)">{{ recognizingTokens.includes(entry.item.token) ? '检测中…' : '检测' }}</button><button class="btn-secondary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openManualRecognition(entry.item)">手动检测</button><button class="btn-primary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openDownload(entry.item)">入库</button></footer>
-        </article>
-      </div>
-      <footer v-if="activeGroup?.status === 'success'" class="panel flex items-center justify-center gap-3"><button class="btn-secondary" :disabled="searching || activeGroup.page <= 1" @click="previousPage(activeGroup)">上一页</button><span class="text-sm">{{ activeGroup.site_name }} · 第 {{ activeGroup.page }} 页</span><button class="btn-secondary" :disabled="searching || !activeGroup.has_next" @click="nextPage(activeGroup)">下一页</button></footer>
-      <p v-else-if="activeChannel === 'all'" class="text-subtle text-center text-xs">“全部渠道”聚合显示各站点当前页；切换到单个站点后可独立翻页。</p>
+            <footer class="mt-4 flex flex-wrap justify-end gap-2 border-t border-[var(--border)] pt-4"><button class="btn-secondary" :disabled="recognizingTokens.includes(entry.item.token)" @click="recognizeResult(entry.item)">{{ recognizingTokens.includes(entry.item.token) ? '检测中…' : '检测' }}</button><button class="btn-secondary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openManualRecognition(entry.item)">手动检测</button><button class="btn-primary" :disabled="!auth.can(Permissions.DownloadsCreate)" @click="openDownload(entry.item)">入库</button></footer>
+          </article>
+        </div>
+        <footer v-if="activeGroup?.status === 'success'" class="panel flex items-center justify-center gap-3"><button class="btn-secondary" :disabled="searching || activeGroup.page <= 1" @click="previousPage(activeGroup)">上一页</button><span class="text-sm">{{ activeGroup.site_name }} · 第 {{ activeGroup.page }} 页</span><button class="btn-secondary" :disabled="searching || !activeGroup.has_next" @click="nextPage(activeGroup)">下一页</button></footer>
+        <p v-else-if="activeChannel === 'all'" class="text-subtle text-center text-xs">“全部渠道”聚合显示各站点当前页；切换到单个站点后可独立翻页。</p>
+      </template>
+
     </template>
 
     <div v-if="manualDialog" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="!manualSaving && (manualDialog = null)">

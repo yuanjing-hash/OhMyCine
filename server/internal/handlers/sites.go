@@ -202,6 +202,95 @@ func (a *API) PTSearch(c *gin.Context) {
 
 func (a *API) TorrentSearch(c *gin.Context) { a.PTSearch(c) }
 
+func parseMediaIdentitySearch(c *gin.Context) (services.MediaIdentitySearchInput, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("tmdbID")), 10, 64)
+	input := services.MediaIdentitySearchInput{MediaType: strings.ToLower(strings.TrimSpace(c.Param("mediaType"))), TMDBID: id, Page: 1}
+	if err != nil || id <= 0 || (input.MediaType != "movie" && input.MediaType != "tv") {
+		return input, invalid("TMDB 搜索身份无效", err)
+	}
+	if value := strings.TrimSpace(c.Query("page")); value != "" {
+		page, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			return input, invalid("种子资源搜索页码无效", parseErr)
+		}
+		input.Page = page
+	}
+	if value := strings.TrimSpace(c.Query("season")); value != "" {
+		season, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			return input, invalid("资源搜索季数无效", parseErr)
+		}
+		input.Season = &season
+	}
+	if value := strings.TrimSpace(c.Query("site_id")); value != "" {
+		siteID, parseErr := strconv.ParseUint(value, 10, 32)
+		if parseErr != nil || siteID == 0 {
+			return input, invalid("站点筛选无效", parseErr)
+		}
+		parsed := uint(siteID)
+		input.SiteID = &parsed
+	}
+	return input, nil
+}
+
+func (a *API) MediaIdentitySearch(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	input, err := parseMediaIdentitySearch(c)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	result, err := a.sites.SearchMediaIdentity(c.Request.Context(), actor, input)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, result)
+}
+
+func (a *API) MediaIdentitySearchStream(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	input, err := parseMediaIdentitySearch(c)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		writeError(c, a.log, &services.AppError{Code: services.CodeSiteUnavailable, Message: "当前 HTTP 服务不支持流式种子资源搜索"})
+		return
+	}
+	started := false
+	err = a.sites.SearchMediaIdentityEach(c.Request.Context(), actor, input, func(result services.MediaIdentitySearchResult) {
+		c.Header("Content-Type", "text/event-stream; charset=utf-8")
+		c.Header("Cache-Control", "no-store")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+		started = true
+		meta, _ := json.Marshal(gin.H{"media_type": result.MediaType, "tmdb_id": result.TMDBID, "title": result.Title, "year": result.Year, "query_names": result.QueryNames})
+		_, _ = fmt.Fprintf(c.Writer, "event: media\ndata: %s\n\n", meta)
+		flusher.Flush()
+	}, func(group services.SiteSearchGroup) {
+		if c.Request.Context().Err() != nil {
+			return
+		}
+		payload, marshalErr := json.Marshal(group)
+		if marshalErr != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(c.Writer, "event: site\ndata: %s\n\n", payload)
+		flusher.Flush()
+	})
+	if err != nil {
+		if !started {
+			writeError(c, a.log, err)
+		}
+		return
+	}
+	_, _ = fmt.Fprint(c.Writer, "event: done\ndata: {}\n\n")
+	flusher.Flush()
+}
+
 func (a *API) PTSearchStream(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	input, err := parsePTSearch(c)

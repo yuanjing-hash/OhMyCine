@@ -56,6 +56,14 @@ type DiscoveryOverview struct {
 	UpdatedAt time.Time                  `json:"updated_at"`
 }
 
+type DiscoveryMediaSearch struct {
+	Query      string           `json:"query"`
+	MediaType  string           `json:"media_type"`
+	Page       int              `json:"page"`
+	TotalPages int              `json:"total_pages"`
+	Items      []discovery.Work `json:"items"`
+}
+
 type DiscoveryPerson struct {
 	TMDBID     int64  `json:"tmdb_id,omitempty"`
 	Name       string `json:"name"`
@@ -103,6 +111,35 @@ func NewDiscoveryServiceWithProviders(db *gorm.DB, providers []discovery.Provide
 		}
 	}
 	return &DiscoveryService{db: db, providers: items, log: log, locks: map[string]*sync.Mutex{}, now: func() time.Time { return time.Now().UTC() }, imageHTTP: discoveryImageHTTPClient()}
+}
+
+func (s *DiscoveryService) MediaSearch(ctx context.Context, actor Actor, query, mediaType string, page int) (DiscoveryMediaSearch, error) {
+	if !actor.Can(authz.PermissionDiscoveryRead) {
+		return DiscoveryMediaSearch{}, appError(CodePermissionDenied, "无权搜索影视作品", nil)
+	}
+	query = strings.Join(strings.Fields(query), " ")
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType == "" {
+		mediaType = "all"
+	}
+	if query == "" || len([]rune(query)) > 256 || page < 1 || page > tmdb.MaxMediaSearchPage || (mediaType != "all" && mediaType != discovery.MediaTypeMovie && mediaType != discovery.MediaTypeTV) {
+		return DiscoveryMediaSearch{}, appError(CodeInvalidRequest, "影视搜索参数无效", nil)
+	}
+	if s.tmdbClient == nil {
+		return DiscoveryMediaSearch{}, appError(CodeDiscoveryProviderUnavailable, "TMDB 搜索服务暂时不可用", nil)
+	}
+	client, err := s.tmdbClient()
+	if err != nil {
+		return DiscoveryMediaSearch{}, appError(CodeDiscoveryProviderUnavailable, "TMDB 搜索服务暂时不可用", nil)
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	result, err := client.SearchMedia(searchCtx, query, mediaType, page, "zh-CN", "CN")
+	if err != nil {
+		return DiscoveryMediaSearch{}, discoveryError(err)
+	}
+	items := s.relatedWorks(client, result)
+	return DiscoveryMediaSearch{Query: query, MediaType: mediaType, Page: result.Page, TotalPages: result.TotalPages, Items: items}, nil
 }
 
 func (s *DiscoveryService) Overview(ctx context.Context, actor Actor, providerFilter string, page int, refresh bool) (DiscoveryOverview, error) {

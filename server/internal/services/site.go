@@ -150,6 +150,7 @@ type SiteSearchInput struct {
 }
 type SiteSearchResult struct {
 	Token          string                        `json:"token"`
+	MatchedName    string                        `json:"matched_name,omitempty"`
 	Title          string                        `json:"title"`
 	Subtitle       string                        `json:"subtitle,omitempty"`
 	SizeBytes      int64                         `json:"size_bytes,omitempty"`

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/database"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/discovery"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 )
 
 type discoveryRoundTripper func(*http.Request) (*http.Response, error)
@@ -166,5 +169,32 @@ func TestDiscoveryDoubanImageUsesRequiredAntiHotlinkHeaders(t *testing.T) {
 	body, contentType, err := service.downloadDoubanImage(context.Background(), "https://img9.doubanio.com/view/photo/test.jpg")
 	if err != nil || string(body) != "jpeg" || contentType != "image/jpeg" {
 		t.Fatalf("body=%q contentType=%q err=%v", body, contentType, err)
+	}
+}
+
+func TestDiscoveryMediaSearchProjectsStableTMDBIdentity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search/multi" || r.URL.Query().Get("query") != "三体" {
+			t.Fatalf("request=%s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = io.WriteString(w, `{"page":1,"total_pages":2,"results":[{"id":42,"media_type":"tv","name":"三体","original_name":"Three-Body","first_air_date":"2023-01-15","poster_path":"/poster.jpg"}]}`)
+	}))
+	defer upstream.Close()
+	client, err := tmdb.NewForTest("token", upstream.URL, upstream.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewDiscoveryServiceWithProviders(nil, nil, zerolog.Nop())
+	service.tmdbClient = func() (*tmdb.Client, error) { return client, nil }
+	actor := Actor{Permissions: map[string]struct{}{authz.PermissionDiscoveryRead: {}}}
+	result, err := service.MediaSearch(context.Background(), actor, " 三体 ", "all", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Query != "三体" || len(result.Items) != 1 || result.Items[0].ProviderID != "42" || result.Items[0].TMDBID == nil || *result.Items[0].TMDBID != 42 || result.Items[0].PosterURL == "" || strings.Contains(result.Items[0].PosterURL, upstream.URL) {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, err := service.MediaSearch(context.Background(), Actor{}, "三体", "all", 1); ErrorCode(err) != CodePermissionDenied {
+		t.Fatalf("permission err=%v", err)
 	}
 }
