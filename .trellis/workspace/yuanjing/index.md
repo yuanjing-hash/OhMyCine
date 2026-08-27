@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 35
+- **Total Sessions**: 36
 - **Last Active**: 2026-08-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~925 | Active |
+| `journal-1.md` | ~948 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 36 | 2026-08-27 | 统一媒体身份搜索与库覆盖率 | `6379537`, `c120846`, `980c153` | `codex/unified-media-search-subscription` |
 | 35 | 2026-08-27 | 修复 Player 离线投影与线程恢复 | `082ae6c` | `develop` |
 | 34 | 2026-08-27 | 修复 Player 下载入口与操作菜单 | `ec29b0f` | `develop` |
 | 33 | 2026-08-27 | 发布 Server AI 模型选择 Beta | `ada3077` | `develop` |

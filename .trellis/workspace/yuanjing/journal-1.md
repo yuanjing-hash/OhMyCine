@@ -923,3 +923,26 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 36: 统一媒体身份搜索与库覆盖率
+
+**Date**: 2026-08-27
+**Task**: 统一媒体身份搜索与库覆盖率
+**Branch**: `codex/unified-media-search-subscription`
+
+### Summary
+
+完成 TMDB 海报搜索、统一详情、多名称 PT/BT 聚合、跨媒体库电影与季集覆盖率，并通过独立检查修复 SSE 渐进输出、精确季过滤、TMDB partial unknown 和查询长度边界。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6379537` | (see git log) |
+| `c120846` | (see git log) |
+| `980c153` | (see git log) |
+
+### Status
+
+[OK] **Completed**
