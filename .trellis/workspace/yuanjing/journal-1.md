@@ -902,3 +902,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 35: 修复 Player 离线投影与线程恢复
+
+**Date**: 2026-08-27
+**Task**: 修复 Player 离线投影与线程恢复
+**Branch**: `develop`
+
+### Summary
+
+将离线下载统一为原媒体本地副本状态，清理旧离线投影与下载徽标残留，并让新任务、暂停继续和失败重试采用最新下载线程设置。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `082ae6c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
