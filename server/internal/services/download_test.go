@@ -576,6 +576,105 @@ func TestDownloaderCredentialsAndDownloadSourceStayEncrypted(t *testing.T) {
 	}
 }
 
+func TestFollowDownloadSubmissionIsIdempotentAndRetriesTerminalTask(t *testing.T) {
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
+	root := t.TempDir()
+	storage := models.Storage{Name: "Follow staging", NameNormalized: "follow-staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Follow qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://follow-qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := SubmitDownloadInput{
+		DownloaderID:              provider.ID,
+		DisplayName:               "Fixture Show S01E01",
+		Source:                    DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:follow-idempotent"},
+		FollowSubscriptionID:      "follow-subscription",
+		FollowResourceFingerprint: strings.Repeat("a", 64),
+	}
+	first, err := downloads.Submit(context.Background(), actor, input, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := downloads.Submit(context.Background(), actor, input, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.ID != first.ID {
+		t.Fatalf("active duplicate created another task: first=%s duplicate=%s", first.ID, duplicate.ID)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", first.ID).Update("phase", models.DownloadTaskStatusFailed).Error; err != nil {
+		t.Fatal(err)
+	}
+	retry, err := downloads.Submit(context.Background(), actor, input, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.ID == first.ID {
+		t.Fatal("failed follow download was not replaced on retry")
+	}
+	var old models.DownloadTask
+	if err := queue.db.First(&old, "id = ?", first.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if old.FollowSubscriptionID != "" || old.FollowResourceFingerprint != "" {
+		t.Fatalf("terminal task retained follow idempotency claim: %+v", old)
+	}
+	var active int64
+	if err := queue.db.Model(&models.DownloadTask{}).Where("follow_subscription_id = ? AND follow_resource_fingerprint = ?", input.FollowSubscriptionID, input.FollowResourceFingerprint).Count(&active).Error; err != nil || active != 1 {
+		t.Fatalf("active follow download count=%d err=%v", active, err)
+	}
+}
+
+func TestFollowDownloadBeforePersistRollsBackJobAndTask(t *testing.T) {
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
+	root := t.TempDir()
+	storage := models.Storage{Name: "Follow guarded staging", NameNormalized: "follow-guarded-staging", Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := queue.db.Create(&storage).Error; err != nil {
+		t.Fatal(err)
+	}
+	configureDownloadStaging(t, queue, storage.ID)
+	provider, err := downloaders.Create(actor, DownloaderInput{Name: "Guarded qBit", Type: models.DownloaderTypeQBittorrent, BaseURL: "http://guarded-qbit.example.test", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jobsBefore, tasksBefore int64
+	if err := queue.db.Model(&models.Job{}).Count(&jobsBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Count(&tasksBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	guardCalled := false
+	_, err = downloads.Submit(context.Background(), actor, SubmitDownloadInput{
+		DownloaderID:              provider.ID,
+		DisplayName:               "Fixture Show S01E01",
+		Source:                    DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:follow-guarded"},
+		FollowSubscriptionID:      "follow-guarded",
+		FollowResourceFingerprint: strings.Repeat("b", 64),
+		BeforePersist: func(tx *gorm.DB) error {
+			guardCalled = tx != nil
+			return appError(CodeConflict, "订阅已暂停", nil)
+		},
+	}, RequestContext{})
+	if ErrorCode(err) != CodeConflict || !guardCalled {
+		t.Fatalf("guard err=%v called=%v", err, guardCalled)
+	}
+	var jobsAfter, tasksAfter int64
+	if err := queue.db.Model(&models.Job{}).Count(&jobsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.DownloadTask{}).Count(&tasksAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobsAfter != jobsBefore || tasksAfter != tasksBefore {
+		t.Fatalf("guard rejection left partial state: jobs %d->%d tasks %d->%d", jobsBefore, jobsAfter, tasksBefore, tasksAfter)
+	}
+}
+
 func TestDeleteTerminalDownloadRemovesProviderDataAndAllLocalQueueFacts(t *testing.T) {
 	downloads, downloaders, queue, actor, client := downloadFixture(t)
 	actor.Permissions[authz.PermissionJobsControlOwn] = struct{}{}

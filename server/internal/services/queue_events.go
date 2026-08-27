@@ -70,6 +70,10 @@ func (h *QueueEventHub) Publish(event JobEvent) {
 }
 
 func canReceiveJobEvent(actor Actor, event JobEvent) bool {
+	if event.JobType == JobTypeFollowSearch {
+		owned := event.OwnerID != nil && *event.OwnerID == actor.User.ID
+		return actor.Can(authz.PermissionFollowsReadAll) || (owned && actor.Can(authz.PermissionFollowsReadOwn))
+	}
 	if actor.Can(authz.PermissionJobsReadAll) {
 		return true
 	}

@@ -23,17 +23,18 @@ import (
 )
 
 type stubSiteAdapter struct {
-	kind            string
-	mu              sync.Mutex
-	testErr         map[string]error
-	searchErr       map[string]error
-	downloadErr     error
-	downloads       int
-	downloadStarted chan struct{}
-	downloadRelease chan struct{}
-	searchTitle     string
-	searchSubtitle  string
-	lastConfig      sitepkg.Config
+	kind               string
+	mu                 sync.Mutex
+	testErr            map[string]error
+	searchErr          map[string]error
+	searchErrByKeyword map[string]error
+	downloadErr        error
+	downloads          int
+	downloadStarted    chan struct{}
+	downloadRelease    chan struct{}
+	searchTitle        string
+	searchSubtitle     string
+	lastConfig         sitepkg.Config
 }
 
 type stubResolverAdapter struct {
@@ -143,6 +144,9 @@ func TestBTAddressResolutionDoesNotProbeAndCreateResolvesAgain(t *testing.T) {
 }
 func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query sitepkg.Query) (sitepkg.Page, error) {
 	if err := a.searchErr[config.BaseURL]; err != nil {
+		return sitepkg.Page{}, err
+	}
+	if err := a.searchErrByKeyword[query.Keyword]; err != nil {
 		return sitepkg.Page{}, err
 	}
 	seeders, leechers := 12, 1
@@ -424,6 +428,7 @@ func TestMediaIdentitySearchAggregatesAliasesDeduplicatesAndBindsVerifiedIdentit
 	}
 	service.SetMetadataSettings(metadata)
 	adapter.searchTitle = "Seven.Samurai.1954.1080p.BluRay.x265-GROUP"
+	adapter.searchErrByKeyword = map[string]error{"七武士": errors.New("localized search unavailable")}
 	created, err := service.Create(context.Background(), actor, validSiteInput("PTTime", "https://identity.example.test"), RequestContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -447,7 +452,7 @@ func TestMediaIdentitySearchAggregatesAliasesDeduplicatesAndBindsVerifiedIdentit
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Title != "七武士" || len(result.QueryNames) != 2 || len(result.Groups) != 1 || len(result.Groups[0].Items) != 1 || result.Groups[0].Items[0].MatchedName == "" {
+	if result.Title != "七武士" || len(result.QueryNames) != 2 || len(result.Groups) != 1 || len(result.Groups[0].Items) != 1 || result.Groups[0].Items[0].MatchedName == "" || result.Groups[0].ErrorCount != 1 {
 		t.Fatalf("result=%+v", result)
 	}
 	if streamedMetadata.QueryNames[0] != result.QueryNames[0] || streamedGroups[0].Items[0].Title != result.Groups[0].Items[0].Title || streamedGroups[0].Items[0].MatchedName != result.Groups[0].Items[0].MatchedName {
@@ -458,6 +463,9 @@ func TestMediaIdentitySearchAggregatesAliasesDeduplicatesAndBindsVerifiedIdentit
 		t.Fatalf("claim=%+v err=%v", claim, err)
 	}
 	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), "error_count") {
+		t.Fatalf("internal partial failure count leaked through public JSON: %s", encoded)
+	}
 	for _, forbidden := range []string{"passkey-server-only", "token=server-only-secret", "https://identity.example.test", `"torrent_id"`} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("identity search leaked %q: %s", forbidden, encoded)

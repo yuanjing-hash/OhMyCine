@@ -28,6 +28,7 @@ import RecommendationsView from '@/views/RecommendationsView.vue'
 import ExploreView from '@/views/ExploreView.vue'
 import SitesView from '@/views/SitesView.vue'
 import DiscoveryDetailView from '@/views/DiscoveryDetailView.vue'
+import FollowsView from '@/views/FollowsView.vue'
 
 function navigationMeta(id: string) {
   const item = findNavigationItem(id)
@@ -35,7 +36,6 @@ function navigationMeta(id: string) {
 }
 
 const plannedRoutes = [
-  ['subscriptions/manage', 'subscriptions'],
   ['subscriptions/workflows', 'workflows'],
   ['subscriptions/calendar', 'calendar'],
   ['automation/files', 'files'],
@@ -56,6 +56,7 @@ export const router = createRouter({
         { path: 'discovery/recommendations', name: 'recommendations', component: RecommendationsView, meta: navigationMeta('recommendations') },
         { path: 'discovery/details/:provider/:mediaType/:providerID', name: 'discovery-detail', component: DiscoveryDetailView, meta: navigationMeta('recommendations') },
         { path: 'discovery/explore', name: 'explore', component: ExploreView, meta: navigationMeta('explore') },
+        { path: 'subscriptions/manage', name: 'subscriptions', component: FollowsView, meta: navigationMeta('subscriptions') },
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
         { path: playersRouteContract.path, name: playersRouteContract.name, component: PlayersView, meta: navigationMeta(playersRouteContract.navigationID) },
         { path: mediaLibrariesRouteContract.path, name: mediaLibrariesRouteContract.name, component: MediaLibrariesView, meta: navigationMeta(mediaLibrariesRouteContract.navigationID) },

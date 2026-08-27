@@ -215,7 +215,9 @@ func newTestClient(t *testing.T) *testClient {
 	aiRecognitionSettings := services.NewAIRecognitionSettingsService(db, audit, credentialStore)
 	discovery := services.NewDiscoveryService(db, metadataSettings, log)
 	api.SetDiscoveryService(discovery)
-	api.SetMediaCoverageService(services.NewMediaCoverageService(db, metadataSettings))
+	coverage := services.NewMediaCoverageService(db, metadataSettings)
+	api.SetMediaCoverageService(coverage)
+	api.SetFollowService(services.NewFollowService(db, audit, queue, coverage, authorization))
 	libraries.SetMetadataSettingsService(metadataSettings)
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, log)
@@ -238,6 +240,34 @@ func newTestClient(t *testing.T) *testClient {
 	api.SetSeedingService(seeding)
 	api.SetPluginRepositoryService(services.NewPluginRepositoryService(db, audit, nil, log))
 	return &testClient{router: New(cfg, api, auth, log), queue: queue, db: db, connections: connections, signedProxy: signedProxy, embyGateway: embyGateway, changes: changes, sites: sites}
+}
+
+func TestFollowRoutesRequireAuthenticationPermissionsAndNoStore(t *testing.T) {
+	owner := newTestClient(t)
+	status, _ := owner.request(t, http.MethodGet, "/api/v1/follows", nil, false)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("anonymous follows status=%d", status)
+	}
+	owner.setup(t)
+	status, envelope := owner.request(t, http.MethodGet, "/api/v1/follows", nil, false)
+	if status != http.StatusOK || owner.lastHeader.Get("Cache-Control") != "no-store" || bytes.Contains(bytes.ToLower(envelope.Data), []byte("source_ciphertext")) {
+		t.Fatalf("owner follows status=%d cache=%q data=%s", status, owner.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
+
+	var viewer models.Role
+	if err := owner.db.First(&viewer, "code = ?", authz.RoleViewer).Error; err != nil {
+		t.Fatal(err)
+	}
+	status, _ = owner.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "follow-viewer", "password": "follow-viewer-strong-password", "role_ids": []uint{viewer.ID}}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create follow viewer status=%d", status)
+	}
+	viewerClient := newTestClientWithRouter(owner.router)
+	viewerClient.login(t, "follow-viewer", "follow-viewer-strong-password")
+	status, _ = viewerClient.request(t, http.MethodGet, "/api/v1/follows", nil, false)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer follows status=%d", status)
+	}
 }
 
 func TestCredentialRevealRouteIsNoStoreAuthorizedAndDoesNotChangeNormalDTOs(t *testing.T) {

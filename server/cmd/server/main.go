@@ -134,6 +134,7 @@ func main() {
 	sites := services.NewSiteService(db, audit, credentialStore, downloads, logManager.Logger("site", "service"))
 	sites.SetMetadataSettings(metadataSettings)
 	sites.SetAIRecognitionSettings(aiRecognitionSettings)
+	follows := services.NewFollowService(db, audit, queue, mediaCoverage, authorization)
 	cookieCloud := services.NewCookieCloudService(db, audit, credentialStore, sites, logManager.Logger("site", "cookiecloud"))
 	downloads.SetMetadataSettings(metadataSettings)
 	downloads.SetAIRecognitionSettings(aiRecognitionSettings)
@@ -202,6 +203,9 @@ func main() {
 	if err := registry.Register(services.JobTypeMediaServerRefresh, services.NewMediaServerRefreshWorker(mediaServerRefresh)); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "media_server_refresh_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("媒体服务器刷新 Worker 注册失败"))
 	}
+	if err := registry.Register(services.JobTypeFollowSearch, services.NewFollowSearchWorker(follows, sites)); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "follow_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("自动追更 Worker 注册失败"))
+	}
 	scheduler := services.NewScheduler(queue, registry, logManager.Logger("queue", "scheduler"))
 	api.SetQueueService(queue)
 	api.SetQueueEventHub(queueEvents)
@@ -219,12 +223,17 @@ func main() {
 	api.SetLibraryArtworkService(libraryArtwork)
 	api.SetDiscoveryService(discoveryService)
 	api.SetMediaCoverageService(mediaCoverage)
+	api.SetFollowService(follows)
 	api.SetSiteService(sites)
 	api.SetCookieCloudService(cookieCloud)
 	if err := cookieCloud.Start(context.Background()); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "cookiecloud_start_failed").Msg(logging.OperationServerLifecycle.Message("CookieCloud 同步服务启动失败"))
 	}
 	defer cookieCloud.Close()
+	if err := follows.Start(context.Background()); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "follow_scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("自动追更调度器启动失败"))
+	}
+	defer follows.Close()
 	if err := scheduler.Start(context.Background()); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("任务调度器启动失败"))
 	}

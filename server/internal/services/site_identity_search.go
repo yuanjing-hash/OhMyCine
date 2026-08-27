@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strconv"
 	"strings"
@@ -154,8 +156,11 @@ func (s *SiteService) searchMediaIdentitySite(ctx context.Context, actor Actor, 
 		target.Skipped += group.Skipped
 		if group.Status == "success" {
 			target.Status, target.ErrorCode = "success", ""
-		} else if target.Status != "success" {
-			target.Status, target.ErrorCode = group.Status, group.ErrorCode
+		} else {
+			target.ErrorCount++
+			if target.Status != "success" {
+				target.Status, target.ErrorCode = group.Status, group.ErrorCode
+			}
 		}
 		for _, item := range group.Items {
 			claim, claimErr := s.resolveAvailableClaim(item.Token, actor.User.ID)
@@ -178,6 +183,7 @@ func (s *SiteService) searchMediaIdentitySite(ctx context.Context, actor Actor, 
 			}
 			privateKeys[key] = struct{}{}
 			item.MatchedName = name.Value
+			item.ResourceFingerprint = privateResultFingerprint(group.SiteID, claim.TorrentID)
 			target.Items = append(target.Items, item)
 		}
 	}
@@ -199,6 +205,11 @@ func (s *SiteService) searchMediaIdentitySite(ctx context.Context, actor Actor, 
 		return target.Items[left].Title < target.Items[right].Title
 	})
 	return *target
+}
+
+func privateResultFingerprint(siteID uint, torrentID string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatUint(uint64(siteID), 10) + "\x00" + torrentID))
+	return hex.EncodeToString(sum[:])
 }
 
 func mediaIdentityResultMatches(title string, names []tmdb.SearchName, year, season *int) bool {

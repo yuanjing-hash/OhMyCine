@@ -2,11 +2,16 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { Permissions } from '@/auth/generated-permissions'
 import { coverageStatusLabel, discoveryCoveragePath, discoveryDetailPath, discoveryDetailRoute, discoveryResourceRoute, providerLabel, type DiscoveryDetail, type DiscoveryMediaType, type DiscoveryProviderCode, type DiscoveryWork, type MediaCoverage } from '@/discovery'
 import { notify } from '@/toast'
+import FollowEditorDialog from '@/components/FollowEditorDialog.vue'
+import type { FollowSummary } from '@/follows'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const loading = ref(true)
 const error = ref('')
 const detail = ref<DiscoveryDetail | null>(null)
@@ -14,6 +19,7 @@ const coverage = ref<MediaCoverage | null>(null)
 const coverageLoading = ref(false)
 const coverageError = ref('')
 const expandedSeasons = ref<number[]>([])
+const followEditorOpen = ref(false)
 
 const identity = computed(() => ({
   provider: String(route.params.provider) as DiscoveryProviderCode,
@@ -49,7 +55,12 @@ function searchResources() { if (detail.value) void router.push(discoveryResourc
 function toggleSeason(season: number) { expandedSeasons.value = expandedSeasons.value.includes(season) ? expandedSeasons.value.filter(item => item !== season) : [...expandedSeasons.value, season] }
 function libraryNames(ids: number[]) { return ids.map(id => coverage.value?.libraries.find(item => item.id === id)?.name).filter(Boolean).join('、') }
 
-function subscribe() { notify('订阅能力将在下一阶段接入；当前不会创建任何订阅任务。', 'info') }
+function subscribe() {
+	if (!auth.can(Permissions.FollowsCreate)) { notify('当前账户没有创建订阅的权限。', 'warning'); return }
+  if (!detail.value?.work.tmdb_id || detail.value.work.media_type !== 'tv') { notify('只有已确认 TMDB 身份的电视剧可以订阅。', 'warning'); return }
+  followEditorOpen.value = true
+}
+function followSaved(follow: FollowSummary) { followEditorOpen.value = false; notify(`已创建《${follow.title}》自动追更，正在排队检查缺集。`, 'success') }
 function openWork(work: DiscoveryWork) { void router.push(discoveryDetailRoute(work)) }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '作品详情加载失败' }
 onMounted(load)
@@ -72,7 +83,7 @@ watch(() => route.fullPath, load)
             <p class="mb-0 mt-3 text-sm text-muted">{{ [detail.work.year, detail.runtime_minutes ? `${detail.runtime_minutes} 分钟` : '', ...detail.genres].filter(Boolean).join(' · ') }}</p>
             <p v-if="detail.tagline" class="mb-0 mt-3 font-650">{{ detail.tagline }}</p>
             <p class="mb-0 mt-3 max-w-3xl text-sm leading-6 text-muted">{{ detail.work.overview || '暂无简介。' }}</p>
-            <div class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="!detail.work.tmdb_id" @click="searchResources">多语言聚合搜索资源</button><button class="btn-secondary" @click="subscribe">订阅（即将支持）</button></div>
+            <div class="mt-5 flex flex-wrap gap-3"><button class="btn-primary" :disabled="!detail.work.tmdb_id" @click="searchResources">多语言聚合搜索资源</button><button v-if="detail.work.media_type === 'tv' && auth.can(Permissions.FollowsCreate)" class="btn-secondary" :disabled="!detail.work.tmdb_id || coverageLoading" @click="subscribe">自动追更</button></div>
           </div>
         </div>
       </article>
@@ -101,6 +112,7 @@ watch(() => route.fullPath, load)
 
       <article v-if="detail.recommendations.length" class="panel overflow-hidden p-0"><header class="border-b border-[var(--border)] px-5 py-4"><h2 class="m-0 text-lg">推荐</h2></header><div class="discovery-row p-5"><button v-for="work in detail.recommendations" :key="`recommendation:${work.provider_id}`" class="discovery-poster" @click="openWork(work)"><div class="discovery-poster__image"><img v-if="work.poster_url" :src="work.poster_url" :alt="`${work.title} 海报`" loading="lazy" /><span v-else>暂无海报</span></div><strong :title="work.title">{{ work.title }}</strong><small>{{ work.year || '年份未知' }}<template v-if="work.rating != null"> · {{ work.rating.toFixed(1) }}</template></small></button></div></article>
       <article v-if="detail.similar.length" class="panel overflow-hidden p-0"><header class="border-b border-[var(--border)] px-5 py-4"><h2 class="m-0 text-lg">类似作品</h2></header><div class="discovery-row p-5"><button v-for="work in detail.similar" :key="`similar:${work.provider_id}`" class="discovery-poster" @click="openWork(work)"><div class="discovery-poster__image"><img v-if="work.poster_url" :src="work.poster_url" :alt="`${work.title} 海报`" loading="lazy" /><span v-else>暂无海报</span></div><strong :title="work.title">{{ work.title }}</strong><small>{{ work.year || '年份未知' }}<template v-if="work.rating != null"> · {{ work.rating.toFixed(1) }}</template></small></button></div></article>
+      <FollowEditorDialog v-if="followEditorOpen && detail.work.tmdb_id" :tmdb-id="detail.work.tmdb_id" :title="detail.work.title" :year="detail.work.year" :poster-ref="detail.work.poster_url" :initial-seasons="coverage?.tv?.seasons.filter(item => item.counts.missing > 0).map(item => item.season_number)" @close="followEditorOpen = false" @saved="followSaved" />
     </template>
   </section>
 </template>

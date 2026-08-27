@@ -1093,6 +1093,8 @@ type DownloadTask struct {
 	StagingProviderDirectoryID         string     `gorm:"size:128;not null;default:''" json:"-"`
 	IngestSourceKey                    string     `gorm:"size:64;not null;default:''" json:"-"`
 	SourceOrigin                       string     `gorm:"size:24;not null;default:'user'" json:"-"`
+	FollowSubscriptionID               string     `gorm:"size:36;not null;default:'';index" json:"-"`
+	FollowResourceFingerprint          string     `gorm:"size:64;not null;default:''" json:"-"`
 	PluginID                           string     `gorm:"size:128;not null;default:'';index" json:"-"`
 	PluginVersion                      string     `gorm:"size:128;not null;default:''" json:"-"`
 	PluginConnectionID                 string     `gorm:"size:36;not null;default:'';index" json:"-"`
@@ -1159,6 +1161,91 @@ type DownloadTask struct {
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 	FinishedAt            *time.Time `json:"finished_at"`
+}
+
+const (
+	FollowStatusActive    = "active"
+	FollowStatusPaused    = "paused"
+	FollowStatusCompleted = "completed"
+	FollowStatusBlocked   = "blocked"
+
+	FollowRunQueued    = "queued"
+	FollowRunRunning   = "running"
+	FollowRunNoMatch   = "no_match"
+	FollowRunSubmitted = "submitted"
+	FollowRunCompleted = "completed"
+	FollowRunFailed    = "failed"
+	FollowRunCancelled = "cancelled"
+	FollowRunStale     = "stale"
+)
+
+// FollowSubscription stores only stable references and a credential-free,
+// versioned execution snapshot. Runtime jobs copy that snapshot into FollowRun
+// so ordinary edits cannot change work already in progress.
+type FollowSubscription struct {
+	ID                    string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID               uint       `gorm:"not null;index" json:"owner_id"`
+	MediaType             string     `gorm:"size:8;not null" json:"media_type"`
+	TMDBID                int64      `gorm:"not null;index" json:"tmdb_id"`
+	Title                 string     `gorm:"size:256;not null" json:"title"`
+	Year                  *int       `json:"year,omitempty"`
+	PosterRef             string     `gorm:"size:1024;not null;default:''" json:"poster_ref,omitempty"`
+	Status                string     `gorm:"size:16;not null;index" json:"status"`
+	Revision              uint64     `gorm:"not null;default:1" json:"revision"`
+	LifecycleRevision     uint64     `gorm:"not null;default:1" json:"-"`
+	ExecutionSnapshotJSON string     `gorm:"type:text;not null" json:"-"`
+	ProgressTarget        int        `gorm:"not null;default:0" json:"progress_target"`
+	ProgressPresent       int        `gorm:"not null;default:0" json:"progress_present"`
+	ProgressMissing       int        `gorm:"not null;default:0" json:"progress_missing"`
+	LastRunID             *string    `gorm:"size:36" json:"last_run_id,omitempty"`
+	LastRunAt             *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt             *time.Time `gorm:"index" json:"next_run_at,omitempty"`
+	LastErrorCode         string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	LastErrorMessage      string     `gorm:"size:256;not null;default:''" json:"last_error_message"`
+	CreatedAt             time.Time  `gorm:"not null" json:"created_at"`
+	UpdatedAt             time.Time  `gorm:"not null" json:"updated_at"`
+}
+
+type FollowSubscriptionSeason struct {
+	SubscriptionID string `gorm:"primaryKey;size:36" json:"subscription_id"`
+	OwnerID        uint   `gorm:"not null;uniqueIndex:idx_follow_owner_season,priority:1" json:"owner_id"`
+	TMDBID         int64  `gorm:"not null;uniqueIndex:idx_follow_owner_season,priority:2" json:"tmdb_id"`
+	SeasonNumber   int    `gorm:"primaryKey;uniqueIndex:idx_follow_owner_season,priority:3" json:"season_number"`
+	Special        bool   `gorm:"not null;default:false" json:"special"`
+}
+
+type FollowRun struct {
+	ID                    string     `gorm:"primaryKey;size:36" json:"id"`
+	SubscriptionID        string     `gorm:"size:36;not null;index" json:"subscription_id"`
+	OwnerID               uint       `gorm:"not null;index" json:"owner_id"`
+	SubscriptionRevision  uint64     `gorm:"not null" json:"subscription_revision"`
+	LifecycleRevision     uint64     `gorm:"not null" json:"-"`
+	ExecutionSnapshotJSON string     `gorm:"type:text;not null" json:"-"`
+	JobID                 string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
+	Trigger               string     `gorm:"size:16;not null" json:"trigger"`
+	Status                string     `gorm:"size:16;not null;index" json:"status"`
+	MissingSnapshotJSON   string     `gorm:"type:text;not null;default:'[]'" json:"-"`
+	SearchedNamesCount    int        `gorm:"not null;default:0" json:"searched_names_count"`
+	Candidates            int        `gorm:"not null;default:0" json:"candidates"`
+	Selected              int        `gorm:"not null;default:0" json:"selected"`
+	FilterSummaryJSON     string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	ErrorCode             string     `gorm:"size:96;not null;default:''" json:"error_code"`
+	ErrorMessage          string     `gorm:"size:256;not null;default:''" json:"error_message"`
+	StartedAt             *time.Time `json:"started_at,omitempty"`
+	FinishedAt            *time.Time `json:"finished_at,omitempty"`
+	CreatedAt             time.Time  `gorm:"not null" json:"created_at"`
+	UpdatedAt             time.Time  `gorm:"not null" json:"updated_at"`
+}
+
+type FollowEpisodeClaim struct {
+	SubscriptionID      string    `gorm:"primaryKey;size:36" json:"subscription_id"`
+	SeasonNumber        int       `gorm:"primaryKey" json:"season_number"`
+	EpisodeNumber       int       `gorm:"primaryKey" json:"episode_number"`
+	State               string    `gorm:"size:16;not null" json:"state"`
+	RunID               *string   `gorm:"size:36;index" json:"run_id,omitempty"`
+	DownloadTaskID      *string   `gorm:"size:36;index" json:"download_task_id,omitempty"`
+	ResourceFingerprint string    `gorm:"size:64;not null;default:''" json:"resource_fingerprint"`
+	UpdatedAt           time.Time `gorm:"not null" json:"updated_at"`
 }
 
 const (

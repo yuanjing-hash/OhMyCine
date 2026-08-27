@@ -149,37 +149,45 @@ type SiteSearchInput struct {
 	SiteID                       *uint
 }
 type SiteSearchResult struct {
-	Token          string                        `json:"token"`
-	MatchedName    string                        `json:"matched_name,omitempty"`
-	Title          string                        `json:"title"`
-	Subtitle       string                        `json:"subtitle,omitempty"`
-	SizeBytes      int64                         `json:"size_bytes,omitempty"`
-	Published      *time.Time                    `json:"published_at,omitempty"`
-	Seeders        *int                          `json:"seeders,omitempty"`
-	Leechers       *int                          `json:"leechers,omitempty"`
-	Completed      *int                          `json:"completed,omitempty"`
-	Promotion      string                        `json:"promotion,omitempty"`
-	Quality        string                        `json:"quality,omitempty"`
-	Tags           []string                      `json:"tags,omitempty"`
-	Specifications SiteRecognitionSpecifications `json:"specifications"`
-	ExpiresAt      time.Time                     `json:"expires_at"`
+	Token               string                        `json:"token"`
+	ResourceFingerprint string                        `json:"-"`
+	MatchedName         string                        `json:"matched_name,omitempty"`
+	Title               string                        `json:"title"`
+	Subtitle            string                        `json:"subtitle,omitempty"`
+	SizeBytes           int64                         `json:"size_bytes,omitempty"`
+	Published           *time.Time                    `json:"published_at,omitempty"`
+	Seeders             *int                          `json:"seeders,omitempty"`
+	Leechers            *int                          `json:"leechers,omitempty"`
+	Completed           *int                          `json:"completed,omitempty"`
+	Promotion           string                        `json:"promotion,omitempty"`
+	Quality             string                        `json:"quality,omitempty"`
+	Tags                []string                      `json:"tags,omitempty"`
+	Specifications      SiteRecognitionSpecifications `json:"specifications"`
+	ExpiresAt           time.Time                     `json:"expires_at"`
 }
 type SiteSearchGroup struct {
-	SiteID    uint               `json:"site_id"`
-	SiteName  string             `json:"site_name"`
-	SiteType  string             `json:"site_type"`
-	Status    string             `json:"status"`
-	ErrorCode string             `json:"error_code,omitempty"`
-	Page      int                `json:"page"`
-	HasNext   bool               `json:"has_next"`
-	Skipped   int                `json:"skipped"`
-	Items     []SiteSearchResult `json:"items"`
+	SiteID     uint               `json:"site_id"`
+	SiteName   string             `json:"site_name"`
+	SiteType   string             `json:"site_type"`
+	Status     string             `json:"status"`
+	ErrorCode  string             `json:"error_code,omitempty"`
+	ErrorCount int                `json:"-"`
+	Page       int                `json:"page"`
+	HasNext    bool               `json:"has_next"`
+	Skipped    int                `json:"skipped"`
+	Items      []SiteSearchResult `json:"items"`
 }
 type SiteDownloadInput struct {
 	ResultToken, DownloaderID string
 	MediaLibraryID            *uint
 	ProfileID                 uint
 	Priority                  int
+	FollowSubscriptionID      string
+	FollowResourceFingerprint string
+	Season                    *int
+	Episode                   *int
+	BeforeSubmit              func() error
+	BeforePersist             func(*gorm.DB) error
 }
 type SiteManualRecognitionInput struct {
 	ResultToken string
@@ -1134,9 +1142,14 @@ func (s *SiteService) Download(ctx context.Context, actor Actor, input SiteDownl
 	}
 	var recognitionOverride *DownloadRecognitionIdentity
 	if claim.ManualTMDBID != nil && claim.ManualMediaType != "" {
-		recognitionOverride = &DownloadRecognitionIdentity{TMDBID: *claim.ManualTMDBID, MediaType: claim.ManualMediaType, Source: claim.RecognitionSource, Status: claim.RecognitionStatus, Locked: claim.RecognitionLocked}
+		recognitionOverride = &DownloadRecognitionIdentity{TMDBID: *claim.ManualTMDBID, MediaType: claim.ManualMediaType, Source: claim.RecognitionSource, Status: claim.RecognitionStatus, Locked: claim.RecognitionLocked, Season: cloneInt(input.Season), Episode: cloneInt(input.Episode)}
 	}
-	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: source, RecognitionOverride: recognitionOverride}, request)
+	if input.BeforeSubmit != nil {
+		if err := input.BeforeSubmit(); err != nil {
+			return DownloadTaskSummary{}, err
+		}
+	}
+	result, err := s.downloads.Submit(ctx, actor, SubmitDownloadInput{DownloaderID: input.DownloaderID, MediaLibraryID: input.MediaLibraryID, ProfileID: input.ProfileID, DisplayName: claim.Title, Priority: input.Priority, Source: source, RecognitionOverride: recognitionOverride, FollowSubscriptionID: input.FollowSubscriptionID, FollowResourceFingerprint: input.FollowResourceFingerprint, ForceRecognitionOverride: input.FollowSubscriptionID != "", BeforePersist: input.BeforePersist}, request)
 	if err != nil {
 		return DownloadTaskSummary{}, err
 	}

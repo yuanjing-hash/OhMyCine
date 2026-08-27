@@ -572,6 +572,41 @@ func TestQueueEventHubScopesOwnersAndThrottlesProgress(t *testing.T) {
 	}
 }
 
+func TestQueueEventHubScopesFollowEventsToFollowReaders(t *testing.T) {
+	hub := NewQueueEventHub()
+	owner := Actor{User: models.User{ID: 1}, Permissions: map[string]struct{}{authz.PermissionFollowsReadOwn: {}}}
+	other := Actor{User: models.User{ID: 2}, Permissions: map[string]struct{}{authz.PermissionFollowsReadOwn: {}}}
+	all := Actor{User: models.User{ID: 3}, Permissions: map[string]struct{}{authz.PermissionFollowsReadAll: {}}}
+	jobReader := Actor{User: models.User{ID: 1}, Permissions: map[string]struct{}{authz.PermissionJobsReadOwn: {}}}
+	ownerEvents, stopOwner := hub.Subscribe(owner)
+	defer stopOwner()
+	otherEvents, stopOther := hub.Subscribe(other)
+	defer stopOther()
+	allEvents, stopAll := hub.Subscribe(all)
+	defer stopAll()
+	jobEvents, stopJobs := hub.Subscribe(jobReader)
+	defer stopJobs()
+	ownerID := uint(1)
+	hub.Publish(JobEvent{Type: "follow.running", JobID: "follow-one", JobType: JobTypeFollowSearch, OwnerID: &ownerID, At: time.Now().UTC()})
+	for name, events := range map[string]<-chan JobEvent{"owner": ownerEvents, "all": allEvents} {
+		select {
+		case event := <-events:
+			if event.JobID != "follow-one" {
+				t.Fatalf("%s received wrong event: %+v", name, event)
+			}
+		default:
+			t.Fatalf("%s did not receive follow event", name)
+		}
+	}
+	for name, events := range map[string]<-chan JobEvent{"other": otherEvents, "jobs-only": jobEvents} {
+		select {
+		case event := <-events:
+			t.Fatalf("%s received unauthorized follow event: %+v", name, event)
+		default:
+		}
+	}
+}
+
 func TestQueueEventHubAllowsTransferReadersOnlyTransferEvents(t *testing.T) {
 	hub := NewQueueEventHub()
 	owner := Actor{User: models.User{ID: 1}, Permissions: map[string]struct{}{authz.PermissionTransfersReadOwn: {}}}

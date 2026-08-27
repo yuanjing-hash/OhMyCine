@@ -54,7 +54,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     id: 'subscriptions',
     label: '订阅',
     items: [
-      { id: 'subscriptions', label: '订阅管理', to: '/subscriptions/manage', permissionsAny: followPermissions, planned: true, description: '追更生命周期、缺集检测与筛选能力将在 follow service 落地后接入。' },
+      { id: 'subscriptions', label: '订阅管理', to: '/subscriptions/manage', permissionsAny: followPermissions, description: '管理电视剧多季追更、缺集对账、自动搜索和下载执行策略。' },
       { id: 'workflows', label: '工作流', to: '/subscriptions/workflows', permissionsAny: followPermissions, planned: true, description: '展示订阅调度工作流与逐阶段结果；当前没有可查询的调度 API。' },
       { id: 'calendar', label: '日历', to: '/subscriptions/calendar', permissionsAny: followPermissions, planned: true, description: '未来仅呈现当前账户获权范围内的将播、待搜和失败事件。' },
     ],

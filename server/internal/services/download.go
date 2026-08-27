@@ -180,7 +180,14 @@ type SubmitDownloadInput struct {
 	Source         DownloadSourceInput
 	// RecognitionOverride is an internal-only, already GetByID-verified media
 	// identity. Public download handlers never deserialize this field.
-	RecognitionOverride *DownloadRecognitionIdentity
+	RecognitionOverride       *DownloadRecognitionIdentity
+	FollowSubscriptionID      string
+	FollowResourceFingerprint string
+	ForceRecognitionOverride  bool
+	// BeforePersist is an internal transactional guard used by automation
+	// orchestrators. It runs after the download Job has acquired SQLite's write
+	// transaction and immediately before the DownloadTask is inserted.
+	BeforePersist func(*gorm.DB) error
 }
 
 type DownloadRecognitionIdentity struct {
@@ -189,6 +196,8 @@ type DownloadRecognitionIdentity struct {
 	Source    string
 	Status    string
 	Locked    bool
+	Season    *int
+	Episode   *int
 }
 
 type downloadSourceEnvelope struct {
@@ -275,6 +284,29 @@ func (s *DownloadService) Submit(ctx context.Context, actor Actor, input SubmitD
 }
 
 func (s *DownloadService) submit(ctx context.Context, ownerID uint, input SubmitDownloadInput, request RequestContext, sourceOrigin, ingestSourceKey, providerItemID string) (DownloadTaskSummary, error) {
+	input.FollowSubscriptionID = strings.TrimSpace(input.FollowSubscriptionID)
+	input.FollowResourceFingerprint = strings.TrimSpace(input.FollowResourceFingerprint)
+	if (input.FollowSubscriptionID == "") != (input.FollowResourceFingerprint == "") || len(input.FollowSubscriptionID) > 36 || len(input.FollowResourceFingerprint) > 64 {
+		return DownloadTaskSummary{}, appError(CodeInvalidRequest, "自动追更幂等标识无效", nil)
+	}
+	if input.FollowSubscriptionID != "" {
+		var existing models.DownloadTask
+		if err := s.db.Where("follow_subscription_id = ? AND follow_resource_fingerprint = ?", input.FollowSubscriptionID, input.FollowResourceFingerprint).First(&existing).Error; err == nil {
+			if existing.Phase != models.DownloadTaskStatusFailed && existing.Phase != models.DownloadTaskStatusCancelled {
+				var job models.Job
+				_ = s.db.First(&job, "id = ?", existing.JobID).Error
+				return downloadTaskSummary(existing, job.Status), nil
+			}
+			result := s.db.Model(&models.DownloadTask{}).
+				Where("id = ? AND phase IN ?", existing.ID, []string{models.DownloadTaskStatusFailed, models.DownloadTaskStatusCancelled}).
+				Updates(map[string]any{"follow_subscription_id": "", "follow_resource_fingerprint": ""})
+			if result.Error != nil {
+				return DownloadTaskSummary{}, result.Error
+			}
+		} else if err != gorm.ErrRecordNotFound {
+			return DownloadTaskSummary{}, err
+		}
+	}
 	var downloaderRecord models.Downloader
 	if err := s.db.First(&downloaderRecord, "id = ?", strings.TrimSpace(input.DownloaderID)).Error; err != nil {
 		return DownloadTaskSummary{}, downloaderNotFound(err)
@@ -384,9 +416,13 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 			return DownloadTaskSummary{}, err
 		}
 	}
-	record := models.DownloadTask{ID: taskID, OwnerID: ownerID, DownloaderID: &downloaderRecord.ID, DownloaderName: downloaderRecord.Name, ProviderType: downloaderRecord.Type, ProviderTag: "omc-" + taskID, SourceCiphertext: encryptedSource, StagingAbsolutePath: staging.AbsolutePath, IngestSourceKey: strings.TrimSpace(ingestSourceKey), SourceOrigin: sourceOrigin, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: canonicalRules, ProfileBuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, ProfileRecognitionRulesJSON: organization.RecognitionRulesJSON, SeedingCleanupEnabled: seedingPolicy.CleanupEnabled, SeedingMinimumMinutes: seedingPolicy.MinimumSeedMinutes, SeedingMinimumRatio: seedingPolicy.MinimumRatio, SeedingCompletionMode: seedingPolicy.CompletionMode, DisplayName: displayName, Phase: models.DownloadTaskStatusQueued, CreatedAt: now, UpdatedAt: now}
+	record := models.DownloadTask{ID: taskID, OwnerID: ownerID, DownloaderID: &downloaderRecord.ID, DownloaderName: downloaderRecord.Name, ProviderType: downloaderRecord.Type, ProviderTag: "omc-" + taskID, SourceCiphertext: encryptedSource, StagingAbsolutePath: staging.AbsolutePath, IngestSourceKey: strings.TrimSpace(ingestSourceKey), SourceOrigin: sourceOrigin, FollowSubscriptionID: input.FollowSubscriptionID, FollowResourceFingerprint: input.FollowResourceFingerprint, ProfileID: profile.ID, ProfileRevision: profile.Revision, ProfileRulesJSON: canonicalRules, ProfileBuiltinRecognitionPacksJSON: organization.BuiltinRecognitionPacksJSON, ProfileRecognitionRulesJSON: organization.RecognitionRulesJSON, SeedingCleanupEnabled: seedingPolicy.CleanupEnabled, SeedingMinimumMinutes: seedingPolicy.MinimumSeedMinutes, SeedingMinimumRatio: seedingPolicy.MinimumRatio, SeedingCompletionMode: seedingPolicy.CompletionMode, DisplayName: displayName, Phase: models.DownloadTaskStatusQueued, CreatedAt: now, UpdatedAt: now}
 	if input.RecognitionOverride != nil {
-		if input.RecognitionOverride.Locked {
+		// Every internal override has already been verified through GetByID.
+		// Locked distinguishes a user correction from a direct identity binding;
+		// it does not make the verified TMDB/season facts less authoritative for
+		// transfer routing.
+		if input.RecognitionOverride.Locked || input.ForceRecognitionOverride {
 			record.RecognitionOverrideTMDBID = cloneInt64(&input.RecognitionOverride.TMDBID)
 			record.RecognitionOverrideMediaType = input.RecognitionOverride.MediaType
 		}
@@ -394,6 +430,8 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		record.IdentityStatus = input.RecognitionOverride.Status
 		record.IdentityLocked = input.RecognitionOverride.Locked
 		record.IdentityRevision = 1
+		record.RecognitionOverrideSeason = cloneInt(input.RecognitionOverride.Season)
+		record.RecognitionOverrideEpisode = cloneInt(input.RecognitionOverride.Episode)
 		identity := MediaIdentitySnapshot{Version: 1, Revision: 1, Source: input.RecognitionOverride.Source, Status: input.RecognitionOverride.Status, Locked: input.RecognitionOverride.Locked, TMDBID: cloneInt64(&input.RecognitionOverride.TMDBID), MediaType: input.RecognitionOverride.MediaType, Title: displayName}
 		if rawIdentity, marshalErr := json.Marshal(identity); marshalErr == nil {
 			record.IdentitySnapshotJSON = string(rawIdentity)
@@ -426,6 +464,11 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		record.TVFilenameTemplate = organization.TVFilenameTemplate
 	}
 	job, err := s.queue.EnqueueWith(EnqueueJobInput{OwnerID: ownerID, JobType: "download", Priority: input.Priority, DisplayName: displayName, Provider: downloaderRecord.Type, ResourceKey: downloadQueueResourceKey(downloaderRecord), Payload: downloadJobPayload{DownloadTaskID: taskID}}, func(tx *gorm.DB, job models.Job) error {
+		if input.BeforePersist != nil {
+			if err := input.BeforePersist(tx); err != nil {
+				return err
+			}
+		}
 		record.JobID = job.ID
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -438,6 +481,14 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		return s.audit.Record(tx, &ownerID, "download.create", "download_task", taskID, "success", metadata, request)
 	})
 	if err != nil {
+		if input.FollowSubscriptionID != "" {
+			var existing models.DownloadTask
+			if queryErr := s.db.Where("follow_subscription_id = ? AND follow_resource_fingerprint = ?", input.FollowSubscriptionID, input.FollowResourceFingerprint).First(&existing).Error; queryErr == nil {
+				var existingJob models.Job
+				_ = s.db.First(&existingJob, "id = ?", existing.JobID).Error
+				return downloadTaskSummary(existing, existingJob.Status), nil
+			}
+		}
 		return DownloadTaskSummary{}, err
 	}
 	return downloadTaskSummary(record, job.Status), nil
