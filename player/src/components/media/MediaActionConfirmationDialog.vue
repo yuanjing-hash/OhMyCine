@@ -68,7 +68,7 @@ function handleKeydown(event: KeyboardEvent) {
 .media-confirm-scrim { position: absolute; inset: 0; background: var(--chrome-scrim); backdrop-filter: blur(10px); }
 .media-confirm-dialog { position: relative; width: min(30rem, 100%); border: 1px solid var(--chrome-border); border-radius: 12px; padding: 1.25rem; color: var(--color-text); background: var(--chrome-surface); box-shadow: var(--chrome-shadow); }
 .media-confirm-dialog h2 { font-size: 1.05rem; font-weight: 800; }
-.media-confirm-dialog p { margin-top: .65rem; color: var(--color-text-secondary); font-size: .82rem; line-height: 1.65; }
+.media-confirm-dialog p { margin-top: .65rem; color: var(--color-text-secondary); font-size: .82rem; line-height: 1.65; white-space: pre-line; }
 .media-confirm-verification { display: block; margin-top: 1rem; }
 .media-confirm-source { margin-top: 1rem; border: 1px solid var(--color-divider); border-radius: 9px; padding: .8rem; background: var(--surface-soft); }
 .media-confirm-source label { display: flex; align-items: center; gap: .55rem; font-size: .78rem; font-weight: 700; }

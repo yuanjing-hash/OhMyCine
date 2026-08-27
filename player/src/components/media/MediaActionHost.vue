@@ -16,6 +16,7 @@ const runtime = useMediaActionRuntime()
 const actions = ref<ResolvedMediaAction[]>([])
 const loading = ref(false)
 const viewportWidth = ref(window.innerWidth)
+const viewportHeight = ref(window.innerHeight)
 const feedbackVisible = ref(false)
 let resolveGeneration = 0
 let feedbackTimer: number | undefined
@@ -30,11 +31,18 @@ const popoverStyle = computed(() => {
   const anchor = runtime.menuRequest.value?.anchor
   if (!anchor || presentation.value !== 'popover')
     return undefined
-  const width = 336
   const margin = 12
+  const rootFontSize = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16
+  const width = Math.min(21 * rootFontSize, Math.max(0, viewportWidth.value - margin * 2))
+  const preferredHeight = Math.min(608, Math.max(0, viewportHeight.value - margin * 2))
   const left = Math.min(Math.max(margin, anchor.x), Math.max(margin, viewportWidth.value - width - margin))
-  const top = Math.min(Math.max(margin, anchor.y), Math.max(margin, window.innerHeight - 420))
-  return { left: `${left}px`, top: `${top}px` }
+  const top = Math.min(Math.max(margin, anchor.y), Math.max(margin, viewportHeight.value - preferredHeight - margin))
+  const availableHeight = Math.max(0, viewportHeight.value - top - margin)
+  return {
+    'left': `${left}px`,
+    'top': `${top}px`,
+    '--media-action-popover-max-height': `${availableHeight}px`,
+  }
 })
 
 watch(() => runtime.menuRequest.value, (request) => {
@@ -81,6 +89,7 @@ onBeforeUnmount(() => {
 
 function updateViewport() {
   viewportWidth.value = window.innerWidth
+  viewportHeight.value = window.innerHeight
 }
 
 async function execute(action: ResolvedMediaAction) {

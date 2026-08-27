@@ -19,7 +19,7 @@ const updater = useUpdaterStore()
 const downloads = useDownloadStore()
 const router = useRouter()
 configureMediaActionController(new MediaActionController({
-  adapters: [createDeleteMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), resolveConfig: sourceId => store.orderedConfigs.find(config => config.id === sourceId) }), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId)), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
+  adapters: [createDeleteMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), resolveConfig: sourceId => store.orderedConfigs.find(config => config.id === sourceId) }), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId), requestMediaActionConfirmation), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
   confirm: requestMediaActionConfirmation,
   invalidate: async (invalidation) => {
     store.getSource(invalidation.sourceId)?.clearCache?.()

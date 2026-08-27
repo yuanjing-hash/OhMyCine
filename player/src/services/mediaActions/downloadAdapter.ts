@@ -1,19 +1,22 @@
-import type { MediaActionAdapter, MediaActionCapability, MediaActionExecutionResult, MediaActionId, MediaActionTarget } from './types'
+import type { MediaActionAdapter, MediaActionCapability, MediaActionConfirmation, MediaActionConfirmationResult, MediaActionExecutionResult, MediaActionId, MediaActionTarget } from './types'
 import type { DataSource } from '@/services/datasource/types'
-import { ask, open } from '@tauri-apps/plugin-dialog'
+import { open } from '@tauri-apps/plugin-dialog'
 import { planMediaDownload, summarizeDownloadPlan } from '@/services/downloadPlanning'
 import { enqueueDownload, enqueueDownloadGroup, pickAndroidDownloadDirectory } from '@/services/downloads'
 import { isNativeAndroidRuntime, isTauriRuntime } from '@/services/runtimePlatform'
 
 const SUPPORTED_TYPES = new Set(['local', 'alist', 'clouddrive2', 'webdav', '123', 'quark', 'emby', 'jellyfin', 'server'])
 
-export function createDownloadMediaActionAdapter(resolveSource: (id: string) => DataSource | null): MediaActionAdapter {
+export function createDownloadMediaActionAdapter(
+  resolveSource: (id: string) => DataSource | null,
+  confirm: (confirmation: MediaActionConfirmation) => Promise<MediaActionConfirmationResult>,
+): MediaActionAdapter {
   return {
     id: 'downloads',
     priority: 85,
     supports: target => target.kind === 'media',
     resolve: target => capabilities(target),
-    execute: (target, action) => execute(resolveSource, target, action),
+    execute: (target, action) => execute(resolveSource, confirm, target, action),
   }
 }
 
@@ -36,7 +39,12 @@ function capabilities(target: MediaActionTarget): MediaActionCapability[] {
   return [{ action: 'download', availability: 'available' }, { action: 'downloadTo', availability: 'available' }]
 }
 
-async function execute(resolveSource: (id: string) => DataSource | null, target: MediaActionTarget, action: MediaActionId): Promise<MediaActionExecutionResult> {
+async function execute(
+  resolveSource: (id: string) => DataSource | null,
+  confirm: (confirmation: MediaActionConfirmation) => Promise<MediaActionConfirmationResult>,
+  target: MediaActionTarget,
+  action: MediaActionId,
+): Promise<MediaActionExecutionResult> {
   if (target.kind !== 'media' || (action !== 'download' && action !== 'downloadTo'))
     throw new Error('此对象不支持下载操作。')
   let directory: string | undefined
@@ -52,12 +60,14 @@ async function execute(resolveSource: (id: string) => DataSource | null, target:
   if (!source)
     throw new Error('媒体来源不可用，请刷新后重试。')
   const plan = await planMediaDownload(source, target)
-  if (!await ask(downloadConfirmation(plan), {
-    title: '确认离线下载',
-    kind: 'info',
-    okLabel: '确认下载',
+  const confirmation = await confirm({
+    title: '确认下载',
+    message: downloadConfirmation(plan),
+    confirmLabel: '确认下载',
     cancelLabel: '取消',
-  })) {
+    danger: 'caution',
+  })
+  if (!confirmation.confirmed) {
     return { message: '已取消下载' }
   }
   if (plan.aggregate) {

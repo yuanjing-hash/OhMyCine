@@ -212,12 +212,22 @@ assert.deepEqual(deriveOfflineBadge({
   name: 'Series',
   type: 'series',
 }, offlineEpisodes), { state: 'partial', downloaded: 2, label: '2 集已下载' })
+assert.deepEqual(deriveOfflineBadge({
+  id: 'episode-1',
+  sourceId: 'remote-source',
+  name: 'Episode 1',
+  type: 'episode',
+}, offlineEpisodes), { state: 'complete', downloaded: 1, total: 1, label: '已下载' })
+assert.equal(deriveOfflineBadge({
+  id: 'episode-1',
+  sourceId: 'remote-source',
+  name: 'Episode 1',
+  type: 'episode',
+}, []), null)
 
 const detailViewSource = readFileSync(new URL('../src/views/MediaDetailView.vue', import.meta.url), 'utf8')
-assert.match(detailViewSource, /variants\.length > 1/)
-assert.match(detailViewSource, /选择离线下载清晰度/)
-assert.match(detailViewSource, /不会创建转码清晰度/)
-assert.match(detailViewSource, /submitOfflineDownload\(selectedDownloadVariantId\)/)
+assert.doesNotMatch(detailViewSource, />离线下载</)
+assert.doesNotMatch(detailViewSource, /openOfflineDownload/)
 const downloadViewSource = readFileSync(new URL('../src/views/DownloadsView.vue', import.meta.url), 'utf8')
 assert.match(downloadViewSource, /打开离线详情/)
 assert.match(downloadViewSource, /打开文件位置/)
@@ -226,7 +236,9 @@ assert.match(downloadViewSource, /attachmentState !== 'complete'/)
 const downloadAdapterSource = readFileSync(new URL('../src/services/mediaActions/downloadAdapter.ts', import.meta.url), 'utf8')
 assert.match(downloadAdapterSource, /文件：\$\{summary\.fileCount\} 个/)
 assert.match(downloadAdapterSource, /预计大小：\$\{size\}/)
-assert.match(downloadAdapterSource, /await ask\(downloadConfirmation\(plan\)/)
+assert.doesNotMatch(downloadAdapterSource, /@tauri-apps\/plugin-dialog'\s*.*\bask\b/)
+assert.match(downloadAdapterSource, /message: downloadConfirmation\(plan\)/)
+assert.match(downloadAdapterSource, /if \(!confirmation\.confirmed\)/)
 const playerViewSource = readFileSync(new URL('../src/views/PlayerView.vue', import.meta.url), 'utf8')
 assert.match(playerViewSource, /function currentOriginItemId\(\): string/)
 assert.match(playerViewSource, /const itemId = currentOriginItemId\(\) \|\| undefined/)

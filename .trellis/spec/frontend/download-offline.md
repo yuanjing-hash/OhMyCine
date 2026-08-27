@@ -59,6 +59,9 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 ### Scheduling and state
 
 - Settings validate `concurrentTasks` in `1..=8`, `segmentsPerTask` in `1..=16`, and an optional positive global bytes-per-second limit.
+- Product UI exposes one `下载` concept: it creates the complete offline package, including the video, detail snapshot, artwork, subtitles, and danmaku. Do not add a parallel `离线下载` entry for the same operation.
+- Download confirmation must use the shared `MediaActionController` confirmation runtime and `MediaActionConfirmationDialog`. Do not call Tauri dialog `ask`/`message` for the core download path; capability ACL differences must not make Download unusable.
+- Desktop media-action popovers must clamp both position and maximum height to the live viewport. Keep the header fixed and make the action-group region independently scrollable so every download and management action remains reachable.
 - The scheduler claims the oldest runnable task. A user-paused task never consumes a slot and remains paused after restart; an interrupted active task returns to the queue.
 - Desktop segmentation is allowed only when total length, trustworthy Range semantics, and entity identity are available. Otherwise transfer safely falls back to one stream.
 - All task and segment workers share one global rate schedule. Runtime setting changes reset old reservations.
@@ -104,6 +107,8 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 | Condition | Required behavior |
 |---|---|
 | Enqueue identity/name is invalid or destination escapes root | Reject before task/file creation with safe text |
+| Native dialog message/ask capability is unavailable | The shared in-app media confirmation still opens and Download remains usable |
+| Media-action rows exceed the remaining viewport height | Clamp the popover and scroll only its action-group region; never render unreachable rows below the window |
 | Concurrent/segment setting exceeds bounds or limit is zero | Reject settings update; preserve prior settings |
 | Range is ignored, malformed, or entity proof is absent | Use safe single stream or restart; never append untrusted bytes |
 | Entity changes during resume | Remove only owned partial/checkpoints and restart from zero |
@@ -119,19 +124,21 @@ It must not gain URL, redirect, Header, Cookie, credential, token, signature, or
 ## 5. Good / Base / Bad Cases
 
 - Good: a four-segment desktop transfer resumes after an expired 302 only after the same entity is proven, then atomically creates an offline item.
+- Good: the single Download action opens the in-app summary confirmation, enqueues the complete offline package, and later exposes the separate downloaded badge.
 - Good: a poster refresh fails after the old poster was downloaded; the old complete poster remains visible and attachment state becomes partial only for missing work.
 - Base: a provider does not support trustworthy Range; Player downloads one stream with the same global task/rate controls.
 - Base: Android SAF supports sequential write only; queue concurrency and shared rate semantics remain consistent while per-task segments degrade to one.
 - Good: Android cancellation loads the owned document name, drops the SQLite connection, awaits SAF deletion, then opens a new connection to clear or retain the cleanup fact.
 - Bad: store the final CDN URL in `download_tasks`, forward Authorization to a CDN redirect, append bytes after ETag changed, or expose `cancelled` as Retry.
 - Bad: keep a `rusqlite::Connection`, prepared statement, row iterator, or transaction guard alive while awaiting an Android plugin call.
+- Bad: add a second Offline Download button for the same queue operation, or depend on Tauri dialog `ask`/`message` ACL for the only Download path.
 - Bad: delete the package directory when removing one episode, use a title as global series identity, or delete an existing asset before replacement bytes are validated and registered.
 
 ## 6. Tests Required
 
 - Rust: schema migration/idempotency, stable task serialization, scheduler fairness, pause/recovery, cancellation races, exact cleanup, segment coverage, Content-Range parsing, entity change, shared live rate-limit update, and local fingerprint correction.
 - Rust security: traversal/symlink/reparse rejection, redirect downgrade/origin behavior, visible error redaction, attachment Header/MIME/size/JSON bounds, cascade ownership, and failed retry preservation.
-- TypeScript: current media version/static variant selection, grouped plan behavior, download-center controls/settings, offline route ownership, badge aggregation, local-first playback/history identity, and mobile entry points.
+- TypeScript: current media version/static variant selection, grouped plan behavior, the single Download entry, in-app confirmation without native dialog ACL, viewport-bounded media actions, download-center controls/settings, offline route ownership, badge aggregation/removal, local-first playback/history identity, and mobile entry points.
 - Integration fixture: local HTTP Range, ignored Range, expiring 302, 401/403, early EOF, entity change, and final checksum. Do not mark this complete from static source assertions alone.
 - Platform compile: compile the Rust crate for `aarch64-linux-android` and assemble the universal debug APK so non-`Send` async futures and Android-only bindings are checked in addition to desktop Rust gates.
 - Manual: Windows interruption/limit/302/offline cold-start and Android SAF/notification/cancel/restart/offline playback. Use isolated profiles and preserve owner data.
@@ -142,6 +149,10 @@ Wrong:
 
 ```ts
 await enqueueDownload({ ...media, url: stream.url, headers: stream.headers })
+```
+
+```ts
+await ask(downloadSummary) // native dialog ACL can disable the only Download path
 ```
 
 ```rust
@@ -156,6 +167,12 @@ await enqueueDownload(target, {
   variantId: selectedVariantId,
   detailSnapshot,
 })
+```
+
+```ts
+const result = await requestMediaActionConfirmation(downloadConfirmation)
+if (result.confirmed)
+  await enqueueCompleteOfflinePackage(plan)
 ```
 
 ```rust

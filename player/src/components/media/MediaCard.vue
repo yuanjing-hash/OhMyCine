@@ -90,6 +90,7 @@ const isPlayed = computed(() => hasMediaPath(props.item) && (props.item.played =
 const offlineBadge = computed(() => hasMediaPath(props.item) ? downloads.badgeFor(props.item) : null)
 
 onMounted(() => {
+  void downloads.initialize()
   window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshPlayedState)
   void refreshPlayedState()
 })
