@@ -3,7 +3,7 @@
   "name": "automatic-tv-subscriptions",
   "title": "自动电视剧订阅管线",
   "description": "实现可配置订阅、缺集调度、自动资源选择、下载提交与入库进度管理。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

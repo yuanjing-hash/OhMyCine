@@ -33,6 +33,7 @@ tmdb_id
 title / year / poster_ref              安全显示快照
 status active|paused|completed|blocked
 revision >= 1
+lifecycle_revision >= 1               暂停/恢复时递增，失效旧运行
 execution_snapshot_json                版本化、无敏感值
 progress_*                             已播目标/已入库/缺失安全计数
 last_run_id / last_run_at / next_run_at
@@ -58,6 +59,7 @@ UNIQUE(owner_id, tmdb_id, season_number)
 id UUID PK
 subscription_id / owner_id
 subscription_revision
+lifecycle_revision                     入队时复制的生命周期版本
 execution_snapshot_json                该 run 的不可变安全策略
 job_id UNIQUE
 trigger scheduled|manual
@@ -115,7 +117,7 @@ updated_at
 
 所有字符串/数组/数值有长度、数量和范围上限。站点顺序即优先级。快照引用 ID，不复制凭据或路径。API 返回可编辑的同一安全结构；默认值 endpoint/表单只根据当前可用配置构建预填，不是运行时依赖。
 
-编辑采用 expected revision/CAS。入队事务先创建包含当前 revision 与完整安全策略快照的 `follow_run`，Job payload 保存 `{run_id, subscription_id, subscription_revision, trigger}`。worker 始终执行 run 的不可变快照；普通编辑只影响下一次运行。worker 在开始和每次提交下载前验证订阅仍存在且未暂停/删除，状态失效时安全结束。
+编辑采用 expected revision/CAS。入队事务先创建包含当前 revision、生命周期 revision 与完整安全策略快照的 `follow_run`，Job payload 保存 `{run_id, subscription_id, subscription_revision, trigger}`。worker 始终执行 run 的不可变快照；普通编辑只影响下一次运行。暂停和恢复都会递增生命周期 revision，因此快速暂停后恢复也不能复活旧运行。worker 在开始、每次外部调用、下载交接前以及创建 DownloadTask 的同一写事务内验证订阅仍存在且当前生命周期仍可执行；只有配置 revision 与生命周期 revision 均匹配的运行才能回写订阅最终状态。
 
 ## 4. API 与权限
 
