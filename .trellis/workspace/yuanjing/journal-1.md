@@ -969,3 +969,26 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 38: 统一搜索订阅与 115 下载流水线
+
+**Date**: 2026-08-27
+**Task**: 统一搜索订阅与 115 下载流水线
+**Branch**: `codex/unified-media-search-subscription`
+
+### Summary
+
+完成搜索双入口与白屏修复、详情库存和自动订阅闭环、PT/BT 到 115 的权威路由、115 统一下载目录与生活事件监听，以及 provider-first 文件保留型取消和默认删除合同；补齐并发竞态和全量验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ee79df0` | (see git log) |
+| `d074536` | (see git log) |
+| `43812b5` | (see git log) |
+
+### Status
+
+[OK] **Completed**

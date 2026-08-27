@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 37
+- **Total Sessions**: 38
 - **Last Active**: 2026-08-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~971 | Active |
+| `journal-1.md` | ~994 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 38 | 2026-08-27 | 统一搜索订阅与 115 下载流水线 | `ee79df0`, `d074536`, `43812b5` | `codex/unified-media-search-subscription` |
 | 37 | 2026-08-27 | 完成统一媒体搜索与自动电视剧订阅 | `ef9ed65`, `ca8df52`, `d5a2f9d` | `codex/unified-media-search-subscription` |
 | 36 | 2026-08-27 | 统一媒体身份搜索与库覆盖率 | `6379537`, `c120846`, `980c153` | `codex/unified-media-search-subscription` |
 | 35 | 2026-08-27 | 修复 Player 离线投影与线程恢复 | `082ae6c` | `develop` |
