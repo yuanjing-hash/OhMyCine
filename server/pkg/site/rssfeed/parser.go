@@ -147,7 +147,7 @@ func parseSize(value string) int64 {
 	if err != nil || number < 0 {
 		return 0
 	}
-	multiplier := float64(1)
+	var multiplier float64
 	switch strings.TrimSuffix(fields[1], "B") {
 	case "K", "KI":
 		multiplier = 1 << 10

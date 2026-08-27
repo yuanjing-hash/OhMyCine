@@ -19,7 +19,7 @@ export interface SiteSummary {
   timeout_seconds: number
   rate_limit_per_minute: number
   browser_emulation: boolean
-  browser_service_url: string
+  browser_service_configured: boolean
   credential_configured: boolean
   cookie_configured: boolean
   passkey_configured: boolean
@@ -28,6 +28,15 @@ export interface SiteSummary {
   revision: number
   created_at: string
   updated_at: string
+}
+
+export interface SearchSiteOption {
+  id: number
+  name: string
+  site_type: 'pt' | 'bt'
+  health_status: string
+  searchable: boolean
+  reason?: string
 }
 
 export interface SiteCapabilities {
@@ -197,6 +206,7 @@ export const torrentRecognitionPath = '/api/v1/discovery/torrent-results/recogni
 export const torrentRecognitionCandidatesPath = '/api/v1/discovery/torrent-results/tmdb-candidates'
 export const torrentRecognitionOverridePath = '/api/v1/discovery/torrent-results/recognition-override'
 export const discoveryDownloadsPath = '/api/v1/discovery/downloads'
+export const discoverySearchOptionsPath = '/api/v1/discovery/search-options'
 export const cookieCloudSettingsPath = '/api/v1/settings/sites/cookiecloud'
 export const cookieCloudSyncPath = `${cookieCloudSettingsPath}/sync`
 
@@ -214,13 +224,19 @@ export function cookieCloudErrorLabel(code: string) {
   } as Record<string, string>)[code] || code || '未知错误'
 }
 
-export function buildPTSearchQuery(input: { keyword: string; mediaType?: string; year?: number; tmdbID?: number; searchBy?: 'title' | 'tmdb_id'; page?: number; siteID?: number }) {
+export function buildPTSearchQuery(input: { keyword: string; mediaType?: string; year?: number; tmdbID?: number; searchBy?: 'title' | 'tmdb_id'; page?: number; siteID?: number; siteIDs?: number[] }) {
   const query = new URLSearchParams({ keyword: input.keyword.trim(), page: String(input.page ?? 1) })
   if (input.mediaType) query.set('media_type', input.mediaType)
   if (input.year) query.set('year', String(input.year))
   if (input.tmdbID) query.set('tmdb_id', String(input.tmdbID))
   if (input.searchBy) query.set('search_by', input.searchBy)
+  if (input.siteID && input.siteIDs) throw new Error('site_id and site_ids cannot be combined')
   if (input.siteID) query.set('site_id', String(input.siteID))
+  if (input.siteIDs) {
+    const ids = [...new Set(input.siteIDs.filter(id => Number.isInteger(id) && id > 0))]
+    if (ids.length === 0 || ids.length > 64) throw new Error('site_ids must contain 1 to 64 sites')
+    for (const id of ids) query.append('site_ids', String(id))
+  }
   return query
 }
 
@@ -272,11 +288,12 @@ export const torrentSearchURL = ptSearchURL
 export const upsertTorrentGroup = upsertPTGroup
 
 export const torrentSearchSessionKey = 'omc:server:torrent-search:v1'
+export const torrentSearchSiteSelectionKey = 'omc:server:torrent-search-sites:v1'
 const torrentSearchSessionMaxBytes = 512 * 1024
 const torrentSearchSessionMaxAgeMs = 30 * 60 * 1000
 
 export interface TorrentSearchSession {
-  input: { keyword: string; mediaType: string; year?: number; tmdbID?: number; searchBy: 'title' | 'tmdb_id'; siteID?: number }
+  input: { keyword: string; mediaType: string; year?: number; tmdbID?: number; searchBy: 'title' | 'tmdb_id'; siteID?: number; siteIDs?: number[] }
   groups: TorrentSearchGroup[]
   recognitions: Record<string, TorrentRecognitionResult>
   searched: boolean
@@ -320,6 +337,30 @@ export function filterAndSortTorrentResults(groups: readonly PTSearchGroup[], fi
         || compareOptionalNumber(timestamp(left.item.published_at), timestamp(right.item.published_at))
         || stableTieBreak(left, right)
     })
+}
+
+type SiteSelectionStorage = Pick<Storage, 'getItem' | 'setItem'>
+
+export function readTorrentSearchSiteSelection(storage: SiteSelectionStorage | undefined, options: readonly SearchSiteOption[]): number[] {
+  const selectable = options.filter(option => option.searchable).map(option => option.id)
+  if (!storage) return selectable
+  try {
+    const raw = storage.getItem(torrentSearchSiteSelectionKey)
+    if (!raw) return selectable
+    const value = JSON.parse(raw) as { site_ids?: unknown }
+    if (!Array.isArray(value.site_ids)) return selectable
+    const selected = new Set(value.site_ids.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0).slice(0, 64))
+    return selectable.filter(id => selected.has(id))
+  } catch {
+    return selectable
+  }
+}
+
+export function saveTorrentSearchSiteSelection(storage: SiteSelectionStorage | undefined, siteIDs: readonly number[]) {
+  if (!storage) return
+  const normalized = [...new Set(siteIDs.filter(id => Number.isInteger(id) && id > 0))].slice(0, 64)
+  try { storage.setItem(torrentSearchSiteSelectionKey, JSON.stringify({ site_ids: normalized })) }
+  catch { /* Search remains usable when browser storage is blocked or full. */ }
 }
 
 export function ptRecognitionEpisodeLabel(value: PTRecognitionResult) {
@@ -376,6 +417,14 @@ export function readTorrentSearchSession(storage: SearchSessionStorage | undefin
       return null
     }
     if (value.input.searchBy !== 'title' && value.input.searchBy !== 'tmdb_id') return null
+    const scopeSiteID = typeof value.input.siteID === 'number' && Number.isInteger(value.input.siteID) && value.input.siteID > 0 ? value.input.siteID : undefined
+    const scopeSiteIDs = Array.isArray(value.input.siteIDs) ? [...new Set(value.input.siteIDs.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0))].slice(0, 64) : undefined
+    // Sessions created before explicit site scoping must never revive the old
+    // implicit all-site behavior. The next search will reopen the selector.
+    if ((!scopeSiteID && !scopeSiteIDs?.length) || (scopeSiteID && scopeSiteIDs?.length)) {
+      storage.removeItem(torrentSearchSessionKey)
+      return null
+    }
     let remainingItems = 300
     const groups = value.groups
       .slice(0, 24)
@@ -398,7 +447,8 @@ export function readTorrentSearchSession(storage: SearchSessionStorage | undefin
         year: typeof value.input.year === 'number' ? value.input.year : undefined,
         tmdbID: typeof value.input.tmdbID === 'number' ? value.input.tmdbID : undefined,
         searchBy: value.input.searchBy,
-        siteID: typeof value.input.siteID === 'number' && Number.isInteger(value.input.siteID) && value.input.siteID > 0 ? value.input.siteID : undefined,
+        siteID: scopeSiteID,
+        siteIDs: scopeSiteIDs,
       },
       groups,
       recognitions,

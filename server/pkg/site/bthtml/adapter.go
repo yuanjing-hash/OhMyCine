@@ -25,21 +25,22 @@ type Profile struct {
 	QueryParameter     string
 	PageParameter      string
 	PageOffset         int
+	RequiresRendered   bool
 	AllowedHosts       []string
 	ResultPathPrefixes []string
 }
 
 func X1337Profile() Profile {
-	return Profile{SearchPath: "/search/{query}/{page}/", PathSearch: true, AllowedHosts: []string{"1337x.to"}, ResultPathPrefixes: []string{"/torrent/"}}
+	return Profile{SearchPath: "/search/{query}/{page}/", PathSearch: true, RequiresRendered: true, AllowedHosts: []string{"1337x.to"}, ResultPathPrefixes: []string{"/torrent/"}}
 }
 func PirateBayProfile() Profile {
 	return Profile{SearchPath: "/search.php", QueryParameter: "q", PageParameter: "page", PageOffset: -1, AllowedHosts: []string{"thepiratebay.org"}, ResultPathPrefixes: []string{"/description.php", "/torrent/"}}
 }
 func EXTToProfile() Profile {
-	return Profile{SearchPath: "/browse/", QueryParameter: "q", PageParameter: "page", AllowedHosts: []string{"ext.to"}, ResultPathPrefixes: []string{"/torrent/"}}
+	return Profile{SearchPath: "/browse/", QueryParameter: "q", PageParameter: "page", RequiresRendered: true, AllowedHosts: []string{"ext.to"}, ResultPathPrefixes: []string{"/torrent/"}}
 }
 func LimeTorrentsProfile() Profile {
-	return Profile{SearchPath: "/search/all/{query}/seeds/{page}/", PathSearch: true, AllowedHosts: []string{"www.limetorrents.lol", "limetorrents.lol"}, ResultPathPrefixes: []string{"/torrent/"}}
+	return Profile{SearchPath: "/search/all/{query}/seeds/{page}/", PathSearch: true, AllowedHosts: []string{"www.limetorrents.fun", "limetorrents.fun", "www.limetorrents.lol", "limetorrents.lol"}, ResultPathPrefixes: []string{"/torrent/"}}
 }
 
 type Adapter struct {
@@ -49,7 +50,9 @@ type Adapter struct {
 }
 
 func NewForProfile(kind string, profile Profile) *Adapter {
-	return &Adapter{kind: strings.ToLower(strings.TrimSpace(kind)), profile: profile, clientFactory: controlledClient}
+	return &Adapter{kind: strings.ToLower(strings.TrimSpace(kind)), profile: profile, clientFactory: func(config site.Config) (*http.Client, *url.URL, error) {
+		return controlledClient(config, profile.AllowedHosts)
+	}}
 }
 
 func NewForTest(kind string, profile Profile, client *http.Client, baseURL string) *Adapter {
@@ -92,7 +95,7 @@ func (a *Adapter) Search(ctx context.Context, config site.Config, query site.Que
 		}
 		target.RawQuery = values.Encode()
 	}
-	body, err := requestHTML(ctx, client, target.String())
+	body, err := a.requestPage(ctx, config, client, target.String())
 	if err != nil {
 		return site.Page{}, err
 	}
@@ -148,7 +151,7 @@ func (a *Adapter) ResolveSource(ctx context.Context, config site.Config, identit
 	if !ok {
 		return site.Source{}, site.ErrNotFound
 	}
-	body, err := requestHTML(ctx, client, detail)
+	body, err := a.requestPage(ctx, config, client, detail)
 	if err != nil {
 		return site.Source{}, err
 	}
@@ -157,6 +160,17 @@ func (a *Adapter) ResolveSource(ctx context.Context, config site.Config, identit
 		return site.Source{}, site.ErrInvalidReply
 	}
 	return site.Source{Magnet: magnet}, nil
+}
+
+func (a *Adapter) requestPage(ctx context.Context, config site.Config, client *http.Client, target string) ([]byte, error) {
+	if !config.BrowserEmulation || !a.profile.RequiresRendered {
+		return requestHTML(ctx, client, target)
+	}
+	page, err := site.FetchRendered(ctx, config, site.RenderedFetchRequest{ProfileID: a.kind, URL: target, AllowedHosts: a.profile.AllowedHosts, Timeout: config.Timeout, MaxBytes: maxHTMLBytes})
+	if err != nil {
+		return nil, err
+	}
+	return page.HTML, nil
 }
 
 type parsedRow struct {
@@ -304,7 +318,7 @@ func requestHTML(ctx context.Context, client *http.Client, target string) ([]byt
 	if err != nil {
 		return nil, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return nil, site.ErrRateLimited
 	}
@@ -318,7 +332,7 @@ func requestHTML(ctx context.Context, client *http.Client, target string) ([]byt
 	return body, nil
 }
 
-func controlledClient(config site.Config) (*http.Client, *url.URL, error) {
+func controlledClient(config site.Config, allowedHosts []string) (*http.Client, *url.URL, error) {
 	rawBase := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	base, err := url.Parse(rawBase)
 	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" || strings.Contains(rawBase, "#") {
@@ -329,7 +343,7 @@ func controlledClient(config site.Config) (*http.Client, *url.URL, error) {
 		timeout = 12 * time.Second
 	}
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 3 || next.URL.Scheme != "https" || !strings.EqualFold(next.URL.Host, via[0].URL.Host) {
+		if len(via) >= 3 || next.URL.Scheme != "https" || next.URL.User != nil || (next.URL.Port() != "" && next.URL.Port() != "443") || !containsHost(allowedHosts, next.URL.Hostname()) {
 			return http.ErrUseLastResponse
 		}
 		return nil
@@ -417,7 +431,7 @@ func parseSize(value string) int64 {
 	if err != nil || number < 0 {
 		return 0
 	}
-	multiplier := float64(1)
+	var multiplier float64
 	switch strings.TrimSuffix(fields[1], "B") {
 	case "K", "KI":
 		multiplier = 1 << 10

@@ -492,7 +492,7 @@ func (s *DiscoveryService) downloadDoubanImage(ctx context.Context, upstream str
 	if err != nil {
 		return nil, "", appError(CodeDiscoveryProviderUnavailable, "推荐图片暂时不可用", nil)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, "", appError(CodeDiscoveryProviderUnavailable, "推荐图片暂时不可用", nil)
 	}

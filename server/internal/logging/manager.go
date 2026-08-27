@@ -185,7 +185,7 @@ func compressFile(source string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	tmp := source + ".gz.tmp"
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {

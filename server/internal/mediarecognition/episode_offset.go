@@ -190,7 +190,7 @@ func parseEpisodeNumber(value string) (number int, chinese bool, err error) {
 	}
 	total += current
 	if total > maxEpisodeMagnitude {
-		return 0, true, errors.New("Chinese episode exceeds limit")
+		return 0, true, errors.New("chinese episode exceeds limit")
 	}
 	return total, true, nil
 }
@@ -244,7 +244,7 @@ func formatChineseNumber(value int) string {
 			builder.WriteRune('零')
 			zeroPending = false
 		}
-		if !(divisor == 10 && digit == 1 && builder.Len() == 0) {
+		if divisor != 10 || digit != 1 || builder.Len() != 0 {
 			builder.WriteRune(digits[digit])
 		}
 		builder.WriteString(units[index])

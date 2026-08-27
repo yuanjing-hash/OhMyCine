@@ -429,6 +429,14 @@ HMAC-SHA256(secret, method + path + exp + user_or_library_scope)
 - Emby 登录、系统信息、媒体库、搜索、详情、标记已观看、PlaybackInfo 和播放进度 JSON 请求统一走 Tauri Rust 受控客户端；只允许 GET/POST、HTTP(S) Base URL 和根路径，15 秒超时、禁用自动重定向、限制查询/请求体，并对声明长度与实际流式读取同时执行 4 MiB 响应上限。浏览器开发 fallback 也必须使用 `redirect: 'error'`、AbortController 和流式大小限制，不得退回无边界 `ofetch`。
 - 禁止访问 `file://`、`gopher://`、`ftp://` 等非预期协议
 
+站点页面渲染是更窄的专用边界，不复用普通可配置 URL 规则：
+
+- 自动 `RenderedFetcher` 首版只接受 Server 已登记的公开 BT `1337x` / `EXT.to` profile，并同时复验精确 HTTPS/443 目标 host 与最终 URL；请求参数不能增加 host，也不能把它变成任意 URL 浏览器代理。
+- CloakBrowser 只作为用户显式安装、接受上游许可后的本机 companion；Server 仅连接 loopback，OhMyCine 不自动下载、打包或重新分发其浏览器二进制。
+- 每次请求限制超时、HTML/JSON 响应大小与重定向；Cloak 不可用时只回退该站点显式配置的 FlareSolverr，不扩大到其它站点或内网地址。
+- RenderedFetcher 请求合同不含 Cookie/passkey。公开 BT 无站点凭据；PT Cookie/passkey 只由 Server 直连站点使用，既有 PT FlareSolverr 入口也不得把这些凭据传给外部 solver。
+- 日志、审计、普通 DTO、SSE 与浏览器存储不得出现 companion/Flare 请求正文、profile 内部状态、Cookie、passkey 或上游响应正文。
+
 ### 10.3 日志脱敏
 
 日志中必须脱敏：

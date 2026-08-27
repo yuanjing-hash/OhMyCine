@@ -237,7 +237,7 @@ func (host *Host) instantiate(ctx context.Context, entryPath, name string, start
 	if err != nil {
 		return nil, &Error{Code: CodeInvalidModule, Cause: err}
 	}
-	defer compiled.Close(context.Background())
+	defer func() { _ = compiled.Close(context.Background()) }()
 	if len(compiled.ImportedMemories()) != 0 {
 		return nil, &Error{Code: CodeCapabilityDenied, Cause: errors.New("plugin imports memory")}
 	}

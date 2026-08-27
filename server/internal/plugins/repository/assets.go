@@ -80,7 +80,7 @@ func (client *AssetClient) fetch(ctx context.Context, source contract.GitHubRepo
 	if err != nil {
 		return nil, &Error{Code: CodeAssetDownload, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, &Error{Code: CodeAssetDownload, Cause: fmt.Errorf("GitHub asset status %d", response.StatusCode)}
 	}

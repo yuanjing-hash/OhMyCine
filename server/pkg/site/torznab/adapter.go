@@ -145,7 +145,7 @@ func (a *Adapter) ResolveSource(ctx context.Context, config site.Config, identit
 	if err != nil {
 		return site.Source{}, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return site.Source{}, site.ErrAuthentication
 	}
@@ -189,7 +189,7 @@ func (a *Adapter) request(ctx context.Context, config site.Config, query url.Val
 	if err != nil {
 		return nil, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return nil, site.ErrAuthentication
 	}

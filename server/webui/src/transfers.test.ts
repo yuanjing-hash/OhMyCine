@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDeleteTransferRecord, formatTransferProgress, shouldRefreshTransferEvent, transferDeletionLabels, transferIdentityLabel, transferStatusClass, transferStatusLabel, type TransferSummary } from '@/transfers'
+import { canDeleteTransferRecord, formatTransferProgress, shouldRefreshTransferEvent, transferDeletionLabels, transferIdentityLabel, transferPhaseDescription, transferStatusClass, transferStatusLabel, type TransferSummary } from '@/transfers'
 
 const summary = { phase: 'planning', job_status: 'running', processed_files: 0, total_files: 2 } as TransferSummary
 
@@ -10,6 +10,8 @@ describe('media organization presentation', () => {
     expect(transferStatusLabel({ ...summary, phase: 'failed', job_status: 'failed' })).toBe('整理失败')
     expect(transferStatusLabel({ ...summary, phase: 'failed', job_status: 'queued' })).toBe('等待重试')
     expect(transferStatusLabel({ ...summary, phase: 'transferring', job_status: 'cancelled' })).toBe('已取消')
+    expect(transferStatusLabel({ ...summary, phase: 'checking_directories' })).toBe('检查目标目录')
+    expect(transferPhaseDescription({ ...summary, phase: 'risk_backoff', retry_at: null })).toContain('等待安全重试')
   })
 
   it('does not invent progress before a plan exists', () => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { confirmTransferDeletion, previewTransferDeletion, transferDeletionLabels, type TransferDeletionPreview, type TransferDeletionScope, type TransferSummary } from '@/transfers'
 import { notify } from '@/toast'
 
@@ -8,6 +8,31 @@ const emit = defineEmits<{ close: []; deleted: [] }>()
 const preview = ref<TransferDeletionPreview | null>(null)
 const loading = ref(false)
 const error = ref('')
+let activeRequest: AbortController | null = null
+let requestTimer: ReturnType<typeof setTimeout> | null = null
+
+function beginRequest(): AbortController {
+  activeRequest?.abort()
+  if (requestTimer) clearTimeout(requestTimer)
+  const controller = new AbortController()
+  activeRequest = controller
+  requestTimer = setTimeout(() => controller.abort('timeout'), 50_000)
+  return controller
+}
+
+function finishRequest(controller: AbortController) {
+  if (activeRequest !== controller) return
+  activeRequest = null
+  if (requestTimer) clearTimeout(requestTimer)
+  requestTimer = null
+}
+
+function close() {
+  activeRequest?.abort('closed')
+  emit('close')
+}
+
+onBeforeUnmount(() => activeRequest?.abort('unmounted'))
 
 const options: Array<{ scope: TransferDeletionScope; description: string; risk: string }> = [
   { scope: 'record_only', description: '只清理 OhMyCine 中的整理记录和执行历史。', risk: '不删除任何文件' },
@@ -17,23 +42,25 @@ const options: Array<{ scope: TransferDeletionScope; description: string; risk: 
 ]
 
 async function choose(scope: TransferDeletionScope) {
+  const controller = beginRequest()
   loading.value = true
   error.value = ''
-  try { preview.value = await previewTransferDeletion(props.transfer.id, scope) }
+  try { preview.value = await previewTransferDeletion(props.transfer.id, scope, controller.signal) }
   catch (reason) { error.value = message(reason) }
-  finally { loading.value = false }
+  finally { finishRequest(controller); loading.value = false }
 }
 
 async function confirmDelete() {
   if (!preview.value) return
+  const controller = beginRequest()
   loading.value = true
   error.value = ''
   try {
-    const result = await confirmTransferDeletion(props.transfer.id, preview.value.confirmation_token)
+    const result = await confirmTransferDeletion(props.transfer.id, preview.value.confirmation_token, controller.signal)
     notify(result.scope === 'record_only' ? '媒体整理记录已删除' : `删除完成：源文件 ${result.source_removed} 项，媒体库文件 ${result.library_removed} 项`, 'success')
     emit('deleted')
   } catch (reason) { error.value = message(reason) }
-  finally { loading.value = false }
+  finally { finishRequest(controller); loading.value = false }
 }
 
 function formatSize(value: number): string {
@@ -45,15 +72,18 @@ function formatSize(value: number): string {
   return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
-function message(reason: unknown): string { return reason instanceof Error ? reason.message : '删除操作失败' }
+function message(reason: unknown): string {
+  if (reason instanceof DOMException && reason.name === 'AbortError') return '核对或删除请求已取消；未确认完成的记录和文件均会保留，可稍后重试。'
+  return reason instanceof Error ? reason.message : '删除操作失败'
+}
 </script>
 
 <template>
-  <div class="modal-backdrop fixed inset-0 z-70 flex items-center justify-center p-4" @click.self="!loading && emit('close')">
+  <div class="modal-backdrop fixed inset-0 z-70 flex items-center justify-center p-4" @click.self="close">
     <section class="panel max-h-[90vh] w-full max-w-4xl overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="transfer-deletion-title">
       <header class="flex items-start justify-between gap-4">
         <div><h2 id="transfer-deletion-title" class="m-0 text-xl">删除媒体整理记录</h2><p class="page-description mt-2">{{ transfer.scrape_title || transfer.display_name }}</p></div>
-        <button class="icon-button" type="button" aria-label="关闭删除窗口" :disabled="loading" @click="emit('close')">×</button>
+        <button class="icon-button" type="button" aria-label="关闭删除窗口" @click="close">×</button>
       </header>
 
       <div v-if="!preview" class="deletion-options mt-5">
@@ -70,7 +100,7 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
           <p class="mb-0 mt-2 text-sm">Server 已按当前任务、身份版本和托管清单重新核对删除边界。确认令牌 5 分钟内有效且只能使用一次。</p>
         </section>
         <dl class="deletion-counts mt-4">
-          <div><dt>来源数据</dt><dd>{{ preview.source_items }} 项 · {{ formatSize(preview.source_bytes) }} · {{ preview.source_storage_type }}</dd><small v-if="preview.source_missing">其中 {{ preview.source_missing }} 项已不存在</small></div>
+          <div><dt>来源数据</dt><dd>{{ preview.source_items }} 项 · {{ formatSize(preview.source_bytes) }} · {{ preview.source_storage_type }}</dd><small v-if="preview.source_missing">其中 {{ preview.source_missing }} 项已不存在</small><small v-if="preview.source_detached">其中 {{ preview.source_detached }} 项已离开来源包或不存在，将保留</small></div>
           <div><dt>媒体库文件</dt><dd>{{ preview.library_items }} 项 · {{ formatSize(preview.library_bytes) }} · {{ preview.library_storage_type }}</dd><small v-if="preview.library_missing">其中 {{ preview.library_missing }} 项已不存在</small></div>
           <div><dt>下载提供方</dt><dd>{{ preview.provider_type || '无' }}</dd></div>
         </dl>
@@ -82,7 +112,7 @@ function message(reason: unknown): string { return reason instanceof Error ? rea
           <button class="btn-danger" type="submit" :disabled="loading">{{ loading ? '正在安全删除…' : `确认${transferDeletionLabels[preview.scope]}` }}</button>
         </form>
       </template>
-      <p v-if="loading && !preview" class="mt-4 text-sm text-muted">正在核对任务、来源和媒体库托管清单…</p>
+      <p v-if="loading && !preview" class="mt-4 text-sm text-muted">正在核对任务和来源边界（最多约 45 秒，可随时关闭取消）…</p>
       <p v-if="error" class="semantic-error mt-4 p-3" role="alert">{{ error }}</p>
     </section>
   </div>

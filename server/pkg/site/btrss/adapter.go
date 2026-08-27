@@ -58,7 +58,7 @@ func DMHYProfile() Profile {
 	return Profile{SearchPath: "/topics/rss/rss.xml", QueryParameter: "keyword", AllowedFeedHosts: []string{"share.dmhy.org"}, AllowedDownloadHosts: []string{"share.dmhy.org"}, AllowedPathPrefixes: []string{"/topics/view/", "/topics/download/", "/torrent/"}}
 }
 func ACGRipProfile() Profile {
-	return Profile{SearchPath: "/feed.xml", QueryParameter: "term", AllowedFeedHosts: []string{"acg.rip"}, AllowedDownloadHosts: []string{"acg.rip"}, AllowedPathPrefixes: []string{"/t/", "/torrent/"}}
+	return Profile{SearchPath: "/.xml", QueryParameter: "term", AllowedFeedHosts: []string{"acg.rip"}, AllowedDownloadHosts: []string{"acg.rip"}, AllowedPathPrefixes: []string{"/t/", "/torrent/"}}
 }
 
 func NewForProfile(kind string, profile Profile) *Adapter {
@@ -156,7 +156,7 @@ func (a *Adapter) ResolveSource(ctx context.Context, config site.Config, identit
 	if err != nil {
 		return site.Source{}, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return site.Source{}, site.ErrRateLimited
 	}
@@ -200,7 +200,7 @@ func (a *Adapter) requestFeed(ctx context.Context, config site.Config, keyword s
 	if err != nil {
 		return nil, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return nil, site.ErrRateLimited
 	}

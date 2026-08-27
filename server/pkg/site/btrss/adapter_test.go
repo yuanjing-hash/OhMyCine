@@ -57,7 +57,7 @@ func TestBuiltInProfilesGenerateExpectedQueryAndConstrainSources(t *testing.T) {
 		{"mikan", "mikan", "/RSS/Search", "searchstr", "/Download/", MikanProfile()},
 		{"anidex", "anidex", "/rss/", "q", "/torrent/", AniDexProfile()},
 		{"dmhy", "dmhy", "/topics/rss/rss.xml", "keyword", "/topics/download/", DMHYProfile()},
-		{"acgrip", "acgrip", "/feed.xml", "term", "/torrent/", ACGRipProfile()},
+		{"acgrip", "acgrip", "/.xml", "term", "/torrent/", ACGRipProfile()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

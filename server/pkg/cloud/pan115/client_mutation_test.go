@@ -14,20 +14,20 @@ import (
 
 type mutationTestSDK struct {
 	*bulkSDK
-	mkdirParent string
-	mkdirName   string
-	moveParent  string
-	moveItems   []string
-	copyParent  string
-	copyItems   []string
-	renameID    string
-	renameName  string
-	deleted     []string
+	mkdirParent     string
+	mkdirName       string
+	moveParent      string
+	moveItems       []string
+	copyParent      string
+	copyItems       []string
+	renameID        string
+	renameName      string
+	deleted         []string
 	cleanedPassword string
-	cleanedIDs  []string
-	recycleItems []pan115sdk.RecycleBinItem
-	cleanErr error
-	err         error
+	cleanedIDs      []string
+	recycleItems    []pan115sdk.RecycleBinItem
+	cleanErr        error
+	err             error
 }
 
 func (s *mutationTestSDK) Mkdir(parentID, name string) (string, error) {
@@ -59,7 +59,8 @@ func (s *mutationTestSDK) ListRecycleBin(_, _ int) ([]pan115sdk.RecycleBinItem, 
 }
 
 func newMutationTestClient(sdk sdkClient) *Client {
-	return &Client{sdk: sdk, mutationRate: rate.NewLimiter(rate.Inf, 1), callSlots: make(chan struct{}, maxInFlightCalls), now: time.Now, jitter: func() time.Duration { return 0 }}
+	unlimited := func() *rate.Limiter { return rate.NewLimiter(rate.Inf, 1) }
+	return &Client{sdk: sdk, mkdirRate: unlimited(), uploadRate: unlimited(), moveRate: unlimited(), copyRate: unlimited(), renameRate: unlimited(), recycleRate: unlimited(), purgeRate: unlimited(), callSlots: make(chan struct{}, maxInFlightCalls), now: time.Now, jitter: func() time.Duration { return 0 }}
 }
 
 func TestMutationAdapterUsesProviderArgumentOrderAndIdentities(t *testing.T) {
@@ -87,6 +88,31 @@ func TestMutationAdapterUsesProviderArgumentOrderAndIdentities(t *testing.T) {
 	}
 	if sdk.mkdirParent != "parent" || sdk.mkdirName != "电影" || sdk.moveParent != "move-parent" || !reflect.DeepEqual(sdk.moveItems, []string{"move-item"}) || sdk.copyParent != "copy-parent" || !reflect.DeepEqual(sdk.copyItems, []string{"copy-item"}) || sdk.renameID != "rename-item" || sdk.renameName != "新名字.mkv" || !reflect.DeepEqual(sdk.deleted, []string{"delete-item"}) {
 		t.Fatalf("sdk calls=%+v", sdk)
+	}
+}
+
+func TestNewClientUsesIndependentMutationLanes(t *testing.T) {
+	driver, err := New(cloud.Config{Cookie: "UID=1; CID=cid; SEID=seid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := driver.(*Client)
+	lanes := []*rate.Limiter{client.mkdirRate, client.uploadRate, client.moveRate, client.copyRate, client.renameRate, client.recycleRate, client.purgeRate}
+	seen := map[*rate.Limiter]struct{}{}
+	for _, lane := range lanes {
+		if lane == nil {
+			t.Fatal("nil operation limiter")
+		}
+		if _, duplicate := seen[lane]; duplicate {
+			t.Fatal("unrelated 115 operations share one limiter")
+		}
+		seen[lane] = struct{}{}
+	}
+	if client.mkdirRate.Limit() != rate.Inf {
+		t.Fatalf("healthy mkdir has fixed pacing: %v", client.mkdirRate.Limit())
+	}
+	if client.moveRate.Limit() == rate.Inf || client.renameRate.Limit() == rate.Inf || client.recycleRate.Limit() == rate.Inf {
+		t.Fatal("destructive mutation lanes lost conservative pacing")
 	}
 }
 

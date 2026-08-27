@@ -146,7 +146,7 @@ func (client *GitHubClient) get(ctx context.Context, path, accept string, maximu
 	if err != nil {
 		return nil, &Error{Code: CodeUnavailable, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests || (response.StatusCode == http.StatusForbidden && response.Header.Get("X-RateLimit-Remaining") == "0") {
 		return nil, &Error{Code: CodeRateLimited, Cause: errors.New("GitHub rate limited")}
 	}

@@ -634,7 +634,10 @@ func buildTransferTargets(download models.DownloadTask, manifest downloadpkg.Man
 	if download.ScrapeMediaType == "movie" && videoCount != 1 {
 		return nil, errors.New("movie transfer manifest must contain exactly one primary video")
 	}
-	episodes := transferEpisodeFactsForManifest(download, manifest)
+	episodes, err := transferEpisodeFactsForManifest(download, manifest)
+	if err != nil {
+		return nil, err
+	}
 	plan := make([]transferTargetItem, 0, len(manifest.Files))
 	targetByStem := map[string]transferTargetItem{}
 	usedTargets := map[string]struct{}{}
@@ -731,7 +734,10 @@ func validateAutomaticTransferSnapshot(download models.DownloadTask, manifest do
 		return errors.New("transfer manifest was not package-selected")
 	}
 	videoCount := 0
-	episodes := transferEpisodeFactsForManifest(download, manifest)
+	episodes, err := transferEpisodeFactsForManifest(download, manifest)
+	if err != nil {
+		return err
+	}
 	for _, file := range manifest.Files {
 		if isVideoFile(file.RelativePath) {
 			videoCount++
@@ -764,7 +770,8 @@ func transferEpisodeFacts(download models.DownloadTask, relativePath string, vid
 		download.RecognitionOverrideEpisode = nil
 	}
 	manifest := downloadpkg.Manifest{Complete: true, Files: []downloadpkg.File{{RelativePath: relativePath, Size: minimumAutomaticTransferVideoBytes}}}
-	fact := transferEpisodeFactsForManifest(download, manifest)[normalizedManifestPath(relativePath)]
+	facts, _ := transferEpisodeFactsForManifest(download, manifest)
+	fact := facts[normalizedManifestPath(relativePath)]
 	season, episode := cloneInt(fact.Season), cloneInt(fact.Episode)
 	if download.ScrapeMediaType == "tv" {
 		if download.ScrapeSeason != nil {
@@ -794,11 +801,20 @@ type transferEpisodeFact struct {
 	Episode *int
 }
 
-func transferEpisodeFactsForManifest(download models.DownloadTask, manifest downloadpkg.Manifest) map[string]transferEpisodeFact {
+func transferEpisodeFactsForManifest(download models.DownloadTask, manifest downloadpkg.Manifest) (map[string]transferEpisodeFact, error) {
 	videoFiles := make([]mediarecognition.FileFact, 0, len(manifest.Files))
+	manifestPaths := make(map[string]struct{}, len(manifest.Files))
 	for _, file := range manifest.Files {
 		if isVideoFile(file.RelativePath) {
-			videoFiles = append(videoFiles, mediarecognition.FileFact{RelativePath: normalizedManifestPath(file.RelativePath), Size: file.Size})
+			key := normalizedManifestPath(file.RelativePath)
+			if key == "" {
+				return nil, errors.New("episode fact path is invalid")
+			}
+			if _, duplicate := manifestPaths[key]; duplicate {
+				return nil, errors.New("episode fact path is duplicated")
+			}
+			manifestPaths[key] = struct{}{}
+			videoFiles = append(videoFiles, mediarecognition.FileFact{RelativePath: key, Size: file.Size})
 		}
 	}
 	resolved := mediarecognition.ResolvePackageEpisodes(videoFiles, mediarecognition.MediaType(download.ScrapeMediaType))
@@ -806,11 +822,54 @@ func transferEpisodeFactsForManifest(download models.DownloadTask, manifest down
 	for _, fact := range resolved.Files {
 		result[normalizedManifestPath(fact.RelativePath)] = transferEpisodeFact{Season: cloneInt(fact.Season), Episode: cloneInt(fact.Episode)}
 	}
+
+	// The immutable identity snapshot is the authoritative per-file projection.
+	// It is deliberately validated against the exact selected manifest before it
+	// can override deterministic filename parsing. This keeps old/corrupt paths
+	// from influencing a retry or reorganization plan.
+	if download.IdentityRevision > 0 && strings.TrimSpace(download.IdentitySnapshotJSON) != "" {
+		snapshot, err := decodeMediaIdentity(download.IdentitySnapshotJSON)
+		if err != nil || snapshot.Revision != download.IdentityRevision {
+			return nil, errors.New("episode identity snapshot revision is invalid")
+		}
+		seenSnapshotPaths := make(map[string]struct{}, len(snapshot.Episodes))
+		for _, episode := range snapshot.Episodes {
+			key := normalizedManifestPath(episode.RelativePath)
+			if _, exists := manifestPaths[key]; !exists {
+				return nil, errors.New("episode identity path is outside selected manifest")
+			}
+			if _, duplicate := seenSnapshotPaths[key]; duplicate {
+				return nil, errors.New("episode identity path is duplicated")
+			}
+			seenSnapshotPaths[key] = struct{}{}
+			if episode.Episode == nil || (episode.Season != nil && (*episode.Season < 0 || *episode.Season > 200)) || *episode.Episode <= 0 || *episode.Episode > 100000 {
+				return nil, errors.New("episode identity fact is invalid")
+			}
+			result[key] = transferEpisodeFact{Season: cloneInt(episode.Season), Episode: cloneInt(episode.Episode)}
+		}
+	}
+
+	structuredSeasons := make(map[int]struct{})
+	for _, fact := range result {
+		if fact.Season != nil {
+			structuredSeasons[*fact.Season] = struct{}{}
+		}
+	}
+	allowTaskSeason := len(videoFiles) == 1
+	if len(structuredSeasons) == 1 {
+		if _, matchesAutomatic := structuredSeasons[valueOrZero(download.ScrapeSeason)]; download.ScrapeSeason != nil && matchesAutomatic {
+			allowTaskSeason = true
+		}
+	}
+	allowManualSeason := len(videoFiles) == 1
+	if len(structuredSeasons) == 1 && download.RecognitionOverrideSeason != nil {
+		_, allowManualSeason = structuredSeasons[*download.RecognitionOverrideSeason]
+	}
 	for _, file := range videoFiles {
 		key := normalizedManifestPath(file.RelativePath)
 		fact := result[key]
 		if download.ScrapeMediaType == "tv" {
-			if download.ScrapeSeason != nil {
+			if download.ScrapeSeason != nil && fact.Season == nil && allowTaskSeason {
 				fact.Season = cloneInt(download.ScrapeSeason)
 			}
 			if download.ScrapeEpisode != nil && len(videoFiles) == 1 {
@@ -818,7 +877,7 @@ func transferEpisodeFactsForManifest(download models.DownloadTask, manifest down
 			}
 		}
 		if download.RecognitionOverrideMediaType == "tv" {
-			if download.RecognitionOverrideSeason != nil {
+			if download.RecognitionOverrideSeason != nil && allowManualSeason {
 				fact.Season = cloneInt(download.RecognitionOverrideSeason)
 			}
 			if download.RecognitionOverrideEpisode != nil && len(videoFiles) == 1 {
@@ -831,7 +890,29 @@ func transferEpisodeFactsForManifest(download models.DownloadTask, manifest down
 		}
 		result[key] = fact
 	}
-	return result
+	seenEpisodes := make(map[string]string, len(result))
+	for key, fact := range result {
+		if fact.Episode == nil {
+			continue
+		}
+		season := 1
+		if fact.Season != nil {
+			season = *fact.Season
+		}
+		identity := fmt.Sprintf("%d:%d", season, *fact.Episode)
+		if other, duplicate := seenEpisodes[identity]; duplicate && other != key && len(videoFiles) > 1 {
+			return nil, errors.New("episode identity is duplicated")
+		}
+		seenEpisodes[identity] = key
+	}
+	return result, nil
+}
+
+func valueOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func sameAutomaticTransferFiles(left, right []downloadpkg.File) bool {
@@ -1196,7 +1277,7 @@ func copyFileAtomic(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	temp := destination + ".omc-" + uuid.NewString() + ".partial"
 	output, err := os.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {

@@ -34,15 +34,16 @@ const (
 )
 
 type SiteService struct {
-	db            *gorm.DB
-	audit         *AuditService
-	credentials   *credential.Store
-	downloads     *DownloadService
-	adapters      map[string]sitepkg.Adapter
-	log           zerolog.Logger
-	now           func() time.Time
-	metadata      *MetadataSettingsService
-	aiRecognition *AIRecognitionSettingsService
+	db              *gorm.DB
+	audit           *AuditService
+	credentials     *credential.Store
+	downloads       *DownloadService
+	adapters        map[string]sitepkg.Adapter
+	log             zerolog.Logger
+	now             func() time.Time
+	metadata        *MetadataSettingsService
+	aiRecognition   *AIRecognitionSettingsService
+	renderedFetcher sitepkg.RenderedFetcher
 
 	limitMu sync.Mutex
 	limits  map[uint]*siteLimiter
@@ -96,28 +97,28 @@ type SiteHealthSummary struct {
 	CheckedAt *time.Time `json:"checked_at,omitempty"`
 }
 type SiteSummary struct {
-	ID                   uint              `json:"id"`
-	Name                 string            `json:"name"`
-	Kind                 string            `json:"kind"`
-	SiteType             string            `json:"site_type"`
-	CredentialKind       string            `json:"credential_kind"`
-	Capabilities         SiteCapabilities  `json:"capabilities"`
-	BaseURL              string            `json:"base_url"`
-	UserAgent            string            `json:"user_agent"`
-	BrowserEmulation     bool              `json:"browser_emulation"`
-	BrowserServiceURL    string            `json:"browser_service_url"`
-	Enabled              bool              `json:"enabled"`
-	Priority             int               `json:"priority"`
-	TimeoutSeconds       int               `json:"timeout_seconds"`
-	RateLimitPerMinute   int               `json:"rate_limit_per_minute"`
-	CredentialConfigured bool              `json:"credential_configured"`
-	CookieConfigured     bool              `json:"cookie_configured"`
-	PasskeyConfigured    bool              `json:"passkey_configured"`
-	APIKeyConfigured     bool              `json:"api_key_configured"`
-	Health               SiteHealthSummary `json:"health"`
-	Revision             uint64            `json:"revision"`
-	CreatedAt            time.Time         `json:"created_at"`
-	UpdatedAt            time.Time         `json:"updated_at"`
+	ID                       uint              `json:"id"`
+	Name                     string            `json:"name"`
+	Kind                     string            `json:"kind"`
+	SiteType                 string            `json:"site_type"`
+	CredentialKind           string            `json:"credential_kind"`
+	Capabilities             SiteCapabilities  `json:"capabilities"`
+	BaseURL                  string            `json:"base_url"`
+	UserAgent                string            `json:"user_agent"`
+	BrowserEmulation         bool              `json:"browser_emulation"`
+	BrowserServiceConfigured bool              `json:"browser_service_configured"`
+	Enabled                  bool              `json:"enabled"`
+	Priority                 int               `json:"priority"`
+	TimeoutSeconds           int               `json:"timeout_seconds"`
+	RateLimitPerMinute       int               `json:"rate_limit_per_minute"`
+	CredentialConfigured     bool              `json:"credential_configured"`
+	CookieConfigured         bool              `json:"cookie_configured"`
+	PasskeyConfigured        bool              `json:"passkey_configured"`
+	APIKeyConfigured         bool              `json:"api_key_configured"`
+	Health                   SiteHealthSummary `json:"health"`
+	Revision                 uint64            `json:"revision"`
+	CreatedAt                time.Time         `json:"created_at"`
+	UpdatedAt                time.Time         `json:"updated_at"`
 }
 type SiteCapabilities struct {
 	Search   bool `json:"search"`
@@ -147,6 +148,15 @@ type SiteSearchInput struct {
 	TMDBID                       *int64
 	Page                         int
 	SiteID                       *uint
+	SiteIDs                      []uint
+}
+type SiteSearchOption struct {
+	ID           uint   `json:"id"`
+	Name         string `json:"name"`
+	SiteType     string `json:"site_type"`
+	HealthStatus string `json:"health_status"`
+	Searchable   bool   `json:"searchable"`
+	Reason       string `json:"reason,omitempty"`
 }
 type SiteSearchResult struct {
 	Token               string                        `json:"token"`
@@ -254,6 +264,9 @@ func (s *SiteService) SetMetadataSettings(service *MetadataSettingsService) { s.
 func (s *SiteService) SetAIRecognitionSettings(service *AIRecognitionSettingsService) {
 	s.aiRecognition = service
 }
+func (s *SiteService) SetRenderedFetcher(fetcher sitepkg.RenderedFetcher) {
+	s.renderedFetcher = fetcher
+}
 
 func (s *SiteService) List(actor Actor) ([]SiteSummary, error) {
 	if !actor.IsSystemAdmin() {
@@ -348,7 +361,7 @@ func (s *SiteService) Create(ctx context.Context, actor Actor, input SiteInput, 
 	if err != nil {
 		return SiteSummary{}, err
 	}
-	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: baseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: input.BrowserEmulation, BrowserServiceURL: browserURL})
+	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: baseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: input.BrowserEmulation, BrowserServiceURL: browserURL, RenderedFetcher: s.renderedFetcher})
 	if err != nil {
 		return SiteSummary{}, siteAdapterError(err, "站点连接测试失败，未保存配置")
 	}
@@ -405,7 +418,7 @@ func (s *SiteService) createFromCookieCloud(ctx context.Context, name, kind, bas
 	if err != nil {
 		return SiteSummary{}, err
 	}
-	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: baseURL, Cookie: credential.Cookie, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second})
+	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: baseURL, Cookie: credential.Cookie, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, RenderedFetcher: s.renderedFetcher})
 	if err != nil {
 		return SiteSummary{}, siteAdapterError(err, "CookieCloud 中的站点凭据验证失败")
 	}
@@ -554,7 +567,7 @@ func (s *SiteService) Update(ctx context.Context, actor Actor, id uint, input Si
 		record.Enabled = *input.Enabled
 	}
 	adapter := s.adapters[record.Kind]
-	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: browserEmulation, BrowserServiceURL: browserURL})
+	health, err := adapter.Test(ctx, sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: userAgent, Timeout: time.Duration(timeout) * time.Second, BrowserEmulation: browserEmulation, BrowserServiceURL: browserURL, RenderedFetcher: s.renderedFetcher})
 	if err != nil {
 		return SiteSummary{}, siteAdapterError(err, "候选站点配置测试失败，原配置已保留")
 	}
@@ -653,6 +666,97 @@ func (s *SiteService) Search(ctx context.Context, actor Actor, input SiteSearchI
 	return groups, err
 }
 
+const maxSiteSearchScope = 64
+
+func normalizeSiteSearchScope(siteID *uint, siteIDs []uint) ([]uint, error) {
+	if siteID != nil && len(siteIDs) > 0 {
+		return nil, appError(CodeInvalidRequest, "单站筛选和多站筛选不能同时使用", nil)
+	}
+	if siteID != nil {
+		if *siteID == 0 {
+			return nil, appError(CodeInvalidRequest, "站点筛选无效", nil)
+		}
+		return []uint{*siteID}, nil
+	}
+	if len(siteIDs) == 0 {
+		return nil, nil
+	}
+	if len(siteIDs) > maxSiteSearchScope {
+		return nil, appError(CodeInvalidRequest, "一次最多选择 64 个站点", nil)
+	}
+	result := make([]uint, 0, len(siteIDs))
+	seen := make(map[uint]struct{}, len(siteIDs))
+	for _, id := range siteIDs {
+		if id == 0 {
+			return nil, appError(CodeInvalidRequest, "站点筛选无效", nil)
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+func (s *SiteService) searchSiteRecords(siteID *uint, siteIDs []uint) ([]models.Site, error) {
+	scope, err := normalizeSiteSearchScope(siteID, siteIDs)
+	if err != nil {
+		return nil, err
+	}
+	var records []models.Site
+	query := s.db.Where("enabled = ?", true).Order("priority ASC,id ASC")
+	if len(scope) > 0 {
+		query = query.Where("id IN ?", scope)
+	}
+	if err := query.Find(&records).Error; err != nil {
+		return nil, err
+	}
+	selected := len(scope) > 0
+	if selected && len(records) != len(scope) {
+		return nil, appError(CodeInvalidRequest, "所选站点不存在、已停用或不可搜索，请重新选择", nil)
+	}
+	filtered := make([]models.Site, 0, len(records))
+	for _, record := range records {
+		definition, found := builtin.DefinitionForKey(record.Kind)
+		if !found || !definition.Search {
+			if selected {
+				return nil, appError(CodeInvalidRequest, "所选站点不存在、已停用或不可搜索，请重新选择", nil)
+			}
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	return filtered, nil
+}
+
+func (s *SiteService) SearchOptions(actor Actor) ([]SiteSearchOption, error) {
+	if !actor.Can(authz.PermissionDiscoveryRead) {
+		return nil, appError(CodePermissionDenied, "无权读取资源搜索站点", nil)
+	}
+	var records []models.Site
+	if err := s.db.Where("enabled = ?", true).Order("priority ASC,id ASC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]SiteSearchOption, 0, len(records))
+	for _, record := range records {
+		definition, found := builtin.DefinitionForKey(record.Kind)
+		if !found || !definition.Search {
+			continue
+		}
+		searchable := record.LastHealthStatus != "offline"
+		reason := ""
+		if !searchable {
+			reason = "最近一次连接测试失败"
+			if record.LastHealthErrorCode != "" {
+				reason += "（" + record.LastHealthErrorCode + "）"
+			}
+		}
+		result = append(result, SiteSearchOption{ID: record.ID, Name: record.Name, SiteType: definition.SiteType, HealthStatus: firstNonEmpty(record.LastHealthStatus, "unknown"), Searchable: searchable, Reason: reason})
+	}
+	return result, nil
+}
+
 func (s *SiteService) SearchEach(ctx context.Context, actor Actor, input SiteSearchInput, emit func(SiteSearchGroup)) error {
 	if !actor.Can(authz.PermissionDiscoveryRead) {
 		return appError(CodePermissionDenied, "无权搜索种子资源", nil)
@@ -689,12 +793,8 @@ func (s *SiteService) SearchEach(ctx context.Context, actor Actor, input SiteSea
 	if input.Page < 1 || input.Page > 20 {
 		return appError(CodeInvalidRequest, "种子资源搜索页码无效", nil)
 	}
-	var records []models.Site
-	query := s.db.Where("enabled = ?", true).Order("priority ASC,id ASC")
-	if input.SiteID != nil {
-		query = query.Where("id = ?", *input.SiteID)
-	}
-	if err := query.Find(&records).Error; err != nil {
+	records, err := s.searchSiteRecords(input.SiteID, input.SiteIDs)
+	if err != nil {
 		return err
 	}
 	if len(records) == 0 {
@@ -1215,7 +1315,7 @@ func (s *SiteService) config(record models.Site) (sitepkg.Config, error) {
 	if err != nil {
 		return sitepkg.Config{}, appError(CodeSiteCredentialInvalid, "站点凭据不可用", nil)
 	}
-	return sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: record.UserAgent, Timeout: time.Duration(record.TimeoutSeconds) * time.Second, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL}, nil
+	return sitepkg.Config{BaseURL: record.BaseURL, Cookie: credential.Cookie, Passkey: credential.Passkey, APIKey: credential.APIKey, UserAgent: record.UserAgent, Timeout: time.Duration(record.TimeoutSeconds) * time.Second, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, RenderedFetcher: s.renderedFetcher}, nil
 }
 func (s *SiteService) encryptCredential(id uint, kind string, value siteCredentialEnvelope) (string, error) {
 	payload, err := json.Marshal(value)
@@ -1422,7 +1522,10 @@ func normalizeSitePolicy(priority, timeout, limit int, userAgent string) (int, i
 }
 func normalizeBrowserService(enabled bool, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
-	if !enabled && raw == "" {
+	// A configured loopback CloakBrowser companion is global. Public BT
+	// challenge profiles may therefore enable rendering without a per-site
+	// FlareSolverr fallback URL.
+	if raw == "" {
 		return "", nil
 	}
 	parsed, err := url.Parse(strings.TrimRight(raw, "/"))
@@ -1439,7 +1542,7 @@ func (s *SiteService) siteSummary(record models.Site) SiteSummary {
 			_ = json.Unmarshal([]byte(raw), &configured)
 		}
 	}
-	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, Capabilities: capabilitiesForDefinition(definition), BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceURL: record.BrowserServiceURL, Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", CookieConfigured: configured.Cookie != "", PasskeyConfigured: configured.Passkey != "", APIKeyConfigured: configured.APIKey != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	return SiteSummary{ID: record.ID, Name: record.Name, Kind: record.Kind, SiteType: definition.SiteType, CredentialKind: definition.CredentialKind, Capabilities: capabilitiesForDefinition(definition), BaseURL: record.BaseURL, UserAgent: record.UserAgent, BrowserEmulation: record.BrowserEmulation, BrowserServiceConfigured: record.BrowserServiceURL != "", Enabled: record.Enabled, Priority: record.Priority, TimeoutSeconds: record.TimeoutSeconds, RateLimitPerMinute: record.RateLimitPerMinute, CredentialConfigured: definition.CredentialKind != builtin.CredentialNone && record.CredentialCiphertext != "", CookieConfigured: configured.Cookie != "", PasskeyConfigured: configured.Passkey != "", APIKeyConfigured: configured.APIKey != "", Health: SiteHealthSummary{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, Username: record.LastHealthUsername, CheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 }
 
 func capabilitiesForDefinition(definition builtin.Definition) SiteCapabilities {

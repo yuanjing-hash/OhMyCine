@@ -604,3 +604,79 @@ plan := managedManifestPlanner.Preview(actor, identity)
 base := validatePublicHTTPSVersionedPrefix(config.BaseURL)
 requestURL := appendOpenAIResource(base, "/v1/chat/completions")
 ```
+
+## Scenario: Public-BT Rendered Fetcher Boundary
+
+### 1. Scope / Trigger
+
+- Trigger: configuring FlareSolverr, connecting an optional CloakBrowser companion, or routing a public BT adapter through browser rendering.
+
+### 2. Signatures
+
+```text
+RenderedFetchRequest {
+  ProfileID string
+  URL string
+  AllowedHosts []string
+  UserAgent string
+  Timeout time.Duration
+  MaxBytes int64
+}
+
+NewFlareSolverrFetcher(endpoint string)
+NewCloakBrowserFetcher(loopbackEndpoint string)
+```
+
+- Automatic rendered profiles are a Server allowlist, currently `1337x` and `EXT.to`. The public request surface never accepts a solver endpoint, profile ID, rendered target URL or allowed-host override.
+
+### 3. Contracts
+
+- Validate the target before dispatch and the final URL after the solver returns. Both must use HTTPS, default port 443, an exact registered profile host, and a public resolved address; reject userinfo, fragments, internal/link-local/loopback/multicast/private addresses and DNS rebinding.
+- CloakBrowser is a separately installed companion reachable only through loopback IPC/HTTP. OhMyCine may provide configuration and health checks but does not download, bundle or redistribute the proprietary browser binary.
+- FlareSolverr is a bounded configured fallback for the same Site only. Do not accept arbitrary scheme/host redirects or environment-proxy behavior that bypasses target validation.
+- `RenderedFetchRequest` is credential-free. PT Cookie/passkey/API key, Authorization, 115 Cookie and proxy credentials remain inside their owning Server clients and are never forwarded to either solver.
+- Limit connect/request time, redirect count, envelope size and final HTML size. Destroy temporary Flare sessions and browser contexts on success, error, timeout and cancellation. One Site failure does not retain a cross-Site cookie jar.
+- Ordinary DTOs, SSE, WebSocket, audit, browser storage and logs expose neither solver URLs/profiles nor request/response bodies. Diagnostics use stable provider-neutral codes only.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| HTTP target, non-443 port or unregistered profile/host | Reject before solver access |
+| Host resolves to private/loopback/link-local/multicast address | Reject before connection |
+| Final URL crosses the exact profile host set | Reject the page and discard its body |
+| Cloak endpoint is non-loopback | Reject configuration/initialization |
+| Cloak health unavailable | Fall back only to same-Site Flare when configured; otherwise site-level unavailable |
+| Flare/Cloak response exceeds envelope/HTML limit | Abort and return a stable invalid-response error |
+| PT configuration contains Cookie/passkey | Omit them from rendered request and solver payload/logs |
+| Context is cancelled | Close response/session/context promptly and retain no reusable cross-Site state |
+
+### 5. Good / Base / Bad Cases
+
+- Good: 1337x resolves to a public address, Cloak renders its exact HTTPS profile URL, and the final URL remains on the registered host.
+- Base: Cloak is not installed; the same Site uses its configured FlareSolverr and other Sites continue normally.
+- Bad: expose `/render?url=...`, accept `http://127.0.0.1`, forward a PT Cookie, or trust the solver's off-host `solution.url`.
+
+### 6. Tests Required
+
+- Unit tests cover scheme/port/userinfo/fragment, exact host sets, public/private DNS answers, final-URL revalidation, loopback-only companion endpoints and bounded time/body behavior.
+- Provider routing tests cover Cloak preference, Flare same-Site fallback only on unavailable, no validation-error fallback, cancellation cleanup and Site failure isolation.
+- Serialization/log tests seed Cookie/passkey/solver URLs/upstream bodies and assert none appear in API/SSE/WebSocket/audit/browser-storage/runtime-log projections.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+page := cloak.Render(ctx, request.URL, site.Cookie)
+return page.HTML // trusts the companion's redirect and body size
+```
+
+#### Correct
+
+```go
+request := registeredRenderedRequest(profile, exactURL) // no credentials
+validatePublicRenderedTarget(request)
+page := fetcher.Fetch(ctx, request)
+validateRenderedFinalURL(page.FinalURL, request.AllowedHosts)
+```

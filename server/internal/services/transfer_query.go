@@ -64,6 +64,7 @@ type TransferSummary struct {
 	ConflictPolicy   string     `json:"conflict_policy"`
 	Phase            string     `json:"phase"`
 	JobStatus        string     `json:"job_status"`
+	RetryAt          *time.Time `json:"retry_at"`
 	ProcessedFiles   int        `json:"processed_files"`
 	TotalFiles       int        `json:"total_files"`
 	LastErrorCode    string     `json:"last_error_code"`
@@ -117,7 +118,7 @@ const transferProjectionColumns = `
 	download.scrape_confidence, download.identity_source, download.identity_status,
 	download.identity_locked, download.identity_revision, download.profile_id, download.profile_revision,
 	transfer.library_id, transfer.library_name, download.transfer_mode,
-	download.conflict_policy, transfer.phase, jobs.status AS job_status,
+	download.conflict_policy, transfer.phase, jobs.status AS job_status, jobs.next_attempt_at AS retry_at,
 	transfer.processed_files, transfer.total_files,
 	transfer.last_error_code AS transfer_error_code,
 	transfer.cleanup_status, transfer.cleanup_removed, transfer.cleanup_error_code,

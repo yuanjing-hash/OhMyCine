@@ -24,7 +24,7 @@ func (a *API) QueueEvents(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	events, unsubscribe := a.queueEvents.Subscribe(actor)
 	defer unsubscribe()
 	for event := range events {

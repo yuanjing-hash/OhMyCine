@@ -214,7 +214,7 @@ func (a *API) PlayerOnlineAsset(c *gin.Context) {
 		writeError(c, a.log, &services.AppError{Code: appCode, Message: message, Cause: err})
 		return
 	}
-	defer stream.Body.Close()
+	defer func() { _ = stream.Body.Close() }()
 	for name, values := range stream.Header {
 		for _, value := range values {
 			c.Writer.Header().Add(name, value)

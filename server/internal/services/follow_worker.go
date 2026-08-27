@@ -457,8 +457,8 @@ func (w *FollowSearchWorker) reserveEpisodes(run models.FollowRun, subscriptionI
 			}
 		}
 		for _, episode := range episodes {
-			claim, exists := existing[episode]
-			claim = models.FollowEpisodeClaim{SubscriptionID: subscriptionID, SeasonNumber: candidate.Season, EpisodeNumber: episode, State: "queued", RunID: &run.ID, ResourceFingerprint: candidate.Fingerprint, UpdatedAt: now}
+			_, exists := existing[episode]
+			claim := models.FollowEpisodeClaim{SubscriptionID: subscriptionID, SeasonNumber: candidate.Season, EpisodeNumber: episode, State: "queued", RunID: &run.ID, ResourceFingerprint: candidate.Fingerprint, UpdatedAt: now}
 			if !exists {
 				if err := tx.Create(&claim).Error; err != nil {
 					return err

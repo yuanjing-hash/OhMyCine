@@ -624,7 +624,7 @@ func (host *Host) http(ctx context.Context, pluginID string, authorization plugi
 		}
 		return httpResponse{}, invalid("plugin_http_upstream_unavailable", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	limited := io.LimitReader(response.Body, maxHTTPResponseBytes+1)
 	responseBody, err := io.ReadAll(limited)
 	if err != nil {

@@ -39,6 +39,7 @@ interface SiteForm {
   rateLimitPerMinute: number
   browserEmulation: boolean
   browserServiceURL: string
+  clearBrowserService: boolean
   clearPasskey: boolean
   clearAPIKey: boolean
 }
@@ -79,6 +80,12 @@ const title = computed(() => editing.value ? `编辑 ${editing.value.name}` : `�
 const filteredCatalog = computed(() => siteCatalog.value.filter(item => item.site_type === selectedType.value))
 const selectedCatalog = computed(() => siteCatalog.value.find(item => item.key === form.value.kind))
 const credentialKind = computed(() => form.value.kind === 'auto_bt' ? 'none' : selectedCatalog.value?.credential_kind || editing.value?.credential_kind || 'cookie')
+const publicRenderedKinds = new Set(['1337x', 'extto'])
+const browserEmulationMode = computed<'pt' | 'public_bt' | null>(() => {
+  const kind = editing.value?.kind || btResolution.value?.kind || form.value.kind
+  if (selectedType.value === 'pt' && credentialKind.value === 'cookie') return 'pt'
+  return publicRenderedKinds.has(kind) ? 'public_bt' : null
+})
 const cookieCloudEndpoint = computed(() => {
   const path = cookieCloudSettings.value?.local_upload_path || '/cookiecloud'
   return `${window.location.origin}${path}`
@@ -88,7 +95,7 @@ function emptyForm(): SiteForm {
   return {
     kind: 'pttime', name: 'PTTime', baseURL: '', cookie: '', passkey: '', apiKey: '', userAgent: '', enabled: true,
     priority: 100, timeoutSeconds: 12, rateLimitPerMinute: 12,
-    browserEmulation: false, browserServiceURL: '', clearPasskey: false, clearAPIKey: false,
+    browserEmulation: false, browserServiceURL: '', clearBrowserService: false, clearPasskey: false, clearAPIKey: false,
   }
 }
 
@@ -155,6 +162,10 @@ async function resolveBT() {
     btResolution.value = result
     form.value.baseURL = result.canonical_base_url
     if (!form.value.name.trim()) form.value.name = result.name
+    if (!publicRenderedKinds.has(result.kind)) {
+      form.value.browserEmulation = false
+      form.value.browserServiceURL = ''
+    }
     return result
   } catch (reason) {
     btResolution.value = null
@@ -170,7 +181,7 @@ function openEdit(site: SiteSummary) {
     kind: site.kind, name: site.name, baseURL: site.base_url, cookie: '', passkey: '', apiKey: '', userAgent: site.user_agent,
     enabled: site.enabled, priority: site.priority, timeoutSeconds: site.timeout_seconds,
     rateLimitPerMinute: site.rate_limit_per_minute, browserEmulation: site.browser_emulation,
-    browserServiceURL: site.browser_service_url, clearPasskey: false, clearAPIKey: false,
+    browserServiceURL: '', clearBrowserService: false, clearPasskey: false, clearAPIKey: false,
   }
   selectedType.value = site.site_type
   dialogStep.value = 'form'
@@ -199,19 +210,21 @@ async function save() {
       timeout_seconds: form.value.timeoutSeconds,
       rate_limit_per_minute: form.value.rateLimitPerMinute,
       browser_emulation: form.value.browserEmulation,
-      browser_service_url: form.value.browserEmulation ? form.value.browserServiceURL : '',
     }
     if (current) {
+      const browserServiceURL = form.value.browserServiceURL.trim()
       await api(sitePath(current.id), { method: 'PATCH', body: JSON.stringify({
         ...common, cookie: form.value.cookie.trim() || undefined,
         passkey: form.value.passkey.trim() || undefined, clear_passkey: form.value.clearPasskey,
         api_key: form.value.apiKey.trim() || undefined, clear_api_key: form.value.clearAPIKey,
+        browser_service_url: !form.value.browserEmulation || form.value.clearBrowserService ? '' : browserServiceURL || undefined,
         revision: current.revision,
       }) })
       notify('候选配置测试通过，站点已更新', 'success')
     } else {
       await api(sitesPath, { method: 'POST', body: JSON.stringify({
         ...common, kind: form.value.kind, cookie: form.value.cookie, passkey: form.value.passkey, api_key: form.value.apiKey,
+        browser_service_url: form.value.browserEmulation ? form.value.browserServiceURL.trim() : '',
       }) })
       notify('站点测试通过并已安全保存', 'success')
     }
@@ -430,11 +443,13 @@ onMounted(loadSites)
           <div><label class="label" for="site-rate">每分钟请求上限</label><input id="site-rate" v-model.number="form.rateLimitPerMinute" class="input" type="number" min="1" max="120" required /></div>
           <div><label class="label" for="site-timeout">请求超时（秒）</label><input id="site-timeout" v-model.number="form.timeoutSeconds" class="input" type="number" min="3" max="30" required /></div>
           <div><label class="label" for="site-ua">自定义 User-Agent（可选）</label><input id="site-ua" v-model="form.userAgent" class="input font-mono" maxlength="256" autocomplete="off" /></div>
-          <label v-if="credentialKind === 'cookie'" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.browserEmulation" type="checkbox" />启用浏览器模拟登录 / 反爬兼容</label>
+          <label v-if="browserEmulationMode" class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.browserEmulation" type="checkbox" />{{ browserEmulationMode === 'public_bt' ? '启用 Cloudflare 页面渲染兼容' : '启用无凭据页面渲染兼容' }}</label>
           <div v-if="form.browserEmulation" class="semantic-warning p-4 sm:col-span-2">
-            <label class="label" for="site-browser-service">FlareSolverr 服务地址</label>
-            <input id="site-browser-service" v-model="form.browserServiceURL" class="input font-mono" type="url" placeholder="http://127.0.0.1:8191" required autocomplete="off" />
-            <p class="mb-0 mt-2 text-xs">Server 会把目标站点 URL 和该站 Cookie 发送给此服务完成浏览器渲染。建议只使用自己在局域网部署并信任的 FlareSolverr；种子下载仍由 Server 直接完成。</p>
+            <label class="label" for="site-browser-service">{{ browserEmulationMode === 'public_bt' ? 'FlareSolverr 回退地址（可选）' : 'FlareSolverr 服务地址' }}</label>
+            <input id="site-browser-service" v-model="form.browserServiceURL" class="input font-mono" type="url" :placeholder="editing?.browser_service_configured ? '已配置；留空继续使用' : 'http://127.0.0.1:8191'" :required="browserEmulationMode === 'pt' && !editing?.browser_service_configured" autocomplete="off" />
+            <label v-if="editing?.browser_service_configured" class="text-muted mt-2 flex items-center gap-2 text-xs"><input v-model="form.clearBrowserService" type="checkbox" />清除已保存的 FlareSolverr 地址</label>
+            <p v-if="browserEmulationMode === 'public_bt'" class="mb-0 mt-2 text-xs">1337x / EXT.to 会优先使用 Server 通过 <span class="font-mono">OMC_CLOAKBROWSER_COMPANION_URL</span> 连接的本机 CloakBrowser companion，不可用时再尝试这里的 FlareSolverr。CloakBrowser 需由用户从官方渠道显式安装并接受其许可；OhMyCine 不附带、下载或重新分发其浏览器二进制。</p>
+            <p v-else class="mb-0 mt-2 text-xs">这是既有 PT 兼容入口。Server 只发送受控 HTTPS 页面地址，不会把 PT Cookie 或 passkey 交给 FlareSolverr；种子下载与带凭据请求仍由 Server 直连完成。</p>
           </div>
           <label class="text-muted flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.enabled" type="checkbox" />启用此站点参与聚合搜索</label>
         </div>

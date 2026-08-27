@@ -1034,7 +1034,7 @@ type Site struct {
 	CredentialCiphertext string     `gorm:"type:text;not null" json:"-"`
 	UserAgent            string     `gorm:"size:256;not null;default:''" json:"user_agent"`
 	BrowserEmulation     bool       `gorm:"not null;default:false" json:"browser_emulation"`
-	BrowserServiceURL    string     `gorm:"size:2048;not null;default:''" json:"browser_service_url"`
+	BrowserServiceURL    string     `gorm:"size:2048;not null;default:''" json:"-"`
 	Enabled              bool       `gorm:"not null;default:true;index" json:"enabled"`
 	Priority             int        `gorm:"not null;default:100;index" json:"priority"`
 	TimeoutSeconds       int        `gorm:"not null;default:12" json:"timeout_seconds"`
@@ -1251,12 +1251,18 @@ type FollowEpisodeClaim struct {
 }
 
 const (
-	TransferTaskStatusQueued       = "queued"
-	TransferTaskStatusPlanning     = "planning"
-	TransferTaskStatusTransferring = "transferring"
-	TransferTaskStatusReconciling  = "reconciling"
-	TransferTaskStatusCompleted    = "completed"
-	TransferTaskStatusFailed       = "failed"
+	TransferTaskStatusQueued              = "queued"
+	TransferTaskStatusPlanning            = "planning"
+	TransferTaskStatusCheckingDirectories = "checking_directories"
+	TransferTaskStatusCreatingDirectories = "creating_directories"
+	TransferTaskStatusCheckingConflicts   = "checking_conflicts"
+	TransferTaskStatusMoving              = "moving"
+	TransferTaskStatusRenaming            = "renaming"
+	TransferTaskStatusRiskBackoff         = "risk_backoff"
+	TransferTaskStatusTransferring        = "transferring"
+	TransferTaskStatusReconciling         = "reconciling"
+	TransferTaskStatusCompleted           = "completed"
+	TransferTaskStatusFailed              = "failed"
 
 	TransferCleanupPending   = "pending"
 	TransferCleanupDeferred  = "deferred"

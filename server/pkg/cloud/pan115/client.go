@@ -189,7 +189,13 @@ type Client struct {
 	directRate      *rate.Limiter
 	offlineRate     *rate.Limiter
 	eventRate       *rate.Limiter
-	mutationRate    *rate.Limiter
+	mkdirRate       *rate.Limiter
+	uploadRate      *rate.Limiter
+	moveRate        *rate.Limiter
+	copyRate        *rate.Limiter
+	renameRate      *rate.Limiter
+	recycleRate     *rate.Limiter
+	purgeRate       *rate.Limiter
 	offlinePages    sync.Map
 	callSlots       chan struct{}
 	stateMu         sync.Mutex
@@ -215,7 +221,18 @@ func New(config cloud.Config) (cloud.Driver, error) {
 	// fail" response for generic and iOS user agents. 115Browser is required
 	// for offline submission and remains compatible with the read APIs.
 	sdk := pan115sdk.New(pan115sdk.WithClient(httpClient), pan115sdk.UA(pan115sdk.UA115Browser)).ImportCredential(credential)
-	return &Client{sdk: &sdkAdapter{sdk}, listRate: rate.NewLimiter(rate.Every(2*time.Second), 1), bulkRate: rate.NewLimiter(rate.Every(bulkRequestSpacing), 1), directRate: rate.NewLimiter(rate.Every(time.Second), 1), offlineRate: rate.NewLimiter(rate.Every(2*time.Second), 1), eventRate: rate.NewLimiter(rate.Every(5*time.Second), 1), mutationRate: rate.NewLimiter(rate.Every(2*time.Second), 1), callSlots: make(chan struct{}, maxInFlightCalls), now: time.Now, jitter: defaultJitter, recyclePassword: strings.TrimSpace(config.RecyclePassword)}, nil
+	return &Client{
+		sdk: &sdkAdapter{sdk}, listRate: rate.NewLimiter(rate.Every(2*time.Second), 1), bulkRate: rate.NewLimiter(rate.Every(bulkRequestSpacing), 1), directRate: rate.NewLimiter(rate.Every(time.Second), 1),
+		offlineRate: rate.NewLimiter(rate.Every(2*time.Second), 1), eventRate: rate.NewLimiter(rate.Every(5*time.Second), 1),
+		// MoviePilot's p115 integrations pace provider endpoints independently.
+		// Keep that boundary here: healthy mkdir is only concurrency bounded and
+		// must not wait behind move/rename/delete traffic, while each destructive
+		// operation retains its conservative two-second lane.
+		mkdirRate: rate.NewLimiter(rate.Inf, 1), uploadRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
+		moveRate: rate.NewLimiter(rate.Every(2*time.Second), 1), copyRate: rate.NewLimiter(rate.Every(2*time.Second), 1), renameRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
+		recycleRate: rate.NewLimiter(rate.Every(2*time.Second), 1), purgeRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
+		callSlots: make(chan struct{}, maxInFlightCalls), now: time.Now, jitter: defaultJitter, recyclePassword: strings.TrimSpace(config.RecyclePassword),
+	}, nil
 }
 
 func (c *Client) Provider() string { return cloud.ProviderPan115 }
@@ -369,7 +386,7 @@ func (c *Client) CreateDirectory(ctx context.Context, parentID, name string) (cl
 		return cloud.Item{}, cloud.Error(cloud.CodeUnavailable, false, errors.New("115 mutation API is unavailable"))
 	}
 	var itemID string
-	if err := c.waitAndCall(ctx, c.mutationRate, func() error {
+	if err := c.waitAndCall(ctx, c.mkdirRate, func() error {
 		var callErr error
 		itemID, callErr = sdk.Mkdir(parentID, name)
 		return callErr
@@ -407,7 +424,7 @@ func (c *Client) Upload(ctx context.Context, request cloud.UploadRequest) (cloud
 	if err := c.waitForRecovery(ctx); err != nil {
 		return cloud.Item{}, mapError(err)
 	}
-	if err := c.mutationRate.Wait(ctx); err != nil {
+	if err := c.uploadRate.Wait(ctx); err != nil {
 		return cloud.Item{}, mapError(err)
 	}
 	select {
@@ -446,13 +463,13 @@ func (c *Client) Upload(ctx context.Context, request cloud.UploadRequest) (cloud
 }
 
 func (c *Client) Move(ctx context.Context, itemID, targetParentID string) error {
-	return c.mutateItems(ctx, itemID, targetParentID, func(sdk mutationSDK, item, parent string) error {
+	return c.mutateItems(ctx, c.moveRate, itemID, targetParentID, func(sdk mutationSDK, item, parent string) error {
 		return sdk.Move(parent, item)
 	})
 }
 
 func (c *Client) Copy(ctx context.Context, itemID, targetParentID string) error {
-	return c.mutateItems(ctx, itemID, targetParentID, func(sdk mutationSDK, item, parent string) error {
+	return c.mutateItems(ctx, c.copyRate, itemID, targetParentID, func(sdk mutationSDK, item, parent string) error {
 		return sdk.Copy(parent, item)
 	})
 }
@@ -470,7 +487,7 @@ func (c *Client) Rename(ctx context.Context, itemID, name string) error {
 	if !ok {
 		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 mutation API is unavailable"))
 	}
-	if err := c.waitAndCall(ctx, c.mutationRate, func() error { return sdk.Rename(itemID, name) }); err != nil {
+	if err := c.waitAndCall(ctx, c.renameRate, func() error { return sdk.Rename(itemID, name) }); err != nil {
 		return mapError(err)
 	}
 	return nil
@@ -485,7 +502,7 @@ func (c *Client) Recycle(ctx context.Context, itemID string) error {
 	if !ok {
 		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 mutation API is unavailable"))
 	}
-	if err := c.waitAndCall(ctx, c.mutationRate, func() error { return sdk.Delete(itemID) }); err != nil {
+	if err := c.waitAndCall(ctx, c.recycleRate, func() error { return sdk.Delete(itemID) }); err != nil {
 		return mapError(err)
 	}
 	return nil
@@ -500,13 +517,13 @@ func (c *Client) PurgeRecycle(ctx context.Context, itemID string) error {
 	if !ok {
 		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 recycle cleanup API is unavailable"))
 	}
-	if err := c.waitAndCall(ctx, c.mutationRate, func() error {
+	if err := c.waitAndCall(ctx, c.purgeRate, func() error {
 		return sdk.CleanRecycleBin(c.recyclePassword, itemID)
 	}); err != nil {
 		original := err
 		for offset := 0; offset < 1000; offset += 100 {
 			var items []pan115sdk.RecycleBinItem
-			if listErr := c.waitAndCall(ctx, c.mutationRate, func() error {
+			if listErr := c.waitAndCall(ctx, c.purgeRate, func() error {
 				var callErr error
 				items, callErr = sdk.ListRecycleBin(offset, 100)
 				return callErr
@@ -532,7 +549,7 @@ func (c *Client) PurgeRecycle(ctx context.Context, itemID string) error {
 	return nil
 }
 
-func (c *Client) mutateItems(ctx context.Context, itemID, targetParentID string, call func(mutationSDK, string, string) error) error {
+func (c *Client) mutateItems(ctx context.Context, limiter *rate.Limiter, itemID, targetParentID string, call func(mutationSDK, string, string) error) error {
 	itemID, targetParentID = strings.TrimSpace(itemID), normalizeID(targetParentID)
 	if itemID == "" || itemID == targetParentID {
 		return cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 mutation identity is invalid"))
@@ -541,7 +558,7 @@ func (c *Client) mutateItems(ctx context.Context, itemID, targetParentID string,
 	if !ok {
 		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 mutation API is unavailable"))
 	}
-	if err := c.waitAndCall(ctx, c.mutationRate, func() error { return call(sdk, itemID, targetParentID) }); err != nil {
+	if err := c.waitAndCall(ctx, limiter, func() error { return call(sdk, itemID, targetParentID) }); err != nil {
 		return mapError(err)
 	}
 	return nil
@@ -1069,6 +1086,13 @@ func (c *Client) recordOutcome(err error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if err == nil {
+		// Calls already in flight when another endpoint reports risk can finish
+		// successfully afterwards. Such a late success must not erase the shared
+		// account backoff/circuit before its bounded recovery window has elapsed.
+		now := c.now()
+		if c.backoffTil.After(now) || c.circuitTil.After(now) {
+			return
+		}
 		c.riskFails = 0
 		c.backoffTil = time.Time{}
 		c.circuitTil = time.Time{}

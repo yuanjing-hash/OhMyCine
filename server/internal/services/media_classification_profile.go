@@ -377,9 +377,10 @@ func profileDetail(record models.MediaClassificationProfile) (MediaClassificatio
 	}
 	summary := MediaClassificationProfileSummary{ID: record.ID, Code: record.Code, Name: record.Name, Kind: record.Kind, Protected: record.Protected, SchemaVersion: record.SchemaVersion, Revision: record.Revision, RecognitionRuleCount: len(organization.RecognitionRules), BuiltinRecognitionPackCount: len(organization.BuiltinRecognitionPacks), CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	for _, group := range rules.Groups {
-		if group.MediaType == classification.MediaTypeMovie {
+		switch group.MediaType {
+		case classification.MediaTypeMovie:
 			summary.MovieCategories = len(group.Categories)
-		} else if group.MediaType == classification.MediaTypeTV {
+		case classification.MediaTypeTV:
 			summary.TVCategories = len(group.Categories)
 		}
 	}

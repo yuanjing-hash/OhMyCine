@@ -60,7 +60,8 @@ func normalizeOpenAIBasePath(value string) (string, error) {
 			return "", wrapInvalidConfig("base URL path is invalid")
 		}
 		for _, character := range segment {
-			if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("-._~", character)) {
+			alphaNumeric := (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9')
+			if !alphaNumeric && !strings.ContainsRune("-._~", character) {
 				return "", wrapInvalidConfig("base URL path is invalid")
 			}
 		}

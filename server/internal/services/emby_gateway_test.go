@@ -433,7 +433,7 @@ func TestEmbyGatewayWebSocketPassthroughPreservesClientCredential(t *testing.T) 
 		if err != nil {
 			return
 		}
-		defer connection.Close()
+		defer func() { _ = connection.Close() }()
 		kind, message, err := connection.ReadMessage()
 		if err == nil {
 			_ = connection.WriteMessage(kind, message)
@@ -477,7 +477,7 @@ func TestEmbyGatewayWebSocketPassthroughPreservesClientCredential(t *testing.T) 
 		}
 		t.Fatal(err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	time.Sleep(100 * time.Millisecond)
 	if err := connection.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
 		t.Fatal(err)

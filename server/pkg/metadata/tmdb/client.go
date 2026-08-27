@@ -523,7 +523,7 @@ func (c *Client) DownloadJPEG(ctx context.Context, identity, size string, maxByt
 	if err != nil {
 		return nil, clientError(ErrorNetworkUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, clientError(ErrorRequestFailed, nil)
 	}
@@ -570,7 +570,7 @@ func testImage(ctx context.Context, client *http.Client, base string) error {
 	if err != nil {
 		return fmt.Errorf("tmdb image unavailable")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("tmdb image request failed")
 	}
@@ -1192,7 +1192,7 @@ func (c *Client) getAt(ctx context.Context, base, endpoint string, values url.Va
 	if err != nil {
 		return nil, &networkRequestError{cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if readErr != nil || len(body) > maxResponseBytes {
 		return nil, clientError(ErrorInvalidResponse, readErr)

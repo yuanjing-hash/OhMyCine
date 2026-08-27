@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	pathpkg "path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -116,10 +117,10 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
 	task.PlanSummaryJSON, task.TotalFiles = encodedSummary, len(targets)
-	if err := w.persistCloudState(&task, state, models.TransferTaskStatusTransferring, completedCloudItems(state), &encodedSummary); err != nil {
+	if err := w.persistCloudState(&task, state, models.TransferTaskStatusCheckingDirectories, completedCloudItems(state), &encodedSummary); err != nil {
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
-	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Int("files", len(targets)).Msg(serverlog.OperationPan115CloudTransfer.Message("已完成命名规划，开始按 115 风控节奏准备目录并逐文件入库"))
+	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Int("files", len(targets)).Msg(serverlog.OperationPan115CloudTransfer.Message("已完成命名规划，开始检查目标目录"))
 
 	for _, target := range targets {
 		if err := validateCloudTargetItem(target); err != nil {
@@ -128,7 +129,13 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		if download.TransferMode == models.MediaLibraryTransferCopy && strings.TrimSpace(target.File.SHA1) == "" {
 			return w.cloudFailure(task, cloudTransferError("cloud_transfer_manifest_invalid", false, errors.New("copy source has no stable content identity")))
 		}
-		if _, err := w.ensureCloudDirectory(ctx, mutations, &task, &state, pathpkg.Dir(target.Relative)); err != nil {
+	}
+	// Build the directory DAG before any move/copy. A season or title directory
+	// shared by many files is reconciled exactly once per attempt instead of
+	// paying a provider Stat/List round trip for every episode.
+	validatedDirectories := map[string]struct{}{".": {}}
+	for _, directory := range uniqueCloudTargetDirectories(targets) {
+		if _, err := w.ensureCloudDirectory(ctx, mutations, &task, &state, directory, validatedDirectories); err != nil {
 			return w.cloudFailure(task, err)
 		}
 	}
@@ -136,6 +143,9 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 	policy := download.ConflictPolicy
 	if response := transferActionResponse(taskJobCheckpoint(w.service.db, task.JobID)); response != "" {
 		policy = response
+	}
+	if err := w.persistCloudState(&task, state, models.TransferTaskStatusCheckingConflicts, completedCloudItems(state), nil); err != nil {
+		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
 	conflicts, applied, err := w.cloudConflicts(ctx, driver, targets, state, download.TransferMode)
 	if err != nil {
@@ -155,7 +165,7 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		}
 	}
 
-	if err := w.persistCloudState(&task, state, models.TransferTaskStatusTransferring, completedCloudItems(state), nil); err != nil {
+	if err := w.persistCloudState(&task, state, models.TransferTaskStatusMoving, completedCloudItems(state), nil); err != nil {
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
 	for index := range targets {
@@ -216,7 +226,7 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 				source = bounded
 			}
 			if download.TransferMode == models.MediaLibraryTransferMove {
-				err = w.executeCloudMove(ctx, mutations, driver, source, targetParentID, targetName)
+				err = w.executeCloudMove(ctx, mutations, driver, &task, &state, source, targetParentID, targetName)
 				if err == nil {
 					state.Items[key] = cloudTransferItemState{SourceID: key, CurrentID: key, TargetParentID: targetParentID, TargetName: targetName, Status: "completed"}
 				}
@@ -240,7 +250,7 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		if err != nil {
 			return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 		}
-		if err := w.persistCloudState(&task, state, models.TransferTaskStatusTransferring, processed, &encodedSummary); err != nil {
+		if err := w.persistCloudState(&task, state, models.TransferTaskStatusMoving, processed, &encodedSummary); err != nil {
 			return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 		}
 		processed64, total64 := int64(processed), int64(len(targets))
@@ -277,6 +287,9 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 			return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 		}
 	}
+	if err := w.persistCloudState(&task, state, models.TransferTaskStatusReconciling, len(targets), nil); err != nil {
+		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
+	}
 
 	now := time.Now().UTC()
 	err = w.service.db.Transaction(func(tx *gorm.DB) error {
@@ -303,6 +316,30 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("transfer_mode", download.TransferMode).Int("files", len(targets)).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationPan115CloudTransfer.Message("完成"))
 	task.Phase = models.TransferTaskStatusCompleted
 	return w.finishCompletedTransfer(ctx, task)
+}
+
+func uniqueCloudTargetDirectories(targets []transferTargetItem) []string {
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		directory := pathpkg.Clean(pathpkg.Dir(target.Relative))
+		if directory == "." || directory == "" {
+			continue
+		}
+		seen[directory] = struct{}{}
+	}
+	result := make([]string, 0, len(seen))
+	for directory := range seen {
+		result = append(result, directory)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftDepth := strings.Count(result[i], "/")
+		rightDepth := strings.Count(result[j], "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return result[i] < result[j]
+	})
+	return result
 }
 
 func decodeCloudTransferState(raw string) (cloudTransferState, error) {
@@ -354,20 +391,24 @@ func (w *TransferWorker) persistCloudState(task *models.TransferTask, state clou
 	return nil
 }
 
-func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations cloudpkg.MutationDriver, task *models.TransferTask, state *cloudTransferState, relative string) (string, error) {
+func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations cloudpkg.MutationDriver, task *models.TransferTask, state *cloudTransferState, relative string, validated map[string]struct{}) (string, error) {
 	relative = pathpkg.Clean(relative)
 	if relative == "." || relative == "" {
 		return state.Directories["."], nil
 	}
+	if _, ok := validated[relative]; ok && state.Directories[relative] != "" {
+		return state.Directories[relative], nil
+	}
 	if id := state.Directories[relative]; id != "" {
 		item, err := providerItemWithinRoot(ctx, mutations, id, state.Directories["."])
 		if err == nil && item.IsDir {
+			validated[relative] = struct{}{}
 			return id, nil
 		}
 		delete(state.Directories, relative)
 	}
 	parentPath := pathpkg.Dir(relative)
-	parentID, err := w.ensureCloudDirectory(ctx, mutations, task, state, parentPath)
+	parentID, err := w.ensureCloudDirectory(ctx, mutations, task, state, parentPath, validated)
 	if err != nil {
 		return "", err
 	}
@@ -384,6 +425,9 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 	if len(matches) == 1 {
 		directory = matches[0]
 	} else {
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusCreatingDirectories, task.ProcessedFiles, nil); err != nil {
+			return "", cloudTransferError("transfer_state_persist_failed", true, err)
+		}
 		directory, err = mutations.CreateDirectory(ctx, parentID, name)
 		if err != nil {
 			items, listErr := listCloudDirectory(ctx, mutations, parentID)
@@ -395,10 +439,8 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 		}
 	}
 	state.Directories[relative] = directory.ID
-	phase := task.Phase
-	if phase == "" {
-		phase = models.TransferTaskStatusPlanning
-	}
+	validated[relative] = struct{}{}
+	phase := models.TransferTaskStatusCheckingDirectories
 	if err := w.persistCloudState(task, *state, phase, task.ProcessedFiles, nil); err != nil {
 		return "", cloudTransferError("transfer_state_persist_failed", true, err)
 	}
@@ -551,7 +593,7 @@ func cloudManifestMatches(item cloudpkg.Item, file downloadpkg.File) bool {
 	return true
 }
 
-func (w *TransferWorker) executeCloudMove(ctx context.Context, mutations cloudpkg.MutationDriver, driver cloudpkg.Driver, source cloudpkg.Item, targetParentID, targetName string) error {
+func (w *TransferWorker) executeCloudMove(ctx context.Context, mutations cloudpkg.MutationDriver, driver cloudpkg.Driver, task *models.TransferTask, state *cloudTransferState, source cloudpkg.Item, targetParentID, targetName string) error {
 	if source.ParentID != targetParentID {
 		if err := mutations.Move(ctx, source.ID, targetParentID); err != nil {
 			current, statErr := driver.Stat(ctx, source.ID)
@@ -565,11 +607,17 @@ func (w *TransferWorker) executeCloudMove(ctx context.Context, mutations cloudpk
 		return err
 	}
 	if current.Name != targetName {
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusRenaming, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
+		}
 		if err := mutations.Rename(ctx, source.ID, targetName); err != nil {
 			verified, statErr := driver.Stat(ctx, source.ID)
 			if statErr != nil || verified.Name != targetName {
 				return err
 			}
+		}
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
 		}
 	}
 	return nil
@@ -603,7 +651,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 			}
 			state.TempDirectoryID = created.ID
 		}
-		if err := w.persistCloudState(task, *state, models.TransferTaskStatusTransferring, completedCloudItems(*state), nil); err != nil {
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
 			return cloudTransferError("transfer_state_persist_failed", true, err)
 		}
 	}
@@ -650,7 +698,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 		copyID = candidate.ID
 		itemState = cloudTransferItemState{SourceID: source.ID, CurrentID: copyID, TargetParentID: targetParentID, TargetName: targetName, Status: "copied"}
 		state.Items[source.ID] = itemState
-		if err := w.persistCloudState(task, *state, models.TransferTaskStatusTransferring, completedCloudItems(*state), nil); err != nil {
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
 			return cloudTransferError("transfer_state_persist_failed", true, err)
 		}
 	}
@@ -659,11 +707,17 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 		return err
 	}
 	if current.Name != targetName {
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusRenaming, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
+		}
 		if err := mutations.Rename(ctx, copyID, targetName); err != nil {
 			verified, statErr := driver.Stat(ctx, copyID)
 			if statErr != nil || verified.Name != targetName {
 				return err
 			}
+		}
+		if err := w.persistCloudState(task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
 		}
 	}
 	current, err = driver.Stat(ctx, copyID)
@@ -728,8 +782,14 @@ func (w *TransferWorker) cloudFailure(task models.TransferTask, err error) Worke
 	code = safeLabel(code, 96)
 	message := "115 云端整理失败"
 	if retryable {
-		message = "115 暂时不可用，云端整理将自动重试"
-		_ = w.service.db.Model(&task).Updates(map[string]any{"last_error_code": code, "updated_at": time.Now().UTC()}).Error
+		phase := task.Phase
+		if code == cloudpkg.CodeRateLimited {
+			phase = models.TransferTaskStatusRiskBackoff
+			message = "115 触发接口风控，云端整理将自动重试"
+		} else {
+			message = "115 暂时不可用，云端整理将自动重试"
+		}
+		_ = w.service.db.Model(&task).Updates(map[string]any{"phase": phase, "last_error_code": code, "updated_at": time.Now().UTC()}).Error
 		next := time.Now().UTC().Add(15 * time.Second)
 		serverlog.OperationPan115CloudTransfer.Event(w.service.log.Warn()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("error_code", code).Time("retry_at", next).Msg(serverlog.OperationPan115CloudTransfer.Message("暂时失败，已安排自动重试"))
 		return WorkerResult{RetryAt: &next, ErrorCode: code, ErrorMessage: message}

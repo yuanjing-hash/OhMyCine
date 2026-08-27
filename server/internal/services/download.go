@@ -772,9 +772,10 @@ func (s *DownloadService) ListScoped(actor Actor, scope string, limit int) ([]Do
 	}
 	historySQL := `(download_scope_job.status = ? OR (download_scope_job.status = ? AND (transfer_scope.id IS NULL OR (transfer_scope_job.status = ? AND (seeding_scope.id IS NULL OR seeding_scope_job.status = ?)))))`
 	historyArgs := []any{models.JobStatusCancelled, models.JobStatusCompleted, models.JobStatusCompleted, models.JobStatusCompleted}
-	if scope == DownloadListScopeHistory {
+	switch scope {
+	case DownloadListScopeHistory:
 		query = query.Where(historySQL, historyArgs...)
-	} else if scope == DownloadListScopeActive {
+	case DownloadListScopeActive:
 		query = query.Where("NOT "+historySQL, historyArgs...)
 	}
 	var total int64

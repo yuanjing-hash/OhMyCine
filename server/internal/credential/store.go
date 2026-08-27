@@ -64,7 +64,7 @@ func loadKey(keyFile, encodedKey string) ([]byte, error) {
 		return nil, fmt.Errorf("create credential key temporary file: %w", err)
 	}
 	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
+	defer func() { _ = os.Remove(temporaryName) }()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
 		return nil, fmt.Errorf("restrict credential key temporary file: %w", err)

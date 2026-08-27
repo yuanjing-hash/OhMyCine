@@ -144,7 +144,7 @@ func TestControlledClientRejectsCrossOriginRedirect(t *testing.T) {
 
 func TestAdapterUsesFlareSolverrForPagesButNotTorrentDownload(t *testing.T) {
 	pageRequests, directDownloads := 0, 0
-	ptServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ptServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/download.php" {
 			t.Errorf("unexpected direct page request %s", r.URL.Path)
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -159,15 +159,18 @@ func TestAdapterUsesFlareSolverrForPagesButNotTorrentDownload(t *testing.T) {
 		if r.URL.Path != "/v1" || r.Method != http.MethodPost {
 			t.Errorf("render request=%s %s", r.Method, r.URL.Path)
 		}
-		var payload struct {
-			Command string              `json:"cmd"`
-			URL     string              `json:"url"`
-			Cookies []map[string]string `json:"cookies"`
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), "uid=1") || strings.Contains(string(raw), "token=secret") || strings.Contains(string(raw), "passkey-secret") || strings.Contains(string(raw), "cookies") || strings.Contains(string(raw), "passkey") {
+			t.Errorf("PT credential reached solver: %s", raw)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		var payload struct {
+			Command string `json:"cmd"`
+			URL     string `json:"url"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
 			t.Error(err)
 		}
-		if payload.Command != "request.get" || !strings.Contains(payload.URL, "/torrents.php") || len(payload.Cookies) != 2 {
+		if payload.Command != "request.get" || !strings.Contains(payload.URL, "/torrents.php") {
 			t.Errorf("payload=%+v", payload)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "solution": map[string]any{"status": 200, "response": string(fixture(t, "torrents.html"))}})
@@ -175,12 +178,14 @@ func TestAdapterUsesFlareSolverrForPagesButNotTorrentDownload(t *testing.T) {
 	defer flare.Close()
 
 	adapter := NewForTest(ptServer.Client())
-	config := site.Config{BaseURL: ptServer.URL, Cookie: "uid=1; token=secret", BrowserEmulation: true, BrowserServiceURL: flare.URL, Timeout: 5 * time.Second}
+	config := site.Config{BaseURL: "https://pt.example.test", Cookie: "uid=1; token=secret", Passkey: "passkey-secret", BrowserEmulation: true, BrowserServiceURL: flare.URL, Timeout: 5 * time.Second}
 	page, err := adapter.Search(context.Background(), config, site.Query{Keyword: "Seven Samurai", Page: 1})
 	if err != nil || len(page.Items) != 1 || pageRequests != 1 {
 		t.Fatalf("page=%+v rendered=%d err=%v", page, pageRequests, err)
 	}
-	if _, _, err := adapter.Download(context.Background(), config, "12345"); err != nil {
+	downloadConfig := config
+	downloadConfig.BaseURL = ptServer.URL
+	if _, _, err := adapter.Download(context.Background(), downloadConfig, "12345"); err != nil {
 		t.Fatal(err)
 	}
 	if pageRequests != 1 || directDownloads != 1 {

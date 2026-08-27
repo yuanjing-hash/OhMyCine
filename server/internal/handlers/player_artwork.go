@@ -51,7 +51,7 @@ func (a *API) PluginLibraryArtwork(c *gin.Context) {
 		writeError(c, a.log, err)
 		return
 	}
-	defer artwork.File.Close()
+	defer func() { _ = artwork.File.Close() }()
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	c.Header("Content-Type", artwork.ContentType)
 	c.Header("Content-Length", strconv.FormatInt(artwork.Size, 10))

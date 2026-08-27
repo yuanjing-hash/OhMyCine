@@ -78,7 +78,7 @@ var definitions = []Definition{
 	btHTMLDefinition("1337x", "1337x", bthtml.X1337Profile(), "https://1337x.to"),
 	btHTMLDefinition("thepiratebay", "The Pirate Bay", bthtml.PirateBayProfile(), "https://thepiratebay.org"),
 	btHTMLDefinition("extto", "EXT.to", bthtml.EXTToProfile(), "https://ext.to"),
-	btHTMLDefinition("limetorrents", "LimeTorrents", bthtml.LimeTorrentsProfile(), "https://www.limetorrents.lol", "https://limetorrents.lol"),
+	btHTMLDefinition("limetorrents", "LimeTorrents", bthtml.LimeTorrentsProfile(), "https://www.limetorrents.fun", "https://limetorrents.fun", "https://www.limetorrents.lol", "https://limetorrents.lol"),
 	{Key: torznab.Kind, Name: "Torznab · Jackett/Prowlarr", Engine: "torznab", SiteType: SiteTypeBT, CredentialKind: CredentialAPIKey, Search: true, Download: true},
 }
 

@@ -534,7 +534,7 @@ func (c *Client) loginCookie(ctx context.Context, values url.Values) (string, er
 	if err != nil {
 		return "", downloader.Error("downloader_unavailable", true, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(body) > maxResponseBytes {
 		return "", downloader.Error("downloader_response_invalid", false, err)
@@ -584,7 +584,7 @@ func (c *Client) do(ctx context.Context, cookie, method, endpoint, contentType s
 	if err != nil {
 		return nil, 0, downloader.Error("downloader_unavailable", true, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(responseBody) > maxResponseBytes {
 		return nil, response.StatusCode, downloader.Error("downloader_response_invalid", false, err)

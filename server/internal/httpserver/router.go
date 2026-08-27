@@ -208,6 +208,7 @@ func New(cfg config.Config, api *handlers.API, auth *services.AuthService, log z
 	ptAPI.GET("/discovery/torrent-search/stream", middleware.RequirePermission(authz.PermissionDiscoveryRead), api.TorrentSearchStream)
 	ptAPI.GET("/discovery/media/:mediaType/:tmdbID/torrent-search", middleware.RequirePermission(authz.PermissionDiscoveryRead), api.MediaIdentitySearch)
 	ptAPI.GET("/discovery/media/:mediaType/:tmdbID/torrent-search/stream", middleware.RequirePermission(authz.PermissionDiscoveryRead), api.MediaIdentitySearchStream)
+	ptAPI.GET("/discovery/search-options", middleware.NoStore(), middleware.RequirePermission(authz.PermissionDiscoveryRead), api.DiscoverySearchOptions)
 	ptAPI.POST("/discovery/pt-results/recognize", middleware.RequirePermission(authz.PermissionDiscoveryRead), api.RecognizePTResult)
 	ptAPI.POST("/discovery/torrent-results/recognize", middleware.RequirePermission(authz.PermissionDiscoveryRead), api.RecognizeTorrentResult)
 	ptAPI.POST("/discovery/pt-results/tmdb-candidates", middleware.RequirePermission(authz.PermissionDiscoveryRead), api.PTResultRecognitionCandidates)

@@ -67,7 +67,7 @@ func (NativeAdapter) Directories(ctx context.Context, current string, limit int)
 	if err != nil {
 		return nil, false, classify(err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 
 	items := make([]Entry, 0, limit)
 	truncated := false

@@ -977,9 +977,10 @@ func decideMediaType(hint MediaType, structure StructureFacts, evidence []Eviden
 	}
 	tv, movie := 0.0, 0.0
 	for _, item := range evidence {
-		if item.Supports == MediaTypeTV {
+		switch item.Supports {
+		case MediaTypeTV:
 			tv = maxFloat(tv, item.Strength)
-		} else if item.Supports == MediaTypeMovie {
+		case MediaTypeMovie:
 			movie = maxFloat(movie, item.Strength)
 		}
 	}

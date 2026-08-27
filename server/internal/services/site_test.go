@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -35,6 +36,7 @@ type stubSiteAdapter struct {
 	downloadRelease    chan struct{}
 	searchTitle        string
 	searchSubtitle     string
+	searchBases        []string
 	lastConfig         sitepkg.Config
 }
 
@@ -144,6 +146,9 @@ func TestBTAddressResolutionDoesNotProbeAndCreateResolvesAgain(t *testing.T) {
 	}
 }
 func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query sitepkg.Query) (sitepkg.Page, error) {
+	a.mu.Lock()
+	a.searchBases = append(a.searchBases, config.BaseURL)
+	a.mu.Unlock()
 	if err := a.searchErr[config.BaseURL]; err != nil {
 		return sitepkg.Page{}, err
 	}
@@ -156,6 +161,81 @@ func (a *stubSiteAdapter) Search(_ context.Context, config sitepkg.Config, query
 		title = "Seven.Samurai.1954.1080p"
 	}
 	return sitepkg.Page{Page: query.Page, Items: []sitepkg.Result{{TorrentID: "42", Title: title, Subtitle: a.searchSubtitle, SizeBytes: 1024, Seeders: &seeders, Leechers: &leechers}}, HasNext: true}, nil
+}
+
+func TestSiteSearchSelectedScopeIsBoundedAndRevalidated(t *testing.T) {
+	service, adapter, actor, _, _, _ := siteFixture(t)
+	created := make([]SiteSummary, 0, 3)
+	for index := 1; index <= 3; index++ {
+		item, err := service.Create(context.Background(), actor, validSiteInput(fmt.Sprintf("Site %d", index), fmt.Sprintf("https://site-%d.example.test", index)), RequestContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, item)
+	}
+	adapter.mu.Lock()
+	adapter.searchBases = nil
+	adapter.mu.Unlock()
+	scope := []uint{created[0].ID, created[2].ID, created[0].ID}
+	groups, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Seven Samurai", SiteIDs: scope, Page: 1})
+	if err != nil || len(groups) != 2 {
+		t.Fatalf("groups=%+v err=%v", groups, err)
+	}
+	seen := map[uint]bool{}
+	for _, group := range groups {
+		seen[group.SiteID] = true
+	}
+	if !seen[created[0].ID] || !seen[created[2].ID] || seen[created[1].ID] {
+		t.Fatalf("selected scope widened: %+v", groups)
+	}
+	adapter.mu.Lock()
+	searchedBases := append([]string(nil), adapter.searchBases...)
+	adapter.mu.Unlock()
+	if len(searchedBases) != 2 {
+		t.Fatalf("adapter calls=%v", searchedBases)
+	}
+	if _, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Seven Samurai", SiteID: &created[0].ID, SiteIDs: []uint{created[2].ID}, Page: 1}); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("mixed site scope err=%v", err)
+	}
+	if err := service.db.Model(&models.Site{}).Where("id = ?", created[2].ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Search(context.Background(), actor, SiteSearchInput{Keyword: "Seven Samurai", SiteIDs: []uint{created[0].ID, created[2].ID}, Page: 1}); ErrorCode(err) != CodeInvalidRequest {
+		t.Fatalf("disabled selected site did not fail closed: %v", err)
+	}
+}
+
+func TestSiteSearchOptionsExposeOnlySafeDiscoveryFields(t *testing.T) {
+	service, _, actor, _, _, _ := siteFixture(t)
+	online, err := service.Create(context.Background(), actor, validSiteInput("Online", "https://online.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offline, err := service.Create(context.Background(), actor, validSiteInput("Offline", "https://offline.example.test"), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.Model(&models.Site{}).Where("id = ?", offline.ID).Updates(map[string]any{"last_health_status": "offline", "last_health_error_code": CodeSiteRateLimited}).Error; err != nil {
+		t.Fatal(err)
+	}
+	options, err := service.SearchOptions(actor)
+	if err != nil || len(options) != 2 {
+		t.Fatalf("options=%+v err=%v", options, err)
+	}
+	if options[0].ID != online.ID || !options[0].Searchable || options[1].ID != offline.ID || options[1].Searchable || options[1].Reason == "" {
+		t.Fatalf("options=%+v", options)
+	}
+	encoded, _ := json.Marshal(options)
+	for _, forbidden := range []string{"base_url", "cookie", "passkey", "server-only", "browser_service"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("search options leaked %q: %s", forbidden, encoded)
+		}
+	}
+	foreign := actor
+	delete(foreign.Permissions, authz.PermissionDiscoveryRead)
+	if _, err := service.SearchOptions(foreign); ErrorCode(err) != CodePermissionDenied {
+		t.Fatalf("unauthorized options err=%v", err)
+	}
 }
 func (a *stubSiteAdapter) Download(_ context.Context, _ sitepkg.Config, torrentID string) ([]byte, string, error) {
 	if a.downloadStarted != nil {
@@ -872,5 +952,33 @@ func TestSiteAdapterErrorsAreStable(t *testing.T) {
 	}
 	if !errors.Is(sitepkg.ErrUnavailable, sitepkg.ErrUnavailable) {
 		t.Fatal("sentinel sanity")
+	}
+}
+
+func TestNormalizeBrowserServiceAllowsGlobalCloakWithoutPerSiteFallback(t *testing.T) {
+	value, err := normalizeBrowserService(true, "")
+	if err != nil || value != "" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	if _, err := normalizeBrowserService(true, "file:///tmp/browser"); ErrorCode(err) != CodeSiteURLInvalid {
+		t.Fatalf("invalid service err=%v", err)
+	}
+}
+
+func TestSiteSummaryNeverReturnsBrowserServiceURL(t *testing.T) {
+	service, _, actor, _, _, _ := siteFixture(t)
+	input := validSiteInput("Rendered PT", "https://rendered.example.test")
+	input.BrowserEmulation = true
+	input.BrowserServiceURL = "http://solver.internal.example:8191"
+	created, err := service.Create(context.Background(), actor, input, RequestContext{})
+	if err != nil || !created.BrowserServiceConfigured {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	raw, err := json.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), input.BrowserServiceURL) || strings.Contains(string(raw), "browser_service_url") {
+		t.Fatalf("browser service URL leaked: %s", raw)
 	}
 }

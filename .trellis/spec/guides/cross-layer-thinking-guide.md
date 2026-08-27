@@ -97,6 +97,9 @@ After implementation:
 - [ ] Kept the complete built-in `tv-v1` and `anime-v1` packs enabled in an integration regression; parser-only success does not prove the production Profile pipeline still uses them.
 - [ ] When several providers produce the same domain object, kept parsing/classification/naming before the provider adapter boundary so one fix covers every provider.
 - [ ] When one downloader protocol cannot consume the discovery artifact, converted it only at the downloader capability boundary (for example raw `.torrent` `info` bytes to BTIH magnet), preserving identity exactly and keeping passkeys in the encrypted source envelope.
+- [ ] When a query has an explicit provider/Site scope, traced that scope through the initial request, SSE/JSON fallback, multilingual variants, retry, pagination and browser restoration; no missing scope may silently widen to all providers.
+- [ ] When task-level metadata and per-item evidence coexist, wrote and tested one precedence resolver used by validation, planning, persisted summaries, catalog output and corrective retries; a package-level fallback must not overwrite conflicting per-file facts.
+- [ ] For destructive previews, separated local-record validation from provider reconciliation, bounded every external call end to end, batched by provider parent/root where possible, and treated missing/detached facts as convergent states without expanding the deletion boundary.
 
 ### Native Playback Bridge Example
 

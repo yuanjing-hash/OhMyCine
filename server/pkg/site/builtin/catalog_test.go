@@ -57,6 +57,7 @@ func TestResolveBTBaseURLUsesExactOfficialHosts(t *testing.T) {
 		"https://1337x.to":         "1337x",
 		"https://thepiratebay.org": "thepiratebay",
 		"https://ext.to":           "extto",
+		"https://limetorrents.fun": "limetorrents",
 		"https://limetorrents.lol": "limetorrents",
 	} {
 		definition, canonical, err := ResolveBTBaseURL(raw)

@@ -26,6 +26,7 @@ type MediaIdentitySearchInput struct {
 	Season    *int
 	Page      int
 	SiteID    *uint
+	SiteIDs   []uint
 }
 
 type MediaIdentitySearchResult struct {
@@ -51,7 +52,7 @@ func (s *SiteService) SearchMediaIdentity(ctx context.Context, actor Actor, inpu
 	if err != nil {
 		return MediaIdentitySearchResult{}, err
 	}
-	priorities := s.sitePriorityMap(input.SiteID)
+	priorities := s.sitePriorityMap(input.SiteID, input.SiteIDs)
 	sort.SliceStable(groups, func(left, right int) bool {
 		leftPriority, rightPriority := priorities[groups[left].SiteID], priorities[groups[right].SiteID]
 		if leftPriority != rightPriority {
@@ -96,12 +97,8 @@ func (s *SiteService) SearchMediaIdentityEach(ctx context.Context, actor Actor, 
 		return appError(CodeTMDBUnavailable, "TMDB 作品没有可用搜索名称", nil)
 	}
 	metadata := MediaIdentitySearchResult{MediaType: input.MediaType, TMDBID: input.TMDBID, Title: verified.Title, Year: cloneInt(verified.ReleaseYear), QueryNames: names, Groups: []SiteSearchGroup{}}
-	var records []models.Site
-	query := s.db.Where("enabled = ?", true).Order("priority ASC,id ASC")
-	if input.SiteID != nil {
-		query = query.Where("id = ?", *input.SiteID)
-	}
-	if err := query.Find(&records).Error; err != nil {
+	records, err := s.searchSiteRecords(input.SiteID, input.SiteIDs)
+	if err != nil {
 		return err
 	}
 	if emitMetadata != nil {
@@ -251,11 +248,13 @@ func (s *SiteService) deleteClaim(token string) {
 	s.vaultMu.Unlock()
 }
 
-func (s *SiteService) sitePriorityMap(siteID *uint) map[uint]int {
+func (s *SiteService) sitePriorityMap(siteID *uint, siteIDs []uint) map[uint]int {
 	var records []models.Site
 	query := s.db.Select("id", "priority")
 	if siteID != nil {
 		query = query.Where("id = ?", *siteID)
+	} else if len(siteIDs) > 0 {
+		query = query.Where("id IN ?", siteIDs)
 	}
 	_ = query.Find(&records).Error
 	result := make(map[uint]int, len(records))

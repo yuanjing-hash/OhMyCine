@@ -23,6 +23,7 @@ type Config struct {
 	Timeout           time.Duration
 	BrowserEmulation  bool
 	BrowserServiceURL string
+	RenderedFetcher   RenderedFetcher
 }
 
 // Source is the server-only download material resolved from an opaque search

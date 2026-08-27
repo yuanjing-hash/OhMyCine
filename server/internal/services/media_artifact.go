@@ -634,7 +634,7 @@ func (s *MediaArtifactService) writeSourceAsset(ctx context.Context, root string
 	if err != nil {
 		return "", errors.New("source asset download failed")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK || response.ContentLength > limit {
 		return "", errors.New("source asset response is invalid")
 	}
@@ -895,7 +895,7 @@ func atomicWriteArtifact(root, target string, content []byte) error {
 		return err
 	}
 	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
+	defer func() { _ = os.Remove(temporaryName) }()
 	if _, err := bytes.NewReader(content).WriteTo(temporary); err != nil {
 		_ = temporary.Close()
 		return err

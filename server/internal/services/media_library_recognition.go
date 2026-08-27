@@ -175,14 +175,12 @@ func (s *MediaLibraryService) recognizeLibraryUnits(ctx context.Context, library
 			}
 		}()
 	}
+dispatch:
 	for index := range units {
 		select {
 		case jobs <- index:
 		case <-workerCtx.Done():
-			break
-		}
-		if workerCtx.Err() != nil {
-			break
+			break dispatch
 		}
 	}
 	close(jobs)

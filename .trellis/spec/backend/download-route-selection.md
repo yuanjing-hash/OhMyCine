@@ -170,3 +170,73 @@ sourceModes = selected.type === 'pan115_offline'
 ```
 
 The backend remains authoritative even when WebUI has already filtered every option.
+
+## Scenario: Provider-First Cancellation and Idempotent Record Deletion
+
+### 1. Scope / Trigger
+
+- Trigger: cancelling any active Download pipeline, deleting terminal Download history, retrying cleanup after a manually removed provider task, or deciding whether source bytes may be destroyed.
+
+### 2. Signatures
+
+```text
+POST   /api/v1/downloads/{id}/cancel
+DELETE /api/v1/downloads/{id}?delete_data=false|true
+
+Downloader.Cancel(context.Context, providerTaskID, deleteData bool)
+```
+
+- Default cancellation and default deletion call `Cancel(providerTaskID, false)`: remove the provider task but retain downloaded files. `delete_data=true` is the only destructive opt-in.
+
+### 3. Contracts
+
+- Provider cleanup happens before the local DownloadTask/Job facts disappear. A provider task-not-found response is idempotent success because the desired provider-task state already holds; other provider failures retain local identity and a safe retryable error.
+- Missing provider task/root/file never corrupts local state. Default deletion may converge local facts when the provider task is already absent. Destructive deletion additionally requires the immutable OMC-owned output boundary and per-item/root revalidation.
+- For 115, a manually removed offline task and a missing `provider_output_id` directory are distinct facts: both may satisfy non-destructive provider cleanup, but neither grants authority to delete another directory or media-library item.
+- Items that left the source package root are detached and retained. Source cleanup never follows a historical item ID outside `provider_output_id`, even when the item now exists in the same 115 account.
+- If submit completes after cancellation, persist the late provider task identity before issuing a fresh bounded `Cancel(..., false)`. A failure remains visible so a later default DELETE can retry; never discard the only cleanup handle.
+- Local qBittorrent/Transmission and future downloaders follow the same semantic split: cancel provider work, delete local history, and delete source data are separate decisions. Provider-specific APIs map into these semantics without weakening them.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Active pipeline cancellation | Provider `Cancel(..., false)` first, then cancel jobs/retries and release Follow claims |
+| Provider task already absent | Treat as success and converge local cancellation/deletion |
+| Provider unavailable/temporary failure | Keep local record and provider identity; show a retryable safe error |
+| Terminal default DELETE | Remove provider task with `deleteData=false`, retain files, then remove local facts |
+| Terminal DELETE with `delete_data=true` | Delete only after the OMC-owned source boundary is revalidated |
+| Source root/file already missing | Count as already deleted; do not fabricate a failure |
+| Historical item now outside package root | Mark detached and retain it |
+| Late submit returns after local cancellation | Persist identity and immediately run non-destructive provider cleanup |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a stale 115 task was manually removed; default DELETE succeeds, keeps the received files and removes the local history.
+- Base: cancellation cannot reach qBittorrent; the task remains visible with a safe retry action and its provider hash is not lost.
+- Bad: delete the local row first, treat task-not-found as fatal, or interpret `delete_data=false` as permission to recycle provider files.
+
+### 6. Tests Required
+
+- Cover cancellation/default deletion/destructive deletion for 115 and local BT downloaders, including task-not-found, temporary failure and repeated requests.
+- Assert `deleteData=false` for cancel/default delete and exact `true` only after destructive-boundary validation.
+- Assert missing root/item convergence, detached retention, immutable package-root enforcement, late-submit cleanup and retained diagnostic/provider identity on failure.
+- Inspect DTOs, audit and logs for absence of provider response bodies, paths, magnets, torrent URLs and credentials.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+db.Delete(&task)
+_ = downloader.Cancel(ctx, task.ProviderTaskID, true)
+```
+
+#### Correct
+
+```go
+err := downloader.Cancel(ctx, task.ProviderTaskID, deleteData)
+if isTaskNotFound(err) { err = nil }
+if err != nil { return persistCleanupFailure(task, safeCode(err)) }
+return deleteLocalFactsTransaction(task)
+```

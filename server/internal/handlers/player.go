@@ -214,7 +214,7 @@ func (a *API) PlayerMediaEntryStream(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	if stream.File != nil {
-		defer stream.File.Close()
+		defer func() { _ = stream.File.Close() }()
 		http.ServeContent(playerNoStoreWriter{ResponseWriter: c.Writer}, c.Request, stream.Name, stream.ModifiedAt, stream.File)
 		return
 	}

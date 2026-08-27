@@ -31,6 +31,7 @@ type Config struct {
 	DeviceTokenIdleTTL            time.Duration
 	DeviceTokenMaxTTL             time.Duration
 	CookieSecure                  bool
+	CloakBrowserCompanionURL      string
 }
 
 // Load reads Server configuration from environment variables and safe local defaults.
@@ -89,6 +90,10 @@ func Load() (Config, error) {
 		DeviceTokenIdleTTL:            30 * 24 * time.Hour,
 		DeviceTokenMaxTTL:             180 * 24 * time.Hour,
 		CookieSecure:                  secure,
+		CloakBrowserCompanionURL:      strings.TrimSpace(os.Getenv("OMC_CLOAKBROWSER_COMPANION_URL")),
+	}
+	if len(config.CloakBrowserCompanionURL) > 2048 || strings.ContainsAny(config.CloakBrowserCompanionURL, "\x00\r\n") {
+		return Config{}, fmt.Errorf("OMC_CLOAKBROWSER_COMPANION_URL is invalid")
 	}
 	if strings.ContainsAny(config.FFmpegPath, "\x00\r\n") {
 		return Config{}, fmt.Errorf("OMC_FFMPEG_PATH is invalid")

@@ -7,7 +7,7 @@ import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
 import { buildDiscoveryMediaSearchPath, discoveryDetailRoute, mediaIdentitySearchURL, type DiscoveryMediaSearch, type DiscoveryMediaSearchFilter, type DiscoveryMediaType, type DiscoverySearchName, type DiscoveryWork } from '@/discovery'
-import { discoveryDownloadsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, sitesPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type SiteSummary, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
+import { discoveryDownloadsPath, discoverySearchOptionsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, readTorrentSearchSiteSelection, saveTorrentSearchSession, saveTorrentSearchSiteSelection, sitesPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type SearchSiteOption, type SiteSummary, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
 import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
 
 const route = useRoute()
@@ -38,6 +38,12 @@ const groups = ref<TorrentSearchGroup[]>([])
 const searching = ref(false)
 const searchError = ref('')
 const searched = ref(false)
+const siteSelectorOpen = ref(false)
+const siteOptionsLoading = ref(false)
+const siteOptionsError = ref('')
+const siteOptions = ref<SearchSiteOption[]>([])
+const selectedSiteIDs = ref<number[]>([])
+const activeSearchSiteIDs = ref<number[]>([])
 const downloaders = ref<DownloaderSummary[]>([])
 const libraries = ref<MediaLibraryDetail[]>([])
 const storages = ref<StorageSummary[]>([])
@@ -61,6 +67,7 @@ const enabledDownloaders = computed(() => downloaders.value.filter(item => item.
 const selectedDownloader = computed(() => enabledDownloaders.value.find(item => item.id === downloadForm.value.downloaderID) ?? null)
 const compatibleLibraries = computed(() => compatibleDownloadLibraries(libraries.value, storages.value, selectedDownloader.value))
 const selectedLibrary = computed(() => downloadForm.value.mediaLibraryID === 0 ? compatibleLibraries.value[0] ?? null : compatibleLibraries.value.find(item => item.id === downloadForm.value.mediaLibraryID) ?? null)
+const selectableSiteOptions = computed(() => siteOptions.value.filter(item => item.searchable))
 const activeChannel = ref<'all' | number>('all')
 const enabledSiteTypes = ref<Array<'pt' | 'bt'>>(['pt', 'bt'])
 const resolutionFilter = ref('')
@@ -126,7 +133,8 @@ function switchMode(value: 'media' | 'resources') {
 }
 
 function searchInput(siteID?: number, page = 1) {
-  return { keyword: keyword.value, mediaType: mediaType.value || undefined, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, page, siteID: lockedSiteID.value ?? siteID }
+  const fixedSiteID = lockedSiteID.value ?? siteID
+  return { keyword: keyword.value, mediaType: mediaType.value || undefined, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, page, siteID: fixedSiteID, siteIDs: fixedSiteID ? undefined : activeSearchSiteIDs.value }
 }
 
 function stopStream() {
@@ -140,7 +148,7 @@ async function searchJSON(siteID?: number, page = 1) {
   try {
     const identity = trustedIdentity.value
     const path = identity
-      ? mediaIdentitySearchURL(identity.mediaType, identity.tmdbID, { page, siteID: lockedSiteID.value ?? siteID })
+      ? mediaIdentitySearchURL(identity.mediaType, identity.tmdbID, { page, siteID: lockedSiteID.value ?? siteID, siteIDs: lockedSiteID.value || siteID ? undefined : activeSearchSiteIDs.value })
       : torrentSearchURL(torrentSearchPath, searchInput(siteID, page))
     const response = await api<TorrentSearchResponse & { query_names?: DiscoverySearchName[] }>(path)
     identityNames.value = response.query_names ?? identityNames.value
@@ -150,9 +158,42 @@ async function searchJSON(siteID?: number, page = 1) {
   finally { searching.value = false }
 }
 
+async function openSiteSelector() {
+  siteSelectorOpen.value = true
+  siteOptionsLoading.value = true
+  siteOptionsError.value = ''
+  try {
+    const response = await api<ListResponse<SearchSiteOption>>(discoverySearchOptionsPath)
+    siteOptions.value = response.list
+    selectedSiteIDs.value = readTorrentSearchSiteSelection(typeof localStorage === 'undefined' ? undefined : localStorage, response.list)
+  } catch (reason) {
+    siteOptions.value = []
+    selectedSiteIDs.value = []
+    siteOptionsError.value = message(reason)
+  } finally { siteOptionsLoading.value = false }
+}
+
+function selectAllSites() { selectedSiteIDs.value = selectableSiteOptions.value.map(item => item.id) }
+function clearSelectedSites() { selectedSiteIDs.value = [] }
+
+function confirmSiteSelection() {
+  const allowed = new Set(selectableSiteOptions.value.map(item => item.id))
+  const selected = [...new Set(selectedSiteIDs.value.filter(id => allowed.has(id)))]
+  if (selected.length === 0) { notify('请至少选择一个可搜索站点', 'warning'); return }
+  saveTorrentSearchSiteSelection(typeof localStorage === 'undefined' ? undefined : localStorage, selected)
+  siteSelectorOpen.value = false
+  executeSearch(selected)
+}
+
 function search() {
   if (!trustedIdentity.value && searchBy.value === 'title' && !keyword.value.trim()) { notify('请输入作品或发行标题', 'warning'); return }
   if (!trustedIdentity.value && searchBy.value === 'tmdb_id' && (!tmdbID.value || !mediaType.value)) { notify('TMDB ID 搜索需要有效 ID 与媒体类型', 'warning'); return }
+  if (!lockedSiteID.value) { void openSiteSelector(); return }
+  executeSearch([lockedSiteID.value])
+}
+
+function executeSearch(siteIDs: number[]) {
+  activeSearchSiteIDs.value = [...siteIDs]
   stopStream()
   groups.value = []
   activeChannel.value = 'all'
@@ -171,7 +212,7 @@ function search() {
   let delivered = false
   const identity = trustedIdentity.value
   const eventSource = new EventSource(identity
-    ? mediaIdentitySearchURL(identity.mediaType, identity.tmdbID, { siteID: lockedSiteID.value }, true)
+    ? mediaIdentitySearchURL(identity.mediaType, identity.tmdbID, { siteID: lockedSiteID.value, siteIDs: lockedSiteID.value ? undefined : activeSearchSiteIDs.value }, true)
     : torrentSearchURL(torrentSearchStreamPath, searchInput()))
   source = eventSource
   eventSource.addEventListener('site', event => {
@@ -271,7 +312,7 @@ function mediaTypeLabel(value?: string) { return value === 'movie' ? '电影' : 
 function message(reason: unknown) { return reason instanceof Error ? reason.message : '种子搜索暂时不可用' }
 
 function currentSearchInput() {
-  return { keyword: keyword.value, mediaType: mediaType.value, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, siteID: lockedSiteID.value }
+  return { keyword: keyword.value, mediaType: mediaType.value, year: year.value, tmdbID: tmdbID.value, searchBy: searchBy.value, siteID: lockedSiteID.value, siteIDs: lockedSiteID.value || activeSearchSiteIDs.value.length === 0 ? undefined : activeSearchSiteIDs.value }
 }
 
 async function openManualRecognition(item: TorrentSearchResult) {
@@ -322,7 +363,8 @@ async function confirmManualRecognition() {
 }
 
 function sameSearchInput(left: ReturnType<typeof currentSearchInput>, right: TorrentSearchSession['input']) {
-  return left.keyword.trim() === right.keyword.trim() && left.mediaType === right.mediaType && left.year === right.year && left.tmdbID === right.tmdbID && left.searchBy === right.searchBy && left.siteID === right.siteID
+  const sameScope = !left.siteIDs?.length || JSON.stringify(left.siteIDs) === JSON.stringify(right.siteIDs)
+  return left.keyword.trim() === right.keyword.trim() && left.mediaType === right.mediaType && left.year === right.year && left.tmdbID === right.tmdbID && left.searchBy === right.searchBy && left.siteID === right.siteID && sameScope
 }
 
 watch([groups, recognitions, searched], () => {
@@ -350,6 +392,7 @@ onMounted(async () => {
     year.value = cached.input.year
     tmdbID.value = cached.input.tmdbID
     searchBy.value = cached.input.searchBy
+    activeSearchSiteIDs.value = cached.input.siteIDs ?? []
     groups.value = cached.groups
     recognitions.value = cached.recognitions
     searched.value = cached.searched
@@ -391,7 +434,7 @@ onBeforeUnmount(() => {
         </div>
       </form>
       <div v-if="selectedTitle" class="panel"><span class="status-chip">已确认作品身份</span><h2 class="mt-3 text-xl font-750">{{ selectedTitle }}</h2><p class="mt-1 text-sm text-muted">Server 会重新验证 TMDB 身份，并按受限的中文名、地区别名、原名和英文名聚合搜索。</p><div v-if="identityNames.length" class="mt-3 flex flex-wrap gap-2"><span v-for="name in identityNames" :key="`${name.kind}:${name.locale}:${name.value}`" class="status-chip">{{ name.value }}<template v-if="name.locale"> · {{ name.locale }}</template></span></div></div>
-      <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">{{ lockedSiteID ? '重试此站' : '重试全部站点' }}</button></div>
+      <div v-if="searchError" class="semantic-error p-4"><strong>搜索失败</strong><p class="mt-1 text-sm">{{ searchError }}</p><button class="btn-secondary mt-3" @click="search">{{ lockedSiteID ? '重试此站' : '重新选择站点' }}</button></div>
       <div v-if="searching && !groups.length" class="panel py-10 text-center text-muted">正在按站点限速并行搜索，结果会渐进出现…</div>
       <div v-else-if="searched && !groups.length && !searchError" class="panel py-10 text-center text-muted">没有启用的 PT/BT 站点，或当前关键词暂无结果。可以先到“站点管理”添加站点。</div>
 
@@ -437,6 +480,24 @@ onBeforeUnmount(() => {
       </template>
 
     </template>
+
+    <div v-if="siteSelectorOpen" class="modal-backdrop fixed inset-0 z-60 flex items-center justify-center p-4" @click.self="siteSelectorOpen = false" @keydown.esc="siteSelectorOpen = false">
+      <section class="panel max-h-[90vh] w-full max-w-2xl overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="search-site-selector-title">
+        <div class="flex items-start justify-between gap-3"><div><h2 id="search-site-selector-title" class="m-0 text-xl">选择搜索站点</h2><p class="page-description mt-1 text-sm">本次搜索、流式回退和多语言聚合只会访问这里选中的站点。</p></div><button class="icon-button" type="button" aria-label="关闭站点选择" @click="siteSelectorOpen = false">×</button></div>
+        <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><span class="text-sm">已选 {{ selectedSiteIDs.length }} / {{ selectableSiteOptions.length }} 个可用站点</span><div class="flex gap-2"><button class="btn-secondary" type="button" :disabled="siteOptionsLoading || !selectableSiteOptions.length" @click="selectAllSites">全选</button><button class="btn-secondary" type="button" :disabled="siteOptionsLoading || !selectedSiteIDs.length" @click="clearSelectedSites">取消全选</button></div></div>
+        <div v-if="siteOptionsLoading" class="semantic-inset mt-4 p-5 text-center text-sm text-muted">正在读取可搜索站点…</div>
+        <div v-else-if="siteOptionsError" class="semantic-error mt-4 p-4"><strong>站点列表读取失败</strong><p class="mb-0 mt-1 text-sm">{{ siteOptionsError }}</p><button class="btn-secondary mt-3" type="button" @click="openSiteSelector">重试</button></div>
+        <div v-else-if="!siteOptions.length" class="semantic-warning mt-4 p-4 text-sm">当前没有已启用且支持搜索的 PT/BT 站点，请先到站点管理添加并测试。</div>
+        <div v-else class="mt-4 grid gap-2 sm:grid-cols-2">
+          <label v-for="site in siteOptions" :key="site.id" class="semantic-list-item flex items-start gap-3 p-3" :class="{ 'opacity-60': !site.searchable }">
+            <input v-model="selectedSiteIDs" type="checkbox" :value="site.id" :disabled="!site.searchable" />
+            <span class="min-w-0"><strong class="block break-words">{{ site.name }}</strong><small class="text-subtle mt-1 block">{{ site.site_type.toUpperCase() }} · {{ site.health_status || 'unknown' }}</small><small v-if="site.reason" class="semantic-danger-text mt-1 block">{{ site.reason }}</small></span>
+          </label>
+        </div>
+        <p v-if="!siteOptionsLoading && !siteOptionsError && selectedSiteIDs.length === 0" class="semantic-warning mt-4 p-3 text-sm" role="alert">至少选择一个可搜索站点后才能开始搜索。</p>
+        <div class="mt-5 flex justify-end gap-3"><button class="btn-secondary" type="button" @click="siteSelectorOpen = false">取消</button><button class="btn-primary" type="button" :disabled="siteOptionsLoading || !!siteOptionsError || selectedSiteIDs.length === 0" @click="confirmSiteSelection">搜索</button></div>
+      </section>
+    </div>
 
     <div v-if="manualDialog" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="!manualSaving && (manualDialog = null)">
       <form class="panel max-h-[90vh] w-full max-w-3xl overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="manual-recognition-title" @submit.prevent="searchManualCandidates">

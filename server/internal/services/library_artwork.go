@@ -168,7 +168,7 @@ func (s *LibraryArtworkService) pluginArtworkCandidates(pluginID, connectionID, 
 				if err != nil {
 					return nil, err
 				}
-				defer stream.Body.Close()
+				defer func() { _ = stream.Body.Close() }()
 				if stream.StatusCode != http.StatusOK {
 					return nil, errors.New("plugin artwork asset returned non-200 status")
 				}
@@ -421,9 +421,10 @@ func renderLibraryArtwork(images []image.Image) *image.RGBA {
 		columnX := startX + columnIndex*columnSpacing
 		columnCenterY := startY + columnHeight/2
 		columnCenterX := columnX
-		if columnIndex == 1 {
+		switch columnIndex {
+		case 1:
 			columnCenterX += cellWidth - 50
-		} else if columnIndex == 2 {
+		case 2:
 			columnCenterY -= 155
 			columnCenterX += (cellWidth-50)*2 + 40
 		}

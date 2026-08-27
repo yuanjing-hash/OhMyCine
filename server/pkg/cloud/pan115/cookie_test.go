@@ -50,6 +50,10 @@ func TestRiskResponsesBackOffAndOpenConnectionCircuit(t *testing.T) {
 	if code, retryable := cloud.ErrorInfo(mapError(errors.New("HTTP 405"))); code != cloud.CodeRateLimited || !retryable {
 		t.Fatalf("mapped code=%q retryable=%v", code, retryable)
 	}
+	client.recordOutcome(nil)
+	if client.riskFails != 3 || client.backoffTil.IsZero() || client.circuitTil.IsZero() {
+		t.Fatal("late success from an in-flight endpoint cleared active risk recovery")
+	}
 	now = now.Add(6 * time.Minute)
 	client.recordOutcome(nil)
 	if client.riskFails != 0 || !client.backoffTil.IsZero() || !client.circuitTil.IsZero() {

@@ -288,8 +288,8 @@ func TestMediaLibraryTenEpisodeScanRepairsRegressedChangeRevision(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !injectedRevisionAdvance || updated.MediaLibrary.ContentRevision != 9 {
-		t.Fatalf("revision advance injected=%v response revision=%d", injectedRevisionAdvance, updated.MediaLibrary.ContentRevision)
+	if !injectedRevisionAdvance || updated.ContentRevision != 9 {
+		t.Fatalf("revision advance injected=%v response revision=%d", injectedRevisionAdvance, updated.ContentRevision)
 	}
 	if err := db.First(&library, created.ID).Error; err != nil || library.ContentRevision != 9 {
 		t.Fatalf("updated library revision=%d err=%v", library.ContentRevision, err)

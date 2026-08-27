@@ -269,7 +269,7 @@ func extractFile(entry *zip.File, target string) error {
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	destination, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
@@ -347,7 +347,7 @@ func validateInstalledArtwork(root, artwork string) error {
 	if err != nil {
 		return errors.New("plugin library artwork cannot be opened")
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	header := make([]byte, 12)
 	read, err := io.ReadFull(file, header)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {

@@ -201,14 +201,14 @@ func readEntries(ctx context.Context, path string) ([]Entry, int64, int, error) 
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var reader io.Reader = file
 	if strings.HasSuffix(path, ".gz") {
 		gz, e := gzip.NewReader(file)
 		if e != nil {
 			return nil, 0, 0, e
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		reader = gz
 	}
 	limited := &io.LimitedReader{R: reader, N: maxScanBytes + 1}

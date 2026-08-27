@@ -22,6 +22,8 @@ type fakeMutationCloudDriver struct {
 	items                  map[string]cloudpkg.Item
 	nextID                 int
 	recycled               []string
+	listCalls              int
+	statCalls              int
 	copyCalls              int
 	moveCalls              int
 	renameCalls            int
@@ -29,20 +31,62 @@ type fakeMutationCloudDriver struct {
 	recycleFailID          string
 	statFailID             string
 	statFailAfterRecycleID string
+	statErrors             map[string]error
+	statBlockID            string
 }
 
 func newFakeMutationCloudDriver() *fakeMutationCloudDriver {
-	return &fakeMutationCloudDriver{items: map[string]cloudpkg.Item{}, nextID: 100}
+	return &fakeMutationCloudDriver{items: map[string]cloudpkg.Item{}, nextID: 100, statErrors: map[string]error{}}
+}
+
+func TestUniqueCloudTargetDirectoriesBuildsDeterministicDAG(t *testing.T) {
+	targets := []transferTargetItem{
+		{Relative: "剧集/作品/Season 02/E02.mkv"},
+		{Relative: "剧集/作品/Season 01/E01.mkv"},
+		{Relative: "剧集/作品/Season 02/E01.mkv"},
+		{Relative: "Movie.mkv"},
+	}
+	got := uniqueCloudTargetDirectories(targets)
+	want := []string{"剧集/作品/Season 01", "剧集/作品/Season 02"}
+	if len(got) != len(want) {
+		t.Fatalf("directories=%v want=%v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("directories=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestEnsureCloudDirectoryReusesCurrentAttemptValidation(t *testing.T) {
+	driver := newFakeMutationCloudDriver()
+	driver.items["root"] = cloudpkg.Item{ID: "root", ParentID: "0", Name: "library", IsDir: true}
+	driver.items["season"] = cloudpkg.Item{ID: "season", ParentID: "root", Name: "Season 01", IsDir: true}
+	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{".": "root", "Season 01": "season"}, Items: map[string]cloudTransferItemState{}}
+	validated := map[string]struct{}{".": {}}
+	worker := &TransferWorker{}
+	task := models.TransferTask{}
+	if _, err := worker.ensureCloudDirectory(context.Background(), driver, &task, &state, "Season 01", validated); err != nil {
+		t.Fatal(err)
+	}
+	firstCalls := driver.statCalls
+	if _, err := worker.ensureCloudDirectory(context.Background(), driver, &task, &state, "Season 01", validated); err != nil {
+		t.Fatal(err)
+	}
+	if firstCalls == 0 || driver.statCalls != firstCalls {
+		t.Fatalf("directory was revalidated per file: first=%d total=%d", firstCalls, driver.statCalls)
+	}
 }
 
 func (f *fakeMutationCloudDriver) Provider() string { return cloudpkg.ProviderPan115 }
 func (f *fakeMutationCloudDriver) Capabilities() cloudpkg.Capabilities {
-	return cloudpkg.Capabilities{NetworkDrive: true, DirectoryList: true, CreateDirectory: true, Move: true, Copy: true, Rename: true, Recycle: true}
+	return cloudpkg.Capabilities{NetworkDrive: true, DirectoryList: true, CreateDirectory: true, Move: true, Copy: true, Rename: true, Recycle: true, NativeOfflineDownload: true}
 }
 func (f *fakeMutationCloudDriver) Probe(context.Context) (cloudpkg.Account, error) {
 	return cloudpkg.Account{ID: "account"}, nil
 }
 func (f *fakeMutationCloudDriver) List(_ context.Context, parentID string, request cloudpkg.PageRequest) (cloudpkg.Page, error) {
+	f.listCalls++
 	items := make([]cloudpkg.Item, 0)
 	for _, item := range f.items {
 		if item.ParentID == parentID {
@@ -60,7 +104,15 @@ func (f *fakeMutationCloudDriver) List(_ context.Context, parentID string, reque
 	}
 	return cloudpkg.Page{Items: items[start:end], Offset: request.Offset, HasMore: end < len(items)}, nil
 }
-func (f *fakeMutationCloudDriver) Stat(_ context.Context, itemID string) (cloudpkg.Item, error) {
+func (f *fakeMutationCloudDriver) Stat(ctx context.Context, itemID string) (cloudpkg.Item, error) {
+	f.statCalls++
+	if f.statBlockID == itemID {
+		<-ctx.Done()
+		return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeUnavailable, true, ctx.Err())
+	}
+	if err := f.statErrors[itemID]; err != nil {
+		return cloudpkg.Item{}, err
+	}
 	if f.statFailID == itemID {
 		return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeUnavailable, true, errors.New("temporary stat failure"))
 	}
@@ -123,10 +175,28 @@ func (f *fakeMutationCloudDriver) Recycle(_ context.Context, itemID string) erro
 	if _, ok := f.items[itemID]; !ok {
 		return cloudpkg.Error(cloudpkg.CodeNotFound, false, nil)
 	}
-	delete(f.items, itemID)
+	queue := []string{itemID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for id, item := range f.items {
+			if item.ParentID == current {
+				queue = append(queue, id)
+			}
+		}
+		delete(f.items, current)
+	}
 	f.recycled = append(f.recycled, itemID)
 	return nil
 }
+
+func (f *fakeMutationCloudDriver) SubmitOffline(context.Context, string, string) (cloudpkg.OfflineTask, error) {
+	return cloudpkg.OfflineTask{}, nil
+}
+func (f *fakeMutationCloudDriver) GetOffline(context.Context, string) (cloudpkg.OfflineTask, error) {
+	return cloudpkg.OfflineTask{}, nil
+}
+func (f *fakeMutationCloudDriver) CancelOffline(context.Context, string, bool) error { return nil }
 
 type cloudTransferFixture struct {
 	queue      *QueueService

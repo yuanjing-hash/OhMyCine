@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"time"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"gorm.io/gorm"
@@ -27,6 +28,9 @@ func cleanupTransferHistoryDependencies(tx *gorm.DB, transferTaskID string) ([]m
 		}
 		if !isTerminalPipelineJobStatus(job.Status) {
 			return nil, appError(CodeQueueStateConflict, "重新整理任务仍在执行，不能删除媒体整理记录", nil)
+		}
+		if jobHasActiveLease(job, time.Now().UTC()) {
+			return nil, appError(CodeQueueStateConflict, "重新整理 worker 仍在收口，不能删除媒体整理记录", nil)
 		}
 		reorganizationJobs = append(reorganizationJobs, job)
 	}

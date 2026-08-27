@@ -107,7 +107,7 @@ func (p *Provider) get(ctx context.Context, endpoint string, query url.Values) (
 	if err != nil {
 		return nil, discovery.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, discovery.ErrUnavailable
 	}

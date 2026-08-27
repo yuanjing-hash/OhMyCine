@@ -228,3 +228,95 @@ items := loadActiveManagedItems(transfer.ID)
 plan := preview(items, sourceIdentityRevision, currentProfileRevision)
 // Worker revalidates plan bindings; identity CAS occurs only after all managed items reconcile.
 ```
+
+## Scenario: Per-File Episode Facts, 115 Operation Pacing, and Convergent Deletion
+
+### 1. Scope / Trigger
+
+- Trigger: planning or repairing a multi-season TV import, changing 115 directory/file mutation pacing, or previewing/confirming deletion of terminal Transfer history and its selected source/library scope.
+
+### 2. Signatures
+
+```text
+episode resolver:
+  transferEpisodeFactsForManifest(DownloadTask, Manifest)
+    -> map[relative_path]{season, episode, source} | error
+
+POST /api/v1/transfers/{id}/deletion-preview
+  request:  { scope: record_only|record_and_source|record_and_library|record_source_and_library }
+  response: { source_items, source_missing, source_detached, library_items,
+              library_missing, blockers, confirmation_token, expires_at, ... }
+
+POST /api/v1/transfers/{id}/deletion-confirm
+  request:  { token }
+  response: { deleted, scope, source_removed, library_removed }
+```
+
+- `record_only` performs zero provider I/O. Provider-backed preview work has one Server-side 45-second deadline; the browser uses an AbortSignal and a 50-second ceiling.
+- 115 pacing has independent lanes for list/path lookup, mkdir, move, copy, rename, recycle/purge and offline/share operations, plus one shared risk-backoff controller.
+
+### 3. Contracts
+
+- Episode precedence is explicit manual per-file correction, then validated `identity_snapshot.episodes[relative_path]`, then deterministic package parsing, then task-level automatic `scrape_season/scrape_episode` only when there is one video or every structured file agrees. A task-level automatic season must never overwrite conflicting per-file facts in a multi-season package.
+- Validation, target planning, `plan_summary_json`, `MediaManagedItem`, catalog projection and corrective reorganization consume the same resolved per-file fact map. Existing-task repair correlates the original manifest by stable provider item ID plus size and available SHA1; missing, conflicting or changed identity fails closed.
+- Build and persist the target directory DAG once per plan. Within one task/attempt, deduplicate directory lookup/creation and reuse validated directory IDs. Healthy mkdir has no unconditional two-second delay; ordinary queueing is not risk backoff.
+- Only provider 405/429 or an explicit operation-frequency/risk response activates shared jittered exponential backoff. A late success from an older request must not clear a newer shared backoff generation. Phase DTOs describe the real action (`checking_directories`, `checking_conflicts`, `moving`, `renaming`, `reconciling`, `risk_backoff`).
+- Deletion is convergent: an already-missing provider task, source item, library item, package root or empty directory counts as already removed. Source items proven outside the immutable `DownloadTask.provider_output_id` package root are `detached` and retained; only still-present items proven beneath that exact root may be recycled.
+- Source reconciliation batches by provider parent directory and matches stable item IDs from bounded listings. Do not run a rate-limited `Stat` chain once per manifest item. A missing whole source root completes source cleanup; changed identity, ambiguous ancestry or SHA1 mismatch still fails closed.
+- Only a worker that can still mutate state blocks deletion. A terminal Job with no live lease does not block merely because historical status is stale; a terminal transfer/reorganization/seeding worker with a still-valid mutation lease continues to block until its lease is released or expires.
+- Preview/confirmation failure persists a stable error code. Closing the dialog aborts only the request; it does not corrupt the task or consume a confirmation token.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Multi-season manifest plus task `scrape_season=2` | Keep each structured S01-S04 fact; do not flatten the package to S02 |
+| Snapshot path/provider item/size/SHA1 is missing or inconsistent | Reject repair before moving or renaming anything |
+| Same 115 target directory is used by many files | Resolve/create once per attempt and reuse the validated ID |
+| Healthy mkdir/move/rename response | Advance the real phase; do not sleep in or label it risk backoff |
+| Provider returns 405/429/explicit frequency control | Enter shared bounded backoff with jitter and a visible retry time |
+| `record_only` preview | Use local DB/lease facts only and make zero provider calls |
+| Provider task/root/file was manually deleted | Treat it as idempotently absent and continue selected local-record cleanup |
+| Historical source item moved into the media library/outside package root | Count it as `source_detached`; retain it and omit it from the delete plan |
+| Provider preview exceeds its deadline or browser aborts | Return/show a retryable bounded error; keep task, files and prior state intact |
+| Terminal task still owns a valid mutation lease | Reject with queue-state conflict until the live worker can no longer write |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a 28-file package resolves to S01 6, S02 6, S03 8 and S04 8, reuses four season-directory identities and repairs only manifest-owned 115 items.
+- Good: a cancelled 23/28 task with 38 source entries across five parents lists those parents once, reports missing/detached counts, and returns a safe preview within the request deadline.
+- Base: every source item and provider task was manually removed; confirmation deletes the terminal local history without touching the media library.
+- Bad: write `ScrapeSeason` over every file, sleep two seconds before each directory action, or recycle a provider item solely because its historical ID still appears in a manifest.
+
+### 6. Tests Required
+
+- Use the untouched four-season 28-file fixture and assert unique targets plus exact 6/6/8/8 season counts; cover explicit override, single-file fallback and conflicting snapshot failure.
+- Reorganization tests assert original provider item ID + size + SHA1 correlation, missing SHA1 fail-closed behavior, and no mutation before the complete repair plan is verified.
+- 115 scheduler tests assert independent operation lanes, per-attempt directory de-duplication, no fixed healthy-mkdir delay, true 405/429 backoff, jitter/circuit recovery and late-success generation safety.
+- Deletion tests assert zero provider calls for `record_only`, parent-batched source listing, provider-task/root/item missing idempotency, detached retention, immutable package-root confinement, live-lease blocking, 45-second context cancellation and persisted failure codes.
+- Web tests assert real phase wording, risk wording only for `risk_backoff`, AbortController cleanup, 50-second timeout recovery and preserved task state after a closed/failed preview.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+for path := range facts {
+    facts[path] = transferEpisodeFact{Season: *download.ScrapeSeason}
+}
+for _, item := range manifest.Items {
+    current, _ := driver.Stat(ctx, item.ID)
+    driver.Recycle(ctx, current.ID)
+}
+```
+
+#### Correct
+
+```go
+facts, err := transferEpisodeFactsForManifest(download, originalManifest)
+// Per-file structured evidence wins; task-level automatic values are only compatible fallback.
+
+parents := groupSourceManifestByParent(originalManifest)
+current := listParentsWithinDeadline(ctx, parents)
+plan := convergeMissingDetachedAndOwned(current, download.ProviderOutputID)
+```

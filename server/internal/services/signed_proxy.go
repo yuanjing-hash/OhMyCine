@@ -463,7 +463,8 @@ func validOpaqueID(value string) bool {
 		return false
 	}
 	for _, character := range value {
-		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && character != '-' && character != '_' {
+		alphaNumeric := (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9')
+		if !alphaNumeric && character != '-' && character != '_' {
 			return false
 		}
 	}

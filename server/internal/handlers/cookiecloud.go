@@ -26,7 +26,7 @@ func (a *API) CookieCloudUpdate(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"action": "error"})
 			return
 		}
-		defer compressed.Close()
+		defer func() { _ = compressed.Close() }()
 		reader = compressed
 	}
 	var payload struct {

@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/download-route-selection.md","reason":"Verify PT never reaches 115 and existing cancellation/life-event ownership stays intact."}
+{"file":".trellis/spec/backend/pt-discovery.md","reason":"Verify JSON/SSE scope parity, fixed single-site compatibility and no credential leaks."}
+{"file":".trellis/spec/backend/transfer-organization.md","reason":"Verify per-file season facts survive planning, persistence, managed items and recovery."}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Audit solver SSRF, cookie isolation, process lifecycle, response bounds and redaction."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Apply Go tests, WebUI checks and final quality gates."}
+{"file":".trellis/tasks/08-27-bt-site-diagnostics-search-selector/research/evidence.md","reason":"Recheck implementation against the real S01-S04 task and MoviePilot-derived pacing behavior."}
+{"file":".trellis/tasks/08-27-bt-site-diagnostics-search-selector/research/transfer-deletion-preview-stall.md","reason":"Verify record-only zero provider I/O, bounded preview timing, missing-item convergence and detached media preservation."}

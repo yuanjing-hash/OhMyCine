@@ -221,7 +221,7 @@ func (c *Client) do(ctx context.Context, method, suffix string, target any) erro
 	if err != nil {
 		return mediaserver.NewError(mediaserver.ErrorUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return mediaserver.NewError(mediaserver.ErrorUnauthorized, nil)
 	}

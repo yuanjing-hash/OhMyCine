@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"gorm.io/gorm"
@@ -221,13 +223,14 @@ func TestDownloadAndTransferLifecycleScopesMoveSettledWorkIntoHistory(t *testing
 	for label, model := range map[string]any{"download": &models.DownloadTask{}, "transfer": &models.TransferTask{}, "seeding": &models.SeedingTask{}, "job": &models.Job{}} {
 		var count int64
 		query := queue.db.Model(model)
-		if label == "download" {
+		switch label {
+		case "download":
 			query = query.Where("id = ?", download.ID)
-		} else if label == "transfer" {
+		case "transfer":
 			query = query.Where("id = ?", transfer.ID)
-		} else if label == "seeding" {
+		case "seeding":
 			query = query.Where("id = ?", seeding.ID)
-		} else {
+		default:
 			query = query.Where("id IN ?", []string{download.JobID, transfer.JobID, seeding.JobID})
 		}
 		if err := query.Count(&count).Error; err != nil || count != 0 {
@@ -280,11 +283,12 @@ func TestTransferDeleteRemovesOnlyTerminalOrganizationRecords(t *testing.T) {
 				"event": &models.JobStatusEvent{}, "action": &models.JobActionRequest{},
 			} {
 				query := queue.db
-				if label == "transfer" {
+				switch label {
+				case "transfer":
 					query = query.Where("id = ?", task.ID)
-				} else if label == "job" {
+				case "job":
 					query = query.Where("id = ?", task.JobID)
-				} else {
+				default:
 					query = query.Where("job_id = ?", task.JobID)
 				}
 				var count int64
@@ -897,6 +901,77 @@ func TestTransferEpisodeFactsUsesPersistedScrapeFactsWithoutReusingSingleEpisode
 	_, multipleEpisode := transferEpisodeFacts(download, "Ultraman Omega.mkv", 2)
 	if multipleEpisode != nil {
 		t.Fatalf("persisted single episode leaked into multi-video package: %v", *multipleEpisode)
+	}
+}
+
+func TestTransferTargetsPreserveFourSeasonIdentityFacts(t *testing.T) {
+	taskSeason, taskEpisode := 2, 1
+	tmdbID := int64(75129)
+	download := models.DownloadTask{
+		ScrapeMediaType:     "tv",
+		ScrapeTitle:         "屌丝男士",
+		ScrapeCategory:      "国产剧",
+		ScrapeTMDBID:        &tmdbID,
+		ScrapeSeason:        &taskSeason,
+		ScrapeEpisode:       &taskEpisode,
+		IdentityRevision:    1,
+		TVDirectoryTemplate: "{category}/{title}/Season {season:02}",
+		TVFilenameTemplate:  "{title} - S{season:02}E{episode:02}",
+	}
+	manifest := downloadpkg.Manifest{Name: "屌丝男士 第1-4季 Diors.Man.S01-S04", Complete: true}
+	identity := MediaIdentitySnapshot{Version: 1, Revision: 1, Source: mediaIdentitySourceAutomatic, Status: mediaIdentityStatusVerified, TMDBID: &tmdbID, MediaType: "tv", Title: download.ScrapeTitle, Category: download.ScrapeCategory, Season: &taskSeason, Episode: &taskEpisode}
+	for season, count := range map[int]int{1: 6, 2: 6, 3: 8, 4: 8} {
+		for episode := 1; episode <= count; episode++ {
+			relative := fmt.Sprintf("屌丝男士第%d季全集.Diors.Man.S%02d/屌丝男士第%d季.第%d集.Diors.Man.S%02d.E%02d.1080P.mp4", season, season, season, episode, season, episode)
+			size := minimumAutomaticTransferVideoBytes + int64(season*100+episode)
+			manifest.Files = append(manifest.Files, downloadpkg.File{RelativePath: relative, Size: size, ProviderItemID: fmt.Sprintf("provider-%d-%d", season, episode)})
+			seasonValue, episodeValue := season, episode
+			identity.Episodes = append(identity.Episodes, mediarecognition.FileEpisodeFact{RelativePath: relative, Season: &seasonValue, Episode: &episodeValue, Evidence: "structured"})
+		}
+	}
+	raw, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	download.IdentitySnapshotJSON = string(raw)
+	targets, err := buildTransferTargets(download, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 28 {
+		t.Fatalf("targets=%d want=28", len(targets))
+	}
+	counts := map[string]int{}
+	seen := map[string]struct{}{}
+	for _, target := range targets {
+		seasonDir := strings.Split(target.Relative, "/")
+		if len(seasonDir) < 3 {
+			t.Fatalf("invalid target=%q", target.Relative)
+		}
+		counts[seasonDir[2]]++
+		if _, duplicate := seen[strings.ToLower(target.Relative)]; duplicate {
+			t.Fatalf("duplicate target=%q", target.Relative)
+		}
+		seen[strings.ToLower(target.Relative)] = struct{}{}
+	}
+	for season, want := range map[string]int{"Season 01": 6, "Season 02": 6, "Season 03": 8, "Season 04": 8} {
+		if counts[season] != want {
+			t.Fatalf("%s=%d want=%d all=%v", season, counts[season], want, counts)
+		}
+	}
+}
+
+func TestTransferEpisodeFactsRejectIdentityPathOutsideManifest(t *testing.T) {
+	season, episode := 1, 1
+	identity := MediaIdentitySnapshot{Version: 1, Revision: 1, Episodes: []mediarecognition.FileEpisodeFact{{RelativePath: "other/S01E01.mkv", Season: &season, Episode: &episode}}}
+	raw, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	download := models.DownloadTask{ScrapeMediaType: "tv", IdentityRevision: 1, IdentitySnapshotJSON: string(raw)}
+	manifest := downloadpkg.Manifest{Complete: true, Files: []downloadpkg.File{{RelativePath: "selected/S01E01.mkv", Size: minimumAutomaticTransferVideoBytes}}}
+	if _, err := transferEpisodeFactsForManifest(download, manifest); err == nil {
+		t.Fatal("identity path outside selected manifest was accepted")
 	}
 }
 

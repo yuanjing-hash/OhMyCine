@@ -538,7 +538,7 @@ func (e *PluginDownloadExecutor) downloadProviderArtwork(ctx context.Context, ro
 	if err != nil {
 		return downloadpkg.File{}, err
 	}
-	defer stream.Body.Close()
+	defer func() { _ = stream.Body.Close() }()
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(stream.Header.Get("Content-Type"), ";")[0]))
 	if stream.StatusCode != http.StatusOK || contentType != "image/jpeg" {
 		return downloadpkg.File{}, errors.New("provider artwork must be a JPEG")
@@ -572,7 +572,7 @@ func existingManagedProviderJPEG(root, name string, maximum int64) (downloadpkg.
 	if err != nil {
 		return downloadpkg.File{}, false, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	header := make([]byte, 2)
 	footer := make([]byte, 2)
 	if _, err := io.ReadFull(file, header); err != nil {
@@ -752,7 +752,7 @@ func (e *PluginDownloadExecutor) downloadAsset(ctx context.Context, runtime JobR
 	if err != nil {
 		return "", 0, err
 	}
-	defer stream.Body.Close()
+	defer func() { _ = stream.Body.Close() }()
 	if stream.StatusCode != http.StatusOK {
 		return "", 0, errors.New("plugin asset did not return a complete response")
 	}

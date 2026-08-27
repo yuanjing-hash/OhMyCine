@@ -693,6 +693,12 @@ type Torrent struct {
 └──────────────────────────────────────────────────────────────┘
 ```
 
+### 8.3 受控页面渲染
+
+公开 BT 站点仍优先使用原生 HTTP/RSS/API。首版只有已登记的 `1337x` 与 `EXT.to` profile 可在管理员显式开启后进入统一 `RenderedFetcher`：Server 只提交 profile 对应的精确 HTTPS/443 官网 URL，限制超时、HTML 大小和最终跳转 host。全局配置的本机 CloakBrowser companion 优先；不可用时才尝试该站点配置的 FlareSolverr。单站失败只形成该站点的安全错误，不扩大搜索范围。
+
+CloakBrowser companion 必须由用户从官方渠道显式安装并接受其许可，OhMyCine 不下载、打包或重新分发其受限浏览器二进制。companion 只允许绑定/连接 loopback。统一渲染请求不含 Cookie/passkey；PT Cookie 始终只在 Server 直连适配器内使用。既有 PT FlareSolverr 配置仅保留无凭据页面渲染兼容，不进入 Cloak 自动路由。
+
 ## 9. 下载器管理 (Download Clients)
 
 ### 9.1 下载器接口

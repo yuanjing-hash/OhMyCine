@@ -28,6 +28,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
+	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/releaseversion"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -96,6 +97,7 @@ type reorganizationPlanItem struct {
 	ProviderItemID   string `json:"provider_item_id,omitempty"`
 	ProviderParentID string `json:"provider_parent_id,omitempty"`
 	Size             int64  `json:"size"`
+	SourceSHA1       string `json:"source_sha1,omitempty"`
 	Action           string `json:"action"`
 }
 
@@ -174,11 +176,11 @@ func (s *MediaReorganizationService) Preview(ctx context.Context, actor Actor, i
 	if err != nil {
 		return MediaReorganizationPreviewResult{}, err
 	}
-	plan, conflicts, err := buildReorganizationPlan(library, storage, transfer, current, target, items, input.ConflictPolicy)
+	plan, _, err := buildReorganizationPlan(library, storage, transfer, download, current, target, items, input.ConflictPolicy)
 	if err != nil {
 		return MediaReorganizationPreviewResult{}, err
 	}
-	conflicts, err = s.applyConflictPreview(ctx, library, storage, &plan, input.ConflictPolicy)
+	conflicts, err := s.applyConflictPreview(ctx, library, storage, &plan, input.ConflictPolicy)
 	if err != nil {
 		return MediaReorganizationPreviewResult{}, err
 	}
@@ -300,8 +302,33 @@ func (s *MediaReorganizationService) loadBoundaryWithDB(db *gorm.DB, actor Actor
 	return transfer, download, library, storage, items, nil
 }
 
-func buildReorganizationPlan(library models.MediaLibrary, storage models.Storage, transfer models.TransferTask, source, target MediaIdentitySnapshot, items []models.MediaManagedItem, policy string) (reorganizationPlan, int, error) {
+func buildReorganizationPlan(library models.MediaLibrary, storage models.Storage, transfer models.TransferTask, download models.DownloadTask, source, target MediaIdentitySnapshot, items []models.MediaManagedItem, policy string) (reorganizationPlan, int, error) {
 	plan := reorganizationPlan{Version: 1, LibraryID: library.ID, TransferTaskID: transfer.ID, StorageType: storage.Type, RuleFingerprint: libraryRuleFingerprint(library), Items: make([]reorganizationPlanItem, 0, len(items))}
+	originalByProviderID := map[string]downloadpkg.File{}
+	episodeByProviderID := map[string]transferEpisodeFact{}
+	if strings.TrimSpace(transfer.ManifestJSON) != "" {
+		var original downloadpkg.Manifest
+		if json.Unmarshal([]byte(transfer.ManifestJSON), &original) != nil || !original.Complete {
+			return plan, 0, appError(CodeReorganizationUnavailable, "原始入库清单无效，不能安全重新整理", nil)
+		}
+		resolved, err := transferEpisodeFactsForManifest(download, original)
+		if err != nil {
+			return plan, 0, appError(CodeReorganizationUnavailable, "原始逐文件季集身份无效，不能安全重新整理", err)
+		}
+		for _, file := range original.Files {
+			providerID := strings.TrimSpace(file.ProviderItemID)
+			if providerID == "" {
+				continue
+			}
+			if _, duplicate := originalByProviderID[providerID]; duplicate {
+				return plan, 0, appError(CodeReorganizationUnavailable, "原始托管文件身份重复，不能安全重新整理", nil)
+			}
+			originalByProviderID[providerID] = file
+			if fact, ok := resolved[normalizedManifestPath(file.RelativePath)]; ok {
+				episodeByProviderID[providerID] = fact
+			}
+		}
+	}
 	videoFacts := make([]mediarecognition.FileFact, 0)
 	for _, item := range items {
 		if item.Kind == models.MediaManagedItemKindVideo {
@@ -320,13 +347,24 @@ func buildReorganizationPlan(library models.MediaLibrary, storage models.Storage
 			continue
 		}
 		season, episode := source.Season, source.Episode
-		if fact, ok := episodes[normalizedManifestPath(item.RelativePath)]; ok {
+		releasePath := item.RelativePath
+		sourceSHA1 := ""
+		if item.ProviderItemID != "" {
+			original, ok := originalByProviderID[item.ProviderItemID]
+			if !ok || original.Size != item.Size {
+				return plan, 0, appError(CodeReorganizationBoundaryChanged, "原始文件与当前托管文件无法安全对应", nil)
+			}
+			releasePath, sourceSHA1 = original.RelativePath, strings.TrimSpace(original.SHA1)
+			if fact, found := episodeByProviderID[item.ProviderItemID]; found {
+				season, episode = fact.Season, fact.Episode
+			}
+		} else if fact, ok := episodes[normalizedManifestPath(item.RelativePath)]; ok {
 			season, episode = fact.Season, fact.Episode
 		}
 		if target.MediaType == "tv" && episode == nil {
 			return plan, 0, appError(CodeTransferEpisodeUnrecognized, "剧集集号无法完整确定，不能重新整理", nil)
 		}
-		values := transferTemplateValues{Category: target.Category, Title: target.Title, Year: target.Year, Version: releaseversion.Parse(item.RelativePath), Season: season, Episode: episode}
+		values := transferTemplateValues{Category: target.Category, Title: target.Title, Year: target.Year, Version: releaseversion.Parse(releasePath), Season: season, Episode: episode}
 		dirTemplate, filenameTemplate := library.MovieDirectoryTemplate, library.MovieFilenameTemplate
 		if target.MediaType == "tv" {
 			dirTemplate, filenameTemplate = library.TVDirectoryTemplate, library.TVFilenameTemplate
@@ -348,7 +386,9 @@ func buildReorganizationPlan(library models.MediaLibrary, storage models.Storage
 			return plan, 0, appError(CodeInvalidRequest, "重新整理目标路径无效", nil)
 		}
 		videoTargets[normalizedManifestPath(item.RelativePath)] = newRelative
-		plan.Items = append(plan.Items, managedToPlanItem(item, newRelative))
+		planned := managedToPlanItem(item, newRelative)
+		planned.SourceSHA1 = sourceSHA1
+		plan.Items = append(plan.Items, planned)
 	}
 	for _, item := range items {
 		if item.Kind == models.MediaManagedItemKindVideo {
@@ -612,11 +652,12 @@ func (w *MediaReorganizationWorker) Run(ctx context.Context, runtime JobRuntime,
 	}
 	_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.MediaReorganizationPhaseExecuting, "last_error_code": "", "updated_at": time.Now().UTC()}).Error
 	var err error
-	if storage.Type == models.StorageTypeLocal {
+	switch storage.Type {
+	case models.StorageTypeLocal:
 		err = w.runLocal(ctx, runtime, &task, library, storage, plan, &state)
-	} else if storage.Type == models.StorageTypePan115 {
+	case models.StorageTypePan115:
 		err = w.runCloud(ctx, runtime, &task, library, storage, plan, &state)
-	} else {
+	default:
 		err = appError(CodeReorganizationUnavailable, "当前存储类型不支持重新整理", nil)
 	}
 	if err != nil {
@@ -732,7 +773,7 @@ func (w *MediaReorganizationWorker) runCloud(ctx context.Context, runtime JobRun
 			continue
 		}
 		current, err := providerItemWithinRoot(ctx, driver, item.ProviderItemID, root.ID)
-		if err != nil || current.IsDir || current.Size != item.Size {
+		if err != nil || cloudReorganizationSourceChanged(item, current) {
 			return appError(CodeReorganizationBoundaryChanged, "115 托管文件已变化", nil)
 		}
 		parentID, err := ensureReorganizationCloudDirectory(ctx, driver, mutations, root.ID, pathpkg.Dir(item.NewRelativePath), directories)
@@ -769,6 +810,10 @@ func (w *MediaReorganizationWorker) runCloud(ctx context.Context, runtime JobRun
 		}
 	}
 	return nil
+}
+
+func cloudReorganizationSourceChanged(item reorganizationPlanItem, current cloudpkg.Item) bool {
+	return current.IsDir || current.Size != item.Size || (item.SourceSHA1 != "" && !strings.EqualFold(item.SourceSHA1, current.SHA1))
 }
 
 func ensureReorganizationCloudTargetAvailable(ctx context.Context, driver cloudpkg.Driver, parentID, name, currentItemID string) error {

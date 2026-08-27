@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,6 +28,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/pkg/downloader/qbittorrent"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/mediatool"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
+	sitepkg "github.com/yuanjing-hash/ohmycine/server/pkg/site"
 )
 
 func main() {
@@ -38,7 +40,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer logManager.Close()
+	defer func() {
+		if closeErr := logManager.Close(); closeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "close runtime logger: %v\n", closeErr)
+		}
+	}()
 	log := logManager.Logger("server", "bootstrap")
 	db, err := database.Open(cfg.DatabasePath)
 	if err != nil {
@@ -132,6 +138,13 @@ func main() {
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, logManager.Logger("download", "service"))
 	sites := services.NewSiteService(db, audit, credentialStore, downloads, logManager.Logger("site", "service"))
+	if cfg.CloakBrowserCompanionURL != "" {
+		cloakBrowser, cloakErr := sitepkg.NewCloakBrowserFetcher(cfg.CloakBrowserCompanionURL)
+		if cloakErr != nil {
+			logging.OperationServerLifecycle.Event(log.Fatal()).Str("error_code", "cloakbrowser_companion_config_invalid").Msg(logging.OperationServerLifecycle.Message("CloakBrowser companion 配置无效，仅允许本机回环地址"))
+		}
+		sites.SetRenderedFetcher(cloakBrowser)
+	}
 	sites.SetMetadataSettings(metadataSettings)
 	sites.SetAIRecognitionSettings(aiRecognitionSettings)
 	follows := services.NewFollowService(db, audit, queue, mediaCoverage, authorization)

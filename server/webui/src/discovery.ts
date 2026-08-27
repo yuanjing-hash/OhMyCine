@@ -105,10 +105,16 @@ export function mediaIdentitySearchPath(mediaType: DiscoveryMediaType, tmdbID: n
   return `/api/v1/discovery/media/${encodeURIComponent(mediaType)}/${encodeURIComponent(String(tmdbID))}/torrent-search${stream ? '/stream' : ''}`
 }
 
-export function mediaIdentitySearchURL(mediaType: DiscoveryMediaType, tmdbID: number, options: { season?: number; page?: number; siteID?: number } = {}, stream = false) {
+export function mediaIdentitySearchURL(mediaType: DiscoveryMediaType, tmdbID: number, options: { season?: number; page?: number; siteID?: number; siteIDs?: number[] } = {}, stream = false) {
   const query = new URLSearchParams({ page: String(Math.max(1, Math.min(20, options.page ?? 1))) })
   if (options.season != null) query.set('season', String(options.season))
+  if (options.siteID && options.siteIDs) throw new Error('site_id and site_ids cannot be combined')
   if (options.siteID) query.set('site_id', String(options.siteID))
+  if (options.siteIDs) {
+    const ids = [...new Set(options.siteIDs.filter(id => Number.isInteger(id) && id > 0))]
+    if (ids.length === 0 || ids.length > 64) throw new Error('site_ids must contain 1 to 64 sites')
+    for (const id of ids) query.append('site_ids', String(id))
+  }
   return `${mediaIdentitySearchPath(mediaType, tmdbID, stream)}?${query}`
 }
 

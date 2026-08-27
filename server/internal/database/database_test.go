@@ -59,7 +59,11 @@ func TestOpenUsesImmediateTransactionsToPreventBusySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer writer.Close()
+	t.Cleanup(func() {
+		if closeErr := writer.Close(); closeErr != nil {
+			t.Errorf("close competing writer: %v", closeErr)
+		}
+	})
 	writerStarted := make(chan struct{})
 	writerDone := make(chan error, 1)
 	go func() {

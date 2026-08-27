@@ -44,7 +44,7 @@ func (s *uploadTestSDK) ListPage(_ string, offset, _ int64, _ ...pan115sdk.ListO
 
 func newUploadTestClient(sdk sdkClient) *Client {
 	return &Client{
-		sdk: sdk, listRate: rate.NewLimiter(rate.Inf, 1), mutationRate: rate.NewLimiter(rate.Inf, 1),
+		sdk: sdk, listRate: rate.NewLimiter(rate.Inf, 1), uploadRate: rate.NewLimiter(rate.Inf, 1),
 		callSlots: make(chan struct{}, maxInFlightCalls), now: time.Now, jitter: func() time.Duration { return 0 },
 	}
 }

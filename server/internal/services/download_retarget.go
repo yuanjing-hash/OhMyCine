@@ -37,9 +37,10 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 		return DownloadTaskSummary{}, appError(CodeDownloaderUnavailable, "原下载器配置不可用", err)
 	}
 	sourceKind := ""
-	if task.SourceOrigin == models.DownloadSourceOriginShare {
+	switch task.SourceOrigin {
+	case models.DownloadSourceOriginShare:
 		sourceKind = downloadpkg.SourcePan115Share
-	} else if task.SourceOrigin == models.DownloadSourceOriginProviderIngest {
+	case models.DownloadSourceOriginProviderIngest:
 		sourceKind = downloadpkg.SourceProviderItem
 	}
 	target, profile, err := s.resolveDownloadTarget(ctx, downloader, libraryID, sourceKind)

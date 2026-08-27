@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/download-route-selection.md","reason":"115 route ownership, life-event adoption and PT/BT compatibility are authoritative."}
+{"file":".trellis/spec/backend/pt-discovery.md","reason":"Search scope, SSE parity, opaque claims and site credential boundaries apply."}
+{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"TMDB multi-name search and coverage/session identity must retain selected site scope."}
+{"file":".trellis/spec/backend/transfer-organization.md","reason":"Transfer planning, safe summaries, retry and reorganization contracts apply to the season fix."}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"Rendered browser fetching, external URLs, cookies, companion processes and logs are security-sensitive."}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"The search selector and truthful 115 progress UI must follow Server WebUI conventions."}
+{"file":".trellis/tasks/08-27-bt-site-diagnostics-search-selector/research/evidence.md","reason":"Contains runtime DB root cause and actual MoviePilot/CloakBrowser comparison evidence."}
+{"file":".trellis/tasks/08-27-bt-site-diagnostics-search-selector/research/transfer-deletion-preview-stall.md","reason":"Contains the real 23/28 cancelled 115 task, 38-item preview stall root cause, convergent deletion boundaries and required test matrix."}

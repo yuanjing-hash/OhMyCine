@@ -57,7 +57,10 @@ func (w *TransferWorker) runCloudUpload(ctx context.Context, runtime JobRuntime,
 	summaryPlan := make([]transferPlanItem, 0, len(targets))
 	for _, target := range targets {
 		summaryPlan = append(summaryPlan, transferPlanItem{Relative: target.Relative, Size: target.File.Size, Group: target.Group})
-		if _, err := w.ensureCloudDirectory(ctx, mutations, &task, &state, pathpkg.Dir(target.Relative)); err != nil {
+	}
+	validatedDirectories := map[string]struct{}{".": {}}
+	for _, directory := range uniqueCloudTargetDirectories(targets) {
+		if _, err := w.ensureCloudDirectory(ctx, mutations, &task, &state, directory, validatedDirectories); err != nil {
 			return w.cloudFailure(task, err)
 		}
 	}

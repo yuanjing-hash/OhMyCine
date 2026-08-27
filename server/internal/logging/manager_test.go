@@ -34,7 +34,11 @@ func TestManagerWritesQueriesAndCompressesRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	t.Cleanup(func() {
+		if closeErr := m.Close(); closeErr != nil {
+			t.Errorf("close log manager: %v", closeErr)
+		}
+	})
 	policy := Policy{Level: "debug", MaxFileMiB: 1, MaxBackups: 3, RetentionDays: 30, MaxTotalMiB: 32}
 	if err := m.Apply(policy); err != nil {
 		t.Fatal(err)
@@ -86,7 +90,11 @@ func TestPluginLoggerBindsPluginIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	t.Cleanup(func() {
+		if closeErr := m.Close(); closeErr != nil {
+			t.Errorf("close log manager: %v", closeErr)
+		}
+	})
 	logger := m.PluginLogger("trusted-plugin", "worker")
 	logger.Info().Str("plugin_id", "spoofed").Msg("plugin event")
 	result, err := m.Query(context.Background(), Filter{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour), Limit: 10})
@@ -109,7 +117,11 @@ func TestManagerFallsBackToStdoutWhenLogDirectoryIsAFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	t.Cleanup(func() {
+		if closeErr := manager.Close(); closeErr != nil {
+			t.Errorf("close log manager: %v", closeErr)
+		}
+	})
 	logger := manager.Logger("server", "degraded-test")
 	logger.Error().Msg("still visible")
 	if !manager.Health().Degraded || !strings.Contains(stdout.String(), "still visible") {
@@ -123,7 +135,11 @@ func TestBusinessOperationCanBeDisplayedAndFiltered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	t.Cleanup(func() {
+		if closeErr := manager.Close(); closeErr != nil {
+			t.Errorf("close log manager: %v", closeErr)
+		}
+	})
 	logger := manager.Logger("media_library", "scanner")
 	OperationLibraryIncrementalScan.Event(logger.Info()).Uint("library_id", 7).Msg(OperationLibraryIncrementalScan.Message("完成"))
 	OperationLibraryFullScan.Event(logger.Info()).Uint("library_id", 7).Msg(OperationLibraryFullScan.Message("完成"))

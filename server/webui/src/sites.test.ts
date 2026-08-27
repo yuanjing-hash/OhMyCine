@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, filterAndSortTorrentResults, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, saveTorrentSearchSession, siteCatalogPath, siteResolvePath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup } from './sites'
+import { buildPTSearchQuery, cookieCloudErrorLabel, cookieCloudSettingsPath, cookieCloudSyncPath, discoverySearchOptionsPath, filterAndSortTorrentResults, ptRecognitionEngineVersion, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionPath, ptRecognitionSpecLabels, readTorrentSearchSession, readTorrentSearchSiteSelection, saveTorrentSearchSession, saveTorrentSearchSiteSelection, siteCatalogPath, siteResolvePath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchSessionKey, torrentSearchStreamPath, upsertPTGroup, type PTSearchGroup, type SearchSiteOption } from './sites'
 
 const group = (siteID: number, page = 1): PTSearchGroup => ({ site_id: siteID, site_name: `site-${siteID}`, site_type: 'pt', status: 'success', page, has_next: false, skipped: 0, items: [{ token: `token-${siteID}-${page}`, title: 'Title', expires_at: '2026-08-24T00:00:00Z' }] })
 
@@ -32,6 +32,27 @@ describe('PT discovery contracts', () => {
     const bt = { ...group(2), site_type: 'bt' as const, items: [{ token: 'bt', title: 'BT', seeders: 200, quality: '2160p', specifications: { resolution: '2160p' }, expires_at: '2026-08-25T00:10:00Z' }] }
     const values = filterAndSortTorrentResults([pt, bt], { activeChannel: 1, enabledSiteTypes: ['pt'], resolution: '2160p', promotion: 'free', minimumSeeders: 10, sort: 'seeders', direction: 'desc' })
     expect(values.map(entry => entry.item.token)).toEqual(['high', 'mid'])
+  })
+
+  it('binds repeated multi-site scope without allowing ambiguous widening', () => {
+    const query = buildPTSearchQuery({ keyword: '七武士', siteIDs: [3, 1, 3] })
+    expect(query.getAll('site_ids')).toEqual(['3', '1'])
+    expect(query.has('site_id')).toBe(false)
+    expect(() => buildPTSearchQuery({ keyword: '七武士', siteID: 1, siteIDs: [2] })).toThrow()
+    expect(() => buildPTSearchQuery({ keyword: '七武士', siteIDs: [] })).toThrow()
+  })
+
+  it('selects all on first use and does not silently add new sites later', () => {
+    const values = new Map<string, string>()
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
+    const options: SearchSiteOption[] = [
+      { id: 1, name: 'PT', site_type: 'pt', health_status: 'online', searchable: true },
+      { id: 2, name: 'BT', site_type: 'bt', health_status: 'offline', searchable: false, reason: 'unavailable' },
+    ]
+    expect(readTorrentSearchSiteSelection(storage, options)).toEqual([1])
+    saveTorrentSearchSiteSelection(storage, [1])
+    const expanded = [...options, { id: 3, name: 'New BT', site_type: 'bt' as const, health_status: 'online', searchable: true }]
+    expect(readTorrentSearchSiteSelection(storage, expanded)).toEqual([1])
   })
 
   it('normalizes null result items at the wire boundary', () => {
@@ -96,6 +117,7 @@ describe('PT discovery contracts', () => {
     expect(torrentRecognitionPath).toBe('/api/v1/discovery/torrent-results/recognize')
     expect(torrentRecognitionCandidatesPath).toBe('/api/v1/discovery/torrent-results/tmdb-candidates')
     expect(torrentRecognitionOverridePath).toBe('/api/v1/discovery/torrent-results/recognition-override')
+    expect(discoverySearchOptionsPath).toBe('/api/v1/discovery/search-options')
   })
 
   it('binds cached results to the fixed single-site scope', () => {
@@ -108,12 +130,28 @@ describe('PT discovery contracts', () => {
     expect(readTorrentSearchSession(storage, now)?.input.siteID).toBe(7)
   })
 
+  it('drops legacy cached searches without an explicit site scope', () => {
+    const values = new Map<string, string>()
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } }
+    const now = Date.parse('2026-08-25T00:00:00Z')
+    const legacy = group(7)
+    legacy.items[0].expires_at = '2026-08-25T00:10:00Z'
+    saveTorrentSearchSession(storage, { input: { keyword: 'anime', mediaType: 'tv', searchBy: 'title' }, groups: [legacy], recognitions: {}, searched: true, savedAt: now })
+    expect(readTorrentSearchSession(storage, now)).toBeNull()
+    expect(values.has(torrentSearchSessionKey)).toBe(false)
+  })
+
   it('uses address-driven BT adding and a fixed single-site search route', () => {
     const sitesView = readFileSync(new URL('./views/SitesView.vue', import.meta.url), 'utf8')
     const exploreView = readFileSync(new URL('./views/ExploreView.vue', import.meta.url), 'utf8')
     expect(sitesView).toContain("form.value.kind = 'auto_bt'")
     expect(sitesView).toContain('siteResolvePath')
     expect(sitesView).toContain("query: { site_id: String(site.id) }")
+    expect(sitesView).toContain("const publicRenderedKinds = new Set(['1337x', 'extto'])")
+    expect(sitesView).toContain('OMC_CLOAKBROWSER_COMPANION_URL')
+    expect(sitesView).toContain('OhMyCine 不附带、下载或重新分发其浏览器二进制')
+    expect(sitesView).toContain('不会把 PT Cookie 或 passkey 交给 FlareSolverr')
+    expect(sitesView).not.toContain('把目标站点 URL 和该站 Cookie 发送给此服务')
     expect(sitesView).not.toContain('选择 Nyaa 等内建公开索引')
     expect(exploreView).toContain('lockedSiteID')
     expect(exploreView).toContain('当前处于单站搜索模式')
@@ -170,7 +208,7 @@ describe('PT discovery contracts', () => {
     const stale = group(2)
     stale.items[0].expires_at = '2026-08-24T23:59:00Z'
     saveTorrentSearchSession(storage, {
-      input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title' },
+      input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title', siteIDs: [1, 2] },
       groups: [fresh, stale],
       recognitions: { [fresh.items[0].token]: { engine_version: ptRecognitionEngineVersion, status: 'matched', manual_override: true, title: '迪迦奥特曼', media_type: 'tv', episodes: { episode_min: 1, episode_max: 52, count: 52 }, specifications: {} } },
       searched: true,
@@ -197,7 +235,7 @@ describe('PT discovery contracts', () => {
     const fresh = group(1)
     fresh.items[0].expires_at = '2026-08-25T00:10:00Z'
     values.set(torrentSearchSessionKey, JSON.stringify({
-      input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title' },
+      input: { keyword: '迪迦奥特曼', mediaType: 'tv', searchBy: 'title', siteIDs: [1] },
       groups: [fresh],
       recognitions: { [fresh.items[0].token]: { engine_version: 'older-engine', status: 'unrecognized', error_code: 'tmdb_no_match', title: 'Ultraman Tiga', specifications: {} } },
       searched: true,
@@ -221,7 +259,7 @@ describe('PT discovery contracts', () => {
       items: Array.from({ length: 200 }, (_, index) => ({ token: `${siteID}-${index}`, title: `Title ${index}`, expires_at: '2026-08-25T00:10:00Z' })),
     }))
     values.set(torrentSearchSessionKey, JSON.stringify({
-      input: { keyword: 'test', mediaType: '', searchBy: 'title' }, groups, recognitions: {}, searched: true, savedAt: now,
+      input: { keyword: 'test', mediaType: '', searchBy: 'title', siteIDs: [1, 2] }, groups, recognitions: {}, searched: true, savedAt: now,
     }))
     const restored = readTorrentSearchSession(storage, now)
     expect(restored?.groups.reduce((total, item) => total + item.items.length, 0)).toBe(300)

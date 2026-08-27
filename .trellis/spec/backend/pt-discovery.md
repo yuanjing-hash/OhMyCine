@@ -243,3 +243,78 @@ definition, err := builtin.ResolveOfficialOrigin(request.BaseURL)
 if err != nil { return ErrUnsupportedSite }
 // Create repeats this resolution, probes definition.CanonicalOrigin, then saves definition.Kind.
 ```
+
+## Scenario: Explicit Multi-Site Scope and Controlled Rendered Fetch
+
+### 1. Scope / Trigger
+
+- Trigger: changing aggregate title search, TMDB identity resource search, retry/pagination/session restoration, safe search options, or Cloudflare-challenged public BT adapters.
+
+### 2. Signatures
+
+```text
+GET /api/v1/discovery/search-options
+  -> { list: [{ id, name, site_type, health_status, searchable, reason }], total }
+
+GET /api/v1/discovery/torrent-search[ /stream ]
+GET /api/v1/discovery/media/{movie|tv}/{tmdb_id}/torrent-search[ /stream ]
+  query: site_id=<id> OR repeated/comma-separated site_ids=<id>, 1..64 unique IDs
+
+pkg/site.RenderedFetcher
+  Fetch(context.Context, RenderedFetchRequest) (RenderedPage, error)
+  Health(context.Context) error
+```
+
+- `RenderedFetchRequest` contains Server-selected `ProfileID`, exact URL, exact allowed hosts, bounded user agent, timeout and maximum bytes. It contains no Cookie, passkey or client-selected host.
+
+### 3. Contracts
+
+- `site_id` is the locked fixed-single-site contract. `site_ids` is the explicit aggregate scope; sending both is invalid. Parse repeated and comma-separated values, trim, validate positive integers, deduplicate in first-seen order and reject more than 64 raw or unique entries.
+- The service reloads every requested Site and rechecks actor visibility, enabled/search capability and current safe configuration. An absent, forbidden or non-searchable requested ID fails the request; it never widens to all Sites.
+- JSON, SSE, TMDB multilingual query variants, per-site retry, pagination and restored sessions carry the exact same ordered scope. A cache/session entry created without an explicit modern scope must not be restored as implicit all-site search.
+- `/discovery/search-options` requires `discovery.read` and returns only the safe summary above. It never returns Base URL, adapter internals, Cookie/passkey/API-key flags, solver URL, profile state or management-only fields.
+- Native HTTP remains the default. Only explicitly registered challenge profiles currently allowed for 1337x and EXT.to may invoke rendered fetch. A healthy configured CloakBrowser loopback companion is preferred; `ErrUnavailable` may fall back only to that Site's configured FlareSolverr endpoint.
+- ACG.RIP uses `/.xml?term=...`; EZTV accepts bounded non-negative integer or decimal-string sizes; LimeTorrents uses the exact registered `.fun` hosts and redirects only within the profile host set. AniDex/YTS/The Pirate Bay external failures remain per-site diagnostics rather than parser relaxations.
+- Rendered fetch failure is isolated to its Site group. It must not cancel successful Sites, disclose upstream bodies, or reinterpret a challenge page as an empty successful result.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Both `site_id` and `site_ids` | Return safe `400`; perform no Site search |
+| Empty/zero/malformed/over-64 `site_ids` | Return safe `400`; never fall back to all Sites |
+| Duplicate selected IDs | Search each requested Site once, preserving first-seen order |
+| Requested Site becomes disabled/forbidden | Fail scope validation; do not silently remove it or widen scope |
+| JSON succeeds and caller retries through SSE | Reuse the exact scope and return only selected Site groups |
+| Cloak companion unavailable | Fall back only to configured FlareSolverr for the same Site; otherwise emit its site-level unavailable error |
+| Challenge adapter returns off-profile final URL/body too large | Reject the rendered page and expose no body or target URL |
+| One selected Site fails remotely | Keep other selected groups usable and attach only a safe error to the failed Site |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the browser selects Mikan, Nyaa and ACG.RIP; title and TMDB multilingual searches, page 2 and retry touch exactly those three Sites.
+- Base: a fixed Site-card search supplies one `site_id` and bypasses the selector while retaining that ID through the full flow.
+- Bad: drop `site_ids` after the first SSE request, restore an unscoped cache as all Sites, or send PT Cookie/passkey to FlareSolverr/CloakBrowser.
+
+### 6. Tests Required
+
+- Handler/service tests cover repeated/comma-separated parsing, de-duplication, mutual exclusion, 1..64 bounds, permission/capability revalidation and no implicit scope widening.
+- Cross-layer tests assert identical scope for JSON/SSE/TMDB multilingual variants/retry/page changes plus safe `search-options` redaction.
+- Adapter fixtures cover ACG.RIP current RSS, EZTV numeric strings, LimeTorrents controlled host redirects, challenge detection and the external-failure diagnostic classes.
+- Rendered-fetch tests cover native routing, Cloak preference, same-Site Flare fallback, no fallback for validation errors, PT credential absence, response limits and final-host rejection.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+if len(input.SiteIDs) == 0 { sites = allEnabledSites }
+page := solver.Fetch(ctx, clientURL, site.Cookie)
+```
+
+#### Correct
+
+```go
+scope, err := authorizeExactSearchScope(actor, input.SiteID, input.SiteIDs)
+page, err := site.FetchRendered(ctx, configWithoutCredentials, registeredProfileRequest)
+```

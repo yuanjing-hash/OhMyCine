@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,51 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
+	"gorm.io/gorm"
 )
+
+func prepareOwnedPan115DeletionPackage(t *testing.T, fixture *cloudTransferFixture, transfer *models.TransferTask) {
+	t.Helper()
+	packageRootID := "owned-package-root"
+	fixture.driver.items[packageRootID] = cloudpkg.Item{ID: packageRootID, ParentID: "source-root", Name: "omc-" + fixture.download.ID, IsDir: true}
+	item := fixture.driver.items[fixture.sourceID]
+	item.ParentID = packageRootID
+	fixture.driver.items[fixture.sourceID] = item
+	fixture.download.ProviderOutputID = packageRootID
+	fixture.manifest.Files[0].ProviderParentID = packageRootID
+	raw, err := json.Marshal(fixture.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Update("provider_output_id", packageRootID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.queue.db.Model(&models.TransferTask{}).Where("id = ?", transfer.ID).Update("source_manifest_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	transfer.SourceManifestJSON = string(raw)
+}
+
+func attachPan115DeletionDownloader(t *testing.T, fixture *cloudTransferFixture, client *stubDownloadClient) {
+	t.Helper()
+	now := time.Now().UTC()
+	record := models.Downloader{ID: "deletion-pan115-" + fixture.download.ID, OwnerID: fixture.download.OwnerID, Name: "115 Offline", NameNormalized: "deletion-pan115-" + fixture.download.ID, Type: models.DownloaderTypePan115Offline, StorageID: fixture.download.StagingStorageID, ProviderDirectoryID: "source-root", Enabled: true, CapabilitiesJSON: `{}`, CreatedAt: now, UpdatedAt: now}
+	if err := fixture.queue.db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	registry := downloadpkg.NewRegistry()
+	if err := registry.Register(models.DownloaderTypePan115Offline, downloadpkg.Capabilities{Cancel: true, NativeOffline: true}, func(downloadpkg.Config) (downloadpkg.Client, error) { return client, nil }); err != nil {
+		t.Fatal(err)
+	}
+	downloader := NewDownloaderService(fixture.queue.db, fixture.queue.audit, nil, registry)
+	downloader.SetConnectionService(fixture.service.connections)
+	fixture.service.SetDownloaderService(downloader)
+	fixture.download.DownloaderID = &record.ID
+	fixture.download.ProviderTaskID = "offline-task-1"
+	if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Updates(map[string]any{"downloader_id": record.ID, "provider_task_id": fixture.download.ProviderTaskID}).Error; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func completedTransferForDeletion(t *testing.T) (*QueueService, Actor, *TransferService, models.DownloadTask, models.TransferTask, string, string) {
 	t.Helper()
@@ -301,8 +346,8 @@ func TestTransferDeletionPan115SourceRecycleFailureWithUnavailableStatIsNotSucce
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.driver.recycleFailID = fixture.sourceID
-	fixture.driver.statFailAfterRecycleID = fixture.sourceID
+	fixture.driver.recycleFailID = fixture.download.ProviderOutputID
+	fixture.driver.statFailAfterRecycleID = fixture.download.ProviderOutputID
 	_, err = fixture.service.ConfirmDeletion(context.Background(), actor, transfer.ID, preview.ConfirmationToken, RequestContext{})
 	if ErrorCode(err) != CodeTransferDeletionPartial {
 		t.Fatalf("confirm err=%v", err)
@@ -313,6 +358,323 @@ func TestTransferDeletionPan115SourceRecycleFailureWithUnavailableStatIsNotSucce
 	var count int64
 	if err := fixture.queue.db.Model(&models.TransferTask{}).Where("id = ?", transfer.ID).Count(&count).Error; err != nil || count != 1 {
 		t.Fatalf("transfer count=%d err=%v", count, err)
+	}
+}
+
+func TestTransferDeletionRecordOnlyLargePan115ManifestUsesNoProviderCalls(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+	if result := fixture.run(t); result.ErrorCode != "" {
+		t.Fatalf("transfer=%+v", result)
+	}
+	var transfer models.TransferTask
+	if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+		t.Fatal("missing transfer")
+	}
+	if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", transfer.JobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	files := make([]downloadpkg.File, 10_000)
+	for index := range files {
+		files[index] = downloadpkg.File{RelativePath: fmt.Sprintf("Season/file-%05d.mkv", index), Size: 1, ProviderItemID: fmt.Sprintf("item-%05d", index), ProviderParentID: "parent"}
+	}
+	raw, _ := json.Marshal(downloadpkg.Manifest{Name: "large", Complete: true, Files: files})
+	if err := fixture.queue.db.Model(&models.TransferTask{}).Where("id = ?", transfer.ID).Update("source_manifest_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := &stubDownloadClient{}
+	attachPan115DeletionDownloader(t, &fixture, client)
+	fixture.driver.listCalls, fixture.driver.statCalls = 0, 0
+	actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+	preview, err := fixture.service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordOnly}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.service.ConfirmDeletion(context.Background(), actor, transfer.ID, preview.ConfirmationToken, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.driver.listCalls != 0 || fixture.driver.statCalls != 0 || client.cancelled {
+		t.Fatalf("record-only called provider: list=%d stat=%d cancel=%v", fixture.driver.listCalls, fixture.driver.statCalls, client.cancelled)
+	}
+}
+
+func TestTransferDeletionPan115MissingRootConvergesAndCancelsOfflineTask(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		cancelErr error
+	}{
+		{name: "existing offline task"},
+		{name: "offline task already missing", cancelErr: downloadpkg.Error("downloader_task_not_found", false, nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+			if result := fixture.run(t); result.ErrorCode != "" {
+				t.Fatalf("transfer=%+v", result)
+			}
+			var transfer models.TransferTask
+			if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+				t.Fatal("missing transfer")
+			}
+			for _, jobID := range []string{transfer.JobID, fixture.download.JobID} {
+				if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", jobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			prepareOwnedPan115DeletionPackage(t, &fixture, &transfer)
+			client := &stubDownloadClient{cancelErr: test.cancelErr}
+			attachPan115DeletionDownloader(t, &fixture, client)
+			delete(fixture.driver.items, fixture.download.ProviderOutputID)
+			fixture.driver.recycled = nil
+			actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+			preview, err := fixture.service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{})
+			if err != nil || preview.SourceMissing != 1 {
+				t.Fatalf("preview=%+v err=%v", preview, err)
+			}
+			result, err := fixture.service.ConfirmDeletion(context.Background(), actor, transfer.ID, preview.ConfirmationToken, RequestContext{})
+			if err != nil || result.SourceRemoved != 0 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if !client.cancelled || client.deleteData || len(fixture.driver.recycled) != 0 {
+				t.Fatalf("cleanup cancel=%v delete_data=%v recycled=%v", client.cancelled, client.deleteData, fixture.driver.recycled)
+			}
+		})
+	}
+}
+
+func TestTransferDeletionPan115RecyclesOnlyOwnedPackageRoot(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+	if result := fixture.run(t); result.ErrorCode != "" {
+		t.Fatalf("transfer=%+v", result)
+	}
+	var transfer models.TransferTask
+	if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+		t.Fatal("missing transfer")
+	}
+	for _, jobID := range []string{transfer.JobID, fixture.download.JobID} {
+		if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", jobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepareOwnedPan115DeletionPackage(t, &fixture, &transfer)
+	client := &stubDownloadClient{}
+	attachPan115DeletionDownloader(t, &fixture, client)
+	fixture.driver.recycled = nil
+	actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+	preview, err := fixture.service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{})
+	if err != nil || preview.SourceDetached != 0 {
+		t.Fatalf("preview=%+v err=%v", preview, err)
+	}
+	result, err := fixture.service.ConfirmDeletion(context.Background(), actor, transfer.ID, preview.ConfirmationToken, RequestContext{})
+	if err != nil || result.SourceRemoved != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !client.cancelled || client.deleteData || len(fixture.driver.recycled) != 1 || fixture.driver.recycled[0] != fixture.download.ProviderOutputID {
+		t.Fatalf("cleanup cancel=%v delete_data=%v recycled=%v", client.cancelled, client.deleteData, fixture.driver.recycled)
+	}
+}
+
+func TestTransferDeletionPan115PartialMovePreservesDetachedItems(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+	if result := fixture.run(t); result.ErrorCode != "" {
+		t.Fatalf("transfer=%+v", result)
+	}
+	var transfer models.TransferTask
+	if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+		t.Fatal("missing transfer")
+	}
+	for _, jobID := range []string{transfer.JobID, fixture.download.JobID} {
+		if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", jobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepareOwnedPan115DeletionPackage(t, &fixture, &transfer)
+	packageRootID := fixture.download.ProviderOutputID
+	fixture.driver.items["remaining-source"] = cloudpkg.Item{ID: "remaining-source", ParentID: packageRootID, Name: "remaining.mkv", Size: 2, SHA1: "REMAINING"}
+	detached := fixture.driver.items[fixture.sourceID]
+	detached.ParentID = "library-root"
+	fixture.driver.items[fixture.sourceID] = detached
+	fixture.manifest.Files = append(fixture.manifest.Files, downloadpkg.File{RelativePath: "remaining.mkv", Size: 2, ProviderItemID: "remaining-source", ProviderParentID: packageRootID, SHA1: "REMAINING"})
+	raw, _ := json.Marshal(fixture.manifest)
+	if err := fixture.queue.db.Model(&models.TransferTask{}).Where("id = ?", transfer.ID).Update("source_manifest_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := &stubDownloadClient{}
+	attachPan115DeletionDownloader(t, &fixture, client)
+	actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+	preview, err := fixture.service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{})
+	if err != nil || preview.SourceDetached != 1 {
+		t.Fatalf("preview=%+v err=%v", preview, err)
+	}
+	result, err := fixture.service.ConfirmDeletion(context.Background(), actor, transfer.ID, preview.ConfirmationToken, RequestContext{})
+	if err != nil || result.SourceRemoved != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if _, exists := fixture.driver.items[fixture.sourceID]; !exists {
+		t.Fatal("detached library-side item was recycled")
+	}
+	if _, exists := fixture.driver.items["remaining-source"]; exists {
+		t.Fatal("remaining source item was not removed with its package root")
+	}
+}
+
+func TestTransferDeletionPan115PreviewScalesWithParentDirectories(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+	if result := fixture.run(t); result.ErrorCode != "" {
+		t.Fatalf("transfer=%+v", result)
+	}
+	var transfer models.TransferTask
+	if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+		t.Fatal("missing transfer")
+	}
+	for _, jobID := range []string{transfer.JobID, fixture.download.JobID} {
+		if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", jobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepareOwnedPan115DeletionPackage(t, &fixture, &transfer)
+	files := make([]downloadpkg.File, 0, 38)
+	for parentIndex := 0; parentIndex < 5; parentIndex++ {
+		parentID := fmt.Sprintf("source-parent-%d", parentIndex)
+		fixture.driver.items[parentID] = cloudpkg.Item{ID: parentID, ParentID: fixture.download.ProviderOutputID, Name: fmt.Sprintf("Season %02d", parentIndex+1), IsDir: true}
+		for fileIndex := parentIndex; fileIndex < 38; fileIndex += 5 {
+			itemID := fmt.Sprintf("source-item-%02d", fileIndex)
+			fixture.driver.items[itemID] = cloudpkg.Item{ID: itemID, ParentID: parentID, Name: fmt.Sprintf("episode-%02d.mkv", fileIndex), Size: int64(fileIndex + 1)}
+			files = append(files, downloadpkg.File{RelativePath: fmt.Sprintf("Season %02d/episode-%02d.mkv", parentIndex+1, fileIndex), Size: int64(fileIndex + 1), ProviderItemID: itemID, ProviderParentID: parentID})
+		}
+	}
+	raw, _ := json.Marshal(downloadpkg.Manifest{Name: "38-files", Complete: true, Files: files})
+	if err := fixture.queue.db.Model(&models.TransferTask{}).Where("id = ?", transfer.ID).Update("source_manifest_json", string(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.listCalls, fixture.driver.statCalls = 0, 0
+	actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+	preview, err := fixture.service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{})
+	if err != nil || preview.SourceItems != 38 {
+		t.Fatalf("preview=%+v err=%v", preview, err)
+	}
+	if fixture.driver.statCalls > 8 || fixture.driver.listCalls > 6 {
+		t.Fatalf("preview did per-item provider work: stat=%d list=%d", fixture.driver.statCalls, fixture.driver.listCalls)
+	}
+}
+
+func TestTransferDeletionUsesLiveLeaseInsteadOfStaleTransferPhase(t *testing.T) {
+	queue, actor, service, _, transfer, _, _ := completedTransferForDeletion(t)
+	future := time.Now().UTC().Add(time.Minute)
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", transfer.JobID).Updates(map[string]any{"lease_token_hash": "active", "lease_expires_at": future}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordOnly}, RequestContext{}); ErrorCode(err) != CodeQueueStateConflict {
+		t.Fatalf("active lease err=%v", err)
+	}
+	if err := queue.db.Model(&models.Job{}).Where("id = ?", transfer.JobID).Updates(map[string]any{"lease_token_hash": "", "lease_expires_at": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Model(&models.TransferTask{}).Where("id = ?", transfer.ID).Update("phase", models.TransferTaskStatusTransferring).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordOnly}, RequestContext{}); err != nil {
+		t.Fatalf("stale transfer phase blocked deletion: %v", err)
+	}
+}
+
+func TestTransferDeletionBlocksTerminalDependentJobsWithActiveLeases(t *testing.T) {
+	t.Run("reorganization", func(t *testing.T) {
+		queue, actor, service, _, transfer, _, _ := completedTransferForDeletion(t)
+		now, future := time.Now().UTC(), time.Now().UTC().Add(time.Minute)
+		ownerID := actor.User.ID
+		job := models.Job{ID: "reorganization-closing-job", OwnerID: &ownerID, JobType: JobTypeMediaReorganization, Revision: 1, Status: models.JobStatusCancelled, DisplayName: "closing reorganization", LeaseTokenHash: "active", LeaseExpiresAt: &future, CreatedAt: now, UpdatedAt: now}
+		task := models.MediaReorganizationTask{ID: "reorganization-closing", OwnerID: ownerID, JobID: job.ID, LibraryID: transfer.LibraryID, TransferTaskID: transfer.ID, SourceIdentityRevision: 1, TargetIdentityRevision: 2, TargetIdentityJSON: `{}`, ManagedManifestDigest: strings.Repeat("d", 64), RuleRevision: 1, ConflictPolicy: models.MediaLibraryConflictRename, PlanJSON: `{}`, StateJSON: `{}`, Phase: models.MediaReorganizationPhaseCompleted, CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+		if err := queue.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&job).Error; err != nil {
+				return err
+			}
+			return tx.Create(&task).Error
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordOnly}, RequestContext{}); ErrorCode(err) != CodeQueueStateConflict {
+			t.Fatalf("active reorganization lease err=%v", err)
+		}
+	})
+
+	t.Run("seeding", func(t *testing.T) {
+		queue, actor, service, download, transfer, _, _ := completedTransferForDeletion(t)
+		now, future := time.Now().UTC(), time.Now().UTC().Add(time.Minute)
+		ownerID := actor.User.ID
+		if err := queue.db.Model(&models.Job{}).Where("id = ?", download.JobID).Update("status", models.JobStatusCancelled).Error; err != nil {
+			t.Fatal(err)
+		}
+		job := models.Job{ID: "seeding-closing-job", OwnerID: &ownerID, JobType: "seeding", Revision: 1, Status: models.JobStatusCancelled, DisplayName: "closing seeding", LeaseTokenHash: "active", LeaseExpiresAt: &future, CreatedAt: now, UpdatedAt: now}
+		task := models.SeedingTask{ID: "seeding-closing", OwnerID: ownerID, JobID: job.ID, DownloadTaskID: download.ID, DownloaderName: download.DownloaderName, ProviderType: download.ProviderType, ProviderTaskID: "provider", TransferMode: models.MediaLibraryTransferCopy, Phase: models.SeedingTaskStatusCompleted, CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+		if err := queue.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&job).Error; err != nil {
+				return err
+			}
+			return tx.Create(&task).Error
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{}); ErrorCode(err) != CodeQueueStateConflict {
+			t.Fatalf("active seeding lease err=%v", err)
+		}
+	})
+}
+
+func TestTransferDeletionPan115ProviderFailuresDoNotConvergeAsMissing(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "authentication", err: cloudpkg.Error(cloudpkg.CodeAuthExpired, false, context.Canceled)},
+		{name: "rate limited", err: cloudpkg.Error(cloudpkg.CodeRateLimited, true, context.Canceled)},
+		{name: "timeout", err: cloudpkg.Error(cloudpkg.CodeUnavailable, true, context.DeadlineExceeded)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+			if result := fixture.run(t); result.ErrorCode != "" {
+				t.Fatalf("transfer=%+v", result)
+			}
+			var transfer models.TransferTask
+			if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+				t.Fatal("missing transfer")
+			}
+			for _, jobID := range []string{transfer.JobID, fixture.download.JobID} {
+				if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", jobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			prepareOwnedPan115DeletionPackage(t, &fixture, &transfer)
+			fixture.driver.statErrors[fixture.download.ProviderOutputID] = test.err
+			actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+			if _, err := fixture.service.PreviewDeletion(context.Background(), actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{}); ErrorCode(err) != CodeTransferDeletionBoundaryChanged {
+				t.Fatalf("provider failure converged: %v", err)
+			}
+		})
+	}
+}
+
+func TestTransferDeletionHonorsCallerDeadline(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictRename, false)
+	if result := fixture.run(t); result.ErrorCode != "" {
+		t.Fatalf("transfer=%+v", result)
+	}
+	var transfer models.TransferTask
+	if fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&transfer).Error != nil {
+		t.Fatal("missing transfer")
+	}
+	for _, jobID := range []string{transfer.JobID, fixture.download.JobID} {
+		if err := fixture.queue.db.Model(&models.Job{}).Where("id = ?", jobID).Update("status", models.JobStatusCompleted).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepareOwnedPan115DeletionPackage(t, &fixture, &transfer)
+	fixture.driver.statBlockID = fixture.download.ProviderOutputID
+	actor := Actor{User: models.User{ID: fixture.download.OwnerID}, Permissions: map[string]struct{}{authz.PermissionJobsControlAll: {}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := fixture.service.PreviewDeletion(ctx, actor, transfer.ID, TransferDeletionPreviewInput{Scope: models.TransferDeletionScopeRecordAndSource}, RequestContext{})
+	if err == nil || time.Since(started) > time.Second {
+		t.Fatalf("deadline err=%v elapsed=%s", err, time.Since(started))
 	}
 }
 

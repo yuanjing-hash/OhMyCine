@@ -123,7 +123,7 @@ func (p *openAIProvider) generate(ctx context.Context, structured StructuredRequ
 	if err != nil {
 		return nil, &Error{Code: ErrorUnavailable, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := readBounded(response.Body, maxStructuredResponseBytes)
 	if err != nil {
 		return nil, err
@@ -161,7 +161,7 @@ func (p *openAIProvider) doModelListJSON(request *http.Request, target any) erro
 	if err != nil {
 		return &Error{Code: ErrorUnavailable, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := readBounded(response.Body, maxModelListResponseBytes)
 	if err != nil {
 		return err
@@ -244,7 +244,7 @@ func (p *googleProvider) GenerateStructured(ctx context.Context, structured Stru
 	if err != nil {
 		return nil, &Error{Code: ErrorUnavailable, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := readBounded(response.Body, maxStructuredResponseBytes)
 	if err != nil {
 		return nil, err
@@ -281,7 +281,7 @@ func (p *googleProvider) doModelListJSON(request *http.Request, target any) erro
 	if err != nil {
 		return &Error{Code: ErrorUnavailable, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := readBounded(response.Body, maxModelListResponseBytes)
 	if err != nil {
 		return err

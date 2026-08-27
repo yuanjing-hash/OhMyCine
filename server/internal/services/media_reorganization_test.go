@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
@@ -43,6 +45,51 @@ func TestTransferCompletionCreatesManagedOwnershipManifest(t *testing.T) {
 	}
 	if _, err := os.Stat(destination); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReorganizationUsesOriginalProviderIdentityForFlattenedMultiSeasonItems(t *testing.T) {
+	taskSeason := 2
+	tmdbID := int64(75129)
+	download := models.DownloadTask{ScrapeMediaType: "tv", ScrapeTitle: "屌丝男士", ScrapeCategory: "国产剧", ScrapeTMDBID: &tmdbID, ScrapeSeason: &taskSeason, IdentityRevision: 1}
+	manifest := downloadpkg.Manifest{Name: "屌丝男士 第1-4季", Complete: true}
+	identity := MediaIdentitySnapshot{Version: 1, Revision: 1, Source: mediaIdentitySourceAutomatic, Status: mediaIdentityStatusVerified, TMDBID: &tmdbID, MediaType: "tv", Title: download.ScrapeTitle, Category: download.ScrapeCategory}
+	managed := make([]models.MediaManagedItem, 0, 4)
+	for season := 1; season <= 4; season++ {
+		episode := 1
+		relative := fmt.Sprintf("屌丝男士第%d季/屌丝男士第%d季.第1集.Diors.Man.S%02d.E01.mp4", season, season, season)
+		providerID := fmt.Sprintf("provider-%d", season)
+		size := minimumAutomaticTransferVideoBytes + int64(season)
+		manifest.Files = append(manifest.Files, downloadpkg.File{RelativePath: relative, Size: size, ProviderItemID: providerID, SHA1: fmt.Sprintf("SHA1-%d", season)})
+		seasonValue := season
+		identity.Episodes = append(identity.Episodes, mediarecognition.FileEpisodeFact{RelativePath: relative, Season: &seasonValue, Episode: &episode, Evidence: "structured"})
+		managed = append(managed, models.MediaManagedItem{ID: uint(season), LibraryID: 1, TransferTaskID: "transfer", Kind: models.MediaManagedItemKindVideo, RelativePath: fmt.Sprintf("国产剧/屌丝男士/Season 02/屌丝男士 - S02E%02d.mp4", season), ProviderItemID: providerID, Size: size, Managed: true, Active: true})
+	}
+	identityRaw, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	download.IdentitySnapshotJSON = string(identityRaw)
+	transfer := models.TransferTask{ID: "transfer", ManifestJSON: string(manifestRaw)}
+	library := models.MediaLibrary{ID: 1, ProfileRevision: 1, TVDirectoryTemplate: "{category}/{title}/Season {season:02}", TVFilenameTemplate: "{title} - S{season:02}E{episode:02}"}
+	storage := models.Storage{Type: models.StorageTypePan115}
+	plan, _, err := buildReorganizationPlan(library, storage, transfer, download, identity, identity, managed, models.MediaLibraryConflictRename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 4 {
+		t.Fatalf("items=%d want=4", len(plan.Items))
+	}
+	for index, item := range plan.Items {
+		season := index + 1
+		want := fmt.Sprintf("国产剧/屌丝男士/Season %02d/屌丝男士 - S%02dE01.mp4", season, season)
+		if item.NewRelativePath != want || item.SourceSHA1 != fmt.Sprintf("SHA1-%d", season) {
+			t.Fatalf("item[%d]=%+v want_path=%q", index, item, want)
+		}
 	}
 }
 
@@ -90,7 +137,7 @@ func TestMediaReorganizationLocalWorkerIsIdempotentAndUpdatesIdentity(t *testing
 	if err := queue.db.Where("transfer_task_id = ?", transfer.ID).Find(&items).Error; err != nil {
 		t.Fatal(err)
 	}
-	plan, _, err := buildReorganizationPlan(library, storage, transfer, identity, target, items, models.MediaLibraryConflictRename)
+	plan, _, err := buildReorganizationPlan(library, storage, transfer, download, identity, target, items, models.MediaLibraryConflictRename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +249,7 @@ func TestReorganizationPlanNeverIncludesUnmanagedFiles(t *testing.T) {
 	target := source
 	target.Title, target.TMDBID = "New", &id
 	managed := []models.MediaManagedItem{{ID: 1, LibraryID: library.ID, TransferTaskID: transfer.ID, Kind: models.MediaManagedItemKindVideo, RelativePath: "old/old.mkv", Size: 10, Managed: true, Active: true}}
-	plan, _, err := buildReorganizationPlan(library, storage, transfer, source, target, managed, models.MediaLibraryConflictRename)
+	plan, _, err := buildReorganizationPlan(library, storage, transfer, models.DownloadTask{}, source, target, managed, models.MediaLibraryConflictRename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +266,16 @@ func TestReorganizationCloudTargetIsRecheckedAfterPreview(t *testing.T) {
 	}
 	if err := ensureReorganizationCloudTargetAvailable(context.Background(), driver, "parent", "Movie.mkv", "target"); err != nil {
 		t.Fatalf("idempotent current item rejected: %v", err)
+	}
+}
+
+func TestCloudReorganizationSourceSHA1FailsClosedWhenProviderOmitsHash(t *testing.T) {
+	item := reorganizationPlanItem{Size: 10, SourceSHA1: "EXPECTED"}
+	if !cloudReorganizationSourceChanged(item, cloudpkg.Item{Size: 10}) {
+		t.Fatal("missing provider SHA1 must invalidate a plan that captured a source SHA1")
+	}
+	if cloudReorganizationSourceChanged(item, cloudpkg.Item{Size: 10, SHA1: "expected"}) {
+		t.Fatal("matching SHA1 should remain valid regardless of case")
 	}
 }
 
@@ -247,7 +304,7 @@ func TestMediaReorganizationPan115UsesStableManagedItemAndParentBoundary(t *test
 	target := identity
 	target.Revision, target.Source, target.Locked, target.TMDBID, target.Title = 2, mediaIdentitySourceManual, true, &newID, "Correct Cloud Movie"
 	targetRaw, _ := json.Marshal(target)
-	plan, _, err := buildReorganizationPlan(fixture.library, storage, transfer, identity, target, items, models.MediaLibraryConflictRename)
+	plan, _, err := buildReorganizationPlan(fixture.library, storage, transfer, fixture.download, identity, target, items, models.MediaLibraryConflictRename)
 	if err != nil {
 		t.Fatal(err)
 	}

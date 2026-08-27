@@ -438,10 +438,7 @@ function healthDetail(item: DownloaderSummary) {
 }
 function transferModeLabel(mode: string) { return ({ move: '移动', copy: '复制', symlink: '软链接' } as Record<string, string>)[mode] ?? '未配置' }
 function transferPhaseLabel(phase: string) {
-  return ({ queued: '等待入库', planning: '规划目录', transferring: '正在入库', reconciling: '刷新媒体库', completed: '入库完成', failed: '入库失败' } as Record<string, string>)[phase] ?? '下载完成后入库'
-}
-function showPan115TransferPacing(task: DownloadTaskSummary) {
-  return task.provider_type === 'pan115_offline' && ['planning', 'transferring'].includes(task.transfer_phase)
+  return ({ queued: '等待入库', planning: '规划目录', checking_directories: '检查目标目录', creating_directories: '创建目标目录', checking_conflicts: '检查文件冲突', moving: '移动 / 复制文件', renaming: '重命名文件', risk_backoff: '115 风控退避', transferring: '正在入库', reconciling: '结果对账', completed: '入库完成', failed: '入库失败' } as Record<string, string>)[phase] ?? '下载完成后入库'
 }
 
 let refreshTimer: number | undefined
@@ -480,7 +477,7 @@ onBeforeUnmount(() => { if (refreshTimer !== undefined) window.clearInterval(ref
               <tr>
                 <td><strong class="block">{{ task.display_name }}</strong><span class="text-subtle mt-1 block text-xs">{{ task.downloader_name }} · {{ downloadProviderStatusLabel(task.provider_status) }}</span><span v-if="task.scrape_title" class="text-subtle mt-1 block text-xs">{{ task.scrape_title }} · {{ task.scrape_category || '待分类' }}<template v-if="task.scrape_tmdb_id"> · TMDB {{ task.scrape_tmdb_id }}</template><template v-if="task.scrape_episode !== null"> · S{{ String(task.scrape_season ?? 1).padStart(2, '0') }}E{{ String(task.scrape_episode).padStart(2, '0') }}</template></span><span v-if="downloadIdentityLabel(task)" class="text-subtle mt-1 block text-xs">{{ downloadIdentityLabel(task) }}</span><span v-if="isTaskRetrying(task)" class="text-subtle mt-1 block text-xs" role="status">正在重试…</span><span v-else-if="downloadErrorMessage(task)" :class="task.scrape_status === 'fallback_unrecognized' ? 'semantic-warning-text' : 'semantic-danger-text'" class="mt-1 block text-xs">{{ downloadErrorMessage(task) }}</span></td>
                 <td><span :class="downloadStatusClass(task, isTaskRetrying(task))">{{ downloadStatusLabel(task, isTaskRetrying(task)) }}</span></td>
-                <td class="min-w-36"><strong v-if="task.target_library_id" class="block">{{ task.target_library_name }}</strong><span v-else class="text-subtle block">仅下载</span><span v-if="task.target_library_id" class="text-subtle mt-1 block text-xs">{{ transferModeLabel(task.transfer_mode) }} · {{ transferPhaseLabel(task.transfer_phase) }}</span><span v-if="showPan115TransferPacing(task)" class="text-subtle mt-1 block text-xs">115 风控限速处理中，多文件入库可能需要数分钟</span></td>
+                <td class="min-w-36"><strong v-if="task.target_library_id" class="block">{{ task.target_library_name }}</strong><span v-else class="text-subtle block">仅下载</span><span v-if="task.target_library_id" class="text-subtle mt-1 block text-xs">{{ transferModeLabel(task.transfer_mode) }} · {{ transferPhaseLabel(task.transfer_phase) }}</span><span v-if="task.transfer_phase === 'risk_backoff'" class="semantic-warning-text mt-1 block text-xs">仅真实 405/429 或“操作频繁”才进入风控退避</span></td>
                 <td class="min-w-36"><progress class="w-full" max="100" :value="task.progress ?? undefined" /><span class="text-subtle mt-1 block text-xs">{{ formatProgress(task.progress) }}</span></td>
                 <td>{{ formatBytes(task.download_speed, '/s') }}<span class="text-subtle block text-xs">↑ {{ formatBytes(task.upload_speed, '/s') }}</span></td>
                 <td>{{ formatBytes(task.bytes_completed) }}<span class="text-subtle block text-xs">/ {{ formatBytes(task.bytes_total) }}</span></td>

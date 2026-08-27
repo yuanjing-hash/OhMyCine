@@ -136,6 +136,7 @@ $env:OMC_SERVER_PORT = '3300'
 | `OMC_TMDB_READ_ACCESS_TOKEN` | 未设置 | 运行时部署级 TMDB Token；优先级低于 Web UI 中 AES-GCM 保存的自定义 Token，高于构建内置 Token |
 | `OMC_TMDB_API_KEY` | 未设置 | 运行时部署级 TMDB v3 API Key；与 `OMC_TMDB_READ_ACCESS_TOKEN` 互斥，优先级相同 |
 | `OMC_FFMPEG_PATH` | 自动发现隔离目录或 `PATH` | 可选 FFmpeg 可执行文件；只用于 Server 固定参数的 DASH 音视频合流 |
+| `OMC_CLOAKBROWSER_COMPANION_URL` | 未设置 | 可选的本机 CloakBrowser companion 根地址，例如 `http://127.0.0.1:9222`；仅允许 loopback。用户须从官方渠道显式安装并接受其许可，OhMyCine 不下载或分发浏览器二进制 |
 | `OMC_ENV` | `production` | `development` / `production` |
 | `OMC_PUBLIC_ORIGIN` | `http://127.0.0.1:3000`（默认端口） | Web UI、STRM 与 Emby 网关使用的精确对外来源；不得使用通配监听地址 |
 | `OMC_COOKIE_SECURE` | 随 public origin 推导 | HTTPS 生产环境应为 `true` |

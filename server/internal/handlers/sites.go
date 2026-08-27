@@ -49,6 +49,16 @@ func (a *API) SiteCatalog(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }
 
+func (a *API) DiscoverySearchOptions(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	items, err := a.sites.SearchOptions(actor)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+
 func (a *API) ResolveBTSite(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
@@ -151,6 +161,52 @@ func (a *API) DeleteSite(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"deleted": true})
 }
 
+func parseSearchSiteScope(c *gin.Context) (*uint, []uint, error) {
+	rawSiteID, hasSiteID := c.GetQuery("site_id")
+	rawSiteIDs, hasSiteIDs := c.Request.URL.Query()["site_ids"]
+	if hasSiteID && hasSiteIDs {
+		return nil, nil, invalid("单站筛选和多站筛选不能同时使用", nil)
+	}
+	if hasSiteID {
+		id, err := strconv.ParseUint(strings.TrimSpace(rawSiteID), 10, 32)
+		if err != nil || id == 0 {
+			return nil, nil, invalid("站点筛选无效", err)
+		}
+		parsed := uint(id)
+		return &parsed, nil, nil
+	}
+	if !hasSiteIDs {
+		return nil, nil, nil
+	}
+	values := make([]string, 0, len(rawSiteIDs))
+	for _, raw := range rawSiteIDs {
+		for _, value := range strings.Split(raw, ",") {
+			values = append(values, strings.TrimSpace(value))
+		}
+	}
+	if len(values) == 0 || len(values) > 64 {
+		return nil, nil, invalid("请选择 1 到 64 个搜索站点", nil)
+	}
+	result := make([]uint, 0, len(values))
+	seen := make(map[uint]struct{}, len(values))
+	for _, value := range values {
+		id, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || id == 0 {
+			return nil, nil, invalid("站点筛选无效", err)
+		}
+		parsed := uint(id)
+		if _, exists := seen[parsed]; exists {
+			continue
+		}
+		seen[parsed] = struct{}{}
+		result = append(result, parsed)
+	}
+	if len(result) == 0 {
+		return nil, nil, invalid("请至少选择一个搜索站点", nil)
+	}
+	return nil, result, nil
+}
+
 func parsePTSearch(c *gin.Context) (services.SiteSearchInput, error) {
 	input := services.SiteSearchInput{Keyword: strings.TrimSpace(c.Query("keyword")), MediaType: strings.TrimSpace(c.Query("media_type")), SearchBy: strings.TrimSpace(c.Query("search_by")), Page: 1}
 	if value := strings.TrimSpace(c.Query("tmdb_id")); value != "" {
@@ -174,14 +230,11 @@ func parsePTSearch(c *gin.Context) (services.SiteSearchInput, error) {
 		}
 		input.Year = &year
 	}
-	if value := strings.TrimSpace(c.Query("site_id")); value != "" {
-		id, err := strconv.ParseUint(value, 10, 32)
-		if err != nil || id == 0 {
-			return input, invalid("站点筛选无效", err)
-		}
-		value := uint(id)
-		input.SiteID = &value
+	siteID, siteIDs, err := parseSearchSiteScope(c)
+	if err != nil {
+		return input, err
 	}
+	input.SiteID, input.SiteIDs = siteID, siteIDs
 	return input, nil
 }
 
@@ -222,13 +275,8 @@ func parseMediaIdentitySearch(c *gin.Context) (services.MediaIdentitySearchInput
 		}
 		input.Season = &season
 	}
-	if value := strings.TrimSpace(c.Query("site_id")); value != "" {
-		siteID, parseErr := strconv.ParseUint(value, 10, 32)
-		if parseErr != nil || siteID == 0 {
-			return input, invalid("站点筛选无效", parseErr)
-		}
-		parsed := uint(siteID)
-		input.SiteID = &parsed
+	if input.SiteID, input.SiteIDs, err = parseSearchSiteScope(c); err != nil {
+		return input, err
 	}
 	return input, nil
 }

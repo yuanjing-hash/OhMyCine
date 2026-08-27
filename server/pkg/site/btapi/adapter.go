@@ -167,14 +167,41 @@ type eztvResponse struct {
 	Limit        int `json:"limit"`
 	Page         int `json:"page"`
 	Torrents     []struct {
-		Title        string `json:"title"`
-		Hash         string `json:"hash"`
-		MagnetURL    string `json:"magnet_url"`
-		SizeBytes    int64  `json:"size_bytes"`
-		Seeds        int    `json:"seeds"`
-		Peers        int    `json:"peers"`
-		DateReleased int64  `json:"date_released_unix"`
+		Title        string       `json:"title"`
+		Hash         string       `json:"hash"`
+		MagnetURL    string       `json:"magnet_url"`
+		SizeBytes    boundedInt64 `json:"size_bytes"`
+		Seeds        int          `json:"seeds"`
+		Peers        int          `json:"peers"`
+		DateReleased int64        `json:"date_released_unix"`
 	} `json:"torrents"`
+}
+
+type boundedInt64 int64
+
+func (value *boundedInt64) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if len(text) >= 2 && text[0] == '"' && text[len(text)-1] == '"' {
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return err
+		}
+		text = decoded
+	}
+	if text == "" {
+		return strconv.ErrSyntax
+	}
+	for _, character := range text {
+		if character < '0' || character > '9' {
+			return strconv.ErrSyntax
+		}
+	}
+	parsed, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || parsed < 0 {
+		return strconv.ErrRange
+	}
+	*value = boundedInt64(parsed)
+	return nil
 }
 
 func parseEZTV(body []byte, keyword string, page int) (site.Page, error) {
@@ -203,7 +230,7 @@ func parseEZTV(body []byte, keyword string, page int) (site.Page, error) {
 			value := time.Unix(torrent.DateReleased, 0).UTC()
 			published = &value
 		}
-		result.Items = append(result.Items, site.Result{TorrentID: btrss.EncodeIdentity("magnet", magnet), Title: title, SizeBytes: torrent.SizeBytes, Published: published, Seeders: &seeders, Leechers: &leechers})
+		result.Items = append(result.Items, site.Result{TorrentID: btrss.EncodeIdentity("magnet", magnet), Title: title, SizeBytes: int64(torrent.SizeBytes), Published: published, Seeders: &seeders, Leechers: &leechers})
 	}
 	limit := payload.Limit
 	if limit <= 0 {
@@ -228,7 +255,7 @@ func requestJSON(ctx context.Context, client *http.Client, target string) ([]byt
 	if err != nil {
 		return nil, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return nil, site.ErrRateLimited
 	}

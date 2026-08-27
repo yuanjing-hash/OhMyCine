@@ -372,6 +372,7 @@ func (s *CookieCloudService) sync(ctx context.Context) (CookieCloudSyncSummary, 
 			continue
 		}
 		candidate := sitepkgConfig(siteRecord, oldCredential, cookie)
+		candidate.RenderedFetcher = s.sites.renderedFetcher
 		health, probeErr := adapter.Test(ctx, candidate)
 		if probeErr != nil {
 			result.addIssue("update", siteRecord.ID, siteRecord.Kind, siteErrorCode(probeErr))
@@ -465,7 +466,7 @@ func (s *CookieCloudService) fetchRemote(ctx context.Context, baseURL, uuid stri
 	if err != nil {
 		return cookieCloudEncryptedPayload{}, appError(CodeCookieCloudUnavailable, "CookieCloud 服务不可用", nil)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return cookieCloudEncryptedPayload{}, appError(CodeCookieCloudUnavailable, "CookieCloud 服务返回错误", nil)
 	}

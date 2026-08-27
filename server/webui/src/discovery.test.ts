@@ -19,6 +19,7 @@ describe('discovery contracts', () => {
     expect(buildDiscoveryMediaSearchPath(' 三体 ', 'tv', 900)).toBe('/api/v1/discovery/media-search?query=%E4%B8%89%E4%BD%93&media_type=tv&page=500')
     expect(discoveryCoveragePath('tv', 100)).toBe('/api/v1/discovery/media/tv/100/coverage')
     expect(mediaIdentitySearchURL('tv', 100, { season: 0, siteID: 2 }, true)).toBe('/api/v1/discovery/media/tv/100/torrent-search/stream?page=1&season=0&site_id=2')
+    expect(mediaIdentitySearchURL('tv', 100, { siteIDs: [3, 1, 3] }, true)).toBe('/api/v1/discovery/media/tv/100/torrent-search/stream?page=1&site_ids=3&site_ids=1')
     expect(discoveryResourceRoute({ provider: 'tmdb', provider_id: '100', media_type: 'tv', title: '三体', tmdb_id: 100 })).toEqual({ path: '/discovery/explore', query: { title: '三体', media_type: 'tv', provider: 'tmdb', provider_id: '100', tmdb_id: '100', mode: 'resources', identity: 'tmdb' } })
     expect(coverageStatusLabel('future')).toBe('未播')
   })

@@ -2,7 +2,7 @@ import { api } from '@/api/client'
 import type { Job, JobAttempt, JobEvent } from '@/jobs'
 
 export type TransferMode = 'move' | 'copy' | 'symlink'
-export type TransferPhase = 'queued' | 'planning' | 'transferring' | 'reconciling' | 'completed' | 'failed'
+export type TransferPhase = 'queued' | 'planning' | 'checking_directories' | 'creating_directories' | 'checking_conflicts' | 'moving' | 'renaming' | 'risk_backoff' | 'transferring' | 'reconciling' | 'completed' | 'failed'
 export type TransferFilterStatus = '' | 'processing' | 'waiting_action' | 'paused' | 'failed' | 'completed' | 'cancelled'
 export type TransferListScope = 'active' | 'history'
 
@@ -40,6 +40,7 @@ export interface TransferSummary {
   conflict_policy: 'ask' | 'overwrite' | 'skip' | 'rename'
   phase: TransferPhase
   job_status: Job['status']
+  retry_at: string | null
   processed_files: number
   total_files: number
   last_error_code: string
@@ -91,6 +92,12 @@ export interface TransferPage {
 export const transferPhaseLabels: Record<TransferPhase, string> = {
   queued: '等待整理',
   planning: '规划目录',
+  checking_directories: '检查目标目录',
+  creating_directories: '创建目标目录',
+  checking_conflicts: '检查文件冲突',
+  moving: '移动 / 复制文件',
+  renaming: '重命名文件',
+  risk_backoff: '115 风控退避',
   transferring: '正在入库',
   reconciling: '媒体库对账',
   completed: '整理完成',
@@ -122,6 +129,7 @@ export interface TransferDeletionPreview {
   source_storage_type: string
   library_storage_type: string
   source_missing: number
+  source_detached: number
   library_missing: number
   blocked: boolean
   blockers: string[]
@@ -179,11 +187,18 @@ export function formatTransferProgress(item: TransferSummary): string {
   return `${item.processed_files} / ${item.total_files}`
 }
 
+export function transferPhaseDescription(item: TransferSummary): string {
+  if (item.phase !== 'risk_backoff') return transferPhaseLabels[item.phase] ?? '正在处理'
+  if (!item.retry_at) return '115 接口触发风控，等待安全重试'
+  const seconds = Math.max(0, Math.ceil((new Date(item.retry_at).getTime() - Date.now()) / 1000))
+  return `115 风控退避，预计 ${seconds} 秒后重试`
+}
+
 export const listTransfers = (query: URLSearchParams) => api<TransferPage>(`/api/v1/transfers?${query}`)
 export const getTransfer = (id: string) => api<TransferDetail>(`/api/v1/transfers/${encodeURIComponent(id)}`)
 export const deleteTransfer = (id: string) => api<{ deleted: boolean }>(`/api/v1/transfers/${encodeURIComponent(id)}`, { method: 'DELETE' })
-export const previewTransferDeletion = (id: string, scope: TransferDeletionScope) => api<TransferDeletionPreview>(`/api/v1/transfers/${encodeURIComponent(id)}/deletion-preview`, { method: 'POST', body: JSON.stringify({ scope }) })
-export const confirmTransferDeletion = (id: string, token: string) => api<TransferDeletionResult>(`/api/v1/transfers/${encodeURIComponent(id)}/deletion-confirm`, { method: 'POST', body: JSON.stringify({ token }) })
+export const previewTransferDeletion = (id: string, scope: TransferDeletionScope, signal?: AbortSignal) => api<TransferDeletionPreview>(`/api/v1/transfers/${encodeURIComponent(id)}/deletion-preview`, { method: 'POST', body: JSON.stringify({ scope }), signal })
+export const confirmTransferDeletion = (id: string, token: string, signal?: AbortSignal) => api<TransferDeletionResult>(`/api/v1/transfers/${encodeURIComponent(id)}/deletion-confirm`, { method: 'POST', body: JSON.stringify({ token }), signal })
 export const retargetCompletedImport = (downloadTaskID: string, mediaLibraryID: number) => api(`/api/v1/downloads/${encodeURIComponent(downloadTaskID)}/import-target`, { method: 'PUT', body: JSON.stringify({ media_library_id: mediaLibraryID }) })
 
 export function canRetargetTransfer(item: TransferSummary): boolean {

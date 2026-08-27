@@ -25,7 +25,21 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const transferDeletionPreviewTTL = 5 * time.Minute
+const (
+	transferDeletionPreviewTTL = 5 * time.Minute
+	transferDeletionTimeout    = 45 * time.Second
+)
+
+func boundedTransferDeletionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) <= transferDeletionTimeout {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, transferDeletionTimeout)
+}
+
+func jobHasActiveLease(job models.Job, now time.Time) bool {
+	return job.LeaseTokenHash != "" && job.LeaseExpiresAt != nil && job.LeaseExpiresAt.After(now)
+}
 
 type TransferDeletionPreviewInput struct {
 	Scope string `json:"scope"`
@@ -45,6 +59,7 @@ type TransferDeletionPreviewResult struct {
 	SourceStorageType  string    `json:"source_storage_type"`
 	LibraryStorageType string    `json:"library_storage_type"`
 	SourceMissing      int       `json:"source_missing"`
+	SourceDetached     int       `json:"source_detached"`
 	LibraryMissing     int       `json:"library_missing"`
 	Blocked            bool      `json:"blocked"`
 	Blockers           []string  `json:"blockers"`
@@ -73,6 +88,9 @@ type transferDeletionBoundary struct {
 	managed        []models.MediaManagedItem
 	sourceManifest downloadpkg.Manifest
 	sourceMissing  int
+	sourceDetached int
+	sourcePresent  int
+	sourceRootGone bool
 	libraryMissing int
 }
 
@@ -103,6 +121,8 @@ func deletionIncludesLibrary(scope string) bool {
 }
 
 func (s *TransferService) PreviewDeletion(ctx context.Context, actor Actor, transferID string, input TransferDeletionPreviewInput, request RequestContext) (TransferDeletionPreviewResult, error) {
+	ctx, cancel := boundedTransferDeletionContext(ctx)
+	defer cancel()
 	scope := strings.TrimSpace(input.Scope)
 	if !validTransferDeletionScope(scope) {
 		return TransferDeletionPreviewResult{}, appError(CodeTransferDeletionScopeInvalid, "删除范围无效", nil)
@@ -142,7 +162,10 @@ func (s *TransferService) PreviewDeletion(ctx context.Context, actor Actor, tran
 	if boundary.download.ProviderType == models.DownloaderTypePan115Offline {
 		sourceStorageType = models.StorageTypePan115
 	}
-	result := TransferDeletionPreviewResult{Scope: scope, ProviderType: boundary.download.ProviderType, SourceStorageType: sourceStorageType, LibraryStorageType: boundary.storage.Type, SourceMissing: boundary.sourceMissing, LibraryMissing: boundary.libraryMissing, Blocked: false, Blockers: []string{}, RequiresFileDelete: scope != models.TransferDeletionScopeRecordOnly, Warnings: deletionWarnings(scope), ConfirmationToken: token, ExpiresAt: preview.ExpiresAt}
+	result := TransferDeletionPreviewResult{Scope: scope, ProviderType: boundary.download.ProviderType, SourceStorageType: sourceStorageType, LibraryStorageType: boundary.storage.Type, SourceMissing: boundary.sourceMissing, SourceDetached: boundary.sourceDetached, LibraryMissing: boundary.libraryMissing, Blocked: false, Blockers: []string{}, RequiresFileDelete: scope != models.TransferDeletionScopeRecordOnly, Warnings: deletionWarnings(scope), ConfirmationToken: token, ExpiresAt: preview.ExpiresAt}
+	if boundary.sourceDetached > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%d 项已离开来源包或不再存在，将保留当前位置且不会按文件 ID 越界删除", boundary.sourceDetached))
+	}
 	if deletionIncludesSource(scope) {
 		result.SourceItems, result.SourceBytes = len(boundary.sourceManifest.Files), manifestBytes(boundary.sourceManifest.Files)
 	}
@@ -153,6 +176,8 @@ func (s *TransferService) PreviewDeletion(ctx context.Context, actor Actor, tran
 }
 
 func (s *TransferService) ConfirmDeletion(ctx context.Context, actor Actor, transferID, rawToken string, request RequestContext) (TransferDeletionResult, error) {
+	ctx, cancel := boundedTransferDeletionContext(ctx)
+	defer cancel()
 	rawToken = strings.TrimSpace(rawToken)
 	if len(rawToken) != 43 {
 		return TransferDeletionResult{}, appError(CodeTransferDeletionPreviewExpired, "删除确认已失效，请重新预览", nil)
@@ -213,11 +238,6 @@ func (s *TransferService) ConfirmDeletion(ctx context.Context, actor Actor, tran
 		return TransferDeletionResult{}, err
 	}
 
-	boundary, err = s.loadTransferDeletionBoundary(ctx, actor, preview.TransferTaskID, preview.Scope)
-	if err != nil {
-		s.persistDeletionFailure(preview, ErrorCode(err), request)
-		return TransferDeletionResult{}, err
-	}
 	state := transferDeletionState{Version: 1, LibraryCompleted: map[uint]bool{}}
 	_ = json.Unmarshal([]byte(preview.StateJSON), &state)
 	if state.LibraryCompleted == nil {
@@ -227,7 +247,9 @@ func (s *TransferService) ConfirmDeletion(ctx context.Context, actor Actor, tran
 		removed, deleteErr := s.deleteTransferSource(ctx, boundary)
 		state.SourceRemoved += removed
 		if deleteErr != nil {
-			s.persistDeletionState(preview.ID, state, CodeTransferDeletionPartial)
+			if persistErr := s.persistDeletionState(preview.ID, state, CodeTransferDeletionPartial); persistErr != nil {
+				deleteErr = errors.Join(deleteErr, fmt.Errorf("persist source deletion state: %w", persistErr))
+			}
 			s.persistDeletionFailure(preview, CodeTransferDeletionPartial, request)
 			return TransferDeletionResult{}, appError(CodeTransferDeletionPartial, "源文件删除未完整完成，记录已保留；请修复后重新预览", deleteErr)
 		}
@@ -240,13 +262,17 @@ func (s *TransferService) ConfirmDeletion(ctx context.Context, actor Actor, tran
 		removed, deleteErr := s.deleteTransferLibrary(ctx, boundary, &state)
 		state.LibraryRemoved += removed
 		if deleteErr != nil {
-			s.persistDeletionState(preview.ID, state, CodeTransferDeletionPartial)
+			if persistErr := s.persistDeletionState(preview.ID, state, CodeTransferDeletionPartial); persistErr != nil {
+				deleteErr = errors.Join(deleteErr, fmt.Errorf("persist library deletion state: %w", persistErr))
+			}
 			s.persistDeletionFailure(preview, CodeTransferDeletionPartial, request)
 			return TransferDeletionResult{}, appError(CodeTransferDeletionPartial, "媒体库文件删除未完整完成，记录和未完成清单已保留；请重新预览", deleteErr)
 		}
 	}
 	if err := s.finalizeTransferDeletion(actor, boundary, preview.Scope, state, request); err != nil {
-		s.persistDeletionState(preview.ID, state, CodeTransferDeletionPartial)
+		if persistErr := s.persistDeletionState(preview.ID, state, CodeTransferDeletionPartial); persistErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist final deletion state: %w", persistErr))
+		}
 		return TransferDeletionResult{}, err
 	}
 	return TransferDeletionResult{Deleted: true, Scope: preview.Scope, SourceRemoved: state.SourceRemoved, LibraryRemoved: state.LibraryRemoved}, nil
@@ -267,6 +293,9 @@ func (s *TransferService) loadTransferDeletionBoundaryWithDB(ctx context.Context
 	if db.First(&b.transferJob, "id = ?", b.transfer.JobID).Error != nil || !isDeletableTransferJobStatus(b.transferJob.Status) {
 		return b, appError(CodeQueueStateConflict, "媒体整理任务仍在执行，不能删除", nil)
 	}
+	if jobHasActiveLease(b.transferJob, time.Now().UTC()) {
+		return b, appError(CodeQueueStateConflict, "媒体整理 worker 仍在收口，请稍后重试", nil)
+	}
 	if db.First(&b.download, "id = ?", b.transfer.DownloadTaskID).Error != nil || db.First(&b.downloadJob, "id = ?", b.download.JobID).Error != nil || db.First(&b.library, b.transfer.LibraryID).Error != nil || db.First(&b.storage, b.library.StorageID).Error != nil {
 		return b, appError(CodeTransferDeletionUnavailable, "删除边界不完整", nil)
 	}
@@ -279,16 +308,25 @@ func (s *TransferService) loadTransferDeletionBoundaryWithDB(ctx context.Context
 		if db.First(&job, "id = ?", reorg.JobID).Error != nil || !isTerminalPipelineJobStatus(job.Status) {
 			return b, appError(CodeQueueStateConflict, "重新整理任务仍在执行，不能删除", nil)
 		}
+		if jobHasActiveLease(job, time.Now().UTC()) {
+			return b, appError(CodeQueueStateConflict, "重新整理 worker 仍在收口，请稍后重试", nil)
+		}
 	}
 	if deletionIncludesSource(scope) {
 		if !isTerminalPipelineJobStatus(b.downloadJob.Status) {
 			return b, appError(CodeQueueStateConflict, "下载任务仍在执行，不能删除源文件", nil)
+		}
+		if jobHasActiveLease(b.downloadJob, time.Now().UTC()) {
+			return b, appError(CodeQueueStateConflict, "下载 worker 仍在收口，请稍后重试", nil)
 		}
 		var seeding models.SeedingTask
 		if err := db.Where("download_task_id = ?", b.download.ID).First(&seeding).Error; err == nil {
 			var job models.Job
 			if db.First(&job, "id = ?", seeding.JobID).Error != nil || !isTerminalPipelineJobStatus(job.Status) {
 				return b, appError(CodeQueueStateConflict, "下载仍在做种，请先停止做种再删除源文件", nil)
+			}
+			if jobHasActiveLease(job, time.Now().UTC()) {
+				return b, appError(CodeQueueStateConflict, "做种 worker 仍在收口，请稍后重试", nil)
 			}
 			b.seeding, b.seedingJob = &seeding, &job
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -353,8 +391,11 @@ func sourceDeletionDigest(download models.DownloadTask, manifest downloadpkg.Man
 
 func (s *TransferService) validateSourceDeletionBoundary(ctx context.Context, b *transferDeletionBoundary) error {
 	if b.download.ProviderType == models.DownloaderTypePan115Offline {
-		_, _, missing, err := s.pan115DeletionBoundary(ctx, *b, b.sourceManifest.Files)
-		b.sourceMissing = missing
+		_, _, present, detached, rootGone, err := s.pan115DeletionBoundary(ctx, *b, b.sourceManifest.Files)
+		b.sourcePresent, b.sourceDetached, b.sourceRootGone = present, detached, rootGone
+		if rootGone {
+			b.sourceMissing = len(b.sourceManifest.Files)
+		}
 		return err
 	}
 	if strings.TrimSpace(b.download.StagingAbsolutePath) == "" {
@@ -439,71 +480,159 @@ func (s *TransferService) validateLibraryDeletionBoundary(ctx context.Context, b
 	return nil
 }
 
-func (s *TransferService) pan115DeletionBoundary(ctx context.Context, b transferDeletionBoundary, files []downloadpkg.File) (cloudpkg.Driver, cloudpkg.Item, int, error) {
+func (s *TransferService) pan115DeletionBoundary(ctx context.Context, b transferDeletionBoundary, files []downloadpkg.File) (cloudpkg.Driver, cloudpkg.Item, int, int, bool, error) {
 	if s.connections == nil || b.download.StagingStorageID == nil {
-		return nil, cloudpkg.Item{}, 0, appError(CodeTransferDeletionUnavailable, "115 来源存储不可用", nil)
+		return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionUnavailable, "115 来源存储不可用", nil)
 	}
 	var storage models.Storage
 	if s.db.First(&storage, *b.download.StagingStorageID).Error != nil || storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil {
-		return nil, cloudpkg.Item{}, 0, appError(CodeTransferDeletionUnavailable, "115 来源存储不可用", nil)
+		return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionUnavailable, "115 来源存储不可用", nil)
 	}
 	_, driver, err := s.connections.driver(*storage.ConnectionID)
 	if err != nil {
-		return nil, cloudpkg.Item{}, 0, appError(CodeTransferDeletionUnavailable, "115 连接不可用", nil)
+		return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionUnavailable, "115 连接不可用", nil)
 	}
 	rootID := strings.TrimSpace(b.download.ProviderOutputID)
 	if rootID == "" {
-		rootID = strings.TrimSpace(b.download.StagingProviderDirectoryID)
+		return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionUnavailable, "旧任务缺少独立 115 包目录，不能安全删除来源", nil)
 	}
 	root, err := providerItemWithinRoot(ctx, driver, rootID, storage.RootPath)
 	if err != nil {
-		return nil, cloudpkg.Item{}, 0, appError(CodeTransferDeletionBoundaryChanged, "115 来源边界已变化", nil)
-	}
-	missing := 0
-	for _, file := range files {
-		if file.ProviderItemID == "" {
-			return nil, cloudpkg.Item{}, missing, appError(CodeTransferDeletionBoundaryChanged, "115 来源身份缺失", nil)
+		if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
+			return driver, cloudpkg.Item{ID: rootID}, 0, 0, true, nil
 		}
-		item, err := providerItemWithinRoot(ctx, driver, file.ProviderItemID, root.ID)
+		return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源边界不可验证", err)
+	}
+	if !root.IsDir {
+		return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源包目录身份已变化", nil)
+	}
+	groups := make(map[string][]downloadpkg.File)
+	for _, file := range files {
+		if strings.TrimSpace(file.ProviderItemID) == "" || strings.TrimSpace(file.ProviderParentID) == "" {
+			return nil, cloudpkg.Item{}, 0, 0, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源身份缺失", nil)
+		}
+		groups[file.ProviderParentID] = append(groups[file.ProviderParentID], file)
+	}
+	cache := map[string]cloudpkg.Item{root.ID: root}
+	present, detached := 0, 0
+	for parentID, group := range groups {
+		if parentID != root.ID {
+			parent, err := providerDirectoryWithinRootCached(ctx, driver, parentID, root, cache)
+			if err != nil {
+				if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
+					detached += len(group)
+					continue
+				}
+				return nil, cloudpkg.Item{}, present, detached, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源父目录不可验证", err)
+			}
+			if !parent.IsDir {
+				return nil, cloudpkg.Item{}, present, detached, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源父目录身份已变化", nil)
+			}
+		}
+		items, err := listCloudDirectory(ctx, driver, parentID)
 		if err != nil {
 			if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
-				missing++
+				detached += len(group)
 				continue
 			}
-			return nil, cloudpkg.Item{}, missing, appError(CodeTransferDeletionBoundaryChanged, "115 来源文件不可验证", nil)
+			return nil, cloudpkg.Item{}, present, detached, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源目录不可读取", err)
 		}
-		if item.IsDir || item.Size != file.Size || (file.ProviderParentID != "" && item.ParentID != file.ProviderParentID) || (file.SHA1 != "" && !strings.EqualFold(file.SHA1, item.SHA1)) {
-			return nil, cloudpkg.Item{}, missing, appError(CodeTransferDeletionBoundaryChanged, "115 来源文件已变化", nil)
+		byID := make(map[string]cloudpkg.Item, len(items))
+		for _, item := range items {
+			byID[item.ID] = item
+		}
+		for _, file := range group {
+			item, ok := byID[file.ProviderItemID]
+			if !ok {
+				detached++
+				continue
+			}
+			if item.IsDir || item.ParentID != parentID || item.Size != file.Size || (file.SHA1 != "" && item.SHA1 != "" && !strings.EqualFold(file.SHA1, item.SHA1)) {
+				return nil, cloudpkg.Item{}, present, detached, false, appError(CodeTransferDeletionBoundaryChanged, "115 来源文件已变化", nil)
+			}
+			present++
 		}
 	}
-	return driver, root, missing, nil
+	return driver, root, present, detached, false, nil
+}
+
+func providerDirectoryWithinRootCached(ctx context.Context, driver cloudpkg.Driver, directoryID string, root cloudpkg.Item, cache map[string]cloudpkg.Item) (cloudpkg.Item, error) {
+	directoryID = strings.TrimSpace(directoryID)
+	root.ID = strings.TrimSpace(root.ID)
+	if directoryID == "" || root.ID == "" || !root.IsDir {
+		return cloudpkg.Item{}, errors.New("provider directory boundary is incomplete")
+	}
+	currentID := directoryID
+	visited := make(map[string]struct{}, maxCloudBoundaryDepth)
+	var initial cloudpkg.Item
+	for depth := 0; depth < maxCloudBoundaryDepth; depth++ {
+		item, ok := cache[currentID]
+		if !ok {
+			var err error
+			item, err = driver.Stat(ctx, currentID)
+			if err != nil {
+				return cloudpkg.Item{}, err
+			}
+			cache[currentID] = item
+		}
+		if strings.TrimSpace(item.ID) != currentID || !item.IsDir {
+			return cloudpkg.Item{}, errors.New("provider returned an invalid directory identity")
+		}
+		if depth == 0 {
+			initial = item
+		}
+		if currentID == root.ID {
+			return initial, nil
+		}
+		if _, exists := visited[currentID]; exists {
+			return cloudpkg.Item{}, errors.New("provider directory parent cycle")
+		}
+		visited[currentID] = struct{}{}
+		currentID = strings.TrimSpace(item.ParentID)
+		if currentID == "" || (currentID == "0" && root.ID != "0") {
+			return cloudpkg.Item{}, errors.New("provider directory is outside the source package root")
+		}
+	}
+	return cloudpkg.Item{}, errors.New("provider directory parent depth exceeded")
 }
 
 func (s *TransferService) deleteTransferSource(ctx context.Context, b transferDeletionBoundary) (int, error) {
 	if b.download.ProviderType == models.DownloaderTypePan115Offline {
-		driver, _, _, err := s.pan115DeletionBoundary(ctx, b, b.sourceManifest.Files)
+		driver, root, present, _, rootGone, err := s.pan115DeletionBoundary(ctx, b, b.sourceManifest.Files)
 		if err != nil {
 			return 0, err
+		}
+		if b.download.ProviderTaskID != "" {
+			if b.download.DownloaderID == nil || s.downloader == nil {
+				return 0, appError(CodeTransferDeletionUnavailable, "115 下载器不可用，未移除离线任务", nil)
+			}
+			_, client, clientErr := s.downloader.client(*b.download.DownloaderID)
+			if clientErr != nil {
+				return 0, appError(CodeTransferDeletionUnavailable, "115 下载器不可用，未移除离线任务", clientErr)
+			}
+			if cancelErr := client.Cancel(ctx, b.download.ProviderTaskID, false); cancelErr != nil && !providerTaskMissing(cancelErr) {
+				return 0, cancelErr
+			}
+		}
+		if rootGone {
+			_ = s.db.Model(&models.DownloadTask{}).Where("id = ?", b.download.ID).Updates(map[string]any{"provider_task_id": "", "provider_status": "deleted", "updated_at": time.Now().UTC()}).Error
+			return 0, nil
 		}
 		mutations, ok := driver.(cloudpkg.MutationDriver)
 		if !ok || !mutations.Capabilities().Recycle {
 			return 0, appError(CodeTransferDeletionUnavailable, "115 回收能力不可用", nil)
 		}
-		removed := 0
-		for _, file := range b.sourceManifest.Files {
-			if err := mutations.Recycle(ctx, file.ProviderItemID); err != nil {
-				_, statErr := driver.Stat(ctx, file.ProviderItemID)
-				if code, _ := cloudpkg.ErrorInfo(statErr); code != cloudpkg.CodeNotFound {
-					if statErr != nil {
-						return removed, fmt.Errorf("115 recycle failed and item state is unavailable: %w", errors.Join(err, statErr))
-					}
-					return removed, err
+		if err := mutations.Recycle(ctx, root.ID); err != nil {
+			_, statErr := driver.Stat(ctx, root.ID)
+			if code, _ := cloudpkg.ErrorInfo(statErr); code != cloudpkg.CodeNotFound {
+				if statErr != nil {
+					return 0, fmt.Errorf("115 package recycle failed and state is unavailable: %w", errors.Join(err, statErr))
 				}
+				return 0, err
 			}
-			removed++
 		}
 		_ = s.db.Model(&models.DownloadTask{}).Where("id = ?", b.download.ID).Updates(map[string]any{"provider_task_id": "", "provider_status": "deleted", "updated_at": time.Now().UTC()}).Error
-		return removed, nil
+		return present, nil
 	}
 	if b.download.ProviderTaskID != "" && b.download.DownloaderID != nil && s.downloader != nil {
 		_, client, err := s.downloader.client(*b.download.DownloaderID)

@@ -3,7 +3,6 @@ package pttime
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -147,7 +146,7 @@ func (a *Adapter) request(ctx context.Context, config site.Config, endpoint stri
 	if err != nil {
 		return nil, nil, site.ErrUnavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if readErr != nil || int64(len(body)) > limit {
 		return nil, response, site.ErrInvalidReply
@@ -165,73 +164,23 @@ func (a *Adapter) request(ctx context.Context, config site.Config, endpoint stri
 }
 
 func renderedRequest(ctx context.Context, config site.Config, target string, limit int64) ([]byte, *http.Response, error) {
-	service, err := url.Parse(strings.TrimRight(strings.TrimSpace(config.BrowserServiceURL), "/"))
-	if err != nil || (service.Scheme != "http" && service.Scheme != "https") || service.Host == "" || service.User != nil || service.RawQuery != "" || service.Fragment != "" {
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return nil, nil, site.ErrUnavailable
 	}
-	service.Path = strings.TrimRight(service.Path, "/") + "/v1"
-	cookies := make([]map[string]string, 0)
-	for _, part := range strings.Split(config.Cookie, ";") {
-		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok || name == "" || value == "" || strings.ContainsAny(name+value, "\x00\r\n") {
-			continue
-		}
-		cookies = append(cookies, map[string]string{"name": name, "value": value})
-	}
-	timeout := config.Timeout
-	if timeout < 3*time.Second || timeout > 30*time.Second {
-		timeout = 12 * time.Second
-	}
-	payload, _ := json.Marshal(map[string]any{"cmd": "request.get", "url": target, "maxTimeout": int(timeout.Milliseconds()), "cookies": cookies})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, service.String(), bytes.NewReader(payload))
+	// PT browser emulation is a legacy, explicitly configured FlareSolverr
+	// compatibility path. It bypasses the public-BT Cloak routing and never
+	// forwards the tracker's Cookie or passkey outside the Server.
+	flare, err := site.NewFlareSolverrFetcher(config.BrowserServiceURL)
 	if err != nil {
 		return nil, nil, site.ErrUnavailable
 	}
-	request.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: timeout + 5*time.Second, CheckRedirect: func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 2 || !strings.EqualFold(next.URL.Host, service.Host) || next.URL.Scheme != service.Scheme {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}}
-	response, err := client.Do(request)
+	page, err := flare.Fetch(ctx, site.RenderedFetchRequest{ProfileID: "private-pt-legacy", URL: target, AllowedHosts: []string{parsed.Hostname()}, Timeout: config.Timeout, MaxBytes: limit})
+	response := &http.Response{StatusCode: page.StatusCode, Header: make(http.Header)}
 	if err != nil {
-		return nil, nil, site.ErrUnavailable
+		return nil, response, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, response, site.ErrUnavailable
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil || int64(len(raw)) > limit {
-		return nil, response, site.ErrInvalidReply
-	}
-	var envelope struct {
-		Status   string `json:"status"`
-		Solution struct {
-			Response  string `json:"response"`
-			Status    int    `json:"status"`
-			UserAgent string `json:"userAgent"`
-		} `json:"solution"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.Status != "ok" || envelope.Solution.Response == "" || int64(len(envelope.Solution.Response)) > limit {
-		return nil, response, site.ErrInvalidReply
-	}
-	status := envelope.Solution.Status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	renderedResponse := &http.Response{StatusCode: status, Header: make(http.Header)}
-	switch status {
-	case http.StatusOK:
-		return []byte(envelope.Solution.Response), renderedResponse, nil
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, renderedResponse, site.ErrAuthentication
-	case http.StatusTooManyRequests:
-		return nil, renderedResponse, site.ErrRateLimited
-	default:
-		return nil, renderedResponse, site.ErrUnavailable
-	}
+	return page.HTML, response, nil
 }
 
 func controlledClient(config site.Config) (*http.Client, *url.URL, error) {
