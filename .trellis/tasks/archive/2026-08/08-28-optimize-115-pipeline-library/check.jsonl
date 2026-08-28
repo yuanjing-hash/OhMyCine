@@ -1,0 +1,6 @@
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/115-transfer-performance.md","reason":"验证性能修复保持正确性和 MoviePilot 只作行为参考"}
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/strm-incremental-diff.md","reason":"验证真实增量、签名和删除保护"}
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/web-detail-and-library.md","reason":"验证白屏和媒体库管理端到端目标"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"总体验收敏感数据、文件操作、RBAC 与审计"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"总体验收 Server 测试和质量门"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"总体验收 WebUI 测试和质量门"}
