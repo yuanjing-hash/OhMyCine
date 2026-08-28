@@ -1056,3 +1056,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 42: 修复 Server Beta lint 门禁
+
+**Date**: 2026-08-28
+**Task**: 修复 Server Beta lint 门禁
+**Branch**: `develop`
+
+### Summary
+
+CI 固定 golangci-lint 发现默认入库服务残留未使用辅助函数；删除死代码后 focused、go vet 与 go test ./... 全部通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `337bc6e` | (see git log) |
+
+### Status
+
+[OK] **Completed**

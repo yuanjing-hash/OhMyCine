@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 41
+- **Total Sessions**: 42
 - **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1058 | Active |
+| `journal-1.md` | ~1079 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 42 | 2026-08-28 | 修复 Server Beta lint 门禁 | `337bc6e` | `develop` |
 | 41 | 2026-08-28 | 统一下载与媒体库入库流水线 | `dd77a7c` | `develop` |
 | 40 | 2026-08-28 | 优化 115 媒体管线与媒体库管理 | `86a5bdf` | `codex/unified-media-search-subscription` |
 | 39 | 2026-08-28 | 修复多季整理与受控站点搜索并发布 Server Beta | `703b048`, `2e3c83a` | `codex/unified-media-search-subscription` |
