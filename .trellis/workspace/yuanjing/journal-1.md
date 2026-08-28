@@ -1014,3 +1014,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 40: 优化 115 媒体管线与媒体库管理
+
+**Date**: 2026-08-28
+**Task**: 优化 115 媒体管线与媒体库管理
+**Branch**: `codex/unified-media-search-subscription`
+
+### Summary
+
+修复推荐详情展开白屏，完成 115 批量转移与安全耗时观测、STRM 真增量同步，并新增 Server 媒体库海报墙、元数据维护和受控源文件删除。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `86a5bdf` | (see git log) |
+
+### Status
+
+[OK] **Completed**
