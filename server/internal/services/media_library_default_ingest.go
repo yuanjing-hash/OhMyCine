@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -158,8 +157,4 @@ func requireNoEnabledLifeEventListener(ctx context.Context, db *gorm.DB, connect
 		return appError(CodeConflict, "仍有下载器启用自动监听，请先选择替代媒体库或关闭监听", nil)
 	}
 	return nil
-}
-
-func isDefaultIngestConstraint(err error) bool {
-	return err != nil && (strings.Contains(strings.ToLower(err.Error()), "idx_media_libraries_default_ingest_connection") || errors.Is(err, gorm.ErrDuplicatedKey))
 }
