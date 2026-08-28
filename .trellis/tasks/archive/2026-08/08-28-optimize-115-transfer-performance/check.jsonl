@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/115-transfer-performance.md","reason":"核对远端调用数、耗时和风控判断是否匹配证据"}
+{"file":".trellis/spec/backend/transfer-organization.md","reason":"验证批量化未放松 ancestry、identity、cleanup 安全"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"验证 provider ID、路径、Cookie 和响应不泄露"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"验证崩溃恢复、限流、批量 fixture 和 Server 质量门"}
