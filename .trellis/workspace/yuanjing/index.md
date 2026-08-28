@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 40
+- **Total Sessions**: 41
 - **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1037 | Active |
+| `journal-1.md` | ~1058 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 41 | 2026-08-28 | 统一下载与媒体库入库流水线 | `dd77a7c` | `develop` |
 | 40 | 2026-08-28 | 优化 115 媒体管线与媒体库管理 | `86a5bdf` | `codex/unified-media-search-subscription` |
 | 39 | 2026-08-28 | 修复多季整理与受控站点搜索并发布 Server Beta | `703b048`, `2e3c83a` | `codex/unified-media-search-subscription` |
 | 38 | 2026-08-27 | 统一搜索订阅与 115 下载流水线 | `ee79df0`, `d074536`, `43812b5` | `codex/unified-media-search-subscription` |

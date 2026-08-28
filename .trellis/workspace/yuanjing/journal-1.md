@@ -1035,3 +1035,24 @@ Server 修复下载重试和真实 TMDB 同名空壳候选，Player 同步 nextg
 ### Status
 
 [OK] **Completed**
+
+
+## Session 41: 统一下载与媒体库入库流水线
+
+**Date**: 2026-08-28
+**Task**: 统一下载与媒体库入库流水线
+**Branch**: `develop`
+
+### Summary
+
+完成下载器能力契约、媒体库 Backend、同源与跨数据源 Transfer、115 唯一默认入库、受管暂存与安全恢复；按 MoviePilot 分类原则固定电影/电视剧一级目录，并通过 Go/WebUI/发布守卫全量验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dd77a7c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
