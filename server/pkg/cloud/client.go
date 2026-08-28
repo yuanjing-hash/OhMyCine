@@ -192,6 +192,123 @@ type MutationDriver interface {
 	Recycle(context.Context, string) error
 }
 
+// MaxBatchMutationItems is the provider-neutral hard ceiling used by the
+// transfer worker. Drivers may reject smaller provider-specific limits, but a
+// task or user input can never increase this request size.
+const MaxBatchMutationItems = 100
+
+// BatchMutationDriver is an optional acceleration capability for providers
+// whose mutation API accepts several opaque identities in one request. A nil
+// error means only that the provider accepted the request; durable callers
+// must still reconcile every item before marking it complete.
+type BatchMutationDriver interface {
+	MutationDriver
+	MoveMany(context.Context, []string, string) error
+	CopyMany(context.Context, []string, string) error
+	RecycleMany(context.Context, []string) error
+}
+
+// OperationTimingSnapshot contains only task-scoped aggregate counters and
+// durations. It deliberately has no labels, item identities, names, paths, or
+// provider responses, so it is safe to project into structured operation logs.
+type OperationTimingSnapshot struct {
+	ProviderWaitCalls  int
+	ProviderWait       time.Duration
+	ProviderCallCalls  int
+	ProviderCall       time.Duration
+	TargetListCalls    int
+	TargetList         time.Duration
+	BatchMutationCalls int
+	BatchMutation      time.Duration
+	DBCheckpointCalls  int
+	DBCheckpoint       time.Duration
+}
+
+type OperationTimingCollector struct {
+	mu       sync.Mutex
+	snapshot OperationTimingSnapshot
+}
+
+type operationTimingContextKey struct{}
+
+func NewOperationTimingCollector() *OperationTimingCollector {
+	return &OperationTimingCollector{}
+}
+
+func WithOperationTimingCollector(ctx context.Context, collector *OperationTimingCollector) context.Context {
+	if ctx == nil || collector == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, operationTimingContextKey{}, collector)
+}
+
+func (collector *OperationTimingCollector) Snapshot() OperationTimingSnapshot {
+	if collector == nil {
+		return OperationTimingSnapshot{}
+	}
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
+	return collector.snapshot
+}
+
+func recordOperationTiming(ctx context.Context, update func(*OperationTimingSnapshot)) {
+	if ctx == nil {
+		return
+	}
+	collector, _ := ctx.Value(operationTimingContextKey{}).(*OperationTimingCollector)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	update(&collector.snapshot)
+	collector.mu.Unlock()
+}
+
+func RecordProviderWait(ctx context.Context, duration time.Duration) {
+	recordOperationTiming(ctx, func(snapshot *OperationTimingSnapshot) {
+		snapshot.ProviderWaitCalls++
+		if duration > 0 {
+			snapshot.ProviderWait += duration
+		}
+	})
+}
+
+func RecordProviderCall(ctx context.Context, duration time.Duration) {
+	recordOperationTiming(ctx, func(snapshot *OperationTimingSnapshot) {
+		snapshot.ProviderCallCalls++
+		if duration > 0 {
+			snapshot.ProviderCall += duration
+		}
+	})
+}
+
+func RecordTargetList(ctx context.Context, duration time.Duration) {
+	recordOperationTiming(ctx, func(snapshot *OperationTimingSnapshot) {
+		snapshot.TargetListCalls++
+		if duration > 0 {
+			snapshot.TargetList += duration
+		}
+	})
+}
+
+func RecordBatchMutation(ctx context.Context, duration time.Duration) {
+	recordOperationTiming(ctx, func(snapshot *OperationTimingSnapshot) {
+		snapshot.BatchMutationCalls++
+		if duration > 0 {
+			snapshot.BatchMutation += duration
+		}
+	})
+}
+
+func RecordDBCheckpoint(ctx context.Context, duration time.Duration) {
+	recordOperationTiming(ctx, func(snapshot *OperationTimingSnapshot) {
+		snapshot.DBCheckpointCalls++
+		if duration > 0 {
+			snapshot.DBCheckpoint += duration
+		}
+	})
+}
+
 // ExactRecyclePurger permanently removes only the explicitly owned recycle
 // item. There is deliberately no empty/all-items variant in this contract.
 type ExactRecyclePurger interface {

@@ -40,6 +40,7 @@
   {"code":"media_libraries.create","module":"media_libraries","name":"创建媒体库","description":"基于已注册 Storage 创建媒体库并可自动初始化。","risk":"sensitive"},
   {"code":"media_libraries.update","module":"media_libraries","name":"编辑媒体库","description":"编辑媒体库扫描配置和启用状态。","risk":"sensitive"},
   {"code":"media_libraries.delete","module":"media_libraries","name":"删除媒体库","description":"删除媒体库索引配置，不删除来源媒体文件。","risk":"destructive"},
+  {"code":"media_libraries.media_delete","module":"media_libraries","name":"删除媒体库作品源文件","description":"经预览确认后从单个媒体库的数据源移除指定作品。","risk":"destructive"},
   {"code":"media_libraries.scan","module":"media_libraries","name":"扫描媒体库","description":"立即重试或手动启动只读媒体库扫描。","risk":"sensitive"},
   {"code":"jobs.read_own","module":"jobs","name":"查看自己的任务","description":"查看自己创建的持久化自动化任务。","risk":"normal"},
   {"code":"jobs.read_all","module":"jobs","name":"查看全部任务","description":"查看全局持久化自动化任务中心。","risk":"sensitive"},

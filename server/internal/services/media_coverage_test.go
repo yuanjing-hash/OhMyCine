@@ -60,6 +60,12 @@ func TestMediaCoverageTVUsesLogicalEpisodesAndFailsClosedForMissingFacts(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(string(encoded), `"library_ids":null`) || strings.Contains(string(encoded), `"episodes":null`) || strings.Contains(string(encoded), `"seasons":null`) || strings.Contains(string(encoded), `"libraries":null`) {
+		t.Fatalf("coverage collections must serialize as arrays: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"episode_number":2,"name":"缺失","air_date":"2026-01-08","status":"missing","library_ids":[]`) {
+		t.Fatalf("unmatched episode library_ids must serialize as []: %s", encoded)
+	}
 	for _, forbidden := range []string{"/show/", "private-a", "relative_path", "provider_id", "root_path"} {
 		if strings.Contains(strings.ToLower(string(encoded)), forbidden) {
 			t.Fatalf("coverage leaked private catalog fact %q: %s", forbidden, encoded)
@@ -97,6 +103,13 @@ func TestMediaCoverageMoviePresentMissingAndUnknown(t *testing.T) {
 	coverage, err := service.Coverage(context.Background(), actor, "movie", 200)
 	if err != nil || coverage.Status != "missing" || coverage.Movie == nil || coverage.Movie.Present {
 		t.Fatalf("missing=%+v err=%v", coverage, err)
+	}
+	encoded, err := json.Marshal(coverage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"libraries":null`) || !strings.Contains(string(encoded), `"movie":{"present":false,"library_ids":[]}`) {
+		t.Fatalf("missing movie collections must serialize as []: %s", encoded)
 	}
 	tmdbID := int64(200)
 	entry := models.MediaLibraryEntry{LibraryID: partialID, RelativePath: "/movie.mkv", ProviderID: "private", MediaType: "movie", Title: "测试电影", WorkKey: "movie:tmdb:200", MatchStatus: mediaRecognitionStatusMatched, TMDBID: &tmdbID, LastGeneration: 1}

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -311,10 +312,33 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 		_ = s.failRun(run.ID, "artifact_projection_unavailable")
 		return WorkerResult{ErrorCode: "artifact_projection_unavailable", ErrorMessage: "媒体产物目录不可用"}
 	}
+	var existingArtifacts []models.MediaArtifact
+	if err := s.db.Where("library_id = ? AND target_kind = ?", run.LibraryID, policy.TargetKind).Find(&existingArtifacts).Error; err != nil {
+		_ = s.failRun(run.ID, "artifact_manifest_unavailable")
+		return WorkerResult{ErrorCode: "artifact_manifest_unavailable", ErrorMessage: "媒体产物清单不可用"}
+	}
+	manifest := newArtifactManifestIndex(len(existingArtifacts))
+	for index := range existingArtifacts {
+		artifact := existingArtifacts[index]
+		manifest.rows[artifactManifestKey(artifact.TargetKind, artifact.RelativePath)] = artifact
+	}
 	var entries []models.MediaLibraryEntry
 	if err := s.db.Where("library_id = ?", run.LibraryID).Order("relative_path").Find(&entries).Error; err != nil {
 		_ = s.failRun(run.ID, "artifact_source_unavailable")
 		return WorkerResult{ErrorCode: "artifact_source_unavailable", ErrorMessage: "媒体源清单不可用"}
+	}
+	activeVerifier := signedArtifactVerifier{}
+	if policy.STRMEnabled && len(entries) > 0 {
+		if s.signedProxy == nil {
+			_ = s.failRun(run.ID, "artifact_proxy_unavailable")
+			return WorkerResult{ErrorCode: "artifact_proxy_unavailable", ErrorMessage: "302 签名服务不可用"}
+		}
+		var profileErr error
+		activeVerifier, profileErr = s.signedProxy.activeSigningVerifier()
+		if profileErr != nil {
+			_ = s.failRun(run.ID, "artifact_proxy_unavailable")
+			return WorkerResult{ErrorCode: "artifact_proxy_unavailable", ErrorMessage: "302 签名服务不可用"}
+		}
 	}
 	entriesByRecognition := make(map[uint][]models.MediaLibraryEntry)
 	for _, entry := range entries {
@@ -354,7 +378,7 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 			_ = s.db.Model(&models.MediaArtifactRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": models.MediaArtifactStatusSuperseded, "cleanup_status": models.MediaArtifactCleanupSkipped, "cleanup_at": now, "finished_at": now, "updated_at": now}).Error
 			return WorkerResult{}
 		}
-		outcome, writeErr := s.writeSTRM(ctx, root, run, entry)
+		outcome, writeErr := s.writeSTRM(ctx, root, run, entry, manifest, activeVerifier)
 		switch outcome {
 		case "written":
 			run.WrittenCount++
@@ -383,7 +407,7 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 			_ = s.db.Model(&models.MediaArtifactRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": models.MediaArtifactStatusSuperseded, "cleanup_status": models.MediaArtifactCleanupSkipped, "cleanup_at": now, "finished_at": now, "updated_at": now}).Error
 			return WorkerResult{}
 		}
-		outcome, writeErr := s.writeSourceAsset(ctx, root, run, policy, asset)
+		outcome, writeErr := s.writeSourceAsset(ctx, root, run, policy, asset, manifest)
 		switch outcome {
 		case "written":
 			run.WrittenCount++
@@ -412,7 +436,7 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 			_ = s.db.Model(&models.MediaArtifactRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": models.MediaArtifactStatusSuperseded, "cleanup_status": models.MediaArtifactCleanupSkipped, "cleanup_at": now, "finished_at": now, "updated_at": now}).Error
 			return WorkerResult{}
 		}
-		outcome, writeErr := s.writeNFO(ctx, root, run, policy.TargetKind, recognition, entriesByRecognition[recognition.ID])
+		outcome, writeErr := s.writeNFO(ctx, root, run, policy.TargetKind, recognition, entriesByRecognition[recognition.ID], manifest)
 		switch outcome {
 		case "written":
 			run.WrittenCount++
@@ -430,6 +454,10 @@ func (s *MediaArtifactService) generateArtifacts(ctx context.Context, runtime Jo
 			_ = s.failRun(run.ID, CodeQueueLeaseInvalid)
 			return WorkerResult{ErrorCode: CodeQueueLeaseInvalid, ErrorMessage: "媒体产物任务租约已失效"}
 		}
+	}
+	if err := s.persistArtifactManifest(manifest); err != nil {
+		_ = s.failRun(run.ID, "artifact_manifest_persist_failed")
+		return WorkerResult{ErrorCode: "artifact_manifest_persist_failed", ErrorMessage: "媒体产物清单保存失败"}
 	}
 	finished := time.Now().UTC()
 	status, code := models.MediaArtifactStatusCompleted, ""
@@ -573,7 +601,7 @@ func canonicalProjectionRoot(root string) (string, string, error) {
 	return canonical, storagefs.NormalizeForComparison(resolved), nil
 }
 
-func (s *MediaArtifactService) writeSourceAsset(ctx context.Context, root string, run models.MediaArtifactRun, policy mediaArtifactPolicy, asset models.MediaLibrarySourceAsset) (string, error) {
+func (s *MediaArtifactService) writeSourceAsset(ctx context.Context, root string, run models.MediaArtifactRun, policy mediaArtifactPolicy, asset models.MediaLibrarySourceAsset, manifest *artifactManifestIndex) (string, error) {
 	extension := strings.ToLower(strings.TrimSpace(asset.Extension))
 	bareExtension := strings.TrimPrefix(extension, ".")
 	if len(policy.AssetExtensions) == 0 {
@@ -654,10 +682,10 @@ func (s *MediaArtifactService) writeSourceAsset(ctx context.Context, root string
 	if relative == "." || relative == ".." || strings.HasPrefix(relative, "../") || !strings.EqualFold(filepath.Ext(relative), extension) {
 		return "", errors.New("source asset path is invalid")
 	}
-	return s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("asset:%d", asset.ID), ProviderItemID: asset.ProviderID, Kind: kind, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/" + relative, Content: func(models.MediaArtifact) ([]byte, error) { return body, nil }})
+	return s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("asset:%d", asset.ID), ProviderItemID: asset.ProviderID, Kind: kind, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/" + relative, Manifest: manifest, Content: func(models.MediaArtifact) ([]byte, error) { return body, nil }})
 }
 
-func (s *MediaArtifactService) writeNFO(ctx context.Context, root string, run models.MediaArtifactRun, targetKind string, recognition models.MediaLibraryRecognition, entries []models.MediaLibraryEntry) (string, error) {
+func (s *MediaArtifactService) writeNFO(ctx context.Context, root string, run models.MediaArtifactRun, targetKind string, recognition models.MediaLibraryRecognition, entries []models.MediaLibraryEntry, manifest *artifactManifestIndex) (string, error) {
 	if len(entries) == 0 {
 		return "skipped", nil
 	}
@@ -676,7 +704,7 @@ func (s *MediaArtifactService) writeNFO(ctx context.Context, root string, run mo
 	if err != nil {
 		return "", err
 	}
-	outcome, err := s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("recognition:%d", recognition.ID), Kind: models.MediaArtifactKindNFO, TargetKind: targetKind, RelativePath: relative, Content: func(models.MediaArtifact) ([]byte, error) { return content, nil }})
+	outcome, err := s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("recognition:%d", recognition.ID), Kind: models.MediaArtifactKindNFO, TargetKind: targetKind, RelativePath: relative, Manifest: manifest, Content: func(models.MediaArtifact) ([]byte, error) { return content, nil }})
 	if err != nil {
 		return outcome, err
 	}
@@ -710,7 +738,7 @@ func (s *MediaArtifactService) writeNFO(ctx context.Context, root string, run mo
 		if image.SeasonNumber != nil {
 			season = fmt.Sprintf(":%d", *image.SeasonNumber)
 		}
-		imageOutcome, err := s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("recognition:%d:%s%s", recognition.ID, image.Kind, season), Kind: imageKind, TargetKind: targetKind, RelativePath: imageRelative, Content: func(models.MediaArtifact) ([]byte, error) { return body, nil }})
+		imageOutcome, err := s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("recognition:%d:%s%s", recognition.ID, image.Kind, season), Kind: imageKind, TargetKind: targetKind, RelativePath: imageRelative, Manifest: manifest, Content: func(models.MediaArtifact) ([]byte, error) { return body, nil }})
 		combined = combineArtifactOutcome(combined, imageOutcome)
 		if err != nil {
 			return combined, err
@@ -785,18 +813,68 @@ func nfoRelativePath(mediaType string, entries []models.MediaLibraryEntry) (stri
 	return "/" + strings.Trim(directory+"/tvshow.nfo", "/"), nil
 }
 
-func (s *MediaArtifactService) writeSTRM(_ context.Context, root string, run models.MediaArtifactRun, entry models.MediaLibraryEntry) (string, error) {
+func (s *MediaArtifactService) writeSTRM(_ context.Context, root string, run models.MediaArtifactRun, entry models.MediaLibraryEntry, manifest *artifactManifestIndex, verifier signedArtifactVerifier) (string, error) {
 	relative, err := strmRelativePath(entry.RelativePath)
 	if err != nil {
 		return "", err
 	}
-	return s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("entry:%d", entry.ID), ProviderItemID: entry.ProviderID, Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: relative, Content: func(artifact models.MediaArtifact) ([]byte, error) {
-		signed, err := s.signedProxy.SignArtifact(artifact.OpaqueID, run.LibraryID, proxyDefaultTTL)
-		if err != nil {
-			return nil, err
+	return s.writeLocalArtifact(root, run, localArtifactSpec{SourceIdentity: fmt.Sprintf("entry:%d", entry.ID), ProviderItemID: entry.ProviderID, Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: relative, Manifest: manifest, Render: func(artifact models.MediaArtifact, target string) (localArtifactRender, error) {
+		if artifact.ID != 0 {
+			if content, inspection, ok := s.reusableSTRM(target, artifact, verifier); ok {
+				return localArtifactRender{Content: content, ContentExpiresAt: &inspection.ExpiresAt, ContentFormatVersion: inspection.FormatVersion, PreserveExisting: true}, nil
+			}
 		}
-		return []byte(signed + "\n"), nil
+		lease, err := s.signedProxy.signArtifactLease(artifact.OpaqueID, run.LibraryID, proxyDefaultTTL)
+		if err != nil {
+			return localArtifactRender{}, err
+		}
+		return localArtifactRender{Content: []byte(lease.URL + "\n"), ContentExpiresAt: &lease.ExpiresAt, ContentFormatVersion: lease.FormatVersion}, nil
 	}})
+}
+
+const maximumPersistedSTRMBytes = 4096
+
+func (s *MediaArtifactService) reusableSTRM(target string, artifact models.MediaArtifact, verifier signedArtifactVerifier) ([]byte, signedArtifactInspection, bool) {
+	info, err := os.Lstat(target)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximumPersistedSTRMBytes {
+		return nil, signedArtifactInspection{}, false
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || len(content) == 0 || len(content) > maximumPersistedSTRMBytes || bytes.IndexByte(content, 0) >= 0 {
+		return nil, signedArtifactInspection{}, false
+	}
+	raw := strings.TrimSpace(string(content))
+	if raw == "" || strings.ContainsAny(raw, "\r\n\t ") {
+		return nil, signedArtifactInspection{}, false
+	}
+	inspection, err := s.signedProxy.inspectArtifactLeaseURL(raw, artifact, verifier)
+	if err != nil {
+		return nil, signedArtifactInspection{}, false
+	}
+	if !inspection.ExpiresAt.After(s.signedProxy.now().Add(proxyRenewalWindow)) {
+		return nil, signedArtifactInspection{}, false
+	}
+	return content, inspection, true
+}
+
+type artifactManifestIndex struct {
+	rows  map[string]models.MediaArtifact
+	dirty map[string]struct{}
+}
+
+func newArtifactManifestIndex(capacity int) *artifactManifestIndex {
+	return &artifactManifestIndex{rows: make(map[string]models.MediaArtifact, capacity), dirty: make(map[string]struct{}, capacity)}
+}
+
+func artifactManifestKey(targetKind, relativePath string) string {
+	return targetKind + "\x00" + relativePath
+}
+
+type localArtifactRender struct {
+	Content              []byte
+	ContentExpiresAt     *time.Time
+	ContentFormatVersion string
+	PreserveExisting     bool
 }
 
 type localArtifactSpec struct {
@@ -805,16 +883,25 @@ type localArtifactSpec struct {
 	Kind           string
 	TargetKind     string
 	RelativePath   string
+	Manifest       *artifactManifestIndex
 	Content        func(models.MediaArtifact) ([]byte, error)
+	Render         func(models.MediaArtifact, string) (localArtifactRender, error)
 }
 
 func (s *MediaArtifactService) writeLocalArtifact(root string, run models.MediaArtifactRun, spec localArtifactSpec) (string, error) {
 	relative := spec.RelativePath
 	var artifact models.MediaArtifact
-	findErr := s.db.Where("library_id = ? AND target_kind = ? AND relative_path = ?", run.LibraryID, spec.TargetKind, relative).First(&artifact).Error
-	exists := findErr == nil
-	if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
-		return "", findErr
+	key := artifactManifestKey(spec.TargetKind, relative)
+	artifact, exists := models.MediaArtifact{}, false
+	if spec.Manifest != nil {
+		artifact, exists = spec.Manifest.rows[key]
+	}
+	if spec.Manifest == nil {
+		findErr := s.db.Where("library_id = ? AND target_kind = ? AND relative_path = ?", run.LibraryID, spec.TargetKind, relative).First(&artifact).Error
+		exists = findErr == nil
+		if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			return "", findErr
+		}
 	}
 	target, err := storagefs.Constrain(root, filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(relative, "/"))))
 	if err != nil {
@@ -837,34 +924,83 @@ func (s *MediaArtifactService) writeLocalArtifact(root string, run models.MediaA
 		return "", errors.New("managed artifact cleanup is in progress")
 	}
 	artifact.RunID, artifact.SourceIdentity, artifact.ProviderItemID, artifact.Kind, artifact.Active = run.ID, spec.SourceIdentity, spec.ProviderItemID, spec.Kind, true
-	content, err := spec.Content(artifact)
+	render := localArtifactRender{}
+	if spec.Render != nil {
+		render, err = spec.Render(artifact, target)
+	} else if spec.Content != nil {
+		render.Content, err = spec.Content(artifact)
+	} else {
+		err = errors.New("artifact content renderer is unavailable")
+	}
 	if err != nil {
 		return "", err
 	}
-	fingerprint := sha256.Sum256(content)
+	fingerprint := sha256.Sum256(render.Content)
 	fingerprintHex := hex.EncodeToString(fingerprint[:])
-	if exists && artifact.ContentFingerprint == fingerprintHex {
+	artifact.ContentExpiresAt, artifact.ContentFormatVersion = render.ContentExpiresAt, render.ContentFormatVersion
+	if exists && (render.PreserveExisting || artifact.ContentFingerprint == fingerprintHex) {
 		if info, err := os.Stat(target); err == nil && !info.IsDir() {
+			artifact.ContentFingerprint = fingerprintHex
 			artifact.Status, artifact.ErrorCode, artifact.UpdatedAt = models.MediaArtifactStatusCompleted, "", time.Now().UTC()
-			if err := s.db.Save(&artifact).Error; err != nil {
+			if spec.Manifest != nil {
+				spec.Manifest.rows[key] = artifact
+				spec.Manifest.dirty[key] = struct{}{}
+			} else if err := s.db.Save(&artifact).Error; err != nil {
 				return "", err
 			}
 			return "skipped", nil
 		}
 	}
-	if err := atomicWriteArtifact(root, target, content); err != nil {
+	if err := atomicWriteArtifact(root, target, render.Content); err != nil {
 		artifact.Status, artifact.ErrorCode, artifact.UpdatedAt = models.MediaArtifactStatusFailed, "artifact_write_failed", time.Now().UTC()
 		_ = s.db.Save(&artifact).Error
 		return "", err
 	}
 	artifact.ContentFingerprint, artifact.Status, artifact.ErrorCode, artifact.UpdatedAt = fingerprintHex, models.MediaArtifactStatusCompleted, "", time.Now().UTC()
-	if err := s.db.Save(&artifact).Error; err != nil {
+	if spec.Manifest != nil {
+		spec.Manifest.rows[key] = artifact
+		spec.Manifest.dirty[key] = struct{}{}
+	} else if err := s.db.Save(&artifact).Error; err != nil {
 		return "", err
 	}
 	if exists {
 		return "updated", nil
 	}
 	return "written", nil
+}
+
+func (s *MediaArtifactService) persistArtifactManifest(manifest *artifactManifestIndex) error {
+	if manifest == nil || len(manifest.dirty) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(manifest.dirty))
+	for key := range manifest.dirty {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	existing := make([]models.MediaArtifact, 0, len(keys))
+	created := make([]models.MediaArtifact, 0, len(keys))
+	for _, key := range keys {
+		artifact := manifest.rows[key]
+		if artifact.ID == 0 {
+			created = append(created, artifact)
+		} else {
+			existing = append(existing, artifact)
+		}
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if len(existing) > 0 {
+			if err := tx.Save(&existing).Error; err != nil {
+				return err
+			}
+		}
+		if len(created) > 0 {
+			if err := tx.CreateInBatches(&created, 100).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func strmRelativePath(source string) (string, error) {

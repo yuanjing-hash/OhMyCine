@@ -49,6 +49,7 @@ const (
 	PermissionMediaLibrariesCreate              = "media_libraries.create"
 	PermissionMediaLibrariesUpdate              = "media_libraries.update"
 	PermissionMediaLibrariesDelete              = "media_libraries.delete"
+	PermissionMediaLibrariesMediaDelete         = "media_libraries.media_delete"
 	PermissionMediaLibrariesScan                = "media_libraries.scan"
 	PermissionMediaServersRefresh               = "media_servers.refresh"
 	PermissionJobsReadOwn                       = "jobs.read_own"

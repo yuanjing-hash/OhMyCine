@@ -21,6 +21,7 @@ import (
 
 const (
 	cloudTransferStateVersion = 1
+	cloudBatchIntentVersion   = 1
 	maxCloudStateBytes        = 1024 * 1024
 	maxCloudDirectoryEntries  = 10000
 )
@@ -30,6 +31,7 @@ type cloudTransferState struct {
 	Directories     map[string]string                 `json:"directories"`
 	TempDirectoryID string                            `json:"temp_directory_id,omitempty"`
 	Items           map[string]cloudTransferItemState `json:"items"`
+	BatchIntent     *cloudTransferBatchIntent         `json:"batch_intent,omitempty"`
 }
 
 type cloudTransferItemState struct {
@@ -38,6 +40,26 @@ type cloudTransferItemState struct {
 	TargetParentID string `json:"target_parent_id,omitempty"`
 	TargetName     string `json:"target_name,omitempty"`
 	Status         string `json:"status"`
+}
+
+// cloudTransferBatchIntent is private durable state. Provider identities and
+// names intentionally remain in CloudStateJSON and never enter public task
+// summaries, logs, audit details, or API DTOs.
+type cloudTransferBatchIntent struct {
+	Version        int                      `json:"version"`
+	Operation      string                   `json:"operation"`
+	TargetParentID string                   `json:"target_parent_id"`
+	Items          []cloudTransferBatchItem `json:"items"`
+}
+
+type cloudTransferBatchItem struct {
+	SourceID       string `json:"source_id"`
+	SourceParentID string `json:"source_parent_id"`
+	SourceName     string `json:"source_name"`
+	TargetParentID string `json:"target_parent_id"`
+	TargetName     string `json:"target_name"`
+	Size           int64  `json:"size"`
+	SHA1           string `json:"sha1,omitempty"`
 }
 
 type cloudTransferFailure struct {
@@ -54,6 +76,8 @@ func cloudTransferError(code string, retryable bool, cause error) error {
 }
 
 func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntime, task models.TransferTask, download models.DownloadTask, manifest downloadpkg.Manifest, started time.Time) WorkerResult {
+	timings := cloudpkg.NewOperationTimingCollector()
+	ctx = cloudpkg.WithOperationTimingCollector(ctx, timings)
 	if w.service.connections == nil || download.TargetConnectionID == nil || download.TargetStorageID == nil || download.StagingStorageID == nil || strings.TrimSpace(download.TargetProviderRootID) == "" {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_snapshot_invalid", false, nil))
 	}
@@ -72,6 +96,7 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 	if !capabilities.CreateDirectory || !capabilities.Rename || !capabilities.Recycle || (download.TransferMode == models.MediaLibraryTransferMove && !capabilities.Move) || (download.TransferMode == models.MediaLibraryTransferCopy && !capabilities.Copy) {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_capability_missing", false, nil))
 	}
+	batchMutations, _ := driver.(cloudpkg.BatchMutationDriver)
 
 	var sourceStorage, targetStorage models.Storage
 	if err := w.service.db.First(&sourceStorage, *download.StagingStorageID).Error; err != nil {
@@ -164,83 +189,39 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 			return w.cloudFailure(task, err)
 		}
 	}
+	if batchMutations == nil && state.BatchIntent != nil {
+		if err := downgradeCloudBatchIntent(&state, targets, download.TransferMode); err != nil {
+			return w.cloudFailure(task, cloudTransferError("cloud_transfer_state_invalid", false, err))
+		}
+	}
+	if batchMutations != nil && policy == models.MediaLibraryConflictOverwrite && len(conflicts) > 0 {
+		if err := recycleCloudConflictBatches(ctx, batchMutations, driver, download.TargetProviderRootID, conflicts); err != nil {
+			return w.cloudFailure(task, err)
+		}
+		// Every exact conflict has been reconciled as absent. Clearing this private
+		// attempt-local projection prevents the singleton compatibility path from
+		// issuing a second recycle request.
+		conflicts = map[string]cloudpkg.Item{}
+	}
 
 	if err := w.persistCloudState(&task, state, models.TransferTaskStatusMoving, completedCloudItems(state), nil); err != nil {
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
-	for index := range targets {
-		if ctx.Err() != nil {
-			return WorkerResult{}
+	if batchMutations != nil && download.TransferMode == models.MediaLibraryTransferCopy {
+		if err := w.prestageCloudCopyBatches(ctx, batchMutations, driver, &task, &state, download, sourceStorage, targets, conflicts, applied, policy); err != nil {
+			return w.cloudFailure(task, err)
 		}
-		target := &targets[index]
-		key := target.File.ProviderItemID
-		itemState := state.Items[key]
-		if itemState.Status == "completed" || itemState.Status == "skipped" {
-			continue
+	}
+	if batchMutations != nil && download.TransferMode == models.MediaLibraryTransferMove {
+		if err := w.executeCloudMoveBatches(ctx, batchMutations, driver, &task, &state, download, sourceStorage, targets, conflicts, applied, policy); err != nil {
+			return w.cloudFailure(task, err)
 		}
-		if applied[key] {
-			itemState = cloudTransferItemState{SourceID: key, CurrentID: key, TargetParentID: state.Directories[pathpkg.Dir(target.Relative)], TargetName: pathpkg.Base(target.Relative), Status: "completed"}
-			if download.TransferMode == models.MediaLibraryTransferCopy {
-				itemState.CurrentID = ""
+		for index := range targets {
+			if index >= len(summary.Items) {
+				break
 			}
-			state.Items[key] = itemState
-		} else if conflict := conflicts[key]; conflict.ID != "" {
-			switch policy {
-			case models.MediaLibraryConflictSkip:
-				state.Items[key] = cloudTransferItemState{SourceID: key, TargetParentID: conflict.ParentID, TargetName: conflict.Name, Status: "skipped"}
-			case models.MediaLibraryConflictOverwrite:
-				if conflict.IsDir {
-					return w.cloudFailure(task, cloudTransferError("cloud_transfer_target_type_conflict", false, nil))
-				}
-				if _, err := providerItemWithinRoot(ctx, driver, conflict.ID, download.TargetProviderRootID); err != nil {
-					return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, err))
-				}
-				if err := mutations.Recycle(ctx, conflict.ID); err != nil {
-					if _, statErr := driver.Stat(ctx, conflict.ID); statErr == nil {
-						return w.cloudFailure(task, err)
-					} else if code, _ := cloudpkg.ErrorInfo(statErr); code != cloudpkg.CodeNotFound {
-						return w.cloudFailure(task, err)
-					}
-				}
-			default:
-				return w.cloudFailure(task, cloudTransferError("transfer_conflict_failed", false, nil))
-			}
-		}
-		if state.Items[key].Status == "" {
-			targetParentID := state.Directories[pathpkg.Dir(target.Relative)]
-			targetName := pathpkg.Base(target.Relative)
-			source, err := driver.Stat(ctx, key)
-			if err != nil || source.IsDir || !cloudManifestMatches(source, target.File) {
-				return w.cloudFailure(task, cloudTransferError("cloud_transfer_source_changed", false, err))
-			}
-			originalName := pathpkg.Base(strings.ReplaceAll(target.File.RelativePath, "\\", "/"))
-			if download.TransferMode == models.MediaLibraryTransferMove && source.ParentID == targetParentID && (source.Name == originalName || source.Name == targetName) {
-				// A previous attempt may have placed the stable item before rename or
-				// before its checkpoint commit. The already-validated target parent is
-				// the only destination outside the source root accepted here.
-			} else {
-				bounded, boundaryErr := providerItemWithinRoot(ctx, driver, key, sourceStorage.RootPath)
-				if boundaryErr != nil || bounded.Name != originalName || (target.File.ProviderParentID != "" && bounded.ParentID != target.File.ProviderParentID) {
-					return w.cloudFailure(task, cloudTransferError("cloud_transfer_source_changed", false, boundaryErr))
-				}
-				source = bounded
-			}
-			if download.TransferMode == models.MediaLibraryTransferMove {
-				err = w.executeCloudMove(ctx, mutations, driver, &task, &state, source, targetParentID, targetName)
-				if err == nil {
-					state.Items[key] = cloudTransferItemState{SourceID: key, CurrentID: key, TargetParentID: targetParentID, TargetName: targetName, Status: "completed"}
-				}
-			} else {
-				err = w.executeCloudCopy(ctx, mutations, driver, &task, &state, source, targetParentID, targetName)
-			}
-			if err != nil {
-				return w.cloudFailure(task, err)
-			}
-		}
-		processed := completedCloudItems(state)
-		if index < len(summary.Items) {
-			summary.Items[index].RelativePath = target.Relative
-			if state.Items[key].Status == "skipped" {
+			summary.Items[index].RelativePath = targets[index].Relative
+			if state.Items[targets[index].File.ProviderItemID].Status == "skipped" {
 				summary.Items[index].Result = "skipped"
 			} else {
 				summary.Items[index].Result = "completed"
@@ -250,13 +231,105 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 		if err != nil {
 			return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 		}
-		if err := w.persistCloudState(&task, state, models.TransferTaskStatusMoving, processed, &encodedSummary); err != nil {
+		if err := w.persistCloudState(&task, state, models.TransferTaskStatusMoving, completedCloudItems(state), &encodedSummary); err != nil {
 			return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 		}
-		processed64, total64 := int64(processed), int64(len(targets))
+		processed64, total64 := int64(completedCloudItems(state)), int64(len(targets))
 		progress := float64(processed64) * 100 / float64(total64)
 		if err := runtime.Heartbeat(&progress, &processed64, &total64, nil, nil); err != nil {
 			return WorkerResult{ErrorCode: CodeQueueLeaseInvalid, ErrorMessage: "入库任务租约已失效"}
+		}
+	} else {
+		for index := range targets {
+			if ctx.Err() != nil {
+				return WorkerResult{}
+			}
+			target := &targets[index]
+			key := target.File.ProviderItemID
+			itemState := state.Items[key]
+			if itemState.Status == "completed" || itemState.Status == "skipped" {
+				continue
+			}
+			if applied[key] {
+				itemState = cloudTransferItemState{SourceID: key, CurrentID: key, TargetParentID: state.Directories[pathpkg.Dir(target.Relative)], TargetName: pathpkg.Base(target.Relative), Status: "completed"}
+				if download.TransferMode == models.MediaLibraryTransferCopy {
+					itemState.CurrentID = ""
+				}
+				state.Items[key] = itemState
+			} else if conflict := conflicts[key]; conflict.ID != "" {
+				switch policy {
+				case models.MediaLibraryConflictSkip:
+					state.Items[key] = cloudTransferItemState{SourceID: key, TargetParentID: conflict.ParentID, TargetName: conflict.Name, Status: "skipped"}
+				case models.MediaLibraryConflictOverwrite:
+					if conflict.IsDir {
+						return w.cloudFailure(task, cloudTransferError("cloud_transfer_target_type_conflict", false, nil))
+					}
+					if _, err := providerItemWithinRoot(ctx, driver, conflict.ID, download.TargetProviderRootID); err != nil {
+						return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, err))
+					}
+					if err := mutations.Recycle(ctx, conflict.ID); err != nil {
+						if _, statErr := driver.Stat(ctx, conflict.ID); statErr == nil {
+							return w.cloudFailure(task, err)
+						} else if code, _ := cloudpkg.ErrorInfo(statErr); code != cloudpkg.CodeNotFound {
+							return w.cloudFailure(task, err)
+						}
+					}
+				default:
+					return w.cloudFailure(task, cloudTransferError("transfer_conflict_failed", false, nil))
+				}
+			}
+			if state.Items[key].Status == "" || state.Items[key].Status == "copied" {
+				targetParentID := state.Directories[pathpkg.Dir(target.Relative)]
+				targetName := pathpkg.Base(target.Relative)
+				source, err := driver.Stat(ctx, key)
+				if err != nil || source.IsDir || !cloudManifestMatches(source, target.File) {
+					return w.cloudFailure(task, cloudTransferError("cloud_transfer_source_changed", false, err))
+				}
+				originalName := pathpkg.Base(strings.ReplaceAll(target.File.RelativePath, "\\", "/"))
+				if download.TransferMode == models.MediaLibraryTransferMove && source.ParentID == targetParentID && (source.Name == originalName || source.Name == targetName) {
+					// A previous attempt may have placed the stable item before rename or
+					// before its checkpoint commit. The already-validated target parent is
+					// the only destination outside the source root accepted here.
+				} else {
+					bounded, boundaryErr := providerItemWithinRoot(ctx, driver, key, sourceStorage.RootPath)
+					if boundaryErr != nil || bounded.Name != originalName || (target.File.ProviderParentID != "" && bounded.ParentID != target.File.ProviderParentID) {
+						return w.cloudFailure(task, cloudTransferError("cloud_transfer_source_changed", false, boundaryErr))
+					}
+					source = bounded
+				}
+				if download.TransferMode == models.MediaLibraryTransferMove {
+					err = w.executeCloudMove(ctx, mutations, driver, &task, &state, source, targetParentID, targetName)
+					if err == nil {
+						state.Items[key] = cloudTransferItemState{SourceID: key, CurrentID: key, TargetParentID: targetParentID, TargetName: targetName, Status: "completed"}
+					}
+				} else {
+					err = w.executeCloudCopy(ctx, mutations, driver, &task, &state, source, targetParentID, targetName)
+				}
+				if err != nil {
+					return w.cloudFailure(task, err)
+				}
+			}
+			processed := completedCloudItems(state)
+			if index < len(summary.Items) {
+				summary.Items[index].RelativePath = target.Relative
+				if state.Items[key].Status == "skipped" {
+					summary.Items[index].Result = "skipped"
+				} else {
+					summary.Items[index].Result = "completed"
+				}
+			}
+			encodedSummary, err = encodeTransferPlanSummary(summary)
+			if err != nil {
+				return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
+			}
+			if err := w.persistCloudState(&task, state, models.TransferTaskStatusMoving, processed, &encodedSummary); err != nil {
+				return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
+			}
+			processed64, total64 := int64(processed), int64(len(targets))
+			progress := float64(processed64) * 100 / float64(total64)
+			if err := runtime.Heartbeat(&progress, &processed64, &total64, nil, nil); err != nil {
+				return WorkerResult{ErrorCode: CodeQueueLeaseInvalid, ErrorMessage: "入库任务租约已失效"}
+			}
 		}
 	}
 
@@ -267,7 +340,7 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 				return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, err))
 			}
 		} else {
-			items, err := listCloudDirectory(ctx, driver, tempID)
+			items, err := listCloudTargetDirectory(ctx, driver, tempID)
 			if err != nil {
 				return w.cloudFailure(task, err)
 			}
@@ -313,9 +386,15 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 	if err != nil {
 		return w.cloudFailure(task, cloudTransferError("transfer_state_persist_failed", true, err))
 	}
-	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("transfer_mode", download.TransferMode).Int("files", len(targets)).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationPan115CloudTransfer.Message("完成"))
 	task.Phase = models.TransferTaskStatusCompleted
-	return w.finishCompletedTransfer(ctx, task)
+	result := w.finishCompletedTransfer(ctx, task)
+	timing := timings.Snapshot()
+	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("transfer_mode", download.TransferMode).Int("files", len(targets)).
+		Int64("duration_ms", time.Since(started).Milliseconds()).Int("provider_wait_calls", timing.ProviderWaitCalls).Int64("provider_wait_ms", timing.ProviderWait.Milliseconds()).
+		Int("provider_call_calls", timing.ProviderCallCalls).Int64("provider_call_ms", timing.ProviderCall.Milliseconds()).Int("target_list_calls", timing.TargetListCalls).
+		Int64("target_list_ms", timing.TargetList.Milliseconds()).Int("batch_mutation_calls", timing.BatchMutationCalls).Int64("batch_mutation_ms", timing.BatchMutation.Milliseconds()).
+		Int("db_checkpoint_calls", timing.DBCheckpointCalls).Int64("db_checkpoint_ms", timing.DBCheckpoint.Milliseconds()).Msg(serverlog.OperationPan115CloudTransfer.Message("完成"))
+	return result
 }
 
 func uniqueCloudTargetDirectories(targets []transferTargetItem) []string {
@@ -364,7 +443,84 @@ func decodeCloudTransferState(raw string) (cloudTransferState, error) {
 	if state.Version != cloudTransferStateVersion || state.Directories == nil || state.Items == nil {
 		return state, errors.New("cloud transfer state version is invalid")
 	}
+	if err := validateCloudBatchIntent(state.BatchIntent); err != nil {
+		return state, err
+	}
 	return state, nil
+}
+
+func validateCloudBatchIntent(intent *cloudTransferBatchIntent) error {
+	if intent == nil {
+		return nil
+	}
+	if intent.Version != cloudBatchIntentVersion || (intent.Operation != "move" && intent.Operation != "copy") || strings.TrimSpace(intent.TargetParentID) == "" || len(intent.Items) == 0 || len(intent.Items) > cloudpkg.MaxBatchMutationItems {
+		return errors.New("cloud transfer batch intent is invalid")
+	}
+	seen := make(map[string]struct{}, len(intent.Items))
+	for _, item := range intent.Items {
+		if strings.TrimSpace(item.SourceID) == "" || item.SourceID != strings.TrimSpace(item.SourceID) ||
+			strings.TrimSpace(item.SourceParentID) == "" || item.SourceParentID != strings.TrimSpace(item.SourceParentID) ||
+			strings.TrimSpace(item.TargetParentID) == "" || item.TargetParentID != strings.TrimSpace(item.TargetParentID) ||
+			(intent.Operation == "move" && item.TargetParentID != intent.TargetParentID) || item.SourceName == "" || item.TargetName == "" || item.Size < 0 ||
+			pathpkg.Base(item.SourceName) != item.SourceName || pathpkg.Base(item.TargetName) != item.TargetName ||
+			strings.ContainsAny(item.SourceID+item.SourceParentID+item.SourceName+item.TargetParentID+item.TargetName+item.SHA1, "\x00\r\n\\") || strings.TrimSpace(item.SHA1) != item.SHA1 {
+			return errors.New("cloud transfer batch item is invalid")
+		}
+		if _, duplicate := seen[item.SourceID]; duplicate {
+			return errors.New("cloud transfer batch item is duplicated")
+		}
+		seen[item.SourceID] = struct{}{}
+	}
+	return nil
+}
+
+func validateCloudBatchIntentTargets(intent *cloudTransferBatchIntent, state cloudTransferState, targets []transferTargetItem, operation string) error {
+	if err := validateCloudBatchIntent(intent); err != nil {
+		return err
+	}
+	if intent == nil || intent.Operation != operation {
+		return errors.New("cloud transfer batch operation does not match transfer mode")
+	}
+	expected := make(map[string]cloudTransferBatchItem, len(targets))
+	for _, target := range targets {
+		item := cloudTransferBatchItem{
+			SourceID:       target.File.ProviderItemID,
+			SourceParentID: target.File.ProviderParentID,
+			SourceName:     pathpkg.Base(strings.ReplaceAll(target.File.RelativePath, "\\", "/")),
+			TargetParentID: state.Directories[pathpkg.Dir(target.Relative)],
+			TargetName:     pathpkg.Base(target.Relative),
+			Size:           target.File.Size,
+			SHA1:           target.File.SHA1,
+		}
+		expected[item.SourceID] = item
+	}
+	for _, item := range intent.Items {
+		want, ok := expected[item.SourceID]
+		if !ok || item.SourceParentID != want.SourceParentID || item.SourceName != want.SourceName ||
+			item.TargetParentID != want.TargetParentID || item.TargetName != want.TargetName || item.Size != want.Size ||
+			!strings.EqualFold(strings.TrimSpace(item.SHA1), strings.TrimSpace(want.SHA1)) {
+			return errors.New("cloud transfer batch intent does not match the current manifest")
+		}
+	}
+	if operation == "copy" && intent.TargetParentID != state.TempDirectoryID {
+		return errors.New("cloud copy batch intent does not match the staging directory")
+	}
+	return nil
+}
+
+func downgradeCloudBatchIntent(state *cloudTransferState, targets []transferTargetItem, operation string) error {
+	if state == nil || state.BatchIntent == nil {
+		return nil
+	}
+	if err := validateCloudBatchIntentTargets(state.BatchIntent, *state, targets, operation); err != nil {
+		return err
+	}
+	// The singleton move/copy reconciler already converges stable moved IDs and
+	// task-private copy candidates. Clearing only the in-memory optional intent
+	// lets a capability rollback make progress; the next ordinary checkpoint is
+	// the durable downgrade. A crash before then still retains the old intent.
+	state.BatchIntent = nil
+	return nil
 }
 
 func encodeCloudTransferState(state cloudTransferState) (string, error) {
@@ -391,6 +547,12 @@ func (w *TransferWorker) persistCloudState(task *models.TransferTask, state clou
 	return nil
 }
 
+func (w *TransferWorker) persistCloudStateTimed(ctx context.Context, task *models.TransferTask, state cloudTransferState, phase string, processed int, summary *string) error {
+	started := time.Now()
+	defer func() { cloudpkg.RecordDBCheckpoint(ctx, time.Since(started)) }()
+	return w.persistCloudState(task, state, phase, processed, summary)
+}
+
 func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations cloudpkg.MutationDriver, task *models.TransferTask, state *cloudTransferState, relative string, validated map[string]struct{}) (string, error) {
 	relative = pathpkg.Clean(relative)
 	if relative == "." || relative == "" {
@@ -413,7 +575,7 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 		return "", err
 	}
 	name := pathpkg.Base(relative)
-	items, err := listCloudDirectory(ctx, mutations, parentID)
+	items, err := listCloudTargetDirectory(ctx, mutations, parentID)
 	if err != nil {
 		return "", err
 	}
@@ -430,7 +592,7 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 		}
 		directory, err = mutations.CreateDirectory(ctx, parentID, name)
 		if err != nil {
-			items, listErr := listCloudDirectory(ctx, mutations, parentID)
+			items, listErr := listCloudTargetDirectory(ctx, mutations, parentID)
 			matches = namedCloudItems(items, name)
 			if listErr != nil || len(matches) != 1 || !matches[0].IsDir {
 				return "", err
@@ -498,7 +660,7 @@ func (w *TransferWorker) cloudConflicts(ctx context.Context, driver cloudpkg.Dri
 		items, ok := listings[parentID]
 		if !ok {
 			var err error
-			items, err = listCloudDirectory(ctx, driver, parentID)
+			items, err = listCloudTargetDirectory(ctx, driver, parentID)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -552,7 +714,7 @@ func (w *TransferWorker) renameCloudConflictGroups(ctx context.Context, driver c
 				items, ok := listings[parentID]
 				if !ok {
 					var err error
-					items, err = listCloudDirectory(ctx, driver, parentID)
+					items, err = listCloudTargetDirectory(ctx, driver, parentID)
 					if err != nil {
 						return err
 					}
@@ -593,6 +755,640 @@ func cloudManifestMatches(item cloudpkg.Item, file downloadpkg.File) bool {
 	return true
 }
 
+func recycleCloudConflictBatches(ctx context.Context, mutations cloudpkg.BatchMutationDriver, driver cloudpkg.Driver, targetRootID string, conflicts map[string]cloudpkg.Item) error {
+	byParent := make(map[string]map[string]cloudpkg.Item)
+	for _, conflict := range conflicts {
+		if conflict.ID == "" {
+			continue
+		}
+		if conflict.IsDir || strings.TrimSpace(conflict.ParentID) == "" {
+			return cloudTransferError("cloud_transfer_target_type_conflict", false, nil)
+		}
+		items := byParent[conflict.ParentID]
+		if items == nil {
+			items = make(map[string]cloudpkg.Item)
+			byParent[conflict.ParentID] = items
+		}
+		if previous, duplicate := items[conflict.ID]; duplicate && (previous.Name != conflict.Name || previous.Size != conflict.Size || !strings.EqualFold(previous.SHA1, conflict.SHA1)) {
+			return cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud conflict identity is inconsistent"))
+		}
+		items[conflict.ID] = conflict
+	}
+	parentIDs := make([]string, 0, len(byParent))
+	for parentID := range byParent {
+		parentIDs = append(parentIDs, parentID)
+	}
+	sort.Strings(parentIDs)
+
+	proof := newProviderBoundaryProof(driver)
+	validated := make(map[string][]string, len(parentIDs))
+	for _, parentID := range parentIDs {
+		parent, err := proof.within(ctx, parentID, targetRootID)
+		if err != nil || !parent.IsDir {
+			return cloudTransferError("cloud_transfer_boundary_invalid", false, err)
+		}
+		listed, err := listCloudTargetDirectory(ctx, driver, parentID)
+		if err != nil {
+			return err
+		}
+		current := make(map[string]cloudpkg.Item, len(listed))
+		for _, item := range listed {
+			if _, duplicate := current[item.ID]; duplicate {
+				return cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud conflict listing contains duplicate identity"))
+			}
+			current[item.ID] = item
+		}
+		ids := make([]string, 0, len(byParent[parentID]))
+		for itemID, expected := range byParent[parentID] {
+			item, exists := current[itemID]
+			if !exists {
+				continue
+			}
+			if item.IsDir || item.ParentID != parentID || item.Name != expected.Name || item.Size != expected.Size ||
+				(expected.SHA1 != "" && !strings.EqualFold(item.SHA1, expected.SHA1)) {
+				return cloudTransferError(cloudpkg.CodeConflict, false, errors.New("cloud conflict identity changed"))
+			}
+			ids = append(ids, itemID)
+		}
+		sort.Strings(ids)
+		validated[parentID] = ids
+	}
+
+	for _, parentID := range parentIDs {
+		ids := validated[parentID]
+		for start := 0; start < len(ids); start += cloudpkg.MaxBatchMutationItems {
+			end := start + cloudpkg.MaxBatchMutationItems
+			if end > len(ids) {
+				end = len(ids)
+			}
+			chunk := ids[start:end]
+			callErr := executeCloudBatchMutation(ctx, func() error { return mutations.RecycleMany(ctx, chunk) })
+			after, reconcileErr := listCloudTargetDirectory(ctx, driver, parentID)
+			if reconcileErr != nil {
+				if callErr != nil {
+					return callErr
+				}
+				return reconcileErr
+			}
+			remaining := make(map[string]struct{}, len(after))
+			for _, item := range after {
+				if _, duplicate := remaining[item.ID]; duplicate {
+					return cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud conflict reconciliation contains duplicate identity"))
+				}
+				remaining[item.ID] = struct{}{}
+			}
+			for _, itemID := range chunk {
+				if _, exists := remaining[itemID]; exists {
+					if callErr != nil {
+						return callErr
+					}
+					return cloudTransferError(cloudpkg.CodeMutationUnknown, true, errors.New("cloud conflict batch result is incomplete"))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+type providerBoundaryProof struct {
+	driver cloudpkg.Driver
+	items  map[string]cloudpkg.Item
+}
+
+func newProviderBoundaryProof(driver cloudpkg.Driver) *providerBoundaryProof {
+	return &providerBoundaryProof{driver: driver, items: map[string]cloudpkg.Item{}}
+}
+
+func (proof *providerBoundaryProof) stat(ctx context.Context, itemID string) (cloudpkg.Item, error) {
+	if item, ok := proof.items[itemID]; ok {
+		return item, nil
+	}
+	item, err := proof.driver.Stat(ctx, itemID)
+	if err != nil {
+		return cloudpkg.Item{}, err
+	}
+	if strings.TrimSpace(item.ID) != itemID {
+		return cloudpkg.Item{}, errors.New("provider returned a mismatched item identity")
+	}
+	proof.items[itemID] = item
+	return item, nil
+}
+
+func (proof *providerBoundaryProof) within(ctx context.Context, itemID, rootID string) (cloudpkg.Item, error) {
+	itemID, rootID = strings.TrimSpace(itemID), strings.TrimSpace(rootID)
+	if itemID == "" || rootID == "" {
+		return cloudpkg.Item{}, errors.New("provider item boundary is incomplete")
+	}
+	current := itemID
+	visited := make(map[string]struct{}, maxCloudBoundaryDepth)
+	var initial cloudpkg.Item
+	for depth := 0; depth < maxCloudBoundaryDepth; depth++ {
+		item, err := proof.stat(ctx, current)
+		if err != nil {
+			return cloudpkg.Item{}, err
+		}
+		if depth == 0 {
+			initial = item
+		}
+		if current == rootID {
+			return initial, nil
+		}
+		if _, exists := visited[current]; exists {
+			return cloudpkg.Item{}, errors.New("provider item parent cycle")
+		}
+		visited[current] = struct{}{}
+		current = strings.TrimSpace(item.ParentID)
+		if current == "" || (current == "0" && rootID != "0") {
+			return cloudpkg.Item{}, errors.New("provider item is outside the configured root")
+		}
+	}
+	return cloudpkg.Item{}, errors.New("provider item parent depth exceeded")
+}
+
+func (w *TransferWorker) prestageCloudCopyBatches(ctx context.Context, mutations cloudpkg.BatchMutationDriver, driver cloudpkg.Driver, task *models.TransferTask, state *cloudTransferState, download models.DownloadTask, sourceStorage models.Storage, targets []transferTargetItem, conflicts map[string]cloudpkg.Item, applied map[string]bool, policy string) error {
+	if state.BatchIntent != nil {
+		if err := validateCloudBatchIntentTargets(state.BatchIntent, *state, targets, "copy"); err != nil {
+			return cloudTransferError("cloud_transfer_state_invalid", false, err)
+		}
+		remaining, err := w.reconcileCloudCopyIntent(ctx, driver, state)
+		if err != nil {
+			return err
+		}
+		if len(remaining) > 0 {
+			state.BatchIntent.Items = remaining
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+		} else {
+			state.BatchIntent = nil
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+		}
+	}
+	if state.TempDirectoryID == "" {
+		name := ".ohmycine-import-" + strings.ReplaceAll(task.ID, "-", "")
+		if len(name) > 48 {
+			name = name[:48]
+		}
+		items, err := listCloudTargetDirectory(ctx, driver, state.Directories["."])
+		if err != nil {
+			return err
+		}
+		matches := namedCloudItems(items, name)
+		if len(matches) > 1 || (len(matches) == 1 && !matches[0].IsDir) {
+			return cloudTransferError(cloudpkg.CodeMutationUnknown, false, errors.New("copy staging directory is ambiguous"))
+		}
+		if len(matches) == 1 {
+			state.TempDirectoryID = matches[0].ID
+		} else {
+			created, createErr := mutations.CreateDirectory(ctx, state.Directories["."], name)
+			if createErr != nil {
+				items, listErr := listCloudTargetDirectory(ctx, driver, state.Directories["."])
+				matches = namedCloudItems(items, name)
+				if listErr != nil || len(matches) != 1 || !matches[0].IsDir {
+					return createErr
+				}
+				created = matches[0]
+			}
+			state.TempDirectoryID = created.ID
+		}
+		if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
+		}
+	}
+	if _, err := providerItemWithinRoot(ctx, driver, state.TempDirectoryID, state.Directories["."]); err != nil {
+		return cloudTransferError("cloud_transfer_boundary_invalid", false, err)
+	}
+
+	pending := make([]cloudTransferBatchItem, 0, len(targets))
+	for _, target := range targets {
+		key := target.File.ProviderItemID
+		if saved := state.Items[key]; saved.CurrentID != "" || saved.Status == "completed" || saved.Status == "skipped" || applied[key] {
+			continue
+		}
+		if conflict := conflicts[key]; conflict.ID != "" && policy == models.MediaLibraryConflictSkip {
+			continue
+		}
+		pending = append(pending, cloudTransferBatchItem{
+			SourceID: key, SourceParentID: target.File.ProviderParentID,
+			SourceName:     pathpkg.Base(strings.ReplaceAll(target.File.RelativePath, "\\", "/")),
+			TargetParentID: state.Directories[pathpkg.Dir(target.Relative)], TargetName: pathpkg.Base(target.Relative),
+			Size: target.File.Size, SHA1: target.File.SHA1,
+		})
+	}
+	if len(pending) < 2 {
+		return nil
+	}
+	// Copy result IDs are provider-created, so reconciliation uses the stable
+	// name+size+SHA1 tuple. Ambiguous tuples retain the singleton fail-closed
+	// path instead of entering a batch that cannot be safely attributed.
+	counts := make(map[string]int, len(pending))
+	nameCounts := make(map[string]int, len(pending))
+	for _, item := range pending {
+		counts[cloudCopyBatchKey(item)]++
+		nameCounts[strings.ToLower(item.SourceName)]++
+	}
+	batchable := pending[:0]
+	for _, item := range pending {
+		// Every copy in one provider request lands in the same task-private
+		// directory under its original name. Even different content with the same
+		// case-folded name can collide there, so keep those items on the existing
+		// singleton fail-closed path.
+		if counts[cloudCopyBatchKey(item)] == 1 && nameCounts[strings.ToLower(item.SourceName)] == 1 {
+			batchable = append(batchable, item)
+		}
+	}
+	if len(batchable) < 2 {
+		return nil
+	}
+	proof := newProviderBoundaryProof(driver)
+	packageRootID := strings.TrimSpace(download.ProviderOutputID)
+	packageRoot, err := proof.within(ctx, packageRootID, sourceStorage.RootPath)
+	if err != nil || !packageRoot.IsDir {
+		return cloudTransferError("cloud_transfer_source_changed", false, err)
+	}
+	if err := preflightCloudCopySources(ctx, driver, proof, packageRootID, batchable); err != nil {
+		return err
+	}
+	for start := 0; start < len(batchable); start += cloudpkg.MaxBatchMutationItems {
+		end := start + cloudpkg.MaxBatchMutationItems
+		if end > len(batchable) {
+			end = len(batchable)
+		}
+		chunk := append([]cloudTransferBatchItem(nil), batchable[start:end]...)
+		state.BatchIntent = &cloudTransferBatchIntent{Version: cloudBatchIntentVersion, Operation: "copy", TargetParentID: state.TempDirectoryID, Items: chunk}
+		if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
+		}
+		ids := make([]string, 0, len(chunk))
+		for _, item := range chunk {
+			ids = append(ids, item.SourceID)
+		}
+		callErr := executeCloudBatchMutation(ctx, func() error { return mutations.CopyMany(ctx, ids, state.TempDirectoryID) })
+		remaining, reconcileErr := w.reconcileCloudCopyIntent(ctx, driver, state)
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		if len(remaining) > 0 {
+			state.BatchIntent.Items = remaining
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+			if callErr != nil {
+				return callErr
+			}
+			return cloudTransferError(cloudpkg.CodeMutationUnknown, true, errors.New("cloud copy batch result is incomplete"))
+		}
+		state.BatchIntent = nil
+		if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+			return cloudTransferError("transfer_state_persist_failed", true, err)
+		}
+		_ = callErr
+	}
+	return nil
+}
+
+func cloudCopyBatchKey(item cloudTransferBatchItem) string {
+	return item.SourceName + "\x00" + strconv.FormatInt(item.Size, 10) + "\x00" + strings.ToLower(strings.TrimSpace(item.SHA1))
+}
+
+func preflightCloudCopySources(ctx context.Context, driver cloudpkg.Driver, proof *providerBoundaryProof, packageRootID string, pending []cloudTransferBatchItem) error {
+	byParent := make(map[string][]cloudTransferBatchItem)
+	for _, item := range pending {
+		if strings.TrimSpace(item.SourceParentID) == "" {
+			return cloudTransferError("cloud_transfer_manifest_invalid", false, errors.New("cloud source parent identity is missing"))
+		}
+		byParent[item.SourceParentID] = append(byParent[item.SourceParentID], item)
+	}
+	for parentID, expectedItems := range byParent {
+		parent, err := proof.within(ctx, parentID, packageRootID)
+		if err != nil || !parent.IsDir {
+			return cloudTransferError("cloud_transfer_source_changed", false, err)
+		}
+		items, err := listCloudDirectory(ctx, driver, parentID)
+		if err != nil {
+			return err
+		}
+		listed := make(map[string]cloudpkg.Item, len(items))
+		for _, item := range items {
+			if _, duplicate := listed[item.ID]; duplicate {
+				return cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud source listing contains duplicate identity"))
+			}
+			listed[item.ID] = item
+		}
+		for _, expected := range expectedItems {
+			item, exists := listed[expected.SourceID]
+			if !exists || item.ParentID != parentID || item.Name != expected.SourceName || item.IsDir || item.Size != expected.Size || (expected.SHA1 != "" && !strings.EqualFold(item.SHA1, expected.SHA1)) {
+				return cloudTransferError("cloud_transfer_source_changed", false, errors.New("cloud source identity changed"))
+			}
+		}
+	}
+	return nil
+}
+
+func (w *TransferWorker) reconcileCloudCopyIntent(ctx context.Context, driver cloudpkg.Driver, state *cloudTransferState) ([]cloudTransferBatchItem, error) {
+	intent := state.BatchIntent
+	if err := validateCloudBatchIntent(intent); err != nil || intent == nil || intent.Operation != "copy" {
+		return nil, cloudTransferError("cloud_transfer_state_invalid", false, err)
+	}
+	items, err := listCloudTargetDirectory(ctx, driver, intent.TargetParentID)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) == "" || item.ParentID != intent.TargetParentID {
+			return nil, cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud copy staging listing is invalid"))
+		}
+		if _, duplicate := seen[item.ID]; duplicate {
+			return nil, cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud copy staging listing contains duplicate identity"))
+		}
+		seen[item.ID] = struct{}{}
+	}
+	remaining := make([]cloudTransferBatchItem, 0, len(intent.Items))
+	claimed := make(map[string]struct{}, len(intent.Items))
+	for _, expected := range intent.Items {
+		matches := make([]cloudpkg.Item, 0, 1)
+		for _, item := range items {
+			if _, used := claimed[item.ID]; used || item.IsDir || item.Name != expected.SourceName || item.Size != expected.Size || (expected.SHA1 != "" && !strings.EqualFold(item.SHA1, expected.SHA1)) {
+				continue
+			}
+			matches = append(matches, item)
+		}
+		if len(matches) == 0 {
+			remaining = append(remaining, expected)
+			continue
+		}
+		if len(matches) != 1 {
+			return nil, cloudTransferError(cloudpkg.CodeMutationUnknown, false, errors.New("copied item identity is ambiguous"))
+		}
+		copyItem := matches[0]
+		claimed[copyItem.ID] = struct{}{}
+		state.Items[expected.SourceID] = cloudTransferItemState{SourceID: expected.SourceID, CurrentID: copyItem.ID, TargetParentID: expected.TargetParentID, TargetName: expected.TargetName, Status: "copied"}
+	}
+	return remaining, nil
+}
+
+func (w *TransferWorker) executeCloudMoveBatches(ctx context.Context, mutations cloudpkg.BatchMutationDriver, driver cloudpkg.Driver, task *models.TransferTask, state *cloudTransferState, download models.DownloadTask, sourceStorage models.Storage, targets []transferTargetItem, conflicts map[string]cloudpkg.Item, applied map[string]bool, policy string) error {
+	if state.BatchIntent != nil {
+		if err := validateCloudBatchIntentTargets(state.BatchIntent, *state, targets, "move"); err != nil {
+			return cloudTransferError("cloud_transfer_state_invalid", false, err)
+		}
+	}
+	for _, target := range targets {
+		key := target.File.ProviderItemID
+		if saved := state.Items[key]; saved.Status == "completed" || saved.Status == "skipped" {
+			continue
+		}
+		if applied[key] {
+			state.Items[key] = cloudTransferItemState{SourceID: key, CurrentID: key, TargetParentID: state.Directories[pathpkg.Dir(target.Relative)], TargetName: pathpkg.Base(target.Relative), Status: "completed"}
+			continue
+		}
+		conflict := conflicts[key]
+		if conflict.ID == "" {
+			continue
+		}
+		switch policy {
+		case models.MediaLibraryConflictSkip:
+			state.Items[key] = cloudTransferItemState{SourceID: key, TargetParentID: conflict.ParentID, TargetName: conflict.Name, Status: "skipped"}
+		case models.MediaLibraryConflictOverwrite:
+			if conflict.IsDir {
+				return cloudTransferError("cloud_transfer_target_type_conflict", false, nil)
+			}
+			if _, err := providerItemWithinRoot(ctx, driver, conflict.ID, download.TargetProviderRootID); err != nil {
+				return cloudTransferError("cloud_transfer_boundary_invalid", false, err)
+			}
+			if err := mutations.Recycle(ctx, conflict.ID); err != nil {
+				if _, statErr := driver.Stat(ctx, conflict.ID); statErr == nil {
+					return err
+				} else if code, _ := cloudpkg.ErrorInfo(statErr); code != cloudpkg.CodeNotFound {
+					return err
+				}
+			}
+		default:
+			return cloudTransferError("transfer_conflict_failed", false, nil)
+		}
+	}
+
+	if state.BatchIntent != nil {
+		remaining, err := w.reconcileCloudMoveIntent(ctx, mutations, driver, task, state)
+		if err != nil {
+			return err
+		}
+		if len(remaining) > 0 {
+			state.BatchIntent.Items = remaining
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+		} else {
+			state.BatchIntent = nil
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+		}
+	}
+
+	pending := make([]cloudTransferBatchItem, 0, len(targets))
+	for _, target := range targets {
+		key := target.File.ProviderItemID
+		if saved := state.Items[key]; saved.Status == "completed" || saved.Status == "skipped" {
+			continue
+		}
+		targetParentID := state.Directories[pathpkg.Dir(target.Relative)]
+		pending = append(pending, cloudTransferBatchItem{
+			SourceID: key, SourceParentID: target.File.ProviderParentID,
+			SourceName:     pathpkg.Base(strings.ReplaceAll(target.File.RelativePath, "\\", "/")),
+			TargetParentID: targetParentID, TargetName: pathpkg.Base(target.Relative), Size: target.File.Size, SHA1: target.File.SHA1,
+		})
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	proof := newProviderBoundaryProof(driver)
+	packageRootID := strings.TrimSpace(download.ProviderOutputID)
+	packageRoot, err := proof.within(ctx, packageRootID, sourceStorage.RootPath)
+	if err != nil || !packageRoot.IsDir {
+		return cloudTransferError("cloud_transfer_source_changed", false, err)
+	}
+	sources, err := preflightCloudMoveSources(ctx, driver, proof, packageRootID, pending)
+	if err != nil {
+		return err
+	}
+
+	groups := make(map[string][]cloudTransferBatchItem)
+	for _, item := range pending {
+		targetParentID := item.TargetParentID
+		if targetParentID == "" {
+			return cloudTransferError("cloud_transfer_state_invalid", false, nil)
+		}
+		if sources[item.SourceID].ParentID == targetParentID {
+			intent := &cloudTransferBatchIntent{Version: cloudBatchIntentVersion, Operation: "move", TargetParentID: targetParentID, Items: []cloudTransferBatchItem{item}}
+			state.BatchIntent = intent
+			if _, err := w.reconcileCloudMoveIntent(ctx, mutations, driver, task, state); err != nil {
+				return err
+			}
+			state.BatchIntent = nil
+			continue
+		}
+		groups[targetParentID] = append(groups[targetParentID], item)
+	}
+	parentIDs := make([]string, 0, len(groups))
+	for parentID := range groups {
+		parentIDs = append(parentIDs, parentID)
+	}
+	sort.Strings(parentIDs)
+	for _, parentID := range parentIDs {
+		items := groups[parentID]
+		for start := 0; start < len(items); start += cloudpkg.MaxBatchMutationItems {
+			end := start + cloudpkg.MaxBatchMutationItems
+			if end > len(items) {
+				end = len(items)
+			}
+			chunk := append([]cloudTransferBatchItem(nil), items[start:end]...)
+			state.BatchIntent = &cloudTransferBatchIntent{Version: cloudBatchIntentVersion, Operation: "move", TargetParentID: parentID, Items: chunk}
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+			ids := make([]string, 0, len(chunk))
+			for _, item := range chunk {
+				ids = append(ids, item.SourceID)
+			}
+			callErr := executeCloudBatchMutation(ctx, func() error { return mutations.MoveMany(ctx, ids, parentID) })
+			remaining, reconcileErr := w.reconcileCloudMoveIntent(ctx, mutations, driver, task, state)
+			if reconcileErr != nil {
+				return reconcileErr
+			}
+			if len(remaining) > 0 {
+				state.BatchIntent.Items = remaining
+				if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+					return cloudTransferError("transfer_state_persist_failed", true, err)
+				}
+				if callErr != nil {
+					return callErr
+				}
+				return cloudTransferError(cloudpkg.CodeMutationUnknown, true, errors.New("cloud move batch result is incomplete"))
+			}
+			state.BatchIntent = nil
+			if err := w.persistCloudStateTimed(ctx, task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
+				return cloudTransferError("transfer_state_persist_failed", true, err)
+			}
+			// An error after every identity is observed at the exact destination is
+			// an ambiguous provider acknowledgement, not a failed transfer.
+			_ = callErr
+		}
+	}
+	return nil
+}
+
+func preflightCloudMoveSources(ctx context.Context, driver cloudpkg.Driver, proof *providerBoundaryProof, packageRootID string, pending []cloudTransferBatchItem) (map[string]cloudpkg.Item, error) {
+	byParent := make(map[string][]cloudTransferBatchItem)
+	for _, item := range pending {
+		if strings.TrimSpace(item.SourceParentID) == "" {
+			return nil, cloudTransferError("cloud_transfer_manifest_invalid", false, errors.New("cloud source parent identity is missing"))
+		}
+		byParent[item.SourceParentID] = append(byParent[item.SourceParentID], item)
+	}
+	parents := make([]string, 0, len(byParent))
+	for parentID := range byParent {
+		parents = append(parents, parentID)
+	}
+	sort.Strings(parents)
+	result := make(map[string]cloudpkg.Item, len(pending))
+	for _, parentID := range parents {
+		parent, err := proof.within(ctx, parentID, packageRootID)
+		if err != nil || !parent.IsDir {
+			return nil, cloudTransferError("cloud_transfer_source_changed", false, err)
+		}
+		items, err := listCloudDirectory(ctx, driver, parentID)
+		if err != nil {
+			return nil, err
+		}
+		listed := make(map[string]cloudpkg.Item, len(items))
+		for _, item := range items {
+			if _, duplicate := listed[item.ID]; duplicate {
+				return nil, cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud source listing contains duplicate identity"))
+			}
+			listed[item.ID] = item
+		}
+		for _, expected := range byParent[parentID] {
+			item, ok := listed[expected.SourceID]
+			if !ok {
+				// Legacy checkpoints may have moved the stable identity before the
+				// batch-intent format existed. Accept only an exact target parent.
+				current, statErr := driver.Stat(ctx, expected.SourceID)
+				if statErr != nil {
+					return nil, cloudTransferError("cloud_transfer_source_changed", false, statErr)
+				}
+				if current.ParentID != expected.TargetParentID {
+					return nil, cloudTransferError("cloud_transfer_source_changed", false, errors.New("cloud source left the proven package boundary"))
+				}
+				item = current
+			}
+			if item.ID != expected.SourceID || item.IsDir || item.Size != expected.Size ||
+				(expected.SHA1 != "" && !strings.EqualFold(item.SHA1, expected.SHA1)) ||
+				(item.ParentID == parentID && item.Name != expected.SourceName) {
+				return nil, cloudTransferError("cloud_transfer_source_changed", false, errors.New("cloud source identity changed"))
+			}
+			result[expected.SourceID] = item
+		}
+	}
+	return result, nil
+}
+
+func listCloudTargetDirectory(ctx context.Context, driver cloudpkg.Driver, parentID string) ([]cloudpkg.Item, error) {
+	started := time.Now()
+	defer func() { cloudpkg.RecordTargetList(ctx, time.Since(started)) }()
+	return listCloudDirectory(ctx, driver, parentID)
+}
+
+func executeCloudBatchMutation(ctx context.Context, call func() error) error {
+	started := time.Now()
+	defer func() { cloudpkg.RecordBatchMutation(ctx, time.Since(started)) }()
+	return call()
+}
+
+func (w *TransferWorker) reconcileCloudMoveIntent(ctx context.Context, mutations cloudpkg.MutationDriver, driver cloudpkg.Driver, task *models.TransferTask, state *cloudTransferState) ([]cloudTransferBatchItem, error) {
+	intent := state.BatchIntent
+	if err := validateCloudBatchIntent(intent); err != nil || intent == nil || intent.Operation != "move" {
+		return nil, cloudTransferError("cloud_transfer_state_invalid", false, err)
+	}
+	items, err := listCloudTargetDirectory(ctx, driver, intent.TargetParentID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]cloudpkg.Item, len(items))
+	for _, item := range items {
+		if _, duplicate := byID[item.ID]; duplicate {
+			return nil, cloudTransferError(cloudpkg.CodeResponseInvalid, false, errors.New("cloud target listing contains duplicate identity"))
+		}
+		byID[item.ID] = item
+	}
+	remaining := make([]cloudTransferBatchItem, 0, len(intent.Items))
+	for _, expected := range intent.Items {
+		item, ok := byID[expected.SourceID]
+		if !ok {
+			remaining = append(remaining, expected)
+			continue
+		}
+		if item.IsDir || item.ParentID != intent.TargetParentID || item.Size != expected.Size || (expected.SHA1 != "" && !strings.EqualFold(item.SHA1, expected.SHA1)) {
+			return nil, cloudTransferError("cloud_transfer_source_changed", false, errors.New("cloud move result identity changed"))
+		}
+		if item.Name != expected.TargetName {
+			if err := mutations.Rename(ctx, item.ID, expected.TargetName); err != nil {
+				verified, statErr := driver.Stat(ctx, item.ID)
+				if statErr != nil || verified.ID != expected.SourceID || verified.IsDir || verified.ParentID != intent.TargetParentID || verified.Name != expected.TargetName || verified.Size != expected.Size ||
+					(expected.SHA1 != "" && !strings.EqualFold(verified.SHA1, expected.SHA1)) {
+					return nil, err
+				}
+			}
+		}
+		state.Items[expected.SourceID] = cloudTransferItemState{SourceID: expected.SourceID, CurrentID: expected.SourceID, TargetParentID: intent.TargetParentID, TargetName: expected.TargetName, Status: "completed"}
+	}
+	return remaining, nil
+}
+
 func (w *TransferWorker) executeCloudMove(ctx context.Context, mutations cloudpkg.MutationDriver, driver cloudpkg.Driver, task *models.TransferTask, state *cloudTransferState, source cloudpkg.Item, targetParentID, targetName string) error {
 	if source.ParentID != targetParentID {
 		if err := mutations.Move(ctx, source.ID, targetParentID); err != nil {
@@ -629,7 +1425,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 		if len(name) > 48 {
 			name = name[:48]
 		}
-		items, err := listCloudDirectory(ctx, driver, state.Directories["."])
+		items, err := listCloudTargetDirectory(ctx, driver, state.Directories["."])
 		if err != nil {
 			return err
 		}
@@ -642,7 +1438,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 		} else {
 			created, err := mutations.CreateDirectory(ctx, state.Directories["."], name)
 			if err != nil {
-				items, listErr := listCloudDirectory(ctx, driver, state.Directories["."])
+				items, listErr := listCloudTargetDirectory(ctx, driver, state.Directories["."])
 				matches = namedCloudItems(items, name)
 				if listErr != nil || len(matches) != 1 || !matches[0].IsDir {
 					return err
@@ -738,7 +1534,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 }
 
 func findCloudCopyCandidate(ctx context.Context, driver cloudpkg.Driver, parentID string, source cloudpkg.Item) (cloudpkg.Item, int, error) {
-	items, err := listCloudDirectory(ctx, driver, parentID)
+	items, err := listCloudTargetDirectory(ctx, driver, parentID)
 	if err != nil {
 		return cloudpkg.Item{}, 0, err
 	}

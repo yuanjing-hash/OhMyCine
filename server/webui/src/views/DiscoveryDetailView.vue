@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
-import { coverageStatusLabel, discoveryCoveragePath, discoveryDetailPath, discoveryDetailRoute, discoveryResourceRoute, providerLabel, type DiscoveryDetail, type DiscoveryMediaType, type DiscoveryProviderCode, type DiscoveryWork, type MediaCoverage } from '@/discovery'
+import { coverageStatusLabel, discoveryCoveragePath, discoveryDetailPath, discoveryDetailRoute, discoveryResourceRoute, normalizeMediaCoverage, providerLabel, type DiscoveryDetail, type DiscoveryMediaType, type DiscoveryProviderCode, type DiscoveryWork, type MediaCoverage } from '@/discovery'
 import { notify } from '@/toast'
 import FollowEditorDialog from '@/components/FollowEditorDialog.vue'
 import type { FollowSummary } from '@/follows'
@@ -46,7 +46,7 @@ async function loadCoverage() {
   if (!work?.tmdb_id) return
   coverageLoading.value = true
   coverageError.value = ''
-  try { coverage.value = await api<MediaCoverage>(discoveryCoveragePath(work.media_type, work.tmdb_id)) }
+  try { coverage.value = normalizeMediaCoverage(await api<unknown>(discoveryCoveragePath(work.media_type, work.tmdb_id))) }
   catch (reason) { coverageError.value = reason instanceof Error ? reason.message : '媒体库覆盖率加载失败' }
   finally { coverageLoading.value = false }
 }
@@ -99,7 +99,7 @@ watch(() => route.fullPath, load)
             <div class="grid gap-2 sm:grid-cols-5"><div v-for="item in [['总集数', coverage.tv.counts.total], ['已入库', coverage.tv.counts.present], ['已播缺失', coverage.tv.counts.missing], ['未播', coverage.tv.counts.future], ['未知', coverage.tv.counts.unknown]]" :key="String(item[0])" class="semantic-inset p-3"><span class="text-subtle block text-xs">{{ item[0] }}</span><strong class="mt-1 block text-lg">{{ item[1] }}</strong></div></div>
             <section v-for="season in coverage.tv.seasons" :key="season.season_number" class="semantic-list-item overflow-hidden">
               <button class="flex w-full items-center gap-4 p-4 text-left" :aria-expanded="expandedSeasons.includes(season.season_number)" @click="toggleSeason(season.season_number)"><img v-if="season.poster_url" :src="season.poster_url" :alt="`${season.name} 海报`" class="h-20 w-14 shrink-0 rounded object-cover" loading="lazy" /><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><strong>{{ season.name || `第 ${season.season_number} 季` }}</strong><span v-if="season.special" class="status-chip">特别篇 · 不计普通缺集</span><span :class="season.status === 'present' ? 'status-chip status-chip--ready' : season.status === 'missing' || season.status === 'partial' ? 'status-chip status-chip--warning' : 'status-chip'">{{ coverageStatusLabel(season.status) }}</span></div><p class="mb-0 mt-2 text-xs text-muted">共 {{ season.counts.total }} · 已入库 {{ season.counts.present }} · 已播缺失 {{ season.counts.missing }} · 未播 {{ season.counts.future }} · 未知 {{ season.counts.unknown }}</p></div><span aria-hidden="true">{{ expandedSeasons.includes(season.season_number) ? '收起' : '展开' }}</span></button>
-              <div v-if="expandedSeasons.includes(season.season_number)" class="border-t border-[var(--border)] p-4"><div v-if="season.episodes.length" class="grid gap-2 md:grid-cols-2"><div v-for="episode in season.episodes" :key="episode.episode_number" class="semantic-inset flex items-start justify-between gap-3 p-3"><div><strong>E{{ String(episode.episode_number).padStart(2, '0') }} · {{ episode.name || '名称未知' }}</strong><p class="mb-0 mt-1 text-xs text-muted">{{ episode.air_date || '播出日期未知' }}<template v-if="episode.library_ids.length"> · {{ libraryNames(episode.library_ids) }}</template></p></div><span :class="episode.status === 'present' ? 'status-chip status-chip--ready' : episode.status === 'missing' ? 'status-chip status-chip--warning' : 'status-chip'">{{ coverageStatusLabel(episode.status) }}</span></div></div><p v-else class="mb-0 text-sm text-muted">该季 TMDB 集信息暂时不可用，因此不会推断缺集。</p></div>
+              <div v-if="expandedSeasons.includes(season.season_number)" class="border-t border-[var(--border)] p-4"><div v-if="season.episodes.length" class="grid gap-2 md:grid-cols-2"><div v-for="episode in season.episodes" :key="episode.episode_number" class="semantic-inset flex items-start justify-between gap-3 p-3"><div><strong>E{{ String(episode.episode_number).padStart(2, '0') }} · {{ episode.name || '名称未知' }}</strong><p class="mb-0 mt-1 text-xs text-muted">{{ episode.air_date || '播出日期未知' }}<template v-if="episode.library_ids.length"> · {{ libraryNames(episode.library_ids) || '媒体库信息暂不可用' }}</template></p></div><span :class="episode.status === 'present' ? 'status-chip status-chip--ready' : episode.status === 'missing' ? 'status-chip status-chip--warning' : 'status-chip'">{{ coverageStatusLabel(episode.status) }}</span></div></div><p v-else class="mb-0 text-sm text-muted">该季暂无可显示的集信息，因此不会推断缺集。</p></div>
             </section>
           </div>
         </template>

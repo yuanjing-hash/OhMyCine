@@ -198,3 +198,14 @@ func TestDiscoveryMediaSearchProjectsStableTMDBIdentity(t *testing.T) {
 		t.Fatalf("permission err=%v", err)
 	}
 }
+
+func TestDiscoveryImageAllowsMediaLibraryReadersForCatalogArtwork(t *testing.T) {
+	service := NewDiscoveryServiceWithProviders(nil, nil, zerolog.Nop())
+	actor := Actor{Permissions: map[string]struct{}{authz.PermissionMediaLibrariesRead: {}}}
+	if _, _, err := service.Image(context.Background(), actor, "tmdb", "!"); ErrorCode(err) == CodePermissionDenied {
+		t.Fatalf("media library reader was denied catalog artwork: %v", err)
+	}
+	if _, _, err := service.Image(context.Background(), Actor{}, "tmdb", "!"); ErrorCode(err) != CodePermissionDenied {
+		t.Fatalf("permission error=%v", err)
+	}
+}

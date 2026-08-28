@@ -77,6 +77,14 @@ func TestSignedProxyUsesPublicOriginValidatesSignatureAndIsolatesUserAgentCache(
 	if err != nil {
 		t.Fatal(err)
 	}
+	inspection, err := service.inspectArtifactURL(signed)
+	if err != nil || inspection.Opaque != opaque || inspection.LibraryID != library.ID || inspection.KeyID == "" || inspection.FormatVersion != proxyFormatV1 || !inspection.ExpiresAt.Equal(now.Add(time.Hour).Truncate(time.Second)) {
+		t.Fatalf("signed inspection=%+v err=%v", inspection, err)
+	}
+	activeKeyID, activeFormat, err := service.activeSigningProfile()
+	if err != nil || activeKeyID != inspection.KeyID || activeFormat != inspection.FormatVersion {
+		t.Fatalf("active signing profile key=%q format=%q err=%v", activeKeyID, activeFormat, err)
+	}
 	parsed, err := url.Parse(signed)
 	if err != nil {
 		t.Fatal(err)

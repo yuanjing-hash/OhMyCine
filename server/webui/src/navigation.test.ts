@@ -75,8 +75,10 @@ describe('grouped administration navigation', () => {
   })
 
   it('exposes the media library workspace only to its generated read permission', () => {
-    expect(buildVisibleNavigation([Permissions.MediaLibrariesRead])[0]?.items.map(item => item.id)).toEqual(['media-libraries'])
-    expect(buildVisibleNavigation([Permissions.StoragesRead])[0]?.items.map(item => item.id)).not.toContain('media-libraries')
+    const groups = buildVisibleNavigation([Permissions.MediaLibrariesRead])
+    expect(groups.flatMap(group => group.items).map(item => item.id)).toEqual(['library-catalog', 'media-libraries'])
+    expect(findNavigationItem('media-libraries').label).toBe('媒体库管理')
+    expect(buildVisibleNavigation([Permissions.StoragesRead]).flatMap(group => group.items).map(item => item.id)).not.toContain('media-libraries')
   })
 
   it('shows User Management when either account or role reads are granted', () => {

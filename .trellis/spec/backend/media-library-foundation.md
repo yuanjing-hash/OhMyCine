@@ -22,6 +22,13 @@ POST   /api/v1/media-libraries/:id/retry
 GET    /api/v1/media-libraries/:id/entries
 GET    /api/v1/media-libraries/:id/catalog
 GET    /api/v1/media-libraries/:id/catalog/:work
+GET    /api/v1/media-libraries/catalog
+GET    /api/v1/media-libraries/:id/catalog/:work/tmdb-candidates
+POST   /api/v1/media-libraries/:id/catalog/:work/rescrape
+PUT    /api/v1/media-libraries/:id/catalog/:work/override
+DELETE /api/v1/media-libraries/:id/catalog/:work/override
+POST   /api/v1/media-libraries/:id/catalog/:work/deletion-preview
+POST   /api/v1/media-libraries/:id/catalog/:work/deletion-confirm
 GET    /api/v1/media-libraries/:id/runs
 GET    /api/v1/media-libraries/:id/recognitions
 POST   /api/v1/media-libraries/:id/recognitions/:token/retry
@@ -122,6 +129,9 @@ disabled -> initializing -> attaching_listener
 - Player series detail projects optional per-episode `title`, `overview`, `still_path`, `air_date`, `runtime_minutes` and `rating`. TMDB season reads run outside SQLite transactions with the request context plus a bounded timeout, fetch only seasons represented by the catalog, and persist a credential-free cache in the recognition snapshot. The cache is bound to TMDB identity and metadata language, stores a complete fetched season within the global bound so later-arriving episodes remain resolvable, and does not mark an over-capacity season complete. Missing episode metadata falls back to the safe provider-relative filename and must not copy the series overview, poster or backdrop into every episode.
 - `/entries` and `/catalog` accept `page`, `page_size=20|50|100`, optional `query`, and `media_type=movie|series`. They return database `COUNT`, `LIMIT`, and `OFFSET` results with `list,total,page,page_size`; an out-of-range page is empty with the real total. Legacy `limit` on `/entries` is capped into the supported page sizes.
 - Catalog list paging groups by indexed `work_key` in SQLite before applying offset. Never load all entries into Go or group episodes in Vue, because either approach splits a series across pages or scales with the whole library.
+- The administration poster wall has a separate discovery navigation entry; the existing configuration route remains `/system/media-libraries` and is labeled `Media Library Management`. The all-library endpoint groups every enabled library before pagination, merges only fully matched exact `(media type, TMDB ID)` identities, and keeps unmatched or stale-identity works library-scoped. Catalog responses return the complete distinct category set for the selected library scope rather than deriving filters from the current page. Every aggregate card carries opaque per-library work projections so a detail or mutation always resolves one concrete library; a multi-library card requires an explicit library choice before opening management actions.
+- Work-level metadata actions resolve current recognition rows from `(library_id, opaque work token)` on the Server. Candidate search, TMDB override, clear override, and rescrape reuse the recognition service; ordinary rescrape changes catalog metadata only and never renames or moves source files.
+- Source deletion uses the dedicated `media_libraries.media_delete` permission and a five-minute, actor-bound, single-use opaque preview. Preview snapshots the exact entry set and local/provider identities privately. Confirm rechecks the entry digest, local canonical root and reparse boundaries or 115 Storage/library ancestry and item identity before each mutation, checkpoints each completed item, then removes catalog facts and emits a removal change. A 115 delete means exact-item recycle only; it never empties the recycle bin. Audit and public DTOs contain only safe relative paths, counts, storage type, safe error codes, and a work-key hash.
 - `partial=true` means enumeration was incomplete. Unseen old entries must be preserved because absence was not proven.
 - GORM boolean fields that accept explicit `false` must not carry `default:true` model tags. Creation must write explicit zero values rather than allowing ORM defaults to silently enable a disabled library.
 - Local Storage rejects STRM fields but may generate managed NFO/JPG beside media. Cloud STRM libraries require signed proxy plus a Server-selected local projection root and generate managed STRM/NFO/JPG only in that projection.
@@ -336,6 +346,8 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 - A successful scan transaction commits source facts, recognition, the versioned credential-free TMDB snapshot and generation before scheduling an artifact run. Recognition cache keys include the snapshot schema version so a pre-snapshot 30-day cache entry cannot suppress detail refresh.
 - Snapshot JSON contains stable TMDB/IMDb IDs, metadata text, people, country/language fields and TMDB image file identities. It never contains credentials, API/image origins, absolute paths, provider IDs, temporary URLs or raw responses.
 - Local libraries with metadata artifacts enabled target `local_adjacent`; cloud + STRM targets `local_projection`. Cloud + STRM always uses opaque signed URLs and never stores provider paths/pickcodes in STRM content.
+- Managed STRM content remains an expiring v1 capability. A generation may reuse the exact on-disk bytes only after strict public-origin, opaque/library, HMAC, active-manifest, current-key and format verification, with expiry outside the seven-day renewal window. Reuse preserves bytes/mtime and a same-path provider binding change updates only the manifest. Near-expiry, expired, invalid, old-origin/key/format or missing content is signed once for another 30 days. `content_expires_at` and `content_format_version` are private additive lease facts; legacy rows are inspected and backfilled lazily without a deployment-time rewrite.
+- Artifact generation loads the current `(library_id,target_kind)` manifest and active signing verifier once, forms a path-keyed in-memory desired diff, and batch-persists staged rows before generation completion. Lease inspection validates the preloaded managed/active/completed STRM row plus origin, opaque/library, current key/format, expiry and HMAC without per-file manifest/key SQL or credential decrypt. Unchanged rebinds count as skipped rather than file updates; unmanaged collisions are never staged.
 - Unrecognized or incomplete snapshot units may still produce STRM, but produce no NFO/JPG. Deterministic NFO/JPG output is derived only from the persisted snapshot.
 - Every output first resolves a root-confined target, rejects reparse/symlink escapes, writes a same-directory temporary file, flushes it, then atomically replaces only a manifest-owned artifact. An unmanaged same-name file is skipped and never adopted.
 - TMDB image download accepts only a snapshot file identity plus an allowlisted size, rejects redirects and non-JPEG content, checks the JPEG magic bytes, and enforces a caller-selected limit no greater than 20 MiB.
@@ -358,6 +370,8 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 | Local output root cannot be resolved/canonicalized | Reject scheduling or fail the run with `artifact_projection_unavailable` |
 | Cloud STRM lacks signed proxy or projection root | Reject media-library policy before a run is created |
 | Existing target has no managed manifest | Count as skipped; never overwrite or adopt it |
+| Existing managed STRM is valid and outside renewal window | Reuse exact bytes, preserve mtime, backfill lease facts if needed, and count skipped |
+| Existing managed STRM is near expiry or its origin/key/format is stale | Sign and atomically replace once, persist the new lease, and count updated |
 | Job generation no longer matches the library | Mark the old run superseded at the next artifact boundary |
 | Scan is failed, partial, superseded, unknown-kind, or projection root changed | Do not automatically delete; persist `skipped` or a safe cleanup failure for manual review |
 | Cleanup process stops after artifact completion | Replay the completed artifact Job and resume from persisted cleanup state/claims without regenerating or double-counting |
@@ -376,11 +390,11 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 
 - TMDB fake responses assert detail/credits/external IDs map into a bounded snapshot and serialized snapshot/NFO contains no credential or configured origin.
 - Local artifact tests assert adjacent NFO/JPG, no STRM, root confinement and unmanaged-file preservation.
-- Cloud tests assert ordinary and ISO STRM naming, opaque signed content, NFO/JPG projection, coalesced latest generation, superseded old run and manifest counts.
+- Cloud tests assert ordinary and ISO STRM naming, opaque expiring signed content, unchanged two-generation byte/mtime preservation, provider rebind without rewrite, one-time renewal, NFO/JPG projection, coalesced latest generation, superseded old run and batched manifest counts.
 - Image tests assert allowlisted size, redirect rejection, MIME/magic/byte limits and invalid absolute identity rejection.
 - Source-asset tests assert same-tree subtitle/JPG output, provider identity revalidation, binary subtitle rejection, redirect/header/size rejection and absence of temporary URLs in DB/logs.
 - Cleanup tests assert full/incremental success, partial/failed/superseded/root-change preservation, replay recovery, idempotent removed counts, per-file claims, unmanaged preservation, kind/extension allowlists, token tamper/size/strict-JSON rejection, and symlink/junction/reparse confinement.
-- Migration tests assert v29 additively introduces cleanup status/summary columns and backfills historical completed/superseded runs as `skipped` so upgrading cannot unexpectedly delete old projections.
+- Migration tests assert v29 additively introduces cleanup status/summary columns and backfills historical completed/superseded runs as `skipped`, and v54 additively introduces nullable/defaulted STRM lease facts without rewriting legacy manifests.
 - Run the focused packages plus `go test ./...`, `go vet`, `go mod verify` and `git diff --check` on Windows.
 
 ### 7. Wrong vs Correct

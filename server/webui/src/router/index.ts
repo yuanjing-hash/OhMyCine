@@ -28,6 +28,8 @@ import RecommendationsView from '@/views/RecommendationsView.vue'
 import ExploreView from '@/views/ExploreView.vue'
 import SitesView from '@/views/SitesView.vue'
 import DiscoveryDetailView from '@/views/DiscoveryDetailView.vue'
+import LibraryCatalogView from '@/views/LibraryCatalogView.vue'
+import LibraryCatalogDetailView from '@/views/LibraryCatalogDetailView.vue'
 import FollowsView from '@/views/FollowsView.vue'
 
 function navigationMeta(id: string) {
@@ -56,6 +58,8 @@ export const router = createRouter({
         { path: 'discovery/recommendations', name: 'recommendations', component: RecommendationsView, meta: navigationMeta('recommendations') },
         { path: 'discovery/details/:provider/:mediaType/:providerID', name: 'discovery-detail', component: DiscoveryDetailView, meta: navigationMeta('recommendations') },
         { path: 'discovery/explore', name: 'explore', component: ExploreView, meta: navigationMeta('explore') },
+        { path: 'discovery/library', name: 'library-catalog', component: LibraryCatalogView, meta: navigationMeta('library-catalog') },
+        { path: 'discovery/library/:libraryID/:workID', name: 'library-catalog-detail', component: LibraryCatalogDetailView, meta: navigationMeta('library-catalog') },
         { path: 'subscriptions/manage', name: 'subscriptions', component: FollowsView, meta: navigationMeta('subscriptions') },
         { path: 'system/connections', name: 'connections-storage', component: StorageView, meta: navigationMeta('connections-storage') },
         { path: playersRouteContract.path, name: playersRouteContract.name, component: PlayersView, meta: navigationMeta(playersRouteContract.navigationID) },

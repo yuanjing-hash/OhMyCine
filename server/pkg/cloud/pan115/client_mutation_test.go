@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -91,6 +92,78 @@ func TestMutationAdapterUsesProviderArgumentOrderAndIdentities(t *testing.T) {
 	}
 }
 
+func TestMutationAdapterBatchesBoundedOpaqueIdentities(t *testing.T) {
+	sdk := &mutationTestSDK{bulkSDK: &bulkSDK{}}
+	client := newMutationTestClient(sdk)
+	if err := client.MoveMany(context.Background(), []string{"move-1", "move-2"}, "move-parent"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sdk.moveItems, []string{"move-1", "move-2"}) {
+		t.Fatalf("move items=%v", sdk.moveItems)
+	}
+	if err := client.CopyMany(context.Background(), []string{"copy-1", "copy-2"}, "copy-parent"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sdk.copyItems, []string{"copy-1", "copy-2"}) {
+		t.Fatalf("copy items=%v", sdk.copyItems)
+	}
+	if err := client.RecycleMany(context.Background(), []string{"delete-1", "delete-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sdk.deleted, []string{"delete-1", "delete-2"}) {
+		t.Fatalf("deleted=%v", sdk.deleted)
+	}
+	oversized := make([]string, cloud.MaxBatchMutationItems+1)
+	for index := range oversized {
+		oversized[index] = "item-" + strconv.Itoa(index)
+	}
+	if err := client.MoveMany(context.Background(), oversized, "parent"); err == nil {
+		t.Fatal("oversized mutation was accepted")
+	}
+	if err := client.RecycleMany(context.Background(), []string{"same", "same"}); err == nil {
+		t.Fatal("duplicate identities were accepted")
+	}
+	maximum := make([]string, cloud.MaxBatchMutationItems)
+	for index := range maximum {
+		maximum[index] = "maximum-" + strconv.Itoa(index)
+	}
+	if err := client.MoveMany(context.Background(), maximum, "maximum-parent"); err != nil {
+		t.Fatalf("maximum bounded batch was rejected: %v", err)
+	}
+}
+
+func TestBatchMutationAdapterDoesNotStartAfterContextCancellation(t *testing.T) {
+	sdk := &mutationTestSDK{bulkSDK: &bulkSDK{}}
+	client := newMutationTestClient(sdk)
+	timings := cloud.NewOperationTimingCollector()
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = cloud.WithOperationTimingCollector(ctx, timings)
+	cancel()
+	if err := client.MoveMany(ctx, []string{"item-1", "item-2"}, "parent"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v want context cancellation", err)
+	}
+	if len(sdk.moveItems) != 0 {
+		t.Fatalf("cancelled mutation reached provider: %v", sdk.moveItems)
+	}
+	if got := timings.Snapshot(); got.ProviderWaitCalls != 1 || got.ProviderCallCalls != 0 {
+		t.Fatalf("cancelled timing=%+v", got)
+	}
+}
+
+func TestBatchMutationAdapterReportsRequestScopedWaitAndCall(t *testing.T) {
+	sdk := &mutationTestSDK{bulkSDK: &bulkSDK{}}
+	client := newMutationTestClient(sdk)
+	timings := cloud.NewOperationTimingCollector()
+	ctx := cloud.WithOperationTimingCollector(context.Background(), timings)
+	if err := client.MoveMany(ctx, []string{"item-1", "item-2"}, "parent"); err != nil {
+		t.Fatal(err)
+	}
+	got := timings.Snapshot()
+	if got.ProviderWaitCalls != 1 || got.ProviderCallCalls != 1 || got.TargetListCalls != 0 || got.BatchMutationCalls != 0 || got.DBCheckpointCalls != 0 {
+		t.Fatalf("request-scoped timing=%+v", got)
+	}
+}
+
 func TestNewClientUsesIndependentMutationLanes(t *testing.T) {
 	driver, err := New(cloud.Config{Cookie: "UID=1; CID=cid; SEID=seid"})
 	if err != nil {
@@ -143,6 +216,18 @@ func TestMutationAdapterMapsRiskFailuresAndUnknownCreateResult(t *testing.T) {
 	_, err = newMutationTestClient(empty).CreateDirectory(context.Background(), "parent", "folder")
 	if code, retryable := cloud.ErrorInfo(err); code != cloud.CodeMutationUnknown || !retryable {
 		t.Fatalf("unknown result code=%q retryable=%t err=%v", code, retryable, err)
+	}
+}
+
+func TestBatchMutationAdapterMapsRiskFailureOncePerRequest(t *testing.T) {
+	riskSDK := &mutationTestSDK{bulkSDK: &bulkSDK{}, err: errors.New("HTTP 405 risk control")}
+	client := newMutationTestClient(riskSDK)
+	err := client.MoveMany(context.Background(), []string{"item-1", "item-2", "item-3"}, "parent")
+	if code, retryable := cloud.ErrorInfo(err); code != cloud.CodeRateLimited || !retryable {
+		t.Fatalf("risk error code=%q retryable=%t err=%v", code, retryable, err)
+	}
+	if !reflect.DeepEqual(riskSDK.moveItems, []string{"item-1", "item-2", "item-3"}) {
+		t.Fatalf("batch request was split per item: %v", riskSDK.moveItems)
 	}
 }
 

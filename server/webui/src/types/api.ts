@@ -204,13 +204,23 @@ export interface MediaLibraryEntry {
 export interface MediaCatalogItem {
   id: string; title: string; kind: 'movie' | 'series'; file_count: number; season_count: number; episode_count: number
   size: number; modified_at: string; category_name: string; match_status: string; tmdb_id?: number; release_year?: number; confidence?: number; recognition_error_code?: string
+  original_title?: string; overview?: string; poster_url?: string; backdrop_url?: string
+  recognition_token?: string; recognition_revision?: number; manual_override: boolean
+  library_works: MediaCatalogLibraryWork[]
 }
+export interface MediaCatalogLibraryWork { library_id: number; library_name: string; work_id: string; file_count: number }
 export interface MediaCatalogEpisode {
   id: number; title: string; season: number | null; episode: number | null; relative_path: string; size: number; modified_at: string
 }
 export interface MediaCatalogSeason { number: number; episodes: MediaCatalogEpisode[] }
 export interface MediaCatalogManagedTransfer { transfer_task_id: string; download_task_id: string; identity_revision: number; file_count: number }
 export interface MediaCatalogDetail { work: MediaCatalogItem; seasons: MediaCatalogSeason[]; files: MediaCatalogEpisode[]; reorganizable_transfers: MediaCatalogManagedTransfer[] }
+export interface MediaCatalogPage extends PageResponse<MediaCatalogItem> { categories: string[] }
+export interface MediaCatalogDeletionPreview {
+  library_id: number; library_name: string; storage_type: string; title: string; file_count: number; total_bytes: number
+  relative_paths: string[]; strm_impact_count: number; missing_count: number; warnings: string[]; confirmation_token: string; expires_at: string
+}
+export interface MediaCatalogDeletionResult { deleted: boolean; removed_files: number; missing_files: number }
 export interface MediaRecognitionSummary {
   token: string; status: 'matched' | 'unrecognized'; error_code: string; title: string; media_type: 'movie' | 'tv' | ''
   release_year?: number; tmdb_id?: number; confidence?: number; category_name: string; manual_override: boolean

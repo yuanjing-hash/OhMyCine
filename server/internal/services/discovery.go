@@ -310,7 +310,7 @@ func (s *DiscoveryService) Detail(ctx context.Context, actor Actor, provider, me
 }
 
 func (s *DiscoveryService) Image(ctx context.Context, actor Actor, provider, token string) ([]byte, string, error) {
-	if !actor.Can(authz.PermissionDiscoveryRead) {
+	if !actor.Can(authz.PermissionDiscoveryRead) && !actor.Can(authz.PermissionMediaLibrariesRead) {
 		return nil, "", appError(CodePermissionDenied, "无权读取推荐图片", nil)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))

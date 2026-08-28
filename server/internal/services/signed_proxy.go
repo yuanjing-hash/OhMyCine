@@ -29,8 +29,10 @@ const (
 	proxyScopeMediaRead = "media-read"
 	proxyDefaultTTL     = 30 * 24 * time.Hour
 	proxyMaximumTTL     = 31 * 24 * time.Hour
+	proxyRenewalWindow  = 7 * 24 * time.Hour
 	proxyClockSkew      = 30 * time.Second
 	proxyCacheMaximum   = 4096
+	proxyFormatV1       = "v1"
 )
 
 type ProxyRedirect struct {
@@ -43,6 +45,41 @@ type ProxyRedirect struct {
 type VerifiedProxyArtifact struct {
 	Opaque    string
 	LibraryID uint
+}
+
+// signedArtifactLease is used only by the artifact writer. It persists the
+// expiry/format facts needed to reuse an otherwise unchanged STRM without
+// exposing signing details through an API DTO.
+type signedArtifactLease struct {
+	URL           string
+	KeyID         string
+	ExpiresAt     time.Time
+	FormatVersion string
+}
+
+type signedArtifactInspection struct {
+	Opaque        string
+	LibraryID     uint
+	KeyID         string
+	ExpiresAt     time.Time
+	FormatVersion string
+}
+
+// signedArtifactVerifier is a generation-scoped snapshot of the active
+// signing profile. Artifact generation loads it once so validating hundreds
+// of already-managed STRM files does not repeat a key lookup and credential
+// decrypt for every file.
+type signedArtifactVerifier struct {
+	KeyID         string
+	Secret        []byte
+	FormatVersion string
+}
+
+type parsedSignedArtifactURL struct {
+	Opaque    string
+	KeyID     string
+	Expiry    int64
+	Signature string
 }
 
 type proxyCacheEntry struct {
@@ -135,27 +172,60 @@ func (s *SignedProxyService) EnsureActiveKey() (models.ProxySigningKey, error) {
 }
 
 func (s *SignedProxyService) SignArtifact(opaque string, libraryID uint, ttl time.Duration) (string, error) {
+	lease, err := s.signArtifactLease(opaque, libraryID, ttl)
+	if err != nil {
+		return "", err
+	}
+	return lease.URL, nil
+}
+
+func (s *SignedProxyService) signArtifactLease(opaque string, libraryID uint, ttl time.Duration) (signedArtifactLease, error) {
 	opaque = strings.TrimSpace(opaque)
 	if !validOpaqueID(opaque) || libraryID == 0 {
-		return "", appError(CodeInvalidRequest, "STRM 产物身份无效", nil)
+		return signedArtifactLease{}, appError(CodeInvalidRequest, "STRM 产物身份无效", nil)
 	}
 	if ttl <= 0 {
 		ttl = proxyDefaultTTL
 	}
 	if ttl > proxyMaximumTTL {
-		return "", appError(CodeInvalidRequest, "STRM 签名有效期超出限制", nil)
+		return signedArtifactLease{}, appError(CodeInvalidRequest, "STRM 签名有效期超出限制", nil)
 	}
 	key, err := s.EnsureActiveKey()
 	if err != nil {
-		return "", appError(CodeProxyUnavailable, "302 签名服务不可用", err)
+		return signedArtifactLease{}, appError(CodeProxyUnavailable, "302 签名服务不可用", err)
 	}
 	secret, err := s.decryptKey(key)
 	if err != nil {
-		return "", appError(CodeProxyUnavailable, "302 签名服务不可用", err)
+		return signedArtifactLease{}, appError(CodeProxyUnavailable, "302 签名服务不可用", err)
 	}
 	expiry := s.now().Add(ttl).Unix()
 	signature := signProxy(secret, opaque, libraryID, key.ID, expiry)
-	return s.publicOrigin + "/proxy/strm/" + url.PathEscape(opaque) + "?kid=" + url.QueryEscape(key.ID) + "&exp=" + strconv.FormatInt(expiry, 10) + "&sig=" + url.QueryEscape(signature), nil
+	return signedArtifactLease{
+		URL:           s.publicOrigin + "/proxy/strm/" + url.PathEscape(opaque) + "?kid=" + url.QueryEscape(key.ID) + "&exp=" + strconv.FormatInt(expiry, 10) + "&sig=" + url.QueryEscape(signature),
+		KeyID:         key.ID,
+		ExpiresAt:     time.Unix(expiry, 0).UTC(),
+		FormatVersion: proxyFormatV1,
+	}, nil
+}
+
+func (s *SignedProxyService) activeSigningProfile() (string, string, error) {
+	key, err := s.EnsureActiveKey()
+	if err != nil {
+		return "", "", appError(CodeProxyUnavailable, "302 签名服务不可用", err)
+	}
+	return key.ID, proxyFormatV1, nil
+}
+
+func (s *SignedProxyService) activeSigningVerifier() (signedArtifactVerifier, error) {
+	key, err := s.EnsureActiveKey()
+	if err != nil {
+		return signedArtifactVerifier{}, appError(CodeProxyUnavailable, "302 签名服务不可用", err)
+	}
+	secret, err := s.decryptKey(key)
+	if err != nil {
+		return signedArtifactVerifier{}, appError(CodeProxyUnavailable, "302 签名服务不可用", err)
+	}
+	return signedArtifactVerifier{KeyID: key.ID, Secret: secret, FormatVersion: proxyFormatV1}, nil
 }
 
 func (s *SignedProxyService) Resolve(ctx context.Context, opaque, keyID string, expiry int64, signature, userAgent string) (ProxyRedirect, error) {
@@ -178,35 +248,81 @@ func (s *SignedProxyService) ResolveForClient(ctx context.Context, opaque, keyID
 // public origin. It validates signature, expiry and current artifact state
 // without resolving or exposing the provider URL.
 func (s *SignedProxyService) VerifyArtifactURL(raw string) (VerifiedProxyArtifact, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.User != nil || parsed.Fragment != "" || parsed.Scheme == "" || parsed.Host == "" {
-		return VerifiedProxyArtifact{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
-	}
-	origin := parsed.Scheme + "://" + parsed.Host
-	if origin != s.publicOrigin {
-		return VerifiedProxyArtifact{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
-	}
-	const prefix = "/proxy/strm/"
-	if !strings.HasPrefix(parsed.EscapedPath(), prefix) || strings.Contains(strings.TrimPrefix(parsed.EscapedPath(), prefix), "/") {
-		return VerifiedProxyArtifact{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
-	}
-	opaque, err := url.PathUnescape(strings.TrimPrefix(parsed.EscapedPath(), prefix))
-	if err != nil {
-		return VerifiedProxyArtifact{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
-	}
-	query := parsed.Query()
-	if len(query) != 3 || len(query["kid"]) != 1 || len(query["exp"]) != 1 || len(query["sig"]) != 1 {
-		return VerifiedProxyArtifact{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
-	}
-	expiry, err := strconv.ParseInt(query.Get("exp"), 10, 64)
-	if err != nil {
-		return VerifiedProxyArtifact{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
-	}
-	target, err := s.verify(opaque, query.Get("kid"), expiry, query.Get("sig"))
+	inspection, err := s.inspectArtifactURL(raw)
 	if err != nil {
 		return VerifiedProxyArtifact{}, err
 	}
-	return VerifiedProxyArtifact{Opaque: opaque, LibraryID: target.LibraryID}, nil
+	return VerifiedProxyArtifact{Opaque: inspection.Opaque, LibraryID: inspection.LibraryID}, nil
+}
+
+// inspectArtifactURL performs the same strict origin, signature, expiry and
+// active-manifest verification as playback. The extra lease facts never leave
+// the services package; they only decide whether the exact on-disk bytes can
+// remain unchanged.
+func (s *SignedProxyService) inspectArtifactURL(raw string) (signedArtifactInspection, error) {
+	parsed, err := s.parseArtifactURL(raw)
+	if err != nil {
+		return signedArtifactInspection{}, err
+	}
+	target, err := s.verify(parsed.Opaque, parsed.KeyID, parsed.Expiry, parsed.Signature)
+	if err != nil {
+		return signedArtifactInspection{}, err
+	}
+	return signedArtifactInspection{Opaque: parsed.Opaque, LibraryID: target.LibraryID, KeyID: parsed.KeyID, ExpiresAt: time.Unix(parsed.Expiry, 0).UTC(), FormatVersion: proxyFormatV1}, nil
+}
+
+func (s *SignedProxyService) inspectArtifactLeaseURL(raw string, artifact models.MediaArtifact, verifier signedArtifactVerifier) (signedArtifactInspection, error) {
+	if artifact.ID == 0 || !artifact.Managed || !artifact.Active || artifact.Status != models.MediaArtifactStatusCompleted || artifact.Kind != models.MediaArtifactKindSTRM || artifact.TargetKind != models.MediaArtifactTargetLocalProjection || !validOpaqueID(artifact.OpaqueID) || artifact.LibraryID == 0 {
+		return signedArtifactInspection{}, appError(CodeProxyTargetUnavailable, "播放目标不可用", nil)
+	}
+	parsed, err := s.parseArtifactURL(raw)
+	if err != nil {
+		return signedArtifactInspection{}, err
+	}
+	if parsed.Opaque != artifact.OpaqueID || parsed.KeyID != verifier.KeyID || verifier.FormatVersion != proxyFormatV1 || len(verifier.Secret) != sha256.Size {
+		return signedArtifactInspection{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	now := s.now()
+	if parsed.Expiry < now.Add(-proxyClockSkew).Unix() || parsed.Expiry > now.Add(proxyMaximumTTL).Unix() {
+		return signedArtifactInspection{}, appError(CodeProxySignatureExpired, "播放链接已过期", nil)
+	}
+	want, err := base64.RawURLEncoding.DecodeString(parsed.Signature)
+	if err != nil || len(want) != sha256.Size {
+		return signedArtifactInspection{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	got := hmacSHA256(verifier.Secret, proxyCanonical(parsed.Opaque, artifact.LibraryID, parsed.KeyID, parsed.Expiry))
+	if subtle.ConstantTimeCompare(got, want) != 1 {
+		return signedArtifactInspection{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	return signedArtifactInspection{Opaque: parsed.Opaque, LibraryID: artifact.LibraryID, KeyID: parsed.KeyID, ExpiresAt: time.Unix(parsed.Expiry, 0).UTC(), FormatVersion: proxyFormatV1}, nil
+}
+
+func (s *SignedProxyService) parseArtifactURL(raw string) (parsedSignedArtifactURL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.User != nil || parsed.Fragment != "" || parsed.Scheme == "" || parsed.Host == "" {
+		return parsedSignedArtifactURL{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	origin := parsed.Scheme + "://" + parsed.Host
+	if origin != s.publicOrigin {
+		return parsedSignedArtifactURL{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	const prefix = "/proxy/strm/"
+	if !strings.HasPrefix(parsed.EscapedPath(), prefix) || strings.Contains(strings.TrimPrefix(parsed.EscapedPath(), prefix), "/") {
+		return parsedSignedArtifactURL{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	opaque, err := url.PathUnescape(strings.TrimPrefix(parsed.EscapedPath(), prefix))
+	if err != nil {
+		return parsedSignedArtifactURL{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	query := parsed.Query()
+	if len(query) != 3 || len(query["kid"]) != 1 || len(query["exp"]) != 1 || len(query["sig"]) != 1 {
+		return parsedSignedArtifactURL{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	expiry, err := strconv.ParseInt(query.Get("exp"), 10, 64)
+	if err != nil {
+		return parsedSignedArtifactURL{}, appError(CodeProxySignatureInvalid, "播放链接无效", nil)
+	}
+	return parsedSignedArtifactURL{Opaque: opaque, KeyID: query.Get("kid"), Expiry: expiry, Signature: query.Get("sig")}, nil
 }
 
 // ResolveArtifact is intentionally signature-free only at this internal
@@ -383,7 +499,7 @@ func signProxy(secret []byte, opaque string, libraryID uint, keyID string, expir
 }
 
 func proxyCanonical(opaque string, libraryID uint, keyID string, expiry int64) []byte {
-	return []byte("v1\n" + proxyScopeMediaRead + "\n" + opaque + "\n" + strconv.FormatUint(uint64(libraryID), 10) + "\n" + keyID + "\n" + strconv.FormatInt(expiry, 10))
+	return []byte(proxyFormatV1 + "\n" + proxyScopeMediaRead + "\n" + opaque + "\n" + strconv.FormatUint(uint64(libraryID), 10) + "\n" + keyID + "\n" + strconv.FormatInt(expiry, 10))
 }
 
 func hmacSHA256(secret, message []byte) []byte {

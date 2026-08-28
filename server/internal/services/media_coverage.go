@@ -124,6 +124,7 @@ func (s *MediaCoverageService) Coverage(ctx context.Context, actor Actor, mediaT
 		default:
 			result.Status = "unknown"
 		}
+		normalizeMediaCoverageCollections(&result)
 		return result, nil
 	}
 
@@ -198,7 +199,7 @@ func (s *MediaCoverageService) Coverage(ctx context.Context, actor Actor, mediaT
 				continue
 			}
 			seenEpisodes[episode.EpisodeNumber] = struct{}{}
-			ids := append([]uint(nil), presence[[2]int{season.SeasonNumber, episode.EpisodeNumber}]...)
+			ids := append([]uint{}, presence[[2]int{season.SeasonNumber, episode.EpisodeNumber}]...)
 			sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
 			item := MediaCoverageEpisode{EpisodeNumber: episode.EpisodeNumber, Name: episode.Name, AirDate: episode.AirDate, LibraryIDs: ids}
 			switch {
@@ -230,7 +231,35 @@ func (s *MediaCoverageService) Coverage(ctx context.Context, actor Actor, mediaT
 	}
 	result.TV = tv
 	result.Status = coverageSeasonStatus(tv.Counts)
+	normalizeMediaCoverageCollections(&result)
 	return result, nil
+}
+
+func normalizeMediaCoverageCollections(result *MediaCoverage) {
+	if result.Libraries == nil {
+		result.Libraries = []MediaCoverageLibrary{}
+	}
+	if result.Movie != nil && result.Movie.LibraryIDs == nil {
+		result.Movie.LibraryIDs = []uint{}
+	}
+	if result.TV == nil {
+		return
+	}
+	if result.TV.Seasons == nil {
+		result.TV.Seasons = []MediaCoverageSeason{}
+	}
+	for seasonIndex := range result.TV.Seasons {
+		season := &result.TV.Seasons[seasonIndex]
+		if season.Episodes == nil {
+			season.Episodes = []MediaCoverageEpisode{}
+		}
+		for episodeIndex := range season.Episodes {
+			episode := &season.Episodes[episodeIndex]
+			if episode.LibraryIDs == nil {
+				episode.LibraryIDs = []uint{}
+			}
+		}
+	}
 }
 
 func (s *MediaCoverageService) coverageLibraries() ([]MediaCoverageLibrary, bool, string, error) {

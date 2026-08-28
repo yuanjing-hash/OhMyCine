@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -271,7 +272,8 @@ func (s *TransferService) cleanupCloudStaging(ctx context.Context, download mode
 	if err != nil {
 		return 0, err
 	}
-	packageRoot, err := providerItemWithinRoot(ctx, driver, packageRootID, storage.RootPath)
+	proof := newProviderBoundaryProof(driver)
+	packageRoot, err := proof.within(ctx, packageRootID, storage.RootPath)
 	if err != nil || !packageRoot.IsDir {
 		return 0, errors.New("cloud staging package boundary is invalid")
 	}
@@ -279,29 +281,91 @@ func (s *TransferService) cleanupCloudStaging(ctx context.Context, download mode
 	if !ok || !mutations.Capabilities().Recycle {
 		return 0, errors.New("cloud staging recycle capability is unavailable")
 	}
-	removed := 0
+	byParent := make(map[string][]downloadpkg.File)
 	for _, file := range extras {
-		if strings.TrimSpace(file.ProviderItemID) == "" {
-			return removed, errors.New("cloud staging item identity is missing")
+		itemID, parentID := strings.TrimSpace(file.ProviderItemID), strings.TrimSpace(file.ProviderParentID)
+		if itemID == "" || parentID == "" || itemID != file.ProviderItemID || parentID != file.ProviderParentID {
+			return 0, errors.New("cloud staging item identity is missing")
 		}
-		item, err := providerItemWithinRoot(ctx, driver, file.ProviderItemID, packageRootID)
-		if err != nil {
-			if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
+		byParent[parentID] = append(byParent[parentID], file)
+	}
+	parentIDs := make([]string, 0, len(byParent))
+	for parentID := range byParent {
+		parentIDs = append(parentIDs, parentID)
+	}
+	sort.Strings(parentIDs)
+	removed := 0
+	batchMutations, hasBatch := driver.(cloudpkg.BatchMutationDriver)
+	for _, parentID := range parentIDs {
+		parent, proofErr := proof.within(ctx, parentID, packageRootID)
+		if proofErr != nil || !parent.IsDir {
+			return removed, errors.New("cloud staging item boundary is invalid")
+		}
+		listed, listErr := listCloudDirectory(ctx, driver, parentID)
+		if listErr != nil {
+			return removed, listErr
+		}
+		current := make(map[string]cloudpkg.Item, len(listed))
+		for _, item := range listed {
+			if _, duplicate := current[item.ID]; duplicate {
+				return removed, errors.New("cloud staging listing contains duplicate identity")
+			}
+			current[item.ID] = item
+		}
+		candidates := make([]string, 0, len(byParent[parentID]))
+		for _, file := range byParent[parentID] {
+			item, exists := current[file.ProviderItemID]
+			if !exists {
 				continue
 			}
-			return removed, err
+			if item.IsDir || item.ParentID != parentID || item.Size != file.Size || (file.SHA1 != "" && !strings.EqualFold(item.SHA1, file.SHA1)) {
+				return removed, errors.New("cloud staging item changed")
+			}
+			candidates = append(candidates, item.ID)
 		}
-		if item.IsDir || item.Size != file.Size || (file.SHA1 != "" && !strings.EqualFold(item.SHA1, file.SHA1)) || (file.ProviderParentID != "" && item.ParentID != file.ProviderParentID) {
-			return removed, errors.New("cloud staging item changed")
-		}
-		if err := mutations.Recycle(ctx, item.ID); err != nil {
-			if _, statErr := driver.Stat(ctx, item.ID); statErr == nil {
-				return removed, err
-			} else if code, _ := cloudpkg.ErrorInfo(statErr); code != cloudpkg.CodeNotFound {
-				return removed, err
+		for start := 0; start < len(candidates); start += cloudpkg.MaxBatchMutationItems {
+			end := start + cloudpkg.MaxBatchMutationItems
+			if end > len(candidates) {
+				end = len(candidates)
+			}
+			chunk := candidates[start:end]
+			var mutationErr error
+			if hasBatch {
+				mutationErr = executeCloudBatchMutation(ctx, func() error { return batchMutations.RecycleMany(ctx, chunk) })
+			} else {
+				for _, itemID := range chunk {
+					if mutationErr = mutations.Recycle(ctx, itemID); mutationErr != nil {
+						break
+					}
+				}
+			}
+			// Provider acknowledgement can be ambiguous. Re-list the one proven
+			// parent and count only identities that are actually absent.
+			after, reconcileErr := listCloudDirectory(ctx, driver, parentID)
+			if reconcileErr != nil {
+				if mutationErr != nil {
+					return removed, mutationErr
+				}
+				return removed, reconcileErr
+			}
+			remaining := make(map[string]struct{}, len(after))
+			for _, item := range after {
+				remaining[item.ID] = struct{}{}
+			}
+			missing := 0
+			for _, itemID := range chunk {
+				if _, exists := remaining[itemID]; !exists {
+					missing++
+				}
+			}
+			removed += missing
+			if missing != len(chunk) {
+				if mutationErr != nil {
+					return removed, mutationErr
+				}
+				return removed, errors.New("cloud staging batch result is incomplete")
 			}
 		}
-		removed++
 	}
 	return removed, nil
 }

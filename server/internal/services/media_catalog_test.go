@@ -2,7 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +23,140 @@ func createCatalogTestLibrary(t *testing.T) (*MediaLibraryService, models.MediaL
 		t.Fatal(err)
 	}
 	return service, detail.MediaLibrary, actor
+}
+
+func TestAggregateMediaCatalogMergesOnlyTrustedTMDBIdentityBeforePaging(t *testing.T) {
+	service, library, actor := createCatalogTestLibrary(t)
+	var storage models.Storage
+	if err := service.db.First(&storage, library.StorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var profile models.MediaClassificationProfile
+	if err := service.db.First(&profile, library.ProfileID).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondRoot := t.TempDir()
+	secondStorage := models.Storage{Name: "Second storage", NameNormalized: "second storage", Type: models.StorageTypeLocal, RootPath: secondRoot, RootPathNormalized: strings.ToLower(secondRoot), Enabled: true, Capabilities: `{}`}
+	if err := service.db.Create(&secondStorage).Error; err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Create(context.Background(), actor, testLibraryInput("Second catalog", secondStorage, profile, false), RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.Model(&models.MediaLibrary{}).Where("id IN ?", []uint{library.ID, second.ID}).Update("enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	now, tmdbID := time.Now().UTC(), int64(42)
+	entries := []models.MediaLibraryEntry{
+		{LibraryID: library.ID, RelativePath: "/A.mkv", ProviderID: "a", Size: 10, ModifiedAt: now, MediaType: "movie", Title: "Same", WorkKey: "movie:first", MatchStatus: "matched", TMDBID: &tmdbID, CategoryName: "电影"},
+		{LibraryID: second.ID, RelativePath: "/B.mkv", ProviderID: "b", Size: 20, ModifiedAt: now, MediaType: "movie", Title: "Same localized", WorkKey: "movie:second", MatchStatus: "matched", TMDBID: &tmdbID, CategoryName: "电影"},
+		{LibraryID: second.ID, RelativePath: "/Same.mkv", ProviderID: "c", Size: 30, ModifiedAt: now, MediaType: "movie", Title: "Same", WorkKey: "movie:unmatched", MatchStatus: "unrecognized", CategoryName: "电影"},
+		{LibraryID: library.ID, RelativePath: "/Stale-A.mkv", ProviderID: "stale-a", Size: 40, ModifiedAt: now, MediaType: "movie", Title: "Stale A", WorkKey: "movie:stale-a", MatchStatus: "unrecognized", TMDBID: &tmdbID, CategoryName: "纪录片"},
+		{LibraryID: second.ID, RelativePath: "/Stale-B.mkv", ProviderID: "stale-b", Size: 50, ModifiedAt: now, MediaType: "movie", Title: "Stale B", WorkKey: "movie:stale-b", MatchStatus: "unrecognized", TMDBID: &tmdbID, CategoryName: "纪录片"},
+	}
+	if err := service.db.Create(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.AggregateCatalog(actor, MediaPageQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 4 || len(page.List) != 4 || !slices.Equal(page.Categories, []string{"电影", "纪录片"}) {
+		t.Fatalf("aggregate=%+v", page)
+	}
+	var merged *MediaCatalogItem
+	for index := range page.List {
+		if page.List[index].TMDBID != nil && page.List[index].MatchStatus == mediaRecognitionStatusMatched {
+			merged = &page.List[index]
+		}
+	}
+	if merged == nil || len(merged.LibraryWorks) != 2 || merged.FileCount != 2 || merged.Size != 30 {
+		t.Fatalf("merged=%+v", merged)
+	}
+}
+
+func TestMediaCatalogLocalDeletionPreviewConfirmAndReplay(t *testing.T) {
+	service, library, actor := createCatalogTestLibrary(t)
+	var storage models.Storage
+	if err := service.db.First(&storage, library.StorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(storage.RootPath, "Delete.mkv")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	entry := models.MediaLibraryEntry{LibraryID: library.ID, RelativePath: "/Delete.mkv", ProviderID: "Delete.mkv", Size: 7, ModifiedAt: now, MediaType: "movie", Title: "Delete", WorkKey: "movie:delete", MatchStatus: "unrecognized", CategoryName: "电影"}
+	if err := service.db.Create(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	run := models.MediaArtifactRun{ID: "catalog-delete-artifact-run", LibraryID: library.ID, Generation: 1, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	if err := service.db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	artifact := models.MediaArtifact{OpaqueID: "catalog-delete-strm", RunID: run.ID, LibraryID: library.ID, SourceIdentity: fmt.Sprintf("entry:%d", entry.ID), Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/Delete.strm", Managed: true, Active: true, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	if err := service.db.Create(&artifact).Error; err != nil {
+		t.Fatal(err)
+	}
+	token := encodeCatalogToken(entry.WorkKey)
+	if _, err := service.PreviewCatalogDeletion(context.Background(), actor, library.ID, token, RequestContext{}); ErrorCode(err) != CodePermissionDenied {
+		t.Fatalf("preview without media-delete permission err=%v", err)
+	}
+	actor.Permissions[authz.PermissionMediaLibrariesMediaDelete] = struct{}{}
+	preview, err := service.PreviewCatalogDeletion(context.Background(), actor, library.ID, token, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.FileCount != 1 || preview.Title != "Delete" || preview.ConfirmationToken == "" || len(preview.RelativePaths) != 1 || preview.STRMImpactCount != 1 {
+		t.Fatalf("preview=%+v", preview)
+	}
+	result, err := service.ConfirmCatalogDeletion(context.Background(), actor, library.ID, token, preview.ConfirmationToken, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Deleted || result.RemovedFiles != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("file still exists err=%v", err)
+	}
+	var count int64
+	if err := service.db.Model(&models.MediaLibraryEntry{}).Where("id = ?", entry.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("entry count=%d err=%v", count, err)
+	}
+	if _, err := service.ConfirmCatalogDeletion(context.Background(), actor, library.ID, token, preview.ConfirmationToken, RequestContext{}); ErrorCode(err) != CodeMediaCatalogDeletionExpired {
+		t.Fatalf("replay err=%v", err)
+	}
+}
+
+func TestMediaCatalogLocalDeletionRejectsSymlinkedAncestor(t *testing.T) {
+	service, library, actor := createCatalogTestLibrary(t)
+	actor.Permissions[authz.PermissionMediaLibrariesMediaDelete] = struct{}{}
+	var storage models.Storage
+	if err := service.db.First(&storage, library.StorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.mkv")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(storage.RootPath, "Linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink boundary test unavailable: %v", err)
+	}
+	now := time.Now().UTC()
+	entry := models.MediaLibraryEntry{LibraryID: library.ID, RelativePath: "/Linked/outside.mkv", ProviderID: "outside", Size: 7, ModifiedAt: now, MediaType: "movie", Title: "Outside", WorkKey: "movie:outside", MatchStatus: "unrecognized", CategoryName: "电影", CreatedAt: now, UpdatedAt: now}
+	if err := service.db.Create(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PreviewCatalogDeletion(context.Background(), actor, library.ID, encodeCatalogToken(entry.WorkKey), RequestContext{}); ErrorCode(err) != CodeMediaCatalogDeletionChanged {
+		t.Fatalf("symlinked ancestor accepted: %v", err)
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Fatalf("outside file changed: %v", err)
+	}
 }
 
 func TestMediaLibraryEntryPageReturnsDatabaseTotalAndEmptyOutOfRangePage(t *testing.T) {

@@ -348,6 +348,7 @@ HMAC-SHA256(secret, method + path + exp + user_or_library_scope)
 - `sig` 不匹配拒绝访问
 - 路径必须规范化，禁止 `../`、重复编码绕过
 - 可选绑定客户端 IP 或媒体库 ID
+- 持久 STRM 继续使用有过期时间的 capability，不得改成永久 URL，也不得写入 provider item ID、pickcode、Cookie 或临时直链。生成器可复用现有 URL，但必须重新验证固定 public origin、opaque/library、HMAC、active managed manifest、当前 key/格式，并且剩余有效期超过七天；否则安全续签一次。
 
 ### 8.3 URL 缓存
 
@@ -367,6 +368,8 @@ HMAC-SHA256(secret, method + path + exp + user_or_library_scope)
 - 不允许把上游要求的敏感 Header 直接暴露给前端，除非该网盘协议必须如此
 
 ## 9. 文件与路径安全
+
+媒体库作品源文件删除不能复用“删除媒体库配置”。它要求独立 `media_libraries.media_delete` 权限、五分钟 actor-bound 单次 opaque token，并在 confirm 时重新对账 library/work revision 与完整 entry digest。浏览器不能提交绝对路径或 provider ID 作为授权：本地目标只能由 Storage root + library relative root + entry relative path 重算，并拒绝 traversal、symlink、junction/Reparse Point；115 必须先证明媒体库 provider root 仍在 Storage root 内，再逐项证明 item identity、parent、name 和 size 未漂移，只能回收预览中的精确 item，不能清空回收站。逐项完成状态必须持久化以便部分失败后收敛，数据库 catalog 不得先于源文件删除。审计只保存库 ID、作品键摘要、数量、storage type、结果和安全错误码。
 
 ### 9.1 路径规范化
 

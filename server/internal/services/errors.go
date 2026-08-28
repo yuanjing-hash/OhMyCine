@@ -146,6 +146,10 @@ const (
 	CodeTransferDeletionPreviewExpired  = "transfer_deletion_preview_expired"
 	CodeTransferDeletionBoundaryChanged = "transfer_deletion_boundary_changed"
 	CodeTransferDeletionPartial         = "transfer_deletion_partial"
+	CodeMediaCatalogDeletionUnavailable = "media_catalog_deletion_unavailable"
+	CodeMediaCatalogDeletionExpired     = "media_catalog_deletion_preview_expired"
+	CodeMediaCatalogDeletionChanged     = "media_catalog_deletion_boundary_changed"
+	CodeMediaCatalogDeletionPartial     = "media_catalog_deletion_partial"
 )
 
 // AppError is a stable, client-safe domain error.

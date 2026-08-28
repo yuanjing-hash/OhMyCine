@@ -48,6 +48,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     items: [
       { id: 'recommendations', label: '推荐', to: '/discovery/recommendations', permissionsAny: discoveryPermissions, description: '浏览 TMDB 与豆瓣真实推荐栏目，按来源刷新并查看缓存状态。' },
       { id: 'explore', label: '搜索', to: '/discovery/explore', permissionsAny: discoveryPermissions, description: '确认作品后按需聚合搜索已启用的 PT 站点并创建下载。' },
+      { id: 'library-catalog', label: '媒体库', to: '/discovery/library', permissionsAny: [Permissions.MediaLibrariesRead], description: '按媒体库浏览已入库作品、真实季集覆盖与元数据维护操作。' },
     ],
   },
   {
@@ -76,7 +77,7 @@ export const navigationGroups: readonly NavigationGroup[] = [
     items: [
       { id: 'connections-storage', label: '数据源', to: '/system/connections', permissionsAny: connectionPermissions, description: '统一管理本地目录与网盘数据源；底层连接凭据和目录边界仍分别保存。' },
       { id: 'players', label: '播放器管理', to: '/system/players', permissionsAny: [Permissions.ConnectionsRead], description: '管理 Emby 连接、聚合运行摘要与签名 STRM 的 302 播放网关。' },
-      { id: 'media-libraries', label: '媒体库', to: '/system/media-libraries', permissionsAny: [Permissions.MediaLibrariesRead], description: '管理来源相对根、扫描计划、监听状态、扫描记录和媒体条目。' },
+      { id: 'media-libraries', label: '媒体库管理', to: '/system/media-libraries', permissionsAny: [Permissions.MediaLibrariesRead], description: '管理来源相对根、扫描计划、监听状态、扫描记录和媒体条目。' },
       { id: 'media-rules', label: '规则管理', to: '/system/media-rules', permissionsAny: [Permissions.MediaClassificationProfilesRead], description: '管理媒体分类、识别预处理与电影/剧集命名 Profile。' },
       { id: 'sites', label: '站点管理', to: '/system/sites', permissionsAny: [Permissions.SystemAdmin], description: '安全配置内建 PTTime 站点、连接健康、限速和启停策略。' },
       { id: 'plugins', label: '插件', to: '/system/plugins', permissionsAny: [Permissions.PluginsRead], description: '管理 GitHub 插件仓库、查看固定提交上的市场条目和真实安装状态。' },

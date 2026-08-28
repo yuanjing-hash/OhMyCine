@@ -58,6 +58,98 @@ export interface MediaCoverage {
   tv?: { counts: MediaCoverageCounts; seasons: MediaCoverageSeason[] }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function safeInteger(value: unknown, fallback = 0) {
+  return typeof value === 'number' && Number.isInteger(value) ? value : fallback
+}
+
+function safeText(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function safeLibraryIDs(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0))]
+}
+
+function normalizeCoverageCounts(value: unknown): MediaCoverageCounts {
+  const counts = isRecord(value) ? value : {}
+  return {
+    total: Math.max(0, safeInteger(counts.total)),
+    present: Math.max(0, safeInteger(counts.present)),
+    missing: Math.max(0, safeInteger(counts.missing)),
+    future: Math.max(0, safeInteger(counts.future)),
+    unknown: Math.max(0, safeInteger(counts.unknown)),
+  }
+}
+
+function normalizeEpisodeStatus(value: unknown): MediaCoverageEpisodeStatus {
+  return value === 'present' || value === 'missing' || value === 'future' || value === 'unknown' ? value : 'unknown'
+}
+
+function normalizeCoverageStatus(value: unknown): MediaCoverageStatus {
+  return value === 'present' || value === 'partial' || value === 'missing' || value === 'future_or_incomplete' || value === 'unknown' ? value : 'unknown'
+}
+
+function normalizeCoverageEpisodes(value: unknown): MediaCoverageEpisode[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isRecord).map(episode => ({
+    episode_number: safeInteger(episode.episode_number),
+    name: safeText(episode.name),
+    air_date: safeText(episode.air_date),
+    status: normalizeEpisodeStatus(episode.status),
+    library_ids: safeLibraryIDs(episode.library_ids),
+  }))
+}
+
+function normalizeCoverageSeasons(value: unknown): MediaCoverageSeason[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isRecord).map(season => ({
+    season_number: safeInteger(season.season_number),
+    name: safeText(season.name) ?? '',
+    poster_url: safeText(season.poster_url),
+    special: season.special === true,
+    status: normalizeCoverageStatus(season.status),
+    counts: normalizeCoverageCounts(season.counts),
+    episodes: normalizeCoverageEpisodes(season.episodes),
+  }))
+}
+
+export function normalizeMediaCoverage(value: unknown): MediaCoverage {
+  if (!isRecord(value) || (value.media_type !== 'movie' && value.media_type !== 'tv')) {
+    throw new Error('媒体库覆盖率数据格式无效')
+  }
+  const freshness = isRecord(value.freshness) ? value.freshness : {}
+  const movie = isRecord(value.movie) ? value.movie : undefined
+  const tv = isRecord(value.tv) ? value.tv : undefined
+  if ((value.media_type === 'movie' && !movie) || (value.media_type === 'tv' && !tv)) {
+    throw new Error('媒体库覆盖率数据格式无效')
+  }
+  return {
+    media_type: value.media_type,
+    tmdb_id: safeInteger(value.tmdb_id),
+    title: safeText(value.title) ?? '',
+    status: normalizeCoverageStatus(value.status),
+    libraries: Array.isArray(value.libraries) ? value.libraries.filter(isRecord).map(library => ({
+      id: safeInteger(library.id),
+      name: safeText(library.name) ?? '',
+      scan_state: library.scan_state === 'complete' || library.scan_state === 'partial' ? library.scan_state : 'unscanned',
+      last_successful_at: safeText(library.last_successful_at),
+      content_revision: Math.max(0, safeInteger(library.content_revision)),
+    })) : [],
+    freshness: {
+      checked_at: safeText(freshness.checked_at) ?? '',
+      library_scan_state: freshness.library_scan_state === 'complete' || freshness.library_scan_state === 'partial' ? freshness.library_scan_state : 'unscanned',
+      tmdb_state: freshness.tmdb_state === 'complete' ? 'complete' : 'partial',
+    },
+    movie: movie ? { present: movie.present === true, library_ids: safeLibraryIDs(movie.library_ids) } : undefined,
+    tv: tv ? { counts: normalizeCoverageCounts(tv.counts), seasons: normalizeCoverageSeasons(tv.seasons) } : undefined,
+  }
+}
+
 export interface DiscoveryPerson { tmdb_id?: number; name: string; role?: string; character?: string; profile_url?: string }
 export interface DiscoveryDetail {
   work: DiscoveryWork

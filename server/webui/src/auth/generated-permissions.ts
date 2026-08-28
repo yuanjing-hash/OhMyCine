@@ -41,6 +41,7 @@ export const Permissions = {
   MediaLibrariesCreate: 'media_libraries.create',
   MediaLibrariesUpdate: 'media_libraries.update',
   MediaLibrariesDelete: 'media_libraries.delete',
+  MediaLibrariesMediaDelete: 'media_libraries.media_delete',
   MediaLibrariesScan: 'media_libraries.scan',
   JobsReadOwn: 'jobs.read_own',
   JobsReadAll: 'jobs.read_all',

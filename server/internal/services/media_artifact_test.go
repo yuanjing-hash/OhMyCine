@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,21 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
+
+type traceCountingGORMLogger struct{ count atomic.Int64 }
+
+func (logger *traceCountingGORMLogger) LogMode(gormlogger.LogLevel) gormlogger.Interface {
+	return logger
+}
+func (*traceCountingGORMLogger) Info(context.Context, string, ...any)  {}
+func (*traceCountingGORMLogger) Warn(context.Context, string, ...any)  {}
+func (*traceCountingGORMLogger) Error(context.Context, string, ...any) {}
+func (logger *traceCountingGORMLogger) Trace(_ context.Context, _ time.Time, call func() (string, int64), _ error) {
+	logger.count.Add(1)
+	_, _ = call()
+}
 
 type recordingArtifactCleanup struct {
 	runIDs []string
@@ -125,6 +140,8 @@ func TestMediaArtifactWorkerGeneratesManagedSTRMAndPreservesUnmanagedFile(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	proxyNow := now
+	proxy.now = func() time.Time { return proxyNow }
 	artifacts := NewMediaArtifactService(db, queue, proxy, zerolog.Nop())
 	artifacts.SetConnectionService(connections)
 	changes := NewMediaChangeService(db)
@@ -238,6 +255,134 @@ func TestMediaArtifactWorkerGeneratesManagedSTRMAndPreservesUnmanagedFile(t *tes
 	if err := db.First(&target, target.ID).Error; err != nil || target.DesiredRevision != pendingChange.Revision || notifiedRevision.Load() != pendingChange.Revision {
 		t.Fatalf("target=%+v change_revision=%d notified_revision=%d err=%v", target, pendingChange.Revision, notifiedRevision.Load(), err)
 	}
+	moviePath := filepath.Join(projection, "Movies", "Movie.strm")
+	movieBefore, err := os.ReadFile(moviePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infoBefore, err := os.Stat(moviePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var movieArtifact models.MediaArtifact
+	if err := db.Where("library_id = ? AND relative_path = ?", library.ID, "/Movies/Movie.strm").First(&movieArtifact).Error; err != nil || movieArtifact.ContentExpiresAt == nil || movieArtifact.ContentFormatVersion != proxyFormatV1 {
+		t.Fatalf("initial STRM lease=%+v err=%v", movieArtifact, err)
+	}
+	verifier, err := proxy.activeSigningVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryCounter := &traceCountingGORMLogger{}
+	proxy.db = proxy.db.Session(&gorm.Session{Logger: queryCounter})
+	if _, inspection, ok := artifacts.reusableSTRM(moviePath, movieArtifact, verifier); !ok || inspection.Opaque != movieArtifact.OpaqueID {
+		t.Fatalf("valid managed STRM was not reusable: inspection=%+v", inspection)
+	}
+	if statements := queryCounter.count.Load(); statements != 0 {
+		t.Fatalf("preloaded STRM lease inspection issued %d SQL statements, want 0", statements)
+	}
+	wrongProfile := verifier
+	wrongProfile.FormatVersion = "future-format"
+	if _, _, ok := artifacts.reusableSTRM(moviePath, movieArtifact, wrongProfile); ok {
+		t.Fatal("STRM with a stale signing format was reused")
+	}
+	wrongProfile = verifier
+	wrongProfile.KeyID = "different-active-key"
+	if _, _, ok := artifacts.reusableSTRM(moviePath, movieArtifact, wrongProfile); ok {
+		t.Fatal("STRM with a stale signing key was reused")
+	}
+	originalOrigin := proxy.publicOrigin
+	proxy.publicOrigin = "https://changed-origin.example.test"
+	if _, _, ok := artifacts.reusableSTRM(moviePath, movieArtifact, verifier); ok {
+		t.Fatal("STRM from an old public origin was reused")
+	}
+	proxy.publicOrigin = originalOrigin
+	runGeneration := func(generation uint64) models.MediaArtifactRun {
+		t.Helper()
+		if err := db.Model(&models.MediaLibraryRecognition{}).Where("id = ?", recognition.ID).Update("last_generation", generation).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Model(&models.MediaLibrarySourceAsset{}).Where("id = ?", sourceAsset.ID).Update("generation", generation).Error; err != nil {
+			t.Fatal(err)
+		}
+		finished := proxyNow
+		scan := models.MediaLibraryScanRun{LibraryID: library.ID, Kind: "full", Status: "success", Generation: generation, StartedAt: proxyNow, FinishedAt: &finished}
+		if err := db.Create(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+		_, identity, err := canonicalProjectionRoot(projection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policyJSON, err := json.Marshal(mediaArtifactPolicy{LibraryID: library.ID, Generation: generation, StorageID: library.StorageID, StorageType: models.StorageTypePan115, ConnectionID: connection.ID, ProjectionRoot: projection, ProjectionRootIdentity: identity, TargetKind: models.MediaArtifactTargetLocalProjection, STRMEnabled: true, Metadata: true, AssetExtensions: effectiveSourceAssetExtensions(nil), ScanRunID: scan.ID, ScanKind: scan.Kind, CleanupEligible: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		generated := models.MediaArtifactRun{ID: fmt.Sprintf("lease-generation-%d", generation), LibraryID: library.ID, Generation: generation, PolicyJSON: string(policyJSON), Status: models.MediaArtifactStatusRunning, CleanupStatus: models.MediaArtifactCleanupPending, CreatedAt: proxyNow, UpdatedAt: proxyNow}
+		if err := db.Create(&generated).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Updates(map[string]any{"artifact_generation": generation, "dirty_generation": generation, "artifact_status": models.MediaArtifactStatusRunning}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if result := artifacts.generateArtifacts(context.Background(), &providerWakeRuntime{}, generated, mediaArtifactPolicy{LibraryID: library.ID, Generation: generation, StorageID: library.StorageID, StorageType: models.StorageTypePan115, ConnectionID: connection.ID, ProjectionRoot: projection, ProjectionRootIdentity: identity, TargetKind: models.MediaArtifactTargetLocalProjection, STRMEnabled: true, Metadata: true, AssetExtensions: effectiveSourceAssetExtensions(nil), ScanRunID: scan.ID, ScanKind: scan.Kind, CleanupEligible: true}); result.ErrorCode != "" {
+			t.Fatalf("generation %d result=%+v", generation, result)
+		}
+		if err := db.First(&generated, "id = ?", generated.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		return generated
+	}
+
+	// A later generation may rebind the private provider item while the stable
+	// opaque URL remains byte-for-byte valid. Clear the new lease facts first to
+	// model a v53 row: strict file inspection lazily backfills them without a
+	// rewrite while applying the provider rebind.
+	if err := db.Model(&models.MediaArtifact{}).Where("id = ?", movieArtifact.ID).Updates(map[string]any{"content_expires_at": nil, "content_format_version": ""}).Error; err != nil {
+		t.Fatal(err)
+	}
+	proxyNow = proxyNow.Add(2 * time.Hour)
+	driver.items["movie-file-rebound"] = cloud.Item{ID: "movie-file-rebound", ParentID: "library-root", Name: "Movie.mkv", PickCode: "rebound-pickcode", Size: 100}
+	if err := db.Model(&models.MediaLibraryEntry{}).Where("id = ?", entries[0].ID).Update("provider_id", "movie-file-rebound").Error; err != nil {
+		t.Fatal(err)
+	}
+	third := runGeneration(3)
+	if third.WrittenCount != 0 || third.UpdatedCount != 0 || third.SkippedCount != 5 || third.FailedCount != 0 {
+		t.Fatalf("unchanged generation=%+v", third)
+	}
+	movieAfter, err := os.ReadFile(moviePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infoAfter, err := os.Stat(moviePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(movieAfter) != string(movieBefore) || !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
+		t.Fatalf("unchanged STRM was rewritten: bytes_equal=%t before=%s after=%s", string(movieAfter) == string(movieBefore), infoBefore.ModTime(), infoAfter.ModTime())
+	}
+	if err := db.First(&movieArtifact, movieArtifact.ID).Error; err != nil || movieArtifact.ProviderItemID != "movie-file-rebound" || movieArtifact.ContentExpiresAt == nil {
+		t.Fatalf("rebound manifest=%+v err=%v", movieArtifact, err)
+	}
+	if _, err := proxy.ResolveArtifact(context.Background(), movieArtifact.OpaqueID, "Lease-Test"); err != nil || len(driver.directFileIDs) == 0 || driver.directFileIDs[len(driver.directFileIDs)-1] != "movie-file-rebound" {
+		t.Fatalf("rebound resolver ids=%v err=%v", driver.directFileIDs, err)
+	}
+
+	// Entering the renewal window updates only the two managed STRM files once;
+	// the immediately following generation reuses the renewed leases again.
+	proxyNow = movieArtifact.ContentExpiresAt.Add(-proxyRenewalWindow + time.Hour)
+	fourth := runGeneration(4)
+	if fourth.WrittenCount != 0 || fourth.UpdatedCount != 2 || fourth.SkippedCount != 3 || fourth.FailedCount != 0 {
+		t.Fatalf("renewal generation=%+v", fourth)
+	}
+	renewed, err := os.ReadFile(moviePath)
+	if err != nil || string(renewed) == string(movieBefore) {
+		t.Fatalf("near-expiry STRM was not renewed: equal=%t err=%v", string(renewed) == string(movieBefore), err)
+	}
+	proxyNow = proxyNow.Add(time.Hour)
+	fifth := runGeneration(5)
+	if fifth.WrittenCount != 0 || fifth.UpdatedCount != 0 || fifth.SkippedCount != 5 || fifth.FailedCount != 0 {
+		t.Fatalf("post-renewal generation=%+v", fifth)
+	}
 }
 
 func TestMediaArtifactCompletionCASDoesNotInvalidateNewerManifest(t *testing.T) {
@@ -271,6 +416,42 @@ func TestMediaArtifactCompletionCASDoesNotInvalidateNewerManifest(t *testing.T) 
 	}
 	if err := service.db.First(&active, active.ID).Error; err != nil || !active.Active {
 		t.Fatalf("newer artifact=%+v err=%v", active, err)
+	}
+}
+
+func TestMediaArtifactManifestPersistenceIsBatched(t *testing.T) {
+	management, queue, _, library, _ := strmManagementFixture(t)
+	now := time.Now().UTC()
+	run := models.MediaArtifactRun{ID: "batched-manifest-run", LibraryID: library.ID, Generation: 100, PolicyJSON: `{}`, Status: models.MediaArtifactStatusRunning, CreatedAt: now, UpdatedAt: now}
+	if err := management.db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]models.MediaArtifact, 250)
+	for index := range rows {
+		rows[index] = models.MediaArtifact{OpaqueID: fmt.Sprintf("batch-artifact-%032d", index), RunID: run.ID, LibraryID: library.ID, SourceIdentity: fmt.Sprintf("entry:%d", index), ProviderItemID: fmt.Sprintf("old-%d", index), Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: fmt.Sprintf("/batch/%03d.strm", index), ContentFingerprint: strings.Repeat("a", 64), Managed: true, Active: true, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	}
+	if err := management.db.CreateInBatches(&rows, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	manifest := newArtifactManifestIndex(len(rows))
+	for index := range rows {
+		row := rows[index]
+		row.ProviderItemID = fmt.Sprintf("new-%d", index)
+		key := artifactManifestKey(row.TargetKind, row.RelativePath)
+		manifest.rows[key] = row
+		manifest.dirty[key] = struct{}{}
+	}
+	counter := &traceCountingGORMLogger{}
+	service := NewMediaArtifactService(management.db.Session(&gorm.Session{Logger: counter}), queue, nil, zerolog.Nop())
+	if err := service.persistArtifactManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if statements := counter.count.Load(); statements > 4 {
+		t.Fatalf("250-row manifest persistence issued %d SQL statements, want <=4", statements)
+	}
+	var persisted models.MediaArtifact
+	if err := management.db.First(&persisted, rows[len(rows)-1].ID).Error; err != nil || persisted.ProviderItemID != "new-249" {
+		t.Fatalf("batched manifest row=%+v err=%v", persisted, err)
 	}
 }
 

@@ -286,6 +286,20 @@ func (a *API) MediaLibraryCatalog(c *gin.Context) {
 	}
 	success(c, http.StatusOK, page)
 }
+func (a *API) AggregateMediaLibraryCatalog(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	query, err := mediaPageQuery(c, false)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	page, err := a.libraries.AggregateCatalog(actor, query)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, page)
+}
 func (a *API) MediaLibraryCatalogDetail(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	id, ok := pathID(c)
@@ -298,6 +312,108 @@ func (a *API) MediaLibraryCatalogDetail(c *gin.Context) {
 		return
 	}
 	success(c, http.StatusOK, detail)
+}
+func (a *API) MediaLibraryCatalogCandidates(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var year *int
+	if raw := c.Query("year"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1888 || value > 2200 {
+			writeError(c, a.log, invalid("年份无效", err))
+			return
+		}
+		year = &value
+	}
+	items, err := a.libraries.CatalogRecognitionCandidates(c.Request.Context(), actor, id, c.Param("work"), c.Query("title"), c.Query("media_type"), year)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+func (a *API) RetryMediaLibraryCatalogRecognition(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	items, err := a.libraries.RetryCatalogRecognition(c.Request.Context(), actor, id, c.Param("work"), middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+func (a *API) OverrideMediaLibraryCatalogRecognition(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var payload struct {
+		TMDBID    int64  `json:"tmdb_id"`
+		MediaType string `json:"media_type"`
+	}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("TMDB 匹配选择无效", err))
+		return
+	}
+	items, err := a.libraries.OverrideCatalogRecognition(c.Request.Context(), actor, id, c.Param("work"), services.MediaRecognitionOverrideInput{TMDBID: payload.TMDBID, MediaType: payload.MediaType}, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+func (a *API) ClearMediaLibraryCatalogRecognition(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	items, err := a.libraries.ClearCatalogRecognitionOverride(c.Request.Context(), actor, id, c.Param("work"), middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
+}
+func (a *API) PreviewMediaLibraryCatalogDeletion(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	result, err := a.libraries.PreviewCatalogDeletion(c.Request.Context(), actor, id, c.Param("work"), middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, result)
+}
+func (a *API) ConfirmMediaLibraryCatalogDeletion(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("删除确认参数无效", err))
+		return
+	}
+	result, err := a.libraries.ConfirmCatalogDeletion(c.Request.Context(), actor, id, c.Param("work"), payload.Token, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, result)
 }
 func (a *API) MediaLibraryRuns(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)

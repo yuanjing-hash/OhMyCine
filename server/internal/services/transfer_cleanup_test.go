@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -226,8 +227,36 @@ func TestTransferCleanupRecyclesOnlyExactPan115Extras(t *testing.T) {
 	if len(fixture.driver.recycled) != 1 || fixture.driver.recycled[0] != "advertisement" {
 		t.Fatalf("recycled=%v", fixture.driver.recycled)
 	}
+	if fixture.driver.recycleBatchCalls != 1 {
+		t.Fatalf("recycle batch calls=%d want=1", fixture.driver.recycleBatchCalls)
+	}
 	if _, exists := fixture.driver.items[fixture.sourceID]; !exists {
 		t.Fatal("selected provider media was recycled")
+	}
+}
+
+func TestTransferCleanupPan115BatchesByProvenSourceParent(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	extras := make([]downloadpkg.File, 0, 10)
+	for parentIndex := 0; parentIndex < 4; parentIndex++ {
+		parentID := "cleanup-parent-" + strconv.Itoa(parentIndex)
+		fixture.driver.items[parentID] = cloudpkg.Item{ID: parentID, ParentID: "source-root", Name: "extras", IsDir: true}
+	}
+	for index := 0; index < 10; index++ {
+		parentID := "cleanup-parent-" + strconv.Itoa(index%4)
+		itemID := "cleanup-item-" + strconv.Itoa(index)
+		fixture.driver.items[itemID] = cloudItem(itemID, parentID, "extra.txt", int64(10+index), "CLEAN-"+strconv.Itoa(index))
+		extras = append(extras, downloadpkg.File{RelativePath: "extras/extra-" + strconv.Itoa(index) + ".txt", ProviderItemID: itemID, ProviderParentID: parentID, Size: int64(10 + index), SHA1: "CLEAN-" + strconv.Itoa(index)})
+	}
+	removed, err := fixture.service.cleanupCloudStaging(context.Background(), fixture.download, extras)
+	if err != nil || removed != len(extras) {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	if fixture.driver.recycleBatchCalls != 4 {
+		t.Fatalf("recycle batch calls=%d want=4", fixture.driver.recycleBatchCalls)
+	}
+	if fixture.driver.statCalls > 5 {
+		t.Fatalf("cleanup boundary proof regressed to per-item stats: %d", fixture.driver.statCalls)
 	}
 }
 

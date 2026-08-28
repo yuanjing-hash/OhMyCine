@@ -85,7 +85,53 @@ func Migrate(db *gorm.DB) error {
 }
 
 func schemaMigrations() []migration {
-	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}, {Version: 38, Apply: migratePluginManagedImports}, {Version: 39, Apply: migrateMediaRefreshNotify}, {Version: 40, Apply: migrateDiscoveryCache}, {Version: 41, Apply: migrateDownloadRecognitionOverride}, {Version: 42, Apply: migratePTSites}, {Version: 43, Apply: migrateCookieCloudAndSiteRendering}, {Version: 44, Apply: migratePTSiteCatalog, DisableForeignKeys: true}, {Version: 45, Apply: migrateCompletedDownloadManifest}, {Version: 46, Apply: migrateDownloaderQueueDelegation}, {Version: 47, Apply: migrateDownloadRecognitionEpisodeOverride}, {Version: 48, Apply: migrateDownloadMediaIdentity}, {Version: 49, Apply: migrateAIRecognitionSettings}, {Version: 50, Apply: migrateMediaReorganization}, {Version: 51, Apply: migrateTransferDeletionScopes}, {Version: 52, Apply: migrateAutomaticTVFollows}, {Version: 53, Apply: migrateDownloaderLifeEventListening}}
+	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}, {Version: 38, Apply: migratePluginManagedImports}, {Version: 39, Apply: migrateMediaRefreshNotify}, {Version: 40, Apply: migrateDiscoveryCache}, {Version: 41, Apply: migrateDownloadRecognitionOverride}, {Version: 42, Apply: migratePTSites}, {Version: 43, Apply: migrateCookieCloudAndSiteRendering}, {Version: 44, Apply: migratePTSiteCatalog, DisableForeignKeys: true}, {Version: 45, Apply: migrateCompletedDownloadManifest}, {Version: 46, Apply: migrateDownloaderQueueDelegation}, {Version: 47, Apply: migrateDownloadRecognitionEpisodeOverride}, {Version: 48, Apply: migrateDownloadMediaIdentity}, {Version: 49, Apply: migrateAIRecognitionSettings}, {Version: 50, Apply: migrateMediaReorganization}, {Version: 51, Apply: migrateTransferDeletionScopes}, {Version: 52, Apply: migrateAutomaticTVFollows}, {Version: 53, Apply: migrateDownloaderLifeEventListening}, {Version: 54, Apply: migrateMediaArtifactContentLease}, {Version: 55, Apply: migrateMediaCatalogDeletion}}
+}
+
+func migrateMediaCatalogDeletion(db *gorm.DB) error {
+	if err := db.Exec(`CREATE TABLE media_catalog_deletion_previews (
+		id TEXT PRIMARY KEY,
+		token_hash TEXT NOT NULL UNIQUE,
+		actor_id INTEGER NOT NULL,
+		library_id INTEGER NOT NULL,
+		work_key TEXT NOT NULL,
+		entry_digest TEXT NOT NULL,
+		storage_type TEXT NOT NULL,
+		snapshot_json TEXT NOT NULL,
+		state_json TEXT NOT NULL,
+		last_error_code TEXT NOT NULL DEFAULT '',
+		started_at DATETIME,
+		consumed_at DATETIME,
+		expires_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE CASCADE,
+		FOREIGN KEY(library_id) REFERENCES media_libraries(id) ON DELETE CASCADE
+	)`).Error; err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE INDEX idx_media_catalog_deletion_actor ON media_catalog_deletion_previews(actor_id)`,
+		`CREATE INDEX idx_media_catalog_deletion_library ON media_catalog_deletion_previews(library_id)`,
+		`CREATE INDEX idx_media_catalog_deletion_expiry ON media_catalog_deletion_previews(expires_at)`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateMediaArtifactContentLease(db *gorm.DB) error {
+	for _, statement := range []string{
+		`ALTER TABLE media_artifacts ADD COLUMN content_expires_at DATETIME`,
+		`ALTER TABLE media_artifacts ADD COLUMN content_format_version TEXT NOT NULL DEFAULT ''`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateDownloaderLifeEventListening(db *gorm.DB) error {
@@ -1676,7 +1722,7 @@ func seedAuthorization(db *gorm.DB) error {
 			}
 			roles[i] = role
 		}
-		operatorCodes := []string{"dashboard.read", "logs.read", "media_libraries.read", "media_libraries.create", "media_libraries.update", "media_libraries.delete", "media_libraries.scan", "connections.read", "connections.create", "connections.update", "connections.test", "downloaders.read", "downloaders.create", "downloaders.update", "downloaders.delete", "downloaders.test", "downloads.read_all", "downloads.create", "downloads.manage_all", "transfers.read_all", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read", "jobs.read_all", "jobs.control_all", "jobs.respond", "jobs.reorder", "discovery.read", "sites.read", "follows.read_all", "follows.create", "follows.update_all", "follows.delete_all", "follows.execute_all"}
+		operatorCodes := []string{"dashboard.read", "logs.read", "media_libraries.read", "media_libraries.create", "media_libraries.update", "media_libraries.delete", "media_libraries.media_delete", "media_libraries.scan", "connections.read", "connections.create", "connections.update", "connections.test", "downloaders.read", "downloaders.create", "downloaders.update", "downloaders.delete", "downloaders.test", "downloads.read_all", "downloads.create", "downloads.manage_all", "transfers.read_all", "storages.read", "storages.browse", "storages.create", "storages.update", "storages.delete", "storages.test", "media_classification_profiles.read", "media_classification_profiles.create", "media_classification_profiles.update", "media_classification_profiles.delete", "destinations.read", "destinations.create", "destinations.update", "strm.runs.read", "strm.runs.create", "strm.runs.cancel", "media_servers.refresh", "settings.read", "jobs.read_all", "jobs.control_all", "jobs.respond", "jobs.reorder", "discovery.read", "sites.read", "follows.read_all", "follows.create", "follows.update_all", "follows.delete_all", "follows.execute_all"}
 		viewerCodes := []string{"dashboard.read", "connections.read", "destinations.read", "strm.runs.read"}
 		for roleIndex, codes := range [][]string{nil, operatorCodes, viewerCodes} {
 			if roleIndex == 0 {

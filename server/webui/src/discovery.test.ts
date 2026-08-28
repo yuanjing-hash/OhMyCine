@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { buildDiscoveryMediaSearchPath, buildDiscoveryPath, buildRefreshPayload, coverageStatusLabel, discoveryCoveragePath, discoveryResourceRoute, discoveryWorkQuery, mediaIdentitySearchURL } from '@/discovery'
+import { buildDiscoveryMediaSearchPath, buildDiscoveryPath, buildRefreshPayload, coverageStatusLabel, discoveryCoveragePath, discoveryResourceRoute, discoveryWorkQuery, mediaIdentitySearchURL, normalizeMediaCoverage } from '@/discovery'
 
 describe('discovery contracts', () => {
   it('builds bounded provider queries', () => {
@@ -42,5 +42,50 @@ describe('discovery contracts', () => {
     expect(layout).toContain('submitGlobalMediaSearch')
     expect(layout).toContain("path: '/discovery/explore', query: { query }")
     expect(layout).not.toContain('全局搜索服务尚未实现')
+  })
+
+  it('normalizes production-shaped nullable coverage collections at the API boundary', () => {
+    const coverage = normalizeMediaCoverage({
+      media_type: 'tv',
+      tmdb_id: 100,
+      title: '测试剧',
+      status: 'missing',
+      libraries: null,
+      freshness: { checked_at: '2026-08-28T00:00:00Z', library_scan_state: 'complete', tmdb_state: 'complete' },
+      tv: {
+        counts: { total: 8, present: 0, missing: 8, future: 0, unknown: 0 },
+        seasons: [
+          {
+            season_number: 1,
+            name: '第 1 季',
+            special: false,
+            status: 'missing',
+            counts: { total: 8, present: 0, missing: 8, future: 0, unknown: 0 },
+            episodes: [{ episode_number: 1, name: null, air_date: null, status: null, library_ids: null }],
+          },
+          {
+            season_number: 2,
+            name: '第 2 季',
+            special: false,
+            status: 'unknown',
+            counts: null,
+            episodes: null,
+          },
+        ],
+      },
+    })
+
+    expect(coverage.libraries).toEqual([])
+    expect(coverage.tv?.seasons[0].episodes[0]).toEqual({ episode_number: 1, name: undefined, air_date: undefined, status: 'unknown', library_ids: [] })
+    expect(coverage.tv?.seasons[1].episodes).toEqual([])
+    expect(coverage.tv?.seasons[1].counts).toEqual({ total: 0, present: 0, missing: 0, future: 0, unknown: 0 })
+  })
+
+  it('normalizes nullable movie library references and rejects an invalid root payload', () => {
+    const coverage = normalizeMediaCoverage({ media_type: 'movie', tmdb_id: 200, title: '测试电影', status: 'missing', libraries: null, freshness: null, movie: { present: false, library_ids: null } })
+    expect(coverage.movie?.library_ids).toEqual([])
+    expect(coverage.freshness).toEqual({ checked_at: '', library_scan_state: 'unscanned', tmdb_state: 'partial' })
+    expect(() => normalizeMediaCoverage(null)).toThrow('媒体库覆盖率数据格式无效')
+    expect(() => normalizeMediaCoverage({ media_type: 'tv', tmdb_id: 100, title: '损坏响应' })).toThrow('媒体库覆盖率数据格式无效')
   })
 })

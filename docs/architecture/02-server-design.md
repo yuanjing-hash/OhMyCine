@@ -28,6 +28,8 @@ Server 已完成管理基础与 Web UI v0.2 壳层：Go/Gin + SQLite/GORM、显�
 
 当前版本已实现 local 与 115 数据源基础：管理员从统一“数据源”页面先选择本地目录或 115 网盘；本地根继续执行绝对路径、Reparse Point 和只读探测校验，115 Cookie 由 Connection AES-GCM 加密保存并可被多个 provider root 复用。115 云目录选择使用绑定 actor、Connection、Storage、Storage 根、provider directory ID、用途和过期时间的 opaque token，Storage 保存稳定 file ID 与显示路径，不保存 Cookie、pickcode 或临时直链。MediaLibrary 可继续从 Storage 根选择任意下级媒体目录，私有保存稳定 provider root ID，并从该 ID 执行 bulk-tree 全量扫描；创建数据源本身不会扫描媒体，删除配置不会修改真实文件或网盘内容。媒体服务器连接、目标绑定、持久刷新任务和 Player 媒体变更通知已经接入；其余 Storage Destination、STRM/302 纵向能力仍按各自路线图继续完善。
 
+Server 管理端现将媒体库配置和内容浏览分开：原 `/system/media-libraries` 仅改名为“媒体库管理”，发现分组新增“媒体库”海报墙。单库继续使用现有 catalog；“全部库”在后端完成稳定身份去重和正确分页，只以媒体类型 + TMDB ID 合并可信匹配，未匹配作品保持库隔离。作品详情展示扫描事实中的真实文件与季集覆盖，并通过 opaque work token 组合现有 TMDB 候选、人工覆盖、清除覆盖和重新刮削；普通重新刮削不移动源文件。源文件删除使用独立 `media_libraries.media_delete` 权限和 preview/confirm：只作用于一个明确媒体库的当前作品，本地逐文件复核 canonical root/Reparse Point，115 逐项复核 Storage/库根 ancestry 与稳定身份后送入回收站；完成项持久 checkpoint，catalog 收敛后再调度产物、STRM 和媒体服务器刷新。
+
 Emby 不作为文件数据源展示，而进入独立“播放器管理”工作区。页面复用通用 Connection 记录和既有权限，以卡片展示真实探测状态、受控的服务器版本/媒体数量聚合摘要，以及默认关闭的签名 STRM 302 gateway。API Key 加密保存且永不回填；gateway 与 Web/API/STRM 共用 Server 主端口，复制地址只使用全局 `OMC_PUBLIC_ORIGIN`。默认监听 `0.0.0.0:3000` 与默认 advertised origin `http://127.0.0.1:3000` 明确分离，wildcard 地址不能进入持久 URL。为兼容不返回 CORS Header 的 115 CDN，网关修补 Emby Web 固定播放器资源中的远程 DirectPlay `crossOrigin` 赋值，并在固定 HTML 壳优先加载一个网关同源、不可配置的兜底脚本以覆盖旧模块缓存；同一固定脚本还可按网关开关提供设备适配的外部播放器入口和 Emby 背景图横向图库。外部播放器只接受本系统 PlaybackInfo 返回的短时 ticket，不传递 Emby/115 持久凭据或最终 CDN 地址；图库只使用当前 Emby 会话可见图片且无第三方前端依赖。其它 HTML/静态内容仍透明代理，不提供任意脚本注入。
 
 Player 现已通过独立 `ServerDataSource` 接入 Server 媒体目录。用户首次在 Player 输入 Server 用户名和密码，Server 只在该次验证后签发可撤销的 `omc_player_` device token；数据库仅保存 token 与设备 ID 的不可逆摘要，Player 密码不持久化，device token 进入 Player provider-specific 安全凭据库。`/api/v1/player/*` 使用独立 Bearer 中间件并注册在浏览器 Origin/CSRF 边界之外，Bearer 不能进入 Cookie 管理 API；停用用户、重置密码、同设备重新登录、登出或显式撤销都会使对应令牌失效。Player 专用 DTO 只返回安全媒体库、作品、版本和身份投影，不返回绝对路径、115 provider ID、Cookie、Emby API Key、signed STRM URL 或上游临时地址。
@@ -436,6 +438,8 @@ STRM 管理有独立的管理页面，当前以媒体库 generation 和 manifest
 媒体视频扩展固定为 `mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v`。投影伴随文件默认包含不可移除的 `srt,ssa,ass,jpg`，每个媒体库可以追加经过严格校验的小写字母/数字扩展；追加集合进入 generation policy 快照，扫描和 worker 使用同一有效集合。
 
 完整成功且非 partial 的权威扫描会把 scan run ID/kind、generation、投影根 canonical identity 和清理资格写入不可变 policy。产物 worker 在同一事务内完成新 manifest 应用、旧 manifest 失效和 applied generation 推进，然后才执行自动清理。失败、partial、superseded、未知扫描类型或投影根变化都不自动删除。
+
+STRM 增量生成先一次加载当前媒体库/目标类型的 managed manifest 和 generation 级 active signing verifier，再以目标相对路径形成内存 diff 并批量持久化；逐文件租约检查复用预加载的 manifest 与 verifier，不再重复查询签名 key、产物行或解密凭据。现有 STRM 只有在严格验证其 public origin、opaque/library 绑定、HMAC、active manifest、当前 signing key、格式和过期时间后才可复用；离续期窗口尚远时保留原 bytes 与 mtime，并将同路径 provider item 变化只作为 manifest rebind。进入七天续期窗口、签名 key/origin/格式变化、内容损坏或目标缺失时才签发新的 30 天 URL并计为真实更新。v54 仅增加 nullable 到期时间与默认空格式版本，旧 URL按磁盘真实内容惰性回填，不因升级全库重写。
 
 自动与人工清理共用同一个 manifest primitive：持有同库扫描互斥锁，每个文件删除前持久化 `cleanup` claim，并重新校验 generation、root identity、manifest snapshot、ownership、kind/扩展名和 symlink/junction/reparse 边界。自动路径只认当前投影根；投影根更换后，人工预览/确认路径可仅根据每条 artifact owner 的不可变 policy 解析旧根，并把完整根身份集合哈希进确认令牌。只会删除 inactive + managed + `local_projection` 的 STRM/NFO/JPG/字幕/已快照伴随文件，绝不删除 unmanaged 同名文件。删除 manifest 与累计计数同事务提交；Server 中断后可通过 `pending|running|failed` 状态和文件 claim 重放收敛，不回滚已完成产物 generation。
 

@@ -656,6 +656,28 @@ type MediaLibraryRecognition struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+// MediaCatalogDeletionPreview is both the short-lived confirmation claim and
+// the durable per-item checkpoint for one concrete library work deletion.
+// SnapshotJSON and StateJSON contain provider identities and must never be
+// serialized by handlers or copied into audit metadata.
+type MediaCatalogDeletionPreview struct {
+	ID            string     `gorm:"primaryKey;size:36" json:"-"`
+	TokenHash     string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	ActorID       uint       `gorm:"not null;index" json:"-"`
+	LibraryID     uint       `gorm:"not null;index" json:"-"`
+	WorkKey       string     `gorm:"size:80;not null" json:"-"`
+	EntryDigest   string     `gorm:"size:64;not null" json:"-"`
+	StorageType   string     `gorm:"size:32;not null" json:"-"`
+	SnapshotJSON  string     `gorm:"type:text;not null" json:"-"`
+	StateJSON     string     `gorm:"type:text;not null" json:"-"`
+	LastErrorCode string     `gorm:"size:96;not null;default:''" json:"-"`
+	StartedAt     *time.Time `json:"-"`
+	ConsumedAt    *time.Time `json:"-"`
+	ExpiresAt     time.Time  `gorm:"not null;index" json:"-"`
+	CreatedAt     time.Time  `gorm:"not null" json:"-"`
+	UpdatedAt     time.Time  `gorm:"not null" json:"-"`
+}
+
 // MediaRecognitionCache contains only canonical, credential-free TMDB match
 // projections. It never stores upstream responses, URLs, paths or provider IDs.
 type MediaRecognitionCache struct {
@@ -751,24 +773,26 @@ type MediaArtifactRun struct {
 // changed or removed by reconciliation; an unmanaged on-disk name collision is
 // never adopted implicitly.
 type MediaArtifact struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`
-	OpaqueID           string    `gorm:"size:64;not null;uniqueIndex" json:"-"`
-	RunID              string    `gorm:"size:36;not null;index" json:"run_id"`
-	LibraryID          uint      `gorm:"not null;uniqueIndex:idx_media_artifact_target;index" json:"library_id"`
-	SourceIdentity     string    `gorm:"size:96;not null;default:'';index" json:"-"`
-	ProviderItemID     string    `gorm:"size:128;not null;default:''" json:"-"`
-	ProviderParentID   string    `gorm:"size:128;not null;default:''" json:"-"`
-	Kind               string    `gorm:"size:32;not null;index" json:"kind"`
-	TargetKind         string    `gorm:"size:32;not null;uniqueIndex:idx_media_artifact_target" json:"target_kind"`
-	RelativePath       string    `gorm:"size:2048;not null;uniqueIndex:idx_media_artifact_target" json:"relative_path"`
-	ContentFingerprint string    `gorm:"size:64;not null;default:''" json:"-"`
-	TargetProviderID   string    `gorm:"size:128;not null;default:''" json:"-"`
-	Managed            bool      `gorm:"not null" json:"managed"`
-	Active             bool      `gorm:"not null;default:true;index" json:"active"`
-	Status             string    `gorm:"size:32;not null;index" json:"status"`
-	ErrorCode          string    `gorm:"size:96;not null;default:''" json:"error_code"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                   uint       `gorm:"primaryKey" json:"id"`
+	OpaqueID             string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	RunID                string     `gorm:"size:36;not null;index" json:"run_id"`
+	LibraryID            uint       `gorm:"not null;uniqueIndex:idx_media_artifact_target;index" json:"library_id"`
+	SourceIdentity       string     `gorm:"size:96;not null;default:'';index" json:"-"`
+	ProviderItemID       string     `gorm:"size:128;not null;default:''" json:"-"`
+	ProviderParentID     string     `gorm:"size:128;not null;default:''" json:"-"`
+	Kind                 string     `gorm:"size:32;not null;index" json:"kind"`
+	TargetKind           string     `gorm:"size:32;not null;uniqueIndex:idx_media_artifact_target" json:"target_kind"`
+	RelativePath         string     `gorm:"size:2048;not null;uniqueIndex:idx_media_artifact_target" json:"relative_path"`
+	ContentFingerprint   string     `gorm:"size:64;not null;default:''" json:"-"`
+	ContentExpiresAt     *time.Time `json:"-"`
+	ContentFormatVersion string     `gorm:"size:16;not null;default:''" json:"-"`
+	TargetProviderID     string     `gorm:"size:128;not null;default:''" json:"-"`
+	Managed              bool       `gorm:"not null" json:"managed"`
+	Active               bool       `gorm:"not null;default:true;index" json:"active"`
+	Status               string     `gorm:"size:32;not null;index" json:"status"`
+	ErrorCode            string     `gorm:"size:96;not null;default:''" json:"error_code"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 // ProxySigningKey stores only an encrypted HMAC secret. ID is the public kid;

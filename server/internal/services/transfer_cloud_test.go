@@ -25,7 +25,12 @@ type fakeMutationCloudDriver struct {
 	listCalls              int
 	statCalls              int
 	copyCalls              int
+	copyBatchCalls         int
 	moveCalls              int
+	moveBatchCalls         int
+	moveBatchApplyOnce     int
+	moveBatchErrOnce       error
+	recycleBatchCalls      int
 	renameCalls            int
 	renameErrOnce          bool
 	recycleFailID          string
@@ -140,6 +145,25 @@ func (f *fakeMutationCloudDriver) Move(_ context.Context, itemID, targetParentID
 	f.items[itemID] = item
 	return nil
 }
+func (f *fakeMutationCloudDriver) MoveMany(ctx context.Context, itemIDs []string, targetParentID string) error {
+	f.moveBatchCalls++
+	limit := len(itemIDs)
+	if f.moveBatchApplyOnce > 0 && f.moveBatchApplyOnce < limit {
+		limit = f.moveBatchApplyOnce
+	}
+	for _, itemID := range itemIDs[:limit] {
+		if err := f.Move(ctx, itemID, targetParentID); err != nil {
+			return err
+		}
+	}
+	if f.moveBatchErrOnce != nil {
+		err := f.moveBatchErrOnce
+		f.moveBatchErrOnce = nil
+		f.moveBatchApplyOnce = 0
+		return err
+	}
+	return nil
+}
 func (f *fakeMutationCloudDriver) Copy(_ context.Context, itemID, targetParentID string) error {
 	item, ok := f.items[itemID]
 	if !ok {
@@ -149,6 +173,15 @@ func (f *fakeMutationCloudDriver) Copy(_ context.Context, itemID, targetParentID
 	f.nextID++
 	item.ID, item.ParentID = "copied-"+strconv.Itoa(f.nextID), targetParentID
 	f.items[item.ID] = item
+	return nil
+}
+func (f *fakeMutationCloudDriver) CopyMany(ctx context.Context, itemIDs []string, targetParentID string) error {
+	f.copyBatchCalls++
+	for _, itemID := range itemIDs {
+		if err := f.Copy(ctx, itemID, targetParentID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 func (f *fakeMutationCloudDriver) Rename(_ context.Context, itemID, name string) error {
@@ -187,6 +220,15 @@ func (f *fakeMutationCloudDriver) Recycle(_ context.Context, itemID string) erro
 		delete(f.items, current)
 	}
 	f.recycled = append(f.recycled, itemID)
+	return nil
+}
+func (f *fakeMutationCloudDriver) RecycleMany(ctx context.Context, itemIDs []string) error {
+	f.recycleBatchCalls++
+	for _, itemID := range itemIDs {
+		if err := f.Recycle(ctx, itemID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -322,6 +364,262 @@ func TestCloudTransferWorkerMovesAndCopiesWithinOneConnection(t *testing.T) {
 	}
 }
 
+func TestCloudTransferCompletionLogContainsOnlyAggregateTiming(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	var output strings.Builder
+	fixture.service.log = zerolog.New(&output)
+	result := fixture.run(t)
+	if result.ErrorCode != "" || result.RetryAt != nil || result.Wait != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	logText := output.String()
+	for _, field := range []string{"provider_wait_calls", "provider_wait_ms", "provider_call_calls", "provider_call_ms", "target_list_calls", "target_list_ms", "batch_mutation_calls", "batch_mutation_ms", "db_checkpoint_calls", "db_checkpoint_ms"} {
+		if !strings.Contains(logText, `"`+field+`"`) {
+			t.Fatalf("completion log missing aggregate field %q: %s", field, logText)
+		}
+	}
+	for _, secret := range []string{fixture.sourceID, "Movie.2024.mkv", "library-root", "target-storage-root"} {
+		if strings.Contains(logText, secret) {
+			t.Fatalf("completion log leaked provider identity/path %q: %s", secret, logText)
+		}
+	}
+}
+
+func TestCloudTransferMoveBatchesScaleWithUniqueParents(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	if err := fixture.service.Enqueue(fixture.download, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sourceStorage models.Storage
+	if err := fixture.queue.db.First(&sourceStorage, *fixture.download.StagingStorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{".": "library-root"}, Items: map[string]cloudTransferItemState{}}
+	targets := make([]transferTargetItem, 0, 28)
+	for parentIndex := 0; parentIndex < 4; parentIndex++ {
+		sourceParentID := "source-parent-" + strconv.Itoa(parentIndex)
+		targetParentID := "target-parent-" + strconv.Itoa(parentIndex)
+		directory := "target-" + strconv.Itoa(parentIndex)
+		fixture.driver.items[sourceParentID] = cloudpkg.Item{ID: sourceParentID, ParentID: "source-root", Name: "source", IsDir: true}
+		fixture.driver.items[targetParentID] = cloudpkg.Item{ID: targetParentID, ParentID: "library-root", Name: directory, IsDir: true}
+		state.Directories[directory] = targetParentID
+	}
+	for index := 0; index < 28; index++ {
+		parentIndex := index % 4
+		sourceID := "batch-source-" + strconv.Itoa(index)
+		sourceName := "Episode." + strconv.Itoa(index) + ".mkv"
+		targetName := "Episode " + strconv.Itoa(index) + ".mkv"
+		sourceParentID := "source-parent-" + strconv.Itoa(parentIndex)
+		fixture.driver.items[sourceID] = cloudpkg.Item{ID: sourceID, ParentID: sourceParentID, Name: sourceName, Size: int64(1000 + index), SHA1: "SHA-" + strconv.Itoa(index)}
+		targets = append(targets, transferTargetItem{File: downloadpkg.File{RelativePath: sourceName, ProviderItemID: sourceID, ProviderParentID: sourceParentID, Size: int64(1000 + index), SHA1: "SHA-" + strconv.Itoa(index)}, Relative: "target-" + strconv.Itoa(parentIndex) + "/" + targetName})
+	}
+	worker := NewTransferWorker(fixture.service)
+	timings := cloudpkg.NewOperationTimingCollector()
+	ctx := cloudpkg.WithOperationTimingCollector(context.Background(), timings)
+	if err := worker.executeCloudMoveBatches(ctx, fixture.driver, fixture.driver, &task, &state, fixture.download, sourceStorage, targets, map[string]cloudpkg.Item{}, map[string]bool{}, models.MediaLibraryConflictOverwrite); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.driver.moveBatchCalls != 4 {
+		t.Fatalf("move batch calls=%d want=4", fixture.driver.moveBatchCalls)
+	}
+	if fixture.driver.statCalls > 6 {
+		t.Fatalf("source proof regressed to per-file stat calls: %d", fixture.driver.statCalls)
+	}
+	if fixture.driver.listCalls != 8 {
+		t.Fatalf("directory list calls=%d want=8", fixture.driver.listCalls)
+	}
+	if completedCloudItems(state) != len(targets) || state.BatchIntent != nil {
+		t.Fatalf("completed=%d intent=%+v", completedCloudItems(state), state.BatchIntent)
+	}
+	timing := timings.Snapshot()
+	if timing.TargetListCalls != 4 || timing.BatchMutationCalls != 4 || timing.DBCheckpointCalls != 8 || timing.ProviderWaitCalls != 0 || timing.ProviderCallCalls != 0 {
+		t.Fatalf("task-scoped aggregate timing=%+v", timing)
+	}
+}
+
+func TestCloudTransferMoveBatchIntentReconcilesAfterProviderSuccess(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	if err := fixture.service.Enqueue(fixture.download, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.items[fixture.sourceID] = cloudpkg.Item{ID: fixture.sourceID, ParentID: "target-parent", Name: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes, SHA1: "VIDEO-SHA1"}
+	fixture.driver.items["target-parent"] = cloudpkg.Item{ID: "target-parent", ParentID: "library-root", Name: "电影", IsDir: true}
+	batchItem := cloudTransferBatchItem{SourceID: fixture.sourceID, SourceParentID: "source-root", SourceName: "Movie.2024.mkv", TargetParentID: "target-parent", TargetName: "Movie (2024).mkv", Size: minimumAutomaticTransferVideoBytes, SHA1: "VIDEO-SHA1"}
+	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{".": "library-root", "电影": "target-parent"}, Items: map[string]cloudTransferItemState{}, BatchIntent: &cloudTransferBatchIntent{Version: cloudBatchIntentVersion, Operation: "move", TargetParentID: "target-parent", Items: []cloudTransferBatchItem{batchItem}}}
+	targets := []transferTargetItem{{File: fixture.manifest.Files[0], Relative: "电影/Movie (2024).mkv"}}
+	worker := NewTransferWorker(fixture.service)
+	if err := worker.executeCloudMoveBatches(context.Background(), fixture.driver, fixture.driver, &task, &state, fixture.download, models.Storage{}, targets, map[string]cloudpkg.Item{}, map[string]bool{}, models.MediaLibraryConflictOverwrite); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.driver.moveBatchCalls != 0 || state.BatchIntent != nil || state.Items[fixture.sourceID].Status != "completed" {
+		t.Fatalf("move calls=%d intent=%+v item=%+v", fixture.driver.moveBatchCalls, state.BatchIntent, state.Items[fixture.sourceID])
+	}
+	if item := fixture.driver.items[fixture.sourceID]; item.ParentID != "target-parent" || item.Name != "Movie (2024).mkv" {
+		t.Fatalf("reconciled item=%+v", item)
+	}
+}
+
+func TestCloudTransferMoveBatchPartialResultPersistsOnlyRemainingIntent(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	if err := fixture.service.Enqueue(fixture.download, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sourceStorage models.Storage
+	if err := fixture.queue.db.First(&sourceStorage, *fixture.download.StagingStorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.items["partial-second"] = cloudpkg.Item{ID: "partial-second", ParentID: "source-root", Name: "Second.mkv", Size: 2000, SHA1: "SECOND-SHA"}
+	fixture.driver.items["target-parent"] = cloudpkg.Item{ID: "target-parent", ParentID: "library-root", Name: "Target", IsDir: true}
+	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{".": "library-root", "Target": "target-parent"}, Items: map[string]cloudTransferItemState{}}
+	targets := []transferTargetItem{
+		{File: fixture.manifest.Files[0], Relative: "Target/First.mkv"},
+		{File: downloadpkg.File{RelativePath: "Second.mkv", ProviderItemID: "partial-second", ProviderParentID: "source-root", Size: 2000, SHA1: "SECOND-SHA"}, Relative: "Target/Second.mkv"},
+	}
+	fixture.driver.moveBatchApplyOnce = 1
+	fixture.driver.moveBatchErrOnce = cloudpkg.Error(cloudpkg.CodeUnavailable, true, errors.New("provider returned a partial batch result"))
+	worker := NewTransferWorker(fixture.service)
+	err := worker.executeCloudMoveBatches(context.Background(), fixture.driver, fixture.driver, &task, &state, fixture.download, sourceStorage, targets, map[string]cloudpkg.Item{}, map[string]bool{}, models.MediaLibraryConflictOverwrite)
+	if code, retryable := cloudpkg.ErrorInfo(err); code != cloudpkg.CodeUnavailable || !retryable {
+		t.Fatalf("first error code=%q retryable=%t err=%v", code, retryable, err)
+	}
+	if state.BatchIntent == nil || len(state.BatchIntent.Items) != 1 || state.BatchIntent.Items[0].SourceID != "partial-second" {
+		t.Fatalf("remaining intent=%+v", state.BatchIntent)
+	}
+	if state.Items[fixture.sourceID].Status != "completed" || state.Items["partial-second"].Status != "" {
+		t.Fatalf("partial item states=%+v", state.Items)
+	}
+	if err := worker.executeCloudMoveBatches(context.Background(), fixture.driver, fixture.driver, &task, &state, fixture.download, sourceStorage, targets, map[string]cloudpkg.Item{}, map[string]bool{}, models.MediaLibraryConflictOverwrite); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if state.BatchIntent != nil || completedCloudItems(state) != 2 || fixture.driver.moveBatchCalls != 2 || fixture.driver.moveCalls != 2 {
+		t.Fatalf("retry state=%+v batchCalls=%d itemMoves=%d", state, fixture.driver.moveBatchCalls, fixture.driver.moveCalls)
+	}
+}
+
+func TestCloudTransferCopyUsesBatchPrestageForUniqueFiles(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
+	fixture.driver.items["source-subtitle"] = cloudpkg.Item{ID: "source-subtitle", ParentID: "source-root", Name: "Movie.2024.zh-CN.vtt", Size: 22, SHA1: "SUBTITLE-SHA1"}
+	fixture.manifest.Files = append(fixture.manifest.Files, downloadpkg.File{RelativePath: "Movie.2024.zh-CN.vtt", ProviderItemID: "source-subtitle", ProviderParentID: "source-root", Size: 22, SHA1: "SUBTITLE-SHA1"})
+	result := fixture.run(t)
+	if result.ErrorCode != "" || result.Wait != nil || result.RetryAt != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if fixture.driver.copyBatchCalls != 1 {
+		t.Fatalf("copy batch calls=%d want=1", fixture.driver.copyBatchCalls)
+	}
+}
+
+func TestCloudTransferCopyDoesNotBatchCollidingTemporaryNames(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
+	if err := fixture.service.Enqueue(fixture.download, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sourceStorage models.Storage
+	if err := fixture.queue.db.First(&sourceStorage, *fixture.download.StagingStorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.driver.items["source-parent-a"] = cloudpkg.Item{ID: "source-parent-a", ParentID: "source-root", Name: "a", IsDir: true}
+	fixture.driver.items["source-parent-b"] = cloudpkg.Item{ID: "source-parent-b", ParentID: "source-root", Name: "b", IsDir: true}
+	fixture.driver.items["same-name-a"] = cloudpkg.Item{ID: "same-name-a", ParentID: "source-parent-a", Name: "Episode.mkv", Size: 1001, SHA1: "SHA-A"}
+	fixture.driver.items["same-name-b"] = cloudpkg.Item{ID: "same-name-b", ParentID: "source-parent-b", Name: "episode.mkv", Size: 1002, SHA1: "SHA-B"}
+	fixture.driver.items["target-a"] = cloudpkg.Item{ID: "target-a", ParentID: "library-root", Name: "A", IsDir: true}
+	fixture.driver.items["target-b"] = cloudpkg.Item{ID: "target-b", ParentID: "library-root", Name: "B", IsDir: true}
+	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{".": "library-root", "A": "target-a", "B": "target-b"}, Items: map[string]cloudTransferItemState{}}
+	targets := []transferTargetItem{
+		{File: downloadpkg.File{RelativePath: "a/Episode.mkv", ProviderItemID: "same-name-a", ProviderParentID: "source-parent-a", Size: 1001, SHA1: "SHA-A"}, Relative: "A/Episode A.mkv"},
+		{File: downloadpkg.File{RelativePath: "b/episode.mkv", ProviderItemID: "same-name-b", ProviderParentID: "source-parent-b", Size: 1002, SHA1: "SHA-B"}, Relative: "B/Episode B.mkv"},
+	}
+	worker := NewTransferWorker(fixture.service)
+	if err := worker.prestageCloudCopyBatches(context.Background(), fixture.driver, fixture.driver, &task, &state, fixture.download, sourceStorage, targets, map[string]cloudpkg.Item{}, map[string]bool{}, models.MediaLibraryConflictOverwrite); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.driver.copyBatchCalls != 0 {
+		t.Fatalf("colliding source names entered one temporary-directory batch: calls=%d", fixture.driver.copyBatchCalls)
+	}
+	if state.Items["same-name-a"].CurrentID != "" || state.Items["same-name-b"].CurrentID != "" {
+		t.Fatalf("colliding copies were attributed before singleton reconciliation: %+v", state.Items)
+	}
+}
+
+func TestCloudTransferMoveRejectsCopyIntentBeforeProviderMutation(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	if err := fixture.service.Enqueue(fixture.download, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sourceStorage models.Storage
+	if err := fixture.queue.db.First(&sourceStorage, *fixture.download.StagingStorageID).Error; err != nil {
+		t.Fatal(err)
+	}
+	state := cloudTransferState{
+		Version:     cloudTransferStateVersion,
+		Directories: map[string]string{".": "library-root", "电影/Movie (2024)": "movie-dir"},
+		Items:       map[string]cloudTransferItemState{},
+		BatchIntent: &cloudTransferBatchIntent{
+			Version: cloudBatchIntentVersion, Operation: "copy", TargetParentID: "temp-dir",
+			Items: []cloudTransferBatchItem{{
+				SourceID: fixture.sourceID, SourceParentID: "source-root", SourceName: "Movie.2024.mkv", TargetParentID: "movie-dir", TargetName: "Movie (2024).mkv", Size: minimumAutomaticTransferVideoBytes, SHA1: "VIDEO-SHA1",
+			}},
+		},
+	}
+	targets := []transferTargetItem{{File: fixture.manifest.Files[0], Relative: "电影/Movie (2024)/Movie (2024).mkv"}}
+	err := NewTransferWorker(fixture.service).executeCloudMoveBatches(context.Background(), fixture.driver, fixture.driver, &task, &state, fixture.download, sourceStorage, targets, map[string]cloudpkg.Item{}, map[string]bool{}, models.MediaLibraryConflictOverwrite)
+	var failure *cloudTransferFailure
+	if !errors.As(err, &failure) || failure.code != "cloud_transfer_state_invalid" {
+		t.Fatalf("error=%v failure=%+v", err, failure)
+	}
+	if fixture.driver.moveBatchCalls != 0 || fixture.driver.renameCalls != 0 {
+		t.Fatalf("provider mutated before rejecting mismatched intent: move=%d rename=%d", fixture.driver.moveBatchCalls, fixture.driver.renameCalls)
+	}
+}
+
+func TestCloudTransferBatchIntentDowngradesToSingletonOnlyWhenManifestMatches(t *testing.T) {
+	targets := []transferTargetItem{{
+		File:     downloadpkg.File{RelativePath: "Movie.mkv", ProviderItemID: "source", ProviderParentID: "source-parent", Size: 10, SHA1: "SHA"},
+		Relative: "Movies/Movie.mkv",
+	}}
+	state := cloudTransferState{
+		Version: cloudTransferStateVersion, Directories: map[string]string{".": "root", "Movies": "target-parent"}, Items: map[string]cloudTransferItemState{},
+		BatchIntent: &cloudTransferBatchIntent{
+			Version: cloudBatchIntentVersion, Operation: "move", TargetParentID: "target-parent",
+			Items: []cloudTransferBatchItem{{
+				SourceID: "source", SourceParentID: "source-parent", SourceName: "Movie.mkv", TargetParentID: "target-parent", TargetName: "Movie.mkv", Size: 10, SHA1: "SHA",
+			}},
+		},
+	}
+	if err := downgradeCloudBatchIntent(&state, targets, "move"); err != nil || state.BatchIntent != nil {
+		t.Fatalf("matching downgrade state=%+v err=%v", state, err)
+	}
+	state.BatchIntent = &cloudTransferBatchIntent{
+		Version: cloudBatchIntentVersion, Operation: "move", TargetParentID: "other-parent",
+		Items: []cloudTransferBatchItem{{
+			SourceID: "source", SourceParentID: "source-parent", SourceName: "Movie.mkv", TargetParentID: "other-parent", TargetName: "Movie.mkv", Size: 10, SHA1: "SHA",
+		}},
+	}
+	if err := downgradeCloudBatchIntent(&state, targets, "move"); err == nil || state.BatchIntent == nil {
+		t.Fatalf("mismatched intent was discarded: state=%+v err=%v", state, err)
+	}
+}
+
 func TestCloudTransferConflictAskDoesNotReplaceExistingItem(t *testing.T) {
 	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictAsk, true)
 	result := fixture.run(t)
@@ -347,6 +645,9 @@ func TestCloudTransferOverwriteRecyclesConflictBeforeMoving(t *testing.T) {
 	}
 	if len(fixture.driver.recycled) == 0 || fixture.driver.recycled[0] != "existing-video" {
 		t.Fatalf("recycled=%v", fixture.driver.recycled)
+	}
+	if fixture.driver.recycleBatchCalls != 1 {
+		t.Fatalf("overwrite conflicts used singleton recycle: batch calls=%d", fixture.driver.recycleBatchCalls)
 	}
 	item := fixture.driver.items[fixture.sourceID]
 	if item.Name != "Movie (2024).mkv" || item.ParentID != "movie-dir" {

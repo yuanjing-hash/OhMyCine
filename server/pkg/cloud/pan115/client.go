@@ -463,14 +463,22 @@ func (c *Client) Upload(ctx context.Context, request cloud.UploadRequest) (cloud
 }
 
 func (c *Client) Move(ctx context.Context, itemID, targetParentID string) error {
-	return c.mutateItems(ctx, c.moveRate, itemID, targetParentID, func(sdk mutationSDK, item, parent string) error {
-		return sdk.Move(parent, item)
-	})
+	return c.MoveMany(ctx, []string{itemID}, targetParentID)
 }
 
 func (c *Client) Copy(ctx context.Context, itemID, targetParentID string) error {
-	return c.mutateItems(ctx, c.copyRate, itemID, targetParentID, func(sdk mutationSDK, item, parent string) error {
-		return sdk.Copy(parent, item)
+	return c.CopyMany(ctx, []string{itemID}, targetParentID)
+}
+
+func (c *Client) MoveMany(ctx context.Context, itemIDs []string, targetParentID string) error {
+	return c.mutateMany(ctx, c.moveRate, itemIDs, targetParentID, func(sdk mutationSDK, items []string, parent string) error {
+		return sdk.Move(parent, items...)
+	})
+}
+
+func (c *Client) CopyMany(ctx context.Context, itemIDs []string, targetParentID string) error {
+	return c.mutateMany(ctx, c.copyRate, itemIDs, targetParentID, func(sdk mutationSDK, items []string, parent string) error {
+		return sdk.Copy(parent, items...)
 	})
 }
 
@@ -494,15 +502,19 @@ func (c *Client) Rename(ctx context.Context, itemID, name string) error {
 }
 
 func (c *Client) Recycle(ctx context.Context, itemID string) error {
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 item identity is empty"))
+	return c.RecycleMany(ctx, []string{itemID})
+}
+
+func (c *Client) RecycleMany(ctx context.Context, itemIDs []string) error {
+	items, err := mutationIDs(itemIDs)
+	if err != nil {
+		return err
 	}
 	sdk, ok := c.sdk.(mutationSDK)
 	if !ok {
 		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 mutation API is unavailable"))
 	}
-	if err := c.waitAndCall(ctx, c.recycleRate, func() error { return sdk.Delete(itemID) }); err != nil {
+	if err := c.waitAndCall(ctx, c.recycleRate, func() error { return sdk.Delete(items...) }); err != nil {
 		return mapError(err)
 	}
 	return nil
@@ -549,19 +561,45 @@ func (c *Client) PurgeRecycle(ctx context.Context, itemID string) error {
 	return nil
 }
 
-func (c *Client) mutateItems(ctx context.Context, limiter *rate.Limiter, itemID, targetParentID string, call func(mutationSDK, string, string) error) error {
-	itemID, targetParentID = strings.TrimSpace(itemID), normalizeID(targetParentID)
-	if itemID == "" || itemID == targetParentID {
-		return cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 mutation identity is invalid"))
+func (c *Client) mutateMany(ctx context.Context, limiter *rate.Limiter, itemIDs []string, targetParentID string, call func(mutationSDK, []string, string) error) error {
+	items, err := mutationIDs(itemIDs)
+	if err != nil {
+		return err
+	}
+	targetParentID = normalizeID(targetParentID)
+	for _, itemID := range items {
+		if itemID == targetParentID {
+			return cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 mutation identity is invalid"))
+		}
 	}
 	sdk, ok := c.sdk.(mutationSDK)
 	if !ok {
 		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 mutation API is unavailable"))
 	}
-	if err := c.waitAndCall(ctx, limiter, func() error { return call(sdk, itemID, targetParentID) }); err != nil {
+	if err := c.waitAndCall(ctx, limiter, func() error { return call(sdk, items, targetParentID) }); err != nil {
 		return mapError(err)
 	}
 	return nil
+}
+
+func mutationIDs(itemIDs []string) ([]string, error) {
+	if len(itemIDs) == 0 || len(itemIDs) > cloud.MaxBatchMutationItems {
+		return nil, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 mutation identity is invalid"))
+	}
+	result := make([]string, 0, len(itemIDs))
+	seen := make(map[string]struct{}, len(itemIDs))
+	for _, raw := range itemIDs {
+		itemID := strings.TrimSpace(raw)
+		if itemID == "" || itemID != raw || strings.ContainsAny(itemID, "\x00\r\n/, ") {
+			return nil, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 mutation identity is invalid"))
+		}
+		if _, duplicate := seen[itemID]; duplicate {
+			return nil, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 mutation identity is duplicated"))
+		}
+		seen[itemID] = struct{}{}
+		result = append(result, itemID)
+	}
+	return result, nil
 }
 
 func mutationName(value string) (string, error) {
@@ -1031,6 +1069,16 @@ func (c *Client) DirectURL(ctx context.Context, request cloud.DirectURLRequest) 
 }
 
 func (c *Client) waitAndCall(ctx context.Context, limiter *rate.Limiter, call func() error) error {
+	waitStarted := time.Now()
+	waitRecorded := false
+	defer func() {
+		if !waitRecorded {
+			cloud.RecordProviderWait(ctx, time.Since(waitStarted))
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := c.waitForRecovery(ctx); err != nil {
 		return err
 	}
@@ -1045,15 +1093,27 @@ func (c *Client) waitAndCall(ctx context.Context, limiter *rate.Limiter, call fu
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if err := ctx.Err(); err != nil {
+		<-c.callSlots
+		return err
+	}
+	cloud.RecordProviderWait(ctx, time.Since(waitStarted))
+	waitRecorded = true
 	done := make(chan error, 1)
 	go func() {
 		defer func() { <-c.callSlots }()
+		callStarted := time.Now()
 		err := call()
+		cloud.RecordProviderCall(ctx, time.Since(callStarted))
+		// Record the provider outcome in the calling generation even when the
+		// caller's context is cancelled while the context-less SDK call is still
+		// in flight. Otherwise a late 405/429 would be silently dropped and the
+		// next operation could bypass the shared account recovery state.
+		c.recordOutcome(err)
 		done <- err
 	}()
 	select {
 	case err := <-done:
-		c.recordOutcome(err)
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
