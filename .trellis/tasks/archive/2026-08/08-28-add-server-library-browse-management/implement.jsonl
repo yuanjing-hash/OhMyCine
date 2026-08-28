@@ -1,0 +1,7 @@
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/web-detail-and-library.md","reason":"现有 catalog/recognition 能力、页面缺口与删除安全边界"}
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"媒体库 root、扫描事实、catalog 与投影契约"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"本地/115 删除、RBAC、审计和秘密脱敏"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"作品级 action、preview/confirm 与统一 API 契约"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"导航、海报墙、详情和局部反馈规范"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"聚合 catalog 和详情 DTO 规范化"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"浏览、动作、持久任务与刷新跨层数据流"}

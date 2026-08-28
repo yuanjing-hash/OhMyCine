@@ -1,0 +1,6 @@
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/web-detail-and-library.md","reason":"核对最小实现、聚合缺口和 provider 删除 caveat"}
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"验证 catalog 使用扫描事实且不跨库误操作"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"验证 preview、token、root/provider 对账、RBAC 和审计"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"验证导航、错误态、复用组件和管理操作交互"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"验证 WebUI 测试、类型、lint 和构建"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"验证 API、持久删除恢复、OpenAPI 和 Server 门"}
