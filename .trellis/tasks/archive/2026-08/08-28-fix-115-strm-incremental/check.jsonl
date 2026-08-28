@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/strm-incremental-diff.md","reason":"核对 no-op、续签、rebind、迁移和 cleanup 场景"}
+{"file":".trellis/spec/backend/media-library-foundation.md","reason":"验证 complete/partial、active manifest 与 root identity 边界"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"验证签名有期限、opaque URL 与 cleanup 安全"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"验证 SQL 计数、迁移、proxy 和完整 Server 门"}
