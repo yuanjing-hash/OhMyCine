@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Go 测试、静态检查、回归与禁止模式"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"WebUI typecheck、lint、test、build 和可访问性验证"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"核对 API、模型、Worker、WebUI 与文档的跨层数据流"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查是否复用统一 route/backend/executor 而非新增 provider 分支"}
+{"file":".trellis/spec/backend/download-route-selection.md","reason":"验证所有入口共享同一来源/目标兼容矩阵"}
+{"file":".trellis/spec/backend/media-classification-profiles.md","reason":"验证固定媒体类型根、Profile 模板和任务快照兼容"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"复核路径、provider identity、凭据和破坏性清理安全"}
+{"file":".trellis/tasks/08-28-optimize-library-ingest-downloader-flow/prd.md","reason":"逐项核对可观察验收标准和明确的范围边界"}
+{"file":".trellis/tasks/08-28-optimize-library-ingest-downloader-flow/design.md","reason":"检查实现是否符合同源原生、跨源暂存和持久恢复设计"}
+{"file":".trellis/tasks/08-28-optimize-library-ingest-downloader-flow/research/moviepilot-media-type-category-paths.md","reason":"对照 MoviePilot 证据检查类型优先目录实现"}
