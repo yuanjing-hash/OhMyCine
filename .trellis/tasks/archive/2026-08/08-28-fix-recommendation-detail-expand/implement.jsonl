@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/web-detail-and-library.md","reason":"白屏生产数据形状、根因和最小实现文件"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"API DTO 运行时归一化与严格类型边界"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"Server 管理端局部错误态和页面组件规范"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Go JSON、TypeScript DTO 与 Vue 模板跨层契约"}
