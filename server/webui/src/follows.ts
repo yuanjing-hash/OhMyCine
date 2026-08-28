@@ -43,9 +43,9 @@ export function cloneFollowSnapshot(snapshot: FollowExecutionSnapshot): FollowEx
 export function compatibleFollowDownloaders(defaults: FollowDefaults, libraryID: number) {
   const library = defaults.media_libraries.find(item => item.id === libraryID)
   if (!library) return []
-  return defaults.downloaders.filter(item => item.type === 'pan115_offline'
-    ? library.storage_type === 'pan115' && item.connection_id != null && item.connection_id === library.connection_id
-    : library.storage_type === 'local')
+  // Target execution capability is authoritative on the Server route preview.
+  // This helper only keeps the selected records internally consistent.
+  return defaults.downloaders
 }
 export function compatibleFollowSites(defaults: FollowDefaults, libraryID: number, downloaderID: string) {
   const downloader = compatibleFollowDownloaders(defaults, libraryID).find(item => item.id === downloaderID)

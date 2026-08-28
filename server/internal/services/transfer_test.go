@@ -49,6 +49,10 @@ func TestDownloadListExposesFailedTransferJobForStageRetry(t *testing.T) {
 func TestTransferOrganizationListDetailAndOwnership(t *testing.T) {
 	queue, actor, download, source, destination := transferFixture(t, models.MediaLibraryTransferCopy, models.MediaLibraryConflictOverwrite, false)
 	actor.Permissions[authz.PermissionTransfersReadAll] = struct{}{}
+	download.TransferRouteKind = models.TransferRouteSameSourceLocal
+	if err := queue.db.Model(&models.DownloadTask{}).Where("id = ?", download.ID).Update("transfer_route_kind", download.TransferRouteKind).Error; err != nil {
+		t.Fatal(err)
+	}
 	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
 	manifest := downloadpkg.Manifest{Name: "Movie.2024", Complete: true, Files: []downloadpkg.File{{RelativePath: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes}}}
 	if err := service.Enqueue(download, manifest); err != nil {
@@ -69,6 +73,9 @@ func TestTransferOrganizationListDetailAndOwnership(t *testing.T) {
 	if err != nil || page.Total != 1 || len(page.List) != 1 || page.Stats.CompletedToday != 1 {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
+	if page.List[0].RouteKind != models.TransferRouteSameSourceLocal {
+		t.Fatalf("route kind=%q", page.List[0].RouteKind)
+	}
 	if len(page.FilterOptions.Libraries) != 1 || page.FilterOptions.Libraries[0].ID != page.List[0].LibraryID || len(page.FilterOptions.Categories) != 1 || page.FilterOptions.Categories[0] != "华语电影" {
 		t.Fatalf("filter options=%+v", page.FilterOptions)
 	}
@@ -81,6 +88,9 @@ func TestTransferOrganizationListDetailAndOwnership(t *testing.T) {
 	}
 	if detail.Job.Status != models.JobStatusCompleted || len(detail.Timeline) == 0 || detail.MovieDirectoryTemplate == "" {
 		t.Fatalf("detail=%+v", detail)
+	}
+	if detail.RouteKind != models.TransferRouteSameSourceLocal {
+		t.Fatalf("detail route kind=%q", detail.RouteKind)
 	}
 	publicJSON, err := json.Marshal(detail)
 	if err != nil {

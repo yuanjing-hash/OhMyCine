@@ -432,6 +432,10 @@ HMAC-SHA256(secret, method + path + exp + user_or_library_scope)
 - Emby 登录、系统信息、媒体库、搜索、详情、标记已观看、PlaybackInfo 和播放进度 JSON 请求统一走 Tauri Rust 受控客户端；只允许 GET/POST、HTTP(S) Base URL 和根路径，15 秒超时、禁用自动重定向、限制查询/请求体，并对声明长度与实际流式读取同时执行 4 MiB 响应上限。浏览器开发 fallback 也必须使用 `redirect: 'error'`、AbortController 和流式大小限制，不得退回无边界 `ofetch`。
 - 禁止访问 `file://`、`gopher://`、`ftp://` 等非预期协议
 
+115 跨数据源物化使用专用 `ReadDriver`，不是通用 URL 下载器。115 adapter 用稳定 file ID 在单次内存调用中取得临时地址，Cookie、Authorization、pickcode、SDK acquisition headers 和临时 URL 不得离开 adapter，也不得进入 Job/checkpoint、数据库、WebSocket、日志或审计。初始地址及每次跳转都必须重新验证为公网 HTTPS/443，拒绝 userinfo、fragment、HTTP 降级以及 loopback/private/link-local/multicast/unspecified 地址；连接前再次解析并只拨号到本次复验的公网 IP，防止 DNS rebinding。跳转最多三次，每一跳只保留 `User-Agent`、`Range`、`Accept-Encoding`，其它 Header 全部清除。
+
+跨源文件只写入统一暂存根下 `.omc-cross-source/<transfer UUID>/` 的任务私有 `.partial`。断点续传只有在 `206 Content-Range` 起点与 checkpoint 完全一致时才能追加；服务端忽略 Range 时关闭响应并从零重启，矛盾响应直接失败。完整文件必须再次核对 provider package-root ancestry、稳定 file ID、parent、size 和 SHA1，写盘后 flush、校验完整 size/SHA1，再原子改名，半成品不能进入识别或目标库。取消只删除该任务根中的 `.partial`，保留已完成文件供安全重试或人工修正；目标对账成功后才能删除该 UUID 根，清理不得从全局暂存根递归，也不得跟随 symlink、Junction 或其它 Reparse Point。
+
 站点页面渲染是更窄的专用边界，不复用普通可配置 URL 规则：
 
 - 自动 `RenderedFetcher` 首版只接受 Server 已登记的公开 BT `1337x` / `EXT.to` profile，并同时复验精确 HTTPS/443 目标 host 与最终 URL；请求参数不能增加 host，也不能把它变成任意 URL 浏览器代理。

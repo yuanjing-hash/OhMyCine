@@ -17,10 +17,28 @@ const draftName = ref('')
 const draftRules = ref<ClassificationRulesV1>(emptyRules())
 const draftRecognitionRules = ref<RecognitionRule[]>([])
 const draftBuiltinPacks = ref<Array<'tv-v1' | 'anime-v1'>>([])
-const movieDirectoryTemplate = ref('{category}/{title} ({year})')
+const movieDirectoryTemplate = ref('电影/{category}/{title} ({year})')
 const movieFilenameTemplate = ref('{title} ({year})')
-const tvDirectoryTemplate = ref('{category}/{title} ({year})/Season {season:02}')
+const tvDirectoryTemplate = ref('电视剧/{category}/{title} ({year})/Season {season:02}')
 const tvFilenameTemplate = ref('{title} - S{season:02}E{episode:02}')
+function templateBelowFixedRoot(value: string, root: '电影' | '电视剧') {
+  let normalized = value.trim().replace(/^\/+|\/+$/g, '')
+  const fixedRoots = [root, root === '电影' ? '电视剧' : '电影']
+  while (normalized) {
+    const fixedRoot = fixedRoots.find(candidate => normalized === candidate || normalized.startsWith(`${candidate}/`))
+    if (!fixedRoot) break
+    normalized = normalized === fixedRoot ? '' : normalized.slice(fixedRoot.length + 1)
+  }
+  return normalized
+}
+const movieDirectoryBody = computed({
+  get: () => templateBelowFixedRoot(movieDirectoryTemplate.value, '电影'),
+  set: value => { movieDirectoryTemplate.value = `电影/${templateBelowFixedRoot(value, '电影')}`.replace(/\/$/, '') },
+})
+const tvDirectoryBody = computed({
+  get: () => templateBelowFixedRoot(tvDirectoryTemplate.value, '电视剧'),
+  set: value => { tvDirectoryTemplate.value = `电视剧/${templateBelowFixedRoot(value, '电视剧')}`.replace(/\/$/, '') },
+})
 const activeSection = ref<RuleSection>('classification')
 const activeGroup = ref<MediaType>('movie')
 const loading = ref(true)
@@ -149,11 +167,11 @@ onMounted(async () => { try { await loadList() } catch (reason) { error.value = 
         </section>
 
         <section v-else class="mt-5">
-          <h3 class="m-0 text-base">电影与剧集命名</h3><p class="text-subtle mb-0 mt-1 text-sm">目录始终限制在所选媒体库根内；文件扩展名由源文件保留，不写在模板中。</p>
+          <h3 class="m-0 text-base">电影与剧集命名</h3><p class="text-subtle mb-0 mt-1 text-sm">自动分类固定先进入“电影”或“电视剧”，再进入对应 Profile 分类；保存时会自动补齐且不会重复。目录始终限制在所选媒体库根内，文件扩展名由源文件保留。</p>
           <div class="mt-4 grid gap-4 md:grid-cols-2">
-            <div><label class="label" for="profile-movie-directory">电影目录模板</label><input id="profile-movie-directory" v-model="movieDirectoryTemplate" class="input font-mono text-xs" maxlength="512" :disabled="readOnly" /><p class="text-subtle mb-0 mt-1 text-xs">可用：{category} {title} {year}</p></div>
+            <div><label class="label" for="profile-movie-directory">电影根内目录模板</label><div class="flex items-center gap-2"><span class="text-muted shrink-0 font-mono text-xs">电影 /</span><input id="profile-movie-directory" v-model="movieDirectoryBody" class="input font-mono text-xs" maxlength="509" :disabled="readOnly" /></div><p class="text-subtle mb-0 mt-1 text-xs">固定根不可编辑；其后可用：{category} {title} {year}</p></div>
             <div><label class="label" for="profile-movie-filename">电影文件名模板</label><input id="profile-movie-filename" v-model="movieFilenameTemplate" class="input font-mono text-xs" maxlength="512" :disabled="readOnly" /><p class="text-subtle mb-0 mt-1 text-xs">可用：{category} {title} {year} {version}；旧模板会自动在片名后追加识别出的版本规格。</p></div>
-            <div><label class="label" for="profile-tv-directory">剧集目录模板</label><input id="profile-tv-directory" v-model="tvDirectoryTemplate" class="input font-mono text-xs" maxlength="512" :disabled="readOnly" /><p class="text-subtle mb-0 mt-1 text-xs">另可用：{season} {season:02} {episode} {episode:02}</p></div>
+            <div><label class="label" for="profile-tv-directory">电视剧根内目录模板</label><div class="flex items-center gap-2"><span class="text-muted shrink-0 font-mono text-xs">电视剧 /</span><input id="profile-tv-directory" v-model="tvDirectoryBody" class="input font-mono text-xs" maxlength="508" :disabled="readOnly" /></div><p class="text-subtle mb-0 mt-1 text-xs">固定根不可编辑；其后另可用：{season} {season:02} {episode} {episode:02}</p></div>
             <div><label class="label" for="profile-tv-filename">剧集文件名模板</label><input id="profile-tv-filename" v-model="tvFilenameTemplate" class="input font-mono text-xs" maxlength="512" :disabled="readOnly" /></div>
           </div>
         </section>

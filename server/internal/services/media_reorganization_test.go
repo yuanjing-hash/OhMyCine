@@ -86,7 +86,7 @@ func TestReorganizationUsesOriginalProviderIdentityForFlattenedMultiSeasonItems(
 	}
 	for index, item := range plan.Items {
 		season := index + 1
-		want := fmt.Sprintf("国产剧/屌丝男士/Season %02d/屌丝男士 - S%02dE01.mp4", season, season)
+		want := fmt.Sprintf("电视剧/国产剧/屌丝男士/Season %02d/屌丝男士 - S%02dE01.mp4", season, season)
 		if item.NewRelativePath != want || item.SourceSHA1 != fmt.Sprintf("SHA1-%d", season) {
 			t.Fatalf("item[%d]=%+v want_path=%q", index, item, want)
 		}
@@ -223,7 +223,7 @@ func TestMediaReorganizationPreviewReclassifiesWithCurrentLibraryProfile(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Items) != 1 || !strings.HasPrefix(filepath.ToSlash(preview.Items[0].NewRelativePath), "外语电影/") {
+	if len(preview.Items) != 1 || !strings.HasPrefix(filepath.ToSlash(preview.Items[0].NewRelativePath), "电影/外语电影/") {
 		t.Fatalf("preview did not use current profile classification: %+v", preview)
 	}
 	var persisted models.MediaReorganizationPreview

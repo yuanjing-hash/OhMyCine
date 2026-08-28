@@ -18,7 +18,7 @@ import (
 )
 
 func (w *TransferWorker) runCloudUpload(ctx context.Context, runtime JobRuntime, task models.TransferTask, download models.DownloadTask, manifest downloadpkg.Manifest, started time.Time) WorkerResult {
-	if w.service.connections == nil || download.TargetConnectionID == nil || download.TargetStorageID == nil || strings.TrimSpace(download.TargetProviderRootID) == "" || download.ProviderType != models.DownloaderTypePluginHTTP {
+	if w.service.connections == nil || download.TargetConnectionID == nil || download.TargetStorageID == nil || strings.TrimSpace(download.TargetProviderRootID) == "" {
 		return w.cloudFailure(task, cloudTransferError("cloud_upload_snapshot_invalid", false, nil))
 	}
 	if download.TransferMode != models.MediaLibraryTransferMove && download.TransferMode != models.MediaLibraryTransferCopy {
@@ -145,8 +145,7 @@ func (w *TransferWorker) runCloudUpload(ctx context.Context, runtime JobRuntime,
 			}
 		}
 		if state.Items[key].Status == "uploading" {
-			sourceRoot := filepath.Join(download.StagingAbsolutePath, pluginDownloadRootName, download.ID)
-			source, err := resolveManifestSource(sourceRoot, sourceRoot, target.File.RelativePath)
+			source, err := resolveCloudUploadSource(task.ID, download, state, target.File.RelativePath)
 			if err != nil {
 				return w.cloudFailure(task, cloudTransferError("cloud_upload_source_invalid", false, err))
 			}
@@ -217,6 +216,37 @@ func (w *TransferWorker) runCloudUpload(ctx context.Context, runtime JobRuntime,
 	serverlog.OperationPan115CloudTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Int("files", len(targets)).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationPan115CloudTransfer.Message("受管上传完成"))
 	task.Phase = models.TransferTaskStatusCompleted
 	return w.finishCompletedTransfer(ctx, task)
+}
+
+func resolveCloudUploadSource(transferTaskID string, download models.DownloadTask, state cloudTransferState, relative string) (string, error) {
+	if strings.TrimSpace(state.ManagedRoot) != "" {
+		staging := filepath.Clean(download.StagingAbsolutePath)
+		if staging == "." || !filepath.IsAbs(staging) {
+			return "", errors.New("cloud upload staging snapshot is invalid")
+		}
+		relativeRoot := filepath.Clean(filepath.FromSlash(state.ManagedRoot))
+		if filepath.IsAbs(relativeRoot) || filepath.Base(relativeRoot) != transferTaskID || filepath.Base(filepath.Dir(relativeRoot)) != crossSourceRootName || filepath.Dir(filepath.Dir(relativeRoot)) != "." {
+			return "", errors.New("cloud upload managed root is invalid")
+		}
+		root := filepath.Join(staging, relativeRoot)
+		if err := ensureWithin(staging, root); err != nil {
+			return "", err
+		}
+		return resolveManifestSource(root, root, relative)
+	}
+	staging := filepath.Clean(download.StagingAbsolutePath)
+	if staging == "." || !filepath.IsAbs(staging) {
+		return "", errors.New("cloud upload staging snapshot is invalid")
+	}
+	if download.ProviderType == models.DownloaderTypePluginHTTP {
+		root := filepath.Join(staging, pluginDownloadRootName, download.ID)
+		return resolveManifestSource(root, root, relative)
+	}
+	categoryRoot := filepath.Join(staging, firstNonEmpty(download.StagingCategory, download.ScrapeCategory))
+	if err := ensureWithin(staging, categoryRoot); err != nil {
+		return "", err
+	}
+	return resolveManifestSource(categoryRoot, staging, relative)
 }
 
 func (w *TransferWorker) cloudUploadConflicts(ctx context.Context, driver cloudpkg.Driver, targets []transferTargetItem, state cloudTransferState) (map[string]cloudpkg.Item, error) {

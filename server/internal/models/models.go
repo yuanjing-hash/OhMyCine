@@ -317,6 +317,29 @@ const (
 	ConnectionProviderJellyfin = "jellyfin"
 )
 
+const (
+	DataSourceKindLocal    = "local"
+	DataSourceKindProvider = "provider"
+
+	DataSourceLocalConnectionIdentity = "server-local"
+
+	TransferRouteVersionCurrent     = 1
+	TransferRouteSameSourceLocal    = "same_source_local"
+	TransferRouteSameSourceProvider = "same_source_provider"
+	TransferRouteCrossSource        = "cross_source"
+)
+
+// DataSourceIdentity is a private, immutable routing fact. ConnectionIdentity
+// is a Server-owned stable identifier, never a display name or provider path.
+// StorageScope is used only for execution-time boundary revalidation and does
+// not decide whether two provider roots belong to the same data source.
+type DataSourceIdentity struct {
+	Kind               string `json:"kind"`
+	ProviderType       string `json:"provider_type"`
+	ConnectionIdentity string `json:"connection_identity"`
+	StorageScope       string `json:"storage_scope,omitempty"`
+}
+
 // Connection owns one external-provider credential and its redacted health
 // summary. The encrypted credential model must never be serialized directly.
 type Connection struct {
@@ -443,9 +466,9 @@ type MediaClassificationProfile struct {
 	RulesJSON                   string    `gorm:"type:text;not null" json:"-"`
 	BuiltinRecognitionPacksJSON string    `gorm:"type:text;not null;default:'[\"tv-v1\",\"anime-v1\"]'" json:"-"`
 	RecognitionRulesJSON        string    `gorm:"type:text;not null;default:'[]'" json:"-"`
-	MovieDirectoryTemplate      string    `gorm:"size:512;not null;default:'{category}/{title} ({year})'" json:"-"`
+	MovieDirectoryTemplate      string    `gorm:"size:512;not null;default:'电影/{category}/{title} ({year})'" json:"-"`
 	MovieFilenameTemplate       string    `gorm:"size:512;not null;default:'{title} ({year})'" json:"-"`
-	TVDirectoryTemplate         string    `gorm:"size:512;not null;default:'{category}/{title} ({year})/Season {season:02}'" json:"-"`
+	TVDirectoryTemplate         string    `gorm:"size:512;not null;default:'电视剧/{category}/{title} ({year})/Season {season:02}'" json:"-"`
 	TVFilenameTemplate          string    `gorm:"size:512;not null;default:'{title} - S{season:02}E{episode:02}'" json:"-"`
 	Revision                    uint64    `gorm:"not null;default:1" json:"revision"`
 	CreatedAt                   time.Time `json:"created_at"`
@@ -480,9 +503,9 @@ type MediaLibrary struct {
 	SortOrder                    int        `gorm:"not null;default:0;index" json:"sort_order"`
 	TransferMode                 string     `gorm:"size:16;not null;default:'move'" json:"transfer_mode"`
 	ConflictPolicy               string     `gorm:"size:16;not null;default:'ask'" json:"conflict_policy"`
-	MovieDirectoryTemplate       string     `gorm:"size:512;not null;default:'{category}/{title} ({year})'" json:"movie_directory_template"`
+	MovieDirectoryTemplate       string     `gorm:"size:512;not null;default:'电影/{category}/{title} ({year})'" json:"movie_directory_template"`
 	MovieFilenameTemplate        string     `gorm:"size:512;not null;default:'{title} ({year})'" json:"movie_filename_template"`
-	TVDirectoryTemplate          string     `gorm:"size:512;not null;default:'{category}/{title} ({year})/Season {season:02}'" json:"tv_directory_template"`
+	TVDirectoryTemplate          string     `gorm:"size:512;not null;default:'电视剧/{category}/{title} ({year})/Season {season:02}'" json:"tv_directory_template"`
 	TVFilenameTemplate           string     `gorm:"size:512;not null;default:'{title} - S{season:02}E{episode:02}'" json:"tv_filename_template"`
 	Enabled                      bool       `gorm:"not null" json:"enabled"`
 	Recursive                    bool       `gorm:"not null" json:"recursive"`
@@ -516,17 +539,21 @@ type MediaLibrary struct {
 	IngestOwnerID                *uint      `gorm:"index" json:"-"`
 	IngestProviderRootID         string     `gorm:"size:128;not null;default:''" json:"-"`
 	IngestRelativeRoot           string     `gorm:"size:2048;not null;default:''" json:"ingest_relative_root"`
-	Status                       string     `gorm:"size:32;not null;index" json:"status"`
-	StatusErrorCode              string     `gorm:"size:64;not null;default:''" json:"status_error_code"`
-	NextRetryAt                  *time.Time `gorm:"index" json:"next_retry_at"`
-	LastScanAt                   *time.Time `json:"last_scan_at"`
-	LastSuccessfulScanAt         *time.Time `json:"last_successful_scan_at"`
-	BaselineGeneration           uint64     `gorm:"not null;default:0" json:"baseline_generation"`
-	DirtyGeneration              uint64     `gorm:"not null;default:0" json:"dirty_generation"`
-	ReclassificationDue          bool       `gorm:"not null;default:false" json:"reclassification_due"`
-	ContentRevision              uint64     `gorm:"not null;default:0" json:"content_revision"`
-	CreatedAt                    time.Time  `json:"created_at"`
-	UpdatedAt                    time.Time  `json:"updated_at"`
+	// DefaultIngestConnectionID is non-null only for the one MediaLibrary that
+	// receives manually added 115 App content for a Connection. A unique
+	// partial database index is the concurrency authority.
+	DefaultIngestConnectionID *uint      `gorm:"index" json:"-"`
+	Status                    string     `gorm:"size:32;not null;index" json:"status"`
+	StatusErrorCode           string     `gorm:"size:64;not null;default:''" json:"status_error_code"`
+	NextRetryAt               *time.Time `gorm:"index" json:"next_retry_at"`
+	LastScanAt                *time.Time `json:"last_scan_at"`
+	LastSuccessfulScanAt      *time.Time `json:"last_successful_scan_at"`
+	BaselineGeneration        uint64     `gorm:"not null;default:0" json:"baseline_generation"`
+	DirtyGeneration           uint64     `gorm:"not null;default:0" json:"dirty_generation"`
+	ReclassificationDue       bool       `gorm:"not null;default:false" json:"reclassification_due"`
+	ContentRevision           uint64     `gorm:"not null;default:0" json:"content_revision"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
 }
 
 const (
@@ -1138,6 +1165,10 @@ type DownloadTask struct {
 	TargetProviderRootID               string     `gorm:"size:128;not null;default:''" json:"-"`
 	TargetStorageRoot                  string     `gorm:"type:text;not null;default:''" json:"-"`
 	TargetRelativeRoot                 string     `gorm:"size:1024;not null;default:''" json:"-"`
+	SourceDataSourceJSON               string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	TargetDataSourceJSON               string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	TransferRouteKind                  string     `gorm:"size:32;not null;default:'';index" json:"-"`
+	TransferRouteVersion               int        `gorm:"not null;default:0" json:"-"`
 	TransferMode                       string     `gorm:"size:16;not null;default:''" json:"-"`
 	ConflictPolicy                     string     `gorm:"size:16;not null;default:''" json:"-"`
 	MovieDirectoryTemplate             string     `gorm:"size:512;not null;default:''" json:"-"`
@@ -1299,26 +1330,30 @@ const (
 // TransferTask is the private durable import fact. ManifestJSON contains
 // provider-relative media names and must never be serialized by an API.
 type TransferTask struct {
-	ID                 string     `gorm:"primaryKey;size:36" json:"id"`
-	OwnerID            uint       `gorm:"not null;index" json:"owner_id"`
-	JobID              string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
-	DownloadTaskID     string     `gorm:"size:36;not null;uniqueIndex" json:"download_task_id"`
-	LibraryID          uint       `gorm:"not null;index" json:"library_id"`
-	LibraryName        string     `gorm:"size:128;not null" json:"library_name"`
-	ManifestJSON       string     `gorm:"type:text;not null" json:"-"`
-	SourceManifestJSON string     `gorm:"type:text;not null;default:'{}'" json:"-"`
-	PlanSummaryJSON    string     `gorm:"type:text;not null;default:''" json:"-"`
-	CloudStateJSON     string     `gorm:"type:text;not null;default:''" json:"-"`
-	Phase              string     `gorm:"size:32;not null;index" json:"phase"`
-	ProcessedFiles     int        `gorm:"not null;default:0" json:"processed_files"`
-	TotalFiles         int        `gorm:"not null;default:0" json:"total_files"`
-	LastErrorCode      string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
-	CleanupStatus      string     `gorm:"size:32;not null;default:'pending';index" json:"cleanup_status"`
-	CleanupRemoved     int        `gorm:"not null;default:0" json:"cleanup_removed"`
-	CleanupErrorCode   string     `gorm:"size:96;not null;default:''" json:"cleanup_error_code"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	FinishedAt         *time.Time `json:"finished_at"`
+	ID                   string     `gorm:"primaryKey;size:36" json:"id"`
+	OwnerID              uint       `gorm:"not null;index" json:"owner_id"`
+	JobID                string     `gorm:"size:36;not null;uniqueIndex" json:"job_id"`
+	DownloadTaskID       string     `gorm:"size:36;not null;uniqueIndex" json:"download_task_id"`
+	LibraryID            uint       `gorm:"not null;index" json:"library_id"`
+	LibraryName          string     `gorm:"size:128;not null" json:"library_name"`
+	ManifestJSON         string     `gorm:"type:text;not null" json:"-"`
+	SourceManifestJSON   string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	PlanSummaryJSON      string     `gorm:"type:text;not null;default:''" json:"-"`
+	CloudStateJSON       string     `gorm:"type:text;not null;default:''" json:"-"`
+	SourceDataSourceJSON string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	TargetDataSourceJSON string     `gorm:"type:text;not null;default:'{}'" json:"-"`
+	RouteKind            string     `gorm:"size:32;not null;default:'';index" json:"-"`
+	RouteVersion         int        `gorm:"not null;default:0" json:"-"`
+	Phase                string     `gorm:"size:32;not null;index" json:"phase"`
+	ProcessedFiles       int        `gorm:"not null;default:0" json:"processed_files"`
+	TotalFiles           int        `gorm:"not null;default:0" json:"total_files"`
+	LastErrorCode        string     `gorm:"size:96;not null;default:''" json:"last_error_code"`
+	CleanupStatus        string     `gorm:"size:32;not null;default:'pending';index" json:"cleanup_status"`
+	CleanupRemoved       int        `gorm:"not null;default:0" json:"cleanup_removed"`
+	CleanupErrorCode     string     `gorm:"size:96;not null;default:''" json:"cleanup_error_code"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	FinishedAt           *time.Time `json:"finished_at"`
 }
 
 const (

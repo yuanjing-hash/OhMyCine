@@ -1,5 +1,7 @@
 # Transfer Organization
 
+Automatic organization uses the immutable template captured by the DownloadTask. New snapshots always begin with the fixed media-type root (`电影` or `电视剧`) followed by the matching Profile category. This same snapshot is consumed by local, same-Connection 115 and cross-source executors; provider adapters never add their own prefix. Corrective reorganization uses the current normalized MediaLibrary policy, while legacy queued snapshots remain unchanged.
+
 ## 1. Scope / Trigger
 
 Apply this contract when changing `TransferTask`, local or cloud transfer workers, cloud mutation adapters, `/api/v1/transfers`, `/automation/organization`, or download-to-organization deep links.

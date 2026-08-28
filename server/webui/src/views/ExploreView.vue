@@ -3,12 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { Permissions } from '@/auth/generated-permissions'
-import { compatibleDownloadLibraries, formatBytes } from '@/downloads'
+import DownloadRouteTargetPicker from '@/components/DownloadRouteTargetPicker.vue'
+import { previewDownloadRoutes, routeTargetByID, type DownloadRoutePreview } from '@/download-routes'
+import { formatBytes } from '@/downloads'
 import { useAuthStore } from '@/stores/auth'
 import { notify } from '@/toast'
 import { buildDiscoveryMediaSearchPath, discoveryDetailRoute, mediaIdentitySearchURL, type DiscoveryMediaSearch, type DiscoveryMediaSearchFilter, type DiscoveryMediaType, type DiscoverySearchName, type DiscoveryWork } from '@/discovery'
 import { discoveryDownloadsPath, discoverySearchOptionsPath, filterAndSortTorrentResults, ptRecognitionEpisodeLabel, ptRecognitionErrorLabel, ptRecognitionSpecLabels, readTorrentSearchSession, readTorrentSearchSiteSelection, saveTorrentSearchSession, saveTorrentSearchSiteSelection, sitesPath, torrentRecognitionCandidatesPath, torrentRecognitionOverridePath, torrentRecognitionPath, torrentSearchPath, torrentSearchStreamPath, torrentSearchURL, upsertTorrentGroup, type PTRecognitionCandidate, type SearchSiteOption, type SiteSummary, type TorrentRecognitionResult, type TorrentResultDirection, type TorrentSearchGroup, type TorrentSearchResponse, type TorrentSearchResult, type TorrentSearchSession } from '@/sites'
-import type { DownloaderSummary, ListResponse, MediaLibraryDetail, StorageSummary } from '@/types/api'
+import type { DownloaderSummary, ListResponse, MediaLibraryDetail } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -46,9 +48,12 @@ const selectedSiteIDs = ref<number[]>([])
 const activeSearchSiteIDs = ref<number[]>([])
 const downloaders = ref<DownloaderSummary[]>([])
 const libraries = ref<MediaLibraryDetail[]>([])
-const storages = ref<StorageSummary[]>([])
 const downloadDialog = ref<TorrentSearchResult | null>(null)
 const downloadForm = ref({ downloaderID: '', mediaLibraryID: 0, priority: 0 })
+const downloadSiteID = ref<number | undefined>()
+const routePreview = ref<DownloadRoutePreview | null>(null)
+const routePreviewLoading = ref(false)
+let routePreviewRequest: AbortController | null = null
 const submitting = ref(false)
 const recognitions = ref<Record<string, TorrentRecognitionResult>>({})
 const recognitionErrors = ref<Record<string, string>>({})
@@ -64,9 +69,8 @@ let streamTimeout: number | undefined
 let mediaSearchRequest: AbortController | null = null
 
 const enabledDownloaders = computed(() => downloaders.value.filter(item => item.enabled))
-const selectedDownloader = computed(() => enabledDownloaders.value.find(item => item.id === downloadForm.value.downloaderID) ?? null)
-const compatibleLibraries = computed(() => compatibleDownloadLibraries(libraries.value, storages.value, selectedDownloader.value))
-const selectedLibrary = computed(() => downloadForm.value.mediaLibraryID === 0 ? compatibleLibraries.value[0] ?? null : compatibleLibraries.value.find(item => item.id === downloadForm.value.mediaLibraryID) ?? null)
+const selectedRoute = computed(() => routeTargetByID(routePreview.value, downloadForm.value.mediaLibraryID))
+const selectedLibrary = computed(() => libraries.value.find(item => item.id === selectedRoute.value?.media_library_id) ?? null)
 const selectableSiteOptions = computed(() => siteOptions.value.filter(item => item.searchable))
 const activeChannel = ref<'all' | number>('all')
 const enabledSiteTypes = ref<Array<'pt' | 'bt'>>(['pt', 'bt'])
@@ -265,17 +269,43 @@ async function loadDownloadOptions() {
   const requests: Promise<void>[] = []
   if (auth.can(Permissions.DownloadersRead)) requests.push(api<ListResponse<DownloaderSummary>>('/api/v1/downloaders').then(response => { downloaders.value = response.list }))
   if (auth.can(Permissions.MediaLibrariesRead)) requests.push(api<ListResponse<MediaLibraryDetail>>('/api/v1/media-libraries').then(response => { libraries.value = response.list }))
-  if (auth.can(Permissions.StoragesRead)) requests.push(api<ListResponse<StorageSummary>>('/api/v1/storages').then(response => { storages.value = response.list }))
   await Promise.all(requests)
   if (!enabledDownloaders.value.some(item => item.id === downloadForm.value.downloaderID)) downloadForm.value.downloaderID = enabledDownloaders.value[0]?.id ?? ''
 }
 
 async function openDownload(item: TorrentSearchResult) {
   downloadDialog.value = item
+  downloadSiteID.value = groups.value.find(group => group.items.some(candidate => candidate.token === item.token))?.site_id
   downloadForm.value = { downloaderID: '', mediaLibraryID: 0, priority: 0 }
-  try { await loadDownloadOptions() }
+  try { await loadDownloadOptions(); await loadRoutePreview() }
   catch (reason) { notify(message(reason), 'error') }
 }
+
+async function loadRoutePreview() {
+  routePreviewRequest?.abort()
+  routePreviewRequest = null
+  routePreview.value = null
+  downloadForm.value.mediaLibraryID = 0
+  if (!downloadForm.value.downloaderID || !downloadDialog.value) return
+  const controller = new AbortController()
+  routePreviewRequest = controller
+  routePreviewLoading.value = true
+  try {
+    const preview = await previewDownloadRoutes({
+      downloader_id: downloadForm.value.downloaderID,
+      source_kind: 'torrent',
+      site_id: downloadSiteID.value,
+      expected_bytes: downloadDialog.value.size_bytes ?? undefined,
+    }, controller.signal)
+    if (!controller.signal.aborted) routePreview.value = preview
+  } catch (reason) {
+    if (!controller.signal.aborted) notify(message(reason), 'error')
+  } finally {
+    if (routePreviewRequest === controller) { routePreviewRequest = null; routePreviewLoading.value = false }
+  }
+}
+
+watch(() => downloadForm.value.downloaderID, () => void loadRoutePreview())
 
 async function recognizeResult(item: TorrentSearchResult) {
   if (recognizingTokens.value.includes(item.token)) return
@@ -296,7 +326,7 @@ async function recognizeResult(item: TorrentSearchResult) {
 async function submitDownload() {
   const item = downloadDialog.value
   if (!item || !downloadForm.value.downloaderID) { notify('请选择已启用的下载器', 'warning'); return }
-  if (!selectedLibrary.value) { notify('没有与所选下载器兼容的媒体库', 'warning'); return }
+  if (!selectedRoute.value?.enabled || !selectedLibrary.value) { notify('请选择一条 Server 已确认可执行的入库路线', 'warning'); return }
   submitting.value = true
   try {
     const result = await api<{ id: string }>(discoveryDownloadsPath, { method: 'POST', body: JSON.stringify({ result_token: item.token, downloader_id: downloadForm.value.downloaderID, media_library_id: downloadForm.value.mediaLibraryID, priority: downloadForm.value.priority }) })
@@ -404,6 +434,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopStream()
   mediaSearchRequest?.abort()
+  routePreviewRequest?.abort()
 })
 </script>
 
@@ -525,13 +556,12 @@ onBeforeUnmount(() => {
         <div class="flex items-start justify-between gap-3"><div><h2 id="pt-download-title" class="m-0 text-xl">创建下载任务</h2><p class="page-description mt-1 line-clamp-2 text-sm">{{ downloadDialog.title }}</p></div><button class="btn-secondary" type="button" :disabled="submitting" @click="downloadDialog = null">关闭</button></div>
         <div class="mt-5 grid gap-4 sm:grid-cols-2">
           <div><label class="label">下载器</label><select v-model="downloadForm.downloaderID" class="input" required><option value="" disabled>请选择</option><option v-for="item in enabledDownloaders" :key="item.id" :value="item.id">{{ item.name }} · {{ item.type === 'pan115_offline' ? '115 离线' : item.type }}</option></select></div>
-          <div><label class="label">目标媒体库</label><select v-model.number="downloadForm.mediaLibraryID" class="input" required><option :value="0">自动选择（按媒体库顺序）</option><option v-for="library in compatibleLibraries" :key="library.id" :value="library.id">{{ library.name }} · {{ library.storage_name }}</option></select></div>
+          <DownloadRouteTargetPicker v-model="downloadForm.mediaLibraryID" :preview="routePreview" :loading="routePreviewLoading" />
           <div class="sm:col-span-2"><label class="label">队列优先级</label><input v-model.number="downloadForm.priority" class="input" type="number" min="-100" max="100" /></div>
         </div>
-        <div v-if="selectedLibrary" class="semantic-inset mt-4 grid gap-3 p-4 text-sm sm:grid-cols-2"><div><span class="text-subtle block text-xs">最终媒体库</span><strong>{{ selectedLibrary.name }}</strong></div><div><span class="text-subtle block text-xs">分类与入库</span><strong>{{ selectedLibrary.profile_name }} · {{ selectedLibrary.transfer_mode }} · {{ selectedLibrary.conflict_policy }}</strong></div></div>
-        <p v-else class="semantic-warning mt-4 p-3 text-sm">没有与当前下载器兼容且启用的媒体库。请先完成媒体库与下载器配置。</p>
+        <div v-if="selectedLibrary && selectedRoute" class="semantic-inset mt-4 grid gap-3 p-4 text-sm sm:grid-cols-2"><div><span class="text-subtle block text-xs">最终媒体库</span><strong>{{ selectedLibrary.name }}</strong></div><div><span class="text-subtle block text-xs">分类与入库</span><strong>{{ selectedRoute.route_label }} · {{ selectedLibrary.profile_name }} · {{ selectedLibrary.transfer_mode }}</strong></div></div>
         <p class="text-subtle mt-4 text-xs">确认后 Server 才会凭短期令牌获取种子，并复用现有下载 → 识别 → 整理 → 入库流水线。真实种子地址和 passkey 不会进入页面。</p>
-        <div class="mt-5 flex justify-end gap-3"><button class="btn-secondary" type="button" :disabled="submitting" @click="downloadDialog = null">取消</button><button class="btn-primary" :disabled="submitting || !downloadForm.downloaderID || !selectedLibrary">{{ submitting ? '正在获取种子并入队…' : '确认并入队' }}</button></div>
+        <div class="mt-5 flex justify-end gap-3"><button class="btn-secondary" type="button" :disabled="submitting" @click="downloadDialog = null">取消</button><button class="btn-primary" :disabled="submitting || routePreviewLoading || !downloadForm.downloaderID || !selectedRoute?.enabled || !selectedLibrary">{{ submitting ? '正在获取种子并入队…' : '确认并入队' }}</button></div>
       </form>
     </div>
   </section>

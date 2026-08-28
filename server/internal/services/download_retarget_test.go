@@ -196,7 +196,7 @@ func TestRetargetCompletedImportRejectsWithoutMutatingTarget(t *testing.T) {
 			},
 		},
 		{
-			name: "unsupported target", wantCode: CodeMediaLibraryStorageUnavailable,
+			name: "source storage unavailable", wantCode: CodeDownloaderStorageUnavailable,
 			mutate: func(t *testing.T, fixture *retargetImportFixture) Actor {
 				if err := fixture.queue.db.Model(&models.Downloader{}).Where("id = ?", *fixture.task.DownloaderID).Update("type", models.DownloaderTypePan115Offline).Error; err != nil {
 					t.Fatal(err)

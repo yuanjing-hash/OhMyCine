@@ -384,6 +384,8 @@ Phase 4: 生态系统           ████████████████
 - [x] 115 原生离线下载器：复用 Connection Cookie、在所选 115 Storage 根内自由选择下载子目录、生活事件广播立即唤醒完成复核并由低频任务查询补漏、统一任务遥测/取消与完成 manifest 分类；不声明暂停、恢复或做种能力
 - [x] 115 云端自动整理：下载时选择同 Connection 的目标 MediaLibrary，完成后按分类与模板执行云端移动/复制/改名，复用四种冲突策略、持久化幂等 checkpoint，并通过 dirty generation 唤醒增量对账
 - [x] 115 分享与手工转存接管：离线、分享转存和 115 App 手工内容共用 Downloader 下载目录；OMC 任务使用 `omc-*` 稳定子目录并由 Worker 独占，自动监听生活事件只接管普通直接子项，周期 reconciliation 补漏，并复用统一识别、广告过滤和云端 Transfer
+- [x] 下载器与媒体库跨数据源路由：任务固化来源/目标 identity 与 route version；local→local、同账号 115→115 保留原生路径，local/qB→115、115→local、115 A→115 B 使用统一 Server 受管暂存、空间预检、SHA1/checkpoint、上传不确定对账和安全清理；PT 仍只能提交给支持做种的本地 BT 下载器，但其最终目标可以是 115
+- [x] 115 自动监听唯一默认库：同一 Connection 最多一个启用的 115 MediaLibrary 可作为生活事件手工内容目标；没有默认库时禁止开启监听，切换默认不改变既有任务，显式下载/转存/追更始终使用任务目标快照
 - [ ] 115 STRM 投影、signed 302、文件树差异同步和关联 sidecar 下载；云盘无 STRM 时提供默认关闭的 NFO/JPG 旁挂上传策略
 
 ### Sprint 2.1B: OpenList/Alist 可播放纵向切片（下一步）
@@ -457,6 +459,7 @@ Phase 4: 生态系统           ████████████████
 - [ ] `PUT /api/v1/categories/{id}` — 更新
 - [ ] `DELETE /api/v1/categories/{id}` — 删除
 - [x] MediaLibrary 电影/剧集目录模板和命名模板字段
+- [x] 自动分类固定媒体类型一级目录：所有新入库路线统一为 `电影/类型内分类/...` 或 `电视剧/类型内分类/...`，历史任务快照保持不变
 - [~] 转移策略字段（本地 move/copy/symlink 已实现；hardlink 与云盘策略待后续）
 - [x] MediaLibrary 全局排序字段、拖放和可访问顺序按钮
 

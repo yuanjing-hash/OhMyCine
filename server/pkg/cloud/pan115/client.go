@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -184,6 +185,7 @@ func (s *sdkAdapter) ListTreeFolders(pickCode string, page, limit int64) ([]bulk
 
 type Client struct {
 	sdk             sdkClient
+	downloadHTTP    *http.Client
 	listRate        *rate.Limiter
 	bulkRate        *rate.Limiter
 	directRate      *rate.Limiter
@@ -222,7 +224,7 @@ func New(config cloud.Config) (cloud.Driver, error) {
 	// for offline submission and remains compatible with the read APIs.
 	sdk := pan115sdk.New(pan115sdk.WithClient(httpClient), pan115sdk.UA(pan115sdk.UA115Browser)).ImportCredential(credential)
 	return &Client{
-		sdk: &sdkAdapter{sdk}, listRate: rate.NewLimiter(rate.Every(2*time.Second), 1), bulkRate: rate.NewLimiter(rate.Every(bulkRequestSpacing), 1), directRate: rate.NewLimiter(rate.Every(time.Second), 1),
+		sdk: &sdkAdapter{sdk}, downloadHTTP: newDownloadHTTPClient(), listRate: rate.NewLimiter(rate.Every(2*time.Second), 1), bulkRate: rate.NewLimiter(rate.Every(bulkRequestSpacing), 1), directRate: rate.NewLimiter(rate.Every(time.Second), 1),
 		offlineRate: rate.NewLimiter(rate.Every(2*time.Second), 1), eventRate: rate.NewLimiter(rate.Every(5*time.Second), 1),
 		// MoviePilot's p115 integrations pace provider endpoints independently.
 		// Keep that boundary here: healthy mkdir is only concurrency bounded and
@@ -1066,6 +1068,103 @@ func (c *Client) DirectURL(ctx context.Context, request cloud.DirectURLRequest) 
 		headers.Set("User-Agent", request.UserAgent)
 	}
 	return cloud.TemporaryURL{URL: parsed.String(), Headers: headers, ExpiresAt: directURLExpiry(parsed, time.Now().UTC())}, nil
+}
+
+func newDownloadHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	transport.DialContext = publicDownloadDialContext(net.DefaultResolver.LookupIPAddr)
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(request *http.Request, previous []*http.Request) error {
+			if len(previous) >= 3 {
+				return errors.New("115 download redirected too many times")
+			}
+			if err := validatePublicDownloadURL(request.Context(), request.URL, net.DefaultResolver.LookupIPAddr); err != nil {
+				return err
+			}
+			for key := range request.Header {
+				if !strings.EqualFold(key, "User-Agent") && !strings.EqualFold(key, "Range") && !strings.EqualFold(key, "Accept-Encoding") {
+					request.Header.Del(key)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// OpenRead keeps the expiring CDN URL and its provider-required headers inside
+// the 115 adapter. The caller receives only a stream and safe size/range facts.
+func (c *Client) OpenRead(ctx context.Context, request cloud.ReadRequest) (cloud.ReadResult, error) {
+	request.FileID = strings.TrimSpace(request.FileID)
+	if request.FileID == "" || request.Offset < 0 {
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 read request is invalid"))
+	}
+	item, err := c.Stat(ctx, request.FileID)
+	if err != nil {
+		return cloud.ReadResult{}, err
+	}
+	if item.IsDir || item.Size < 0 || request.Offset > item.Size {
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 read source is invalid"))
+	}
+	temporary, err := c.DirectURL(ctx, cloud.DirectURLRequest{FileID: item.ID, PickCode: item.PickCode, UserAgent: pan115sdk.UA115Browser})
+	if err != nil {
+		return cloud.ReadResult{}, err
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, temporary.URL, nil)
+	if err != nil {
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeResponseInvalid, false, err)
+	}
+	if err := validatePublicDownloadURL(ctx, httpRequest.URL, net.DefaultResolver.LookupIPAddr); err != nil {
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeResponseInvalid, false, err)
+	}
+	// 115 download URLs are bound only to the acquisition User-Agent. Never
+	// forward API cookies, Authorization or other acquisition headers to a CDN,
+	// even if a future SDK version puts them back into TemporaryURL.Headers.
+	if userAgent := strings.TrimSpace(temporary.Headers.Get("User-Agent")); userAgent != "" {
+		httpRequest.Header.Set("User-Agent", userAgent)
+	}
+	httpRequest.Header.Set("Accept-Encoding", "identity")
+	if request.Offset > 0 {
+		httpRequest.Header.Set("Range", fmt.Sprintf("bytes=%d-", request.Offset))
+	}
+	client := c.downloadHTTP
+	if client == nil {
+		client = newDownloadHTTPClient()
+	}
+	response, err := client.Do(httpRequest)
+	if err != nil {
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeUnavailable, true, err)
+	}
+	accepted := request.Offset == 0
+	if request.Offset > 0 {
+		accepted = response.StatusCode == http.StatusPartialContent && validContentRangeStart(response.Header.Get("Content-Range"), request.Offset)
+	}
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
+		_ = response.Body.Close()
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeUnavailable, response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500, fmt.Errorf("115 download returned HTTP %d", response.StatusCode))
+	}
+	if response.StatusCode == http.StatusPartialContent && !validContentRangeStart(response.Header.Get("Content-Range"), request.Offset) {
+		_ = response.Body.Close()
+		return cloud.ReadResult{}, cloud.Error(cloud.CodeResponseInvalid, true, errors.New("115 download returned an invalid content range"))
+	}
+	total := item.Size
+	return cloud.ReadResult{Body: response.Body, OffsetAccepted: accepted, TotalSize: &total}, nil
+}
+
+func validContentRangeStart(value string, offset int64) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "bytes ") {
+		return false
+	}
+	rangePart := strings.TrimPrefix(value, "bytes ")
+	dash := strings.IndexByte(rangePart, '-')
+	if dash <= 0 {
+		return false
+	}
+	start, err := strconv.ParseInt(rangePart[:dash], 10, 64)
+	return err == nil && start == offset
 }
 
 func (c *Client) waitAndCall(ctx context.Context, limiter *rate.Limiter, call func() error) error {

@@ -103,6 +103,25 @@ func (s *DownloadSettingsService) Snapshot(ctx context.Context, providerType str
 	return DownloadStagingSnapshot{AbsolutePath: absolute}, nil
 }
 
+// SnapshotForRoute requires the Server-managed local working root when a
+// provider-native download will cross into another data source. Same-source
+// 115 organization keeps its cloud-native path and does not consume local
+// staging space.
+func (s *DownloadSettingsService) SnapshotForRoute(ctx context.Context, providerType, routeKind string) (DownloadStagingSnapshot, error) {
+	if routeKind != models.TransferRouteCrossSource {
+		return s.Snapshot(ctx, providerType)
+	}
+	var record models.DownloadSettings
+	if err := s.db.First(&record, 1).Error; err != nil {
+		return DownloadStagingSnapshot{}, err
+	}
+	absolute, err := s.resolveRecord(ctx, record)
+	if err != nil {
+		return DownloadStagingSnapshot{}, err
+	}
+	return DownloadStagingSnapshot{AbsolutePath: absolute}, nil
+}
+
 func (s *DownloadSettingsService) ResolveSnapshot(ctx context.Context, providerType, absolute string, storageID *uint, relative string) (string, error) {
 	if providerType == models.DownloaderTypeFake || providerType == models.DownloaderTypePan115Offline {
 		return "", nil

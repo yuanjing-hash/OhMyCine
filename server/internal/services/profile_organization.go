@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
+	"github.com/yuanjing-hash/ohmycine/server/internal/organization"
 )
 
 const (
@@ -20,11 +21,21 @@ const (
 )
 
 const (
-	defaultMovieDirectoryTemplate = "{category}/{title} ({year})"
+	defaultMovieDirectoryTemplate = organization.DefaultMovieDirectoryTemplate
 	defaultMovieFilenameTemplate  = "{title} ({year})"
-	defaultTVDirectoryTemplate    = "{category}/{title} ({year})/Season {season:02}"
+	defaultTVDirectoryTemplate    = organization.DefaultTVDirectoryTemplate
 	defaultTVFilenameTemplate     = "{title} - S{season:02}E{episode:02}"
 )
+
+// normalizeMediaTypeDirectoryTemplate makes the media-type root a Server-owned
+// organization invariant. The Profile template remains responsible for the
+// category/title/season structure below this root. A template that already has
+// the correct root stays single-prefixed; a wrong fixed root is replaced rather
+// than nested. DownloadTask snapshots are deliberately not passed through this
+// helper so work queued before the migration keeps its frozen destination.
+func normalizeMediaTypeDirectoryTemplate(value, mediaType string) string {
+	return organization.NormalizeDirectoryTemplate(value, mediaType)
+}
 
 // RecognitionRule is a provider-neutral title preprocessor owned by one
 // classification Profile. Rules are snapshotted into DownloadTask and applied

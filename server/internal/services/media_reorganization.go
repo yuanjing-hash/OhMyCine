@@ -369,6 +369,9 @@ func buildReorganizationPlan(library models.MediaLibrary, storage models.Storage
 		if target.MediaType == "tv" {
 			dirTemplate, filenameTemplate = library.TVDirectoryTemplate, library.TVFilenameTemplate
 		}
+		// Reorganization uses the current library policy rather than a frozen
+		// DownloadTask snapshot, so it must also honor the fixed media-type root.
+		dirTemplate = normalizeMediaTypeDirectoryTemplate(dirTemplate, target.MediaType)
 		dir, err := renderImportTemplate(dirTemplate, values, true)
 		if err != nil {
 			return plan, 0, appError(CodeInvalidRequest, "媒体库命名规则无效", nil)

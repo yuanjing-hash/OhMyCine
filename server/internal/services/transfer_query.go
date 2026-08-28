@@ -60,6 +60,7 @@ type TransferSummary struct {
 	ProfileRevision  uint64     `json:"profile_revision"`
 	LibraryID        uint       `json:"library_id"`
 	LibraryName      string     `json:"library_name"`
+	RouteKind        string     `json:"route_kind"`
 	TransferMode     string     `json:"transfer_mode"`
 	ConflictPolicy   string     `json:"conflict_policy"`
 	Phase            string     `json:"phase"`
@@ -117,7 +118,7 @@ const transferProjectionColumns = `
 	download.scrape_category, download.scrape_tmdb_id, download.scrape_year,
 	download.scrape_confidence, download.identity_source, download.identity_status,
 	download.identity_locked, download.identity_revision, download.profile_id, download.profile_revision,
-	transfer.library_id, transfer.library_name, download.transfer_mode,
+	transfer.library_id, transfer.library_name, download.transfer_route_kind AS route_kind, download.transfer_mode,
 	download.conflict_policy, transfer.phase, jobs.status AS job_status, jobs.next_attempt_at AS retry_at,
 	transfer.processed_files, transfer.total_files,
 	transfer.last_error_code AS transfer_error_code,

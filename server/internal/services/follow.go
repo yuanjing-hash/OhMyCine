@@ -13,6 +13,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/site/builtin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -157,6 +158,7 @@ type FollowService struct {
 	queue         *QueueService
 	coverage      *MediaCoverageService
 	authorization *AuthorizationService
+	downloads     *DownloadService
 	now           func() time.Time
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
@@ -165,6 +167,8 @@ type FollowService struct {
 func NewFollowService(db *gorm.DB, audit *AuditService, queue *QueueService, coverage *MediaCoverageService, authorization *AuthorizationService) *FollowService {
 	return &FollowService{db: db, audit: audit, queue: queue, coverage: coverage, authorization: authorization, now: func() time.Time { return time.Now().UTC() }}
 }
+
+func (s *FollowService) SetDownloadService(downloads *DownloadService) { s.downloads = downloads }
 
 func (s *FollowService) Start(parent context.Context) error {
 	if s.cancel != nil {
@@ -261,7 +265,7 @@ func (s *FollowService) Defaults(ctx context.Context, actor Actor, tmdbID int64)
 		for _, downloader := range downloaders {
 			compatibleSiteIDs := make([]uint, 0, len(sites))
 			for _, site := range sites {
-				if s.validateFollowRoute(downloader, library, []models.Site{site}) == nil {
+				if s.validateFollowRoute(context.Background(), downloader, library, []models.Site{site}) == nil {
 					compatibleSiteIDs = append(compatibleSiteIDs, site.ID)
 				}
 			}
@@ -279,7 +283,7 @@ func (s *FollowService) Defaults(ctx context.Context, actor Actor, tmdbID int64)
 		}
 	}
 	if !foundTuple {
-		result.UnavailableReason = "没有可用的站点、下载器与目标媒体库组合；115 只能选择公开 BT 站点和同账号 115 媒体库"
+		result.UnavailableReason = "没有可用的站点、下载器与目标媒体库组合；115 下载器不能接收 PT，跨数据源路线还需要可用的 Server 暂存与写入能力"
 	}
 	return result, nil
 }
@@ -631,7 +635,7 @@ func (s *FollowService) validateSnapshot(actor Actor, tmdbID int64, input Follow
 	if err := s.db.Where("id IN ? AND enabled = ?", input.SiteIDs, true).Find(&sites).Error; err != nil || len(sites) != len(input.SiteIDs) {
 		return input, nil, appError(CodeFollowConfigurationInvalid, "订阅站点不存在或已停用", err)
 	}
-	if err := s.validateFollowRoute(downloader, library, sites); err != nil {
+	if err := s.validateFollowRoute(context.Background(), downloader, library, sites); err != nil {
 		return input, nil, err
 	}
 	var err error
@@ -662,16 +666,12 @@ func (s *FollowService) validateSnapshot(actor Actor, tmdbID int64, input Follow
 // matrix used by defaults, saves, and every worker run. 115 rejects only an
 // authoritative PT site; all authoritative BT sites remain eligible and the
 // SiteService rechecks the resolved source immediately before submission.
-func (s *FollowService) validateFollowRoute(downloader models.Downloader, library models.MediaLibrary, sites []models.Site) error {
+func (s *FollowService) validateFollowRoute(ctx context.Context, downloader models.Downloader, library models.MediaLibrary, sites []models.Site) error {
 	if !downloader.Enabled {
 		return appError(CodeFollowConfigurationInvalid, "订阅下载器不存在或已停用", nil)
 	}
 	if !library.Enabled {
 		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库不存在或已停用", nil)
-	}
-	var storage models.Storage
-	if err := s.db.First(&storage, library.StorageID).Error; err != nil || !storage.Enabled {
-		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库 Storage 不可用", err)
 	}
 	if downloader.Type == models.DownloaderTypePan115Offline {
 		for _, site := range sites {
@@ -680,23 +680,30 @@ func (s *FollowService) validateFollowRoute(downloader models.Downloader, librar
 				return appError(CodeFollowConfigurationInvalid, "订阅包含 PT 或未知来源站点，不能使用 115 离线下载", nil)
 			}
 		}
-		if downloader.StorageID == nil || storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil {
-			return appError(CodeFollowConfigurationInvalid, "115 订阅只能进入同账号的 115 媒体库", nil)
+	}
+	if s.downloads != nil {
+		target, _, err := s.downloads.snapshotDownloadTarget(ctx, downloader, library, downloadpkg.SourceURL)
+		if err != nil {
+			return err
 		}
-		var downloaderStorage models.Storage
-		if err := s.db.First(&downloaderStorage, *downloader.StorageID).Error; err != nil || !downloaderStorage.Enabled || downloaderStorage.Type != models.StorageTypePan115 || downloaderStorage.ConnectionID == nil || *downloaderStorage.ConnectionID != *storage.ConnectionID {
-			return appError(CodeFollowConfigurationInvalid, "115 下载器与目标媒体库不属于同一 115 账号", err)
+		if _, err := s.downloads.settings.SnapshotForRoute(ctx, downloader.Type, target.RouteKind); err != nil {
+			return err
 		}
-		if library.TransferMode != models.MediaLibraryTransferMove && library.TransferMode != models.MediaLibraryTransferCopy {
-			return appError(CodeFollowConfigurationInvalid, "115 订阅目标媒体库只支持移动或复制入库", nil)
-		}
-	} else {
-		if storage.Type != models.StorageTypeLocal {
-			return appError(CodeFollowConfigurationInvalid, "非网盘 BT 下载器的订阅当前只能进入本地媒体库", nil)
-		}
+		return nil
+	}
+	// Unit-level fallback for isolated FollowService tests. Production wiring
+	// always sets DownloadService above, which is the capability/identity
+	// authority shared with route preview and actual submission.
+	var storage models.Storage
+	if err := s.db.First(&storage, library.StorageID).Error; err != nil || !storage.Enabled {
+		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库 Storage 不可用", err)
+	}
+	if storage.Type == models.StorageTypeLocal {
 		if _, err := medialibrary.ResolveRoot(storage.RootPath, library.RelativeRoot); err != nil {
 			return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库目录不可用", err)
 		}
+	} else if storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil || strings.TrimSpace(library.ProviderRootID) == "" || library.TransferMode != models.MediaLibraryTransferMove && library.TransferMode != models.MediaLibraryTransferCopy {
+		return appError(CodeFollowConfigurationInvalid, "订阅目标媒体库不可写", nil)
 	}
 	var profile models.MediaClassificationProfile
 	if err := s.db.First(&profile, library.ProfileID).Error; err != nil {

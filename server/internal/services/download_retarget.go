@@ -119,6 +119,8 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 			"target_library_id": target.LibraryID, "target_library_name": target.LibraryName, "target_storage_id": target.StorageID,
 			"target_storage_type": target.StorageType, "target_connection_id": target.ConnectionID, "target_provider_root_id": target.ProviderRootID,
 			"target_storage_root": target.StorageRoot, "target_relative_root": target.RelativeRoot, "transfer_mode": target.TransferMode,
+			"source_data_source_json": target.SourceDataSourceJSON, "target_data_source_json": target.TargetDataSourceJSON,
+			"transfer_route_kind": target.RouteKind, "transfer_route_version": target.RouteVersion,
 			"conflict_policy": target.ConflictPolicy, "movie_directory_template": organization.MovieDirectoryTemplate,
 			"movie_filename_template": organization.MovieFilenameTemplate, "tv_directory_template": organization.TVDirectoryTemplate,
 			"tv_filename_template": organization.TVFilenameTemplate, "scrape_category": safeLabel(match.Category, 128),
@@ -130,6 +132,8 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 		if err := tx.Model(&lockedTransfer).Updates(map[string]any{
 			"library_id": target.LibraryID, "library_name": target.LibraryName, "phase": models.TransferTaskStatusQueued,
 			"processed_files": 0, "plan_summary_json": "", "cloud_state_json": "", "last_error_code": "",
+			"source_data_source_json": target.SourceDataSourceJSON, "target_data_source_json": target.TargetDataSourceJSON,
+			"route_kind": target.RouteKind, "route_version": target.RouteVersion,
 			"cleanup_status": models.TransferCleanupPending, "cleanup_removed": 0, "cleanup_error_code": "", "finished_at": nil, "updated_at": now,
 		}).Error; err != nil {
 			return err
@@ -166,6 +170,8 @@ func (s *DownloadService) RetargetCompletedImport(ctx context.Context, actor Act
 	task.TargetStorageID, task.TargetStorageType = &target.StorageID, target.StorageType
 	task.TargetConnectionID, task.TargetProviderRootID = target.ConnectionID, target.ProviderRootID
 	task.TargetStorageRoot, task.TargetRelativeRoot = target.StorageRoot, target.RelativeRoot
+	task.SourceDataSourceJSON, task.TargetDataSourceJSON = target.SourceDataSourceJSON, target.TargetDataSourceJSON
+	task.TransferRouteKind, task.TransferRouteVersion = target.RouteKind, target.RouteVersion
 	task.TransferMode, task.ConflictPolicy, task.ScrapeCategory = target.TransferMode, target.ConflictPolicy, safeLabel(match.Category, 128)
 	task.IdentitySource, task.IdentityStatus, task.IdentityLocked = identitySource, identityStatus, identityLocked
 	task.IdentityRevision, task.IdentitySnapshotJSON = identityRevision, identityJSON

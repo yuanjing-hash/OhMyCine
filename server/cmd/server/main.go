@@ -148,6 +148,7 @@ func main() {
 	sites.SetMetadataSettings(metadataSettings)
 	sites.SetAIRecognitionSettings(aiRecognitionSettings)
 	follows := services.NewFollowService(db, audit, queue, mediaCoverage, authorization)
+	follows.SetDownloadService(downloads)
 	cookieCloud := services.NewCookieCloudService(db, audit, credentialStore, sites, logManager.Logger("site", "cookiecloud"))
 	downloads.SetMetadataSettings(metadataSettings)
 	downloads.SetAIRecognitionSettings(aiRecognitionSettings)

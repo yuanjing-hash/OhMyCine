@@ -1,8 +1,9 @@
 import { api } from '@/api/client'
+import type { DownloadRouteKind } from '@/download-routes'
 import type { Job, JobAttempt, JobEvent } from '@/jobs'
 
 export type TransferMode = 'move' | 'copy' | 'symlink'
-export type TransferPhase = 'queued' | 'planning' | 'checking_directories' | 'creating_directories' | 'checking_conflicts' | 'moving' | 'renaming' | 'risk_backoff' | 'transferring' | 'reconciling' | 'completed' | 'failed'
+export type TransferPhase = 'queued' | 'routing' | 'reserving_space' | 'materializing' | 'verifying' | 'recognizing' | 'planning' | 'checking_directories' | 'creating_directories' | 'checking_conflicts' | 'moving' | 'renaming' | 'uploading' | 'placing' | 'risk_backoff' | 'transferring' | 'reconciling' | 'generating_artifacts' | 'notifying' | 'completed' | 'failed'
 export type TransferFilterStatus = '' | 'processing' | 'waiting_action' | 'paused' | 'failed' | 'completed' | 'cancelled'
 export type TransferListScope = 'active' | 'history'
 
@@ -36,6 +37,7 @@ export interface TransferSummary {
   profile_revision: number
   library_id: number
   library_name: string
+  route_kind: DownloadRouteKind
   transfer_mode: TransferMode
   conflict_policy: 'ask' | 'overwrite' | 'skip' | 'rename'
   phase: TransferPhase
@@ -91,15 +93,24 @@ export interface TransferPage {
 
 export const transferPhaseLabels: Record<TransferPhase, string> = {
   queued: '等待整理',
+  routing: '确认入库路线',
+  reserving_space: '检查暂存空间',
+  materializing: '拉取到 Server 暂存',
+  verifying: '校验完整性',
+  recognizing: '识别与刮削',
   planning: '规划目录',
   checking_directories: '检查目标目录',
   creating_directories: '创建目标目录',
   checking_conflicts: '检查文件冲突',
   moving: '移动 / 复制文件',
   renaming: '重命名文件',
+  uploading: '上传到目标网盘',
+  placing: '写入目标媒体库',
   risk_backoff: '115 风控退避',
   transferring: '正在入库',
   reconciling: '媒体库对账',
+  generating_artifacts: '生成 STRM / 元数据',
+  notifying: '刷新媒体服务器',
   completed: '整理完成',
   failed: '整理失败',
 }
@@ -115,6 +126,14 @@ export const conflictPolicyLabels: Record<TransferSummary['conflict_policy'], st
   overwrite: '覆盖同名文件',
   skip: '跳过同名文件',
   rename: '自动重命名',
+}
+
+export function transferRouteLabel(routeKind: DownloadRouteKind): string {
+  return ({
+    same_source_local: '同源本地',
+    same_source_provider: '同源云端',
+    cross_source: '跨数据源暂存',
+  } as Record<string, string>)[routeKind] ?? '旧任务路线未知'
 }
 
 export type TransferDeletionScope = 'record_only' | 'record_and_source' | 'record_and_library' | 'record_source_and_library'

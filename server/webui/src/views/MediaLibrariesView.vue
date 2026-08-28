@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import DirectoryPickerDialog from '@/components/DirectoryPickerDialog.vue'
 import MediaReorganizationDialog from '@/components/MediaReorganizationDialog.vue'
 import MediaLibrarySettingsFields from '@/components/MediaLibrarySettingsFields.vue'
-import { draftFromLibrary, emptyMediaLibraryDraft, isActiveLibraryStatus, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSidecarUpload, supportsSTRM, type MediaLibraryDraft } from '@/media-libraries'
+import { clearDefaultIngestLibrary, draftFromLibrary, emptyMediaLibraryDraft, isActiveLibraryStatus, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, setDefaultIngestLibrary, supportsSidecarUpload, supportsSTRM, type MediaLibraryDraft } from '@/media-libraries'
 import { mediaCatalogDetailEndpoint, mediaCatalogEndpoint, mediaCatalogPageCount, mediaCatalogPageSizes, mediaCatalogVisibleRange, type MediaCatalogMatchFilter, type MediaCatalogPageSize, type MediaCatalogTypeFilter } from '@/media-catalog'
 import { useAuthStore } from '@/stores/auth'
 import type { ListResponse, MediaCatalogDetail, MediaCatalogItem, MediaCatalogManagedTransfer, MediaClassificationProfileSummary, MediaLibraryDetail, MediaLibraryScanRun, MediaRecognitionSummary, PageResponse, StorageSummary, TMDBCandidate } from '@/types/api'
@@ -58,6 +58,7 @@ let catalogRequest: AbortController | null = null
 const detailRequests = new Map<string, AbortController>()
 
 const selected = computed(() => libraries.value.find(item => item.id === selectedID.value) ?? null)
+const selectedStorage = computed(() => storages.value.find(item => item.id === selected.value?.storage_id))
 const activeDraft = computed(() => pickerMode.value === 'create' ? createDraft.value : editDraft.value)
 const createStorage = computed(() => storages.value.find(item => item.id === createDraft.value.storage_id))
 const editStorage = computed(() => storages.value.find(item => item.id === editDraft.value?.storage_id))
@@ -300,11 +301,6 @@ function resetSourceSelection(draft: MediaLibraryDraft, storage?: StorageSummary
   draft.relative_root_token = ''
   draft.relative_root = '/'
   draft.source_path = ''
-  draft.ingest_enabled = false
-  draft.ingest_downloader_id = ''
-  draft.ingest_relative_root = ''
-  draft.ingest_relative_root_token = ''
-  draft.ingest_path = ''
   if (storage?.type === 'pan115' && draft.transfer_mode === 'symlink') draft.transfer_mode = 'move'
 }
 function normalizeSTRM(draft: MediaLibraryDraft, storage: StorageSummary | undefined) {
@@ -349,6 +345,25 @@ async function removeLibrary() {
   if (!selected.value || !window.confirm(`确认删除媒体库“${selected.value.name}”？只会删除配置、索引和扫描记录，不会删除来源媒体文件。`)) return
   const id = selected.value.id
   await run(async () => { await api(`/api/v1/media-libraries/${id}`, { method: 'DELETE', body: '{}' }); selectedID.value = null; notice.value = '媒体库配置和索引已删除；来源媒体文件未改变。'; await load() })
+}
+
+async function setAutoListenDefault() {
+  if (!selected.value) return
+  await run(async () => {
+    const result = await setDefaultIngestLibrary(selected.value!.id)
+    notice.value = `已将“${result.media_library_name}”设为该 115 账号的自动监听默认入库库。`
+    await load({ preferred: selected.value!.id })
+  })
+}
+
+async function clearAutoListenDefault() {
+  if (!selected.value?.connection_id || !window.confirm('确认取消该 115 账号的自动监听默认入库库？\n\n如果仍有下载器开启生活事件监听，Server 会拒绝此操作。')) return
+  const id = selected.value.id
+  await run(async () => {
+    await clearDefaultIngestLibrary(selected.value!.connection_id!)
+    notice.value = '已取消自动监听默认入库库。'
+    await load({ preferred: id })
+  })
 }
 
 async function run(action: () => Promise<void>) { saving.value = true; error.value = ''; notice.value = ''; try { await action() } catch (reason) { error.value = message(reason) } finally { saving.value = false } }
@@ -425,6 +440,13 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
           <div class="flex flex-wrap items-start justify-between gap-4"><div><div class="flex flex-wrap items-center gap-2"><h2 class="m-0">{{ selected.name }}</h2><span :class="presentLibraryStatus(selected.status).className">{{ presentLibraryStatus(selected.status).label }}</span></div><p class="text-subtle mb-0 mt-2 text-sm">{{ selected.storage_name }} · {{ selectedSourceDisplay }}（相对根 {{ selected.relative_root }}） · Profile {{ selected.profile_name }} r{{ selected.profile_revision }}</p></div><div class="flex flex-wrap gap-2"><button v-if="selected.status === 'initialization_failed' && auth.can(Permissions.MediaLibrariesScan)" type="button" class="btn-primary" :disabled="saving" @click="retryNow">立即重试</button><button v-if="selected.enabled && selected.status !== 'initializing' && auth.can(Permissions.MediaLibrariesScan)" type="button" class="btn-secondary" :disabled="saving" @click="scanNow">立即扫描</button><button v-if="auth.can(Permissions.MediaLibrariesDelete)" type="button" class="btn-danger" :disabled="saving" @click="removeLibrary">删除配置</button></div></div>
           <p v-if="selected.status === 'initialization_failed'" class="semantic-error mt-4 p-3 text-sm">初始化失败：{{ selected.status_error_code || 'media_library_scan_failed' }}。失败库不会启动监听；下次自动重试：{{ dateTime(selected.next_retry_at) }}。</p>
           <p v-if="selected.reclassification_due" class="semantic-warning mt-4 p-3 text-sm">所选 Profile 已更新。下一次扫描会重新应用分类，但不会移动、重命名或写回来源文件。<RouterLink class="semantic-link ml-1" to="/system/media-rules">打开规则管理</RouterLink></p>
+        </section>
+
+        <section v-if="selectedStorage?.type === 'pan115'" class="semantic-inset mt-4 p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div><div class="flex flex-wrap items-center gap-2"><strong>自动监听默认入库库</strong><span v-if="selected.auto_listen_default" class="status-chip status-chip--ready">当前默认</span></div><p class="text-subtle mb-0 mt-1 text-xs">同一 115 账号只能有一个。它只接收 115 App 手工放入下载目录的内容；离线下载、转存、站点下载和追更仍使用各自任务的目标。</p></div>
+            <div v-if="auth.can(Permissions.MediaLibrariesUpdate)" class="flex gap-2"><button v-if="!selected.auto_listen_default" type="button" class="btn-secondary" :disabled="saving || !selected.enabled" @click="setAutoListenDefault">设为默认</button><button v-else type="button" class="btn-danger" :disabled="saving" @click="clearAutoListenDefault">取消默认</button></div>
+          </div>
         </section>
 
         <div class="management-tabs mt-4" role="tablist" aria-label="媒体库详情"><button v-for="tab in ([['status','状态'],['runs','扫描记录'],['entries','媒体清单'],['settings','配置']] as const)" :id="`library-tab-${tab[0]}`" :key="tab[0]" type="button" class="management-tab" :class="activeTab === tab[0] ? 'management-tab--active' : ''" role="tab" :aria-selected="activeTab === tab[0]" :aria-controls="`library-panel-${tab[0]}`" @click="activeTab = tab[0]">{{ tab[1] }}</button></div>

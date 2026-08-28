@@ -85,8 +85,8 @@ type Category struct {
 // MetadataClient is implemented by providers which can expose a bounded file
 // manifest and route a paused task before content download starts.
 type MetadataClient interface {
-	Pause(context.Context, string) error
-	Resume(context.Context, string) error
+	Pauser
+	Resumer
 	Manifest(context.Context, string) (Manifest, error)
 	Categories(context.Context) ([]Category, error)
 	EnsureCategory(context.Context, string, string) error
@@ -135,9 +135,18 @@ type Client interface {
 	Test(context.Context) (Health, error)
 	Submit(context.Context, SubmitRequest) (Task, error)
 	Get(context.Context, string) (Task, error)
-	Pause(context.Context, string) error
-	Resume(context.Context, string) error
 	Cancel(context.Context, string, bool) error
+}
+
+// Pauser and Resumer are optional provider capabilities. Keeping them out of
+// Client prevents native-offline implementations from advertising fake control
+// operations merely to satisfy the required downloader contract.
+type Pauser interface {
+	Pause(context.Context, string) error
+}
+
+type Resumer interface {
+	Resume(context.Context, string) error
 }
 
 type Builder func(Config) (Client, error)

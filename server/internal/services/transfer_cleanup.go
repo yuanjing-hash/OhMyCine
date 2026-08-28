@@ -41,7 +41,7 @@ func (w *TransferWorker) finishCompletedTransfer(ctx context.Context, task model
 	} else if err != nil {
 		return WorkerResult{ErrorCode: "transfer_download_missing", ErrorMessage: "原下载任务不存在"}
 	}
-	if download.TargetStorageType != models.StorageTypePan115 && w.service.seeding != nil {
+	if download.ProviderType != models.DownloaderTypePan115Offline && w.service.seeding != nil {
 		if err := w.service.seeding.AfterTransfer(ctx, download); err != nil {
 			next := time.Now().UTC().Add(time.Minute)
 			return WorkerResult{RetryAt: &next, ErrorCode: "post_transfer_provider_failed", ErrorMessage: "下载器收尾失败，将自动重试"}
@@ -68,6 +68,10 @@ func (w *TransferWorker) finishCompletedTransfer(ctx context.Context, task model
 		return WorkerResult{}
 	}
 	if task.CleanupStatus == models.TransferCleanupCompleted || task.CleanupStatus == models.TransferCleanupSkipped {
+		if err := cleanupCrossSourceManagedRoot(task, download); err != nil {
+			next := time.Now().UTC().Add(time.Minute)
+			return WorkerResult{RetryAt: &next, ErrorCode: "cross_source_staging_cleanup_failed", ErrorMessage: "入库已完成，跨数据源暂存清理将自动重试"}
+		}
 		return WorkerResult{}
 	}
 	if err := ensureDownloadPipelineActive(w.service.db, task.DownloadTaskID); errors.Is(err, context.Canceled) {
@@ -78,6 +82,10 @@ func (w *TransferWorker) finishCompletedTransfer(ctx context.Context, task model
 	if _, err := w.service.cleanupTransferStaging(ctx, task, download); err != nil {
 		next := time.Now().UTC().Add(time.Minute)
 		return WorkerResult{RetryAt: &next, ErrorCode: "download_staging_cleanup_failed", ErrorMessage: "入库已完成，下载暂存清理将自动重试"}
+	}
+	if err := cleanupCrossSourceManagedRoot(task, download); err != nil {
+		next := time.Now().UTC().Add(time.Minute)
+		return WorkerResult{RetryAt: &next, ErrorCode: "cross_source_staging_cleanup_failed", ErrorMessage: "入库已完成，跨数据源暂存清理将自动重试"}
 	}
 	return WorkerResult{}
 }
@@ -127,7 +135,7 @@ func (s *TransferService) cleanupTransferStaging(ctx context.Context, task model
 	}
 	_ = s.db.Model(&models.TransferTask{}).Where("id = ?", task.ID).Updates(map[string]any{"cleanup_status": models.TransferCleanupRunning, "cleanup_error_code": "", "updated_at": time.Now().UTC()}).Error
 	removed := 0
-	if download.TargetStorageType == models.StorageTypePan115 {
+	if download.ProviderType == models.DownloaderTypePan115Offline {
 		removed, err = s.cleanupCloudStaging(ctx, download, extras)
 	} else {
 		removed, err = cleanupLocalStaging(download, extras)

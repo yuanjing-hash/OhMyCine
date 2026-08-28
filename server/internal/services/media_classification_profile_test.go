@@ -197,7 +197,7 @@ func TestProfileOwnsRecognitionAndNamingConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.RecognitionRuleCount != 2 || len(updated.RecognitionRules) != 2 || updated.MovieDirectoryTemplate != movieDirectory || updated.TVFilenameTemplate != tvFilename {
+	if updated.RecognitionRuleCount != 2 || len(updated.RecognitionRules) != 2 || updated.MovieDirectoryTemplate != movieDirectory || updated.TVDirectoryTemplate != "电视剧/{category}/剧集/{title} ({year})/Season {season:02}" || updated.TVFilenameTemplate != tvFilename {
 		t.Fatalf("updated=%+v", updated)
 	}
 	copied, err := service.Copy(actor, updated.ID, CopyMediaClassificationProfileInput{}, RequestContext{})

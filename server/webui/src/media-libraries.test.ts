@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { draftFromLibrary, emptyMediaLibraryDraft, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSTRM } from '@/media-libraries'
 import type { StorageSummary } from '@/types/api'
@@ -42,19 +43,20 @@ describe('media library form boundary', () => {
 
   it('omits legacy media-library intake writes in favor of downloader life-event listening', () => {
     const draft = emptyMediaLibraryDraft(1, 2)
-    draft.ingest_enabled = true
-    draft.ingest_downloader_id = 'downloader-115'
-    draft.ingest_relative_root_token = 'opaque-intake'
-    draft.ingest_path = '/中转'
     const payload = payloadFromDraft(draft, storage('pan115'))
     expect(payload).not.toHaveProperty('ingest_enabled')
     expect(payload).not.toHaveProperty('ingest_downloader_id')
     expect(payload).not.toHaveProperty('ingest_relative_root_token')
     expect(JSON.stringify(payload)).not.toContain('ingest_path')
+  })
 
-    draft.ingest_enabled = false
-    expect(payloadFromDraft(draft, storage('pan115'))).not.toHaveProperty('ingest_enabled')
-    expect(payloadFromDraft(draft, storage('pan115'))).not.toHaveProperty('ingest_relative_root_token')
+  it('manages one 115 default library without exposing a second intake directory', () => {
+    const source = readFileSync(new URL('./views/MediaLibrariesView.vue', import.meta.url), 'utf8')
+    expect(source).toContain('setDefaultIngestLibrary')
+    expect(source).toContain('clearDefaultIngestLibrary')
+    expect(source).toContain('自动监听默认入库库')
+    expect(source).not.toContain('自动摄取的中转目录')
+    expect(source).not.toContain('ingest_downloader_id')
   })
 
   it('presents initialization failure as an error state', () => {

@@ -31,7 +31,16 @@ type cloudTransferState struct {
 	Directories     map[string]string                 `json:"directories"`
 	TempDirectoryID string                            `json:"temp_directory_id,omitempty"`
 	Items           map[string]cloudTransferItemState `json:"items"`
+	ManagedRoot     string                            `json:"managed_root,omitempty"`
+	Materialized    map[string]materializedItemState  `json:"materialized,omitempty"`
 	BatchIntent     *cloudTransferBatchIntent         `json:"batch_intent,omitempty"`
+}
+
+type materializedItemState struct {
+	RelativePath string `json:"relative_path"`
+	Size         int64  `json:"size"`
+	SHA1         string `json:"sha1,omitempty"`
+	Status       string `json:"status"`
 }
 
 type cloudTransferItemState struct {
@@ -422,7 +431,7 @@ func uniqueCloudTargetDirectories(targets []transferTargetItem) []string {
 }
 
 func decodeCloudTransferState(raw string) (cloudTransferState, error) {
-	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{}, Items: map[string]cloudTransferItemState{}}
+	state := cloudTransferState{Version: cloudTransferStateVersion, Directories: map[string]string{}, Items: map[string]cloudTransferItemState{}, Materialized: map[string]materializedItemState{}}
 	if strings.TrimSpace(raw) == "" {
 		return state, nil
 	}
@@ -442,6 +451,9 @@ func decodeCloudTransferState(raw string) (cloudTransferState, error) {
 	}
 	if state.Version != cloudTransferStateVersion || state.Directories == nil || state.Items == nil {
 		return state, errors.New("cloud transfer state version is invalid")
+	}
+	if state.Materialized == nil {
+		state.Materialized = map[string]materializedItemState{}
 	}
 	if err := validateCloudBatchIntent(state.BatchIntent); err != nil {
 		return state, err

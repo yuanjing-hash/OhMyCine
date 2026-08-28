@@ -1,12 +1,14 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -179,6 +181,45 @@ func TestPluginCloudUploadCompletesAndPersistsReconciledState(t *testing.T) {
 	}
 }
 
+func TestLocalQBittorrentOutputUploadsToPan115WithoutRemovingSeedingSource(t *testing.T) {
+	fixture := newUploadTransferFixture(t, models.MediaLibraryConflictOverwrite, false)
+	body := bytes.Repeat([]byte{'q'}, int(minimumAutomaticTransferVideoBytes))
+	categoryRoot := filepath.Join(fixture.download.StagingAbsolutePath, "电影")
+	if err := os.MkdirAll(categoryRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(categoryRoot, fixture.manifest.Files[0].RelativePath)
+	if err := os.WriteFile(source, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmdbID, confidence, year := int64(550), .99, 2024
+	identityRaw, _ := json.Marshal(MediaIdentitySnapshot{Version: 1, Revision: 1, Source: mediaIdentitySourceAutomatic, Status: mediaIdentityStatusVerified, TMDBID: &tmdbID, MediaType: "movie", Title: "Movie", Year: &year, Category: "电影", Confidence: &confidence})
+	sourceIdentity, _ := marshalDataSourceIdentity(localDataSourceIdentity())
+	targetIdentity, _ := marshalDataSourceIdentity(models.DataSourceIdentity{Kind: models.DataSourceKindProvider, ProviderType: models.StorageTypePan115, ConnectionIdentity: strconv.FormatUint(uint64(*fixture.download.TargetConnectionID), 10), StorageScope: strconv.FormatUint(uint64(*fixture.download.TargetStorageID), 10)})
+	fixture.download.ProviderType = models.DownloaderTypeQBittorrent
+	fixture.download.PluginID, fixture.download.PluginVersion, fixture.download.PluginConnectionID, fixture.download.ProviderMetadataJSON = "", "", "", ""
+	fixture.download.StagingCategory = "电影"
+	fixture.download.ScrapeTMDBID, fixture.download.ScrapeConfidence = &tmdbID, &confidence
+	fixture.download.IdentitySource, fixture.download.IdentityStatus, fixture.download.IdentityRevision, fixture.download.IdentitySnapshotJSON = mediaIdentitySourceAutomatic, mediaIdentityStatusVerified, 1, string(identityRaw)
+	fixture.download.SourceDataSourceJSON, fixture.download.TargetDataSourceJSON = sourceIdentity, targetIdentity
+	fixture.download.TransferRouteKind, fixture.download.TransferRouteVersion = models.TransferRouteCrossSource, models.TransferRouteVersionCurrent
+	fixture.manifest.Files[0].Size = int64(len(body))
+	if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Updates(map[string]any{
+		"provider_type": models.DownloaderTypeQBittorrent, "plugin_id": "", "plugin_version": "", "plugin_connection_id": "", "provider_metadata_json": "", "staging_category": "电影",
+		"scrape_tmdb_id": tmdbID, "scrape_confidence": confidence, "identity_source": mediaIdentitySourceAutomatic, "identity_status": mediaIdentityStatusVerified, "identity_revision": 1, "identity_snapshot_json": string(identityRaw),
+		"source_data_source_json": sourceIdentity, "target_data_source_json": targetIdentity, "transfer_route_kind": models.TransferRouteCrossSource, "transfer_route_version": models.TransferRouteVersionCurrent,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	result := fixture.enqueueAndRun(t)
+	if result.ErrorCode != "" || result.Wait != nil || result.RetryAt != nil || fixture.driver.uploadCalls != 1 {
+		t.Fatalf("result=%+v uploads=%d", result, fixture.driver.uploadCalls)
+	}
+	if info, err := os.Stat(source); err != nil || info.Size() != int64(len(body)) {
+		t.Fatalf("qBittorrent seeding source changed: info=%+v err=%v", info, err)
+	}
+}
+
 func TestPluginCloudUploadResumesUploadingStateByExactTargetWithoutDuplicate(t *testing.T) {
 	fixture := newUploadTransferFixture(t, models.MediaLibraryConflictOverwrite, false)
 	if err := fixture.service.EnqueuePackage(fixture.download, fixture.manifest, fixture.manifest); err != nil {
@@ -298,6 +339,28 @@ func TestPluginCloudUploadRejectsChangedAndNonRegularStagingSources(t *testing.T
 			t.Fatalf("sibling staging file changed: body=%q err=%v", body, err)
 		}
 	})
+}
+
+func TestResolveCloudUploadSourceUsesTransferOwnedManagedRoot(t *testing.T) {
+	staging := t.TempDir()
+	transferID := uuid.NewString()
+	download := models.DownloadTask{ID: uuid.NewString(), StagingAbsolutePath: staging}
+	managedRoot := filepath.Join(staging, crossSourceRootName, transferID)
+	if err := os.MkdirAll(managedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(managedRoot, "Movie.mkv")
+	if err := os.WriteFile(want, []byte("video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := cloudTransferState{ManagedRoot: filepath.ToSlash(filepath.Join(crossSourceRootName, transferID))}
+	got, err := resolveCloudUploadSource(transferID, download, state, "Movie.mkv")
+	if err != nil || got != want {
+		t.Fatalf("managed upload source=%q want=%q err=%v", got, want, err)
+	}
+	if _, err := resolveCloudUploadSource(download.ID, download, state, "Movie.mkv"); err == nil {
+		t.Fatal("download task identity was accepted as managed-root ownership")
+	}
 }
 
 var _ cloudpkg.UploadDriver = (*fakeUploadCloudDriver)(nil)

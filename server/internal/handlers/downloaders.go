@@ -138,6 +138,22 @@ func (a *API) Downloads(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"list": items, "total": total})
 }
 
+func (a *API) PreviewDownloadRoutes(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+	var payload services.DownloadRoutePreviewInput
+	if err := strictJSON(c, &payload); err != nil {
+		writeError(c, a.log, invalid("下载路由预览参数无效", err))
+		return
+	}
+	preview, err := a.downloads.PreviewRoutes(c.Request.Context(), actor, payload)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, preview)
+}
+
 func (a *API) CreateDownload(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 6<<20)

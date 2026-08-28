@@ -1,4 +1,9 @@
 import type { MediaLibraryDetail, MediaLibraryStatus, MediaLibraryWritePayload, StorageSummary } from '@/types/api'
+import { api } from '@/api/client'
+
+export interface DefaultIngestLibrarySummary { connection_id: number; media_library_id: number; media_library_name: string }
+export const setDefaultIngestLibrary = (libraryID: number) => api<DefaultIngestLibrarySummary>(`/api/v1/media-libraries/${libraryID}/default-ingest`, { method: 'PUT', body: '{}' })
+export const clearDefaultIngestLibrary = (connectionID: number) => api<{ cleared: boolean }>(`/api/v1/connections/${connectionID}/default-ingest-library`, { method: 'DELETE', body: '{}' })
 
 export const defaultVideoExtensions = ['.mp4', '.mkv', '.ts', '.iso', '.rmvb', '.avi', '.mov', '.mpeg', '.mpg', '.wmv', '.3gp', '.asf', '.m4v', '.flv', '.m2ts', '.tp', '.f4v']
 
@@ -8,7 +13,6 @@ export interface MediaLibraryDraft extends Omit<MediaLibraryWritePayload, 'video
 	strm_asset_extra_extensions_text: string
   ignore_patterns_text: string
   strm_local_path: string
-  ingest_path: string
 }
 
 export function emptyMediaLibraryDraft(storageID = 0, profileID = 0): MediaLibraryDraft {
@@ -18,10 +22,9 @@ export function emptyMediaLibraryDraft(storageID = 0, profileID = 0): MediaLibra
 	video_extensions_text: defaultVideoExtensions.join(', '), strm_asset_extra_extensions_text: '', ignore_patterns_text: '', metadata_language: 'zh-CN', metadata_region: 'CN', match_strategy: 'balanced',
     provider_rate_per_second: 100, provider_concurrency: 2, metadata_rate_per_second: 5, metadata_concurrency: 1,
     strm_enabled: false, strm_local_root_token: '', strm_local_path: '', metadata_artifacts_enabled: true, upload_sidecars: false,
-    ingest_enabled: false, ingest_downloader_id: '', ingest_relative_root: '', ingest_relative_root_token: '', ingest_path: '',
     transfer_mode: 'move', conflict_policy: 'ask',
-    movie_directory_template: '{category}/{title} ({year})', movie_filename_template: '{title} ({year})',
-    tv_directory_template: '{category}/{title} ({year})/Season {season:02}', tv_filename_template: '{title} - S{season:02}E{episode:02}',
+    movie_directory_template: '电影/{category}/{title} ({year})', movie_filename_template: '{title} ({year})',
+    tv_directory_template: '电视剧/{category}/{title} ({year})/Season {season:02}', tv_filename_template: '{title} - S{season:02}E{episode:02}',
   }
 }
 
@@ -45,7 +48,6 @@ export function draftFromLibrary(library: MediaLibraryDetail, storage?: StorageS
     provider_rate_per_second: library.provider_rate_per_second, provider_concurrency: library.provider_concurrency,
     metadata_rate_per_second: library.metadata_rate_per_second, metadata_concurrency: library.metadata_concurrency,
     strm_enabled: library.strm_enabled, strm_local_root_token: '', strm_local_path: library.strm_local_path || '', metadata_artifacts_enabled: library.metadata_artifacts_enabled, upload_sidecars: library.upload_sidecars,
-    ingest_enabled: false, ingest_downloader_id: '', ingest_relative_root: '', ingest_relative_root_token: '', ingest_path: '',
     transfer_mode: library.transfer_mode, conflict_policy: library.conflict_policy,
     movie_directory_template: library.movie_directory_template, movie_filename_template: library.movie_filename_template,
     tv_directory_template: library.tv_directory_template, tv_filename_template: library.tv_filename_template,

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { beginDownloadRetry, canCancelDownloadPipeline, compatibleDownloadLibraries, downloadErrorMessage, downloadProviderStatusLabel, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
-import type { DownloaderSummary, DownloadTaskSummary, MediaLibraryDetail, StorageSummary } from '@/types/api'
+import { beginDownloadRetry, canCancelDownloadPipeline, downloadErrorMessage, downloadProviderStatusLabel, downloadStatusClass, downloadStatusLabel, formatBytes, formatETA, formatProgress, isDownloadHistoryTask, reconcileDownloadRetries, summarizeDownloaderTasks, torrentToBase64 } from '@/downloads'
+import type { DownloadTaskSummary } from '@/types/api'
 
 const task = { job_status: 'queued' } as DownloadTaskSummary
 
@@ -82,6 +82,17 @@ describe('download presentation', () => {
     expect(source).toContain('?delete_data=${deleteSourceData.value}')
     expect(source).not.toContain('取消并删除数据')
   })
+
+  it('uses the authoritative route preview and disables life-event listening without a default library', () => {
+    const source = readFileSync(new URL('./views/DownloadsView.vue', import.meta.url), 'utf8')
+    expect(source).toContain('previewDownloadRoutes')
+    expect(source).toContain('<DownloadRouteTargetPicker')
+    expect(source).toContain('transferRouteLabel(task.route_kind)')
+    expect(source).toContain(':disabled="!createLifeEventDefault"')
+    expect(source).toContain(':disabled="!editLifeEventDefault"')
+    expect(source).not.toContain('按媒体库顺序自动选择')
+    expect(source).not.toContain('compatibleDownloadLibraries')
+  })
 })
 
 describe('115 offline downloader directory selection', () => {
@@ -93,29 +104,6 @@ describe('115 offline downloader directory selection', () => {
     expect(source).toContain(':restrict-to-storage="true"')
     expect(source).toContain(':storage-id="downloaderPickerStorageID"')
     expect(source).toContain('provider_directory_token')
-  })
-
-  it('offers only writable libraries in the downloader output boundary', () => {
-    const capabilities = { network_drive: false, directory_list: true, watch: true, native_offline_download: true, temporary_direct_url: false, signed_proxy: false, change_cursor: true }
-    const probe = { exists: true, readable: true, available: true, free_bytes: null, total_bytes: null, last_checked_at: '', error_code: '' }
-    const storages = [
-      { id: 1, name: 'local', type: 'local', connection_id: null, enabled: true, capabilities, probe },
-      { id: 2, name: '115 source', type: 'pan115', connection_id: 10, enabled: true, capabilities, probe },
-      { id: 3, name: '115 same account', type: 'pan115', connection_id: 10, enabled: true, capabilities, probe },
-      { id: 4, name: '115 other account', type: 'pan115', connection_id: 20, enabled: true, capabilities, probe },
-    ] as StorageSummary[]
-    const libraries = [
-      { id: 1, name: 'local', storage_id: 1, enabled: true, transfer_mode: 'move' },
-      { id: 2, name: 'same', storage_id: 3, enabled: true, transfer_mode: 'copy', ingest_enabled: true, ingest_downloader_id: 'pan115' },
-      { id: 3, name: 'other', storage_id: 4, enabled: true, transfer_mode: 'move' },
-      { id: 4, name: 'legacy link', storage_id: 3, enabled: true, transfer_mode: 'symlink' },
-    ] as MediaLibraryDetail[]
-    const qbit = { type: 'qbittorrent', storage_id: null } as DownloaderSummary
-    const pan115 = { id: 'pan115', type: 'pan115_offline', storage_id: 2 } as DownloaderSummary
-
-    expect(compatibleDownloadLibraries(libraries, storages, qbit).map(item => item.id)).toEqual([1])
-    expect(compatibleDownloadLibraries(libraries, storages, pan115).map(item => item.id)).toEqual([2])
-    expect(compatibleDownloadLibraries(libraries, storages, { ...pan115, id: 'other' }).map(item => item.id)).toEqual([2])
   })
 
   it('renders separate native-offline and 115-share source entries', () => {

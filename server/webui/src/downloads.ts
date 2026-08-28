@@ -1,4 +1,4 @@
-import type { DownloaderSummary, DownloadTaskSummary, MediaLibraryDetail, StorageSummary } from '@/types/api'
+import type { DownloadTaskSummary } from '@/types/api'
 
 export type DownloadSourceMode = 'url' | 'torrent' | 'share'
 export type DownloadManagementSection = 'active' | 'history' | 'create' | 'seeding' | 'downloaders'
@@ -142,27 +142,6 @@ export function isDownloadHistoryTask(task: DownloadTaskSummary): boolean {
 
 export function canCancelDownloadPipeline(task: DownloadTaskSummary): boolean {
   return task.lifecycle_scope === 'active' && task.job_status !== 'cancelled'
-}
-
-export function compatibleDownloadLibraries(
-  libraries: MediaLibraryDetail[],
-  storages: StorageSummary[],
-  downloader: DownloaderSummary | null,
-): MediaLibraryDetail[] {
-  if (!downloader) return []
-  const storageByID = new Map(storages.map(storage => [storage.id, storage]))
-  const enabled = libraries.filter(library => library.enabled && storageByID.get(library.storage_id)?.enabled)
-  if (downloader.type !== 'pan115_offline') {
-    return enabled.filter(library => storageByID.get(library.storage_id)?.type === 'local')
-  }
-  const source = downloader.storage_id == null ? undefined : storageByID.get(downloader.storage_id)
-  if (source?.type !== 'pan115' || source.connection_id == null) return []
-  return enabled.filter(library => {
-    const target = storageByID.get(library.storage_id)
-    return target?.type === 'pan115'
-      && target.connection_id === source.connection_id
-      && library.transfer_mode !== 'symlink'
-  })
 }
 
 export function formatSampleTime(value: string | null): string {

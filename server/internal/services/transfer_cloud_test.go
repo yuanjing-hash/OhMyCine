@@ -364,6 +364,24 @@ func TestCloudTransferWorkerMovesAndCopiesWithinOneConnection(t *testing.T) {
 	}
 }
 
+func TestCurrentSameConnectionPan115RouteNeverRequiresMaterializationReader(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	sourceIdentity, _ := marshalDataSourceIdentity(models.DataSourceIdentity{Kind: models.DataSourceKindProvider, ProviderType: models.StorageTypePan115, ConnectionIdentity: strconv.FormatUint(uint64(fixture.connection), 10), StorageScope: strconv.FormatUint(uint64(*fixture.download.StagingStorageID), 10)})
+	targetIdentity, _ := marshalDataSourceIdentity(models.DataSourceIdentity{Kind: models.DataSourceKindProvider, ProviderType: models.StorageTypePan115, ConnectionIdentity: strconv.FormatUint(uint64(fixture.connection), 10), StorageScope: strconv.FormatUint(uint64(*fixture.download.TargetStorageID), 10)})
+	fixture.download.SourceDataSourceJSON, fixture.download.TargetDataSourceJSON = sourceIdentity, targetIdentity
+	fixture.download.TransferRouteKind, fixture.download.TransferRouteVersion = models.TransferRouteSameSourceProvider, models.TransferRouteVersionCurrent
+	if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Updates(map[string]any{"source_data_source_json": sourceIdentity, "target_data_source_json": targetIdentity, "transfer_route_kind": models.TransferRouteSameSourceProvider, "transfer_route_version": models.TransferRouteVersionCurrent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	result := fixture.run(t)
+	if result.ErrorCode != "" || result.Wait != nil || result.RetryAt != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if fixture.driver.moveCalls == 0 {
+		t.Fatal("same-connection route did not use provider-native move")
+	}
+}
+
 func TestCloudTransferCompletionLogContainsOnlyAggregateTiming(t *testing.T) {
 	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
 	var output strings.Builder

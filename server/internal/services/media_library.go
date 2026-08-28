@@ -49,6 +49,7 @@ type MediaLibraryService struct {
 	lifeEventRechecks map[uint]struct{}
 	lifeEventMu       sync.Mutex
 	lifeEvents        map[string]downloaderLifeEventCandidate
+	backends          *MediaLibraryBackendRegistry
 }
 
 // MediaLibraryIngestEnqueuer is the narrow boundary from provider directory
@@ -115,6 +116,8 @@ type UpdateMediaLibraryInput struct {
 type MediaLibraryDetail struct {
 	models.MediaLibrary
 	StorageName                  string   `json:"storage_name"`
+	ConnectionID                 *uint    `json:"connection_id,omitempty"`
+	AutoListenDefault            bool     `json:"auto_listen_default"`
 	ProfileName                  string   `json:"profile_name"`
 	VideoExtensions              []string `json:"video_extensions"`
 	STRMAssetDefaultExtensions   []string `json:"strm_asset_default_extensions"`
@@ -127,7 +130,18 @@ type MediaLibraryDetail struct {
 }
 
 func NewMediaLibraryService(db *gorm.DB, audit *AuditService, log zerolog.Logger) *MediaLibraryService {
-	return &MediaLibraryService{db: db, audit: audit, log: log, supervisors: map[uint]supervisorHandle{}, scanLocks: map[uint]*sync.Mutex{}, lifeEventRechecks: map[uint]struct{}{}, lifeEvents: map[string]downloaderLifeEventCandidate{}}
+	service := &MediaLibraryService{db: db, audit: audit, log: log, supervisors: map[uint]supervisorHandle{}, scanLocks: map[uint]*sync.Mutex{}, lifeEventRechecks: map[uint]struct{}{}, lifeEvents: map[string]downloaderLifeEventCandidate{}}
+	service.backends = NewMediaLibraryBackendRegistry(
+		localMediaLibraryBackend{},
+		pan115MediaLibraryBackend{driver: func(connectionID uint) (cloudpkg.Driver, error) {
+			if service.connections == nil {
+				return nil, errors.New("provider connection is unavailable")
+			}
+			_, driver, err := service.connections.driver(connectionID)
+			return driver, err
+		}},
+	)
+	return service
 }
 func (s *MediaLibraryService) SetConnectionService(connections *ConnectionService) {
 	s.connections = connections
@@ -216,6 +230,10 @@ func (s *MediaLibraryService) Create(ctx context.Context, actor Actor, input Med
 	if !actor.Can(authz.PermissionMediaLibrariesCreate) {
 		return MediaLibraryDetail{}, appError(CodePermissionDenied, "无权创建媒体库", nil)
 	}
+	// The MediaLibrary-owned intake directory is a legacy, read-only fact.
+	// New callers (including forged old WebUI payloads) cannot create a second
+	// intake route beside the Downloader-owned life-event directory.
+	clearLegacyMediaLibraryIngestInput(&input)
 	record, err := s.validateInput(ctx, 0, actor, input)
 	if err != nil {
 		return MediaLibraryDetail{}, err
@@ -234,7 +252,7 @@ func (s *MediaLibraryService) Create(ctx context.Context, actor Actor, input Med
 		return s.audit.Record(tx, &actor.User.ID, "media_library.create", "media_library", uintID(record.ID), "success", map[string]any{"storage_id": record.StorageID, "profile_id": record.ProfileID, "relative_root": record.RelativeRoot, "enabled": record.Enabled}, request)
 	})
 	if transactionErr != nil {
-		return MediaLibraryDetail{}, mediaLibraryConstraint(err)
+		return MediaLibraryDetail{}, mediaLibraryConstraint(transactionErr)
 	}
 	if record.Enabled {
 		s.startSupervisor(context.Background(), record.ID)
@@ -254,6 +272,11 @@ func (s *MediaLibraryService) Update(ctx context.Context, actor Actor, id uint, 
 		value := existing.MetadataArtifactsEnabled
 		input.MetadataArtifactsEnabled = &value
 	}
+	// Legacy intake configuration belongs to already-running compatibility
+	// routes. Ignore request fields and copy the persisted snapshot back after
+	// validating the current MediaLibrary fields, so an unrelated edit neither
+	// creates nor silently disables legacy intake work.
+	clearLegacyMediaLibraryIngestInput(&input)
 	record, err := s.validateInput(ctx, id, actor, input)
 	if err != nil {
 		return MediaLibraryDetail{}, err
@@ -268,6 +291,11 @@ func (s *MediaLibraryService) Update(ctx context.Context, actor Actor, id uint, 
 	record.ArtifactCleanupRemoved = existing.ArtifactCleanupRemoved
 	record.ArtifactCleanupError = existing.ArtifactCleanupError
 	record.ArtifactCleanupAt = existing.ArtifactCleanupAt
+	record.IngestEnabled = existing.IngestEnabled
+	record.IngestDownloaderID = cloneOptionalString(existing.IngestDownloaderID)
+	record.IngestOwnerID = cloneOptionalUint(existing.IngestOwnerID)
+	record.IngestProviderRootID = existing.IngestProviderRootID
+	record.IngestRelativeRoot = existing.IngestRelativeRoot
 	sourceChanged := mediaLibrarySourceChanged(existing, record)
 	if !sourceChanged {
 		record.BaselineGeneration = existing.BaselineGeneration
@@ -281,10 +309,36 @@ func (s *MediaLibraryService) Update(ctx context.Context, actor Actor, id uint, 
 	} else {
 		record.Status = models.MediaLibraryStatusDisabled
 	}
+	var replacementStorage models.Storage
+	if err := s.db.Select("type", "connection_id").First(&replacementStorage, record.StorageID).Error; err != nil {
+		return MediaLibraryDetail{}, appError(CodeMediaLibraryStorageUnavailable, "来源 Storage 不可用", err)
+	}
+	preservesDefault := func(connectionID uint) bool {
+		return record.Enabled && replacementStorage.Type == models.StorageTypePan115 && replacementStorage.ConnectionID != nil && *replacementStorage.ConnectionID == connectionID
+	}
+	// Reject the expected destructive edit before stopping the active supervisor.
+	// The same guard is repeated in the write transaction to close the race with
+	// listener/default changes made after this read.
+	if existing.DefaultIngestConnectionID != nil && !preservesDefault(*existing.DefaultIngestConnectionID) {
+		if err := requireNoEnabledLifeEventListener(ctx, s.db, *existing.DefaultIngestConnectionID); err != nil {
+			return MediaLibraryDetail{}, err
+		}
+	}
 	s.stopSupervisor(id)
 	lock := s.scanLock(id)
 	lock.Lock()
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var current models.MediaLibrary
+		if err := tx.Select("default_ingest_connection_id").First(&current, id).Error; err != nil {
+			return mediaLibraryNotFound(err)
+		}
+		record.DefaultIngestConnectionID = current.DefaultIngestConnectionID
+		if current.DefaultIngestConnectionID != nil && !preservesDefault(*current.DefaultIngestConnectionID) {
+			if err := requireNoEnabledLifeEventListener(ctx, tx, *current.DefaultIngestConnectionID); err != nil {
+				return err
+			}
+			record.DefaultIngestConnectionID = nil
+		}
 		if sourceChanged {
 			if err := tx.Where("library_id = ?", id).Delete(&models.MediaLibraryEntry{}).Error; err != nil {
 				return err
@@ -322,6 +376,32 @@ func (s *MediaLibraryService) Update(ctx context.Context, actor Actor, id uint, 
 		s.startSupervisor(context.Background(), id)
 	}
 	return s.detail(record)
+}
+
+func clearLegacyMediaLibraryIngestInput(input *MediaLibraryInput) {
+	if input == nil {
+		return
+	}
+	input.IngestEnabled = false
+	input.IngestDownloaderID = ""
+	input.IngestProviderRootID = ""
+	input.IngestRelativeRoot = ""
+}
+
+func cloneOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneOptionalUint(value *uint) *uint {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func mediaLibrarySourceChanged(existing, replacement models.MediaLibrary) bool {
@@ -376,6 +456,15 @@ func (s *MediaLibraryService) Delete(actor Actor, id uint, request RequestContex
 	if !actor.Can(authz.PermissionMediaLibrariesDelete) {
 		return appError(CodePermissionDenied, "无权删除媒体库", nil)
 	}
+	var existing models.MediaLibrary
+	if err := s.db.First(&existing, id).Error; err != nil {
+		return mediaLibraryNotFound(err)
+	}
+	if existing.DefaultIngestConnectionID != nil {
+		if err := requireNoEnabledLifeEventListener(context.Background(), s.db, *existing.DefaultIngestConnectionID); err != nil {
+			return err
+		}
+	}
 	s.stopSupervisor(id)
 	lock := s.scanLock(id)
 	lock.Lock()
@@ -384,6 +473,11 @@ func (s *MediaLibraryService) Delete(actor Actor, id uint, request RequestContex
 		var record models.MediaLibrary
 		if err := tx.First(&record, id).Error; err != nil {
 			return mediaLibraryNotFound(err)
+		}
+		if record.DefaultIngestConnectionID != nil {
+			if err := requireNoEnabledLifeEventListener(context.Background(), tx, *record.DefaultIngestConnectionID); err != nil {
+				return err
+			}
 		}
 		if err := tx.Delete(&record).Error; err != nil {
 			return err
@@ -394,6 +488,8 @@ func (s *MediaLibraryService) Delete(actor Actor, id uint, request RequestContex
 		s.mu.Lock()
 		delete(s.scanLocks, id)
 		s.mu.Unlock()
+	} else if existing.Enabled {
+		s.startSupervisor(context.Background(), id)
 	}
 	return err
 }
@@ -906,7 +1002,8 @@ func (s *MediaLibraryService) detail(record models.MediaLibrary) (MediaLibraryDe
 			return MediaLibraryDetail{}, err
 		}
 	}
-	return MediaLibraryDetail{MediaLibrary: record, StorageName: storage.Name, ProfileName: profile.Name, VideoExtensions: extensions, STRMAssetDefaultExtensions: append([]string(nil), defaultSourceAssetExtensions...), STRMAssetExtraExtensions: extraAssetExtensions, STRMAssetEffectiveExtensions: effectiveSourceAssetExtensions(extraAssetExtensions), IgnorePatterns: ignores, EntryCount: count, IngestDownloaderName: ingestDownloaderName, STRMLocalPath: record.STRMLocalRoot}, nil
+	autoListenDefault := record.DefaultIngestConnectionID != nil && storage.ConnectionID != nil && *record.DefaultIngestConnectionID == *storage.ConnectionID
+	return MediaLibraryDetail{MediaLibrary: record, StorageName: storage.Name, ConnectionID: storage.ConnectionID, AutoListenDefault: autoListenDefault, ProfileName: profile.Name, VideoExtensions: extensions, STRMAssetDefaultExtensions: append([]string(nil), defaultSourceAssetExtensions...), STRMAssetExtraExtensions: extraAssetExtensions, STRMAssetEffectiveExtensions: effectiveSourceAssetExtensions(extraAssetExtensions), IgnorePatterns: ignores, EntryCount: count, IngestDownloaderName: ingestDownloaderName, STRMLocalPath: record.STRMLocalRoot}, nil
 }
 func (s *MediaLibraryService) startSupervisor(parent context.Context, id uint) {
 	s.stopSupervisor(id)
@@ -966,25 +1063,7 @@ func (s *MediaLibraryService) supervise(ctx context.Context, id uint) {
 		if s.db.First(&storage, library.StorageID).Error != nil {
 			return
 		}
-		if storage.Type == models.StorageTypePan115 {
-			_ = s.setStatus(id, models.MediaLibraryStatusReconciling, "", nil)
-			if _, err := s.reconcile(ctx, id, "catch_up"); err != nil {
-				next := time.Now().UTC().Add(delay)
-				_ = s.setStatus(id, models.MediaLibraryStatusInitializationFailed, CodeMediaLibraryScanFailed, &next)
-				if !waitForRetry(ctx, delay) {
-					return
-				}
-				delay = nextRetryDelay(delay)
-				continue
-			}
-			_ = s.setStatus(id, models.MediaLibraryStatusListening, "", nil)
-			s.listenProvider(ctx, id, s.providerWake(id))
-			if ctx.Err() != nil {
-				return
-			}
-			continue
-		}
-		root, err := s.libraryRoot(id)
+		backend, err := s.backends.Get(storage.Type)
 		if err != nil {
 			next := time.Now().UTC().Add(delay)
 			_ = s.setStatus(id, models.MediaLibraryStatusInitializationFailed, CodeMediaLibraryScanFailed, &next)
@@ -994,7 +1073,7 @@ func (s *MediaLibraryService) supervise(ctx context.Context, id uint) {
 			delay = nextRetryDelay(delay)
 			continue
 		}
-		watcher, err := newRecursiveWatcher(root)
+		listener, err := backend.OpenListener(ctx, library, storage, s.providerWake(id))
 		if err != nil {
 			next := time.Now().UTC().Add(delay)
 			_ = s.setStatus(id, models.MediaLibraryStatusInitializationFailed, CodeMediaLibraryScanFailed, &next)
@@ -1006,7 +1085,7 @@ func (s *MediaLibraryService) supervise(ctx context.Context, id uint) {
 		}
 		_ = s.setStatus(id, models.MediaLibraryStatusReconciling, "", nil)
 		if _, err := s.reconcile(ctx, id, "catch_up"); err != nil {
-			_ = watcher.Close()
+			_ = listener.Close()
 			next := time.Now().UTC().Add(delay)
 			_ = s.setStatus(id, models.MediaLibraryStatusInitializationFailed, CodeMediaLibraryScanFailed, &next)
 			if !waitForRetry(ctx, delay) {
@@ -1015,59 +1094,18 @@ func (s *MediaLibraryService) supervise(ctx context.Context, id uint) {
 			delay = nextRetryDelay(delay)
 			continue
 		}
+		_ = s.sweepIngest(ctx, id)
 		_ = s.setStatus(id, models.MediaLibraryStatusListening, "", nil)
-		s.listen(ctx, id, watcher)
-		_ = watcher.Close()
+		_ = listener.Run(ctx, func(reconcileCtx context.Context, reason string) error {
+			_, reconcileErr := s.reconcile(reconcileCtx, id, reason)
+			if reconcileErr == nil {
+				_ = s.sweepIngest(reconcileCtx, id)
+			}
+			return reconcileErr
+		})
+		_ = listener.Close()
 		if ctx.Err() != nil {
 			return
-		}
-	}
-}
-
-func (s *MediaLibraryService) listenProvider(ctx context.Context, id uint, wake <-chan struct{}) {
-	var library models.MediaLibrary
-	if s.db.First(&library, id).Error != nil {
-		return
-	}
-	incremental := time.NewTicker(time.Duration(library.IncrementalMinutes) * time.Minute)
-	full := time.NewTicker(time.Duration(library.FullScanIntervalHours) * time.Hour)
-	defer incremental.Stop()
-	defer full.Stop()
-	_ = s.sweepIngest(ctx, id)
-	var debounce *time.Timer
-	var debounceC <-chan time.Time
-	defer func() {
-		if debounce != nil {
-			debounce.Stop()
-		}
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-wake:
-			if debounce == nil {
-				debounce = time.NewTimer(2 * time.Second)
-			} else {
-				if !debounce.Stop() {
-					select {
-					case <-debounce.C:
-					default:
-					}
-				}
-				debounce.Reset(2 * time.Second)
-			}
-			debounceC = debounce.C
-		case <-debounceC:
-			_, _ = s.reconcile(ctx, id, "event")
-			_ = s.sweepIngest(ctx, id)
-			debounceC = nil
-		case <-incremental.C:
-			_, _ = s.reconcile(ctx, id, "incremental")
-			_ = s.sweepIngest(ctx, id)
-		case <-full.C:
-			_, _ = s.reconcile(ctx, id, "full")
-			_ = s.sweepIngest(ctx, id)
 		}
 	}
 }
@@ -1494,79 +1532,6 @@ func downloaderLifeEventItemFact(item cloudpkg.Item) string {
 		item.ModifiedAt.UTC().Format(time.RFC3339Nano),
 	}, "\x00")
 }
-func (s *MediaLibraryService) listen(ctx context.Context, id uint, watcher *fsnotify.Watcher) {
-	var library models.MediaLibrary
-	if s.db.First(&library, id).Error != nil {
-		return
-	}
-	incremental := time.NewTicker(time.Duration(library.IncrementalMinutes) * time.Minute)
-	full := time.NewTicker(time.Duration(library.FullScanIntervalHours) * time.Hour)
-	defer incremental.Stop()
-	defer full.Stop()
-	var debounce *time.Timer
-	var debounceC <-chan time.Time
-	pending := map[string]fsnotify.Op{}
-	needsReconciliation := false
-	defer func() {
-		if debounce != nil {
-			debounce.Stop()
-		}
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return
-			}
-			if event.Op&fsnotify.Create != 0 {
-				if info, err := osStatDir(event.Name); err == nil && info {
-					_ = addWatchTree(watcher, event.Name)
-					needsReconciliation = true
-				}
-			}
-			pending[event.Name] |= event.Op
-			if debounce == nil {
-				debounce = time.NewTimer(600 * time.Millisecond)
-			} else {
-				if !debounce.Stop() {
-					select {
-					case <-debounce.C:
-					default:
-					}
-				}
-				debounce.Reset(600 * time.Millisecond)
-			}
-			debounceC = debounce.C
-		case <-debounceC:
-			if needsReconciliation {
-				_, _ = s.reconcile(ctx, id, "event")
-			} else {
-				_ = s.applyLocalEvents(ctx, id, pending)
-			}
-			pending = map[string]fsnotify.Op{}
-			needsReconciliation = false
-			debounceC = nil
-		case <-incremental.C:
-			_, _ = s.reconcile(ctx, id, "incremental")
-		case <-full.C:
-			_, _ = s.reconcile(ctx, id, "full")
-		case <-watcher.Errors:
-			return
-		}
-	}
-}
-
-// applyLocalEvents deliberately routes watcher changes through the same
-// provider-neutral reconciliation pipeline as scheduled scans. Cache and
-// fingerprints prevent unchanged units from reaching TMDB, while keeping all
-// metadata calls outside a database transaction.
-func (s *MediaLibraryService) applyLocalEvents(ctx context.Context, id uint, _ map[string]fsnotify.Op) error {
-	_, err := s.reconcile(ctx, id, "event")
-	return err
-}
-
 func waitForRetry(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -1618,28 +1583,13 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		return run, err
 	}
 	operation.Event(s.log.Info()).Uint("library_id", id).Uint("scan_run_id", run.ID).Str("scan_kind", kind).Msg(operation.Message("开始"))
+	backend, backendErr := s.backends.Get(storage.Type)
 	var result medialibrary.Result
 	var scanErr error
-	switch storage.Type {
-	case models.StorageTypeLocal:
-		result, scanErr = medialibrary.ScanLocal(ctx, storage.RootPath, library.RelativeRoot, library.Recursive, extensions, assetExtensions, ignores)
-	case models.StorageTypePan115:
-		if storage.ConnectionID == nil || s.connections == nil {
-			scanErr = errors.New("provider connection is unavailable")
-			break
-		}
-		_, driver, driverErr := s.connections.driver(*storage.ConnectionID)
-		if driverErr != nil {
-			scanErr = driverErr
-			break
-		}
-		providerRootID := strings.TrimSpace(library.ProviderRootID)
-		if providerRootID == "" {
-			providerRootID = storage.RootPath
-		}
-		result, scanErr = medialibrary.ScanProvider(ctx, driver, providerRootID, library.Recursive, extensions, assetExtensions, ignores)
-	default:
-		scanErr = errors.New("storage provider is unsupported")
+	if backendErr != nil {
+		scanErr = backendErr
+	} else {
+		result, scanErr = backend.Scan(ctx, MediaLibraryScanRequest{Library: library, Storage: storage, VideoExtensions: extensions, AssetExtensions: assetExtensions, IgnorePatterns: ignores})
 	}
 	finished := time.Now().UTC()
 	if scanErr != nil {
@@ -1974,17 +1924,6 @@ func (s *MediaLibraryService) scanLock(id uint) *sync.Mutex {
 
 func (s *MediaLibraryService) setStatus(id uint, status, code string, next *time.Time) error {
 	return s.db.Model(&models.MediaLibrary{}).Where("id = ?", id).Updates(map[string]any{"status": status, "status_error_code": code, "next_retry_at": next}).Error
-}
-func (s *MediaLibraryService) libraryRoot(id uint) (string, error) {
-	var library models.MediaLibrary
-	var storage models.Storage
-	if err := s.db.First(&library, id).Error; err != nil {
-		return "", err
-	}
-	if err := s.db.First(&storage, library.StorageID).Error; err != nil {
-		return "", err
-	}
-	return medialibrary.ResolveRoot(storage.RootPath, library.RelativeRoot)
 }
 func rootsOverlap(a, b string) bool {
 	a = strings.TrimSuffix(a, "/")

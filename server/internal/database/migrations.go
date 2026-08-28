@@ -10,6 +10,7 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/classification"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
+	"github.com/yuanjing-hash/ohmycine/server/internal/organization"
 	"github.com/yuanjing-hash/ohmycine/server/internal/plugins/packagefs"
 	storagefs "github.com/yuanjing-hash/ohmycine/server/internal/storage"
 	"gorm.io/gorm"
@@ -85,7 +86,148 @@ func Migrate(db *gorm.DB) error {
 }
 
 func schemaMigrations() []migration {
-	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}, {Version: 38, Apply: migratePluginManagedImports}, {Version: 39, Apply: migrateMediaRefreshNotify}, {Version: 40, Apply: migrateDiscoveryCache}, {Version: 41, Apply: migrateDownloadRecognitionOverride}, {Version: 42, Apply: migratePTSites}, {Version: 43, Apply: migrateCookieCloudAndSiteRendering}, {Version: 44, Apply: migratePTSiteCatalog, DisableForeignKeys: true}, {Version: 45, Apply: migrateCompletedDownloadManifest}, {Version: 46, Apply: migrateDownloaderQueueDelegation}, {Version: 47, Apply: migrateDownloadRecognitionEpisodeOverride}, {Version: 48, Apply: migrateDownloadMediaIdentity}, {Version: 49, Apply: migrateAIRecognitionSettings}, {Version: 50, Apply: migrateMediaReorganization}, {Version: 51, Apply: migrateTransferDeletionScopes}, {Version: 52, Apply: migrateAutomaticTVFollows}, {Version: 53, Apply: migrateDownloaderLifeEventListening}, {Version: 54, Apply: migrateMediaArtifactContentLease}, {Version: 55, Apply: migrateMediaCatalogDeletion}}
+	return []migration{{Version: 1, Apply: migrateAuthFoundation}, {Version: 2, Apply: migrateStorageFoundation}, {Version: 3, Apply: migrateMediaClassificationProfiles}, {Version: 4, Apply: migrateRuntimeLogging}, {Version: 5, Apply: migrateMediaLibraries}, {Version: 6, Apply: migratePersistentQueue}, {Version: 7, Apply: migrateDownloaderManagement}, {Version: 8, Apply: migrateUnifiedDownloadStaging}, {Version: 9, Apply: migrateDownloadClassification}, {Version: 10, Apply: migrateTMDBRoutes}, {Version: 11, Apply: migrateTMDBCredentialKind}, {Version: 12, Apply: migrateGlobalDownloadStaging}, {Version: 13, Apply: migrateAutomaticDownloadClassification}, {Version: 14, Apply: migrateLibraryImportRouting}, {Version: 15, Apply: migrateSeedingManagement}, {Version: 16, Apply: migrateTransferOrganizationCenter}, {Version: 17, Apply: migratePan115Connections}, {Version: 18, Apply: migratePan115StorageRoots, DisableForeignKeys: true}, {Version: 19, Apply: migrateProviderEventInbox}, {Version: 20, Apply: migratePan115OfflineDownloader, DisableForeignKeys: true}, {Version: 21, Apply: migrateMediaLibraryCatalogV21}, {Version: 22, Apply: migratePan115OfflineDownloaderDirectories}, {Version: 23, Apply: migratePan115CloudImport}, {Version: 24, Apply: migrateProfileRecognitionAndNaming}, {Version: 25, Apply: migrateSharedMediaRecognition}, {Version: 26, Apply: migratePan115ShareIngest}, {Version: 27, Apply: migrateMediaArtifactsAndProxy}, {Version: 28, Apply: migrateSTRMAssetExtensionsAndGatewayAlias}, {Version: 29, Apply: migrateArtifactAutoCleanup}, {Version: 30, Apply: migratePan115MultiDevicePlayback}, {Version: 31, Apply: migrateEmbyWebEnhancements}, {Version: 32, Apply: migratePlayerDeviceTokens}, {Version: 33, Apply: migratePluginRepositories}, {Version: 34, Apply: migratePluginInstallations}, {Version: 35, Apply: migratePluginPackageIntegrity, DisableForeignKeys: true}, {Version: 36, Apply: migratePluginHostCapabilities}, {Version: 37, Apply: migratePluginOnlineMediaContracts}, {Version: 38, Apply: migratePluginManagedImports}, {Version: 39, Apply: migrateMediaRefreshNotify}, {Version: 40, Apply: migrateDiscoveryCache}, {Version: 41, Apply: migrateDownloadRecognitionOverride}, {Version: 42, Apply: migratePTSites}, {Version: 43, Apply: migrateCookieCloudAndSiteRendering}, {Version: 44, Apply: migratePTSiteCatalog, DisableForeignKeys: true}, {Version: 45, Apply: migrateCompletedDownloadManifest}, {Version: 46, Apply: migrateDownloaderQueueDelegation}, {Version: 47, Apply: migrateDownloadRecognitionEpisodeOverride}, {Version: 48, Apply: migrateDownloadMediaIdentity}, {Version: 49, Apply: migrateAIRecognitionSettings}, {Version: 50, Apply: migrateMediaReorganization}, {Version: 51, Apply: migrateTransferDeletionScopes}, {Version: 52, Apply: migrateAutomaticTVFollows}, {Version: 53, Apply: migrateDownloaderLifeEventListening}, {Version: 54, Apply: migrateMediaArtifactContentLease}, {Version: 55, Apply: migrateMediaCatalogDeletion}, {Version: 56, Apply: migrateDataSourceRouting}, {Version: 57, Apply: migrateMediaTypeFirstOrganization}}
+}
+
+func migrateMediaTypeFirstOrganization(db *gorm.DB) error {
+	// Normalize only mutable Profile/MediaLibrary policy. Frozen DownloadTask and
+	// TransferTask snapshots intentionally remain byte-for-byte untouched.
+	var profiles []models.MediaClassificationProfile
+	if err := db.Find(&profiles).Error; err != nil {
+		return err
+	}
+	for _, profile := range profiles {
+		movie := organization.NormalizeDirectoryTemplate(profile.MovieDirectoryTemplate, "movie")
+		tv := organization.NormalizeDirectoryTemplate(profile.TVDirectoryTemplate, "tv")
+		if movie != profile.MovieDirectoryTemplate || tv != profile.TVDirectoryTemplate {
+			if err := db.Model(&models.MediaClassificationProfile{}).Where("id = ?", profile.ID).Updates(map[string]any{"movie_directory_template": movie, "tv_directory_template": tv}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	var libraries []models.MediaLibrary
+	if err := db.Find(&libraries).Error; err != nil {
+		return err
+	}
+	for _, library := range libraries {
+		movie := organization.NormalizeDirectoryTemplate(library.MovieDirectoryTemplate, "movie")
+		tv := organization.NormalizeDirectoryTemplate(library.TVDirectoryTemplate, "tv")
+		if movie != library.MovieDirectoryTemplate || tv != library.TVDirectoryTemplate {
+			if err := db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Updates(map[string]any{"movie_directory_template": movie, "tv_directory_template": tv}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func migrateDataSourceRouting(db *gorm.DB) error {
+	statements := []string{
+		`ALTER TABLE media_libraries ADD COLUMN default_ingest_connection_id INTEGER REFERENCES connections(id) ON DELETE RESTRICT`,
+		`CREATE UNIQUE INDEX idx_media_libraries_default_ingest_connection ON media_libraries(default_ingest_connection_id) WHERE default_ingest_connection_id IS NOT NULL`,
+		`ALTER TABLE download_tasks ADD COLUMN source_data_source_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE download_tasks ADD COLUMN target_data_source_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE download_tasks ADD COLUMN transfer_route_kind TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE download_tasks ADD COLUMN transfer_route_version INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX idx_download_tasks_transfer_route_kind ON download_tasks(transfer_route_kind)`,
+		`ALTER TABLE transfer_tasks ADD COLUMN source_data_source_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE transfer_tasks ADD COLUMN target_data_source_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE transfer_tasks ADD COLUMN route_kind TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE transfer_tasks ADD COLUMN route_version INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX idx_transfer_tasks_route_kind ON transfer_tasks(route_kind)`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+
+	// Preserve an explicit legacy intake choice first. If a Connection only had
+	// Downloader-level listening, freeze the formerly implicit first usable
+	// library exactly once during migration; runtime routing never repeats this
+	// sort-order fallback.
+	if err := db.Exec(`UPDATE media_libraries
+		SET default_ingest_connection_id = (
+			SELECT storages.connection_id FROM storages WHERE storages.id = media_libraries.storage_id
+		)
+		WHERE id IN (
+			SELECT candidate.id FROM media_libraries AS candidate
+			JOIN storages AS source ON source.id = candidate.storage_id
+			WHERE candidate.enabled = 1 AND candidate.ingest_enabled = 1
+				AND source.enabled = 1 AND source.type = 'pan115' AND source.connection_id IS NOT NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM media_libraries AS earlier
+					JOIN storages AS earlier_source ON earlier_source.id = earlier.storage_id
+					WHERE earlier.enabled = 1 AND earlier.ingest_enabled = 1
+						AND earlier_source.enabled = 1 AND earlier_source.type = 'pan115'
+						AND earlier_source.connection_id = source.connection_id
+						AND (earlier.sort_order < candidate.sort_order OR (earlier.sort_order = candidate.sort_order AND earlier.id < candidate.id))
+				)
+		)`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`UPDATE media_libraries
+		SET default_ingest_connection_id = (
+			SELECT storages.connection_id FROM storages WHERE storages.id = media_libraries.storage_id
+		)
+		WHERE id IN (
+			SELECT candidate.id FROM media_libraries AS candidate
+			JOIN storages AS source ON source.id = candidate.storage_id
+			WHERE candidate.enabled = 1 AND candidate.transfer_mode IN ('move','copy')
+				AND source.enabled = 1 AND source.type = 'pan115' AND source.connection_id IS NOT NULL
+				AND EXISTS (
+					SELECT 1 FROM downloaders JOIN storages AS downloader_storage ON downloader_storage.id = downloaders.storage_id
+					WHERE downloaders.enabled = 1 AND downloaders.auto_listen_life_events = 1
+						AND downloaders.type = 'pan115_offline' AND downloader_storage.connection_id = source.connection_id
+				)
+				AND NOT EXISTS (SELECT 1 FROM media_libraries AS chosen WHERE chosen.default_ingest_connection_id = source.connection_id)
+				AND NOT EXISTS (
+					SELECT 1 FROM media_libraries AS earlier
+					JOIN storages AS earlier_source ON earlier_source.id = earlier.storage_id
+					WHERE earlier.enabled = 1 AND earlier.transfer_mode IN ('move','copy')
+						AND earlier_source.enabled = 1 AND earlier_source.type = 'pan115'
+						AND earlier_source.connection_id = source.connection_id
+						AND (earlier.sort_order < candidate.sort_order OR (earlier.sort_order = candidate.sort_order AND earlier.id < candidate.id))
+				)
+		)`).Error; err != nil {
+		return err
+	}
+
+	// Frozen legacy tasks keep their existing execution path. Backfill only
+	// unambiguous identities and routes; cross-source work is created by v56+
+	// and must never be guessed for an already-running task.
+	if err := db.Exec(`UPDATE download_tasks SET
+		source_data_source_json = CASE
+			WHEN provider_type IN ('qbittorrent','fake','plugin_http') THEN '{"kind":"local","provider_type":"local","connection_identity":"server-local"}'
+			WHEN provider_type = 'pan115_offline' AND staging_storage_id IS NOT NULL
+				AND EXISTS (SELECT 1 FROM storages WHERE storages.id = download_tasks.staging_storage_id AND storages.type = 'pan115' AND storages.connection_id IS NOT NULL)
+				THEN printf('{"kind":"provider","provider_type":"pan115","connection_identity":"%d","storage_scope":"%d"}', (SELECT storages.connection_id FROM storages WHERE storages.id = download_tasks.staging_storage_id), staging_storage_id)
+			ELSE source_data_source_json END,
+		target_data_source_json = CASE
+			WHEN target_storage_type = 'local' THEN '{"kind":"local","provider_type":"local","connection_identity":"server-local"}'
+			WHEN target_storage_type = 'pan115' AND target_connection_id IS NOT NULL AND target_storage_id IS NOT NULL
+				THEN printf('{"kind":"provider","provider_type":"pan115","connection_identity":"%d","storage_scope":"%d"}', target_connection_id, target_storage_id)
+			ELSE target_data_source_json END,
+		transfer_route_kind = CASE
+			WHEN provider_type IN ('qbittorrent','fake','plugin_http') AND target_storage_type = 'local' THEN 'same_source_local'
+			WHEN provider_type = 'pan115_offline' AND target_storage_type = 'pan115' AND target_connection_id IS NOT NULL AND target_storage_id IS NOT NULL
+				AND EXISTS (SELECT 1 FROM storages WHERE storages.id = download_tasks.staging_storage_id AND storages.connection_id = download_tasks.target_connection_id)
+				THEN 'same_source_provider'
+			ELSE transfer_route_kind END,
+		transfer_route_version = CASE
+			WHEN provider_type IN ('qbittorrent','fake','plugin_http') AND target_storage_type = 'local' THEN 1
+			WHEN provider_type = 'pan115_offline' AND target_storage_type = 'pan115' AND target_connection_id IS NOT NULL AND target_storage_id IS NOT NULL
+				AND EXISTS (SELECT 1 FROM storages WHERE storages.id = download_tasks.staging_storage_id AND storages.connection_id = download_tasks.target_connection_id)
+				THEN 1
+			ELSE transfer_route_version END
+		WHERE target_library_id IS NOT NULL`).Error; err != nil {
+		return err
+	}
+	return db.Exec(`UPDATE transfer_tasks SET
+		source_data_source_json = COALESCE((SELECT source_data_source_json FROM download_tasks WHERE download_tasks.id = transfer_tasks.download_task_id), '{}'),
+		target_data_source_json = COALESCE((SELECT target_data_source_json FROM download_tasks WHERE download_tasks.id = transfer_tasks.download_task_id), '{}'),
+		route_kind = COALESCE((SELECT transfer_route_kind FROM download_tasks WHERE download_tasks.id = transfer_tasks.download_task_id), ''),
+		route_version = COALESCE((SELECT transfer_route_version FROM download_tasks WHERE download_tasks.id = transfer_tasks.download_task_id), 0)`).Error
 }
 
 func migrateMediaCatalogDeletion(db *gorm.DB) error {
@@ -891,9 +1033,9 @@ func migrateSharedMediaRecognition(db *gorm.DB) error {
 func migrateProfileRecognitionAndNaming(db *gorm.DB) error {
 	statements := []string{
 		`ALTER TABLE media_classification_profiles ADD COLUMN recognition_rules_json TEXT NOT NULL DEFAULT '[]'`,
-		`ALTER TABLE media_classification_profiles ADD COLUMN movie_directory_template TEXT NOT NULL DEFAULT '{category}/{title} ({year})'`,
+		`ALTER TABLE media_classification_profiles ADD COLUMN movie_directory_template TEXT NOT NULL DEFAULT '电影/{category}/{title} ({year})'`,
 		`ALTER TABLE media_classification_profiles ADD COLUMN movie_filename_template TEXT NOT NULL DEFAULT '{title} ({year})'`,
-		`ALTER TABLE media_classification_profiles ADD COLUMN tv_directory_template TEXT NOT NULL DEFAULT '{category}/{title} ({year})/Season {season:02}'`,
+		`ALTER TABLE media_classification_profiles ADD COLUMN tv_directory_template TEXT NOT NULL DEFAULT '电视剧/{category}/{title} ({year})/Season {season:02}'`,
 		`ALTER TABLE media_classification_profiles ADD COLUMN tv_filename_template TEXT NOT NULL DEFAULT '{title} - S{season:02}E{episode:02}'`,
 		`ALTER TABLE download_tasks ADD COLUMN profile_recognition_rules_json TEXT NOT NULL DEFAULT '[]'`,
 	}
@@ -1191,9 +1333,9 @@ func migrateLibraryImportRouting(db *gorm.DB) error {
 		`ALTER TABLE media_libraries ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE media_libraries ADD COLUMN transfer_mode TEXT NOT NULL DEFAULT 'move'`,
 		`ALTER TABLE media_libraries ADD COLUMN conflict_policy TEXT NOT NULL DEFAULT 'ask'`,
-		`ALTER TABLE media_libraries ADD COLUMN movie_directory_template TEXT NOT NULL DEFAULT '{category}/{title} ({year})'`,
+		`ALTER TABLE media_libraries ADD COLUMN movie_directory_template TEXT NOT NULL DEFAULT '电影/{category}/{title} ({year})'`,
 		`ALTER TABLE media_libraries ADD COLUMN movie_filename_template TEXT NOT NULL DEFAULT '{title} ({year})'`,
-		`ALTER TABLE media_libraries ADD COLUMN tv_directory_template TEXT NOT NULL DEFAULT '{category}/{title} ({year})/Season {season:02}'`,
+		`ALTER TABLE media_libraries ADD COLUMN tv_directory_template TEXT NOT NULL DEFAULT '电视剧/{category}/{title} ({year})/Season {season:02}'`,
 		`ALTER TABLE media_libraries ADD COLUMN tv_filename_template TEXT NOT NULL DEFAULT '{title} - S{season:02}E{episode:02}'`,
 		`CREATE INDEX idx_media_libraries_sort_order ON media_libraries(sort_order, id)`,
 		`ALTER TABLE download_tasks ADD COLUMN target_library_id INTEGER`,

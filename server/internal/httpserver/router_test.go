@@ -87,7 +87,7 @@ func (routerSiteAdapter) Download(context.Context, sitepkg.Config, string) ([]by
 
 func (routerCloudDriver) Provider() string { return cloudpkg.ProviderPan115 }
 func (routerCloudDriver) Capabilities() cloudpkg.Capabilities {
-	return cloudpkg.Capabilities{NetworkDrive: true, DirectoryList: true, TemporaryDirectURL: true, SignedProxy: true}
+	return cloudpkg.Capabilities{NetworkDrive: true, DirectoryList: true, TemporaryDirectURL: true, SignedProxy: true, CreateDirectory: true, Move: true, Copy: true, Rename: true, Recycle: true}
 }
 func (routerCloudDriver) Probe(context.Context) (cloudpkg.Account, error) {
 	return cloudpkg.Account{ID: "safe-account", Name: "测试账号"}, nil
@@ -113,6 +113,13 @@ func (routerCloudDriver) Stat(_ context.Context, id string) (cloudpkg.Item, erro
 func (routerCloudDriver) DirectURL(context.Context, cloudpkg.DirectURLRequest) (cloudpkg.TemporaryURL, error) {
 	return cloudpkg.TemporaryURL{URL: "https://cdn.example.test/video", ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
+func (routerCloudDriver) CreateDirectory(_ context.Context, parentID, name string) (cloudpkg.Item, error) {
+	return cloudpkg.Item{ID: "created-directory", ParentID: parentID, Name: name, IsDir: true}, nil
+}
+func (routerCloudDriver) Move(context.Context, string, string) error   { return nil }
+func (routerCloudDriver) Copy(context.Context, string, string) error   { return nil }
+func (routerCloudDriver) Rename(context.Context, string, string) error { return nil }
+func (routerCloudDriver) Recycle(context.Context, string) error        { return nil }
 
 func newTestClient(t *testing.T) *testClient {
 	t.Helper()
@@ -217,10 +224,12 @@ func newTestClient(t *testing.T) *testClient {
 	api.SetDiscoveryService(discovery)
 	coverage := services.NewMediaCoverageService(db, metadataSettings)
 	api.SetMediaCoverageService(coverage)
-	api.SetFollowService(services.NewFollowService(db, audit, queue, coverage, authorization))
+	follows := services.NewFollowService(db, audit, queue, coverage, authorization)
+	api.SetFollowService(follows)
 	libraries.SetMetadataSettingsService(metadataSettings)
 	storages.AddReferenceChecker(downloadSettings)
 	downloads := services.NewDownloadService(db, audit, credentialStore, downloaders, downloadSettings, queue, log)
+	follows.SetDownloadService(downloads)
 	downloads.SetMetadataSettings(metadataSettings)
 	downloads.SetSeedingSettings(seedingSettings)
 	sites := services.NewSiteServiceWithAdapters(db, audit, credentialStore, downloads, []sitepkg.Adapter{routerSiteAdapter{}}, log)
@@ -1320,6 +1329,99 @@ func TestPan115DirectoryPickerCreatesStableCloudStorage(t *testing.T) {
 	}
 }
 
+func TestDefaultIngestMediaLibraryRoutesAreAtomicSafeAndPermissionBounded(t *testing.T) {
+	client := newTestClient(t)
+	unauthenticated := httptest.NewRecorder()
+	client.router.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/v1/connections/1/default-ingest-library", nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", unauthenticated.Code)
+	}
+
+	client.setup(t)
+	status, envelope := client.request(t, http.MethodPost, "/api/v1/connections", map[string]any{"name": "Default ingest 115", "provider": "pan115", "cookie": "UID=default_A1; CID=default-cid; SEID=default-secret", "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create connection status=%d data=%s", status, envelope.Data)
+	}
+	var connection services.ConnectionSummary
+	if err := json.Unmarshal(envelope.Data, &connection); err != nil {
+		t.Fatal(err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/connections/"+uintString(connection.ID)+"/directories", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("browse directories status=%d data=%s", status, envelope.Data)
+	}
+	var listing services.DirectoryListing
+	if err := json.Unmarshal(envelope.Data, &listing); err != nil || len(listing.Items) != 1 {
+		t.Fatalf("listing=%+v err=%v", listing, err)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/storages", map[string]any{"name": "Default ingest storage", "type": "pan115", "connection_id": connection.ID, "provider_picker_token": listing.Items[0].SelectionToken, "enabled": true}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create storage status=%d data=%s", status, envelope.Data)
+	}
+	var storage services.StorageSummary
+	if err := json.Unmarshal(envelope.Data, &storage); err != nil {
+		t.Fatal(err)
+	}
+	var profile models.MediaClassificationProfile
+	if err := client.db.Where("code = ?", "default-v1").First(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	library := models.MediaLibrary{Name: "Default ingest library", NameNormalized: "default-ingest-library", StorageID: storage.ID, ProfileID: profile.ID, ProfileRevision: profile.Revision, RelativeRoot: "/", ProviderRootID: storage.RootPath, Enabled: true, Recursive: true, TransferMode: models.MediaLibraryTransferMove, ConflictPolicy: models.MediaLibraryConflictAsk, VideoExtensionsJSON: `[".mkv"]`, IgnorePatternsJSON: `[]`, Status: models.MediaLibraryStatusListening, CreatedAt: now, UpdatedAt: now}
+	if err := client.db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	status, envelope = client.request(t, http.MethodPut, "/api/v1/media-libraries/"+uintString(library.ID)+"/default-ingest", map[string]any{}, true)
+	if status != http.StatusOK || bytes.Contains(bytes.ToLower(envelope.Data), []byte("provider_root")) || bytes.Contains(bytes.ToLower(envelope.Data), []byte("cookie")) {
+		t.Fatalf("set default status=%d data=%s", status, envelope.Data)
+	}
+	var selected services.DefaultIngestLibrarySummary
+	if err := json.Unmarshal(envelope.Data, &selected); err != nil || selected.ConnectionID != connection.ID || selected.LibraryID != library.ID {
+		t.Fatalf("selected=%+v err=%v", selected, err)
+	}
+	status, envelope = client.request(t, http.MethodGet, "/api/v1/connections/"+uintString(connection.ID)+"/default-ingest-library", nil, false)
+	var fetched services.DefaultIngestLibrarySummary
+	fetchedErr := json.Unmarshal(envelope.Data, &fetched)
+	if status != http.StatusOK || client.lastHeader.Get("Cache-Control") != "no-store" || fetchedErr != nil || fetched != selected {
+		t.Fatalf("get default status=%d cache=%q data=%s", status, client.lastHeader.Get("Cache-Control"), envelope.Data)
+	}
+
+	status, roleEnvelope := client.request(t, http.MethodPost, "/api/v1/roles", map[string]any{"code": "library_default_reader", "name": "Library default reader", "permissions": []string{authz.PermissionMediaLibrariesRead}}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create role status=%d data=%s", status, roleEnvelope.Data)
+	}
+	var role struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(roleEnvelope.Data, &role); err != nil {
+		t.Fatal(err)
+	}
+	status, userEnvelope := client.request(t, http.MethodPost, "/api/v1/users", map[string]any{"username": "library-default-reader", "display_name": "Library default reader", "password": "library-default-reader-password", "role_ids": []uint{role.ID}}, true)
+	if status != http.StatusCreated {
+		t.Fatalf("create user status=%d data=%s", status, userEnvelope.Data)
+	}
+	reader := newTestClientWithRouter(client.router)
+	reader.login(t, "library-default-reader", "library-default-reader-password")
+	status, _ = reader.request(t, http.MethodGet, "/api/v1/connections/"+uintString(connection.ID)+"/default-ingest-library", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("reader get status=%d", status)
+	}
+	status, _ = reader.request(t, http.MethodPut, "/api/v1/media-libraries/"+uintString(library.ID)+"/default-ingest", map[string]any{}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("reader set status=%d", status)
+	}
+	status, _ = reader.request(t, http.MethodDelete, "/api/v1/connections/"+uintString(connection.ID)+"/default-ingest-library", map[string]any{}, true)
+	if status != http.StatusForbidden {
+		t.Fatalf("reader clear status=%d", status)
+	}
+
+	status, envelope = client.request(t, http.MethodDelete, "/api/v1/connections/"+uintString(connection.ID)+"/default-ingest-library", map[string]any{}, true)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"cleared":true`)) {
+		t.Fatalf("clear default status=%d data=%s", status, envelope.Data)
+	}
+}
+
 func TestDownloaderAndDownloadAPIRedactSensitiveSources(t *testing.T) {
 	client := newTestClient(t)
 	deniedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/downloaders", nil)
@@ -1341,6 +1443,14 @@ func TestDownloaderAndDownloadAPIRedactSensitiveSources(t *testing.T) {
 	}
 	if err := json.Unmarshal(envelope.Data, &downloader); err != nil || downloader.ID == "" {
 		t.Fatalf("downloader=%+v err=%v", downloader, err)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/download-routes/preview", map[string]any{"downloader_id": downloader.ID, "source_kind": "url"}, true)
+	if status != http.StatusOK || !bytes.Contains(envelope.Data, []byte(`"options":[]`)) {
+		t.Fatalf("download route preview status=%d body=%s", status, envelope.Data)
+	}
+	status, envelope = client.request(t, http.MethodPost, "/api/v1/download-routes/preview", map[string]any{"downloader_id": downloader.ID, "source_kind": "url", "unexpected": "forbidden"}, true)
+	if status != http.StatusBadRequest {
+		t.Fatalf("download route preview strict payload status=%d body=%s", status, envelope.Data)
 	}
 	source := "https://tracker.example.test/download?id=1&passkey=secret-passkey"
 	status, envelope = client.request(t, http.MethodPost, "/api/v1/downloads", map[string]any{"downloader_id": downloader.ID, "display_name": "API download", "source_kind": "url", "source_url": source}, true)

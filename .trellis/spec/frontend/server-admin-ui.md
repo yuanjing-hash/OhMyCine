@@ -31,6 +31,7 @@ toggleTheme(): void
 - Both palettes use a conventional administration style: opaque surfaces, clear 1px borders, compact spacing, small radii, restrained shadows, stable blue emphasis, and Chinese-first information hierarchy.
 - Player-only Cinema OS rules (artwork-first layout, liquid glass, dark-only chrome) do not apply to `server/webui`.
 - AI 模型列表使用页面内模态选择器：成功读取后才打开，搜索覆盖模型 ID/显示名称，整行选择只回填而不自动保存；失败保留当前模型。选择器必须使用语义主题 token，并覆盖加载、空列表、无匹配、当前选择、Escape/遮罩/关闭按钮、焦点约束和关闭后焦点恢复。
+- Profile 命名编辑器把 `电影 /` 与 `电视剧 /` 显示为不可编辑固定根，只编辑根内模板，并明确自动分类按“媒体类型 → 类型内分类”组织。前端默认值包含完整固定根，但 Server 仍是规范化与权限边界。
 
 ## Validation and Error Matrix
 

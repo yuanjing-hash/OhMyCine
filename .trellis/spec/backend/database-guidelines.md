@@ -292,7 +292,7 @@ WHERE ingest_source_key <> '';
 
 - v26 is additive and idempotent. Existing libraries remain intake-disabled and existing tasks remain `source_origin=user`.
 - The stable provider intake directory, adopted provider item and share source remain private. Only the safe Storage-relative intake display path and configured downloader reference may appear in the administrative DTO.
-- `ingest_source_key` is a SHA-256 identity derived from Connection, library and provider item. Preflight lookup is an optimization; the partial unique index is the concurrent sweep authority.
+- New `ingest_source_key` values are SHA-256 identities derived from Connection and provider item so competing completion/event/sweep paths share one deduplication domain. Existing legacy keys remain readable. Preflight lookup is an optimization; the partial unique index is the concurrent authority.
 - Provider network calls occur before/after short transactions, never while holding the SQLite writer. Job creation and DownloadTask insertion remain one transaction.
 
 ### 4. Validation & Error Matrix
@@ -328,7 +328,110 @@ task.IngestSourceKey = providerItemID
 #### Correct
 
 ```go
-task.IngestSourceKey = sha256Hex(connectionID, libraryID, providerItemID)
+task.IngestSourceKey = sha256Hex(connectionID, providerItemID)
 err := tx.Create(&task).Error // partial unique index is authoritative
 if isIngestUniqueConflict(err) { return nil }
+```
+
+## Scenario: v56 Data-source Route and Default Ingest Persistence
+
+### 1. Scope / Trigger
+
+- Trigger: changing source/target identity, cross-data-source route selection, Transfer route recovery, or the Connection-scoped 115 manual-content default library.
+
+### 2. Signatures
+
+```text
+media_libraries.default_ingest_connection_id NULL UNIQUE WHERE NOT NULL
+
+download_tasks:
+  source_data_source_json, target_data_source_json
+  transfer_route_kind, transfer_route_version
+
+transfer_tasks:
+  source_data_source_json, target_data_source_json
+  route_kind, route_version
+```
+
+### 3. Contracts
+
+- v56 is additive and idempotent. It never changes the destination of an existing task.
+- One 115 Connection has at most one non-null default ingest library; replacement clears and sets inside one immediate SQLite transaction.
+- Valid explicit legacy intake is preferred during backfill. A listener-only legacy Connection freezes the formerly implicit first usable library exactly once; runtime code never repeats that fallback.
+- Existing unambiguous local-to-local and same-Connection 115 tasks receive route/version snapshots. Unknown legacy combinations remain non-rerouted and fail closed rather than being guessed as cross-source.
+- Identity JSON is private and contains only kind, provider type, stable internal Connection identity, and Storage scope. `storage_scope` is omitted only for `server-local`; every executable provider identity, including v56 legacy backfill, must freeze it so execution-time Storage/root revalidation can succeed. Provider item IDs, paths, URLs, cookies, and credentials are forbidden.
+
+### 4. Tests Required
+
+- Fresh, v55-to-v56, and repeated migration tests cover columns, route indexes, the partial unique default index, legacy preference, and no duplicate default.
+- Service tests cover local/local, local/115, 115/local, same-Connection 115, different-Connection 115, explicit-target enforcement, and listener enablement without a default.
+
+## Scenario: v57 Media-type-first Organization Policy
+
+### 1. Scope / Trigger
+
+- Trigger: changing Profile/MediaLibrary directory templates, fixed media-type roots, automatic organization paths, or the v57 migration.
+- Scope: future organization policy stored in `media_classification_profiles` and `media_libraries`; immutable task snapshots and existing media files are explicitly outside the migration write set.
+
+### 2. Signatures
+
+```text
+schema migration v57
+movie root = 电影
+tv root    = 电视剧
+movie path = 电影/{category}/...
+tv path    = 电视剧/{category}/...
+```
+
+The shared Server normalizer is applied before Profile/MediaLibrary templates become a future DownloadTask snapshot. Transfer execution consumes the frozen snapshot without normalizing it again.
+
+### 3. Contracts
+
+- v57 normalizes only `media_classification_profiles` and `media_libraries` directory-policy fields to the fixed `电影` / `电视剧` first segment.
+- A correct fixed root remains single, a wrong or repeated fixed root is replaced, and the remaining custom template structure is preserved.
+- `download_tasks` naming snapshots, `transfer_tasks` plans, and already imported files are never rewritten. This keeps queued/running work on its original frozen destination.
+- Fresh schema defaults and the protected default Profile use the normalized templates. Repeated migration is idempotent.
+- The fixed type root precedes the matching Profile category. Provider adapters and Transfer executors never add their own type/category prefix.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Movie template has no fixed root | Prefix `电影/` and preserve the remaining template. |
+| TV template has no fixed root | Prefix `电视剧/` and preserve the remaining template. |
+| Template already starts with the correct fixed root | Keep exactly one fixed root. |
+| Template starts with the opposite fixed root | Replace only that first fixed segment with the correct one. |
+| Persisted template is empty | Restore the complete type-specific default. |
+| Historical DownloadTask has a pre-v57 flat snapshot | Leave it byte-for-byte unchanged; execution uses the frozen path. |
+| Reorganization is requested after v57 | Use the current normalized MediaLibrary/Profile policy and generate the fixed root. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a new TV import with category `国产剧` resolves to `电视剧/国产剧/<title>/Season 01` through the same snapshot for local, 115-native and cross-source executors.
+- Base: a custom movie template already begins `电影/{category}`; v57 and later saves retain one `电影` segment.
+- Bad: update every `download_tasks.movie_directory_template`, move existing files during migration, or let the 115 executor independently prefix `电影`.
+
+### 6. Tests Required
+
+- Upgrade and fresh-database tests verify Profile/MediaLibrary normalization, root deduplication, exact fixed Chinese names, unchanged DownloadTask snapshots, and one v57 migration record.
+- Planner tests assert identical movie/TV leaf category names remain separated by the fixed root, and TV paths retain title/season structure after the category.
+- Entry-point tests cover ordinary download, plugin, follow/share/life-event snapshot creation and corrective reorganization without provider-specific path branches.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+// Mutates the meaning of queued work and makes every provider drift.
+db.Model(&models.DownloadTask{}).Update("tv_directory_template", "电视剧/"+old)
+pan115Target = path.Join("电视剧", category, pan115Target)
+```
+
+Correct:
+
+```go
+// Normalize future policy once; execution uses the immutable task snapshot.
+profile.TVDirectoryTemplate = normalizeMediaTypeDirectoryTemplate(input, "tv")
+download.TVDirectoryTemplate = profile.TVDirectoryTemplate
+target := renderImportTemplate(download.TVDirectoryTemplate, values, true)
 ```

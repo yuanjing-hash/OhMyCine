@@ -172,6 +172,7 @@ export interface MediaClassificationProfileDetail extends MediaClassificationPro
 export type MediaLibraryStatus = 'disabled' | 'initializing' | 'attaching_listener' | 'catch_up_reconciliation' | 'listening' | 'initialization_failed'
 export interface MediaLibraryDetail {
   id: number; name: string; storage_id: number; storage_name: string; profile_id: number; profile_name: string
+  connection_id?: number; auto_listen_default: boolean
   profile_revision: number; relative_root: string; enabled: boolean; recursive: boolean
   full_scan_interval_hours: number; incremental_minutes: number; video_extensions: string[]; ignore_patterns: string[]
 	strm_asset_default_extensions: string[]; strm_asset_extra_extensions: string[]; strm_asset_effective_extensions: string[]
@@ -186,7 +187,6 @@ export interface MediaLibraryDetail {
   sort_order: number; transfer_mode: 'move' | 'copy' | 'symlink'; conflict_policy: 'ask' | 'overwrite' | 'skip' | 'rename'
   movie_directory_template: string; movie_filename_template: string
   tv_directory_template: string; tv_filename_template: string
-  ingest_enabled: boolean; ingest_downloader_id?: string; ingest_downloader_name: string; ingest_relative_root: string
 }
 export interface MediaLibraryScanRun {
   id: number; library_id: number; kind: 'initial' | 'catch_up' | 'event' | 'incremental' | 'full' | 'manual' | string
@@ -239,7 +239,6 @@ export interface MediaLibraryWritePayload {
   transfer_mode: 'move' | 'copy' | 'symlink'; conflict_policy: 'ask' | 'overwrite' | 'skip' | 'rename'
   movie_directory_template: string; movie_filename_template: string
   tv_directory_template: string; tv_filename_template: string
-  ingest_enabled?: boolean; ingest_downloader_id?: string; ingest_relative_root?: string; ingest_relative_root_token?: string
 }
 
 export interface RuntimeLogEntry {
@@ -261,6 +260,7 @@ export interface DownloaderSummary {
   id: string; name: string; type: 'fake' | 'qbittorrent' | 'pan115_offline'; base_url: string; enabled: boolean
   storage_id: number | null; storage_name: string; provider_directory_path: string
   auto_listen_life_events: boolean
+  life_event_default_library_id?: number; life_event_default_library_name: string
   username_configured: boolean; password_configured: boolean; capabilities: DownloaderCapabilities
   health: { status: 'unknown' | 'online' | 'offline'; version: string; error_code: string; last_checked_at: string | null }
   created_at: string; updated_at: string
@@ -290,7 +290,7 @@ export interface DownloadTaskSummary {
 	scrape_season: number | null; scrape_episode: number | null; manifest_file_count: number
   identity_source: 'manual' | 'direct_id' | 'automatic' | 'ai' | 'local_provisional' | ''
   identity_status: 'verified' | 'provisional' | 'local_provisional' | ''; identity_locked: boolean; identity_revision: number
-  target_library_id: number | null; target_library_name: string; transfer_mode: string; conflict_policy: string; transfer_phase: string
+  target_library_id: number | null; target_library_name: string; route_kind: string; transfer_mode: string; conflict_policy: string; transfer_phase: string
   transfer_task_id: string; transfer_job_id: string; transfer_job_status: string
   seeding_task_id: string; seeding_job_id: string; seeding_job_status: string; seeding_phase: string
   lifecycle_scope: 'active' | 'history'

@@ -141,25 +141,40 @@ func (r *recordingIngestEnqueuer) AdoptDownloaderProviderItem(_ context.Context,
 
 func (f shareIngestFixture) createLibrary(t *testing.T, name, finalID, intakeID, intakePath string) MediaLibraryDetail {
 	t.Helper()
-	item, err := f.libraries.Create(context.Background(), f.actor, MediaLibraryInput{Name: name, StorageID: f.storage.ID, ProfileID: f.profile.ID, RelativeRoot: "/" + name, ProviderRootID: finalID, Enabled: false, Recursive: true, TransferMode: models.MediaLibraryTransferCopy, IngestEnabled: true, IngestDownloaderID: f.downloader.ID, IngestProviderRootID: intakeID, IngestRelativeRoot: intakePath}, RequestContext{})
+	item, err := f.libraries.Create(context.Background(), f.actor, MediaLibraryInput{Name: name, StorageID: f.storage.ID, ProfileID: f.profile.ID, RelativeRoot: "/" + name, ProviderRootID: finalID, Enabled: false, Recursive: true, TransferMode: models.MediaLibraryTransferCopy}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerID := f.actor.User.ID
+	if err := f.db.Model(&models.MediaLibrary{}).Where("id = ?", item.ID).Updates(map[string]any{
+		"ingest_enabled": true, "ingest_downloader_id": f.downloader.ID, "ingest_owner_id": ownerID,
+		"ingest_provider_root_id": intakeID, "ingest_relative_root": intakePath,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	item, err = f.libraries.Get(f.actor, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return item
 }
 
-func TestMediaLibraryIngestValidatesOverlapAndDownloaderReference(t *testing.T) {
+func TestMediaLibraryLegacyIngestIsReadOnlyForNewCreates(t *testing.T) {
 	fixture := newShareIngestFixture(t)
+	created, err := fixture.libraries.Create(context.Background(), fixture.actor, MediaLibraryInput{Name: "新媒体库", StorageID: fixture.storage.ID, ProfileID: fixture.profile.ID, RelativeRoot: "/新媒体库", ProviderRootID: "other", Enabled: false, Recursive: true, TransferMode: models.MediaLibraryTransferCopy, IngestEnabled: true, IngestDownloaderID: fixture.downloader.ID, IngestProviderRootID: "nested", IngestRelativeRoot: "/中转/子目录"}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.IngestEnabled || created.IngestDownloaderID != nil || created.IngestProviderRootID != "" || created.IngestRelativeRoot != "" {
+		t.Fatalf("new create persisted legacy intake fields: %+v", created.MediaLibrary)
+	}
+
 	library := fixture.createLibrary(t, "电影", "library", "intake", "/中转")
 	if !library.IngestEnabled || library.IngestDownloaderID == nil || *library.IngestDownloaderID != fixture.downloader.ID || library.IngestRelativeRoot != "/中转" {
 		t.Fatalf("ingest detail=%+v", library.MediaLibrary)
 	}
 	if err := fixture.downloads.downloader.Delete(fixture.actor, fixture.downloader.ID, RequestContext{}); ErrorCode(err) != CodeDownloaderInUse {
 		t.Fatalf("delete referenced downloader error=%v", err)
-	}
-	_, err := fixture.libraries.Create(context.Background(), fixture.actor, MediaLibraryInput{Name: "冲突库", StorageID: fixture.storage.ID, ProfileID: fixture.profile.ID, RelativeRoot: "/其它", ProviderRootID: "other", Enabled: false, Recursive: true, TransferMode: models.MediaLibraryTransferCopy, IngestEnabled: true, IngestDownloaderID: fixture.downloader.ID, IngestProviderRootID: "nested", IngestRelativeRoot: "/中转/子目录"}, RequestContext{})
-	if ErrorCode(err) != CodeMediaLibraryOverlap {
-		t.Fatalf("nested intake overlap error=%v", err)
 	}
 }
 
@@ -169,9 +184,8 @@ func TestShareAndProviderAdoptionUseEncryptedImmutableIntakeSnapshot(t *testing.
 	if err := fixture.db.Model(&models.MediaLibrary{}).Where("id = ?", library.ID).Update("enabled", true).Error; err != nil {
 		t.Fatal(err)
 	}
-	zero := uint(0)
 	shareLink := "https://115.com/s/example?password=abcd"
-	created, err := fixture.downloads.Submit(context.Background(), fixture.actor, SubmitDownloadInput{DownloaderID: fixture.downloader.ID, MediaLibraryID: &zero, Source: DownloadSourceInput{Kind: downloadpkg.SourcePan115Share, URL: shareLink}}, RequestContext{})
+	created, err := fixture.downloads.Submit(context.Background(), fixture.actor, SubmitDownloadInput{DownloaderID: fixture.downloader.ID, MediaLibraryID: &library.ID, Source: DownloadSourceInput{Kind: downloadpkg.SourcePan115Share, URL: shareLink}}, RequestContext{})
 	if err != nil {
 		t.Fatal(err)
 	}

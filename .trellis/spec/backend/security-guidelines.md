@@ -302,6 +302,91 @@ Use a controlled HTTP client for external calls:
 
 ---
 
+## Scenario: 115 Cross-Source Read and Managed Materialization
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing `cloud.ReadDriver`, 115 file export, provider-to-local or provider-to-provider Transfer, resumable materialization, or cross-source staging cleanup.
+- This capability is internal to the Transfer worker. It is not a generic URL fetch API and does not expose a provider download URL to handlers, jobs, WebSocket events, logs, or the Web UI.
+
+### 2. Signatures
+
+```go
+type ReadRequest struct {
+    FileID string
+    Offset int64
+}
+
+type ReadResult struct {
+    Body           io.ReadCloser
+    OffsetAccepted bool
+    TotalSize      *int64
+}
+
+type ReadDriver interface {
+    Driver
+    OpenRead(context.Context, ReadRequest) (ReadResult, error)
+}
+```
+
+- Managed files live only below `<global staging>/.omc-cross-source/<transfer UUID>/`; durable state stores that task-relative marker and per-file size/SHA1/status, never the absolute path or temporary provider URL/header.
+
+### 3. Contracts
+
+- The 115 adapter resolves the stable file identity and obtains each expiring provider URL only inside `OpenRead`. Cookies, Authorization, pickcodes, acquisition headers, response bodies, and the URL never cross the adapter boundary or enter persistence/logging.
+- The initial URL and every redirect must be HTTPS on port 443, contain no userinfo or fragment, and resolve only to public addresses. Validate once before dispatch and again in the transport dial path so a DNS answer cannot rebind to loopback, private, link-local, multicast, or unspecified addresses.
+- Follow no more than three redirects and never allow HTTPS downgrade. On every hop retain only the exact `User-Agent`, `Range`, and `Accept-Encoding` needed for the media read; drop Cookie, Authorization, Referer, and every other inherited header.
+- A non-zero resume offset is accepted only with `206` and a matching `Content-Range` start. If the provider safely ignores Range, close that response and restart the task-owned partial from byte zero. Any contradictory range or source size fails closed.
+- Before and after streaming, revalidate Storage root -> immutable package root -> exact file ID/parent/size/SHA1. Bound the response stream to the frozen remaining manifest size plus at most one proof byte; an oversized or endless CDN response must stop before it can fill staging. Write only to a task-owned `.partial`, flush it, verify full size plus SHA1, and atomically rename before recognition or target import can observe it.
+- Cancellation may remove only `.partial` files below the exact task UUID root. Completed materialized files remain available for safe retry/manual correction. Successful target reconciliation may remove the complete task root after revalidating ownership; it must never recurse from the global staging root or follow symlink/Junction/Reparse Point boundaries.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Initial or redirected URL is HTTP, non-443, contains userinfo/fragment, or resolves privately | Reject before sending bytes; expose only a stable safe error |
+| DNS validation is public but dial-time resolution is private | Reject the dial as rebinding; do not connect |
+| Redirect count exceeds three | Stop the request; retain the resumable task checkpoint |
+| Redirect carries Cookie/Authorization or an unrelated provider header | Strip it before the redirected request |
+| Resume response is `200` instead of a valid `206` | Close it and restart from zero without appending duplicate bytes |
+| Provider file size/SHA1/parent/root changes | Fail closed; retain provider data and do not expose a completed staging file |
+| Cancellation observes completed and partial files | Remove only task-owned partials; preserve completed files and provider/library data |
+| Successful reconciliation cleanup meets an unsafe path or ownership mismatch | Retain the task root and report retryable cleanup failure |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a 115 file resumes from a verified partial through one public HTTPS redirect, matches size/SHA1, atomically finalizes, uploads to the target library, and then removes only its transfer UUID root.
+- Base: the CDN ignores Range; the worker closes the response, truncates the same task-owned partial, and restarts from byte zero.
+- Bad: persist the CDN URL, forward the 115 Cookie to a redirect host, trust only the preflight DNS answer, append a `200` body to an existing partial, or recursively delete `.omc-cross-source`.
+
+### 6. Tests Required
+
+- Cover initial URL scheme/port/userinfo/fragment, public/private DNS answers, dial-time DNS rebinding, HTTPS downgrade, redirect count, and per-hop header stripping.
+- Cover partial resume, ignored Range restart, invalid `Content-Range`, source size/SHA1 drift, atomic finalize, restart checkpoint reuse, cancellation partial-only cleanup, and successful task-root cleanup.
+- Assert database rows, Job payload/checkpoint, DTOs, WebSocket events, audit, and logs contain no temporary URL, Cookie, Authorization, pickcode, provider response, or absolute staging path.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+checkpoint.URL = temporary.URL
+request.Header = temporary.Headers
+http.DefaultClient.Do(request)
+os.RemoveAll(globalStagingRoot)
+```
+
+Correct:
+
+```go
+stream, err := reader.OpenRead(ctx, cloud.ReadRequest{FileID: file.ID, Offset: partialSize})
+// The adapter validates every URL/DNS hop and exposes only the response stream.
+verifySizeAndSHA1(partial, file)
+atomicFinalizeWithinTaskRoot(partial)
+```
+
+---
+
 ## Config Sync Security
 
 Default Player ↔ Server sync is structural only.

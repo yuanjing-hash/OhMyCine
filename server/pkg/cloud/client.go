@@ -338,6 +338,31 @@ type UploadDriver interface {
 	Upload(context.Context, UploadRequest) (Item, error)
 }
 
+// ReadRequest identifies one immutable provider file and an optional restart
+// offset. Provider-specific temporary URLs, acquisition headers and cookies
+// must remain inside the driver implementation.
+type ReadRequest struct {
+	FileID string
+	Offset int64
+}
+
+// ReadResult is a single streaming response. OffsetAccepted is false when the
+// provider ignored a non-zero range request; callers must then discard their
+// partial file and restart from byte zero.
+type ReadResult struct {
+	Body           io.ReadCloser
+	OffsetAccepted bool
+	TotalSize      *int64
+}
+
+// ReadDriver is the optional source-export capability used by cross-data-source
+// transfer. It deliberately exposes a stream rather than a direct URL so
+// credentials and expiring provider URLs never enter checkpoints or logs.
+type ReadDriver interface {
+	Driver
+	OpenRead(context.Context, ReadRequest) (ReadResult, error)
+}
+
 type Driver interface {
 	Provider() string
 	Capabilities() Capabilities

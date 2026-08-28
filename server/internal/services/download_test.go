@@ -374,7 +374,7 @@ func configureDownloadStaging(t *testing.T, queue *QueueService, storageID uint)
 	}
 }
 
-func TestDownloadTargetUsesFirstAvailableLibraryAndKeepsSnapshot(t *testing.T) {
+func TestDownloadTargetRequiresExplicitLibraryAndKeepsSnapshot(t *testing.T) {
 	downloads, downloaders, queue, actor, _ := downloadFixture(t)
 	createStorage := func(name, root string, enabled bool) models.Storage {
 		storage := models.Storage{Name: name, NameNormalized: strings.ToLower(name), Type: models.StorageTypeLocal, RootPath: root, RootPathNormalized: strings.ToLower(root), Enabled: true, Capabilities: `{}`}
@@ -423,12 +423,13 @@ func TestDownloadTargetUsesFirstAvailableLibraryAndKeepsSnapshot(t *testing.T) {
 	manual := createLibrary("Manual third", manualStorage, 3, models.MediaLibraryTransferSymlink, models.MediaLibraryConflictSkip)
 
 	automaticID := uint(0)
-	automatic, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, MediaLibraryID: &automaticID, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:auto-target"}}, RequestContext{})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, MediaLibraryID: &automaticID, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:auto-target"}}, RequestContext{}); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+		t.Fatalf("implicit target error=%v", err)
 	}
-	if automatic.TargetLibraryID == nil || *automatic.TargetLibraryID != selected.ID || automatic.ProfileID != profile.ID || automatic.TransferMode != models.MediaLibraryTransferCopy || automatic.ConflictPolicy != models.MediaLibraryConflictRename {
-		t.Fatalf("automatic target=%+v", automatic)
+	selectedID := selected.ID
+	selectedTask, err := downloads.Submit(context.Background(), actor, SubmitDownloadInput{DownloaderID: provider.ID, MediaLibraryID: &selectedID, Source: DownloadSourceInput{Kind: downloadpkg.SourceURL, URL: "magnet:?xt=urn:btih:selected-target"}}, RequestContext{})
+	if err != nil || selectedTask.TargetLibraryID == nil || *selectedTask.TargetLibraryID != selected.ID || selectedTask.ProfileID != profile.ID || selectedTask.TransferMode != models.MediaLibraryTransferCopy || selectedTask.ConflictPolicy != models.MediaLibraryConflictRename {
+		t.Fatalf("selected target=%+v err=%v", selectedTask, err)
 	}
 
 	manualID := manual.ID
@@ -444,15 +445,15 @@ func TestDownloadTargetUsesFirstAvailableLibraryAndKeepsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	var persisted models.DownloadTask
-	if err := queue.db.First(&persisted, "id = ?", automatic.ID).Error; err != nil {
+	if err := queue.db.First(&persisted, "id = ?", selectedTask.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if persisted.TargetLibraryName != "Available second" || persisted.TransferMode != models.MediaLibraryTransferCopy || persisted.ConflictPolicy != models.MediaLibraryConflictRename || persisted.ProfileRevision != profile.Revision || persisted.ProfileBuiltinRecognitionPacksJSON != profile.BuiltinRecognitionPacksJSON || persisted.ProfileRecognitionRulesJSON != profile.RecognitionRulesJSON || persisted.MovieDirectoryTemplate != profile.MovieDirectoryTemplate || persisted.TVDirectoryTemplate != profile.TVDirectoryTemplate {
+	if persisted.TargetLibraryName != "Available second" || persisted.TransferMode != models.MediaLibraryTransferCopy || persisted.ConflictPolicy != models.MediaLibraryConflictRename || persisted.ProfileRevision != profile.Revision || persisted.ProfileBuiltinRecognitionPacksJSON != profile.BuiltinRecognitionPacksJSON || persisted.ProfileRecognitionRulesJSON != profile.RecognitionRulesJSON || persisted.MovieDirectoryTemplate != normalizeMediaTypeDirectoryTemplate(profile.MovieDirectoryTemplate, "movie") || persisted.TVDirectoryTemplate != normalizeMediaTypeDirectoryTemplate(profile.TVDirectoryTemplate, "tv") || persisted.TransferRouteKind != models.TransferRouteSameSourceLocal || persisted.TransferRouteVersion != models.TransferRouteVersionCurrent || persisted.SourceDataSourceJSON == "{}" || persisted.TargetDataSourceJSON == "{}" {
 		t.Fatalf("download target snapshot changed with library: %+v", persisted)
 	}
 }
 
-func TestPan115DownloadTargetRequiresSameConnectionAndWritableMode(t *testing.T) {
+func TestPan115DownloadTargetRequiresAvailableCrossSourceCapabilitiesAndWritableMode(t *testing.T) {
 	downloads, downloaders, queue, _, _ := downloadFixture(t)
 	now := time.Now().UTC()
 	connectionA := models.Connection{Name: "115 A", NameNormalized: "115-a-target", Provider: cloudpkg.ProviderPan115, CredentialCiphertext: "encrypted", Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -494,12 +495,11 @@ func TestPan115DownloadTargetRequiresSameConnectionAndWritableMode(t *testing.T)
 	if err := queue.db.Create(&localLibrary).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, localLibrary); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, localLibrary); ErrorCode(err) != CodeTransferRouteUnsupported {
 		t.Fatalf("pan115 local-target error=%v", err)
 	}
-	automatic, _, err := downloads.resolveDownloadTarget(context.Background(), provider, 0, downloadpkg.SourceURL)
-	if err != nil || automatic.LibraryID != library.ID || automatic.StorageType != models.StorageTypePan115 {
-		t.Fatalf("automatic pan115 target=%+v err=%v", automatic, err)
+	if automatic, _, err := downloads.resolveDownloadTarget(context.Background(), provider, 0, downloadpkg.SourceURL); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+		t.Fatalf("implicit target selection survived: target=%+v err=%v", automatic, err)
 	}
 	target, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, library)
 	if err != nil || target.ConnectionID == nil || *target.ConnectionID != connectionA.ID || target.ProviderRootID != "library-a" || target.StorageType != models.StorageTypePan115 {
@@ -507,7 +507,7 @@ func TestPan115DownloadTargetRequiresSameConnectionAndWritableMode(t *testing.T)
 	}
 
 	library.TransferMode = models.MediaLibraryTransferSymlink
-	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, library); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, library); ErrorCode(err) != CodeTransferRouteUnsupported {
 		t.Fatalf("symlink error=%v", err)
 	}
 	library.TransferMode = models.MediaLibraryTransferMove
@@ -515,12 +515,12 @@ func TestPan115DownloadTargetRequiresSameConnectionAndWritableMode(t *testing.T)
 	if err := queue.db.Model(&targetStorage).Update("connection_id", connectionB.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, library); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), provider, library); ErrorCode(err) != CodeTransferRouteUnsupported {
 		t.Fatalf("cross-connection error=%v", err)
 	}
 	qbit := provider
 	qbit.Type = models.DownloaderTypeQBittorrent
-	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), qbit, library); ErrorCode(err) != CodeMediaLibraryStorageUnavailable {
+	if _, _, err := downloads.snapshotDownloadTarget(context.Background(), qbit, library); ErrorCode(err) != CodeTransferRouteUnsupported {
 		t.Fatalf("qBittorrent cloud-target error=%v", err)
 	}
 }

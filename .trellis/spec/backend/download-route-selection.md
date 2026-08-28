@@ -28,8 +28,8 @@ It does not gain a second intake directory. MediaLibrary must not own a new prov
 - A 115 native-offline Downloader never accepts a Site whose authoritative `SiteType` is `pt`. Never convert a private torrent to magnet to bypass this boundary.
 - A Site whose authoritative `SiteType` is `bt` may reach 115 when it resolves directly to a provider-supported magnet/HTTP(S)/ed2k URL, or when its bounded `.torrent` payload is safely parsed and converted from the exact raw `info` dictionary to a BTIH magnet.
 - Torrent bytes, tracker shape, host names, and browser labels never establish public provenance. The persisted/reloaded Site definition does. Unknown Site provenance fails closed before conversion.
-- A 115 target MediaLibrary accepts a 115 Downloader only when their Storage records have the same non-null `connection_id`.
-- A local target never accepts 115 native offline; different 115 Connections never cross.
+- Downloader/source compatibility is independent from the final MediaLibrary. A local downloader may target 115 through verified upload, and a 115 native-offline downloader may target local or another 115 Connection through Server-managed materialization.
+- The same non-null 115 `connection_id` selects provider-native move/copy. Local ↔ 115 and different 115 Connections select the cross-source route; they must never be mistaken for same-source merely because both Storage records use `pan115`.
 - Follow defaults choose one complete compatible tuple. Never independently select all Sites, the first Downloader, and the first MediaLibrary.
 - WebUI filtering is advisory. Follow Create/Update, Worker pre-search, Site handoff, and Download submit reload authoritative records and fail closed through the same helper.
 
@@ -58,9 +58,9 @@ It does not gain a second intake directory. MediaLibrary must not own a new prov
 - Delayed stability rechecks are coalesced per 115 Connection: an event storm may have at most one pending recheck for that Connection. Service shutdown cancels and waits for pending rechecks instead of leaving detached goroutines.
 - The supervisor skips the full `omc-*` namespace. A user-created `omc-*` item is not adopted and produces a safe diagnostic warning.
 - A normal direct child becomes eligible only after a quiet window and two equivalent authoritative snapshots, so partially received content is not claimed.
-- Claim identity is a digest of `connection_id + downloader_id + provider_item_id`; a database unique constraint is the concurrency authority.
+- Claim identity is a digest of `connection_id + provider_item_id`; a database unique constraint is the concurrency authority across download completion, life events, compensating sweeps, and multiple Downloader observers.
 - Duplicate events, concurrent sweeps, missed events plus periodic reconciliation, and process restart must create at most one durable task per provider item.
-- The adopted task references the discovering Downloader and remains inside that Downloader's 115 Storage/Connection. Existing classification/Profile/destination rules choose only a compatible MediaLibrary on that 115; ambiguous classification becomes needs-action and never crosses Storage.
+- The adopted task references the discovering Downloader and snapshots the Connection's one explicit default-ingest MediaLibrary. Runtime adoption never chooses the first sorted library. The default target remains same-Connection 115; explicit user/share/follow tasks may select supported cross-source targets.
 - A failed or needs-action task retains its claim. Retry operates on the same durable task.
 
 ### 4.3 Directory boundaries
@@ -82,6 +82,10 @@ It does not gain a second intake directory. MediaLibrary must not own a new prov
 
 ## 6. Legacy Compatibility
 
+- `media_libraries.default_ingest_connection_id` is nullable and protected by a partial unique index. A non-null value means that library is the only target for 115 App manual-content life events on that Connection.
+- Enabling Downloader life-event listening requires an enabled valid default for its Connection. Clearing, disabling, or deleting that default requires selecting a replacement or disabling every dependent listener first.
+- Migration v56 freezes one valid legacy choice per Connection exactly once. No post-migration request, event sweep, or retry may reproduce a `sort_order,id` first-library fallback.
+
 - `MediaLibrary.ingest_downloader_id`, `ingest_provider_root_id`, and `ingest_relative_root` are legacy read-only compatibility facts for existing tasks/configuration; new WebUI/API saves do not require or expose them as current configuration.
 - WebUI omits legacy intake fields from every new MediaLibrary write. Server ignores those fields on create and preserves the complete existing legacy intake snapshot on unrelated updates, so editing naming, scan, or STRM settings cannot silently disable an in-flight legacy route.
 - Existing intake DownloadTasks keep their frozen route for completion or explicit retry. Do not migrate, resubmit, delete, or relocate provider work automatically.
@@ -94,8 +98,8 @@ It does not gain a second intake directory. MediaLibrary must not own a new prov
 | PT Site + 115 native offline | Reject before torrent fetch/submission. |
 | BT Site + valid resolved torrent + 115 | Parse bounded bencode, hash the exact raw `info` bytes, and submit the resulting magnet. |
 | Unknown/PT Site + resolved torrent + 115 | Reject; no conversion and no DownloadTask. |
-| 115 Downloader + different Connection target | Reject with stable compatibility error. |
-| 115 Downloader + local target | Reject with stable target error. |
+| 115 Downloader + different Connection target | Use the cross-source route only when source-read, managed-staging, and target-upload capabilities are all available. |
+| 115 Downloader + local/different Connection target | Allow only when the source implements `ReadDriver`, the target is writable, and Server-managed staging is configured with sufficient space. |
 | No complete Follow tuple | Return empty defaults plus actionable reason; disable save. |
 | OMC task directory appears in listened root | Skip; owning Download Worker remains authoritative. |
 | Manual item is still changing | Keep pending; do not claim. |

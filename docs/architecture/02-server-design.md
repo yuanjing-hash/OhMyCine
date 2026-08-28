@@ -18,9 +18,15 @@ OhMyCine Server 是一个**以媒体流水线为核心**的自托管后端，负
 
 发现搜索现已采用与 MoviePilot v3 产品流一致、但按 OhMyCine 安全边界独立实现的两层入口：探索页与 `Ctrl/⌘ K` 全局搜索默认通过 `GET /api/v1/discovery/media-search` 先用关键词搜索 TMDB 电影/剧集海报，推荐、海报搜索、相关作品和类似作品都以 `media_type + tmdb_id` 进入同一详情页；原始 PT/BT 标题和 TMDB ID 搜索作为“直接搜索”入口继续保留。详情页发起资源搜索时，Server 会重新读取 TMDB 身份，按本地化名、中文地区别名、原名、英文名和其它翻译构建有序、去重且有硬上限的名称集合，再通过 `/api/v1/discovery/media/{mediaType}/{tmdbID}/torrent-search*` 复用现有站点并发、限速、识别和 opaque claim 边界进行聚合；同站同一真实 torrent 身份跨名称只返回一次，浏览器只看到命中名称和安全资源字段。`/coverage` 同时要求 `discovery.read` 与 `media_libraries.read`，仅聚合启用且可读媒体库的可信 catalog 事实：电影返回 `present|missing|unknown`，剧集按 TMDB 默认季序显示逐季逐集的 `present|missing|future|unknown`，跨库重复只算一个逻辑集，Season 0 可见但不计普通缺集；扫描事实不完整时只承认 catalog 已能证明的 `present`，其余缺口与缺少播出日期、TMDB 季读取不完整的集均保守为 `unknown`。同一覆盖率服务已作为自动追更的权威只读事实，只有明确已播且为 `missing` 的剧集才会进入自动搜索。
 
+自动分类入库采用 MoviePilot 的“媒体类型目录 → 类型内分类目录”层级原则，但保持 OhMyCine 自己的 Profile、任务快照和执行器实现：所有新任务先固定进入 `电影` 或 `电视剧`，再进入对应 Profile 分类、作品和季目录。本地、115 同源、跨数据源、插件下载与自动追更共享同一规范化模板；升级不会改写已排队任务的冻结模板或自动搬动已有文件。
+
 电视剧详情现已提供 MoviePilot 风格的多季订阅入口，并在创建前展示站点顺序、下载器、目标媒体库、检查周期、分辨率/编码/来源/发布组、包含与排除词、做种/年龄/大小、单次资源上限和下载优先级。保存后形成版本化、无凭据的执行快照；以后修改全局配置不会漂移旧订阅，编辑通过 revision CAS 生成下一版。到期订阅只创建持久 `follow-search` Job，Worker 重新验证 owner 权限和配置，复用 `MediaCoverageService`、多语言身份搜索、SiteService opaque result claim 与 DownloadService；它不持久化真实 torrent/magnet URL，也不直接调用下载器或移动文件。明确缺集先建立逐集 claim，再由稳定排序与集合覆盖选择单集、多集或整季资源；下载仍沿用 Download → Transfer → Import → STRM/refresh/notify 流水线。`active|paused|completed|blocked` 状态、运行记录和安全错误可在订阅管理页查看，`completed` 仍会按周期低成本复核，发现新已播缺集后重新进入追更。
 
 下载预分类完成后 Server 不只设置 qBittorrent Category，还必须显式调用 `setLocation(暂存目录/分类)` 后才恢复下载；因为用户关闭 Automatic Torrent Management 时，单独修改 Category 不会改变保存位置。入库源解析仅对旧任务兼容查找暂存根目录，新任务的正常路线始终是分类目录。`copy|symlink` 入库后进入独立做种管理，按任务快照的时长/分享率条件采样；`copy` 达标后删任务与暂存源数据，`symlink` 只删任务并永久保留链接源，`move` 入库后以 `deleteData=false` 清理 qBittorrent 任务。自动清理默认关闭。
+
+下载器与最终媒体库的组合现在由 `POST /api/v1/download-routes/preview` 统一判定。请求只接受 `downloader_id`、`source_kind`、可选 `site_id` 与预计字节数；响应为每个启用媒体库返回冻结候选路线 `same_source_local | same_source_provider | cross_source`、是否可执行、稳定原因码、是否需要 Server 受管暂存以及安全的所需/可用空间摘要。新建下载、发现资源下载和自动追更都消费这一权威矩阵，提交时 Server 会重新执行同一组来源、站点、数据源 identity、读写 capability、provider root 与暂存空间校验；浏览器不能根据 qBittorrent、115 或 Storage 展示类型自行推断兼容性。同源本地继续使用本地转移能力，同一 115 Connection 继续使用云端原生移动/复制，只有数据源 identity 不同才物化到统一受管暂存后再放置或上传。Download/Transfer 安全 DTO 只投影任务创建时冻结的 `route_kind`，不暴露 Connection identity、绝对路径、provider item、临时 URL 或私有 checkpoint。
+
+115 App 手工内容的自动摄取目标独立于显式下载路线：每个 115 Connection 最多有一个启用的默认入库媒体库，通过 `GET /api/v1/connections/{id}/default-ingest-library` 查询、`PUT /api/v1/media-libraries/{id}/default-ingest` 原子替换、`DELETE /api/v1/connections/{id}/default-ingest-library` 清除。它只服务下载器的“自动监听生活事件”；离线下载、分享转存、站点下载与自动追更仍固化各自明确选择的目标。没有有效默认库时不得开启监听，也不得按媒体库顺序兜底。媒体库配置不再提供第二个摄取目录或下载器绑定。
 
 下载完成后自动生成的 TransferTask 现已拥有独立 `/automation/organization` 媒体整理工作区。`GET /api/v1/transfers` 提供 own/all 范围内的稳定分页、`active|history|all` 范围、状态/媒体库/分类/方式/标题筛选、完整可见范围的筛选选项和真实统计；管理端默认“进行中”，终态记录进入“历史记录”，详情复用 transfer Job 的 attempts、timeline、ActionRequest 与阶段重试。失败、已取消和已完成的整理记录可通过 `DELETE /api/v1/transfers/{id}` 清理，操作复用 `jobs.control_own/all` 并二次确认；它只删除 TransferTask 和对应 transfer Job 执行历史，不删除 DownloadTask、下载器任务、暂存/源文件、媒体库文件或做种记录。Transfer worker 仅保存最多 100 项、48 KiB 内的目标相对命名结果摘要，读写两端均拒绝绝对路径、遍历与控制字符；私有 manifest、暂存/Storage 根、provider task ID 和原始错误不进入 API。这里不创建手动整理任务，手动选择文件与操作归后续“文件管理”。
 
@@ -58,11 +64,11 @@ v25 新增媒体库识别单元和安全缓存持久化，Entry 关联识别投�
 
 Server 运行日志已经形成独立基础设施：zerolog 事件在统一脱敏后同时写入 stdout 与本地 JSONL，默认按 20 MiB 切割、gzip 压缩，并以 10 个分片、30 天和 500 MiB 三项上限清理最旧历史。管理端顶栏日志中心通过 `logs.read` 查询并组合筛选模块、组件、插件和业务关联 ID；导出和策略修改分别由 `logs.export`、`logs.configure` 控制。运行日志与 SQLite 审计日志分域、分权、分开保留，日志文件故障时 Server 降级为 stdout 而不退出。
 
-下载器纵向切片现已接入真实持久队列：管理员可创建、编辑、测试和删除 qBittorrent 连接；qBittorrent 下载目录不再属于某个下载器或 Storage，而是在 `/system/settings` 通过全局 Server 目录选择器配置一份统一绝对暂存目录，支持 Server 可见 Windows 盘符/UNC 与 Linux 挂载点。115 原生离线下载器则受 provider 约束：复用一个 115 数据源的加密 Cookie，并通过 Storage-scoped 目录令牌选择该数据源根内任意子目录；数据库私有保存稳定 provider directory ID，管理 API 只显示数据源名和 Storage-relative 路径。115 离线任务以生活事件广播作为低延迟完成检查信号，事件到达后立即重新读取任务状态和输出清单；20 秒低频查询继续作为漏事件补偿，等待期间只刷新本地 Job lease，不把生活事件直接当作完成事实。管理端通过顶部页签切换进行中、历史记录、新建下载、做种管理和下载器管理，不再把所有区域纵向平铺；`GET /api/v1/downloads?scope=active|history|all` 按 download→transfer→seeding 完整流水线判定范围，失败或未收口的后续仍留在进行中。取消会先调用 provider `Cancel(taskID, false)` 删除下载器任务并保留文件，成功或 task-not-found 后才停止 OhMyCine 后续流水线、释放 Follow claim 并保留 cancelled 历史；provider 失败时不伪取消。failed/cancelled/completed 终态删除默认同样以 `delete_data=false` 删除 provider 任务、保留文件，再清理本地记录；只有用户显式勾选完全删除才传 `true` 删除源/临时文件。Submit 与取消竞态时，迟到 provider ID 会先持久化再立即用 `false` 清理，失败留下可诊断重试事实。保存和执行均重新校验路径、symlink 与 Reparse Point，下载任务入队时快照绝对路径和媒体分类 Profile revision；旧 Storage-relative 任务保持兼容。下载完成会同时持久化 provider 完整清单与安全入库清单，只有识别、转移和目标对账全部成功后才精确清理二者差集；任何 partial、非子集、路径/文件变化都会保留数据。qBittorrent `copy|symlink` 将该清理延后到做种收口，115 只按已验证稳定 item ID 送回收站，不递归猜测目录内容。TMDB 凭据按“用户 AES-GCM 自定义凭据 → 部署凭据 → 正式构建内置应用凭据”解析，并显式区分 v4 Read Access Token/Bearer 与 v3 API Key/`api_key` query；管理 API 只显示来源和类型，清除自定义凭据自动回到下一级。v11 前的 Token 密文不重写并继续按 Read Access Token 使用。默认 API 优先短域名且只在网络错误时回退旧域名，401/403 或其它 HTTP 响应不回退；自定义 API 与图片 HTTPS 前缀分别通过固定真实请求测试成功后才独立保存。裸磁力先获取 metadata、暂停并复用 `ParseFilename + TMDB + classification.Classify` 做轻量刮削，再把结果安全映射为暂存根内的 qBittorrent category 后恢复下载；缺少凭据、认证/网络失败、无结果或低置信时自动归入 `未识别`，不阻塞后续任务，完成后再次复核。qBittorrent 新旧 API 与 OMC tag 幂等接管和 115 原生离线下载均已覆盖；115 离线完成后可按目标 MediaLibrary 快照，在同一 Connection 内执行云端 `move|copy`、模板改名、四种冲突策略和 dirty-generation 对账。Transmission、跨账号/跨网盘传输、STRM 与媒体服务器通知仍由后续切片实现。
+下载器纵向切片现已接入真实持久队列：管理员可创建、编辑、测试和删除 qBittorrent 连接；qBittorrent 下载目录不再属于某个下载器或 Storage，而是在 `/system/settings` 通过全局 Server 目录选择器配置一份统一绝对暂存目录，支持 Server 可见 Windows 盘符/UNC 与 Linux 挂载点。115 原生离线下载器则受 provider 约束：复用一个 115 数据源的加密 Cookie，并通过 Storage-scoped 目录令牌选择该数据源根内任意子目录；数据库私有保存稳定 provider directory ID，管理 API 只显示数据源名和 Storage-relative 路径。115 离线任务以生活事件广播作为低延迟完成检查信号，事件到达后立即重新读取任务状态和输出清单；20 秒低频查询继续作为漏事件补偿，等待期间只刷新本地 Job lease，不把生活事件直接当作完成事实。管理端通过顶部页签切换进行中、历史记录、新建下载、做种管理和下载器管理，不再把所有区域纵向平铺；`GET /api/v1/downloads?scope=active|history|all` 按 download→transfer→seeding 完整流水线判定范围，失败或未收口的后续仍留在进行中。取消会先调用 provider `Cancel(taskID, false)` 删除下载器任务并保留文件，成功或 task-not-found 后才停止 OhMyCine 后续流水线、释放 Follow claim 并保留 cancelled 历史；provider 失败时不伪取消。failed/cancelled/completed 终态删除默认同样以 `delete_data=false` 删除 provider 任务、保留文件，再清理本地记录；只有用户显式勾选完全删除才传 `true` 删除源/临时文件。Submit 与取消竞态时，迟到 provider ID 会先持久化再立即用 `false` 清理，失败留下可诊断重试事实。保存和执行均重新校验路径、symlink 与 Reparse Point，下载任务入队时快照绝对路径、媒体分类 Profile revision、来源/目标数据源身份和 route version；旧 Storage-relative/无 route 快照任务只走旧兼容执行器，不会被升级后静默重路由。下载完成会同时持久化 provider 完整清单与安全入库清单，只有识别、转移和目标对账全部成功后才精确清理二者差集；任何 partial、非子集、路径/文件变化都会保留数据。qBittorrent `copy|symlink` 将该清理延后到做种收口，115 只按已验证稳定 item ID 送回收站，不递归猜测目录内容。TMDB 凭据按“用户 AES-GCM 自定义凭据 → 部署凭据 → 正式构建内置应用凭据”解析，并显式区分 v4 Read Access Token/Bearer 与 v3 API Key/`api_key` query；管理 API 只显示来源和类型，清除自定义凭据自动回到下一级。v11 前的 Token 密文不重写并继续按 Read Access Token 使用。默认 API 优先短域名且只在网络错误时回退旧域名，401/403 或其它 HTTP 响应不回退；自定义 API 与图片 HTTPS 前缀分别通过固定真实请求测试成功后才独立保存。裸磁力先获取 metadata、暂停并复用 `ParseFilename + TMDB + classification.Classify` 做轻量刮削，再把结果安全映射为暂存根内的 qBittorrent category 后恢复下载；缺少凭据、认证/网络失败、无结果或低置信时自动归入 `未识别`，不阻塞后续任务，完成后再次复核。qBittorrent 新旧 API 与 OMC tag 幂等接管和 115 原生离线下载均已覆盖。最终媒体库不再由下载器介质硬限制：local→local 与同一 115 Connection→同一 115 Connection 保留原生整理；local→115、115→local 和不同 115 Connection 之间使用统一受管暂存、空间预检、完整 SHA1 校验、上传/放置和目标对账，上传成功不会提前删除仍在做种的 qBittorrent 源。Transmission、OpenList/Alist 与 CloudDrive2 的具体写入 adapter 仍由后续切片实现。
 
 115 转存不再配置独立侧栏、媒体库级绑定或“中转目录”。下载页选择 115 Downloader 后，在同一表单切换“离线下载 / 分享转存”，两者共用 Downloader 下载目录并分别使用 `omc-<task-id>` 子目录，由 Download Worker 独占。权威 `SiteType=pt` 的结果只能进入非网盘 BT Downloader，绝不转 magnet；`SiteType=bt` 的站点可直接提交受支持 URL/magnet，返回 `.torrent` 时经有界 bencode 解析并按原始 `info` 字节计算 BTIH 后转 magnet 交给 115，未知来源 fail closed。115 provider 状态按 `0 等待、1 运行、2 完成、-1 失败` 解释。
 
-Downloader 可选“自动监听生活事件”：生活事件唤醒后以下载目录事实为准，跳过 `omc-*`，只接管稳定的普通直接子项，并按 `Connection + Downloader + provider item ID` 唯一 claim；目标默认选择同一 115 Connection 下排序最前的可用媒体库。分享与手工转存不另建识别/整理实现，而是继续经过统一包过滤、Profile/TMDB 识别门禁和 TransferService；旧 MediaLibrary intake 字段只保留读取兼容，新 UI 不再写入。分享链接、提取码、provider item ID、Cookie、完整 provider 路径和上游正文均不进入 Job payload、API、WebSocket、日志或审计。
+Downloader 可选“自动监听生活事件”：生活事件唤醒后以下载目录事实为准，跳过 `omc-*`，只接管稳定的普通直接子项，并按 `Connection + Downloader + provider item ID` 唯一 claim。每个 115 Connection 必须先显式选择且最多只能选择一个启用的 115 MediaLibrary 作为自动监听默认入库库；没有默认库时禁止开启监听，切换默认只影响之后接管的新内容，显式离线、分享、站点下载和追更始终使用各自固化的目标。分享与手工转存不另建识别/整理实现，而是继续经过统一包过滤、Profile/TMDB 识别门禁和 TransferService；旧 MediaLibrary intake 字段只保留读取兼容，新 UI 不再写入。分享链接、提取码、provider item ID、Cookie、完整 provider 路径和上游正文均不进入 Job payload、API、WebSocket、日志或审计。
 
 元数据产物仍遵循统一“识别/TMDB 快照是数据库唯一真相，按媒体库策略投影”的后续设计：本地媒体库在媒体文件旁生成 NFO/JPG；云盘启用 STRM 时在本地 STRM 投影目录生成 STRM/NFO/JPG；云盘未启用 STRM 时默认只保存数据库元数据，并允许媒体库显式开启旁挂文件上传。这个开关必须和真实 NFO/JPG/STRM worker 同时交付，当前分享接管切片不提供无执行效果的占位设置。
 
@@ -714,10 +720,10 @@ type Client interface {
     Test(ctx context.Context) (Health, error)
     Submit(ctx context.Context, req SubmitRequest) (Task, error)
     Get(ctx context.Context, taskID string) (Task, error)
-    Pause(ctx context.Context, taskID string) error
-    Resume(ctx context.Context, taskID string) error
     Cancel(ctx context.Context, taskID string, deleteData bool) error
 }
+
+// Pause/Resume、完成清单、做种、分享转存等由独立 capability interface 声明。
 
 type SubmitRequest struct {
     Source   Source // magnet/HTTP(S) URL 或受限内存 torrent bytes
@@ -741,7 +747,7 @@ type Task struct {
 
 ### 9.2 下载器配置
 
-下载器配置保存在 SQLite `downloaders`，不再以包含明文密码的 YAML 作为运行事实。`base_url` 只允许无 userinfo、path、query、fragment 的 HTTP(S) origin；username/password 分字段加密。qBittorrent 配置只描述连接和能力，API 只返回 `*_configured` 布尔值而不回显凭据。统一暂存目录保存在 singleton `download_settings`，由 `settings.read/update` 控制。发起下载时直接选择目标 MediaLibrary；选择 `0` 时按媒体库顺序取第一条真正可用的库。媒体库负责 Profile、最终路径、转移方式、冲突策略和命名模板，不再引入一层重复的 DownloadRule。
+下载器配置保存在 SQLite `downloaders`，不再以包含明文密码的 YAML 作为运行事实。`base_url` 只允许无 userinfo、path、query、fragment 的 HTTP(S) origin；username/password 分字段加密。qBittorrent 配置只描述连接和能力，API 只返回 `*_configured` 布尔值而不回显凭据。统一暂存目录保存在 singleton `download_settings`，由 `settings.read/update` 控制。发起下载时通过 Server 权威 route preview 显式选择目标 MediaLibrary；手工任务不再把 `0` 解释为“按排序取第一条”，自动任务也必须来自明确的分类/订阅/生活事件默认路由。媒体库负责 Profile、最终路径、转移方式、冲突策略和命名模板，不再引入一层重复的 DownloadRule。
 
 每个新任务会同时快照暂存目录和目标媒体库路由，之后修改全局设置或媒体库都不会重定向在途任务。下载完成并复核真实 manifest 后创建单独的 `transfer` Job；无目标库的历史兼容任务只下载和刮削，不自动写入媒体库。
 

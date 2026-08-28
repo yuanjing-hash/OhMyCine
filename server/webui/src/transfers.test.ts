@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDeleteTransferRecord, formatTransferProgress, shouldRefreshTransferEvent, transferDeletionLabels, transferIdentityLabel, transferPhaseDescription, transferStatusClass, transferStatusLabel, type TransferSummary } from '@/transfers'
+import { canDeleteTransferRecord, formatTransferProgress, shouldRefreshTransferEvent, transferDeletionLabels, transferIdentityLabel, transferPhaseDescription, transferRouteLabel, transferStatusClass, transferStatusLabel, type TransferSummary } from '@/transfers'
 
 const summary = { phase: 'planning', job_status: 'running', processed_files: 0, total_files: 2 } as TransferSummary
 
@@ -11,6 +11,10 @@ describe('media organization presentation', () => {
     expect(transferStatusLabel({ ...summary, phase: 'failed', job_status: 'queued' })).toBe('等待重试')
     expect(transferStatusLabel({ ...summary, phase: 'transferring', job_status: 'cancelled' })).toBe('已取消')
     expect(transferStatusLabel({ ...summary, phase: 'checking_directories' })).toBe('检查目标目录')
+    expect(transferStatusLabel({ ...summary, phase: 'materializing' })).toBe('拉取到 Server 暂存')
+    expect(transferStatusLabel({ ...summary, phase: 'verifying' })).toBe('校验完整性')
+    expect(transferStatusLabel({ ...summary, phase: 'uploading' })).toBe('上传到目标网盘')
+    expect(transferStatusLabel({ ...summary, phase: 'reconciling' })).toBe('媒体库对账')
     expect(transferPhaseDescription({ ...summary, phase: 'risk_backoff', retry_at: null })).toContain('等待安全重试')
   })
 
@@ -28,6 +32,13 @@ describe('media organization presentation', () => {
     expect(transferIdentityLabel({ ...summary, identity_locked: true, identity_source: 'manual', identity_status: 'verified', identity_revision: 3 })).toBe('人工锁定 · r3')
     expect(transferIdentityLabel({ ...summary, identity_locked: false, identity_source: 'ai', identity_status: 'provisional', identity_revision: 2 })).toBe('AI 辅助 · r2')
     expect(transferIdentityLabel({ ...summary, identity_locked: false, identity_source: 'automatic', identity_status: 'provisional', identity_revision: 1 })).toBe('自动暂定 · r1')
+  })
+
+  it('renders only the frozen server route instead of inferring from provider types', () => {
+    expect(transferRouteLabel('same_source_local')).toBe('同源本地')
+    expect(transferRouteLabel('same_source_provider')).toBe('同源云端')
+    expect(transferRouteLabel('cross_source')).toBe('跨数据源暂存')
+    expect(transferRouteLabel('')).toBe('旧任务路线未知')
   })
 
   it('refreshes only transfer or visible job events', () => {

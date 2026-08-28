@@ -507,3 +507,80 @@ tx.Omit("content_revision").Save(&editable)
 next := max(authoritativeLibraryRevision(tx), latestPersistedChangeRevision(tx)) + 1
 tx.Create(&MediaLibraryChange{Revision: next})
 ```
+
+## Scenario: Registered Media Library Backends
+
+### 1. Scope / Trigger
+
+- Trigger: adding a Storage provider, changing MediaLibrary scanning/listening, or moving provider-specific behavior out of `MediaLibraryService`.
+
+### 2. Signatures
+
+```go
+type MediaLibraryBackend interface {
+    StorageType() string
+    Scan(context.Context, MediaLibraryScanRequest) (medialibrary.Result, error)
+    OpenListener(context.Context, models.MediaLibrary, models.Storage, <-chan struct{}) (MediaLibraryListener, error)
+}
+
+type MediaLibraryListener interface {
+    Run(context.Context, func(context.Context, string) error) error
+    Close() error
+}
+```
+
+`MediaLibraryBackendRegistry.Get(storageType)` is the only reconciliation-time dispatch point. `localMediaLibraryBackend` and `pan115MediaLibraryBackend` are the initial implementations.
+
+### 3. Contracts
+
+- `MediaLibraryService` owns lifecycle state, recognition, catalog persistence, generation, artifacts, and notifications. A backend owns only Storage-facing scan/listen translation.
+- Reconciliation sends the same provider-neutral `MediaLibraryScanRequest` to every backend and consumes one `medialibrary.Result`; the core service must not switch on `Storage.Type` to choose scanners.
+- Listener implementations normalize local filesystem changes, provider wake events, incremental ticks, and full ticks into the controlled reasons `event|incremental|full`. They never write catalog rows directly.
+- Backend lookup is fail-closed. An unknown Storage type produces a safe scan failure and cannot silently fall back to local paths or another cloud driver.
+- Local roots remain canonicalized under the configured Storage root before a watcher opens. Provider implementations resolve credentials internally and return no Cookie, temporary URL, provider response, or absolute path through the common contract.
+- Adding a provider registers one backend implementation and its narrow cloud capabilities; it must not add another type branch to reconciliation or supervisor lifecycle.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Storage type has no registered backend | Fail with the safe MediaLibrary scan/unavailable envelope; do not scan another source |
+| Local root escapes, is missing, or watcher cannot attach | Keep the library in bounded initialization failure/retry; do not publish a baseline |
+| Provider Connection or driver is unavailable | Backend scan fails safely without exposing provider details |
+| Listener closes while Server is stopping | Exit after context cancellation and release watcher/provider resources |
+| Reconciliation callback fails | Listener remains bounded and future event/timer reconciliation may converge; no catalog write occurs inside the listener |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a new provider registers one backend and immediately reuses recognition, catalog, artifact, and notify stages.
+- Base: local and 115 listeners emit the same `event` reason even though their event sources differ.
+- Bad: add `case models.StorageTypeNewCloud` in `MediaLibraryService.reconcile` or let a backend persist MediaLibraryEntry rows itself.
+
+### 6. Tests Required
+
+- Registry tests reject unknown types and return the exact registered backend.
+- Local integration tests cover canonical roots, initial/catch-up scans, watcher changes, shutdown, and retry.
+- Provider integration tests assert the library provider root (not only the Storage root) is scanned and Connection identity is used to resolve the driver.
+- A backend-conformance test must show every implementation returns provider-neutral relative paths and identities suitable for the shared recognition/persistence pipeline.
+- Run focused MediaLibrary tests plus `go test ./...`, `go vet ./...`, and `git diff --check`.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+switch storage.Type {
+case models.StorageTypeLocal:
+    result = medialibrary.ScanLocal(...)
+case models.StorageTypePan115:
+    result = medialibrary.ScanProvider(...)
+}
+```
+
+Correct:
+
+```go
+backend, err := service.backends.Get(storage.Type)
+if err != nil { return safeScanFailure(err) }
+result, err := backend.Scan(ctx, request)
+```

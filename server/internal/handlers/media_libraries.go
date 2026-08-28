@@ -71,6 +71,47 @@ func (a *API) MediaLibraries(c *gin.Context) {
 	}
 	success(c, http.StatusOK, gin.H{"list": items, "total": len(items)})
 }
+
+func (a *API) DefaultIngestMediaLibrary(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	connectionID, ok := pathID(c)
+	if !ok {
+		return
+	}
+	item, err := a.libraries.GetDefaultIngestLibrary(c.Request.Context(), actor, connectionID)
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}
+
+func (a *API) SetDefaultIngestMediaLibrary(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	libraryID, ok := pathID(c)
+	if !ok {
+		return
+	}
+	item, err := a.libraries.SetDefaultIngestLibrary(c.Request.Context(), actor, libraryID, middleware.RequestContextFrom(c))
+	if err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, item)
+}
+
+func (a *API) ClearDefaultIngestMediaLibrary(c *gin.Context) {
+	actor, _ := middleware.ActorFrom(c)
+	connectionID, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := a.libraries.ClearDefaultIngestLibrary(c.Request.Context(), actor, connectionID, middleware.RequestContextFrom(c)); err != nil {
+		writeError(c, a.log, err)
+		return
+	}
+	success(c, http.StatusOK, gin.H{"cleared": true})
+}
 func (a *API) MediaLibrary(c *gin.Context) {
 	actor, _ := middleware.ActorFrom(c)
 	id, ok := pathID(c)

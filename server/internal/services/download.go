@@ -24,7 +24,6 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/medialibrary"
 	"github.com/yuanjing-hash/ohmycine/server/internal/mediarecognition"
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
-	cloudpkg "github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb"
 	"gorm.io/gorm"
@@ -263,6 +262,7 @@ type DownloadTaskSummary struct {
 	TargetLibraryName string     `json:"target_library_name"`
 	TransferMode      string     `json:"transfer_mode"`
 	ConflictPolicy    string     `json:"conflict_policy"`
+	RouteKind         string     `json:"route_kind"`
 	TransferPhase     string     `json:"transfer_phase"`
 	TransferTaskID    string     `json:"transfer_task_id"`
 	TransferJobID     string     `json:"transfer_job_id"`
@@ -378,7 +378,11 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 	if err != nil {
 		return DownloadTaskSummary{}, appError(CodeProfileValidation, "媒体识别与命名配置无效", err)
 	}
-	staging, err := s.settings.Snapshot(ctx, downloaderRecord.Type)
+	routeKind := ""
+	if target != nil {
+		routeKind = target.RouteKind
+	}
+	staging, err := s.settings.SnapshotForRoute(ctx, downloaderRecord.Type, routeKind)
 	if err != nil {
 		return DownloadTaskSummary{}, err
 	}
@@ -463,6 +467,10 @@ func (s *DownloadService) submit(ctx context.Context, ownerID uint, input Submit
 		record.TargetProviderRootID = target.ProviderRootID
 		record.TargetStorageRoot = target.StorageRoot
 		record.TargetRelativeRoot = target.RelativeRoot
+		record.SourceDataSourceJSON = target.SourceDataSourceJSON
+		record.TargetDataSourceJSON = target.TargetDataSourceJSON
+		record.TransferRouteKind = target.RouteKind
+		record.TransferRouteVersion = target.RouteVersion
 		record.TransferMode = target.TransferMode
 		record.ConflictPolicy = target.ConflictPolicy
 		record.MovieDirectoryTemplate = organization.MovieDirectoryTemplate
@@ -543,7 +551,10 @@ func (s *DownloadService) AdoptProviderItem(ctx context.Context, libraryID uint,
 	if err := s.db.WithContext(ctx).First(&storage, library.StorageID).Error; err != nil || storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil {
 		return false, appError(CodeMediaLibraryStorageUnavailable, "自动摄取媒体库 Storage 不可用", err)
 	}
-	keyBytes := sha256.Sum256([]byte(fmt.Sprintf("pan115:%d:%d:%s", *storage.ConnectionID, library.ID, providerItemID)))
+	// Legacy MediaLibrary sweeps and Downloader life-event sweeps intentionally
+	// share one Connection-scoped claim domain. A provider item observed through
+	// both paths must still create exactly one durable pipeline.
+	keyBytes := sha256.Sum256([]byte(fmt.Sprintf("pan115:%d:%s", *storage.ConnectionID, providerItemID)))
 	ingestKey := fmt.Sprintf("%x", keyBytes[:])
 	var existing int64
 	if err := s.db.WithContext(ctx).Model(&models.DownloadTask{}).Where("ingest_source_key = ?", ingestKey).Count(&existing).Error; err != nil {
@@ -576,7 +587,7 @@ func (s *DownloadService) AdoptProviderItem(ctx context.Context, libraryID uint,
 func (s *DownloadService) AdoptDownloaderProviderItem(ctx context.Context, downloaderID string, libraryID uint, providerItemID, displayName string) (bool, error) {
 	downloaderID = strings.TrimSpace(downloaderID)
 	providerItemID = strings.TrimSpace(providerItemID)
-	if downloaderID == "" || libraryID == 0 || providerItemID == "" || len(providerItemID) > 128 || strings.ContainsAny(providerItemID, "\x00\r\n") {
+	if downloaderID == "" || providerItemID == "" || len(providerItemID) > 128 || strings.ContainsAny(providerItemID, "\x00\r\n") {
 		return false, appError(CodeDownloadSourceInvalid, "115 生活事件接管来源无效", nil)
 	}
 	var downloader models.Downloader
@@ -588,14 +599,18 @@ func (s *DownloadService) AdoptDownloaderProviderItem(ctx context.Context, downl
 		return false, appError(CodeDownloaderStorageUnavailable, "115 自动监听下载目录不可用", err)
 	}
 	var library models.MediaLibrary
-	if err := s.db.WithContext(ctx).Where("id = ? AND enabled = ?", libraryID, true).First(&library).Error; err != nil {
-		return false, appError(CodeMediaLibraryStorageUnavailable, "自动监听目标媒体库不存在或已停用", err)
+	if err := s.db.WithContext(ctx).Where("default_ingest_connection_id = ? AND enabled = ?", *sourceStorage.ConnectionID, true).First(&library).Error; err != nil {
+		return false, appError(CodeMediaLibraryStorageUnavailable, "该 115 连接尚未设置自动监听默认入库媒体库", err)
 	}
+	// libraryID is retained only for compatibility with the old internal
+	// enqueuer signature. The Connection-scoped database default is authoritative
+	// and the caller cannot redirect a life-event item to another library.
+	_ = libraryID
 	var targetStorage models.Storage
 	if err := s.db.WithContext(ctx).First(&targetStorage, library.StorageID).Error; err != nil || targetStorage.Type != models.StorageTypePan115 || targetStorage.ConnectionID == nil || *targetStorage.ConnectionID != *sourceStorage.ConnectionID {
 		return false, appError(CodeMediaLibraryStorageUnavailable, "自动监听目标媒体库与下载器不属于同一 115", err)
 	}
-	keyBytes := sha256.Sum256([]byte(fmt.Sprintf("pan115:%d:%s:%s", *sourceStorage.ConnectionID, downloader.ID, providerItemID)))
+	keyBytes := sha256.Sum256([]byte(fmt.Sprintf("pan115:%d:%s", *sourceStorage.ConnectionID, providerItemID)))
 	ingestKey := fmt.Sprintf("%x", keyBytes[:])
 	var existing int64
 	if err := s.db.WithContext(ctx).Model(&models.DownloadTask{}).Where("ingest_source_key = ?", ingestKey).Count(&existing).Error; err != nil {
@@ -636,28 +651,21 @@ type downloadTargetSnapshot struct {
 	TVDirectoryTemplate    string
 	TVFilenameTemplate     string
 	IngestProviderRootID   string
+	SourceDataSourceJSON   string
+	TargetDataSourceJSON   string
+	RouteKind              string
+	RouteVersion           int
 }
 
 func (s *DownloadService) resolveDownloadTarget(ctx context.Context, downloader models.Downloader, requested uint, sourceKind string) (*downloadTargetSnapshot, models.MediaClassificationProfile, error) {
-	if requested != 0 {
-		var library models.MediaLibrary
-		if err := s.db.Where("id = ? AND enabled = ?", requested, true).First(&library).Error; err != nil {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "目标媒体库不存在或已停用", err)
-		}
-		return s.snapshotDownloadTarget(ctx, downloader, library, sourceKind)
+	if requested == 0 {
+		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "请选择明确的目标媒体库", nil)
 	}
-
-	var libraries []models.MediaLibrary
-	if err := s.db.Where("enabled = ?", true).Order("sort_order,id").Find(&libraries).Error; err != nil {
-		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "没有可用的目标媒体库", err)
+	var library models.MediaLibrary
+	if err := s.db.Where("id = ? AND enabled = ?", requested, true).First(&library).Error; err != nil {
+		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "目标媒体库不存在或已停用", err)
 	}
-	for _, library := range libraries {
-		target, profile, err := s.snapshotDownloadTarget(ctx, downloader, library, sourceKind)
-		if err == nil {
-			return target, profile, nil
-		}
-	}
-	return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "没有可用的目标媒体库", nil)
+	return s.snapshotDownloadTarget(ctx, downloader, library, sourceKind)
 }
 
 func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader models.Downloader, library models.MediaLibrary, sourceKinds ...string) (*downloadTargetSnapshot, models.MediaClassificationProfile, error) {
@@ -665,78 +673,7 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 	if len(sourceKinds) > 0 {
 		sourceKind = sourceKinds[0]
 	}
-	var storage models.Storage
-	if err := s.db.First(&storage, library.StorageID).Error; err != nil || !storage.Enabled {
-		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "目标媒体库 Storage 不可用", err)
-	}
-	var connectionID *uint
-	providerRootID := ""
-	ingestProviderRootID := strings.TrimSpace(library.IngestProviderRootID)
-	switch storage.Type {
-	case models.StorageTypeLocal:
-		if downloader.Type == models.DownloaderTypePan115Offline {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 原生离线下载仅支持同账号的 115 媒体库", nil)
-		}
-		if _, err := medialibrary.ResolveRoot(storage.RootPath, library.RelativeRoot); err != nil {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "目标媒体库目录不可用", err)
-		}
-	case models.StorageTypePan115:
-		if storage.ConnectionID == nil || strings.TrimSpace(library.ProviderRootID) == "" || s.downloader == nil || s.downloader.connections == nil {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标媒体库连接不可用", nil)
-		}
-		if library.TransferMode != models.MediaLibraryTransferMove && library.TransferMode != models.MediaLibraryTransferCopy {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 媒体库仅支持移动或复制入库", nil)
-		}
-		_, driver, err := s.downloader.connections.driver(*storage.ConnectionID)
-		if err != nil {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标连接不可用", err)
-		}
-		capabilities := driver.Capabilities()
-		if downloader.Type == models.DownloaderTypePluginHTTP && sourceKind == "plugin_plan" {
-			if _, ok := driver.(cloudpkg.UploadDriver); !ok || !capabilities.FileUpload || !capabilities.CreateDirectory || !capabilities.Recycle {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标缺少文件上传能力", nil)
-			}
-		} else {
-			if downloader.Type != models.DownloaderTypePan115Offline || downloader.StorageID == nil {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标媒体库只能接收同账号离线下载或受管站点下载", nil)
-			}
-			var sourceStorage models.Storage
-			if err := s.db.First(&sourceStorage, *downloader.StorageID).Error; err != nil || sourceStorage.Type != models.StorageTypePan115 || sourceStorage.ConnectionID == nil || *sourceStorage.ConnectionID != *storage.ConnectionID {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 离线下载与目标媒体库不属于同一账号", err)
-			}
-			_, ok := driver.(cloudpkg.MutationDriver)
-			if !ok || !capabilities.CreateDirectory || !capabilities.Rename || !capabilities.Recycle || (library.TransferMode == models.MediaLibraryTransferMove && !capabilities.Move) || (library.TransferMode == models.MediaLibraryTransferCopy && !capabilities.Copy) {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "115 目标缺少所需的云端整理能力", nil)
-			}
-		}
-		root, err := providerItemWithinRoot(ctx, driver, library.ProviderRootID, storage.RootPath)
-		if err != nil || !root.IsDir {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 目标媒体库目录不可用", err)
-		}
-		value := *storage.ConnectionID
-		connectionID, providerRootID = &value, strings.TrimSpace(library.ProviderRootID)
-		if sourceKind == downloadpkg.SourcePan115Share || sourceKind == downloadpkg.SourceProviderItem {
-			ingestProviderRootID = strings.TrimSpace(downloader.ProviderDirectoryID)
-			if ingestProviderRootID == "" {
-				return nil, models.MediaClassificationProfile{}, appError(CodeDownloaderStorageUnavailable, "115 下载器目录不可用", nil)
-			}
-			ingestRoot, err := providerItemWithinRoot(ctx, driver, ingestProviderRootID, storage.RootPath)
-			if err != nil || !ingestRoot.IsDir {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 下载目录不可用", err)
-			}
-		}
-	default:
-		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "目标媒体库 Storage 类型不受支持", nil)
-	}
-	var profile models.MediaClassificationProfile
-	if err := s.db.First(&profile, library.ProfileID).Error; err != nil {
-		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryProfileUnavailable, "目标媒体库分类规则不可用", err)
-	}
-	organization, err := storedProfileOrganizationConfig(profile)
-	if err != nil {
-		return nil, models.MediaClassificationProfile{}, appError(CodeProfileValidation, "目标媒体库识别与命名配置无效", err)
-	}
-	return &downloadTargetSnapshot{LibraryID: library.ID, LibraryName: library.Name, StorageID: storage.ID, StorageType: storage.Type, ConnectionID: connectionID, ProviderRootID: providerRootID, StorageRoot: storage.RootPath, RelativeRoot: library.RelativeRoot, TransferMode: library.TransferMode, ConflictPolicy: library.ConflictPolicy, MovieDirectoryTemplate: organization.MovieDirectoryTemplate, MovieFilenameTemplate: organization.MovieFilenameTemplate, TVDirectoryTemplate: organization.TVDirectoryTemplate, TVFilenameTemplate: organization.TVFilenameTemplate, IngestProviderRootID: ingestProviderRootID}, profile, nil
+	return s.buildDownloadTargetSnapshot(ctx, downloader, library, sourceKind)
 }
 
 func (s *DownloadService) List(actor Actor, limit int) ([]DownloadTaskSummary, error) {
@@ -1362,7 +1299,7 @@ func normalizeDownloadDisplayName(requestedName, fallback string) (string, error
 func downloadSourcePurpose(id string) string { return "download-task:" + id + ":source" }
 
 func downloadTaskSummary(record models.DownloadTask, jobStatus string) DownloadTaskSummary {
-	return DownloadTaskSummary{ID: record.ID, JobID: record.JobID, OwnerID: record.OwnerID, DownloaderID: record.DownloaderID, DownloaderName: record.DownloaderName, ProviderType: record.ProviderType, DisplayName: record.DisplayName, JobStatus: jobStatus, ProviderStatus: record.ProviderStatus, Phase: record.Phase, Progress: record.Progress, BytesCompleted: record.BytesCompleted, BytesTotal: record.BytesTotal, DownloadSpeed: record.DownloadSpeed, UploadSpeed: record.UploadSpeed, ETASeconds: record.ETASeconds, LastSampledAt: record.LastSampledAt, LastErrorCode: record.LastErrorCode, LastErrorMessage: record.LastErrorMessage, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt, ProfileID: record.ProfileID, ProfileRevision: record.ProfileRevision, ScrapeStatus: record.ScrapeStatus, ScrapeTitle: record.ScrapeTitle, ScrapeMediaType: record.ScrapeMediaType, ScrapeCategory: record.ScrapeCategory, ScrapeTMDBID: record.ScrapeTMDBID, ScrapeConfidence: record.ScrapeConfidence, ScrapeSeason: cloneInt(record.ScrapeSeason), ScrapeEpisode: cloneInt(record.ScrapeEpisode), IdentitySource: record.IdentitySource, IdentityStatus: record.IdentityStatus, IdentityLocked: record.IdentityLocked, IdentityRevision: record.IdentityRevision, ManifestFiles: record.ManifestFileCount, TargetLibraryID: record.TargetLibraryID, TargetLibraryName: record.TargetLibraryName, TransferMode: record.TransferMode, ConflictPolicy: record.ConflictPolicy}
+	return DownloadTaskSummary{ID: record.ID, JobID: record.JobID, OwnerID: record.OwnerID, DownloaderID: record.DownloaderID, DownloaderName: record.DownloaderName, ProviderType: record.ProviderType, DisplayName: record.DisplayName, JobStatus: jobStatus, ProviderStatus: record.ProviderStatus, Phase: record.Phase, Progress: record.Progress, BytesCompleted: record.BytesCompleted, BytesTotal: record.BytesTotal, DownloadSpeed: record.DownloadSpeed, UploadSpeed: record.UploadSpeed, ETASeconds: record.ETASeconds, LastSampledAt: record.LastSampledAt, LastErrorCode: record.LastErrorCode, LastErrorMessage: record.LastErrorMessage, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, FinishedAt: record.FinishedAt, ProfileID: record.ProfileID, ProfileRevision: record.ProfileRevision, ScrapeStatus: record.ScrapeStatus, ScrapeTitle: record.ScrapeTitle, ScrapeMediaType: record.ScrapeMediaType, ScrapeCategory: record.ScrapeCategory, ScrapeTMDBID: record.ScrapeTMDBID, ScrapeConfidence: record.ScrapeConfidence, ScrapeSeason: cloneInt(record.ScrapeSeason), ScrapeEpisode: cloneInt(record.ScrapeEpisode), IdentitySource: record.IdentitySource, IdentityStatus: record.IdentityStatus, IdentityLocked: record.IdentityLocked, IdentityRevision: record.IdentityRevision, ManifestFiles: record.ManifestFileCount, TargetLibraryID: record.TargetLibraryID, TargetLibraryName: record.TargetLibraryName, TransferMode: record.TransferMode, ConflictPolicy: record.ConflictPolicy, RouteKind: record.TransferRouteKind}
 }
 
 type DownloadWorker struct {
@@ -1438,7 +1375,11 @@ func (w *DownloadWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		return w.failure(task, err)
 	}
 	if task.Phase == models.DownloadTaskStatusPaused && task.ProviderTaskID != "" {
-		if err := client.Resume(ctx, task.ProviderTaskID); err != nil {
+		resumer, ok := client.(downloadpkg.Resumer)
+		if !ok {
+			return w.failure(task, downloadpkg.Error("downloader_resume_unsupported", false, nil))
+		}
+		if err := resumer.Resume(ctx, task.ProviderTaskID); err != nil {
 			return w.failure(task, err)
 		}
 	}
@@ -2293,7 +2234,12 @@ func (w *DownloadWorker) Interrupt(ctx context.Context, job ClaimedJob, action s
 	}
 	switch action {
 	case "pause":
-		err = client.Pause(ctx, task.ProviderTaskID)
+		pauser, ok := client.(downloadpkg.Pauser)
+		if !ok {
+			err = downloadpkg.Error("downloader_pause_unsupported", false, nil)
+			break
+		}
+		err = pauser.Pause(ctx, task.ProviderTaskID)
 		if err == nil {
 			err = w.service.db.Model(&task).Updates(map[string]any{"phase": models.DownloadTaskStatusPaused, "updated_at": time.Now().UTC()}).Error
 		}

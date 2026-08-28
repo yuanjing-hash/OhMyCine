@@ -131,7 +131,7 @@ func (s *TransferService) EnqueuePackage(download models.DownloadTask, manifest,
 		return nil
 	}
 	if err := validateTransferRouteSnapshot(download); err != nil {
-		return appError(CodeTransferRouteUnsupported, "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库", err)
+		return appError(CodeTransferRouteUnsupported, transferRouteUnsupportedMessage(download), err)
 	}
 	if err := validateAutomaticTransferSnapshot(download, manifest); err != nil {
 		if errors.Is(err, errPackageEpisodeUnrecognized) {
@@ -155,12 +155,20 @@ func (s *TransferService) EnqueuePackage(download models.DownloadTask, manifest,
 	}
 	now := time.Now().UTC()
 	id := uuid.NewString()
-	record := models.TransferTask{ID: id, OwnerID: download.OwnerID, DownloadTaskID: download.ID, LibraryID: *download.TargetLibraryID, LibraryName: download.TargetLibraryName, ManifestJSON: string(raw), SourceManifestJSON: string(sourceRaw), Phase: models.TransferTaskStatusQueued, CleanupStatus: models.TransferCleanupPending, TotalFiles: len(manifest.Files), CreatedAt: now, UpdatedAt: now}
+	record := models.TransferTask{ID: id, OwnerID: download.OwnerID, DownloadTaskID: download.ID, LibraryID: *download.TargetLibraryID, LibraryName: download.TargetLibraryName, ManifestJSON: string(raw), SourceManifestJSON: string(sourceRaw), SourceDataSourceJSON: download.SourceDataSourceJSON, TargetDataSourceJSON: download.TargetDataSourceJSON, RouteKind: download.TransferRouteKind, RouteVersion: download.TransferRouteVersion, Phase: models.TransferTaskStatusQueued, CleanupStatus: models.TransferCleanupPending, TotalFiles: len(manifest.Files), CreatedAt: now, UpdatedAt: now}
 	provider := models.StorageTypeLocal
 	resourceKey := "library:" + strconv.FormatUint(uint64(*download.TargetLibraryID), 10)
 	if download.TargetStorageType == models.StorageTypePan115 && download.TargetConnectionID != nil {
 		provider = cloudpkg.ProviderPan115
 		resourceKey = "connection:" + strconv.FormatUint(uint64(*download.TargetConnectionID), 10)
+	}
+	if download.TransferRouteVersion == models.TransferRouteVersionCurrent && download.TransferRouteKind == models.TransferRouteCrossSource {
+		if source, decodeErr := decodeDataSourceIdentity(download.SourceDataSourceJSON); decodeErr == nil && source.Kind == models.DataSourceKindProvider {
+			// One durable resource key serializes all cloud materialization into
+			// the shared managed staging root. This closes the race where several
+			// jobs independently pass the same instantaneous free-space probe.
+			resourceKey = "staging:cross-source"
+		}
 	}
 	_, err = s.queue.EnqueueWith(EnqueueJobInput{OwnerID: download.OwnerID, JobType: "transfer", DisplayName: "入库：" + download.DisplayName, Provider: provider, ResourceKey: resourceKey, Payload: transferJobPayload{TransferTaskID: id}}, func(tx *gorm.DB, job models.Job) error {
 		if err := ensureDownloadPipelineActive(tx, download.ID); err != nil {
@@ -250,7 +258,7 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		return WorkerResult{}
 	}
 	if err := validateTransferRouteSnapshot(download); err != nil {
-		return w.fail(task, CodeTransferRouteUnsupported, "115 原生离线下载不能直接入库到本地媒体库；请选择同账号的 115 媒体库")
+		return w.fail(task, CodeTransferRouteUnsupported, transferRouteUnsupportedMessage(download))
 	}
 	var manifest downloadpkg.Manifest
 	if err := json.Unmarshal([]byte(task.ManifestJSON), &manifest); err != nil || len(manifest.Files) == 0 {
@@ -300,11 +308,30 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 		task.ManifestJSON = string(raw)
 		task.TotalFiles = len(verifiedManifest.Files)
 	}
-	if download.TargetStorageType == models.StorageTypePan115 {
-		if download.ProviderType == models.DownloaderTypePluginHTTP {
-			return w.runCloudUpload(ctx, runtime, task, download, manifest, started)
-		}
+	route, err := w.resolveTransferRoute(task, download)
+	if err != nil {
+		return w.fail(task, CodeTransferRouteUnsupported, "下载来源与目标媒体库之间没有可用的入库执行器")
+	}
+	switch route {
+	case transferRoutePan115Native:
 		return w.runCloudTransfer(ctx, runtime, task, download, manifest, started)
+	case transferRouteLocalToPan115:
+		return w.runCloudUpload(ctx, runtime, task, download, manifest, started)
+	case transferRoutePan115ToOtherCloud:
+		materializedTask, managedRoot, materializeErr := w.materializePan115Source(ctx, runtime, task, download, manifest)
+		if materializeErr != nil {
+			return w.cloudFailure(materializedTask, materializeErr)
+		}
+		download.StagingAbsolutePath = filepath.Dir(filepath.Dir(managedRoot))
+		return w.runCloudUpload(ctx, runtime, materializedTask, download, manifest, started)
+	case transferRoutePan115ToLocal:
+		materializedTask, managedRoot, materializeErr := w.materializePan115Source(ctx, runtime, task, download, manifest)
+		if materializeErr != nil {
+			return w.cloudFailure(materializedTask, materializeErr)
+		}
+		task = materializedTask
+		download.StagingAbsolutePath = managedRoot
+		download.StagingCategory = "."
 	}
 	_ = w.service.db.Model(&task).Updates(map[string]any{"phase": models.TransferTaskStatusPlanning, "updated_at": time.Now().UTC()}).Error
 	plan, targetRoot, err := buildTransferPlan(download, manifest)
@@ -439,13 +466,6 @@ func (w *TransferWorker) Run(ctx context.Context, runtime JobRuntime, job Claime
 	serverlog.OperationMediaTransfer.Event(w.service.log.Info()).Str("task_id", task.ID).Uint("library_id", task.LibraryID).Str("transfer_mode", download.TransferMode).Int("files", len(plan)).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationMediaTransfer.Message("完成"))
 	task.Phase = models.TransferTaskStatusCompleted
 	return w.finishCompletedTransfer(ctx, task)
-}
-
-func validateTransferRouteSnapshot(download models.DownloadTask) error {
-	if download.ProviderType == models.DownloaderTypePan115Offline && download.TargetStorageType != models.StorageTypePan115 {
-		return errors.New("pan115 offline output requires a pan115 target storage")
-	}
-	return nil
 }
 
 func newTransferPlanSummary(plan []transferPlanItem) (TransferPlanSummary, error) {

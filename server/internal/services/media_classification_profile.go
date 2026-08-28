@@ -415,6 +415,8 @@ func storedProfileOrganizationConfig(record models.MediaClassificationProfile) (
 		TVDirectoryTemplate:         firstNonEmpty(record.TVDirectoryTemplate, defaults.TVDirectoryTemplate),
 		TVFilenameTemplate:          firstNonEmpty(record.TVFilenameTemplate, defaults.TVFilenameTemplate),
 	}
+	config.MovieDirectoryTemplate = normalizeMediaTypeDirectoryTemplate(config.MovieDirectoryTemplate, "movie")
+	config.TVDirectoryTemplate = normalizeMediaTypeDirectoryTemplate(config.TVDirectoryTemplate, "tv")
 	if err := validateProfileTemplates(config); err != nil {
 		return profileOrganizationConfig{}, err
 	}
@@ -460,6 +462,8 @@ func resolveProfileOrganizationConfig(existing models.MediaClassificationProfile
 	if tvFilename != nil {
 		config.TVFilenameTemplate = strings.TrimSpace(*tvFilename)
 	}
+	config.MovieDirectoryTemplate = normalizeMediaTypeDirectoryTemplate(config.MovieDirectoryTemplate, "movie")
+	config.TVDirectoryTemplate = normalizeMediaTypeDirectoryTemplate(config.TVDirectoryTemplate, "tv")
 	if err := validateProfileTemplates(config); err != nil {
 		return profileOrganizationConfig{}, err
 	}

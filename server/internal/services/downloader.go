@@ -68,21 +68,23 @@ type DownloaderHealth struct {
 }
 
 type DownloaderSummary struct {
-	ID                    string                   `json:"id"`
-	Name                  string                   `json:"name"`
-	Type                  string                   `json:"type"`
-	BaseURL               string                   `json:"base_url"`
-	Enabled               bool                     `json:"enabled"`
-	UsernameConfigured    bool                     `json:"username_configured"`
-	PasswordConfigured    bool                     `json:"password_configured"`
-	Capabilities          downloadpkg.Capabilities `json:"capabilities"`
-	Health                DownloaderHealth         `json:"health"`
-	CreatedAt             time.Time                `json:"created_at"`
-	UpdatedAt             time.Time                `json:"updated_at"`
-	StorageID             *uint                    `json:"storage_id"`
-	StorageName           string                   `json:"storage_name"`
-	ProviderDirectoryPath string                   `json:"provider_directory_path"`
-	AutoListenLifeEvents  bool                     `json:"auto_listen_life_events"`
+	ID                          string                   `json:"id"`
+	Name                        string                   `json:"name"`
+	Type                        string                   `json:"type"`
+	BaseURL                     string                   `json:"base_url"`
+	Enabled                     bool                     `json:"enabled"`
+	UsernameConfigured          bool                     `json:"username_configured"`
+	PasswordConfigured          bool                     `json:"password_configured"`
+	Capabilities                downloadpkg.Capabilities `json:"capabilities"`
+	Health                      DownloaderHealth         `json:"health"`
+	CreatedAt                   time.Time                `json:"created_at"`
+	UpdatedAt                   time.Time                `json:"updated_at"`
+	StorageID                   *uint                    `json:"storage_id"`
+	StorageName                 string                   `json:"storage_name"`
+	ProviderDirectoryPath       string                   `json:"provider_directory_path"`
+	AutoListenLifeEvents        bool                     `json:"auto_listen_life_events"`
+	LifeEventDefaultLibraryID   *uint                    `json:"life_event_default_library_id"`
+	LifeEventDefaultLibraryName string                   `json:"life_event_default_library_name"`
 }
 
 func (s *DownloaderService) List(actor Actor) ([]DownloaderSummary, error) {
@@ -132,6 +134,9 @@ func (s *DownloaderService) CreateContext(ctx context.Context, actor Actor, inpu
 	autoListen := input.AutoListenLifeEvents && providerType == models.DownloaderTypePan115Offline
 	if input.Enabled && autoListen {
 		if err := s.validateLifeEventDirectory(ctx, "", storage, providerDirectoryID); err != nil {
+			return DownloaderSummary{}, err
+		}
+		if err := requireDefaultIngestForStorage(ctx, s.db, storage); err != nil {
 			return DownloaderSummary{}, err
 		}
 	}
@@ -236,6 +241,9 @@ func (s *DownloaderService) UpdateContext(ctx context.Context, actor Actor, id s
 	}
 	if record.Enabled && record.AutoListenLifeEvents {
 		if err := s.validateLifeEventDirectory(ctx, record.ID, record.StorageID, record.ProviderDirectoryID); err != nil {
+			return DownloaderSummary{}, err
+		}
+		if err := requireDefaultIngestForStorage(ctx, s.db, record.StorageID); err != nil {
 			return DownloaderSummary{}, err
 		}
 	}
@@ -528,13 +536,24 @@ func (s *DownloaderService) summary(record models.Downloader) DownloaderSummary 
 	var capabilities downloadpkg.Capabilities
 	_ = json.Unmarshal([]byte(record.CapabilitiesJSON), &capabilities)
 	name := ""
+	var defaultLibraryID *uint
+	defaultLibraryName := ""
 	if record.StorageID != nil {
 		var storage models.Storage
 		if s.db.Select("name").First(&storage, *record.StorageID).Error == nil {
 			name = storage.Name
 		}
+		if record.Type == models.DownloaderTypePan115Offline {
+			if s.db.Select("id", "name", "connection_id").First(&storage, *record.StorageID).Error == nil && storage.ConnectionID != nil {
+				var library models.MediaLibrary
+				if s.db.Select("id", "name").Where("default_ingest_connection_id = ? AND enabled = ?", *storage.ConnectionID, true).First(&library).Error == nil {
+					value := library.ID
+					defaultLibraryID, defaultLibraryName = &value, library.Name
+				}
+			}
+		}
 	}
-	return DownloaderSummary{ID: record.ID, Name: record.Name, Type: record.Type, BaseURL: record.BaseURL, Enabled: record.Enabled, UsernameConfigured: record.UsernameCiphertext != "", PasswordConfigured: record.PasswordCiphertext != "", Capabilities: capabilities, Health: DownloaderHealth{Status: record.LastHealthStatus, Version: record.LastHealthVersion, ErrorCode: record.LastHealthErrorCode, LastChecked: record.LastHealthCheckedAt}, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, StorageID: record.StorageID, StorageName: name, ProviderDirectoryPath: record.ProviderDirectoryPath, AutoListenLifeEvents: record.AutoListenLifeEvents}
+	return DownloaderSummary{ID: record.ID, Name: record.Name, Type: record.Type, BaseURL: record.BaseURL, Enabled: record.Enabled, UsernameConfigured: record.UsernameCiphertext != "", PasswordConfigured: record.PasswordCiphertext != "", Capabilities: capabilities, Health: DownloaderHealth{Status: record.LastHealthStatus, Version: record.LastHealthVersion, ErrorCode: record.LastHealthErrorCode, LastChecked: record.LastHealthCheckedAt}, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, StorageID: record.StorageID, StorageName: name, ProviderDirectoryPath: record.ProviderDirectoryPath, AutoListenLifeEvents: record.AutoListenLifeEvents, LifeEventDefaultLibraryID: defaultLibraryID, LifeEventDefaultLibraryName: defaultLibraryName}
 }
 
 func downloaderTestMessage(providerType, code string) string {
