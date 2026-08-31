@@ -1077,3 +1077,24 @@ CI 固定 golangci-lint 发现默认入库服务残留未使用辅助函数；�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 43: 优化 115 媒体库链路与 STRM 清理
+
+**Date**: 2026-08-31
+**Task**: 优化 115 媒体库链路与 STRM 清理
+**Branch**: `develop`
+
+### Summary
+
+修复 115 目录浏览、路线预览与同源整理的串行等待放大，完善媒体库保存反馈、supervisor/no-op generation，并让 STRM 清理安全收敛空目录。全量 Go 与 WebUI 门禁通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `72c5e75` | (see git log) |
+
+### Status
+
+[OK] **Completed**
