@@ -333,3 +333,68 @@ parents := groupSourceManifestByParent(originalManifest)
 current := listParentsWithinDeadline(ctx, parents)
 plan := convergeMissingDetachedAndOwned(current, download.ProviderOutputID)
 ```
+
+## Scenario: Completed 115 Staging Package Convergence
+
+### 1. Scope / Trigger
+
+- Trigger: a completed `pan115_offline` Transfer, including a life-event-adopted manual transfer, has moved its selected media out of the frozen staging package and now performs post-import cleanup.
+
+### 2. Signatures
+
+```text
+DownloadTask.provider_output_id             immutable package root identity
+DownloadTask.staging_storage_id             immutable Storage boundary selector
+DownloadTask.staging_provider_directory_id  optional immutable listener boundary
+TransferTask.cleanup_status/error/removed   retryable cleanup projection
+
+MutationDriver.Recycle(ctx, provider_output_id)
+```
+
+### 3. Contracts
+
+- A completed 115 cleanup always inspects the package root even when `source_manifest - selected_manifest` is empty. It proves `Storage root -> listener root (when present) -> provider_output_id` by stable identity, cleans manifest-owned extras first, then performs one authoritative package listing.
+- An already-missing package is converged success. A non-empty package is retained and cleanup may complete without scanning or deleting its children. An empty package is sent to the provider recycle bin and counted only after a fresh `Stat` proves it absent.
+- The package root may never equal the Storage root or listener root. Cleanup never permanently purges the recycle bin and never searches for a replacement package by name.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Transfer is not completed | `download_staging_package_not_completed`; zero mutation |
+| Package equals/proves outside Storage or listener root | `download_staging_package_boundary_invalid`; zero mutation |
+| Package listing contains any child | Retain the package; cleanup succeeds with zero package removals |
+| Package listing is empty and recycle + missing recheck succeeds | Increment `cleanup_removed` once and complete |
+| Recycle acknowledgement is ambiguous but recheck is missing | Treat as converged success and count once |
+| Recycle/list/recheck fails or package still exists | Persist a stable cleanup failure and retry without rolling back the import |
+
+### 5. Good / Base / Bad Cases
+
+- Good: manual share adoption moves the only movie into its 115 library, then recycles the now-empty title folder while preserving the listener folder.
+- Base: the user already removed the empty package before retry; cleanup completes without another mutation or count increment.
+- Bad: return early because `extras == 0`, recursively delete a non-empty package, or recycle a directory identified only by its display name.
+
+### 6. Tests Required
+
+- Cover empty package with zero extras through proof, listing, recycle and missing reconciliation.
+- Cover non-empty, already-missing, Storage-root, listener-root, outside-listener and incomplete-Transfer cases with exact zero-mutation assertions.
+- Cover recycle and post-recycle reconciliation failures across retry, including no repeated recycle and no duplicated `cleanup_removed` count.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+if len(extras) == 0 { return markCleanupCompleted() }
+driver.Recycle(ctx, findDirectoryByName(download.Title))
+```
+
+#### Correct
+
+```go
+boundary := proveFrozenPackageBoundary(download.StagingStorageID,
+    download.StagingProviderDirectoryID, download.ProviderOutputID)
+if authoritativeList(boundary.packageRoot).Empty() {
+    recycleAndReconcileMissing(boundary.packageRoot.ID)
+}
+```

@@ -127,7 +127,8 @@ func (s *TransferService) cleanupTransferStaging(ctx context.Context, task model
 	if err != nil {
 		return 0, s.persistTransferCleanupFailure(task.ID, "download_staging_manifest_invalid", err)
 	}
-	if len(extras) == 0 {
+	cloudCleanup := download.ProviderType == models.DownloaderTypePan115Offline
+	if len(extras) == 0 && !cloudCleanup {
 		if err := s.persistTransferCleanupSuccess(task.ID, 0); err != nil {
 			return 0, err
 		}
@@ -135,13 +136,26 @@ func (s *TransferService) cleanupTransferStaging(ctx context.Context, task model
 	}
 	_ = s.db.Model(&models.TransferTask{}).Where("id = ?", task.ID).Updates(map[string]any{"cleanup_status": models.TransferCleanupRunning, "cleanup_error_code": "", "updated_at": time.Now().UTC()}).Error
 	removed := 0
-	if download.ProviderType == models.DownloaderTypePan115Offline {
-		removed, err = s.cleanupCloudStaging(ctx, download, extras)
+	if cloudCleanup {
+		if task.Phase != models.TransferTaskStatusCompleted {
+			err = transferStagingCleanupFailure("download_staging_package_not_completed", errors.New("transfer is not completed"))
+		} else {
+			var boundary cloudStagingCleanupBoundary
+			boundary, err = s.prepareCloudStagingCleanup(ctx, download)
+			if err == nil && !boundary.packageMissing && len(extras) > 0 {
+				removed, err = cleanupCloudStagingItems(ctx, boundary, extras)
+			}
+			if err == nil && !boundary.packageMissing {
+				var packageRemoved int
+				packageRemoved, err = cleanupEmptyCloudStagingPackage(ctx, boundary)
+				removed += packageRemoved
+			}
+		}
 	} else {
 		removed, err = cleanupLocalStaging(download, extras)
 	}
 	if err != nil {
-		return removed, s.persistTransferCleanupFailureWithCount(task.ID, "download_staging_cleanup_failed", removed, err)
+		return removed, s.persistTransferCleanupFailureWithCount(task.ID, transferStagingCleanupCode(err), removed, err)
 	}
 	if err := s.persistTransferCleanupSuccess(task.ID, removed); err != nil {
 		return removed, err
@@ -161,6 +175,26 @@ func transferCleanupDifference(task models.TransferTask) ([]downloadpkg.File, er
 type transferCleanupPlan struct {
 	Removable      []downloadpkg.File
 	ProtectedCount int
+}
+
+type transferStagingCleanupError struct {
+	code  string
+	cause error
+}
+
+func (e *transferStagingCleanupError) Error() string { return e.code }
+func (e *transferStagingCleanupError) Unwrap() error { return e.cause }
+
+func transferStagingCleanupFailure(code string, cause error) error {
+	return &transferStagingCleanupError{code: code, cause: cause}
+}
+
+func transferStagingCleanupCode(err error) string {
+	var failure *transferStagingCleanupError
+	if errors.As(err, &failure) && strings.TrimSpace(failure.code) != "" {
+		return failure.code
+	}
+	return "download_staging_cleanup_failed"
 }
 
 func buildTransferCleanupPlan(task models.TransferTask) (transferCleanupPlan, error) {
@@ -267,28 +301,81 @@ func pruneEmptyStagingDirectories(root, directory string) {
 	}
 }
 
-func (s *TransferService) cleanupCloudStaging(ctx context.Context, download models.DownloadTask, extras []downloadpkg.File) (int, error) {
+type cloudStagingCleanupBoundary struct {
+	driver         cloudpkg.Driver
+	mutations      cloudpkg.MutationDriver
+	proof          *providerBoundaryProof
+	packageRoot    cloudpkg.Item
+	packageMissing bool
+}
+
+func (s *TransferService) prepareCloudStagingCleanup(ctx context.Context, download models.DownloadTask) (cloudStagingCleanupBoundary, error) {
+	var boundary cloudStagingCleanupBoundary
 	packageRootID := strings.TrimSpace(download.ProviderOutputID)
-	if s.connections == nil || download.StagingStorageID == nil || packageRootID == "" {
-		return 0, errors.New("cloud staging connection is unavailable")
+	listenerRootID := strings.TrimSpace(download.StagingProviderDirectoryID)
+	if s.connections == nil || download.StagingStorageID == nil || packageRootID == "" || packageRootID != download.ProviderOutputID || (listenerRootID != "" && listenerRootID != download.StagingProviderDirectoryID) {
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging identity is unavailable"))
 	}
 	var storage models.Storage
 	if err := s.db.First(&storage, *download.StagingStorageID).Error; err != nil || storage.Type != models.StorageTypePan115 || storage.ConnectionID == nil {
-		return 0, errors.New("cloud staging storage is unavailable")
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging storage is unavailable"))
+	}
+	storageRootID := strings.TrimSpace(storage.RootPath)
+	if storageRootID == "" || storageRootID != storage.RootPath || packageRootID == storageRootID || (listenerRootID != "" && packageRootID == listenerRootID) {
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging package equals a protected root"))
 	}
 	_, driver, err := s.connections.driver(*storage.ConnectionID)
 	if err != nil {
-		return 0, err
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_unavailable", err)
 	}
 	proof := newProviderBoundaryProof(driver)
-	packageRoot, err := proof.within(ctx, packageRootID, storage.RootPath)
-	if err != nil || !packageRoot.IsDir {
-		return 0, errors.New("cloud staging package boundary is invalid")
+	storageRoot, err := proof.stat(ctx, storageRootID)
+	if err != nil {
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_unavailable", err)
+	}
+	if !storageRoot.IsDir || storageRoot.ID != storageRootID {
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging storage root identity changed"))
+	}
+	packageBoundaryID := storageRootID
+	if listenerRootID != "" {
+		packageBoundaryID = listenerRootID
+	}
+	packageRoot, err := proof.within(ctx, packageRootID, packageBoundaryID)
+	if err != nil {
+		if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
+			boundary.driver, boundary.proof, boundary.packageMissing = driver, proof, true
+			return boundary, nil
+		}
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", err)
+	}
+	if !packageRoot.IsDir || packageRoot.ID != packageRootID {
+		return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging package identity changed"))
+	}
+	if listenerRootID != "" {
+		listener, listenerErr := proof.within(ctx, listenerRootID, storageRootID)
+		if listenerErr != nil || !listener.IsDir || listener.ID != listenerRootID {
+			return boundary, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging listener boundary changed"))
+		}
 	}
 	mutations, ok := driver.(cloudpkg.MutationDriver)
 	if !ok || !mutations.Capabilities().Recycle {
-		return 0, errors.New("cloud staging recycle capability is unavailable")
+		return boundary, transferStagingCleanupFailure("download_staging_package_recycle_unavailable", errors.New("cloud staging recycle capability is unavailable"))
 	}
+	boundary.driver, boundary.mutations, boundary.proof, boundary.packageRoot = driver, mutations, proof, packageRoot
+	return boundary, nil
+}
+
+func (s *TransferService) cleanupCloudStaging(ctx context.Context, download models.DownloadTask, extras []downloadpkg.File) (int, error) {
+	boundary, err := s.prepareCloudStagingCleanup(ctx, download)
+	if err != nil || boundary.packageMissing {
+		return 0, err
+	}
+	return cleanupCloudStagingItems(ctx, boundary, extras)
+}
+
+func cleanupCloudStagingItems(ctx context.Context, boundary cloudStagingCleanupBoundary, extras []downloadpkg.File) (int, error) {
+	driver, mutations, proof := boundary.driver, boundary.mutations, boundary.proof
+	packageRootID := boundary.packageRoot.ID
 	byParent := make(map[string][]downloadpkg.File)
 	for _, file := range extras {
 		itemID, parentID := strings.TrimSpace(file.ProviderItemID), strings.TrimSpace(file.ProviderParentID)
@@ -376,6 +463,53 @@ func (s *TransferService) cleanupCloudStaging(ctx context.Context, download mode
 		}
 	}
 	return removed, nil
+}
+
+func cleanupEmptyCloudStagingPackage(ctx context.Context, boundary cloudStagingCleanupBoundary) (int, error) {
+	items, err := listCloudDirectory(ctx, boundary.driver, boundary.packageRoot.ID)
+	if err != nil {
+		if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
+			return 0, nil
+		}
+		return 0, transferStagingCleanupFailure("download_staging_package_list_failed", err)
+	}
+	if len(items) != 0 {
+		return 0, nil
+	}
+	// The package ID was proven below the immutable Storage/listener boundary.
+	// Re-read the package immediately after the empty listing so moving or
+	// replacing that exact claimed directory fails before recursive recycle.
+	current, err := boundary.driver.Stat(ctx, boundary.packageRoot.ID)
+	if err != nil {
+		if code, _ := cloudpkg.ErrorInfo(err); code == cloudpkg.CodeNotFound {
+			return 0, nil
+		}
+		return 0, transferStagingCleanupFailure("download_staging_package_boundary_unavailable", err)
+	}
+	if current.ID != boundary.packageRoot.ID || !current.IsDir || current.ParentID != boundary.packageRoot.ParentID {
+		return 0, transferStagingCleanupFailure("download_staging_package_boundary_invalid", errors.New("cloud staging package boundary changed"))
+	}
+	mutationErr := boundary.mutations.Recycle(ctx, boundary.packageRoot.ID)
+	after, reconcileErr := boundary.driver.Stat(ctx, boundary.packageRoot.ID)
+	if reconcileErr != nil {
+		if code, _ := cloudpkg.ErrorInfo(reconcileErr); code == cloudpkg.CodeNotFound {
+			// The root existed at the immediately preceding proof and is now gone.
+			// Count this convergence once even if the provider acknowledgement was
+			// ambiguous; later retries see the missing root and add nothing.
+			return 1, nil
+		}
+		if mutationErr != nil {
+			return 0, transferStagingCleanupFailure("download_staging_package_recycle_failed", mutationErr)
+		}
+		return 0, transferStagingCleanupFailure("download_staging_package_reconcile_failed", reconcileErr)
+	}
+	if mutationErr != nil {
+		return 0, transferStagingCleanupFailure("download_staging_package_recycle_failed", mutationErr)
+	}
+	if after.ID != boundary.packageRoot.ID || !after.IsDir {
+		return 0, transferStagingCleanupFailure("download_staging_package_reconcile_failed", errors.New("cloud staging package reconcile identity changed"))
+	}
+	return 0, transferStagingCleanupFailure("download_staging_package_reconcile_failed", errors.New("cloud staging package still exists after recycle"))
 }
 
 func (s *TransferService) persistTransferCleanupSuccess(taskID string, removed int) error {

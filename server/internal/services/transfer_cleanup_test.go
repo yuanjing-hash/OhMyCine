@@ -16,6 +16,70 @@ import (
 	downloadpkg "github.com/yuanjing-hash/ohmycine/server/pkg/downloader"
 )
 
+func configurePan115CleanupPackage(t *testing.T, fixture *cloudTransferFixture, withListener bool) {
+	t.Helper()
+	stagingRootID := "cleanup-storage-root"
+	packageParentID := stagingRootID
+	fixture.driver.items[stagingRootID] = cloudpkg.Item{ID: stagingRootID, ParentID: "0", Name: "staging", IsDir: true}
+	listenerRootID := ""
+	if withListener {
+		listenerRootID = "cleanup-listener-root"
+		packageParentID = listenerRootID
+		fixture.driver.items[listenerRootID] = cloudpkg.Item{ID: listenerRootID, ParentID: stagingRootID, Name: "listener", IsDir: true}
+	}
+	packageRoot := fixture.driver.items[fixture.download.ProviderOutputID]
+	packageRoot.ParentID = packageParentID
+	fixture.driver.items[packageRoot.ID] = packageRoot
+	fixture.download.StagingProviderDirectoryID = listenerRootID
+	if err := fixture.queue.db.Model(&models.Storage{}).Where("id = ?", *fixture.download.StagingStorageID).Updates(map[string]any{"root_path": stagingRootID, "root_path_normalized": "pan115:" + stagingRootID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Update("staging_provider_directory_id", listenerRootID).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func markPan115TransferCompleted(t *testing.T, fixture cloudTransferFixture, task *models.TransferTask) {
+	t.Helper()
+	task.Phase = models.TransferTaskStatusCompleted
+	if err := fixture.queue.db.Model(&models.TransferTask{}).Where("id = ?", task.ID).Update("phase", models.TransferTaskStatusCompleted).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type cleanupReconcileFailureDriver struct {
+	*fakeMutationCloudDriver
+	failAfterRecycleID string
+}
+
+func (d *cleanupReconcileFailureDriver) Recycle(ctx context.Context, itemID string) error {
+	err := d.fakeMutationCloudDriver.Recycle(ctx, itemID)
+	if err == nil && itemID == d.failAfterRecycleID {
+		d.statFailID = itemID
+	}
+	return err
+}
+
+func enqueueCompletedPan115CleanupTask(t *testing.T, fixture cloudTransferFixture) models.TransferTask {
+	t.Helper()
+	if err := fixture.service.EnqueuePackage(fixture.download, fixture.manifest, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	markPan115TransferCompleted(t, fixture, &task)
+	return task
+}
+
+func movePan115SelectedMediaOutOfPackage(t *testing.T, fixture cloudTransferFixture) {
+	t.Helper()
+	item := fixture.driver.items[fixture.sourceID]
+	item.ParentID = "library-root"
+	fixture.driver.items[item.ID] = item
+}
+
 func TestTransferCleanupDeletesOnlyClearlyNonMediaLocalManifestFiles(t *testing.T) {
 	queue, _, download, selectedPath, _ := transferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
 	service := NewTransferService(queue.db, queue.audit, queue, zerolog.Nop())
@@ -209,6 +273,7 @@ func TestTransferCleanupRetriesChangedLocalFileAndAccumulatesCount(t *testing.T)
 
 func TestTransferCleanupRecyclesOnlyExactPan115Extras(t *testing.T) {
 	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	configurePan115CleanupPackage(t, &fixture, true)
 	fixture.driver.items["advertisement"] = cloudItem("advertisement", "source-root", "promo.txt", 4, "AD-SHA1")
 	selected := fixture.manifest
 	source := selected
@@ -220,6 +285,7 @@ func TestTransferCleanupRecyclesOnlyExactPan115Extras(t *testing.T) {
 	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
 		t.Fatal(err)
 	}
+	markPan115TransferCompleted(t, fixture, &task)
 	removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
 	if err != nil || removed != 1 {
 		t.Fatalf("removed=%d err=%v", removed, err)
@@ -237,6 +303,7 @@ func TestTransferCleanupRecyclesOnlyExactPan115Extras(t *testing.T) {
 
 func TestTransferCleanupPan115BatchesByProvenSourceParent(t *testing.T) {
 	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	configurePan115CleanupPackage(t, &fixture, true)
 	extras := make([]downloadpkg.File, 0, 10)
 	for parentIndex := 0; parentIndex < 4; parentIndex++ {
 		parentID := "cleanup-parent-" + strconv.Itoa(parentIndex)
@@ -255,13 +322,16 @@ func TestTransferCleanupPan115BatchesByProvenSourceParent(t *testing.T) {
 	if fixture.driver.recycleBatchCalls != 4 {
 		t.Fatalf("recycle batch calls=%d want=4", fixture.driver.recycleBatchCalls)
 	}
-	if fixture.driver.statCalls > 5 {
+	// One Storage root, one listener root, one package root and four unique
+	// source parents; never one Stat per item.
+	if fixture.driver.statCalls > 7 {
 		t.Fatalf("cleanup boundary proof regressed to per-item stats: %d", fixture.driver.statCalls)
 	}
 }
 
 func TestTransferCleanupPan115RetainsProtectedManifestItems(t *testing.T) {
 	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	configurePan115CleanupPackage(t, &fixture, true)
 	fixture.driver.items["alternate-video"] = cloudItem("alternate-video", "source-root", "alternate.mkv", 4, "VIDEO-SHA1")
 	fixture.driver.items["unmatched-subtitle"] = cloudItem("unmatched-subtitle", "source-root", "subtitle.vtt", 4, "SUB-SHA1")
 	fixture.driver.items["junk"] = cloudItem("junk", "source-root", "tracker.txt", 4, "JUNK-SHA1")
@@ -279,6 +349,7 @@ func TestTransferCleanupPan115RetainsProtectedManifestItems(t *testing.T) {
 	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
 		t.Fatal(err)
 	}
+	markPan115TransferCompleted(t, fixture, &task)
 	removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
 	if err != nil || removed != 1 {
 		t.Fatalf("removed=%d err=%v", removed, err)
@@ -295,6 +366,7 @@ func TestTransferCleanupPan115RetainsProtectedManifestItems(t *testing.T) {
 
 func TestTransferCleanupPan115RequiresExactPackageRoot(t *testing.T) {
 	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	configurePan115CleanupPackage(t, &fixture, true)
 	fixture.driver.items["other-package"] = cloudItem("other-package", "0", "other", 0, "")
 	fixture.driver.items["outside-junk"] = cloudItem("outside-junk", "other-package", "tracker.txt", 4, "JUNK-SHA1")
 	selected := fixture.manifest
@@ -307,6 +379,7 @@ func TestTransferCleanupPan115RequiresExactPackageRoot(t *testing.T) {
 	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
 		t.Fatal(err)
 	}
+	markPan115TransferCompleted(t, fixture, &task)
 	if removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download); err == nil || removed != 0 {
 		t.Fatalf("outside-package cleanup removed=%d err=%v", removed, err)
 	}
@@ -317,6 +390,181 @@ func TestTransferCleanupPan115RequiresExactPackageRoot(t *testing.T) {
 	if removed, err := fixture.service.cleanupCloudStaging(context.Background(), fixture.download, []downloadpkg.File{{RelativePath: "tracker.txt", Size: 4, ProviderItemID: "outside-junk"}}); err == nil || removed != 0 {
 		t.Fatalf("missing package root cleanup removed=%d err=%v", removed, err)
 	}
+}
+
+func TestTransferCleanupPan115RecyclesEmptyAdoptedPackageWithNoExtras(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	configurePan115CleanupPackage(t, &fixture, true)
+	movePan115SelectedMediaOutOfPackage(t, fixture)
+	task := enqueueCompletedPan115CleanupTask(t, fixture)
+
+	removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
+	if err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	if len(fixture.driver.recycled) != 1 || fixture.driver.recycled[0] != fixture.download.ProviderOutputID {
+		t.Fatalf("recycled=%v", fixture.driver.recycled)
+	}
+	for _, protectedID := range []string{"cleanup-storage-root", "cleanup-listener-root"} {
+		if _, exists := fixture.driver.items[protectedID]; !exists {
+			t.Fatalf("protected root %q was recycled", protectedID)
+		}
+	}
+	if fixture.driver.listCalls != 1 || fixture.driver.statCalls < 5 {
+		t.Fatalf("empty-package proof/list/reconcile calls stat=%d list=%d", fixture.driver.statCalls, fixture.driver.listCalls)
+	}
+	if err := fixture.queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupCompleted || task.CleanupRemoved != 1 || task.CleanupErrorCode != "" {
+		t.Fatalf("task=%+v err=%v", task, err)
+	}
+}
+
+func TestTransferCleanupPan115KeepsNonEmptyAndConvergesMissingPackage(t *testing.T) {
+	t.Run("non-empty", func(t *testing.T) {
+		fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+		configurePan115CleanupPackage(t, &fixture, true)
+		task := enqueueCompletedPan115CleanupTask(t, fixture)
+		removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
+		if err != nil || removed != 0 {
+			t.Fatalf("removed=%d err=%v", removed, err)
+		}
+		if len(fixture.driver.recycled) != 0 {
+			t.Fatalf("non-empty package recycled=%v", fixture.driver.recycled)
+		}
+		if _, exists := fixture.driver.items[fixture.download.ProviderOutputID]; !exists {
+			t.Fatal("non-empty package root disappeared")
+		}
+	})
+
+	t.Run("already-missing", func(t *testing.T) {
+		fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+		configurePan115CleanupPackage(t, &fixture, true)
+		delete(fixture.driver.items, fixture.sourceID)
+		delete(fixture.driver.items, fixture.download.ProviderOutputID)
+		task := enqueueCompletedPan115CleanupTask(t, fixture)
+		removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
+		if err != nil || removed != 0 {
+			t.Fatalf("removed=%d err=%v", removed, err)
+		}
+		if len(fixture.driver.recycled) != 0 {
+			t.Fatalf("missing package recycled again=%v", fixture.driver.recycled)
+		}
+		if err := fixture.queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupCompleted || task.CleanupRemoved != 0 {
+			t.Fatalf("task=%+v err=%v", task, err)
+		}
+	})
+}
+
+func TestTransferCleanupPan115RejectsProtectedAndOutsidePackageRoots(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *cloudTransferFixture)
+	}{
+		{name: "storage root", setup: func(t *testing.T, fixture *cloudTransferFixture) {
+			movePan115SelectedMediaOutOfPackage(t, *fixture)
+			if err := fixture.queue.db.Model(&models.Storage{}).Where("id = ?", *fixture.download.StagingStorageID).Updates(map[string]any{"root_path": fixture.download.ProviderOutputID, "root_path_normalized": "pan115:" + fixture.download.ProviderOutputID}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "listener root", setup: func(t *testing.T, fixture *cloudTransferFixture) {
+			configurePan115CleanupPackage(t, fixture, true)
+			movePan115SelectedMediaOutOfPackage(t, *fixture)
+			fixture.download.StagingProviderDirectoryID = fixture.download.ProviderOutputID
+		}},
+		{name: "outside listener", setup: func(t *testing.T, fixture *cloudTransferFixture) {
+			configurePan115CleanupPackage(t, fixture, true)
+			movePan115SelectedMediaOutOfPackage(t, *fixture)
+			root := fixture.driver.items[fixture.download.ProviderOutputID]
+			root.ParentID = "0"
+			fixture.driver.items[root.ID] = root
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+			test.setup(t, &fixture)
+			if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Update("staging_provider_directory_id", fixture.download.StagingProviderDirectoryID).Error; err != nil {
+				t.Fatal(err)
+			}
+			task := enqueueCompletedPan115CleanupTask(t, fixture)
+			removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
+			if err == nil || removed != 0 || transferStagingCleanupCode(err) != "download_staging_package_boundary_invalid" {
+				t.Fatalf("removed=%d code=%s err=%v", removed, transferStagingCleanupCode(err), err)
+			}
+			if len(fixture.driver.recycled) != 0 {
+				t.Fatalf("unsafe root recycled=%v", fixture.driver.recycled)
+			}
+			if err := fixture.queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupFailed || task.CleanupErrorCode != "download_staging_package_boundary_invalid" || task.CleanupRemoved != 0 {
+				t.Fatalf("task=%+v err=%v", task, err)
+			}
+		})
+	}
+}
+
+func TestTransferCleanupPan115DoesNotRecyclePackageBeforeTransferCompletion(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+	configurePan115CleanupPackage(t, &fixture, true)
+	movePan115SelectedMediaOutOfPackage(t, fixture)
+	if err := fixture.service.EnqueuePackage(fixture.download, fixture.manifest, fixture.manifest); err != nil {
+		t.Fatal(err)
+	}
+	var task models.TransferTask
+	if err := fixture.queue.db.Where("download_task_id = ?", fixture.download.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download)
+	if err == nil || removed != 0 || transferStagingCleanupCode(err) != "download_staging_package_not_completed" {
+		t.Fatalf("removed=%d code=%s err=%v", removed, transferStagingCleanupCode(err), err)
+	}
+	if len(fixture.driver.recycled) != 0 {
+		t.Fatalf("incomplete transfer recycled=%v", fixture.driver.recycled)
+	}
+}
+
+func TestTransferCleanupPan115RetriesRecycleAndReconcileFailures(t *testing.T) {
+	t.Run("recycle failure", func(t *testing.T) {
+		fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+		configurePan115CleanupPackage(t, &fixture, true)
+		movePan115SelectedMediaOutOfPackage(t, fixture)
+		task := enqueueCompletedPan115CleanupTask(t, fixture)
+		fixture.driver.recycleFailID = fixture.download.ProviderOutputID
+
+		if removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download); err == nil || removed != 0 || transferStagingCleanupCode(err) != "download_staging_package_recycle_failed" {
+			t.Fatalf("first removed=%d code=%s err=%v", removed, transferStagingCleanupCode(err), err)
+		}
+		fixture.driver.recycleFailID = ""
+		if removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download); err != nil || removed != 1 {
+			t.Fatalf("retry removed=%d err=%v", removed, err)
+		}
+		if len(fixture.driver.recycled) != 1 {
+			t.Fatalf("recycled=%v", fixture.driver.recycled)
+		}
+		if err := fixture.queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupCompleted || task.CleanupRemoved != 1 {
+			t.Fatalf("task=%+v err=%v", task, err)
+		}
+	})
+
+	t.Run("reconcile failure after recycle", func(t *testing.T) {
+		fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictOverwrite, false)
+		configurePan115CleanupPackage(t, &fixture, true)
+		movePan115SelectedMediaOutOfPackage(t, fixture)
+		task := enqueueCompletedPan115CleanupTask(t, fixture)
+		wrapped := &cleanupReconcileFailureDriver{fakeMutationCloudDriver: fixture.driver, failAfterRecycleID: fixture.download.ProviderOutputID}
+		fixture.service.connections.drivers[fixture.connection] = wrapped
+
+		if removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download); err == nil || removed != 0 || transferStagingCleanupCode(err) != "download_staging_package_reconcile_failed" {
+			t.Fatalf("first removed=%d code=%s err=%v", removed, transferStagingCleanupCode(err), err)
+		}
+		fixture.driver.statFailID = ""
+		if removed, err := fixture.service.cleanupTransferStaging(context.Background(), task, fixture.download); err != nil || removed != 0 {
+			t.Fatalf("retry removed=%d err=%v", removed, err)
+		}
+		if len(fixture.driver.recycled) != 1 {
+			t.Fatalf("package recycle repeated=%v", fixture.driver.recycled)
+		}
+		if err := fixture.queue.db.First(&task, "id = ?", task.ID).Error; err != nil || task.CleanupStatus != models.TransferCleanupCompleted || task.CleanupRemoved != 0 {
+			t.Fatalf("task=%+v err=%v", task, err)
+		}
+	})
 }
 
 func TestTransferCleanupDefersQBittorrentCopyUntilSeedingCleanup(t *testing.T) {

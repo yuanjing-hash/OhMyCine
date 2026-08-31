@@ -276,14 +276,15 @@ func newCloudTransferFixture(t *testing.T, mode, policy string, conflict bool) c
 	driver := newFakeMutationCloudDriver()
 	for _, item := range []cloudpkg.Item{
 		{ID: "0", Name: "root", IsDir: true},
-		{ID: "source-root", ParentID: "0", Name: "downloads", IsDir: true},
+		{ID: "source-storage-root", ParentID: "0", Name: "downloads", IsDir: true},
+		{ID: "source-root", ParentID: "source-storage-root", Name: "Movie.2024", IsDir: true},
 		{ID: "target-storage-root", ParentID: "0", Name: "media", IsDir: true},
 		{ID: "library-root", ParentID: "target-storage-root", Name: "library", IsDir: true},
 		{ID: "source-video", ParentID: "source-root", Name: "Movie.2024.mkv", Size: minimumAutomaticTransferVideoBytes, SHA1: "VIDEO-SHA1"},
 	} {
 		driver.items[item.ID] = item
 	}
-	sourceStorage := models.Storage{Name: "115 Downloads", NameNormalized: "115-downloads-transfer", Type: models.StorageTypePan115, RootPath: "source-root", RootDisplayPath: "/downloads", RootPathNormalized: "pan115:source-root", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`, CreatedAt: now, UpdatedAt: now}
+	sourceStorage := models.Storage{Name: "115 Downloads", NameNormalized: "115-downloads-transfer", Type: models.StorageTypePan115, RootPath: "source-storage-root", RootDisplayPath: "/downloads", RootPathNormalized: "pan115:source-storage-root", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`, CreatedAt: now, UpdatedAt: now}
 	targetStorage := models.Storage{Name: "115 Media", NameNormalized: "115-media-transfer", Type: models.StorageTypePan115, RootPath: "target-storage-root", RootDisplayPath: "/media", RootPathNormalized: "pan115:target-storage-root", ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`, CreatedAt: now, UpdatedAt: now}
 	if err := queue.db.Create(&sourceStorage).Error; err != nil {
 		t.Fatal(err)
@@ -787,8 +788,8 @@ func TestCloudTransferRenameKeepsExistingItemAndUsesOneGroupSuffix(t *testing.T)
 	if caseCollision.Name != "Movie (2024) (1).ZH-CN.default.2.vtt" || caseCollision.ParentID != "movie-dir" {
 		t.Fatalf("renamed colliding sidecar=%+v", caseCollision)
 	}
-	if len(fixture.driver.recycled) != 0 {
-		t.Fatalf("rename policy recycled provider items: %v", fixture.driver.recycled)
+	if len(fixture.driver.recycled) != 1 || fixture.driver.recycled[0] != fixture.download.ProviderOutputID {
+		t.Fatalf("rename policy did not recycle only the empty source package: %v", fixture.driver.recycled)
 	}
 }
 
