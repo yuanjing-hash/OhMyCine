@@ -167,6 +167,7 @@ type pan115MediaLibraryBackend struct {
 func (pan115MediaLibraryBackend) StorageType() string { return models.StorageTypePan115 }
 
 func (b pan115MediaLibraryBackend) Scan(ctx context.Context, request MediaLibraryScanRequest) (medialibrary.Result, error) {
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassBackground)
 	if request.Storage.ConnectionID == nil || b.driver == nil {
 		return medialibrary.Result{}, errors.New("provider connection is unavailable")
 	}
@@ -209,7 +210,10 @@ func (l *providerMediaLibraryListener) Run(ctx context.Context, reconcile func(c
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-l.wake:
+		case _, ok := <-l.wake:
+			if !ok {
+				return nil
+			}
 			if debounce == nil {
 				debounce = time.NewTimer(2 * time.Second)
 			} else {

@@ -6,7 +6,7 @@ import { Permissions } from '@/auth/generated-permissions'
 import DirectoryPickerDialog from '@/components/DirectoryPickerDialog.vue'
 import MediaReorganizationDialog from '@/components/MediaReorganizationDialog.vue'
 import MediaLibrarySettingsFields from '@/components/MediaLibrarySettingsFields.vue'
-import { clearDefaultIngestLibrary, draftFromLibrary, emptyMediaLibraryDraft, isActiveLibraryStatus, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, setDefaultIngestLibrary, supportsSidecarUpload, supportsSTRM, type MediaLibraryDraft } from '@/media-libraries'
+import { clearDefaultIngestLibrary, draftFromLibrary, emptyMediaLibraryDraft, isActiveLibraryStatus, isMediaLibraryDraftValid, mediaLibraryDraftFingerprint, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, setDefaultIngestLibrary, supportsSidecarUpload, supportsSTRM, type MediaLibraryDraft } from '@/media-libraries'
 import { mediaCatalogDetailEndpoint, mediaCatalogEndpoint, mediaCatalogPageCount, mediaCatalogPageSizes, mediaCatalogVisibleRange, type MediaCatalogMatchFilter, type MediaCatalogPageSize, type MediaCatalogTypeFilter } from '@/media-catalog'
 import { useAuthStore } from '@/stores/auth'
 import type { ListResponse, MediaCatalogDetail, MediaCatalogItem, MediaCatalogManagedTransfer, MediaClassificationProfileSummary, MediaLibraryDetail, MediaLibraryScanRun, MediaRecognitionSummary, PageResponse, StorageSummary, TMDBCandidate } from '@/types/api'
@@ -50,7 +50,8 @@ const refreshing = ref(false)
 const saving = ref(false)
 const error = ref('')
 const notice = ref('')
-const editDirty = ref(false)
+const editBaseline = ref('')
+const editSaveFeedback = ref<{ state: 'idle' | 'saving' | 'success' | 'error'; message: string }>({ state: 'idle', message: '' })
 const draggedLibraryID = ref<number | null>(null)
 let pollTimer: number | undefined
 let runsRequest: AbortController | null = null
@@ -62,6 +63,9 @@ const selectedStorage = computed(() => storages.value.find(item => item.id === s
 const activeDraft = computed(() => pickerMode.value === 'create' ? createDraft.value : editDraft.value)
 const createStorage = computed(() => storages.value.find(item => item.id === createDraft.value.storage_id))
 const editStorage = computed(() => storages.value.find(item => item.id === editDraft.value?.storage_id))
+const editFingerprint = computed(() => editDraft.value ? mediaLibraryDraftFingerprint(editDraft.value, editStorage.value) : '')
+const editDirty = computed(() => Boolean(editDraft.value && editBaseline.value && editFingerprint.value !== editBaseline.value))
+const editFormValid = computed(() => Boolean(editDraft.value && isMediaLibraryDraftValid(editDraft.value, editStorage.value)))
 const selectedSourceDisplay = computed(() => selected.value ? mediaLibrarySourceDisplayPath(selected.value, storages.value.find(item => item.id === selected.value?.storage_id)) : '')
 const shouldPoll = computed(() => activeTab.value !== 'settings' && !editDirty.value && (libraries.value.some(item => isActiveLibraryStatus(item.status) || (item.enabled && item.status === 'initialization_failed')) || runs.value.some(run => run.status === 'running')))
 const catalogPages = computed(() => mediaCatalogPageCount(catalogTotal.value, catalogPageSize.value))
@@ -292,7 +296,7 @@ function openPicker(mode: 'create' | 'edit', target: PickerTarget) {
 function directorySelected(value: { path: string; token: string }) {
   const draft = activeDraft.value
   if (!draft) return
-  if (pickerTarget.value === 'source') { draft.source_path = value.path; draft.relative_root_token = value.token; if (pickerMode.value === 'edit') editDirty.value = true }
+  if (pickerTarget.value === 'source') { draft.source_path = value.path; draft.relative_root_token = value.token }
   else { draft.strm_local_path = value.path; draft.strm_local_root_token = value.token }
   pickerOpen.value = false
 }
@@ -321,12 +325,23 @@ async function createLibrary() {
 async function saveLibrary() {
   if (!selected.value || !editDraft.value) return
   const id = selected.value.id
-  await run(async () => {
-    await api<MediaLibraryDetail>(`/api/v1/media-libraries/${id}`, { method: 'PUT', body: JSON.stringify(payloadFromDraft(editDraft.value!, editStorage.value)) })
-	editDirty.value = false
+  saving.value = true
+  error.value = ''
+  notice.value = ''
+  editSaveFeedback.value = { state: 'saving', message: '正在保存媒体库配置…' }
+  try {
+    const saved = await api<MediaLibraryDetail>(`/api/v1/media-libraries/${id}`, { method: 'PUT', body: JSON.stringify(payloadFromDraft(editDraft.value, editStorage.value)) })
+    libraries.value = libraries.value.map(item => item.id === saved.id ? saved : item)
+    replaceEditDraft(saved)
+    editSaveFeedback.value = { state: 'success', message: '保存成功，新的媒体库配置已生效。' }
     notice.value = '媒体库配置已保存。启停、扫描计划和监听状态将按新配置生效。'
-    await load({ preferred: id })
-  })
+    try { await loadActivity(id) } catch (reason) { error.value = `配置已经保存，但最新状态读取失败：${message(reason)}` }
+    schedulePoll()
+  } catch (reason) {
+    const failure = message(reason)
+    error.value = failure
+    editSaveFeedback.value = { state: 'error', message: `保存失败：${failure}` }
+  } finally { saving.value = false }
 }
 
 async function scanNow() {
@@ -370,16 +385,30 @@ async function run(action: () => Promise<void>) { saving.value = true; error.val
 
 watch(selectedID, async id => {
 	runs.value = []; resetCatalog(); activeTab.value = 'status'
-  editDirty.value = false
-  if (id) { const library = libraries.value.find(item => item.id === id); editDraft.value = library ? draftFromLibrary(library, storages.value.find(item => item.id === library.storage_id)) : null; try { await loadActivity(id) } catch (reason) { error.value = message(reason) } }
-  else editDraft.value = null
+  editSaveFeedback.value = { state: 'idle', message: '' }
+  if (id) { const library = libraries.value.find(item => item.id === id); if (library) replaceEditDraft(library); else clearEditDraft(); try { await loadActivity(id) } catch (reason) { error.value = message(reason) } }
+  else clearEditDraft()
 })
-watch(selected, library => { if (library && activeTab.value !== 'settings' && !editDirty.value) editDraft.value = draftFromLibrary(library, storages.value.find(item => item.id === library.storage_id)) })
+watch(selected, library => { if (library && !editDirty.value && !saving.value) replaceEditDraft(library) })
+watch(editFingerprint, fingerprint => {
+  if (fingerprint !== editBaseline.value && editSaveFeedback.value.state !== 'saving') editSaveFeedback.value = { state: 'idle', message: '' }
+})
 watch(activeTab, tab => { if (tab === 'entries' && selectedID.value) void loadCatalog(selectedID.value) })
 watch(() => createDraft.value.storage_id, () => { resetSourceSelection(createDraft.value, createStorage.value); normalizeSTRM(createDraft.value, createStorage.value) })
 watch(() => editDraft.value?.storage_id, () => { if (editDraft.value && editDraft.value.storage_id !== selected.value?.storage_id) resetSourceSelection(editDraft.value, editStorage.value); if (editDraft.value) normalizeSTRM(editDraft.value, editStorage.value) })
 onMounted(() => void load())
 onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); resetCatalog() })
+
+function replaceEditDraft(library: MediaLibraryDetail) {
+  const draft = draftFromLibrary(library, storages.value.find(item => item.id === library.storage_id))
+  editDraft.value = draft
+  editBaseline.value = mediaLibraryDraftFingerprint(draft, storages.value.find(item => item.id === library.storage_id))
+}
+
+function clearEditDraft() {
+  editDraft.value = null
+  editBaseline.value = ''
+}
 </script>
 
 <template>
@@ -513,7 +542,7 @@ onBeforeUnmount(() => { window.clearTimeout(pollTimer); runsRequest?.abort(); re
             <div class="flex items-center gap-2"><button type="button" class="btn-secondary" :disabled="catalogLoading || catalogPage <= 1" @click="changeCatalogPage(catalogPage - 1)">上一页</button><span>第 {{ catalogPage }} / {{ catalogPages }} 页</span><button type="button" class="btn-secondary" :disabled="catalogLoading || catalogPage >= catalogPages" @click="changeCatalogPage(catalogPage + 1)">下一页</button></div>
           </footer>
         </section>
-        <form v-else-if="editDraft" id="library-panel-settings" class="panel mt-4" role="tabpanel" aria-labelledby="library-tab-settings" @submit.prevent="saveLibrary"><div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"><div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" /></div><div><label class="label">来源 Storage</label><select v-model.number="editDraft.storage_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="storage in storages" :key="storage.id" :value="storage.id">{{ storage.name }}</option></select></div><div><label class="label">分类 Profile</label><select v-model.number="editDraft.profile_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · r{{ profile.revision }}</option></select></div><div class="md:col-span-2 xl:col-span-3"><label class="label">来源目录</label><div class="flex gap-2"><input class="input font-mono" :value="editDraft.source_path" readonly /><button v-if="editStorage && auth.can(Permissions.MediaLibrariesUpdate) && auth.can(Permissions.StoragesBrowse)" type="button" class="btn-secondary" @click="openPicker('edit', 'source')">重新选择</button></div><p v-if="editDraft.source_path" class="text-subtle mb-0 mt-2 text-xs">实际可读位置如上；数据库保存 Storage 相对根 {{ editDraft.relative_root || '/' }}，其中 / 表示该 Storage 根目录。</p><p v-else class="semantic-warning-text mb-0 mt-2 text-xs">更换 Storage 后必须通过目录选择器重新选择其范围内的来源根。</p></div><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />启用媒体库</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.recursive" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />递归扫描</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.metadata_artifacts_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />生成 NFO / 图片元数据</label><template v-if="supportsSTRM(editStorage)"><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.strm_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @change="normalizeSTRM(editDraft!, editStorage)" />启用 signed 302 / STRM</label><div v-if="editDraft.strm_enabled" class="md:col-span-2 xl:col-span-3"><label class="label">本地 STRM 输出目录</label><div class="flex gap-2"><input class="input" :value="editDraft.strm_local_path" readonly required /><button type="button" class="btn-secondary" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @click="openPicker('edit', 'strm')">重新选择</button></div></div></template><label v-if="supportsSidecarUpload(editStorage) && !editDraft.strm_enabled" class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.upload_sidecars" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate) || !editDraft.metadata_artifacts_enabled" />将 NFO / JPG 上传到云端媒体旁</label></div><MediaLibrarySettingsFields v-model="editDraft" class="mt-5" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" :storage-type="editStorage?.type" /><div class="mt-5 flex flex-wrap gap-2"><button v-if="auth.can(Permissions.MediaLibrariesUpdate)" class="btn-primary" :disabled="saving || !editDraft.source_path || (editDraft.strm_enabled && !editDraft.strm_local_path)">保存配置</button><RouterLink class="btn-secondary" to="/system/media-rules">管理分类规则</RouterLink></div></form>
+        <form v-else-if="editDraft" id="library-panel-settings" class="panel mt-4" role="tabpanel" aria-labelledby="library-tab-settings" @submit.prevent="saveLibrary"><div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"><div><label class="label">名称</label><input v-model="editDraft.name" class="input" required maxlength="128" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" /></div><div><label class="label">来源 Storage</label><select v-model.number="editDraft.storage_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="storage in storages" :key="storage.id" :value="storage.id">{{ storage.name }}</option></select></div><div><label class="label">分类 Profile</label><select v-model.number="editDraft.profile_id" class="input" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)"><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · r{{ profile.revision }}</option></select></div><div class="md:col-span-2 xl:col-span-3"><label class="label">来源目录</label><div class="flex gap-2"><input class="input font-mono" :value="editDraft.source_path" readonly /><button v-if="editStorage && auth.can(Permissions.MediaLibrariesUpdate) && auth.can(Permissions.StoragesBrowse)" type="button" class="btn-secondary" @click="openPicker('edit', 'source')">重新选择</button></div><p v-if="editDraft.source_path" class="text-subtle mb-0 mt-2 text-xs">实际可读位置如上；数据库保存 Storage 相对根 {{ editDraft.relative_root || '/' }}，其中 / 表示该 Storage 根目录。</p><p v-else class="semantic-warning-text mb-0 mt-2 text-xs">更换 Storage 后必须通过目录选择器重新选择其范围内的来源根。</p></div><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />启用媒体库</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.recursive" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />递归扫描</label><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.metadata_artifacts_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" />生成 NFO / 图片元数据</label><template v-if="supportsSTRM(editStorage)"><label class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.strm_enabled" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @change="normalizeSTRM(editDraft!, editStorage)" />启用 signed 302 / STRM</label><div v-if="editDraft.strm_enabled" class="md:col-span-2 xl:col-span-3"><label class="label">本地 STRM 输出目录</label><div class="flex gap-2"><input class="input" :value="editDraft.strm_local_path" readonly required /><button type="button" class="btn-secondary" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" @click="openPicker('edit', 'strm')">重新选择</button></div></div></template><label v-if="supportsSidecarUpload(editStorage) && !editDraft.strm_enabled" class="text-muted flex items-center gap-3 text-sm"><input v-model="editDraft.upload_sidecars" type="checkbox" :disabled="!auth.can(Permissions.MediaLibrariesUpdate) || !editDraft.metadata_artifacts_enabled" />将 NFO / JPG 上传到云端媒体旁</label></div><MediaLibrarySettingsFields v-model="editDraft" class="mt-5" :disabled="!auth.can(Permissions.MediaLibrariesUpdate)" :storage-type="editStorage?.type" /><div class="mt-5 flex flex-wrap items-center gap-2"><button v-if="auth.can(Permissions.MediaLibrariesUpdate)" class="btn-primary" :disabled="saving || !editDirty || !editFormValid">{{ saving ? '正在保存…' : '保存配置' }}</button><RouterLink class="btn-secondary" to="/system/media-rules">管理分类规则</RouterLink><p v-if="editSaveFeedback.message" class="mb-0 basis-full text-sm" :class="editSaveFeedback.state === 'error' ? 'text-[var(--danger)]' : editSaveFeedback.state === 'success' ? 'semantic-success-text' : 'text-muted'" aria-live="polite">{{ editSaveFeedback.message }}</p></div></form>
       </main>
     </div>
 

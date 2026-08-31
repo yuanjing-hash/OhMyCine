@@ -36,6 +36,25 @@ type cloudTransferState struct {
 	BatchIntent     *cloudTransferBatchIntent         `json:"batch_intent,omitempty"`
 }
 
+type cloudDirectoryAttemptCache struct {
+	basePath string
+	resolver cloudpkg.DirectoryPathResolver
+	listings map[string][]cloudpkg.Item
+}
+
+type cloudDirectoryAttemptContextKey struct{}
+
+func withCloudDirectoryAttempt(ctx context.Context, driver cloudpkg.Driver, basePath string) context.Context {
+	cache := &cloudDirectoryAttemptCache{basePath: basePath, listings: map[string][]cloudpkg.Item{}}
+	cache.resolver, _ = driver.(cloudpkg.DirectoryPathResolver)
+	return context.WithValue(ctx, cloudDirectoryAttemptContextKey{}, cache)
+}
+
+func cloudDirectoryAttemptFromContext(ctx context.Context) *cloudDirectoryAttemptCache {
+	cache, _ := ctx.Value(cloudDirectoryAttemptContextKey{}).(*cloudDirectoryAttemptCache)
+	return cache
+}
+
 type materializedItemState struct {
 	RelativePath string `json:"relative_path"`
 	Size         int64  `json:"size"`
@@ -87,6 +106,7 @@ func cloudTransferError(code string, retryable bool, cause error) error {
 func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntime, task models.TransferTask, download models.DownloadTask, manifest downloadpkg.Manifest, started time.Time) WorkerResult {
 	timings := cloudpkg.NewOperationTimingCollector()
 	ctx = cloudpkg.WithOperationTimingCollector(ctx, timings)
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassPipeline)
 	if w.service.connections == nil || download.TargetConnectionID == nil || download.TargetStorageID == nil || download.StagingStorageID == nil || strings.TrimSpace(download.TargetProviderRootID) == "" {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_snapshot_invalid", false, nil))
 	}
@@ -117,10 +137,12 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 	if sourceStorage.Type != models.StorageTypePan115 || targetStorage.Type != models.StorageTypePan115 || sourceStorage.ConnectionID == nil || targetStorage.ConnectionID == nil || *sourceStorage.ConnectionID != *download.TargetConnectionID || *targetStorage.ConnectionID != *download.TargetConnectionID {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, nil))
 	}
-	targetRoot, err := providerItemWithinRoot(ctx, driver, download.TargetProviderRootID, targetStorage.RootPath)
+	targetBasePath, _ := joinProviderPath(targetStorage.RootDisplayPath, download.TargetRelativeRoot)
+	targetRoot, err := resolveCloudTargetRoot(ctx, driver, targetBasePath, download.TargetProviderRootID, targetStorage.RootPath)
 	if err != nil || !targetRoot.IsDir {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, err))
 	}
+	ctx = withCloudDirectoryAttempt(ctx, driver, targetBasePath)
 
 	targets, err := buildTransferTargets(download, manifest)
 	if err != nil {
@@ -283,6 +305,7 @@ func (w *TransferWorker) runCloudTransfer(ctx context.Context, runtime JobRuntim
 							return w.cloudFailure(task, err)
 						}
 					}
+					invalidateCloudDirectoryListings(ctx, conflict.ParentID)
 				default:
 					return w.cloudFailure(task, cloudTransferError("transfer_conflict_failed", false, nil))
 				}
@@ -573,6 +596,29 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 	if _, ok := validated[relative]; ok && state.Directories[relative] != "" {
 		return state.Directories[relative], nil
 	}
+	if cache := cloudDirectoryAttemptFromContext(ctx); cache != nil && cache.resolver != nil && cache.basePath != "" {
+		providerPath, pathErr := joinProviderPath(cache.basePath, "/"+relative)
+		if pathErr == nil {
+			item, resolveErr := cache.resolver.ResolveDirectory(ctx, providerPath)
+			if resolveErr == nil && item.IsDir {
+				if saved := state.Directories[relative]; saved != "" && saved != item.ID {
+					return "", cloudTransferError("cloud_transfer_boundary_invalid", false, errors.New("cloud directory identity changed"))
+				}
+				state.Directories[relative] = item.ID
+				validated[relative] = struct{}{}
+				if err := w.persistCloudState(task, *state, models.TransferTaskStatusCheckingDirectories, task.ProcessedFiles, nil); err != nil {
+					return "", cloudTransferError("transfer_state_persist_failed", true, err)
+				}
+				return item.ID, nil
+			}
+			if resolveErr != nil {
+				code, _ := cloudpkg.ErrorInfo(resolveErr)
+				if code != cloudpkg.CodeNotFound {
+					return "", resolveErr
+				}
+			}
+		}
+	}
 	if id := state.Directories[relative]; id != "" {
 		item, err := providerItemWithinRoot(ctx, mutations, id, state.Directories["."])
 		if err == nil && item.IsDir {
@@ -587,7 +633,7 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 		return "", err
 	}
 	name := pathpkg.Base(relative)
-	items, err := listCloudTargetDirectory(ctx, mutations, parentID)
+	items, err := listCloudTargetDirectoryCached(ctx, mutations, parentID)
 	if err != nil {
 		return "", err
 	}
@@ -596,6 +642,7 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 		return "", cloudTransferError(cloudpkg.CodeConflict, false, errors.New("cloud directory name is ambiguous"))
 	}
 	var directory cloudpkg.Item
+	createdDirectory := false
 	if len(matches) == 1 {
 		directory = matches[0]
 	} else {
@@ -610,6 +657,17 @@ func (w *TransferWorker) ensureCloudDirectory(ctx context.Context, mutations clo
 				return "", err
 			}
 			directory = matches[0]
+		} else {
+			createdDirectory = true
+		}
+	}
+	if cache := cloudDirectoryAttemptFromContext(ctx); cache != nil {
+		parentItems := cache.listings[parentID]
+		if len(namedCloudItems(parentItems, directory.Name)) == 0 {
+			cache.listings[parentID] = append(parentItems, directory)
+		}
+		if createdDirectory {
+			cache.listings[directory.ID] = []cloudpkg.Item{}
 		}
 	}
 	state.Directories[relative] = directory.ID
@@ -672,7 +730,7 @@ func (w *TransferWorker) cloudConflicts(ctx context.Context, driver cloudpkg.Dri
 		items, ok := listings[parentID]
 		if !ok {
 			var err error
-			items, err = listCloudTargetDirectory(ctx, driver, parentID)
+			items, err = listCloudTargetDirectoryCached(ctx, driver, parentID)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -835,6 +893,7 @@ func recycleCloudConflictBatches(ctx context.Context, mutations cloudpkg.BatchMu
 			}
 			chunk := ids[start:end]
 			callErr := executeCloudBatchMutation(ctx, func() error { return mutations.RecycleMany(ctx, chunk) })
+			invalidateCloudDirectoryListings(ctx, parentID)
 			after, reconcileErr := listCloudTargetDirectory(ctx, driver, parentID)
 			if reconcileErr != nil {
 				if callErr != nil {
@@ -1038,6 +1097,7 @@ func (w *TransferWorker) prestageCloudCopyBatches(ctx context.Context, mutations
 			ids = append(ids, item.SourceID)
 		}
 		callErr := executeCloudBatchMutation(ctx, func() error { return mutations.CopyMany(ctx, ids, state.TempDirectoryID) })
+		invalidateCloudDirectoryListings(ctx, state.TempDirectoryID)
 		remaining, reconcileErr := w.reconcileCloudCopyIntent(ctx, driver, state)
 		if reconcileErr != nil {
 			return reconcileErr
@@ -1178,6 +1238,7 @@ func (w *TransferWorker) executeCloudMoveBatches(ctx context.Context, mutations 
 					return err
 				}
 			}
+			invalidateCloudDirectoryListings(ctx, conflict.ParentID)
 		default:
 			return cloudTransferError("transfer_conflict_failed", false, nil)
 		}
@@ -1268,6 +1329,7 @@ func (w *TransferWorker) executeCloudMoveBatches(ctx context.Context, mutations 
 				ids = append(ids, item.SourceID)
 			}
 			callErr := executeCloudBatchMutation(ctx, func() error { return mutations.MoveMany(ctx, ids, parentID) })
+			invalidateCloudDirectoryListings(ctx, parentID)
 			remaining, reconcileErr := w.reconcileCloudMoveIntent(ctx, mutations, driver, task, state)
 			if reconcileErr != nil {
 				return reconcileErr
@@ -1355,6 +1417,46 @@ func listCloudTargetDirectory(ctx context.Context, driver cloudpkg.Driver, paren
 	return listCloudDirectory(ctx, driver, parentID)
 }
 
+func listCloudTargetDirectoryCached(ctx context.Context, driver cloudpkg.Driver, parentID string) ([]cloudpkg.Item, error) {
+	cache := cloudDirectoryAttemptFromContext(ctx)
+	if cache != nil {
+		if items, ok := cache.listings[parentID]; ok {
+			return items, nil
+		}
+	}
+	items, err := listCloudTargetDirectory(ctx, driver, parentID)
+	if err == nil && cache != nil {
+		cache.listings[parentID] = items
+	}
+	return items, err
+}
+
+func invalidateCloudDirectoryListings(ctx context.Context, parentIDs ...string) {
+	cache := cloudDirectoryAttemptFromContext(ctx)
+	if cache == nil {
+		return
+	}
+	for _, parentID := range parentIDs {
+		if parentID = strings.TrimSpace(parentID); parentID != "" {
+			delete(cache.listings, parentID)
+		}
+	}
+}
+
+func resolveCloudTargetRoot(ctx context.Context, driver cloudpkg.Driver, providerPath, expectedID, storageRootID string) (cloudpkg.Item, error) {
+	if resolver, ok := driver.(cloudpkg.DirectoryPathResolver); ok && strings.TrimSpace(providerPath) != "" {
+		item, err := resolver.ResolveDirectory(ctx, providerPath)
+		if err != nil {
+			return cloudpkg.Item{}, err
+		}
+		if !item.IsDir || strings.TrimSpace(item.ID) != strings.TrimSpace(expectedID) {
+			return cloudpkg.Item{}, errors.New("cloud target root identity changed")
+		}
+		return item, nil
+	}
+	return providerItemWithinRoot(ctx, driver, expectedID, storageRootID)
+}
+
 func executeCloudBatchMutation(ctx context.Context, call func() error) error {
 	started := time.Now()
 	defer func() { cloudpkg.RecordBatchMutation(ctx, time.Since(started)) }()
@@ -1395,6 +1497,7 @@ func (w *TransferWorker) reconcileCloudMoveIntent(ctx context.Context, mutations
 					return nil, err
 				}
 			}
+			invalidateCloudDirectoryListings(ctx, intent.TargetParentID)
 		}
 		state.Items[expected.SourceID] = cloudTransferItemState{SourceID: expected.SourceID, CurrentID: expected.SourceID, TargetParentID: intent.TargetParentID, TargetName: expected.TargetName, Status: "completed"}
 	}
@@ -1409,6 +1512,7 @@ func (w *TransferWorker) executeCloudMove(ctx context.Context, mutations cloudpk
 				return err
 			}
 		}
+		invalidateCloudDirectoryListings(ctx, source.ParentID, targetParentID)
 	}
 	current, err := driver.Stat(ctx, source.ID)
 	if err != nil {
@@ -1424,6 +1528,7 @@ func (w *TransferWorker) executeCloudMove(ctx context.Context, mutations cloudpk
 				return err
 			}
 		}
+		invalidateCloudDirectoryListings(ctx, targetParentID)
 		if err := w.persistCloudState(task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
 			return cloudTransferError("transfer_state_persist_failed", true, err)
 		}
@@ -1493,6 +1598,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 					return err
 				}
 			}
+			invalidateCloudDirectoryListings(ctx, state.TempDirectoryID)
 			if candidate.ID == "" {
 				candidate, count, err = findCloudCopyCandidate(ctx, driver, state.TempDirectoryID, source)
 				if err != nil {
@@ -1524,6 +1630,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 				return err
 			}
 		}
+		invalidateCloudDirectoryListings(ctx, current.ParentID)
 		if err := w.persistCloudState(task, *state, models.TransferTaskStatusMoving, completedCloudItems(*state), nil); err != nil {
 			return cloudTransferError("transfer_state_persist_failed", true, err)
 		}
@@ -1539,6 +1646,7 @@ func (w *TransferWorker) executeCloudCopy(ctx context.Context, mutations cloudpk
 				return err
 			}
 		}
+		invalidateCloudDirectoryListings(ctx, current.ParentID, targetParentID)
 	}
 	itemState.Status = "completed"
 	state.Items[source.ID] = itemState

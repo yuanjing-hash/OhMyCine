@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,22 @@ import (
 	"github.com/yuanjing-hash/ohmycine/server/internal/models"
 	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 )
+
+type resolvingDirectoryDriver struct {
+	*fakeCloudDriver
+	paths        map[string]string
+	resolveCalls int
+}
+
+func (d *resolvingDirectoryDriver) ResolveDirectory(_ context.Context, providerPath string) (cloud.Item, error) {
+	d.resolveCalls++
+	id := d.paths[providerPath]
+	item, ok := d.items[id]
+	if !ok {
+		return cloud.Item{}, cloud.Error(cloud.CodeNotFound, false, errors.New("not found"))
+	}
+	return item, nil
+}
 
 func TestProviderDirectoryTokensBindActorConnectionPurposeAndExpiry(t *testing.T) {
 	driver := &fakeCloudDriver{items: map[string]cloud.Item{"movies": {ID: "movies", ParentID: "0", Name: "电影", IsDir: true}}, children: map[string][]cloud.Item{"0": {{ID: "movies", ParentID: "0", Name: "电影", IsDir: true}, {ID: "video", ParentID: "0", Name: "x.mkv"}}}}
@@ -130,6 +147,51 @@ func TestProviderDirectoryStorageScopeBindsRootAndRejectsMovedDirectory(t *testi
 	clock = clock.Add(11 * time.Minute)
 	if _, err := service.ResolveStorageSelection(context.Background(), actor, first.ID, tv.Items[0].SelectionToken); ErrorCode(err) != CodeDirectoryTokenExpired {
 		t.Fatalf("expired storage token code=%q err=%v", ErrorCode(err), err)
+	}
+}
+
+func TestProviderDirectoryStorageBrowseUsesOnePathResolutionPerDepth(t *testing.T) {
+	base := &fakeCloudDriver{
+		items: map[string]cloud.Item{
+			"media":  {ID: "media", ParentID: "0", Name: "媒体", IsDir: true},
+			"tv":     {ID: "tv", ParentID: "media", Name: "剧集", IsDir: true},
+			"season": {ID: "season", ParentID: "tv", Name: "第一季", IsDir: true},
+		},
+		children: map[string][]cloud.Item{
+			"media": {{ID: "tv", ParentID: "media", Name: "剧集", IsDir: true}},
+			"tv":    {{ID: "season", ParentID: "tv", Name: "第一季", IsDir: true}},
+		},
+	}
+	db, store, connections, actor := newConnectionTestService(t, base)
+	connection, err := connections.Create(actor, ConnectionInput{Name: "Path Account", Provider: cloud.ProviderPan115, Cookie: testPan115Cookie, Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageService := NewStorageService(db, NewAuditService(db))
+	storageService.SetConnectionService(connections)
+	storage, err := storageService.CreateContext(context.Background(), actor, StorageInput{Name: "Path Storage", Type: models.StorageTypePan115, RootPath: "media", RootDisplayPath: "/媒体", ConnectionID: &connection.ID, Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &resolvingDirectoryDriver{fakeCloudDriver: base, paths: map[string]string{"/媒体": "media", "/媒体/剧集": "tv", "/媒体/剧集/第一季": "season"}}
+	connections.mu.Lock()
+	connections.drivers[connection.ID] = resolver
+	connections.mu.Unlock()
+	base.statCalls = 0
+	service := NewProviderDirectoryService(connections, store)
+	root, err := service.BrowseStorage(context.Background(), actor, storage.ID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tv, err := service.BrowseStorage(context.Background(), actor, storage.ID, root.Items[0].Token, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResolveStorageSelection(context.Background(), actor, storage.ID, tv.Items[0].SelectionToken); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.resolveCalls != 3 || base.statCalls != 0 {
+		t.Fatalf("path resolves=%d stat calls=%d, want one resolve per operation and no ancestry walk", resolver.resolveCalls, base.statCalls)
 	}
 }
 

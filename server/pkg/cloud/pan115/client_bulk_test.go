@@ -2,13 +2,36 @@ package pan115
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	pan115sdk "github.com/SheltonZhu/115driver/pkg/driver"
+	"github.com/yuanjing-hash/ohmycine/server/pkg/cloud"
 	"golang.org/x/time/rate"
 )
+
+func TestInteractiveReadDoesNotWaitBehindBackgroundReservation(t *testing.T) {
+	sdk := &bulkSDK{}
+	unlimited := rate.NewLimiter(rate.Inf, 1)
+	client := &Client{
+		sdk: sdk, listRate: unlimited, interactiveRate: rate.NewLimiter(rate.Inf, 1), pipelineRate: rate.NewLimiter(rate.Inf, 1),
+		callSlots: make(chan struct{}, maxInFlightCalls), backgroundRead: make(chan struct{}, 1), now: time.Now, jitter: func() time.Duration { return 0 },
+	}
+	client.backgroundRead <- struct{}{}
+	interactiveCtx, cancel := context.WithTimeout(cloud.WithReadClass(context.Background(), cloud.ReadClassInteractive), time.Second)
+	defer cancel()
+	if _, err := client.List(interactiveCtx, "0", cloud.PageRequest{Limit: 1}); err != nil {
+		t.Fatalf("interactive read waited behind background reservation: %v", err)
+	}
+	backgroundCtx, cancelBackground := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelBackground()
+	if _, err := client.List(backgroundCtx, "0", cloud.PageRequest{Limit: 1}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("background read bypassed reservation: %v", err)
+	}
+	<-client.backgroundRead
+}
 
 type bulkSDK struct {
 	mu            sync.Mutex

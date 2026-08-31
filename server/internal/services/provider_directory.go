@@ -55,6 +55,7 @@ func NewProviderDirectoryService(connections *ConnectionService, credentials *cr
 
 // Browse is connection-scoped and is used only while selecting a Storage root.
 func (s *ProviderDirectoryService) Browse(ctx context.Context, actor Actor, connectionID uint, token, pageToken string) (DirectoryListing, error) {
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassInteractive)
 	if !actor.Can(authz.PermissionConnectionsRead) || !actor.Can(authz.PermissionStoragesBrowse) {
 		return DirectoryListing{}, appError(CodePermissionDenied, "无权浏览网盘目录", nil)
 	}
@@ -75,6 +76,7 @@ func (s *ProviderDirectoryService) Browse(ctx context.Context, actor Actor, conn
 
 // BrowseStorage keeps all navigation rooted inside one registered Storage.
 func (s *ProviderDirectoryService) BrowseStorage(ctx context.Context, actor Actor, storageID uint, token, pageToken string) (DirectoryListing, error) {
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassInteractive)
 	if !actor.Can(authz.PermissionStoragesBrowse) {
 		return DirectoryListing{}, appError(CodePermissionDenied, "无权浏览网盘目录", nil)
 	}
@@ -97,13 +99,24 @@ func (s *ProviderDirectoryService) BrowseStorage(ctx context.Context, actor Acto
 	if err != nil {
 		return DirectoryListing{}, err
 	}
-	if err := s.ensureWithinStorage(ctx, driver, claims.ItemID, storage.RootPath); err != nil {
-		return DirectoryListing{}, err
+	verified, accelerated, verifyErr := verifyProviderDirectoryPath(ctx, driver, storage.RootDisplayPath, claims.DisplayPath, claims.ItemID)
+	if verifyErr != nil {
+		return DirectoryListing{}, providerDirectoryError(verifyErr)
 	}
-	return s.browse(ctx, actor, driver, claims)
+	if !accelerated {
+		if err := s.ensureWithinStorage(ctx, driver, claims.ItemID, storage.RootPath); err != nil {
+			return DirectoryListing{}, err
+		}
+		verified, verifyErr = driver.Stat(ctx, claims.ItemID)
+		if verifyErr != nil || !verified.IsDir {
+			return DirectoryListing{}, providerDirectoryError(verifyErr)
+		}
+	}
+	return s.browse(ctx, actor, driver, claims, verified)
 }
 
 func (s *ProviderDirectoryService) ResolveSelection(ctx context.Context, actor Actor, connectionID uint, token string) (ProviderDirectorySelection, error) {
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassInteractive)
 	claims, err := s.resolve(actor, token, tokenPurposeSelect)
 	if err != nil {
 		return ProviderDirectorySelection{}, err
@@ -115,14 +128,21 @@ func (s *ProviderDirectoryService) ResolveSelection(ctx context.Context, actor A
 	if err != nil {
 		return ProviderDirectorySelection{}, err
 	}
-	item, err := driver.Stat(ctx, claims.ItemID)
-	if err != nil || !item.IsDir {
+	item, accelerated, err := verifyProviderDirectoryPath(ctx, driver, "/", claims.DisplayPath, claims.ItemID)
+	if err != nil {
 		return ProviderDirectorySelection{}, providerDirectoryError(err)
+	}
+	if !accelerated {
+		item, err = driver.Stat(ctx, claims.ItemID)
+		if err != nil || !item.IsDir {
+			return ProviderDirectorySelection{}, providerDirectoryError(err)
+		}
 	}
 	return ProviderDirectorySelection{ConnectionID: connectionID, ProviderID: item.ID, RelativeRoot: claims.DisplayPath, DisplayPath: claims.DisplayPath}, nil
 }
 
 func (s *ProviderDirectoryService) ResolveStorageSelection(ctx context.Context, actor Actor, storageID uint, token string) (ProviderDirectorySelection, error) {
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassInteractive)
 	if !actor.Can(authz.PermissionStoragesBrowse) {
 		return ProviderDirectorySelection{}, appError(CodePermissionDenied, "无权使用目录选择结果", nil)
 	}
@@ -141,12 +161,18 @@ func (s *ProviderDirectoryService) ResolveStorageSelection(ctx context.Context, 
 	if err != nil {
 		return ProviderDirectorySelection{}, err
 	}
-	if err := s.ensureWithinStorage(ctx, driver, claims.ItemID, storage.RootPath); err != nil {
-		return ProviderDirectorySelection{}, err
-	}
-	item, err := driver.Stat(ctx, claims.ItemID)
-	if err != nil || !item.IsDir {
+	item, accelerated, err := verifyProviderDirectoryPath(ctx, driver, storage.RootDisplayPath, claims.DisplayPath, claims.ItemID)
+	if err != nil {
 		return ProviderDirectorySelection{}, providerDirectoryError(err)
+	}
+	if !accelerated {
+		if err := s.ensureWithinStorage(ctx, driver, claims.ItemID, storage.RootPath); err != nil {
+			return ProviderDirectorySelection{}, err
+		}
+		item, err = driver.Stat(ctx, claims.ItemID)
+		if err != nil || !item.IsDir {
+			return ProviderDirectorySelection{}, providerDirectoryError(err)
+		}
 	}
 	relative, err := normalizeProviderRelativePath(claims.DisplayPath)
 	if err != nil {
@@ -155,13 +181,28 @@ func (s *ProviderDirectoryService) ResolveStorageSelection(ctx context.Context, 
 	return ProviderDirectorySelection{ConnectionID: *storage.ConnectionID, ProviderID: item.ID, RelativeRoot: relative, DisplayPath: relative}, nil
 }
 
-func (s *ProviderDirectoryService) browse(ctx context.Context, actor Actor, driver cloudpkg.Driver, claims providerDirectoryClaims) (DirectoryListing, error) {
+func (s *ProviderDirectoryService) browse(ctx context.Context, actor Actor, driver cloudpkg.Driver, claims providerDirectoryClaims, verified ...cloudpkg.Item) (DirectoryListing, error) {
 	if claims.ItemID != "0" {
-		item, err := driver.Stat(ctx, claims.ItemID)
-		if err != nil || !item.IsDir {
-			return DirectoryListing{}, providerDirectoryError(err)
+		var item cloudpkg.Item
+		if len(verified) > 0 && verified[0].ID == claims.ItemID {
+			item = verified[0]
+		} else {
+			resolved, accelerated, resolveErr := verifyProviderDirectoryPath(ctx, driver, "/", claims.DisplayPath, claims.ItemID)
+			if resolveErr != nil {
+				return DirectoryListing{}, providerDirectoryError(resolveErr)
+			}
+			if accelerated {
+				item = resolved
+			} else {
+				item, resolveErr = driver.Stat(ctx, claims.ItemID)
+				if resolveErr != nil || !item.IsDir {
+					return DirectoryListing{}, providerDirectoryError(resolveErr)
+				}
+			}
 		}
-		claims.ParentID = item.ParentID
+		if item.ParentID != "" {
+			claims.ParentID = item.ParentID
+		}
 	}
 	pageResult, err := driver.List(ctx, claims.ItemID, cloudpkg.PageRequest{Offset: claims.Offset, Limit: 200})
 	if err != nil {
@@ -214,6 +255,45 @@ func (s *ProviderDirectoryService) browse(ctx context.Context, actor Actor, driv
 		listing.ParentToken, _ = s.sign(claims.scoped(actor.User.ID, claims.ParentID, "", parentDisplay, tokenPurposeBrowse, 0))
 	}
 	return listing, nil
+}
+
+func verifyProviderDirectoryPath(ctx context.Context, driver cloudpkg.Driver, rootDisplayPath, relativePath, expectedID string) (cloudpkg.Item, bool, error) {
+	resolver, ok := driver.(cloudpkg.DirectoryPathResolver)
+	if !ok {
+		return cloudpkg.Item{}, false, nil
+	}
+	providerPath, err := joinProviderPath(rootDisplayPath, relativePath)
+	if err != nil {
+		// Legacy Storage records without a display path retain the ancestry
+		// fallback instead of weakening their boundary proof.
+		return cloudpkg.Item{}, false, nil
+	}
+	item, err := resolver.ResolveDirectory(ctx, providerPath)
+	if err != nil {
+		return cloudpkg.Item{}, true, err
+	}
+	if !item.IsDir || strings.TrimSpace(item.ID) != strings.TrimSpace(expectedID) {
+		return cloudpkg.Item{}, true, cloudpkg.Error(cloudpkg.CodeNotFound, false, errors.New("provider directory identity changed"))
+	}
+	return item, true, nil
+}
+
+func joinProviderPath(rootDisplayPath, relativePath string) (string, error) {
+	root, err := normalizeProviderRelativePath(strings.TrimSpace(rootDisplayPath))
+	if err != nil {
+		return "", err
+	}
+	relative, err := normalizeProviderRelativePath(relativePath)
+	if err != nil {
+		return "", err
+	}
+	if relative == "/" {
+		return root, nil
+	}
+	if root == "/" {
+		return relative, nil
+	}
+	return path.Clean(strings.TrimSuffix(root, "/") + relative), nil
 }
 
 func (s *ProviderDirectoryService) resolveBrowseClaims(actor Actor, connectionID, storageID uint, storageRootID, token, pageToken string) (providerDirectoryClaims, error) {

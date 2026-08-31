@@ -673,7 +673,7 @@ func (s *DownloadService) snapshotDownloadTarget(ctx context.Context, downloader
 	if len(sourceKinds) > 0 {
 		sourceKind = sourceKinds[0]
 	}
-	return s.buildDownloadTargetSnapshot(ctx, downloader, library, sourceKind)
+	return s.buildDownloadTargetSnapshot(ctx, downloader, library, sourceKind, true)
 }
 
 func (s *DownloadService) List(actor Actor, limit int) ([]DownloadTaskSummary, error) {

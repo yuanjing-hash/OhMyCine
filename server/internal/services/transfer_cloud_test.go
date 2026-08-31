@@ -38,10 +38,12 @@ type fakeMutationCloudDriver struct {
 	statFailAfterRecycleID string
 	statErrors             map[string]error
 	statBlockID            string
+	pathResolves           int
+	paths                  map[string]string
 }
 
 func newFakeMutationCloudDriver() *fakeMutationCloudDriver {
-	return &fakeMutationCloudDriver{items: map[string]cloudpkg.Item{}, nextID: 100, statErrors: map[string]error{}}
+	return &fakeMutationCloudDriver{items: map[string]cloudpkg.Item{}, nextID: 100, statErrors: map[string]error{}, paths: map[string]string{}}
 }
 
 func TestUniqueCloudTargetDirectoriesBuildsDeterministicDAG(t *testing.T) {
@@ -122,6 +124,14 @@ func (f *fakeMutationCloudDriver) Stat(ctx context.Context, itemID string) (clou
 		return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeUnavailable, true, errors.New("temporary stat failure"))
 	}
 	if item, ok := f.items[itemID]; ok {
+		return item, nil
+	}
+	return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeNotFound, false, errors.New("not found"))
+}
+func (f *fakeMutationCloudDriver) ResolveDirectory(_ context.Context, providerPath string) (cloudpkg.Item, error) {
+	f.pathResolves++
+	id := f.paths[providerPath]
+	if item, ok := f.items[id]; ok && item.IsDir {
 		return item, nil
 	}
 	return cloudpkg.Item{}, cloudpkg.Error(cloudpkg.CodeNotFound, false, errors.New("not found"))
@@ -649,6 +659,66 @@ func TestCloudTransferConflictAskDoesNotReplaceExistingItem(t *testing.T) {
 	}
 	if item := fixture.driver.items[fixture.sourceID]; item.ParentID != "source-root" {
 		t.Fatalf("source moved before user action: %+v", item)
+	}
+}
+
+func TestCloudTransferExistingTargetLeafUsesBoundedPathResolutionAndCachedListing(t *testing.T) {
+	fixture := newCloudTransferFixture(t, models.MediaLibraryTransferMove, models.MediaLibraryConflictAsk, true)
+	fixture.download.TargetRelativeRoot = "/library"
+	fixture.driver.paths["/media/library"] = "library-root"
+	fixture.driver.paths["/media/library/电影/Movie (2024)"] = "movie-dir"
+	if err := fixture.queue.db.Model(&models.DownloadTask{}).Where("id = ?", fixture.download.ID).Update("target_relative_root", fixture.download.TargetRelativeRoot).Error; err != nil {
+		t.Fatal(err)
+	}
+	result := fixture.run(t)
+	if result.Wait == nil || result.Wait.ActionType != "transfer_conflict" {
+		t.Fatalf("result=%+v", result)
+	}
+	if fixture.driver.pathResolves != 2 {
+		t.Fatalf("path resolves=%d want root+leaf", fixture.driver.pathResolves)
+	}
+	if fixture.driver.listCalls != 1 {
+		t.Fatalf("target listings=%d want one conflict listing", fixture.driver.listCalls)
+	}
+	if fixture.driver.statCalls != 0 {
+		t.Fatalf("target path resolution regressed to ancestry stats: %d", fixture.driver.statCalls)
+	}
+}
+
+func TestCloudConflictListingCacheIsSharedAcrossAttempt(t *testing.T) {
+	driver := newFakeMutationCloudDriver()
+	driver.items["target"] = cloudpkg.Item{ID: "target", ParentID: "root", Name: "target", IsDir: true}
+	driver.items["existing"] = cloudpkg.Item{ID: "existing", ParentID: "target", Name: "Movie.mkv", Size: 9}
+	state := cloudTransferState{Directories: map[string]string{".": "root", "Movies": "target"}, Items: map[string]cloudTransferItemState{}}
+	targets := []transferTargetItem{{File: downloadpkg.File{ProviderItemID: "source", Size: 10}, Relative: "Movies/Movie.mkv"}}
+	worker := &TransferWorker{}
+	ctx := withCloudDirectoryAttempt(context.Background(), driver, "")
+	if _, _, err := worker.cloudConflicts(ctx, driver, targets, state, models.MediaLibraryTransferMove); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := worker.cloudConflicts(ctx, driver, targets, state, models.MediaLibraryTransferMove); err != nil {
+		t.Fatal(err)
+	}
+	if driver.listCalls != 1 {
+		t.Fatalf("repeated conflict check listed target %d times", driver.listCalls)
+	}
+}
+
+func TestCloudDirectoryAttemptCacheIsInvalidatedAfterMutation(t *testing.T) {
+	driver := newFakeMutationCloudDriver()
+	driver.items["target"] = cloudpkg.Item{ID: "target", ParentID: "root", Name: "target", IsDir: true}
+	ctx := withCloudDirectoryAttempt(context.Background(), driver, "")
+	if _, err := listCloudTargetDirectoryCached(ctx, driver, "target"); err != nil {
+		t.Fatal(err)
+	}
+	driver.items["added"] = cloudpkg.Item{ID: "added", ParentID: "target", Name: "Movie.mkv", Size: 9}
+	invalidateCloudDirectoryListings(ctx, "target")
+	items, err := listCloudTargetDirectoryCached(ctx, driver, "target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.listCalls != 2 || len(items) != 1 || items[0].ID != "added" {
+		t.Fatalf("list calls=%d items=%+v", driver.listCalls, items)
 	}
 }
 

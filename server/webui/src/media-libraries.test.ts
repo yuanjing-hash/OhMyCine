@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { draftFromLibrary, emptyMediaLibraryDraft, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSTRM } from '@/media-libraries'
+import { defaultVideoExtensions, draftFromLibrary, emptyMediaLibraryDraft, isMediaLibraryDraftValid, mediaLibraryDraftFingerprint, mediaLibrarySourceDisplayPath, payloadFromDraft, presentLibraryStatus, supportsSTRM } from '@/media-libraries'
 import type { StorageSummary } from '@/types/api'
 
 function storage(type: string, direct = false, signed = false): StorageSummary {
@@ -61,6 +61,100 @@ describe('media library form boundary', () => {
 
   it('presents initialization failure as an error state', () => {
     expect(presentLibraryStatus('initialization_failed')).toEqual({ label: '初始化失败', className: 'status-chip status-chip--error' })
+  })
+
+  it('tracks every editable persistent setting without treating picker tokens as configuration', () => {
+    const target = { ...storage('pan115', true, true), capabilities: { ...storage('pan115', true, true).capabilities, small_file_upload: true } }
+    const original = emptyMediaLibraryDraft(1, 2)
+    original.name = '媒体库'
+    original.source_path = '/媒体'
+    const baseline = mediaLibraryDraftFingerprint(original, target)
+    const mutations: Array<(draft: typeof original) => void> = [
+      draft => { draft.name = '新名称' },
+      draft => { draft.storage_id = 2 },
+      draft => { draft.profile_id = 3 },
+      draft => { draft.source_path = '/媒体/电视剧' },
+      draft => { draft.enabled = false },
+      draft => { draft.recursive = false },
+      draft => { draft.full_scan_interval_hours = 48 },
+      draft => { draft.incremental_minutes = 30 },
+      draft => { draft.strm_asset_extra_extensions_text = 'png' },
+      draft => { draft.ignore_patterns_text = 'sample' },
+      draft => { draft.metadata_language = 'en-US' },
+      draft => { draft.metadata_region = 'US' },
+      draft => { draft.match_strategy = 'strict' },
+      draft => { draft.provider_rate_per_second = 50 },
+      draft => { draft.provider_concurrency = 3 },
+      draft => { draft.metadata_rate_per_second = 4 },
+      draft => { draft.metadata_concurrency = 2 },
+      draft => { draft.metadata_artifacts_enabled = false },
+      draft => { draft.upload_sidecars = true },
+      draft => { draft.transfer_mode = 'copy' },
+      draft => { draft.conflict_policy = 'skip' },
+      draft => { draft.movie_directory_template = '电影/{title}' },
+      draft => { draft.movie_filename_template = '{title}' },
+      draft => { draft.tv_directory_template = '电视剧/{title}' },
+      draft => { draft.tv_filename_template = '{title}-E{episode:02}' },
+    ]
+    for (const mutate of mutations) {
+      const changed = { ...original }
+      mutate(changed)
+      expect(mediaLibraryDraftFingerprint(changed, target)).not.toBe(baseline)
+    }
+
+    const withTokens = { ...original, relative_root_token: 'opaque-source', strm_local_root_token: 'opaque-strm' }
+    expect(mediaLibraryDraftFingerprint(withTokens, target)).toBe(baseline)
+
+    const strm = { ...original, strm_enabled: true, strm_local_path: 'D:\\STRM' }
+    const strmBaseline = mediaLibraryDraftFingerprint(strm, target)
+    expect(strmBaseline).not.toBe(baseline)
+    expect(mediaLibraryDraftFingerprint({ ...strm, strm_local_path: 'E:\\STRM' }, target)).not.toBe(strmBaseline)
+  })
+
+  it('disables saving for incomplete or out-of-range drafts', () => {
+    const target = storage('pan115', true, true)
+    const draft = emptyMediaLibraryDraft(1, 2)
+    draft.name = '媒体库'
+    draft.source_path = '/媒体'
+    expect(isMediaLibraryDraftValid(draft, target)).toBe(true)
+    expect(isMediaLibraryDraftValid({ ...draft, name: ' ' }, target)).toBe(false)
+    expect(isMediaLibraryDraftValid({ ...draft, provider_concurrency: 0 }, target)).toBe(false)
+    expect(isMediaLibraryDraftValid({ ...draft, strm_enabled: true, strm_local_path: '' }, target)).toBe(false)
+  })
+
+  it('rehydrates an authoritative saved detail without reusing consumed picker tokens', () => {
+    const target = storage('pan115', true, true)
+    const draft = emptyMediaLibraryDraft(1, 2)
+    draft.relative_root_token = 'consumed-source-token'
+    draft.strm_local_root_token = 'consumed-strm-token'
+    const rehydrated = draftFromLibrary({
+      ...draft,
+      id: 9,
+      storage_name: 'source',
+      profile_name: 'profile',
+      profile_revision: 1,
+      auto_listen_default: false,
+      video_extensions: defaultVideoExtensions,
+      strm_asset_default_extensions: [],
+      strm_asset_extra_extensions: [],
+      strm_asset_effective_extensions: [],
+      ignore_patterns: [],
+      strm_local_path: 'D:\\STRM',
+    } as never, target)
+    expect(rehydrated.relative_root_token).toBe('')
+    expect(rehydrated.strm_local_root_token).toBe('')
+    expect(payloadFromDraft(rehydrated, target)).not.toHaveProperty('relative_root_token')
+    expect(payloadFromDraft(rehydrated, target)).not.toHaveProperty('strm_local_root_token')
+  })
+
+  it('shows save lifecycle feedback beside the dirty-aware action', () => {
+    const source = readFileSync(new URL('./views/MediaLibrariesView.vue', import.meta.url), 'utf8')
+    expect(source).toContain('mediaLibraryDraftFingerprint')
+    expect(source).toContain('replaceEditDraft(saved)')
+    expect(source).toContain("state: 'saving', message: '正在保存媒体库配置…'")
+    expect(source).toContain("state: 'success', message: '保存成功，新的媒体库配置已生效。'")
+    expect(source).toContain(':disabled="saving || !editDirty || !editFormValid"')
+    expect(source).toContain('aria-live="polite"')
   })
 
   it('shows persisted storage root and child roots as readable Windows locations', () => {

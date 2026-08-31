@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -74,7 +75,13 @@ type uploadSDK interface {
 	UploadFastOrByMultipart(string, string, int64, *os.File, ...pan115sdk.UploadMultipartOption) error
 }
 
+type directoryPathSDK interface {
+	DirName2CID(string) (*pan115sdk.APIGetDirIDResp, error)
+}
+
 type sdkAdapter struct{ *pan115sdk.Pan115Client }
+
+var _ directoryPathSDK = (*sdkAdapter)(nil)
 
 const shareReceiveEndpoint = "https://webapi.115.com/share/receive"
 
@@ -187,6 +194,8 @@ type Client struct {
 	sdk             sdkClient
 	downloadHTTP    *http.Client
 	listRate        *rate.Limiter
+	interactiveRate *rate.Limiter
+	pipelineRate    *rate.Limiter
 	bulkRate        *rate.Limiter
 	directRate      *rate.Limiter
 	offlineRate     *rate.Limiter
@@ -200,6 +209,7 @@ type Client struct {
 	purgeRate       *rate.Limiter
 	offlinePages    sync.Map
 	callSlots       chan struct{}
+	backgroundRead  chan struct{}
 	stateMu         sync.Mutex
 	now             func() time.Time
 	jitter          func() time.Duration
@@ -224,7 +234,9 @@ func New(config cloud.Config) (cloud.Driver, error) {
 	// for offline submission and remains compatible with the read APIs.
 	sdk := pan115sdk.New(pan115sdk.WithClient(httpClient), pan115sdk.UA(pan115sdk.UA115Browser)).ImportCredential(credential)
 	return &Client{
-		sdk: &sdkAdapter{sdk}, downloadHTTP: newDownloadHTTPClient(), listRate: rate.NewLimiter(rate.Every(2*time.Second), 1), bulkRate: rate.NewLimiter(rate.Every(bulkRequestSpacing), 1), directRate: rate.NewLimiter(rate.Every(time.Second), 1),
+		sdk: &sdkAdapter{sdk}, downloadHTTP: newDownloadHTTPClient(), listRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
+		interactiveRate: rate.NewLimiter(rate.Every(250*time.Millisecond), 1), pipelineRate: rate.NewLimiter(rate.Every(250*time.Millisecond), 1),
+		bulkRate: rate.NewLimiter(rate.Every(bulkRequestSpacing), 1), directRate: rate.NewLimiter(rate.Every(time.Second), 1),
 		offlineRate: rate.NewLimiter(rate.Every(2*time.Second), 1), eventRate: rate.NewLimiter(rate.Every(5*time.Second), 1),
 		// MoviePilot's p115 integrations pace provider endpoints independently.
 		// Keep that boundary here: healthy mkdir is only concurrency bounded and
@@ -233,7 +245,7 @@ func New(config cloud.Config) (cloud.Driver, error) {
 		mkdirRate: rate.NewLimiter(rate.Inf, 1), uploadRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
 		moveRate: rate.NewLimiter(rate.Every(2*time.Second), 1), copyRate: rate.NewLimiter(rate.Every(2*time.Second), 1), renameRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
 		recycleRate: rate.NewLimiter(rate.Every(2*time.Second), 1), purgeRate: rate.NewLimiter(rate.Every(2*time.Second), 1),
-		callSlots: make(chan struct{}, maxInFlightCalls), now: time.Now, jitter: defaultJitter, recyclePassword: strings.TrimSpace(config.RecyclePassword),
+		callSlots: make(chan struct{}, maxInFlightCalls), backgroundRead: make(chan struct{}, 1), now: time.Now, jitter: defaultJitter, recyclePassword: strings.TrimSpace(config.RecyclePassword),
 	}, nil
 }
 
@@ -838,7 +850,7 @@ func (c *Client) List(ctx context.Context, parentID string, page cloud.PageReque
 		page.Limit = maxPageSize
 	}
 	var files *[]pan115sdk.File
-	err := c.waitAndCall(ctx, c.listRate, func() error {
+	err := c.waitReadAndCall(ctx, c.readLimiter(ctx), func() error {
 		var err error
 		files, err = c.sdk.ListPage(parentID, page.Offset, page.Limit)
 		return err
@@ -860,15 +872,42 @@ func (c *Client) List(ctx context.Context, parentID string, page cloud.PageReque
 	return cloud.Page{Items: items, Offset: page.Offset, HasMore: int64(len(items)) == page.Limit}, nil
 }
 
+func (c *Client) ResolveDirectory(ctx context.Context, providerPath string) (cloud.Item, error) {
+	providerPath = strings.TrimSpace(providerPath)
+	if providerPath == "" || !strings.HasPrefix(providerPath, "/") || strings.ContainsAny(providerPath, "\x00\r\n\\") {
+		return cloud.Item{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 directory path is invalid"))
+	}
+	clean := path.Clean(providerPath)
+	if clean == "/" {
+		return cloud.Item{ID: "0", Name: "115 网盘", IsDir: true}, nil
+	}
+	sdk, ok := c.sdk.(directoryPathSDK)
+	if !ok {
+		return cloud.Item{}, cloud.Error(cloud.CodeUnavailable, false, errors.New("115 directory path resolver is unavailable"))
+	}
+	var response *pan115sdk.APIGetDirIDResp
+	if err := c.waitReadAndCall(ctx, c.readLimiter(ctx), func() error {
+		var callErr error
+		response, callErr = sdk.DirName2CID(clean)
+		return callErr
+	}); err != nil {
+		return cloud.Item{}, mapError(err)
+	}
+	if response == nil || strings.TrimSpace(string(response.CategoryID)) == "" {
+		return cloud.Item{}, cloud.Error(cloud.CodeNotFound, false, errors.New("115 directory path was not found"))
+	}
+	return cloud.Item{ID: strings.TrimSpace(string(response.CategoryID)), Name: path.Base(clean), IsDir: true}, nil
+}
+
 // ListTree uses 115's recursive file enumeration together with its descendant
-// folder stream. This is the full-scan lane; interactive List remains at the
-// conservative one-request-per-two-seconds policy used by the directory UI.
+// folder stream. It stays on the background lane so interactive navigation and
+// active transfers retain one shared provider call slot.
 func (c *Client) ListTree(ctx context.Context, rootID string, maxEntries int) (cloud.TreeResult, error) {
 	rootID = normalizeID(rootID)
 	if rootID == "0" {
 		return cloud.TreeResult{}, cloud.Error(cloud.CodeResponseInvalid, false, errors.New("115 root has no bulk tree identity"))
 	}
-	root, err := c.Stat(ctx, rootID)
+	root, err := c.Stat(cloud.WithReadClass(ctx, cloud.ReadClassBackground), rootID)
 	if err != nil {
 		return cloud.TreeResult{}, err
 	}
@@ -912,7 +951,7 @@ func (c *Client) loadTreeFolders(ctx context.Context, pickCode string) ([]bulkFo
 	for page := int64(1); ; page++ {
 		var items []bulkFolder
 		var more bool
-		err := c.waitAndCall(ctx, c.bulkRate, func() error {
+		err := c.waitReadAndCall(cloud.WithReadClass(ctx, cloud.ReadClassBackground), c.bulkRate, func() error {
 			var err error
 			items, more, err = c.sdk.ListTreeFolders(pickCode, page, bulkFolderPageSize)
 			return err
@@ -935,7 +974,7 @@ func (c *Client) loadTreeFiles(ctx context.Context, rootID string, maxEntries in
 	for offset := int64(0); ; {
 		var page []pan115sdk.File
 		var total int64
-		err := c.waitAndCall(ctx, c.bulkRate, func() error {
+		err := c.waitReadAndCall(cloud.WithReadClass(ctx, cloud.ReadClassBackground), c.bulkRate, func() error {
 			var err error
 			page, total, err = c.sdk.ListTreeFiles(rootID, offset, bulkTreePageSize)
 			return err
@@ -1013,7 +1052,7 @@ func (c *Client) Stat(ctx context.Context, itemID string) (cloud.Item, error) {
 		return cloud.Item{ID: "0", ParentID: "", Name: "115 网盘", IsDir: true}, nil
 	}
 	var file *pan115sdk.File
-	err := c.waitAndCall(ctx, c.listRate, func() error {
+	err := c.waitReadAndCall(ctx, c.readLimiter(ctx), func() error {
 		var err error
 		file, err = c.sdk.GetFile(itemID)
 		return err
@@ -1217,6 +1256,33 @@ func (c *Client) waitAndCall(ctx context.Context, limiter *rate.Limiter, call fu
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (c *Client) readLimiter(ctx context.Context) *rate.Limiter {
+	switch cloud.ReadClassFromContext(ctx) {
+	case cloud.ReadClassInteractive:
+		if c.interactiveRate != nil {
+			return c.interactiveRate
+		}
+	case cloud.ReadClassPipeline:
+		if c.pipelineRate != nil {
+			return c.pipelineRate
+		}
+	}
+	return c.listRate
+}
+
+func (c *Client) waitReadAndCall(ctx context.Context, limiter *rate.Limiter, call func() error) error {
+	if cloud.ReadClassFromContext(ctx) != cloud.ReadClassBackground || c.backgroundRead == nil {
+		return c.waitAndCall(ctx, limiter, call)
+	}
+	select {
+	case c.backgroundRead <- struct{}{}:
+		defer func() { <-c.backgroundRead }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return c.waitAndCall(ctx, limiter, call)
 }
 
 func (c *Client) waitForRecovery(ctx context.Context) error {

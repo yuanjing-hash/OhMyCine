@@ -94,7 +94,7 @@ func TestManagedStagingPreviewReportsRequiredAndAvailableBytes(t *testing.T) {
 }
 
 func TestDownloadTargetSnapshotAllowsCrossSourceAndPreservesSamePan115(t *testing.T) {
-	downloads, downloaders, queue, _, _ := downloadFixture(t)
+	downloads, downloaders, queue, actor, _ := downloadFixture(t)
 	now := time.Now().UTC()
 	connectionA := createRouteConnection(t, queue, "a", now)
 	connectionB := createRouteConnection(t, queue, "b", now)
@@ -126,6 +126,17 @@ func TestDownloadTargetSnapshotAllowsCrossSourceAndPreservesSamePan115(t *testin
 	}
 	localLibrary := createRouteLibrary(t, queue, "local", localStorage.ID, profile.ID, "", now)
 	panDownloader := models.Downloader{ID: "pan-route", Type: models.DownloaderTypePan115Offline, StorageID: &sourceStorage.ID, ProviderDirectoryID: "source-downloads", Enabled: true}
+	if err := queue.db.Create(&panDownloader).Error; err != nil {
+		t.Fatal(err)
+	}
+	beforeReadStats, beforeUploadStats := readA.statCalls, uploadB.statCalls
+	preview, err := downloads.PreviewRoutes(context.Background(), actor, DownloadRoutePreviewInput{DownloaderID: panDownloader.ID, SourceKind: downloader.SourceURL})
+	if err != nil || len(preview.Options) < 3 {
+		t.Fatalf("preview=%+v err=%v", preview, err)
+	}
+	if readA.statCalls != beforeReadStats || uploadB.statCalls != beforeUploadStats {
+		t.Fatalf("route preview called provider: source=%d->%d target=%d->%d", beforeReadStats, readA.statCalls, beforeUploadStats, uploadB.statCalls)
+	}
 
 	if target, _, err := downloads.snapshotDownloadTarget(context.Background(), panDownloader, sameLibrary, downloader.SourceURL); err != nil || target.RouteKind != models.TransferRouteSameSourceProvider {
 		t.Fatalf("same-account route=%+v err=%v", target, err)

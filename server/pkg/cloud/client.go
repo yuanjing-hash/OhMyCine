@@ -88,6 +88,46 @@ type BulkTreeDriver interface {
 	ListTree(context.Context, string, int) (TreeResult, error)
 }
 
+// DirectoryPathResolver is an optional acceleration for providers that can
+// resolve one complete directory path without walking every ancestor. The
+// returned identity is still compared with the caller's signed or persisted
+// identity; paths and provider IDs remain private to the Server.
+type DirectoryPathResolver interface {
+	ResolveDirectory(context.Context, string) (Item, error)
+}
+
+type ReadClass uint8
+
+const (
+	// ReadClassBackground is the conservative default for reconciliation and
+	// maintenance work. Keeping it as zero makes unclassified call sites safe.
+	ReadClassBackground ReadClass = iota
+	ReadClassInteractive
+	ReadClassPipeline
+)
+
+type readClassContextKey struct{}
+
+func WithReadClass(ctx context.Context, class ReadClass) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, readClassContextKey{}, class)
+}
+
+func ReadClassFromContext(ctx context.Context) ReadClass {
+	if ctx == nil {
+		return ReadClassBackground
+	}
+	class, _ := ctx.Value(readClassContextKey{}).(ReadClass)
+	switch class {
+	case ReadClassInteractive, ReadClassPipeline:
+		return class
+	default:
+		return ReadClassBackground
+	}
+}
+
 type DirectURLRequest struct {
 	FileID    string
 	PickCode  string

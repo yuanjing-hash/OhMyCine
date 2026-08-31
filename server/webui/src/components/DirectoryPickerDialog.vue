@@ -14,18 +14,23 @@ const loading = ref(false)
 const loadingMore = ref(false)
 const error = ref('')
 let previousFocus: HTMLElement | null = null
-let activeRequest: AbortController | null = null
+let activeRequest: { controller: AbortController; version: number } | null = null
+let requestVersion = 0
+let currentCacheKey = ''
+const sessionCache = new Map<string, DirectoryListing>()
 const restrictedHistory: string[] = []
 
 watch(() => props.open, async open => {
-	if (!open) { cancelRequest(); await nextTick(); previousFocus?.focus(); return }
+  if (!open) { endSession(); await nextTick(); previousFocus?.focus(); return }
+  sessionCache.clear()
+  currentCacheKey = ''
   previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   await nextTick()
   closeButton.value?.focus()
 	await loadInitial()
-})
+}, { immediate: true })
 
-onBeforeUnmount(() => { cancelRequest(); previousFocus?.focus() })
+onBeforeUnmount(() => { endSession(); previousFocus?.focus() })
 
 async function loadInitial() {
   restrictedHistory.length = 0
@@ -40,26 +45,34 @@ async function loadInitial() {
 }
 
 async function loadInitialWithRootsFallback(endpoint: string) {
+  const cached = sessionCache.get(endpoint)
+  if (cached) { showListing(cached, endpoint); return }
   loading.value = true; error.value = ''
-  const controller = beginRequest()
-  try { listing.value = await api<DirectoryListing>(endpoint, { signal: controller.signal }) }
+  const request = beginRequest()
+  try {
+    const result = await api<DirectoryListing>(endpoint, { signal: request.controller.signal })
+    if (!isCurrent(request)) return
+    cacheAndShow(result, endpoint)
+  }
   catch (reason) {
-	if (controller.signal.aborted) return
+    if (!isCurrent(request)) return
     const staleMessage = reason instanceof Error ? reason.message : '原目录已不可用'
     const fallbackEndpoint = directoryPickerFallbackEndpoint(endpoint)
     if (!fallbackEndpoint) { error.value = staleMessage; return }
     try {
-		listing.value = await api<DirectoryListing>(fallbackEndpoint, { signal: controller.signal })
+      const fallback = await api<DirectoryListing>(fallbackEndpoint, { signal: request.controller.signal })
+      if (!isCurrent(request)) return
+      cacheAndShow(fallback, fallbackEndpoint)
       error.value = `${staleMessage}；请重新选择可用目录。`
-    } catch (fallbackReason) { error.value = fallbackReason instanceof Error ? fallbackReason.message : '无法读取 Server 目录' }
-	} finally { if (activeRequest === controller) { activeRequest = null; loading.value = false } }
+    } catch (fallbackReason) { if (isCurrent(request)) error.value = fallbackReason instanceof Error ? fallbackReason.message : '无法读取 Server 目录' }
+	} finally { finishRequest(request) }
 }
 
 const withinStorage = () => Boolean(props.restrictToStorage && props.storageId)
 
 async function browse(token: string) {
   const base = directoryPickerBrowseEndpoint(props.storageId, props.providerConnectionId)
-  await load(base + '?token=' + encodeURIComponent(token))
+  await load(base + '?token=' + encodeURIComponent(token), { cacheKey: browseCacheKey(base, token) })
 }
 
 async function enter(token: string) {
@@ -74,47 +87,108 @@ async function backWithinStorage() {
 
 async function loadRoots() { await load(FILESYSTEM_ROOTS_ENDPOINT) }
 
-async function load(path: string) {
-	const controller = beginRequest()
+async function load(path: string, options: { cacheKey?: string; force?: boolean } = {}) {
+  const cacheKey = options.cacheKey ?? path
+  const cached = !options.force ? sessionCache.get(cacheKey) : undefined
+  if (cached) {
+    cancelRequest()
+    loading.value = false
+    loadingMore.value = false
+    error.value = ''
+    showListing(cached, cacheKey)
+    return
+  }
+	const request = beginRequest()
   loading.value = true
   error.value = ''
-	try { listing.value = await api<DirectoryListing>(path, { signal: controller.signal }) }
-	catch (reason) { if (!controller.signal.aborted) error.value = reason instanceof Error ? reason.message : '无法读取 Server 目录' }
-	finally { if (activeRequest === controller) { activeRequest = null; loading.value = false } }
+	try {
+    const result = await api<DirectoryListing>(path, { signal: request.controller.signal })
+    if (isCurrent(request)) cacheAndShow(result, cacheKey)
+  }
+	catch (reason) { if (isCurrent(request)) error.value = reason instanceof Error ? reason.message : '无法读取 Server 目录' }
+	finally { finishRequest(request) }
+}
+
+async function refreshCurrent() {
+  if (listing.value?.current_token) {
+    const base = directoryPickerBrowseEndpoint(props.storageId, props.providerConnectionId)
+    await load(`${base}?token=${encodeURIComponent(listing.value.current_token)}`, { cacheKey: browseCacheKey(base, listing.value.current_token), force: true })
+    return
+  }
+  sessionCache.delete(currentCacheKey)
+  await loadInitial()
 }
 
 async function loadNextPage() {
   const pageToken = listing.value?.next_page_token
   if (!pageToken || !listing.value || loading.value || loadingMore.value) return
   const current = listing.value
-  const controller = beginRequest()
+  const request = beginRequest()
   loadingMore.value = true
   error.value = ''
   try {
     const base = directoryPickerBrowseEndpoint(props.storageId, props.providerConnectionId)
-    const page = await api<DirectoryListing>(`${base}?page_token=${encodeURIComponent(pageToken)}`, { signal: controller.signal })
+    const page = await api<DirectoryListing>(`${base}?page_token=${encodeURIComponent(pageToken)}`, { signal: request.controller.signal })
+    if (!isCurrent(request)) return
     if (page.location !== current.location || page.platform !== current.platform) throw new Error('目录分页响应与当前位置不匹配')
     const seen = new Set(current.items.map(item => item.token || `${item.kind}:${item.location}`))
     const appended = page.items.filter(item => !seen.has(item.token || `${item.kind}:${item.location}`))
-    listing.value = { ...page, items: [...current.items, ...appended] }
+    cacheAndShow({ ...page, items: [...current.items, ...appended] }, currentCacheKey)
   } catch (reason) {
-    if (!controller.signal.aborted) error.value = reason instanceof Error ? reason.message : '无法读取下一页目录'
+    if (isCurrent(request)) error.value = reason instanceof Error ? reason.message : '无法读取下一页目录'
   } finally {
-    if (activeRequest === controller) activeRequest = null
-    loadingMore.value = false
+    if (isCurrent(request)) loadingMore.value = false
+    finishRequest(request)
   }
 }
 
 function beginRequest() {
 	cancelRequest()
 	const controller = new AbortController()
-	activeRequest = controller
-	return controller
+  const request = { controller, version: ++requestVersion }
+	activeRequest = request
+	return request
 }
 
 function cancelRequest() {
-	activeRequest?.abort()
+	activeRequest?.controller.abort()
 	activeRequest = null
+  requestVersion++
+}
+
+function isCurrent(request: { controller: AbortController; version: number }) {
+  return activeRequest === request && request.version === requestVersion && !request.controller.signal.aborted
+}
+
+function finishRequest(request: { controller: AbortController; version: number }) {
+  if (!isCurrent(request)) return
+  activeRequest = null
+  loading.value = false
+}
+
+function browseCacheKey(base: string, token: string) {
+  return `${base}#${token}`
+}
+
+function cacheAndShow(result: DirectoryListing, cacheKey: string) {
+  sessionCache.set(cacheKey, result)
+  const base = directoryPickerBrowseEndpoint(props.storageId, props.providerConnectionId)
+  if (result.current_token) sessionCache.set(browseCacheKey(base, result.current_token), result)
+  showListing(result, cacheKey)
+}
+
+function showListing(result: DirectoryListing, cacheKey: string) {
+  listing.value = result
+  currentCacheKey = cacheKey
+}
+
+function endSession() {
+  cancelRequest()
+  sessionCache.clear()
+  restrictedHistory.length = 0
+  currentCacheKey = ''
+  loading.value = false
+  loadingMore.value = false
 }
 
 function choose(path: string, token: string) {
@@ -124,7 +198,7 @@ function choose(path: string, token: string) {
 }
 
 function close() {
-	cancelRequest()
+  endSession()
   emit('close')
   nextTick(() => previousFocus?.focus())
 }
@@ -166,7 +240,7 @@ function onKeydown(event: KeyboardEvent) {
         <div class="mt-4 flex flex-wrap gap-2">
           <button v-if="withinStorage() && restrictedHistory.length" type="button" class="btn-secondary" :disabled="loading" @click="backWithinStorage">返回上级</button>
           <button v-else-if="listing?.parent_token && !withinStorage()" type="button" class="btn-secondary" :disabled="loading" @click="browse(listing.parent_token)">返回上级</button>
-          <button type="button" class="btn-secondary" :disabled="loading" @click="listing?.current_token ? browse(listing.current_token) : loadInitial()">刷新</button>
+          <button type="button" class="btn-secondary" :disabled="loading" @click="refreshCurrent">刷新</button>
         </div>
 
         <p v-if="error" role="alert" class="semantic-error p-3 text-sm">{{ error }}</p>

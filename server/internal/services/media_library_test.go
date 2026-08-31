@@ -117,6 +117,23 @@ func TestMediaLibraryEntryProjectionChangedIgnoresPhysicalFacts(t *testing.T) {
 	}
 }
 
+func TestMediaLibraryNoOpRoutineScanDoesNotRequireArtifactGeneration(t *testing.T) {
+	run := models.MediaLibraryScanRun{Status: "success", Partial: false}
+	for _, kind := range []string{"event", "incremental", "full"} {
+		if mediaLibraryArtifactGenerationRequired(kind, run, false) {
+			t.Fatalf("complete no-op %s scan scheduled artifacts", kind)
+		}
+	}
+	run.Added = 1
+	if !mediaLibraryArtifactGenerationRequired("event", run, false) {
+		t.Fatal("catalog change did not schedule artifacts")
+	}
+	run.Added = 0
+	if !mediaLibraryArtifactGenerationRequired("event", run, true) || !mediaLibraryArtifactGenerationRequired("catch_up", run, false) {
+		t.Fatal("metadata or policy reconciliation did not schedule artifacts")
+	}
+}
+
 func TestMediaLibraryScanUsesSharedTMDBRecognitionAndPersistentCache(t *testing.T) {
 	service, db, actor, storage, profile := mediaLibraryTestService(t)
 	if err := os.WriteFile(filepath.Join(storage.RootPath, "Seven.Samurai.1954.1080p.BluRay.mkv"), []byte("media"), 0o600); err != nil {
@@ -673,6 +690,22 @@ func TestPan115MediaLibraryArtifactPolicyRequiresCapabilitiesAndProjectionRoot(t
 	if !created.STRMEnabled || !created.SignedProxyEnabled || !created.MetadataArtifactsEnabled || created.STRMLocalPath != filepath.Clean(projection) || created.UploadSidecars {
 		t.Fatalf("artifact policy=%+v", created.MediaLibrary)
 	}
+	listener := models.Downloader{ID: "pan115-listener", OwnerID: actor.User.ID, Name: "Listener", NameNormalized: "pan115-listener", Type: models.DownloaderTypePan115Offline, StorageID: &storage.ID, ProviderDirectoryID: "listener-root", AutoListenLifeEvents: true, Enabled: true, CapabilitiesJSON: `{}`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.MediaLibrary{}).Where("id = ?", created.ID).Update("enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	input.Enabled = true
+	driver.statCalls = 0
+	if _, err := service.validateInput(context.Background(), created.ID, actor, input); err != nil {
+		t.Fatalf("ordinary enabled-library edit failed: %v", err)
+	}
+	if driver.statCalls != 0 {
+		t.Fatalf("ordinary media-library edit repeated provider validation: %d stat calls", driver.statCalls)
+	}
+	input.Enabled = false
 
 	input.Name = "Missing projection"
 	input.RelativeRoot = "/other"

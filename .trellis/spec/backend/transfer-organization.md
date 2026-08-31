@@ -257,12 +257,15 @@ POST /api/v1/transfers/{id}/deletion-confirm
 
 - `record_only` performs zero provider I/O. Provider-backed preview work has one Server-side 45-second deadline; the browser uses an AbortSignal and a 50-second ceiling.
 - 115 pacing has independent lanes for list/path lookup, mkdir, move, copy, rename, recycle/purge and offline/share operations, plus one shared risk-backoff controller.
+- Optional provider acceleration is `cloud.DirectoryPathResolver.ResolveDirectory(context.Context, absoluteProviderPath) (cloud.Item, error)`. Read callers attach exactly one of `ReadClassInteractive`, `ReadClassPipeline`, or the conservative default `ReadClassBackground` to the request context; all classes still share the Connection call-slot bound and 405/429 recovery state.
 
 ### 3. Contracts
 
 - Episode precedence is explicit manual per-file correction, then validated `identity_snapshot.episodes[relative_path]`, then deterministic package parsing, then task-level automatic `scrape_season/scrape_episode` only when there is one video or every structured file agrees. A task-level automatic season must never overwrite conflicting per-file facts in a multi-season package.
 - Validation, target planning, `plan_summary_json`, `MediaManagedItem`, catalog projection and corrective reorganization consume the same resolved per-file fact map. Existing-task repair correlates the original manifest by stable provider item ID plus size and available SHA1; missing, conflicting or changed identity fails closed.
 - Build and persist the target directory DAG once per plan. Within one task/attempt, deduplicate directory lookup/creation and reuse validated directory IDs. Healthy mkdir has no unconditional two-second delay; ordinary queueing is not risk backoff.
+- A pure route preview uses only persisted Storage/Downloader/MediaLibrary identity and capability snapshots and performs zero provider calls. Enqueue and worker execution remain authority boundaries: enqueue revalidates the frozen roots once, and an active 115 transfer may resolve a complete target path once, compare the returned stable ID, list each unique conflict parent once, mutate in bounded batches, invalidate affected cache entries, and perform a fresh reconciliation read.
+- Interactive directory browsing and active transfer reads may use provider-specific low-latency lanes, while background scans are bounded to at most one shared read slot. Separate limiters do not bypass the shared call slots, risk generation, circuit state, cancellation, or endpoint-specific mutation lanes.
 - Only provider 405/429 or an explicit operation-frequency/risk response activates shared jittered exponential backoff. A late success from an older request must not clear a newer shared backoff generation. Phase DTOs describe the real action (`checking_directories`, `checking_conflicts`, `moving`, `renaming`, `reconciling`, `risk_backoff`).
 - 115 transfer observability uses a request/task-scoped concurrent-safe collector carried by `context.Context`, never connection-global cumulative counters. The completion log may expose only aggregate call counts and milliseconds for provider wait, SDK call, target listing, batch mutation and DB checkpoint; labels cannot contain paths, names, provider IDs, credentials or response bodies.
 - Deletion is convergent: an already-missing provider task, source item, library item, package root or empty directory counts as already removed. Source items proven outside the immutable `DownloadTask.provider_output_id` package root are `detached` and retained; only still-present items proven beneath that exact root may be recycled.
@@ -278,6 +281,8 @@ POST /api/v1/transfers/{id}/deletion-confirm
 | Multi-season manifest plus task `scrape_season=2` | Keep each structured S01-S04 fact; do not flatten the package to S02 |
 | Snapshot path/provider item/size/SHA1 is missing or inconsistent | Reject repair before moving or renaming anything |
 | Same 115 target directory is used by many files | Resolve/create once per attempt and reuse the validated ID |
+| Route preview covers one or many 115 libraries | Use persisted snapshots only; make zero `Stat`, `List`, or path-resolution calls |
+| Complete provider path resolves to a different stable ID | Fail the boundary proof; do not fall back to matching by name |
 | Healthy mkdir/move/rename response | Advance the real phase; do not sleep in or label it risk backoff |
 | Provider returns 405/429/explicit frequency control | Enter shared bounded backoff with jitter and a visible retry time |
 | `record_only` preview | Use local DB/lease facts only and make zero provider calls |
@@ -289,6 +294,7 @@ POST /api/v1/transfers/{id}/deletion-confirm
 ### 5. Good / Base / Bad Cases
 
 - Good: a 28-file package resolves to S01 6, S02 6, S03 8 and S04 8, reuses four season-directory identities and repairs only manifest-owned 115 items.
+- Good: a one-file same-115 move into an existing target leaf performs one root/path proof, one unique-parent conflict listing, one batch move and one fresh reconciliation instead of an ancestor-depth walk.
 - Good: a cancelled 23/28 task with 38 source entries across five parents lists those parents once, reports missing/detached counts, and returns a safe preview within the request deadline.
 - Base: every source item and provider task was manually removed; confirmation deletes the terminal local history without touching the media library.
 - Bad: write `ScrapeSeason` over every file, sleep two seconds before each directory action, or recycle a provider item solely because its historical ID still appears in a manifest.
@@ -298,6 +304,7 @@ POST /api/v1/transfers/{id}/deletion-confirm
 - Use the untouched four-season 28-file fixture and assert unique targets plus exact 6/6/8/8 season counts; cover explicit override, single-file fallback and conflicting snapshot failure.
 - Reorganization tests assert original provider item ID + size + SHA1 correlation, missing SHA1 fail-closed behavior, and no mutation before the complete repair plan is verified.
 - 115 scheduler tests assert independent operation lanes, per-attempt directory de-duplication, no fixed healthy-mkdir delay, true 405/429 backoff, jitter/circuit recovery and late-success generation safety.
+- Route and path-resolution tests assert preview zero-I/O for multiple libraries, depth-independent complete-path resolution, interactive/pipeline progress while a background scan runs, context cancellation and safe ancestry fallback for providers or legacy Storage rows without a usable display path.
 - 115 batch tests assert the 100-ID ceiling, unique-parent call scaling, copy temporary-name collision fallback, provider-success/checkpoint-loss replay, partial result convergence, overwrite/cleanup reconciliation and pre-call context cancellation.
 - Deletion tests assert zero provider calls for `record_only`, parent-batched source listing, provider-task/root/item missing idempotency, detached retention, immutable package-root confinement, live-lease blocking, 45-second context cancellation and persisted failure codes.
 - Web tests assert real phase wording, risk wording only for `risk_backoff`, AbortController cleanup, 50-second timeout recovery and preserved task state after a closed/failed preview.

@@ -83,7 +83,7 @@ func (s *DownloadService) PreviewRoutes(ctx context.Context, actor Actor, input 
 	preview := DownloadRoutePreview{DownloaderID: downloader.ID, SourceKind: input.SourceKind, Options: make([]DownloadRouteTargetOption, 0, len(rows))}
 	for _, row := range rows {
 		option := DownloadRouteTargetOption{MediaLibraryID: row.ID, LibraryName: row.Name, StorageName: row.StorageName, ExpectedBytes: cloneOptionalInt64(input.ExpectedBytes)}
-		target, _, err := s.snapshotDownloadTarget(ctx, downloader, row.MediaLibrary, input.SourceKind)
+		target, _, err := s.previewDownloadTarget(ctx, downloader, row.MediaLibrary, input.SourceKind)
 		if err != nil {
 			option.ReasonCode = ErrorCode(err)
 			option.ReasonMessage = safeErrorMessage(err, "该媒体库当前不可作为目标")
@@ -194,7 +194,11 @@ func (s *DownloadService) validatePreviewSource(downloader models.Downloader, so
 	return nil
 }
 
-func (s *DownloadService) buildDownloadTargetSnapshot(ctx context.Context, downloader models.Downloader, library models.MediaLibrary, sourceKind string) (*downloadTargetSnapshot, models.MediaClassificationProfile, error) {
+func (s *DownloadService) previewDownloadTarget(ctx context.Context, downloader models.Downloader, library models.MediaLibrary, sourceKind string) (*downloadTargetSnapshot, models.MediaClassificationProfile, error) {
+	return s.buildDownloadTargetSnapshot(ctx, downloader, library, sourceKind, false)
+}
+
+func (s *DownloadService) buildDownloadTargetSnapshot(ctx context.Context, downloader models.Downloader, library models.MediaLibrary, sourceKind string, validateProviderRoots bool) (*downloadTargetSnapshot, models.MediaClassificationProfile, error) {
 	var targetStorage models.Storage
 	if err := s.db.WithContext(ctx).First(&targetStorage, library.StorageID).Error; err != nil || !targetStorage.Enabled {
 		return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryStorageUnavailable, "目标媒体库 Storage 不可用", err)
@@ -243,9 +247,11 @@ func (s *DownloadService) buildDownloadTargetSnapshot(ctx context.Context, downl
 				return nil, models.MediaClassificationProfile{}, appError(CodeTransferRouteUnsupported, "115 目标缺少跨数据源文件上传能力", nil)
 			}
 		}
-		root, rootErr := providerItemWithinRoot(ctx, driver, library.ProviderRootID, targetStorage.RootPath)
-		if rootErr != nil || !root.IsDir {
-			return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 目标媒体库目录不可用", rootErr)
+		if validateProviderRoots {
+			root, rootErr := providerItemWithinRoot(cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassPipeline), driver, library.ProviderRootID, targetStorage.RootPath)
+			if rootErr != nil || !root.IsDir {
+				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 目标媒体库目录不可用", rootErr)
+			}
 		}
 		value := *targetStorage.ConnectionID
 		targetConnectionID, targetProviderRootID = &value, strings.TrimSpace(library.ProviderRootID)
@@ -270,9 +276,11 @@ func (s *DownloadService) buildDownloadTargetSnapshot(ctx context.Context, downl
 			if ingestProviderRootID == "" {
 				return nil, models.MediaClassificationProfile{}, appError(CodeDownloaderStorageUnavailable, "115 下载器目录不可用", nil)
 			}
-			ingestRoot, rootErr := providerItemWithinRoot(ctx, sourceDriver, ingestProviderRootID, sourceStorage.RootPath)
-			if rootErr != nil || !ingestRoot.IsDir {
-				return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 下载目录不可用", rootErr)
+			if validateProviderRoots {
+				ingestRoot, rootErr := providerItemWithinRoot(cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassPipeline), sourceDriver, ingestProviderRootID, sourceStorage.RootPath)
+				if rootErr != nil || !ingestRoot.IsDir {
+					return nil, models.MediaClassificationProfile{}, appError(CodeMediaLibraryPathInvalid, "115 下载目录不可用", rootErr)
+				}
 			}
 		}
 	}

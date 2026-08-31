@@ -90,6 +90,7 @@ type STRMManagementService struct {
 	cleanupKey []byte
 	log        zerolog.Logger
 	removeFile func(string) error
+	removeDir  func(string) error
 }
 
 func NewSTRMManagementService(db *gorm.DB, audit *AuditService, queue *QueueService, libraries *MediaLibraryService, artifacts *MediaArtifactService, loggers ...zerolog.Logger) *STRMManagementService {
@@ -101,7 +102,7 @@ func NewSTRMManagementService(db *gorm.DB, audit *AuditService, queue *QueueServ
 	if len(loggers) > 0 {
 		log = loggers[0]
 	}
-	return &STRMManagementService{db: db, audit: audit, queue: queue, libraries: libraries, artifacts: artifacts, cleanupKey: key, log: log, removeFile: os.Remove}
+	return &STRMManagementService{db: db, audit: audit, queue: queue, libraries: libraries, artifacts: artifacts, cleanupKey: key, log: log, removeFile: os.Remove, removeDir: os.Remove}
 }
 
 func (s *STRMManagementService) Libraries(actor Actor) ([]STRMLibraryOverview, error) {
@@ -507,21 +508,21 @@ func (s *STRMManagementService) ExecuteCleanup(actor Actor, libraryID uint, toke
 	}
 	started := time.Now()
 	serverlog.OperationArtifactCleanup.Event(s.log.Info()).Uint("library_id", libraryID).Uint64("generation", plan.Library.ArtifactAppliedGeneration).Msg(serverlog.OperationArtifactCleanup.Message("人工清理开始"))
-	removed, executeErr := s.executeCleanupPlan(context.Background(), plan)
+	removed, removedDirectories, executeErr := s.executeCleanupPlan(context.Background(), plan)
 	if executeErr != nil {
 		code := cleanupStableCode(executeErr)
-		_ = s.audit.Record(nil, &actor.User.ID, "strm.cleanup", "media_library", strconv.FormatUint(uint64(libraryID), 10), "failed", map[string]any{"count": removed, "error_code": code}, request)
-		serverlog.OperationArtifactCleanup.Event(s.log.Error()).Uint("library_id", libraryID).Uint64("generation", plan.Library.ArtifactAppliedGeneration).Int("removed", removed).Str("error_code", code).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("人工清理失败"))
+		_ = s.audit.Record(nil, &actor.User.ID, "strm.cleanup", "media_library", strconv.FormatUint(uint64(libraryID), 10), "failed", map[string]any{"count": removed, "directory_count": removedDirectories, "error_code": code}, request)
+		serverlog.OperationArtifactCleanup.Event(s.log.Error()).Uint("library_id", libraryID).Uint64("generation", plan.Library.ArtifactAppliedGeneration).Int("removed", removed).Int("removed_directories", removedDirectories).Str("error_code", code).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("人工清理失败"))
 		return removed, appError(CodeConflict, "STRM 产物清理安全检查失败", nil)
 	}
 	if removed > 0 {
 		if err := s.db.Transaction(func(tx *gorm.DB) error {
-			return s.audit.Record(tx, &actor.User.ID, "strm.cleanup", "media_library", strconv.FormatUint(uint64(libraryID), 10), "success", map[string]any{"count": removed}, request)
+			return s.audit.Record(tx, &actor.User.ID, "strm.cleanup", "media_library", strconv.FormatUint(uint64(libraryID), 10), "success", map[string]any{"count": removed, "directory_count": removedDirectories}, request)
 		}); err != nil {
 			return 0, err
 		}
 	}
-	serverlog.OperationArtifactCleanup.Event(s.log.Info()).Uint("library_id", libraryID).Uint64("generation", plan.Library.ArtifactAppliedGeneration).Int("removed", removed).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("人工清理完成"))
+	serverlog.OperationArtifactCleanup.Event(s.log.Info()).Uint("library_id", libraryID).Uint64("generation", plan.Library.ArtifactAppliedGeneration).Int("removed", removed).Int("removed_directories", removedDirectories).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("人工清理完成"))
 	return removed, nil
 }
 
@@ -534,7 +535,7 @@ func (s *STRMManagementService) lockCleanupBoundary(libraryID uint) func() {
 	return lock.Unlock
 }
 
-func (s *STRMManagementService) executeCleanupPlan(ctx context.Context, plan artifactCleanupPlan) (int, error) {
+func (s *STRMManagementService) executeCleanupPlan(ctx context.Context, plan artifactCleanupPlan) (int, int, error) {
 	guard := artifactCleanupGuard{LibraryID: plan.Library.ID, Generation: plan.Library.ArtifactGeneration, AppliedGeneration: plan.Library.ArtifactAppliedGeneration, RootIdentity: plan.RootIdentity, Snapshot: plan.Snapshot, Automatic: plan.Automatic}
 	if plan.Run != nil {
 		guard.RunID = plan.Run.ID
@@ -542,24 +543,25 @@ func (s *STRMManagementService) executeCleanupPlan(ctx context.Context, plan art
 		guard.AppliedGeneration = plan.Run.Generation
 	}
 	removed := 0
+	removedDirectories := 0
 	for _, artifact := range plan.Artifacts {
 		if err := ctx.Err(); err != nil {
-			return removed, cleanupFailure("artifact_cleanup_context_canceled")
+			return removed, removedDirectories, cleanupFailure("artifact_cleanup_context_canceled")
 		}
 		fresh, err := s.buildCleanupPlan(guard.LibraryID, guard.RunID, guard.Automatic)
 		if err != nil {
-			return removed, err
+			return removed, removedDirectories, err
 		}
 		if fresh.Library.ArtifactGeneration != guard.Generation || fresh.Library.ArtifactAppliedGeneration != guard.AppliedGeneration || fresh.RootIdentity != guard.RootIdentity || !hmac.Equal([]byte(fresh.Snapshot), []byte(guard.Snapshot)) {
-			return removed, cleanupFailure("artifact_cleanup_boundary_changed")
+			return removed, removedDirectories, cleanupFailure("artifact_cleanup_boundary_changed")
 		}
 		current, ok := cleanupArtifactByID(fresh.Artifacts, artifact.ID)
 		if !ok || current.RunID != artifact.RunID || current.RelativePath != artifact.RelativePath || current.ContentFingerprint != artifact.ContentFingerprint || !current.Managed || current.Active || current.TargetKind != models.MediaArtifactTargetLocalProjection {
-			return removed, cleanupFailure("artifact_cleanup_ownership_changed")
+			return removed, removedDirectories, cleanupFailure("artifact_cleanup_ownership_changed")
 		}
 		originalStatus := current.Status
 		if err := s.claimCleanupArtifact(fresh, current); err != nil {
-			return removed, err
+			return removed, removedDirectories, err
 		}
 		expectedArtifacts := append([]models.MediaArtifact(nil), fresh.Artifacts...)
 		for index := range expectedArtifacts {
@@ -573,47 +575,53 @@ func (s *STRMManagementService) executeCleanupPlan(ctx context.Context, plan art
 		if err != nil || fresh.Library.ArtifactGeneration != guard.Generation || fresh.Library.ArtifactAppliedGeneration != guard.AppliedGeneration || fresh.RootIdentity != guard.RootIdentity || !hmac.Equal([]byte(fresh.Snapshot), []byte(expectedSnapshot)) {
 			s.restoreCleanupArtifact(current, originalStatus)
 			if err != nil {
-				return removed, err
+				return removed, removedDirectories, err
 			}
-			return removed, cleanupFailure("artifact_cleanup_boundary_changed")
+			return removed, removedDirectories, cleanupFailure("artifact_cleanup_boundary_changed")
 		}
 		guard.Snapshot = fresh.Snapshot
 		current.Status = models.MediaArtifactStatusCleanup
 		cleanupTarget, ok := fresh.Targets[current.ID]
 		if !ok {
 			s.restoreCleanupArtifact(current, originalStatus)
-			return removed, cleanupFailure("artifact_cleanup_ownership_changed")
+			return removed, removedDirectories, cleanupFailure("artifact_cleanup_ownership_changed")
 		}
 		target, exists, err := safeCleanupTarget(cleanupTarget.Root, cleanupTarget.RootIdentity, current.RelativePath)
 		if err != nil {
 			s.restoreCleanupArtifact(current, originalStatus)
-			return removed, err
+			return removed, removedDirectories, err
 		}
 		if exists {
 			if _, stillExists, err := safeCleanupTarget(cleanupTarget.Root, cleanupTarget.RootIdentity, current.RelativePath); err != nil || !stillExists {
 				s.restoreCleanupArtifact(current, originalStatus)
 				if err != nil {
-					return removed, err
+					return removed, removedDirectories, err
 				}
-				return removed, cleanupFailure("artifact_cleanup_target_changed")
+				return removed, removedDirectories, cleanupFailure("artifact_cleanup_target_changed")
 			}
 			if err := s.removeFile(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 				s.restoreCleanupArtifact(current, originalStatus)
-				return removed, cleanupFailure("artifact_cleanup_delete_failed")
+				return removed, removedDirectories, cleanupFailure("artifact_cleanup_delete_failed")
 			}
 		}
+		pruned, err := s.removeEmptyCleanupAncestors(ctx, cleanupTarget.Root, cleanupTarget.RootIdentity, target)
+		removedDirectories += pruned
+		if err != nil {
+			s.restoreCleanupArtifact(current, originalStatus)
+			return removed, removedDirectories, err
+		}
 		if err := s.deleteClaimedCleanupArtifact(plan, current); err != nil {
-			return removed, err
+			return removed, removedDirectories, err
 		}
 		removed++
 		next, err := s.buildCleanupPlan(guard.LibraryID, guard.RunID, guard.Automatic)
 		if err != nil {
-			return removed, err
+			return removed, removedDirectories, err
 		}
 		guard.RootIdentity = next.RootIdentity
 		guard.Snapshot = next.Snapshot
 	}
-	return removed, nil
+	return removed, removedDirectories, nil
 }
 
 func (s *STRMManagementService) claimCleanupArtifact(plan artifactCleanupPlan, artifact models.MediaArtifact) error {
@@ -735,6 +743,139 @@ func safeCleanupTarget(root, rootIdentity, relativePath string) (string, bool, e
 	return target, true, nil
 }
 
+// removeEmptyCleanupAncestors converges only the lexical ancestor chain owned by
+// one claimed artifact. It intentionally uses non-recursive directory removal:
+// a user file, an active artifact, or any other entry stops convergence without
+// being touched. The projection root itself is never passed to removeDir.
+func (s *STRMManagementService) removeEmptyCleanupAncestors(ctx context.Context, root, rootIdentity, target string) (int, error) {
+	root = filepath.Clean(root)
+	current := filepath.Dir(target)
+	if _, err := storagefs.Constrain(root, current); err != nil {
+		return 0, cleanupFailure("artifact_cleanup_path_outside_root")
+	}
+	removed := 0
+	for storagefs.NormalizeForComparison(current) != storagefs.NormalizeForComparison(root) {
+		if err := ctx.Err(); err != nil {
+			return removed, cleanupFailure("artifact_cleanup_context_canceled")
+		}
+		parent := filepath.Dir(current)
+		directory, exists, err := safeCleanupDirectory(root, rootIdentity, current)
+		if err != nil {
+			return removed, err
+		}
+		if !exists {
+			current = parent
+			continue
+		}
+		empty, exists, err := cleanupDirectoryEmpty(directory)
+		if err != nil {
+			return removed, cleanupFailure("artifact_cleanup_directory_unreadable")
+		}
+		if !exists {
+			current = parent
+			continue
+		}
+		if !empty {
+			return removed, nil
+		}
+		// Revalidate after reading and immediately before the destructive call so
+		// a directory replaced by a symlink/junction is rejected.
+		directory, exists, err = safeCleanupDirectory(root, rootIdentity, current)
+		if err != nil {
+			return removed, err
+		}
+		if !exists {
+			current = parent
+			continue
+		}
+		if err := s.removeDir(directory); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				current = parent
+				continue
+			}
+			// A concurrent creator wins over cleanup. Confirming a new entry makes
+			// this an ordinary convergence stop rather than a failed deletion.
+			empty, exists, inspectErr := cleanupDirectoryEmpty(directory)
+			if inspectErr != nil {
+				return removed, cleanupFailure("artifact_cleanup_directory_unreadable")
+			}
+			if !exists {
+				current = parent
+				continue
+			}
+			if !empty {
+				return removed, nil
+			}
+			return removed, cleanupFailure("artifact_cleanup_directory_delete_failed")
+		}
+		removed++
+		current = parent
+	}
+	return removed, nil
+}
+
+func safeCleanupDirectory(root, rootIdentity, candidate string) (string, bool, error) {
+	directory, err := storagefs.Constrain(root, candidate)
+	if err != nil {
+		return "", false, cleanupFailure("artifact_cleanup_path_outside_root")
+	}
+	_, currentIdentity, err := canonicalProjectionRoot(root)
+	if err != nil || currentIdentity != rootIdentity {
+		return "", false, cleanupFailure("artifact_cleanup_root_changed")
+	}
+	relative, err := filepath.Rel(root, directory)
+	if err != nil || filepath.IsAbs(relative) || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false, cleanupFailure("artifact_cleanup_path_outside_root")
+	}
+	current := root
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return directory, false, nil
+		}
+		if statErr != nil {
+			return "", false, cleanupFailure("artifact_cleanup_directory_unreadable")
+		}
+		if !info.IsDir() || storagefs.IsReparsePoint(current, info) {
+			return "", false, cleanupFailure("artifact_cleanup_reparse_boundary")
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return directory, false, nil
+		}
+		return "", false, cleanupFailure("artifact_cleanup_directory_unreadable")
+	}
+	if _, err := storagefs.Constrain(rootIdentity, storagefs.NormalizeForComparison(resolved)); err != nil {
+		return "", false, cleanupFailure("artifact_cleanup_reparse_boundary")
+	}
+	return directory, true, nil
+}
+
+func cleanupDirectoryEmpty(path string) (empty bool, exists bool, err error) {
+	directory, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, true, err
+	}
+	_, readErr := directory.Readdirnames(1)
+	closeErr := directory.Close()
+	if readErr == nil {
+		return false, true, closeErr
+	}
+	if !errors.Is(readErr, io.EOF) {
+		return false, true, readErr
+	}
+	if closeErr != nil {
+		return false, true, closeErr
+	}
+	return true, true, nil
+}
+
 func (s *STRMManagementService) AutoCleanup(ctx context.Context, runID string) ArtifactCleanupResult {
 	var run models.MediaArtifactRun
 	if err := s.db.First(&run, "id = ?", runID).Error; err != nil {
@@ -765,7 +906,7 @@ func (s *STRMManagementService) AutoCleanup(ctx context.Context, runID string) A
 	if err != nil {
 		var skip *artifactCleanupSkip
 		if errors.As(err, &skip) {
-			if persistErr := s.persistAutoCleanup(run, 0, "", "skipped", skip.reason); persistErr != nil {
+			if persistErr := s.persistAutoCleanup(run, 0, 0, "", "skipped", skip.reason); persistErr != nil {
 				code := "artifact_cleanup_state_failed"
 				serverlog.OperationArtifactCleanup.Event(s.log.Error()).Uint("library_id", run.LibraryID).Str("task_id", run.ID).Uint64("generation", run.Generation).Str("error_code", code).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("自动清理失败"))
 				return ArtifactCleanupResult{ErrorCode: code}
@@ -774,29 +915,29 @@ func (s *STRMManagementService) AutoCleanup(ctx context.Context, runID string) A
 			return ArtifactCleanupResult{Skipped: true}
 		}
 		code := cleanupStableCode(err)
-		_ = s.persistAutoCleanup(run, 0, code, "failed", code)
+		_ = s.persistAutoCleanup(run, 0, 0, code, "failed", code)
 		serverlog.OperationArtifactCleanup.Event(s.log.Error()).Uint("library_id", run.LibraryID).Str("task_id", run.ID).Uint64("generation", run.Generation).Str("error_code", code).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("自动清理失败"))
 		return ArtifactCleanupResult{ErrorCode: code}
 	}
-	removed, executeErr := s.executeCleanupPlan(ctx, plan)
+	removed, removedDirectories, executeErr := s.executeCleanupPlan(ctx, plan)
 	code := ""
 	outcome := "success"
 	if executeErr != nil {
 		code = cleanupStableCode(executeErr)
 		outcome = "failed"
 	}
-	if err := s.persistAutoCleanup(run, removed, code, outcome, code); err != nil {
+	if err := s.persistAutoCleanup(run, removed, removedDirectories, code, outcome, code); err != nil {
 		code = "artifact_cleanup_state_failed"
 	}
 	if code != "" {
-		serverlog.OperationArtifactCleanup.Event(s.log.Error()).Uint("library_id", run.LibraryID).Str("task_id", run.ID).Uint64("generation", run.Generation).Int("removed", removed).Str("error_code", code).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("自动清理失败"))
+		serverlog.OperationArtifactCleanup.Event(s.log.Error()).Uint("library_id", run.LibraryID).Str("task_id", run.ID).Uint64("generation", run.Generation).Int("removed", removed).Int("removed_directories", removedDirectories).Str("error_code", code).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("自动清理失败"))
 		return ArtifactCleanupResult{Removed: removed, ErrorCode: code}
 	}
-	serverlog.OperationArtifactCleanup.Event(s.log.Info()).Uint("library_id", run.LibraryID).Str("task_id", run.ID).Uint64("generation", run.Generation).Int("removed", removed).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("自动清理完成"))
+	serverlog.OperationArtifactCleanup.Event(s.log.Info()).Uint("library_id", run.LibraryID).Str("task_id", run.ID).Uint64("generation", run.Generation).Int("removed", removed).Int("removed_directories", removedDirectories).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(serverlog.OperationArtifactCleanup.Message("自动清理完成"))
 	return ArtifactCleanupResult{Removed: removed}
 }
 
-func (s *STRMManagementService) persistAutoCleanup(run models.MediaArtifactRun, removed int, errorCode, outcome, auditCode string) error {
+func (s *STRMManagementService) persistAutoCleanup(run models.MediaArtifactRun, removed, removedDirectories int, errorCode, outcome, auditCode string) error {
 	now := time.Now().UTC()
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		cleanupStatus := models.MediaArtifactCleanupCompleted
@@ -819,7 +960,7 @@ func (s *STRMManagementService) persistAutoCleanup(run models.MediaArtifactRun, 
 				return result.Error
 			}
 		}
-		metadata := map[string]any{"run_id": run.ID, "generation": run.Generation, "count": removed, "total_count": current.RemovedCount}
+		metadata := map[string]any{"run_id": run.ID, "generation": run.Generation, "count": removed, "directory_count": removedDirectories, "total_count": current.RemovedCount}
 		if auditCode != "" {
 			if outcome == "skipped" {
 				metadata["reason_code"] = auditCode

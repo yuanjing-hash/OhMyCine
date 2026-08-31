@@ -104,6 +104,21 @@ func createAutoCleanupScenario(t *testing.T, service *STRMManagementService, lib
 	return run, artifact, path
 }
 
+func relocateCleanupArtifact(t *testing.T, service *STRMManagementService, artifact models.MediaArtifact, source, root, relativePath string) string {
+	t.Helper()
+	target := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(relativePath, "/")))
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(source, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.Model(&models.MediaArtifact{}).Where("id = ?", artifact.ID).Update("relative_path", relativePath).Error; err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
 func TestSTRMManagementReconcileUsesDurableQueue(t *testing.T) {
 	service, queue, actor, library, _ := strmManagementFixture(t)
 	job, err := service.RequestReconcile(actor, library.ID, "full")
@@ -319,7 +334,11 @@ func TestSTRMManualCleanupCanConfirmArtifactsFromPreviousProjectionRoot(t *testi
 	if err := service.db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
-	stalePaths := []string{filepath.Join(oldRoot, "stale.strm"), filepath.Join(oldRoot, "stale.nfo")}
+	oldWorkDirectory := filepath.Join(oldRoot, "电影", "外语电影", "七武士 (1954)")
+	if err := os.MkdirAll(oldWorkDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stalePaths := []string{filepath.Join(oldWorkDirectory, "七武士 (1954).strm"), filepath.Join(oldWorkDirectory, "七武士 (1954).nfo")}
 	for index, stalePath := range stalePaths {
 		if err := os.WriteFile(stalePath, []byte("stale\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -328,7 +347,11 @@ func TestSTRMManualCleanupCanConfirmArtifactsFromPreviousProjectionRoot(t *testi
 		if index == 1 {
 			kind = models.MediaArtifactKindNFO
 		}
-		artifact := models.MediaArtifact{OpaqueID: uuid.NewString(), RunID: run.ID, LibraryID: library.ID, Kind: kind, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/" + filepath.Base(stalePath), ContentFingerprint: strings.Repeat("a", 64), Managed: true, Active: false, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+		relativePath, err := filepath.Rel(oldRoot, stalePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifact := models.MediaArtifact{OpaqueID: uuid.NewString(), RunID: run.ID, LibraryID: library.ID, Kind: kind, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/" + filepath.ToSlash(relativePath), ContentFingerprint: strings.Repeat("a", 64), Managed: true, Active: false, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
 		if err := service.db.Create(&artifact).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -352,11 +375,19 @@ func TestSTRMManualCleanupCanConfirmArtifactsFromPreviousProjectionRoot(t *testi
 	if err := service.db.Create(&currentRun).Error; err != nil {
 		t.Fatal(err)
 	}
-	currentStalePath := filepath.Join(newRoot, "current-stale.strm")
+	currentWorkDirectory := filepath.Join(newRoot, "电视剧", "剧情", "当前剧", "Season 01")
+	if err := os.MkdirAll(currentWorkDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	currentStalePath := filepath.Join(currentWorkDirectory, "当前剧 S01E01.strm")
 	if err := os.WriteFile(currentStalePath, []byte("stale\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	currentArtifact := models.MediaArtifact{OpaqueID: uuid.NewString(), RunID: currentRun.ID, LibraryID: library.ID, Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/current-stale.strm", ContentFingerprint: strings.Repeat("b", 64), Managed: true, Active: false, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	currentRelativePath, err := filepath.Rel(newRoot, currentStalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentArtifact := models.MediaArtifact{OpaqueID: uuid.NewString(), RunID: currentRun.ID, LibraryID: library.ID, Kind: models.MediaArtifactKindSTRM, TargetKind: models.MediaArtifactTargetLocalProjection, RelativePath: "/" + filepath.ToSlash(currentRelativePath), ContentFingerprint: strings.Repeat("b", 64), Managed: true, Active: false, Status: models.MediaArtifactStatusCompleted, CreatedAt: now, UpdatedAt: now}
 	if err := service.db.Create(&currentArtifact).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -377,6 +408,16 @@ func TestSTRMManualCleanupCanConfirmArtifactsFromPreviousProjectionRoot(t *testi
 			t.Fatalf("old-root artifact remains: %v", err)
 		}
 	}
+	for _, directory := range []string{oldWorkDirectory, filepath.Join(oldRoot, "电影"), currentWorkDirectory, filepath.Join(newRoot, "电视剧")} {
+		if _, err := os.Stat(directory); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("empty artifact directory remains: %s err=%v", directory, err)
+		}
+	}
+	for _, projectionRoot := range []string{oldRoot, newRoot} {
+		if info, err := os.Stat(projectionRoot); err != nil || !info.IsDir() {
+			t.Fatalf("projection root removed: %s err=%v", projectionRoot, err)
+		}
+	}
 }
 
 func TestAutomaticSTRMCleanupAfterCompleteFullAndIncrementalScans(t *testing.T) {
@@ -384,6 +425,18 @@ func TestAutomaticSTRMCleanupAfterCompleteFullAndIncrementalScans(t *testing.T) 
 		t.Run(scanKind, func(t *testing.T) {
 			service, _, _, library, root := strmManagementFixture(t)
 			run, artifact, path := createAutoCleanupScenario(t, service, library, root, scanKind, false, models.MediaArtifactStatusCompleted)
+			workDirectory := filepath.Join(root, "电视剧", "剧情", "七武士", "Season 01")
+			if err := os.MkdirAll(workDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			nestedPath := filepath.Join(workDirectory, "七武士 S01E01.strm")
+			if err := os.Rename(path, nestedPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.db.Model(&models.MediaArtifact{}).Where("id = ?", artifact.ID).Update("relative_path", "/电视剧/剧情/七武士/Season 01/七武士 S01E01.strm").Error; err != nil {
+				t.Fatal(err)
+			}
+			path = nestedPath
 			result := service.AutoCleanup(context.Background(), run.ID)
 			if result.ErrorCode != "" || result.Skipped || result.Removed != 1 {
 				t.Fatalf("result=%+v", result)
@@ -394,6 +447,12 @@ func TestAutomaticSTRMCleanupAfterCompleteFullAndIncrementalScans(t *testing.T) 
 			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("stale file remains: %v", err)
 			}
+			if _, err := os.Stat(filepath.Join(root, "电视剧")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("empty classification tree remains: %v", err)
+			}
+			if info, err := os.Stat(root); err != nil || !info.IsDir() {
+				t.Fatalf("projection root removed: %v", err)
+			}
 			var count int64
 			if err := service.db.Model(&models.MediaArtifact{}).Where("id = ?", artifact.ID).Count(&count).Error; err != nil || count != 0 {
 				t.Fatalf("manifest count=%d err=%v", count, err)
@@ -402,7 +461,7 @@ func TestAutomaticSTRMCleanupAfterCompleteFullAndIncrementalScans(t *testing.T) 
 				t.Fatalf("run=%+v err=%v", run, err)
 			}
 			var audit models.AuditLog
-			if err := service.db.Where("action = ?", "strm.cleanup.auto").Order("id DESC").First(&audit).Error; err != nil || audit.ActorID != nil || strings.Contains(audit.Metadata, root) {
+			if err := service.db.Where("action = ?", "strm.cleanup.auto").Order("id DESC").First(&audit).Error; err != nil || audit.ActorID != nil || strings.Contains(audit.Metadata, root) || !strings.Contains(audit.Metadata, `"directory_count":4`) {
 				t.Fatalf("audit=%+v err=%v", audit, err)
 			}
 		})
@@ -496,6 +555,110 @@ func TestAutomaticSTRMCleanupIgnoresUnmanagedAndIsIdempotent(t *testing.T) {
 	}
 	if err := service.db.First(&run, "id = ?", run.ID).Error; err != nil || run.RemovedCount != 0 || run.CleanupStatus != models.MediaArtifactCleanupCompleted {
 		t.Fatalf("run=%+v err=%v", run, err)
+	}
+}
+
+func TestAutomaticSTRMCleanupPreservesNonEmptyArtifactAncestors(t *testing.T) {
+	service, _, _, library, root := strmManagementFixture(t)
+	run, artifact, original := createAutoCleanupScenario(t, service, library, root, "full", false, models.MediaArtifactStatusCompleted)
+	workDirectory := filepath.Join(root, "电影", "外语电影", "七武士 (1954)")
+	path := relocateCleanupArtifact(t, service, artifact, original, root, "/电影/外语电影/七武士 (1954)/七武士 (1954).strm")
+	userFile := filepath.Join(workDirectory, "用户说明.txt")
+	if err := os.WriteFile(userFile, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := service.AutoCleanup(context.Background(), run.ID)
+	if result.ErrorCode != "" || result.Removed != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed artifact remains: %v", err)
+	}
+	if content, err := os.ReadFile(userFile); err != nil || string(content) != "keep\n" {
+		t.Fatalf("user file content=%q err=%v", content, err)
+	}
+	if info, err := os.Stat(workDirectory); err != nil || !info.IsDir() {
+		t.Fatalf("non-empty work directory removed: %v", err)
+	}
+}
+
+func TestAutomaticSTRMCleanupRetriesDirectoryFailureAfterFileDeletion(t *testing.T) {
+	service, _, _, library, root := strmManagementFixture(t)
+	run, artifact, original := createAutoCleanupScenario(t, service, library, root, "full", false, models.MediaArtifactStatusCompleted)
+	path := relocateCleanupArtifact(t, service, artifact, original, root, "/电影/外语电影/七武士 (1954)/七武士 (1954).strm")
+	workDirectory := filepath.Dir(path)
+	service.removeDir = func(string) error { return errors.New("injected directory delete failure") }
+
+	first := service.AutoCleanup(context.Background(), run.ID)
+	if first.Removed != 0 || first.ErrorCode != "artifact_cleanup_directory_delete_failed" {
+		t.Fatalf("first=%+v", first)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact file was not converged: %v", err)
+	}
+	if info, err := os.Stat(workDirectory); err != nil || !info.IsDir() {
+		t.Fatalf("failed directory unexpectedly changed: %v", err)
+	}
+	var persisted models.MediaArtifact
+	if err := service.db.First(&persisted, "id = ?", artifact.ID).Error; err != nil || persisted.Status != models.MediaArtifactStatusCompleted {
+		t.Fatalf("retry manifest=%+v err=%v", persisted, err)
+	}
+	if err := service.db.First(&run, "id = ?", run.ID).Error; err != nil || run.CleanupStatus != models.MediaArtifactCleanupFailed || run.CleanupErrorCode != "artifact_cleanup_directory_delete_failed" || run.RemovedCount != 0 {
+		t.Fatalf("failed run=%+v err=%v", run, err)
+	}
+
+	service.removeDir = os.Remove
+	second := service.AutoCleanup(context.Background(), run.ID)
+	if second.ErrorCode != "" || second.Removed != 1 {
+		t.Fatalf("second=%+v", second)
+	}
+	if _, err := os.Stat(filepath.Join(root, "电影")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty tree remains after retry: %v", err)
+	}
+	var count int64
+	if err := service.db.Model(&models.MediaArtifact{}).Where("id = ?", artifact.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("manifest count=%d err=%v", count, err)
+	}
+}
+
+func TestAutomaticSTRMCleanupRejectsAncestorReparseCreatedAfterFileDelete(t *testing.T) {
+	service, _, _, library, root := strmManagementFixture(t)
+	run, artifact, original := createAutoCleanupScenario(t, service, library, root, "full", false, models.MediaArtifactStatusCompleted)
+	path := relocateCleanupArtifact(t, service, artifact, original, root, "/电影/七武士/七武士.strm")
+	workDirectory := filepath.Dir(path)
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probeLink := filepath.Join(t.TempDir(), "probe-link")
+	if err := os.Symlink(outside, probeLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(probeLink); err != nil {
+		t.Fatal(err)
+	}
+	service.removeFile = func(target string) error {
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+		if err := os.Remove(workDirectory); err != nil {
+			return err
+		}
+		return os.Symlink(outside, workDirectory)
+	}
+
+	result := service.AutoCleanup(context.Background(), run.ID)
+	if result.Removed != 0 || result.ErrorCode != "artifact_cleanup_reparse_boundary" {
+		t.Fatalf("result=%+v", result)
+	}
+	if content, err := os.ReadFile(outsideFile); err != nil || string(content) != "outside\n" {
+		t.Fatalf("outside content=%q err=%v", content, err)
+	}
+	var count int64
+	if err := service.db.Model(&models.MediaArtifact{}).Where("id = ?", artifact.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("manifest count=%d err=%v", count, err)
 	}
 }
 

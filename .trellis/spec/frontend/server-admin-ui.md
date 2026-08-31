@@ -155,3 +155,65 @@ selected.value = firstUse ? selectableIDs : savedIDs.filter(id => selectable.has
 const controller = new AbortController()
 await previewTransferDeletion(id, scope, controller.signal)
 ```
+
+## Scenario: Provider Directory Session Cache and Authoritative Media-Library Save
+
+### 1. Scope / Trigger
+
+- Trigger: changing `DirectoryPickerDialog`, media-library edit drafts, provider directory selection, or `PUT /api/v1/media-libraries/:id` feedback.
+
+### 2. Signatures
+
+```ts
+sessionCache: Map<string, DirectoryListing>
+mediaLibraryDraftFingerprint(draft, storage): string
+isMediaLibraryDraftValid(draft, storage): boolean
+PUT /api/v1/media-libraries/:id -> MediaLibraryDetail
+```
+
+### 3. Contracts
+
+- Directory cache lives only for one open dialog session. Normal back/enter navigation reuses a listing; explicit Refresh bypasses and replaces it. Closing clears cache and aborts the active request.
+- Every request has an AbortController plus monotonically increasing version. An aborted or stale response cannot replace the current listing, error, or loading state; pagination verifies location/platform before merging.
+- Dirty state compares a stable fingerprint of every persistent editable field against an authoritative baseline. Short-lived source/STRM picker tokens are transport proof, not persisted configuration and are excluded from the baseline.
+- A successful PUT replaces the row and draft from the returned `MediaLibraryDetail`, clears consumed picker tokens, rebuilds the baseline and shows a nearby `aria-live` success state. Failure keeps the draft and shows a readable nearby error. Background polling never overwrites a dirty or saving draft.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Return to a directory already read in the same dialog | Render from memory with zero API requests |
+| User presses Refresh | Make one new request and replace that cache entry |
+| A slower old request finishes after navigation | Ignore the stale result entirely |
+| Any persistent setting changes | Enable Save when the full draft is valid |
+| PUT succeeds after a directory-token save | Rehydrate from Server, clear tokens, disable Save as clean, and show success |
+| PUT fails | Preserve edits/tokens, re-enable Save, and show failure |
+
+### 5. Good / Base / Bad Cases
+
+- Good: select a new 115 root, save, immediately change scan interval, save again without resending the consumed token or touching 115.
+- Base: open a parent, enter a child, return to the parent and use the cached listing; Refresh intentionally fetches again.
+- Bad: mark dirty only from the directory button, retain a consumed token after PUT, or let a stale request blank the dialog.
+
+### 6. Tests Required
+
+- Component tests cover session cache hit, forced refresh, close/unmount abort, stale-response isolation and safe pagination merge.
+- Draft tests mutate every persistent field, exclude tokens from the persisted fingerprint, validate numeric/path bounds, and assert authoritative rehydration plus nearby saving/success/failure feedback.
+- Run WebUI test, typecheck, lint and production build.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+editDirty.value = pickerWasUsed
+await put(payload); editDirty.value = false // keeps stale draft and token
+```
+
+#### Correct
+
+```ts
+const saved = await put<MediaLibraryDetail>(payloadFromDraft(draft))
+draft = draftFromLibrary(saved) // tokens cleared
+baseline = mediaLibraryDraftFingerprint(draft, storage)
+```

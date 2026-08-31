@@ -18,6 +18,7 @@ import (
 )
 
 func (w *TransferWorker) runCloudUpload(ctx context.Context, runtime JobRuntime, task models.TransferTask, download models.DownloadTask, manifest downloadpkg.Manifest, started time.Time) WorkerResult {
+	ctx = cloudpkg.WithReadClass(ctx, cloudpkg.ReadClassPipeline)
 	if w.service.connections == nil || download.TargetConnectionID == nil || download.TargetStorageID == nil || strings.TrimSpace(download.TargetProviderRootID) == "" {
 		return w.cloudFailure(task, cloudTransferError("cloud_upload_snapshot_invalid", false, nil))
 	}
@@ -38,10 +39,12 @@ func (w *TransferWorker) runCloudUpload(ctx context.Context, runtime JobRuntime,
 	if err := w.service.db.First(&targetStorage, *download.TargetStorageID).Error; err != nil || targetStorage.Type != models.StorageTypePan115 || targetStorage.ConnectionID == nil || *targetStorage.ConnectionID != *download.TargetConnectionID {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, err))
 	}
-	targetRoot, err := providerItemWithinRoot(ctx, driver, download.TargetProviderRootID, targetStorage.RootPath)
+	targetBasePath, _ := joinProviderPath(targetStorage.RootDisplayPath, download.TargetRelativeRoot)
+	targetRoot, err := resolveCloudTargetRoot(ctx, driver, targetBasePath, download.TargetProviderRootID, targetStorage.RootPath)
 	if err != nil || !targetRoot.IsDir {
 		return w.cloudFailure(task, cloudTransferError("cloud_transfer_boundary_invalid", false, err))
 	}
+	ctx = withCloudDirectoryAttempt(ctx, driver, targetBasePath)
 	targets, err := buildTransferTargets(download, manifest)
 	if err != nil {
 		return w.cloudFailure(task, cloudTransferError("transfer_plan_invalid", false, err))

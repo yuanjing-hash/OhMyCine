@@ -339,11 +339,14 @@ Relevant service boundaries:
 ScheduleGeneration(libraryID uint, generation uint64) error
 tmdb.Client.DownloadJPEG(ctx, imageIdentity, size string, maxBytes int64) ([]byte, error)
 nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
+mediaLibraryArtifactGenerationRequired(kind string, run MediaLibraryScanRun, metadataProjectionChanged bool) bool
 ```
 
 ### 3. Contracts
 
 - A successful scan transaction commits source facts, recognition, the versioned credential-free TMDB snapshot and generation before scheduling an artifact run. Recognition cache keys include the snapshot schema version so a pre-snapshot 30-day cache entry cannot suppress detail refresh.
+- A complete `event|incremental|full` reconciliation with zero added, updated, removed or metadata-projection changes records scan success but does not schedule or advance an artifact generation. Initial, catch-up, manual, partial, or genuinely changed scans keep their existing generation/barrier semantics.
+- Supervisor replacement is atomic in the registry. Each listener receives the wake channel created with its own handle, treats a closed channel as termination through a two-value receive, and waits for the replaced handle to stop before the replacement begins provider work; a missing handle must never be represented by a permanently readable closed wake channel.
 - Snapshot JSON contains stable TMDB/IMDb IDs, metadata text, people, country/language fields and TMDB image file identities. It never contains credentials, API/image origins, absolute paths, provider IDs, temporary URLs or raw responses.
 - Local libraries with metadata artifacts enabled target `local_adjacent`; cloud + STRM targets `local_projection`. Cloud + STRM always uses opaque signed URLs and never stores provider paths/pickcodes in STRM content.
 - Managed STRM content remains an expiring v1 capability. A generation may reuse the exact on-disk bytes only after strict public-origin, opaque/library, HMAC, active-manifest, current-key and format verification, with expiry outside the seven-day renewal window. Reuse preserves bytes/mtime and a same-path provider binding change updates only the manifest. Near-expiry, expired, invalid, old-origin/key/format or missing content is signed once for another 30 days. `content_expires_at` and `content_format_version` are private additive lease facts; legacy rows are inspected and backfilled lazily without a deployment-time rewrite.
@@ -358,6 +361,7 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 - Automatic and manual cleanup share one deletion primitive. It holds the per-library scan mutex, revalidates generation/root/manifest snapshot at each file boundary, and atomically claims each candidate as `cleanup` before deleting it. Automatic cleanup may resolve only the current projection root; confirmed manual cleanup may resolve previous roots solely from each artifact owner's immutable policy, with the complete root-identity set hashed into the token. Manifest deletion and the run's cumulative removed count commit together; a crash after file deletion leaves a recoverable claim that converges on replay.
 - STRM administration reads only safe library/run/artifact DTOs. Incremental/full requests enqueue durable `strm_reconcile` Jobs; failed artifact runs may be retried. Manual cleanup first issues an operation/actor/library/generation/root-hash/manifest-bound short-lived HMAC confirmation token. Tokens use bounded canonical Base64URL plus strict JSON and never encode the absolute projection root.
 - Cleanup deletes only inactive managed `local_projection` artifacts whose kind matches an allowlisted extension: STRM, NFO, generated JPG artwork, subtitles, and policy-snapshotted source companions. It never adopts or deletes unmanaged same-name files. Candidate rows remain tied to their owning run and canonical root.
+- After one claimed artifact is absent or safely deleted, cleanup walks only that artifact's lexical parent chain and removes empty directories bottom-up with non-recursive `Remove`. It stops before the immutable projection root and at the first non-empty directory. Every candidate directory is root-constrained and rechecked with `Lstat`, root identity, symlink/junction/reparse rejection and an immediate pre-delete validation. A file already gone but a directory deletion failure keeps the manifest claim retryable so the next run can finish directory convergence.
 - Cleanup never follows symlink, junction or other reparse boundaries. Path, ownership, kind/extension, root identity, generation and manifest snapshot are checked before claim and again before deletion; a changed boundary stops the run with a stable safe code. Cleanup audits, logs and API DTOs contain IDs, counts, state and safe codes only, never absolute roots or provider details.
 - One active coalesced Job per library advances to the latest queued generation. Older runs become `superseded`; each file boundary rechecks the current generation and heartbeats the persistent queue lease.
 
@@ -375,6 +379,10 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 | Job generation no longer matches the library | Mark the old run superseded at the next artifact boundary |
 | Scan is failed, partial, superseded, unknown-kind, or projection root changed | Do not automatically delete; persist `skipped` or a safe cleanup failure for manual review |
 | Cleanup process stops after artifact completion | Replay the completed artifact Job and resume from persisted cleanup state/claims without regenerating or double-counting |
+| Routine complete scan has no file or metadata diff | Record scan success, schedule no artifact Job, and leave artifact generation unchanged |
+| Listener wake channel closes during replacement/stop | Exit that listener; never spin or repeatedly reconcile |
+| Managed artifact is gone and its work/season/type/category ancestors are empty | Remove those empty ancestors bottom-up, preserve the projection root, and count removed directories separately |
+| Empty-directory removal fails after the file is already absent | Keep the cleanup manifest/claim retryable; replay skips the missing file and retries the same ancestor convergence |
 | Candidate kind/extension, ownership, root, generation or manifest snapshot changes | Stop cleanup with a stable safe code; never delete the candidate |
 | Image identity is absolute, redirects, exceeds limit, is non-JPEG or has wrong magic | Fail the metadata artifact unit safely; persist no URL/body |
 | Source asset extension is not allowlisted, provider identity changed, or temporary URL requires headers | Skip unsupported extension or fail safely; never persist/log URL, headers, pickcode or provider ID |
@@ -383,6 +391,7 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 ### 5. Good / Base / Bad Cases
 
 - Good: one matched movie scan commits a full snapshot, writes `Movie.strm`, `Movie.nfo`, `Movie-poster.jpg` in a cloud projection and later regenerates identical managed content.
+- Good: deleting the final cloud video removes its inactive managed STRM, then its empty Season/work/category chain, while a sibling work and the projection root remain untouched.
 - Base: an unrecognized video writes only its signed STRM and remains visible for correction.
 - Bad: save `image.tmdb.org` URLs in SQLite, derive URLs from request Host, overwrite a user NFO because the name matches, or let a 115 adapter implement its own NFO renderer.
 
@@ -393,7 +402,8 @@ nfo.Render(snapshot tmdb.Snapshot) ([]byte, error)
 - Cloud tests assert ordinary and ISO STRM naming, opaque expiring signed content, unchanged two-generation byte/mtime preservation, provider rebind without rewrite, one-time renewal, NFO/JPG projection, coalesced latest generation, superseded old run and batched manifest counts.
 - Image tests assert allowlisted size, redirect rejection, MIME/magic/byte limits and invalid absolute identity rejection.
 - Source-asset tests assert same-tree subtitle/JPG output, provider identity revalidation, binary subtitle rejection, redirect/header/size rejection and absence of temporary URLs in DB/logs.
-- Cleanup tests assert full/incremental success, partial/failed/superseded/root-change preservation, replay recovery, idempotent removed counts, per-file claims, unmanaged preservation, kind/extension allowlists, token tamper/size/strict-JSON rejection, and symlink/junction/reparse confinement.
+- Cleanup tests assert full/incremental success, partial/failed/superseded/root-change preservation, replay recovery after the file is already absent, idempotent file/directory counts, bottom-up work/season/type/category removal, projection-root/non-empty/unmanaged preservation, per-file claims, kind/extension allowlists, token tamper/size/strict-JSON rejection, and symlink/junction/reparse confinement.
+- Supervisor and reconciliation tests assert concurrent start/stop/update leaves one listener, a closed wake exits without a busy loop, an event storm coalesces, and a complete routine no-op creates no artifact generation or Job while initial/catch-up/manual/pending-change cases still do.
 - Migration tests assert v29 additively introduces cleanup status/summary columns and backfills historical completed/superseded runs as `skipped`, and v54 additively introduces nullable/defaulted STRM lease facts without rewriting legacy manifests.
 - Run the focused packages plus `go test ./...`, `go vet`, `go mod verify` and `git diff --check` on Windows.
 

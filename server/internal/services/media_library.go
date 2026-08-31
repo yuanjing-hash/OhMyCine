@@ -627,7 +627,18 @@ func (s *MediaLibraryService) validateInput(ctx context.Context, id uint, actor 
 	if input.MetadataArtifactsEnabled != nil {
 		metadataArtifactsEnabled = *input.MetadataArtifactsEnabled
 	}
-	if input.Enabled && storage.Type == models.StorageTypePan115 {
+	validateProviderOverlap := input.Enabled && storage.Type == models.StorageTypePan115
+	if validateProviderOverlap && id != 0 {
+		var current models.MediaLibrary
+		if err := s.db.Select("storage_id", "provider_root_id", "enabled").First(&current, id).Error; err != nil {
+			return models.MediaLibrary{}, mediaLibraryNotFound(err)
+		}
+		// The directory identity and listener-overlap proof were already made
+		// authoritative when this enabled configuration was saved. Ordinary
+		// policy edits must not repeat an ancestry walk against 115.
+		validateProviderOverlap = !current.Enabled || current.StorageID != storage.ID || strings.TrimSpace(current.ProviderRootID) != strings.TrimSpace(input.ProviderRootID)
+	}
+	if validateProviderOverlap {
 		if err := s.validateMediaLibraryLifeEventOverlap(ctx, storage, strings.TrimSpace(input.ProviderRootID)); err != nil {
 			return models.MediaLibrary{}, err
 		}
@@ -1006,20 +1017,30 @@ func (s *MediaLibraryService) detail(record models.MediaLibrary) (MediaLibraryDe
 	return MediaLibraryDetail{MediaLibrary: record, StorageName: storage.Name, ConnectionID: storage.ConnectionID, AutoListenDefault: autoListenDefault, ProfileName: profile.Name, VideoExtensions: extensions, STRMAssetDefaultExtensions: append([]string(nil), defaultSourceAssetExtensions...), STRMAssetExtraExtensions: extraAssetExtensions, STRMAssetEffectiveExtensions: effectiveSourceAssetExtensions(extraAssetExtensions), IgnorePatterns: ignores, EntryCount: count, IngestDownloaderName: ingestDownloaderName, STRMLocalPath: record.STRMLocalRoot}, nil
 }
 func (s *MediaLibraryService) startSupervisor(parent context.Context, id uint) {
-	s.stopSupervisor(id)
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	wake := make(chan struct{}, 1)
-	s.supervisors[id] = supervisorHandle{cancel: cancel, done: done, wake: wake}
+	handle := supervisorHandle{cancel: cancel, done: done, wake: wake}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		cancel()
+		close(done)
+		return
+	}
+	previous, replaced := s.supervisors[id]
+	s.supervisors[id] = handle
 	s.mu.Unlock()
 	go func() {
 		defer close(done)
-		s.supervise(ctx, id)
+		if replaced {
+			previous.cancel()
+			<-previous.done
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		s.supervise(ctx, id, wake)
 	}()
 }
 func (s *MediaLibraryService) stopSupervisor(id uint) {
@@ -1027,15 +1048,22 @@ func (s *MediaLibraryService) stopSupervisor(id uint) {
 	handle, ok := s.supervisors[id]
 	if ok {
 		handle.cancel()
-		delete(s.supervisors, id)
 	}
 	s.mu.Unlock()
 	if ok {
 		<-handle.done
+		// Keep the canceled handle published until it has actually exited. A
+		// concurrent start then chains behind this handle instead of observing an
+		// empty registry slot and briefly running two listeners for one library.
+		s.mu.Lock()
+		if current, exists := s.supervisors[id]; exists && current.done == handle.done {
+			delete(s.supervisors, id)
+		}
+		s.mu.Unlock()
 	}
 }
 
-func (s *MediaLibraryService) supervise(ctx context.Context, id uint) {
+func (s *MediaLibraryService) supervise(ctx context.Context, id uint, wake <-chan struct{}) {
 	delay := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -1073,7 +1101,7 @@ func (s *MediaLibraryService) supervise(ctx context.Context, id uint) {
 			delay = nextRetryDelay(delay)
 			continue
 		}
-		listener, err := backend.OpenListener(ctx, library, storage, s.providerWake(id))
+		listener, err := backend.OpenListener(ctx, library, storage, wake)
 		if err != nil {
 			next := time.Now().UTC().Add(delay)
 			_ = s.setStatus(id, models.MediaLibraryStatusInitializationFailed, CodeMediaLibraryScanFailed, &next)
@@ -1194,17 +1222,6 @@ func (s *MediaLibraryService) sweepIngest(ctx context.Context, libraryID uint) e
 	}
 	operation.Event(s.log.Info()).Uint("library_id", library.ID).Uint("connection_id", *storage.ConnectionID).Int("discovered", discovered).Int("created", created).Int("skipped", skipped).Int64("duration_ms", time.Since(started).Milliseconds()).Msg(operation.Message("中转目录扫描完成"))
 	return nil
-}
-
-func (s *MediaLibraryService) providerWake(id uint) <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if handle, ok := s.supervisors[id]; ok {
-		return handle.wake
-	}
-	closed := make(chan struct{})
-	close(closed)
-	return closed
 }
 
 // ProviderEventsChanged coalesces a connection event batch into one immediate
@@ -1856,12 +1873,28 @@ func (s *MediaLibraryService) reconcile(ctx context.Context, id uint, kind strin
 		}
 	}
 	serverlog.OperationMetadataSnapshot.Event(s.log.Info()).Uint("library_id", id).Uint("scan_run_id", run.ID).Uint64("generation", generation).Int("units", len(recognizedUnits)).Int("matched", matched).Int("snapshots", snapshots).Int("cache_hits", cacheHits).Msg(serverlog.OperationMetadataSnapshot.Message("提交"))
-	if s.artifacts != nil {
+	if s.artifacts != nil && mediaLibraryArtifactGenerationRequired(kind, run, metadataProjectionChanged) {
 		if err := s.artifacts.ScheduleGeneration(id, generation); err != nil {
 			serverlog.OperationMediaArtifact.Event(s.log.Error()).Uint("library_id", id).Uint64("generation", generation).Str("error_code", "artifact_schedule_failed").Msg(serverlog.OperationMediaArtifact.Message("入队失败"))
 		}
 	}
 	return run, nil
+}
+
+func mediaLibraryArtifactGenerationRequired(kind string, run models.MediaLibraryScanRun, metadataProjectionChanged bool) bool {
+	if run.Partial || run.Added > 0 || run.Updated > 0 || run.Removed > 0 || metadataProjectionChanged {
+		return true
+	}
+	// Initial/catch-up scans establish or replace an immutable artifact policy,
+	// and explicit manual scans may intentionally rebuild it. Routine provider
+	// events and periodic scans with a complete no-op diff must not create a new
+	// artifact generation.
+	switch kind {
+	case "event", "incremental", "full":
+		return false
+	default:
+		return true
+	}
 }
 
 // applyRecognitionEpisodeHints preserves file-level season/episode facts. A

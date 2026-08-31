@@ -88,6 +88,34 @@ export function payloadFromDraft(draft: MediaLibraryDraft, storage: StorageSumma
   return payload
 }
 
+export function mediaLibraryDraftFingerprint(draft: MediaLibraryDraft, storage: StorageSummary | undefined): string {
+  const payload = payloadFromDraft(draft, storage)
+  const persistent: Record<string, unknown> = { ...payload }
+  delete persistent.relative_root
+  delete persistent.relative_root_token
+  delete persistent.strm_local_root_token
+  return JSON.stringify({
+    ...persistent,
+    source_location: draft.source_path.trim() || draft.relative_root || '/',
+    strm_local_path: payload.strm_enabled ? draft.strm_local_path.trim() : '',
+  })
+}
+
+export function isMediaLibraryDraftValid(draft: MediaLibraryDraft, storage: StorageSummary | undefined): boolean {
+  const inRange = (value: number, minimum: number, maximum: number) => Number.isFinite(value) && value >= minimum && value <= maximum
+  return draft.name.trim().length > 0
+    && draft.storage_id > 0
+    && draft.profile_id > 0
+    && draft.source_path.trim().length > 0
+    && (!draft.strm_enabled || !supportsSTRM(storage) || draft.strm_local_path.trim().length > 0)
+    && inRange(draft.full_scan_interval_hours, 1, 720)
+    && inRange(draft.incremental_minutes, 1, 1440)
+    && inRange(draft.provider_rate_per_second, 1, 1000)
+    && inRange(draft.provider_concurrency, 1, 32)
+    && inRange(draft.metadata_rate_per_second, 1, 100)
+    && inRange(draft.metadata_concurrency, 1, 16)
+}
+
 const statusPresentation: Record<MediaLibraryStatus, { label: string; className: string }> = {
   disabled: { label: '已停用', className: 'status-chip' },
   initializing: { label: '首次扫描中', className: 'status-chip status-chip--warning' },
