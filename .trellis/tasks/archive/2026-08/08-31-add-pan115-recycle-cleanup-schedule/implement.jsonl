@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"实现操作密码加密、危险操作授权、审计和脱敏。"}
+{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"实现到期入队、单飞、重启恢复与 worker 状态。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"实现向后兼容 migration 与 Connection revision。"}
+{"file":".trellis/spec/backend/api-guidelines.md","reason":"扩展 Connection create/update/summary 契约。"}
+{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"实现 115 连接级危险设置和状态展示。"}
+{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"实现 SecretInput、开关、Cron 与不可恢复确认。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"核对 UI、API、模型、队列、driver 的完整数据流。"}
