@@ -1,8 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查 migration、service、worker、handler、恢复和失败路径测试质量。"}
-{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"检查订阅没有复制搜索/覆盖算法，且 future/unknown/Season 0 仍 fail closed。"}
-{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"检查调度/立即执行无并发、lease 恢复、stale revision 和 safe Job DTO。"}
-{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/ohmycine-current-contracts.md","reason":"检查 crash-after-submit、catalog 收敛、DownloadService 交接、owner/RBAC 和不泄密边界。"}
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"检查 follows API owner/all 权限矩阵、认证、CSRF 和安全错误一致。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查订阅创建/编辑/管理 UI 的 typed 测试、lint、build 和交互状态。"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"确认 FollowWorker 复用搜索、覆盖率、下载、Transfer 和入库实现。"}
-{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/moviepilot-v3-analysis.md","reason":"复核 MP 风格选项和自动链路被准确采用，且明确排除洗版等范围。"}

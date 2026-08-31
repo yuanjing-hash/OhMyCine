@@ -245,7 +245,7 @@ addConfig({
 ### 2. Signatures
 
 ```ts
-GET /api/v1/player/media-changes?cursor=<cursor>&wait_seconds=12
+GET /api/v1/media-changes?cursor=<cursor>&wait_seconds=12
 
 type MediaChangeResponse = {
   cursor: string
@@ -260,7 +260,7 @@ window event = ohmycine:server-library-refresh
 ### 3. Contracts
 
 - `DataSourceManager` owns at most one long-poll controller per enabled, credential-valid ServerDataSource and disposes it on disable, removal, replacement, or app teardown.
-- Polling uses the existing native `/api/v1/player/*` Bearer bridge, a 12-second server wait below the 20-second native timeout, and bounded exponential retry capped at 15 seconds. One source's failure does not block browsing, playback, Home, or another source.
+- Polling uses the existing native `/api/v1/*` Bearer bridge, a 12-second server wait below the 20-second native timeout, and bounded exponential retry capped at 15 seconds. One source's failure does not block browsing, playback, Home, or another source.
 - Persist only a decimal uint64 cursor per source and Server origin. Runtime parsing rejects oversized arrays, invalid `changed_at`, unsafe numeric revisions, non-resync cursor regression, and change pages that do not advance their cursor. Never persist the Bearer token in app settings or copy event payloads, paths, stream URLs, provider IDs, or credentials into UI state.
 - A ready change clears only the matching Server source cache/root snapshot, invalidates aggregated Home, and starts a background forced Home refresh. Direct Emby/Jellyfin, local, OpenList/Alist, CloudDrive2, WebDAV, active playback, progress, subtitles, and audio tracks remain untouched.
 - The current affected list keeps rendered items and scroll position and shows one coalesced update notice. Clicking reloads the current logical location and restores `main.cinema-scrollbar.scrollTop`; leaving and re-entering reads fresh data automatically. A Server source-root refresh acknowledges physical-library changes only after the strict physical-library request succeeds; an online/plugin partial response must not clear a physical catalog update.

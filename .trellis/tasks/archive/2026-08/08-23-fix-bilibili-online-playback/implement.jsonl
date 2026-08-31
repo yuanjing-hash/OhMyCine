@@ -1,5 +1,0 @@
-{"file":".trellis/spec/backend/plugin-online-media.md","reason":"在线插件播放契约、Host 资产与错误边界"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"播放资产、凭据、日志脱敏和网关安全"}
-{"file":".trellis/spec/backend/logging-guidelines.md","reason":"阶段化可筛选日志规范"}
-{"file":".trellis/spec/frontend/server-online-media.md","reason":"Player 在线播放方案、DASH 音视频和清晰度映射"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"插件到 Server 再到 Player 的端到端链路检查"}

@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查 Go 单元/集成测试、错误路径、context 和无隐藏降级。"}
-{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"检查身份搜索、JSON/SSE、Season 0、future/unknown 和 coverage 安全契约。"}
-{"file":".trellis/spec/backend/pt-discovery.md","reason":"检查多名称搜索没有绕过站点限速、claim 和安全下载边界。"}
-{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/ohmycine-current-contracts.md","reason":"检查 coverage 的 partial/unknown/跨库/RBAC 以及 API、日志、缓存安全边界。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"执行 Web UI test/typecheck/lint/build 并覆盖失败、空态和响应式交互。"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"确认 Discovery、SiteService、TMDB、catalog 和详情组件均复用而非复制。"}
-{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/moviepilot-v3-analysis.md","reason":"核对实现行为与实际 MP 搜索/详情证据一致且没有照搬越界功能。"}

@@ -1,6 +1,0 @@
-{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/115-transfer-performance.md","reason":"115 整理性能事实与批量化方向"}
-{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/strm-incremental-diff.md","reason":"STRM 重复更新根因与安全增量策略"}
-{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/web-detail-and-library.md","reason":"白屏、媒体库浏览/维护与删除边界"}
-{"file":".trellis/spec/backend/media-library-foundation.md","reason":"父任务媒体库和 STRM 核心契约"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"父任务签名、文件操作、权限和审计边界"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"四个子任务的跨层一致性"}

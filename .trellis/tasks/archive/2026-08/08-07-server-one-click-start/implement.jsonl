@@ -1,6 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"Server backend pre-development checklist"}
-{"file":".trellis/spec/backend/directory-structure.md","reason":"Server and nested Web UI module boundaries"}
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Production Web UI build and embed contracts"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Required Go and frontend quality gates"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Safe runtime configuration and public origin defaults"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing build commands and avoid duplicate startup logic"}

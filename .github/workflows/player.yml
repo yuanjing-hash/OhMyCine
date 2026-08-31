@@ -4,12 +4,12 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - "player/**"
+      - "**"
       - ".github/workflows/player.yml"
   pull_request:
     branches: [main, develop]
     paths:
-      - "player/**"
+      - "**"
       - ".github/workflows/player.yml"
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: player
+        working-directory: .
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: player/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: player
+        working-directory: .
 
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +90,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: player/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -110,7 +110,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: player/src-tauri -> target
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -119,18 +119,18 @@ jobs:
         run: npm run build
 
       - name: Test native Linux Rust target
-        working-directory: player/src-tauri
+        working-directory: ./src-tauri
         run: cargo test --lib
 
       - name: Check native Linux Rust targets
-        working-directory: player/src-tauri
+        working-directory: ./src-tauri
         run: cargo check --all-targets
 
   rust-windows-msvc:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: player
+        working-directory: .
 
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +139,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: player/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -148,7 +148,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: player/src-tauri -> target
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -160,18 +160,18 @@ jobs:
         run: npm run build
 
       - name: Test native Windows MSVC Rust target
-        working-directory: player/src-tauri
+        working-directory: ./src-tauri
         run: cargo test --lib
 
       - name: Check native Windows MSVC Rust targets
-        working-directory: player/src-tauri
+        working-directory: ./src-tauri
         run: cargo check --all-targets
 
   android-arm64:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: player
+        working-directory: .
 
     steps:
       - uses: actions/checkout@v4
@@ -180,7 +180,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: player/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -205,7 +205,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: player/src-tauri -> target
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -223,7 +223,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: player
+        working-directory: .
 
     steps:
       - uses: actions/checkout@v4
@@ -232,7 +232,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: player/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -246,7 +246,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: player/src-tauri -> target
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -269,5 +269,5 @@ jobs:
         with:
           name: player-windows-gnu
           path: |
-            player/src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*.exe
+            src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*.exe
           retention-days: 30

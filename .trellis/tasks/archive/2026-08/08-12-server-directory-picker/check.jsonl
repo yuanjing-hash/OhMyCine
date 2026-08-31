@@ -1,8 +1,0 @@
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"Verify roots/children/token routes, envelopes, no-store and independent authorization"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Verify no traversal, symlink/Reparse Point escape, raw-path logging or browse-to-save bypass"}
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Verify storages.browse catalog/role/frontend synchronization and backend enforcement"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify Windows/Unix adapters, token tamper/expiry, bounded listing and full Server gates"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify modal focus, keyboard, loading/empty/error/truncated and responsive directory tree UX"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify picker DTOs and permission constants remain strict without any/path concatenation"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify Web UI tests, typecheck, lint and production build"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify selected token survives adapter-service-API-UI round trip and is revalidated on save"}

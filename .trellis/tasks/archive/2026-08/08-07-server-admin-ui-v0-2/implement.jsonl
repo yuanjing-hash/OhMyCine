@@ -1,8 +1,0 @@
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Defines the executable navigation, dashboard, RBAC, session, launcher, and verification contracts for Server Web UI changes."}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Preserves authentication, permission, log redaction, and self-service security boundaries."}
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"Defines authenticated API defaults, response envelopes, permission enforcement, and WebSocket boundaries."}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Provides Vue component, accessibility, responsive, styling, and empty-state conventions."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Defines frontend test, lint, typecheck, build, and review expectations."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Requires searching and sharing navigation/permission logic rather than duplicating it across layout and router."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Keeps API, auth store, route meta, navigation, and dashboard display boundaries aligned."}
-{"file":"docs/architecture/08-server-web-ui-design.md","reason":"Canonical product design for grouped navigation, mixed dashboard, user management, top bar, and responsive ordering."}

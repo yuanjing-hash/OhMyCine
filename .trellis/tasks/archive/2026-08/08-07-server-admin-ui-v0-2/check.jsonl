@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Verify navigation grouping, real/planned dashboard states, user-management permission combinations, top tools, and responsive behavior."}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Review authorization, audit/log visibility, session handling, and credential/token non-disclosure."}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Review Vue composition, responsive behavior, empty states, focus, keyboard, and accessibility."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Run and assess required frontend quality gates and forbidden patterns."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Check that route, navigation, permission, and card state definitions do not drift or duplicate unnecessarily."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify backend response shapes, route permissions, auth refresh, and UI state remain aligned."}
-{"file":"docs/architecture/08-server-web-ui-design.md","reason":"Check implementation coverage against the approved product design without copying external branding."}

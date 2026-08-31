@@ -400,7 +400,7 @@ class WebDavDataSource {
 - `npm run typecheck` must catch drift between `TmdbMetadata`, `TmdbEpisodeMetadata`, local cache sanitizer, `MediaItem`, playback route/context/history payloads, and Vue usages.
 - `npm run lint` must pass without broad `any` in scraper/TMDB response mapping.
 - `npm run build` must pass after UI integration.
-- If playback history schema or Rust commands change, run `cargo check --manifest-path player/src-tauri/Cargo.toml`.
+- If playback history schema or Rust commands change, run `cargo check --manifest-path src-tauri/Cargo.toml`.
 
 #### 7. Wrong vs Correct
 
@@ -840,7 +840,7 @@ interface EmbyNativePlaybackJsonResponse {
 - `npm run typecheck` must catch drift in `ProviderPlaybackProgressInput` and optional `DataSource.syncPlaybackProgress` calls.
 - `npm run lint` must pass without broad provider-progress `any` payloads or unused queue/progress state.
 - `npm run build` must pass after Player route/control integration.
-- If native playback sync commands change, run `cargo check --manifest-path player/src-tauri/Cargo.toml` in addition to frontend checks.
+- If native playback sync commands change, run `cargo check --manifest-path src-tauri/Cargo.toml` in addition to frontend checks.
 - `npm run verify:emby-http-boundary` must assert ordinary requests no longer import `ofetch`, both native commands stay registered, and browser fallback has redirect/timeout/body bounds.
 - `npm run verify:emby-playback-progress` must execute a real local Emby-compatible HTTP flow through `EmbyDataSource`: system probe, PlaybackInfo, Range stream read, Playing, Pause, Unpause, TimeUpdate, and Stopped. It must assert `MediaSourceId`, `PlaySessionId`, tick conversion, release-version authentication headers, and successful `204 No Content` handling.
 - Rust tests must cover a successful authenticated GET, rejected redirect, oversized body, unsafe path, and unsupported method.
@@ -1018,7 +1018,7 @@ interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
 - `npm run lint` verifies no unused progress state or broad `any` wrappers are introduced.
 - `npm run build` verifies Home/Player route integration compiles.
 - `npm run verify:secure-playback-routing` must assert every Player navigation uses `createPlaybackRouteQuery`, forbidden query fields are stripped, `legacyPath` is absent, `getStreamRequest` remains the playback boundary, and the Android 302 bridge contract remains present.
-- `cargo check --manifest-path player/src-tauri/Cargo.toml` verifies Rust command registration/schema code compiles.
+- `cargo check --manifest-path src-tauri/Cargo.toml` verifies Rust command registration/schema code compiles.
 - Windows package builds should run with `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player` when Player packaging is in scope.
 - Manual Windows runtime checks should cover pause save, close save, queue switch save, automatic resume, completed exclusion, and token redaction with a real remote source.
 
@@ -1275,8 +1275,8 @@ interface RenderSurfaceBounds {
 #### 6. Tests Required
 - `npm run typecheck` catches command response/interface drift.
 - `npm run lint` passes without broad `any` or unused render state.
-- `cargo check --manifest-path player/src-tauri/Cargo.toml` passes for host Rust changes.
-- Windows render changes must also pass `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path player/src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` when the target is installed.
+- `cargo check --manifest-path src-tauri/Cargo.toml` passes for host Rust changes.
+- Windows render changes must also pass `RUSTC="$(rustup which rustc)" rustup run stable cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu` when the target is installed.
 - Windows package changes must pass `RUSTC="$(rustup which rustc)" npm run tauri:build:windows --prefix player`.
 - Manual Windows-host runtime review verifies local playback, Emby playback, no external mpv window, WebView/Vue overlay hit-testing, resize/maximize/fullscreen alignment, and close-during-playback cleanup.
 
@@ -1324,7 +1324,7 @@ await invoke<MpvRenderState>('mpv_update_render_surface_bounds', {
 ### 2. Signatures
 
 - Credential envelope: `ServerCredentialValue { accessToken: string }`; ordinary config stores only Server origin, `credentialRef`, random device ID and safe media-library summaries.
-- Native JSON command: `server_request_json({ baseUrl, method, path, accessToken?, body? })`; only GET/POST/DELETE and `/api/v1/player/*` are allowed.
+- Native JSON command: `server_request_json({ baseUrl, method, path, accessToken?, body? })`; only GET/POST/DELETE and `/api/v1/*` are allowed.
 - `MediaItem` optional identity fields: `originType`, `workIdentity`, `exactIdentity`, and typed `playbackTargets` containing configured source/item/media-source references only.
 - `MediaSourceOption` may carry `sourceLabel?: string` and `deliveryKind?: 'server_stream' | 'server_redirect'`; both are presentation-safe values parsed at the `ServerDataSource` boundary.
 - Playback remains `DataSource.getStreamRequest({ itemId, mediaSourceId? }) -> MediaStreamRequest`.

@@ -1,5 +1,0 @@
-{"file":".trellis/spec/backend/media-library-foundation.md","reason":"检查 local/provider 扫描、目录范围、partial 和兼容性回归"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"检查跨 actor/Storage/Connection token 滥用与信息泄露"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查 Go 测试、vet/build 和禁止模式"}
-{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"检查管理台分页、展开、状态、响应式与双主题"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查 Web UI test/typecheck/lint/build"}

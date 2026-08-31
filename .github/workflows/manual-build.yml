@@ -1,221 +1,39 @@
-name: Manual Build
+name: Player Manual Build
 
 on:
   workflow_dispatch:
-    inputs:
-      component:
-        description: "构建组件"
-        required: true
-        type: choice
-        options:
-          - player
-          - server
-          - cli
-          - hub
-          - all
-      platform:
-        description: "构建平台 (仅 Player 生效；当前仅 Windows GNU)"
-        required: false
-        type: choice
-        options:
-          - windows-gnu
-        default: windows-gnu
+
+permissions:
+  contents: read
 
 jobs:
-  build-server:
-    if: inputs.component == 'server' || inputs.component == 'all'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
-
+  verify:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check Server scaffold
-        id: scaffold
-        run: |
-          if [ -f go.mod ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Server Go module is not initialized yet; skipping Go build."
-          fi
-
-      - uses: actions/setup-go@v5
-        if: steps.scaffold.outputs.ready == 'true'
-        with:
-          go-version: "1.23"
-
-      - name: Download dependencies
-        if: steps.scaffold.outputs.ready == 'true'
-        run: go mod download
-
-      - name: Build
-        if: steps.scaffold.outputs.ready == 'true'
-        env:
-          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
-          OHMYCINE_TMDB_API_KEY: ${{ secrets.OHMYCINE_TMDB_API_KEY }}
-        run: |
-          if [ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ] && [ -n "${OHMYCINE_TMDB_API_KEY:-}" ]; then
-            echo "::error::Configure only one TMDB credential Secret for the official Server artifact."
-            exit 1
-          fi
-          if [ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ] && [ -z "${OHMYCINE_TMDB_API_KEY:-}" ]; then
-            echo "::error::A TMDB credential GitHub Secret is required for the official Server artifact."
-            exit 1
-          fi
-          if [ -n "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]; then
-            if (( ${#OHMYCINE_TMDB_READ_ACCESS_TOKEN} > 4096 )) || [[ ! "${OHMYCINE_TMDB_READ_ACCESS_TOKEN}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-              echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN contains unsupported characters."
-              exit 1
-            fi
-            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinReadAccessToken=${OHMYCINE_TMDB_READ_ACCESS_TOKEN}"
-          else
-            if (( ${#OHMYCINE_TMDB_API_KEY} > 4096 )) || [[ ! "${OHMYCINE_TMDB_API_KEY}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-              echo "::error::OHMYCINE_TMDB_API_KEY contains unsupported characters."
-              exit 1
-            fi
-            tmdb_ldflags="-X=github.com/yuanjing-hash/ohmycine/server/pkg/metadata/tmdb.BuiltinAPIKey=${OHMYCINE_TMDB_API_KEY}"
-          fi
-          go build -ldflags "${tmdb_ldflags}" -o ohmycine-server ./cmd/server
-
-      - name: Test
-        if: steps.scaffold.outputs.ready == 'true'
-        run: go test ./...
-
-      - name: Upload artifact
-        if: steps.scaffold.outputs.ready == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ohmycine-server-linux
-          path: server/ohmycine-server
-          retention-days: 30
-
-  build-cli:
-    if: inputs.component == 'cli' || inputs.component == 'all'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cli
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check CLI scaffold
-        id: scaffold
-        run: |
-          if [ -f go.mod ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "CLI Go module is not initialized yet; skipping Go build."
-          fi
-
-      - uses: actions/setup-go@v5
-        if: steps.scaffold.outputs.ready == 'true'
-        with:
-          go-version: "1.22"
-
-      - name: Download dependencies
-        if: steps.scaffold.outputs.ready == 'true'
-        run: go mod download
-
-      - name: Build
-        if: steps.scaffold.outputs.ready == 'true'
-        run: go build -o omc ./cmd/omc
-
-      - name: Test
-        if: steps.scaffold.outputs.ready == 'true'
-        run: go test ./...
-
-      - name: Upload artifact
-        if: steps.scaffold.outputs.ready == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: omc-linux
-          path: cli/omc
-          retention-days: 30
-
-  build-hub:
-    if: inputs.component == 'hub' || inputs.component == 'all'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: hub
-
-    steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: hub/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: hub-site
-          path: hub/.vitepress/dist
-          retention-days: 30
-
-  build-player:
-    if: inputs.component == 'player' || inputs.component == 'all'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: player
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: player/package-lock.json
-
+          cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnu
-
-      - name: Install Windows cross-build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 nsis zip
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+          targets: x86_64-pc-windows-msvc
+      - uses: swatinem/rust-cache@v2
         with:
-          workspaces: player/src-tauri -> target
-
-      - name: Install frontend dependencies
+          workspaces: src-tauri -> target
+      - name: Install dependencies
         run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Prepare Windows libmpv runtime
+      - name: Prepare libmpv
         run: npm run setup:libmpv -- windows
-
-      - name: Build Windows GNU installer
+      - name: Verify frontend
         env:
           OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
-          OHMYCINE_DANDANPLAY_APP_ID: ${{ secrets.OHMYCINE_DANDANPLAY_APP_ID }}
-          OHMYCINE_DANDANPLAY_APP_SECRET: ${{ secrets.OHMYCINE_DANDANPLAY_APP_SECRET }}
-        run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: player-windows-gnu
-          path: |
-            player/src-tauri/target/x86_64-pc-windows-gnu/release/bundle/**/*.exe
-          retention-days: 30
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run build
+      - name: Verify native Player
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets

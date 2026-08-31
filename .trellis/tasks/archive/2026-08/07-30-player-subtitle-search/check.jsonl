@@ -1,5 +1,0 @@
-{"file":"player/src/components/player/PlayerControls.vue","reason":"检查 Emby 来源选择、非 Emby 直达本地搜索和菜单交互。"}
-{"file":"player/src/services/datasource/emby.ts","reason":"检查远程字幕搜索、下载、刷新与错误脱敏。"}
-{"file":"player/src/services/subtitle","reason":"检查 OpenSubtitles 查询、下载和安全凭据边界。"}
-{"file":"player/src-tauri/src/commands/subtitle.rs","reason":"检查域名白名单、大小限制、扩展名和缓存路径约束。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查 typecheck、lint、build、专项验证和 Windows EXE。"}

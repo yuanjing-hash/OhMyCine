@@ -1,5 +1,0 @@
-{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/strm-incremental-diff.md","reason":"重复更新根因、MoviePilot 对照与安全增量算法"}
-{"file":".trellis/spec/backend/media-library-foundation.md","reason":"manifest ownership、generation 与 STRM cleanup 契约"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"signed proxy、文件写入和删除安全规则"}
-{"file":".trellis/spec/backend/database-guidelines.md","reason":"additive migration 与批量 manifest 事务规范"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"生成统计、API DTO 和管理端展示跨层一致性"}

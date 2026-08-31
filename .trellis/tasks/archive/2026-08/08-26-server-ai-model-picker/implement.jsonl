@@ -1,6 +1,0 @@
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"AI Provider 自定义 Base URL、响应大小、SSRF、凭据和安全错误边界"}
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Server Web UI 模态窗口、表单反馈、可访问性和管理端交互规范"}
-{"file":".trellis/spec/backend/error-handling.md","reason":"Provider 内部错误到客户端安全文案的稳定映射"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Go 与嵌入式 Web UI 测试、lint、typecheck 和构建门禁"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Vue 组件、响应式主题与对话框交互一致性参考"}
-{"file":"docs/architecture/07-security-design.md","reason":"AI Provider、外部 HTTP、API Key 与响应限制的架构安全约束"}

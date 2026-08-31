@@ -43,16 +43,16 @@ Frontend quality is measured by Player independence, type safety, immersive UI c
 
 ## Testing and Verification
 
-When `player/` exists, run local checks from Windows PowerShell:
+When `` exists, run local checks from Windows PowerShell:
 
 ```powershell
-cd player
+cd .
 npm run typecheck
 npm run lint
 npm run build
 ```
 
-For Tauri/Rust changes, also run the relevant Cargo command when configured, such as `cargo check` from `player/src-tauri`.
+For Tauri/Rust changes, also run the relevant Cargo command when configured, such as `cargo check` from `src-tauri`.
 
 Before completing Player dependency-security work, run `npm audit` against the official npm registry when the configured mirror does not provide an advisory endpoint. Known vulnerabilities with available fixes must be resolved; a mirror audit `404` is not evidence that the dependency graph is clean.
 
@@ -73,7 +73,7 @@ When a Player task changes Tauri runtime, libmpv, windowing, or rendering behavi
 | Case | Required check | Completion rule |
 |------|----------------|-----------------|
 | Web/UI-only Player change | `npm run typecheck`, `npm run lint`, `npm run build` | All pass |
-| Rust/Tauri backend change | Above plus `cargo check` for `player/src-tauri` | All pass |
+| Rust/Tauri backend change | Above plus `cargo check` for `src-tauri` | All pass |
 | Native Rust portability | Ubuntu with system `libmpv` plus Windows with vendored libmpv run `cargo test --lib` and `cargo check --all-targets` | Both native targets pass before the Windows GNU package job |
 | Runtime/render/libmpv change | Above plus `npm run setup:libmpv -- windows` and Windows-native `npm run tauri:dev:windows` when the local graphics/runtime environment can launch it | Report full verification only after the Windows desktop window/runtime is exercised |
 | WSL/WSLg compatibility check | `tauri dev` compiles and starts the app process but emits EGL/Mesa/DRI warnings or cannot show a reliable window | Mark as supplementary partial verification; require the Windows-native check for completion |
@@ -142,8 +142,8 @@ Correct:
 
 ### Tauri Windows-Only Packaging Contract
 
-- Keep platform-specific runtime resources out of the shared `player/src-tauri/tauri.conf.json` `bundle.resources`. Tauri validates every declared resource during packaging, so a Windows GNU CI job that only ran `npm run setup:libmpv -- windows` must not require Linux `.so` or macOS `.dylib` files.
-- Current-stage Player packaging is Windows-only. Keep `player/src-tauri/tauri.windows.conf.json` as the only platform resource override until Linux/macOS Player rendering and packaging are implemented.
+- Keep platform-specific runtime resources out of the shared `src-tauri/tauri.conf.json` `bundle.resources`. Tauri validates every declared resource during packaging, so a Windows GNU CI job that only ran `npm run setup:libmpv -- windows` must not require Linux `.so` or macOS `.dylib` files.
+- Current-stage Player packaging is Windows-only. Keep `src-tauri/tauri.windows.conf.json` as the only platform resource override until Linux/macOS Player rendering and packaging are implemented.
 - Windows resources should include only Windows runtime files such as `lib/libmpv-2.dll`, `lib/libmpv-wrapper.dll`, and license text. Do not include `libmpv.dll.a` or `mpv.lib`; they are link-time import libraries, not runtime bundle resources.
 - Local Windows development and manual builds use the native `x86_64-pc-windows-msvc` scripts. Player CI and beta release guardrails continue to validate/publish Windows GNU packages through `ubuntu-latest` + `x86_64-pc-windows-gnu`.
 - Player CI compiles and tests native Linux and native Windows MSVC Rust targets before the Windows GNU packaging job. A cross-built Windows GNU package does not replace either native compile gate.
@@ -161,7 +161,7 @@ Correct:
 - Version input/tag: `vMAJOR.MINOR.PATCH`, for example `v1.0.0`.
 - App version written into Player files: `MAJOR.MINOR.PATCH` without the leading `v`.
 - Build command: `RUSTC="$(rustup which rustc)" npm run tauri:build:windows`.
-- Target output root: `player/src-tauri/target/x86_64-pc-windows-gnu/release`.
+- Target output root: `src-tauri/target/x86_64-pc-windows-gnu/release`.
 
 ### 3. Contracts
 
@@ -227,7 +227,7 @@ Correct:
 #### Wrong
 
 ```bash
-zip -r player-portable.zip player/src-tauri/target/x86_64-pc-windows-gnu/release
+zip -r player-portable.zip src-tauri/target/x86_64-pc-windows-gnu/release
 ```
 
 #### Correct

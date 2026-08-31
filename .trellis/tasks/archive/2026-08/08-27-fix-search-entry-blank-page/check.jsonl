@@ -1,9 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"执行 Server 全层质量检查。"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"验证 Go 测试、边界与回归质量。"}
-{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"复核搜索两条路径和空数组合同。"}
-{"file":".trellis/spec/backend/automatic-tv-follow.md","reason":"复核 Follow 默认值、保存和 Worker 四层防护。"}
-{"file":".trellis/spec/backend/download-route-selection.md","reason":"复核 Follow 路线、115 保留命名空间、生活事件幂等与跨 Connection 边界全部 fail closed。"}
-{"file":".trellis/spec/frontend/index.md","reason":"执行 WebUI 全层质量检查。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"验证类型、测试、构建和交互回归。"}
-{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"复核订阅编辑器和搜索页可用性。"}
-{"file":".trellis/tasks/08-27-fix-search-entry-blank-page/research/root-cause.md","reason":"对照已验证根因，避免只修症状。"}

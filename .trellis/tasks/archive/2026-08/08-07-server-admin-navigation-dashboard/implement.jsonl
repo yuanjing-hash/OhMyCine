@@ -1,5 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"Server documentation and architecture checklist"}
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Existing Server Web UI, RBAC and embedded administration contracts"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Vue component, responsive layout and accessibility rules for future implementation"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"Permission and route metadata type contracts referenced by the design"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Navigation and dashboard data cross UI, API, jobs and storage domains"}

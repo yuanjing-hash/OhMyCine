@@ -1,4 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"复核全量测试、race-sensitive 单飞和回归。"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"复核全量删除边界、密码不泄漏和审计。"}
-{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"复核重启恢复、revision 失效和 coalescing。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"复核表单状态、类型、测试和构建。"}

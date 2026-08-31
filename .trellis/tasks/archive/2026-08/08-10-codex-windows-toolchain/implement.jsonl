@@ -1,3 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Windows-native local development and Go quality rules"}
-{"file": ".trellis/tasks/08-10-codex-windows-toolchain/research/windows-toolchain.md", "reason": "Codex PATH and Windows toolchain research"}

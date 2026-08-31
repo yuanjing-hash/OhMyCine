@@ -110,11 +110,11 @@ PT 站点 Cookie/passkey 使用独立于下载任务的站点 AES-GCM purpose/AA
 
 Player 首次连接 Server 时提交用户名、密码、随机设备 ID 和安全显示名称，密码只用于当次校验。Server 返回一次性可见的高熵 `omc_player_` device token；Server 数据库只保存 SHA-256 token hash 与不可逆 device ID hash，Player 只把原始 token 保存到 provider-specific 安全凭据 envelope，不保存 Server 密码。
 
-device token 只允许进入 `/api/v1/player/*` 的独立 Bearer 路由组，不能作为 Cookie session、不能获得 CSRF 豁免，也不能进入普通管理 API。每次认证重新解析当前用户和权限；默认 30 天 idle、180 天 absolute 上限，并在同设备重新登录、登出、显式设备撤销、用户停用或密码重置时立即撤销。设备列表只返回记录 ID、安全名称、客户端类型和生命周期时间，不返回 token/hash、IP、User-Agent 或原始设备 ID。
+device token 只允许进入 `/api/v1/*` 的独立 Bearer 路由组，不能作为 Cookie session、不能获得 CSRF 豁免，也不能进入普通管理 API。每次认证重新解析当前用户和权限；默认 30 天 idle、180 天 absolute 上限，并在同设备重新登录、登出、显式设备撤销、用户停用或密码重置时立即撤销。设备列表只返回记录 ID、安全名称、客户端类型和生命周期时间，不返回 token/hash、IP、User-Agent 或原始设备 ID。
 
 Player 115 直连播放仍按 entry/version ID 请求 Server；Server 在每次 GET/HEAD 中重新校验媒体库权限和 active managed artifact 后才返回短期 302。Windows/Android 的 loopback 播放桥仅向 Server origin 发送 device Bearer，跨 origin 重定向必须删除 Authorization、Cookie 和 provider-private Header，禁止将 device token 转发给 115/CDN。播放 URL、Header、signed STRM URL 和上游临时地址只存在于瞬时原生播放边界，不进入路由、配置、播放历史、日志或诊断。
 
-Player 媒体变更使用同一 `/api/v1/player/*` Bearer 边界上的 12 秒有界长轮询，不使用 query token、Cookie、WebSocket subprotocol 或管理端 Job WebSocket。每次 poll 都重新认证设备/用户并按当前媒体库权限过滤；cursor 只是可持久化的断线恢复提示，不授予访问权。事件只包含逻辑媒体库 ID、content revision、受控 kind、时间和新 cursor；禁止包含绝对路径、115/provider ID、Emby/Jellyfin upstream ID/API Key、signed STRM、临时 URL 或原始错误。ready outbox 有界保留，过期 cursor 返回 `resync_required`，不为离线设备创建无界逐设备队列。
+Player 媒体变更使用同一 `/api/v1/*` Bearer 边界上的 12 秒有界长轮询，不使用 query token、Cookie、WebSocket subprotocol 或管理端 Job WebSocket。每次 poll 都重新认证设备/用户并按当前媒体库权限过滤；cursor 只是可持久化的断线恢复提示，不授予访问权。事件只包含逻辑媒体库 ID、content revision、受控 kind、时间和新 cursor；禁止包含绝对路径、115/provider ID、Emby/Jellyfin upstream ID/API Key、signed STRM、临时 URL 或原始错误。ready outbox 有界保留，过期 cursor 返回 `resync_required`，不为离线设备创建无界逐设备队列。
 
 Emby/Jellyfin 管理 API Key 继续使用 Connection provider/purpose 隔离的 AES-GCM envelope，只有刷新服务调用边界可以解密。`media_server_refresh` Job payload 只允许 target record ID；上游 library ID 仅作为私有目标配置保存，不进入目标 DTO、Job、日志或审计。外部客户端固定到已验证的 HTTP(S) endpoint，拒绝 credential-bearing redirect，限制超时和响应大小，并将认证/配置错误与可重试的网络不可用/限流明确分开。
 

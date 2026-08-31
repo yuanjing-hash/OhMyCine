@@ -1,4 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"复核定向/全量测试与回归范围。"}
-{"file":".trellis/spec/backend/transfer-organization.md","reason":"复核 cleanup 所有权和幂等边界。"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"复核零越界、非递归删除和日志脱敏。"}
-

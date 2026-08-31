@@ -1,3 +1,0 @@
-{"file":".trellis/spec/backend/directory-structure.md","reason":"检查 develop 的后端目录规则未被覆盖"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查发布分支规则未被覆盖"}
-{"file":".trellis/tasks/08-11-migrate-uncommitted-to-develop/research/safe-git-migration.md","reason":"检查分支、冲突、stash 和恢复点满足迁移安全要求"}

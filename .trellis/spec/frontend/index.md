@@ -1,6 +1,6 @@
 # Frontend Development Guidelines
 
-> Long-lived implementation rules for OhMyCine Player, Hub UI, and TypeScript frontend code.
+> Long-lived implementation rules for OhMyCine Player frontend and Tauri code.
 
 ---
 
@@ -22,7 +22,7 @@ Before changing frontend code or Player design:
 4. Keep all media sources behind the common DataSource interface.
 5. Use UnoCSS and CSS variables for Cinema OS styling.
 6. Store credentials in OS secure storage when available; do not write secrets to ordinary config files.
-7. If feature completion status changes, update `docs/architecture/06-roadmap.md` in the same task.
+7. If feature completion status changes, update the owning Player architecture/spec document in the same task.
 8. Existing Player work is to be adopted as current state and continued, not rewritten during Trellis migration tasks.
 
 ---
@@ -37,7 +37,6 @@ Before changing frontend code or Player design:
 | [State Management](./state-management.md) | Pinia stores, config, playback and server state | Active |
 | [Type Safety](./type-safety.md) | TypeScript, DataSource types, runtime validation | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Lint/typecheck/build and forbidden patterns | Active |
-| [Server Admin Web UI](./server-admin-ui.md) | Server console theme, tokens, accessibility, and visual verification | Active |
 | [Danmaku Contract](./danmaku.md) | API, privacy, lifecycle, rendering, and cross-platform controls | Active |
 | [Server Online Media](./server-online-media.md) | Generic online libraries, paged history, progress sync, stream variants, and plugin danmaku priority | Active |
 | [Player Download and Offline Media](./download-offline.md) | Stable download identity, scheduler, offline package, attachment, local-first playback, and deletion contracts | Active |

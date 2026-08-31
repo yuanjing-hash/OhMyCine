@@ -2,8 +2,6 @@
 # OhMyCine .gitignore
 # ====================
 
-# Claude Code local settings
-.claude/settings.local.json
 RESEARCH.md
 
 # ====================
@@ -46,7 +44,7 @@ $RECYCLE.BIN/
 .settings/
 
 # ====================
-# Node / JavaScript (player, hub)
+# Node / JavaScript
 # ====================
 
 node_modules/
@@ -70,7 +68,7 @@ __pycache__/
 *.pyc
 
 # ====================
-# Rust / Tauri (player/src-tauri)
+# Rust / Tauri (src-tauri)
 # ====================
 
 target/
@@ -78,34 +76,15 @@ target/
 
 # Tauri
 src-tauri/target/
-player/src-tauri/lib/libmpv.dll.a
-player/src-tauri/lib/mpv.lib
+src-tauri/lib/libmpv.dll.a
+src-tauri/lib/mpv.lib
 
-# ====================
-# Go (server, cli)
-# ====================
-
-# Binaries
+# Native binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-omc
-ohmycine-server
-server/server
-server/bin/
-cli/bin/
-
-# Test binary
-*.test
-
-# Go workspace
-go.work
-go.work.sum
-
-# Vendor (uncomment if not vendoring)
-# vendor/
 
 # ====================
 # Build Outputs
@@ -113,11 +92,6 @@ go.work.sum
 
 # Tauri build
 src-tauri/target/
-player/src-tauri/target/
-
-# VitePress build
-hub/.vitepress/dist/
-hub/.vitepress/cache/
 
 # ====================
 # Runtime / Data
@@ -129,8 +103,6 @@ hub/.vitepress/cache/
 *.sqlite
 *.log
 logs/
-server/.runtime/
-server/.tmp/
 .tmp/
 
 # ====================

@@ -1,5 +1,0 @@
-{"file":".trellis/spec/frontend/state-management.md","reason":"检查桌面设置不再依赖 WebView localStorage。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查 lint、typecheck、build 和专项验证。"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"检查默认/便携凭据保护和路径白名单迁移。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查旧数据到新 SQLite 的完整往返和失败行为。"}
-{"file":"docs/architecture/07-security-design.md","reason":"确认文档准确描述 DPAPI 与便携模式权衡。"}

@@ -1,6 +1,0 @@
-{"file":".trellis/spec/frontend/index.md","reason":"检查 Server Web UI 是否满足前端总体质量门禁。"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"检查组件复用、可访问性、主题原子切换和响应式行为。"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"检查新增主题与导航逻辑的 TypeScript 类型安全。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"执行并核对测试、lint、typecheck 和生产构建。"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查是否仍有散落的暗色颜色和重复主题机制。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"复核根导航未绕过既有 roots API、权限和 token 边界。"}

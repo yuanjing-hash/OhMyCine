@@ -1,4 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Server 与插件测试和质量门禁"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"检查凭据、CDN URL 和日志泄露"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player 构建、类型和回归检查"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查播放数据跨层闭环"}

@@ -6,7 +6,7 @@
 
 ## Overview
 
-Player uses Tauri v2 + Vue 3 + TypeScript + UnoCSS. The web UI lives under `player/src/`; Rust/Tauri integration lives under `player/src-tauri/`. Windows-native development and runtime verification are the local default. Linux/WSL cross-built artifacts remain supplementary and must not be treated as Windows runtime proof.
+Player uses Tauri v2 + Vue 3 + TypeScript + UnoCSS. The web UI lives under `src/`; Rust/Tauri integration lives under `src-tauri/`. Windows-native development and runtime verification are the local default. Linux/WSL cross-built artifacts remain supplementary and must not be treated as Windows runtime proof.
 
 The repository is design-first. Use existing directories when present and do not create broad rewrites to match a planned tree unless the task explicitly asks for it.
 
@@ -15,7 +15,7 @@ The repository is design-first. Use existing directories when present and do not
 ## Target Directory Layout
 
 ```text
-player/
+
 ├── src-tauri/
 │   ├── src/
 │   │   ├── commands/       # Tauri commands exposed to Vue
@@ -28,7 +28,7 @@ player/
 │   ├── components/
 │   │   ├── ui/             # reusable Cinema OS UI primitives
 │   │   ├── layout/         # app layout, sidebar, window chrome
-│   │   ├── player/         # playback UI, controls, track menus
+│   │   ├──          # playback UI, controls, track menus
 │   │   ├── media/          # cards, grids, hero, poster wall
 │   │   └── common/         # search, settings, server status
 │   ├── views/              # route-level pages
@@ -315,7 +315,7 @@ Rust internals should use structured errors and return strings safe for frontend
 
 ### libmpv FFI Contract
 
-When wrapping libmpv in `player/src-tauri/src/mpv/`, keep the FFI surface small and explicit:
+When wrapping libmpv in `src-tauri/src/mpv/`, keep the FFI surface small and explicit:
 
 #### 1. Scope / Trigger
 - Trigger: Rust code creates, owns, or controls a native `mpv_handle`.
@@ -393,7 +393,7 @@ When implementing embedded video rendering through libmpv's render API, keep the
 
 #### 1. Scope / Trigger
 - Trigger: adding or changing `mpv_render_context`, native render surfaces, GL/WGL/EGL/Metal/Android/iOS surfaces, render-thread callbacks, or render-status commands.
-- Applies to `player/src-tauri/src/mpv/render.rs`, platform-specific render modules, `MpvPlayer` handle access, Tauri render commands, and frontend render status UI.
+- Applies to `src-tauri/src/mpv/render.rs`, platform-specific render modules, `MpvPlayer` handle access, Tauri render commands, and frontend render status UI.
 
 #### 2. Signatures
 - Render status command: `mpv_render_status() -> Result<MpvRenderState, String>`.
@@ -527,11 +527,11 @@ When Windows-native development builds Player for `x86_64-pc-windows-msvc`, or C
 
 #### 1. Scope / Trigger
 - Trigger: `npm run tauri:build:windows:native`, `npm run tauri:build:windows`, either Windows Rust target, or any change to libmpv setup/bundling.
-- Applies to `player/scripts/setup-libmpv.mjs`, `player/src-tauri/build.rs`, `player/src-tauri/tauri.conf.json`, and `.gitignore`.
+- Applies to `scripts/setup-libmpv.mjs`, `src-tauri/build.rs`, `src-tauri/tauri.conf.json`, and `.gitignore`.
 
 #### 2. Signatures
-- Setup script command: `npm run setup:libmpv -- windows` installs Windows libmpv artifacts under `player/src-tauri/lib/`.
-- Build targets: `TARGET=x86_64-pc-windows-msvc` and `TARGET=x86_64-pc-windows-gnu` add `player/src-tauri/lib` as a native link-search path.
+- Setup script command: `npm run setup:libmpv -- windows` installs Windows libmpv artifacts under `src-tauri/lib/`.
+- Build targets: `TARGET=x86_64-pc-windows-msvc` and `TARGET=x86_64-pc-windows-gnu` add `src-tauri/lib` as a native link-search path.
 - Bundle resource mapping: runtime DLLs are copied to the Windows app install root.
 
 #### 3. Contracts
@@ -548,7 +548,7 @@ When Windows-native development builds Player for `x86_64-pc-windows-msvc`, or C
 #### 4. Validation & Error Matrix
 | Condition | Required behavior |
 |-----------|-------------------|
-| Linker says `cannot find -lmpv` | Ensure `libmpv.dll.a` exists in `player/src-tauri/lib/` and the Windows GNU target has that directory in `rustc-link-search` |
+| Linker says `cannot find -lmpv` | Ensure `libmpv.dll.a` exists in `src-tauri/lib/` and the Windows GNU target has that directory in `rustc-link-search` |
 | MSVC linker says it cannot open `mpv.lib` | Run `npm run setup:libmpv -- windows`; ensure `mpv.lib` exists and the Windows MSVC target has the vendored link-search path |
 | `libmpv-2.dll` missing from bundle | Add it as a Tauri resource at the Windows app root |
 | `libmpv.dll.a` or `mpv.lib` appears in git status as tracked/addable | Ignore it; regenerate via the setup script instead of committing it |

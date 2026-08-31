@@ -1,4 +1,0 @@
-{"file":".github/workflows/player-beta-release.yml","reason":"增加标准 ZIP 并把三种程序包接入 artifact、校验和 GitHub Release。"}
-{"file":".github/scripts/generate-player-beta-release-notes.py","reason":"在自动发布说明中描述安装包、标准 ZIP 和便携 ZIP。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"固化 Player Beta 三种程序包的长期打包契约。"}
-{"file":"README.md","reason":"向用户说明标准免安装与便携版本的存储差异。"}

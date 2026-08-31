@@ -140,7 +140,7 @@ AI recommendation is primarily Player-side.
 Use only after the Player project exists:
 
 ```bash
-cd player
+cd .
 npm install
 npm run tauri dev
 npm run build
@@ -151,7 +151,7 @@ npm run lint
 If Tauri/Rust code exists:
 
 ```bash
-cd player/src-tauri
+cd ./src-tauri
 cargo check
 cargo clippy
 cargo test
@@ -160,8 +160,6 @@ cargo test
 ## Documentation to consult
 
 - `docs/architecture/03-player-design.md`
-- `docs/architecture/01-overview.md`
-- `docs/architecture/06-roadmap.md`
 - `docs/architecture/07-security-design.md`
 - `DEVELOPMENT.md`
 - `AGENTS.md`

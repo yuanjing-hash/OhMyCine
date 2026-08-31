@@ -6,7 +6,7 @@
 
 ## Overview
 
-Reusable stateful logic belongs in composables under `player/src/composables/`. Composables should expose small reactive APIs and hide Tauri event wiring, keyboard listeners, and client calls from components.
+Reusable stateful logic belongs in composables under `src/composables/`. Composables should expose small reactive APIs and hide Tauri event wiring, keyboard listeners, and client calls from components.
 
 ---
 

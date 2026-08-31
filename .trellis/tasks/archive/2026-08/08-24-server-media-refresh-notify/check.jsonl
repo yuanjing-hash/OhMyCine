@@ -1,6 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Full Server quality, security and documentation review gate."}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Review secrets, permissions, device auth, external HTTP and event redaction."}
-{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"Review Job coalescing, recovery and private-state invariants."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player TypeScript/build and regression review gate."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"Review non-disruptive cache and lifecycle behavior."}
-{"file":"docs/architecture/07-security-design.md","reason":"Cross-layer WebSocket/event, credential and Player-Server security requirements."}

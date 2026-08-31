@@ -1,9 +1,0 @@
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"Verify Storage routes, authorization, safe stable errors, and REST envelopes"}
-{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify explicit SQLite v1-to-v2 migration, constraints, and canonical path persistence"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Verify path canonicalization, Reparse Point handling, delete safety, and audit redaction"}
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Verify permission catalog, system-role seeds, route meta, controls, and backend RBAC"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify Go tests, vet/build gates, path regressions, and documentation sync"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify the Vue Storage administration view follows component and permission conventions"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"Verify generated permissions and Storage API types remain strict and synchronized"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify Web UI test, typecheck, lint, and build gates"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace Storage data and errors from SQLite through service, API, and UI"}

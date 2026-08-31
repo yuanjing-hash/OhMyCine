@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/media-library-foundation.md","reason":"核对事件扫描、generation、媒体库设置与 STRM 清理契约"}
-{"file":".trellis/spec/backend/transfer-organization.md","reason":"核对同源 115 调用数、批量操作和恢复边界"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"核对 provider 调度、删除边界、reparse 和日志安全"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"核对 Go 测试与质量门禁"}
-{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"核对保存反馈、dirty state 与选择器交互"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"核对 WebUI 测试、类型、lint 与构建"}
-{"file":".trellis/tasks/archive/2026-08/08-28-optimize-115-pipeline-library/research/115-transfer-performance.md","reason":"核对实现是否真正消除前置目录和 mutation 请求放大"}

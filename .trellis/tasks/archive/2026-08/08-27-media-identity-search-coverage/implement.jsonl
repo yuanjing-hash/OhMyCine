@@ -1,8 +1,0 @@
-{"file":".trellis/spec/backend/pt-discovery.md","reason":"复用多站有界并发、SSE、opaque result claim、识别和下载交接边界。"}
-{"file":".trellis/spec/backend/media-identity-discovery.md","reason":"遵循 TMDB-first、多名称聚合和 actor-scoped coverage 的可执行契约。"}
-{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/ohmycine-current-contracts.md","reason":"实现 actor-scoped 媒体库事实聚合并复用当前 Discovery/SiteService/TMDB 契约。"}
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"新增 discovery identity/coverage API 的认证、权限、标准响应和安全错误契约。"}
-{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"统一详情和探索页遵循 Server 管理 UI、响应式和可访问性规范。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"约束 Web UI typed API、路由、coverage union 状态并执行质量门。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"验证 TMDB→service→API→Vue 及 catalog→coverage 的端到端字段一致性。"}
-{"file":".trellis/tasks/08-27-unified-media-search-subscription/research/moviepilot-v3-analysis.md","reason":"以已固定 MP v3 源码证据校准海报搜索、详情、多名称搜索和覆盖率 UX。"}

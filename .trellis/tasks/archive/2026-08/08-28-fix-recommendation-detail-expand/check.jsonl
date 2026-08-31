@@ -1,4 +1,0 @@
-{"file":".trellis/tasks/08-28-optimize-115-pipeline-library/research/web-detail-and-library.md","reason":"核对 null collection 根因和生产 fixture 是否被覆盖"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"验证规范化 DTO 与模板无不安全假设"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"验证测试、类型检查、lint 与构建门"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"验证 Go JSON 契约测试和 Server 质量门"}

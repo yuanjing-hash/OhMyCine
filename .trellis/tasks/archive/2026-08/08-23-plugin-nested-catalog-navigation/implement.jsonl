@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/plugin-online-media.md","reason":"插件导航能力、响应规范化和兼容约束"}
-{"file":".trellis/spec/backend/media-classification-profiles.md","reason":"标准媒体库分类所有权与顺序"}
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"Player 分类及导航 API 契约"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"节点 token、边界校验与插件隔离"}
-{"file":".trellis/spec/frontend/server-online-media.md","reason":"Player ServerDataSource 在线媒体导航约定"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"节点联合类型和不可信响应解析"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Server、插件、Player 跨层数据流"}

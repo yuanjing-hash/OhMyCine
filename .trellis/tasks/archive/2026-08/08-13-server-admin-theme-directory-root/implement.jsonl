@@ -1,7 +1,0 @@
-{"file":".trellis/spec/frontend/index.md","reason":"Server Web UI 的 Vue/TypeScript 前端入口规范与预开发门禁。"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"组件结构、可访问性、主题切换与共享样式约束。"}
-{"file":".trellis/spec/frontend/state-management.md","reason":"浏览器本地主题偏好和共享响应式状态的存放边界。"}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"主题枚举、浏览器 API 和组件契约的 TypeScript 安全要求。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Vue 前端实现的测试、lint、typecheck 与 build 门禁。"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"主题状态、语义颜色和重复页面样式需要统一复用。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"目录根导航必须保持 UI 到既有安全 API 的契约边界。"}

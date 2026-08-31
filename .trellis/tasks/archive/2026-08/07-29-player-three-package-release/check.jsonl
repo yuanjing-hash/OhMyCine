@@ -1,3 +1,0 @@
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查三个发布资产、目录内容、命名和校验和契约。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 workflow 变量、打包输出、artifact、Release notes 和 GitHub 上传的完整传播。"}
-{"file":".github/workflows/player-beta-release.yml","reason":"检查标准 ZIP 不含 portable.flag，便携 ZIP 必须包含标记。"}

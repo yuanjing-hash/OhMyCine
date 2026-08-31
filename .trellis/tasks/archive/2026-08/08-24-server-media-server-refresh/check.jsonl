@@ -1,5 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Server full-scope quality gate."}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Credential, SSRF, authorization and logging review."}
-{"file":".trellis/spec/backend/database-guidelines.md","reason":"Migration, transaction and SQLite compatibility review."}
-{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"Coalescing, generation, retry and recovery review."}
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Management UI permissions and truthful state review."}

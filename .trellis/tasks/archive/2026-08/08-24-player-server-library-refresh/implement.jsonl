@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/api-guidelines.md","reason":"Player event endpoint authentication, envelopes and filtering."}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"Device Bearer and media-event visibility/redaction boundary."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"Source-scoped snapshots, background Home refresh and offline behavior."}
-{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Composable lifecycle, cancellation and cleanup rules."}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"Runtime validation and DataSource type boundary."}
-{"file":".trellis/spec/frontend/server-online-media.md","reason":"ServerDataSource navigation, source isolation and safe DTO behavior."}
-{"file":"docs/architecture/03-player-design.md","reason":"Player ServerDataSource and native HTTP bridge architecture."}

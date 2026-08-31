@@ -1,6 +1,0 @@
-{
-  "idempotencyKey": "event-existing",
-  "positionSeconds": 120,
-  "event": "progress",
-  "versionId": "bilibili:BV1xx411c7mD:101"
-}

@@ -1,4 +1,0 @@
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"检查最大化与全屏状态独立、图标和按钮职责。"}
-{"file":".trellis/spec/frontend/directory-structure.md","reason":"检查 Windows underlay resize 只由 WebView 最终 bounds 驱动。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 Tauri Window API、Vue 状态、WebView layout 和 Win32 HWND 的完整时序。"}
-{"file":"player/src/views/PlayerView.vue","reason":"检查窗口失焦、鼠标移出和残留 controlsInteracting 不再阻止 3 秒隐藏。"}

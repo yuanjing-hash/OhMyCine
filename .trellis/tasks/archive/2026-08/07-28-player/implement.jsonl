@@ -1,6 +1,0 @@
-{"file":".trellis/spec/frontend/type-safety.md","reason":"统一 DataSource 播放请求类型并保持调用方类型安全。"}
-{"file":".trellis/spec/frontend/state-management.md","reason":"播放敏感上下文只保存在短生命周期内存状态，不进入持久化路由。"}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"保持错误处理、删除流程和验证脚本符合 Player 质量约束。"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"校验 Tauri SQLite 删除命令和敏感播放信息边界。"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"覆盖 Vue、DataSource、Tauri command 与 SQLite 的完整数据流。"}
-{"file":"docs/architecture/07-security-design.md","reason":"遵守播放 URL、凭据和本地路径不得持久化或进入路由状态的安全设计。"}

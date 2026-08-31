@@ -1,4 +1,0 @@
-{"file":".trellis/spec/backend/transfer-organization.md","reason":"媒体整理 read model、路径摘要、RBAC、重试与冲突响应的主契约"}
-{"file":".trellis/spec/backend/persistent-task-queue.md","reason":"复用 Job DTO、attempts、timeline、ActionRequest、事件和重试语义"}
-{"file":".trellis/spec/backend/security-guidelines.md","reason":"own/all 数据隔离、绝对路径与私有任务字段防泄露"}
-{"file":".trellis/spec/frontend/server-admin-ui.md","reason":"管理端主题、响应式、抽屉可访问性和视觉验收"}

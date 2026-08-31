@@ -1,3 +1,0 @@
-{"file":".trellis/spec/backend/web-admin-guidelines.md","reason":"Verify design preserves RBAC and personal/admin account boundaries"}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify hierarchy, responsive behavior and accessibility guidance"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify dashboard cards map to real future data owners and no fake data"}
