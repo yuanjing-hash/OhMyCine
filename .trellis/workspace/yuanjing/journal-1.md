@@ -1098,3 +1098,25 @@ CI 固定 golangci-lint 发现默认入库服务残留未使用辅助函数；�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 44: 完成115自动监听空包回收与回收站定时清理
+
+**Date**: 2026-08-31
+**Task**: 完成115自动监听空包回收与回收站定时清理
+**Branch**: `develop`
+
+### Summary
+
+修复115自动监听内容入库后空作品包未回收，并增加账号级定时清空回收站、操作密码、Cron、持久队列调度与前端状态；Server/WebUI 全量门禁通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d7ddd46` | (see git log) |
+| `414802e` | (see git log) |
+
+### Status
+
+[OK] **Completed**
