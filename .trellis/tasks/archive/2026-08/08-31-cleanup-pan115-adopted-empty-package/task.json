@@ -1,0 +1,29 @@
+{
+  "id": "cleanup-pan115-adopted-empty-package",
+  "name": "cleanup-pan115-adopted-empty-package",
+  "title": "清理自动监听入库后的115空包目录",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjing",
+  "assignee": "yuanjing",
+  "createdAt": "2026-08-31",
+  "completedAt": "2026-08-31",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-31-fix-pan115-ingest-empty-package",
+    "08-31-add-pan115-recycle-cleanup-schedule"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
