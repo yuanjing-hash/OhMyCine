@@ -9,14 +9,18 @@ import (
 )
 
 type connectionPayload struct {
-	Name            string  `json:"name"`
-	Provider        string  `json:"provider"`
-	Cookie          *string `json:"cookie"`
-	RecyclePassword *string `json:"recycle_password"`
-	Endpoint        *string `json:"endpoint"`
-	APIKey          *string `json:"api_key"`
-	Enabled         *bool   `json:"enabled"`
-	Revision        uint64  `json:"revision"`
+	Name                    string  `json:"name"`
+	Provider                string  `json:"provider"`
+	Cookie                  *string `json:"cookie"`
+	RecyclePassword         *string `json:"recycle_password"`
+	RemoveRecyclePassword   *bool   `json:"remove_recycle_password"`
+	RecycleCleanupEnabled   *bool   `json:"recycle_cleanup_enabled"`
+	RecycleCleanupCron      *string `json:"recycle_cleanup_cron"`
+	RecycleCleanupConfirmed bool    `json:"recycle_cleanup_confirmed"`
+	Endpoint                *string `json:"endpoint"`
+	APIKey                  *string `json:"api_key"`
+	Enabled                 *bool   `json:"enabled"`
+	Revision                uint64  `json:"revision"`
 }
 
 func (a *API) Connections(c *gin.Context) {
@@ -70,7 +74,15 @@ func (a *API) CreateConnection(c *gin.Context) {
 	if payload.RecyclePassword != nil {
 		recyclePassword = *payload.RecyclePassword
 	}
-	item, err := a.connections.Create(actor, services.ConnectionInput{Name: payload.Name, Provider: payload.Provider, Cookie: cookie, RecyclePassword: recyclePassword, Endpoint: endpoint, APIKey: apiKey, Enabled: enabled}, middleware.RequestContextFrom(c))
+	cleanupEnabled := false
+	if payload.RecycleCleanupEnabled != nil {
+		cleanupEnabled = *payload.RecycleCleanupEnabled
+	}
+	cleanupCron := ""
+	if payload.RecycleCleanupCron != nil {
+		cleanupCron = *payload.RecycleCleanupCron
+	}
+	item, err := a.connections.Create(actor, services.ConnectionInput{Name: payload.Name, Provider: payload.Provider, Cookie: cookie, RecyclePassword: recyclePassword, Endpoint: endpoint, APIKey: apiKey, Enabled: enabled, RecycleCleanupEnabled: cleanupEnabled, RecycleCleanupCron: cleanupCron, RecycleCleanupConfirmed: payload.RecycleCleanupConfirmed}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return
@@ -94,7 +106,7 @@ func (a *API) UpdateConnection(c *gin.Context) {
 	if payload.Name != "" {
 		name = &payload.Name
 	}
-	item, err := a.connections.Update(actor, id, services.UpdateConnectionInput{Name: name, Cookie: payload.Cookie, RecyclePassword: payload.RecyclePassword, Endpoint: payload.Endpoint, APIKey: payload.APIKey, Enabled: payload.Enabled, Revision: payload.Revision}, middleware.RequestContextFrom(c))
+	item, err := a.connections.Update(actor, id, services.UpdateConnectionInput{Name: name, Cookie: payload.Cookie, RecyclePassword: payload.RecyclePassword, RemoveRecyclePassword: payload.RemoveRecyclePassword, RecycleCleanupEnabled: payload.RecycleCleanupEnabled, RecycleCleanupCron: payload.RecycleCleanupCron, RecycleCleanupConfirmed: payload.RecycleCleanupConfirmed, Endpoint: payload.Endpoint, APIKey: payload.APIKey, Enabled: payload.Enabled, Revision: payload.Revision}, middleware.RequestContextFrom(c))
 	if err != nil {
 		writeError(c, a.log, err)
 		return

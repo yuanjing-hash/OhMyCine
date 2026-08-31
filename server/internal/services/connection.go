@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"github.com/rs/zerolog"
 	"github.com/yuanjing-hash/ohmycine/server/internal/authz"
 	"github.com/yuanjing-hash/ohmycine/server/internal/credential"
@@ -40,23 +41,30 @@ func NewConnectionService(db *gorm.DB, audit *AuditService, credentials *credent
 }
 
 type ConnectionInput struct {
-	Name            string
-	Provider        string
-	Cookie          string
-	RecyclePassword string
-	Endpoint        string
-	APIKey          string
-	Enabled         bool
+	Name                    string
+	Provider                string
+	Cookie                  string
+	RecyclePassword         string
+	Endpoint                string
+	APIKey                  string
+	Enabled                 bool
+	RecycleCleanupEnabled   bool
+	RecycleCleanupCron      string
+	RecycleCleanupConfirmed bool
 }
 
 type UpdateConnectionInput struct {
-	Name            *string
-	Cookie          *string
-	RecyclePassword *string
-	Endpoint        *string
-	APIKey          *string
-	Enabled         *bool
-	Revision        uint64
+	Name                    *string
+	Cookie                  *string
+	RecyclePassword         *string
+	RemoveRecyclePassword   *bool
+	RecycleCleanupEnabled   *bool
+	RecycleCleanupCron      *string
+	RecycleCleanupConfirmed bool
+	Endpoint                *string
+	APIKey                  *string
+	Enabled                 *bool
+	Revision                uint64
 }
 
 type ConnectionHealth struct {
@@ -74,18 +82,24 @@ type ConnectionAccount struct {
 }
 
 type ConnectionSummary struct {
-	ID                        uint              `json:"id"`
-	Name                      string            `json:"name"`
-	Provider                  string            `json:"provider"`
-	Endpoint                  string            `json:"endpoint"`
-	Enabled                   bool              `json:"enabled"`
-	CredentialConfigured      bool              `json:"credential_configured"`
-	RecyclePasswordConfigured bool              `json:"recycle_password_configured"`
-	Account                   ConnectionAccount `json:"account"`
-	Health                    ConnectionHealth  `json:"health"`
-	Revision                  uint64            `json:"revision"`
-	CreatedAt                 time.Time         `json:"created_at"`
-	UpdatedAt                 time.Time         `json:"updated_at"`
+	ID                          uint              `json:"id"`
+	Name                        string            `json:"name"`
+	Provider                    string            `json:"provider"`
+	Endpoint                    string            `json:"endpoint"`
+	Enabled                     bool              `json:"enabled"`
+	CredentialConfigured        bool              `json:"credential_configured"`
+	RecyclePasswordConfigured   bool              `json:"recycle_password_configured"`
+	RecycleCleanupEnabled       bool              `json:"recycle_cleanup_enabled"`
+	RecycleCleanupCron          string            `json:"recycle_cleanup_cron"`
+	RecycleCleanupNextRunAt     *time.Time        `json:"recycle_cleanup_next_run_at"`
+	RecycleCleanupLastRunAt     *time.Time        `json:"recycle_cleanup_last_run_at"`
+	RecycleCleanupLastStatus    string            `json:"recycle_cleanup_last_status"`
+	RecycleCleanupLastErrorCode string            `json:"recycle_cleanup_last_error_code"`
+	Account                     ConnectionAccount `json:"account"`
+	Health                      ConnectionHealth  `json:"health"`
+	Revision                    uint64            `json:"revision"`
+	CreatedAt                   time.Time         `json:"created_at"`
+	UpdatedAt                   time.Time         `json:"updated_at"`
 }
 
 type EmbyManagementSummary struct {
@@ -179,12 +193,33 @@ func (s *ConnectionService) Create(actor Actor, input ConnectionInput, request R
 	if provider != cloudpkg.ProviderPan115 && !isMediaServerProvider(provider) {
 		return ConnectionSummary{}, appError(CodeConnectionProviderUnsupported, "当前 Server 不支持该连接类型", nil)
 	}
+	if provider != models.ConnectionProviderPan115 && (strings.TrimSpace(input.RecyclePassword) != "" || input.RecycleCleanupEnabled || strings.TrimSpace(input.RecycleCleanupCron) != "" || input.RecycleCleanupConfirmed) {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "115 回收站配置不适用于该连接", nil)
+	}
 	endpoint, credentialValue, err := s.validateCreateConfig(provider, input)
 	if err != nil {
 		return ConnectionSummary{}, err
 	}
 	now := time.Now().UTC()
-	record := models.Connection{Name: name, NameNormalized: normalized, Provider: provider, Endpoint: endpoint, Enabled: input.Enabled, LastHealthStatus: "unknown", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	cleanupCron := defaultRecycleCleanupCron
+	if strings.TrimSpace(input.RecycleCleanupCron) != "" {
+		cleanupCron = strings.TrimSpace(input.RecycleCleanupCron)
+	}
+	if _, err := nextRecycleCleanup(cleanupCron, now); err != nil {
+		return ConnectionSummary{}, err
+	}
+	if input.RecycleCleanupEnabled && provider != models.ConnectionProviderPan115 {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "定时清空回收站仅适用于 115 连接", nil)
+	}
+	if input.RecycleCleanupEnabled && (!input.RecycleCleanupConfirmed || strings.TrimSpace(input.RecyclePassword) == "") {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "启用定时清空前必须确认不可恢复风险并配置操作密码", nil)
+	}
+	var cleanupNext *time.Time
+	if input.RecycleCleanupEnabled {
+		next, _ := nextRecycleCleanup(cleanupCron, now)
+		cleanupNext = &next
+	}
+	record := models.Connection{Name: name, NameNormalized: normalized, Provider: provider, Endpoint: endpoint, Enabled: input.Enabled, RecycleCleanupEnabled: input.RecycleCleanupEnabled, RecycleCleanupCron: cleanupCron, RecycleCleanupNextRunAt: cleanupNext, RecycleCleanupLastStatus: models.RecycleCleanupStatusIdle, LastHealthStatus: "unknown", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -263,6 +298,12 @@ func (s *ConnectionService) Update(actor Actor, id uint, input UpdateConnectionI
 	if isMediaServerProvider(record.Provider) && input.RecyclePassword != nil {
 		return ConnectionSummary{}, appError(CodeInvalidRequest, "媒体服务器连接不接受 115 回收站安全码", nil)
 	}
+	if record.Provider != models.ConnectionProviderPan115 && (input.RemoveRecyclePassword != nil || input.RecycleCleanupEnabled != nil || input.RecycleCleanupCron != nil || input.RecycleCleanupConfirmed) {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "115 回收站配置不适用于该连接", nil)
+	}
+	if input.RemoveRecyclePassword != nil && *input.RemoveRecyclePassword && input.RecyclePassword != nil && strings.TrimSpace(*input.RecyclePassword) != "" {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "不能同时更换并移除 115 操作密码", nil)
+	}
 	if input.Endpoint != nil {
 		if !isMediaServerProvider(record.Provider) {
 			return ConnectionSummary{}, appError(CodeInvalidRequest, "连接地址不适用于该类型", nil)
@@ -306,9 +347,7 @@ func (s *ConnectionService) Update(actor Actor, id uint, input UpdateConnectionI
 			return ConnectionSummary{}, appError(CodeInvalidRequest, "回收站安全码不适用于该连接", nil)
 		}
 		value := strings.TrimSpace(*input.RecyclePassword)
-		if value == "" {
-			record.RecycleCredentialCiphertext = ""
-		} else {
+		if value != "" {
 			normalized, normalizeErr := normalizeRecyclePassword(value)
 			if normalizeErr != nil {
 				return ConnectionSummary{}, normalizeErr
@@ -320,6 +359,52 @@ func (s *ConnectionService) Update(actor Actor, id uint, input UpdateConnectionI
 			record.RecycleCredentialCiphertext = ciphertext
 		}
 	}
+	removeRecyclePassword := input.RemoveRecyclePassword != nil && *input.RemoveRecyclePassword
+	if removeRecyclePassword {
+		cleanupWillRemainEnabled := record.RecycleCleanupEnabled
+		if input.RecycleCleanupEnabled != nil {
+			cleanupWillRemainEnabled = *input.RecycleCleanupEnabled
+		}
+		if cleanupWillRemainEnabled {
+			return ConnectionSummary{}, appError(CodeInvalidRequest, "启用定时清空时不能移除操作密码", nil)
+		}
+		record.RecycleCredentialCiphertext = ""
+	}
+	cleanupCronChanged := input.RecycleCleanupCron != nil
+	if cleanupCronChanged {
+		value := strings.TrimSpace(*input.RecycleCleanupCron)
+		if _, err := nextRecycleCleanup(value, time.Now()); err != nil {
+			return ConnectionSummary{}, err
+		}
+		record.RecycleCleanupCron = value
+	}
+	wasCleanupEnabled := record.RecycleCleanupEnabled
+	if input.RecycleCleanupEnabled != nil {
+		if record.Provider != models.ConnectionProviderPan115 {
+			return ConnectionSummary{}, appError(CodeInvalidRequest, "定时清空回收站仅适用于 115 连接", nil)
+		}
+		if *input.RecycleCleanupEnabled && !wasCleanupEnabled && !input.RecycleCleanupConfirmed {
+			return ConnectionSummary{}, appError(CodeInvalidRequest, "请确认定时清空回收站的不可恢复风险", nil)
+		}
+		record.RecycleCleanupEnabled = *input.RecycleCleanupEnabled
+	}
+	if record.RecycleCleanupEnabled && record.RecycleCredentialCiphertext == "" {
+		return ConnectionSummary{}, appError(CodeInvalidRequest, "启用定时清空前必须配置 115 操作密码", nil)
+	}
+	if record.RecycleCleanupCron == "" {
+		record.RecycleCleanupCron = defaultRecycleCleanupCron
+	}
+	if record.RecycleCleanupEnabled {
+		if !wasCleanupEnabled || cleanupCronChanged || record.RecycleCleanupNextRunAt == nil {
+			next, err := nextRecycleCleanup(record.RecycleCleanupCron, time.Now())
+			if err != nil {
+				return ConnectionSummary{}, err
+			}
+			record.RecycleCleanupNextRunAt = &next
+		}
+	} else {
+		record.RecycleCleanupNextRunAt = nil
+	}
 	record.LastHealthStatus, record.LastHealthErrorCode, record.LastHealthCheckedAt = "unknown", "", nil
 	record.AccountID, record.AccountName, record.AccountVIP = "", "", false
 	record.QuotaUsedBytes, record.QuotaTotalBytes = nil, nil
@@ -327,6 +412,7 @@ func (s *ConnectionService) Update(actor Actor, id uint, input UpdateConnectionI
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&models.Connection{}).Where("id = ? AND revision = ?", id, input.Revision).Updates(map[string]any{
 			"name": record.Name, "name_normalized": record.NameNormalized, "endpoint": record.Endpoint, "credential_ciphertext": record.CredentialCiphertext, "recycle_credential_ciphertext": record.RecycleCredentialCiphertext,
+			"recycle_cleanup_enabled": record.RecycleCleanupEnabled, "recycle_cleanup_cron": record.RecycleCleanupCron, "recycle_cleanup_next_run_at": record.RecycleCleanupNextRunAt,
 			"enabled": record.Enabled, "account_id": "", "account_name": "", "account_vip": false,
 			"quota_used_bytes": nil, "quota_total_bytes": nil, "last_health_status": "unknown",
 			"last_health_error_code": "", "last_health_checked_at": nil, "revision": record.Revision, "updated_at": time.Now().UTC(),
@@ -561,7 +647,27 @@ func normalizeRecyclePassword(value string) (string, error) {
 }
 
 func connectionSummary(record models.Connection) ConnectionSummary {
-	return ConnectionSummary{ID: record.ID, Name: record.Name, Provider: record.Provider, Endpoint: record.Endpoint, Enabled: record.Enabled, CredentialConfigured: record.CredentialCiphertext != "", RecyclePasswordConfigured: record.RecycleCredentialCiphertext != "", Account: ConnectionAccount{ID: record.AccountID, Name: record.AccountName, VIP: record.AccountVIP, UsedBytes: record.QuotaUsedBytes, TotalBytes: record.QuotaTotalBytes}, Health: ConnectionHealth{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, LastCheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	return ConnectionSummary{ID: record.ID, Name: record.Name, Provider: record.Provider, Endpoint: record.Endpoint, Enabled: record.Enabled, CredentialConfigured: record.CredentialCiphertext != "", RecyclePasswordConfigured: record.RecycleCredentialCiphertext != "", RecycleCleanupEnabled: record.RecycleCleanupEnabled, RecycleCleanupCron: record.RecycleCleanupCron, RecycleCleanupNextRunAt: record.RecycleCleanupNextRunAt, RecycleCleanupLastRunAt: record.RecycleCleanupLastRunAt, RecycleCleanupLastStatus: record.RecycleCleanupLastStatus, RecycleCleanupLastErrorCode: record.RecycleCleanupLastErrorCode, Account: ConnectionAccount{ID: record.AccountID, Name: record.AccountName, VIP: record.AccountVIP, UsedBytes: record.QuotaUsedBytes, TotalBytes: record.QuotaTotalBytes}, Health: ConnectionHealth{Status: record.LastHealthStatus, ErrorCode: record.LastHealthErrorCode, LastCheckedAt: record.LastHealthCheckedAt}, Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+}
+
+const defaultRecycleCleanupCron = "0 */7 * * *"
+
+var recycleCleanupParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+func nextRecycleCleanup(expression string, after time.Time) (time.Time, error) {
+	expression = strings.TrimSpace(expression)
+	if len(strings.Fields(expression)) != 5 {
+		return time.Time{}, appError(CodeInvalidRequest, "回收站清理 Cron 必须是 5 段格式", nil)
+	}
+	schedule, err := recycleCleanupParser.Parse(expression)
+	if err != nil {
+		return time.Time{}, appError(CodeInvalidRequest, "回收站清理 Cron 无效", nil)
+	}
+	next := schedule.Next(after.In(time.Local))
+	if next.IsZero() {
+		return time.Time{}, appError(CodeInvalidRequest, "回收站清理 Cron 无法产生下一次时间", nil)
+	}
+	return next.UTC(), nil
 }
 
 func connectionTestMessage(provider, code string) string {

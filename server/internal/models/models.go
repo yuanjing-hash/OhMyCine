@@ -350,6 +350,12 @@ type Connection struct {
 	Endpoint                    string     `gorm:"size:2048;not null;default:''" json:"-"`
 	CredentialCiphertext        string     `gorm:"type:text;not null" json:"-"`
 	RecycleCredentialCiphertext string     `gorm:"type:text;not null;default:''" json:"-"`
+	RecycleCleanupEnabled       bool       `gorm:"not null;default:false;index" json:"-"`
+	RecycleCleanupCron          string     `gorm:"size:128;not null;default:'0 */7 * * *'" json:"-"`
+	RecycleCleanupNextRunAt     *time.Time `gorm:"index" json:"-"`
+	RecycleCleanupLastRunAt     *time.Time `json:"-"`
+	RecycleCleanupLastStatus    string     `gorm:"size:16;not null;default:'idle'" json:"-"`
+	RecycleCleanupLastErrorCode string     `gorm:"size:96;not null;default:''" json:"-"`
 	Enabled                     bool       `gorm:"not null" json:"enabled"`
 	AccountID                   string     `gorm:"size:128;not null;default:''" json:"-"`
 	AccountName                 string     `gorm:"size:256;not null;default:''" json:"-"`
@@ -363,6 +369,12 @@ type Connection struct {
 	CreatedAt                   time.Time  `json:"created_at"`
 	UpdatedAt                   time.Time  `json:"updated_at"`
 }
+
+const (
+	RecycleCleanupStatusIdle      = "idle"
+	RecycleCleanupStatusSucceeded = "succeeded"
+	RecycleCleanupStatusFailed    = "failed"
+)
 
 const (
 	Pan115PlaybackRolePrimary   = "primary"

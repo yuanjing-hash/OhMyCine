@@ -575,6 +575,24 @@ func (c *Client) PurgeRecycle(ctx context.Context, itemID string) error {
 	return nil
 }
 
+// ClearRecycleBin permanently removes every item in this 115 account's
+// recycle bin. The SDK call intentionally receives no item IDs.
+func (c *Client) ClearRecycleBin(ctx context.Context) error {
+	if c.recyclePassword == "" {
+		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 recycle cleanup credential is unavailable"))
+	}
+	sdk, ok := c.sdk.(recycleSDK)
+	if !ok {
+		return cloud.Error(cloud.CodeUnavailable, false, errors.New("115 recycle cleanup API is unavailable"))
+	}
+	if err := c.waitAndCall(ctx, c.purgeRate, func() error {
+		return sdk.CleanRecycleBin(c.recyclePassword)
+	}); err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
 func (c *Client) mutateMany(ctx context.Context, limiter *rate.Limiter, itemIDs []string, targetParentID string, call func(mutationSDK, []string, string) error) error {
 	items, err := mutationIDs(itemIDs)
 	if err != nil {

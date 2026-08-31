@@ -67,7 +67,7 @@ func TestMigrateMediaRefreshNotifyIsAdditiveIdempotentAndConstrained(t *testing.
 		t.Fatal(err)
 	}
 	connection := models.Connection{Name: "Refresh migration Emby", NameNormalized: "refresh migration emby", Provider: models.ConnectionProviderEmby, Endpoint: "https://emby.example.test", CredentialCiphertext: "encrypted", Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&connection).Error; err != nil {
+	if err := db.Omit("RecycleCleanupEnabled", "RecycleCleanupCron", "RecycleCleanupNextRunAt", "RecycleCleanupLastRunAt", "RecycleCleanupLastStatus", "RecycleCleanupLastErrorCode").Create(&connection).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec(`INSERT INTO media_server_refresh_targets(library_id,connection_id,upstream_library_id,upstream_library_name,created_at,updated_at) VALUES(?,?,?,?,?,?)`, library.ID, connection.ID, "private-upstream-id", "电影", now, now).Error; err != nil {

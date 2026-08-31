@@ -46,6 +46,8 @@ export interface ListResponse<T> { list: T[]; total: number }
 
 export interface ConnectionSummary {
   id: number; name: string; provider: 'pan115' | 'emby' | string; endpoint: string; enabled: boolean; credential_configured: boolean; recycle_password_configured: boolean
+  recycle_cleanup_enabled: boolean; recycle_cleanup_cron: string; recycle_cleanup_next_run_at: string | null; recycle_cleanup_last_run_at: string | null
+  recycle_cleanup_last_status: 'idle' | 'succeeded' | 'failed'; recycle_cleanup_last_error_code: string
   account: { id: string; name: string; vip: boolean; used_bytes: number | null; total_bytes: number | null }
   health: { status: 'unknown' | 'online' | 'offline'; error_code: string; last_checked_at: string | null }
   revision: number; created_at: string; updated_at: string

@@ -28,7 +28,7 @@ func TestMigrationV56AddsRouteSnapshotsAndFreezesOneDefaultIngestLibrary(t *test
 		t.Fatal(err)
 	}
 	connection := models.Connection{Name: "115", NameNormalized: "v56-115-" + uuid.NewString(), Provider: models.ConnectionProviderPan115, CredentialCiphertext: "encrypted", Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&connection).Error; err != nil {
+	if err := db.Omit("RecycleCleanupEnabled", "RecycleCleanupCron", "RecycleCleanupNextRunAt", "RecycleCleanupLastRunAt", "RecycleCleanupLastStatus", "RecycleCleanupLastErrorCode").Create(&connection).Error; err != nil {
 		t.Fatal(err)
 	}
 	storage := models.Storage{Name: "115", NameNormalized: "v56-storage-" + uuid.NewString(), Type: models.StorageTypePan115, RootPath: "0", RootPathNormalized: "v56:0:" + uuid.NewString(), ConnectionID: &connection.ID, Enabled: true, Capabilities: `{}`, CreatedAt: now, UpdatedAt: now}
@@ -52,7 +52,7 @@ func TestMigrationV56AddsRouteSnapshotsAndFreezesOneDefaultIngestLibrary(t *test
 		t.Fatal(err)
 	}
 	connectionB := models.Connection{Name: "115 B", NameNormalized: "v56-115-b-" + uuid.NewString(), Provider: models.ConnectionProviderPan115, CredentialCiphertext: "encrypted", Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&connectionB).Error; err != nil {
+	if err := db.Omit("RecycleCleanupEnabled", "RecycleCleanupCron", "RecycleCleanupNextRunAt", "RecycleCleanupLastRunAt", "RecycleCleanupLastStatus", "RecycleCleanupLastErrorCode").Create(&connectionB).Error; err != nil {
 		t.Fatal(err)
 	}
 	storageB := models.Storage{Name: "115 B", NameNormalized: "v56-storage-b-" + uuid.NewString(), Type: models.StorageTypePan115, RootPath: "0", RootPathNormalized: "v56:b:0:" + uuid.NewString(), ConnectionID: &connectionB.ID, Enabled: true, Capabilities: `{}`, CreatedAt: now, UpdatedAt: now}

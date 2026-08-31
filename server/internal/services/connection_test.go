@@ -25,28 +25,30 @@ import (
 const testPan115Cookie = "UID=100_A1; CID=cid-value; SEID=seid-value; KID=kid-value"
 
 type fakeCloudDriver struct {
-	account          cloud.Account
-	err              error
-	items            map[string]cloud.Item
-	children         map[string][]cloud.Item
-	nativeOffline    bool
-	signedProxy      bool
-	smallFileUpload  bool
-	offlineTask      cloud.OfflineTask
-	offlineDirectory string
-	probeCalls       int
-	statCalls        int
-	directURLCalls   atomic.Int32
-	directURL        string
-	directHeaders    http.Header
-	echoDirectUA     bool
-	createDirectory  bool
-	copyItems        bool
-	recycleItems     bool
-	nextItem         int
-	recycled         []string
-	purged           []string
-	directFileIDs    []string
+	account           cloud.Account
+	err               error
+	items             map[string]cloud.Item
+	children          map[string][]cloud.Item
+	nativeOffline     bool
+	signedProxy       bool
+	smallFileUpload   bool
+	offlineTask       cloud.OfflineTask
+	offlineDirectory  string
+	probeCalls        int
+	statCalls         int
+	directURLCalls    atomic.Int32
+	directURL         string
+	directHeaders     http.Header
+	echoDirectUA      bool
+	createDirectory   bool
+	copyItems         bool
+	recycleItems      bool
+	nextItem          int
+	recycled          []string
+	purged            []string
+	clearRecycleCalls int
+	clearRecycleErr   error
+	directFileIDs     []string
 }
 
 func (f *fakeCloudDriver) Provider() string { return cloud.ProviderPan115 }
@@ -159,6 +161,10 @@ func (f *fakeCloudDriver) PurgeRecycle(_ context.Context, itemID string) error {
 	f.purged = append(f.purged, itemID)
 	return nil
 }
+func (f *fakeCloudDriver) ClearRecycleBin(context.Context) error {
+	f.clearRecycleCalls++
+	return f.clearRecycleErr
+}
 func (f *fakeCloudDriver) SubmitOffline(_ context.Context, _ string, directoryID string) (cloud.OfflineTask, error) {
 	f.offlineDirectory = directoryID
 	return f.offlineTask, f.err
@@ -265,6 +271,45 @@ func TestConnectionCredentialIsEncryptedRedactedAndPreserved(t *testing.T) {
 		if strings.Contains(audit.Metadata, "SEID") || strings.Contains(audit.Metadata, "cookie") || strings.Contains(audit.Metadata, "cipher") {
 			t.Fatalf("audit exposed credential material: %s", audit.Metadata)
 		}
+	}
+}
+
+func TestConnectionRecycleCleanupRejectsConflictingOrForeignConfiguration(t *testing.T) {
+	_, _, service, actor := newConnectionTestService(t, &fakeCloudDriver{})
+	if _, err := service.Create(actor, ConnectionInput{Name: "播放器", Provider: models.ConnectionProviderEmby, Endpoint: "http://127.0.0.1:8096", APIKey: "summary-key", RecycleCleanupCron: defaultRecycleCleanupCron, Enabled: true}, RequestContext{}); err == nil {
+		t.Fatal("non-115 connection accepted recycle cleanup policy")
+	}
+	created, err := service.Create(actor, ConnectionInput{Name: "清理账号", Provider: cloud.ProviderPan115, Cookie: testPan115Cookie, RecyclePassword: "old-code", Enabled: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := "new-code"
+	remove := true
+	if _, err := service.Update(actor, created.ID, UpdateConnectionInput{RecyclePassword: &replacement, RemoveRecyclePassword: &remove, Revision: created.Revision}, RequestContext{}); err == nil {
+		t.Fatal("connection accepted replacing and removing the recycle password together")
+	}
+}
+
+func TestConnectionUnrelatedUpdatePreservesRecycleCleanupDeadline(t *testing.T) {
+	db, _, service, actor := newConnectionTestService(t, &fakeCloudDriver{})
+	created, err := service.Create(actor, ConnectionInput{Name: "定时账号", Provider: cloud.ProviderPan115, Cookie: testPan115Cookie, RecyclePassword: "safe-code", Enabled: true, RecycleCleanupEnabled: true, RecycleCleanupCron: defaultRecycleCleanupCron, RecycleCleanupConfirmed: true}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	if err := db.Model(&models.Connection{}).Where("id = ?", created.ID).Update("recycle_cleanup_next_run_at", deadline).Error; err != nil {
+		t.Fatal(err)
+	}
+	name := "定时账号（改名）"
+	if _, err := service.Update(actor, created.ID, UpdateConnectionInput{Name: &name, Revision: created.Revision}, RequestContext{}); err != nil {
+		t.Fatal(err)
+	}
+	var record models.Connection
+	if err := db.First(&record, created.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.RecycleCleanupNextRunAt == nil || !record.RecycleCleanupNextRunAt.Equal(deadline) {
+		t.Fatalf("unrelated update moved cleanup deadline: got=%v want=%v", record.RecycleCleanupNextRunAt, deadline)
 	}
 }
 

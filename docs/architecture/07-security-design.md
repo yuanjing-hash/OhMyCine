@@ -328,6 +328,8 @@ Emby Web 的 HTML5 播放器若为远程 DirectPlay 设置 `crossOrigin=anonymou
 
 115 signed 302 的多设备兼容使用有界 lease，不把复制能力开放成通用代理参数：第一台活动设备读取原文件，第二台只可在 `/OhMyCine/.playback-copies/lease-*` 创建一个系统持有的短命副本，第三台安全限流。设备路由摘要由 Remote IP 与 User-Agent 生成但不参与鉴权，数据库和日志均不保存原始值。副本只按持久化的精确目录 item ID 送入回收站并永久清理；回收站安全码使用 AES-GCM 保存，缺失或错误时保留待清理事实并重试，自动路径永不以空 ID 清空用户整个回收站。
 
+管理员显式配置的账号级定时清空是另一条独立危险能力：默认关闭，只挂在 115 Connection，首次启用必须二次确认，并要求已有或本次提交有效操作密码与合法 5 段 Cron。空密码输入保留原密文，显式移除才清空，策略启用时禁止移除。调度 Job 不携带密码、Cookie、上游条目或路径，只携带 Connection ID 与 revision；执行前必须再次验证连接/策略仍启用、revision 未变化且密码仍配置。全量接口必须调用 SDK `CleanRecycleBin(password)` 且不传 item ID，不能把空 ID 交给精确清理能力。日志、审计、队列 DTO 和错误信息只保存稳定错误码，不保存密码或上游响应正文。
+
 ### 8.2 签名 URL
 
 STRM 内容建议：

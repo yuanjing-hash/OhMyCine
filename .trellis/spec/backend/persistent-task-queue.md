@@ -54,3 +54,58 @@ if len(jobTypes) == 0 {
 }
 claimed, err := queue.Claim(jobTypes)
 ```
+
+## Scenario: Periodic policy poll creates one immutable occurrence
+
+### 1. Scope / Trigger
+
+- Applies when a background policy poll repeatedly discovers the same due resource and creates a persistent Job for that schedule occurrence.
+
+### 2. Signatures
+
+- The poll queries active Jobs by `(job_type, resource_key, coalescing_key, status IN activeJobStatuses())` before calling `QueueService.Enqueue`.
+- A process-local mutex serializes concurrent calls to the same poller; SQLite remains authoritative across restarts.
+
+### 3. Contracts
+
+- An already queued or running occurrence is immutable from the poller's perspective: repeated polls do not change its payload, `revision`, `generation`, lease, or status.
+- The payload freezes only stable resource identity and the policy revision. The Worker reloads current policy and credentials before provider mutation.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| No active occurrence exists | Enqueue one Job with revision/generation `1` |
+| Queued or running occurrence exists | Skip without calling `Enqueue` |
+| Active-job lookup fails | Fail the poll; do not enqueue speculatively |
+| Frozen policy revision is stale at execution | Complete as a no-op; a later due poll may enqueue the current revision |
+
+### 5. Good/Base/Bad Cases
+
+- Good: eight concurrent poll calls converge to one active Job whose revision and generation remain `1`.
+- Base: after the occurrence is terminal and the persisted policy remains due, the next poll may enqueue a new Job.
+- Bad: using generic coalescing to “deduplicate” the poll; `EnqueueWith` intentionally advances an active Job's generation/revision and can revoke its running lease/completion path.
+
+### 6. Tests Required
+
+- Call the poll twice and concurrently; assert exactly one active row and unchanged payload/revision/generation.
+- Claim the Job, poll again, and assert its lease, revision, generation and running status are unchanged.
+- Change policy revision before Worker execution and assert zero provider mutations.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```go
+// Generic coalescing mutates the active Job generation.
+queue.Enqueue(EnqueueJobInput{ResourceKey: resource, CoalescingKey: "scheduled"})
+```
+
+Correct:
+
+```go
+if activeOccurrenceExists(jobType, resource, "scheduled") {
+    continue
+}
+queue.Enqueue(EnqueueJobInput{ResourceKey: resource, CoalescingKey: "scheduled"})
+```

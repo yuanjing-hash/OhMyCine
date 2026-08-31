@@ -356,6 +356,14 @@ type ExactRecyclePurger interface {
 	PurgeRecycle(context.Context, string) error
 }
 
+// RecycleBinCleaner permanently clears the provider account's entire recycle
+// bin. It is deliberately separate from ExactRecyclePurger: callers must
+// explicitly opt in to the account-wide destructive operation.
+type RecycleBinCleaner interface {
+	Driver
+	ClearRecycleBin(context.Context) error
+}
+
 // SmallFileUploadDriver is deliberately narrower than a general upload API.
 // Artifact orchestration must enforce extension, MIME, size and ancestry
 // policy before invoking it; providers repeat their own boundary validation.

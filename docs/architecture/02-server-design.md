@@ -1066,6 +1066,8 @@ func buildTargetPath(dest *StorageDestination, rule *CategoryRule, parsed *Parse
 
 115 的签名 STRM 默认采用有界双设备策略：第一台活跃设备使用原文件 pickcode，第二台在 OhMyCine 专属临时目录创建一个短命副本并使用副本 pickcode，第三台返回明确的并发上限。设备路由键只保存 `Remote IP + User-Agent` 的 SHA-256，不保存原始值。副本 lease 持久化以支持崩溃恢复；直链签发后只将该 lease 持有的精确目录送入回收站，再使用可选的 AES-GCM 回收站安全码按同一 item ID 永久删除。自动流程永不以空 ID 清空用户整个 115 回收站，安全码缺失或错误时保留待清理事实并指数退避重试。
 
+账号连接还可由管理员单独启用“定时自动清空整个 115 回收站”。该策略默认关闭，属于 Connection 而不是 Storage；多个媒体库/数据源复用同一账号时只调度一份任务。配置复用同一 AES-GCM 操作密码密文，使用 5 段 Cron（默认 `0 */7 * * *`），首次启用必须在管理端确认不可恢复风险。持久队列 payload 只保存 Connection ID 和 revision，Worker 执行前重读并复核 provider、连接状态、策略、revision 和密码，再通过独立的 `RecycleBinCleaner` 调用 115 全量清理接口；它不复用精确 item purger，也不提供“立即清空”接口。
+
 ```go
 // pkg/proxy/engine.go
 

@@ -249,6 +249,18 @@ func TestMutationAdapterPurgesOnlyExactOwnedRecycleItem(t *testing.T) {
 	}
 }
 
+func TestMutationAdapterClearsWholeRecycleBinWithoutItemIDs(t *testing.T) {
+	sdk := &mutationTestSDK{}
+	client := newMutationTestClient(sdk)
+	client.recyclePassword = "safe-code"
+	if err := client.ClearRecycleBin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sdk.cleanedPassword != "safe-code" || len(sdk.cleanedIDs) != 0 {
+		t.Fatalf("full cleanup call password=%q ids=%v", sdk.cleanedPassword, sdk.cleanedIDs)
+	}
+}
+
 func TestMutationAdapterTreatsAlreadyPurgedOwnedItemAsIdempotent(t *testing.T) {
 	sdk := &mutationTestSDK{bulkSDK: &bulkSDK{}, cleanErr: errors.New("already removed")}
 	client := newMutationTestClient(sdk)

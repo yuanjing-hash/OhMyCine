@@ -535,8 +535,8 @@ func TestMigrateUpgradesAuthFoundationDatabaseToStorageFoundation(t *testing.T) 
 	if err := db.Table("schema_migrations").Order("version").Pluck("version", &versions).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57}) {
-		t.Fatalf("migration versions=%v, want [1..57]", versions)
+	if !reflect.DeepEqual(versions, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58}) {
+		t.Fatalf("migration versions=%v, want [1..58]", versions)
 	}
 	if !db.Migrator().HasColumn(&models.DownloadTask{}, "provider_metadata_json") || !db.Migrator().HasColumn(&models.DownloadTask{}, "plugin_connection_id") {
 		t.Fatal("plugin managed import snapshot columns missing after upgrade")
@@ -1188,7 +1188,7 @@ func TestPersistentQueueMigrationPoliciesRBACAndForeignKeys(t *testing.T) {
 		}
 	}
 	var policies int64
-	if err := db.Model(&models.QueuePolicy{}).Count(&policies).Error; err != nil || policies != 12 {
+	if err := db.Model(&models.QueuePolicy{}).Count(&policies).Error; err != nil || policies != 13 {
 		t.Fatalf("policies=%d err=%v", policies, err)
 	}
 	var downloadPolicy models.QueuePolicy

@@ -101,6 +101,7 @@ func main() {
 	profiles.SetRevisionNotifier(libraries)
 	storages.SetReferenceChecker(libraries)
 	queue := services.NewQueueService(db, audit)
+	recycleCleanup := services.NewPan115RecycleCleanupService(db, queue, audit, connections, logManager.Logger("connection", "pan115_recycle_cleanup"))
 	mediaChanges := services.NewMediaChangeService(db)
 	mediaServerRefresh := services.NewMediaServerRefreshService(db, queue, audit, connections)
 	mediaChanges.SetReadyHandler(mediaServerRefresh.EnqueueLibrary)
@@ -220,6 +221,9 @@ func main() {
 	if err := registry.Register(services.JobTypeFollowSearch, services.NewFollowSearchWorker(follows, sites)); err != nil {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "follow_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("自动追更 Worker 注册失败"))
 	}
+	if err := registry.Register(services.JobTypePan115RecycleCleanup, services.NewPan115RecycleCleanupWorker(recycleCleanup)); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "pan115_recycle_cleanup_worker_registration_failed").Msg(logging.OperationServerLifecycle.Message("115 回收站清理 Worker 注册失败"))
+	}
 	scheduler := services.NewScheduler(queue, registry, logManager.Logger("queue", "scheduler"))
 	api.SetQueueService(queue)
 	api.SetQueueEventHub(queueEvents)
@@ -252,6 +256,10 @@ func main() {
 		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("任务调度器启动失败"))
 	}
 	defer scheduler.Close()
+	if err := recycleCleanup.Start(context.Background()); err != nil {
+		logging.OperationServerLifecycle.Event(log.Fatal()).Err(err).Str("error_code", "pan115_recycle_cleanup_scheduler_start_failed").Msg(logging.OperationServerLifecycle.Message("115 回收站清理调度器启动失败"))
+	}
+	defer recycleCleanup.Close()
 	if err := mediaServerRefresh.RecoverPending(); err != nil {
 		logging.OperationServerLifecycle.Event(log.Error()).Err(err).Str("error_code", "media_server_refresh_recovery_failed").Msg(logging.OperationServerLifecycle.Message("媒体服务器刷新恢复失败"))
 	}
