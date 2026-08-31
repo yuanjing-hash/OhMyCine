@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/transfer-organization.md","reason":"实现 Transfer 完成后的来源暂存收尾与 provider 边界。"}
+{"file":".trellis/spec/backend/security-guidelines.md","reason":"约束云端删除、路径/身份边界与日志脱敏。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"定义可重试 provider 失败与稳定错误码。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"核对下载任务快照、Transfer cleanup 与 driver mutation 数据流。"}
