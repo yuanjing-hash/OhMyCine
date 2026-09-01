@@ -16,6 +16,7 @@ const MAX_HISTORY_PAGE: u32 = 100_000;
 const MAX_ID_LENGTH: usize = 512;
 const MAX_IDENTITY_LENGTH: usize = 2048;
 const MAX_TEXT_LENGTH: usize = 2048;
+const NOW_MILLIS_SQL: &str = "(CAST(strftime('%s','now') AS INTEGER) * 1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +72,26 @@ pub struct PlaybackHistoryPage {
     page: u32,
     page_size: u32,
     has_more: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHistoryMerge {
+    source_id: String,
+    library_id: Option<String>,
+    item_id: Option<String>,
+    media_identity: String,
+    title: String,
+    stream_identity: Option<String>,
+    media_type: Option<String>,
+    poster_url: Option<String>,
+    backdrop_url: Option<String>,
+    title_logo_url: Option<String>,
+    position: f64,
+    duration: Option<f64>,
+    completed: bool,
+    deleted: bool,
+    updated_at: i64,
 }
 
 #[tauri::command]
@@ -173,6 +194,73 @@ pub fn player_delete_playback_history_for_source(
     storage.delete_for_source(&source_id)
 }
 
+#[tauri::command]
+pub fn player_merge_playback_history(
+    app: AppHandle,
+    entries: Vec<PlaybackHistoryMerge>,
+) -> Result<u64, String> {
+    if entries.len() > 500 {
+        return Err("Too many playback history entries.".to_string());
+    }
+    let storage = PlaybackHistoryStorage::open(&app)?;
+    let mut changed = 0_u64;
+    for entry in entries {
+        if entry.updated_at <= 0 {
+            return Err("Invalid playback history timestamp.".to_string());
+        }
+        let updated_at = entry.updated_at;
+        let deleted = entry.deleted;
+        let progress = NormalizedProgress::from_payload(PlaybackProgressUpsert {
+            source_id: entry.source_id,
+            library_id: entry.library_id,
+            item_id: entry.item_id,
+            media_identity: entry.media_identity,
+            title: entry.title,
+            stream_identity: entry.stream_identity,
+            media_type: entry.media_type,
+            poster_url: entry.poster_url,
+            backdrop_url: entry.backdrop_url,
+            title_logo_url: entry.title_logo_url,
+            position: entry.position,
+            duration: entry.duration,
+            completed: Some(entry.completed),
+        })?;
+        let key = identity_key(&progress.source_id, &progress.media_identity);
+        if deleted {
+            changed += storage.conn.execute(
+                "DELETE FROM playback_history WHERE identity_key = ?1 AND updated_at <= ?2",
+                params![key, updated_at],
+            ).map_err(|_| "Failed to merge playback history deletion.".to_string())? as u64;
+            continue;
+        }
+        changed += storage.conn.execute(
+            "INSERT INTO playback_history (
+                identity_key, source_id, library_id, item_id, media_identity, title,
+                stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
+                position, duration, completed, progress_source, created_at, updated_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'server',?15,?15)
+             ON CONFLICT(identity_key) DO UPDATE SET
+                library_id=excluded.library_id, item_id=excluded.item_id, title=excluded.title,
+                stream_identity=excluded.stream_identity, media_type=excluded.media_type,
+                poster_url=excluded.poster_url, backdrop_url=excluded.backdrop_url,
+                title_logo_url=excluded.title_logo_url, position=excluded.position,
+                duration=excluded.duration, completed=excluded.completed,
+                progress_source='server', updated_at=excluded.updated_at
+             WHERE playback_history.updated_at < excluded.updated_at
+                OR (playback_history.updated_at = excluded.updated_at
+                    AND playback_history.completed = 0 AND excluded.completed = 1)",
+            params![
+                key, progress.source_id, progress.library_id, progress.item_id,
+                progress.media_identity, progress.title, progress.stream_identity,
+                progress.media_type, progress.poster_url, progress.backdrop_url,
+                progress.title_logo_url, progress.position, progress.duration,
+                if progress.completed { 1 } else { 0 }, updated_at,
+            ],
+        ).map_err(|_| "Failed to merge playback history.".to_string())? as u64;
+    }
+    Ok(changed)
+}
+
 struct PlaybackHistoryStorage {
     conn: Connection,
 }
@@ -229,7 +317,7 @@ impl PlaybackHistoryStorage {
             .execute(
                 &format!(
                     "UPDATE playback_history
-                     SET completed = ?1, position = {position_expression}, updated_at = unixepoch()
+                     SET completed = ?1, position = {position_expression}, updated_at = {NOW_MILLIS_SQL}
                      WHERE identity_key = ?2"
                 ),
                 params![
@@ -255,12 +343,12 @@ impl PlaybackHistoryStorage {
     fn upsert(&self, progress: &NormalizedProgress) -> Result<(), String> {
         self.conn
             .execute(
-                "INSERT INTO playback_history (
+                &format!("INSERT INTO playback_history (
                     identity_key, source_id, library_id, item_id, media_identity, title,
                     stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
                     position, duration, completed, progress_source, created_at, updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'local', unixepoch(), unixepoch())
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'local', {NOW_MILLIS_SQL}, {NOW_MILLIS_SQL})
                 ON CONFLICT(identity_key) DO UPDATE SET
                     source_id = excluded.source_id,
                     library_id = excluded.library_id,
@@ -276,7 +364,7 @@ impl PlaybackHistoryStorage {
                     duration = excluded.duration,
                     completed = excluded.completed,
                     progress_source = 'local',
-                    updated_at = unixepoch()",
+                    updated_at = {NOW_MILLIS_SQL}"),
                 params![
                     identity_key(&progress.source_id, &progress.media_identity),
                     progress.source_id,

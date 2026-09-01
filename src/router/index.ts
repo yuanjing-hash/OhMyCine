@@ -25,6 +25,11 @@ const router = createRouter({
       component: () => import('@/views/MediaDetailView.vue'),
     },
     {
+      path: '/server/:sourceId/discovery/:provider/:mediaType/:providerId',
+      name: 'server-discovery-detail',
+      component: () => import('@/views/ServerDiscoveryDetailView.vue'),
+    },
+    {
       path: '/favorites',
       name: 'favorites',
       component: () => import('@/views/FavoritesView.vue'),

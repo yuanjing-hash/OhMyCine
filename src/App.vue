@@ -9,7 +9,9 @@ import MediaEditorHost from '@/components/media/MediaEditorHost.vue'
 import { configureMediaActionController, createCollectionMediaActionAdapter, createDeleteMediaActionAdapter, createDownloadMediaActionAdapter, createMaintenanceMediaActionAdapter, createNavigationMediaActionAdapter, createPlayedStateMediaActionAdapter, MediaActionController, publishFeedback, requestMediaActionConfirmation } from '@/services/mediaActions'
 import { COLLECTIONS_CHANGED_EVENT } from '@/services/mediaCollections'
 import { PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
+import { startPlaybackHistorySync } from '@/services/playbackHistorySync'
 import { createRawSourceAutoIndexTargets, createRawSourceLocalWatcherController, rawSourceIndexScheduler } from '@/services/scraper'
+import { initializeServerDeepLinks } from '@/services/serverDeepLink'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useDownloadStore } from '@/stores/downloads'
 import { useUpdaterStore } from '@/stores/updater'
@@ -38,6 +40,8 @@ const localWatcherController = createRawSourceLocalWatcherController({
   resolveSource: sourceId => store.getSource(sourceId),
   markDirty: target => rawSourceIndexScheduler.markIncrementalDirty(target),
 })
+let disposeServerDeepLinks: (() => void) | undefined
+let disposePlaybackHistorySync: (() => void) | undefined
 
 onMounted(() => {
   store.loadConfigs()
@@ -51,6 +55,10 @@ onMounted(() => {
   void store.syncManager().finally(() => localWatcherController.sync(store.orderedConfigs))
   void updater.initialize().then(() => updater.scheduleStartupCheck())
   void downloads.initialize()
+  void initializeServerDeepLinks(router, store).then((dispose) => {
+    disposeServerDeepLinks = dispose
+  })
+  disposePlaybackHistorySync = startPlaybackHistorySync(store)
 })
 
 watch(
@@ -66,6 +74,8 @@ onBeforeUnmount(() => {
   void localWatcherController.dispose()
   updater.cancelStartupCheck()
   downloads.dispose()
+  disposeServerDeepLinks?.()
+  disposePlaybackHistorySync?.()
 })
 
 function suppressNativeContextMenu(event: MouseEvent) {

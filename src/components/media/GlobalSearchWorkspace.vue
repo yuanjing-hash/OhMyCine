@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { ServerDiscoveryWork } from '@/services/serverDiscovery'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ServerDataSource } from '@/services/datasource/server'
 import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackCompletionBatch, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
+import { searchServerDiscovery } from '@/services/serverDiscovery'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 import CachedImage from './CachedImage.vue'
@@ -21,6 +24,7 @@ const workspace = useSearchWorkspaceStore()
 const inputRef = ref<HTMLInputElement | null>(null)
 const query = ref('')
 const results = ref<MediaItem[]>([])
+const discoveryResults = ref<Array<{ sourceId: string, sourceName: string, work: ServerDiscoveryWork }>>([])
 const libraries = ref<MediaLibrary[]>([])
 const selectedSourceId = ref(ALL_FILTER)
 const selectedLibraryId = ref(ALL_FILTER)
@@ -50,7 +54,7 @@ const statusLabel = computed(() => {
     return '正在聚合媒体库结果'
   if (!hasActiveQuery.value)
     return `${suggestionItems.value.length} 个馆藏推荐`
-  return `${filteredResults.value.length} 个结果`
+  return `${filteredResults.value.length + discoveryResults.value.length} 个结果`
 })
 
 watch(() => workspace.open, async (open) => {
@@ -73,6 +77,7 @@ watch(query, () => {
   const keyword = normalizedQuery.value
   if (!keyword) {
     results.value = []
+    discoveryResults.value = []
     loading.value = false
     searchGeneration += 1
     return
@@ -143,16 +148,28 @@ function uniqueLibraries(items: readonly MediaLibrary[]): MediaLibrary[] {
 async function runSearch(keyword: string, generation: number) {
   try {
     const sourceIds = selectedSourceId.value === ALL_FILTER ? undefined : [selectedSourceId.value]
-    const items = await store.searchAllSources(keyword, 100, sourceIds)
+    const discoveryType = selectedType.value === 'movie' ? 'movie' : selectedType.value === 'series' ? 'tv' : selectedType.value === 'other' ? null : 'all'
+    const serverSources = enabledSources.value.flatMap((config) => {
+      if (!discoveryType || (sourceIds && !sourceIds.includes(config.id)))
+        return []
+      const source = store.getSource(config.id)
+      return source instanceof ServerDataSource ? [{ config, source }] : []
+    })
+    const [items, discovered] = await Promise.all([
+      store.searchAllSources(keyword, 100, sourceIds),
+      Promise.allSettled(serverSources.map(async ({ config, source }) => (await searchServerDiscovery(source, keyword, discoveryType!)).map(work => ({ sourceId: config.id, sourceName: config.displayName ?? config.name, work })))).then(settled => settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])),
+    ])
     if (generation !== searchGeneration || keyword !== normalizedQuery.value)
       return
     results.value = uniqueItems(items)
+    discoveryResults.value = discovered
     void refreshSearchPlayedStates()
   }
   catch {
     if (generation !== searchGeneration)
       return
     results.value = []
+    discoveryResults.value = []
     error.value = '部分媒体源暂时无法搜索，请稍后重试。'
   }
   finally {
@@ -261,6 +278,11 @@ function canPlay(item: MediaItem): boolean {
 function openItem(item: MediaItem) {
   workspace.hide()
   void router.push({ name: 'media-detail', params: { sourceId: item.sourceId, itemId: item.id } })
+}
+
+function openDiscoveryItem(item: { sourceId: string, work: ServerDiscoveryWork }) {
+  workspace.hide()
+  void router.push({ name: 'server-discovery-detail', params: { sourceId: item.sourceId, provider: item.work.provider, mediaType: item.work.mediaType, providerId: item.work.providerId } })
 }
 
 async function playItem(item: MediaItem) {
@@ -419,6 +441,32 @@ onBeforeUnmount(() => {
             </template>
 
             <template v-else>
+              <section v-if="discoveryResults.length" class="mb-6">
+                <div class="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-xs font-semibold uppercase text-white/36">
+                      TMDB
+                    </p><h3 class="mt-1 text-base font-bold text-white/88">
+                      Server 在线影视
+                    </h3>
+                  </div><span class="text-xs text-white/38">点进海报后可搜索站点并控制入库</span>
+                </div>
+                <div class="poster-grid">
+                  <button v-for="item in discoveryResults" :key="`${item.sourceId}:${item.work.provider}:${item.work.providerId}`" class="result-card text-left" type="button" @click="openDiscoveryItem(item)">
+                    <div class="result-poster overflow-hidden">
+                      <img v-if="item.work.posterUrl" :src="item.work.posterUrl" :alt="item.work.title" class="h-full w-full object-cover"><div v-else class="flex h-full items-center justify-center px-3 text-center text-sm font-bold text-white/42">
+                        {{ item.work.title }}
+                      </div>
+                    </div>
+                    <h3 class="mt-2 truncate text-sm font-semibold text-white/88">
+                      {{ item.work.title }}
+                    </h3>
+                    <p class="mt-1 truncate text-xs text-white/40">
+                      {{ item.work.year || '年份未知' }} · {{ item.work.mediaType === 'tv' ? '剧集' : '电影' }} · {{ item.sourceName }}
+                    </p>
+                  </button>
+                </div>
+              </section>
               <div v-if="filteredResults.length" class="result-grid">
                 <article
                   v-for="item in filteredResults"
@@ -461,7 +509,7 @@ onBeforeUnmount(() => {
                   <span v-if="isSearchItemPlayed(item)" class="search-played-badge search-played-badge--row" aria-label="已播放">✓</span>
                 </article>
               </div>
-              <p v-else-if="!loading && !error" class="search-message text-white/44">
+              <p v-else-if="!loading && !error && !discoveryResults.length" class="search-message text-white/44">
                 没有找到符合当前筛选的媒体。
               </p>
             </template>

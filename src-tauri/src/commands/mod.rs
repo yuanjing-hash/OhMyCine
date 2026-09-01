@@ -3,6 +3,7 @@ pub mod credential;
 #[cfg(target_os = "android")]
 pub mod credential_android;
 pub mod danmaku;
+pub mod deep_link;
 #[cfg(not(mobile))]
 pub(crate) mod display_brightness;
 #[cfg(target_os = "android")]
