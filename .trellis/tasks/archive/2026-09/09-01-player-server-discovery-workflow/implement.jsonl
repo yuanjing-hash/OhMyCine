@@ -1,0 +1,7 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Player independent-first boundary and frontend quality requirements."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Shared detail shell, dialogs, progress and accessible controls."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Connection capabilities and async search state ownership."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Streaming composable lifecycle and cancellation."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Typed Server SSE events and runtime parsing."}
+{"file":".trellis/spec/frontend/server-online-media.md","reason":"Optional Server integration and authenticated playback/search boundaries."}
+{"file":".trellis/tasks/09-01-player-server-discovery-workflow/research/current-flow-findings.md","reason":"Verified implicit discovery, fixed timeout and load-chain root causes."}
