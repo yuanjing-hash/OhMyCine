@@ -1,5 +1,6 @@
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Method, Url};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -25,6 +26,13 @@ pub struct ServerJsonRequest {
 pub struct ServerJsonResponse {
     status: u16,
     body: Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerBlobResponse {
+    mime_type: String,
+    data_base64: String,
 }
 
 #[tauri::command]
@@ -108,6 +116,41 @@ pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJso
     })
 }
 
+#[tauri::command]
+pub async fn server_request_blob(request: ServerJsonRequest) -> Result<ServerBlobResponse, String> {
+    if request.method.trim().to_ascii_uppercase() != "GET"
+        || !request.path.starts_with("/api/v1/player/discovery/images/")
+    {
+        return Err("Server binary request path is not allowed.".to_string());
+    }
+    let url = server_url(&request.base_url, &request.path)?;
+    let token = request.access_token.as_deref().unwrap_or_default().trim();
+    if !token.starts_with("omc_player_") || token.len() > MAX_TOKEN_LENGTH || token.chars().any(char::is_control) {
+        return Err("Server access token is required.".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Failed to initialize Server HTTP client.".to_string())?;
+    let response = client.get(url).header(ACCEPT, "image/avif,image/webp,image/jpeg,image/png")
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .send().await.map_err(|_| "无法读取 Server 海报。".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Server 海报请求失败（HTTP {}）。", response.status().as_u16()));
+    }
+    let mime_type = response.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next()).unwrap_or("").trim().to_ascii_lowercase();
+    if !matches!(mime_type.as_str(), "image/jpeg" | "image/png" | "image/webp" | "image/avif") {
+        return Err("Server 海报格式无效。".to_string());
+    }
+    let bytes = response.bytes().await.map_err(|_| "读取 Server 海报失败。".to_string())?;
+    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        return Err("Server 海报响应无效。".to_string());
+    }
+    Ok(ServerBlobResponse { mime_type, data_base64: STANDARD.encode(bytes) })
+}
+
 fn server_url(base_url: &str, path: &str) -> Result<Url, String> {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() || base.len() > MAX_BASE_URL_LENGTH || base.chars().any(char::is_control) {
@@ -147,6 +190,7 @@ fn server_method(method: &str) -> Result<Method, String> {
     match method.trim().to_ascii_uppercase().as_str() {
         "GET" => Ok(Method::GET),
         "POST" => Ok(Method::POST),
+        "PUT" => Ok(Method::PUT),
         "DELETE" => Ok(Method::DELETE),
         _ => Err("OhMyCine Server 请求方法无效。".to_string()),
     }

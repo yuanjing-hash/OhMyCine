@@ -41,6 +41,7 @@ const MIGRATABLE_PREFIXES = [
   'ohmycine-raw-source-index-schedule-v1:',
   'ohmycine-raw-source-index-schedule-v2:',
   'ohmycine:server-media-change-cursor:',
+  'ohmycine:server-history-cursor:',
 ]
 
 const settings = new Map<string, string>()

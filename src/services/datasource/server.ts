@@ -34,7 +34,7 @@ interface ServerConfigExtra {
 
 interface ServerNativeRequest {
   baseUrl: string
-  method: 'GET' | 'POST' | 'DELETE'
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
   path: string
   accessToken?: string
   body?: unknown
@@ -217,6 +217,58 @@ export class ServerDataSource implements DataSource {
     await this.request('/api/v1/player/bootstrap')
     this.connected = true
     return true
+  }
+
+  async syncPlaybackHistory(payload: ServerPlaybackHistorySyncRequest): Promise<ServerPlaybackHistorySyncResponse> {
+    return parsePlaybackHistorySyncResponse(await this.request('/api/v1/player/history/sync', 'POST', payload))
+  }
+
+  async searchDiscoveryMedia(query: string, mediaType: 'all' | 'movie' | 'tv' = 'all'): Promise<unknown> {
+    const params = new URLSearchParams({ query: query.trim(), media_type: mediaType, page: '1' })
+    return this.request(`/api/v1/player/discovery/media-search?${params}`)
+  }
+
+  async getDiscoveryDetail(provider: 'tmdb' | 'douban', mediaType: 'movie' | 'tv', providerID: string): Promise<unknown> {
+    return this.request(`/api/v1/player/discovery/details/${encodeURIComponent(provider)}/${encodeURIComponent(mediaType)}/${encodeURIComponent(providerID)}`)
+  }
+
+  async getDiscoverySearchOptions(): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/search-options')
+  }
+
+  async getDiscoveryCoverage(mediaType: 'movie' | 'tv', tmdbId: number): Promise<unknown> {
+    return this.request(`/api/v1/player/discovery/media/${mediaType}/${tmdbId}/coverage`)
+  }
+
+  async searchDiscoveryResources(path: string): Promise<unknown> {
+    if (!path.startsWith('/api/v1/player/discovery/torrent-search?') && !/^\/api\/v1\/player\/discovery\/media\/(?:movie|tv)\/\d+\/torrent-search\?/.test(path))
+      throw new Error('Server 资源搜索路径无效。')
+    return this.request(path)
+  }
+
+  async getDiscoveryDownloadOptions(): Promise<{ downloaders: unknown, libraries: unknown, profiles: unknown }> {
+    const [downloaders, libraries, profiles] = await Promise.all([
+      this.request('/api/v1/player/downloaders'),
+      this.request('/api/v1/player/media-libraries'),
+      this.request('/api/v1/player/classification-profiles'),
+    ])
+    return { downloaders, libraries, profiles }
+  }
+
+  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id: number, priority: number }): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
+  }
+
+  async loadDiscoveryArtwork(reference: string): Promise<string | undefined> {
+    const route = reference.trim()
+    if (!/^\/api\/v1\/discovery\/images\/(?:tmdb|douban)\/[\w-]{1,4096}$/.test(route))
+      return undefined
+    const credential = await this.ensureCredential()
+    const path = route.replace('/api/v1/discovery/images/', '/api/v1/player/discovery/images/')
+    const response = await invoke<{ mimeType: string, dataBase64: string }>('server_request_blob', { request: { baseUrl: this.baseUrl, method: 'GET', path, accessToken: credential.accessToken } })
+    if (!/^image\/(?:jpeg|png|webp|avif)$/.test(response.mimeType) || !response.dataBase64)
+      return undefined
+    return `data:${response.mimeType};base64,${response.dataBase64}`
   }
 
   destroy(): void {
@@ -847,6 +899,48 @@ export class ServerDataSource implements DataSource {
       this.onlineProgressContexts.delete(oldest)
     }
   }
+}
+
+export interface ServerPlaybackHistoryChange {
+  sync_key: string
+  source_kind: string
+  source_locator?: string
+  source_id: string
+  library_id?: string
+  item_id?: string
+  media_identity: string
+  title: string
+  stream_identity?: string
+  media_type?: string
+  poster_url?: string
+  backdrop_url?: string
+  title_logo_url?: string
+  position: number
+  duration?: number
+  completed: boolean
+  deleted?: boolean
+  updated_at: number
+  revision?: number
+}
+
+export interface ServerPlaybackHistorySyncRequest { cursor: number, changes: ServerPlaybackHistoryChange[] }
+export interface ServerPlaybackHistorySyncResponse { cursor: number, changes: ServerPlaybackHistoryChange[] }
+
+function parsePlaybackHistorySyncResponse(value: unknown): ServerPlaybackHistorySyncResponse {
+  const data = recordData(value)
+  if (!Number.isSafeInteger(data.cursor) || Number(data.cursor) < 0 || !Array.isArray(data.changes))
+    throw new Error('Server 播放历史同步响应无效。')
+  const changes = data.changes.flatMap((raw): ServerPlaybackHistoryChange[] => {
+    if (!isRecord(raw) || typeof raw.sync_key !== 'string' || !/^[a-f0-9]{64}$/.test(raw.sync_key)
+      || typeof raw.source_kind !== 'string' || typeof raw.source_id !== 'string'
+      || typeof raw.media_identity !== 'string' || typeof raw.title !== 'string'
+      || typeof raw.position !== 'number' || !Number.isFinite(raw.position)
+      || typeof raw.updated_at !== 'number' || !Number.isSafeInteger(raw.updated_at)) {
+      return []
+    }
+    return [raw as unknown as ServerPlaybackHistoryChange]
+  })
+  return { cursor: Number(data.cursor), changes }
 }
 
 function safeServerChangeCursor(value: string | null): string {
