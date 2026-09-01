@@ -4,7 +4,9 @@ mod commands;
 mod mpv;
 mod storage;
 
-use tauri::{utils::config::Color, Emitter, Manager};
+use tauri::{utils::config::Color, Manager};
+#[cfg(not(mobile))]
+use tauri::Emitter;
 
 use commands::clouddrive2::{
     clouddrive2_get_stream, clouddrive2_list, clouddrive2_search, CloudDrive2GrpcState,
@@ -78,18 +80,22 @@ use mpv::surface::OwnerWindowEvent;
 pub fn run() {
     env_logger::init();
 
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            let urls = app.state::<DeepLinkState>().push_arguments(args);
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-            if !urls.is_empty() {
-                let _ = app.emit("ohmycine-deep-link", urls);
-            }
-        }))
+    let builder = tauri::Builder::default();
+
+    #[cfg(not(mobile))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        let urls = app.state::<DeepLinkState>().push_arguments(args);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        if !urls.is_empty() {
+            let _ = app.emit("ohmycine-deep-link", urls);
+        }
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
