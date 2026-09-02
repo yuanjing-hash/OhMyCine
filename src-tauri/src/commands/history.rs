@@ -227,14 +227,20 @@ pub fn player_merge_playback_history(
         })?;
         let key = identity_key(&progress.source_id, &progress.media_identity);
         if deleted {
-            changed += storage.conn.execute(
-                "DELETE FROM playback_history WHERE identity_key = ?1 AND updated_at <= ?2",
-                params![key, updated_at],
-            ).map_err(|_| "Failed to merge playback history deletion.".to_string())? as u64;
+            changed += storage
+                .conn
+                .execute(
+                    "DELETE FROM playback_history WHERE identity_key = ?1 AND updated_at <= ?2",
+                    params![key, updated_at],
+                )
+                .map_err(|_| "Failed to merge playback history deletion.".to_string())?
+                as u64;
             continue;
         }
-        changed += storage.conn.execute(
-            "INSERT INTO playback_history (
+        changed += storage
+            .conn
+            .execute(
+                "INSERT INTO playback_history (
                 identity_key, source_id, library_id, item_id, media_identity, title,
                 stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
                 position, duration, completed, progress_source, created_at, updated_at
@@ -249,14 +255,26 @@ pub fn player_merge_playback_history(
              WHERE playback_history.updated_at < excluded.updated_at
                 OR (playback_history.updated_at = excluded.updated_at
                     AND playback_history.completed = 0 AND excluded.completed = 1)",
-            params![
-                key, progress.source_id, progress.library_id, progress.item_id,
-                progress.media_identity, progress.title, progress.stream_identity,
-                progress.media_type, progress.poster_url, progress.backdrop_url,
-                progress.title_logo_url, progress.position, progress.duration,
-                if progress.completed { 1 } else { 0 }, updated_at,
-            ],
-        ).map_err(|_| "Failed to merge playback history.".to_string())? as u64;
+                params![
+                    key,
+                    progress.source_id,
+                    progress.library_id,
+                    progress.item_id,
+                    progress.media_identity,
+                    progress.title,
+                    progress.stream_identity,
+                    progress.media_type,
+                    progress.poster_url,
+                    progress.backdrop_url,
+                    progress.title_logo_url,
+                    progress.position,
+                    progress.duration,
+                    if progress.completed { 1 } else { 0 },
+                    updated_at,
+                ],
+            )
+            .map_err(|_| "Failed to merge playback history.".to_string())?
+            as u64;
     }
     Ok(changed)
 }

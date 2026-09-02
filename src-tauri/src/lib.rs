@@ -4,9 +4,9 @@ mod commands;
 mod mpv;
 mod storage;
 
-use tauri::{utils::config::Color, Manager};
 #[cfg(not(mobile))]
 use tauri::Emitter;
+use tauri::{utils::config::Color, Manager};
 
 use commands::clouddrive2::{
     clouddrive2_get_stream, clouddrive2_list, clouddrive2_search, CloudDrive2GrpcState,
@@ -61,7 +61,10 @@ use commands::quark::{
     quark_auth_start_qr, quark_get_stream, quark_list, quark_search, QuarkAuthState,
 };
 use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
-use commands::server::{server_request_blob, server_request_json};
+use commands::server::{
+    server_cancel_sse, server_request_blob, server_request_json, server_stream_sse,
+    ServerStreamState,
+};
 use commands::settings::{
     player_get_storage_info, player_settings_delete, player_settings_get_all, player_settings_set,
 };
@@ -106,6 +109,7 @@ pub fn run() {
         .manage(PendingUpdate::default())
         .manage(OpenSubtitlesSessionState::default())
         .manage(SubtitleDownloadState::default())
+        .manage(ServerStreamState::default())
         .manage(AndroidStreamProxyState::default());
     let builder = builder.manage(DeepLinkState::from_current_process());
     let builder = builder.manage(DownloadQueueState::default());
@@ -197,6 +201,8 @@ pub fn run() {
             player_get_storage_info,
             server_request_json,
             server_request_blob,
+            server_stream_sse,
+            server_cancel_sse,
             subtitle_search_opensubtitles,
             subtitle_download_opensubtitles,
             subtitle_login_opensubtitles,

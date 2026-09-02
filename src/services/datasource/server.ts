@@ -1,6 +1,6 @@
 import type { ServerCredentialValue } from './credentialStore'
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
@@ -30,6 +30,7 @@ interface ServerConfigExtra {
   deviceId: string
   credentialVersion?: number
   libraries?: Array<{ id: string, name: string, type: MediaLibrary['type'] }>
+  capabilities?: string[]
 }
 
 interface ServerNativeRequest {
@@ -43,6 +44,17 @@ interface ServerNativeRequest {
 interface ServerNativeResponse {
   status: number
   body: unknown
+}
+
+export interface ServerDiscoveryStreamEvent {
+  event: 'media' | 'progress' | 'site' | 'done' | 'error'
+  data: unknown
+}
+
+export interface ServerDiscoveryStreamHandle {
+  requestId: string
+  done: Promise<void>
+  cancel: () => Promise<void>
 }
 
 interface ServerLibraryRecord {
@@ -166,10 +178,18 @@ export interface ServerLoginResult {
 
 export interface ServerBridge {
   request: (request: ServerNativeRequest) => Promise<ServerNativeResponse>
+  stream?: (request: ServerNativeRequest, requestId: string, onEvent: (event: ServerDiscoveryStreamEvent) => void) => Promise<void>
+  cancelStream?: (requestId: string) => Promise<void>
 }
 
 const defaultServerBridge: ServerBridge = {
   request: request => invoke<ServerNativeResponse>('server_request_json', { request }),
+  stream: (request, requestId, onEvent) => {
+    const onEventChannel = new Channel<ServerDiscoveryStreamEvent>()
+    onEventChannel.onmessage = onEvent
+    return invoke<void>('server_stream_sse', { request, requestId, onEvent: onEventChannel })
+  },
+  cancelStream: requestId => invoke<void>('server_cancel_sse', { requestId }),
 }
 
 const SERVER_PAGE_SIZE = 100
@@ -191,6 +211,7 @@ export class ServerDataSource implements DataSource {
   private credentialRef = ''
   private credential: ServerCredentialValue | null = null
   private connected = false
+  private capabilities = new Set<string>()
   private readonly onlineProgressContexts = new Map<string, ServerOnlineProgressContext>()
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
@@ -204,19 +225,36 @@ export class ServerDataSource implements DataSource {
   get id(): string { return this.config?.id ?? '' }
   get name(): string { return this.config?.displayName ?? this.config?.name ?? 'OhMyCine Server' }
   get isConnected(): boolean { return this.connected }
+  get capabilityCodes(): string[] { return [...this.capabilities].sort() }
+
+  hasCapability(capability: string): boolean {
+    return this.capabilities.has(capability)
+  }
 
   async init(config: DataSourceConfig): Promise<void> {
     this.config = sanitizeServerConfig(config)
     this.baseUrl = normalizeServerBaseUrl(config.url)
     this.credentialRef = readServerExtra(config).credentialRef ?? ''
     this.credential = this.credentialRef ? await this.readCredential(this.credentialRef) : null
+    this.capabilities = new Set(readServerExtra(config).capabilities ?? [])
     this.connected = Boolean(this.baseUrl && this.credential)
   }
 
   async test(): Promise<boolean> {
-    await this.request('/api/v1/player/bootstrap')
+    await this.refreshCapabilities()
     this.connected = true
     return true
+  }
+
+  async refreshCapabilities(): Promise<string[]> {
+    const data = recordData(await this.request('/api/v1/player/bootstrap'))
+    if (!Array.isArray(data.capabilities) || data.capabilities.length > 64)
+      throw new Error('Server 返回了无效的账户能力。')
+    const capabilities = data.capabilities.flatMap((value): string[] => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value) ? [value] : [])
+    if (capabilities.length !== data.capabilities.length)
+      throw new Error('Server 返回了无效的账户能力。')
+    this.capabilities = new Set(capabilities)
+    return this.capabilityCodes
   }
 
   async syncPlaybackHistory(payload: ServerPlaybackHistorySyncRequest): Promise<ServerPlaybackHistorySyncResponse> {
@@ -240,10 +278,39 @@ export class ServerDataSource implements DataSource {
     return this.request(`/api/v1/player/discovery/media/${mediaType}/${tmdbId}/coverage`)
   }
 
+  async getDiscoveryAcquisition(mediaType: 'movie' | 'tv', tmdbId: number): Promise<unknown> {
+    return this.request(`/api/v1/player/discovery/media/${mediaType}/${tmdbId}/acquisition`)
+  }
+
   async searchDiscoveryResources(path: string): Promise<unknown> {
     if (!path.startsWith('/api/v1/player/discovery/torrent-search?') && !/^\/api\/v1\/player\/discovery\/media\/(?:movie|tv)\/\d+\/torrent-search\?/.test(path))
       throw new Error('Server 资源搜索路径无效。')
     return this.request(path)
+  }
+
+  async streamDiscoveryResources(path: string, onEvent: (event: ServerDiscoveryStreamEvent) => void): Promise<ServerDiscoveryStreamHandle> {
+    if (!path.startsWith('/api/v1/player/discovery/torrent-search/stream?') && !/^\/api\/v1\/player\/discovery\/media\/(?:movie|tv)\/\d+\/torrent-search\/stream\?/.test(path))
+      throw new Error('Server 流式资源搜索路径无效。')
+    if (!this.bridge.stream || !this.bridge.cancelStream)
+      throw new Error('当前 Player 环境不支持 Server 流式搜索。')
+    const credential = await this.ensureCredential()
+    const requestId = crypto.randomUUID()
+    const request: ServerNativeRequest = { baseUrl: this.baseUrl, method: 'GET', path, accessToken: credential.accessToken }
+    const done = this.bridge.stream(request, requestId, onEvent).catch((error) => {
+      throw new Error(redactSensitiveText(error))
+    })
+    return {
+      requestId,
+      done,
+      cancel: async () => {
+        try {
+          await this.bridge.cancelStream?.(requestId)
+        }
+        catch {
+          // Cancellation is best effort; search generations still reject late events.
+        }
+      },
+    }
   }
 
   async getDiscoveryDownloadOptions(): Promise<{ downloaders: unknown, libraries: unknown, profiles: unknown }> {
@@ -257,6 +324,14 @@ export class ServerDataSource implements DataSource {
 
   async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id: number, priority: number }): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
+  }
+
+  async getDiscoveryFollowDefaults(tmdbId: number): Promise<unknown> {
+    return this.request(`/api/v1/player/discovery/follows/defaults?media_type=tv&tmdb_id=${tmdbId}`)
+  }
+
+  async createDiscoveryFollow(payload: unknown): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/follows', 'POST', payload)
   }
 
   async loadDiscoveryArtwork(reference: string): Promise<string | undefined> {
@@ -275,6 +350,7 @@ export class ServerDataSource implements DataSource {
     this.mediaChangeWatchGeneration += 1
     this.credential = null
     this.connected = false
+    this.capabilities.clear()
     this.onlineProgressContexts.clear()
   }
 
@@ -1082,7 +1158,7 @@ export async function loginServerAndCreateConfig(
 
     await persistServerCredentialOrRevoke(credentialRef, accessToken, baseUrl, bridge, writeCredential)
     return {
-      config: { ...config, extra: { ...config.extra, libraries: libraries.map(library => ({ id: library.id, name: library.name, type: library.type })) } },
+      config: { ...config, extra: { ...config.extra, capabilities: source.capabilityCodes, libraries: libraries.map(library => ({ id: library.id, name: library.name, type: library.type })) } },
       libraries,
     }
   }
@@ -1392,6 +1468,7 @@ function readServerExtra(config: DataSourceConfig): ServerConfigExtra {
     deviceId: typeof extra.deviceId === 'string' ? extra.deviceId.trim() : '',
     credentialVersion: typeof extra.credentialVersion === 'number' && Number.isFinite(extra.credentialVersion) ? extra.credentialVersion : undefined,
     libraries: Array.isArray(extra.libraries) ? extra.libraries as ServerConfigExtra['libraries'] : undefined,
+    capabilities: Array.isArray(extra.capabilities) ? extra.capabilities.filter((value): value is string => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value)).slice(0, 64) : undefined,
   }
 }
 
@@ -1399,7 +1476,7 @@ function sanitizeServerConfig(config: DataSourceConfig | null): DataSourceConfig
   if (!config)
     return { id: '', type: 'server', name: 'OhMyCine Server', order: 0, url: '', enabled: false, extra: {} }
   const extra = readServerExtra(config)
-  return { ...config, type: 'server', url: normalizeServerBaseUrl(config.url), extra: { credentialRef: extra.credentialRef, deviceId: extra.deviceId, credentialVersion: extra.credentialVersion, libraries: extra.libraries } }
+  return { ...config, type: 'server', url: normalizeServerBaseUrl(config.url), extra: { credentialRef: extra.credentialRef, deviceId: extra.deviceId, credentialVersion: extra.credentialVersion, libraries: extra.libraries, capabilities: extra.capabilities } }
 }
 
 export function normalizeServerBaseUrl(value: string): string {

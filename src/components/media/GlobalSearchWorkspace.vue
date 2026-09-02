@@ -30,13 +30,38 @@ const selectedSourceId = ref(ALL_FILTER)
 const selectedLibraryId = ref(ALL_FILTER)
 const selectedType = ref(ALL_FILTER)
 const loading = ref(false)
+const loadingDiscovery = ref(false)
 const loadingLibraries = ref(false)
 const error = ref<string | null>(null)
+const checkingServerCapabilities = ref(false)
+const serverCapabilityRevision = ref(0)
 const completedItemKeys = ref<Set<string>>(new Set())
 let searchTimer: number | undefined
 let searchGeneration = 0
 
 const enabledSources = computed(() => store.orderedConfigs.filter(config => config.enabled !== false))
+const enabledServerSources = computed(() => {
+  // ServerDataSource owns the validated capability set; the revision makes
+  // successful bootstrap refreshes observable without duplicating that state.
+  void serverCapabilityRevision.value
+  const sources = enabledSources.value.flatMap((config) => {
+    if (selectedSourceId.value !== ALL_FILTER && selectedSourceId.value !== config.id)
+      return []
+    const source = store.getSource(config.id)
+    return source instanceof ServerDataSource ? [{ config, source }] : []
+  })
+  return sources
+})
+const discoveryServerSources = computed(() => enabledServerSources.value.filter(({ source }) => source.hasCapability('discovery_search')))
+const serverDiscoveryHint = computed(() => {
+  if (checkingServerCapabilities.value)
+    return '检查权限中…'
+  if (!enabledServerSources.value.length)
+    return '需连接 Server'
+  if (!discoveryServerSources.value.length)
+    return '账号无搜索权限'
+  return '继续'
+})
 const normalizedQuery = computed(() => query.value.trim())
 const sourceLibraries = computed(() => libraries.value.filter(library =>
   selectedSourceId.value === ALL_FILTER || library.sourceId === selectedSourceId.value,
@@ -63,10 +88,23 @@ watch(() => workspace.open, async (open) => {
   store.loadConfigs()
   void store.loadHomeSections({ background: store.homeSections.length > 0 })
   void loadLibraries()
+  void refreshServerCapabilities()
   void refreshSearchPlayedStates()
   await nextTick()
   window.setTimeout(() => inputRef.value?.focus(), 80)
 })
+
+async function refreshServerCapabilities() {
+  checkingServerCapabilities.value = true
+  try {
+    await store.syncManager()
+    await Promise.allSettled(enabledServerSources.value.map(({ source }) => source.refreshCapabilities()))
+  }
+  finally {
+    serverCapabilityRevision.value += 1
+    checkingServerCapabilities.value = false
+  }
+}
 
 watch(() => route.fullPath, () => workspace.hide())
 
@@ -74,6 +112,7 @@ watch(query, () => {
   if (searchTimer)
     window.clearTimeout(searchTimer)
   error.value = null
+  loadingDiscovery.value = false
   const keyword = normalizedQuery.value
   if (!keyword) {
     results.value = []
@@ -148,21 +187,10 @@ function uniqueLibraries(items: readonly MediaLibrary[]): MediaLibrary[] {
 async function runSearch(keyword: string, generation: number) {
   try {
     const sourceIds = selectedSourceId.value === ALL_FILTER ? undefined : [selectedSourceId.value]
-    const discoveryType = selectedType.value === 'movie' ? 'movie' : selectedType.value === 'series' ? 'tv' : selectedType.value === 'other' ? null : 'all'
-    const serverSources = enabledSources.value.flatMap((config) => {
-      if (!discoveryType || (sourceIds && !sourceIds.includes(config.id)))
-        return []
-      const source = store.getSource(config.id)
-      return source instanceof ServerDataSource ? [{ config, source }] : []
-    })
-    const [items, discovered] = await Promise.all([
-      store.searchAllSources(keyword, 100, sourceIds),
-      Promise.allSettled(serverSources.map(async ({ config, source }) => (await searchServerDiscovery(source, keyword, discoveryType!)).map(work => ({ sourceId: config.id, sourceName: config.displayName ?? config.name, work })))).then(settled => settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])),
-    ])
+    const items = await store.searchAllSources(keyword, 100, sourceIds)
     if (generation !== searchGeneration || keyword !== normalizedQuery.value)
       return
     results.value = uniqueItems(items)
-    discoveryResults.value = discovered
     void refreshSearchPlayedStates()
   }
   catch {
@@ -178,6 +206,40 @@ async function runSearch(keyword: string, generation: number) {
   }
 }
 
+async function searchServerMore() {
+  const keyword = normalizedQuery.value
+  const discoveryType = selectedType.value === 'movie' ? 'movie' : selectedType.value === 'series' ? 'tv' : selectedType.value === 'other' ? null : 'all'
+  if (!keyword || !discoveryType)
+    return
+  loadingDiscovery.value = true
+  error.value = null
+  const generation = searchGeneration
+  try {
+    await store.syncManager()
+    await Promise.allSettled(enabledServerSources.value.map(({ source }) => source.refreshCapabilities()))
+    serverCapabilityRevision.value += 1
+    const serverSources = discoveryServerSources.value
+    if (!enabledServerSources.value.length)
+      throw new Error('请先连接并启用 OhMyCine Server。')
+    if (!serverSources.length)
+      throw new Error('当前 Server 账号没有影视搜索权限，请让管理员分配“发现搜索”能力。')
+    const settled = await Promise.allSettled(serverSources.map(async ({ config, source }) => (await searchServerDiscovery(source, keyword, discoveryType)).map(work => ({ sourceId: config.id, sourceName: config.displayName ?? config.name, work }))))
+    if (generation !== searchGeneration || keyword !== normalizedQuery.value)
+      return
+    discoveryResults.value = settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])
+    if (!discoveryResults.value.length && settled.every(result => result.status === 'rejected'))
+      throw new Error('Server 暂时无法搜索更多影视，请检查连接或账号权限。')
+  }
+  catch (reason) {
+    if (generation === searchGeneration)
+      error.value = reason instanceof Error ? reason.message : 'Server 搜索失败。'
+  }
+  finally {
+    if (generation === searchGeneration)
+      loadingDiscovery.value = false
+  }
+}
+
 function restartSearch() {
   const keyword = normalizedQuery.value
   if (!keyword)
@@ -189,6 +251,7 @@ function restartSearch() {
 
 function chooseType(type: string) {
   selectedType.value = type
+  discoveryResults.value = []
 }
 
 function chooseLibrary(libraryId: string) {
@@ -333,14 +396,14 @@ onBeforeUnmount(() => {
             </button>
             <div class="search-input flex min-w-0 flex-1 items-center gap-3 px-4">
               <svg class="shrink-0" width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" /><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
-              <input ref="inputRef" v-model="query" type="search" class="min-w-0 flex-1 bg-transparent text-base outline-none" placeholder="搜索所有媒体库" autocomplete="off" spellcheck="false">
+              <input ref="inputRef" v-model="query" type="text" class="min-w-0 flex-1 bg-transparent text-base outline-none" placeholder="搜索所有媒体库" autocomplete="off" spellcheck="false">
               <span v-if="loading" class="search-spinner h-4 w-4 shrink-0 rounded-full border-2" aria-label="搜索中" />
               <button v-else-if="query" class="clear-button flex h-8 w-8 shrink-0 items-center justify-center" type="button" aria-label="清除搜索" @click="clearSearch">
                 <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
               </button>
             </div>
-            <button class="desktop-close flex h-10 w-10 shrink-0 items-center justify-center" type="button" aria-label="关闭搜索" @click="workspace.hide">
-              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+            <button class="desktop-close flex h-10 shrink-0 items-center justify-center px-3 text-sm font-semibold" type="button" aria-label="取消搜索" @click="workspace.hide">
+              取消
             </button>
           </header>
 
@@ -509,6 +572,10 @@ onBeforeUnmount(() => {
                   <span v-if="isSearchItemPlayed(item)" class="search-played-badge search-played-badge--row" aria-label="已播放">✓</span>
                 </article>
               </div>
+              <button v-if="!discoveryResults.length && selectedType !== 'other'" class="server-more mt-5 flex w-full items-center justify-between gap-4 rounded-xl border border-white/10 bg-white/5 px-5 py-4 text-left transition hover:bg-white/9 disabled:cursor-not-allowed disabled:opacity-55" type="button" :disabled="loadingDiscovery || checkingServerCapabilities || !discoveryServerSources.length" @click="searchServerMore">
+                <span><strong class="block text-sm text-white/88">从 Server 搜索更多并入库</strong><small class="mt-1 block text-xs text-white/42">仅在点击后搜索 TMDB 海报；进入详情后可选站点、订阅或下载入库。</small></span>
+                <span class="shrink-0 text-sm text-white/58">{{ loadingDiscovery ? '搜索中…' : serverDiscoveryHint }}</span>
+              </button>
               <p v-else-if="!loading && !error && !discoveryResults.length" class="search-message text-white/44">
                 没有找到符合当前筛选的媒体。
               </p>

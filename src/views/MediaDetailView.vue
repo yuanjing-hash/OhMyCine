@@ -5,6 +5,7 @@ import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { describeMediaSource, hasMeaningfulMediaSource } from '@/services/datasource/mediaSourceDisplay'
@@ -143,10 +144,6 @@ function handleDetailHeroClick(event: MouseEvent) {
   suppressMediaActionClick(event)
 }
 
-const heroStyle = computed(() => {
-  const backdrop = detail.value?.backdropUrl
-  return backdrop ? { backgroundImage: `url(${backdrop})` } : {}
-})
 const visibleTitleLogoUrl = computed(() => {
   const url = detail.value?.titleLogoUrl
   return url && !failedTitleLogoUrls.value.has(url) ? url : ''
@@ -930,9 +927,13 @@ function markTitleLogoFailed(url: string) {
     </div>
 
     <template v-else-if="detail">
-      <section
-        class="detail-hero theme-immersive-dark relative min-h-[68vh] overflow-hidden bg-cover bg-center"
-        :style="heroStyle"
+      <MediaDetailHero
+        :title="detail.name"
+        :poster-url="detail.posterUrl"
+        :backdrop-url="detail.backdropUrl"
+        :title-logo-url="visibleTitleLogoUrl"
+        :overview="detail.overview"
+        :eyebrow="isSeriesDetail ? 'OhMyCine Series' : 'OhMyCine Detail'"
         data-media-action-target
         @pointerdown="beginDetailActionLongPress"
         @pointermove="moveMediaActionLongPress"
@@ -941,67 +942,37 @@ function markTitleLogoFailed(url: string) {
         @pointerleave="cancelMediaActionLongPress($event.pointerId)"
         @click="handleDetailHeroClick"
         @contextmenu="openDetailActionMenu"
+        @title-logo-error="markTitleLogoFailed"
       >
-        <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
-        <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
-        <div class="detail-hero-content relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
-          <div class="hidden w-56 flex-shrink-0 overflow-hidden rounded-[1.8rem] border border-white/12 bg-white/6 shadow-2xl md:block">
-            <img v-if="detail.posterUrl" :src="detail.posterUrl" :alt="detail.name" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async">
-            <div v-else class="flex aspect-[2/3] items-center justify-center p-6 text-center text-sm text-white/45">
-              {{ detail.name }}
-            </div>
-          </div>
-
-          <div class="max-w-4xl">
-            <p v-if="!visibleTitleLogoUrl" class="text-xs uppercase tracking-[0.28em] text-white/42">
-              {{ isSeriesDetail ? 'OhMyCine Series' : 'OhMyCine Detail' }}
-            </p>
-            <img
-              v-if="visibleTitleLogoUrl"
-              :src="visibleTitleLogoUrl"
-              :alt="detail.name"
-              class="max-h-28 max-w-[min(30rem,78vw)] object-contain object-left drop-shadow-2xl"
-              loading="eager"
-              decoding="async"
-              @error="markTitleLogoFailed(visibleTitleLogoUrl)"
-            >
-            <h1 :class="visibleTitleLogoUrl ? 'sr-only' : 'mt-3 text-3xl font-bold leading-tight drop-shadow-2xl sm:text-4xl lg:text-6xl'">
-              {{ detail.name }}
-            </h1>
-            <div class="mt-4 flex flex-wrap items-center gap-3 text-sm text-white/68">
-              <span v-if="detail.rating" class="rounded-full bg-yellow-400/16 px-3 py-1 text-yellow-100">★ {{ detail.rating.toFixed(1) }}</span>
-              <span v-if="detail.year">{{ detail.year }}</span>
-              <span v-if="runtimeLabel">{{ runtimeLabel }}</span>
-              <span v-if="detail.resolution && !isSeriesDetail">{{ detail.resolution }}</span>
-              <span v-if="detail.genres?.length">{{ detail.genres.slice(0, 4).join(' / ') }}</span>
-            </div>
-            <p v-if="detail.overview" class="mt-5 max-w-3xl text-base leading-8 text-white/68 line-clamp-5">
-              {{ detail.overview }}
-            </p>
-            <div class="mt-7 flex flex-wrap items-center gap-3">
-              <button v-if="primaryCanPlay" class="flex items-center gap-2 rounded-full bg-white px-7 py-3 text-sm font-bold text-black shadow-xl transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-60" :disabled="isPlaying" @click="playPrimaryTarget">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z" /></svg>
-                {{ primaryPlayLabel }}
-              </button>
-              <button
-                v-if="canEnqueueOnlineDownload"
-                type="button"
-                class="rounded-full border border-white/16 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/16 disabled:opacity-50"
-                :disabled="isEnqueueingOnlineDownload"
-                @click="enqueueOnlineDownload"
-              >
-                {{ isEnqueueingOnlineDownload ? '正在提交…' : '下载并入库' }}
-              </button>
-              <span v-if="isSeriesDetail && selectedEpisode" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ episodeTitle(selectedEpisode) }}</span>
-              <span v-else-if="visibleMediaSources.length" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ sourceLabel }}</span>
-              <span class="detail-played-state" :class="{ 'is-played': detailPlayed }">{{ detailPlayed ? '✓ 已播放' : '未播放' }}</span>
-              <button v-if="canToggleDetailPlayed" type="button" class="detail-played-toggle" @click.stop="toggleDetailPlayedState">
-                {{ detailPlayed ? '标记为未播放' : '标记为已播放' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
+        <template #meta>
+          <span v-if="detail.rating" class="rounded-full bg-yellow-400/16 px-3 py-1 text-yellow-100">★ {{ detail.rating.toFixed(1) }}</span>
+          <span v-if="detail.year">{{ detail.year }}</span>
+          <span v-if="runtimeLabel">{{ runtimeLabel }}</span>
+          <span v-if="detail.resolution && !isSeriesDetail">{{ detail.resolution }}</span>
+          <span v-if="detail.genres?.length">{{ detail.genres.slice(0, 4).join(' / ') }}</span>
+        </template>
+        <template #actions>
+          <button v-if="primaryCanPlay" class="flex items-center gap-2 rounded-full bg-white px-7 py-3 text-sm font-bold text-black shadow-xl transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-60" :disabled="isPlaying" @click="playPrimaryTarget">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z" /></svg>
+            {{ primaryPlayLabel }}
+          </button>
+          <button
+            v-if="canEnqueueOnlineDownload"
+            type="button"
+            class="rounded-full border border-white/16 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/16 disabled:opacity-50"
+            :disabled="isEnqueueingOnlineDownload"
+            @click="enqueueOnlineDownload"
+          >
+            {{ isEnqueueingOnlineDownload ? '正在提交…' : '下载并入库' }}
+          </button>
+          <span v-if="isSeriesDetail && selectedEpisode" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ episodeTitle(selectedEpisode) }}</span>
+          <span v-else-if="visibleMediaSources.length" class="rounded-full border border-white/12 bg-white/8 px-4 py-3 text-xs text-white/58">{{ sourceLabel }}</span>
+          <span class="detail-played-state" :class="{ 'is-played': detailPlayed }">{{ detailPlayed ? '✓ 已播放' : '未播放' }}</span>
+          <button v-if="canToggleDetailPlayed" type="button" class="detail-played-toggle" @click.stop="toggleDetailPlayedState">
+            {{ detailPlayed ? '标记为未播放' : '标记为已播放' }}
+          </button>
+        </template>
+      </MediaDetailHero>
 
       <main class="detail-content mobile-nav-safe space-y-10 px-4 pb-14 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
         <div v-if="downloadFeedback" class="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-5 py-4 text-sm text-emerald-100">
@@ -1752,32 +1723,6 @@ function markTitleLogoFailed(url: string) {
 
   .episode-search-results {
     max-height: calc(100svh - max(1rem, env(safe-area-inset-top)) - max(1.25rem, env(safe-area-inset-bottom)) - 11.5rem);
-  }
-
-  .detail-hero,
-  .detail-hero-content {
-    min-height: min(68svh, 38rem);
-  }
-
-  .detail-hero-content {
-    padding-top: max(5rem, calc(env(safe-area-inset-top) + 4rem));
-    padding-bottom: 2rem;
-  }
-
-  .detail-hero-content h1 {
-    font-size: 2rem;
-  }
-
-  .detail-hero-content p.line-clamp-5 {
-    -webkit-line-clamp: 3;
-    font-size: 0.88rem;
-    line-height: 1.65;
-  }
-
-  .detail-hero-content button,
-  .detail-hero-content span.rounded-full {
-    min-height: 2.9rem;
-    border-radius: 8px;
   }
 
   .detail-content {

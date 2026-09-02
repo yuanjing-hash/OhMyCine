@@ -66,6 +66,9 @@ await source.init({
   extra: { credentialRef: 'datasource:server-home:server-credential', deviceId: 'device-test' },
 })
 assert.equal(await source.test(), true)
+assert.deepEqual(source.capabilityCodes, ['direct_stream', 'media_catalog'])
+assert.equal(source.hasCapability('media_catalog'), true)
+assert.equal(source.hasCapability('discovery_search'), false)
 const libraries = await source.listLibraries()
 assert.deepEqual(libraries.map(item => [item.id, item.sourceId, item.name]), [
   ['9', 'server-home', '115 电影'],
@@ -336,6 +339,29 @@ assert.equal(
 )
 assert.equal(extractTrustedOhMyCineArtifactIdentity('https://attacker.example/proxy/strm/artifact_test_1234?sig=secret'), undefined)
 assert.equal(extractTrustedOhMyCineArtifactIdentity('/proxy/strm/artifact_test_1234?sig=secret'), undefined)
+
+let successfulCredential = ''
+const successfulLogin = await loginServerAndCreateConfig({
+  id: 'server-capability-login',
+  url: 'http://127.0.0.1:3000',
+  username: 'owner',
+  password: 'temporary-password',
+  deviceId: 'stable-device-id',
+}, {
+  async request(request) {
+    if (request.path === '/api/v1/player/auth/login')
+      return { status: 200, body: { code: 0, message: 'success', data: { access_token: token } } }
+    if (request.path === '/api/v1/player/bootstrap')
+      return { status: 200, body: { code: 0, message: 'success', data: { capabilities: ['media_catalog', 'discovery_search', 'acquisition_create'] } } }
+    if (request.path === '/api/v1/player/media-libraries')
+      return { status: 200, body: { code: 0, message: 'success', data: { list: [], total: 0 } } }
+    return { status: 404, body: { code: 'NOT_FOUND', message: 'not found', data: {} } }
+  },
+}, async (_ref, value) => {
+  successfulCredential = value.accessToken
+})
+assert.equal(successfulCredential, token)
+assert.deepEqual(successfulLogin.config.extra?.capabilities, ['acquisition_create', 'discovery_search', 'media_catalog'])
 
 const failedLoginCalls: Array<{ path: string, accessToken?: string, body?: unknown }> = []
 await assert.rejects(loginServerAndCreateConfig({

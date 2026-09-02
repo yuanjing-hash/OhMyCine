@@ -34,9 +34,7 @@ impl DeepLinkState {
 }
 
 #[tauri::command]
-pub fn player_take_pending_deep_links(
-    state: tauri::State<'_, DeepLinkState>,
-) -> Vec<String> {
+pub fn player_take_pending_deep_links(state: tauri::State<'_, DeepLinkState>) -> Vec<String> {
     state
         .pending
         .lock()
@@ -59,7 +57,10 @@ mod tests {
 
     #[test]
     fn accepts_only_bounded_ohmycine_urls() {
-        assert_eq!(sanitize_deep_link("ohmycine://open?work=1").as_deref(), Some("ohmycine://open?work=1"));
+        assert_eq!(
+            sanitize_deep_link("ohmycine://open?work=1").as_deref(),
+            Some("ohmycine://open?work=1")
+        );
         assert!(sanitize_deep_link("https://example.com").is_none());
         assert!(sanitize_deep_link(&format!("ohmycine://{}", "a".repeat(5000))).is_none());
     }

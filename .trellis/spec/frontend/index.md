@@ -24,6 +24,7 @@ Before changing frontend code or Player design:
 6. Store credentials in OS secure storage when available; do not write secrets to ordinary config files.
 7. If feature completion status changes, update the owning Player architecture/spec document in the same task.
 8. Existing Player work is to be adopted as current state and continued, not rewritten during Trellis migration tasks.
+9. Server discovery is always an explicit, capability-gated enhancement; ordinary Player search must not silently call Server TMDB discovery.
 
 ---
 
@@ -39,6 +40,7 @@ Before changing frontend code or Player design:
 | [Quality Guidelines](./quality-guidelines.md) | Lint/typecheck/build and forbidden patterns | Active |
 | [Danmaku Contract](./danmaku.md) | API, privacy, lifecycle, rendering, and cross-platform controls | Active |
 | [Server Online Media](./server-online-media.md) | Generic online libraries, paged history, progress sync, stream variants, and plugin danmaku priority | Active |
+| [Server Discovery and Acquisition](./server-discovery-acquisition.md) | Explicit Server discovery, capability-gated actions, native SSE progress, shared detail UI, and acquisition state | Active |
 | [Player Download and Offline Media](./download-offline.md) | Stable download identity, scheduler, offline package, attachment, local-first playback, and deletion contracts | Active |
 
 ---

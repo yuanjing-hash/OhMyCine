@@ -1,15 +1,27 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Method, Url};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
+use tauri::{ipc::Channel, State};
+use tokio::sync::watch;
 
 const MAX_BASE_URL_LENGTH: usize = 2048;
 const MAX_PATH_LENGTH: usize = 2048;
 const MAX_TOKEN_LENGTH: usize = 256;
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = 512 * 1024;
+const MAX_SSE_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(75);
+
+#[derive(Default)]
+pub struct ServerStreamState {
+    cancellations: Mutex<HashMap<String, watch::Sender<bool>>>,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +45,12 @@ pub struct ServerJsonResponse {
 pub struct ServerBlobResponse {
     mime_type: String,
     data_base64: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ServerSseEvent {
+    event: String,
+    data: Value,
 }
 
 #[tauri::command]
@@ -118,14 +136,17 @@ pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJso
 
 #[tauri::command]
 pub async fn server_request_blob(request: ServerJsonRequest) -> Result<ServerBlobResponse, String> {
-    if request.method.trim().to_ascii_uppercase() != "GET"
+    if !request.method.trim().eq_ignore_ascii_case("GET")
         || !request.path.starts_with("/api/v1/player/discovery/images/")
     {
         return Err("Server binary request path is not allowed.".to_string());
     }
     let url = server_url(&request.base_url, &request.path)?;
     let token = request.access_token.as_deref().unwrap_or_default().trim();
-    if !token.starts_with("omc_player_") || token.len() > MAX_TOKEN_LENGTH || token.chars().any(char::is_control) {
+    if !token.starts_with("omc_player_")
+        || token.len() > MAX_TOKEN_LENGTH
+        || token.chars().any(char::is_control)
+    {
         return Err("Server access token is required.".to_string());
     }
     let client = reqwest::Client::builder()
@@ -133,22 +154,255 @@ pub async fn server_request_blob(request: ServerJsonRequest) -> Result<ServerBlo
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Failed to initialize Server HTTP client.".to_string())?;
-    let response = client.get(url).header(ACCEPT, "image/avif,image/webp,image/jpeg,image/png")
+    let response = client
+        .get(url)
+        .header(ACCEPT, "image/avif,image/webp,image/jpeg,image/png")
         .header(AUTHORIZATION, format!("Bearer {token}"))
-        .send().await.map_err(|_| "无法读取 Server 海报。".to_string())?;
+        .send()
+        .await
+        .map_err(|_| "无法读取 Server 海报。".to_string())?;
     if !response.status().is_success() {
-        return Err(format!("Server 海报请求失败（HTTP {}）。", response.status().as_u16()));
+        return Err(format!(
+            "Server 海报请求失败（HTTP {}）。",
+            response.status().as_u16()
+        ));
     }
-    let mime_type = response.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next()).unwrap_or("").trim().to_ascii_lowercase();
-    if !matches!(mime_type.as_str(), "image/jpeg" | "image/png" | "image/webp" | "image/avif") {
+    let mime_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(
+        mime_type.as_str(),
+        "image/jpeg" | "image/png" | "image/webp" | "image/avif"
+    ) {
         return Err("Server 海报格式无效。".to_string());
     }
-    let bytes = response.bytes().await.map_err(|_| "读取 Server 海报失败。".to_string())?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "读取 Server 海报失败。".to_string())?;
     if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
         return Err("Server 海报响应无效。".to_string());
     }
-    Ok(ServerBlobResponse { mime_type, data_base64: STANDARD.encode(bytes) })
+    Ok(ServerBlobResponse {
+        mime_type,
+        data_base64: STANDARD.encode(bytes),
+    })
+}
+
+#[tauri::command]
+pub async fn server_stream_sse(
+    request: ServerJsonRequest,
+    request_id: String,
+    on_event: Channel<ServerSseEvent>,
+    state: State<'_, ServerStreamState>,
+) -> Result<(), String> {
+    validate_stream_request(&request, &request_id)?;
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    {
+        let mut cancellations = state
+            .cancellations
+            .lock()
+            .map_err(|_| "Server 搜索取消状态暂不可用。".to_string())?;
+        if cancellations.contains_key(&request_id) {
+            return Err("Server 搜索请求标识已存在。".to_string());
+        }
+        cancellations.insert(request_id.clone(), cancel_tx);
+    }
+
+    let result = run_sse_stream(request, cancel_rx, &on_event).await;
+    if let Ok(mut cancellations) = state.cancellations.lock() {
+        cancellations.remove(&request_id);
+    }
+    result
+}
+
+#[tauri::command]
+pub fn server_cancel_sse(
+    request_id: String,
+    state: State<'_, ServerStreamState>,
+) -> Result<(), String> {
+    if !valid_request_id(&request_id) {
+        return Err("Server 搜索请求标识无效。".to_string());
+    }
+    let cancellations = state
+        .cancellations
+        .lock()
+        .map_err(|_| "Server 搜索取消状态暂不可用。".to_string())?;
+    if let Some(sender) = cancellations.get(&request_id) {
+        let _ = sender.send(true);
+    }
+    Ok(())
+}
+
+async fn run_sse_stream(
+    request: ServerJsonRequest,
+    mut cancel_rx: watch::Receiver<bool>,
+    on_event: &Channel<ServerSseEvent>,
+) -> Result<(), String> {
+    let url = server_url(&request.base_url, &request.path)?;
+    let token = request.access_token.as_deref().unwrap_or_default().trim();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Failed to initialize Server HTTP client.".to_string())?;
+    let mut response = client
+        .get(url)
+        .header(ACCEPT, "text/event-stream")
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "连接 OhMyCine Server 搜索流超时。".to_string()
+            } else if error.is_connect() {
+                "无法连接 OhMyCine Server。".to_string()
+            } else {
+                "OhMyCine Server 搜索流请求失败。".to_string()
+            }
+        })?;
+    if response.status().is_redirection() {
+        return Err("OhMyCine Server 搜索流返回了不受信任的跳转。".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(format!(
+            "OhMyCine Server 搜索失败（HTTP {}）。",
+            response.status().as_u16()
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.starts_with("text/event-stream") {
+        return Err("OhMyCine Server 返回了无效搜索流。".to_string());
+    }
+
+    let mut buffer = Vec::new();
+    let mut total = 0usize;
+    loop {
+        let next = tokio::time::timeout(SSE_IDLE_TIMEOUT, response.chunk());
+        let chunk = tokio::select! {
+            changed = cancel_rx.changed() => {
+                if changed.is_ok() && *cancel_rx.borrow() {
+                    return Ok(());
+                }
+                continue;
+            }
+            result = next => {
+                match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(_)) => return Err("读取 OhMyCine Server 搜索流失败。".to_string()),
+                    Err(_) => return Err("OhMyCine Server 搜索流长时间没有响应。".to_string()),
+                }
+            }
+        };
+        let Some(chunk) = chunk else {
+            if !buffer.is_empty() {
+                dispatch_sse_block(&buffer, on_event)?;
+            }
+            return Ok(());
+        };
+        total = total.saturating_add(chunk.len());
+        if total > MAX_SSE_TOTAL_BYTES {
+            return Err("OhMyCine Server 搜索流响应过大。".to_string());
+        }
+        buffer.extend_from_slice(&chunk);
+        if buffer.len() > MAX_SSE_EVENT_BYTES && find_sse_boundary(&buffer).is_none() {
+            return Err("OhMyCine Server 搜索流事件过大。".to_string());
+        }
+        while let Some((position, delimiter_length)) = find_sse_boundary(&buffer) {
+            let block = buffer[..position].to_vec();
+            buffer.drain(..position + delimiter_length);
+            if !block.is_empty() {
+                dispatch_sse_block(&block, on_event)?;
+            }
+        }
+    }
+}
+
+fn dispatch_sse_block(block: &[u8], on_event: &Channel<ServerSseEvent>) -> Result<(), String> {
+    if block.len() > MAX_SSE_EVENT_BYTES {
+        return Err("OhMyCine Server 搜索流事件过大。".to_string());
+    }
+    let text =
+        std::str::from_utf8(block).map_err(|_| "OhMyCine Server 搜索流编码无效。".to_string())?;
+    let mut event = "message".to_string();
+    let mut data = Vec::new();
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            event = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.trim_start());
+        }
+    }
+    if !matches!(
+        event.as_str(),
+        "media" | "progress" | "site" | "done" | "error"
+    ) {
+        return Ok(());
+    }
+    let payload = serde_json::from_str::<Value>(&data.join("\n"))
+        .map_err(|_| "OhMyCine Server 搜索流 JSON 无效。".to_string())?;
+    on_event
+        .send(ServerSseEvent {
+            event,
+            data: payload,
+        })
+        .map_err(|_| "无法向 Player 传递 Server 搜索进度。".to_string())
+}
+
+fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|position| (position, 2))
+        .or_else(|| {
+            buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| (position, 4))
+        })
+}
+
+fn validate_stream_request(request: &ServerJsonRequest, request_id: &str) -> Result<(), String> {
+    if !request.method.trim().eq_ignore_ascii_case("GET")
+        || request.body.is_some()
+        || !valid_request_id(request_id)
+        || !allowed_discovery_stream_path(&request.path)
+    {
+        return Err("Server 搜索流请求无效。".to_string());
+    }
+    let token = request.access_token.as_deref().unwrap_or_default().trim();
+    if !token.starts_with("omc_player_")
+        || token.len() > MAX_TOKEN_LENGTH
+        || token.chars().any(char::is_control)
+    {
+        return Err("Server access token is required.".to_string());
+    }
+    server_url(&request.base_url, &request.path).map(|_| ())
+}
+
+fn valid_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
+fn allowed_discovery_stream_path(path: &str) -> bool {
+    let route = path.split_once('?').map_or(path, |(value, _)| value);
+    route == "/api/v1/player/discovery/torrent-search/stream"
+        || (route.starts_with("/api/v1/player/discovery/media/")
+            && route.ends_with("/torrent-search/stream"))
 }
 
 fn server_url(base_url: &str, path: &str) -> Result<Url, String> {
@@ -226,5 +480,33 @@ mod tests {
             "/api/v1/player/bootstrap"
         )
         .is_err());
+    }
+
+    #[test]
+    fn discovery_stream_allowlist_is_narrow() {
+        assert!(allowed_discovery_stream_path(
+            "/api/v1/player/discovery/torrent-search/stream?keyword=test"
+        ));
+        assert!(allowed_discovery_stream_path(
+            "/api/v1/player/discovery/media/movie/346/torrent-search/stream?site_ids=1"
+        ));
+        assert!(!allowed_discovery_stream_path(
+            "/api/v1/player/online-assets/private/stream"
+        ));
+        assert!(!allowed_discovery_stream_path(
+            "/api/v1/users/torrent-search/stream"
+        ));
+    }
+
+    #[test]
+    fn sse_boundary_supports_lf_and_crlf() {
+        assert_eq!(
+            find_sse_boundary(b"event: done\ndata: {}\n\nrest"),
+            Some((20, 2))
+        );
+        assert_eq!(
+            find_sse_boundary(b"event: done\r\ndata: {}\r\n\r\nrest"),
+            Some((21, 4))
+        );
     }
 }

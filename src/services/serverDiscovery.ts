@@ -1,4 +1,4 @@
-import type { ServerDataSource } from '@/services/datasource/server'
+import type { ServerDataSource, ServerDiscoveryStreamHandle } from '@/services/datasource/server'
 
 export interface ServerDiscoveryWork {
   provider: 'tmdb' | 'douban'
@@ -25,13 +25,85 @@ export interface ServerDiscoveryDetail {
   cast: string[]
 }
 
-export interface ServerSearchSite { id: number, name: string, siteType: string, searchable: boolean, reason?: string }
-export interface ServerResourceItem { token: string, title: string, subtitle?: string, sizeBytes?: number, seeders?: number, promotion?: string, quality?: string, matchedName?: string }
-export interface ServerResourceGroup { siteId: number, siteName: string, siteType: string, status: string, errorCode?: string, items: ServerResourceItem[] }
+export interface ServerSearchSite {
+  id: number
+  name: string
+  siteType: string
+  searchable: boolean
+  reason?: string
+}
+export interface ServerResourceItem {
+  token: string
+  title: string
+  subtitle?: string
+  sizeBytes?: number
+  seeders?: number
+  promotion?: string
+  quality?: string
+  matchedName?: string
+}
+export interface ServerResourceGroup {
+  siteId: number
+  siteName: string
+  siteType: string
+  status: string
+  errorCode?: string
+  items: ServerResourceItem[]
+}
 export interface ServerDownloadOption { id: string, name: string, type?: string }
 export interface ServerLibraryOption { id: number, name: string }
 export interface ServerProfileOption { id: number, name: string }
 export interface ServerCoverageSummary { status: string, present: number, missing: number, total: number }
+export interface ServerAcquisitionStatus {
+  id?: string
+  mediaType: 'movie' | 'tv'
+  tmdbId: number
+  stage: string
+  status: string
+  downloadTaskId?: string
+  followSubscriptionId?: string
+  targetLibraryId?: number
+  lastErrorCode?: string
+  revision: number
+}
+export interface ServerFollowSnapshot {
+  version: number
+  seasons: number[]
+  site_ids: number[]
+  downloader_id: string
+  media_library_id: number
+  schedule: { kind: string, minutes: number }
+  filters: Record<string, unknown>
+  max_resources_per_run: number
+  download_priority: number
+}
+export interface ServerFollowDefaults {
+  snapshot: ServerFollowSnapshot
+  sites: { id: number, name: string, site_type: string }[]
+  downloaders: ServerDownloadOption[]
+  mediaLibraries: ServerLibraryOption[]
+  subscribedSeasons: number[]
+}
+export interface ServerSearchProgress {
+  total: number
+  pending: number
+  running: number
+  completed: number
+  succeeded: number
+  failed: number
+  resultCount: number
+  siteId?: number
+  siteName?: string
+  siteStatus?: string
+  errorCode?: string
+}
+export type ServerResourceStreamEvent
+  = | { type: 'progress', progress: ServerSearchProgress }
+    | { type: 'site', group: ServerResourceGroup }
+    | { type: 'done', progress: ServerSearchProgress }
+    | { type: 'error', code?: string, message: string }
+
+export interface ServerResourceSearchInput { mediaType: 'movie' | 'tv', tmdbId?: number, title?: string, direct?: boolean, siteIds: number[] }
 
 export async function searchServerDiscovery(source: ServerDataSource, query: string, mediaType: 'all' | 'movie' | 'tv' = 'all'): Promise<ServerDiscoveryWork[]> {
   const data = record(await source.searchDiscoveryMedia(query, mediaType))
@@ -80,13 +152,84 @@ export async function getServerCoverage(source: ServerDataSource, mediaType: 'mo
     : { status: text(data.status) ?? 'unknown', present: number(counts.present) ?? 0, missing: number(counts.missing) ?? 0, total: number(counts.total) ?? 0 }
 }
 
-export async function searchServerResources(source: ServerDataSource, input: { mediaType: 'movie' | 'tv', tmdbId?: number, title?: string, direct?: boolean, siteIds: number[] }): Promise<ServerResourceGroup[]> {
+export async function getServerAcquisition(source: ServerDataSource, mediaType: 'movie' | 'tv', tmdbId: number): Promise<ServerAcquisitionStatus> {
+  const data = record(await source.getDiscoveryAcquisition(mediaType, tmdbId))
+  return { id: text(data.id), mediaType: data.media_type === 'tv' ? 'tv' : 'movie', tmdbId: number(data.tmdb_id) ?? tmdbId, stage: text(data.stage) ?? 'idle', status: text(data.status) ?? 'idle', downloadTaskId: text(data.download_task_id), followSubscriptionId: text(data.follow_subscription_id), targetLibraryId: number(data.target_library_id), lastErrorCode: text(data.last_error_code), revision: number(data.revision) ?? 0 }
+}
+
+export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: number): Promise<ServerFollowDefaults> {
+  const data = record(await source.getDiscoveryFollowDefaults(tmdbId))
+  const snapshot = record(data.snapshot)
+  const schedule = record(snapshot.schedule)
+  const sites = array(data.sites).flatMap((value) => {
+    const item = record(value)
+    const id = number(item.id)
+    const name = text(item.name)
+    return id && name ? [{ id, name, site_type: text(item.site_type) ?? '' }] : []
+  })
+  const downloaders = array(data.downloaders).flatMap((value) => {
+    const item = record(value)
+    const id = text(item.id)
+    const name = text(item.name)
+    return id && name ? [{ id, name, type: text(item.type) }] : []
+  })
+  const mediaLibraries = array(data.media_libraries).flatMap((value) => {
+    const item = record(value)
+    const id = number(item.id)
+    const name = text(item.name)
+    return id && name ? [{ id, name }] : []
+  })
+  return {
+    snapshot: {
+      version: number(snapshot.version) ?? 1,
+      seasons: array(snapshot.seasons).flatMap(value => typeof value === 'number' ? [value] : []),
+      site_ids: array(snapshot.site_ids).flatMap(value => typeof value === 'number' ? [value] : []),
+      downloader_id: text(snapshot.downloader_id) ?? '',
+      media_library_id: number(snapshot.media_library_id) ?? 0,
+      schedule: { kind: text(schedule.kind) ?? 'interval', minutes: number(schedule.minutes) ?? 360 },
+      filters: record(snapshot.filters),
+      max_resources_per_run: number(snapshot.max_resources_per_run) ?? 3,
+      download_priority: number(snapshot.download_priority) ?? 0,
+    },
+    sites,
+    downloaders,
+    mediaLibraries,
+    subscribedSeasons: array(data.subscribed_seasons).flatMap(value => typeof value === 'number' ? [value] : []),
+  }
+}
+
+export async function searchServerResources(source: ServerDataSource, input: ServerResourceSearchInput): Promise<ServerResourceGroup[]> {
+  const path = resourceSearchPath(input, false)
+  const data = record(await source.searchDiscoveryResources(path))
+  return array(data.groups).map(parseGroup).filter((item): item is ServerResourceGroup => item != null)
+}
+
+export async function streamServerResources(source: ServerDataSource, input: ServerResourceSearchInput, onEvent: (event: ServerResourceStreamEvent) => void): Promise<ServerDiscoveryStreamHandle> {
+  return source.streamDiscoveryResources(resourceSearchPath(input, true), (raw) => {
+    const data = record(raw.data)
+    if (raw.event === 'site') {
+      const group = parseGroup(data)
+      if (group)
+        onEvent({ type: 'site', group })
+      return
+    }
+    if (raw.event === 'progress' || raw.event === 'done') {
+      const progress = parseProgress(data)
+      onEvent({ type: raw.event, progress })
+      return
+    }
+    if (raw.event === 'error')
+      onEvent({ type: 'error', code: text(data.code), message: text(data.message) ?? 'Server 资源搜索失败。' })
+  })
+}
+
+function resourceSearchPath(input: ServerResourceSearchInput, stream: boolean): string {
   const params = new URLSearchParams({ page: '1' })
   for (const id of input.siteIds)
     params.append('site_ids', String(id))
   let path: string
   if (!input.direct && input.tmdbId) {
-    path = `/api/v1/player/discovery/media/${input.mediaType}/${input.tmdbId}/torrent-search?${params}`
+    path = `/api/v1/player/discovery/media/${input.mediaType}/${input.tmdbId}/torrent-search${stream ? '/stream' : ''}?${params}`
   }
   else {
     if (input.tmdbId && !input.title) {
@@ -100,10 +243,9 @@ export async function searchServerResources(source: ServerDataSource, input: { m
       params.set('keyword', input.title?.trim() ?? '')
       params.set('media_type', input.mediaType)
     }
-    path = `/api/v1/player/discovery/torrent-search?${params}`
+    path = `/api/v1/player/discovery/torrent-search${stream ? '/stream' : ''}?${params}`
   }
-  const data = record(await source.searchDiscoveryResources(path))
-  return array(data.groups).map(parseGroup).filter((item): item is ServerResourceGroup => item != null)
+  return path
 }
 
 export async function getServerDownloadOptions(source: ServerDataSource) {
@@ -152,6 +294,22 @@ function parseGroup(value: unknown): ServerResourceGroup | null {
     const title = text(result.title)
     return token && title ? [{ token, title, subtitle: text(result.subtitle), sizeBytes: number(result.size_bytes), seeders: number(result.seeders), promotion: text(result.promotion), quality: text(result.quality), matchedName: text(result.matched_name) }] : []
   }) }
+}
+
+function parseProgress(value: Record<string, unknown>): ServerSearchProgress {
+  return {
+    total: number(value.total) ?? 0,
+    pending: number(value.pending) ?? 0,
+    running: number(value.running) ?? 0,
+    completed: number(value.completed) ?? 0,
+    succeeded: number(value.succeeded) ?? 0,
+    failed: number(value.failed) ?? 0,
+    resultCount: number(value.result_count) ?? 0,
+    siteId: number(value.site_id),
+    siteName: text(value.site_name),
+    siteStatus: text(value.site_status),
+    errorCode: text(value.error_code),
+  }
 }
 
 async function hydrateArtwork(source: ServerDataSource, works: ServerDiscoveryWork[], includeBackdrop: boolean) {
