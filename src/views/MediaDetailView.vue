@@ -5,6 +5,7 @@ import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import ImmersiveMediaRail from '@/components/media/ImmersiveMediaRail.vue'
 import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
@@ -929,6 +930,7 @@ function markTitleLogoFailed(url: string) {
     <template v-else-if="detail">
       <MediaDetailHero
         :title="detail.name"
+        :original-title="detail.originalTitle"
         :poster-url="detail.posterUrl"
         :backdrop-url="detail.backdropUrl"
         :title-logo-url="visibleTitleLogoUrl"
@@ -974,7 +976,7 @@ function markTitleLogoFailed(url: string) {
         </template>
       </MediaDetailHero>
 
-      <main class="detail-content mobile-nav-safe space-y-10 px-4 pb-14 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
+      <main class="detail-content mobile-nav-safe space-y-12 px-4 pb-16 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
         <div v-if="downloadFeedback" class="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-5 py-4 text-sm text-emerald-100">
           {{ downloadFeedback }}
         </div>
@@ -1238,89 +1240,120 @@ function markTitleLogoFailed(url: string) {
           </div>
         </Teleport>
 
-        <section v-if="!isSeriesDetail && (visibleMediaSources.length || audioTracks.length || subtitleTracks.length)" class="grid gap-5 lg:grid-cols-3">
-          <div v-if="visibleMediaSources.length" class="glass-panel rounded-[1.6rem] p-5">
-            <h2 class="text-base font-semibold">
-              版本
-            </h2>
-            <div class="mt-4 space-y-2">
-              <button
-                v-for="source in visibleMediaSources"
-                :key="source.id"
-                class="w-full rounded-2xl border px-4 py-3 text-left text-sm transition-colors"
-                :class="selectedMediaSourceId === source.id ? 'border-white/34 bg-white/14 text-white' : 'border-white/8 bg-white/5 text-white/62 hover:bg-white/10'"
-                @click="selectedMediaSourceId = source.id"
-              >
-                <span class="block font-medium">版本 {{ mediaSources.findIndex(candidate => candidate.id === source.id) + 1 }}</span>
-                <span class="mt-1 block text-xs text-white/42">{{ describeMediaSource(source) }}</span>
-              </button>
+        <section v-if="!isSeriesDetail && (visibleMediaSources.length || audioTracks.length || subtitleTracks.length)" class="detail-options-dock glass-panel">
+          <div class="detail-section-heading">
+            <div>
+              <p class="detail-section-eyebrow">
+                Playback
+              </p>
+              <h2>播放选项</h2>
+            </div>
+            <p>选择版本、音轨与字幕后开始播放</p>
+          </div>
+          <div class="detail-options-grid">
+            <div v-if="visibleMediaSources.length" class="detail-option-card">
+              <h2 class="text-base font-semibold">
+                版本
+              </h2>
+              <div class="mt-4 space-y-2">
+                <button
+                  v-for="source in visibleMediaSources"
+                  :key="source.id"
+                  class="w-full rounded-2xl border px-4 py-3 text-left text-sm transition-colors"
+                  :class="selectedMediaSourceId === source.id ? 'border-white/34 bg-white/14 text-white' : 'border-white/8 bg-white/5 text-white/62 hover:bg-white/10'"
+                  @click="selectedMediaSourceId = source.id"
+                >
+                  <span class="block font-medium">版本 {{ mediaSources.findIndex(candidate => candidate.id === source.id) + 1 }}</span>
+                  <span class="mt-1 block text-xs text-white/42">{{ describeMediaSource(source) }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="audioTracks.length" class="detail-option-card">
+              <h2 class="text-base font-semibold">
+                音轨
+              </h2>
+              <select v-model="selectedAudioIndex" class="mt-4 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none">
+                <option v-for="track in audioTracks" :key="track.index" :value="track.index">
+                  {{ trackLabel(track) }}
+                </option>
+              </select>
+            </div>
+
+            <div v-if="subtitleTracks.length" class="detail-option-card">
+              <h2 class="text-base font-semibold">
+                字幕
+              </h2>
+              <select v-model="selectedSubtitleIndex" class="mt-4 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none">
+                <option :value="null">
+                  不预选字幕
+                </option>
+                <option v-for="track in subtitleTracks" :key="track.index" :value="track.index">
+                  {{ trackLabel(track) }}
+                </option>
+              </select>
             </div>
           </div>
-
-          <div v-if="audioTracks.length" class="glass-panel rounded-[1.6rem] p-5">
-            <h2 class="text-base font-semibold">
-              音轨
-            </h2>
-            <select v-model="selectedAudioIndex" class="mt-4 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none">
-              <option v-for="track in audioTracks" :key="track.index" :value="track.index">
-                {{ trackLabel(track) }}
-              </option>
-            </select>
-          </div>
-
-          <div v-if="subtitleTracks.length" class="glass-panel rounded-[1.6rem] p-5">
-            <h2 class="text-base font-semibold">
-              字幕
-            </h2>
-            <select v-model="selectedSubtitleIndex" class="mt-4 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none">
-              <option :value="null">
-                不预选字幕
-              </option>
-              <option v-for="track in subtitleTracks" :key="track.index" :value="track.index">
-                {{ trackLabel(track) }}
-              </option>
-            </select>
-          </div>
         </section>
 
-        <section v-if="detail.stills?.length">
-          <h2 class="mb-4 text-xl font-bold">
-            剧照 / 截图
-          </h2>
-          <div class="flex gap-4 overflow-x-auto cinema-scrollbar">
-            <img v-for="still in detail.stills" :key="still" :src="still" :alt="detail.name" class="h-40 w-72 flex-shrink-0 rounded-3xl object-cover" loading="lazy" decoding="async">
+        <section v-if="detail.stills?.length" class="detail-artwork-section">
+          <div class="detail-section-heading">
+            <div>
+              <p class="detail-section-eyebrow">
+                Gallery
+              </p>
+              <h2>剧照与截图</h2>
+            </div>
+            <p>{{ detail.stills.length }} 张画面</p>
           </div>
+          <ImmersiveMediaRail label="剧照与截图">
+            <div class="stills-strip">
+              <figure v-for="(still, index) in detail.stills" :key="still" class="still-card">
+                <img :src="still" :alt="`${detail.name} 剧照 ${index + 1}`" loading="lazy" decoding="async">
+                <figcaption>{{ String(index + 1).padStart(2, '0') }}</figcaption>
+              </figure>
+            </div>
+          </ImmersiveMediaRail>
         </section>
 
-        <section class="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-          <div class="glass-panel min-w-0 rounded-[1.6rem] p-6">
-            <h2 class="text-xl font-bold">
-              演职员
-            </h2>
-            <div v-if="visiblePeople.length" class="people-strip cinema-scrollbar mt-4">
+        <section v-if="visiblePeople.length" class="detail-people-section">
+          <div class="detail-section-heading">
+            <div>
+              <p class="detail-section-eyebrow">
+                Cast & Crew
+              </p>
+              <h2>演职员</h2>
+            </div>
+            <p>{{ visiblePeople.length }} 位演职人员</p>
+          </div>
+          <ImmersiveMediaRail label="演职员">
+            <div class="people-strip">
               <article v-for="person in visiblePeople" :key="`${person.id || person.name}:${person.role || ''}:${person.character || ''}`" class="person-tile">
-                <div class="person-avatar">
+                <div class="person-portrait">
                   <img v-if="person.imageUrl" :src="person.imageUrl" :alt="`${person.name} 照片`" loading="lazy" decoding="async">
                   <span v-else>{{ person.name.slice(0, 1) }}</span>
+                  <div class="person-portrait-shade" />
                 </div>
                 <strong :title="person.name">{{ person.name }}</strong>
                 <small :title="personSubtitle(person.role, person.character)">{{ personSubtitle(person.role, person.character) }}</small>
               </article>
             </div>
-            <p v-else class="mt-4 text-sm leading-7 text-white/58">
-              暂无演职员信息。
+          </ImmersiveMediaRail>
+        </section>
+
+        <section v-if="mediaInfoRows.length" class="detail-metadata-strip glass-panel">
+          <div>
+            <p class="detail-section-eyebrow">
+              Technical
             </p>
+            <h2>媒体信息</h2>
           </div>
-          <div v-if="mediaInfoRows.length" class="glass-panel rounded-[1.6rem] p-6">
-            <h2 class="text-xl font-bold">
-              媒体信息
-            </h2>
-            <dl class="mt-4 space-y-2 text-sm text-white/58">
-              <div v-for="row in mediaInfoRows" :key="row[0]" class="flex justify-between gap-4">
-                <dt>{{ row[0] }}</dt><dd>{{ row[1] }}</dd>
-              </div>
-            </dl>
-          </div>
+          <dl>
+            <div v-for="row in mediaInfoRows" :key="row[0]">
+              <dt>{{ row[0] }}</dt>
+              <dd>{{ row[1] }}</dd>
+            </div>
+          </dl>
         </section>
 
         <section v-if="detail.collections?.length">
@@ -1345,13 +1378,224 @@ function markTitleLogoFailed(url: string) {
 .detail-played-state,.detail-played-toggle { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: .7rem 1rem; color: rgba(255,255,255,.68); background: rgba(255,255,255,.08); font-size: .75rem; font-weight: 700; }
 .detail-played-state.is-played { border-color: rgba(34,197,94,.42); color: #dcfce7; background: rgba(34,197,94,.18); }
 .detail-played-toggle:hover { background: rgba(255,255,255,.14); }
-.people-strip { display: grid; grid-auto-flow: column; grid-auto-columns: 7.25rem; gap: 1rem; overflow-x: auto; padding-bottom: .55rem; }
-.person-tile { min-width: 0; text-align: center; }
-.person-avatar { display: grid; width: 5.75rem; height: 5.75rem; margin: 0 auto .7rem; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(255,255,255,.07); color: rgba(255,255,255,.52); font-size: 1.35rem; }
-.person-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.person-tile strong,.person-tile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.person-tile strong { font-size: .82rem; }
-.person-tile small { margin-top: .22rem; color: rgba(255,255,255,.46); font-size: .7rem; }
+.detail-content {
+  position: relative;
+}
+
+.detail-section-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-bottom: 1.15rem;
+}
+
+.detail-section-heading h2,
+.detail-metadata-strip h2 {
+  margin-top: 0.25rem;
+  color: var(--color-text);
+  font-size: 1.35rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.detail-section-heading > p {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.detail-section-eyebrow {
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.detail-options-dock {
+  border-radius: 1.8rem;
+  padding: 1.35rem;
+  background: linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
+}
+
+.detail-options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 0.8rem;
+}
+
+.detail-option-card {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 1.2rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.stills-strip,
+.people-strip {
+  display: flex;
+  width: max-content;
+  max-width: none;
+  gap: 1rem;
+  padding: 0.25rem 0.25rem 0.9rem;
+}
+
+.still-card {
+  position: relative;
+  width: clamp(19rem, 24vw, 31rem);
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1.35rem;
+  background: var(--surface-soft);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.2);
+  scroll-snap-align: start;
+  transition: border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.still-card:hover {
+  border-color: var(--control-border-hover);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.32);
+  transform: translateY(-0.2rem);
+}
+
+.still-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  transition: transform 700ms var(--ease-out);
+}
+
+.still-card:hover img {
+  transform: scale(1.025);
+}
+
+.still-card figcaption {
+  position: absolute;
+  right: 0.8rem;
+  bottom: 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  color: rgba(255, 255, 255, 0.68);
+  background: rgba(0, 0, 0, 0.42);
+  font-size: 0.65rem;
+  font-weight: 700;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.people-strip {
+  gap: 0.85rem;
+}
+
+.person-tile {
+  width: clamp(8.5rem, 10vw, 11rem);
+  min-width: 0;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
+
+.person-portrait {
+  position: relative;
+  display: grid;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1.1rem;
+  color: rgba(255,255,255,.52);
+  background: radial-gradient(circle at 35% 20%, rgba(255,255,255,.13), rgba(255,255,255,.035) 58%);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
+  font-size: 1.7rem;
+  transition: border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.person-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 650ms var(--ease-out);
+}
+
+.person-portrait-shade {
+  position: absolute;
+  inset: 55% 0 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.46), transparent);
+}
+
+.person-tile:hover .person-portrait {
+  border-color: var(--control-border-hover);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.3);
+  transform: translateY(-0.18rem);
+}
+
+.person-tile:hover .person-portrait img {
+  transform: scale(1.035);
+}
+
+.person-tile strong,
+.person-tile small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.person-tile strong {
+  margin-top: 0.7rem;
+  color: var(--color-text);
+  font-size: 0.82rem;
+}
+
+.person-tile small {
+  margin-top: 0.22rem;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+}
+
+.detail-metadata-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  border-radius: 1.6rem;
+  padding: 1.25rem 1.4rem;
+  background: linear-gradient(110deg, rgba(255,255,255,.065), rgba(255,255,255,.02));
+}
+
+.detail-metadata-strip dl {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.65rem;
+}
+
+.detail-metadata-strip dl > div {
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+  padding-left: 1rem;
+}
+
+.detail-metadata-strip dt {
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.detail-metadata-strip dd {
+  overflow: hidden;
+  margin-top: 0.3rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .episode-search-trigger,
 .episode-search-close {
   display: inline-flex;
@@ -1540,6 +1784,15 @@ function markTitleLogoFailed(url: string) {
 .episode-season-strip button.is-selected {
   border-color: var(--control-border-hover);
   box-shadow: var(--glass-shadow);
+}
+
+.episode-season-strip {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.episode-season-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .episode-rail {
@@ -1731,6 +1984,62 @@ function markTitleLogoFailed(url: string) {
 
   .detail-content :deep(.glass-panel) {
     border-radius: 8px;
+  }
+
+  .detail-section-heading {
+    align-items: flex-start;
+    margin-bottom: 0.85rem;
+  }
+
+  .detail-section-heading > p {
+    display: none;
+  }
+
+  .detail-options-dock {
+    margin-inline: -1rem;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0 !important;
+    padding: 1rem;
+    box-shadow: none;
+  }
+
+  .detail-option-card {
+    border-radius: 8px;
+  }
+
+  .detail-artwork-section,
+  .detail-people-section {
+    margin-right: -1rem;
+  }
+
+  .stills-strip,
+  .people-strip {
+    padding-right: 1rem;
+    scroll-padding-inline: 0 1rem;
+  }
+
+  .still-card {
+    width: min(82vw, 23rem);
+    border-radius: 8px;
+  }
+
+  .person-tile {
+    width: 8.25rem;
+  }
+
+  .person-portrait {
+    border-radius: 8px;
+  }
+
+  .detail-metadata-strip {
+    display: block;
+    padding: 1rem;
+  }
+
+  .detail-metadata-strip dl {
+    margin-top: 1rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .is-mobile-episode-surface.is-horizontal .episode-card > div:last-child {

@@ -14,20 +14,20 @@ defineEmits<{ titleLogoError: [url: string] }>()
 
 <template>
   <section
-    class="detail-hero theme-immersive-dark relative min-h-[68vh] overflow-hidden bg-cover bg-center"
+    class="detail-hero theme-immersive-dark relative overflow-hidden bg-cover bg-center"
     :style="backdropUrl ? { backgroundImage: `url(${backdropUrl})` } : undefined"
   >
-    <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/94 via-black/62 to-black/20" />
-    <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-bg)] via-transparent to-black/40" />
-    <div class="detail-hero-content relative flex min-h-[68vh] items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
-      <div class="hidden w-56 flex-shrink-0 overflow-hidden rounded-[1.8rem] border border-white/12 bg-white/6 shadow-2xl md:block">
+    <div class="detail-hero-horizontal-shade pointer-events-none absolute inset-0" />
+    <div class="detail-hero-vertical-shade pointer-events-none absolute inset-0" />
+    <div class="detail-hero-content relative flex items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
+      <div class="detail-hero-poster hidden flex-shrink-0 overflow-hidden rounded-[1.55rem] border border-white/12 bg-white/6 shadow-2xl md:block">
         <img v-if="posterUrl" :src="posterUrl" :alt="title" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async">
         <div v-else class="flex aspect-[2/3] items-center justify-center p-6 text-center text-sm text-white/45">
           {{ title }}
         </div>
       </div>
 
-      <div class="max-w-4xl">
+      <div class="detail-hero-copy max-w-4xl">
         <p v-if="!titleLogoUrl" class="text-xs uppercase tracking-[0.28em] text-white/42">
           {{ eyebrow || 'OhMyCine Detail' }}
         </p>
@@ -61,6 +61,32 @@ defineEmits<{ titleLogoError: [url: string] }>()
 </template>
 
 <style scoped>
+.detail-hero,
+.detail-hero-content {
+  min-height: clamp(34rem, 58vh, 45rem);
+}
+
+.detail-hero {
+  background-position: center 28%;
+}
+
+.detail-hero-horizontal-shade {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.76) 34%, rgba(0, 0, 0, 0.28) 72%, rgba(0, 0, 0, 0.12) 100%);
+}
+
+.detail-hero-vertical-shade {
+  background: linear-gradient(0deg, var(--color-bg) 0%, rgba(5, 6, 10, 0.76) 9%, transparent 46%, rgba(0, 0, 0, 0.36) 100%);
+}
+
+.detail-hero-poster {
+  width: clamp(12rem, 14vw, 15rem);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.detail-hero-copy {
+  padding-bottom: 0.25rem;
+}
+
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   .detail-hero,
   .detail-hero-content {

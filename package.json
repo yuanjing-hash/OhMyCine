@@ -41,6 +41,7 @@
     "verify:server-datasource": "tsx scripts/verify-server-datasource.ts",
     "verify:server-online-library": "tsx scripts/verify-server-online-library.ts",
     "verify:server-library-navigation": "tsx scripts/verify-server-library-navigation.ts",
+    "verify:media-detail-immersive": "tsx scripts/verify-media-detail-immersive.ts",
     "verify:library-artwork": "tsx scripts/verify-library-artwork.ts",
     "verify:stream-quality": "tsx scripts/verify-stream-quality-switch.ts",
     "verify:view-architecture": "tsx scripts/verify-view-architecture.ts",
