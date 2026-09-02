@@ -6,6 +6,7 @@ import { useTheme } from '@/composables/useTheme'
 import { useLayoutContextActions } from '@/services/layoutContextActions'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
+import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDownloadStore } from '@/stores/downloads'
 import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
 
@@ -35,6 +36,7 @@ const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
 const { actions: contextActions } = useLayoutContextActions()
 const downloads = useDownloadStore()
+const acquisitions = useAcquisitionWorkspaceStore()
 const isTouchUi = window.matchMedia('(hover: none) and (pointer: coarse)').matches
 const isHovered = ref(isTouchUi)
 const isOpeningFile = ref(false)
@@ -133,6 +135,20 @@ function runContextAction(action: (typeof contextActions.value)[number]) {
             <path d="M10 2v10m0 0 4-4m-4 4L6 8M3 16h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
           <b v-if="downloads.activeCount" class="download-count">{{ downloads.activeCount > 99 ? '99+' : downloads.activeCount }}</b>
+        </button>
+
+        <button
+          v-if="!isPlayerRoute"
+          class="gp-btn relative flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
+          :class="{ 'is-active': acquisitions.open }"
+          title="Player 入库任务"
+          aria-label="Player 入库任务"
+          @click="acquisitions.toggle()"
+        >
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M3.5 6.5 10 3l6.5 3.5L10 10 3.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+            <path d="M3.5 10 10 13.5l6.5-3.5M3.5 13.5 10 17l6.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
         </button>
 
         <div class="gp-divider my-1 h-px w-6" />

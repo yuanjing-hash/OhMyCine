@@ -163,6 +163,24 @@ const audioTracks = computed(() => isPlayableDetail.value ? (detail.value?.audio
 const subtitleTracks = computed(() => isPlayableDetail.value ? (detail.value?.subtitles ?? []) : [])
 const runtimeLabel = computed(() => detail.value?.duration ? `${Math.round(detail.value.duration / 60)} 分钟` : '')
 const sourceLabel = computed(() => selectedMediaSource.value ? describeMediaSource(selectedMediaSource.value) : '默认版本')
+const acquisitionLabel = computed(() => {
+  const acquisition = detail.value?.acquisition
+  if (!acquisition)
+    return ''
+  if (acquisition.status === 'failed')
+    return '入库需要处理'
+  if (acquisition.status === 'queued')
+    return '等待执行'
+  return ({ download: '正在下载', organize: '正在整理', transfer: '正在传输', import: '正在刮削入库', subscription: '订阅等待中' } as Record<string, string>)[acquisition.stage] ?? acquisition.stage
+})
+const acquisitionProgress = computed(() => {
+  const acquisition = detail.value?.acquisition
+  if (!acquisition)
+    return undefined
+  if (acquisition.totalFiles)
+    return Math.min(100, Math.round((acquisition.processedFiles ?? 0) / acquisition.totalFiles * 100))
+  return acquisition.progress == null ? undefined : Math.min(100, Math.max(0, Math.round(acquisition.progress)))
+})
 const mediaInfoRows = computed(() => {
   const current = detail.value
   if (!current)
@@ -977,6 +995,25 @@ function markTitleLogoFailed(url: string) {
       </MediaDetailHero>
 
       <main class="detail-content mobile-nav-safe space-y-12 px-4 pb-16 md:px-6 md:pl-24 lg:px-12 lg:pl-28">
+        <section v-if="detail.acquisition" class="glass-panel flex flex-wrap items-center gap-4 rounded-[1.75rem] border border-white/10 bg-white/[.045] px-5 py-4 shadow-2xl">
+          <span class="h-3 w-3 shrink-0 rounded-full" :class="detail.acquisition.status === 'failed' ? 'bg-red-400 shadow-[0_0_0_6px_rgba(248,113,113,.12)]' : 'bg-emerald-300 shadow-[0_0_0_6px_rgba(110,231,183,.12)]'" />
+          <div class="min-w-0 flex-1">
+            <p class="text-[11px] font-bold tracking-[.18em] text-white/38 uppercase">
+              Server 入库状态
+            </p>
+            <h2 class="mt-1 text-sm font-semibold text-white/88">
+              {{ acquisitionLabel }}
+            </h2>
+            <p class="mt-1 text-xs text-white/42">
+              {{ detail.acquisition.totalFiles ? `${detail.acquisition.processedFiles ?? 0} / ${detail.acquisition.totalFiles} 个文件` : acquisitionProgress != null ? `${acquisitionProgress}%` : detail.acquisition.status }}<template v-if="detail.acquisition.lastErrorCode">
+                · {{ detail.acquisition.lastErrorCode }}
+              </template>
+            </p>
+          </div>
+          <div v-if="acquisitionProgress != null" class="h-1.5 w-40 overflow-hidden rounded-full bg-white/8">
+            <div class="h-full rounded-full bg-white/80 transition-[width]" :style="{ width: `${acquisitionProgress}%` }" />
+          </div>
+        </section>
         <div v-if="downloadFeedback" class="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-5 py-4 text-sm text-emerald-100">
           {{ downloadFeedback }}
         </div>

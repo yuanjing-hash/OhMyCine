@@ -12,6 +12,9 @@ Apply this contract when changing Player global search, `ServerDataSource`, Serv
 - Local and Server discovery details share the same media hero/detail component. Local actions remain play/history/download; Server actions are search, direct search, acquisition, and subscription.
 - Server workflow is progressive: method, sites, resources, target/options, confirmation. Site selection supports explicit all/none and failed-site retry.
 - Coverage and acquisition status load independently from the detail shell; either may fail without blanking the page.
+- The right floating controls expose a “Player 入库任务” workspace. It aggregates only the signed-in user's visible acquisitions from connected Servers, refreshes active rows, identifies their Server origin, and reports unsupported/unauthorized Servers separately from an empty result.
+- A Server media library with active acquisitions exposes a leading virtual “正在入库” category. Its poster placeholders reuse TMDB display metadata and acquisition progress but never advertise playback until a real playable library item replaces them.
+- Detail navigation preserves its explicit origin: global search reopens the search workspace, the acquisition panel reopens that panel, and an originless deep link returns home.
 
 ## Native SSE boundary
 

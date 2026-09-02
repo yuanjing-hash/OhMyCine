@@ -39,6 +39,18 @@ export interface MediaItem {
   /** Alternate provider routes retained when aggregate cards are merged. */
   playbackTargets?: MediaPlaybackTarget[]
   siteActions?: readonly SiteActionDescriptor[]
+  /** Server-owned, credential-free progress for a work that is still entering a media library. */
+  acquisition?: MediaAcquisitionState
+}
+
+export interface MediaAcquisitionState {
+  stage: string
+  status: string
+  processedFiles?: number
+  totalFiles?: number
+  progress?: number
+  lastErrorCode?: string
+  updatedAt?: string
 }
 
 export type SiteActionKey

@@ -48,6 +48,9 @@ export interface ServerResourceGroup {
   siteType: string
   status: string
   errorCode?: string
+  page: number
+  hasNext: boolean
+  skipped: number
   items: ServerResourceItem[]
 }
 export interface ServerDownloadOption { id: string, name: string, type?: string }
@@ -56,6 +59,7 @@ export interface ServerProfileOption { id: number, name: string }
 export interface ServerCoverageSummary { status: string, present: number, missing: number, total: number }
 export interface ServerAcquisitionStatus {
   id?: string
+  title?: string
   mediaType: 'movie' | 'tv'
   tmdbId: number
   stage: string
@@ -63,9 +67,19 @@ export interface ServerAcquisitionStatus {
   downloadTaskId?: string
   followSubscriptionId?: string
   targetLibraryId?: number
+  transferTaskId?: string
+  progress?: number
+  bytesCompleted?: number
+  bytesTotal?: number
+  downloadSpeed?: number
+  etaSeconds?: number
+  processedFiles: number
+  totalFiles: number
   lastErrorCode?: string
   revision: number
+  updatedAt?: string
 }
+export interface ServerAcquisitionPage { list: ServerAcquisitionStatus[], total: number, page: number, pageSize: number }
 export interface ServerFollowSnapshot {
   version: number
   seasons: number[]
@@ -103,7 +117,7 @@ export type ServerResourceStreamEvent
     | { type: 'done', progress: ServerSearchProgress }
     | { type: 'error', code?: string, message: string }
 
-export interface ServerResourceSearchInput { mediaType: 'movie' | 'tv', tmdbId?: number, title?: string, direct?: boolean, siteIds: number[] }
+export interface ServerResourceSearchInput { mediaType: 'movie' | 'tv', tmdbId?: number, title?: string, direct?: boolean, siteIds: number[], page?: number }
 
 export async function searchServerDiscovery(source: ServerDataSource, query: string, mediaType: 'all' | 'movie' | 'tv' = 'all'): Promise<ServerDiscoveryWork[]> {
   const data = record(await source.searchDiscoveryMedia(query, mediaType))
@@ -154,7 +168,17 @@ export async function getServerCoverage(source: ServerDataSource, mediaType: 'mo
 
 export async function getServerAcquisition(source: ServerDataSource, mediaType: 'movie' | 'tv', tmdbId: number): Promise<ServerAcquisitionStatus> {
   const data = record(await source.getDiscoveryAcquisition(mediaType, tmdbId))
-  return { id: text(data.id), mediaType: data.media_type === 'tv' ? 'tv' : 'movie', tmdbId: number(data.tmdb_id) ?? tmdbId, stage: text(data.stage) ?? 'idle', status: text(data.status) ?? 'idle', downloadTaskId: text(data.download_task_id), followSubscriptionId: text(data.follow_subscription_id), targetLibraryId: number(data.target_library_id), lastErrorCode: text(data.last_error_code), revision: number(data.revision) ?? 0 }
+  return parseAcquisition(data, mediaType, tmdbId)
+}
+
+export async function getServerAcquisitions(source: ServerDataSource, page = 1, pageSize = 30): Promise<ServerAcquisitionPage> {
+  const data = record(await source.getDiscoveryAcquisitions(page, pageSize))
+  return {
+    list: array(data.list).map(value => parseAcquisition(record(value))).filter(item => Boolean(item.id)),
+    total: number(data.total) ?? 0,
+    page: number(data.page) ?? page,
+    pageSize: number(data.page_size) ?? pageSize,
+  }
 }
 
 export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: number): Promise<ServerFollowDefaults> {
@@ -224,7 +248,7 @@ export async function streamServerResources(source: ServerDataSource, input: Ser
 }
 
 function resourceSearchPath(input: ServerResourceSearchInput, stream: boolean): string {
-  const params = new URLSearchParams({ page: '1' })
+  const params = new URLSearchParams({ page: String(input.page ?? 1) })
   for (const id of input.siteIds)
     params.append('site_ids', String(id))
   let path: string
@@ -288,12 +312,37 @@ function parseGroup(value: unknown): ServerResourceGroup | null {
   const siteName = text(item.site_name)
   if (!siteId || !siteName)
     return null
-  return { siteId, siteName, siteType: text(item.site_type) ?? '', status: text(item.status) ?? 'error', errorCode: text(item.error_code), items: array(item.items).flatMap((raw): ServerResourceItem[] => {
+  return { siteId, siteName, siteType: text(item.site_type) ?? '', status: text(item.status) ?? 'error', errorCode: text(item.error_code), page: number(item.page) ?? 1, hasNext: item.has_next === true, skipped: number(item.skipped) ?? 0, items: array(item.items).flatMap((raw): ServerResourceItem[] => {
     const result = record(raw)
     const token = text(result.token)
     const title = text(result.title)
     return token && title ? [{ token, title, subtitle: text(result.subtitle), sizeBytes: number(result.size_bytes), seeders: number(result.seeders), promotion: text(result.promotion), quality: text(result.quality), matchedName: text(result.matched_name) }] : []
   }) }
+}
+
+function parseAcquisition(data: Record<string, unknown>, fallbackMediaType: 'movie' | 'tv' = 'movie', fallbackTMDBId = 0): ServerAcquisitionStatus {
+  return {
+    id: text(data.id),
+    title: text(data.title),
+    mediaType: data.media_type === 'tv' ? 'tv' : fallbackMediaType,
+    tmdbId: number(data.tmdb_id) ?? fallbackTMDBId,
+    stage: text(data.stage) ?? 'idle',
+    status: text(data.status) ?? 'idle',
+    downloadTaskId: text(data.download_task_id),
+    followSubscriptionId: text(data.follow_subscription_id),
+    targetLibraryId: number(data.target_library_id),
+    transferTaskId: text(data.transfer_task_id),
+    progress: number(data.progress),
+    bytesCompleted: number(data.bytes_completed),
+    bytesTotal: number(data.bytes_total),
+    downloadSpeed: number(data.download_speed),
+    etaSeconds: number(data.eta_seconds),
+    processedFiles: number(data.processed_files) ?? 0,
+    totalFiles: number(data.total_files) ?? 0,
+    lastErrorCode: text(data.last_error_code),
+    revision: number(data.revision) ?? 0,
+    updatedAt: text(data.updated_at),
+  }
 }
 
 function parseProgress(value: Record<string, unknown>): ServerSearchProgress {

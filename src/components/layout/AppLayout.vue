@@ -4,6 +4,7 @@ import type { PlayerShortcutBindings } from '@/services/playerShortcuts'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GlobalSearchWorkspace from '@/components/media/GlobalSearchWorkspace.vue'
+import ServerAcquisitionWorkspace from '@/components/server/ServerAcquisitionWorkspace.vue'
 import { APP_SCROLL_TO_TOP_EVENT } from '@/services/appScroll'
 import { loadNavigationShortcutBindings, NAVIGATION_SHORTCUTS_CHANGED_EVENT, navigationShortcutTargetForEvent, shouldIgnoreNavigationShortcut } from '@/services/navigationShortcuts'
 import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShortcutTargetForEvent } from '@/services/playerShortcuts'
@@ -149,6 +150,7 @@ watch(() => route.fullPath, scrollContentToTop, { flush: 'post' })
     <FloatingControls v-if="!isNativeAndroid" />
 
     <GlobalSearchWorkspace v-if="!isPlayerRoute" />
+    <ServerAcquisitionWorkspace v-if="!isPlayerRoute" />
   </div>
 </template>
 

@@ -345,7 +345,12 @@ function openItem(item: MediaItem) {
 
 function openDiscoveryItem(item: { sourceId: string, work: ServerDiscoveryWork }) {
   workspace.hide()
-  void router.push({ name: 'server-discovery-detail', params: { sourceId: item.sourceId, provider: item.work.provider, mediaType: item.work.mediaType, providerId: item.work.providerId } })
+  const returnTo = route.name === 'server-discovery-detail' ? '/' : route.fullPath
+  void router.push({
+    name: 'server-discovery-detail',
+    params: { sourceId: item.sourceId, provider: item.work.provider, mediaType: item.work.mediaType, providerId: item.work.providerId },
+    query: { origin: 'global-search', return_to: returnTo },
+  })
 }
 
 async function playItem(item: MediaItem) {

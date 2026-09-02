@@ -6,6 +6,7 @@ import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrusted
 import { forgetPlaybackTargetsForSource, mergeMediaItemsByIdentity, prunePlaybackTargets, rememberPlaybackTargetsForItems } from '../src/services/datasource/identityMerge.ts'
 import { describeMediaSource } from '../src/services/datasource/mediaSourceDisplay.ts'
 import { loginServerAndCreateConfig, logoutServerBestEffort, ServerDataSource } from '../src/services/datasource/server.ts'
+import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
 const calls: Array<{ path: string, accessToken?: string, method?: string, body?: unknown }> = []
@@ -13,7 +14,11 @@ const bridge = {
   async request(request: { path: string, accessToken?: string, method?: string, body?: unknown }) {
     calls.push({ path: request.path, accessToken: request.accessToken, method: request.method, body: request.body })
     const page = Number(new URL(`http://player.test${request.path}`).searchParams.get('page') ?? '1')
-    const data = request.path === '/api/v1/player/bootstrap'
+    const data = request.path === '/api/v1/player/discovery/acquisitions?page=2&page_size=12'
+      ? { list: [{ id: 'acquisition-1', title: '七武士', media_type: 'movie', tmdb_id: 346, stage: 'download', status: 'running', progress: 62.5, bytes_completed: 625, bytes_total: 1000, download_speed: 100, eta_seconds: 4, processed_files: 1, total_files: 2, revision: 3, updated_at: '2026-09-02T00:00:00Z' }], total: 13, page: 2, page_size: 12 }
+      : request.path.startsWith('/api/v1/player/discovery/torrent-search?')
+        ? { groups: [{ site_id: 7, site_name: 'Nyaa', site_type: 'bt', status: 'success', page: 2, has_next: true, skipped: 4, items: [{ token: 'opaque-result-token', title: 'Seven Samurai' }] }] }
+        : request.path === '/api/v1/player/bootstrap'
       ? { capabilities: ['media_catalog', 'direct_stream'] }
       : request.path === '/api/v1/player/media-libraries'
         ? { list: [
@@ -69,6 +74,27 @@ assert.equal(await source.test(), true)
 assert.deepEqual(source.capabilityCodes, ['direct_stream', 'media_catalog'])
 assert.equal(source.hasCapability('media_catalog'), true)
 assert.equal(source.hasCapability('discovery_search'), false)
+const acquisitionPage = await getServerAcquisitions(source, 2, 12)
+assert.deepEqual(acquisitionPage, {
+  list: [{ id: 'acquisition-1', title: '七武士', mediaType: 'movie', tmdbId: 346, stage: 'download', status: 'running', progress: 62.5, bytesCompleted: 625, bytesTotal: 1000, downloadSpeed: 100, etaSeconds: 4, processedFiles: 1, totalFiles: 2, revision: 3, updatedAt: '2026-09-02T00:00:00Z', downloadTaskId: undefined, followSubscriptionId: undefined, targetLibraryId: undefined, transferTaskId: undefined, lastErrorCode: undefined }],
+  total: 13,
+  page: 2,
+  pageSize: 12,
+})
+const resourceGroups = await searchServerResources(source, { mediaType: 'movie', title: 'Seven Samurai', direct: true, siteIds: [7], page: 2 })
+assert.equal(resourceGroups[0]?.page, 2)
+assert.equal(resourceGroups[0]?.hasNext, true)
+assert.equal(resourceGroups[0]?.skipped, 4)
+await source.createDiscoveryDownload({ result_token: 'opaque-result-token', downloader_id: 'downloader-1', media_library_id: 9, profile_id: 2, priority: 0, expected_tmdb_id: 346, expected_media_type: 'movie' })
+assert.deepEqual(calls.find(call => call.path === '/api/v1/player/discovery/downloads')?.body, {
+  result_token: 'opaque-result-token',
+  downloader_id: 'downloader-1',
+  media_library_id: 9,
+  profile_id: 2,
+  priority: 0,
+  expected_tmdb_id: 346,
+  expected_media_type: 'movie',
+})
 const libraries = await source.listLibraries()
 assert.deepEqual(libraries.map(item => [item.id, item.sourceId, item.name]), [
   ['9', 'server-home', '115 电影'],
@@ -99,6 +125,35 @@ assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '�
 assert.equal(categories[0].posterUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 assert.equal(categories[0].artworkRevision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(categories[0].artworkSource, 'generated')
+
+const acquisitionCatalogSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      const acquisition = { id: 'active-acquisition', title: 'Seven Samurai release', media_type: 'movie', tmdb_id: 346, stage: 'download', status: 'running', target_library_id: 9, progress: 25, processed_files: 0, total_files: 0, revision: 1, updated_at: '2026-09-02T00:00:00Z' }
+      if (request.path === '/api/v1/player/media-libraries/9/categories')
+        return { status: 200, body: { code: 0, message: 'success', data: { list: [], total: 0 } } }
+      if (request.path.startsWith('/api/v1/player/discovery/acquisitions?'))
+        return { status: 200, body: { code: 0, message: 'success', data: { list: [acquisition], total: 1, page: 1, page_size: 100 } } }
+      if (request.path === '/api/v1/player/discovery/details/tmdb/movie/346')
+        return { status: 200, body: { code: 0, message: 'success', data: { work: { provider: 'tmdb', provider_id: '346', media_type: 'movie', title: '七武士', tmdb_id: 346 }, genres: [], directors: [], cast: [] } } }
+      if (request.path === '/api/v1/player/discovery/media/movie/346/acquisition')
+        return { status: 200, body: { code: 0, message: 'success', data: acquisition } }
+      return { status: 404, body: { code: 'NOT_FOUND', message: 'not found', data: {} } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await acquisitionCatalogSource.init({ id: 'server-acquisition-catalog', type: 'server', name: '入库占位测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'acquisition-catalog-credential', deviceId: 'acquisition-catalog-device' } })
+const acquisitionCategories = await acquisitionCatalogSource.list('9')
+assert.deepEqual(acquisitionCategories.map(item => [item.type, item.name]), [['folder', '正在入库']])
+const acquisitionItems = await acquisitionCatalogSource.list(acquisitionCategories[0].id)
+assert.deepEqual(acquisitionItems.map(item => [item.name, item.type, item.acquisition?.progress]), [['Seven Samurai release', 'movie', 25]])
+const acquisitionDetail = await acquisitionCatalogSource.getDetail(acquisitionItems[0].id)
+assert.equal(acquisitionDetail.name, '七武士')
+assert.equal(acquisitionDetail.acquisition?.stage, 'download')
+assert.deepEqual(acquisitionDetail.mediaSources, [])
+acquisitionCatalogSource.destroy()
+
 const items = await source.list(categories[0].id)
 assert.equal(items.length, 101)
 assert.equal(calls.filter(call => call.path.startsWith('/api/v1/player/media-libraries/9/catalog?')).length, 2)
@@ -474,6 +529,10 @@ console.log(JSON.stringify({
   durableServerMediaChangePolling: true,
   stableServerDeviceId: true,
   deviceTokenRevocation: true,
+  ownerScopedAcquisitionContract: true,
+  expectedIdentitySubmission: true,
+  perSiteResultPagination: true,
+  acquisitionPlaceholderCategory: true,
 }, null, 2))
 
 function mediaItem(index = 0) {

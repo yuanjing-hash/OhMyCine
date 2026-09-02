@@ -1,8 +1,9 @@
 import type { ServerCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
+import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
+import { getServerAcquisition, getServerDiscoveryDetail } from '@/services/serverDiscovery'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
@@ -144,6 +145,21 @@ interface ServerDetailRecord {
   versions: ServerVersionRecord[]
 }
 
+interface ServerAcquisitionRecord {
+  id: string
+  title?: string
+  mediaType: 'movie' | 'tv'
+  tmdbId: number
+  stage: string
+  status: string
+  targetLibraryId?: number
+  progress?: number
+  processedFiles: number
+  totalFiles: number
+  lastErrorCode?: string
+  updatedAt?: string
+}
+
 interface ServerMediaChangePage {
   cursor: string
   resyncRequired: boolean
@@ -282,6 +298,11 @@ export class ServerDataSource implements DataSource {
     return this.request(`/api/v1/player/discovery/media/${mediaType}/${tmdbId}/acquisition`)
   }
 
+  async getDiscoveryAcquisitions(page = 1, pageSize = 30): Promise<unknown> {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+    return this.request(`/api/v1/player/discovery/acquisitions?${params}`)
+  }
+
   async searchDiscoveryResources(path: string): Promise<unknown> {
     if (!path.startsWith('/api/v1/player/discovery/torrent-search?') && !/^\/api\/v1\/player\/discovery\/media\/(?:movie|tv)\/\d+\/torrent-search\?/.test(path))
       throw new Error('Server 资源搜索路径无效。')
@@ -322,7 +343,7 @@ export class ServerDataSource implements DataSource {
     return { downloaders, libraries, profiles }
   }
 
-  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id: number, priority: number }): Promise<unknown> {
+  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv' }): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
   }
 
@@ -411,8 +432,19 @@ export class ServerDataSource implements DataSource {
       const work = await this.onlineWork(online.libraryId, online.workId)
       return onlineWorkToDetail(this.id, online.libraryId, work).children ?? []
     }
-    if (/^\d+$/.test(value))
-      return (await this.categories(value)).map(category => this.mapCategory(value, category))
+    if (/^\d+$/.test(value)) {
+      const [categories, acquisitions] = await Promise.all([
+        this.categories(value),
+        this.acquisitionItems(value).catch(() => []),
+      ])
+      const result = categories.map(category => this.mapCategory(value, category))
+      if (acquisitions.length)
+        result.unshift(this.mapAcquisitionCategory(value, acquisitions.length))
+      return result
+    }
+    const acquisitionCategory = parseServerAcquisitionCategoryID(value)
+    if (acquisitionCategory)
+      return this.acquisitionItems(acquisitionCategory.libraryId)
     const category = parseServerCategoryID(value)
     if (category)
       return (await this.catalog(category.libraryId, category.name, category.mediaType)).map(item => this.mapItem(item))
@@ -534,6 +566,38 @@ export class ServerDataSource implements DataSource {
     const online = parseOnlineItemID(id)
     if (online?.kind === 'work' || online?.kind === 'version')
       return onlineWorkToDetail(this.id, online.libraryId, await this.onlineWork(online.libraryId, online.workId))
+    const acquisition = parseServerAcquisitionItemID(id)
+    if (acquisition) {
+      const [detail, status] = await Promise.all([
+        getServerDiscoveryDetail(this, 'tmdb', acquisition.mediaType, String(acquisition.tmdbId)),
+        getServerAcquisition(this, acquisition.mediaType, acquisition.tmdbId),
+      ])
+      return {
+        id,
+        sourceId: this.id,
+        originType: 'server',
+        libraryId: acquisition.libraryId,
+        name: detail.work.title,
+        originalTitle: detail.work.originalTitle,
+        type: acquisition.mediaType === 'tv' ? 'series' : 'movie',
+        posterUrl: detail.work.posterUrl,
+        backdropUrl: detail.work.backdropUrl,
+        year: detail.work.year,
+        rating: detail.work.rating,
+        overview: detail.work.overview,
+        tagline: detail.tagline,
+        duration: detail.runtimeMinutes ? detail.runtimeMinutes * 60 : undefined,
+        genres: detail.genres,
+        directors: detail.directors,
+        cast: detail.cast,
+        tmdbId: acquisition.tmdbId,
+        path: '',
+        workIdentity: { scheme: 'tmdb', mediaType: acquisition.mediaType === 'tv' ? 'series' : 'movie', value: String(acquisition.tmdbId) },
+        acquisition: acquisitionState(status),
+        mediaSources: [],
+        children: [],
+      }
+    }
     const work = parseWorkItemID(id)
     if (!work)
       throw new Error('Server 媒体标识无效。')
@@ -797,6 +861,52 @@ export class ServerDataSource implements DataSource {
       artworkSource: category.artwork_source,
       path: '',
     }
+  }
+
+  private mapAcquisitionCategory(libraryID: string, count: number): MediaItem {
+    return {
+      id: createServerAcquisitionCategoryID(libraryID),
+      sourceId: this.id,
+      originType: 'server',
+      libraryId: libraryID,
+      name: '正在入库',
+      type: 'folder',
+      overview: `${count} 个任务正在下载、整理或等待处理`,
+      artworkSource: 'fallback',
+      path: '',
+    }
+  }
+
+  private async acquisitionItems(libraryID: string): Promise<MediaItem[]> {
+    const numericLibraryID = Number.parseInt(libraryID, 10)
+    if (!Number.isSafeInteger(numericLibraryID) || numericLibraryID <= 0)
+      return []
+    const records = new Map<string, ServerAcquisitionRecord>()
+    for (let page = 1; page <= 4; page++) {
+      const data = recordData(await this.getDiscoveryAcquisitions(page, 100))
+      const list = arrayRecords(data.list).map(parseAcquisitionRecord).filter((item): item is ServerAcquisitionRecord => item != null)
+      for (const item of list) {
+        if (item.targetLibraryId === numericLibraryID && !isTerminalAcquisitionRecord(item))
+          records.set(`${item.mediaType}:${item.tmdbId}`, item)
+      }
+      const total = numberValue(data.total) ?? list.length
+      if (page * 100 >= total || list.length < 100)
+        break
+    }
+    return [...records.values()]
+      .sort((left, right) => (Date.parse(right.updatedAt ?? '') || 0) - (Date.parse(left.updatedAt ?? '') || 0))
+      .map(item => ({
+        id: createServerAcquisitionItemID(libraryID, item.mediaType, item.tmdbId),
+        sourceId: this.id,
+        originType: 'server' as const,
+        libraryId: libraryID,
+        name: item.title || `TMDB ${item.tmdbId}`,
+        type: item.mediaType === 'tv' ? 'series' as const : 'movie' as const,
+        modified: item.updatedAt,
+        path: '',
+        workIdentity: { scheme: 'tmdb' as const, mediaType: item.mediaType === 'tv' ? 'series' as const : 'movie' as const, value: String(item.tmdbId) },
+        acquisition: acquisitionState(item),
+      }))
   }
 
   private async pagedItems(path: string): Promise<ServerItemRecord[]> {
@@ -1240,6 +1350,43 @@ function createServerCategoryID(libraryId: string, mediaType: 'movie' | 'series'
   return ['server-category', libraryId, mediaType, name].map((value, index) => index === 0 ? value : encodeURIComponent(value)).join('|')
 }
 
+function createServerAcquisitionCategoryID(libraryId: string): string {
+  return `server-acquisition-category|${encodeURIComponent(libraryId)}`
+}
+
+function parseServerAcquisitionCategoryID(value: string): { libraryId: string } | null {
+  const [kind, rawLibraryId, ...rest] = value.split('|')
+  if (kind !== 'server-acquisition-category' || !rawLibraryId || rest.length > 0)
+    return null
+  try {
+    const libraryId = decodeURIComponent(rawLibraryId)
+    return /^\d+$/.test(libraryId) ? { libraryId } : null
+  }
+  catch {
+    return null
+  }
+}
+
+function createServerAcquisitionItemID(libraryId: string, mediaType: 'movie' | 'tv', tmdbId: number): string {
+  return `server-acquisition|${encodeURIComponent(libraryId)}|${mediaType}|${tmdbId}`
+}
+
+function parseServerAcquisitionItemID(value: string): { libraryId: string, mediaType: 'movie' | 'tv', tmdbId: number } | null {
+  const [kind, rawLibraryId, rawMediaType, rawTMDBId, ...rest] = value.split('|')
+  if (kind !== 'server-acquisition' || !rawLibraryId || (rawMediaType !== 'movie' && rawMediaType !== 'tv') || !rawTMDBId || rest.length > 0)
+    return null
+  try {
+    const libraryId = decodeURIComponent(rawLibraryId)
+    const tmdbId = Number.parseInt(rawTMDBId, 10)
+    return /^\d+$/.test(libraryId) && /^\d+$/.test(rawTMDBId) && Number.isSafeInteger(tmdbId) && tmdbId > 0
+      ? { libraryId, mediaType: rawMediaType, tmdbId }
+      : null
+  }
+  catch {
+    return null
+  }
+}
+
 function parseServerCategoryID(value: string): { libraryId: string, mediaType: 'movie' | 'series', name: string } | null {
   const [kind, rawLibraryId, rawMediaType, rawName, ...rest] = value.split('|')
   if (kind !== 'server-category' || !rawLibraryId || !rawMediaType || !rawName || rest.length > 0)
@@ -1294,6 +1441,46 @@ function parseItem(value: unknown): ServerItemRecord | null {
     episode_count: numberValue(value.episode_count) ?? 0,
     modified_at: optionalString(value.modified_at) ?? '',
     match_status: optionalString(value.match_status) ?? '',
+  }
+}
+
+function parseAcquisitionRecord(value: unknown): ServerAcquisitionRecord | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim() || (value.media_type !== 'movie' && value.media_type !== 'tv'))
+    return null
+  const tmdbId = numberValue(value.tmdb_id)
+  const stage = optionalString(value.stage)
+  const status = optionalString(value.status)
+  if (!tmdbId || !Number.isSafeInteger(tmdbId) || !stage || !status)
+    return null
+  return {
+    id: value.id,
+    title: optionalString(value.title),
+    mediaType: value.media_type,
+    tmdbId,
+    stage,
+    status,
+    targetLibraryId: numberValue(value.target_library_id),
+    progress: numberValue(value.progress),
+    processedFiles: numberValue(value.processed_files) ?? 0,
+    totalFiles: numberValue(value.total_files) ?? 0,
+    lastErrorCode: optionalString(value.last_error_code),
+    updatedAt: optionalString(value.updated_at),
+  }
+}
+
+function isTerminalAcquisitionRecord(value: ServerAcquisitionRecord): boolean {
+  return value.stage === 'idle' || value.stage === 'library' || ['completed', 'cancelled', 'canceled'].includes(value.status)
+}
+
+function acquisitionState(value: { stage: string, status: string, progress?: number, processedFiles: number, totalFiles: number, lastErrorCode?: string, updatedAt?: string }): MediaAcquisitionState {
+  return {
+    stage: value.stage,
+    status: value.status,
+    progress: value.progress,
+    processedFiles: value.processedFiles,
+    totalFiles: value.totalFiles,
+    lastErrorCode: value.lastErrorCode,
+    updatedAt: value.updatedAt,
   }
 }
 
