@@ -45,6 +45,8 @@ Home aggregation must isolate external failures at the source/section level. A f
 
 Home and source-root navigation use process-memory session snapshots with a short TTL. A route revisit must render the last successful snapshot immediately instead of clearing refs and showing first-load UI again; expired snapshots stay visible while refresh runs in the background. These snapshots may contain display metadata only and must never persist credentials, authorization headers, raw stream URLs, signed URLs, or local absolute paths. Config changes, source removal, manual cache clearing, and explicit progress refreshes must invalidate the relevant snapshot.
 
+Source-library drill-down state uses an opaque, process-memory browse context when navigation leaves the source route for a media detail or playback route. The source history entry is updated with `replace` and only the opaque context identifier may appear in the URL; provider node identifiers can be local or remote paths and must remain out of route/query persistence. Media detail navigation remains a normal `push`, so shared browser/window back navigation restores the selected library, nested breadcrumb or scanned category, current list, and scroll position. Restore must verify source ownership and current library/category existence, and safely fall back to the source landing page when a context is missing, stale, invalid, or no longer loadable.
+
 ### Raw Source Auto Indexing Contract
 
 #### 1. Scope / Trigger

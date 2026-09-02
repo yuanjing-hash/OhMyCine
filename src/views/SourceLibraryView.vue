@@ -20,6 +20,7 @@ import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playba
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { applyRawManualArtworkOverride, applyRawManualIdentification, categoryNameForRawCandidate, createEffectiveRawScrapeItemMap, createRawSeriesGroupingKey, enrichRawScrapedItemsEpisodeMetadata, loadRawSourceScanCache, loadTmdbLocalSettings, RAW_UNRESOLVED_CATEGORY_NAME, rawSourceIndexScheduler, readConfiguredTmdbCredential, readRawSourceRootPath, saveRawSourceScanCache, TmdbScraper, toRawScannedMediaItem } from '@/services/scraper'
 import { SERVER_LIBRARY_REFRESH_EVENT } from '@/services/serverMediaChanges'
+import { loadSourceBrowseContext, saveSourceBrowseContext, sourceBrowseContextIdFromQuery } from '@/services/sourceBrowseContext'
 import { compareHeroScannedItems, compareScannedCategories, createScannedCategory, domainForScannedEntry, findVisibleHomeSection, formatRawIndexStatus, formatRawIndexTime, isContainerItem, labelForSourceType, metadataForCandidate, playableItemsFromWorks } from '@/services/sourceLibraryScannedMedia'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -97,6 +98,8 @@ let identificationSearchRequestId = 0
 let rawIndexGeneration = 0
 let sourceRootLoadGeneration = 0
 let serverViewRefreshGeneration = 0
+let activeSourceBrowseContextId: string | null = null
+let isRestoringSourceBrowseContext = false
 const isApplyingServerUpdate = ref(false)
 const observedServerUpdateVersion = ref(0)
 
@@ -387,6 +390,7 @@ onMounted(async () => {
   await prepareRawSourceIndex()
   if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
+  await restoreSourceBrowseContext()
 })
 
 onBeforeUnmount(() => {
@@ -487,6 +491,8 @@ watch(sourceId, async () => {
   rawIndexGeneration += 1
   sourceRootLoadGeneration += 1
   serverViewRefreshGeneration += 1
+  activeSourceBrowseContextId = null
+  isRestoringSourceBrowseContext = false
   isApplyingServerUpdate.value = false
   isLoading.value = false
   selectedLibrary.value = null
@@ -507,6 +513,7 @@ watch(sourceId, async () => {
   await prepareRawSourceIndex()
   if (isFolderView.value || isRawFileSource.value)
     await loadSourceRoot()
+  await restoreSourceBrowseContext()
 })
 
 function registerCurrentMaintenanceHandler() {
@@ -606,6 +613,115 @@ function applySourceRootSnapshot(snapshot: { libraries: MediaLibrary[], homeSect
   continueItems.value = findVisibleHomeSection(snapshot.homeSections, 'continueWatching')?.items ?? []
 }
 
+async function persistSourceBrowseContext(options: { captureScroll?: boolean } = {}) {
+  if (isRestoringSourceBrowseContext || route.name !== 'source')
+    return
+
+  const contextId = saveSourceBrowseContext({
+    sourceId: sourceId.value,
+    viewMode: activeViewMode.value,
+    selectedLibrary: selectedLibrary.value,
+    navigationStack: navigationStack.value,
+    selectedScannedCategoryId: selectedScannedCategoryId.value,
+    searchKeyword: searchKeyword.value,
+    scrollTop: options.captureScroll ? readSourceScrollTop() : 0,
+  }, activeSourceBrowseContextId)
+  activeSourceBrowseContextId = contextId
+  const query = { ...route.query, browseContextId: contextId }
+  await router.replace({
+    name: 'source',
+    params: { sourceId: sourceId.value },
+    query,
+  })
+}
+
+async function restoreSourceBrowseContext() {
+  const contextId = sourceBrowseContextIdFromQuery(route.query.browseContextId)
+  activeSourceBrowseContextId = contextId
+  const context = loadSourceBrowseContext(contextId, sourceId.value)
+  if (!context)
+    return
+
+  isRestoringSourceBrowseContext = true
+  try {
+    if (isRawFileSource.value)
+      viewMode.value = context.viewMode
+
+    if (activeViewMode.value === 'media-library') {
+      const categoryExists = context.selectedScannedCategoryId != null
+        && scannedCategories.value.some(category => category.id === context.selectedScannedCategoryId)
+      selectedScannedCategoryId.value = categoryExists ? context.selectedScannedCategoryId : null
+      restoreSourceScrollTop(context.scrollTop)
+      return
+    }
+
+    const searchNode = context.navigationStack.find(node => node.isSearch)
+    if (searchNode && context.searchKeyword.trim() && source.value) {
+      items.value = normalizeWorkLevelSearchResults(await source.value.search(context.searchKeyword.trim()))
+      selectedLibrary.value = context.selectedLibrary
+      navigationStack.value = context.navigationStack.map(node => ({ ...node }))
+      searchKeyword.value = context.searchKeyword
+      restoreSourceScrollTop(context.scrollTop)
+      return
+    }
+
+    if (!context.selectedLibrary) {
+      restoreSourceScrollTop(context.scrollTop)
+      return
+    }
+
+    const library = libraries.value.find(candidate => candidate.id === context.selectedLibrary?.id)
+    if (!library)
+      throw new Error('The saved library no longer exists.')
+    const restoredStack = context.navigationStack
+      .filter(node => !node.isSearch && node.id && node.name)
+      .slice(0, 64)
+    if (restoredStack.length === 0 || restoredStack[0]?.id !== library.id)
+      throw new Error('The saved folder path is invalid.')
+
+    selectedLibrary.value = library
+    navigationStack.value = restoredStack.map(node => ({ ...node }))
+    searchKeyword.value = context.searchKeyword
+    if (source.value)
+      items.value = await source.value.list(restoredStack.at(-1)?.id ?? library.id)
+    restoreSourceScrollTop(context.scrollTop)
+  }
+  catch {
+    selectedLibrary.value = null
+    navigationStack.value = []
+    selectedScannedCategoryId.value = null
+    searchKeyword.value = ''
+    items.value = []
+    activeSourceBrowseContextId = null
+    const query = { ...route.query }
+    delete query.browseContextId
+    await router.replace({
+      name: 'source',
+      params: { sourceId: sourceId.value },
+      query,
+    })
+  }
+  finally {
+    isRestoringSourceBrowseContext = false
+  }
+}
+
+function readSourceScrollTop(): number {
+  const scrollRoot = document.querySelector<HTMLElement>('main.cinema-scrollbar')
+  return Math.max(0, Math.round(scrollRoot?.scrollTop ?? 0))
+}
+
+function restoreSourceScrollTop(scrollTop: number) {
+  if (!Number.isFinite(scrollTop) || scrollTop <= 0)
+    return
+  void nextTick(() => {
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>('main.cinema-scrollbar')
+        ?.scrollTo({ top: scrollTop, left: 0, behavior: 'auto' })
+    })
+  })
+}
+
 async function switchViewMode(mode: SourceViewMode) {
   if (!isRawFileSource.value || viewMode.value === mode)
     return
@@ -618,12 +734,14 @@ async function switchViewMode(mode: SourceViewMode) {
     await prepareRawSourceIndex()
     if (libraries.value.length === 0)
       await loadSourceRoot()
+    await persistSourceBrowseContext()
     return
   }
 
   selectedScannedCategoryId.value = null
   isScanManagementOpen.value = false
   await loadSourceRoot()
+  await persistSourceBrowseContext()
 }
 
 async function loadLibrary(library: MediaLibrary) {
@@ -649,6 +767,7 @@ async function loadLibrary(library: MediaLibrary) {
   finally {
     isLoading.value = false
   }
+  await persistSourceBrowseContext()
 }
 
 async function runSearch() {
@@ -678,6 +797,7 @@ async function runSearch() {
     }
     navigationStack.value = [{ id: 'search', name: `搜索：${keyword}`, type: 'mixed', isSearch: true }]
     requestAppScrollTop()
+    await persistSourceBrowseContext()
   }
   catch (error) {
     items.value = []
@@ -694,6 +814,7 @@ function backToLibraries() {
   items.value = []
   searchKeyword.value = ''
   requestAppScrollTop()
+  void persistSourceBrowseContext()
 }
 
 async function handleInPageBack(): Promise<boolean> {
@@ -719,6 +840,7 @@ async function navigateToCrumb(index: number) {
   searchKeyword.value = ''
   navigationStack.value = navigationStack.value.slice(0, index + 1)
   await loadNestedItems(crumb.id)
+  await persistSourceBrowseContext()
 }
 
 async function handleSelect(item: MediaItem | MediaLibrary) {
@@ -749,6 +871,7 @@ async function handleSelect(item: MediaItem | MediaLibrary) {
         { id: item.id, name: item.name, type: item.type },
       ]
       await loadNestedItems(item.id)
+      await persistSourceBrowseContext()
       return
     }
 
@@ -770,6 +893,7 @@ async function handleSelect(item: MediaItem | MediaLibrary) {
 }
 
 async function openDetail(item: MediaItem) {
+  await persistSourceBrowseContext({ captureScroll: true })
   const queue = createPlaybackQueue(currentQueueItems(), item.id)
   const contextualDetail = scannedWorkById.value.has(item.id) && item.type !== 'series'
     ? createScannedMediaDetail(item)
@@ -837,6 +961,7 @@ async function handlePlay(item: MediaItem) {
   isLoading.value = true
   errorMessage.value = null
   try {
+    await persistSourceBrowseContext({ captureScroll: true })
     const queue = createPlaybackQueue(currentQueueItems(), item.id)
     const playbackContextId = savePlaybackMediaContext({
       sourceId: sourceId.value,
@@ -1087,11 +1212,13 @@ function currentQueueItems(): MediaItem[] {
 function selectScannedCategory(category: ScannedCategory) {
   selectedScannedCategoryId.value = category.id
   requestAppScrollTop()
+  void persistSourceBrowseContext()
 }
 
 function backToScannedCategories() {
   selectedScannedCategoryId.value = null
   requestAppScrollTop()
+  void persistSourceBrowseContext()
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -1402,6 +1529,7 @@ async function enrichIdentifiedTvEpisodeMetadata(
 }
 
 async function openScannedSeriesDetail(series: ScannedSeriesWork) {
+  await persistSourceBrowseContext({ captureScroll: true })
   const firstEpisode = series.episodes[0]
   const queue = firstEpisode ? createPlaybackQueue(series.episodes, firstEpisode.id) : undefined
   const contextId = savePlaybackMediaContext({
@@ -1436,6 +1564,7 @@ async function openScannedWorkDetail(work: ScannedWorkItem) {
     return
   }
 
+  await persistSourceBrowseContext({ captureScroll: true })
   const queue = createPlaybackQueue(currentQueueItems(), work.item.id)
   const contextId = savePlaybackMediaContext({
     sourceId: sourceId.value,
