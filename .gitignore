@@ -78,6 +78,14 @@ target/
 src-tauri/target/
 src-tauri/lib/libmpv.dll.a
 src-tauri/lib/mpv.lib
+src-tauri/lib/frame-interpolation/
+
+# Reproducibly downloaded frame-interpolation weights and generated Android mirrors.
+src-tauri/resources/frame-interpolation/models/
+src-tauri/gen/android/app/src/main/assets/frame-interpolation/
+# Stale copies produced by older base bundle configs; Android uses the dedicated assets above.
+src-tauri/gen/android/app/src/main/assets/resources/frame-interpolation/
+src-tauri/gen/android/app/src/main/cpp/third_party/
 
 # Native binaries
 *.exe

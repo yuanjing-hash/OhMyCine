@@ -26,12 +26,18 @@ val previewSigningAvailable = listOf(
 
 android {
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
     namespace = "com.ohmycine.player"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "com.ohmycine.player"
         minSdk = 24
         targetSdk = 36
+        ndk {
+            // The published Android preview is ARM64-only and the pinned ncnn
+            // Vulkan runtime is intentionally audited/bundled for this ABI.
+            abiFilters += "arm64-v8a"
+        }
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
@@ -68,6 +74,12 @@ android {
     }
     buildFeatures {
         buildConfig = true
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 }
 

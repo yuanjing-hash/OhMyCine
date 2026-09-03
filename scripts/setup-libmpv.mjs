@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
@@ -8,8 +9,35 @@ import SevenZip from '7z-wasm'
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const targetDir = resolve(rootDir, 'src-tauri', 'lib')
 const tempDir = join(targetDir, 'temp')
-const wrapperBaseUrl = 'https://github.com/nini22P/libmpv-wrapper/releases/latest/download'
-const mpvBaseUrl = 'https://github.com/zhongfly/mpv-winbuild/releases/latest/download'
+const frameInterpolationRuntimeDir = join(targetDir, 'frame-interpolation')
+const wrapperRelease = 'v0.1.1'
+const wrapperBaseUrl = `https://github.com/nini22P/libmpv-wrapper/releases/download/${wrapperRelease}`
+const mpvRelease = '2026-08-30-e8673660ab'
+const mpvBaseUrl = `https://github.com/zhongfly/mpv-winbuild/releases/download/${mpvRelease}`
+const windowsMpvArchive = {
+  fileName: 'mpv-dev-lgpl-x86_64-20260830-git-e8673660ab.7z',
+  sha256: '7659f968ccea69168aa8924ea1bf7c524e996946d184720d79f92241805f4724',
+}
+const windowsInferenceRuntime = {
+  onnxRuntime: {
+    version: '1.24.4',
+    fileName: 'microsoft.ml.onnxruntime.directml.1.24.4.nupkg',
+    url: 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.24.4/microsoft.ml.onnxruntime.directml.1.24.4.nupkg',
+    sha256: '57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681',
+  },
+  directMl: {
+    version: '1.15.4',
+    fileName: 'microsoft.ai.directml.1.15.4.nupkg',
+    url: 'https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg',
+    sha256: '4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9',
+  },
+}
+const wrapperArchives = {
+  'linux-x86_64': ['libmpv-wrapper-linux-x86_64.zip', '1583564042f10be25166b52b6fe02db6d87cf9cef34985ba517048c044b7eee0'],
+  'windows-x86_64': ['libmpv-wrapper-windows-x86_64.zip', 'd2ff8b2edcd34d2968e544adaa915e5e5c48eb1a0995945005269c2af119a492'],
+  'macos-x86_64': ['libmpv-wrapper-macos-x86_64.zip', '99d65d7e368a456c883b4b3cf5d6384c9af64ec29dccaf4923548c2e3784b0e4'],
+  'macos-aarch64': ['libmpv-wrapper-macos-aarch64.zip', '086dbf977fe5b51785048cbd190f1809186513688be0ecea1ad27bd766c55de8'],
+}
 
 const targets = {
   linux: {
@@ -48,6 +76,12 @@ async function downloadFile(url, destPath) {
   if (!res.ok)
     throw new Error(`Failed to fetch ${url}: ${res.status} ${res.statusText}`)
   await pipeline(res.body, createWriteStream(destPath))
+}
+
+function verifySha256(path, expectedSha256) {
+  const actualSha256 = createHash('sha256').update(readFileSync(path)).digest('hex')
+  if (actualSha256 !== expectedSha256)
+    throw new Error(`Runtime checksum mismatch for ${basename(path)}: expected ${expectedSha256}, got ${actualSha256}`)
 }
 
 async function extractArchive(archivePath, extractDir) {
@@ -121,36 +155,76 @@ function copyInstalledFile(fileName, outputName) {
   console.log(`installed ${outputName}`)
 }
 
-async function installWrapper(target) {
-  const sha = await fetch(`${wrapperBaseUrl}/sha256.txt`).then(res => res.text())
-  const searchKey = `libmpv-wrapper-${target.osName}-${target.archName}`
-  const line = sha.split('\n').find(item => item.includes(searchKey))
-  if (!line)
-    throw new Error(`Could not find ${searchKey} in libmpv-wrapper sha256.txt`)
+function copyRuntimeFile(source, relativeDestination) {
+  if (!existsSync(source))
+    throw new Error(`Pinned inference runtime file not found: ${source}`)
+  const destination = resolve(frameInterpolationRuntimeDir, relativeDestination)
+  const relativeDest = relative(frameInterpolationRuntimeDir, destination)
+  if (!relativeDest || relativeDest.startsWith('..') || relativeDest.includes(':'))
+    throw new Error(`Refusing to install outside ${frameInterpolationRuntimeDir}: ${destination}`)
+  ensureDir(dirname(destination))
+  copyFileSync(source, destination)
+  console.log(`installed frame-interpolation/${relativeDestination}`)
+}
 
-  const fileName = line.trim().split(/\s+/).pop()
+async function installWindowsFrameInterpolationRuntime(target) {
+  if (target.archName !== 'x86_64')
+    throw new Error(`No pinned Windows frame-interpolation runtime for ${target.archName}`)
+  const ort = windowsInferenceRuntime.onnxRuntime
+  const dml = windowsInferenceRuntime.directMl
+  const ortArchive = join(tempDir, ort.fileName)
+  const dmlArchive = join(tempDir, dml.fileName)
+  const ortExtract = join(tempDir, 'onnxruntime-directml')
+  const dmlExtract = join(tempDir, 'directml')
+  await downloadFile(ort.url, ortArchive)
+  verifySha256(ortArchive, ort.sha256)
+  await extractArchive(ortArchive, ortExtract)
+  await downloadFile(dml.url, dmlArchive)
+  verifySha256(dmlArchive, dml.sha256)
+  await extractArchive(dmlArchive, dmlExtract)
+
+  const ortNative = join(ortExtract, 'runtimes', 'win-x64', 'native')
+  copyRuntimeFile(join(ortNative, 'onnxruntime.dll'), 'onnxruntime.dll')
+  copyRuntimeFile(join(ortNative, 'onnxruntime_providers_shared.dll'), 'onnxruntime_providers_shared.dll')
+  copyRuntimeFile(join(ortNative, 'onnxruntime.lib'), 'onnxruntime.lib')
+  for (const header of readdirSync(join(ortExtract, 'build', 'native', 'include')))
+    copyRuntimeFile(join(ortExtract, 'build', 'native', 'include', header), join('include', header))
+  copyRuntimeFile(join(ortExtract, 'LICENSE'), 'LICENSE-ONNX-RUNTIME')
+  copyRuntimeFile(join(ortExtract, 'ThirdPartyNotices.txt'), 'THIRD-PARTY-ONNX-RUNTIME.txt')
+  copyRuntimeFile(join(dmlExtract, 'bin', 'x64-win', 'DirectML.dll'), 'DirectML.dll')
+  copyRuntimeFile(join(dmlExtract, 'bin', 'x64-win', 'DirectML.lib'), 'DirectML.lib')
+  copyRuntimeFile(join(dmlExtract, 'include', 'DirectML.h'), join('include', 'DirectML.h'))
+  copyRuntimeFile(join(dmlExtract, 'include', 'DirectMLConfig.h'), join('include', 'DirectMLConfig.h'))
+  copyRuntimeFile(join(dmlExtract, 'LICENSE.txt'), 'LICENSE-DIRECTML')
+  copyRuntimeFile(join(dmlExtract, 'LICENSE-CODE.txt'), 'LICENSE-DIRECTML-CODE')
+  copyRuntimeFile(join(dmlExtract, 'ThirdPartyNotices.txt'), 'THIRD-PARTY-DIRECTML.txt')
+}
+
+async function installWrapper(target) {
+  const archive = wrapperArchives[`${target.osName}-${target.archName}`]
+  if (!archive)
+    throw new Error(`No pinned wrapper archive for ${target.osName}-${target.archName}`)
+  const [fileName, expectedSha256] = archive
   const archivePath = join(tempDir, fileName)
   const extractDir = join(tempDir, `wrapper-${target.osName}-${target.archName}`)
 
   console.log(`downloading ${fileName}`)
   await downloadFile(`${wrapperBaseUrl}/${fileName}`, archivePath)
+  verifySha256(archivePath, expectedSha256)
   await extractArchive(archivePath, extractDir)
   moveExtractedFile(extractDir, target.wrapperLibName, target.outputName)
 }
 
 async function installWindowsMpv(target) {
-  const sha = await fetch(`${mpvBaseUrl}/sha256.txt`).then(res => res.text())
-  const searchKey = `mpv-dev-lgpl-${target.archName}`
-  const line = sha.split('\n').find(item => item.includes(searchKey) && !item.includes('v3'))
-  if (!line)
-    throw new Error(`Could not find ${searchKey} in mpv-winbuild sha256.txt`)
-
-  const fileName = line.trim().split(/\s+/).pop()
+  if (target.archName !== 'x86_64')
+    throw new Error(`No pinned Windows mpv archive for ${target.archName}`)
+  const { fileName, sha256: expectedSha256 } = windowsMpvArchive
   const archivePath = join(tempDir, fileName)
   const extractDir = join(tempDir, 'mpv-windows')
 
   console.log(`downloading ${fileName}`)
   await downloadFile(`${mpvBaseUrl}/${fileName}`, archivePath)
+  verifySha256(archivePath, expectedSha256)
   await extractArchive(archivePath, extractDir)
 
   // Runtime DLL is shared by both Windows toolchains. The upstream GNU import
@@ -172,8 +246,10 @@ async function setup(targetNames) {
 
     console.log(`setting up ${targetName}`)
     await installWrapper(target)
-    if (target.downloadsMpv)
+    if (target.downloadsMpv) {
       await installWindowsMpv(target)
+      await installWindowsFrameInterpolationRuntime(target)
+    }
   }
 
   rmSync(tempDir, { recursive: true, force: true })

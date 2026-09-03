@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "model": "rife-v4.6",
+  "family": "RIFE",
+  "source": "nihui/rife-ncnn-vulkan",
+  "sourceCommit": "a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7",
+  "license": "MIT",
+  "inferenceInputs": {
+    "in0": "tone-compressed RGB proxy for the earlier frame",
+    "in1": "tone-compressed RGB proxy for the later frame",
+    "in2": "full-resolution scalar timestep plane in [0,1]"
+  },
+  "inferenceOutputs": {
+    "flow": {
+      "blob": "327",
+      "channels": [
+        "frame0-dx",
+        "frame0-dy",
+        "frame1-dx",
+        "frame1-dy"
+      ],
+      "units": "full-resolution pixels"
+    },
+    "mask": {
+      "blob": "332",
+      "meaning": "sigmoid blend weight for frame0; frame1 weight is 1-mask"
+    },
+    "prohibitedOutput": {
+      "blob": "out0",
+      "reason": "The model RGB output is proxy-domain. SDR and HDR are both synthesized from their original FP16 source frames; SDR is linearized before and encoded after the common warp/composite pass."
+    }
+  },
+  "windowsOnnx": {
+    "source": "hzwer/Practical-RIFE official v4.6 checkpoint",
+    "sourceCommit": "f6b5132517695127bdb5d5a8c3727e719f0fda22",
+    "sourceArchiveSha256": "52b094d14cf275e925a5ae25381e46f94fab1c232a847dc45117cfd7c89ceec2",
+    "checkpointSha256": "008646e761f0e67cb77f0c6c44cfe3c3e5a05d9d9465311b9681ca650ce030db",
+    "exporter": "scripts/export-rife-v4.6-flow-mask.py",
+    "exporterDependencies": {
+      "torch": "2.14.0",
+      "onnx": "1.20.0",
+      "opset": 18
+    },
+    "output": "rife-v4.6-flow-mask.onnx",
+    "outputSha256": "067f1eb525cebb0f3d737aac9ca26425e6fad3cdf9afffcb674bd8b62aa03a54",
+    "outputs": [
+      "flow_pixels",
+      "blend_mask"
+    ],
+    "prohibitedOutput": "No RGB composite is exported.",
+    "license": "MIT",
+    "licenseSha256": "7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd"
+  },
+  "files": {
+    "flownet.param": {
+      "sha256": "724569596bcd1e7b9fa50455c604777ebed99746d2ef40aa86e31b5725f1053c",
+      "source": "https://raw.githubusercontent.com/nihui/rife-ncnn-vulkan/a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7/models/rife-v4.6/flownet.param"
+    },
+    "flownet.bin": {
+      "sha256": "f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958",
+      "source": "https://raw.githubusercontent.com/nihui/rife-ncnn-vulkan/a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7/models/rife-v4.6/flownet.bin"
+    },
+    "LICENSE": {
+      "sha256": "a73beab18143600af0b10c6050a953ec233775ce31c2bf3373a794db535329fd",
+      "source": "https://raw.githubusercontent.com/nihui/rife-ncnn-vulkan/a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7/LICENSE"
+    }
+  }
+}

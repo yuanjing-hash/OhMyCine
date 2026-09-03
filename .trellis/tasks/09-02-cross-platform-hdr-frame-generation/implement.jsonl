@@ -1,0 +1,6 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Player independent-first boundary, pre-development checklist, and mandatory build checks."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Persisted playback settings, shared state, and backward-compatible normalization rules."}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Tauri event lifecycle and composable cleanup for playback diagnostics and state changes."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required quality gates for Vue, TypeScript, Rust, and build changes."}
+{"file":".trellis/spec/frontend/danmaku.md","reason":"Danmaku lifecycle and rendering contract when overlays move after frame generation."}
+{"file":".trellis/tasks/09-02-cross-platform-hdr-frame-generation/research/platform-evidence.md","reason":"Focused local and upstream evidence for mpv, HDR/Dolby Vision, Windows capture, Android surfaces, and model licensing."}

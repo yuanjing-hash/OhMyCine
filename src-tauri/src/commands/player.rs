@@ -7,59 +7,21 @@ use super::player_shared::{
 };
 use crate::mpv::{
     mobile_proxy::AndroidStreamProxyState,
-    player::{MpvState, MpvTrackState},
+    player::{DesktopPlaybackDiagnostics, MpvState, MpvTrackState},
     render::MpvRenderState,
     surface::{RenderSurfaceBounds, ZOrderStrategy},
 };
 use crate::storage;
 const FSR_SHADER_BYTES: &[u8] = include_bytes!("../../resources/shaders/ohmycine-fsr-v1.glsl");
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DesktopPlaybackDiagnostics {
-    state: &'static str,
-    last_event: &'static str,
-    last_error: Option<String>,
-    file_loaded: bool,
-    video_format: Option<String>,
-    audio_codec: Option<String>,
-    vo_configured: bool,
-    hardware_decoder: Option<String>,
-    video_output: &'static str,
-    video_output_fallback_used: bool,
-    playback_transport: &'static str,
-    fsr_status: String,
-    fsr_reason: Option<String>,
-    logs: Vec<String>,
-}
-
 #[tauri::command]
-pub fn mpv_playback_diagnostics(state: State<'_, MpvState>) -> DesktopPlaybackDiagnostics {
-    let (fsr_status, fsr_reason) = state
+pub fn mpv_playback_diagnostics(
+    state: State<'_, MpvState>,
+) -> Result<DesktopPlaybackDiagnostics, String> {
+    state
         .lock()
-        .map(|player| player.fsr_diagnostics())
-        .unwrap_or_else(|_| {
-            (
-                "unavailable".to_string(),
-                Some("播放器状态暂不可用。".to_string()),
-            )
-        });
-    DesktopPlaybackDiagnostics {
-        state: "desktop",
-        last_event: "desktop-backend",
-        last_error: None,
-        file_loaded: false,
-        video_format: None,
-        audio_codec: None,
-        vo_configured: false,
-        hardware_decoder: None,
-        video_output: "desktop",
-        video_output_fallback_used: false,
-        playback_transport: "native",
-        fsr_status,
-        fsr_reason,
-        logs: Vec::new(),
-    }
+        .map(|player| player.playback_diagnostics())
+        .map_err(|_| "播放器状态暂不可用。".to_string())
 }
 
 #[tauri::command]

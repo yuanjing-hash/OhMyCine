@@ -183,6 +183,15 @@ const nativePlaybackDiagnosticRows = computed(() => {
     ['videoOutputFallback', diagnostics.videoOutputFallbackUsed ? 'yes' : 'no'],
     ['fsr', diagnostics.fsrStatus || 'unknown'],
     ['fsrReason', diagnostics.fsrReason || 'none'],
+    ['frameInterpolationRequested', diagnostics.frameInterpolationRequestedMode],
+    ['frameInterpolationEffective', diagnostics.frameInterpolationEffectiveState],
+    ['frameInterpolationReason', diagnostics.frameInterpolationReason || 'none'],
+    ['frameInterpolationBackend', diagnostics.frameInterpolationBackend || 'none'],
+    ['frameInterpolationHdr', `${diagnostics.frameInterpolationInputHdrKind}->${diagnostics.frameInterpolationOutputHdrMode}`],
+    ['frameInterpolationTargetFps', diagnostics.frameInterpolationTargetFps?.toString() || 'auto'],
+    ['frameInterpolationFlowScale', diagnostics.frameInterpolationFlowScale?.toFixed(2) || 'none'],
+    ['frameInterpolationModelP95Ms', diagnostics.frameInterpolationModelTimeP95Ms?.toFixed(2) || 'none'],
+    ['frameInterpolationDrops', diagnostics.frameInterpolationDroppedFrames.toString()],
     ['playbackTransport', diagnostics.playbackTransport],
   ] as const
 })
@@ -201,7 +210,7 @@ const diagnosticText = computed(() => {
     lines.push(`renderError=${redactDiagnosticText(props.renderError)}`)
 
   if (nativePlaybackDiagnosticRows.value.length > 0) {
-    lines.push('', 'Android playback')
+    lines.push('', 'Native playback')
     for (const [key, value] of nativePlaybackDiagnosticRows.value)
       lines.push(`${key}=${redactDiagnosticText(value)}`)
     if (props.playbackDiagnostics?.lastError)

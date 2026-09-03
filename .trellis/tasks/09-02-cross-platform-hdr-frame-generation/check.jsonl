@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Verify independent Player behavior and mandatory build checks."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Verify persisted defaults, migration, and no invalid cross-platform state."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify lint, typecheck, production build, and test expectations."}
+{"file":".trellis/spec/frontend/danmaku.md","reason":"Verify overlay ordering and lifecycle remain compatible with the danmaku contract."}
+{"file":".trellis/tasks/09-02-cross-platform-hdr-frame-generation/research/platform-evidence.md","reason":"Verify implementation claims against the focused platform and upstream evidence."}

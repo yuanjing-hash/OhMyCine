@@ -7,8 +7,9 @@ use std::{
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_FILE_LOADED,
-    mpv_event_id_MPV_EVENT_LOG_MESSAGE, mpv_event_id_MPV_EVENT_NONE,
+    mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_END_FILE,
+    mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_LOG_MESSAGE,
+    mpv_event_id_MPV_EVENT_NONE, mpv_event_id_MPV_EVENT_START_FILE,
     mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_format_MPV_FORMAT_DOUBLE,
     mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
     mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
@@ -18,12 +19,43 @@ use libmpv_sys::{
 };
 
 use super::{
+    frame_interpolation::{FrameGenerationController, MediaEvent},
     render::{current_render_state, MpvRenderState, RenderStatus},
     surface::{NativeRenderSurface, OwnerWindowEvent, RenderSurfaceBounds, ZOrderStrategy},
 };
-use crate::commands::player_shared::MpvEngineSettings;
+use crate::commands::player_shared::{
+    FrameInterpolationCapability, FrameInterpolationDiagnostics, MpvEngineSettings,
+};
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
+
+#[cfg(target_os = "windows")]
+fn is_windows_frame_interpolation_hwdec(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.starts_with("d3d11va")
+        || value.starts_with("dxva2")
+        || value.starts_with("nvdec")
+        || value.starts_with("vulkan")
+}
+
+#[cfg(target_os = "windows")]
+fn has_reliable_windows_cfr_timing(media_pts: f64, container_fps: f64, estimated_fps: f64) -> bool {
+    media_pts.is_finite()
+        && container_fps.is_finite()
+        && estimated_fps.is_finite()
+        && container_fps > 0.0
+        && estimated_fps > 0.0
+        && ((container_fps - estimated_fps).abs() / container_fps) <= 0.002
+}
+
+#[cfg(target_os = "windows")]
+fn source_needs_windows_frame_interpolation(source_fps: f64, target_fps: f64) -> bool {
+    source_fps.is_finite()
+        && target_fps.is_finite()
+        && source_fps > 0.0
+        && target_fps > 0.0
+        && source_fps < target_fps - 0.01
+}
 
 #[derive(Debug, Default)]
 pub struct MpvEventBatch {
@@ -54,6 +86,27 @@ pub struct MpvTrackState {
     pub current_audio: Option<i64>,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPlaybackDiagnostics {
+    pub state: String,
+    pub last_event: String,
+    pub last_error: Option<String>,
+    pub file_loaded: bool,
+    pub video_format: Option<String>,
+    pub audio_codec: Option<String>,
+    pub vo_configured: bool,
+    pub hardware_decoder: Option<String>,
+    pub video_output: String,
+    pub video_output_fallback_used: bool,
+    pub playback_transport: String,
+    pub fsr_status: String,
+    pub fsr_reason: Option<String>,
+    #[serde(flatten)]
+    pub frame_interpolation: FrameInterpolationDiagnostics,
+    pub logs: Vec<String>,
+}
+
 pub struct MpvPlayer {
     ctx: *mut mpv_handle,
     /// True once `mpv_initialize` has succeeded on the current `ctx`.
@@ -64,6 +117,20 @@ pub struct MpvPlayer {
     fsr_shader_path: Option<PathBuf>,
     fsr_status: String,
     fsr_reason: Option<String>,
+    playback_state: String,
+    last_playback_event: String,
+    last_playback_error: Option<String>,
+    file_loaded: bool,
+    stop_requested: bool,
+    playback_transport: String,
+    frame_interpolation_controller: FrameGenerationController,
+    #[cfg(target_os = "windows")]
+    windows_frame_interpolation_session:
+        Option<super::windows_frame_interpolation_assets::WindowsFrameInterpolationSession>,
+    #[cfg(target_os = "windows")]
+    windows_frame_interpolation_reason: Option<String>,
+    #[cfg(target_os = "windows")]
+    windows_frame_interpolation_audio_delay_original: Option<f64>,
 }
 
 // MpvPlayer is only accessed through Arc<Mutex<_>> in Tauri state. libmpv handles are designed
@@ -78,6 +145,8 @@ impl Drop for MpvPlayer {
         //   3. Dropping the render surface then calls `DestroyWindow` and unregisters the class.
         // Doing it in this order prevents libmpv from writing to a destroyed HWND and prevents a
         // residual ghost window from flashing after mpv shuts down.
+        #[cfg(target_os = "windows")]
+        self.stop_windows_frame_interpolation_session();
         if let Some(surface) = self.render_surface.as_mut() {
             surface.on_owner_window_event(OwnerWindowEvent::Destroyed);
         }
@@ -108,6 +177,19 @@ impl MpvPlayer {
             fsr_shader_path: None,
             fsr_status: "not-configured".to_string(),
             fsr_reason: None,
+            playback_state: "idle".to_string(),
+            last_playback_event: "not-started".to_string(),
+            last_playback_error: None,
+            file_loaded: false,
+            stop_requested: false,
+            playback_transport: "none".to_string(),
+            frame_interpolation_controller: FrameGenerationController::default(),
+            #[cfg(target_os = "windows")]
+            windows_frame_interpolation_session: None,
+            #[cfg(target_os = "windows")]
+            windows_frame_interpolation_reason: None,
+            #[cfg(target_os = "windows")]
+            windows_frame_interpolation_audio_delay_original: None,
         };
 
         // Non-Windows: initialize immediately in the no-visible-video safety mode. Visible video
@@ -137,11 +219,24 @@ impl MpvPlayer {
         audio_path: Option<&str>,
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
+        #[cfg(target_os = "windows")]
+        self.stop_windows_frame_interpolation_session();
         self.apply_http_headers(headers)?;
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
         let audio_option = audio_path.map(|value| format!("audio-file={value}"));
+        self.playback_state = "loading".to_string();
+        self.last_playback_event = "load-command".to_string();
+        self.last_playback_error = None;
+        self.file_loaded = false;
+        self.stop_requested = false;
+        self.playback_transport = if path.starts_with("http://127.0.0.1:") {
+            "rust-loopback"
+        } else {
+            "direct"
+        }
+        .to_string();
         let result = if let Some(option) = audio_option.as_deref() {
             self.command(&["loadfile", path, "replace", "-1", option])
         } else {
@@ -151,6 +246,10 @@ impl MpvPlayer {
             if let Some(surface) = self.render_surface.as_mut() {
                 surface.set_playback_active(true);
             }
+        } else if let Err(error) = result.as_ref() {
+            self.playback_state = "error".to_string();
+            self.last_playback_event = "load-command-error".to_string();
+            self.last_playback_error = Some(error.clone());
         }
         result
     }
@@ -172,6 +271,20 @@ impl MpvPlayer {
             self.set_property("video-sync", &settings.video_sync)?;
         }
         self.fsr_shader_path = shader_path;
+        self.frame_interpolation_controller
+            .set_requested(settings.frame_interpolation_mode == "auto");
+        #[cfg(target_os = "windows")]
+        if settings.frame_interpolation_mode != self.engine_settings.frame_interpolation_mode
+            || settings.frame_interpolation_target
+                != self.engine_settings.frame_interpolation_target
+            || settings.frame_interpolation_quality
+                != self.engine_settings.frame_interpolation_quality
+        {
+            self.stop_windows_frame_interpolation_session();
+            if settings.frame_interpolation_mode != "auto" {
+                self.windows_frame_interpolation_reason = None;
+            }
+        }
         self.engine_settings = settings;
         if self.initialized {
             self.apply_fsr_runtime_safely();
@@ -185,8 +298,186 @@ impl MpvPlayer {
         Ok(())
     }
 
-    pub fn fsr_diagnostics(&self) -> (String, Option<String>) {
-        (self.fsr_status.clone(), self.fsr_reason.clone())
+    pub fn playback_diagnostics(&self) -> DesktopPlaybackDiagnostics {
+        let hardware_decoder = if self.initialized {
+            self.get_property_string("hwdec-current").ok().flatten()
+        } else {
+            None
+        };
+        let video_output = if self.initialized {
+            self.get_property_string("current-vo")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| self.engine_settings.video_output.clone())
+        } else {
+            self.engine_settings.video_output.clone()
+        };
+        let frame_interpolation_hwdec = hardware_decoder.as_deref().filter(|value| {
+            let value = value.to_ascii_lowercase();
+            value.starts_with("d3d11va")
+                || value.starts_with("dxva2")
+                || value.starts_with("nvdec")
+                || value.starts_with("vulkan")
+        });
+        #[cfg(target_os = "windows")]
+        let frame_interpolation_backend_reason = self
+            .windows_frame_interpolation_reason
+            .as_deref()
+            .unwrap_or_else(|| {
+                super::windows_frame_interpolation_assets::probe()
+                    .reason
+                    .as_str()
+            });
+        #[cfg(not(target_os = "windows"))]
+        let frame_interpolation_backend_reason = "Windows DirectML 视频插帧后端仅支持 Windows。";
+        #[cfg(target_os = "windows")]
+        let mut frame_interpolation = {
+            let asset_probe = super::windows_frame_interpolation_assets::probe();
+            let has_hwdec = frame_interpolation_hwdec.is_some();
+            let controller_state = self.frame_interpolation_controller.state().as_str();
+            let effective_state = if self.engine_settings.frame_interpolation_mode == "off" {
+                "disabled"
+            } else if !has_hwdec {
+                "unavailable-no-hwdec"
+            } else {
+                controller_state
+            };
+            let effective_reason = if effective_state == "disabled" {
+                None
+            } else if effective_state == "unavailable-no-hwdec" {
+                Some("当前媒体未使用硬件解码，视频插帧已自动关闭。".to_string())
+            } else {
+                self.windows_frame_interpolation_reason
+                    .clone()
+                    .or_else(|| {
+                        self.frame_interpolation_controller
+                            .reason()
+                            .map(str::to_string)
+                    })
+                    .or_else(|| Some(frame_interpolation_backend_reason.to_string()))
+            };
+            let mut diagnostics = self
+                .engine_settings
+                .unavailable_frame_interpolation_diagnostics(
+                    frame_interpolation_hwdec,
+                    frame_interpolation_backend_reason,
+                    None,
+                );
+            diagnostics.frame_interpolation_effective_state = effective_state.to_string();
+            diagnostics.frame_interpolation_reason = effective_reason;
+            diagnostics.frame_interpolation_backend = asset_probe
+                .directml_flow_mask_ready
+                .then(|| "windows-directml".to_string());
+            diagnostics.frame_interpolation_output_hdr_mode = if effective_state == "active" {
+                "scrgb".to_string()
+            } else {
+                "unknown".to_string()
+            };
+            diagnostics.frame_interpolation_capability = FrameInterpolationCapability {
+                supported: asset_probe.directml_flow_mask_ready,
+                backend: asset_probe
+                    .directml_flow_mask_ready
+                    .then(|| "windows-directml".to_string()),
+                reason: (!asset_probe.directml_flow_mask_ready).then(|| asset_probe.reason.clone()),
+                api_level: None,
+                gpu_name: None,
+                gpu_adapter_id: None,
+                fp16: asset_probe.directml_flow_mask_ready,
+                hdr_kinds: if asset_probe.directml_flow_mask_ready {
+                    ["sdr", "pq", "hlg", "hdr10plus", "dolby-vision"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                max_target_fps: asset_probe.directml_flow_mask_ready.then_some(120),
+            };
+            diagnostics
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut frame_interpolation = self
+            .engine_settings
+            .unavailable_frame_interpolation_diagnostics(
+                frame_interpolation_hwdec,
+                frame_interpolation_backend_reason,
+                None,
+            );
+        frame_interpolation.frame_interpolation_input_hdr_kind = self.input_hdr_kind();
+        frame_interpolation.frame_interpolation_flow_scale =
+            Some(self.frame_interpolation_controller.flow_scale());
+        let (p50, p95) = self.frame_interpolation_controller.model_time_percentiles();
+        frame_interpolation.frame_interpolation_model_time_p50_ms = p50;
+        frame_interpolation.frame_interpolation_model_time_p95_ms = p95;
+        frame_interpolation.frame_interpolation_dropped_frames =
+            self.frame_interpolation_controller.dropped_frames();
+
+        DesktopPlaybackDiagnostics {
+            state: self.playback_state.clone(),
+            last_event: self.last_playback_event.clone(),
+            last_error: self.last_playback_error.clone(),
+            file_loaded: self.file_loaded,
+            video_format: self
+                .initialized
+                .then(|| self.get_property_string("video-format").ok().flatten())
+                .flatten(),
+            audio_codec: self
+                .initialized
+                .then(|| self.get_property_string("audio-codec-name").ok().flatten())
+                .flatten(),
+            vo_configured: self.initialized
+                && self.get_property_flag("vo-configured").unwrap_or(0) != 0,
+            hardware_decoder,
+            video_output,
+            video_output_fallback_used: false,
+            playback_transport: self.playback_transport.clone(),
+            fsr_status: self.fsr_status.clone(),
+            fsr_reason: self.fsr_reason.clone(),
+            frame_interpolation,
+            logs: Vec::new(),
+        }
+    }
+
+    fn input_hdr_kind(&self) -> String {
+        if !self.initialized || !self.file_loaded {
+            return "unknown".to_string();
+        }
+        let dovi_profile = self
+            .get_property_string("video-params/dolby-vision-profile")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                self.get_property_string("current-tracks/video/demux-dovi-profile")
+                    .ok()
+                    .flatten()
+            });
+        if dovi_profile.as_deref().is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "unknown"
+        }) {
+            return "dolby-vision".to_string();
+        }
+        if self
+            .get_property_string("video-params/scene-max-r")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return "hdr10plus".to_string();
+        }
+        match self
+            .get_property_string("video-params/gamma")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "pq" => "pq".to_string(),
+            "hlg" => "hlg".to_string(),
+            _ => "sdr".to_string(),
+        }
     }
 
     pub fn add_subtitle(
@@ -298,6 +589,12 @@ impl MpvPlayer {
                 self.set_option("cache", &cache)?;
                 self.set_option("demuxer-max-bytes", &demuxer_max_bytes)?;
                 self.set_option("video-sync", &video_sync)?;
+                // Let gpu-next/libplacebo preserve the source HDR intent all the way into the
+                // D3D11 swapchain. source-dynamic converts HDR10+/Dolby Vision scene metadata to
+                // dynamic HDR10 luminance hints without pretending to synthesize new DV RPUs.
+                self.set_option("target-colorspace-hint", "auto")?;
+                self.set_option("target-colorspace-hint-mode", "source-dynamic")?;
+                self.set_option("hdr-compute-peak", "auto")?;
                 self.set_option("keep-open", "yes")?;
                 self.set_option("osc", "no")?;
                 let wid = surface.mpv_wid();
@@ -315,6 +612,8 @@ impl MpvPlayer {
                 Ok(()) => {
                     // Surface can now reveal the mpv video underlay behind the transparent Tauri overlay.
                     surface.mark_mpv_ready();
+                    self.frame_interpolation_controller
+                        .on_media_event(MediaEvent::SurfaceReady);
                     let snapshot = surface.snapshot();
                     self.render_surface = Some(surface);
                     // Automatic mode requires the managed Windows surface to be present. Apply
@@ -442,26 +741,56 @@ impl MpvPlayer {
 
     pub fn pause(&mut self) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
+        #[cfg(target_os = "windows")]
+        {
+            self.windows_frame_interpolation_reason =
+                Some("播放已暂停；插帧输出已隐藏，恢复播放后会重新建立新一代帧队列。".to_string());
+            self.stop_windows_frame_interpolation_session();
+        }
         self.set_property("pause", "true")
     }
 
     pub fn resume(&mut self) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
-        self.set_property("pause", "false")
+        self.set_property("pause", "false")?;
+        #[cfg(target_os = "windows")]
+        if self.engine_settings.frame_interpolation_mode == "auto" {
+            self.windows_frame_interpolation_reason =
+                Some("播放已恢复，正在重新建立插帧安全门。".to_string());
+        }
+        Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        self.stop_windows_frame_interpolation_session();
+        self.frame_interpolation_controller
+            .on_media_event(MediaEvent::EndFile);
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
         if !self.initialized {
+            self.playback_state = "idle".to_string();
+            self.last_playback_event = "stopped".to_string();
+            self.file_loaded = false;
             return Ok(());
         }
-        self.command(&["stop"])
+        self.stop_requested = true;
+        let result = self.command(&["stop"]);
+        if result.is_ok() {
+            self.playback_state = "idle".to_string();
+            self.last_playback_event = "stopped".to_string();
+            self.file_loaded = false;
+        }
+        result
     }
 
     pub fn seek(&mut self, position: f64) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
+        #[cfg(target_os = "windows")]
+        self.stop_windows_frame_interpolation_session();
+        self.frame_interpolation_controller
+            .on_media_event(MediaEvent::Seek);
         self.command(&["seek", &position.to_string(), "absolute"])
     }
 
@@ -742,6 +1071,254 @@ impl MpvPlayer {
         self.finish_initialize()
     }
 
+    #[cfg(target_os = "windows")]
+    fn start_windows_frame_interpolation_session(&mut self, hardware_decode_ready: bool) {
+        self.stop_windows_frame_interpolation_session();
+        if self.engine_settings.frame_interpolation_mode != "auto" || !hardware_decode_ready {
+            return;
+        }
+        let asset_probe = super::windows_frame_interpolation_assets::probe();
+        if !asset_probe.directml_flow_mask_ready {
+            self.windows_frame_interpolation_reason = Some(asset_probe.reason.clone());
+            return;
+        }
+        let Some(source_wid) = self
+            .render_surface
+            .as_ref()
+            .map(NativeRenderSurface::mpv_wid)
+        else {
+            self.windows_frame_interpolation_reason =
+                Some("Windows mpv source HWND 不存在，已保持普通播放。".to_string());
+            return;
+        };
+        let target_fps = u32::from(
+            self.engine_settings
+                .frame_interpolation_target_fps()
+                .unwrap_or(60),
+        );
+        let hdr_input = matches!(
+            self.input_hdr_kind().as_str(),
+            "pq" | "hlg" | "hdr10plus" | "dolby-vision"
+        );
+        match super::windows_frame_interpolation_assets::WindowsFrameInterpolationSession::start(
+            &source_wid,
+            target_fps,
+            hdr_input,
+        ) {
+            Ok(session) => {
+                self.windows_frame_interpolation_session = Some(session);
+                self.windows_frame_interpolation_reason = Some(
+                    "Windows 实时 WGC/FP16 隐藏输出正在自检；原 mpv 画面保持可见。".to_string(),
+                );
+            }
+            Err(reason) => {
+                self.windows_frame_interpolation_reason = Some(reason);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn poll_windows_frame_interpolation_session(&mut self) {
+        let subtitle_active = self.track_list().ok().is_some_and(|tracks| {
+            tracks
+                .iter()
+                .any(|track| track.kind == "sub" && track.selected)
+        });
+        self.frame_interpolation_controller
+            .set_graphic_subtitle_active(subtitle_active);
+        if subtitle_active {
+            self.windows_frame_interpolation_reason = Some(
+                "当前字幕仍在 mpv 视频层中；为避免字幕被插帧拉丝或被输出层遮挡，Windows 插帧已自动旁路。"
+                    .to_string(),
+            );
+            self.stop_windows_frame_interpolation_session();
+            return;
+        }
+        let paused = self.get_property_flag("pause").unwrap_or(1) != 0;
+        if paused {
+            if self.windows_frame_interpolation_session.is_some() {
+                self.windows_frame_interpolation_reason = Some(
+                    "播放已暂停；插帧输出已隐藏，恢复播放后会重新建立新一代帧队列。".to_string(),
+                );
+                self.stop_windows_frame_interpolation_session();
+            }
+            return;
+        }
+        if !self.file_loaded || self.engine_settings.frame_interpolation_mode != "auto" {
+            self.stop_windows_frame_interpolation_session();
+            return;
+        }
+        let media_pts = self
+            .get_property_double("playback-time")
+            .or_else(|_| self.get_property_double("time-pos"))
+            .unwrap_or(f64::NAN);
+        let container_fps = self
+            .get_property_double("container-fps")
+            .unwrap_or(f64::NAN);
+        let estimated_fps = self
+            .get_property_double("estimated-vf-fps")
+            .unwrap_or(f64::NAN);
+        let timing_reliable =
+            has_reliable_windows_cfr_timing(media_pts, container_fps, estimated_fps);
+        let hardware_decode_ready = self
+            .get_property_string("hwdec-current")
+            .ok()
+            .flatten()
+            .is_some_and(|value| is_windows_frame_interpolation_hwdec(&value));
+        if !hardware_decode_ready {
+            self.stop_windows_frame_interpolation_session();
+            self.frame_interpolation_controller
+                .set_gates(false, true, false);
+            self.windows_frame_interpolation_reason = Some(
+                "当前媒体未使用受支持的硬件解码；插帧已关闭，mpv 原画面继续播放。".to_string(),
+            );
+            return;
+        }
+        if !timing_reliable {
+            self.stop_windows_frame_interpolation_session();
+            self.frame_interpolation_controller
+                .set_gates(true, true, false);
+            self.windows_frame_interpolation_reason = Some(
+                "当前视频帧率未知或检测为 VFR；为避免节奏和音画同步错误，插帧保持关闭。"
+                    .to_string(),
+            );
+            return;
+        }
+        let target_fps = f64::from(
+            self.engine_settings
+                .frame_interpolation_target_fps()
+                .unwrap_or(60),
+        );
+        if !source_needs_windows_frame_interpolation(estimated_fps, target_fps) {
+            self.stop_windows_frame_interpolation_session();
+            self.frame_interpolation_controller
+                .set_gates(true, true, false);
+            self.windows_frame_interpolation_reason = Some(format!(
+                "源帧率 {estimated_fps:.3}fps 已达到目标 {target_fps:.0}fps，无需插帧。"
+            ));
+            return;
+        }
+        if self.windows_frame_interpolation_session.is_none() {
+            self.start_windows_frame_interpolation_session(true);
+        }
+        if let Some(session) = self.windows_frame_interpolation_session.as_ref() {
+            session.update_timing(media_pts, estimated_fps, timing_reliable, paused);
+        }
+        let status = match self
+            .windows_frame_interpolation_session
+            .as_ref()
+            .map(|session| session.poll())
+        {
+            Some(Ok(status)) => Some(status),
+            Some(Err(reason)) => {
+                self.windows_frame_interpolation_reason = Some(reason.clone());
+                self.frame_interpolation_controller.backend_failed(reason);
+                self.stop_windows_frame_interpolation_session();
+                None
+            }
+            None => None,
+        };
+        let Some(status) = status else {
+            return;
+        };
+        self.windows_frame_interpolation_reason = Some(status.reason.clone());
+        if status.hidden_first_present && !status.captured_pair {
+            self.frame_interpolation_controller.backend_failed(
+                "Windows 隐藏输出在形成有效实时帧对前被 Present，已拒绝切换并保持 mpv 原画面。",
+            );
+        } else if status.captured_pair && !status.hidden_first_present && status.finished {
+            self.frame_interpolation_controller.backend_failed(
+                "Windows 实时帧对已捕获，但 FP16 隐藏输出未完成 Present；已保持 mpv 原画面。",
+            );
+        }
+        if status.device_lost {
+            self.stop_windows_frame_interpolation_session();
+            self.frame_interpolation_controller
+                .backend_failed("Windows GPU device lost；已原子回退到 mpv 原画面。");
+            self.windows_frame_interpolation_reason =
+                Some("Windows GPU device lost；已原子回退到 mpv 原画面。".to_string());
+            return;
+        }
+        if status.finished {
+            self.stop_windows_frame_interpolation_session();
+            return;
+        }
+        self.frame_interpolation_controller
+            .set_gates(true, true, true);
+        if status.hidden_first_present && !status.generated_first_present {
+            if let Err(reason) = self.apply_windows_frame_interpolation_audio_delay(estimated_fps) {
+                self.windows_frame_interpolation_reason = Some(reason.clone());
+                self.frame_interpolation_controller.backend_failed(reason);
+                self.stop_windows_frame_interpolation_session();
+                return;
+            }
+            let reveal_result = self
+                .windows_frame_interpolation_session
+                .as_ref()
+                .expect("session exists after successful status poll")
+                .reveal_after_safe_gates();
+            if let Err(reason) = reveal_result {
+                self.windows_frame_interpolation_reason = Some(reason.clone());
+                self.frame_interpolation_controller.backend_failed(reason);
+                self.stop_windows_frame_interpolation_session();
+                return;
+            }
+        }
+        if status.generated_first_present
+            || self
+                .windows_frame_interpolation_session
+                .as_ref()
+                .and_then(|session| session.poll().ok())
+                .is_some_and(|snapshot| snapshot.generated_first_present)
+        {
+            let generation = self.frame_interpolation_controller.generation();
+            if self
+                .frame_interpolation_controller
+                .backend_first_frame(generation)
+            {
+                self.windows_frame_interpolation_reason = Some(format!(
+                    "Windows DirectML 插帧已启用：{estimated_fps:.3}→{target_fps:.0}fps，FP16 scRGB 输出，音频已补偿一帧前视延迟。"
+                ));
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn stop_windows_frame_interpolation_session(&mut self) {
+        // Dropping joins the native worker after it hides and destroys only the generated-output
+        // HWND. The source mpv HWND is never destroyed or hidden by this path.
+        self.windows_frame_interpolation_session.take();
+        if let Some(original_delay) = self.windows_frame_interpolation_audio_delay_original.take() {
+            if self.initialized && !self.ctx.is_null() {
+                let _ = self.set_property("audio-delay", &original_delay.to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn apply_windows_frame_interpolation_audio_delay(
+        &mut self,
+        source_fps: f64,
+    ) -> Result<(), String> {
+        if self
+            .windows_frame_interpolation_audio_delay_original
+            .is_some()
+        {
+            return Ok(());
+        }
+        if !source_fps.is_finite() || source_fps <= 0.0 {
+            return Err("无法计算插帧前视延迟；已保持 mpv 原画面。".to_string());
+        }
+        let original_delay = self
+            .get_property_double("audio-delay")
+            .map_err(|_| "无法读取用户当前的 audio-delay；已拒绝启用插帧。".to_string())?;
+        let compensated_delay = original_delay + 1.0 / source_fps;
+        self.set_property("audio-delay", &compensated_delay.to_string())
+            .map_err(|_| "无法应用一帧音频前视补偿；已拒绝启用插帧。".to_string())?;
+        self.windows_frame_interpolation_audio_delay_original = Some(original_delay);
+        Ok(())
+    }
+
     fn command(&self, args: &[&str]) -> Result<(), String> {
         let c_args = args
             .iter()
@@ -764,6 +1341,62 @@ impl MpvPlayer {
                 break;
             }
             let event_id = unsafe { (*event).event_id };
+            if event_id == mpv_event_id_MPV_EVENT_START_FILE {
+                #[cfg(target_os = "windows")]
+                self.stop_windows_frame_interpolation_session();
+                self.frame_interpolation_controller
+                    .on_media_event(MediaEvent::StartFile);
+                self.playback_state = "loading".to_string();
+                self.last_playback_event = "start-file".to_string();
+                self.last_playback_error = None;
+                self.file_loaded = false;
+                self.stop_requested = false;
+            } else if event_id == mpv_event_id_MPV_EVENT_FILE_LOADED {
+                let hardware_decode_ready = self
+                    .get_property_string("hwdec-current")
+                    .ok()
+                    .flatten()
+                    .is_some_and(|value| {
+                        let value = value.to_ascii_lowercase();
+                        value.starts_with("d3d11va")
+                            || value.starts_with("dxva2")
+                            || value.starts_with("nvdec")
+                            || value.starts_with("vulkan")
+                    });
+                self.frame_interpolation_controller
+                    .set_gates(hardware_decode_ready, true, false);
+                self.frame_interpolation_controller
+                    .on_media_event(MediaEvent::FileLoaded);
+                self.playback_state = "playing".to_string();
+                self.last_playback_event = "file-loaded".to_string();
+                self.last_playback_error = None;
+                self.file_loaded = true;
+            } else if event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG {
+                #[cfg(target_os = "windows")]
+                self.stop_windows_frame_interpolation_session();
+                self.frame_interpolation_controller
+                    .on_media_event(MediaEvent::VideoReconfig);
+                self.last_playback_event = "video-reconfig".to_string();
+            } else if event_id == mpv_event_id_MPV_EVENT_END_FILE {
+                #[cfg(target_os = "windows")]
+                self.stop_windows_frame_interpolation_session();
+                self.frame_interpolation_controller
+                    .on_media_event(MediaEvent::EndFile);
+                if self.stop_requested {
+                    self.playback_state = "idle".to_string();
+                    self.last_playback_event = "stopped".to_string();
+                    self.stop_requested = false;
+                } else if self.file_loaded {
+                    self.playback_state = "ended".to_string();
+                    self.last_playback_event = "end-file".to_string();
+                } else {
+                    self.playback_state = "error".to_string();
+                    self.last_playback_event = "end-file-error".to_string();
+                    self.last_playback_error =
+                        Some("媒体文件未能完成加载，请打开播放诊断查看原因。".to_string());
+                }
+                self.file_loaded = false;
+            }
             if event_id == mpv_event_id_MPV_EVENT_LOG_MESSAGE {
                 let data = unsafe { (*event).data };
                 if !data.is_null() {
@@ -779,6 +1412,8 @@ impl MpvPlayer {
             batch.video_ready |= event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG;
             batch.reached_limit = index + 1 == max_events;
         }
+        #[cfg(target_os = "windows")]
+        self.poll_windows_frame_interpolation_session();
         batch
     }
 
@@ -1017,4 +1652,19 @@ fn failed_surface_state(message: String) -> MpvRenderState {
 
 pub fn create_state() -> Result<MpvState, String> {
     Ok(Arc::new(Mutex::new(MpvPlayer::new()?)))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_frame_interpolation_gate_tests {
+    use super::{has_reliable_windows_cfr_timing, source_needs_windows_frame_interpolation};
+
+    #[test]
+    fn rejects_unknown_vfr_and_sources_already_at_target_before_session_start() {
+        assert!(has_reliable_windows_cfr_timing(12.0, 24.0, 24.0));
+        assert!(!has_reliable_windows_cfr_timing(12.0, 24.0, 23.8));
+        assert!(!has_reliable_windows_cfr_timing(f64::NAN, 24.0, 24.0));
+        assert!(source_needs_windows_frame_interpolation(24.0, 60.0));
+        assert!(!source_needs_windows_frame_interpolation(60.0, 60.0));
+        assert!(!source_needs_windows_frame_interpolation(120.0, 60.0));
+    }
 }

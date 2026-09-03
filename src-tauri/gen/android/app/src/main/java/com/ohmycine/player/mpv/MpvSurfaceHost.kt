@@ -4,6 +4,9 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Build
+import android.os.Looper
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
@@ -28,6 +31,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private var initializationError: String? = null
 
     private var surfaceView: OhMyCineMpvSurfaceView? = null
+    private var frameOutputView: OhMyCineFrameOutputSurfaceView? = null
     private var surfaceContainer: FrameLayout? = null
     @Volatile
     private var pendingLoad: PendingLoad? = null
@@ -66,6 +70,17 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Volatile
     private var fsrTarget = "auto"
     @Volatile
+    private var frameInterpolationMode = "off"
+    @Volatile
+    private var frameInterpolationTarget = "auto"
+    @Volatile
+    private var frameInterpolationQuality = "auto"
+    private val frameInterpolationController = FrameInterpolationController()
+    @Volatile
+    private var frameInterpolationSessionGeneration = -1L
+    @Volatile
+    private var frameInterpolationOffscreenAttached = false
+    @Volatile
     private var fsrShaderFile: File? = null
     @Volatile
     private var fsrStatus = "not-configured"
@@ -88,6 +103,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 val index = parent.indexOfChild(webView)
                 val layoutParams = webView.layoutParams
                 val surface = OhMyCineMpvSurfaceView(activity)
+                val frameOutput = OhMyCineFrameOutputSurfaceView(activity).apply {
+                    alpha = 0f
+                }
                 val container = FrameLayout(activity).apply {
                     setBackgroundColor(Color.BLACK)
                 }
@@ -99,6 +117,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ))
+                container.addView(frameOutput, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ))
                 container.addView(webView, FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -106,6 +128,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 parent.addView(container, index, layoutParams)
                 surfaceContainer = container
                 surfaceView = surface
+                frameOutputView = frameOutput
+                frameOutput.initialize()
                 surface.initialize()
                 initializationError = null
             } catch (error: Exception) {
@@ -115,8 +139,11 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     fun destroy() {
+        stopFrameInterpolationSession("播放器正在销毁。")
         surfaceView?.destroy()
+        frameOutputView?.destroy()
         surfaceView = null
+        frameOutputView = null
         surfaceContainer = null
         pendingLoad = null
         surfaceAttached = false
@@ -139,6 +166,11 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fsrSharpness = 35.0
         fsrDenoise = true
         fsrTarget = "auto"
+        frameInterpolationMode = "off"
+        frameInterpolationTarget = "auto"
+        frameInterpolationQuality = "auto"
+        frameInterpolationSessionGeneration = -1L
+        frameInterpolationOffscreenAttached = false
         fsrShaderFile = null
         fsrStatus = "not-configured"
         fsrReason = null
@@ -162,6 +194,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     @Synchronized
     private fun play(request: PendingLoad) {
+        stopFrameInterpolationSession("正在加载新的媒体。")
         pendingLoad = null
         playbackState = "loading"
         lastPlaybackEvent = "load-command"
@@ -211,6 +244,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fsrTarget = settings.fsrTarget.takeIf {
             it == "auto" || it == "1080p" || it == "1440p" || it == "2160p"
         } ?: "auto"
+        frameInterpolationMode = FrameInterpolationPolicy.normalizeMode(settings.frameInterpolationMode)
+        frameInterpolationTarget = FrameInterpolationPolicy.normalizeTarget(settings.frameInterpolationTarget)
+        frameInterpolationQuality = FrameInterpolationPolicy.normalizeQuality(settings.frameInterpolationQuality)
+        frameInterpolationController.setRequested(frameInterpolationMode == "auto")
         videoOutputFallbackUsed = false
 
         if (initialized) {
@@ -221,6 +258,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             MPVLib.setPropertyString("video-sync", videoSync)
             applyManagedFsrShader()
         }
+        requestFrameInterpolationReconcile()
     }
 
     fun addSubtitle(url: String, title: String?, language: String?) {
@@ -234,6 +272,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     fun stop() {
+        frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.END_FILE)
+        stopFrameInterpolationSession("播放已停止。")
         pendingLoad = null
         if (initialized) {
             stopRequested = true
@@ -246,6 +286,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     fun seek(position: Double) {
         requireInitialized()
+        frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.SEEK)
+        stopFrameInterpolationSession("Seek 已清空旧一代插帧资源。")
         MPVLib.command(arrayOf("seek", position.toString(), "absolute+exact"))
     }
 
@@ -256,6 +298,11 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             "brightness", "sub-delay" -> MPVLib.setPropertyDouble(name, value.toDouble())
             "pause" -> MPVLib.setPropertyBoolean(name, value == "true" || value == "1")
             else -> MPVLib.setPropertyString(name, value)
+        }
+        if (name == "sid") {
+            stopFrameInterpolationSession("字幕轨变化，正在重新检查插帧条件。")
+            frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.TRACK_SWITCH)
+            requestFrameInterpolationReconcile()
         }
     }
 
@@ -307,6 +354,38 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     fun playbackDiagnostics(): MpvPlaybackDiagnostics {
         val logs = synchronized(diagnosticLogs) { diagnosticLogs.toList() }
+        val currentHardwareDecoder = safePropertyString("hwdec-current")
+        val currentInputHdrKind = inputHdrKind()
+        val interpolationCapability = surfaceView?.let {
+            AndroidFrameInterpolationCapabilityProbe.probe(it.context, it.display)
+        } ?: FrameInterpolationCapability(
+            supported = false,
+            backend = null,
+            reason = "Android 视频表面尚未创建。",
+            apiLevel = Build.VERSION.SDK_INT,
+            gpuName = null,
+            gpuAdapterId = null,
+            fp16 = false,
+            hdrKinds = emptyList(),
+            maxTargetFps = null,
+        )
+        val interpolationUnavailableReason = interpolationCapability.reason
+            ?: "Android ncnn Vulkan 视频插帧后端尚未就绪。"
+        val nativeSession = AndroidFrameInterpolationNative.sessionSnapshot()
+        frameInterpolationController.setGates(
+            hardwareDecode = currentHardwareDecoder?.lowercase()?.startsWith("mediacodec") == true,
+            hdrPath = interpolationCapability.fp16 &&
+                currentInputHdrKind in interpolationCapability.hdrKinds,
+            backend = interpolationCapability.supported,
+        )
+        frameInterpolationController.setGraphicSubtitleActive(graphicSubtitleSelected())
+        val controllerSnapshot = frameInterpolationController.snapshot()
+        val interpolationState = controllerSnapshot.state
+        val interpolationReason = when (interpolationState) {
+            "disabled" -> null
+            "unavailable-no-hwdec" -> "当前媒体未使用硬件解码，视频插帧已自动关闭。"
+            else -> interpolationCapability.reason ?: controllerSnapshot.reason ?: interpolationUnavailableReason
+        }
         return MpvPlaybackDiagnostics(
             state = playbackState,
             lastEvent = lastPlaybackEvent,
@@ -315,12 +394,35 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             videoFormat = safePropertyString("video-format"),
             audioCodec = safePropertyString("audio-codec-name"),
             voConfigured = safePropertyBoolean("vo-configured") ?: false,
-            hardwareDecoder = safePropertyString("hwdec-current"),
+            hardwareDecoder = currentHardwareDecoder,
             videoOutput = activeVideoOutput,
             videoOutputFallbackUsed = videoOutputFallbackUsed,
             playbackTransport = playbackTransport,
             fsrStatus = fsrStatus,
             fsrReason = fsrReason,
+            frameInterpolationRequestedMode = frameInterpolationMode,
+            frameInterpolationEffectiveState = interpolationState,
+            frameInterpolationReason = interpolationReason,
+            frameInterpolationBackend = interpolationCapability.backend,
+            frameInterpolationInputHdrKind = currentInputHdrKind,
+            frameInterpolationOutputHdrMode = if (nativeSession?.firstFramePresented == true) {
+                when (currentInputHdrKind) {
+                    "pq", "hdr10plus", "dolby-vision" -> "pq"
+                    "hlg" -> "hlg"
+                    "sdr" -> "sdr"
+                    else -> "unknown"
+                }
+            } else {
+                "unknown"
+            },
+            frameInterpolationTargetFps = frameInterpolationTarget.toIntOrNull(),
+            frameInterpolationFlowScale = null,
+            frameInterpolationModelTimeP50Ms = null,
+            frameInterpolationModelTimeP95Ms = null,
+            frameInterpolationDroppedFrames = nativeSession?.let {
+                it.sourceDroppedFrames + it.staleFrames + it.importFailures
+            } ?: 0,
+            frameInterpolationCapability = interpolationCapability,
             logs = logs,
         )
     }
@@ -330,14 +432,17 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     override fun eventProperty(property: String, value: Long) = Unit
 
     override fun eventProperty(property: String, value: Boolean) {
-        if (property == "vo-configured" && value)
+        if (property == "vo-configured" && value) {
             lastPlaybackEvent = "video-output-ready"
+            requestFrameInterpolationReconcile()
+        }
     }
 
     override fun eventProperty(property: String, value: String) {
         when (property) {
             "video-format" -> if (value.isNotBlank()) lastPlaybackEvent = "video-format-ready"
             "audio-codec-name" -> if (value.isNotBlank()) lastPlaybackEvent = "audio-format-ready"
+            "hwdec-current", "video-params/gamma" -> requestFrameInterpolationReconcile()
         }
     }
 
@@ -346,6 +451,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     override fun event(eventId: Int) {
         when (eventId) {
             MPVLib.MpvEvent.START_FILE -> {
+                stopFrameInterpolationSession("正在切换媒体。")
+                frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.START_FILE)
                 stopRequested = false
                 playbackState = "loading"
                 lastPlaybackEvent = "start-file"
@@ -353,18 +460,26 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 fileLoaded = false
             }
             MPVLib.MpvEvent.FILE_LOADED -> {
+                frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.FILE_LOADED)
                 playbackState = "playing"
                 lastPlaybackEvent = "file-loaded"
                 lastPlaybackError = null
                 fileLoaded = true
+                requestFrameInterpolationReconcile()
             }
-            MPVLib.MpvEvent.VIDEO_RECONFIG -> lastPlaybackEvent = "video-reconfig"
+            MPVLib.MpvEvent.VIDEO_RECONFIG -> {
+                stopFrameInterpolationSession("视频输出已重配置。")
+                frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.VIDEO_RECONFIG)
+                lastPlaybackEvent = "video-reconfig"
+            }
             MPVLib.MpvEvent.AUDIO_RECONFIG -> lastPlaybackEvent = "audio-reconfig"
             MPVLib.MpvEvent.PLAYBACK_RESTART -> {
                 playbackState = "playing"
                 lastPlaybackEvent = "playback-restart"
             }
             MPVLib.MpvEvent.END_FILE -> {
+                stopFrameInterpolationSession("媒体播放结束。")
+                frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.END_FILE)
                 if (stopRequested) {
                     playbackState = "idle"
                     lastPlaybackEvent = "stopped"
@@ -413,6 +528,80 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             .getOrNull()
             ?.trim()
             ?.takeIf { it.isNotEmpty() && it != "unknown" }
+    }
+
+    private fun requestFrameInterpolationReconcile() {
+        val view = surfaceView ?: return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            view.reconcileFrameInterpolationSession()
+        } else {
+            view.post { view.reconcileFrameInterpolationSession() }
+        }
+    }
+
+    private fun stopFrameInterpolationSession(reason: String) {
+        val view = surfaceView
+        if (view == null) {
+            AndroidFrameInterpolationNative.stopSession()
+            AndroidFrameInterpolationNative.destroyInputSurface()
+            frameInterpolationSessionGeneration = -1L
+            frameInterpolationOffscreenAttached = false
+            return
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            view.stopFrameInterpolationSession(reason)
+        } else {
+            view.post { view.stopFrameInterpolationSession(reason) }
+        }
+    }
+
+    private fun inputHdrKind(): String {
+        if (!initialized || !fileLoaded)
+            return "unknown"
+        val doviProfile = safePropertyString("video-params/dolby-vision-profile")
+            ?: safePropertyString("current-tracks/video/demux-dovi-profile")
+        if (!doviProfile.isNullOrBlank())
+            return "dolby-vision"
+        if (safePropertyDouble("video-params/scene-max-r") != null)
+            return "hdr10plus"
+        return when (safePropertyString("video-params/gamma")?.lowercase()) {
+            "pq" -> "pq"
+            "hlg" -> "hlg"
+            else -> "sdr"
+        }
+    }
+
+    private fun graphicSubtitleSelected(): Boolean {
+        if (!initialized || !fileLoaded)
+            return false
+        val graphicCodecs = setOf(
+            "hdmv_pgs_subtitle",
+            "pgs",
+            "dvd_subtitle",
+            "dvdsub",
+            "dvb_subtitle",
+            "dvbsub",
+            "xsub",
+        )
+        val count = MPVLib.getPropertyInt("track-list/count") ?: return false
+        for (index in 0 until count) {
+            val prefix = "track-list/$index"
+            if (MPVLib.getPropertyString("$prefix/type") != "sub")
+                continue
+            if (MPVLib.getPropertyBoolean("$prefix/selected") != true)
+                continue
+            val codec = MPVLib.getPropertyString("$prefix/codec")?.lowercase() ?: return false
+            return codec in graphicCodecs
+        }
+        return false
+    }
+
+    private fun safePropertyDouble(name: String): Double? {
+        if (!initialized)
+            return null
+        return runCatching { MPVLib.getPropertyDouble(name) }
+            .getOrNull()
+            ?.takeIf { it.isFinite() }
     }
 
     private fun applyManagedFsrShader() {
@@ -544,6 +733,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     private class OhMyCineMpvSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         private var destroyed = false
+        private var frameInputSurface: Surface? = null
 
         fun initialize() {
             if (!initialized) {
@@ -574,6 +764,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.setOptionString("demuxer-max-bytes", demuxerMaxBytes.toString())
                 MPVLib.setOptionString("demuxer-max-back-bytes", (32 * 1024 * 1024).toString())
                 MPVLib.setOptionString("video-sync", videoSync)
+                MPVLib.setOptionString("target-colorspace-hint", "auto")
+                MPVLib.setOptionString("target-colorspace-hint-mode", "source-dynamic")
+                MPVLib.setOptionString("hdr-compute-peak", "auto")
                 MPVLib.setOptionString("gpu-shader-cache-dir", context.cacheDir.path)
                 MPVLib.setOptionString("icc-cache-dir", context.cacheDir.path)
                 MPVLib.setOptionString("tls-verify", "yes")
@@ -583,6 +776,19 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.observeProperty("audio-codec-name", MPVLib.MpvFormat.STRING)
                 MPVLib.observeProperty("vo-configured", MPVLib.MpvFormat.FLAG)
                 MPVLib.observeProperty("hwdec-current", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("video-params/gamma", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("video-params/primaries", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("video-params/sig-peak", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("video-params/max-cll", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("video-params/max-fall", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("video-params/dolby-vision-profile", MPVLib.MpvFormat.INT64)
+                MPVLib.observeProperty("current-tracks/video/demux-dovi-profile", MPVLib.MpvFormat.INT64)
+                MPVLib.observeProperty("video-params/scene-max-r", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("video-params/scene-max-g", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("video-params/scene-max-b", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("video-params/scene-avg", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("estimated-vf-fps", MPVLib.MpvFormat.DOUBLE)
+                MPVLib.observeProperty("display-fps", MPVLib.MpvFormat.DOUBLE)
                 initialized = true
                 lastPlaybackEvent = "mpv-initialized"
                 applyManagedFsrShader()
@@ -596,6 +802,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             if (destroyed)
                 return
             destroyed = true
+            stopFrameInterpolationSession("视频 Surface 正在销毁。")
             holder.removeCallback(this)
             if (surfaceAttached) {
                 MPVLib.setPropertyString("vo", "null")
@@ -610,12 +817,14 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
+            frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.SURFACE_READY)
             MPVLib.attachSurface(holder.surface)
             MPVLib.setOptionString("force-window", "yes")
             MPVLib.setPropertyString("vo", activeVideoOutput)
             surfaceAttached = true
             lastPlaybackEvent = "surface-attached"
             pendingLoad?.let { play(it) }
+            reconcileFrameInterpolationSession()
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -623,9 +832,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             surfaceHeight = height.coerceAtLeast(0)
             MPVLib.setPropertyString("android-surface-size", "${width}x$height")
             refreshFsrTargetParameters()
+            stopFrameInterpolationSession("视频尺寸已变化，正在重建插帧 Surface。")
+            reconcileFrameInterpolationSession()
         }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
+            frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.SURFACE_LOST)
+            stopFrameInterpolationSession("视频 Surface 已失效。", restoreDirect = false)
             if (!surfaceAttached)
                 return
             MPVLib.setPropertyString("vo", "null")
@@ -633,6 +846,174 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             MPVLib.detachSurface()
             surfaceAttached = false
             lastPlaybackEvent = "surface-detached"
+        }
+
+        fun reconcileFrameInterpolationSession() {
+            if (destroyed || !initialized || !fileLoaded || !holder.surface.isValid ||
+                surfaceWidth <= 0 || surfaceHeight <= 0) {
+                return
+            }
+            val capability = AndroidFrameInterpolationCapabilityProbe.probe(context, display)
+            val outputSurface = frameOutputView?.holder?.surface
+            if (outputSurface == null || !outputSurface.isValid)
+                return
+            val currentHardwareDecoder = safePropertyString("hwdec-current")
+            val hdrKind = inputHdrKind()
+            val hardwareDecodeReady = currentHardwareDecoder
+                ?.lowercase()
+                ?.startsWith("mediacodec") == true
+            val hdrPathReady = capability.fp16 && hdrKind in capability.hdrKinds
+            val graphicSubtitleActive = graphicSubtitleSelected()
+            frameInterpolationController.setGates(
+                hardwareDecode = hardwareDecodeReady,
+                hdrPath = hdrPathReady,
+                backend = capability.supported,
+            )
+            frameInterpolationController.setGraphicSubtitleActive(graphicSubtitleActive)
+            val controllerGeneration = frameInterpolationController.snapshot().generation
+            val gatesReady = frameInterpolationMode == "auto" && capability.supported &&
+                hardwareDecodeReady && hdrPathReady && !graphicSubtitleActive
+            if (!gatesReady) {
+                if (frameInputSurface != null || frameInterpolationOffscreenAttached)
+                    stopFrameInterpolationSession("插帧能力门控已关闭。")
+                return
+            }
+            if (frameInterpolationSessionGeneration == controllerGeneration &&
+                frameInterpolationOffscreenAttached) {
+                return
+            }
+            stopFrameInterpolationSession("正在替换旧一代插帧会话。")
+            val input = AndroidFrameInterpolationNative.prepareSession(
+                context,
+                outputSurface,
+                surfaceWidth,
+                surfaceHeight,
+                hdrKind,
+                controllerGeneration,
+            ) ?: run {
+                frameInterpolationController.backendFailed("RGBA16F 离屏 Surface 或 Vulkan 输出会话创建失败。")
+                return
+            }
+            frameInputSurface = input
+            if (!AndroidFrameInterpolationNative.startSession()) {
+                input.release()
+                frameInputSurface = null
+                AndroidFrameInterpolationNative.stopSession()
+                frameInterpolationController.backendFailed("Android GPU 插帧消费线程启动失败。")
+                return
+            }
+            val switched = runCatching {
+                if (surfaceAttached) {
+                    MPVLib.setPropertyString("vo", "null")
+                    MPVLib.detachSurface()
+                    surfaceAttached = false
+                }
+                MPVLib.attachSurface(input)
+                MPVLib.setPropertyString("android-surface-size", "${surfaceWidth}x$surfaceHeight")
+                MPVLib.setPropertyString("force-window", "yes")
+                MPVLib.setPropertyString("vo", activeVideoOutput)
+                surfaceAttached = true
+                frameInterpolationOffscreenAttached = true
+                frameInterpolationSessionGeneration = controllerGeneration
+            }.isSuccess
+            if (!switched) {
+                stopFrameInterpolationSession("mpv 无法切换到 RGBA16F 离屏 Surface。")
+                frameInterpolationController.backendFailed("mpv 离屏 Surface 切换失败，已恢复直接输出。")
+                return
+            }
+            // Import is not presentation. The native backend must report a
+            // swapchain-presented frame from this exact generation before the
+            // controller is allowed to transition to active.
+            postDelayed({ verifyFirstPresentedFrame(controllerGeneration) }, 1_000L)
+        }
+
+        fun stopFrameInterpolationSession(reason: String, restoreDirect: Boolean = true) {
+            val hadSession = frameInputSurface != null || frameInterpolationOffscreenAttached
+            frameOutputView?.alpha = 0f
+            if (frameInterpolationOffscreenAttached && surfaceAttached) {
+                runCatching {
+                    MPVLib.setPropertyString("vo", "null")
+                    MPVLib.detachSurface()
+                }
+                surfaceAttached = false
+            }
+            AndroidFrameInterpolationNative.stopSession()
+            AndroidFrameInterpolationNative.destroyInputSurface()
+            frameInputSurface?.release()
+            frameInputSurface = null
+            frameInterpolationOffscreenAttached = false
+            frameInterpolationSessionGeneration = -1L
+            if (restoreDirect && !destroyed && initialized && holder.surface.isValid && !surfaceAttached) {
+                runCatching {
+                    MPVLib.attachSurface(holder.surface)
+                    if (surfaceWidth > 0 && surfaceHeight > 0)
+                        MPVLib.setPropertyString("android-surface-size", "${surfaceWidth}x$surfaceHeight")
+                    MPVLib.setPropertyString("force-window", "yes")
+                    MPVLib.setPropertyString("vo", activeVideoOutput)
+                    surfaceAttached = true
+                    lastPlaybackEvent = "frame-interpolation-direct-fallback"
+                }.onFailure {
+                    initializationError = "插帧旁路后恢复原生 Surface 失败：${it.message ?: "unknown"}"
+                }
+            }
+            if (hadSession)
+                lastPlaybackError = null
+            if (hadSession && reason.isNotBlank())
+                lastPlaybackEvent = "frame-interpolation-bypass"
+        }
+
+        private fun verifyFirstPresentedFrame(generation: Long) {
+            if (!frameInterpolationOffscreenAttached ||
+                frameInterpolationSessionGeneration != generation) {
+                return
+            }
+            val snapshot = AndroidFrameInterpolationNative.sessionSnapshot()
+            if (snapshot?.generation == generation && snapshot.firstFramePresented) {
+                if (!frameInterpolationController.backendFirstFrame(generation)) {
+                    stopFrameInterpolationSession("首帧已过期，已恢复原生播放。")
+                } else {
+                    frameOutputView?.alpha = 1f
+                }
+                return
+            }
+            val detail = snapshot?.reason ?: "真实输出 Surface 尚未呈现首帧。"
+            stopFrameInterpolationSession("首帧呈现超时，已恢复原生播放。")
+            frameInterpolationController.backendFailed("$detail；已恢复原生硬解播放。")
+        }
+    }
+
+    private class OhMyCineFrameOutputSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
+        private var destroyed = false
+
+        fun initialize() {
+            setZOrderMediaOverlay(false)
+            holder.setFormat(PixelFormat.OPAQUE)
+            holder.addCallback(this)
+        }
+
+        fun destroy() {
+            if (destroyed)
+                return
+            destroyed = true
+            alpha = 0f
+            holder.removeCallback(this)
+        }
+
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            alpha = 0f
+            requestFrameInterpolationReconcile()
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            if (width <= 0 || height <= 0)
+                return
+            stopFrameInterpolationSession("插帧输出 Surface 尺寸已变化。")
+            requestFrameInterpolationReconcile()
+        }
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            alpha = 0f
+            stopFrameInterpolationSession("插帧输出 Surface 已失效。")
         }
     }
 
@@ -670,6 +1051,9 @@ internal data class MpvEngineSettings(
     val fsrSharpness: Double,
     val fsrDenoise: Boolean,
     val fsrTarget: String,
+    val frameInterpolationMode: String,
+    val frameInterpolationTarget: String,
+    val frameInterpolationQuality: String,
 )
 internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
@@ -702,5 +1086,17 @@ internal data class MpvPlaybackDiagnostics(
     val playbackTransport: String,
     val fsrStatus: String,
     val fsrReason: String?,
+    val frameInterpolationRequestedMode: String,
+    val frameInterpolationEffectiveState: String,
+    val frameInterpolationReason: String?,
+    val frameInterpolationBackend: String?,
+    val frameInterpolationInputHdrKind: String,
+    val frameInterpolationOutputHdrMode: String,
+    val frameInterpolationTargetFps: Int?,
+    val frameInterpolationFlowScale: Double?,
+    val frameInterpolationModelTimeP50Ms: Double?,
+    val frameInterpolationModelTimeP95Ms: Double?,
+    val frameInterpolationDroppedFrames: Long,
+    val frameInterpolationCapability: FrameInterpolationCapability,
     val logs: List<String>,
 )

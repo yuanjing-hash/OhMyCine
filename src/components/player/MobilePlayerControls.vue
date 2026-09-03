@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { MpvOrientationMode, MpvPlaybackDiagnostics, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
-import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFrameInterpolationSettings, PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { computed, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { streamVariantDescription, streamVariantLabel, usableStreamVariants } from '@/services/streamVariants'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import DanmakuToggleIcon from './DanmakuToggleIcon.vue'
+import FrameInterpolationSettingsContent from './FrameInterpolationSettingsContent.vue'
 import FsrSettingsContent from './FsrSettingsContent.vue'
 import ProgressBar from './ProgressBar.vue'
 
-type MobilePanel = 'more' | 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'orientation'
+type MobilePanel = 'more' | 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'frameInterpolation' | 'orientation'
 
 const props = defineProps<{
   title: string
@@ -45,6 +46,9 @@ const props = defineProps<{
   pictureSettingsError: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
+  frameInterpolationSettings: PlayerFrameInterpolationSettings
+  frameInterpolationDiagnostics: MpvPlaybackDiagnostics | null
+  frameInterpolationError: string | null
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
   danmakuSettings: DanmakuSettings
@@ -73,6 +77,7 @@ const emit = defineEmits<{
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
+  updateFrameInterpolationSettings: [patch: Partial<PlayerFrameInterpolationSettings>]
   setOrientationMode: [mode: MpvOrientationMode]
   interactionChange: [active: boolean]
   toggleDanmaku: []
@@ -104,6 +109,7 @@ const panelTitle = computed(() => {
     case 'queue': return '播放队列'
     case 'picture': return '画面'
     case 'fsr': return 'FSR 超分'
+    case 'frameInterpolation': return '视频插帧'
     case 'orientation': return '屏幕方向'
     default: return '播放工具'
   }
@@ -361,6 +367,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               <button type="button" class="mobile-sheet-action" @click="openPanel('fsr')">
                 <span>FSR 超分与锐化</span><b>›</b>
               </button>
+              <button type="button" class="mobile-sheet-action" @click="openPanel('frameInterpolation')">
+                <span>视频插帧 · {{ frameInterpolationDiagnostics?.frameInterpolationEffectiveState || 'disabled' }}</span><b>›</b>
+              </button>
               <button type="button" class="mobile-sheet-action" @click="openPanel('subtitle')">
                 <span>字幕与偏移</span><b>›</b>
               </button>
@@ -496,6 +505,14 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
             </template>
 
             <FsrSettingsContent v-else-if="activePanel === 'fsr'" :settings="fsrSettings" :error="fsrError" @update="emit('updateFsrSettings', $event)" />
+
+            <FrameInterpolationSettingsContent
+              v-else-if="activePanel === 'frameInterpolation'"
+              :settings="frameInterpolationSettings"
+              :diagnostics="frameInterpolationDiagnostics"
+              :error="frameInterpolationError"
+              @update="emit('updateFrameInterpolationSettings', $event)"
+            />
 
             <template v-else-if="activePanel === 'orientation'">
               <button type="button" class="mobile-sheet-action" :class="{ 'is-selected': orientationMode === 'auto' }" @click="chooseOrientation('auto')">

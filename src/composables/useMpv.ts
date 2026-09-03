@@ -123,7 +123,31 @@ export interface MpvPlaybackDiagnostics {
   playbackTransport: string
   fsrStatus?: string
   fsrReason?: string | null
+  frameInterpolationRequestedMode: 'off' | 'auto'
+  frameInterpolationEffectiveState: 'disabled' | 'probing' | 'active' | 'temporary-bypass' | 'unavailable-no-hwdec' | 'unavailable-hdr-path' | 'fallback-performance' | 'backend-error' | 'backend-unavailable'
+  frameInterpolationReason: string | null
+  frameInterpolationBackend: 'windows-directml' | 'android-ncnn-vulkan' | null
+  frameInterpolationInputHdrKind: 'unknown' | 'sdr' | 'pq' | 'hlg' | 'hdr10plus' | 'dolby-vision'
+  frameInterpolationOutputHdrMode: 'unknown' | 'sdr' | 'pq' | 'hlg' | 'scrgb'
+  frameInterpolationTargetFps: number | null
+  frameInterpolationFlowScale: number | null
+  frameInterpolationModelTimeP50Ms: number | null
+  frameInterpolationModelTimeP95Ms: number | null
+  frameInterpolationDroppedFrames: number
+  frameInterpolationCapability: FrameInterpolationCapability
   logs: string[]
+}
+
+export interface FrameInterpolationCapability {
+  supported: boolean
+  backend: 'windows-directml' | 'android-ncnn-vulkan' | null
+  reason: string | null
+  apiLevel: number | null
+  gpuName: string | null
+  gpuAdapterId: string | null
+  fp16: boolean
+  hdrKinds: Array<'sdr' | 'pq' | 'hlg' | 'hdr10plus' | 'dolby-vision'>
+  maxTargetFps: number | null
 }
 
 export interface VideoDynamicRangeState {
@@ -195,6 +219,9 @@ async function applyEngineSettings(): Promise<void> {
       fsrSharpness: settings.fsrSharpness,
       fsrDenoise: settings.fsrDenoise,
       fsrTarget: settings.fsrTarget,
+      frameInterpolationMode: settings.frameInterpolationMode,
+      frameInterpolationTarget: settings.frameInterpolationTarget,
+      frameInterpolationQuality: settings.frameInterpolationQuality,
     },
   })
 }

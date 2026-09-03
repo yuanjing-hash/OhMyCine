@@ -5,7 +5,7 @@ import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRe
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
-import type { PlayerFsrSettings, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFrameInterpolationSettings, PlayerFsrSettings, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -164,6 +164,8 @@ const pictureSettingsError = ref<string | null>(null)
 const initialInteractionSettings = loadPlayerInteractionSettings()
 const fsrSettings = ref<PlayerFsrSettings>(pickFsrSettings(initialInteractionSettings))
 const fsrSettingsError = ref<string | null>(null)
+const frameInterpolationSettings = ref<PlayerFrameInterpolationSettings>(pickFrameInterpolationSettings(initialInteractionSettings))
+const frameInterpolationSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
 const providerSyncDiagnostics = ref<ProviderPlaybackSyncDiagnostic[]>([])
 const resumeMessage = ref<string | null>(null)
@@ -2599,6 +2601,14 @@ function pickFsrSettings(settings: PlayerInteractionSettings): PlayerFsrSettings
   }
 }
 
+function pickFrameInterpolationSettings(settings: PlayerInteractionSettings): PlayerFrameInterpolationSettings {
+  return {
+    frameInterpolationMode: settings.frameInterpolationMode,
+    frameInterpolationTarget: settings.frameInterpolationTarget,
+    frameInterpolationQuality: settings.frameInterpolationQuality,
+  }
+}
+
 async function handleUpdateFsrSettings(patch: Partial<PlayerFsrSettings>) {
   fsrSettingsError.value = null
   const next = normalizePlayerInteractionSettings({
@@ -2614,6 +2624,29 @@ async function handleUpdateFsrSettings(patch: Partial<PlayerFsrSettings>) {
   }
   catch (error) {
     fsrSettingsError.value = toSafeErrorMessage(error, 'FSR 设置暂时无法应用，播放器已保持普通缩放。')
+  }
+}
+
+async function handleUpdateFrameInterpolationSettings(patch: Partial<PlayerFrameInterpolationSettings>) {
+  frameInterpolationSettingsError.value = null
+  if (patch.frameInterpolationMode === 'auto' && playbackDiagnostics.value?.frameInterpolationCapability.supported !== true) {
+    frameInterpolationSettingsError.value = playbackDiagnostics.value?.frameInterpolationCapability.reason
+      || '当前设备尚未通过硬解、FP16 高精度输出与 GPU 后端能力检测。'
+    return
+  }
+  const next = normalizePlayerInteractionSettings({
+    ...loadPlayerInteractionSettings(),
+    ...patch,
+  })
+  frameInterpolationSettings.value = pickFrameInterpolationSettings(next)
+
+  try {
+    await savePlayerInteractionSettings(next)
+    await applyEngineSettings()
+    await refreshPlaybackDiagnostics()
+  }
+  catch (error) {
+    frameInterpolationSettingsError.value = toSafeErrorMessage(error, '视频插帧设置暂时无法应用，播放器已恢复原始画面。')
   }
 }
 
@@ -3091,6 +3124,9 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :fsr-settings="fsrSettings"
         :fsr-error="fsrSettingsError"
+        :frame-interpolation-settings="frameInterpolationSettings"
+        :frame-interpolation-diagnostics="playbackDiagnostics"
+        :frame-interpolation-error="frameInterpolationSettingsError"
         :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
@@ -3113,6 +3149,7 @@ watch(
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
         @update-fsr-settings="handleUpdateFsrSettings"
+        @update-frame-interpolation-settings="handleUpdateFrameInterpolationSettings"
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @interaction-change="handleControlsInteraction"
@@ -3161,6 +3198,9 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :fsr-settings="fsrSettings"
         :fsr-error="fsrSettingsError"
+        :frame-interpolation-settings="frameInterpolationSettings"
+        :frame-interpolation-diagnostics="playbackDiagnostics"
+        :frame-interpolation-error="frameInterpolationSettingsError"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
         :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length"
@@ -3183,6 +3223,7 @@ watch(
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
         @update-fsr-settings="handleUpdateFsrSettings"
+        @update-frame-interpolation-settings="handleUpdateFrameInterpolationSettings"
         @set-orientation-mode="handleSetOrientationMode"
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"

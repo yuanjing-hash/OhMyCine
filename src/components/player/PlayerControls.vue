@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { MpvOrientationMode, MpvPlaybackDiagnostics, SubtitleSelectionId, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
-import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFrameInterpolationSettings, PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
@@ -45,6 +45,9 @@ const props = defineProps<{
   pictureSettingsError: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
+  frameInterpolationSettings: PlayerFrameInterpolationSettings
+  frameInterpolationDiagnostics: MpvPlaybackDiagnostics | null
+  frameInterpolationError: string | null
   mobileLayout: boolean
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
@@ -73,6 +76,7 @@ const emit = defineEmits<{
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
+  updateFrameInterpolationSettings: [patch: Partial<PlayerFrameInterpolationSettings>]
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   interactionChange: [active: boolean]
@@ -801,7 +805,25 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
       </button>
     </div>
 
-    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" :fsr-settings="fsrSettings" :fsr-error="fsrError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" @update-fsr-settings="emit('updateFsrSettings', $event)" />
+    <PlayerSettingsPanel
+      :open="settingsPanelOpen"
+      :aspect-mode="videoAspectMode"
+      :fit-mode="videoFitMode"
+      :video-brightness="videoBrightness"
+      :error-message="pictureSettingsError"
+      :fsr-settings="fsrSettings"
+      :fsr-error="fsrError"
+      :frame-interpolation-settings="frameInterpolationSettings"
+      :frame-interpolation-diagnostics="frameInterpolationDiagnostics"
+      :frame-interpolation-error="frameInterpolationError"
+      @close="closeSettingsPanel"
+      @interaction-change="setSettingsPanelInteracting"
+      @set-aspect-mode="(mode) => emit('setVideoAspect', mode)"
+      @set-fit-mode="(mode) => emit('setVideoFit', mode)"
+      @set-video-brightness="(level) => emit('setVideoBrightness', level)"
+      @update-fsr-settings="emit('updateFsrSettings', $event)"
+      @update-frame-interpolation-settings="emit('updateFrameInterpolationSettings', $event)"
+    />
   </div>
 </template>
 

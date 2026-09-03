@@ -1,0 +1,1157 @@
+// SPDX-License-Identifier: MIT
+
+#include <dml_provider_factory.h>
+#include <onnxruntime_cxx_api.h>
+
+#include <wrl/client.h>
+#include <windows.h>
+#include <d3d11on12.h>
+#include <d3dcompiler.h>
+#include <dxgi1_6.h>
+#include <windows.graphics.capture.interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Capture.h>
+#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <exception>
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+#pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "DirectML.lib")
+#pragma comment(lib, "runtimeobject.lib")
+
+namespace {
+
+using Microsoft::WRL::ComPtr;
+
+void throw_if_failed(HRESULT result, const char* operation) {
+    if (FAILED(result)) {
+        char message[160]{};
+        std::snprintf(
+            message,
+            sizeof(message),
+            "%s failed with HRESULT 0x%08lx",
+            operation,
+            static_cast<unsigned long>(result));
+        throw std::runtime_error(message);
+    }
+}
+
+void write_reason(char* destination, size_t capacity, const char* reason) {
+    if (destination == nullptr || capacity == 0)
+        return;
+    std::snprintf(destination, capacity, "%s", reason == nullptr ? "unknown" : reason);
+}
+
+bool expected_names(Ort::Session& session) {
+    Ort::AllocatorWithDefaultOptions allocator;
+    if (session.GetInputCount() != 3 || session.GetOutputCount() != 2)
+        return false;
+    const char* inputs[] = {"earlier_proxy", "later_proxy", "timestep"};
+    const char* outputs[] = {"flow_pixels", "blend_mask"};
+    for (size_t index = 0; index < 3; ++index) {
+        auto name = session.GetInputNameAllocated(index, allocator);
+        if (std::strcmp(name.get(), inputs[index]) != 0)
+            return false;
+    }
+    for (size_t index = 0; index < 2; ++index) {
+        auto name = session.GetOutputNameAllocated(index, allocator);
+        if (std::strcmp(name.get(), outputs[index]) != 0)
+            return false;
+    }
+    return true;
+}
+
+struct GpuTensor {
+    ComPtr<ID3D12Resource> resource;
+    void* allocation = nullptr;
+};
+
+ComPtr<ID3D12Resource> create_buffer(
+    ID3D12Device* device,
+    size_t byte_count,
+    D3D12_HEAP_TYPE heap_type,
+    D3D12_RESOURCE_STATES initial_state,
+    D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE) {
+    const D3D12_HEAP_PROPERTIES heap{
+        heap_type,
+        D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        D3D12_MEMORY_POOL_UNKNOWN,
+        1,
+        1,
+    };
+    const D3D12_RESOURCE_DESC desc{
+        D3D12_RESOURCE_DIMENSION_BUFFER,
+        0,
+        static_cast<UINT64>(byte_count),
+        1,
+        1,
+        1,
+        DXGI_FORMAT_UNKNOWN,
+        {1, 0},
+        D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        flags,
+    };
+    ComPtr<ID3D12Resource> resource;
+    throw_if_failed(device->CreateCommittedResource(
+        &heap,
+        D3D12_HEAP_FLAG_NONE,
+        &desc,
+        initial_state,
+        nullptr,
+        IID_PPV_ARGS(&resource)), "ID3D12Device::CreateCommittedResource");
+    return resource;
+}
+
+void execute_and_wait(
+    ID3D12Device* device,
+    ID3D12CommandQueue* queue,
+    ID3D12GraphicsCommandList* list) {
+    throw_if_failed(list->Close(), "ID3D12GraphicsCommandList::Close");
+    ID3D12CommandList* lists[] = {list};
+    queue->ExecuteCommandLists(1, lists);
+    ComPtr<ID3D12Fence> fence;
+    throw_if_failed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "ID3D12Device::CreateFence");
+    const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (event == nullptr)
+        throw_if_failed(HRESULT_FROM_WIN32(GetLastError()), "CreateEventW");
+    throw_if_failed(queue->Signal(fence.Get(), 1), "ID3D12CommandQueue::Signal");
+    throw_if_failed(fence->SetEventOnCompletion(1, event), "ID3D12Fence::SetEventOnCompletion");
+    WaitForSingleObject(event, INFINITE);
+    CloseHandle(event);
+}
+
+void upload_inputs(
+    ID3D12Device* device,
+    ID3D12CommandQueue* queue,
+    const std::vector<std::pair<ComPtr<ID3D12Resource>, const std::vector<float>*>>& uploads) {
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    throw_if_failed(device->CreateCommandAllocator(
+        D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)), "ID3D12Device::CreateCommandAllocator");
+    throw_if_failed(device->CreateCommandList(
+        0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list)), "ID3D12Device::CreateCommandList");
+    std::vector<ComPtr<ID3D12Resource>> staging;
+    staging.reserve(uploads.size());
+    for (const auto& [destination, source] : uploads) {
+        const size_t bytes = source->size() * sizeof(float);
+        auto upload = create_buffer(
+            device, bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+        void* mapped = nullptr;
+        const D3D12_RANGE no_read{0, 0};
+        throw_if_failed(upload->Map(0, &no_read, &mapped), "ID3D12Resource::Map");
+        std::memcpy(mapped, source->data(), bytes);
+        upload->Unmap(0, nullptr);
+        list->CopyBufferRegion(destination.Get(), 0, upload.Get(), 0, bytes);
+        const D3D12_RESOURCE_BARRIER barrier{
+            D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            {.Transition = {
+                destination.Get(),
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            }},
+        };
+        list->ResourceBarrier(1, &barrier);
+        staging.push_back(std::move(upload));
+    }
+    execute_and_wait(device, queue, list.Get());
+}
+
+const OrtDmlApi* dml_api() {
+    const void* api = nullptr;
+    Ort::ThrowOnError(Ort::GetApi().GetExecutionProviderApi("DML", ORT_API_VERSION, &api));
+    return static_cast<const OrtDmlApi*>(api);
+}
+
+GpuTensor bind_gpu_tensor(
+    const OrtDmlApi* api,
+    ID3D12Device* device,
+    size_t byte_count,
+    D3D12_RESOURCE_STATES initial_state) {
+    GpuTensor tensor;
+    tensor.resource = create_buffer(
+        device,
+        byte_count,
+        D3D12_HEAP_TYPE_DEFAULT,
+        initial_state,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    Ort::ThrowOnError(api->CreateGPUAllocationFromD3DResource(
+        tensor.resource.Get(), &tensor.allocation));
+    return tensor;
+}
+
+void free_gpu_tensor(const OrtDmlApi* api, GpuTensor& tensor) noexcept {
+    if (tensor.allocation != nullptr) {
+        const OrtStatus* status = api->FreeGPUAllocation(tensor.allocation);
+        if (status != nullptr)
+            Ort::GetApi().ReleaseStatus(const_cast<OrtStatus*>(status));
+        tensor.allocation = nullptr;
+    }
+}
+
+constexpr wchar_t kOutputWindowClass[] = L"OhMyCineFrameGenerationOutput";
+constexpr UINT kProxySize = 64;
+
+constexpr char kProxyShader[] = R"(
+Texture2D<float4> Source : register(t0);
+RWStructuredBuffer<float> Proxy : register(u0);
+cbuffer Params : register(b0) { uint2 sourceSize; uint2 proxySize; float referenceWhite; float sourcePeak; };
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= proxySize)) return;
+    uint2 pixel = min(uint2((float2(id.xy) + 0.5) * float2(sourceSize) / float2(proxySize)), sourceSize - 1);
+    float3 linearHdr = max(Source.Load(int3(pixel, 0)).rgb, 0.0);
+    float peakScale = max(sourcePeak / max(referenceWhite, 1.0), 1.0);
+    float3 compressed = saturate(log2(1.0 + min(linearHdr, peakScale)) / log2(1.0 + peakScale));
+    uint index = id.y * proxySize.x + id.x;
+    uint plane = proxySize.x * proxySize.y;
+    Proxy[index] = compressed.r; Proxy[plane + index] = compressed.g; Proxy[2 * plane + index] = compressed.b;
+})";
+
+constexpr char kTimestepShader[] = R"(
+RWStructuredBuffer<float> Timestep : register(u0);
+cbuffer Params : register(b0) { float value; uint elementCount; float2 padding; };
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    if (id.x < elementCount) Timestep[id.x] = value;
+})";
+
+constexpr char kCompositeShader[] = R"(
+Texture2D<float4> Source0 : register(t0); Texture2D<float4> Source1 : register(t1);
+StructuredBuffer<float> Flow : register(t2); StructuredBuffer<float> Mask : register(t3);
+SamplerState LinearClamp : register(s0); RWTexture2D<float4> Output : register(u0);
+cbuffer Params : register(b0) { uint2 outputSize; uint2 proxySize; float timestep; float confidenceThreshold; uint sceneCut; float padding; };
+float conf(float3 a, float3 b) { a /= 1.0 + max(a, 0.0); b /= 1.0 + max(b, 0.0); return saturate(1.0 - dot(abs(a-b), float3(.2126,.7152,.0722))*3.0); }
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= outputSize)) return;
+    float2 uv = (float2(id.xy) + 0.5) / float2(outputSize);
+    uint2 p = min(uint2(uv * float2(proxySize)), proxySize - 1); uint i = p.y * proxySize.x + p.x; uint plane = proxySize.x * proxySize.y;
+    float4 flow = float4(Flow[i], Flow[plane+i], Flow[2*plane+i], Flow[3*plane+i]);
+    float3 a0 = Source0.SampleLevel(LinearClamp, uv, 0).rgb; float3 b0 = Source1.SampleLevel(LinearClamp, uv, 0).rgb;
+    float3 a = Source0.SampleLevel(LinearClamp, uv + flow.xy / float2(proxySize), 0).rgb;
+    float3 b = Source1.SampleLevel(LinearClamp, uv + flow.zw / float2(proxySize), 0).rgb;
+    float blend = saturate(Mask[i]); float3 generated = a * blend + b * (1.0 - blend);
+    float valid = conf(a,b) >= confidenceThreshold && sceneCut == 0;
+    Output[id.xy] = float4(clamp(valid ? generated : (timestep < 0.5 ? a0 : b0), -65504.0, 65504.0), 1.0);
+})";
+
+ComPtr<ID3DBlob> compile_compute_shader(const char* source, const char* name) {
+    ComPtr<ID3DBlob> bytecode;
+    ComPtr<ID3DBlob> errors;
+    const HRESULT result = D3DCompile(
+        source, std::strlen(source), name, nullptr, nullptr, "main", "cs_5_0",
+        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS, 0, &bytecode, &errors);
+    if (FAILED(result)) {
+        const char* detail = errors ? static_cast<const char*>(errors->GetBufferPointer()) : name;
+        throw std::runtime_error(detail);
+    }
+    return bytecode;
+}
+
+ComPtr<ID3D11Buffer> create_constant_buffer(ID3D11Device* device, UINT bytes) {
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = (bytes + 15u) & ~15u;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    ComPtr<ID3D11Buffer> buffer;
+    throw_if_failed(device->CreateBuffer(&desc, nullptr, &buffer), "CreateBuffer(constants)");
+    return buffer;
+}
+
+struct WrappedTensorViews {
+    ComPtr<ID3D11Resource> resource;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    ComPtr<ID3D11ShaderResourceView> srv;
+};
+
+WrappedTensorViews wrap_tensor(
+    ID3D11On12Device* on12,
+    ID3D11Device* device,
+    ID3D12Resource* resource,
+    UINT elements,
+    bool create_uav,
+    bool create_srv) {
+    WrappedTensorViews views;
+    const D3D11_RESOURCE_FLAGS flags{
+        (create_uav ? D3D11_BIND_UNORDERED_ACCESS : 0u)
+            | (create_srv ? D3D11_BIND_SHADER_RESOURCE : 0u),
+        0,
+        0,
+        0,
+    };
+    throw_if_failed(on12->CreateWrappedResource(
+        resource,
+        &flags,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        IID_PPV_ARGS(&views.resource)), "CreateWrappedResource(tensor)");
+    if (create_uav) {
+        D3D11_UNORDERED_ACCESS_VIEW_DESC desc{};
+        desc.Format = DXGI_FORMAT_R32_FLOAT;
+        desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        desc.Buffer.NumElements = elements;
+        throw_if_failed(device->CreateUnorderedAccessView(
+            views.resource.Get(), &desc, &views.uav), "CreateUnorderedAccessView(tensor)");
+    }
+    if (create_srv) {
+        D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+        desc.Format = DXGI_FORMAT_R32_FLOAT;
+        desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        desc.Buffer.NumElements = elements;
+        throw_if_failed(device->CreateShaderResourceView(
+            views.resource.Get(), &desc, &views.srv), "CreateShaderResourceView(tensor)");
+    }
+    return views;
+}
+
+LRESULT CALLBACK output_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+void register_output_window_class() {
+    static std::once_flag once;
+    static DWORD error = ERROR_SUCCESS;
+    std::call_once(once, [] {
+        WNDCLASSW window_class{};
+        window_class.lpfnWndProc = output_window_proc;
+        window_class.hInstance = GetModuleHandleW(nullptr);
+        window_class.lpszClassName = kOutputWindowClass;
+        if (RegisterClassW(&window_class) == 0) {
+            error = GetLastError();
+            if (error == ERROR_CLASS_ALREADY_EXISTS)
+                error = ERROR_SUCCESS;
+        }
+    });
+    if (error != ERROR_SUCCESS)
+        throw_if_failed(HRESULT_FROM_WIN32(error), "RegisterClassW(frame-generation output)");
+}
+
+struct WindowsFrameGenerationSession {
+    WindowsFrameGenerationSession(HWND source, std::wstring model, UINT target, bool hdr)
+        : source_hwnd(source), model_path(std::move(model)), target_fps(target), hdr_input(hdr) {}
+
+    HWND source_hwnd = nullptr;
+    std::wstring model_path;
+    UINT target_fps = 60;
+    bool hdr_input = false;
+    HWND output_hwnd = nullptr;
+    std::atomic<bool> stop_requested{false};
+    std::atomic<bool> captured_pair{false};
+    std::atomic<bool> hidden_first_present{false};
+    std::atomic<bool> generated_first_present{false};
+    std::atomic<bool> device_lost{false};
+    std::atomic<bool> finished{false};
+    std::atomic<bool> timing_reliable{false};
+    std::atomic<bool> paused{false};
+    std::atomic<double> media_pts_seconds{0.0};
+    std::atomic<double> source_fps{0.0};
+    std::atomic<int64_t> timing_qpc{0};
+    std::mutex reason_mutex;
+    std::string reason = "Waiting for live WGC FP16 frames.";
+    std::thread worker;
+
+    void set_reason(std::string value) {
+        std::lock_guard lock(reason_mutex);
+        reason = std::move(value);
+    }
+
+    std::string get_reason() {
+        std::lock_guard lock(reason_mutex);
+        return reason;
+    }
+};
+
+int64_t adapter_luid(ID3D11Device* device) {
+    ComPtr<IDXGIDevice> dxgi_device;
+    throw_if_failed(device->QueryInterface(IID_PPV_ARGS(&dxgi_device)), "ID3D11Device::QueryInterface(IDXGIDevice)");
+    ComPtr<IDXGIAdapter> adapter;
+    throw_if_failed(dxgi_device->GetAdapter(&adapter), "IDXGIDevice::GetAdapter");
+    DXGI_ADAPTER_DESC desc{};
+    throw_if_failed(adapter->GetDesc(&desc), "IDXGIAdapter::GetDesc");
+    return (static_cast<int64_t>(desc.AdapterLuid.HighPart) << 32)
+        | static_cast<uint32_t>(desc.AdapterLuid.LowPart);
+}
+
+ComPtr<IDXGIAdapter1> display_adapter_for_window(HWND hwnd) {
+    const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    ComPtr<IDXGIFactory6> factory;
+    throw_if_failed(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2(adapter selection)");
+    for (UINT adapter_index = 0;; ++adapter_index) {
+        ComPtr<IDXGIAdapter1> adapter;
+        const HRESULT adapter_result = factory->EnumAdapters1(adapter_index, &adapter);
+        if (adapter_result == DXGI_ERROR_NOT_FOUND)
+            break;
+        throw_if_failed(adapter_result, "EnumAdapters1");
+        for (UINT output_index = 0;; ++output_index) {
+            ComPtr<IDXGIOutput> output;
+            const HRESULT output_result = adapter->EnumOutputs(output_index, &output);
+            if (output_result == DXGI_ERROR_NOT_FOUND)
+                break;
+            throw_if_failed(output_result, "EnumOutputs");
+            DXGI_OUTPUT_DESC output_desc{};
+            throw_if_failed(output->GetDesc(&output_desc), "IDXGIOutput::GetDesc");
+            if (output_desc.Monitor == monitor)
+                return adapter;
+        }
+    }
+    throw std::runtime_error("no DXGI adapter owns the mpv window monitor");
+}
+
+void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept {
+    using namespace winrt;
+    using namespace winrt::Windows::Graphics;
+    using namespace winrt::Windows::Graphics::Capture;
+    using namespace winrt::Windows::Graphics::DirectX;
+    using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
+    try {
+        init_apartment(apartment_type::multi_threaded);
+        if (!IsWindow(state->source_hwnd))
+            throw std::runtime_error("mpv source HWND is no longer valid");
+
+        const auto adapter = display_adapter_for_window(state->source_hwnd);
+        ComPtr<ID3D11Device> bootstrap_device;
+        ComPtr<ID3D11DeviceContext> bootstrap_context;
+        D3D_FEATURE_LEVEL selected_level{};
+        throw_if_failed(D3D11CreateDevice(
+            adapter.Get(),
+            D3D_DRIVER_TYPE_UNKNOWN,
+            nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            nullptr,
+            0,
+            D3D11_SDK_VERSION,
+            &bootstrap_device,
+            &selected_level,
+            &bootstrap_context), "D3D11CreateDevice(frame-generation bootstrap)");
+        ComPtr<ID3D12Device> d3d12_device;
+        throw_if_failed(D3D12CreateDevice(
+            adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3d12_device)), "D3D12CreateDevice(product)");
+        const D3D12_COMMAND_QUEUE_DESC queue_desc{
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            0,
+            D3D12_COMMAND_QUEUE_FLAG_NONE,
+            0,
+        };
+        ComPtr<ID3D12CommandQueue> queue;
+        throw_if_failed(d3d12_device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)), "CreateCommandQueue(product)");
+        IUnknown* queues[] = {queue.Get()};
+        ComPtr<ID3D11Device> bridge_device;
+        ComPtr<ID3D11DeviceContext> bridge_context;
+        throw_if_failed(D3D11On12CreateDevice(
+            d3d12_device.Get(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            &selected_level,
+            1,
+            queues,
+            1,
+            0,
+            &bridge_device,
+            &bridge_context,
+            nullptr), "D3D11On12CreateDevice(product)");
+        if (adapter_luid(bootstrap_device.Get()) != adapter_luid(bridge_device.Get()))
+            throw std::runtime_error("D3D11On12 bridge adapter differs from mpv/WGC adapter");
+
+        auto interop = get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        GraphicsCaptureItem item{nullptr};
+        check_hresult(interop->CreateForWindow(
+            state->source_hwnd,
+            guid_of<GraphicsCaptureItem>(),
+            put_abi(item)));
+        const auto item_size = item.Size();
+        if (item_size.Width <= 0 || item_size.Height <= 0)
+            throw std::runtime_error("mpv WGC item has empty dimensions");
+
+        ComPtr<IDXGIDevice> bridge_dxgi;
+        throw_if_failed(bridge_device.As(&bridge_dxgi), "D3D11On12 IDXGIDevice");
+        com_ptr<IInspectable> inspectable;
+        check_hresult(CreateDirect3D11DeviceFromDXGIDevice(
+            bridge_dxgi.Get(), inspectable.put()));
+        const auto winrt_device = inspectable.as<IDirect3DDevice>();
+        auto pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+            winrt_device,
+            DirectXPixelFormat::R16G16B16A16Float,
+            4,
+            item_size);
+        auto capture = pool.CreateCaptureSession(item);
+        capture.IsCursorCaptureEnabled(false);
+
+        register_output_window_class();
+        state->output_hwnd = CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            kOutputWindowClass,
+            L"OhMyCine hidden frame-generation output",
+            WS_POPUP,
+            0,
+            0,
+            item_size.Width,
+            item_size.Height,
+            nullptr,
+            nullptr,
+            GetModuleHandleW(nullptr),
+            nullptr);
+        if (state->output_hwnd == nullptr)
+            throw_if_failed(HRESULT_FROM_WIN32(GetLastError()), "CreateWindowExW(frame-generation output)");
+        ShowWindow(state->output_hwnd, SW_HIDE);
+
+        ComPtr<IDXGIFactory2> factory;
+        throw_if_failed(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2(product)");
+        DXGI_SWAP_CHAIN_DESC1 swap_desc{};
+        swap_desc.Width = static_cast<UINT>(item_size.Width);
+        swap_desc.Height = static_cast<UINT>(item_size.Height);
+        swap_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        swap_desc.SampleDesc = {1, 0};
+        swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_UNORDERED_ACCESS;
+        swap_desc.BufferCount = 3;
+        swap_desc.Scaling = DXGI_SCALING_STRETCH;
+        swap_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        swap_desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        ComPtr<IDXGISwapChain1> swapchain1;
+        throw_if_failed(factory->CreateSwapChainForHwnd(
+            queue.Get(), state->output_hwnd, &swap_desc, nullptr, nullptr, &swapchain1), "CreateSwapChainForHwnd(product)");
+        ComPtr<IDXGISwapChain3> swapchain;
+        throw_if_failed(swapchain1.As(&swapchain), "IDXGISwapChain3(product)");
+        UINT color_support = 0;
+        throw_if_failed(swapchain->CheckColorSpaceSupport(
+            DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &color_support), "CheckColorSpaceSupport(scRGB)");
+        if ((color_support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) == 0)
+            throw std::runtime_error("FP16 scRGB swapchain cannot present on this output");
+        throw_if_failed(swapchain->SetColorSpace1(
+            DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709), "SetColorSpace1(scRGB)");
+
+        ComPtr<ID3D11On12Device> on12;
+        throw_if_failed(bridge_device.As(&on12), "ID3D11On12Device(product)");
+        std::array<ComPtr<ID3D11Resource>, 3> wrapped_buffers;
+        std::array<ComPtr<ID3D11UnorderedAccessView>, 3> output_uavs;
+        for (UINT index = 0; index < wrapped_buffers.size(); ++index) {
+            ComPtr<ID3D12Resource> back_buffer;
+            throw_if_failed(swapchain->GetBuffer(index, IID_PPV_ARGS(&back_buffer)), "GetBuffer(product)");
+            const D3D11_RESOURCE_FLAGS flags{
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS, 0, 0, 0};
+            throw_if_failed(on12->CreateWrappedResource(
+                back_buffer.Get(),
+                &flags,
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_PRESENT,
+                IID_PPV_ARGS(&wrapped_buffers[index])), "CreateWrappedResource(product)");
+            throw_if_failed(bridge_device->CreateUnorderedAccessView(
+                wrapped_buffers[index].Get(), nullptr, &output_uavs[index]), "CreateUnorderedAccessView(output)");
+        }
+
+        ComPtr<IDMLDevice> dml_device;
+        throw_if_failed(DMLCreateDevice(
+            d3d12_device.Get(), DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&dml_device)), "DMLCreateDevice(product)");
+        Ort::Env ort_environment(ORT_LOGGING_LEVEL_WARNING, "OhMyCineFrameInterpolationLive");
+        Ort::SessionOptions ort_options;
+        ort_options.DisableMemPattern();
+        ort_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+        Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProviderEx_DML(
+            ort_options, dml_device.Get(), queue.Get()));
+        Ort::Session ort_session(ort_environment, state->model_path.c_str(), ort_options);
+        if (!expected_names(ort_session))
+            throw std::runtime_error("live flow/mask ONNX contract mismatch");
+        const OrtDmlApi* api = dml_api();
+        constexpr size_t image_elements = 3u * kProxySize * kProxySize;
+        constexpr size_t timestep_elements = kProxySize * kProxySize;
+        constexpr size_t flow_elements = 4u * kProxySize * kProxySize;
+        constexpr size_t mask_elements = kProxySize * kProxySize;
+        GpuTensor earlier_gpu = bind_gpu_tensor(api, d3d12_device.Get(), image_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        GpuTensor later_gpu = bind_gpu_tensor(api, d3d12_device.Get(), image_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        GpuTensor timestep_gpu = bind_gpu_tensor(api, d3d12_device.Get(), timestep_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        GpuTensor flow_gpu = bind_gpu_tensor(api, d3d12_device.Get(), flow_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        GpuTensor mask_gpu = bind_gpu_tensor(api, d3d12_device.Get(), mask_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        const Ort::MemoryInfo dml_memory("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault);
+        const std::array<int64_t, 4> image_shape{1, 3, kProxySize, kProxySize};
+        const std::array<int64_t, 4> timestep_shape{1, 1, kProxySize, kProxySize};
+        const std::array<int64_t, 4> flow_shape{1, 4, kProxySize, kProxySize};
+        const std::array<int64_t, 4> mask_shape{1, 1, kProxySize, kProxySize};
+        std::array<Ort::Value, 3> model_inputs{
+            Ort::Value::CreateTensor(dml_memory, earlier_gpu.allocation, image_elements * sizeof(float), image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+            Ort::Value::CreateTensor(dml_memory, later_gpu.allocation, image_elements * sizeof(float), image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+            Ort::Value::CreateTensor(dml_memory, timestep_gpu.allocation, timestep_elements * sizeof(float), timestep_shape.data(), timestep_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+        };
+        std::array<Ort::Value, 2> model_outputs{
+            Ort::Value::CreateTensor(dml_memory, flow_gpu.allocation, flow_elements * sizeof(float), flow_shape.data(), flow_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+            Ort::Value::CreateTensor(dml_memory, mask_gpu.allocation, mask_elements * sizeof(float), mask_shape.data(), mask_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+        };
+        auto earlier_views = wrap_tensor(on12.Get(), bridge_device.Get(), earlier_gpu.resource.Get(), static_cast<UINT>(image_elements), true, false);
+        auto later_views = wrap_tensor(on12.Get(), bridge_device.Get(), later_gpu.resource.Get(), static_cast<UINT>(image_elements), true, false);
+        auto timestep_views = wrap_tensor(on12.Get(), bridge_device.Get(), timestep_gpu.resource.Get(), static_cast<UINT>(timestep_elements), true, false);
+        auto flow_views = wrap_tensor(on12.Get(), bridge_device.Get(), flow_gpu.resource.Get(), static_cast<UINT>(flow_elements), false, true);
+        auto mask_views = wrap_tensor(on12.Get(), bridge_device.Get(), mask_gpu.resource.Get(), static_cast<UINT>(mask_elements), false, true);
+
+        const auto proxy_bytecode = compile_compute_shader(kProxyShader, "OhMyCineProxy");
+        const auto timestep_bytecode = compile_compute_shader(kTimestepShader, "OhMyCineTimestep");
+        const auto composite_bytecode = compile_compute_shader(kCompositeShader, "OhMyCineComposite");
+        ComPtr<ID3D11ComputeShader> proxy_shader;
+        ComPtr<ID3D11ComputeShader> timestep_shader;
+        ComPtr<ID3D11ComputeShader> composite_shader;
+        throw_if_failed(bridge_device->CreateComputeShader(proxy_bytecode->GetBufferPointer(), proxy_bytecode->GetBufferSize(), nullptr, &proxy_shader), "CreateComputeShader(proxy)");
+        throw_if_failed(bridge_device->CreateComputeShader(timestep_bytecode->GetBufferPointer(), timestep_bytecode->GetBufferSize(), nullptr, &timestep_shader), "CreateComputeShader(timestep)");
+        throw_if_failed(bridge_device->CreateComputeShader(composite_bytecode->GetBufferPointer(), composite_bytecode->GetBufferSize(), nullptr, &composite_shader), "CreateComputeShader(composite)");
+        struct ProxyConstants { UINT source_size[2]; UINT proxy_size[2]; float reference_white; float source_peak; float padding[2]; };
+        struct TimestepConstants { float value; UINT element_count; float padding[2]; };
+        struct CompositeConstants { UINT output_size[2]; UINT proxy_size[2]; float timestep; float confidence; UINT scene_cut; float padding; };
+        auto proxy_constants = create_constant_buffer(bridge_device.Get(), sizeof(ProxyConstants));
+        auto timestep_constants = create_constant_buffer(bridge_device.Get(), sizeof(TimestepConstants));
+        auto composite_constants = create_constant_buffer(bridge_device.Get(), sizeof(CompositeConstants));
+        D3D11_SAMPLER_DESC sampler_desc{};
+        sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler_desc.AddressU = sampler_desc.AddressV = sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_desc.MaxLOD = D3D11_FLOAT32_MAX;
+        ComPtr<ID3D11SamplerState> sampler;
+        throw_if_failed(bridge_device->CreateSamplerState(&sampler_desc, &sampler), "CreateSamplerState(composite)");
+
+        capture.StartCapture();
+        ComPtr<ID3D11Texture2D> previous;
+        int64_t previous_timestamp = 0;
+        int64_t previous_source_index = -1;
+        int64_t next_output_tick = -1;
+        LARGE_INTEGER qpc_frequency{};
+        QueryPerformanceFrequency(&qpc_frequency);
+        while (!state->stop_requested.load(std::memory_order_acquire)) {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            auto frame = pool.TryGetNextFrame();
+            if (!frame) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                continue;
+            }
+            const auto size = frame.ContentSize();
+            if (size.Width != item_size.Width || size.Height != item_size.Height) {
+                state->set_reason("mpv window size changed; source playback remains visible while the frame-generation session rebuilds.");
+                break;
+            }
+            auto surface = frame.Surface();
+            auto access = surface.as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+            ComPtr<ID3D11Texture2D> texture;
+            check_hresult(access->GetInterface(IID_PPV_ARGS(&texture)));
+            D3D11_TEXTURE2D_DESC texture_desc{};
+            texture->GetDesc(&texture_desc);
+            ComPtr<ID3D11Device> capture_device;
+            texture->GetDevice(&capture_device);
+            if (texture_desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT
+                || adapter_luid(capture_device.Get()) != adapter_luid(bridge_device.Get()))
+                throw std::runtime_error("live WGC frame is not same-adapter R16G16B16A16_FLOAT");
+            const int64_t ticks = frame.SystemRelativeTime().count();
+            RECT source_rect{};
+            if (GetWindowRect(state->source_hwnd, &source_rect)) {
+                HWND insertion_point = GetWindow(state->source_hwnd, GW_HWNDPREV);
+                if (insertion_point == state->output_hwnd)
+                    insertion_point = GetWindow(state->output_hwnd, GW_HWNDPREV);
+                SetWindowPos(
+                    state->output_hwnd,
+                    insertion_point,
+                    source_rect.left,
+                    source_rect.top,
+                    source_rect.right - source_rect.left,
+                    source_rect.bottom - source_rect.top,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
+            texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            texture_desc.MiscFlags = 0;
+            ComPtr<ID3D11Texture2D> current;
+            throw_if_failed(bridge_device->CreateTexture2D(&texture_desc, nullptr, &current), "CreateTexture2D(frame-ring)");
+            bridge_context->CopyResource(current.Get(), texture.Get());
+            bridge_context->Flush();
+            if (!state->timing_reliable.load(std::memory_order_acquire)
+                || state->paused.load(std::memory_order_acquire)) {
+                state->set_reason("Waiting for reliable CFR mpv media timing; VFR/unknown timing remains bypassed.");
+                continue;
+            }
+            LARGE_INTEGER qpc_now{};
+            QueryPerformanceCounter(&qpc_now);
+            const auto anchor_qpc = state->timing_qpc.load(std::memory_order_acquire);
+            const auto fps = state->source_fps.load(std::memory_order_acquire);
+            const auto anchor_pts = state->media_pts_seconds.load(std::memory_order_acquire);
+            const auto elapsed = static_cast<double>(qpc_now.QuadPart - anchor_qpc)
+                / static_cast<double>(qpc_frequency.QuadPart);
+            const auto media_pts = anchor_pts + elapsed;
+            const auto source_index = static_cast<int64_t>(std::floor(media_pts * fps + 0.5));
+            if (source_index == previous_source_index)
+                continue;
+            if (previous && ticks > previous_timestamp
+                && source_index == previous_source_index + 1) {
+                state->captured_pair.store(true, std::memory_order_release);
+                ComPtr<ID3D11ShaderResourceView> earlier_srv;
+                ComPtr<ID3D11ShaderResourceView> later_srv;
+                throw_if_failed(bridge_device->CreateShaderResourceView(previous.Get(), nullptr, &earlier_srv), "CreateShaderResourceView(earlier)");
+                throw_if_failed(bridge_device->CreateShaderResourceView(current.Get(), nullptr, &later_srv), "CreateShaderResourceView(later)");
+                const ProxyConstants proxy_params{
+                    {texture_desc.Width, texture_desc.Height},
+                    {kProxySize, kProxySize},
+                    203.0f,
+                    state->hdr_input ? 1000.0f : 203.0f,
+                    {0.0f, 0.0f}};
+                bridge_context->UpdateSubresource(proxy_constants.Get(), 0, nullptr, &proxy_params, 0, 0);
+                bridge_context->CSSetShader(proxy_shader.Get(), nullptr, 0);
+                bridge_context->CSSetConstantBuffers(0, 1, proxy_constants.GetAddressOf());
+                const std::array<std::pair<ID3D11ShaderResourceView*, WrappedTensorViews*>, 2> proxy_passes{{
+                    {earlier_srv.Get(), &earlier_views}, {later_srv.Get(), &later_views}}};
+                for (const auto& [source_srv, destination] : proxy_passes) {
+                    ID3D11Resource* acquired[] = {destination->resource.Get()};
+                    on12->AcquireWrappedResources(acquired, 1);
+                    bridge_context->CSSetShaderResources(0, 1, &source_srv);
+                    auto* destination_uav = destination->uav.Get();
+                    bridge_context->CSSetUnorderedAccessViews(0, 1, &destination_uav, nullptr);
+                    bridge_context->Dispatch(kProxySize / 8, kProxySize / 8, 1);
+                    ID3D11ShaderResourceView* null_srv = nullptr;
+                    ID3D11UnorderedAccessView* null_uav = nullptr;
+                    bridge_context->CSSetShaderResources(0, 1, &null_srv);
+                    bridge_context->CSSetUnorderedAccessViews(0, 1, &null_uav, nullptr);
+                    on12->ReleaseWrappedResources(acquired, 1);
+                }
+                bridge_context->Flush();
+
+                const double earlier_pts = static_cast<double>(previous_source_index) / fps;
+                const double later_pts = static_cast<double>(source_index) / fps;
+                if (next_output_tick < 0 ||
+                    static_cast<double>(next_output_tick) / state->target_fps < earlier_pts - 1e-6) {
+                    next_output_tick = static_cast<int64_t>(
+                        std::ceil(earlier_pts * state->target_fps - 1e-7));
+                }
+                const char* input_names[] = {"earlier_proxy", "later_proxy", "timestep"};
+                const char* output_names[] = {"flow_pixels", "blend_mask"};
+                LARGE_INTEGER pair_started{};
+                QueryPerformanceCounter(&pair_started);
+                bool abort_session = false;
+                while (static_cast<double>(next_output_tick) / state->target_fps
+                       < later_pts - 1e-7) {
+                    if (state->stop_requested.load(std::memory_order_acquire)) {
+                        abort_session = true;
+                        break;
+                    }
+                    const double output_pts =
+                        static_cast<double>(next_output_tick) / state->target_fps;
+                    const float timestep = static_cast<float>(std::clamp(
+                        (output_pts - earlier_pts) / (later_pts - earlier_pts), 0.0, 1.0));
+                    const TimestepConstants timestep_params{
+                        timestep, static_cast<UINT>(timestep_elements), {0.0f, 0.0f}};
+                    bridge_context->UpdateSubresource(
+                        timestep_constants.Get(), 0, nullptr, &timestep_params, 0, 0);
+                    ID3D11Resource* timestep_acquired[] = {timestep_views.resource.Get()};
+                    on12->AcquireWrappedResources(timestep_acquired, 1);
+                    bridge_context->CSSetShader(timestep_shader.Get(), nullptr, 0);
+                    bridge_context->CSSetConstantBuffers(
+                        0, 1, timestep_constants.GetAddressOf());
+                    auto* timestep_uav = timestep_views.uav.Get();
+                    bridge_context->CSSetUnorderedAccessViews(
+                        0, 1, &timestep_uav, nullptr);
+                    bridge_context->Dispatch(
+                        (static_cast<UINT>(timestep_elements) + 63u) / 64u, 1, 1);
+                    ID3D11UnorderedAccessView* null_timestep_uav = nullptr;
+                    bridge_context->CSSetUnorderedAccessViews(
+                        0, 1, &null_timestep_uav, nullptr);
+                    on12->ReleaseWrappedResources(timestep_acquired, 1);
+                    bridge_context->Flush();
+
+                    ort_session.Run(
+                        Ort::RunOptions{nullptr}, input_names, model_inputs.data(),
+                        model_inputs.size(), output_names, model_outputs.data(),
+                        model_outputs.size());
+
+                    const UINT index = swapchain->GetCurrentBackBufferIndex();
+                    ID3D11Resource* acquired[] = {
+                        flow_views.resource.Get(), mask_views.resource.Get(),
+                        wrapped_buffers[index].Get()};
+                    on12->AcquireWrappedResources(acquired, 3);
+                    const CompositeConstants composite_params{
+                        {texture_desc.Width, texture_desc.Height},
+                        {kProxySize, kProxySize},
+                        timestep,
+                        0.20f,
+                        timestep <= 0.0001f ? 1u : 0u,
+                        0.0f};
+                    bridge_context->UpdateSubresource(
+                        composite_constants.Get(), 0, nullptr, &composite_params, 0, 0);
+                    ID3D11ShaderResourceView* composite_srvs[] = {
+                        earlier_srv.Get(), later_srv.Get(), flow_views.srv.Get(),
+                        mask_views.srv.Get()};
+                    bridge_context->CSSetShader(composite_shader.Get(), nullptr, 0);
+                    bridge_context->CSSetShaderResources(0, 4, composite_srvs);
+                    bridge_context->CSSetSamplers(0, 1, sampler.GetAddressOf());
+                    bridge_context->CSSetConstantBuffers(
+                        0, 1, composite_constants.GetAddressOf());
+                    auto* output_uav = output_uavs[index].Get();
+                    bridge_context->CSSetUnorderedAccessViews(
+                        0, 1, &output_uav, nullptr);
+                    bridge_context->Dispatch(
+                        (texture_desc.Width + 7) / 8, (texture_desc.Height + 7) / 8, 1);
+                    ID3D11ShaderResourceView* null_srvs[4]{};
+                    ID3D11UnorderedAccessView* null_uav = nullptr;
+                    bridge_context->CSSetShaderResources(0, 4, null_srvs);
+                    bridge_context->CSSetUnorderedAccessViews(0, 1, &null_uav, nullptr);
+                    on12->ReleaseWrappedResources(acquired, 3);
+                    bridge_context->Flush();
+
+                    const double offset_seconds = output_pts - earlier_pts;
+                    const int64_t deadline = pair_started.QuadPart + static_cast<int64_t>(
+                        offset_seconds * static_cast<double>(qpc_frequency.QuadPart));
+                    for (;;) {
+                        LARGE_INTEGER now{};
+                        QueryPerformanceCounter(&now);
+                        if (now.QuadPart >= deadline ||
+                            state->stop_requested.load(std::memory_order_acquire)) {
+                            break;
+                        }
+                        const double remaining_ms =
+                            static_cast<double>(deadline - now.QuadPart) * 1000.0 /
+                            static_cast<double>(qpc_frequency.QuadPart);
+                        if (remaining_ms > 2.0)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        else
+                            std::this_thread::yield();
+                    }
+                    const HRESULT present = swapchain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+                    if (present == DXGI_ERROR_DEVICE_REMOVED ||
+                        present == DXGI_ERROR_DEVICE_RESET) {
+                        state->device_lost.store(true, std::memory_order_release);
+                        state->set_reason("GPU device lost; source mpv playback remains visible and the generated output is being destroyed.");
+                        abort_session = true;
+                        break;
+                    }
+                    if (present != DXGI_ERROR_WAS_STILL_DRAWING)
+                        throw_if_failed(present, "scheduled FP16 Present");
+                    if (present == S_OK && timestep > 0.0001f && timestep < 0.9999f) {
+                        state->hidden_first_present.store(true, std::memory_order_release);
+                        state->set_reason("Reliable CFR cadence is producing arbitrary-timestep DirectML flow/mask frames from the original FP16 pair into the scRGB swapchain; waiting for the audio/reveal gate.");
+                    }
+                    ++next_output_tick;
+                }
+                if (abort_session)
+                    break;
+            } else if (previous && source_index != previous_source_index + 1) {
+                next_output_tick = -1;
+                state->set_reason("A source-frame discontinuity was detected; the pair was discarded without interpolation.");
+            }
+            previous = current;
+            previous_timestamp = ticks;
+            previous_source_index = source_index;
+        }
+        capture.Close();
+        pool.Close();
+        for (auto& output : model_outputs)
+            output = Ort::Value{nullptr};
+        for (auto& input : model_inputs)
+            input = Ort::Value{nullptr};
+        free_gpu_tensor(api, mask_gpu);
+        free_gpu_tensor(api, flow_gpu);
+        free_gpu_tensor(api, timestep_gpu);
+        free_gpu_tensor(api, later_gpu);
+        free_gpu_tensor(api, earlier_gpu);
+    }
+    catch (const hresult_error& error) {
+        state->set_reason(to_string(error.message()));
+    }
+    catch (const std::exception& error) {
+        state->set_reason(error.what());
+    }
+    catch (...) {
+        state->set_reason("unknown Windows frame-generation session failure");
+    }
+    if (state->output_hwnd != nullptr) {
+        ShowWindow(state->output_hwnd, SW_HIDE);
+        DestroyWindow(state->output_hwnd);
+        state->output_hwnd = nullptr;
+    }
+    state->finished.store(true, std::memory_order_release);
+}
+
+}  // namespace
+
+extern "C" int ohmycine_probe_directml_flow_mask(
+    const wchar_t* model_path,
+    char* reason,
+    size_t reason_capacity) noexcept {
+    if (model_path == nullptr) {
+        write_reason(reason, reason_capacity, "model path is null");
+        return 0;
+    }
+    try {
+        ComPtr<ID3D12Device> device;
+        throw_if_failed(D3D12CreateDevice(
+            nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)), "D3D12CreateDevice");
+        const D3D12_COMMAND_QUEUE_DESC queue_desc{
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            0,
+            D3D12_COMMAND_QUEUE_FLAG_NONE,
+            0,
+        };
+        ComPtr<ID3D12CommandQueue> queue;
+        throw_if_failed(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)), "ID3D12Device::CreateCommandQueue");
+        ComPtr<IDMLDevice> directml_device;
+        throw_if_failed(DMLCreateDevice(
+            device.Get(), DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&directml_device)), "DMLCreateDevice");
+
+        Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "OhMyCineFrameInterpolationProbe");
+        Ort::SessionOptions options;
+        options.DisableMemPattern();
+        options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+        Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProviderEx_DML(
+            options, directml_device.Get(), queue.Get()));
+        Ort::Session session(environment, model_path, options);
+        if (!expected_names(session)) {
+            write_reason(reason, reason_capacity, "flow/mask ONNX input-output contract mismatch");
+            return 0;
+        }
+
+        constexpr int64_t kSize = 64;
+        const std::array<int64_t, 4> image_shape{1, 3, kSize, kSize};
+        const std::array<int64_t, 4> timestep_shape{1, 1, kSize, kSize};
+        std::vector<float> earlier(3 * kSize * kSize, 0.2F);
+        std::vector<float> later(3 * kSize * kSize, 0.8F);
+        std::vector<float> timestep(kSize * kSize, 0.5F);
+
+        const OrtDmlApi* api = dml_api();
+        const size_t image_bytes = earlier.size() * sizeof(float);
+        const size_t timestep_bytes = timestep.size() * sizeof(float);
+        const size_t flow_bytes = 4 * kSize * kSize * sizeof(float);
+        const size_t mask_bytes = kSize * kSize * sizeof(float);
+        GpuTensor earlier_gpu = bind_gpu_tensor(
+            api, device.Get(), image_bytes, D3D12_RESOURCE_STATE_COPY_DEST);
+        GpuTensor later_gpu = bind_gpu_tensor(
+            api, device.Get(), image_bytes, D3D12_RESOURCE_STATE_COPY_DEST);
+        GpuTensor timestep_gpu = bind_gpu_tensor(
+            api, device.Get(), timestep_bytes, D3D12_RESOURCE_STATE_COPY_DEST);
+        GpuTensor flow_gpu = bind_gpu_tensor(
+            api, device.Get(), flow_bytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        GpuTensor mask_gpu = bind_gpu_tensor(
+            api, device.Get(), mask_bytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        upload_inputs(device.Get(), queue.Get(), {
+            {earlier_gpu.resource, &earlier},
+            {later_gpu.resource, &later},
+            {timestep_gpu.resource, &timestep},
+        });
+
+        const Ort::MemoryInfo memory(
+            "DML", OrtDeviceAllocator, 0, OrtMemTypeDefault);
+        std::array<Ort::Value, 3> inputs{
+            Ort::Value::CreateTensor(
+                memory, earlier_gpu.allocation, image_bytes, image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+            Ort::Value::CreateTensor(
+                memory, later_gpu.allocation, image_bytes, image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+            Ort::Value::CreateTensor(
+                memory, timestep_gpu.allocation, timestep_bytes, timestep_shape.data(), timestep_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+        };
+        const std::array<int64_t, 4> flow_shape{1, 4, kSize, kSize};
+        const std::array<int64_t, 4> mask_shape{1, 1, kSize, kSize};
+        std::array<Ort::Value, 2> outputs{
+            Ort::Value::CreateTensor(
+                memory, flow_gpu.allocation, flow_bytes, flow_shape.data(), flow_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+            Ort::Value::CreateTensor(
+                memory, mask_gpu.allocation, mask_bytes, mask_shape.data(), mask_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
+        };
+        const char* input_names[] = {"earlier_proxy", "later_proxy", "timestep"};
+        const char* output_names[] = {"flow_pixels", "blend_mask"};
+        session.Run(
+            Ort::RunOptions{nullptr},
+            input_names,
+            inputs.data(),
+            inputs.size(),
+            output_names,
+            outputs.data(),
+            outputs.size());
+        if (!outputs[0].IsTensor() || !outputs[1].IsTensor()) {
+            write_reason(reason, reason_capacity, "DirectML inference did not return two tensors");
+            return 0;
+        }
+        const auto actual_flow_shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
+        const auto actual_mask_shape = outputs[1].GetTensorTypeAndShapeInfo().GetShape();
+        if (actual_flow_shape != std::vector<int64_t>({1, 4, kSize, kSize}) ||
+            actual_mask_shape != std::vector<int64_t>({1, 1, kSize, kSize})) {
+            write_reason(reason, reason_capacity, "DirectML flow/mask output shape mismatch");
+            return 0;
+        }
+
+        // OrtValue objects must release their DML allocations before the backing D3D12
+        // resources are freed. The probe deliberately never asks ORT for a CPU output: passing
+        // these preallocated DML tensors proves that model input and flow/mask output stay GPU
+        // resident. Pixel validation belongs to the subsequent FP16 composite/readback probe.
+        for (auto& output : outputs)
+            output = Ort::Value{nullptr};
+        for (auto& input : inputs)
+            input = Ort::Value{nullptr};
+        free_gpu_tensor(api, mask_gpu);
+        free_gpu_tensor(api, flow_gpu);
+        free_gpu_tensor(api, timestep_gpu);
+        free_gpu_tensor(api, later_gpu);
+        free_gpu_tensor(api, earlier_gpu);
+        write_reason(reason, reason_capacity, "ok");
+        return 1;
+    }
+    catch (const Ort::Exception& error) {
+        write_reason(reason, reason_capacity, error.what());
+        return 0;
+    }
+    catch (const std::exception& error) {
+        write_reason(reason, reason_capacity, error.what());
+        return 0;
+    }
+    catch (...) {
+        write_reason(reason, reason_capacity, "unknown DirectML probe error");
+        return 0;
+    }
+}
+
+extern "C" void* ohmycine_windows_framegen_start(
+    intptr_t source_hwnd,
+    const wchar_t* model_path,
+    unsigned int target_fps,
+    int hdr_input,
+    char* reason,
+    size_t reason_capacity) noexcept {
+    try {
+        const HWND source = reinterpret_cast<HWND>(source_hwnd);
+        if (!IsWindow(source) || model_path == nullptr) {
+            write_reason(reason, reason_capacity, "invalid mpv source HWND");
+            return nullptr;
+        }
+        if (target_fps < 24 || target_fps > 240) {
+            write_reason(reason, reason_capacity, "invalid frame-generation target fps");
+            return nullptr;
+        }
+        auto* session = new WindowsFrameGenerationSession(
+            source, model_path, target_fps, hdr_input == 1);
+        session->worker = std::thread(run_product_capture_session, session);
+        write_reason(reason, reason_capacity, "started-hidden");
+        return session;
+    }
+    catch (const std::exception& error) {
+        write_reason(reason, reason_capacity, error.what());
+        return nullptr;
+    }
+    catch (...) {
+        write_reason(reason, reason_capacity, "unknown Windows session start error");
+        return nullptr;
+    }
+}
+
+extern "C" int ohmycine_windows_framegen_poll(
+    void* opaque,
+    int* captured_pair,
+    int* hidden_first_present,
+    int* generated_first_present,
+    int* device_lost,
+    int* finished,
+    char* reason,
+    size_t reason_capacity) noexcept {
+    if (opaque == nullptr) {
+        write_reason(reason, reason_capacity, "Windows frame-generation session is null");
+        return 0;
+    }
+    auto* session = static_cast<WindowsFrameGenerationSession*>(opaque);
+    if (captured_pair != nullptr)
+        *captured_pair = session->captured_pair.load(std::memory_order_acquire) ? 1 : 0;
+    if (hidden_first_present != nullptr)
+        *hidden_first_present = session->hidden_first_present.load(std::memory_order_acquire) ? 1 : 0;
+    if (generated_first_present != nullptr)
+        *generated_first_present = session->generated_first_present.load(std::memory_order_acquire) ? 1 : 0;
+    if (device_lost != nullptr)
+        *device_lost = session->device_lost.load(std::memory_order_acquire) ? 1 : 0;
+    if (finished != nullptr)
+        *finished = session->finished.load(std::memory_order_acquire) ? 1 : 0;
+    const auto message = session->get_reason();
+    write_reason(reason, reason_capacity, message.c_str());
+    return 1;
+}
+
+extern "C" void ohmycine_windows_framegen_update_timing(
+    void* opaque,
+    double media_pts_seconds,
+    double source_fps,
+    int timing_reliable,
+    int paused) noexcept {
+    if (opaque == nullptr)
+        return;
+    auto* session = static_cast<WindowsFrameGenerationSession*>(opaque);
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    session->media_pts_seconds.store(media_pts_seconds, std::memory_order_release);
+    session->source_fps.store(source_fps, std::memory_order_release);
+    session->paused.store(paused == 1, std::memory_order_release);
+    session->timing_qpc.store(counter.QuadPart, std::memory_order_release);
+    session->timing_reliable.store(
+        timing_reliable == 1 && std::isfinite(media_pts_seconds)
+            && std::isfinite(source_fps) && source_fps > 0.0,
+        std::memory_order_release);
+}
+
+// Final reveal hook for the Rust media-timing/audio/subtitle gate. A genuinely interpolated frame
+// must already have completed a hidden Present; only after Win32 confirms the output HWND is
+// visible is generated_first_present published.
+extern "C" int ohmycine_windows_framegen_reveal_after_safe_gates(
+    void* opaque,
+    char* reason,
+    size_t reason_capacity) noexcept {
+    if (opaque == nullptr) {
+        write_reason(reason, reason_capacity, "Windows frame-generation session is null");
+        return 0;
+    }
+    auto* session = static_cast<WindowsFrameGenerationSession*>(opaque);
+    if (!session->hidden_first_present.load(std::memory_order_acquire)
+        || session->device_lost.load(std::memory_order_acquire)
+        || session->output_hwnd == nullptr) {
+        write_reason(reason, reason_capacity, "no safely presented generated frame is ready to reveal");
+        return 0;
+    }
+    RECT rect{};
+    if (!GetWindowRect(session->source_hwnd, &rect)) {
+        write_reason(reason, reason_capacity, "source HWND geometry is unavailable");
+        return 0;
+    }
+    HWND above_source = GetWindow(session->source_hwnd, GW_HWNDPREV);
+    if (above_source == session->output_hwnd)
+        above_source = GetWindow(session->output_hwnd, GW_HWNDPREV);
+    if (!SetWindowPos(
+            session->output_hwnd,
+            above_source,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW)
+        || !IsWindowVisible(session->output_hwnd)) {
+        ShowWindow(session->output_hwnd, SW_HIDE);
+        write_reason(reason, reason_capacity, "generated output reveal failed; source playback remains visible");
+        return 0;
+    }
+    session->generated_first_present.store(true, std::memory_order_release);
+    session->set_reason("A generated FP16 frame is visibly presented above the source HWND.");
+    write_reason(reason, reason_capacity, "visible-generated-first-present");
+    return 1;
+}
+
+extern "C" void ohmycine_windows_framegen_stop(void* opaque) noexcept {
+    if (opaque == nullptr)
+        return;
+    auto* session = static_cast<WindowsFrameGenerationSession*>(opaque);
+    // Hide first, then wait for GPU/session teardown. This ordering makes source mpv visibility
+    // the atomic fallback even if DirectML is still finishing an in-flight dispatch.
+    if (session->output_hwnd != nullptr)
+        ShowWindowAsync(session->output_hwnd, SW_HIDE);
+    session->stop_requested.store(true, std::memory_order_release);
+    if (session->worker.joinable())
+        session->worker.join();
+    delete session;
+}

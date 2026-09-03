@@ -13,6 +13,9 @@ export interface PlayerInteractionSettings {
   fsrSharpness: number
   fsrDenoise: boolean
   fsrTarget: PlayerFsrTarget
+  frameInterpolationMode: PlayerFrameInterpolationMode
+  frameInterpolationTarget: PlayerFrameInterpolationTarget
+  frameInterpolationQuality: PlayerFrameInterpolationQuality
 }
 
 export type PlayerVideoOutput = 'gpu-next' | 'gpu'
@@ -23,6 +26,10 @@ export type PlayerVideoSync = 'audio' | 'display-resample' | 'display-vdrop'
 export type PlayerFsrMode = 'off' | 'auto' | 'force'
 export type PlayerFsrTarget = 'auto' | '1080p' | '1440p' | '2160p'
 export type PlayerFsrSettings = Pick<PlayerInteractionSettings, 'fsrMode' | 'fsrSharpness' | 'fsrDenoise' | 'fsrTarget'>
+export type PlayerFrameInterpolationMode = 'off' | 'auto'
+export type PlayerFrameInterpolationTarget = 'auto' | '48' | '60' | '120'
+export type PlayerFrameInterpolationQuality = 'auto' | 'quality' | 'balanced' | 'performance'
+export type PlayerFrameInterpolationSettings = Pick<PlayerInteractionSettings, 'frameInterpolationMode' | 'frameInterpolationTarget' | 'frameInterpolationQuality'>
 export type MobileEpisodeLayout = 'vertical' | 'horizontal'
 
 export const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
@@ -41,6 +48,9 @@ const DEFAULT_SETTINGS: PlayerInteractionSettings = {
   fsrSharpness: 35,
   fsrDenoise: true,
   fsrTarget: 'auto',
+  frameInterpolationMode: 'off',
+  frameInterpolationTarget: 'auto',
+  frameInterpolationQuality: 'auto',
 }
 
 export function loadPlayerInteractionSettings(): PlayerInteractionSettings {
@@ -82,6 +92,13 @@ export function normalizePlayerInteractionSettings(settings: Partial<PlayerInter
     fsrDenoise: settings.fsrDenoise !== false,
     fsrTarget: settings.fsrTarget === '1080p' || settings.fsrTarget === '1440p' || settings.fsrTarget === '2160p'
       ? settings.fsrTarget
+      : 'auto',
+    frameInterpolationMode: settings.frameInterpolationMode === 'auto' ? 'auto' : 'off',
+    frameInterpolationTarget: settings.frameInterpolationTarget === '48' || settings.frameInterpolationTarget === '60' || settings.frameInterpolationTarget === '120'
+      ? settings.frameInterpolationTarget
+      : 'auto',
+    frameInterpolationQuality: settings.frameInterpolationQuality === 'quality' || settings.frameInterpolationQuality === 'balanced' || settings.frameInterpolationQuality === 'performance'
+      ? settings.frameInterpolationQuality
       : 'auto',
   }
 }

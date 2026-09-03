@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
-import { delimiter, join, resolve } from 'node:path'
+import { delimiter, join, parse, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const androidApi = '36'
@@ -10,6 +10,7 @@ const androidBuildTools = platform() === 'win32' ? ['35.0.0', '36.0.0'] : ['36.0
 const androidNdk = '27.2.12479018'
 const playerRoot = fileURLToPath(new URL('..', import.meta.url))
 const tauriCli = resolve(playerRoot, 'node_modules', '@tauri-apps', 'cli', 'tauri.js')
+const setupFrameInterpolationModel = resolve(playerRoot, 'scripts', 'setup-frame-interpolation-model.mjs')
 const setupLibmpv = resolve(playerRoot, 'scripts', 'setup-libmpv-android.mjs')
 const apkPath = resolve(playerRoot, 'src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'debug', 'app-universal-debug.apk')
 
@@ -94,6 +95,7 @@ if (!javaHome)
 if (!existsSync(tauriCli))
   throw new Error('Tauri CLI is missing. Run npm ci in player first.')
 
+run(process.execPath, [setupFrameInterpolationModel, '--android'])
 run(process.execPath, [setupLibmpv])
 rmSync(apkPath, { force: true })
 
@@ -112,6 +114,16 @@ if (platform() === 'win32') {
 }
 if (platform() === 'win32')
   env.GRADLE_OPTS = [env.GRADLE_OPTS, '-Dkotlin.incremental=false', '-Dkotlin.compiler.execution.strategy=in-process'].filter(Boolean).join(' ')
+if (platform() === 'win32') {
+  // JDK 21 uses an AF_UNIX socket for NIO selectors. A long TEMP path can
+  // exceed Windows' Unix-domain socket limit and make Gradle fail before it
+  // evaluates the project with "Unable to establish loopback connection".
+  const gradleTemp = process.env.OHMYCINE_GRADLE_TEMP
+    || join(parse(playerRoot).root, 'ohmycine-gradle-tmp')
+  mkdirSync(gradleTemp, { recursive: true })
+  env.TEMP = gradleTemp
+  env.TMP = gradleTemp
+}
 env.CARGO_PROFILE_DEV_DEBUG = '0'
 env.CARGO_PROFILE_DEV_STRIP = 'debuginfo'
 const pathKey = Object.keys(env).find(name => name.toLowerCase() === 'path') || 'PATH'
@@ -124,6 +136,8 @@ console.log(`Android NDK: ${ndkHome}`)
 console.log(`JDK: ${javaHome}`)
 if (env.GRADLE_USER_HOME)
   console.log(`Gradle cache: ${env.GRADLE_USER_HOME}`)
+if (platform() === 'win32')
+  console.log(`Gradle temp: ${env.TEMP}`)
 run(process.execPath, [tauriCli, 'android', 'build', '--debug', '--apk', '--target', 'aarch64', '--ci'], env)
 
 if (!existsSync(apkPath))

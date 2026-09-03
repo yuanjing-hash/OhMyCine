@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::commands::player_shared::FrameInterpolationDiagnostics;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tauri::{
     plugin::{Builder, PluginHandle, TauriPlugin},
@@ -56,6 +57,10 @@ pub struct AndroidPlaybackDiagnostics {
     pub video_output: String,
     pub video_output_fallback_used: bool,
     pub playback_transport: String,
+    pub fsr_status: String,
+    pub fsr_reason: Option<String>,
+    #[serde(flatten)]
+    pub frame_interpolation: FrameInterpolationDiagnostics,
     pub logs: Vec<String>,
 }
 

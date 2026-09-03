@@ -3125,6 +3125,7 @@ dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.22.1",
+ "cc",
  "chrono",
  "crc32fast",
  "env_logger",

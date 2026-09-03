@@ -40,6 +40,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Verify frame-interpolation contracts
+        run: npm run verify:frame-interpolation
+
       - name: Verify scraper classification
         run: npm run verify:scraper
 
@@ -156,6 +159,12 @@ jobs:
       - name: Prepare Windows libmpv runtime and import libraries
         run: npm run setup:libmpv -- windows
 
+      - name: Verify Windows frame-interpolation assets and shaders
+        run: |
+          npm run verify:frame-interpolation
+          npm run verify:frame-interpolation:shaders
+          npm run probe:frame-interpolation:windows
+
       - name: Build frontend
         run: npm run build
 
@@ -195,7 +204,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1" "ndk;27.2.12479018"
           echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -217,6 +226,11 @@ jobs:
 
       - name: Build unsigned Android ARM64 debug APK
         run: npm run tauri:build:android:preview
+
+      - name: Verify Android frame-interpolation native backend
+        run: |
+          npm run verify:frame-interpolation
+          npm run verify:frame-interpolation:android-native
 
   build:
     needs: [quality, rust-linux, rust-windows-msvc, android-arm64]

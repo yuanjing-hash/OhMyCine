@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "windows": {
+    "architecture": "x86_64",
+    "source": "zhongfly/mpv-winbuild",
+    "release": "2026-08-30-e8673660ab",
+    "archive": "mpv-dev-lgpl-x86_64-20260830-git-e8673660ab.7z",
+    "archiveSha256": "7659f968ccea69168aa8924ea1bf7c524e996946d184720d79f92241805f4724",
+    "mpv": "v0.41.0-1012-ge8673660a",
+    "mpvCommit": "e8673660ab7ee5d4ea8f93e4bf3a6e170ab2a19a",
+    "ffmpeg": "N-126335-gb32f8d1c2",
+    "libplacebo": "v7.371.0",
+    "installedRuntimeSha256": "7d79f8fb29fc1111e9ed986486916ebc4cb8cdf4449a10c674285e1aad8d0f5b",
+    "onnxRuntimeDirectMl": {
+      "release": "1.24.4",
+      "sourceCommit": "2d924974ef147392ced8409d36bd6d2e7fcc8a74",
+      "package": "microsoft.ml.onnxruntime.directml.1.24.4.nupkg",
+      "packageSha256": "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681",
+      "runtimeDllSha256": "e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40",
+      "license": "MIT",
+      "directMlRelease": "1.15.4",
+      "directMlPackageSha256": "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9",
+      "directMlDllSha256": "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1"
+    }
+  },
+  "android": {
+    "architecture": "arm64-v8a",
+    "source": "mpv-android/mpv-android",
+    "release": "2026-04-25",
+    "releaseCommit": "3018d47277d5b3ca02acdd96466f261c1d23ee08",
+    "archive": "app-default-arm64-v8a-release.apk",
+    "archiveSha256": "4400bcba6be9cec1128e24d1eba153d8727384926b0639fa7fe44d4e36b04f81",
+    "mpvCommit": "9ce79bcaa0132660a2e45b6bfc1fb0c199665277",
+    "ffmpegCommit": "fc4960b155aa33b9a08cf26c5e0a0530f0545f24",
+    "libplaceboCommit": "82224764a98164ce9d2d9a10e4fefca934e475fb",
+    "mpvBuildNdk": "r29",
+    "appNdk": "27.2.12479018",
+    "ncnn": {
+      "release": "20260526",
+      "archive": "ncnn-20260526-android-vulkan.zip",
+      "archiveSha256": "26909c92eed35afed4a966b5e9e503fcb0a529691ea3f910ec2c94a4fff52804",
+      "license": "BSD-3-Clause",
+      "licenseSha256": "7c974bac98848df46be1af5bdaa3c3c9c01f6082a90f55caeb7f60c6208aa255"
+    }
+  },
+  "interpolationRuntime": {
+    "status": "model-audited",
+    "windowsBackend": "windows-directml",
+    "androidBackend": "android-ncnn-vulkan",
+    "model": {
+      "family": "RIFE",
+      "version": "rife-v4.6",
+      "source": "nihui/rife-ncnn-vulkan",
+      "sourceCommit": "a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7",
+      "paramSha256": "724569596bcd1e7b9fa50455c604777ebed99746d2ef40aa86e31b5725f1053c",
+      "weightsSha256": "f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958",
+      "license": "MIT",
+      "outputContract": "blob 327 = frame0 dx/dy + frame1 dx/dy in full-resolution pixels; blob 332 = sigmoid frame0 blend weight; out0 is prohibited for both SDR and HDR because final pixels are synthesized from the original FP16 source frames"
+    },
+    "licenseAuditComplete": true
+  }
+}

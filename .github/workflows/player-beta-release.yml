@@ -30,10 +30,18 @@ on:
       - "package.json"
       - "scripts/build-android-preview.mjs"
       - "scripts/setup-libmpv-android.mjs"
+      - "scripts/setup-frame-interpolation-model.mjs"
+      - "scripts/export-rife-v4.6-flow-mask.py"
+      - "scripts/verify-frame-interpolation-contract.ts"
+      - "scripts/verify-frame-interpolation-shaders.mjs"
+      - "scripts/verify-android-frame-interpolation-native.mjs"
       - "src-tauri/tauri.conf.json"
       - "src-tauri/tauri.windows.conf.json"
       - "src-tauri/tauri.updater.conf.json"
       - "src-tauri/Cargo.toml"
+      - "src-tauri/build.rs"
+      - "src-tauri/src/commands/player.rs"
+      - "src-tauri/src/commands/player_shared.rs"
       - "src-tauri/src/commands/updater.rs"
       - "src-tauri/src/commands/downloads.rs"
       - "src-tauri/src/commands/download_android.rs"
@@ -43,6 +51,19 @@ on:
       - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/**"
       - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/downloads/**"
       - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/**"
+      - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/mpv/**"
+      - "src-tauri/gen/android/app/src/main/cpp/**"
+      - "src-tauri/gen/android/app/src/main/assets/frame-interpolation/**"
+      - "src-tauri/gen/android/app/src/main/assets/resources/frame-interpolation/**"
+      - "src-tauri/native/**"
+      - "src-tauri/resources/frame-interpolation/**"
+      - "src-tauri/src/mpv/frame_interpolation.rs"
+      - "src-tauri/src/mpv/windows_frame_interpolation_assets.rs"
+      - "src-tauri/src/mpv/player.rs"
+      - "src/components/player/FrameInterpolationSettingsContent.vue"
+      - "src/services/playerInteractionSettings.ts"
+      - "src/composables/useMpv.ts"
+      - "src/views/PlayerView.vue"
       - "src-tauri/gen/android/app/src/main/res/xml/file_paths.xml"
       - "src/services/updater.ts"
       - "src/stores/updater.ts"
@@ -59,10 +80,18 @@ on:
       - "package.json"
       - "scripts/build-android-preview.mjs"
       - "scripts/setup-libmpv-android.mjs"
+      - "scripts/setup-frame-interpolation-model.mjs"
+      - "scripts/export-rife-v4.6-flow-mask.py"
+      - "scripts/verify-frame-interpolation-contract.ts"
+      - "scripts/verify-frame-interpolation-shaders.mjs"
+      - "scripts/verify-android-frame-interpolation-native.mjs"
       - "src-tauri/tauri.conf.json"
       - "src-tauri/tauri.windows.conf.json"
       - "src-tauri/tauri.updater.conf.json"
       - "src-tauri/Cargo.toml"
+      - "src-tauri/build.rs"
+      - "src-tauri/src/commands/player.rs"
+      - "src-tauri/src/commands/player_shared.rs"
       - "src-tauri/src/commands/updater.rs"
       - "src-tauri/src/commands/downloads.rs"
       - "src-tauri/src/commands/download_android.rs"
@@ -72,6 +101,19 @@ on:
       - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/updater/**"
       - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/downloads/**"
       - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/**"
+      - "src-tauri/gen/android/app/src/main/java/com/ohmycine/player/mpv/**"
+      - "src-tauri/gen/android/app/src/main/cpp/**"
+      - "src-tauri/gen/android/app/src/main/assets/frame-interpolation/**"
+      - "src-tauri/gen/android/app/src/main/assets/resources/frame-interpolation/**"
+      - "src-tauri/native/**"
+      - "src-tauri/resources/frame-interpolation/**"
+      - "src-tauri/src/mpv/frame_interpolation.rs"
+      - "src-tauri/src/mpv/windows_frame_interpolation_assets.rs"
+      - "src-tauri/src/mpv/player.rs"
+      - "src/components/player/FrameInterpolationSettingsContent.vue"
+      - "src/services/playerInteractionSettings.ts"
+      - "src/composables/useMpv.ts"
+      - "src/views/PlayerView.vue"
       - "src-tauri/gen/android/app/src/main/res/xml/file_paths.xml"
       - "src/services/updater.ts"
       - "src/stores/updater.ts"
@@ -154,6 +196,21 @@ jobs:
               'windows': {
                   'lib/libmpv-2.dll': 'libmpv-2.dll',
                   'lib/libmpv-wrapper.dll': 'libmpv-wrapper.dll',
+                  'lib/frame-interpolation/onnxruntime.dll': 'onnxruntime.dll',
+                  'lib/frame-interpolation/onnxruntime_providers_shared.dll': 'onnxruntime_providers_shared.dll',
+                  'lib/frame-interpolation/DirectML.dll': 'DirectML.dll',
+                  'lib/frame-interpolation/LICENSE-ONNX-RUNTIME': 'FRAME-INTERPOLATION-LICENSE-ONNX-RUNTIME.txt',
+                  'lib/frame-interpolation/LICENSE-DIRECTML': 'FRAME-INTERPOLATION-LICENSE-DIRECTML.txt',
+                  'lib/frame-interpolation/LICENSE-DIRECTML-CODE': 'FRAME-INTERPOLATION-LICENSE-DIRECTML-CODE.txt',
+                  'lib/frame-interpolation/THIRD-PARTY-ONNX-RUNTIME.txt': 'FRAME-INTERPOLATION-THIRD-PARTY-ONNX-RUNTIME.txt',
+                  'lib/frame-interpolation/THIRD-PARTY-DIRECTML.txt': 'FRAME-INTERPOLATION-THIRD-PARTY-DIRECTML.txt',
+                  'resources/frame-interpolation/model-manifest.json': 'resources/frame-interpolation/model-manifest.json',
+                  'resources/frame-interpolation/runtime-manifest.json': 'resources/frame-interpolation/runtime-manifest.json',
+                  'resources/frame-interpolation/NOTICE.md': 'resources/frame-interpolation/NOTICE.md',
+                  'resources/frame-interpolation/models/rife-v4.6/rife-v4.6-flow-mask.onnx': 'resources/frame-interpolation/models/rife-v4.6/rife-v4.6-flow-mask.onnx',
+                  'resources/frame-interpolation/models/rife-v4.6/LICENSE-Practical-RIFE': 'resources/frame-interpolation/models/rife-v4.6/LICENSE-Practical-RIFE',
+                  'resources/frame-interpolation/shaders/proxy.hlsl': 'resources/frame-interpolation/shaders/proxy.hlsl',
+                  'resources/frame-interpolation/shaders/composite.hlsl': 'resources/frame-interpolation/shaders/composite.hlsl',
                   'lib/LICENSE': 'lib/LICENSE',
                   'resources/shaders/NOTICE.md': 'FSR-NOTICE.md',
               },
@@ -372,7 +429,7 @@ jobs:
     name: Build and publish Android ARM64 preview
     needs:
       - validate
-      - release-windows-gnu
+      - release-windows-msvc
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
@@ -440,7 +497,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1" "ndk;27.2.12479018"
           echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Setup Rust
@@ -456,6 +513,16 @@ jobs:
       - name: Install frontend dependencies
         working-directory: .
         run: npm ci
+
+      - name: Prepare Android interpolation runtime
+        working-directory: .
+        run: npm run setup:libmpv:android
+
+      - name: Verify frame-interpolation contracts and Android native backend
+        working-directory: .
+        run: |
+          npm run verify:frame-interpolation
+          npm run verify:frame-interpolation:android-native
 
       - name: Sync Player version
         shell: bash
@@ -544,16 +611,16 @@ jobs:
           set -euo pipefail
           gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber
 
-  release-windows-gnu:
+  release-windows-msvc:
     name: Build and publish Windows release
     needs: validate
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: write
 
     env:
-      TARGET: x86_64-pc-windows-gnu
+      TARGET: x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout
@@ -661,14 +728,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnu
+          targets: x86_64-pc-windows-msvc
 
-      - name: Install Windows cross-build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 nsis zip
+      - name: Install Windows packaging tools
+        shell: pwsh
+        run: choco install zip -y --no-progress
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -679,11 +743,15 @@ jobs:
         working-directory: .
         run: npm ci
 
+      - name: Verify frame-interpolation contracts
+        working-directory: .
+        run: npm run verify:frame-interpolation
+
       - name: Prepare Windows libmpv runtime
         working-directory: .
         run: npm run setup:libmpv -- windows
 
-      - name: Build Windows GNU installer
+      - name: Build Windows MSVC installer
         env:
           OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
           OHMYCINE_DANDANPLAY_APP_ID: ${{ secrets.OHMYCINE_DANDANPLAY_APP_ID }}
@@ -706,7 +774,7 @@ jobs:
             echo "::error::DanDanPlay AppId/AppSecret GitHub Secrets are required for the default official danmaku service."
             exit 1
           fi
-          RUSTC="$(rustup which rustc)" npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json
+          npm run tauri:build:windows:native -- --config src-tauri/tauri.updater.conf.json
 
       - name: Package release assets
         id: package
@@ -751,6 +819,35 @@ jobs:
             cp "${release_dir}/${file}" "${standard_dir}/${file}"
             cp "${release_dir}/${file}" "${portable_dir}/${file}"
           done
+          for file in onnxruntime.dll onnxruntime_providers_shared.dll DirectML.dll; do
+            source="src-tauri/lib/frame-interpolation/${file}"
+            test -f "$source"
+            cp "$source" "${standard_dir}/${file}"
+            cp "$source" "${portable_dir}/${file}"
+          done
+          framegen_resource_dir="resources/frame-interpolation"
+          for destination in "${standard_dir}" "${portable_dir}"; do
+            mkdir -p "${destination}/${framegen_resource_dir}/models/rife-v4.6" "${destination}/${framegen_resource_dir}/shaders"
+            cp src-tauri/resources/frame-interpolation/model-manifest.json "${destination}/${framegen_resource_dir}/"
+            cp src-tauri/resources/frame-interpolation/runtime-manifest.json "${destination}/${framegen_resource_dir}/"
+            cp src-tauri/resources/frame-interpolation/NOTICE.md "${destination}/${framegen_resource_dir}/"
+            cp src-tauri/resources/frame-interpolation/models/rife-v4.6/rife-v4.6-flow-mask.onnx "${destination}/${framegen_resource_dir}/models/rife-v4.6/"
+            cp src-tauri/resources/frame-interpolation/models/rife-v4.6/LICENSE-Practical-RIFE "${destination}/${framegen_resource_dir}/models/rife-v4.6/"
+            cp src-tauri/resources/frame-interpolation/shaders/proxy.hlsl "${destination}/${framegen_resource_dir}/shaders/"
+            cp src-tauri/resources/frame-interpolation/shaders/composite.hlsl "${destination}/${framegen_resource_dir}/shaders/"
+          done
+          while read -r source_name destination_name; do
+            source="src-tauri/lib/frame-interpolation/${source_name}"
+            test -f "$source"
+            cp "$source" "${standard_dir}/${destination_name}"
+            cp "$source" "${portable_dir}/${destination_name}"
+          done <<'FRAMEGEN_LICENSES'
+          LICENSE-ONNX-RUNTIME FRAME-INTERPOLATION-LICENSE-ONNX-RUNTIME.txt
+          LICENSE-DIRECTML FRAME-INTERPOLATION-LICENSE-DIRECTML.txt
+          LICENSE-DIRECTML-CODE FRAME-INTERPOLATION-LICENSE-DIRECTML-CODE.txt
+          THIRD-PARTY-ONNX-RUNTIME.txt FRAME-INTERPOLATION-THIRD-PARTY-ONNX-RUNTIME.txt
+          THIRD-PARTY-DIRECTML.txt FRAME-INTERPOLATION-THIRD-PARTY-DIRECTML.txt
+          FRAMEGEN_LICENSES
           printf 'OhMyCine portable mode\n' > "${portable_dir}/portable.flag"
 
           if [[ -f "src-tauri/lib/LICENSE" ]]; then

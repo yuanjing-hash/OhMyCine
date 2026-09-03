@@ -31,6 +31,37 @@ pub struct MpvDisplayBrightnessState {
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FrameInterpolationCapability {
+    pub supported: bool,
+    pub backend: Option<String>,
+    pub reason: Option<String>,
+    pub api_level: Option<u32>,
+    pub gpu_name: Option<String>,
+    pub gpu_adapter_id: Option<String>,
+    pub fp16: bool,
+    pub hdr_kinds: Vec<String>,
+    pub max_target_fps: Option<u16>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameInterpolationDiagnostics {
+    pub frame_interpolation_requested_mode: String,
+    pub frame_interpolation_effective_state: String,
+    pub frame_interpolation_reason: Option<String>,
+    pub frame_interpolation_backend: Option<String>,
+    pub frame_interpolation_input_hdr_kind: String,
+    pub frame_interpolation_output_hdr_mode: String,
+    pub frame_interpolation_target_fps: Option<u16>,
+    pub frame_interpolation_flow_scale: Option<f64>,
+    pub frame_interpolation_model_time_p50_ms: Option<f64>,
+    pub frame_interpolation_model_time_p95_ms: Option<f64>,
+    pub frame_interpolation_dropped_frames: u64,
+    pub frame_interpolation_capability: FrameInterpolationCapability,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MpvEngineSettings {
     pub video_output: String,
     pub hardware_decoder: String,
@@ -42,6 +73,9 @@ pub struct MpvEngineSettings {
     pub fsr_sharpness: f64,
     pub fsr_denoise: bool,
     pub fsr_target: String,
+    pub frame_interpolation_mode: String,
+    pub frame_interpolation_target: String,
+    pub frame_interpolation_quality: String,
 }
 
 impl Default for MpvEngineSettings {
@@ -57,6 +91,9 @@ impl Default for MpvEngineSettings {
             fsr_sharpness: 35.0,
             fsr_denoise: true,
             fsr_target: "auto".to_string(),
+            frame_interpolation_mode: "off".to_string(),
+            frame_interpolation_target: "auto".to_string(),
+            frame_interpolation_quality: "auto".to_string(),
         }
     }
 }
@@ -97,6 +134,21 @@ impl MpvEngineSettings {
         ) {
             self.fsr_target = "auto".to_string();
         }
+        if !matches!(self.frame_interpolation_mode.as_str(), "off" | "auto") {
+            self.frame_interpolation_mode = "off".to_string();
+        }
+        if !matches!(
+            self.frame_interpolation_target.as_str(),
+            "auto" | "48" | "60" | "120"
+        ) {
+            self.frame_interpolation_target = "auto".to_string();
+        }
+        if !matches!(
+            self.frame_interpolation_quality.as_str(),
+            "auto" | "quality" | "balanced" | "performance"
+        ) {
+            self.frame_interpolation_quality = "auto".to_string();
+        }
         Ok(self)
     }
 
@@ -125,6 +177,56 @@ impl MpvEngineSettings {
 
     pub fn fsr_sharpness_stops(&self) -> f64 {
         2.0 * (1.0 - self.fsr_sharpness / 100.0)
+    }
+
+    pub fn frame_interpolation_target_fps(&self) -> Option<u16> {
+        self.frame_interpolation_target.parse().ok()
+    }
+
+    pub fn unavailable_frame_interpolation_diagnostics(
+        &self,
+        hardware_decoder: Option<&str>,
+        reason: &str,
+        api_level: Option<u32>,
+    ) -> FrameInterpolationDiagnostics {
+        let has_hwdec = hardware_decoder
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty() && value != "no");
+        let (effective_state, effective_reason) = if self.frame_interpolation_mode == "off" {
+            ("disabled", None)
+        } else if !has_hwdec {
+            (
+                "unavailable-no-hwdec",
+                Some("当前媒体未使用硬件解码，视频插帧已自动关闭。".to_string()),
+            )
+        } else {
+            ("backend-unavailable", Some(reason.to_string()))
+        };
+
+        FrameInterpolationDiagnostics {
+            frame_interpolation_requested_mode: self.frame_interpolation_mode.clone(),
+            frame_interpolation_effective_state: effective_state.to_string(),
+            frame_interpolation_reason: effective_reason,
+            frame_interpolation_backend: None,
+            frame_interpolation_input_hdr_kind: "unknown".to_string(),
+            frame_interpolation_output_hdr_mode: "unknown".to_string(),
+            frame_interpolation_target_fps: self.frame_interpolation_target_fps(),
+            frame_interpolation_flow_scale: None,
+            frame_interpolation_model_time_p50_ms: None,
+            frame_interpolation_model_time_p95_ms: None,
+            frame_interpolation_dropped_frames: 0,
+            frame_interpolation_capability: FrameInterpolationCapability {
+                supported: false,
+                backend: None,
+                reason: Some(reason.to_string()),
+                api_level,
+                gpu_name: None,
+                gpu_adapter_id: None,
+                fp16: false,
+                hdr_kinds: Vec::new(),
+                max_target_fps: None,
+            },
+        }
     }
 
     pub fn fsr_target_short_edge(&self) -> Option<u32> {
@@ -427,6 +529,8 @@ mod tests {
         assert_eq!(settings.demuxer_max_bytes(), 64 * 1024 * 1024);
         assert!((settings.fsr_sharpness_stops() - 1.3).abs() < f64::EPSILON);
         assert_eq!(settings.fsr_target_short_edge(), None);
+        assert_eq!(settings.frame_interpolation_mode, "off");
+        assert_eq!(settings.frame_interpolation_target_fps(), None);
 
         let invalid = MpvEngineSettings {
             video_output: "custom-vo".to_string(),
@@ -445,6 +549,44 @@ mod tests {
         assert_eq!(normalized_fsr.fsr_mode, "auto");
         assert_eq!(normalized_fsr.fsr_sharpness, 35.0);
         assert_eq!(normalized_fsr.fsr_target, "auto");
+
+        let normalized_interpolation = MpvEngineSettings {
+            frame_interpolation_mode: "force".to_string(),
+            frame_interpolation_target: "240".to_string(),
+            frame_interpolation_quality: "cinematic".to_string(),
+            ..MpvEngineSettings::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(normalized_interpolation.frame_interpolation_mode, "off");
+        assert_eq!(normalized_interpolation.frame_interpolation_target, "auto");
+        assert_eq!(normalized_interpolation.frame_interpolation_quality, "auto");
+
+        let enabled_interpolation = MpvEngineSettings {
+            frame_interpolation_mode: "auto".to_string(),
+            frame_interpolation_target: "60".to_string(),
+            ..MpvEngineSettings::default()
+        };
+        let no_hwdec = enabled_interpolation.unavailable_frame_interpolation_diagnostics(
+            None,
+            "backend missing",
+            None,
+        );
+        assert_eq!(
+            no_hwdec.frame_interpolation_effective_state,
+            "unavailable-no-hwdec"
+        );
+        let no_backend = enabled_interpolation.unavailable_frame_interpolation_diagnostics(
+            Some("d3d11va"),
+            "backend missing",
+            None,
+        );
+        assert_eq!(
+            no_backend.frame_interpolation_effective_state,
+            "backend-unavailable"
+        );
+        assert_eq!(no_backend.frame_interpolation_target_fps, Some(60));
+        assert!(!no_backend.frame_interpolation_capability.supported);
     }
 
     #[test]

@@ -1,0 +1,42 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D source0;
+layout(binding = 1) uniform sampler2D source1;
+layout(binding = 2) uniform sampler2D flow_texture;
+layout(binding = 3) uniform sampler2D mask_texture;
+layout(binding = 4, rgba16f) writeonly uniform image2D output_frame;
+layout(push_constant) uniform Parameters {
+    ivec2 output_size;
+    float inverse_flow_scale;
+    float timestep;
+    float confidence_threshold;
+    uint scene_cut;
+} params;
+
+float frame_confidence(vec3 earlier, vec3 later) {
+    vec3 a = earlier / (vec3(1.0) + max(earlier, vec3(0.0)));
+    vec3 b = later / (vec3(1.0) + max(later, vec3(0.0)));
+    float disagreement = dot(abs(a - b), vec3(0.2126, 0.7152, 0.0722));
+    return clamp(1.0 - disagreement * 3.0, 0.0, 1.0);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, params.output_size)))
+        return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(params.output_size);
+    vec4 flow = texture(flow_texture, uv) * params.inverse_flow_scale;
+    vec2 pixel_to_uv = vec2(1.0) / vec2(params.output_size);
+    vec3 unwarped0 = texture(source0, uv).rgb;
+    vec3 unwarped1 = texture(source1, uv).rgb;
+    vec3 warped0 = texture(source0, uv + flow.xy * pixel_to_uv).rgb;
+    vec3 warped1 = texture(source1, uv + flow.zw * pixel_to_uv).rgb;
+    float blend = clamp(texture(mask_texture, uv).r, 0.0, 1.0);
+    vec3 generated = warped0 * blend + warped1 * (1.0 - blend);
+    bool valid = params.scene_cut == 0u &&
+                 frame_confidence(warped0, warped1) >= params.confidence_threshold;
+    vec3 nearest_real = params.timestep < 0.5 ? unwarped0 : unwarped1;
+    imageStore(output_frame, pixel, vec4(clamp(valid ? generated : nearest_real,
+                                                vec3(-65504.0), vec3(65504.0)), 1.0));
+}

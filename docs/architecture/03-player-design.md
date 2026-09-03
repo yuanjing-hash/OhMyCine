@@ -2308,6 +2308,8 @@ Android 原生播放页显式启用触摸优先控制布局，不以 `820px` 等
 
 全局“播放与字幕”设置包含受控播放器引擎参数：视频输出仅允许 `gpu-next`（默认）或 `gpu`；解码策略仅允许自动安全、硬件优先或纯软件；缓存允许自动、开启、关闭和 64/128/256/512 MB 上限；同步允许以音频为准、显示重采样或显示丢帧。设置写入 Player SQLite app settings，Vue 在原生渲染初始化前和每次媒体加载前通过 `mpv_apply_engine_settings` 下发。Windows 映射到 libmpv `vo/hwdec/cache/demuxer-max-bytes/video-sync`，Android 映射到 `gpu-next/gpu`、MediaCodec/软件解码及相同缓存同步参数。不得从 UI 接受任意 mpv 参数名或自定义原始字符串。
 
+视频插帧采用独立于单帧 FSR 的跨平台受控协议。设置只允许 `off | auto`、目标 `auto | 48 | 60 | 120` 和质量 `auto | quality | balanced | performance`，旧设置升级后固定为关闭。进入 active 前必须同时确认当前媒体的真实 `hwdec-current`、平台 GPU 后端、FP16 中间表面、目标 HDR 输出和模型完整性；任一条件消失都先恢复原始 libmpv 画面，再释放插帧资源，禁止 CPU 插帧和静默 SDR 回退。Windows 后端边界为 mpv D3D11 源 HWND → WGC `R16G16B16A16_FLOAT` → DirectML flow/mask → D3D12 FP16 合成与 scRGB/HDR10 输出；Android 边界为 MediaCodec → RGBA_FP16 AHardwareBuffer → ncnn Vulkan flow/mask → Vulkan FP16 合成与 HDR Surface。运动估计只读取色调压缩代理帧，最终像素必须从原始高精度帧 warp/composite。HDR10+ 与 Dolby Vision 的动态映射先由 mpv/libplacebo 应用，输出不宣称合成新的 Dolby Vision RPU。模型和原生后端尚未同时通过许可、校验值与真机矩阵时，设置界面只显示能力原因并禁用“自动”，诊断不得报告 active。
+
 这些工作不代表 Android 已可正式发布。当前 ARM64 APK 已进入真机验证：包内包含 libmpv、FFmpeg、JNI bridge、OhMyCine Rust 库和 CA 证书，JNI 导出符号与 `is.xyz.mpv.MPVLib` 匹配；首轮日志确认 SurfaceView 与 `gpu-next` 已完成配置，同时暴露了原生 FFmpeg TLS 握手兼容问题，因此加入 Rust TLS 回环桥，仍需在同一远程媒体上复测画面、音频和 Range seek。远程 header、字幕、暂停/seek、MediaCodec 兼容性、SAF 文件/目录授权恢复、横竖屏切换和 Activity 生命周期仍需继续真机覆盖。Android 启动图标使用与桌面相同的“影院之眼”母版，并生成 mdpi 至 xxxhdpi 的普通、圆形和 Android 8+ adaptive icon 资源。预览渠道已具备固定签名、Release APK 校验下载和系统安装确认；正式商店签名、系统返回键、系统栏避让，以及 armeabi-v7a/x86_64 等额外 ABI 仍待完成。桌面窗口拖拽、最小化、最大化与关闭按钮在移动环境中不得作为导航依赖。
 
 ### 9.9 GPL 合规说明
