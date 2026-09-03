@@ -1,5 +1,0 @@
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Player lint, typecheck, build and Rust review gates."}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Visual consistency, keyboard, focus and progress accessibility review."}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"SSE event parsing and error-state exhaustiveness review."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check Player/Tauri/Server contract consistency."}
-{"file":".trellis/tasks/09-01-player-server-discovery-workflow/research/current-flow-findings.md","reason":"Regression checks must cover the identified current behavior."}

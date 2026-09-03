@@ -1,3 +1,0 @@
-{"file":".trellis/spec/frontend/index.md","reason":"Player frontend boundaries and required checks."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"Choose the safe lifetime and ownership boundary for cross-route browsing state."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verification and non-destructive Player quality requirements."}
