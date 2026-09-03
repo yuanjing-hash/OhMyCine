@@ -811,7 +811,7 @@ jobs:
           fi
           cp "${setup_source}.sig" "${dist_dir}/${setup_signature_asset}"
 
-          for file in ohmycine-player.exe WebView2Loader.dll libmpv-wrapper.dll libmpv-2.dll; do
+          for file in ohmycine-player.exe libmpv-wrapper.dll libmpv-2.dll; do
             if [[ ! -f "${release_dir}/${file}" ]]; then
               echo "::error::Required Windows runtime file is missing: ${release_dir}/${file}"
               exit 1
@@ -819,6 +819,10 @@ jobs:
             cp "${release_dir}/${file}" "${standard_dir}/${file}"
             cp "${release_dir}/${file}" "${portable_dir}/${file}"
           done
+          if [[ -f "${release_dir}/WebView2Loader.dll" ]]; then
+            cp "${release_dir}/WebView2Loader.dll" "${standard_dir}/WebView2Loader.dll"
+            cp "${release_dir}/WebView2Loader.dll" "${portable_dir}/WebView2Loader.dll"
+          fi
           for file in onnxruntime.dll onnxruntime_providers_shared.dll DirectML.dll; do
             source="src-tauri/lib/frame-interpolation/${file}"
             test -f "$source"
