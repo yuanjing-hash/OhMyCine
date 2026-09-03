@@ -35,21 +35,18 @@ async function loadRemoteSources() {
   const next: Array<{ key: string, sourceId: string, libraryId?: string, label: string }> = []
   for (const config of store.orderedConfigs.filter(item => item.type === 'server' && item.enabled !== false)) {
     const source = store.getSource(config.id)
-    let added = false
+    next.push({ key: config.id, sourceId: config.id, label: `${config.displayName ?? config.name} 历史` })
     if (source?.listLibraries) {
       try {
         const libraries = await source.listLibraries()
         for (const library of libraries.filter(item => item.providerIdentity?.startsWith('plugin:'))) {
           next.push({ key: `${config.id}:${library.id}`, sourceId: config.id, libraryId: library.id, label: `${library.name} 历史` })
-          added = true
         }
       }
       catch {
-        // Keep the Server-level fallback below so an older Server remains usable.
+        // Keep the Server-level history entry so older Servers fail softly.
       }
     }
-    if (!added)
-      next.push({ key: config.id, sourceId: config.id, label: `${config.displayName ?? config.name} 在线历史` })
   }
   remoteSources.value = next
 }

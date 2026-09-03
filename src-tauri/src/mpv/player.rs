@@ -281,6 +281,8 @@ impl MpvPlayer {
         self.fsr_shader_path = shader_path;
         self.frame_interpolation_controller
             .set_requested(settings.frame_interpolation_mode == "auto");
+        self.frame_interpolation_controller
+            .set_quality(&settings.frame_interpolation_quality);
         #[cfg(target_os = "windows")]
         if settings.frame_interpolation_mode != self.engine_settings.frame_interpolation_mode
             || settings.frame_interpolation_target
@@ -1112,6 +1114,7 @@ impl MpvPlayer {
             &source_wid,
             target_fps,
             hdr_input,
+            self.frame_interpolation_controller.flow_scale(),
         ) {
             Ok(session) => {
                 self.windows_frame_interpolation_session = Some(session);
@@ -1242,9 +1245,18 @@ impl MpvPlayer {
             && status.latest_inference_ms.is_finite()
             && status.latest_inference_ms > 0.0
         {
+            let previous_flow_scale = self.frame_interpolation_controller.flow_scale();
             self.frame_interpolation_controller
                 .record_model_time(status.latest_inference_ms, target_fps as u16);
             self.windows_frame_interpolation_seen_inferences = status.inference_sample_count;
+            if self.frame_interpolation_controller.flow_scale() != previous_flow_scale {
+                let flow_scale = self.frame_interpolation_controller.flow_scale();
+                self.stop_windows_frame_interpolation_session();
+                self.windows_frame_interpolation_reason = Some(format!(
+                    "DirectML 推理超过预算，正在以 Flow Scale {flow_scale:.2} 重建低成本推理会话。"
+                ));
+                return;
+            }
         }
         self.windows_frame_interpolation_reason = Some(status.reason.clone());
         if status.hidden_first_present && !status.captured_pair {
@@ -1349,8 +1361,7 @@ impl MpvPlayer {
             self.windows_frame_interpolation_audio_delay_original = None;
         } else {
             self.windows_frame_interpolation_reason = Some(
-                "恢复用户原 audio-delay 失败；已保留原值并将在下一次旁路/停止时重试。"
-                    .to_string(),
+                "恢复用户原 audio-delay 失败；已保留原值并将在下一次旁路/停止时重试。".to_string(),
             );
         }
     }

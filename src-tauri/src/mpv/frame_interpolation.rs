@@ -100,6 +100,11 @@ impl FrameGenerationController {
         self.reevaluate();
     }
 
+    pub fn set_quality(&mut self, quality: &str) {
+        self.performance.set_quality(quality);
+        self.reevaluate();
+    }
+
     pub fn set_gates(
         &mut self,
         hardware_decode_ready: bool,
@@ -308,6 +313,7 @@ enum PerformanceDecision {
 #[derive(Debug, Clone)]
 struct PerformanceGovernor {
     samples: VecDeque<f64>,
+    base_scale_index: usize,
     scale_index: usize,
     recovery_samples: usize,
 }
@@ -316,6 +322,7 @@ impl Default for PerformanceGovernor {
     fn default() -> Self {
         Self {
             samples: VecDeque::with_capacity(120),
+            base_scale_index: 0,
             scale_index: 0,
             recovery_samples: 0,
         }
@@ -345,7 +352,7 @@ impl PerformanceGovernor {
             self.samples.clear();
             return PerformanceDecision::Lowered;
         }
-        if self.scale_index > 0 && p95 < budget * 0.55 {
+        if self.scale_index > self.base_scale_index && p95 < budget * 0.55 {
             self.recovery_samples += 1;
             if self.recovery_samples >= 300 {
                 self.scale_index -= 1;
@@ -361,6 +368,19 @@ impl PerformanceGovernor {
 
     fn flow_scale(&self) -> f64 {
         Self::SCALES[self.scale_index]
+    }
+
+    fn set_quality(&mut self, quality: &str) {
+        let scale_index = match quality {
+            "balanced" => 1,
+            "performance" => 2,
+            _ => 0,
+        };
+        if self.base_scale_index != scale_index || self.scale_index != scale_index {
+            self.base_scale_index = scale_index;
+            self.scale_index = scale_index;
+            self.reset_samples();
+        }
     }
 
     fn percentiles(&self) -> (Option<f64>, Option<f64>) {
@@ -383,7 +403,7 @@ impl PerformanceGovernor {
 
     fn reset(&mut self) {
         self.reset_samples();
-        self.scale_index = 0;
+        self.scale_index = self.base_scale_index;
     }
 }
 
@@ -512,6 +532,30 @@ mod tests {
         }
         assert_eq!(controller.flow_scale(), 0.67);
         assert_eq!(controller.state(), EffectiveState::FallbackPerformance);
+    }
+
+    #[test]
+    fn quality_preset_sets_and_preserves_the_minimum_flow_scale() {
+        let mut controller = FrameGenerationController::default();
+        controller.set_quality("balanced");
+        assert_eq!(controller.flow_scale(), 0.67);
+        for _ in 0..30 {
+            controller.record_model_time(20.0, 60);
+        }
+        assert_eq!(controller.flow_scale(), 0.5);
+        for _ in 0..330 {
+            controller.record_model_time(1.0, 60);
+        }
+        assert_eq!(controller.flow_scale(), 0.67);
+        controller.set_requested(false);
+        assert_eq!(controller.flow_scale(), 0.67);
+
+        controller.set_quality("performance");
+        assert_eq!(controller.flow_scale(), 0.5);
+        for _ in 0..330 {
+            controller.record_model_time(1.0, 60);
+        }
+        assert_eq!(controller.flow_scale(), 0.5);
     }
 
     #[test]

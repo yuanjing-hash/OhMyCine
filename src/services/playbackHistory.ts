@@ -60,7 +60,9 @@ export async function savePlaybackProgress(input: PlaybackProgressUpsert): Promi
     return null
 
   try {
-    return await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', { progress })
+    const saved = await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', { progress })
+    notifyPlaybackHistoryChanged('progress-saved')
+    return saved
   }
   catch {
     return null
@@ -102,13 +104,19 @@ export async function listPlaybackHistoryPage(page = 1, pageSize = 24): Promise<
 export async function setPlaybackCompleted(identity: PlaybackProgressIdentity, completed: boolean): Promise<boolean> {
   if (!isValidIdentity(identity))
     return false
-  return invoke<boolean>('player_set_playback_completed', { identity, completed })
+  const changed = await invoke<boolean>('player_set_playback_completed', { identity, completed })
+  if (changed)
+    notifyPlaybackHistoryChanged('completion-changed')
+  return changed
 }
 
 export async function removeContinueWatching(identity: PlaybackProgressIdentity): Promise<boolean> {
   if (!isValidIdentity(identity))
     return false
-  return invoke<boolean>('player_remove_continue_watching', { identity })
+  const changed = await invoke<boolean>('player_remove_continue_watching', { identity })
+  if (changed)
+    notifyPlaybackHistoryChanged('continue-removed')
+  return changed
 }
 
 export async function getPlaybackCompletionBatch(identities: readonly PlaybackProgressIdentity[]): Promise<PlaybackHistoryEntry[]> {
@@ -146,12 +154,18 @@ export async function deletePlaybackHistoryForSource(sourceId: string): Promise<
     return false
 
   try {
-    await invoke<number>('player_delete_playback_history_for_source', { sourceId: normalizedSourceId })
+    const changed = await invoke<number>('player_delete_playback_history_for_source', { sourceId: normalizedSourceId })
+    if (changed > 0)
+      notifyPlaybackHistoryChanged('source-history-deleted')
     return true
   }
   catch {
     return false
   }
+}
+
+function notifyPlaybackHistoryChanged(reason: string): void {
+  window.dispatchEvent(new CustomEvent(PLAYED_STATE_CHANGED_EVENT, { detail: { source: 'player-history', reason } }))
 }
 
 export function shouldResumePlayback(entry: PlaybackHistoryEntry | null | undefined): entry is PlaybackHistoryEntry {

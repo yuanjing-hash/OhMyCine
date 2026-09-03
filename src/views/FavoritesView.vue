@@ -32,7 +32,7 @@ async function refresh() {
   const collections = annotateMissingCollectionSources(await listLocalMediaCollections().catch(() => []), new Set(configs.map(config => config.id)))
   const local = collections.find(collection => collection.kind === 'favorite')
   const next: FavoriteGroup[] = [{ id: 'player-local', title: 'Player 本地收藏', owner: 'Player 本地 · 跨来源', items: (local?.members ?? []).filter(member => !member.missing).map(memberToItem), missing: (local?.members ?? []).filter(member => member.missing) }]
-  const providers = await Promise.all(configs.filter(config => config.type === 'emby' || config.type === 'jellyfin').map(async (config): Promise<FavoriteGroup> => {
+  const providers = await Promise.all(configs.filter(config => config.type === 'emby' || config.type === 'jellyfin' || config.type === 'server').map(async (config): Promise<FavoriteGroup> => {
     const source = store.getSource(config.id)
     try {
       if (!source?.listFavorites)

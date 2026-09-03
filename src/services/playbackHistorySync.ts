@@ -4,11 +4,13 @@ import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { useDataSourceStore } from '@/stores/datasource'
 import { invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
+import { redactSensitiveText } from '@/services/datasource/errors'
 import { ServerDataSource } from '@/services/datasource/server'
 import { listPlaybackHistoryPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 
 type DataSourceStore = ReturnType<typeof useDataSourceStore>
 const CURSOR_PREFIX = 'ohmycine:server-history-cursor:'
+const DIAGNOSTIC_PREFIX = 'ohmycine:server-history-sync-diagnostic:'
 const SYNC_INTERVAL_MS = 60_000
 
 export function startPlaybackHistorySync(store: DataSourceStore): () => void {
@@ -76,8 +78,10 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
     const cursorKey = `${CURSOR_PREFIX}${target.config.id}:${encodeURIComponent(safeOrigin(target.config.url) ?? target.config.url)}`
     let cursor = safeCursor(getAppSetting(cursorKey))
     try {
+      let received = 0
       for (let page = 0; page < 20; page++) {
         const response = await target.source.syncPlaybackHistory({ cursor, changes: page === 0 ? outgoing : [] })
+        received += response.changes.length
         const incoming = response.changes.flatMap(change => mapIncomingChange(change, configs))
         if (incoming.length)
           merged += await invoke<number>('player_merge_playback_history', { entries: incoming })
@@ -88,13 +92,24 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
         if (response.changes.length < 500)
           break
       }
+      await saveSyncDiagnostic(target.config.id, { ok: true, cursor, outgoing: outgoing.length, received })
     }
-    catch {
+    catch (error) {
       // Local playback history remains authoritative while a Server is offline.
+      await saveSyncDiagnostic(target.config.id, { ok: false, cursor, outgoing: outgoing.length, message: redactSensitiveText(error).slice(0, 256) })
     }
   }
   if (merged > 0)
     window.dispatchEvent(new CustomEvent(PLAYED_STATE_CHANGED_EVENT, { detail: { source: 'server-history-sync' } }))
+}
+
+async function saveSyncDiagnostic(sourceId: string, value: { ok: boolean, cursor: number, outgoing: number, received?: number, message?: string }): Promise<void> {
+  try {
+    await setAppSetting(`${DIAGNOSTIC_PREFIX}${sourceId}`, JSON.stringify({ timestamp: new Date().toISOString(), ...value }))
+  }
+  catch {
+    // Diagnostics must never make playback history synchronization fail.
+  }
 }
 
 async function readLocalHistory(limit: number): Promise<PlaybackHistoryEntry[]> {

@@ -54,7 +54,12 @@ pub struct WindowsFrameInterpolationSession {
 unsafe impl Send for WindowsFrameInterpolationSession {}
 
 impl WindowsFrameInterpolationSession {
-    pub fn start(mpv_wid: &str, target_fps: u32, hdr_input: bool) -> Result<Self, String> {
+    pub fn start(
+        mpv_wid: &str,
+        target_fps: u32,
+        hdr_input: bool,
+        flow_scale: f64,
+    ) -> Result<Self, String> {
         let source_hwnd = mpv_wid
             .parse::<isize>()
             .map_err(|_| "mpv source HWND is not a valid integer".to_string())?;
@@ -73,12 +78,14 @@ impl WindowsFrameInterpolationSession {
                 .chain(Some(0))
                 .collect::<Vec<_>>();
             let mut reason = vec![0_i8; 1024];
+            let proxy_size = proxy_size_for_flow_scale(flow_scale);
             let raw = unsafe {
                 ohmycine_windows_framegen_start(
                     source_hwnd,
                     model_path.as_ptr(),
                     target_fps,
                     i32::from(hdr_input),
+                    proxy_size,
                     reason.as_mut_ptr(),
                     reason.len(),
                 )
@@ -192,6 +199,16 @@ impl WindowsFrameInterpolationSession {
     }
 }
 
+fn proxy_size_for_flow_scale(flow_scale: f64) -> u32 {
+    if flow_scale <= 0.5 {
+        32
+    } else if flow_scale <= 0.67 {
+        48
+    } else {
+        64
+    }
+}
+
 impl Drop for WindowsFrameInterpolationSession {
     fn drop(&mut self) {
         #[cfg(ohmycine_framegen_directml_probe)]
@@ -209,6 +226,7 @@ unsafe extern "C" {
         model_path: *const u16,
         target_fps: u32,
         hdr_input: i32,
+        proxy_size: u32,
         reason: *mut std::ffi::c_char,
         reason_capacity: usize,
     ) -> *mut c_void;
@@ -390,6 +408,13 @@ fn failed(reason: impl Into<String>) -> WindowsFrameInterpolationAssetProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quality_scales_select_distinct_dynamic_proxy_sizes() {
+        assert_eq!(proxy_size_for_flow_scale(1.0), 64);
+        assert_eq!(proxy_size_for_flow_scale(0.67), 48);
+        assert_eq!(proxy_size_for_flow_scale(0.5), 32);
+    }
 
     #[test]
     fn pinned_development_model_has_the_expected_digest_when_installed() {

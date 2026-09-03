@@ -1,5 +1,5 @@
 import type { ServerCredentialValue } from './credentialStore'
-import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
+import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderCollectionOption, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
@@ -760,17 +760,65 @@ export class ServerDataSource implements DataSource {
   }
 
   async listPlaybackHistory(request: ProviderPlaybackHistoryRequest = {}): Promise<ProviderPlaybackHistoryPage> {
-    const parameters = new URLSearchParams()
     if (request.libraryId) {
       const onlineLibrary = parseOnlineItemID(request.libraryId)
       if (onlineLibrary?.kind !== 'library')
         throw new Error('在线媒体库历史来源无效。')
+      const parameters = new URLSearchParams()
       parameters.set('library_id', onlineLibrary.libraryId)
+      if (request.cursor)
+        parameters.set('cursor', request.cursor)
+      parameters.set('page_size', String(Math.max(1, Math.min(100, request.limit ?? 24))))
+      return parseOnlineHistoryPage(this.id, await this.request(`/api/v1/player/online-history?${parameters.toString()}`))
     }
-    if (request.cursor)
-      parameters.set('cursor', request.cursor)
-    parameters.set('page_size', String(Math.max(1, Math.min(100, request.limit ?? 24))))
-    return parseOnlineHistoryPage(this.id, await this.request(`/api/v1/player/online-history?${parameters.toString()}`))
+    const page = request.cursor && /^\d{1,6}$/.test(request.cursor) ? Math.max(1, Number.parseInt(request.cursor, 10)) : 1
+    const pageSize = Math.max(1, Math.min(100, request.limit ?? 24))
+    return parseServerHistoryPage(this.id, await this.request(`/api/v1/player/history?page=${page}&page_size=${pageSize}`), page)
+  }
+
+  async setFavorite(itemId: string, favorite: boolean): Promise<void> {
+    const stateID = createPlayerMediaStateItemID(itemId)
+    await this.request(`/api/v1/player/favorites/${encodeURIComponent(stateID)}`, 'PUT', { favorite })
+  }
+
+  async listFavorites(): Promise<MediaItem[]> {
+    const data = recordData(await this.request('/api/v1/player/favorites'))
+    return arrayRecords(data.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => ({ ...this.mapItem(item), favorite: true }))
+  }
+
+  async getFavoriteState(itemId: string): Promise<boolean> {
+    const stateID = createPlayerMediaStateItemID(itemId)
+    const data = recordData(await this.request(`/api/v1/player/favorites/${encodeURIComponent(stateID)}`))
+    return data.favorite === true
+  }
+
+  async listProviderCollections(kind: 'playlist' | 'collection'): Promise<ProviderCollectionOption[]> {
+    const data = recordData(await this.request(`/api/v1/player/collections?kind=${encodeURIComponent(kind)}`))
+    return arrayRecords(data.list).flatMap((raw): ProviderCollectionOption[] => {
+      if (!isRecord(raw) || raw.source !== 'manual')
+        return []
+      const id = optionalString(raw.id)
+      const name = optionalString(raw.name)
+      const itemKind = raw.kind === 'collection' || raw.kind === 'playlist' ? raw.kind : null
+      if (!id || !name || itemKind !== kind)
+        return []
+      return [{ id, name, kind: itemKind, itemCount: boundedNumber(raw.item_count, 0, SERVER_MAX_ITEMS) }]
+    })
+  }
+
+  async createProviderCollection(name: string, kind: 'playlist' | 'collection'): Promise<string> {
+    const data = recordData(await this.request('/api/v1/player/collections', 'POST', { name, kind }))
+    const id = optionalString(data.id)
+    if (!id)
+      throw new Error('Server 返回的合集标识无效。')
+    return id
+  }
+
+  async addProviderCollectionMember(collectionId: string, itemId: string, kind: 'playlist' | 'collection'): Promise<void> {
+    if (!collectionId || (kind !== 'collection' && kind !== 'playlist'))
+      throw new Error('Server 合集参数无效。')
+    const stateID = createPlayerMediaStateItemID(itemId)
+    await this.request(`/api/v1/player/collections/${encodeURIComponent(collectionId)}/items`, 'POST', { item_id: stateID })
   }
 
   async syncPlaybackProgress(progress: ProviderPlaybackProgressInput): Promise<void> {
@@ -1629,6 +1677,13 @@ function createEntryItemID(libraryId: string, workId: string, entryID: number): 
   return `entry|${libraryId}|${workId}|${entryID}`
 }
 
+function createPlayerMediaStateItemID(itemId: string): string {
+  const work = parseWorkItemID(itemId)
+  if (!work)
+    throw new Error('Server 媒体标识无效。')
+  return `${work.libraryId}:${work.workId}`
+}
+
 interface WorkItemID { libraryId: string, workId: string, season?: number }
 function parseWorkItemID(value: string): WorkItemID | null {
   const parts = value.split('|')
@@ -1646,6 +1701,62 @@ function parseNumericID(value: string | undefined): number | null {
     return null
   const parsed = Number.parseInt(value, 10)
   return parsed > 0 ? parsed : null
+}
+
+function parseServerHistoryPage(sourceId: string, value: unknown, page: number): ProviderPlaybackHistoryPage {
+  const data = recordData(value)
+  const items = arrayRecords(data.list).slice(0, 100).flatMap((raw): MediaItem[] => {
+    if (!isRecord(raw))
+      return []
+    const title = optionalString(raw.title)
+    const itemId = optionalString(raw.item_id) ?? optionalString(raw.media_identity)
+    const libraryId = optionalString(raw.library_id)
+    const position = boundedNumber(raw.position, 0, Number.MAX_SAFE_INTEGER) ?? 0
+    const duration = boundedNumber(raw.duration, 0, Number.MAX_SAFE_INTEGER)
+    const updatedAt = boundedNumber(raw.updated_at, 1, Number.MAX_SAFE_INTEGER)
+    if (!title || !itemId || !updatedAt)
+      return []
+    const type = ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(String(raw.media_type))
+      ? raw.media_type as MediaItem['type']
+      : 'file'
+    return [{
+      id: itemId,
+      sourceId,
+      originType: 'server',
+      libraryId,
+      name: title,
+      type,
+      posterUrl: safeHistoryArtworkURL(raw.poster_url),
+      backdropUrl: safeHistoryArtworkURL(raw.backdrop_url),
+      titleLogoUrl: safeHistoryArtworkURL(raw.title_logo_url),
+      duration,
+      path: optionalString(raw.stream_identity) ?? itemId,
+      resumePosition: position,
+      progress: duration && duration > 0 ? Math.min(1, position / duration) : undefined,
+      modified: new Date(updatedAt).toISOString(),
+    }]
+  })
+  const hasMore = data.has_more === true
+  return { items, cursor: hasMore ? String(page + 1) : undefined, hasMore }
+}
+
+function safeHistoryArtworkURL(value: unknown): string | undefined {
+  const candidate = optionalString(value)
+  if (!candidate || candidate.length > 2048)
+    return undefined
+  try {
+    const parsed = new URL(candidate)
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
+      return undefined
+    for (const key of parsed.searchParams.keys()) {
+      if (['token', 'key', 'auth', 'signature', 'sig', 'expires'].some(fragment => key.toLowerCase().includes(fragment)))
+        return undefined
+    }
+    return parsed.toString()
+  }
+  catch {
+    return undefined
+  }
 }
 
 function readServerExtra(config: DataSourceConfig): ServerConfigExtra {

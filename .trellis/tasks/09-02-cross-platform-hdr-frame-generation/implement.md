@@ -133,6 +133,14 @@ Add and run dedicated frame-interpolation protocol, state-machine, asset-license
 - The first v1.1.40 dispatch exposed a Windows-runner locale bug in release-note generation: Python decoded a Chinese Conventional Commit subject with cp1252. Git subprocess output is now explicitly decoded as UTF-8 with replacement only for malformed bytes, so localized commit subjects cannot block an otherwise successful release package.
 - Contract, Rust state-machine, Clippy, frontend production build and Android ARM64 native full-session verification cover the correction; physical observation remains Beta acceptance rather than a publication blocker.
 
+### 2026-09-03 inference-efficiency correction
+
+- The Windows DirectML backend now runs RIFE once per adjacent source-frame pair at `t=0.5`; additional 48/60/120 Hz target timestamps reuse that midpoint flow/mask instead of repeating the full model for every generated frame.
+- The FP16 composite shader scales the cached bidirectional flow for each requested target timestamp and uses endpoint-correct mask weighting, while the decoded source and output surfaces remain `R16G16B16A16_FLOAT`.
+- The user quality preset now reaches native inference: quality/auto uses a 64-pixel proxy, balanced uses 48, and performance uses 32. The governor treats that selection as its ceiling and rebuilds the DirectML session after a scale transition.
+- The bundled dynamic-shape ONNX model was executed through DirectML at 32x32 as a real self-test; 48/64 use the same dynamic graph, with 64 retaining the previously shipped default path.
+- Contract coverage now rejects per-target-timestamp RIFE calls and verifies the single midpoint inference, flow-time scaling, mask endpoint semantics, and 64/48/32 preset mapping.
+
 ## High-risk Files and Boundaries
 
 - `src-tauri/src/mpv/player.rs`: mpv lifecycle, Windows source HWND and fallback ordering.

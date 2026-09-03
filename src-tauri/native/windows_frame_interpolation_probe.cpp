@@ -238,7 +238,7 @@ constexpr char kCompositeShader[] = R"(
 Texture2D<float4> Source0 : register(t0); Texture2D<float4> Source1 : register(t1);
 StructuredBuffer<float> Flow : register(t2); StructuredBuffer<float> Mask : register(t3);
 SamplerState LinearClamp : register(s0); RWTexture2D<float4> Output : register(u0);
-cbuffer Params : register(b0) { uint2 outputSize; uint2 proxySize; float timestep; float confidenceThreshold; uint sceneCut; float padding; };
+cbuffer Params : register(b0) { uint2 outputSize; uint2 proxySize; float timestep; float confidenceThreshold; uint sceneCut; float flowTimestep; };
 float conf(float3 a, float3 b) { a /= 1.0 + max(a, 0.0); b /= 1.0 + max(b, 0.0); return saturate(1.0 - dot(abs(a-b), float3(.2126,.7152,.0722))*3.0); }
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -247,9 +247,14 @@ void main(uint3 id : SV_DispatchThreadID) {
     uint2 p = min(uint2(uv * float2(proxySize)), proxySize - 1); uint i = p.y * proxySize.x + p.x; uint plane = proxySize.x * proxySize.y;
     float4 flow = float4(Flow[i], Flow[plane+i], Flow[2*plane+i], Flow[3*plane+i]);
     float3 a0 = Source0.SampleLevel(LinearClamp, uv, 0).rgb; float3 b0 = Source1.SampleLevel(LinearClamp, uv, 0).rgb;
-    float3 a = Source0.SampleLevel(LinearClamp, uv + flow.xy / float2(proxySize), 0).rgb;
-    float3 b = Source1.SampleLevel(LinearClamp, uv + flow.zw / float2(proxySize), 0).rgb;
-    float blend = saturate(Mask[i]); float3 generated = a * blend + b * (1.0 - blend);
+    float flowTime = clamp(flowTimestep, 0.001, 0.999);
+    float2 earlierFlow = flow.xy * (timestep / flowTime);
+    float2 laterFlow = flow.zw * ((1.0 - timestep) / (1.0 - flowTime));
+    float3 a = Source0.SampleLevel(LinearClamp, uv + earlierFlow / float2(proxySize), 0).rgb;
+    float3 b = Source1.SampleLevel(LinearClamp, uv + laterFlow / float2(proxySize), 0).rgb;
+    float occlusion = saturate(Mask[i]);
+    float blend = saturate((1.0 - timestep) + (occlusion - 0.5) * 4.0 * timestep * (1.0 - timestep));
+    float3 generated = a * blend + b * (1.0 - blend);
     float valid = conf(a,b) >= confidenceThreshold && sceneCut == 0;
     Output[id.xy] = float4(clamp(valid ? generated : (timestep < 0.5 ? a0 : b0), -65504.0, 65504.0), 1.0);
 })";
@@ -346,13 +351,14 @@ void register_output_window_class() {
 }
 
 struct WindowsFrameGenerationSession {
-    WindowsFrameGenerationSession(HWND source, std::wstring model, UINT target, bool hdr)
-        : source_hwnd(source), model_path(std::move(model)), target_fps(target), hdr_input(hdr) {}
+    WindowsFrameGenerationSession(HWND source, std::wstring model, UINT target, bool hdr, UINT proxy)
+        : source_hwnd(source), model_path(std::move(model)), target_fps(target), hdr_input(hdr), proxy_size(proxy) {}
 
     HWND source_hwnd = nullptr;
     std::wstring model_path;
     UINT target_fps = 60;
     bool hdr_input = false;
+    UINT proxy_size = kProxySize;
     std::atomic<HWND> output_hwnd{nullptr};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> captured_pair{false};
@@ -650,20 +656,21 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         if (!expected_names(ort_session))
             throw std::runtime_error("live flow/mask ONNX contract mismatch");
         const OrtDmlApi* api = dml_api();
-        constexpr size_t image_elements = 3u * kProxySize * kProxySize;
-        constexpr size_t timestep_elements = kProxySize * kProxySize;
-        constexpr size_t flow_elements = 4u * kProxySize * kProxySize;
-        constexpr size_t mask_elements = kProxySize * kProxySize;
+        const UINT proxy_size = state->proxy_size;
+        const size_t image_elements = 3u * proxy_size * proxy_size;
+        const size_t timestep_elements = proxy_size * proxy_size;
+        const size_t flow_elements = 4u * proxy_size * proxy_size;
+        const size_t mask_elements = proxy_size * proxy_size;
         GpuTensor earlier_gpu = bind_gpu_tensor(api, d3d12_device.Get(), image_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor later_gpu = bind_gpu_tensor(api, d3d12_device.Get(), image_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor timestep_gpu = bind_gpu_tensor(api, d3d12_device.Get(), timestep_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor flow_gpu = bind_gpu_tensor(api, d3d12_device.Get(), flow_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor mask_gpu = bind_gpu_tensor(api, d3d12_device.Get(), mask_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         const Ort::MemoryInfo dml_memory("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault);
-        const std::array<int64_t, 4> image_shape{1, 3, kProxySize, kProxySize};
-        const std::array<int64_t, 4> timestep_shape{1, 1, kProxySize, kProxySize};
-        const std::array<int64_t, 4> flow_shape{1, 4, kProxySize, kProxySize};
-        const std::array<int64_t, 4> mask_shape{1, 1, kProxySize, kProxySize};
+        const std::array<int64_t, 4> image_shape{1, 3, proxy_size, proxy_size};
+        const std::array<int64_t, 4> timestep_shape{1, 1, proxy_size, proxy_size};
+        const std::array<int64_t, 4> flow_shape{1, 4, proxy_size, proxy_size};
+        const std::array<int64_t, 4> mask_shape{1, 1, proxy_size, proxy_size};
         std::array<Ort::Value, 3> model_inputs{
             Ort::Value::CreateTensor(dml_memory, earlier_gpu.allocation, image_elements * sizeof(float), image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
             Ort::Value::CreateTensor(dml_memory, later_gpu.allocation, image_elements * sizeof(float), image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
@@ -690,7 +697,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         throw_if_failed(bridge_device->CreateComputeShader(composite_bytecode->GetBufferPointer(), composite_bytecode->GetBufferSize(), nullptr, &composite_shader), "CreateComputeShader(composite)");
         struct ProxyConstants { UINT source_size[2]; UINT proxy_size[2]; float reference_white; float source_peak; float padding[2]; };
         struct TimestepConstants { float value; UINT element_count; float padding[2]; };
-        struct CompositeConstants { UINT output_size[2]; UINT proxy_size[2]; float timestep; float confidence; UINT scene_cut; float padding; };
+        struct CompositeConstants { UINT output_size[2]; UINT proxy_size[2]; float timestep; float confidence; UINT scene_cut; float flow_timestep; };
         auto proxy_constants = create_constant_buffer(bridge_device.Get(), sizeof(ProxyConstants));
         auto timestep_constants = create_constant_buffer(bridge_device.Get(), sizeof(TimestepConstants));
         auto composite_constants = create_constant_buffer(bridge_device.Get(), sizeof(CompositeConstants));
@@ -817,7 +824,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                 throw_if_failed(bridge_device->CreateShaderResourceView(current.Get(), nullptr, &later_srv), "CreateShaderResourceView(later)");
                 const ProxyConstants proxy_params{
                     {texture_desc.Width, texture_desc.Height},
-                    {kProxySize, kProxySize},
+                    {proxy_size, proxy_size},
                     203.0f,
                     state->hdr_input ? 1000.0f : 203.0f,
                     {0.0f, 0.0f}};
@@ -832,7 +839,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     bridge_context->CSSetShaderResources(0, 1, &source_srv);
                     auto* destination_uav = destination->uav.Get();
                     bridge_context->CSSetUnorderedAccessViews(0, 1, &destination_uav, nullptr);
-                    bridge_context->Dispatch(kProxySize / 8, kProxySize / 8, 1);
+                    bridge_context->Dispatch((proxy_size + 7) / 8, (proxy_size + 7) / 8, 1);
                     ID3D11ShaderResourceView* null_srv = nullptr;
                     ID3D11UnorderedAccessView* null_uav = nullptr;
                     bridge_context->CSSetShaderResources(0, 1, &null_srv);
@@ -855,6 +862,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                 bool abort_session = false;
                 bool pair_had_drop = false;
                 UINT generated_this_pair = 0;
+                bool flow_ready = false;
                 const int64_t target_tick_qpc = std::max<int64_t>(
                     1, qpc_frequency.QuadPart / static_cast<int64_t>(state->target_fps));
                 while (static_cast<double>(next_output_tick) / state->target_fps
@@ -880,9 +888,9 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                         ++next_output_tick;
                         continue;
                     }
-                    if (interpolated) {
+                    if (interpolated && !flow_ready) {
                         const TimestepConstants timestep_params{
-                            timestep, static_cast<UINT>(timestep_elements), {0.0f, 0.0f}};
+                            0.5f, static_cast<UINT>(timestep_elements), {0.0f, 0.0f}};
                         bridge_context->UpdateSubresource(
                             timestep_constants.Get(), 0, nullptr, &timestep_params, 0, 0);
                         ID3D11Resource* timestep_acquired[] = {timestep_views.resource.Get()};
@@ -926,6 +934,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                         state->latest_inference_micros.store(
                             inference_micros, std::memory_order_release);
                         state->inference_sample_count.fetch_add(1, std::memory_order_relaxed);
+                        flow_ready = true;
                         if (inference_finished.QuadPart > deadline + target_tick_qpc) {
                             state->dropped_output_ticks.fetch_add(1, std::memory_order_relaxed);
                             pair_had_drop = true;
@@ -941,11 +950,11 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     on12->AcquireWrappedResources(acquired, 3);
                     const CompositeConstants composite_params{
                         {texture_desc.Width, texture_desc.Height},
-                        {kProxySize, kProxySize},
+                        {proxy_size, proxy_size},
                         timestep,
                         0.20f,
                         timestep <= 0.0001f ? 1u : 0u,
-                        0.0f};
+                        0.5f};
                     bridge_context->UpdateSubresource(
                         composite_constants.Get(), 0, nullptr, &composite_params, 0, 0);
                     ID3D11ShaderResourceView* composite_srvs[] = {
@@ -1127,7 +1136,9 @@ extern "C" int ohmycine_probe_directml_flow_mask(
             return 0;
         }
 
-        constexpr int64_t kSize = 64;
+        // The performance preset uses the 32x32 dynamic shape. The original
+        // 64x64 shape is exercised by the product path and prior releases.
+        constexpr int64_t kSize = 32;
         const std::array<int64_t, 4> image_shape{1, 3, kSize, kSize};
         const std::array<int64_t, 4> timestep_shape{1, 1, kSize, kSize};
         std::vector<float> earlier(3 * kSize * kSize, 0.2F);
@@ -1230,6 +1241,7 @@ extern "C" void* ohmycine_windows_framegen_start(
     const wchar_t* model_path,
     unsigned int target_fps,
     int hdr_input,
+    unsigned int proxy_size,
     char* reason,
     size_t reason_capacity) noexcept {
     try {
@@ -1242,8 +1254,12 @@ extern "C" void* ohmycine_windows_framegen_start(
             write_reason(reason, reason_capacity, "invalid frame-generation target fps");
             return nullptr;
         }
+        if (proxy_size != 32 && proxy_size != 48 && proxy_size != 64) {
+            write_reason(reason, reason_capacity, "invalid frame-generation proxy size");
+            return nullptr;
+        }
         auto* session = new WindowsFrameGenerationSession(
-            source, model_path, target_fps, hdr_input == 1);
+            source, model_path, target_fps, hdr_input == 1, proxy_size);
         session->worker = std::thread(run_product_capture_session, session);
         session->watchdog = std::thread(run_inference_watchdog, session);
         write_reason(reason, reason_capacity, "started-hidden");
