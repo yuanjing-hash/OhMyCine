@@ -81,6 +81,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Volatile
     private var frameInterpolationOffscreenAttached = false
     @Volatile
+    private var frameInterpolationSurfaceTransition = false
+    private var frameInterpolationSurfaceTransitionToken = 0L
+    @Volatile
     private var fsrShaderFile: File? = null
     @Volatile
     private var fsrStatus = "not-configured"
@@ -171,6 +174,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         frameInterpolationQuality = "auto"
         frameInterpolationSessionGeneration = -1L
         frameInterpolationOffscreenAttached = false
+        frameInterpolationSurfaceTransition = false
+        frameInterpolationSurfaceTransitionToken = 0L
         fsrShaderFile = null
         fsrStatus = "not-configured"
         fsrReason = null
@@ -468,14 +473,27 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 requestFrameInterpolationReconcile()
             }
             MPVLib.MpvEvent.VIDEO_RECONFIG -> {
+                if (frameInterpolationSurfaceTransition) {
+                    // Switching libmpv between the direct Surface and the owned
+                    // FP16 input Surface emits VIDEO_RECONFIG by design. Treating
+                    // that event as an external format change tears down the brand
+                    // new session before its first present and leaves UI in probing.
+                    lastPlaybackEvent = "video-reconfig-surface-transition"
+                    return
+                }
                 stopFrameInterpolationSession("视频输出已重配置。")
                 frameInterpolationController.onMediaEvent(FrameInterpolationMediaEvent.VIDEO_RECONFIG)
                 lastPlaybackEvent = "video-reconfig"
+                // libmpv commonly emits VIDEO_RECONFIG after FILE_LOADED. The old
+                // path destroyed the offscreen session here but never scheduled a
+                // replacement, leaving the controller in "probing" forever.
+                requestFrameInterpolationReconcile()
             }
             MPVLib.MpvEvent.AUDIO_RECONFIG -> lastPlaybackEvent = "audio-reconfig"
             MPVLib.MpvEvent.PLAYBACK_RESTART -> {
                 playbackState = "playing"
                 lastPlaybackEvent = "playback-restart"
+                requestFrameInterpolationReconcile()
             }
             MPVLib.MpvEvent.END_FILE -> {
                 stopFrameInterpolationSession("媒体播放结束。")
@@ -902,6 +920,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 frameInterpolationController.backendFailed("Android GPU 插帧消费线程启动失败。")
                 return
             }
+            beginFrameInterpolationSurfaceTransition()
             val switched = runCatching {
                 if (surfaceAttached) {
                     MPVLib.setPropertyString("vo", "null")
@@ -917,6 +936,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 frameInterpolationSessionGeneration = controllerGeneration
             }.isSuccess
             if (!switched) {
+                frameInterpolationSurfaceTransition = false
                 stopFrameInterpolationSession("mpv 无法切换到 RGBA16F 离屏 Surface。")
                 frameInterpolationController.backendFailed("mpv 离屏 Surface 切换失败，已恢复直接输出。")
                 return
@@ -931,6 +951,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             val hadSession = frameInputSurface != null || frameInterpolationOffscreenAttached
             frameOutputView?.alpha = 0f
             if (frameInterpolationOffscreenAttached && surfaceAttached) {
+                beginFrameInterpolationSurfaceTransition()
                 runCatching {
                     MPVLib.setPropertyString("vo", "null")
                     MPVLib.detachSurface()
@@ -960,6 +981,17 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 lastPlaybackError = null
             if (hadSession && reason.isNotBlank())
                 lastPlaybackEvent = "frame-interpolation-bypass"
+        }
+
+        private fun beginFrameInterpolationSurfaceTransition() {
+            frameInterpolationSurfaceTransition = true
+            val token = ++frameInterpolationSurfaceTransitionToken
+            postDelayed({
+                if (token != frameInterpolationSurfaceTransitionToken)
+                    return@postDelayed
+                frameInterpolationSurfaceTransition = false
+                requestFrameInterpolationReconcile()
+            }, 500L)
         }
 
         private fun verifyFirstPresentedFrame(generation: Long) {

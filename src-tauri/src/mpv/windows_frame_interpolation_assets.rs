@@ -200,6 +200,9 @@ impl WindowsFrameInterpolationSession {
 }
 
 fn proxy_size_for_flow_scale(flow_scale: f64) -> u32 {
+    // 48 is a balanced-profile selector. The native bridge maps it to an
+    // orientation-aware 64x32/32x64 tensor so every RIFE axis remains aligned
+    // to 32 and DirectML never reaches an invalid Concat shape.
     if flow_scale <= 0.5 {
         32
     } else if flow_scale <= 0.67 {
@@ -410,7 +413,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quality_scales_select_distinct_dynamic_proxy_sizes() {
+    fn quality_scales_select_distinct_aligned_proxy_profiles() {
         assert_eq!(proxy_size_for_flow_scale(1.0), 64);
         assert_eq!(proxy_size_for_flow_scale(0.67), 48);
         assert_eq!(proxy_size_for_flow_scale(0.5), 32);

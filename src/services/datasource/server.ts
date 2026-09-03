@@ -598,14 +598,14 @@ export class ServerDataSource implements DataSource {
       .map(item => mediaLibraryToRootItem({ ...item, sourceId: this.id }))
     const sections = [
       overviewHomeSection(this.id, 'hero', 'Server 精选', 'hero', mappedItems(overview.sections.featured), overview.sections.featured),
-      overviewHomeSection(this.id, 'continue', '继续观看', 'continueWatching', mappedHistory(overview.sections.continueWatching), overview.sections.continueWatching),
+      overviewHomeSection(this.id, 'continue', '继续观看', 'continueWatching', mappedHistory(overview.sections.continueWatching), overview.sections.continueWatching, { purpose: 'history', viewAllRoute: { kind: 'history', sourceId: this.id } }),
       overviewHomeSection(this.id, 'recent', 'Server 最近入库', 'recentlyAdded', mappedItems(overview.sections.recentlyAdded), overview.sections.recentlyAdded),
       overviewHomeSection(this.id, 'favorites', '我的收藏', 'libraryRow', mappedItems(overview.sections.favorites).map(item => ({ ...item, favorite: true })), overview.sections.favorites, { purpose: 'favorites', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } }),
       overviewHomeSection(this.id, 'automatic-collections', '自动合集', 'libraryRow', mappedCollections(overview.sections.automaticCollections), overview.sections.automaticCollections, { purpose: 'automaticCollections', collectionSource: 'automatic', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } }),
       overviewHomeSection(this.id, 'manual-collections', '我的合集', 'libraryRow', mappedCollections(overview.sections.manualCollections), overview.sections.manualCollections, { purpose: 'manualCollections', collectionSource: 'manual', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } }),
       overviewHomeSection(this.id, 'libraries', '媒体库', 'libraryRow', mappedLibraries, overview.sections.mediaLibraries, { purpose: 'libraries' }),
     ] satisfies HomeSection[]
-    return sections.filter(section => section.purpose === 'libraries' || section.items.length > 0 || Boolean(section.errorCode && section.purpose))
+    return sections.filter(section => section.purpose === 'libraries' || section.purpose === 'history' || section.items.length > 0 || Boolean(section.errorCode && section.purpose))
   }
 
   private async loadLegacyPhysicalHomeSections(): Promise<HomeSection[]> {
@@ -626,13 +626,13 @@ export class ServerDataSource implements DataSource {
     const manualCollections = collectionsResult.filter(item => item.source === 'manual').map(item => this.mapCollection(item)).slice(0, 12)
     return ([
       { id: `${this.id}:hero`, sourceId: this.id, title: 'Server 精选', type: 'hero', items: items.filter(item => item.backdropUrl).slice(0, 12) },
-      { id: `${this.id}:continue`, sourceId: this.id, title: '继续观看', type: 'continueWatching', items: continueItems },
+      { id: `${this.id}:continue`, sourceId: this.id, title: '继续观看', type: 'continueWatching', purpose: 'history', items: continueItems, viewAllRoute: { kind: 'history', sourceId: this.id } },
       { id: `${this.id}:recent`, sourceId: this.id, title: 'Server 最近入库', type: 'recentlyAdded', items: items.slice(0, 24) },
       { id: `${this.id}:favorites`, sourceId: this.id, title: '我的收藏', type: 'libraryRow', purpose: 'favorites', items: favoritesResult.slice(0, 12), viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } },
       { id: `${this.id}:automatic-collections`, sourceId: this.id, title: '自动合集', type: 'libraryRow', purpose: 'automaticCollections', collectionSource: 'automatic', items: automaticCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } },
       { id: `${this.id}:manual-collections`, sourceId: this.id, title: '我的合集', type: 'libraryRow', purpose: 'manualCollections', collectionSource: 'manual', items: manualCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } },
       { id: `${this.id}:libraries`, sourceId: this.id, title: '媒体库', type: 'libraryRow', purpose: 'libraries', items: physicalLibraries.map(library => mediaLibraryToRootItem(library)) },
-    ] satisfies HomeSection[]).filter(section => section.purpose === 'libraries' || section.items.length > 0)
+    ] satisfies HomeSection[]).filter(section => section.purpose === 'libraries' || section.purpose === 'history' || section.items.length > 0)
   }
 
   async refreshHomeSection(refreshKey: string): Promise<HomeSection[]> {

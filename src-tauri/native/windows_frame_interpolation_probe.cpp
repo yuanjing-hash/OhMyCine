@@ -119,13 +119,7 @@ ComPtr<ID3D12Resource> create_buffer(
     return resource;
 }
 
-void execute_and_wait(
-    ID3D12Device* device,
-    ID3D12CommandQueue* queue,
-    ID3D12GraphicsCommandList* list) {
-    throw_if_failed(list->Close(), "ID3D12GraphicsCommandList::Close");
-    ID3D12CommandList* lists[] = {list};
-    queue->ExecuteCommandLists(1, lists);
+void wait_for_queue_idle(ID3D12Device* device, ID3D12CommandQueue* queue) {
     ComPtr<ID3D12Fence> fence;
     throw_if_failed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "ID3D12Device::CreateFence");
     const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -135,6 +129,16 @@ void execute_and_wait(
     throw_if_failed(fence->SetEventOnCompletion(1, event), "ID3D12Fence::SetEventOnCompletion");
     WaitForSingleObject(event, INFINITE);
     CloseHandle(event);
+}
+
+void execute_and_wait(
+    ID3D12Device* device,
+    ID3D12CommandQueue* queue,
+    ID3D12GraphicsCommandList* list) {
+    throw_if_failed(list->Close(), "ID3D12GraphicsCommandList::Close");
+    ID3D12CommandList* lists[] = {list};
+    queue->ExecuteCommandLists(1, lists);
+    wait_for_queue_idle(device, queue);
 }
 
 void upload_inputs(
@@ -209,6 +213,24 @@ void free_gpu_tensor(const OrtDmlApi* api, GpuTensor& tensor) noexcept {
 
 constexpr wchar_t kOutputWindowClass[] = L"OhMyCineFrameGenerationOutput";
 constexpr UINT kProxySize = 64;
+
+struct ProxyExtent {
+    UINT width;
+    UINT height;
+};
+
+// RIFE's encoder/decoder concatenations require both spatial axes to stay aligned to 32.
+// A square 48x48 proxy reaches mismatched 3x3/4x4 feature maps and DirectML rejects the
+// Concat node with E_INVALIDARG. Keep the three product tiers distinct by using a half-area,
+// orientation-aware 64x32 proxy for the balanced selector.
+ProxyExtent proxy_extent(UINT selector, const winrt::Windows::Graphics::SizeInt32& source_size) {
+    if (selector == 48) {
+        return source_size.Width >= source_size.Height
+            ? ProxyExtent{64, 32}
+            : ProxyExtent{32, 64};
+    }
+    return ProxyExtent{selector, selector};
+}
 
 constexpr char kProxyShader[] = R"(
 Texture2D<float4> Source : register(t0);
@@ -656,21 +678,22 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         if (!expected_names(ort_session))
             throw std::runtime_error("live flow/mask ONNX contract mismatch");
         const OrtDmlApi* api = dml_api();
-        const UINT proxy_size = state->proxy_size;
-        const size_t image_elements = 3u * proxy_size * proxy_size;
-        const size_t timestep_elements = proxy_size * proxy_size;
-        const size_t flow_elements = 4u * proxy_size * proxy_size;
-        const size_t mask_elements = proxy_size * proxy_size;
+        const ProxyExtent proxy = proxy_extent(state->proxy_size, item_size);
+        const size_t proxy_pixels = static_cast<size_t>(proxy.width) * proxy.height;
+        const size_t image_elements = 3u * proxy_pixels;
+        const size_t timestep_elements = proxy_pixels;
+        const size_t flow_elements = 4u * proxy_pixels;
+        const size_t mask_elements = proxy_pixels;
         GpuTensor earlier_gpu = bind_gpu_tensor(api, d3d12_device.Get(), image_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor later_gpu = bind_gpu_tensor(api, d3d12_device.Get(), image_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor timestep_gpu = bind_gpu_tensor(api, d3d12_device.Get(), timestep_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor flow_gpu = bind_gpu_tensor(api, d3d12_device.Get(), flow_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         GpuTensor mask_gpu = bind_gpu_tensor(api, d3d12_device.Get(), mask_elements * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         const Ort::MemoryInfo dml_memory("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault);
-        const std::array<int64_t, 4> image_shape{1, 3, proxy_size, proxy_size};
-        const std::array<int64_t, 4> timestep_shape{1, 1, proxy_size, proxy_size};
-        const std::array<int64_t, 4> flow_shape{1, 4, proxy_size, proxy_size};
-        const std::array<int64_t, 4> mask_shape{1, 1, proxy_size, proxy_size};
+        const std::array<int64_t, 4> image_shape{1, 3, proxy.height, proxy.width};
+        const std::array<int64_t, 4> timestep_shape{1, 1, proxy.height, proxy.width};
+        const std::array<int64_t, 4> flow_shape{1, 4, proxy.height, proxy.width};
+        const std::array<int64_t, 4> mask_shape{1, 1, proxy.height, proxy.width};
         std::array<Ort::Value, 3> model_inputs{
             Ort::Value::CreateTensor(dml_memory, earlier_gpu.allocation, image_elements * sizeof(float), image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
             Ort::Value::CreateTensor(dml_memory, later_gpu.allocation, image_elements * sizeof(float), image_shape.data(), image_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT),
@@ -824,7 +847,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                 throw_if_failed(bridge_device->CreateShaderResourceView(current.Get(), nullptr, &later_srv), "CreateShaderResourceView(later)");
                 const ProxyConstants proxy_params{
                     {texture_desc.Width, texture_desc.Height},
-                    {proxy_size, proxy_size},
+                    {proxy.width, proxy.height},
                     203.0f,
                     state->hdr_input ? 1000.0f : 203.0f,
                     {0.0f, 0.0f}};
@@ -839,7 +862,8 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     bridge_context->CSSetShaderResources(0, 1, &source_srv);
                     auto* destination_uav = destination->uav.Get();
                     bridge_context->CSSetUnorderedAccessViews(0, 1, &destination_uav, nullptr);
-                    bridge_context->Dispatch((proxy_size + 7) / 8, (proxy_size + 7) / 8, 1);
+                    bridge_context->Dispatch(
+                        (proxy.width + 7) / 8, (proxy.height + 7) / 8, 1);
                     ID3D11ShaderResourceView* null_srv = nullptr;
                     ID3D11UnorderedAccessView* null_uav = nullptr;
                     bridge_context->CSSetShaderResources(0, 1, &null_srv);
@@ -950,7 +974,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     on12->AcquireWrappedResources(acquired, 3);
                     const CompositeConstants composite_params{
                         {texture_desc.Width, texture_desc.Height},
-                        {proxy_size, proxy_size},
+                        {proxy.width, proxy.height},
                         timestep,
                         0.20f,
                         timestep <= 0.0001f ? 1u : 0u,

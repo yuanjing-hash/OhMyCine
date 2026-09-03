@@ -285,7 +285,7 @@ const overviewSource = new ServerDataSource({
 await overviewSource.init({ id: 'server-overview', type: 'server', name: '总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'overview-credential', deviceId: 'overview-device' } })
 const overviewSections = await overviewSource.getHomeSections()
 assert.deepEqual(overviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
-  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
+  'hero', 'history', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
 ])
 const automaticSection = overviewSections.find(section => section.purpose === 'automaticCollections')!
 assert.equal(automaticSection.collectionSource, 'automatic')
@@ -329,14 +329,53 @@ const fastOverviewSource = new ServerDataSource({
 await fastOverviewSource.init({ id: 'server-fast-overview', type: 'server', name: '聚合总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'fast-overview-credential', deviceId: 'fast-overview-device', capabilities: ['media_overview_v1'] } })
 const fastOverviewSections = await fastOverviewSource.getHomeSections()
 assert.deepEqual(fastOverviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
-  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
+  'hero', 'history', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
 ])
 assert.equal(fastOverviewSections.find(section => section.purpose === 'manualCollections')?.errorCode, 'INTERNAL_ERROR')
 assert.equal(fastOverviewSections.find(section => section.purpose === 'favorites')?.items[0]?.favorite, true)
 assert.equal(fastOverviewSections.find(section => section.type === 'continueWatching')?.items.length, 1)
-assert.equal(fastOverviewSections.some(section => section.purpose === 'history'), false)
+const fastHistorySections = fastOverviewSections.filter(section => section.purpose === 'history')
+assert.equal(fastHistorySections.length, 1)
+assert.equal(fastHistorySections[0]?.title, '继续观看')
+assert.deepEqual(fastHistorySections[0]?.viewAllRoute, { kind: 'history', sourceId: 'server-fast-overview' })
 assert.deepEqual(fastOverviewCalls.filter(path => ['/api/v1/player/overview', '/api/v1/player/media-libraries', '/api/v1/player/history?page=1&page_size=24&source_kind=server', '/api/v1/player/favorites', '/api/v1/player/collections?kind=collection'].includes(path)), ['/api/v1/player/overview'])
 fastOverviewSource.destroy()
+
+const emptyHistoryOverviewSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      const section = (list: unknown[]) => ({ status: 'ok' as const, list, has_more: false })
+      const data = request.path === '/api/v1/player/overview'
+        ? {
+            version: 'v1',
+            sections: {
+              featured: section([]),
+              continue_watching: section([]),
+              recently_added: section([]),
+              favorites: section([]),
+              automatic_collections: section([]),
+              manual_collections: section([]),
+              recent_history: section([]),
+              media_libraries: section([]),
+            },
+          }
+        : request.path === '/api/v1/player/online-libraries'
+          ? { list: [], total: 0 }
+          : request.path === '/api/v1/player/home-contributions'
+            ? { contributions: [] }
+            : { list: [], total: 0 }
+      return { status: 200, body: { code: 0, message: 'success', data } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await emptyHistoryOverviewSource.init({ id: 'server-empty-history', type: 'server', name: '空历史测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'empty-history-credential', deviceId: 'empty-history-device', capabilities: ['media_overview_v1'] } })
+const emptyHistorySections = (await emptyHistoryOverviewSource.getHomeSections()).filter(section => section.purpose === 'history')
+assert.equal(emptyHistorySections.length, 1)
+assert.equal(emptyHistorySections[0]?.type, 'continueWatching')
+assert.deepEqual(emptyHistorySections[0]?.items, [])
+assert.deepEqual(emptyHistorySections[0]?.viewAllRoute, { kind: 'history', sourceId: 'server-empty-history' })
+emptyHistoryOverviewSource.destroy()
 
 const changeCalls: string[] = []
 const changeSource = new ServerDataSource({
@@ -640,6 +679,7 @@ assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? ch
 const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
 assert.match(sourceLibraryView, /supplementalHomeSections/)
 assert.match(sourceLibraryView, /section\.viewAllRoute/)
+assert.match(sourceLibraryView, /continueSection[\s\S]*?continueSection\.purpose === 'history'[\s\S]*?查看完整历史/)
 const embySource = fs.readFileSync(new URL('../src/services/datasource/emby.ts', import.meta.url), 'utf8')
 assert.match(embySource, /DETAIL_IMAGE_QUERY[\s\S]*ImageTypeLimit: '8'/)
 assert.match(embySource, /fetchDetailPayload[\s\S]*getItem\(id, true\)/)

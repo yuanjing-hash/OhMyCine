@@ -115,6 +115,7 @@ const activeViewMode = computed<SourceViewMode>(() => isRawFileSource.value ? vi
 const isMediaLibraryView = computed(() => activeViewMode.value === 'media-library')
 const isFolderView = computed(() => activeViewMode.value === 'folders')
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
+const continueSection = computed(() => findVisibleHomeSection(rootHomeSections.value, 'continueWatching'))
 const supplementalHomeSections = computed(() => rootHomeSections.value.filter(section => !['hero', 'continueWatching', 'recentlyAdded'].includes(section.type)))
 const hasHomeLibrarySection = computed(() => supplementalHomeSections.value.some(section => section.purpose === 'libraries'))
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
@@ -2066,7 +2067,7 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
           </template>
         </section>
 
-        <section v-if="isFolderView && !selectedLibrary && continueItems.length">
+        <section v-if="isFolderView && !selectedLibrary && continueSection && (continueItems.length || continueSection.purpose === 'history')">
           <div class="mb-4 flex items-end justify-between">
             <div>
               <h2 class="text-xl font-bold text-white">
@@ -2076,8 +2077,22 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
                 从 {{ sourceTypeLabel }} 恢复列表继续播放。
               </p>
             </div>
+            <button
+              v-if="continueSection.viewAllRoute"
+              type="button"
+              class="rounded-xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 hover:text-white"
+              @click="openHomeSection(continueSection)"
+            >
+              查看完整历史
+            </button>
           </div>
-          <MediaGrid :items="continueItems" @select="handleSelect" @play="handlePlay" />
+          <MediaGrid
+            :items="continueItems"
+            empty-title="暂无未看完内容"
+            empty-description="可以打开完整历史查看已经播放过的 Server 媒体。"
+            @select="handleSelect"
+            @play="handlePlay"
+          />
         </section>
 
         <section v-if="isFolderView && !selectedLibrary && latestItems.length">
