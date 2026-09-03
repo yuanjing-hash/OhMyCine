@@ -13,7 +13,7 @@ import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, requestMediaActionConfirmation, suppressMediaActionClick } from '@/services/mediaActions'
 import { annotateMissingCollectionSources, listLocalMediaCollections, removeLocalCollectionMember } from '@/services/mediaCollections'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { getPlaybackCompletionBatch, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
+import { getPlaybackCompletionBatch, getPlaybackProgress, playbackCompletionKey, playbackCompletionKeyForMediaItem, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -108,7 +108,7 @@ function isHomeItemPlayed(item: MediaItem): boolean {
   const sourceType = store.configs.find(config => config.id === item.sourceId)?.type
   if (sourceType === 'emby' || sourceType === 'jellyfin')
     return item.played === true
-  return item.played === true || completedItemKeys.value.has(playbackCompletionKey(item.sourceId, item.id))
+  return item.played === true || completedItemKeys.value.has(playbackCompletionKeyForMediaItem(item))
 }
 
 function homeActionTarget(item: MediaItem, context?: 'continueWatching') {
@@ -135,7 +135,7 @@ function handleHomeCardKey(item: MediaItem, event: KeyboardEvent, action: 'play'
 
 async function refreshHomePlayedStates() {
   const items = store.homeSections.flatMap(section => section.items).filter(item => item.sourceId !== 'placeholder')
-  const entries = await getPlaybackCompletionBatch(items.map(item => ({ sourceId: item.sourceId, mediaIdentity: item.id })))
+  const entries = await getPlaybackCompletionBatch(items.map(playbackProgressIdentityForMediaItem))
   completedItemKeys.value = new Set(entries.filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
 }
 
@@ -385,7 +385,7 @@ async function resolveSeriesPlaybackTarget(item: MediaItem): Promise<SeriesPlayb
       return null
 
     const providerResumeIndex = episodes.findIndex(episode => isResumePosition(episode.resumePosition, episode.duration))
-    const progressEntries = await Promise.all(episodes.map(episode => getPlaybackProgress({ sourceId: episode.sourceId, mediaIdentity: episode.id })))
+    const progressEntries = await Promise.all(episodes.map(episode => getPlaybackProgress(playbackProgressIdentityForMediaItem(episode))))
     const localResume = providerResumeIndex >= 0 ? null : newestLocalResume(progressEntries)
     const index = providerResumeIndex >= 0 ? providerResumeIndex : (localResume?.index ?? 0)
     const episode = episodes[index]

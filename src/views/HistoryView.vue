@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { listPlaybackHistoryPage, toContinueWatchingMediaItem } from '@/services/playbackHistory'
@@ -10,6 +10,7 @@ import { useDataSourceStore } from '@/stores/datasource'
 
 const PAGE_SIZE = 24
 const router = useRouter()
+const route = useRoute()
 const store = useDataSourceStore()
 const page = ref(1)
 const total = ref(0)
@@ -28,7 +29,12 @@ onMounted(async () => {
   store.loadConfigs()
   await store.syncManager().catch(() => undefined)
   await loadRemoteSources()
-  await loadPage(1)
+  const requestedSourceId = typeof route.query.sourceId === 'string' ? route.query.sourceId : ''
+  const requestedLibraryId = typeof route.query.libraryId === 'string' ? route.query.libraryId : undefined
+  if (requestedSourceId && remoteSources.value.some(source => source.sourceId === requestedSourceId && source.libraryId === requestedLibraryId))
+    await selectRemoteSource(requestedSourceId, requestedLibraryId)
+  else
+    await loadPage(1)
 })
 
 async function loadRemoteSources() {

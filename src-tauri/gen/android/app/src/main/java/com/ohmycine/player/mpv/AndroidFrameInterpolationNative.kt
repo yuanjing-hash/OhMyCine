@@ -21,6 +21,7 @@ internal data class AndroidNativeFrameInterpolationProbe(
     val ncnnModelLoaded: Boolean,
     val ncnnInferenceSelfTest: Boolean,
     val gpuName: String?,
+    val ncnnDiagnostic: String?,
     val reason: String?,
 )
 
@@ -173,6 +174,7 @@ internal object AndroidFrameInterpolationNative {
                 ncnnModelLoaded = value.optBoolean("ncnnModelLoaded"),
                 ncnnInferenceSelfTest = value.optBoolean("ncnnInferenceSelfTest"),
                 gpuName = value.optString("gpuName").takeIf { it.isNotBlank() },
+                ncnnDiagnostic = value.optString("ncnnDiagnostic").takeIf { it.isNotBlank() },
                 reason = value.optString("reason").takeIf { it.isNotBlank() },
             )
         }.getOrElse { error ->
@@ -191,6 +193,7 @@ internal object AndroidFrameInterpolationNative {
                 ncnnModelLoaded = false,
                 ncnnInferenceSelfTest = false,
                 gpuName = null,
+                ncnnDiagnostic = null,
                 reason = "Android 视频插帧原生能力探测失败：${error.message ?: "unknown"}",
             )
         }
@@ -211,6 +214,7 @@ internal object AndroidFrameInterpolationNative {
         ncnnModelLoaded = false,
         ncnnInferenceSelfTest = false,
         gpuName = null,
+        ncnnDiagnostic = null,
         reason = reason,
     )
 

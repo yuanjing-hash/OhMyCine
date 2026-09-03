@@ -1,17 +1,16 @@
 #include <gpu.h>
-#include <layer.h>
 #include <net.h>
 
-#include "rife_warp.h"
+#include "rife_ncnn_runtime.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <cstring>
+#include <memory>
+#include <sstream>
+#include <string>
 
 namespace {
-
-DEFINE_LAYER_CREATOR(RifeWarp)
 
 bool run_vulkan_flow_mask_self_test(ncnn::Net& network) {
     constexpr int kTestSize = 32;
@@ -65,31 +64,12 @@ bool run_vulkan_flow_mask_self_test(ncnn::Net& network) {
     return true;
 }
 
-// Returns 0 when the model cannot be loaded, 1 when it loads but inference
-// fails, and 2 after a successful flow/mask inference. Some Android Vulkan
-// drivers expose FP16 storage but cannot compile ncnn's packed custom-layer
-// shaders. The compatibility mode keeps the decoded/composited video in
-// RGBA16F while running the small flow/mask proxy tensors as unpacked FP32.
-int load_and_test_model(
-    const char* model_param_path,
-    const char* model_bin_path,
-    bool packed_fp16) {
-    ncnn::Net network;
-    network.opt.use_vulkan_compute = true;
-    network.opt.use_fp16_storage = packed_fp16;
-    network.opt.use_fp16_packed = packed_fp16;
-    network.opt.use_fp16_arithmetic = false;
-    network.opt.use_packing_layout = packed_fp16;
-    network.register_custom_layer("rife.Warp", RifeWarp_layer_creator);
-    network.set_vulkan_device(0);
-    if (network.load_param(model_param_path) != 0 ||
-        network.load_model(model_bin_path) != 0) {
-        network.clear();
-        return 0;
-    }
-    const bool inferred = run_vulkan_flow_mask_self_test(network);
-    network.clear();
-    return inferred ? 2 : 1;
+void copy_text(const std::string& value, char* output, size_t output_size) {
+    if (output == nullptr || output_size == 0)
+        return;
+    const size_t length = std::min(output_size - 1, value.size());
+    std::memcpy(output, value.data(), length);
+    output[length] = '\0';
 }
 
 }  // namespace
@@ -98,7 +78,9 @@ extern "C" int ohmycine_ncnn_probe(
     const char* model_param_path,
     const char* model_bin_path,
     char* gpu_name,
-    size_t gpu_name_size) {
+    size_t gpu_name_size,
+    char* diagnostic,
+    size_t diagnostic_size) {
     ncnn::create_gpu_instance();
     const int gpu_count = ncnn::get_gpu_count();
     if (gpu_count <= 0) {
@@ -116,14 +98,38 @@ extern "C" int ohmycine_ncnn_probe(
 
     int status = 1;
     if (model_param_path && model_bin_path) {
-        int model_status = load_and_test_model(
-            model_param_path, model_bin_path, true);
-        if (model_status < 2) {
-            model_status = std::max(
-                model_status,
-                load_and_test_model(model_param_path, model_bin_path, false));
+        const ncnn::VulkanDevice* device = ncnn::get_gpu_device(0);
+        const RifeNcnnCompatibilityMode modes[] = {
+            RifeNcnnCompatibilityMode::PackedFp16,
+            RifeNcnnCompatibilityMode::SafeFp32,
+            RifeNcnnCompatibilityMode::SafeFp32HostWeights,
+        };
+        std::ostringstream attempts;
+        bool loaded = false;
+        bool inferred = false;
+        for (const RifeNcnnCompatibilityMode mode : modes) {
+            ncnn::Net network;
+            const RifeNcnnLoadResult load = load_rife_ncnn_network(
+                network,
+                device,
+                model_param_path,
+                model_bin_path,
+                mode,
+                make_rife_ncnn_option(mode));
+            if (attempts.tellp() > 0)
+                attempts << ";";
+            attempts << format_rife_ncnn_load_result(load);
+            if (load.loaded()) {
+                loaded = true;
+                inferred = run_vulkan_flow_mask_self_test(network);
+                attempts << ",inference=" << (inferred ? 0 : -1);
+            }
+            network.clear();
+            if (inferred)
+                break;
         }
-        status = 1 + model_status;
+        copy_text(attempts.str(), diagnostic, diagnostic_size);
+        status = inferred ? 3 : (loaded ? 2 : 1);
     }
     ncnn::destroy_gpu_instance();
     return status;

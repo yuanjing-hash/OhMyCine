@@ -99,6 +99,8 @@ assert.match(mediaCard, /top: 39\.57%/)
 assert.match(mediaCard, /padding-left: 3\.82%/)
 assert.match(mediaCard, /v-if="!usesStyle3Artwork"/)
 assert.match(mediaCard, /libraryArtworkCandidates\.value\.length > 0/)
+assert.match(mediaCard, /\['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'\]\.includes\(sourceType\)/)
+assert.match(mediaCard, /props\.item\.artworkSource === 'generated' && hasLibraryCollage\.value/)
 assert.match(mediaCard, /Array\.from\(\{ length: 9 \}, \(_, index\) => candidates\[index % candidates\.length\]\)/)
 assert.doesNotMatch(mediaCard, /library-artwork-collage/)
 
@@ -109,4 +111,5 @@ console.log(JSON.stringify({
   contentChangeInvalidatesRevision: true,
   sparseAndFallbackStates: true,
   styleStatic3Layout: true,
+  serverAndManagedProvidersBypassPlayerCollage: true,
 }, null, 2))

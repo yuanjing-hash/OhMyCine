@@ -19,6 +19,8 @@ export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
   posterUrl?: string
   backdropUrl?: string
   titleLogoUrl?: string
+  displaySubtitle?: string
+  episodeStillUrl?: string
   position: number
   duration?: number
   completed?: boolean
@@ -33,6 +35,8 @@ export interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   posterUrl?: string | null
   backdropUrl?: string | null
   titleLogoUrl?: string | null
+  displaySubtitle?: string | null
+  episodeStillUrl?: string | null
   position: number
   duration?: number | null
   progress?: number | null
@@ -133,11 +137,23 @@ export async function getPlaybackCompletionBatch(identities: readonly PlaybackPr
 
 export function areAllKnownPlayableChildrenCompleted(items: readonly MediaItem[], completedKeys: ReadonlySet<string>): boolean {
   const playable = flattenPlayableChildren(items)
-  return playable.length > 0 && playable.every(item => item.played === true || completedKeys.has(playbackCompletionKey(item.sourceId, item.id)))
+  return playable.length > 0 && playable.every(item => item.played === true || completedKeys.has(playbackCompletionKeyForMediaItem(item)))
 }
 
 export function playbackCompletionKey(sourceId: string, mediaIdentity: string): string {
   return `${sourceId.trim()}:${mediaIdentity.trim()}`
+}
+
+export function playbackProgressIdentityForMediaItem(item: MediaItem): PlaybackProgressIdentity {
+  return {
+    sourceId: item.offlineOriginSourceId ?? item.sourceId,
+    mediaIdentity: item.historyIdentity ?? item.offlineOriginItemId ?? item.id,
+  }
+}
+
+export function playbackCompletionKeyForMediaItem(item: MediaItem): string {
+  const identity = playbackProgressIdentityForMediaItem(item)
+  return playbackCompletionKey(identity.sourceId, identity.mediaIdentity)
 }
 
 function flattenPlayableChildren(items: readonly MediaItem[]): MediaItem[] {
@@ -198,6 +214,10 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     posterUrl: safeArtworkUrl(entry.posterUrl),
     backdropUrl: safeArtworkUrl(entry.backdropUrl),
     titleLogoUrl: safeArtworkUrl(entry.titleLogoUrl),
+    historyIdentity: entry.mediaIdentity,
+    displaySubtitle: nonEmpty(entry.displaySubtitle),
+    episodeStillUrl: safeArtworkUrl(entry.episodeStillUrl),
+    cardLayout: entry.mediaType === 'episode' ? 'poster' : undefined,
     duration: entry.duration ?? undefined,
     path: entry.streamIdentity ?? entry.mediaIdentity,
     resumePosition: entry.position,
@@ -235,6 +255,8 @@ function sanitizeProgressInput(input: PlaybackProgressUpsert): PlaybackProgressU
     posterUrl: safeArtworkUrl(input.posterUrl),
     backdropUrl: safeArtworkUrl(input.backdropUrl),
     titleLogoUrl: safeArtworkUrl(input.titleLogoUrl),
+    displaySubtitle: nonEmpty(input.displaySubtitle),
+    episodeStillUrl: safeArtworkUrl(input.episodeStillUrl),
     position: input.position,
     duration,
     completed: input.completed ?? isCompletedPosition(input.position, duration),

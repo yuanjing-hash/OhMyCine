@@ -37,6 +37,7 @@ export interface MediaItemActionTarget {
   readonly sourceId: string
   readonly sourceType?: DataSourceType
   readonly itemId: string
+  readonly historyIdentity?: string
   /** Stable version selected by the user in the detail/player UI. */
   readonly mediaSourceId?: string
   /** Stable quality variant selected inside mediaSourceId. */
@@ -146,6 +147,8 @@ export function createMediaActionTarget(
       mediaType: item.type,
       display: { name: item.name, sourceName },
     }
+    if (item.historyIdentity)
+      Object.assign(target, { historyIdentity: item.historyIdentity })
     if (item.played != null)
       Object.assign(target, { played: item.played })
     if (item.favorite != null)

@@ -14,7 +14,7 @@ import { toOfflineMediaDetail } from '@/services/datasource/offline'
 import { getOfflineDetail } from '@/services/downloads'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
-import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
+import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
@@ -702,7 +702,7 @@ async function refreshPlaybackProgress(items: readonly MediaItem[]) {
   if (playableItems.length === 0)
     return
 
-  const entries = await Promise.all(playableItems.map(async item => [item.id, await getPlaybackProgress({ sourceId: sourceId.value, mediaIdentity: item.id })] as const))
+  const entries = await Promise.all(playableItems.map(async item => [item.id, await getPlaybackProgress(playbackProgressIdentityForMediaItem(item))] as const))
   playbackProgressByItemId.value = {
     ...playbackProgressByItemId.value,
     ...Object.fromEntries(entries.filter((entry): entry is readonly [string, PlaybackHistoryEntry] => entry[1] != null)),
@@ -734,6 +734,10 @@ function recoverContextualDetail(): { detail: MediaDetail, relatedItems: MediaIt
       path: item.path,
       seasonNumber: item.seasonNumber,
       episodeNumber: item.episodeNumber,
+      historyIdentity: item.historyIdentity,
+      displaySubtitle: item.displaySubtitle,
+      episodeStillUrl: item.episodeStillUrl,
+      cardLayout: item.cardLayout,
     }))
     ?? []
 

@@ -17,6 +17,10 @@ export interface PlaybackQueueItem {
   duration?: number
   seasonNumber?: number
   episodeNumber?: number
+  historyIdentity?: string
+  displaySubtitle?: string
+  episodeStillUrl?: string
+  cardLayout?: MediaItem['cardLayout']
   resumePosition?: number
   offlineOriginSourceId?: string
   offlineOriginItemId?: string
@@ -90,6 +94,10 @@ export interface PlaybackQueueItemInput {
   duration?: number
   seasonNumber?: number
   episodeNumber?: number
+  historyIdentity?: string
+  displaySubtitle?: string
+  episodeStillUrl?: string
+  cardLayout?: MediaItem['cardLayout']
   resumePosition?: number
   offlineOriginSourceId?: string
   offlineOriginItemId?: string
@@ -178,6 +186,10 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
+    historyIdentity: item.historyIdentity,
+    displaySubtitle: item.displaySubtitle,
+    episodeStillUrl: item.episodeStillUrl,
+    cardLayout: item.cardLayout,
     resumePosition: item.resumePosition,
     offlineOriginSourceId: item.offlineOriginSourceId,
     offlineOriginItemId: item.offlineOriginItemId,
@@ -227,6 +239,10 @@ function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
     duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
+    historyIdentity: item.historyIdentity,
+    displaySubtitle: item.displaySubtitle,
+    episodeStillUrl: item.episodeStillUrl,
+    cardLayout: item.cardLayout,
     resumePosition: item.resumePosition,
     offlineOriginSourceId: item.offlineOriginSourceId,
     offlineOriginItemId: item.offlineOriginItemId,

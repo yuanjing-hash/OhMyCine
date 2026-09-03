@@ -4,12 +4,11 @@
 
 #include "android_ncnn_frame_processor.h"
 
-#include "rife_warp.h"
+#include "rife_ncnn_runtime.h"
 
 #include <allocator.h>
 #include <command.h>
 #include <gpu.h>
-#include <layer.h>
 #include <net.h>
 #include <pipeline.h>
 
@@ -23,8 +22,6 @@
 #include <vector>
 
 namespace {
-
-DEFINE_LAYER_CREATOR(RifeWarp)
 
 constexpr char kTypedFp16ProxyShader[] = R"glsl(
 #version 450
@@ -210,29 +207,34 @@ public:
             destroy();
             return false;
         }
-        const auto load_network = [&](bool packed_fp16) {
+        const auto load_network = [&](RifeNcnnCompatibilityMode mode) {
             if (network_) {
                 network_->clear();
                 network_.reset();
             }
-            options_ = ncnn::Option{};
-            options_.use_vulkan_compute = true;
-            options_.use_fp16_storage = packed_fp16;
-            options_.use_fp16_packed = packed_fp16;
-            options_.use_fp16_arithmetic = false;
-            options_.use_packing_layout = packed_fp16;
-            options_.blob_vkallocator = blob_allocator_;
-            options_.workspace_vkallocator = blob_allocator_;
-            options_.staging_vkallocator = staging_allocator_;
+            options_ = make_rife_ncnn_option(mode, blob_allocator_, staging_allocator_);
             network_ = std::make_unique<ncnn::Net>();
-            network_->opt = options_;
-            network_->register_custom_layer("rife.Warp", RifeWarp_layer_creator);
-            network_->set_vulkan_device(device_);
-            return network_->load_param(model_param_path) == 0 &&
-                network_->load_model(model_bin_path) == 0;
+            const RifeNcnnLoadResult result = load_rife_ncnn_network(
+                *network_,
+                device_,
+                model_param_path,
+                model_bin_path,
+                mode,
+                options_);
+            model_load_attempts_.push_back(format_rife_ncnn_load_result(result));
+            return result.loaded();
         };
-        if (!load_network(true) && !load_network(false)) {
-            *reason = "RIFE flow/mask model failed to load on the session Vulkan device";
+        model_load_attempts_.clear();
+        if (!load_network(RifeNcnnCompatibilityMode::PackedFp16) &&
+            !load_network(RifeNcnnCompatibilityMode::SafeFp32) &&
+            !load_network(RifeNcnnCompatibilityMode::SafeFp32HostWeights)) {
+            std::string attempts;
+            for (const std::string& attempt : model_load_attempts_) {
+                if (!attempts.empty())
+                    attempts += ";";
+                attempts += attempt;
+            }
+            *reason = "RIFE flow/mask model load failed (" + attempts + ")";
             destroy();
             return false;
         }
@@ -874,6 +876,7 @@ private:
     ncnn::VkAllocator* blob_allocator_ = nullptr;
     ncnn::VkAllocator* staging_allocator_ = nullptr;
     ncnn::Option options_;
+    std::vector<std::string> model_load_attempts_;
     std::unique_ptr<ncnn::Net> network_;
     std::unique_ptr<ncnn::Pipeline> proxy_pipeline_;
     std::unique_ptr<ncnn::Pipeline> composite_pipeline_;

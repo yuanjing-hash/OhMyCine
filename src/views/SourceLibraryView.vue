@@ -61,6 +61,7 @@ const items = ref<MediaItem[]>([])
 const heroItems = ref<MediaItem[]>([])
 const latestItems = ref<MediaItem[]>([])
 const continueItems = ref<MediaItem[]>([])
+const rootHomeSections = ref<HomeSection[]>([])
 const selectedLibrary = ref<MediaLibrary | null>(null)
 const navigationStack = ref<BreadcrumbNode[]>([])
 const searchKeyword = ref('')
@@ -114,6 +115,8 @@ const activeViewMode = computed<SourceViewMode>(() => isRawFileSource.value ? vi
 const isMediaLibraryView = computed(() => activeViewMode.value === 'media-library')
 const isFolderView = computed(() => activeViewMode.value === 'folders')
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
+const supplementalHomeSections = computed(() => rootHomeSections.value.filter(section => !['hero', 'continueWatching', 'recentlyAdded'].includes(section.type)))
+const hasHomeLibrarySection = computed(() => supplementalHomeSections.value.some(section => section.purpose === 'libraries'))
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
 const pendingServerViewUpdate = computed<PendingServerMediaUpdate | null>(() => {
   void observedServerUpdateVersion.value
@@ -608,9 +611,27 @@ async function loadSourceRoot(options: { force?: boolean } = {}): Promise<boolea
 
 function applySourceRootSnapshot(snapshot: { libraries: MediaLibrary[], homeSections: HomeSection[] }) {
   libraries.value = snapshot.libraries
+  rootHomeSections.value = snapshot.homeSections
   heroItems.value = findVisibleHomeSection(snapshot.homeSections, 'hero')?.items ?? []
   latestItems.value = findVisibleHomeSection(snapshot.homeSections, 'recentlyAdded')?.items ?? []
   continueItems.value = findVisibleHomeSection(snapshot.homeSections, 'continueWatching')?.items ?? []
+}
+
+async function openHomeSection(section: HomeSection) {
+  const target = section.viewAllRoute
+  if (!target)
+    return
+  if (target.kind === 'history') {
+    await router.push({ name: 'history', query: { sourceId: target.sourceId, ...(target.libraryId ? { libraryId: target.libraryId } : {}) } })
+    return
+  }
+  await handleSelect({
+    id: target.path,
+    sourceId: sourceId.value,
+    name: section.title,
+    type: 'folder',
+    path: '',
+  })
 }
 
 async function persistSourceBrowseContext(options: { captureScroll?: boolean } = {}) {
@@ -2073,7 +2094,40 @@ function metadataTypeLabel(metadata: TmdbMetadata): string {
           <MediaGrid :items="latestItems" @select="handleSelect" @play="handlePlay" />
         </section>
 
-        <section v-if="isFolderView">
+        <section
+          v-for="section in supplementalHomeSections"
+          v-show="isFolderView && !selectedLibrary"
+          :key="section.id"
+        >
+          <div class="mb-4 flex items-end justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-bold text-white">
+                {{ section.title }}
+              </h2>
+              <p v-if="section.errorCode" class="mt-1 text-sm text-amber-200/70">
+                该板块暂时不可用，其他内容仍可正常浏览。
+              </p>
+            </div>
+            <button
+              v-if="section.viewAllRoute && section.items.length"
+              type="button"
+              class="rounded-xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 hover:text-white"
+              @click="openHomeSection(section)"
+            >
+              查看全部
+            </button>
+          </div>
+          <MediaGrid
+            v-if="section.items.length || section.purpose === 'libraries'"
+            :items="section.items"
+            :empty-title="section.purpose === 'libraries' ? '当前没有可访问的媒体库' : undefined"
+            :empty-description="section.purpose === 'libraries' ? '请检查 Server 媒体库权限或扫库状态。' : undefined"
+            @select="handleSelect"
+            @play="handlePlay"
+          />
+        </section>
+
+        <section v-if="isFolderView && (selectedLibrary || !hasHomeLibrarySection)">
           <div class="mb-4 flex items-end justify-between">
             <div>
               <h2 class="text-xl font-bold text-white">

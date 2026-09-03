@@ -95,6 +95,7 @@ interface ServerPersonRecord {
 
 interface ServerItemRecord {
   id: string
+  item_token?: string
   library_id: number
   title: string
   original_title?: string
@@ -120,15 +121,24 @@ interface ServerItemRecord {
   episode_count: number
   modified_at: string
   match_status: string
+  history_identity?: string
 }
 
 interface ServerVersionRecord {
   id: number
+  item_token?: string
   title: string
+  display_title?: string
+  display_subtitle?: string
+  series_title?: string
+  episode_title?: string
   season?: number
   episode?: number
   overview?: string
   still_path?: string
+  poster_path?: string
+  backdrop_path?: string
+  episode_still_path?: string
   air_date?: string
   runtime_minutes?: number
   rating?: number
@@ -138,6 +148,7 @@ interface ServerVersionRecord {
   stream_path?: string
   delivery_kind?: 'server_stream' | 'server_redirect'
   exact_identity: string
+  history_identity?: string
 }
 
 interface ServerDetailRecord {
@@ -158,6 +169,37 @@ interface ServerAcquisitionRecord {
   totalFiles: number
   lastErrorCode?: string
   updatedAt?: string
+}
+
+interface ServerCollectionRecord {
+  id: string
+  name: string
+  kind: 'collection' | 'playlist'
+  source: 'tmdb' | 'manual'
+  itemCount: number
+  posterPath?: string
+  backdropPath?: string
+}
+
+interface ServerOverviewSectionRecord {
+  status: 'ok' | 'unavailable'
+  list: unknown[]
+  hasMore: boolean
+  errorCode?: string
+}
+
+interface ServerOverviewRecord {
+  version: 'v1'
+  sections: {
+    featured: ServerOverviewSectionRecord
+    continueWatching: ServerOverviewSectionRecord
+    recentlyAdded: ServerOverviewSectionRecord
+    favorites: ServerOverviewSectionRecord
+    automaticCollections: ServerOverviewSectionRecord
+    manualCollections: ServerOverviewSectionRecord
+    recentHistory: ServerOverviewSectionRecord
+    mediaLibraries: ServerOverviewSectionRecord
+  }
 }
 
 interface ServerMediaChangePage {
@@ -412,6 +454,20 @@ export class ServerDataSource implements DataSource {
 
   async list(path = ''): Promise<MediaItem[]> {
     const value = path.trim()
+    const overview = parseServerOverviewPath(value)
+    if (overview?.kind === 'favorites')
+      return this.listFavorites()
+    if (overview?.kind === 'history')
+      return (await this.listPlaybackHistory({ limit: 100 })).items
+    if (overview?.kind === 'automaticCollections' || overview?.kind === 'manualCollections') {
+      const source = overview.kind === 'automaticCollections' ? 'tmdb' : 'manual'
+      return (await this.collections()).filter(item => item.source === source).map(item => this.mapCollection(item))
+    }
+    const collection = parseServerCollectionID(value)
+    if (collection) {
+      const data = recordData(await this.request(`/api/v1/player/collections/${encodeURIComponent(collection.collectionId)}/items`))
+      return arrayRecords(data.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => this.mapItem(item))
+    }
     const online = parseOnlineItemID(value)
     if (online?.kind === 'library') {
       const navigation = parseOnlineNavigationList(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/navigation`), this.baseUrl)
@@ -475,18 +531,11 @@ export class ServerDataSource implements DataSource {
   }
 
   async getHomeSections(): Promise<HomeSection[]> {
-    const [libraries, onlineLibraries, contributionResponse] = await Promise.all([
-      this.listLibraries(),
+    const [physicalSections, onlineLibraries, contributionResponse] = await Promise.all([
+      this.loadPhysicalHomeSections(),
       this.onlineLibraries().catch(() => []),
       this.request('/api/v1/player/home-contributions').catch(() => null),
     ])
-    const physicalLibraries = libraries.filter(library => /^\d+$/.test(library.id))
-    const pages = await Promise.all(physicalLibraries.slice(0, 12).map(library => this.catalog(library.id).catch(() => [])))
-    const items = pages.flat().map(item => this.mapItem(item)).sort((a, b) => Date.parse(b.modified ?? '') - Date.parse(a.modified ?? ''))
-    const physicalSections = [
-      { id: `${this.id}:hero`, sourceId: this.id, title: 'Server 精选', type: 'hero', items: items.filter(item => item.backdropUrl).slice(0, 12) },
-      { id: `${this.id}:recent`, sourceId: this.id, title: 'Server 最近入库', type: 'recentlyAdded', items: items.slice(0, 24) },
-    ].filter(section => section.items.length > 0) as HomeSection[]
     const onlineSections = contributionResponse == null
       ? (await Promise.all(onlineLibraries.filter(item => item.available).slice(0, 8).flatMap(library =>
           library.homeContributions.slice(0, 4).map(async (routeKey) => {
@@ -511,7 +560,81 @@ export class ServerDataSource implements DataSource {
             contribution.providerLabel,
           )
         })
-    return [...physicalSections, ...onlineSections]
+    const onlineLibraryItems = onlineLibraries.filter(item => item.available).map(item => mediaLibraryToRootItem(onlineLibraryToMediaLibrary(this.id, item, this.baseUrl)))
+    const sections = physicalSections.map(section => section.purpose === 'libraries'
+      ? { ...section, items: [...section.items, ...onlineLibraryItems] }
+      : section)
+    return [...sections, ...onlineSections]
+  }
+
+  private async loadPhysicalHomeSections(): Promise<HomeSection[]> {
+    if (this.hasCapability('media_overview_v1')) {
+      try {
+        const overview = parseServerOverview(await this.request('/api/v1/player/overview'))
+        if (overview)
+          return this.mapPhysicalOverview(overview)
+      }
+      catch {
+        // A capability can be stale during rolling upgrades. Fall back to the
+        // version-independent endpoint set without taking down the source.
+      }
+    }
+    return this.loadLegacyPhysicalHomeSections()
+  }
+
+  private mapPhysicalOverview(overview: ServerOverviewRecord): HomeSection[] {
+    const mappedItems = (section: ServerOverviewSectionRecord) => section.list
+      .map(parseItem)
+      .filter((item): item is ServerItemRecord => item != null)
+      .map(item => this.mapItem(item))
+    const mappedHistory = (section: ServerOverviewSectionRecord) => section.list.flatMap(item => mapServerHistoryItem(this.id, item))
+    const mappedCollections = (section: ServerOverviewSectionRecord) => section.list
+      .map(parseCollectionRecord)
+      .filter((item): item is ServerCollectionRecord => item != null)
+      .map(item => this.mapCollection(item))
+    const mappedLibraries = overview.sections.mediaLibraries.list
+      .map(item => parseLibrary(item, this.baseUrl))
+      .filter((item): item is MediaLibrary => item != null)
+      .map(item => mediaLibraryToRootItem({ ...item, sourceId: this.id }))
+    const sections = [
+      overviewHomeSection(this.id, 'hero', 'Server 精选', 'hero', mappedItems(overview.sections.featured), overview.sections.featured),
+      overviewHomeSection(this.id, 'continue', '继续观看', 'continueWatching', mappedHistory(overview.sections.continueWatching), overview.sections.continueWatching),
+      overviewHomeSection(this.id, 'recent', 'Server 最近入库', 'recentlyAdded', mappedItems(overview.sections.recentlyAdded), overview.sections.recentlyAdded),
+      overviewHomeSection(this.id, 'favorites', '我的收藏', 'libraryRow', mappedItems(overview.sections.favorites).map(item => ({ ...item, favorite: true })), overview.sections.favorites, { purpose: 'favorites', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } }),
+      overviewHomeSection(this.id, 'automatic-collections', '自动合集', 'libraryRow', mappedCollections(overview.sections.automaticCollections), overview.sections.automaticCollections, { purpose: 'automaticCollections', collectionSource: 'automatic', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } }),
+      overviewHomeSection(this.id, 'manual-collections', '我的合集', 'libraryRow', mappedCollections(overview.sections.manualCollections), overview.sections.manualCollections, { purpose: 'manualCollections', collectionSource: 'manual', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } }),
+      overviewHomeSection(this.id, 'history', '最近历史', 'libraryRow', mappedHistory(overview.sections.recentHistory), overview.sections.recentHistory, { purpose: 'history', viewAllRoute: { kind: 'history', sourceId: this.id } }),
+      overviewHomeSection(this.id, 'libraries', '媒体库', 'libraryRow', mappedLibraries, overview.sections.mediaLibraries, { purpose: 'libraries' }),
+    ] satisfies HomeSection[]
+    return sections.filter(section => section.purpose === 'libraries' || section.items.length > 0 || Boolean(section.errorCode && section.purpose))
+  }
+
+  private async loadLegacyPhysicalHomeSections(): Promise<HomeSection[]> {
+    const physicalData = recordData(await this.request('/api/v1/player/media-libraries').catch(() => null))
+    const physicalLibraries = arrayRecords(physicalData.list)
+      .map(item => parseLibrary(item, this.baseUrl))
+      .filter((item): item is MediaLibrary => item != null)
+      .map(item => ({ ...item, sourceId: this.id }))
+    const [pages, historyResult, favoritesResult, collectionsResult] = await Promise.all([
+      Promise.all(physicalLibraries.slice(0, 12).map(library => this.catalog(library.id).catch(() => []))),
+      this.listPlaybackHistory({ limit: 24 }).catch(() => ({ items: [], hasMore: false } as ProviderPlaybackHistoryPage)),
+      this.listFavorites().catch(() => []),
+      this.collections().catch(() => []),
+    ])
+    const items = pages.flat().map(item => this.mapItem(item)).sort((a, b) => Date.parse(b.modified ?? '') - Date.parse(a.modified ?? ''))
+    const continueItems = historyResult.items.filter(item => item.played !== true && (item.resumePosition ?? 0) > 0 && (item.progress ?? 0) < 0.92).slice(0, 12)
+    const automaticCollections = collectionsResult.filter(item => item.source === 'tmdb').map(item => this.mapCollection(item)).slice(0, 12)
+    const manualCollections = collectionsResult.filter(item => item.source === 'manual').map(item => this.mapCollection(item)).slice(0, 12)
+    return ([
+      { id: `${this.id}:hero`, sourceId: this.id, title: 'Server 精选', type: 'hero', items: items.filter(item => item.backdropUrl).slice(0, 12) },
+      { id: `${this.id}:continue`, sourceId: this.id, title: '继续观看', type: 'continueWatching', items: continueItems },
+      { id: `${this.id}:recent`, sourceId: this.id, title: 'Server 最近入库', type: 'recentlyAdded', items: items.slice(0, 24) },
+      { id: `${this.id}:favorites`, sourceId: this.id, title: '我的收藏', type: 'libraryRow', purpose: 'favorites', items: favoritesResult.slice(0, 12), viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } },
+      { id: `${this.id}:automatic-collections`, sourceId: this.id, title: '自动合集', type: 'libraryRow', purpose: 'automaticCollections', collectionSource: 'automatic', items: automaticCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } },
+      { id: `${this.id}:manual-collections`, sourceId: this.id, title: '我的合集', type: 'libraryRow', purpose: 'manualCollections', collectionSource: 'manual', items: manualCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } },
+      { id: `${this.id}:history`, sourceId: this.id, title: '最近历史', type: 'libraryRow', purpose: 'history', items: historyResult.items.slice(0, 12), viewAllRoute: { kind: 'history', sourceId: this.id } },
+      { id: `${this.id}:libraries`, sourceId: this.id, title: '媒体库', type: 'libraryRow', purpose: 'libraries', items: physicalLibraries.map(library => mediaLibraryToRootItem(library)) },
+    ] satisfies HomeSection[]).filter(section => section.purpose === 'libraries' || section.items.length > 0)
   }
 
   async refreshHomeSection(refreshKey: string): Promise<HomeSection[]> {
@@ -793,17 +916,9 @@ export class ServerDataSource implements DataSource {
   }
 
   async listProviderCollections(kind: 'playlist' | 'collection'): Promise<ProviderCollectionOption[]> {
-    const data = recordData(await this.request(`/api/v1/player/collections?kind=${encodeURIComponent(kind)}`))
-    return arrayRecords(data.list).flatMap((raw): ProviderCollectionOption[] => {
-      if (!isRecord(raw) || raw.source !== 'manual')
-        return []
-      const id = optionalString(raw.id)
-      const name = optionalString(raw.name)
-      const itemKind = raw.kind === 'collection' || raw.kind === 'playlist' ? raw.kind : null
-      if (!id || !name || itemKind !== kind)
-        return []
-      return [{ id, name, kind: itemKind, itemCount: boundedNumber(raw.item_count, 0, SERVER_MAX_ITEMS) }]
-    })
+    return (await this.collections(kind))
+      .filter(item => item.source === 'manual')
+      .map(item => ({ id: item.id, name: item.name, kind: item.kind, itemCount: item.itemCount }))
   }
 
   async createProviderCollection(name: string, kind: 'playlist' | 'collection'): Promise<string> {
@@ -871,6 +986,25 @@ export class ServerDataSource implements DataSource {
   private async catalog(libraryID: string, category?: string, mediaType?: 'movie' | 'series'): Promise<ServerItemRecord[]> {
     const query = category ? `?category=${encodeURIComponent(category)}&media_type=${encodeURIComponent(mediaType ?? '')}` : ''
     return this.pagedItems(`/api/v1/player/media-libraries/${encodeURIComponent(libraryID)}/catalog${query}`)
+  }
+
+  private async collections(kind: 'playlist' | 'collection' = 'collection'): Promise<ServerCollectionRecord[]> {
+    const data = recordData(await this.request(`/api/v1/player/collections?kind=${encodeURIComponent(kind)}`))
+    return arrayRecords(data.list).map(parseCollectionRecord).filter((item): item is ServerCollectionRecord => item?.kind === kind)
+  }
+
+  private mapCollection(collection: ServerCollectionRecord): MediaItem {
+    return {
+      id: createServerCollectionID(collection.id),
+      sourceId: this.id,
+      originType: 'server',
+      name: collection.name,
+      type: 'folder',
+      posterUrl: artwork(collection.posterPath, 'w500'),
+      backdropUrl: artwork(collection.backdropPath ?? collection.posterPath, 'w1280'),
+      displaySubtitle: `${collection.itemCount} 部影片`,
+      path: '',
+    }
   }
 
   private async categories(libraryID: string): Promise<ServerCategoryRecord[]> {
@@ -1003,8 +1137,9 @@ export class ServerDataSource implements DataSource {
   }
 
   private mapItem(item: ServerItemRecord): MediaItem {
+    const itemID = item.item_token ?? createWorkItemID(String(item.library_id), item.id)
     return {
-      id: createWorkItemID(String(item.library_id), item.id),
+      id: itemID,
       sourceId: this.id,
       originType: 'server',
       libraryId: String(item.library_id),
@@ -1020,15 +1155,16 @@ export class ServerDataSource implements DataSource {
       duration: item.runtime_minutes ? item.runtime_minutes * 60 : undefined,
       modified: item.modified_at,
       path: '',
+      historyIdentity: item.kind === 'movie' ? item.history_identity ?? createMovieHistoryIdentity(String(item.library_id), item.id) : undefined,
       workIdentity: mapIdentity(item.work_identity),
-      playbackTargets: [{ sourceId: this.id, itemId: createWorkItemID(String(item.library_id), item.id), label: this.name }],
+      playbackTargets: [{ sourceId: this.id, itemId: itemID, label: this.name }],
     }
   }
 
   private mapVersion(item: ServerItemRecord, version: ServerVersionRecord, work: WorkItemID): MediaItem {
-    const id = createEntryItemID(work.libraryId, work.workId, version.id)
+    const id = version.item_token ?? createEntryItemID(work.libraryId, work.workId, version.id)
     const isEpisode = item.kind === 'series'
-    const episodeArtwork = isEpisode ? artwork(version.still_path, 'w1280') : undefined
+    const episodeArtwork = isEpisode ? artwork(version.episode_still_path ?? version.still_path, 'w1280') : undefined
     const runtimeMinutes = isEpisode ? version.runtime_minutes : item.runtime_minutes
     return {
       id,
@@ -1038,8 +1174,9 @@ export class ServerDataSource implements DataSource {
       name: version.title,
       originalTitle: isEpisode ? undefined : item.original_title,
       type: isEpisode ? 'episode' : 'movie',
-      posterUrl: isEpisode ? episodeArtwork : artwork(item.poster_path, 'w500'),
-      backdropUrl: isEpisode ? episodeArtwork : artwork(item.backdrop_path, 'w1280'),
+      posterUrl: artwork(version.poster_path ?? item.poster_path, 'w500'),
+      backdropUrl: artwork(version.backdrop_path ?? item.backdrop_path, 'w1280'),
+      episodeStillUrl: episodeArtwork,
       year: item.release_year,
       rating: isEpisode ? version.rating : item.rating,
       overview: isEpisode ? version.overview : item.overview,
@@ -1050,7 +1187,11 @@ export class ServerDataSource implements DataSource {
       path: '',
       seasonNumber: version.season,
       episodeNumber: version.episode,
-      seriesName: item.kind === 'series' ? item.title : undefined,
+      seriesName: item.kind === 'series' ? version.series_title ?? item.title : undefined,
+      historyIdentity: version.history_identity
+        ?? (isEpisode && version.season != null && version.episode != null
+          ? createEpisodeHistoryIdentity(work.libraryId, work.workId, version.season, version.episode)
+          : !isEpisode ? item.history_identity ?? createMovieHistoryIdentity(work.libraryId, work.workId) : undefined),
       workIdentity: mapIdentity(item.work_identity),
       exactIdentity: version.exact_identity,
       playbackTargets: [{ sourceId: this.id, itemId: id, mediaSourceId: String(version.id), label: this.name, exactIdentity: version.exact_identity }],
@@ -1143,12 +1284,24 @@ export interface ServerPlaybackHistoryChange {
   library_id?: string
   item_id?: string
   media_identity: string
+  history_identity?: string
+  item_token?: string
   title: string
+  display_title?: string
+  display_subtitle?: string
+  series_title?: string
+  episode_title?: string
+  season_number?: number
+  episode_number?: number
   stream_identity?: string
   media_type?: string
   poster_url?: string
   backdrop_url?: string
   title_logo_url?: string
+  episode_still_url?: string
+  poster_path?: string
+  backdrop_path?: string
+  episode_still_path?: string
   position: number
   duration?: number
   completed: boolean
@@ -1390,12 +1543,131 @@ function parseLibrary(value: unknown, baseUrl: string): MediaLibrary | null {
   }
 }
 
+function parseCollectionRecord(value: unknown): ServerCollectionRecord | null {
+  if (!isRecord(value) || (value.source !== 'tmdb' && value.source !== 'manual'))
+    return null
+  const id = optionalString(value.id)
+  const name = optionalString(value.name)
+  const kind = value.kind === 'collection' || value.kind === 'playlist' ? value.kind : null
+  if (!id || !name || !kind)
+    return null
+  return {
+    id,
+    name,
+    kind,
+    source: value.source,
+    itemCount: boundedNumber(value.item_count, 0, SERVER_MAX_ITEMS) ?? 0,
+    posterPath: optionalImagePath(value.poster_path),
+    backdropPath: optionalImagePath(value.backdrop_path),
+  }
+}
+
+function parseServerOverview(value: unknown): ServerOverviewRecord | null {
+  if (!isRecord(value) || value.version !== 'v1' || !isRecord(value.sections))
+    return null
+  const sections = value.sections
+  const featured = parseServerOverviewSection(sections.featured)
+  const continueWatching = parseServerOverviewSection(sections.continue_watching)
+  const recentlyAdded = parseServerOverviewSection(sections.recently_added)
+  const favorites = parseServerOverviewSection(sections.favorites)
+  const automaticCollections = parseServerOverviewSection(sections.automatic_collections)
+  const manualCollections = parseServerOverviewSection(sections.manual_collections)
+  const recentHistory = parseServerOverviewSection(sections.recent_history)
+  const mediaLibraries = parseServerOverviewSection(sections.media_libraries)
+  if (!featured || !continueWatching || !recentlyAdded || !favorites || !automaticCollections || !manualCollections || !recentHistory || !mediaLibraries)
+    return null
+  return {
+    version: 'v1',
+    sections: { featured, continueWatching, recentlyAdded, favorites, automaticCollections, manualCollections, recentHistory, mediaLibraries },
+  }
+}
+
+function parseServerOverviewSection(value: unknown): ServerOverviewSectionRecord | null {
+  if (!isRecord(value) || (value.status !== 'ok' && value.status !== 'unavailable') || !Array.isArray(value.list) || value.list.length > 100 || typeof value.has_more !== 'boolean')
+    return null
+  const errorCode = optionalString(value.error_code)
+  return {
+    status: value.status,
+    list: value.list,
+    hasMore: value.has_more,
+    errorCode: errorCode && /^[A-Z][A-Z0-9_]{0,63}$/.test(errorCode) ? errorCode : undefined,
+  }
+}
+
+function overviewHomeSection(
+  sourceId: string,
+  id: string,
+  title: string,
+  type: HomeSection['type'],
+  items: MediaItem[],
+  section: ServerOverviewSectionRecord,
+  extra: Pick<HomeSection, 'purpose' | 'collectionSource' | 'viewAllRoute'> = {},
+): HomeSection {
+  return {
+    id: `${sourceId}:${id}`,
+    sourceId,
+    title,
+    type,
+    items,
+    ...extra,
+    errorCode: section.status === 'unavailable' ? section.errorCode ?? 'UNAVAILABLE' : undefined,
+  }
+}
+
 function parseArtworkSource(value: unknown): MediaLibrary['artworkSource'] {
   return ['generated', 'provider', 'custom', 'fallback'].includes(String(value)) ? value as MediaLibrary['artworkSource'] : undefined
 }
 
 function createServerCategoryID(libraryId: string, mediaType: 'movie' | 'series', name: string): string {
   return ['server-category', libraryId, mediaType, name].map((value, index) => index === 0 ? value : encodeURIComponent(value)).join('|')
+}
+
+type ServerOverviewPathKind = 'favorites' | 'automaticCollections' | 'manualCollections' | 'history'
+
+function createServerOverviewPath(kind: ServerOverviewPathKind): string {
+  return `server-overview|${kind}`
+}
+
+function parseServerOverviewPath(value: string): { kind: ServerOverviewPathKind } | null {
+  const [prefix, kind, ...rest] = value.split('|')
+  return prefix === 'server-overview'
+    && rest.length === 0
+    && (kind === 'favorites' || kind === 'automaticCollections' || kind === 'manualCollections' || kind === 'history')
+    ? { kind }
+    : null
+}
+
+function createServerCollectionID(collectionId: string): string {
+  return `server-collection|${encodeURIComponent(collectionId)}`
+}
+
+function parseServerCollectionID(value: string): { collectionId: string } | null {
+  const [prefix, rawCollectionId, ...rest] = value.split('|')
+  if (prefix !== 'server-collection' || !rawCollectionId || rest.length > 0)
+    return null
+  try {
+    const collectionId = decodeURIComponent(rawCollectionId)
+    return /^[0-9a-f-]{36}$/i.test(collectionId) ? { collectionId } : null
+  }
+  catch {
+    return null
+  }
+}
+
+function mediaLibraryToRootItem(library: MediaLibrary): MediaItem {
+  return {
+    id: library.id,
+    sourceId: library.sourceId,
+    libraryId: library.id,
+    name: library.name,
+    type: 'folder',
+    posterUrl: library.posterUrl,
+    backdropUrl: library.backdropUrl,
+    artworkRevision: library.artworkRevision,
+    artworkSource: library.artworkSource,
+    displaySubtitle: library.itemCount == null ? '媒体库' : `${library.itemCount} 项内容`,
+    path: '',
+  }
 }
 
 function createServerAcquisitionCategoryID(libraryId: string): string {
@@ -1460,6 +1732,7 @@ function parseItem(value: unknown): ServerItemRecord | null {
     return null
   return {
     id: value.id,
+    item_token: optionalString(value.item_token),
     library_id: value.library_id,
     title: value.title,
     original_title: optionalString(value.original_title),
@@ -1489,6 +1762,7 @@ function parseItem(value: unknown): ServerItemRecord | null {
     episode_count: numberValue(value.episode_count) ?? 0,
     modified_at: optionalString(value.modified_at) ?? '',
     match_status: optionalString(value.match_status) ?? '',
+    history_identity: optionalHistoryIdentity(value.history_identity),
   }
 }
 
@@ -1540,11 +1814,19 @@ function parseVersion(value: unknown): ServerVersionRecord | null {
     : undefined
   return {
     id: value.id,
+    item_token: optionalString(value.item_token),
     title: value.title,
+    display_title: optionalString(value.display_title),
+    display_subtitle: optionalString(value.display_subtitle),
+    series_title: optionalString(value.series_title),
+    episode_title: optionalString(value.episode_title),
     season: numberValue(value.season),
     episode: numberValue(value.episode),
     overview: optionalString(value.overview),
     still_path: optionalImagePath(value.still_path),
+    poster_path: optionalImagePath(value.poster_path),
+    backdrop_path: optionalImagePath(value.backdrop_path),
+    episode_still_path: optionalImagePath(value.episode_still_path),
     air_date: optionalString(value.air_date),
     runtime_minutes: boundedNumber(value.runtime_minutes, 1, 24 * 60),
     rating: boundedNumber(value.rating, 0, 10),
@@ -1554,6 +1836,7 @@ function parseVersion(value: unknown): ServerVersionRecord | null {
     stream_path: optionalString(value.stream_path),
     delivery_kind: deliveryKind,
     exact_identity: value.exact_identity,
+    history_identity: optionalHistoryIdentity(value.history_identity),
   }
 }
 
@@ -1595,6 +1878,17 @@ function optionalString(value: unknown): string | undefined {
     return undefined
   const trimmed = value.trim()
   return trimmed || undefined
+}
+
+function optionalIDString(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+    return String(value)
+  return optionalString(value)
+}
+
+function optionalHistoryIdentity(value: unknown): string | undefined {
+  const candidate = optionalString(value)
+  return candidate && /^server:v1:(?:movie|episode):\S{1,1024}$/.test(candidate) ? candidate : undefined
 }
 
 function boundedNumber(value: unknown, minimum: number, maximum: number): number | undefined {
@@ -1677,6 +1971,14 @@ function createEntryItemID(libraryId: string, workId: string, entryID: number): 
   return `entry|${libraryId}|${workId}|${entryID}`
 }
 
+function createMovieHistoryIdentity(libraryId: string, workId: string): string {
+  return `server:v1:movie:${libraryId}:${workId}`
+}
+
+function createEpisodeHistoryIdentity(libraryId: string, workId: string, season: number, episode: number): string {
+  return `server:v1:episode:${libraryId}:${workId}:${season}:${episode}`
+}
+
 function createPlayerMediaStateItemID(itemId: string): string {
   const work = parseWorkItemID(itemId)
   if (!work)
@@ -1705,39 +2007,62 @@ function parseNumericID(value: string | undefined): number | null {
 
 function parseServerHistoryPage(sourceId: string, value: unknown, page: number): ProviderPlaybackHistoryPage {
   const data = recordData(value)
-  const items = arrayRecords(data.list).slice(0, 100).flatMap((raw): MediaItem[] => {
-    if (!isRecord(raw))
-      return []
-    const title = optionalString(raw.title)
-    const itemId = optionalString(raw.item_id) ?? optionalString(raw.media_identity)
-    const libraryId = optionalString(raw.library_id)
-    const position = boundedNumber(raw.position, 0, Number.MAX_SAFE_INTEGER) ?? 0
-    const duration = boundedNumber(raw.duration, 0, Number.MAX_SAFE_INTEGER)
-    const updatedAt = boundedNumber(raw.updated_at, 1, Number.MAX_SAFE_INTEGER)
-    if (!title || !itemId || !updatedAt)
-      return []
-    const type = ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(String(raw.media_type))
-      ? raw.media_type as MediaItem['type']
-      : 'file'
-    return [{
-      id: itemId,
-      sourceId,
-      originType: 'server',
-      libraryId,
-      name: title,
-      type,
-      posterUrl: safeHistoryArtworkURL(raw.poster_url),
-      backdropUrl: safeHistoryArtworkURL(raw.backdrop_url),
-      titleLogoUrl: safeHistoryArtworkURL(raw.title_logo_url),
-      duration,
-      path: optionalString(raw.stream_identity) ?? itemId,
-      resumePosition: position,
-      progress: duration && duration > 0 ? Math.min(1, position / duration) : undefined,
-      modified: new Date(updatedAt).toISOString(),
-    }]
-  })
+  const items = arrayRecords(data.list).slice(0, 100).flatMap(raw => mapServerHistoryItem(sourceId, raw))
   const hasMore = data.has_more === true
   return { items, cursor: hasMore ? String(page + 1) : undefined, hasMore }
+}
+
+/** Shared Server history projection used by the history page and Server overview sections. */
+export function mapServerHistoryItem(sourceId: string, value: unknown): MediaItem[] {
+  if (!isRecord(value))
+    return []
+  const title = optionalString(value.display_title) ?? optionalString(value.series_title) ?? optionalString(value.title)
+  const historyIdentity = optionalHistoryIdentity(value.history_identity) ?? optionalString(value.media_identity)
+  const itemId = optionalString(value.item_token) ?? optionalString(value.item_id) ?? historyIdentity
+  const libraryId = optionalIDString(value.library_id)
+  const position = boundedNumber(value.position, 0, Number.MAX_SAFE_INTEGER) ?? 0
+  const duration = boundedNumber(value.duration, 0, Number.MAX_SAFE_INTEGER)
+  const updatedAt = boundedNumber(value.updated_at, 1, Number.MAX_SAFE_INTEGER)
+  if (!title || !itemId || !historyIdentity || !updatedAt)
+    return []
+  const type = ['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(String(value.media_type))
+    ? value.media_type as MediaItem['type']
+    : 'file'
+  const seasonNumber = boundedNumber(value.season_number, 0, 10_000)
+  const episodeNumber = boundedNumber(value.episode_number, 0, 100_000)
+  const episodeTitle = optionalString(value.episode_title)
+  const displaySubtitle = optionalString(value.display_subtitle) ?? episodeDisplaySubtitle(seasonNumber, episodeNumber, episodeTitle)
+  return [{
+    id: itemId,
+    sourceId,
+    originType: 'server',
+    libraryId,
+    name: title,
+    type,
+    historyIdentity,
+    displaySubtitle,
+    posterUrl: safeHistoryArtworkURL(value.poster_url) ?? artwork(optionalImagePath(value.poster_path), 'w500'),
+    backdropUrl: safeHistoryArtworkURL(value.backdrop_url) ?? artwork(optionalImagePath(value.backdrop_path), 'w1280'),
+    episodeStillUrl: safeHistoryArtworkURL(value.episode_still_url) ?? artwork(optionalImagePath(value.episode_still_path), 'w1280'),
+    titleLogoUrl: safeHistoryArtworkURL(value.title_logo_url),
+    duration,
+    path: optionalString(value.stream_identity) ?? itemId,
+    resumePosition: position,
+    progress: duration && duration > 0 ? Math.min(1, position / duration) : undefined,
+    played: value.completed === true,
+    seriesName: optionalString(value.series_title),
+    seasonNumber,
+    episodeNumber,
+    cardLayout: type === 'episode' ? 'poster' : undefined,
+    modified: new Date(updatedAt).toISOString(),
+  }]
+}
+
+function episodeDisplaySubtitle(season: number | undefined, episode: number | undefined, title: string | undefined): string | undefined {
+  if (season == null || episode == null)
+    return title
+  const code = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+  return title ? `${code} · ${title}` : code
 }
 
 function safeHistoryArtworkURL(value: unknown): string | undefined {

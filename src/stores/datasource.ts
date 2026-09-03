@@ -653,6 +653,11 @@ function sanitizeDisplayHomeSection(value: unknown): HomeSection {
     layout: ['hero', 'row', 'poster-grid', 'video-list'].includes(String(section.layout))
       ? section.layout as HomeSection['layout']
       : undefined,
+    viewAllRoute: sanitizeHomeSectionViewAllRoute(section.viewAllRoute),
+    purpose: ['favorites', 'automaticCollections', 'manualCollections', 'history', 'libraries'].includes(String(section.purpose))
+      ? section.purpose as HomeSection['purpose']
+      : undefined,
+    collectionSource: section.collectionSource === 'automatic' || section.collectionSource === 'manual' ? section.collectionSource : undefined,
     errorCode: sanitizeIdentityText(section.errorCode),
   }
 }
@@ -689,11 +694,30 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
     seriesName: optionalText(item.seriesName),
     seasonNumber: optionalNumber(item.seasonNumber),
     episodeNumber: optionalNumber(item.episodeNumber),
+    historyIdentity: sanitizeBoundedText(item.historyIdentity, 1100),
+    displaySubtitle: sanitizeBoundedText(item.displaySubtitle, 256),
+    episodeStillUrl: sanitizeDisplayUrl(item.episodeStillUrl),
+    cardLayout: item.cardLayout === 'poster' || item.cardLayout === 'landscape' ? item.cardLayout : undefined,
     workIdentity: sanitizeMediaIdentity(item.workIdentity),
     exactIdentity: sanitizeIdentityText(item.exactIdentity),
     playbackTargets: sanitizePlaybackTargets(item.playbackTargets),
     siteActions: sanitizeSiteActions(item.siteActions),
   }
+}
+
+function sanitizeHomeSectionViewAllRoute(value: unknown): HomeSection['viewAllRoute'] {
+  if (!isRecord(value))
+    return undefined
+  if (value.kind === 'sourcePath') {
+    const path = sanitizeBoundedText(value.path, 1024)
+    return path ? { kind: 'sourcePath', path } : undefined
+  }
+  if (value.kind === 'history') {
+    const sourceId = sanitizeBoundedText(value.sourceId, 512)
+    const libraryId = sanitizeBoundedText(value.libraryId, 512)
+    return sourceId ? { kind: 'history', sourceId, libraryId } : undefined
+  }
+  return undefined
 }
 
 function sanitizeSiteActions(value: unknown): MediaItem['siteActions'] {
@@ -747,8 +771,12 @@ function sanitizePlaybackTargets(value: unknown): MediaItem['playbackTargets'] {
 }
 
 function sanitizeIdentityText(value: unknown): string | undefined {
+  return sanitizeBoundedText(value, 256)
+}
+
+function sanitizeBoundedText(value: unknown, maximumLength: number): string | undefined {
   const text = optionalText(value)
-  return text && text.length <= 256 && !/[\r\n]/.test(text) ? text : undefined
+  return text && text.length <= maximumLength && !/[\r\n]/.test(text) ? text : undefined
 }
 
 function sanitizeDataSourceType(value: unknown): MediaItem['originType'] {

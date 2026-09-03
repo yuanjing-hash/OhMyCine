@@ -13,6 +13,7 @@ add_library(
     android_frame_source.cpp
     android_frame_source_jni.cpp
     ncnn_model_probe.cpp
+    rife_ncnn_runtime.cpp
     rife_warp.cpp
 )
 target_compile_features(ohmycine_framegen PRIVATE cxx_std_20)

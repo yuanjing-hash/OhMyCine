@@ -38,6 +38,8 @@ pub struct PlaybackProgressUpsert {
     poster_url: Option<String>,
     backdrop_url: Option<String>,
     title_logo_url: Option<String>,
+    display_subtitle: Option<String>,
+    episode_still_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     completed: Option<bool>,
@@ -56,6 +58,8 @@ pub struct PlaybackHistoryEntry {
     poster_url: Option<String>,
     backdrop_url: Option<String>,
     title_logo_url: Option<String>,
+    display_subtitle: Option<String>,
+    episode_still_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     progress: Option<f64>,
@@ -87,6 +91,8 @@ pub struct PlaybackHistoryMerge {
     poster_url: Option<String>,
     backdrop_url: Option<String>,
     title_logo_url: Option<String>,
+    display_subtitle: Option<String>,
+    episode_still_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     completed: bool,
@@ -221,6 +227,8 @@ pub fn player_merge_playback_history(
             poster_url: entry.poster_url,
             backdrop_url: entry.backdrop_url,
             title_logo_url: entry.title_logo_url,
+            display_subtitle: entry.display_subtitle,
+            episode_still_url: entry.episode_still_url,
             position: entry.position,
             duration: entry.duration,
             completed: Some(entry.completed),
@@ -243,13 +251,16 @@ pub fn player_merge_playback_history(
                 "INSERT INTO playback_history (
                 identity_key, source_id, library_id, item_id, media_identity, title,
                 stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
-                position, duration, completed, progress_source, created_at, updated_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'server',?15,?15)
+                display_subtitle, episode_still_url, position, duration, completed,
+                progress_source, created_at, updated_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,'server',?17,?17)
              ON CONFLICT(identity_key) DO UPDATE SET
                 library_id=excluded.library_id, item_id=excluded.item_id, title=excluded.title,
                 stream_identity=excluded.stream_identity, media_type=excluded.media_type,
                 poster_url=excluded.poster_url, backdrop_url=excluded.backdrop_url,
                 title_logo_url=excluded.title_logo_url, position=excluded.position,
+                display_subtitle=excluded.display_subtitle,
+                episode_still_url=excluded.episode_still_url,
                 duration=excluded.duration, completed=excluded.completed,
                 progress_source='server', updated_at=excluded.updated_at
              WHERE playback_history.updated_at < excluded.updated_at
@@ -267,6 +278,8 @@ pub fn player_merge_playback_history(
                     progress.poster_url,
                     progress.backdrop_url,
                     progress.title_logo_url,
+                    progress.display_subtitle,
+                    progress.episode_still_url,
                     progress.position,
                     progress.duration,
                     if progress.completed { 1 } else { 0 },
@@ -275,6 +288,7 @@ pub fn player_merge_playback_history(
             )
             .map_err(|_| "Failed to merge playback history.".to_string())?
             as u64;
+        changed += storage.cleanup_legacy_identity_for_canonical(&progress, updated_at)?;
     }
     Ok(changed)
 }
@@ -294,6 +308,8 @@ struct NormalizedProgress {
     poster_url: Option<String>,
     backdrop_url: Option<String>,
     title_logo_url: Option<String>,
+    display_subtitle: Option<String>,
+    episode_still_url: Option<String>,
     position: f64,
     duration: Option<f64>,
     completed: bool,
@@ -318,6 +334,31 @@ impl PlaybackHistoryStorage {
             )
             .map_err(|_| "Failed to delete playback history for source.".to_string())?;
         Ok(deleted as u64)
+    }
+
+    fn cleanup_legacy_identity_for_canonical(
+        &self,
+        progress: &NormalizedProgress,
+        updated_at: i64,
+    ) -> Result<u64, String> {
+        if !is_server_canonical_history_identity(&progress.media_identity) {
+            return Ok(0);
+        }
+        let Some(item_id) = progress
+            .item_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(0);
+        };
+        self.conn
+            .execute(
+                "DELETE FROM playback_history
+                 WHERE source_id = ?1 AND item_id = ?2 AND media_identity <> ?3 AND updated_at <= ?4",
+                params![progress.source_id, item_id, progress.media_identity, updated_at],
+            )
+            .map(|deleted| deleted as u64)
+            .map_err(|_| "Failed to reconcile legacy playback history.".to_string())
     }
 
     fn set_completed(
@@ -364,9 +405,10 @@ impl PlaybackHistoryStorage {
                 &format!("INSERT INTO playback_history (
                     identity_key, source_id, library_id, item_id, media_identity, title,
                     stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
-                    position, duration, completed, progress_source, created_at, updated_at
+                    display_subtitle, episode_still_url, position, duration, completed,
+                    progress_source, created_at, updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'local', {NOW_MILLIS_SQL}, {NOW_MILLIS_SQL})
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'local', {NOW_MILLIS_SQL}, {NOW_MILLIS_SQL})
                 ON CONFLICT(identity_key) DO UPDATE SET
                     source_id = excluded.source_id,
                     library_id = excluded.library_id,
@@ -378,6 +420,8 @@ impl PlaybackHistoryStorage {
                     poster_url = excluded.poster_url,
                     backdrop_url = excluded.backdrop_url,
                     title_logo_url = excluded.title_logo_url,
+                    display_subtitle = excluded.display_subtitle,
+                    episode_still_url = excluded.episode_still_url,
                     position = excluded.position,
                     duration = excluded.duration,
                     completed = excluded.completed,
@@ -395,6 +439,8 @@ impl PlaybackHistoryStorage {
                     progress.poster_url,
                     progress.backdrop_url,
                     progress.title_logo_url,
+                    progress.display_subtitle,
+                    progress.episode_still_url,
                     progress.position,
                     progress.duration,
                     if progress.completed { 1 } else { 0 },
@@ -412,7 +458,7 @@ impl PlaybackHistoryStorage {
             .query_row(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                     media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                    completed, progress_source
+                    completed, progress_source, display_subtitle, episode_still_url
                  FROM playback_history
                  WHERE identity_key = ?1",
                 params![identity_key(&identity.source_id, &identity.media_identity)],
@@ -428,7 +474,7 @@ impl PlaybackHistoryStorage {
             .prepare(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                     media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                    completed, progress_source
+                    completed, progress_source, display_subtitle, episode_still_url
                  FROM playback_history
                  WHERE completed = 0
                     AND position >= ?1
@@ -467,7 +513,7 @@ impl PlaybackHistoryStorage {
             .prepare(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                     media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                    completed, progress_source
+                    completed, progress_source, display_subtitle, episode_still_url
                  FROM playback_history
                  ORDER BY updated_at DESC, identity_key ASC
                  LIMIT ?1 OFFSET ?2",
@@ -502,6 +548,8 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
             poster_url TEXT,
             backdrop_url TEXT,
             title_logo_url TEXT,
+            display_subtitle TEXT,
+            episode_still_url TEXT,
             position REAL NOT NULL,
             duration REAL,
             completed INTEGER NOT NULL DEFAULT 0,
@@ -517,6 +565,14 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|_| "Failed to initialize playback history database.".to_string())?;
     let _ = conn.execute(
         "ALTER TABLE playback_history ADD COLUMN title_logo_url TEXT",
+        params![],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE playback_history ADD COLUMN display_subtitle TEXT",
+        params![],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE playback_history ADD COLUMN episode_still_url TEXT",
         params![],
     );
     Ok(())
@@ -555,6 +611,10 @@ impl NormalizedProgress {
             poster_url: payload.poster_url.and_then(sanitize_optional_url),
             backdrop_url: payload.backdrop_url.and_then(sanitize_optional_url),
             title_logo_url: payload.title_logo_url.and_then(sanitize_optional_url),
+            display_subtitle: payload
+                .display_subtitle
+                .and_then(|value| sanitize_optional_display_text(value, false)),
+            episode_still_url: payload.episode_still_url.and_then(sanitize_optional_url),
             position,
             duration,
             completed,
@@ -576,6 +636,8 @@ fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybackHistor
         poster_url: row.get(7)?,
         backdrop_url: row.get(8)?,
         title_logo_url: row.get(9)?,
+        display_subtitle: row.get(15)?,
+        episode_still_url: row.get(16)?,
         position,
         duration,
         progress: progress_ratio(position, duration),
@@ -591,6 +653,10 @@ fn identity_key(source_id: &str, media_identity: &str) -> String {
     hasher.update([0]);
     hasher.update(media_identity.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn is_server_canonical_history_identity(value: &str) -> bool {
+    value.starts_with("server:v1:movie:") || value.starts_with("server:v1:episode:")
 }
 
 fn normalize_identity(
@@ -903,6 +969,71 @@ mod tests {
         assert_eq!(identities.len(), 5);
     }
 
+    #[test]
+    fn episode_presentation_survives_local_history_round_trip() {
+        let conn = Connection::open_in_memory().expect("open playback history test database");
+        initialize_schema(&conn).expect("initialize playback history schema");
+        let storage = PlaybackHistoryStorage { conn };
+        let mut episode = progress("server-home", "server:v1:episode:9:work:1:2");
+        episode.media_type = Some("episode".to_string());
+        episode.title = "示例剧".to_string();
+        episode.display_subtitle = Some("S01E02 · 改稻为桑".to_string());
+        episode.episode_still_url = Some("https://image.example.test/episode.jpg".to_string());
+
+        storage.upsert(&episode).expect("insert episode history");
+        let saved = storage
+            .get(&identity("server-home", "server:v1:episode:9:work:1:2"))
+            .expect("read episode history")
+            .expect("episode history");
+
+        assert_eq!(saved.title, "示例剧");
+        assert_eq!(saved.display_subtitle.as_deref(), Some("S01E02 · 改稻为桑"));
+        assert_eq!(
+            saved.episode_still_url.as_deref(),
+            Some("https://image.example.test/episode.jpg")
+        );
+    }
+
+    #[test]
+    fn canonical_merge_cleanup_only_removes_same_item_legacy_identity() {
+        let conn = Connection::open_in_memory().expect("open playback history test database");
+        initialize_schema(&conn).expect("initialize playback history schema");
+        let storage = PlaybackHistoryStorage { conn };
+        let mut legacy = progress("server-home", "entry|9|work|202");
+        legacy.item_id = Some("entry|9|work|202".to_string());
+        storage.upsert(&legacy).expect("insert legacy history");
+        let mut unrelated = progress("server-home", "entry|9|work|203");
+        unrelated.item_id = Some("entry|9|work|203".to_string());
+        unrelated.title = legacy.title.clone();
+        storage
+            .upsert(&unrelated)
+            .expect("insert unrelated history");
+        let mut canonical = progress("server-home", "server:v1:episode:9:work:1:2");
+        canonical.item_id = legacy.item_id.clone();
+        storage
+            .upsert(&canonical)
+            .expect("insert canonical history");
+
+        assert_eq!(
+            storage
+                .cleanup_legacy_identity_for_canonical(&canonical, i64::MAX)
+                .expect("cleanup legacy identity"),
+            1
+        );
+        assert!(storage
+            .get(&identity("server-home", "entry|9|work|202"))
+            .expect("read legacy history")
+            .is_none());
+        assert!(storage
+            .get(&identity("server-home", "server:v1:episode:9:work:1:2"))
+            .expect("read canonical history")
+            .is_some());
+        assert!(storage
+            .get(&identity("server-home", "entry|9|work|203"))
+            .expect("read unrelated history")
+            .is_some());
+    }
+
     fn identity(source_id: &str, media_identity: &str) -> PlaybackProgressIdentity {
         PlaybackProgressIdentity {
             source_id: source_id.to_string(),
@@ -922,6 +1053,8 @@ mod tests {
             poster_url: None,
             backdrop_url: None,
             title_logo_url: None,
+            display_subtitle: None,
+            episode_still_url: None,
             position: 120.0,
             duration: Some(3600.0),
             completed: false,

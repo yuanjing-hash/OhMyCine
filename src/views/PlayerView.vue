@@ -871,7 +871,7 @@ function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'me
   const playbackItem = currentPlaybackItem()
   const sourceId = playbackItem?.offlineOriginSourceId || activeSourceId.value || context?.sourceId || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID
   const itemId = currentOriginItemId()
-  const mediaIdentity = itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
+  const mediaIdentity = playbackItem?.historyIdentity || itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
 
   if (!sourceId || !mediaIdentity)
     return null
@@ -1211,17 +1211,23 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
   const mediaType = activeMediaType.value ?? queueItem?.type
   const position = effectivePlaybackPosition()
   const mediaDuration = duration.value > 0 ? duration.value : queueItem?.duration
+  const displayTitle = mediaType === 'episode' ? queueItem?.seriesName || mediaTitle.value : mediaTitle.value
+  const displaySubtitle = mediaType === 'episode'
+    ? queueItem?.displaySubtitle ?? episodeHistorySubtitle(queueItem?.seasonNumber, queueItem?.episodeNumber, queueItem?.name)
+    : undefined
 
   return {
     ...identity,
     libraryId,
     itemId,
-    title: mediaTitle.value || context?.title || queueItem?.title || queueItem?.name || '未命名影片',
+    title: displayTitle || context?.title || queueItem?.title || queueItem?.name || '未命名影片',
     streamIdentity: createSafeStreamIdentity(identity.sourceId, itemId, mediaPath.value),
     mediaType,
     posterUrl: activePosterUrl.value || queueItem?.posterUrl,
     backdropUrl: activeBackdropUrl.value || queueItem?.backdropUrl,
     titleLogoUrl: activeTitleLogoUrl.value || queueItem?.titleLogoUrl,
+    displaySubtitle,
+    episodeStillUrl: queueItem?.episodeStillUrl,
     position,
     duration: mediaDuration,
     completed: isCompletedPosition(position, mediaDuration),
@@ -2599,6 +2605,13 @@ function pickFsrSettings(settings: PlayerInteractionSettings): PlayerFsrSettings
     fsrDenoise: settings.fsrDenoise,
     fsrTarget: settings.fsrTarget,
   }
+}
+
+function episodeHistorySubtitle(season: number | undefined, episode: number | undefined, title: string | undefined): string | undefined {
+  if (season == null || episode == null)
+    return title
+  const code = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+  return title ? `${code} · ${title}` : code
 }
 
 function pickFrameInterpolationSettings(settings: PlayerInteractionSettings): PlayerFrameInterpolationSettings {

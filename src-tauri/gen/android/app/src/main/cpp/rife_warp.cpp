@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -112,7 +113,12 @@ int compile_pipeline(
     size_t source_size,
     ncnn::Pipeline*& pipeline) {
     std::vector<uint32_t> spirv;
-    const int compile_status = ncnn::compile_spirv_module(source, source_size, options, spirv);
+    // ncnn's sized overload expects the GLSL byte count without the trailing
+    // NUL. Passing sizeof(char[]) made the custom layer dependent on glslang's
+    // tolerance for an embedded terminator and failed on some Android builds.
+    const size_t shader_size = std::min(source_size, std::strlen(source));
+    const int compile_status = ncnn::compile_spirv_module(
+        source, static_cast<int>(shader_size), options, spirv);
     if (compile_status != 0 || spirv.empty())
         return compile_status != 0 ? compile_status : -1;
     pipeline = new ncnn::Pipeline(device);

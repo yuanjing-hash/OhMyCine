@@ -7,7 +7,7 @@ import { ServerDataSource } from '@/services/datasource/server'
 import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { getPlaybackCompletionBatch, playbackCompletionKey, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
+import { getPlaybackCompletionBatch, playbackCompletionKey, playbackCompletionKeyForMediaItem, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { searchServerDiscovery } from '@/services/serverDiscovery'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -285,12 +285,12 @@ function isSearchItemPlayed(item: MediaItem): boolean {
   const sourceType = store.configs.find(config => config.id === item.sourceId)?.type
   if (sourceType === 'emby' || sourceType === 'jellyfin')
     return item.played === true
-  return item.played === true || completedItemKeys.value.has(playbackCompletionKey(item.sourceId, item.id))
+  return item.played === true || completedItemKeys.value.has(playbackCompletionKeyForMediaItem(item))
 }
 
 async function refreshSearchPlayedStates() {
   const items = uniqueItems([...suggestionItems.value, ...filteredResults.value])
-  const entries = await getPlaybackCompletionBatch(items.map(item => ({ sourceId: item.sourceId, mediaIdentity: item.id })))
+  const entries = await getPlaybackCompletionBatch(items.map(playbackProgressIdentityForMediaItem))
   completedItemKeys.value = new Set(entries.filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
 }
 

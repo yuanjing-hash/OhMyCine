@@ -3,7 +3,7 @@ import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, moveMediaActionLongPress, openMediaActionContextMenu, openMediaActionMenu, suppressMediaActionClick } from '@/services/mediaActions'
-import { getPlaybackProgress, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
+import { getPlaybackProgress, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useDownloadStore } from '@/stores/downloads'
 import CachedImage from './CachedImage.vue'
@@ -27,10 +27,17 @@ const locallyPlayed = ref(false)
 
 const isMediaItem = computed(() => hasMediaPath(props.item))
 const title = computed(() => props.item.name)
+const allowsPlayerCollage = computed(() => {
+  const sourceType = store.configs.find(config => config.id === props.item.sourceId)?.type
+  return sourceType != null && ['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'].includes(sourceType)
+})
 const subtitle = computed(() => {
   const item = props.item
   if (!hasMediaPath(item))
     return item.itemCount == null ? '媒体库' : `${item.itemCount} 项内容`
+
+  if (item.displaySubtitle)
+    return item.displaySubtitle
 
   if (item.type === 'season')
     return item.seasonNumber == null ? '季' : `第 ${item.seasonNumber} 季`
@@ -46,12 +53,12 @@ const subtitle = computed(() => {
 const posterUrl = computed(() => {
   if (props.kind === 'library')
     return props.item.backdropUrl ?? props.item.posterUrl
-  if (hasMediaPath(props.item) && props.item.type === 'episode')
-    return props.item.backdropUrl ?? props.item.posterUrl
+  if (hasMediaPath(props.item) && props.item.type === 'episode' && props.item.cardLayout !== 'poster')
+    return props.item.episodeStillUrl ?? props.item.backdropUrl ?? props.item.posterUrl
   return props.item.posterUrl
 })
 const libraryArtworkCandidates = computed(() => {
-  if (props.kind !== 'library' || hasMediaPath(props.item))
+  if (props.kind !== 'library' || hasMediaPath(props.item) || !allowsPlayerCollage.value)
     return []
   return [...new Set(props.item.artworkCandidates ?? [])].filter(Boolean).slice(0, 9)
 })
@@ -72,9 +79,10 @@ const style3ArtworkColumns = computed(() => {
   })
   return [arranged.slice(0, 3), arranged.slice(3, 6), arranged.slice(6, 9)].filter(column => column.length > 0)
 })
-const usesStyle3Artwork = computed(() => props.kind === 'library' && props.item.artworkSource === 'generated')
+const usesStyle3Artwork = computed(() => props.kind === 'library' && props.item.artworkSource === 'generated' && hasLibraryCollage.value)
 const cardClass = computed(() => props.kind === 'library' ? 'library-card' : 'poster-card')
-const imageClass = computed(() => props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'aspect-[16/9]' : 'aspect-[2/3]')
+const usesLandscapeArtwork = computed(() => props.kind === 'library' || (hasMediaPath(props.item) && props.item.cardLayout === 'landscape') || (hasMediaPath(props.item) && props.item.type === 'episode' && props.item.cardLayout !== 'poster'))
+const imageClass = computed(() => usesLandscapeArtwork.value ? 'aspect-[16/9]' : 'aspect-[2/3]')
 const imageRevisionKey = computed(() => {
   if (props.kind === 'library')
     return props.item.artworkRevision ?? 'initial'
@@ -83,7 +91,7 @@ const imageRevisionKey = computed(() => {
 const imageCacheKey = computed(() => artworkCacheKey(
   props.item.sourceId,
   `${props.item.id}:${imageRevisionKey.value}`,
-  props.kind === 'library' || (hasMediaPath(props.item) && props.item.type === 'episode') ? 'backdrop' : 'poster',
+  usesLandscapeArtwork.value ? 'backdrop' : 'poster',
 ))
 const canPlay = computed(() => isMediaItem.value && !props.disabled && props.item.type !== 'folder' && props.item.type !== 'series' && props.item.type !== 'season')
 const isPlayed = computed(() => hasMediaPath(props.item) && (props.item.played === true || locallyPlayed.value))
@@ -107,7 +115,7 @@ async function refreshPlayedState() {
     locallyPlayed.value = false
     return
   }
-  locallyPlayed.value = (await getPlaybackProgress({ sourceId: props.item.sourceId, mediaIdentity: props.item.id }))?.completed === true
+  locallyPlayed.value = (await getPlaybackProgress(playbackProgressIdentityForMediaItem(props.item)))?.completed === true
 }
 
 function hasMediaPath(item: MediaItem | MediaLibrary): item is MediaItem {

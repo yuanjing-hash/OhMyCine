@@ -5,7 +5,7 @@ import type { useDataSourceStore } from '@/stores/datasource'
 import { invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { redactSensitiveText } from '@/services/datasource/errors'
-import { ServerDataSource } from '@/services/datasource/server'
+import { mapServerHistoryItem, ServerDataSource } from '@/services/datasource/server'
 import { listPlaybackHistoryPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 
 type DataSourceStore = ReturnType<typeof useDataSourceStore>
@@ -68,21 +68,20 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
   if (!servers.length)
     return
   const history = await readLocalHistory(500)
-  const outgoing = await Promise.all(history.flatMap((entry) => {
-    const sourceConfig = configs.find(config => config.id === entry.sourceId)
-    return sourceConfig ? [{ entry, sourceConfig }] : []
-  }).map(({ entry, sourceConfig }) => toServerChange(entry, sourceConfig)))
 
   let merged = 0
   for (const target of servers) {
-    const cursorKey = `${CURSOR_PREFIX}${target.config.id}:${encodeURIComponent(safeOrigin(target.config.url) ?? target.config.url)}`
+    const outgoing = await Promise.all(history
+      .filter(entry => entry.sourceId === target.config.id)
+      .map(entry => toServerChange(entry, target.config)))
+    const cursorKey = `${CURSOR_PREFIX}${target.config.id}`
     let cursor = safeCursor(getAppSetting(cursorKey))
     try {
       let received = 0
       for (let page = 0; page < 20; page++) {
         const response = await target.source.syncPlaybackHistory({ cursor, changes: page === 0 ? outgoing : [] })
         received += response.changes.length
-        const incoming = response.changes.flatMap(change => mapIncomingChange(change, configs))
+        const incoming = response.changes.flatMap(change => mapIncomingChange(change, configs, target.config))
         if (incoming.length)
           merged += await invoke<number>('player_merge_playback_history', { entries: incoming })
         if (response.cursor < cursor)
@@ -126,20 +125,27 @@ async function readLocalHistory(limit: number): Promise<PlaybackHistoryEntry[]> 
 async function toServerChange(entry: PlaybackHistoryEntry, config: DataSourceConfig): Promise<ServerPlaybackHistoryChange> {
   const locator = safeOrigin(config.url) ?? ''
   const stableSource = locator || config.id
+  const historyIdentity = config.type === 'server' && isServerHistoryIdentity(entry.mediaIdentity)
+    ? entry.mediaIdentity
+    : undefined
   return {
-    sync_key: await sha256(`${config.type}\0${stableSource}\0${entry.mediaIdentity}`),
+    sync_key: await sha256(historyIdentity ? `${config.type}\0${historyIdentity}` : `${config.type}\0${stableSource}\0${entry.mediaIdentity}`),
     source_kind: config.type,
     source_locator: locator || undefined,
     source_id: config.id,
     library_id: entry.libraryId ?? undefined,
     item_id: entry.itemId ?? undefined,
+    item_token: entry.itemId ?? undefined,
     media_identity: entry.mediaIdentity,
+    history_identity: historyIdentity,
     title: entry.title,
     stream_identity: entry.streamIdentity ?? undefined,
     media_type: entry.mediaType ?? undefined,
     poster_url: entry.posterUrl ?? undefined,
     backdrop_url: entry.backdropUrl ?? undefined,
     title_logo_url: entry.titleLogoUrl ?? undefined,
+    display_subtitle: entry.displaySubtitle ?? undefined,
+    episode_still_url: entry.episodeStillUrl ?? undefined,
     position: entry.position,
     duration: entry.duration ?? undefined,
     completed: entry.completed,
@@ -147,32 +153,41 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: DataSourceCon
   }
 }
 
-function mapIncomingChange(change: ServerPlaybackHistoryChange, configs: readonly DataSourceConfig[]) {
+function mapIncomingChange(change: ServerPlaybackHistoryChange, configs: readonly DataSourceConfig[], currentServer: DataSourceConfig) {
   const locator = change.source_locator ? safeOrigin(change.source_locator) : undefined
-  const config = configs.find((candidate) => {
-    if (candidate.type !== change.source_kind || candidate.enabled === false)
-      return false
-    return locator ? safeOrigin(candidate.url) === locator : candidate.id === change.source_id
-  })
+  const config = change.source_kind === 'server'
+    ? currentServer
+    : configs.find((candidate) => {
+        if (candidate.type !== change.source_kind || candidate.enabled === false)
+          return false
+        return locator ? safeOrigin(candidate.url) === locator : candidate.id === change.source_id
+      })
   if (!config)
     return []
+  const presentation = change.source_kind === 'server' ? mapServerHistoryItem(config.id, change)[0] : undefined
   return [{
     sourceId: config.id,
     libraryId: change.library_id,
-    itemId: change.item_id,
-    mediaIdentity: change.media_identity,
-    title: change.title,
+    itemId: presentation?.id ?? change.item_token ?? change.item_id,
+    mediaIdentity: change.deleted === true ? change.media_identity : presentation?.historyIdentity ?? change.history_identity ?? change.media_identity,
+    title: presentation?.name ?? change.display_title ?? change.series_title ?? change.title,
     streamIdentity: change.stream_identity,
-    mediaType: change.media_type,
-    posterUrl: change.poster_url,
-    backdropUrl: change.backdrop_url,
-    titleLogoUrl: change.title_logo_url,
+    mediaType: presentation?.type ?? change.media_type,
+    posterUrl: presentation?.posterUrl ?? change.poster_url,
+    backdropUrl: presentation?.backdropUrl ?? change.backdrop_url,
+    titleLogoUrl: presentation?.titleLogoUrl ?? change.title_logo_url,
+    displaySubtitle: presentation?.displaySubtitle ?? change.display_subtitle,
+    episodeStillUrl: presentation?.episodeStillUrl ?? change.episode_still_url,
     position: change.position,
     duration: change.duration,
     completed: change.completed,
     deleted: change.deleted === true,
     updatedAt: normalizeTimestamp(change.updated_at),
   }]
+}
+
+function isServerHistoryIdentity(value: string): boolean {
+  return /^server:v1:(?:movie|episode):\S{1,1024}$/.test(value)
 }
 
 function safeOrigin(value: string): string | undefined {

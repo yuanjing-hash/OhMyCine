@@ -32,7 +32,7 @@ async function resolveCapabilities(options: PlayedStateAdapterOptions, target: M
 
   const localEntry = providerOwned
     ? null
-    : await getPlaybackProgress({ sourceId: target.sourceId, mediaIdentity: target.itemId })
+    : await getPlaybackProgress({ sourceId: target.sourceId, mediaIdentity: target.historyIdentity ?? target.itemId })
   const played = target.played ?? localEntry?.completed ?? false
   const capabilities: MediaActionCapability[] = [played
     ? { action: 'markUnplayed', availability: 'available' }
@@ -65,14 +65,14 @@ async function executePlayedStateAction(options: PlayedStateAdapterOptions, targ
     await provider.setPlayedState(target.itemId, mutation)
   }
   else if (mutation === 'removeContinueWatching') {
-    await removeContinueWatching({ sourceId: target.sourceId, mediaIdentity: target.itemId })
+    await removeContinueWatching({ sourceId: target.sourceId, mediaIdentity: target.historyIdentity ?? target.itemId })
   }
   else if (mutation === 'played') {
-    const updated = await setPlaybackCompleted({ sourceId: target.sourceId, mediaIdentity: target.itemId }, true)
+    const updated = await setPlaybackCompleted({ sourceId: target.sourceId, mediaIdentity: target.historyIdentity ?? target.itemId }, true)
     if (!updated) {
       await savePlaybackProgress({
         sourceId: target.sourceId,
-        mediaIdentity: target.itemId,
+        mediaIdentity: target.historyIdentity ?? target.itemId,
         itemId: target.itemId,
         libraryId: target.libraryId,
         title: target.display.name,
@@ -83,11 +83,11 @@ async function executePlayedStateAction(options: PlayedStateAdapterOptions, targ
     }
   }
   else {
-    const updated = await setPlaybackCompleted({ sourceId: target.sourceId, mediaIdentity: target.itemId }, false)
+    const updated = await setPlaybackCompleted({ sourceId: target.sourceId, mediaIdentity: target.historyIdentity ?? target.itemId }, false)
     if (!updated) {
       await savePlaybackProgress({
         sourceId: target.sourceId,
-        mediaIdentity: target.itemId,
+        mediaIdentity: target.historyIdentity ?? target.itemId,
         itemId: target.itemId,
         libraryId: target.libraryId,
         title: target.display.name,

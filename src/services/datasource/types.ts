@@ -28,6 +28,14 @@ export interface MediaItem {
   seriesName?: string
   seasonNumber?: number
   episodeNumber?: number
+  /** Provider-owned identity used to merge playback history across routes and devices. */
+  historyIdentity?: string
+  /** Secondary card copy supplied by the owning provider, for example S01E02 + episode title. */
+  displaySubtitle?: string
+  /** Optional episode still. It must not replace a series poster on portrait history cards. */
+  episodeStillUrl?: string
+  /** Explicit visual shape for contexts whose card layout differs from the media type default. */
+  cardLayout?: 'poster' | 'landscape'
   children?: MediaItem[]
   /** Stable cross-source work identity. It never contains credentials or paths. */
   workIdentity?: MediaIdentity
@@ -116,6 +124,12 @@ export interface HomeSection {
   refreshKey?: string
   refreshable?: boolean
   layout?: 'hero' | 'row' | 'poster-grid' | 'video-list'
+  /** Provider-neutral drill-down handled through DataSource.list(). */
+  viewAllRoute?: { kind: 'sourcePath', path: string } | { kind: 'history', sourceId: string, libraryId?: string }
+  /** Semantic role used by provider-neutral source pages to order and de-duplicate root sections. */
+  purpose?: 'favorites' | 'automaticCollections' | 'manualCollections' | 'history' | 'libraries'
+  /** Distinguishes provider-managed and user-managed collection sections without leaking provider schemas. */
+  collectionSource?: 'automatic' | 'manual'
   /** Safe stable source-level diagnostic; raw provider errors never belong here. */
   errorCode?: string
 }

@@ -5,7 +5,9 @@ import { readServerCredential, removeCredential } from '../src/services/datasour
 import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrustedOhMyCineArtifactIdentity, namesByPersonType } from '../src/services/datasource/emby.ts'
 import { forgetPlaybackTargetsForSource, mergeMediaItemsByIdentity, prunePlaybackTargets, rememberPlaybackTargetsForItems } from '../src/services/datasource/identityMerge.ts'
 import { describeMediaSource } from '../src/services/datasource/mediaSourceDisplay.ts'
-import { loginServerAndCreateConfig, logoutServerBestEffort, ServerDataSource } from '../src/services/datasource/server.ts'
+import { loginServerAndCreateConfig, logoutServerBestEffort, mapServerHistoryItem, ServerDataSource } from '../src/services/datasource/server.ts'
+import { createPlaybackQueueItem } from '../src/services/playbackContext.ts'
+import { playbackProgressIdentityForMediaItem } from '../src/services/playbackHistory.ts'
 import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
@@ -190,12 +192,17 @@ const seriesDetail = await source.getDetail(`work|9|${seriesItem().id}`)
 assert.deepEqual(seriesDetail.children?.map(item => [item.type, item.seasonNumber, item.episodeNumber]), [['episode', 1, 1], ['episode', 1, 2], ['episode', 1, 46]])
 assert.equal(seriesDetail.children?.[0]?.name, '改稻为桑')
 assert.equal(seriesDetail.children?.[0]?.overview, '第一集简介')
-assert.match(seriesDetail.children?.[0]?.backdropUrl ?? '', /episode-1\.jpg$/)
+assert.match(seriesDetail.children?.[0]?.posterUrl ?? '', /image\.tmdb\.org\/t\/p\/w500/)
+assert.match(seriesDetail.children?.[0]?.backdropUrl ?? '', /backdrop\.jpg$/)
+assert.match(seriesDetail.children?.[0]?.episodeStillUrl ?? '', /episode-1\.jpg$/)
+assert.equal(seriesDetail.children?.[0]?.historyIdentity, `server:v1:episode:9:${seriesItem().id}:1:1`)
 assert.equal(seriesDetail.children?.[0]?.duration, 47 * 60)
 assert.equal(seriesDetail.children?.[1]?.overview, undefined)
-assert.equal(seriesDetail.children?.[1]?.backdropUrl, undefined)
+assert.match(seriesDetail.children?.[1]?.backdropUrl ?? '', /backdrop\.jpg$/)
+assert.equal(seriesDetail.children?.[1]?.episodeStillUrl, undefined)
 assert.equal(seriesDetail.children?.[2]?.name, '落幕')
-assert.match(seriesDetail.children?.[2]?.backdropUrl ?? '', /episode-46\.jpg$/)
+assert.match(seriesDetail.children?.[2]?.backdropUrl ?? '', /backdrop\.jpg$/)
+assert.match(seriesDetail.children?.[2]?.episodeStillUrl ?? '', /episode-46\.jpg$/)
 assert.equal(seriesDetail.mediaSources?.[0]?.isStrm, undefined)
 assert.equal(seriesDetail.mediaSources?.[0]?.deliveryKind, 'server_stream')
 assert.equal(describeMediaSource(seriesDetail.mediaSources![0]!), '2.0 KB · 来自 家庭 Server · 文件流')
@@ -215,6 +222,120 @@ const noPlayableDetail = await source.getDetail(`work|9|${noPlayableItem().id}`)
 assert.deepEqual(noPlayableDetail.mediaSources, [])
 assert.deepEqual(noPlayableDetail.children, [])
 assert.ok(calls.filter(call => call.path !== '/api/v1/player/auth/login').every(call => call.accessToken === token))
+
+const mappedEpisodeHistory = mapServerHistoryItem('server-home', {
+  history_identity: `server:v1:episode:9:${seriesItem().id}:1:2`,
+  item_token: `entry|9|${seriesItem().id}|202`,
+  display_title: '示例剧',
+  display_subtitle: 'S01E02 · 改稻为桑',
+  series_title: '示例剧',
+  episode_title: '改稻为桑',
+  season_number: 1,
+  episode_number: 2,
+  media_type: 'episode',
+  poster_url: 'https://image.example.test/series-poster.jpg',
+  backdrop_url: 'https://image.example.test/series-backdrop.jpg',
+  episode_still_url: 'https://image.example.test/episode-still.jpg',
+  position: 600,
+  duration: 2400,
+  completed: false,
+  updated_at: 1_788_220_800_000,
+})[0]!
+assert.equal(mappedEpisodeHistory.name, '示例剧')
+assert.equal(mappedEpisodeHistory.displaySubtitle, 'S01E02 · 改稻为桑')
+assert.equal(mappedEpisodeHistory.posterUrl, 'https://image.example.test/series-poster.jpg')
+assert.equal(mappedEpisodeHistory.episodeStillUrl, 'https://image.example.test/episode-still.jpg')
+assert.equal(mappedEpisodeHistory.cardLayout, 'poster')
+assert.deepEqual(playbackProgressIdentityForMediaItem(mappedEpisodeHistory), { sourceId: 'server-home', mediaIdentity: mappedEpisodeHistory.historyIdentity })
+assert.equal(createPlaybackQueueItem(mappedEpisodeHistory).historyIdentity, mappedEpisodeHistory.historyIdentity)
+
+const overviewCollectionIds = {
+  automatic: '11111111-1111-4111-8111-111111111111',
+  manual: '22222222-2222-4222-8222-222222222222',
+}
+const overviewSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      const path = request.path
+      const data = path === '/api/v1/player/media-libraries'
+        ? { list: [{ id: 9, name: '家庭影片', storage_type: 'local', entry_count: 1, work_count: 1, artwork_url: '/api/v1/assets/library-covers/library-local.png', artwork_revision: 'library-v1', artwork_source: 'provider' }], total: 1 }
+        : path === '/api/v1/player/online-libraries'
+          ? { list: [], total: 0 }
+          : path === '/api/v1/player/home-contributions'
+            ? { contributions: [] }
+            : path.startsWith('/api/v1/player/media-libraries/9/catalog')
+              ? { list: [mediaItem()], total: 1, page: 1, page_size: 100 }
+              : path === '/api/v1/player/history?page=1&page_size=24' || path === '/api/v1/player/history?page=1&page_size=100'
+                ? { list: [{ history_identity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', item_token: 'work|9|bW92aWU6dG1kYjozNDY', display_title: '七武士', media_type: 'movie', position: 300, duration: 1200, completed: false, updated_at: 1_788_220_800_000 }], total: 1, page: 1, page_size: 24, has_more: false }
+                : path === '/api/v1/player/favorites'
+                  ? { list: [mediaItem()], total: 1 }
+                  : path === '/api/v1/player/collections?kind=collection'
+                    ? { list: [
+                        { id: overviewCollectionIds.automatic, name: '系统合集', kind: 'collection', source: 'tmdb', item_count: 2, poster_path: '/automatic.jpg' },
+                        { id: overviewCollectionIds.manual, name: '我的合集', kind: 'collection', source: 'manual', item_count: 1, poster_path: '/manual.jpg' },
+                      ], total: 2 }
+                    : path === `/api/v1/player/collections/${overviewCollectionIds.automatic}/items`
+                      ? { list: [mediaItem()], total: 1 }
+                      : { list: [], total: 0 }
+      return { status: 200, body: { code: 0, message: 'success', data } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await overviewSource.init({ id: 'server-overview', type: 'server', name: '总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'overview-credential', deviceId: 'overview-device' } })
+const overviewSections = await overviewSource.getHomeSections()
+assert.deepEqual(overviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
+  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'history', 'libraries',
+])
+const automaticSection = overviewSections.find(section => section.purpose === 'automaticCollections')!
+assert.equal(automaticSection.collectionSource, 'automatic')
+assert.equal(automaticSection.items[0]?.displaySubtitle, '2 部影片')
+const automaticCards = await overviewSource.list(automaticSection.viewAllRoute!.path)
+assert.equal(automaticCards[0]?.name, '系统合集')
+assert.equal((await overviewSource.list(automaticCards[0]!.id))[0]?.name, '七武士')
+overviewSource.destroy()
+
+const fastOverviewCalls: string[] = []
+const fastOverviewSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      fastOverviewCalls.push(request.path)
+      const history = { history_identity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', item_token: 'work|9|bW92aWU6dG1kYjozNDY', display_title: '七武士', media_type: 'movie', position: 300, duration: 1200, completed: false, updated_at: 1_788_220_800_000 }
+      const section = (list: unknown[], status: 'ok' | 'unavailable' = 'ok') => ({ status, list, has_more: false, ...(status === 'unavailable' ? { error_code: 'INTERNAL_ERROR' } : {}) })
+      const data = request.path === '/api/v1/player/overview'
+        ? {
+            version: 'v1',
+            sections: {
+              featured: section([mediaItem()]),
+              continue_watching: section([history]),
+              recently_added: section([mediaItem()]),
+              favorites: section([mediaItem()]),
+              automatic_collections: section([{ id: overviewCollectionIds.automatic, name: '系统合集', kind: 'collection', source: 'tmdb', item_count: 2, poster_path: '/automatic.jpg' }]),
+              manual_collections: section([], 'unavailable'),
+              recent_history: section([history]),
+              media_libraries: section([{ id: 9, name: '家庭影片', storage_type: 'local', entry_count: 1, work_count: 1, artwork_url: '/api/v1/assets/library-covers/library-local.png', artwork_revision: 'library-v1', artwork_source: 'provider' }]),
+            },
+          }
+        : request.path === '/api/v1/player/online-libraries'
+          ? { list: [], total: 0 }
+          : request.path === '/api/v1/player/home-contributions'
+            ? { contributions: [] }
+            : { list: [], total: 0 }
+      return { status: 200, body: { code: 0, message: 'success', data } }
+    },
+  },
+  readCredential: async () => ({ accessToken: token }),
+})
+await fastOverviewSource.init({ id: 'server-fast-overview', type: 'server', name: '聚合总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'fast-overview-credential', deviceId: 'fast-overview-device', capabilities: ['media_overview_v1'] } })
+const fastOverviewSections = await fastOverviewSource.getHomeSections()
+assert.deepEqual(fastOverviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
+  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'history', 'libraries',
+])
+assert.equal(fastOverviewSections.find(section => section.purpose === 'manualCollections')?.errorCode, 'INTERNAL_ERROR')
+assert.equal(fastOverviewSections.find(section => section.purpose === 'favorites')?.items[0]?.favorite, true)
+assert.equal(fastOverviewSections.find(section => section.purpose === 'history')?.items[0]?.historyIdentity, 'server:v1:movie:9:bW92aWU6dG1kYjozNDY')
+assert.deepEqual(fastOverviewCalls.filter(path => ['/api/v1/player/overview', '/api/v1/player/media-libraries', '/api/v1/player/history?page=1&page_size=24', '/api/v1/player/favorites', '/api/v1/player/collections?kind=collection'].includes(path)), ['/api/v1/player/overview'])
+fastOverviewSource.destroy()
 
 const changeCalls: string[] = []
 const changeSource = new ServerDataSource({
@@ -507,6 +628,15 @@ assert.match(settingsSource, /if \(result\.config\.type === 'server'\)\s*await l
 const serverSource = fs.readFileSync(new URL('../src/services/datasource/server.ts', import.meta.url), 'utf8')
 assert.match(serverSource, /credentialVersion:\s*Date\.now\(\)/)
 assert.match(serverSource, /libraries = await source\.listLibraries\(\)[\s\S]*await persistServerCredentialOrRevoke/)
+assert.match(serverSource, /mapServerHistoryItem[\s\S]*cardLayout:\s*type === 'episode' \? 'poster'/)
+assert.match(serverSource, /purpose:\s*'favorites'[\s\S]*purpose:\s*'automaticCollections'[\s\S]*purpose:\s*'manualCollections'[\s\S]*purpose:\s*'history'[\s\S]*purpose:\s*'libraries'/)
+const historySyncSource = fs.readFileSync(new URL('../src/services/playbackHistorySync.ts', import.meta.url), 'utf8')
+assert.match(historySyncSource, /filter\(entry => entry\.sourceId === target\.config\.id\)/)
+assert.match(historySyncSource, /change\.source_kind === 'server'[\s\S]*\? currentServer/)
+assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? change\.media_identity : presentation\?\.historyIdentity/)
+const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
+assert.match(sourceLibraryView, /supplementalHomeSections/)
+assert.match(sourceLibraryView, /section\.viewAllRoute/)
 const embySource = fs.readFileSync(new URL('../src/services/datasource/emby.ts', import.meta.url), 'utf8')
 assert.match(embySource, /DETAIL_IMAGE_QUERY[\s\S]*ImageTypeLimit: '8'/)
 assert.match(embySource, /fetchDetailPayload[\s\S]*getItem\(id, true\)/)
@@ -533,6 +663,10 @@ console.log(JSON.stringify({
   expectedIdentitySubmission: true,
   perSiteResultPagination: true,
   acquisitionPlaceholderCategory: true,
+  canonicalHistoryIdentity: true,
+  seriesPosterHistoryCard: true,
+  providerNeutralServerOverview: true,
+  collectionMemberNavigation: true,
 }, null, 2))
 
 function mediaItem(index = 0) {
@@ -552,6 +686,7 @@ function seriesItem() {
     id: 'c2VyaWVzOnRtZGI6MTAw',
     title: '示例剧',
     original_title: 'Example Series',
+    poster_path: '/series-poster.jpg',
     kind: 'series',
     work_identity: { scheme: 'tmdb', media_type: 'series', value: '100' },
     tmdb_id: 100,

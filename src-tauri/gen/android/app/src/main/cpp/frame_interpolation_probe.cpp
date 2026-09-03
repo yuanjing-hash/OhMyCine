@@ -32,6 +32,7 @@ struct ProbeResult {
     bool ncnn_model_loaded = false;
     bool ncnn_inference_self_test = false;
     std::string gpu_name;
+    std::string ncnn_diagnostic;
     std::string reason;
 };
 
@@ -56,7 +57,9 @@ extern "C" int ohmycine_ncnn_probe(
     const char* model_param_path,
     const char* model_bin_path,
     char* gpu_name,
-    size_t gpu_name_size);
+    size_t gpu_name_size,
+    char* diagnostic,
+    size_t diagnostic_size);
 
 ProbeResult probe(const char* model_param_path, const char* model_bin_path) {
     ProbeResult result;
@@ -280,13 +283,21 @@ ProbeResult probe(const char* model_param_path, const char* model_bin_path) {
     }
 
     char ncnn_gpu_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]{};
+    char ncnn_diagnostic[768]{};
     const int ncnn_status = ohmycine_ncnn_probe(
-        model_param_path, model_bin_path, ncnn_gpu_name, sizeof(ncnn_gpu_name));
+        model_param_path,
+        model_bin_path,
+        ncnn_gpu_name,
+        sizeof(ncnn_gpu_name),
+        ncnn_diagnostic,
+        sizeof(ncnn_diagnostic));
     result.ncnn_vulkan = ncnn_status >= 1;
     result.ncnn_model_loaded = ncnn_status >= 2;
     result.ncnn_inference_self_test = ncnn_status >= 3;
     if (result.gpu_name.empty() && ncnn_gpu_name[0] != '\0')
         result.gpu_name = ncnn_gpu_name;
+    if (ncnn_diagnostic[0] != '\0')
+        result.ncnn_diagnostic = ncnn_diagnostic;
 
     if (!result.image_reader_fp16)
         result.reason = "RGBA16F AImageReader Surface creation failed";
@@ -301,9 +312,10 @@ ProbeResult probe(const char* model_param_path, const char* model_bin_path) {
     else if (!result.ncnn_vulkan)
         result.reason = "ncnn Vulkan runtime did not find a compute device";
     else if (!result.ncnn_model_loaded)
-        result.reason = "verified RIFE model failed the ncnn load self-test";
+        result.reason = "RIFE ncnn model load failed (" + result.ncnn_diagnostic + ")";
     else if (!result.ncnn_inference_self_test)
-        result.reason = "RIFE Vulkan flow/mask inference self-test failed";
+        result.reason = "RIFE Vulkan flow/mask inference failed (" +
+            result.ncnn_diagnostic + ")";
 
     vkDestroyInstance(instance, nullptr);
     AHardwareBuffer_release(hardware_buffer);
@@ -348,6 +360,7 @@ Java_com_ohmycine_player_mpv_AndroidFrameInterpolationNative_nativeProbe(
          << ",\"ncnnInferenceSelfTest\":"
          << (result.ncnn_inference_self_test ? "true" : "false")
          << ",\"gpuName\":\"" << escape_json(result.gpu_name) << "\""
+         << ",\"ncnnDiagnostic\":\"" << escape_json(result.ncnn_diagnostic) << "\""
          << ",\"reason\":\"" << escape_json(result.reason) << "\"} ";
     return environment->NewStringUTF(json.str().c_str());
 }
