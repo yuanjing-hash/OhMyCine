@@ -265,7 +265,7 @@ const overviewSource = new ServerDataSource({
             ? { contributions: [] }
             : path.startsWith('/api/v1/player/media-libraries/9/catalog')
               ? { list: [mediaItem()], total: 1, page: 1, page_size: 100 }
-              : path === '/api/v1/player/history?page=1&page_size=24' || path === '/api/v1/player/history?page=1&page_size=100'
+              : path === '/api/v1/player/history?page=1&page_size=24&source_kind=server' || path === '/api/v1/player/history?page=1&page_size=100&source_kind=server'
                 ? { list: [{ history_identity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', item_token: 'work|9|bW92aWU6dG1kYjozNDY', display_title: '七武士', media_type: 'movie', position: 300, duration: 1200, completed: false, updated_at: 1_788_220_800_000 }], total: 1, page: 1, page_size: 24, has_more: false }
                 : path === '/api/v1/player/favorites'
                   ? { list: [mediaItem()], total: 1 }
@@ -285,7 +285,7 @@ const overviewSource = new ServerDataSource({
 await overviewSource.init({ id: 'server-overview', type: 'server', name: '总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'overview-credential', deviceId: 'overview-device' } })
 const overviewSections = await overviewSource.getHomeSections()
 assert.deepEqual(overviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
-  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'history', 'libraries',
+  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
 ])
 const automaticSection = overviewSections.find(section => section.purpose === 'automaticCollections')!
 assert.equal(automaticSection.collectionSource, 'automatic')
@@ -307,12 +307,12 @@ const fastOverviewSource = new ServerDataSource({
             version: 'v1',
             sections: {
               featured: section([mediaItem()]),
-              continue_watching: section([history]),
+              continue_watching: section([history, { ...history, item_token: 'entry|9|bW92aWU6dG1kYjozNDY|77' }]),
               recently_added: section([mediaItem()]),
               favorites: section([mediaItem()]),
               automatic_collections: section([{ id: overviewCollectionIds.automatic, name: '系统合集', kind: 'collection', source: 'tmdb', item_count: 2, poster_path: '/automatic.jpg' }]),
               manual_collections: section([], 'unavailable'),
-              recent_history: section([history]),
+              recent_history: section([history, { ...history, item_token: 'entry|9|bW92aWU6dG1kYjozNDY|77' }]),
               media_libraries: section([{ id: 9, name: '家庭影片', storage_type: 'local', entry_count: 1, work_count: 1, artwork_url: '/api/v1/assets/library-covers/library-local.png', artwork_revision: 'library-v1', artwork_source: 'provider' }]),
             },
           }
@@ -329,12 +329,13 @@ const fastOverviewSource = new ServerDataSource({
 await fastOverviewSource.init({ id: 'server-fast-overview', type: 'server', name: '聚合总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'fast-overview-credential', deviceId: 'fast-overview-device', capabilities: ['media_overview_v1'] } })
 const fastOverviewSections = await fastOverviewSource.getHomeSections()
 assert.deepEqual(fastOverviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
-  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'history', 'libraries',
+  'hero', 'continueWatching', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
 ])
 assert.equal(fastOverviewSections.find(section => section.purpose === 'manualCollections')?.errorCode, 'INTERNAL_ERROR')
 assert.equal(fastOverviewSections.find(section => section.purpose === 'favorites')?.items[0]?.favorite, true)
-assert.equal(fastOverviewSections.find(section => section.purpose === 'history')?.items[0]?.historyIdentity, 'server:v1:movie:9:bW92aWU6dG1kYjozNDY')
-assert.deepEqual(fastOverviewCalls.filter(path => ['/api/v1/player/overview', '/api/v1/player/media-libraries', '/api/v1/player/history?page=1&page_size=24', '/api/v1/player/favorites', '/api/v1/player/collections?kind=collection'].includes(path)), ['/api/v1/player/overview'])
+assert.equal(fastOverviewSections.find(section => section.type === 'continueWatching')?.items.length, 1)
+assert.equal(fastOverviewSections.some(section => section.purpose === 'history'), false)
+assert.deepEqual(fastOverviewCalls.filter(path => ['/api/v1/player/overview', '/api/v1/player/media-libraries', '/api/v1/player/history?page=1&page_size=24&source_kind=server', '/api/v1/player/favorites', '/api/v1/player/collections?kind=collection'].includes(path)), ['/api/v1/player/overview'])
 fastOverviewSource.destroy()
 
 const changeCalls: string[] = []
@@ -629,9 +630,11 @@ const serverSource = fs.readFileSync(new URL('../src/services/datasource/server.
 assert.match(serverSource, /credentialVersion:\s*Date\.now\(\)/)
 assert.match(serverSource, /libraries = await source\.listLibraries\(\)[\s\S]*await persistServerCredentialOrRevoke/)
 assert.match(serverSource, /mapServerHistoryItem[\s\S]*cardLayout:\s*type === 'episode' \? 'poster'/)
-assert.match(serverSource, /purpose:\s*'favorites'[\s\S]*purpose:\s*'automaticCollections'[\s\S]*purpose:\s*'manualCollections'[\s\S]*purpose:\s*'history'[\s\S]*purpose:\s*'libraries'/)
+assert.match(serverSource, /purpose:\s*'favorites'[\s\S]*purpose:\s*'automaticCollections'[\s\S]*purpose:\s*'manualCollections'[\s\S]*purpose:\s*'libraries'/)
+assert.doesNotMatch(serverSource, /title:\s*'最近历史'/)
 const historySyncSource = fs.readFileSync(new URL('../src/services/playbackHistorySync.ts', import.meta.url), 'utf8')
-assert.match(historySyncSource, /filter\(entry => entry\.sourceId === target\.config\.id\)/)
+assert.match(historySyncSource, /configsById\.get\(entry\.sourceId\)[\s\S]*sourceConfig\.type === 'server' && sourceConfig\.id !== target\.config\.id/)
+assert.match(serverSource, /history\?page=\$\{page\}&page_size=\$\{pageSize\}&source_kind=server/)
 assert.match(historySyncSource, /change\.source_kind === 'server'[\s\S]*\? currentServer/)
 assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? change\.media_identity : presentation\?\.historyIdentity/)
 const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')

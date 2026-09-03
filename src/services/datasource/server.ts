@@ -587,7 +587,7 @@ export class ServerDataSource implements DataSource {
       .map(parseItem)
       .filter((item): item is ServerItemRecord => item != null)
       .map(item => this.mapItem(item))
-    const mappedHistory = (section: ServerOverviewSectionRecord) => section.list.flatMap(item => mapServerHistoryItem(this.id, item))
+    const mappedHistory = (section: ServerOverviewSectionRecord) => mapServerHistoryItems(this.id, section.list)
     const mappedCollections = (section: ServerOverviewSectionRecord) => section.list
       .map(parseCollectionRecord)
       .filter((item): item is ServerCollectionRecord => item != null)
@@ -603,7 +603,6 @@ export class ServerDataSource implements DataSource {
       overviewHomeSection(this.id, 'favorites', '我的收藏', 'libraryRow', mappedItems(overview.sections.favorites).map(item => ({ ...item, favorite: true })), overview.sections.favorites, { purpose: 'favorites', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } }),
       overviewHomeSection(this.id, 'automatic-collections', '自动合集', 'libraryRow', mappedCollections(overview.sections.automaticCollections), overview.sections.automaticCollections, { purpose: 'automaticCollections', collectionSource: 'automatic', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } }),
       overviewHomeSection(this.id, 'manual-collections', '我的合集', 'libraryRow', mappedCollections(overview.sections.manualCollections), overview.sections.manualCollections, { purpose: 'manualCollections', collectionSource: 'manual', viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } }),
-      overviewHomeSection(this.id, 'history', '最近历史', 'libraryRow', mappedHistory(overview.sections.recentHistory), overview.sections.recentHistory, { purpose: 'history', viewAllRoute: { kind: 'history', sourceId: this.id } }),
       overviewHomeSection(this.id, 'libraries', '媒体库', 'libraryRow', mappedLibraries, overview.sections.mediaLibraries, { purpose: 'libraries' }),
     ] satisfies HomeSection[]
     return sections.filter(section => section.purpose === 'libraries' || section.items.length > 0 || Boolean(section.errorCode && section.purpose))
@@ -632,7 +631,6 @@ export class ServerDataSource implements DataSource {
       { id: `${this.id}:favorites`, sourceId: this.id, title: '我的收藏', type: 'libraryRow', purpose: 'favorites', items: favoritesResult.slice(0, 12), viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } },
       { id: `${this.id}:automatic-collections`, sourceId: this.id, title: '自动合集', type: 'libraryRow', purpose: 'automaticCollections', collectionSource: 'automatic', items: automaticCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } },
       { id: `${this.id}:manual-collections`, sourceId: this.id, title: '我的合集', type: 'libraryRow', purpose: 'manualCollections', collectionSource: 'manual', items: manualCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } },
-      { id: `${this.id}:history`, sourceId: this.id, title: '最近历史', type: 'libraryRow', purpose: 'history', items: historyResult.items.slice(0, 12), viewAllRoute: { kind: 'history', sourceId: this.id } },
       { id: `${this.id}:libraries`, sourceId: this.id, title: '媒体库', type: 'libraryRow', purpose: 'libraries', items: physicalLibraries.map(library => mediaLibraryToRootItem(library)) },
     ] satisfies HomeSection[]).filter(section => section.purpose === 'libraries' || section.items.length > 0)
   }
@@ -896,7 +894,7 @@ export class ServerDataSource implements DataSource {
     }
     const page = request.cursor && /^\d{1,6}$/.test(request.cursor) ? Math.max(1, Number.parseInt(request.cursor, 10)) : 1
     const pageSize = Math.max(1, Math.min(100, request.limit ?? 24))
-    return parseServerHistoryPage(this.id, await this.request(`/api/v1/player/history?page=${page}&page_size=${pageSize}`), page)
+    return parseServerHistoryPage(this.id, await this.request(`/api/v1/player/history?page=${page}&page_size=${pageSize}&source_kind=server`), page)
   }
 
   async setFavorite(itemId: string, favorite: boolean): Promise<void> {
@@ -2007,9 +2005,23 @@ function parseNumericID(value: string | undefined): number | null {
 
 function parseServerHistoryPage(sourceId: string, value: unknown, page: number): ProviderPlaybackHistoryPage {
   const data = recordData(value)
-  const items = arrayRecords(data.list).slice(0, 100).flatMap(raw => mapServerHistoryItem(sourceId, raw))
+  const items = mapServerHistoryItems(sourceId, arrayRecords(data.list).slice(0, 100))
   const hasMore = data.has_more === true
   return { items, cursor: hasMore ? String(page + 1) : undefined, hasMore }
+}
+
+function mapServerHistoryItems(sourceId: string, values: readonly unknown[]): MediaItem[] {
+  const items: MediaItem[] = []
+  const seenIdentities = new Set<string>()
+  for (const value of values) {
+    for (const item of mapServerHistoryItem(sourceId, value)) {
+      if (!item.historyIdentity || seenIdentities.has(item.historyIdentity))
+        continue
+      seenIdentities.add(item.historyIdentity)
+      items.push(item)
+    }
+  }
+  return items
 }
 
 /** Shared Server history projection used by the history page and Server overview sections. */

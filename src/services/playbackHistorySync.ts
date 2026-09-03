@@ -68,12 +68,16 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
   if (!servers.length)
     return
   const history = await readLocalHistory(500)
+  const configsById = new Map(configs.map(config => [config.id, config]))
 
   let merged = 0
   for (const target of servers) {
-    const outgoing = await Promise.all(history
-      .filter(entry => entry.sourceId === target.config.id)
-      .map(entry => toServerChange(entry, target.config)))
+    const outgoing = await Promise.all(history.flatMap((entry) => {
+      const sourceConfig = configsById.get(entry.sourceId)
+      if (!sourceConfig || (sourceConfig.type === 'server' && sourceConfig.id !== target.config.id))
+        return []
+      return [toServerChange(entry, sourceConfig)]
+    }))
     const cursorKey = `${CURSOR_PREFIX}${target.config.id}`
     let cursor = safeCursor(getAppSetting(cursorKey))
     try {
