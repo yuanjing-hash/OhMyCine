@@ -130,6 +130,7 @@ Add and run dedicated frame-interpolation protocol, state-machine, asset-license
 - Native telemetry now reports successful/generated presents, expired ticks, inference samples, latest model time and measured output cadence to Rust. Rust feeds model time/drop counters into the existing diagnostics and removes its one-frame audio compensation whenever native output is bypassed.
 - Queued WGC textures are indexed from their `SystemRelativeTime` mapped onto the mpv timing anchor, never from the later worker-consumption time. A separate 250ms inference watchdog requests ONNX Runtime termination so the Present watchdog and stop path are not trapped behind the same synchronous DirectML call.
 - Audio-delay restoration retains its saved baseline until the mpv property write succeeds, allowing later bypass/stop paths to retry instead of permanently losing the user's value.
+- The first v1.1.40 dispatch exposed a Windows-runner locale bug in release-note generation: Python decoded a Chinese Conventional Commit subject with cp1252. Git subprocess output is now explicitly decoded as UTF-8 with replacement only for malformed bytes, so localized commit subjects cannot block an otherwise successful release package.
 - Contract, Rust state-machine, Clippy, frontend production build and Android ARM64 native full-session verification cover the correction; physical observation remains Beta acceptance rather than a publication blocker.
 
 ## High-risk Files and Boundaries

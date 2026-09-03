@@ -27,6 +27,8 @@ def git(args: list[str]) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
@@ -42,6 +44,8 @@ def git_success(args: list[str]) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         ).returncode
         == 0
     )
