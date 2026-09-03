@@ -131,9 +131,9 @@ int RifeWarp::create_pipeline(const ncnn::Option& opt) {
     if (vkdev == nullptr)
         return 0;
     int status = compile_pipeline(vkdev, opt, kWarpPack1, sizeof(kWarpPack1), pipeline_pack1_);
-    if (status == 0)
+    if (status == 0 && opt.use_packing_layout)
         status = compile_pipeline(vkdev, opt, kWarpPack4, sizeof(kWarpPack4), pipeline_pack4_);
-    if (status == 0)
+    if (status == 0 && opt.use_fp16_packed)
         status = compile_pipeline(vkdev, opt, kWarpPack8, sizeof(kWarpPack8), pipeline_pack8_);
     return status;
 }

@@ -519,7 +519,12 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         swap_desc.Height = static_cast<UINT>(item_size.Height);
         swap_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         swap_desc.SampleDesc = {1, 0};
-        swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_UNORDERED_ACCESS;
+        // Flip-model swap-chain buffers are not guaranteed to support UAV
+        // binding.  Requesting DXGI_USAGE_UNORDERED_ACCESS makes
+        // CreateSwapChainForHwnd fail with DXGI_ERROR_INVALID_CALL on a
+        // number of otherwise capable drivers.  Composite into a dedicated
+        // FP16 UAV below and copy it into the presentable buffer instead.
+        swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         swap_desc.BufferCount = 3;
         swap_desc.Scaling = DXGI_SCALING_STRETCH;
         swap_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -540,21 +545,35 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         ComPtr<ID3D11On12Device> on12;
         throw_if_failed(bridge_device.As(&on12), "ID3D11On12Device(product)");
         std::array<ComPtr<ID3D11Resource>, 3> wrapped_buffers;
-        std::array<ComPtr<ID3D11UnorderedAccessView>, 3> output_uavs;
         for (UINT index = 0; index < wrapped_buffers.size(); ++index) {
             ComPtr<ID3D12Resource> back_buffer;
             throw_if_failed(swapchain->GetBuffer(index, IID_PPV_ARGS(&back_buffer)), "GetBuffer(product)");
             const D3D11_RESOURCE_FLAGS flags{
-                D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS, 0, 0, 0};
+                D3D11_BIND_RENDER_TARGET, 0, 0, 0};
             throw_if_failed(on12->CreateWrappedResource(
                 back_buffer.Get(),
                 &flags,
-                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_PRESENT,
                 IID_PPV_ARGS(&wrapped_buffers[index])), "CreateWrappedResource(product)");
-            throw_if_failed(bridge_device->CreateUnorderedAccessView(
-                wrapped_buffers[index].Get(), nullptr, &output_uavs[index]), "CreateUnorderedAccessView(output)");
         }
+        D3D11_TEXTURE2D_DESC composite_texture_desc{};
+        composite_texture_desc.Width = static_cast<UINT>(item_size.Width);
+        composite_texture_desc.Height = static_cast<UINT>(item_size.Height);
+        composite_texture_desc.MipLevels = 1;
+        composite_texture_desc.ArraySize = 1;
+        composite_texture_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        composite_texture_desc.SampleDesc = {1, 0};
+        composite_texture_desc.Usage = D3D11_USAGE_DEFAULT;
+        composite_texture_desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        ComPtr<ID3D11Texture2D> composite_texture;
+        ComPtr<ID3D11UnorderedAccessView> composite_uav;
+        throw_if_failed(bridge_device->CreateTexture2D(
+            &composite_texture_desc, nullptr, &composite_texture),
+            "CreateTexture2D(FP16 composite output)");
+        throw_if_failed(bridge_device->CreateUnorderedAccessView(
+            composite_texture.Get(), nullptr, &composite_uav),
+            "CreateUnorderedAccessView(FP16 composite output)");
 
         ComPtr<IDMLDevice> dml_device;
         throw_if_failed(DMLCreateDevice(
@@ -793,7 +812,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     bridge_context->CSSetSamplers(0, 1, sampler.GetAddressOf());
                     bridge_context->CSSetConstantBuffers(
                         0, 1, composite_constants.GetAddressOf());
-                    auto* output_uav = output_uavs[index].Get();
+                    auto* output_uav = composite_uav.Get();
                     bridge_context->CSSetUnorderedAccessViews(
                         0, 1, &output_uav, nullptr);
                     bridge_context->Dispatch(
@@ -802,6 +821,8 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     ID3D11UnorderedAccessView* null_uav = nullptr;
                     bridge_context->CSSetShaderResources(0, 4, null_srvs);
                     bridge_context->CSSetUnorderedAccessViews(0, 1, &null_uav, nullptr);
+                    bridge_context->CopyResource(
+                        wrapped_buffers[index].Get(), composite_texture.Get());
                     on12->ReleaseWrappedResources(acquired, 3);
                     bridge_context->Flush();
 

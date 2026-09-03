@@ -210,19 +210,28 @@ public:
             destroy();
             return false;
         }
-        options_.use_vulkan_compute = true;
-        options_.use_fp16_storage = true;
-        options_.use_fp16_packed = true;
-        options_.use_fp16_arithmetic = false;
-        options_.blob_vkallocator = blob_allocator_;
-        options_.workspace_vkallocator = blob_allocator_;
-        options_.staging_vkallocator = staging_allocator_;
-        network_ = std::make_unique<ncnn::Net>();
-        network_->opt = options_;
-        network_->register_custom_layer("rife.Warp", RifeWarp_layer_creator);
-        network_->set_vulkan_device(device_);
-        if (network_->load_param(model_param_path) != 0 ||
-            network_->load_model(model_bin_path) != 0) {
+        const auto load_network = [&](bool packed_fp16) {
+            if (network_) {
+                network_->clear();
+                network_.reset();
+            }
+            options_ = ncnn::Option{};
+            options_.use_vulkan_compute = true;
+            options_.use_fp16_storage = packed_fp16;
+            options_.use_fp16_packed = packed_fp16;
+            options_.use_fp16_arithmetic = false;
+            options_.use_packing_layout = packed_fp16;
+            options_.blob_vkallocator = blob_allocator_;
+            options_.workspace_vkallocator = blob_allocator_;
+            options_.staging_vkallocator = staging_allocator_;
+            network_ = std::make_unique<ncnn::Net>();
+            network_->opt = options_;
+            network_->register_custom_layer("rife.Warp", RifeWarp_layer_creator);
+            network_->set_vulkan_device(device_);
+            return network_->load_param(model_param_path) == 0 &&
+                network_->load_model(model_bin_path) == 0;
+        };
+        if (!load_network(true) && !load_network(false)) {
             *reason = "RIFE flow/mask model failed to load on the session Vulkan device";
             destroy();
             return false;

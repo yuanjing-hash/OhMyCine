@@ -114,6 +114,13 @@ Add and run dedicated frame-interpolation protocol, state-machine, asset-license
 - The Beta is intentionally an in-field validation build. Windows VFR and any selected subtitle are explicitly bypassed; Android currently presents one generated midpoint per real frame pair, so full 48/60/120 pacing, audio compensation, thermal/OOM adaptation and physical HDR-device validation remain acceptance work after device results.
 - Ordinary mpv hardware playback remains the atomic fallback on both platforms. Physical HDR/Dolby Vision color, cadence and A/V-sync observations must be captured during Beta testing before stable release.
 
+### 2026-09-03 v1.1.38 field-failure correction
+
+- A Windows field device returned `DXGI_ERROR_INVALID_CALL (0x887A0001)` from the product `CreateSwapChainForHwnd` path. The flip-model scRGB back buffers no longer request `DXGI_USAGE_UNORDERED_ACCESS`; synthesis now targets a dedicated `R16G16B16A16_FLOAT` UAV texture and performs a GPU copy into a render-target-only present buffer.
+- An Android field device reached ncnn Vulkan but rejected the forced packed-FP16 custom Warp pipeline while loading the verified RIFE model. Pack4/pack8 shaders are now created only when their packing modes are active, and flow/mask inference retries with unpacked Vulkan FP32 tensors when packed FP16 is rejected. Decoded source frames and final composition remain typed RGBA16F, so this compatibility retry is not an SDR or 8-bit fallback.
+- Contract tests now reject reintroducing a swapchain UAV usage flag and require both the dedicated Windows FP16 composite/copy path and the Android unpacked model fallback.
+- Windows DirectML model execution (10 Rust tests), Windows scRGB capability probing, and Android ARM64 full-session native linking with `-Werror` pass after the correction. Physical-device confirmation remains the Beta acceptance gate.
+
 ## High-risk Files and Boundaries
 
 - `src-tauri/src/mpv/player.rs`: mpv lifecycle, Windows source HWND and fallback ordering.

@@ -65,6 +65,33 @@ bool run_vulkan_flow_mask_self_test(ncnn::Net& network) {
     return true;
 }
 
+// Returns 0 when the model cannot be loaded, 1 when it loads but inference
+// fails, and 2 after a successful flow/mask inference. Some Android Vulkan
+// drivers expose FP16 storage but cannot compile ncnn's packed custom-layer
+// shaders. The compatibility mode keeps the decoded/composited video in
+// RGBA16F while running the small flow/mask proxy tensors as unpacked FP32.
+int load_and_test_model(
+    const char* model_param_path,
+    const char* model_bin_path,
+    bool packed_fp16) {
+    ncnn::Net network;
+    network.opt.use_vulkan_compute = true;
+    network.opt.use_fp16_storage = packed_fp16;
+    network.opt.use_fp16_packed = packed_fp16;
+    network.opt.use_fp16_arithmetic = false;
+    network.opt.use_packing_layout = packed_fp16;
+    network.register_custom_layer("rife.Warp", RifeWarp_layer_creator);
+    network.set_vulkan_device(0);
+    if (network.load_param(model_param_path) != 0 ||
+        network.load_model(model_bin_path) != 0) {
+        network.clear();
+        return 0;
+    }
+    const bool inferred = run_vulkan_flow_mask_self_test(network);
+    network.clear();
+    return inferred ? 2 : 1;
+}
+
 }  // namespace
 
 extern "C" int ohmycine_ncnn_probe(
@@ -89,20 +116,14 @@ extern "C" int ohmycine_ncnn_probe(
 
     int status = 1;
     if (model_param_path && model_bin_path) {
-        ncnn::Net network;
-        network.opt.use_vulkan_compute = true;
-        network.opt.use_fp16_storage = true;
-        network.opt.use_fp16_packed = true;
-        network.opt.use_fp16_arithmetic = false;
-        network.register_custom_layer("rife.Warp", RifeWarp_layer_creator);
-        network.set_vulkan_device(0);
-        if (network.load_param(model_param_path) == 0 &&
-            network.load_model(model_bin_path) == 0) {
-            status = 2;
-            if (run_vulkan_flow_mask_self_test(network))
-                status = 3;
+        int model_status = load_and_test_model(
+            model_param_path, model_bin_path, true);
+        if (model_status < 2) {
+            model_status = std::max(
+                model_status,
+                load_and_test_model(model_param_path, model_bin_path, false));
         }
-        network.clear();
+        status = 1 + model_status;
     }
     ncnn::destroy_gpu_instance();
     return status;
