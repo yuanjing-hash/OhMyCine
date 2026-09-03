@@ -197,6 +197,12 @@ impl FrameGenerationController {
         self.reason = Some(reason.into());
     }
 
+    pub fn backend_stalled(&mut self, reason: impl Into<String>) {
+        self.backend_first_frame_ready = false;
+        self.state = EffectiveState::FallbackPerformance;
+        self.reason = Some(reason.into());
+    }
+
     pub fn record_model_time(&mut self, milliseconds: f64, target_fps: u16) {
         match self.performance.record(milliseconds, target_fps) {
             PerformanceDecision::Keep => {}
@@ -210,6 +216,10 @@ impl FrameGenerationController {
 
     pub fn record_drop(&mut self) {
         self.dropped_frames = self.dropped_frames.saturating_add(1);
+    }
+
+    pub fn record_drops(&mut self, count: u64) {
+        self.dropped_frames = self.dropped_frames.saturating_add(count);
     }
 
     pub fn generation(&self) -> u64 {
@@ -502,6 +512,21 @@ mod tests {
         }
         assert_eq!(controller.flow_scale(), 0.67);
         assert_eq!(controller.state(), EffectiveState::FallbackPerformance);
+    }
+
+    #[test]
+    fn stalled_native_cadence_revokes_active_and_accounts_for_all_drops() {
+        let mut controller = FrameGenerationController::default();
+        controller.set_requested(true);
+        controller.on_media_event(MediaEvent::SurfaceReady);
+        controller.on_media_event(MediaEvent::FileLoaded);
+        controller.set_gates(true, true, true);
+        assert!(controller.backend_first_frame(controller.generation()));
+        controller.record_drops(7);
+        controller.backend_stalled("native present watchdog");
+        assert_eq!(controller.state(), EffectiveState::FallbackPerformance);
+        assert_eq!(controller.dropped_frames(), 7);
+        assert_eq!(controller.reason(), Some("native present watchdog"));
     }
 
     #[test]

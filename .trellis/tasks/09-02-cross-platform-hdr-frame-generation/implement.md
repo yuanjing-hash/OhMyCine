@@ -121,6 +121,17 @@ Add and run dedicated frame-interpolation protocol, state-machine, asset-license
 - Contract tests now reject reintroducing a swapchain UAV usage flag and require both the dedicated Windows FP16 composite/copy path and the Android unpacked model fallback.
 - Windows DirectML model execution (10 Rust tests), Windows scRGB capability probing, and Android ARM64 full-session native linking with `-Werror` pass after the correction. Physical-device confirmation remains the Beta acceptance gate.
 
+### 2026-09-03 v1.1.39 cadence-freeze correction
+
+- Field playback proved that one successful hidden generated `Present` is not a sufficient active gate: the DirectML worker could later fall behind while the visible output HWND retained its last texture, leaving audio running over a frozen frame.
+- Windows now skips expired target ticks instead of completing historical inference work. Source-aligned ticks bypass the RIFE inference call entirely; only true intermediate timesteps execute the flow/mask model.
+- The output is an owned overlay of the mpv source HWND and is continuously checked to remain immediately above the source and below the Tauri/WebView window across focus and Z-order changes.
+- Reveal requires two consecutive source pairs with generated presents and no expired output. Two missed pairs, a source discontinuity while visible, unsafe Z-order, or a 350ms Present stall hides the output immediately and restores ordinary mpv playback.
+- Native telemetry now reports successful/generated presents, expired ticks, inference samples, latest model time and measured output cadence to Rust. Rust feeds model time/drop counters into the existing diagnostics and removes its one-frame audio compensation whenever native output is bypassed.
+- Queued WGC textures are indexed from their `SystemRelativeTime` mapped onto the mpv timing anchor, never from the later worker-consumption time. A separate 250ms inference watchdog requests ONNX Runtime termination so the Present watchdog and stop path are not trapped behind the same synchronous DirectML call.
+- Audio-delay restoration retains its saved baseline until the mpv property write succeeds, allowing later bypass/stop paths to retry instead of permanently losing the user's value.
+- Contract, Rust state-machine, Clippy, frontend production build and Android ARM64 native full-session verification cover the correction; physical observation remains Beta acceptance rather than a publication blocker.
+
 ## High-risk Files and Boundaries
 
 - `src-tauri/src/mpv/player.rs`: mpv lifecycle, Windows source HWND and fallback ordering.

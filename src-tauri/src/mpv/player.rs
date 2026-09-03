@@ -131,6 +131,10 @@ pub struct MpvPlayer {
     windows_frame_interpolation_reason: Option<String>,
     #[cfg(target_os = "windows")]
     windows_frame_interpolation_audio_delay_original: Option<f64>,
+    #[cfg(target_os = "windows")]
+    windows_frame_interpolation_seen_drops: u64,
+    #[cfg(target_os = "windows")]
+    windows_frame_interpolation_seen_inferences: u64,
 }
 
 // MpvPlayer is only accessed through Arc<Mutex<_>> in Tauri state. libmpv handles are designed
@@ -190,6 +194,10 @@ impl MpvPlayer {
             windows_frame_interpolation_reason: None,
             #[cfg(target_os = "windows")]
             windows_frame_interpolation_audio_delay_original: None,
+            #[cfg(target_os = "windows")]
+            windows_frame_interpolation_seen_drops: 0,
+            #[cfg(target_os = "windows")]
+            windows_frame_interpolation_seen_inferences: 0,
         };
 
         // Non-Windows: initialize immediately in the no-visible-video safety mode. Visible video
@@ -1107,6 +1115,8 @@ impl MpvPlayer {
         ) {
             Ok(session) => {
                 self.windows_frame_interpolation_session = Some(session);
+                self.windows_frame_interpolation_seen_drops = 0;
+                self.windows_frame_interpolation_seen_inferences = 0;
                 self.windows_frame_interpolation_reason = Some(
                     "Windows 实时 WGC/FP16 隐藏输出正在自检；原 mpv 画面保持可见。".to_string(),
                 );
@@ -1221,6 +1231,21 @@ impl MpvPlayer {
         let Some(status) = status else {
             return;
         };
+        let new_drops = status
+            .dropped_output_ticks
+            .saturating_sub(self.windows_frame_interpolation_seen_drops);
+        self.windows_frame_interpolation_seen_drops = status.dropped_output_ticks;
+        if new_drops > 0 {
+            self.frame_interpolation_controller.record_drops(new_drops);
+        }
+        if status.inference_sample_count > self.windows_frame_interpolation_seen_inferences
+            && status.latest_inference_ms.is_finite()
+            && status.latest_inference_ms > 0.0
+        {
+            self.frame_interpolation_controller
+                .record_model_time(status.latest_inference_ms, target_fps as u16);
+            self.windows_frame_interpolation_seen_inferences = status.inference_sample_count;
+        }
         self.windows_frame_interpolation_reason = Some(status.reason.clone());
         if status.hidden_first_present && !status.captured_pair {
             self.frame_interpolation_controller.backend_failed(
@@ -1241,6 +1266,18 @@ impl MpvPlayer {
         }
         if status.finished {
             self.stop_windows_frame_interpolation_session();
+            return;
+        }
+        if status.cadence_stalled {
+            self.restore_windows_frame_interpolation_audio_delay();
+            let reason = format!(
+                "Windows 插帧未能持续输出（已生成 {} 帧、丢弃 {} 个过期输出，最近推理 {:.2}ms）；覆盖画面已隐藏，mpv 原画面继续播放，后端正在等待稳定帧序列后自动重试。",
+                status.generated_present_count,
+                status.dropped_output_ticks,
+                status.latest_inference_ms,
+            );
+            self.windows_frame_interpolation_reason = Some(reason.clone());
+            self.frame_interpolation_controller.backend_stalled(reason);
             return;
         }
         self.frame_interpolation_controller
@@ -1277,7 +1314,10 @@ impl MpvPlayer {
                 .backend_first_frame(generation)
             {
                 self.windows_frame_interpolation_reason = Some(format!(
-                    "Windows DirectML 插帧已启用：{estimated_fps:.3}→{target_fps:.0}fps，FP16 scRGB 输出，音频已补偿一帧前视延迟。"
+                    "Windows DirectML 插帧已启用：{estimated_fps:.3}→{target_fps:.0}fps，实测输出 {:.1}fps，已持续 Present {} 帧（其中生成 {} 帧），FP16 scRGB 输出，音频已补偿一帧前视延迟。",
+                    status.measured_output_fps,
+                    status.successful_present_count,
+                    status.generated_present_count,
                 ));
             }
         }
@@ -1288,10 +1328,30 @@ impl MpvPlayer {
         // Dropping joins the native worker after it hides and destroys only the generated-output
         // HWND. The source mpv HWND is never destroyed or hidden by this path.
         self.windows_frame_interpolation_session.take();
-        if let Some(original_delay) = self.windows_frame_interpolation_audio_delay_original.take() {
-            if self.initialized && !self.ctx.is_null() {
-                let _ = self.set_property("audio-delay", &original_delay.to_string());
-            }
+        self.restore_windows_frame_interpolation_audio_delay();
+        self.windows_frame_interpolation_seen_drops = 0;
+        self.windows_frame_interpolation_seen_inferences = 0;
+    }
+
+    #[cfg(target_os = "windows")]
+    fn restore_windows_frame_interpolation_audio_delay(&mut self) {
+        let Some(original_delay) = self.windows_frame_interpolation_audio_delay_original else {
+            return;
+        };
+        if !self.initialized || self.ctx.is_null() {
+            self.windows_frame_interpolation_audio_delay_original = None;
+            return;
+        }
+        if self
+            .set_property("audio-delay", &original_delay.to_string())
+            .is_ok()
+        {
+            self.windows_frame_interpolation_audio_delay_original = None;
+        } else {
+            self.windows_frame_interpolation_reason = Some(
+                "恢复用户原 audio-delay 失败；已保留原值并将在下一次旁路/停止时重试。"
+                    .to_string(),
+            );
         }
     }
 

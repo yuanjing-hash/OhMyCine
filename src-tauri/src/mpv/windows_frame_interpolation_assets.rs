@@ -32,8 +32,15 @@ pub struct WindowsFrameInterpolationSessionStatus {
     pub captured_pair: bool,
     pub hidden_first_present: bool,
     pub generated_first_present: bool,
+    pub cadence_stalled: bool,
     pub device_lost: bool,
     pub finished: bool,
+    pub successful_present_count: u64,
+    pub generated_present_count: u64,
+    pub dropped_output_ticks: u64,
+    pub inference_sample_count: u64,
+    pub latest_inference_ms: f64,
+    pub measured_output_fps: f64,
     pub reason: String,
 }
 
@@ -94,8 +101,15 @@ impl WindowsFrameInterpolationSession {
             let mut captured_pair = 0;
             let mut hidden_first_present = 0;
             let mut generated_first_present = 0;
+            let mut cadence_stalled = 0;
             let mut device_lost = 0;
             let mut finished = 0;
+            let mut successful_present_count = 0;
+            let mut generated_present_count = 0;
+            let mut dropped_output_ticks = 0;
+            let mut inference_sample_count = 0;
+            let mut latest_inference_micros = 0;
+            let mut measured_output_fps = 0.0;
             let mut reason = vec![0_i8; 1024];
             let ok = unsafe {
                 ohmycine_windows_framegen_poll(
@@ -103,8 +117,15 @@ impl WindowsFrameInterpolationSession {
                     &mut captured_pair,
                     &mut hidden_first_present,
                     &mut generated_first_present,
+                    &mut cadence_stalled,
                     &mut device_lost,
                     &mut finished,
+                    &mut successful_present_count,
+                    &mut generated_present_count,
+                    &mut dropped_output_ticks,
+                    &mut inference_sample_count,
+                    &mut latest_inference_micros,
+                    &mut measured_output_fps,
                     reason.as_mut_ptr(),
                     reason.len(),
                 )
@@ -116,8 +137,15 @@ impl WindowsFrameInterpolationSession {
                 captured_pair: captured_pair == 1,
                 hidden_first_present: hidden_first_present == 1,
                 generated_first_present: generated_first_present == 1,
+                cadence_stalled: cadence_stalled == 1,
                 device_lost: device_lost == 1,
                 finished: finished == 1,
+                successful_present_count,
+                generated_present_count,
+                dropped_output_ticks,
+                inference_sample_count,
+                latest_inference_ms: latest_inference_micros as f64 / 1_000.0,
+                measured_output_fps,
                 reason: c_reason(&reason),
             })
         }
@@ -189,8 +217,15 @@ unsafe extern "C" {
         captured_pair: *mut i32,
         hidden_first_present: *mut i32,
         generated_first_present: *mut i32,
+        cadence_stalled: *mut i32,
         device_lost: *mut i32,
         finished: *mut i32,
+        successful_present_count: *mut u64,
+        generated_present_count: *mut u64,
+        dropped_output_ticks: *mut u64,
+        inference_sample_count: *mut u64,
+        latest_inference_micros: *mut u64,
+        measured_output_fps: *mut f64,
         reason: *mut std::ffi::c_char,
         reason_capacity: usize,
     ) -> i32;

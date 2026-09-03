@@ -353,13 +353,24 @@ struct WindowsFrameGenerationSession {
     std::wstring model_path;
     UINT target_fps = 60;
     bool hdr_input = false;
-    HWND output_hwnd = nullptr;
+    std::atomic<HWND> output_hwnd{nullptr};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> captured_pair{false};
     std::atomic<bool> hidden_first_present{false};
     std::atomic<bool> generated_first_present{false};
+    std::atomic<bool> cadence_stalled{false};
     std::atomic<bool> device_lost{false};
     std::atomic<bool> finished{false};
+    std::atomic<uint64_t> successful_present_count{0};
+    std::atomic<uint64_t> generated_present_count{0};
+    std::atomic<uint64_t> dropped_output_ticks{0};
+    std::atomic<uint64_t> inference_sample_count{0};
+    std::atomic<uint64_t> latest_inference_micros{0};
+    std::atomic<int64_t> first_successful_present_qpc{0};
+    std::atomic<int64_t> last_successful_present_qpc{0};
+    std::atomic<int64_t> last_generated_present_qpc{0};
+    std::atomic<bool> inference_in_flight{false};
+    std::atomic<int64_t> inference_started_qpc{0};
     std::atomic<bool> timing_reliable{false};
     std::atomic<bool> paused{false};
     std::atomic<double> media_pts_seconds{0.0};
@@ -367,7 +378,9 @@ struct WindowsFrameGenerationSession {
     std::atomic<int64_t> timing_qpc{0};
     std::mutex reason_mutex;
     std::string reason = "Waiting for live WGC FP16 frames.";
+    Ort::RunOptions run_options;
     std::thread worker;
+    std::thread watchdog;
 
     void set_reason(std::string value) {
         std::lock_guard lock(reason_mutex);
@@ -379,6 +392,54 @@ struct WindowsFrameGenerationSession {
         return reason;
     }
 };
+
+void hide_generated_output(
+    WindowsFrameGenerationSession* state,
+    const char* reason,
+    bool stalled) noexcept;
+
+void run_inference_watchdog(WindowsFrameGenerationSession* state) noexcept {
+    LARGE_INTEGER frequency{};
+    if (!QueryPerformanceFrequency(&frequency))
+        return;
+    while (!state->finished.load(std::memory_order_acquire)
+           && !state->stop_requested.load(std::memory_order_acquire)) {
+        if (state->inference_in_flight.load(std::memory_order_acquire)) {
+            const auto started = state->inference_started_qpc.load(std::memory_order_acquire);
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
+            const double elapsed_ms = static_cast<double>(now.QuadPart - started) * 1000.0
+                / static_cast<double>(frequency.QuadPart);
+            if (started > 0 && elapsed_ms > 250.0) {
+                hide_generated_output(
+                    state,
+                    "DirectML inference exceeded the 250 ms safety deadline; cancellation was requested and mpv source playback was restored.",
+                    true);
+                try {
+                    state->run_options.SetTerminate();
+                }
+                catch (...) {
+                    state->set_reason("DirectML inference exceeded the safety deadline and cancellation failed; the generated overlay remains bypassed.");
+                }
+                return;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+void hide_generated_output(
+    WindowsFrameGenerationSession* state,
+    const char* reason,
+    bool stalled) noexcept {
+    const HWND output = state->output_hwnd.load(std::memory_order_acquire);
+    if (output != nullptr)
+        ShowWindowAsync(output, SW_HIDE);
+    state->generated_first_present.store(false, std::memory_order_release);
+    state->hidden_first_present.store(false, std::memory_order_release);
+    state->cadence_stalled.store(stalled, std::memory_order_release);
+    state->set_reason(reason);
+}
 
 int64_t adapter_luid(ID3D11Device* device) {
     ComPtr<IDXGIDevice> dxgi_device;
@@ -495,7 +556,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         capture.IsCursorCaptureEnabled(false);
 
         register_output_window_class();
-        state->output_hwnd = CreateWindowExW(
+        const HWND output_hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             kOutputWindowClass,
             L"OhMyCine hidden frame-generation output",
@@ -504,13 +565,14 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
             0,
             item_size.Width,
             item_size.Height,
-            nullptr,
+            state->source_hwnd,
             nullptr,
             GetModuleHandleW(nullptr),
             nullptr);
-        if (state->output_hwnd == nullptr)
+        if (output_hwnd == nullptr)
             throw_if_failed(HRESULT_FROM_WIN32(GetLastError()), "CreateWindowExW(frame-generation output)");
-        ShowWindow(state->output_hwnd, SW_HIDE);
+        state->output_hwnd.store(output_hwnd, std::memory_order_release);
+        ShowWindow(output_hwnd, SW_HIDE);
 
         ComPtr<IDXGIFactory2> factory;
         throw_if_failed(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2(product)");
@@ -531,7 +593,7 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         swap_desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
         ComPtr<IDXGISwapChain1> swapchain1;
         throw_if_failed(factory->CreateSwapChainForHwnd(
-            queue.Get(), state->output_hwnd, &swap_desc, nullptr, nullptr, &swapchain1), "CreateSwapChainForHwnd(product)");
+            queue.Get(), output_hwnd, &swap_desc, nullptr, nullptr, &swapchain1), "CreateSwapChainForHwnd(product)");
         ComPtr<IDXGISwapChain3> swapchain;
         throw_if_failed(swapchain1.As(&swapchain), "IDXGISwapChain3(product)");
         UINT color_support = 0;
@@ -644,6 +706,8 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
         int64_t previous_timestamp = 0;
         int64_t previous_source_index = -1;
         int64_t next_output_tick = -1;
+        UINT consecutive_generated_pairs = 0;
+        UINT consecutive_missed_pairs = 0;
         LARGE_INTEGER qpc_frequency{};
         QueryPerformanceFrequency(&qpc_frequency);
         while (!state->stop_requested.load(std::memory_order_acquire)) {
@@ -654,6 +718,23 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
             }
             auto frame = pool.TryGetNextFrame();
             if (!frame) {
+                const auto last_present =
+                    state->last_successful_present_qpc.load(std::memory_order_acquire);
+                if (state->generated_first_present.load(std::memory_order_acquire)
+                    && last_present > 0) {
+                    LARGE_INTEGER now{};
+                    QueryPerformanceCounter(&now);
+                    const double stalled_ms =
+                        static_cast<double>(now.QuadPart - last_present) * 1000.0
+                        / static_cast<double>(qpc_frequency.QuadPart);
+                    if (stalled_ms > 350.0) {
+                        consecutive_generated_pairs = 0;
+                        hide_generated_output(
+                            state,
+                            "Generated presentation stalled for over 350 ms; the overlay was hidden and mpv source playback was restored.",
+                            true);
+                    }
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
@@ -677,16 +758,28 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
             RECT source_rect{};
             if (GetWindowRect(state->source_hwnd, &source_rect)) {
                 HWND insertion_point = GetWindow(state->source_hwnd, GW_HWNDPREV);
-                if (insertion_point == state->output_hwnd)
-                    insertion_point = GetWindow(state->output_hwnd, GW_HWNDPREV);
-                SetWindowPos(
-                    state->output_hwnd,
+                if (insertion_point == output_hwnd)
+                    insertion_point = GetWindow(output_hwnd, GW_HWNDPREV);
+                const BOOL positioned = SetWindowPos(
+                    output_hwnd,
                     insertion_point,
                     source_rect.left,
                     source_rect.top,
                     source_rect.right - source_rect.left,
                     source_rect.bottom - source_rect.top,
                     SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                const bool output_visible =
+                    state->generated_first_present.load(std::memory_order_acquire);
+                const bool safely_above_source =
+                    GetWindow(state->source_hwnd, GW_HWNDPREV) == output_hwnd;
+                if (output_visible
+                    && (!positioned || !safely_above_source || !IsWindowVisible(output_hwnd))) {
+                    consecutive_generated_pairs = 0;
+                    hide_generated_output(
+                        state,
+                        "Generated output lost its safe z-order; the overlay was hidden and mpv source playback was restored.",
+                        true);
+                }
             }
             texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             texture_desc.MiscFlags = 0;
@@ -699,13 +792,18 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                 state->set_reason("Waiting for reliable CFR mpv media timing; VFR/unknown timing remains bypassed.");
                 continue;
             }
-            LARGE_INTEGER qpc_now{};
-            QueryPerformanceCounter(&qpc_now);
             const auto anchor_qpc = state->timing_qpc.load(std::memory_order_acquire);
             const auto fps = state->source_fps.load(std::memory_order_acquire);
             const auto anchor_pts = state->media_pts_seconds.load(std::memory_order_acquire);
-            const auto elapsed = static_cast<double>(qpc_now.QuadPart - anchor_qpc)
+            // GraphicsCaptureFrame::SystemRelativeTime is a 100-nanosecond timestamp on the
+            // system-relative/QPC timeline. Map the captured texture's time to mpv's latest
+            // media anchor instead of using the later queue-consumption time; otherwise a slow
+            // inference pass relabels queued old textures as current video frames.
+            constexpr double kTimeSpanTicksPerSecond = 10'000'000.0;
+            const auto capture_seconds = static_cast<double>(ticks) / kTimeSpanTicksPerSecond;
+            const auto anchor_seconds = static_cast<double>(anchor_qpc)
                 / static_cast<double>(qpc_frequency.QuadPart);
+            const auto elapsed = capture_seconds - anchor_seconds;
             const auto media_pts = anchor_pts + elapsed;
             const auto source_index = static_cast<int64_t>(std::floor(media_pts * fps + 0.5));
             if (source_index == previous_source_index)
@@ -755,6 +853,10 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                 LARGE_INTEGER pair_started{};
                 QueryPerformanceCounter(&pair_started);
                 bool abort_session = false;
+                bool pair_had_drop = false;
+                UINT generated_this_pair = 0;
+                const int64_t target_tick_qpc = std::max<int64_t>(
+                    1, qpc_frequency.QuadPart / static_cast<int64_t>(state->target_fps));
                 while (static_cast<double>(next_output_tick) / state->target_fps
                        < later_pts - 1e-7) {
                     if (state->stop_requested.load(std::memory_order_acquire)) {
@@ -765,30 +867,72 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                         static_cast<double>(next_output_tick) / state->target_fps;
                     const float timestep = static_cast<float>(std::clamp(
                         (output_pts - earlier_pts) / (later_pts - earlier_pts), 0.0, 1.0));
-                    const TimestepConstants timestep_params{
-                        timestep, static_cast<UINT>(timestep_elements), {0.0f, 0.0f}};
-                    bridge_context->UpdateSubresource(
-                        timestep_constants.Get(), 0, nullptr, &timestep_params, 0, 0);
-                    ID3D11Resource* timestep_acquired[] = {timestep_views.resource.Get()};
-                    on12->AcquireWrappedResources(timestep_acquired, 1);
-                    bridge_context->CSSetShader(timestep_shader.Get(), nullptr, 0);
-                    bridge_context->CSSetConstantBuffers(
-                        0, 1, timestep_constants.GetAddressOf());
-                    auto* timestep_uav = timestep_views.uav.Get();
-                    bridge_context->CSSetUnorderedAccessViews(
-                        0, 1, &timestep_uav, nullptr);
-                    bridge_context->Dispatch(
-                        (static_cast<UINT>(timestep_elements) + 63u) / 64u, 1, 1);
-                    ID3D11UnorderedAccessView* null_timestep_uav = nullptr;
-                    bridge_context->CSSetUnorderedAccessViews(
-                        0, 1, &null_timestep_uav, nullptr);
-                    on12->ReleaseWrappedResources(timestep_acquired, 1);
-                    bridge_context->Flush();
+                    const bool interpolated = timestep > 0.0001f && timestep < 0.9999f;
+                    const double offset_seconds = output_pts - earlier_pts;
+                    const int64_t deadline = pair_started.QuadPart + static_cast<int64_t>(
+                        offset_seconds * static_cast<double>(qpc_frequency.QuadPart));
+                    LARGE_INTEGER before_inference{};
+                    QueryPerformanceCounter(&before_inference);
+                    if (interpolated
+                        && before_inference.QuadPart > deadline + target_tick_qpc) {
+                        state->dropped_output_ticks.fetch_add(1, std::memory_order_relaxed);
+                        pair_had_drop = true;
+                        ++next_output_tick;
+                        continue;
+                    }
+                    if (interpolated) {
+                        const TimestepConstants timestep_params{
+                            timestep, static_cast<UINT>(timestep_elements), {0.0f, 0.0f}};
+                        bridge_context->UpdateSubresource(
+                            timestep_constants.Get(), 0, nullptr, &timestep_params, 0, 0);
+                        ID3D11Resource* timestep_acquired[] = {timestep_views.resource.Get()};
+                        on12->AcquireWrappedResources(timestep_acquired, 1);
+                        bridge_context->CSSetShader(timestep_shader.Get(), nullptr, 0);
+                        bridge_context->CSSetConstantBuffers(
+                            0, 1, timestep_constants.GetAddressOf());
+                        auto* timestep_uav = timestep_views.uav.Get();
+                        bridge_context->CSSetUnorderedAccessViews(
+                            0, 1, &timestep_uav, nullptr);
+                        bridge_context->Dispatch(
+                            (static_cast<UINT>(timestep_elements) + 63u) / 64u, 1, 1);
+                        ID3D11UnorderedAccessView* null_timestep_uav = nullptr;
+                        bridge_context->CSSetUnorderedAccessViews(
+                            0, 1, &null_timestep_uav, nullptr);
+                        on12->ReleaseWrappedResources(timestep_acquired, 1);
+                        bridge_context->Flush();
 
-                    ort_session.Run(
-                        Ort::RunOptions{nullptr}, input_names, model_inputs.data(),
-                        model_inputs.size(), output_names, model_outputs.data(),
-                        model_outputs.size());
+                        LARGE_INTEGER inference_started{};
+                        QueryPerformanceCounter(&inference_started);
+                        state->inference_started_qpc.store(
+                            inference_started.QuadPart, std::memory_order_release);
+                        state->inference_in_flight.store(true, std::memory_order_release);
+                        try {
+                            ort_session.Run(
+                                state->run_options, input_names, model_inputs.data(),
+                                model_inputs.size(), output_names, model_outputs.data(),
+                                model_outputs.size());
+                        }
+                        catch (...) {
+                            state->inference_in_flight.store(false, std::memory_order_release);
+                            throw;
+                        }
+                        state->inference_in_flight.store(false, std::memory_order_release);
+                        LARGE_INTEGER inference_finished{};
+                        QueryPerformanceCounter(&inference_finished);
+                        const auto inference_micros = static_cast<uint64_t>(std::max<int64_t>(
+                            0,
+                            (inference_finished.QuadPart - inference_started.QuadPart) * 1000000
+                                / qpc_frequency.QuadPart));
+                        state->latest_inference_micros.store(
+                            inference_micros, std::memory_order_release);
+                        state->inference_sample_count.fetch_add(1, std::memory_order_relaxed);
+                        if (inference_finished.QuadPart > deadline + target_tick_qpc) {
+                            state->dropped_output_ticks.fetch_add(1, std::memory_order_relaxed);
+                            pair_had_drop = true;
+                            ++next_output_tick;
+                            continue;
+                        }
+                    }
 
                     const UINT index = swapchain->GetCurrentBackBufferIndex();
                     ID3D11Resource* acquired[] = {
@@ -826,9 +970,6 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     on12->ReleaseWrappedResources(acquired, 3);
                     bridge_context->Flush();
 
-                    const double offset_seconds = output_pts - earlier_pts;
-                    const int64_t deadline = pair_started.QuadPart + static_cast<int64_t>(
-                        offset_seconds * static_cast<double>(qpc_frequency.QuadPart));
                     for (;;) {
                         LARGE_INTEGER now{};
                         QueryPerformanceCounter(&now);
@@ -854,17 +995,66 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
                     }
                     if (present != DXGI_ERROR_WAS_STILL_DRAWING)
                         throw_if_failed(present, "scheduled FP16 Present");
-                    if (present == S_OK && timestep > 0.0001f && timestep < 0.9999f) {
-                        state->hidden_first_present.store(true, std::memory_order_release);
-                        state->set_reason("Reliable CFR cadence is producing arbitrary-timestep DirectML flow/mask frames from the original FP16 pair into the scRGB swapchain; waiting for the audio/reveal gate.");
+                    if (present == DXGI_ERROR_WAS_STILL_DRAWING) {
+                        state->dropped_output_ticks.fetch_add(1, std::memory_order_relaxed);
+                        pair_had_drop = true;
+                    } else {
+                        LARGE_INTEGER presented_at{};
+                        QueryPerformanceCounter(&presented_at);
+                        state->successful_present_count.fetch_add(1, std::memory_order_relaxed);
+                        int64_t no_first_present = 0;
+                        state->first_successful_present_qpc.compare_exchange_strong(
+                            no_first_present,
+                            presented_at.QuadPart,
+                            std::memory_order_release,
+                            std::memory_order_relaxed);
+                        state->last_successful_present_qpc.store(
+                            presented_at.QuadPart, std::memory_order_release);
+                        if (interpolated) {
+                            ++generated_this_pair;
+                            state->generated_present_count.fetch_add(1, std::memory_order_relaxed);
+                            state->last_generated_present_qpc.store(
+                                presented_at.QuadPart, std::memory_order_release);
+                        }
                     }
                     ++next_output_tick;
                 }
                 if (abort_session)
                     break;
+                if (generated_this_pair > 0 && !pair_had_drop) {
+                    ++consecutive_generated_pairs;
+                    consecutive_missed_pairs = 0;
+                    if (consecutive_generated_pairs >= 2) {
+                        state->hidden_first_present.store(true, std::memory_order_release);
+                        state->cadence_stalled.store(false, std::memory_order_release);
+                        state->set_reason("Two consecutive source pairs completed generated FP16 presents without expired ticks; waiting for the audio/reveal gate.");
+                    }
+                } else {
+                    consecutive_generated_pairs = 0;
+                    ++consecutive_missed_pairs;
+                    state->hidden_first_present.store(false, std::memory_order_release);
+                    if (consecutive_missed_pairs >= 2) {
+                        hide_generated_output(
+                            state,
+                            "The requested cadence could not be sustained for two source pairs; the overlay was hidden and mpv source playback was restored.",
+                            true);
+                    }
+                }
             } else if (previous && source_index != previous_source_index + 1) {
                 next_output_tick = -1;
-                state->set_reason("A source-frame discontinuity was detected; the pair was discarded without interpolation.");
+                consecutive_generated_pairs = 0;
+                ++consecutive_missed_pairs;
+                state->dropped_output_ticks.fetch_add(1, std::memory_order_relaxed);
+                if (consecutive_missed_pairs >= 2
+                    || state->generated_first_present.load(std::memory_order_acquire)) {
+                    hide_generated_output(
+                        state,
+                        "A source-frame discontinuity was detected; the overlay was hidden immediately and mpv source playback was restored.",
+                        true);
+                } else {
+                    state->hidden_first_present.store(false, std::memory_order_release);
+                    state->set_reason("A source-frame discontinuity was detected; the pair was discarded while mpv source playback remained visible.");
+                }
             }
             previous = current;
             previous_timestamp = ticks;
@@ -891,10 +1081,10 @@ void run_product_capture_session(WindowsFrameGenerationSession* state) noexcept 
     catch (...) {
         state->set_reason("unknown Windows frame-generation session failure");
     }
-    if (state->output_hwnd != nullptr) {
-        ShowWindow(state->output_hwnd, SW_HIDE);
-        DestroyWindow(state->output_hwnd);
-        state->output_hwnd = nullptr;
+    const HWND output = state->output_hwnd.exchange(nullptr, std::memory_order_acq_rel);
+    if (output != nullptr) {
+        ShowWindow(output, SW_HIDE);
+        DestroyWindow(output);
     }
     state->finished.store(true, std::memory_order_release);
 }
@@ -1055,6 +1245,7 @@ extern "C" void* ohmycine_windows_framegen_start(
         auto* session = new WindowsFrameGenerationSession(
             source, model_path, target_fps, hdr_input == 1);
         session->worker = std::thread(run_product_capture_session, session);
+        session->watchdog = std::thread(run_inference_watchdog, session);
         write_reason(reason, reason_capacity, "started-hidden");
         return session;
     }
@@ -1073,8 +1264,15 @@ extern "C" int ohmycine_windows_framegen_poll(
     int* captured_pair,
     int* hidden_first_present,
     int* generated_first_present,
+    int* cadence_stalled,
     int* device_lost,
     int* finished,
+    uint64_t* successful_present_count,
+    uint64_t* generated_present_count,
+    uint64_t* dropped_output_ticks,
+    uint64_t* inference_sample_count,
+    uint64_t* latest_inference_micros,
+    double* measured_output_fps,
     char* reason,
     size_t reason_capacity) noexcept {
     if (opaque == nullptr) {
@@ -1088,10 +1286,34 @@ extern "C" int ohmycine_windows_framegen_poll(
         *hidden_first_present = session->hidden_first_present.load(std::memory_order_acquire) ? 1 : 0;
     if (generated_first_present != nullptr)
         *generated_first_present = session->generated_first_present.load(std::memory_order_acquire) ? 1 : 0;
+    if (cadence_stalled != nullptr)
+        *cadence_stalled = session->cadence_stalled.load(std::memory_order_acquire) ? 1 : 0;
     if (device_lost != nullptr)
         *device_lost = session->device_lost.load(std::memory_order_acquire) ? 1 : 0;
     if (finished != nullptr)
         *finished = session->finished.load(std::memory_order_acquire) ? 1 : 0;
+    if (successful_present_count != nullptr)
+        *successful_present_count = session->successful_present_count.load(std::memory_order_acquire);
+    if (generated_present_count != nullptr)
+        *generated_present_count = session->generated_present_count.load(std::memory_order_acquire);
+    if (dropped_output_ticks != nullptr)
+        *dropped_output_ticks = session->dropped_output_ticks.load(std::memory_order_acquire);
+    if (inference_sample_count != nullptr)
+        *inference_sample_count = session->inference_sample_count.load(std::memory_order_acquire);
+    if (latest_inference_micros != nullptr)
+        *latest_inference_micros = session->latest_inference_micros.load(std::memory_order_acquire);
+    if (measured_output_fps != nullptr) {
+        *measured_output_fps = 0.0;
+        const auto count = session->successful_present_count.load(std::memory_order_acquire);
+        const auto first = session->first_successful_present_qpc.load(std::memory_order_acquire);
+        const auto last = session->last_successful_present_qpc.load(std::memory_order_acquire);
+        LARGE_INTEGER frequency{};
+        if (count > 1 && first > 0 && last > first && QueryPerformanceFrequency(&frequency)) {
+            *measured_output_fps = static_cast<double>(count - 1)
+                * static_cast<double>(frequency.QuadPart)
+                / static_cast<double>(last - first);
+        }
+    }
     const auto message = session->get_reason();
     write_reason(reason, reason_capacity, message.c_str());
     return 1;
@@ -1130,9 +1352,10 @@ extern "C" int ohmycine_windows_framegen_reveal_after_safe_gates(
         return 0;
     }
     auto* session = static_cast<WindowsFrameGenerationSession*>(opaque);
+    const HWND output = session->output_hwnd.load(std::memory_order_acquire);
     if (!session->hidden_first_present.load(std::memory_order_acquire)
         || session->device_lost.load(std::memory_order_acquire)
-        || session->output_hwnd == nullptr) {
+        || output == nullptr) {
         write_reason(reason, reason_capacity, "no safely presented generated frame is ready to reveal");
         return 0;
     }
@@ -1142,22 +1365,24 @@ extern "C" int ohmycine_windows_framegen_reveal_after_safe_gates(
         return 0;
     }
     HWND above_source = GetWindow(session->source_hwnd, GW_HWNDPREV);
-    if (above_source == session->output_hwnd)
-        above_source = GetWindow(session->output_hwnd, GW_HWNDPREV);
+    if (above_source == output)
+        above_source = GetWindow(output, GW_HWNDPREV);
     if (!SetWindowPos(
-            session->output_hwnd,
+            output,
             above_source,
             rect.left,
             rect.top,
             rect.right - rect.left,
             rect.bottom - rect.top,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW)
-        || !IsWindowVisible(session->output_hwnd)) {
-        ShowWindow(session->output_hwnd, SW_HIDE);
+        || !IsWindowVisible(output)
+        || GetWindow(session->source_hwnd, GW_HWNDPREV) != output) {
+        ShowWindow(output, SW_HIDE);
         write_reason(reason, reason_capacity, "generated output reveal failed; source playback remains visible");
         return 0;
     }
     session->generated_first_present.store(true, std::memory_order_release);
+    session->cadence_stalled.store(false, std::memory_order_release);
     session->set_reason("A generated FP16 frame is visibly presented above the source HWND.");
     write_reason(reason, reason_capacity, "visible-generated-first-present");
     return 1;
@@ -1169,10 +1394,18 @@ extern "C" void ohmycine_windows_framegen_stop(void* opaque) noexcept {
     auto* session = static_cast<WindowsFrameGenerationSession*>(opaque);
     // Hide first, then wait for GPU/session teardown. This ordering makes source mpv visibility
     // the atomic fallback even if DirectML is still finishing an in-flight dispatch.
-    if (session->output_hwnd != nullptr)
-        ShowWindowAsync(session->output_hwnd, SW_HIDE);
+    const HWND output = session->output_hwnd.load(std::memory_order_acquire);
+    if (output != nullptr)
+        ShowWindowAsync(output, SW_HIDE);
     session->stop_requested.store(true, std::memory_order_release);
+    try {
+        session->run_options.SetTerminate();
+    }
+    catch (...) {
+    }
     if (session->worker.joinable())
         session->worker.join();
+    if (session->watchdog.joinable())
+        session->watchdog.join();
     delete session;
 }
