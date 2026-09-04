@@ -177,7 +177,10 @@ export function compareHeroScannedItems(a: MediaItem, b: MediaItem): number {
 }
 
 export function findVisibleHomeSection(homeSections: readonly HomeSection[], type: 'hero' | 'continueWatching' | 'recentlyAdded'): HomeSection | undefined {
-  return homeSections.find(section => section.type === type && section.items.length > 0)
+  return homeSections.find(section => section.type === type && (
+    section.items.length > 0
+    || (section.purpose === 'history' && section.viewAllRoute?.kind === 'history')
+  ))
 }
 
 export function isContainerItem(item: MediaItem): boolean {

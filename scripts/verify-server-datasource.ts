@@ -9,6 +9,7 @@ import { loginServerAndCreateConfig, logoutServerBestEffort, mapServerHistoryIte
 import { createPlaybackQueueItem } from '../src/services/playbackContext.ts'
 import { playbackProgressIdentityForMediaItem } from '../src/services/playbackHistory.ts'
 import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
+import { findVisibleHomeSection } from '../src/services/sourceLibraryScannedMedia.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
 const calls: Array<{ path: string, accessToken?: string, method?: string, body?: unknown }> = []
@@ -370,11 +371,14 @@ const emptyHistoryOverviewSource = new ServerDataSource({
   readCredential: async () => ({ accessToken: token }),
 })
 await emptyHistoryOverviewSource.init({ id: 'server-empty-history', type: 'server', name: '空历史测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'empty-history-credential', deviceId: 'empty-history-device', capabilities: ['media_overview_v1'] } })
-const emptyHistorySections = (await emptyHistoryOverviewSource.getHomeSections()).filter(section => section.purpose === 'history')
+const emptyHistoryHomeSections = await emptyHistoryOverviewSource.getHomeSections()
+const emptyHistorySections = emptyHistoryHomeSections.filter(section => section.purpose === 'history')
 assert.equal(emptyHistorySections.length, 1)
 assert.equal(emptyHistorySections[0]?.type, 'continueWatching')
 assert.deepEqual(emptyHistorySections[0]?.items, [])
 assert.deepEqual(emptyHistorySections[0]?.viewAllRoute, { kind: 'history', sourceId: 'server-empty-history' })
+assert.equal(findVisibleHomeSection(emptyHistoryHomeSections, 'continueWatching')?.id, 'server-empty-history:continue')
+assert.equal(findVisibleHomeSection([{ ...emptyHistorySections[0]!, purpose: undefined, viewAllRoute: undefined }], 'continueWatching'), undefined)
 emptyHistoryOverviewSource.destroy()
 
 const changeCalls: string[] = []
@@ -679,7 +683,7 @@ assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? ch
 const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
 assert.match(sourceLibraryView, /supplementalHomeSections/)
 assert.match(sourceLibraryView, /section\.viewAllRoute/)
-assert.match(sourceLibraryView, /continueSection[\s\S]*?continueSection\.purpose === 'history'[\s\S]*?查看完整历史/)
+assert.match(sourceLibraryView, /<section v-if="isFolderView && !selectedLibrary && continueSection && \(continueItems\.length \|\| continueSection\.purpose === 'history'\)">[\s\S]*?v-if="continueSection\.viewAllRoute"[\s\S]*?查看完整历史[\s\S]*?<MediaGrid[\s\S]*?:items="continueItems"/)
 const embySource = fs.readFileSync(new URL('../src/services/datasource/emby.ts', import.meta.url), 'utf8')
 assert.match(embySource, /DETAIL_IMAGE_QUERY[\s\S]*ImageTypeLimit: '8'/)
 assert.match(embySource, /fetchDetailPayload[\s\S]*getItem\(id, true\)/)
