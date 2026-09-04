@@ -1,5 +1,5 @@
 import type { ServerPlaybackHistoryChange } from '@/services/datasource/server'
-import type { DataSourceConfig } from '@/services/datasource/types'
+import type { DataSourceConfig, DataSourceType } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { useDataSourceStore } from '@/stores/datasource'
 import { invoke } from '@tauri-apps/api/core'
@@ -9,6 +9,12 @@ import { mapServerHistoryItem, ServerDataSource } from '@/services/datasource/se
 import { listPlaybackHistoryPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 
 type DataSourceStore = ReturnType<typeof useDataSourceStore>
+interface HistorySourceDescriptor {
+  id: string
+  type: DataSourceType | 'local-file'
+  name: string
+  url: string
+}
 const CURSOR_PREFIX = 'ohmycine:server-history-cursor:'
 const DIAGNOSTIC_PREFIX = 'ohmycine:server-history-sync-diagnostic:'
 const SYNC_INTERVAL_MS = 60_000
@@ -60,42 +66,54 @@ export function startPlaybackHistorySync(store: DataSourceStore): () => void {
 export async function syncPlaybackHistory(store: DataSourceStore): Promise<void> {
   store.loadConfigs()
   await store.syncManager().catch(() => undefined)
-  const configs = store.orderedConfigs.filter(config => config.enabled !== false)
-  const servers = configs.flatMap((config) => {
+  const allConfigs = store.orderedConfigs
+  const enabledConfigs = allConfigs.filter(config => config.enabled !== false)
+  const servers = enabledConfigs.flatMap((config) => {
     const source = store.getSource(config.id)
     return config.type === 'server' && source instanceof ServerDataSource ? [{ config, source }] : []
   })
   if (!servers.length)
     return
-  const history = await readLocalHistory(500)
-  const configsById = new Map(configs.map(config => [config.id, config]))
-
+  const history = await readLocalHistory()
   let merged = 0
   for (const target of servers) {
-    const outgoing = await Promise.all(history.flatMap((entry) => {
-      const sourceConfig = configsById.get(entry.sourceId)
-      if (!sourceConfig || (sourceConfig.type === 'server' && sourceConfig.id !== target.config.id))
-        return []
-      return [toServerChange(entry, sourceConfig)]
-    }))
+    const outgoing = await createServerHistoryUploadChanges(history, allConfigs, target.config.id)
     const cursorKey = `${CURSOR_PREFIX}${target.config.id}`
     let cursor = safeCursor(getAppSetting(cursorKey))
     try {
       let received = 0
-      for (let page = 0; page < 20; page++) {
-        const response = await target.source.syncPlaybackHistory({ cursor, changes: page === 0 ? outgoing : [] })
+      let rejected = 0
+      const batches = chunkServerHistoryChanges(outgoing)
+      let shouldPullMore = false
+      for (const changes of batches) {
+        const response = await target.source.syncPlaybackHistory({ cursor, changes })
         received += response.changes.length
-        const incoming = response.changes.flatMap(change => mapIncomingChange(change, configs, target.config))
+        rejected += response.rejected.length
+        const incoming = response.changes.flatMap(change => mapServerHistoryChangeToLocalEntry(change, enabledConfigs, target.config))
         if (incoming.length)
           merged += await invoke<number>('player_merge_playback_history', { entries: incoming })
         if (response.cursor < cursor)
           throw new Error('Server 播放历史游标发生回退。')
         cursor = response.cursor
         await setAppSetting(cursorKey, String(cursor))
-        if (response.changes.length < 500)
+        shouldPullMore = response.changes.length === 500
+      }
+      for (let page = 0; shouldPullMore && page < 100; page++) {
+        const response = await target.source.syncPlaybackHistory({ cursor, changes: [] })
+        received += response.changes.length
+        rejected += response.rejected.length
+        const incoming = response.changes.flatMap(change => mapServerHistoryChangeToLocalEntry(change, enabledConfigs, target.config))
+        if (incoming.length)
+          merged += await invoke<number>('player_merge_playback_history', { entries: incoming })
+        if (response.cursor < cursor)
+          throw new Error('Server 播放历史游标发生回退。')
+        cursor = response.cursor
+        await setAppSetting(cursorKey, String(cursor))
+        shouldPullMore = response.changes.length === 500
+        if (!shouldPullMore)
           break
       }
-      await saveSyncDiagnostic(target.config.id, { ok: true, cursor, outgoing: outgoing.length, received })
+      await saveSyncDiagnostic(target.config.id, { ok: true, cursor, outgoing: outgoing.length, received, rejected })
     }
     catch (error) {
       // Local playback history remains authoritative while a Server is offline.
@@ -106,7 +124,17 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
     window.dispatchEvent(new CustomEvent(PLAYED_STATE_CHANGED_EVENT, { detail: { source: 'server-history-sync' } }))
 }
 
-async function saveSyncDiagnostic(sourceId: string, value: { ok: boolean, cursor: number, outgoing: number, received?: number, message?: string }): Promise<void> {
+export async function createServerHistoryUploadChanges(history: readonly PlaybackHistoryEntry[], configs: readonly DataSourceConfig[], targetServerId: string): Promise<ServerPlaybackHistoryChange[]> {
+  const configsById = new Map(configs.map(config => [config.id, config]))
+  return Promise.all(history.flatMap((entry) => {
+    const sourceConfig = historySourceDescriptor(entry, configsById)
+    if (!sourceConfig || (sourceConfig.type === 'server' && sourceConfig.id !== targetServerId))
+      return []
+    return [toServerChange(entry, sourceConfig)]
+  }))
+}
+
+async function saveSyncDiagnostic(sourceId: string, value: { ok: boolean, cursor: number, outgoing: number, received?: number, rejected?: number, message?: string }): Promise<void> {
   try {
     await setAppSetting(`${DIAGNOSTIC_PREFIX}${sourceId}`, JSON.stringify({ timestamp: new Date().toISOString(), ...value }))
   }
@@ -115,10 +143,19 @@ async function saveSyncDiagnostic(sourceId: string, value: { ok: boolean, cursor
   }
 }
 
-async function readLocalHistory(limit: number): Promise<PlaybackHistoryEntry[]> {
+export function chunkServerHistoryChanges(changes: readonly ServerPlaybackHistoryChange[]): ServerPlaybackHistoryChange[][] {
+  if (!changes.length)
+    return [[]]
+  const result: ServerPlaybackHistoryChange[][] = []
+  for (let offset = 0; offset < changes.length; offset += 500)
+    result.push(changes.slice(offset, offset + 500))
+  return result
+}
+
+async function readLocalHistory(): Promise<PlaybackHistoryEntry[]> {
   const result: PlaybackHistoryEntry[] = []
-  for (let page = 1; result.length < limit; page++) {
-    const current = await listPlaybackHistoryPage(page, Math.min(100, limit - result.length))
+  for (let page = 1; page <= 100_000; page++) {
+    const current = await listPlaybackHistoryPage(page, 100)
     result.push(...current.list)
     if (!current.hasMore)
       break
@@ -126,7 +163,22 @@ async function readLocalHistory(limit: number): Promise<PlaybackHistoryEntry[]> 
   return result
 }
 
-async function toServerChange(entry: PlaybackHistoryEntry, config: DataSourceConfig): Promise<ServerPlaybackHistoryChange> {
+function historySourceDescriptor(entry: PlaybackHistoryEntry, configsById: ReadonlyMap<string, DataSourceConfig>): HistorySourceDescriptor | undefined {
+  const config = configsById.get(entry.sourceId)
+  if (config) {
+    return {
+      id: config.id,
+      type: config.type,
+      name: config.displayName ?? config.name,
+      url: config.url,
+    }
+  }
+  if (entry.sourceId === 'local-file')
+    return { id: 'local-file', type: 'local-file', name: '本机文件', url: '' }
+  return undefined
+}
+
+async function toServerChange(entry: PlaybackHistoryEntry, config: HistorySourceDescriptor): Promise<ServerPlaybackHistoryChange> {
   const locator = safeOrigin(config.url) ?? ''
   const stableSource = locator || config.id
   const historyIdentity = config.type === 'server' && isServerHistoryIdentity(entry.mediaIdentity)
@@ -135,6 +187,7 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: DataSourceCon
   return {
     sync_key: await sha256(historyIdentity ? `${config.type}\0${historyIdentity}` : `${config.type}\0${stableSource}\0${entry.mediaIdentity}`),
     source_kind: config.type,
+    source_name: config.name,
     source_locator: locator || undefined,
     source_id: config.id,
     library_id: entry.libraryId ?? undefined,
@@ -157,7 +210,7 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: DataSourceCon
   }
 }
 
-function mapIncomingChange(change: ServerPlaybackHistoryChange, configs: readonly DataSourceConfig[], currentServer: DataSourceConfig) {
+export function mapServerHistoryChangeToLocalEntry(change: ServerPlaybackHistoryChange, configs: readonly DataSourceConfig[], currentServer: DataSourceConfig) {
   const locator = change.source_locator ? safeOrigin(change.source_locator) : undefined
   const config = change.source_kind === 'server'
     ? currentServer

@@ -1277,6 +1277,7 @@ export class ServerDataSource implements DataSource {
 export interface ServerPlaybackHistoryChange {
   sync_key: string
   source_kind: string
+  source_name?: string
   source_locator?: string
   source_id: string
   library_id?: string
@@ -1309,23 +1310,65 @@ export interface ServerPlaybackHistoryChange {
 }
 
 export interface ServerPlaybackHistorySyncRequest { cursor: number, changes: ServerPlaybackHistoryChange[] }
-export interface ServerPlaybackHistorySyncResponse { cursor: number, changes: ServerPlaybackHistoryChange[] }
+export interface ServerPlaybackHistoryRejection { sync_key?: string, code: string }
+export interface ServerPlaybackHistorySyncResponse { cursor: number, changes: ServerPlaybackHistoryChange[], rejected: ServerPlaybackHistoryRejection[] }
 
-function parsePlaybackHistorySyncResponse(value: unknown): ServerPlaybackHistorySyncResponse {
+export function parsePlaybackHistorySyncResponse(value: unknown): ServerPlaybackHistorySyncResponse {
   const data = recordData(value)
-  if (!Number.isSafeInteger(data.cursor) || Number(data.cursor) < 0 || !Array.isArray(data.changes))
+  if (!Number.isSafeInteger(data.cursor) || Number(data.cursor) < 0 || !Array.isArray(data.changes) || data.changes.length > 500)
     throw new Error('Server 播放历史同步响应无效。')
-  const changes = data.changes.flatMap((raw): ServerPlaybackHistoryChange[] => {
-    if (!isRecord(raw) || typeof raw.sync_key !== 'string' || !/^[a-f0-9]{64}$/.test(raw.sync_key)
-      || typeof raw.source_kind !== 'string' || typeof raw.source_id !== 'string'
-      || typeof raw.media_identity !== 'string' || typeof raw.title !== 'string'
-      || typeof raw.position !== 'number' || !Number.isFinite(raw.position)
-      || typeof raw.updated_at !== 'number' || !Number.isSafeInteger(raw.updated_at)) {
-      return []
+  const changes = data.changes.map(parsePlaybackHistoryChange)
+  const rawRejected = data.rejected ?? []
+  if (!Array.isArray(rawRejected) || rawRejected.length > 500)
+    throw new Error('Server 播放历史同步响应无效。')
+  const rejected = rawRejected.map((raw): ServerPlaybackHistoryRejection => {
+    if (!isRecord(raw) || typeof raw.code !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/.test(raw.code)
+      || (raw.sync_key !== undefined && (typeof raw.sync_key !== 'string' || !/^[a-f0-9]{64}$/.test(raw.sync_key)))) {
+      throw new Error('Server 播放历史同步响应无效。')
     }
-    return [raw as unknown as ServerPlaybackHistoryChange]
+    return { code: raw.code, ...(typeof raw.sync_key === 'string' ? { sync_key: raw.sync_key } : {}) }
   })
-  return { cursor: Number(data.cursor), changes }
+  return { cursor: Number(data.cursor), changes, rejected }
+}
+
+function parsePlaybackHistoryChange(raw: unknown): ServerPlaybackHistoryChange {
+  if (!isRecord(raw) || typeof raw.sync_key !== 'string' || !/^[a-f0-9]{64}$/.test(raw.sync_key)
+    || typeof raw.source_kind !== 'string' || !raw.source_kind || typeof raw.source_id !== 'string' || !raw.source_id
+    || typeof raw.media_identity !== 'string' || !raw.media_identity || typeof raw.title !== 'string' || !raw.title
+    || typeof raw.position !== 'number' || !Number.isFinite(raw.position) || raw.position < 0
+    || typeof raw.completed !== 'boolean'
+    || typeof raw.updated_at !== 'number' || !Number.isSafeInteger(raw.updated_at) || raw.updated_at <= 0
+    || (raw.duration !== undefined && (typeof raw.duration !== 'number' || !Number.isFinite(raw.duration) || raw.duration < 0))
+    || (raw.deleted !== undefined && typeof raw.deleted !== 'boolean')
+    || (raw.revision !== undefined && (!Number.isSafeInteger(raw.revision) || Number(raw.revision) < 0))
+    || (raw.season_number !== undefined && !Number.isSafeInteger(raw.season_number))
+    || (raw.episode_number !== undefined && !Number.isSafeInteger(raw.episode_number))) {
+    throw new Error('Server 播放历史同步响应无效。')
+  }
+  const optionalStrings = [
+    'source_name',
+    'source_locator',
+    'library_id',
+    'item_id',
+    'history_identity',
+    'item_token',
+    'display_title',
+    'display_subtitle',
+    'series_title',
+    'episode_title',
+    'stream_identity',
+    'media_type',
+    'poster_url',
+    'backdrop_url',
+    'title_logo_url',
+    'episode_still_url',
+    'poster_path',
+    'backdrop_path',
+    'episode_still_path',
+  ]
+  if (optionalStrings.some(key => raw[key] !== undefined && typeof raw[key] !== 'string'))
+    throw new Error('Server 播放历史同步响应无效。')
+  return raw as unknown as ServerPlaybackHistoryChange
 }
 
 function safeServerChangeCursor(value: string | null): string {

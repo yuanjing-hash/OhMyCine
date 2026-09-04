@@ -5,9 +5,10 @@ import { readServerCredential, removeCredential } from '../src/services/datasour
 import { configureOhMyCineServerOrigins, embyInstanceFingerprint, extractTrustedOhMyCineArtifactIdentity, namesByPersonType } from '../src/services/datasource/emby.ts'
 import { forgetPlaybackTargetsForSource, mergeMediaItemsByIdentity, prunePlaybackTargets, rememberPlaybackTargetsForItems } from '../src/services/datasource/identityMerge.ts'
 import { describeMediaSource } from '../src/services/datasource/mediaSourceDisplay.ts'
-import { loginServerAndCreateConfig, logoutServerBestEffort, mapServerHistoryItem, ServerDataSource } from '../src/services/datasource/server.ts'
+import { loginServerAndCreateConfig, logoutServerBestEffort, mapServerHistoryItem, parsePlaybackHistorySyncResponse, ServerDataSource } from '../src/services/datasource/server.ts'
 import { createPlaybackQueueItem } from '../src/services/playbackContext.ts'
 import { playbackProgressIdentityForMediaItem } from '../src/services/playbackHistory.ts'
+import { chunkServerHistoryChanges, createServerHistoryUploadChanges, mapServerHistoryChangeToLocalEntry } from '../src/services/playbackHistorySync.ts'
 import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
 import { findVisibleHomeSection } from '../src/services/sourceLibraryScannedMedia.ts'
 
@@ -676,14 +677,51 @@ assert.match(serverSource, /mapServerHistoryItem[\s\S]*cardLayout:\s*type === 'e
 assert.match(serverSource, /purpose:\s*'favorites'[\s\S]*purpose:\s*'automaticCollections'[\s\S]*purpose:\s*'manualCollections'[\s\S]*purpose:\s*'libraries'/)
 assert.doesNotMatch(serverSource, /title:\s*'最近历史'/)
 const historySyncSource = fs.readFileSync(new URL('../src/services/playbackHistorySync.ts', import.meta.url), 'utf8')
-assert.match(historySyncSource, /configsById\.get\(entry\.sourceId\)[\s\S]*sourceConfig\.type === 'server' && sourceConfig\.id !== target\.config\.id/)
 assert.match(serverSource, /history\?page=\$\{page\}&page_size=\$\{pageSize\}&source_kind=server/)
 assert.match(historySyncSource, /change\.source_kind === 'server'[\s\S]*\? currentServer/)
+
+const historyConfigs = [
+  { id: 'server-home', type: 'server' as const, name: '家庭 Server', order: 0, url: 'https://server.example.test', enabled: true },
+  { id: 'emby-home', type: 'emby' as const, name: '客厅 Emby', order: 1, url: 'https://emby.example.test', enabled: true },
+  { id: 'jellyfin-disabled', type: 'jellyfin' as const, name: '已停用 Jellyfin', order: 2, url: 'https://jellyfin.example.test', enabled: false },
+]
+const historyUploads = await createServerHistoryUploadChanges([
+  { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 60, updatedAt: 10_000, completed: false, progressSource: 'local' },
+  { sourceId: 'emby-home', mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', posterUrl: 'https://image.example.test/emby.jpg', position: 120, updatedAt: 11_000, completed: false, progressSource: 'local' },
+  { sourceId: 'jellyfin-disabled', mediaIdentity: 'jellyfin:item:84', itemId: '84', title: '已停用来源电影', position: 90, updatedAt: 11_500, completed: false, progressSource: 'local' },
+  { sourceId: 'local-file', mediaIdentity: 'local:file:demo', itemId: 'demo', title: '本机文件', position: 30, updatedAt: 12_000, completed: false, progressSource: 'local' },
+], historyConfigs, 'server-home')
+assert.deepEqual(historyUploads.map(item => [item.source_kind, item.source_name, item.poster_url]), [
+  ['server', '家庭 Server', undefined],
+  ['emby', '客厅 Emby', 'https://image.example.test/emby.jpg'],
+  ['jellyfin', '已停用 Jellyfin', undefined],
+  ['local-file', '本机文件', undefined],
+])
+assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[1]!, historyConfigs, historyConfigs[0]!).length, 1)
+assert.equal(mapServerHistoryChangeToLocalEntry({ ...historyUploads[1]!, source_locator: 'https://missing.example.test' }, historyConfigs, historyConfigs[0]!).length, 0)
+assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[2]!, historyConfigs, historyConfigs[0]!).length, 0)
+assert.deepEqual(chunkServerHistoryChanges(Array.from({ length: 501 }, () => historyUploads[0]!)).map(batch => batch.length), [500, 1])
+const parsedPartialHistorySync = parsePlaybackHistorySyncResponse({
+  cursor: 7,
+  changes: [{ ...historyUploads[1]!, completed: false, revision: 7 }],
+  rejected: [{ sync_key: historyUploads[0]!.sync_key, code: 'NOT_FOUND' }],
+})
+assert.equal(parsedPartialHistorySync.rejected.length, 1)
+assert.equal(parsedPartialHistorySync.rejected[0]?.code, 'NOT_FOUND')
+assert.throws(() => parsePlaybackHistorySyncResponse({
+  cursor: 8,
+  changes: [{ ...historyUploads[1]!, completed: 'false' }],
+}), /播放历史同步响应无效/)
 assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? change\.media_identity : presentation\?\.historyIdentity/)
 const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
 assert.match(sourceLibraryView, /supplementalHomeSections/)
 assert.match(sourceLibraryView, /section\.viewAllRoute/)
 assert.match(sourceLibraryView, /<section v-if="isFolderView && !selectedLibrary && continueSection && \(continueItems\.length \|\| continueSection\.purpose === 'history'\)">[\s\S]*?v-if="continueSection\.viewAllRoute"[\s\S]*?查看完整历史[\s\S]*?<MediaGrid[\s\S]*?:items="continueItems"/)
+assert.match(sourceLibraryView, /source\.value\?\.listPlaybackHistory/)
+assert.match(sourceLibraryView, /history-navigation/)
+const historyView = fs.readFileSync(new URL('../src/views/HistoryView.vue', import.meta.url), 'utf8')
+assert.match(historyView, /await syncPlaybackHistory\(store\)[\s\S]*?await loadPage\(1\)/)
+assert.doesNotMatch(historyView, /Player 本机|remoteSources|selectRemoteSource/)
 const embySource = fs.readFileSync(new URL('../src/services/datasource/emby.ts', import.meta.url), 'utf8')
 assert.match(embySource, /DETAIL_IMAGE_QUERY[\s\S]*ImageTypeLimit: '8'/)
 assert.match(embySource, /fetchDetailPayload[\s\S]*getItem\(id, true\)/)

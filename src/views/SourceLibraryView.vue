@@ -115,7 +115,20 @@ const activeViewMode = computed<SourceViewMode>(() => isRawFileSource.value ? vi
 const isMediaLibraryView = computed(() => activeViewMode.value === 'media-library')
 const isFolderView = computed(() => activeViewMode.value === 'folders')
 const displayItems = computed(() => selectedLibrary.value ? items.value : libraries.value)
-const continueSection = computed(() => findVisibleHomeSection(rootHomeSections.value, 'continueWatching'))
+const continueSection = computed<HomeSection | undefined>(() =>
+  findVisibleHomeSection(rootHomeSections.value, 'continueWatching')
+  ?? (sourceConfig.value?.type === 'server' && source.value?.listPlaybackHistory
+    ? {
+        id: `${sourceId.value}:history-navigation`,
+        sourceId: sourceId.value,
+        title: '继续观看',
+        type: 'continueWatching',
+        purpose: 'history',
+        items: [],
+        viewAllRoute: { kind: 'history', sourceId: sourceId.value },
+      }
+    : undefined),
+)
 const supplementalHomeSections = computed(() => rootHomeSections.value.filter(section => !['hero', 'continueWatching', 'recentlyAdded'].includes(section.type)))
 const hasHomeLibrarySection = computed(() => supplementalHomeSections.value.some(section => section.purpose === 'libraries'))
 const currentNode = computed(() => navigationStack.value.at(-1) ?? null)
