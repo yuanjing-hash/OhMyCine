@@ -103,6 +103,10 @@ export async function verifyNextgenRecognition(): Promise<Record<string, unknown
     { path: '/기생수/2시즌/기생수 제4화.mkv', title: '기생수', season: 2, episode: 4 },
     { path: '/Lupin/Saison 02/Episode 03.mkv', title: 'Lupin', season: 2, episode: 3 },
     { path: '/Dark/Staffel 03/Folge 05.mkv', title: 'Dark', season: 3, episode: 5 },
+    { path: '/示例剧 (2020)/Season 1/示例剧 01..mp4', title: '示例剧', season: 1, episode: 1 },
+    { path: '/示例剧 (2020)/Season 02/01..mp4', title: '示例剧', season: 2, episode: 1 },
+    { path: '/示例剧 (2020)/第3季/01..mp4', title: '示例剧', season: 3, episode: 1 },
+    { path: '/示例剧 (2020)/Specials/01..mp4', title: '示例剧', season: 0, episode: 1 },
   ]
   for (const fixture of multilingualCases) {
     const candidate = parseRawMediaCandidate(recordForPath(fixture.path))
@@ -122,6 +126,11 @@ export async function verifyNextgenRecognition(): Promise<Record<string, unknown
   const numericTitle = parseRawMediaCandidate(recordForPath('/1917.2019.2160p.UHD.BluRay-GRP.mkv'))
   assert.equal(numericTitle.title, '1917')
   assert.equal(numericTitle.year, 2019)
+
+  for (const path of ['/作品/Season 1/作品 2005..mp4', '/作品/Season 1/作品 1080p..mp4', '/作品/Season 1/作品 10bit..mp4']) {
+    const candidate = parseRawMediaCandidate(recordForPath(path))
+    assert.equal(candidate.episodeNumber, undefined, `${path}: technical/year token became an episode`)
+  }
 
   const sourceFairCandidate = parseRawMediaCandidate(recordForPath('/祖级 Grand/父级 Parent/文件 File.mkv'))
   const sourceFairVariants = buildRecognitionTitleVariants(sourceFairCandidate)

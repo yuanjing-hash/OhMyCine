@@ -31,6 +31,8 @@ const S_SEASON_SEGMENT_RE = /^S\s*0*(\d{1,2})$/i
 const CHINESE_SEASON_RE = new RegExp(`第\\s*(${EAST_ASIAN_ORDINAL})\\s*季`)
 const EAST_ASIAN_SEASON_RE = new RegExp(`(?:第|제)?\\s*(${EAST_ASIAN_ORDINAL})\\s*(?:季|期|시즌)`)
 const SEASON_SUFFIX_RE = /^(\d{1,2})\s*시즌$/u
+const SPECIALS_SEASON_RE = /^(?:specials?|特别篇|特別篇|特别季|特別季)$/iu
+const SEASON_SCOPED_TRAILING_EPISODE_RE = /(?:^|[\s._-])0*(\d{1,4})$/u
 const TECH_TOKEN_RE = /\b(?:\d{3,4}x\d{3,4}|4320p|2160p|1080p|720p|576p|480p|8K|4K|UHD|HQ|Blu[- .]?Ray|BDRip|WEB[- .]?DL|WEBRip|HDTV|DVDRip|REMUX|x264|x265|H\.?264|H\.?265|AVC|HEVC|AV1|AAC|FLAC|DTS(?:-HD)?|TrueHD|Atmos|DDP?|EAC3|AC3|LPCM|2Audios?|3Audios?|Dual[- .]?Audio|HDR10\+?|HDR|DoVi|Dolby[- .]?Vision|DV|10[- .]?bit|8[- .]?bit|Proper|Repack|MKV|MP4)\b/gi
 const SOURCE_TOKEN_RE = /\b(?:AMZN|Amazon|NF|Netflix|DSNP|Disney\+?|HMAX|HBO|Hulu|ATVP|AppleTV|iTunes|BiliBili|Baha|Crunchyroll|CR|Viu|U-?NEXT|ABEMA|TVING|PrimeVideo|MAX|Peacock|Paramount\+?)\b/g
 const RELEASE_GROUP_TOKEN_RE = /\b(?:GrassTV|BlackTV|GRP|NTb|FLUX|PTerWEB|CMCT|CHD|FGT|YIFY|YTS|MeGusta|VARYG|LoliHouse|ANi|Lilith|U3|CatWEB|MTeam|MWeb|Hares|SweetSub|MagicStar|Skymoon|XiaYong|Nekomoe|DBD-Raws|GM-Team|NC-Raws)\b/gi
@@ -229,8 +231,8 @@ export function extractRawPathHints(record: RawFileRecord): RawPathHints {
   const fileEpisodeTitle = cleanEpisodeTitleFromStem(fileStem)
   const titleYearFile = parseTitleYear(fileStem)
   const titleYearFolder = findLastTitleYearSegment(parentSegments)
-  const episode = parseEpisode(fileStem)
   const seasonFolder = findLastSeasonFolder(parentSegments)
+  const episode = parseEpisode(fileStem) ?? (seasonFolder ? parseSeasonScopedTrailingEpisode(fileStem) : null)
   const seasonNumber = episode?.seasonNumber ?? seasonFolder?.seasonNumber
   const episodeNumber = episode?.episodeNumber
   const seriesIndex = seasonFolder
@@ -423,7 +425,22 @@ function parseEpisode(value: string): EpisodeMatch | null {
   return null
 }
 
+function parseSeasonScopedTrailingEpisode(value: string): EpisodeMatch | null {
+  const candidate = value
+    .replace(TECH_TOKEN_RE, ' ')
+    .replace(/[\s._-]+$/gu, '')
+  const match = SEASON_SCOPED_TRAILING_EPISODE_RE.exec(candidate)
+  if (!match)
+    return null
+  const episodeNumber = Number(match[1])
+  if (!Number.isInteger(episodeNumber) || episodeNumber <= 0 || (episodeNumber >= 1888 && episodeNumber <= 2200))
+    return null
+  return { episodeNumber, chinese: false }
+}
+
 function parseSeasonFolder(value: string): number | null {
+  if (SPECIALS_SEASON_RE.test(value.trim()))
+    return 0
   const season = SEASON_SEGMENT_RE.exec(value) ?? S_SEASON_SEGMENT_RE.exec(value) ?? SEASON_SUFFIX_RE.exec(value)
   if (season)
     return Number(season[1])
