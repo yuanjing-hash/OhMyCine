@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import type { MpvPlaybackDiagnostics, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { PlayerFrameInterpolationSettings, PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
+import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { computed, nextTick, ref, watch } from 'vue'
-import FrameInterpolationSettingsContent from './FrameInterpolationSettingsContent.vue'
 import FsrSettingsContent from './FsrSettingsContent.vue'
 
 interface PictureOption<T extends string> {
@@ -20,9 +19,6 @@ const props = defineProps<{
   errorMessage: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
-  frameInterpolationSettings: PlayerFrameInterpolationSettings
-  frameInterpolationDiagnostics: MpvPlaybackDiagnostics | null
-  frameInterpolationError: string | null
 }>()
 
 const emit = defineEmits<{
@@ -32,7 +28,6 @@ const emit = defineEmits<{
   setFitMode: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
-  updateFrameInterpolationSettings: [patch: Partial<PlayerFrameInterpolationSettings>]
 }>()
 
 const panelRef = ref<HTMLElement | null>(null)
@@ -146,7 +141,7 @@ watch(
             设置
           </h2>
           <p class="mt-1 text-sm leading-5 text-white/52">
-            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整画面、插帧与 FSR 超分设置。
+            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整画面与 FSR 超分设置。
           </p>
         </div>
         <button
@@ -167,26 +162,6 @@ watch(
       </p>
 
       <div class="mt-4 space-y-3">
-        <article class="settings-section rounded-3xl p-3">
-          <div class="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <p class="text-[10px] font-semibold tracking-[0.18em] text-white/35">
-                Hardware HDR Frame Generation
-              </p>
-              <h3 class="mt-1 text-sm font-semibold text-white/88">
-                视频插帧
-              </h3>
-            </div>
-            <span class="status-pill">{{ frameInterpolationDiagnostics?.frameInterpolationEffectiveState || 'disabled' }}</span>
-          </div>
-          <FrameInterpolationSettingsContent
-            :settings="frameInterpolationSettings"
-            :diagnostics="frameInterpolationDiagnostics"
-            :error="frameInterpolationError"
-            @update="emit('updateFrameInterpolationSettings', $event)"
-          />
-        </article>
-
         <article class="settings-section rounded-3xl p-3">
           <div class="mb-3 flex items-start justify-between gap-3">
             <div>

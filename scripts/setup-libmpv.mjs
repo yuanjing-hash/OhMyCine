@@ -9,7 +9,6 @@ import SevenZip from '7z-wasm'
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const targetDir = resolve(rootDir, 'src-tauri', 'lib')
 const tempDir = join(targetDir, 'temp')
-const frameInterpolationRuntimeDir = join(targetDir, 'frame-interpolation')
 const wrapperRelease = 'v0.1.1'
 const wrapperBaseUrl = `https://github.com/nini22P/libmpv-wrapper/releases/download/${wrapperRelease}`
 const mpvRelease = '2026-08-30-e8673660ab'
@@ -17,20 +16,6 @@ const mpvBaseUrl = `https://github.com/zhongfly/mpv-winbuild/releases/download/$
 const windowsMpvArchive = {
   fileName: 'mpv-dev-lgpl-x86_64-20260830-git-e8673660ab.7z',
   sha256: '7659f968ccea69168aa8924ea1bf7c524e996946d184720d79f92241805f4724',
-}
-const windowsInferenceRuntime = {
-  onnxRuntime: {
-    version: '1.24.4',
-    fileName: 'microsoft.ml.onnxruntime.directml.1.24.4.nupkg',
-    url: 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.24.4/microsoft.ml.onnxruntime.directml.1.24.4.nupkg',
-    sha256: '57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681',
-  },
-  directMl: {
-    version: '1.15.4',
-    fileName: 'microsoft.ai.directml.1.15.4.nupkg',
-    url: 'https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg',
-    sha256: '4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9',
-  },
 }
 const wrapperArchives = {
   'linux-x86_64': ['libmpv-wrapper-linux-x86_64.zip', '1583564042f10be25166b52b6fe02db6d87cf9cef34985ba517048c044b7eee0'],
@@ -155,51 +140,6 @@ function copyInstalledFile(fileName, outputName) {
   console.log(`installed ${outputName}`)
 }
 
-function copyRuntimeFile(source, relativeDestination) {
-  if (!existsSync(source))
-    throw new Error(`Pinned inference runtime file not found: ${source}`)
-  const destination = resolve(frameInterpolationRuntimeDir, relativeDestination)
-  const relativeDest = relative(frameInterpolationRuntimeDir, destination)
-  if (!relativeDest || relativeDest.startsWith('..') || relativeDest.includes(':'))
-    throw new Error(`Refusing to install outside ${frameInterpolationRuntimeDir}: ${destination}`)
-  ensureDir(dirname(destination))
-  copyFileSync(source, destination)
-  console.log(`installed frame-interpolation/${relativeDestination}`)
-}
-
-async function installWindowsFrameInterpolationRuntime(target) {
-  if (target.archName !== 'x86_64')
-    throw new Error(`No pinned Windows frame-interpolation runtime for ${target.archName}`)
-  const ort = windowsInferenceRuntime.onnxRuntime
-  const dml = windowsInferenceRuntime.directMl
-  const ortArchive = join(tempDir, ort.fileName)
-  const dmlArchive = join(tempDir, dml.fileName)
-  const ortExtract = join(tempDir, 'onnxruntime-directml')
-  const dmlExtract = join(tempDir, 'directml')
-  await downloadFile(ort.url, ortArchive)
-  verifySha256(ortArchive, ort.sha256)
-  await extractArchive(ortArchive, ortExtract)
-  await downloadFile(dml.url, dmlArchive)
-  verifySha256(dmlArchive, dml.sha256)
-  await extractArchive(dmlArchive, dmlExtract)
-
-  const ortNative = join(ortExtract, 'runtimes', 'win-x64', 'native')
-  copyRuntimeFile(join(ortNative, 'onnxruntime.dll'), 'onnxruntime.dll')
-  copyRuntimeFile(join(ortNative, 'onnxruntime_providers_shared.dll'), 'onnxruntime_providers_shared.dll')
-  copyRuntimeFile(join(ortNative, 'onnxruntime.lib'), 'onnxruntime.lib')
-  for (const header of readdirSync(join(ortExtract, 'build', 'native', 'include')))
-    copyRuntimeFile(join(ortExtract, 'build', 'native', 'include', header), join('include', header))
-  copyRuntimeFile(join(ortExtract, 'LICENSE'), 'LICENSE-ONNX-RUNTIME')
-  copyRuntimeFile(join(ortExtract, 'ThirdPartyNotices.txt'), 'THIRD-PARTY-ONNX-RUNTIME.txt')
-  copyRuntimeFile(join(dmlExtract, 'bin', 'x64-win', 'DirectML.dll'), 'DirectML.dll')
-  copyRuntimeFile(join(dmlExtract, 'bin', 'x64-win', 'DirectML.lib'), 'DirectML.lib')
-  copyRuntimeFile(join(dmlExtract, 'include', 'DirectML.h'), join('include', 'DirectML.h'))
-  copyRuntimeFile(join(dmlExtract, 'include', 'DirectMLConfig.h'), join('include', 'DirectMLConfig.h'))
-  copyRuntimeFile(join(dmlExtract, 'LICENSE.txt'), 'LICENSE-DIRECTML')
-  copyRuntimeFile(join(dmlExtract, 'LICENSE-CODE.txt'), 'LICENSE-DIRECTML-CODE')
-  copyRuntimeFile(join(dmlExtract, 'ThirdPartyNotices.txt'), 'THIRD-PARTY-DIRECTML.txt')
-}
-
 async function installWrapper(target) {
   const archive = wrapperArchives[`${target.osName}-${target.archName}`]
   if (!archive)
@@ -248,7 +188,6 @@ async function setup(targetNames) {
     await installWrapper(target)
     if (target.downloadsMpv) {
       await installWindowsMpv(target)
-      await installWindowsFrameInterpolationRuntime(target)
     }
   }
 

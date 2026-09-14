@@ -69,9 +69,6 @@ class EngineSettingsArgs {
     var fsrSharpness: Double = 35.0
     var fsrDenoise: Boolean = true
     var fsrTarget: String = "auto"
-    var frameInterpolationMode: String = "off"
-    var frameInterpolationTarget: String = "auto"
-    var frameInterpolationQuality: String = "auto"
 }
 
 @InvokeArg
@@ -135,9 +132,6 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
             fsrSharpness = args.fsrSharpness,
             fsrDenoise = args.fsrDenoise,
             fsrTarget = args.fsrTarget,
-            frameInterpolationMode = args.frameInterpolationMode,
-            frameInterpolationTarget = args.frameInterpolationTarget,
-            frameInterpolationQuality = args.frameInterpolationQuality,
         ))
         backgroundPlaybackEnabled = args.backgroundPlaybackEnabled
         if (backgroundPlaybackEnabled)

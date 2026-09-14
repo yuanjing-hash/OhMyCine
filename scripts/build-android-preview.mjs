@@ -10,7 +10,6 @@ const androidBuildTools = platform() === 'win32' ? ['35.0.0', '36.0.0'] : ['36.0
 const androidNdk = '27.2.12479018'
 const playerRoot = fileURLToPath(new URL('..', import.meta.url))
 const tauriCli = resolve(playerRoot, 'node_modules', '@tauri-apps', 'cli', 'tauri.js')
-const setupFrameInterpolationModel = resolve(playerRoot, 'scripts', 'setup-frame-interpolation-model.mjs')
 const setupLibmpv = resolve(playerRoot, 'scripts', 'setup-libmpv-android.mjs')
 const apkPath = resolve(playerRoot, 'src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk', 'universal', 'debug', 'app-universal-debug.apk')
 
@@ -95,7 +94,6 @@ if (!javaHome)
 if (!existsSync(tauriCli))
   throw new Error('Tauri CLI is missing. Run npm ci in player first.')
 
-run(process.execPath, [setupFrameInterpolationModel, '--android'])
 run(process.execPath, [setupLibmpv])
 rmSync(apkPath, { force: true })
 
