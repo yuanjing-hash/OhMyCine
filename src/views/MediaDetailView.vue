@@ -1125,7 +1125,7 @@ function markTitleLogoFailed(url: string) {
                 @keydown.enter.self.prevent="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
               >
                 <div class="episode-artwork theme-immersive-dark relative block overflow-hidden text-left">
-                  <img v-if="episode.backdropUrl || episode.posterUrl" :src="episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async">
+                  <img v-if="episode.episodeStillUrl || episode.backdropUrl || episode.posterUrl" :src="episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async">
                   <div v-else class="episode-artwork-fallback flex aspect-video w-full items-center justify-center p-5 text-center text-sm text-white/42">
                     {{ episodeTitle(episode) }}
                   </div>

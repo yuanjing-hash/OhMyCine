@@ -10,6 +10,7 @@ assert.match(detailView, /<ImmersiveMediaRail label="剧照与截图">[\s\S]*cla
 assert.match(detailView, /<ImmersiveMediaRail label="演职员">[\s\S]*class="people-strip"/)
 assert.match(detailView, /\.person-portrait[\s\S]*aspect-ratio:\s*2\s*\/\s*3/)
 assert.match(detailView, /\.still-card img[\s\S]*aspect-ratio:\s*16\s*\/\s*9/)
+assert.match(detailView, /<img v-if="episode\.episodeStillUrl \|\| episode\.backdropUrl \|\| episode\.posterUrl" :src="episode\.episodeStillUrl \?\? episode\.backdropUrl \?\? episode\.posterUrl"/)
 assert.match(detailView, /grid-template-columns:\s*repeat\(auto-fit, minmax\(min\(100%, 18rem\), 1fr\)\)/)
 assert.doesNotMatch(detailView, /detail\.stills[\s\S]{0,500}cinema-scrollbar/)
 
