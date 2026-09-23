@@ -338,7 +338,7 @@ export function useMpv() {
   function applyRenderState(state: MpvRenderState) {
     renderStatus.value = state.status
     renderBackend.value = state.backend
-    renderError.value = state.message
+    renderError.value = state.status === 'error' ? state.message : null
     renderDiagnostics.value = state.diagnostics ?? null
   }
 

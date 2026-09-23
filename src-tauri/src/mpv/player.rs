@@ -7,7 +7,10 @@ use std::{
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_create, mpv_error_string, mpv_event_id_MPV_EVENT_END_FILE,
+    mpv_command, mpv_create, mpv_end_file_reason_MPV_END_FILE_REASON_EOF,
+    mpv_end_file_reason_MPV_END_FILE_REASON_ERROR, mpv_end_file_reason_MPV_END_FILE_REASON_QUIT,
+    mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT, mpv_end_file_reason_MPV_END_FILE_REASON_STOP,
+    mpv_error_string, mpv_event_end_file, mpv_event_id_MPV_EVENT_END_FILE,
     mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_LOG_MESSAGE,
     mpv_event_id_MPV_EVENT_NONE, mpv_event_id_MPV_EVENT_START_FILE,
     mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_format_MPV_FORMAT_DOUBLE,
@@ -32,6 +35,33 @@ pub struct MpvEventBatch {
     pub video_ready: bool,
     pub reached_limit: bool,
     pub fsr_fallback: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EndFileDisposition {
+    Stopped,
+    Redirecting,
+    Ended,
+    Failed,
+}
+
+fn end_file_disposition(
+    reason: i32,
+    file_loaded: bool,
+    stop_requested: bool,
+) -> EndFileDisposition {
+    if stop_requested
+        || reason == mpv_end_file_reason_MPV_END_FILE_REASON_STOP as i32
+        || reason == mpv_end_file_reason_MPV_END_FILE_REASON_QUIT as i32
+    {
+        EndFileDisposition::Stopped
+    } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT as i32 {
+        EndFileDisposition::Redirecting
+    } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32 && file_loaded {
+        EndFileDisposition::Ended
+    } else {
+        EndFileDisposition::Failed
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -870,19 +900,44 @@ impl MpvPlayer {
             } else if event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG {
                 self.last_playback_event = "video-reconfig".to_string();
             } else if event_id == mpv_event_id_MPV_EVENT_END_FILE {
-                if self.stop_requested {
-                    self.playback_state = "idle".to_string();
-                    self.last_playback_event = "stopped".to_string();
-                    self.stop_requested = false;
-                } else if self.file_loaded {
-                    self.playback_state = "ended".to_string();
-                    self.last_playback_event = "end-file".to_string();
-                } else {
-                    self.playback_state = "error".to_string();
-                    self.last_playback_event = "end-file-error".to_string();
-                    self.last_playback_error =
-                        Some("媒体文件未能完成加载，请打开播放诊断查看原因。".to_string());
+                let end_file = unsafe { (*event).data.cast::<mpv_event_end_file>().as_ref() };
+                let reason = end_file.map(|value| value.reason).unwrap_or(-1);
+                let error_code = end_file.map(|value| value.error).unwrap_or(0);
+                match end_file_disposition(reason, self.file_loaded, self.stop_requested) {
+                    EndFileDisposition::Stopped => {
+                        self.playback_state = "idle".to_string();
+                        self.last_playback_event = "stopped".to_string();
+                        self.last_playback_error = None;
+                    }
+                    EndFileDisposition::Redirecting => {
+                        // mpv will load the playlist target without another Player command.
+                        self.playback_state = "loading".to_string();
+                        self.last_playback_event = "playlist-redirect".to_string();
+                        self.last_playback_error = None;
+                    }
+                    EndFileDisposition::Ended => {
+                        self.playback_state = "ended".to_string();
+                        self.last_playback_event = "end-file".to_string();
+                        self.last_playback_error = None;
+                    }
+                    EndFileDisposition::Failed => {
+                        self.playback_state = "error".to_string();
+                        self.last_playback_event = "end-file-error".to_string();
+                        self.last_playback_error = Some(
+                            if reason == mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32
+                                && error_code < 0
+                            {
+                                let detail =
+                                    unsafe { CStr::from_ptr(mpv_error_string(error_code)) }
+                                        .to_string_lossy();
+                                format!("媒体加载失败（mpv {error_code}: {detail}）。")
+                            } else {
+                                format!("媒体文件未能完成加载（mpv 结束原因 {reason}）。")
+                            },
+                        );
+                    }
                 }
+                self.stop_requested = false;
                 self.file_loaded = false;
             }
             if event_id == mpv_event_id_MPV_EVENT_LOG_MESSAGE {
@@ -1138,4 +1193,65 @@ fn failed_surface_state(message: String) -> MpvRenderState {
 
 pub fn create_state() -> Result<MpvState, String> {
     Ok(Arc::new(Mutex::new(MpvPlayer::new()?)))
+}
+
+#[cfg(test)]
+mod end_file_tests {
+    use super::*;
+
+    #[test]
+    fn playlist_redirect_and_explicit_stop_are_not_load_failures() {
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT as i32,
+                false,
+                false
+            ),
+            EndFileDisposition::Redirecting,
+        );
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_STOP as i32,
+                false,
+                false
+            ),
+            EndFileDisposition::Stopped,
+        );
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32,
+                false,
+                true
+            ),
+            EndFileDisposition::Stopped,
+        );
+    }
+
+    #[test]
+    fn real_error_and_unloaded_eof_are_failures() {
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32,
+                true,
+                false
+            ),
+            EndFileDisposition::Failed,
+        );
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                false,
+                false
+            ),
+            EndFileDisposition::Failed,
+        );
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                true,
+                false
+            ),
+            EndFileDisposition::Ended,
+        );
+    }
 }
