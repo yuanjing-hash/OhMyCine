@@ -22,9 +22,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 futures-util = "0.3"
 fs2 = "0.4"
 axum = "0.7"
-tonic = { version = "0.12", features = ["tls-native-roots"] }
-prost = "0.13"
-prost-types = "0.13"
 tauri-plugin-dialog = "2"
 sha2 = "0.10"
 sha1 = "0.10"
@@ -32,14 +29,11 @@ md5 = "0.7"
 rusqlite = { version = "0.32", features = ["bundled"] }
 aes-gcm = "0.10"
 base64 = "0.22"
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 flate2 = "1"
 roxmltree = "0.20"
 rand = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-crc32fast = "1"
 raw-window-handle = "0.6"
-notify = "6.1"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

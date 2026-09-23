@@ -13,14 +13,7 @@ const isVisible = ref(false)
 const sourceIcons: Record<string, string> = {
   emby: 'E',
   jellyfin: 'J',
-  alist: 'A',
-  clouddrive2: 'C',
-  webdav: 'W',
-  local: 'L',
   server: 'S',
-  115: '1',
-  123: '2',
-  quark: 'Q',
   offline: '↓',
 }
 

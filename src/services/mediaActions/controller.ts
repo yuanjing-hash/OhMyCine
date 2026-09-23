@@ -85,7 +85,7 @@ export class MediaActionController {
 
       let confirmation: MediaActionConfirmationResult | undefined
       if (capability.confirmation) {
-        confirmation = await this.options.confirm?.(capability.confirmation) ?? { confirmed: false, deleteSourceFiles: false }
+        confirmation = await this.options.confirm?.(capability.confirmation) ?? { confirmed: false }
         if (!confirmation.confirmed)
           return { status: 'cancelled' }
       }

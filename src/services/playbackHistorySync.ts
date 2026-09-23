@@ -221,7 +221,7 @@ export function mapServerHistoryChangeToLocalEntry(change: ServerPlaybackHistory
       })
   if (!config)
     return []
-  const presentation = change.source_kind === 'server' ? mapServerHistoryItem(config.id, change)[0] : undefined
+  const presentation = change.source_kind === 'server' ? mapServerHistoryItem(config.id, change, config.url)[0] : undefined
   return [{
     sourceId: config.id,
     libraryId: change.library_id,

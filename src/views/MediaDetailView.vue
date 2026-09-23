@@ -5,6 +5,7 @@ import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import CachedImage from '@/components/media/CachedImage.vue'
 import ImmersiveMediaRail from '@/components/media/ImmersiveMediaRail.vue'
 import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
 import MediaGrid from '@/components/media/MediaGrid.vue'
@@ -12,13 +13,13 @@ import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { describeMediaSource, hasMeaningfulMediaSource } from '@/services/datasource/mediaSourceDisplay'
 import { toOfflineMediaDetail } from '@/services/datasource/offline'
 import { getOfflineDetail } from '@/services/downloads'
+import { artworkURLCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
-import { getContextFlatEpisodes, getContextSeriesSeasons, getPlayableSeasonChildren } from '@/services/scraper/rawSeriesGrouping'
 import { episodeSearchTitle, searchSeriesEpisodes } from '@/services/seriesEpisodeSearch'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -305,29 +306,10 @@ async function loadDetail() {
       selectedAudioIndex.value = contextual.detail.audioTracks?.find(track => track.isDefault)?.index ?? contextual.detail.audioTracks?.[0]?.index ?? null
       selectedSubtitleIndex.value = contextual.detail.subtitles?.find(track => track.isDefault)?.index ?? contextual.detail.subtitles?.[0]?.index ?? null
 
-      if (contextual.detail.type === 'series') {
-        const contextSeasons = getContextSeriesSeasons(contextual.detail)
-        if (contextSeasons.length > 0) {
-          seasons.value = contextSeasons
-          for (const season of contextSeasons) {
-            const seasonEpisodes = getPlayableSeasonChildren(season)
-            if (seasonEpisodes.length > 0)
-              seasonEpisodeCache.set(season.id, seasonEpisodes)
-          }
-          selectedSeasonId.value = contextSeasons[0].id
-          episodes.value = getPlayableSeasonChildren(contextSeasons[0])
-        }
-        else {
-          episodes.value = getContextFlatEpisodes(contextual)
-          seasonEpisodeCache.set(contextual.detail.id, episodes.value)
-        }
-        resetEpisodeWindow()
-        await refreshPlaybackProgress(episodes.value)
-        selectInitialEpisodeForSeason()
-      }
-      else {
+      if (contextual.detail.type === 'series')
+        await loadSeriesSeasons(await resolveSource(), contextual.detail.id)
+      else
         await refreshPlaybackProgress([contextual.detail])
-      }
       return
     }
 
@@ -404,16 +386,6 @@ async function selectSeason(season: MediaItem) {
     return
 
   selectedSeasonId.value = season.id
-  const contextEpisodes = getPlayableSeasonChildren(season)
-  if (contextEpisodes.length > 0) {
-    seasonEpisodeCache.set(season.id, contextEpisodes)
-    episodes.value = contextEpisodes
-    resetEpisodeWindow()
-    await refreshPlaybackProgress(episodes.value)
-    selectInitialEpisodeForSeason()
-    return
-  }
-
   const cachedEpisodes = seasonEpisodeCache.get(season.id)
   if (cachedEpisodes) {
     episodes.value = cachedEpisodes
@@ -474,14 +446,8 @@ async function openEpisodeSearch() {
     const entriesBySeason = await Promise.all(seasons.value.map(async (season) => {
       let seasonEpisodes = seasonEpisodeCache.get(season.id)
       if (!seasonEpisodes) {
-        const contextualEpisodes = getPlayableSeasonChildren(season)
-        if (contextualEpisodes.length > 0) {
-          seasonEpisodes = contextualEpisodes
-        }
-        else {
-          sourcePromise ??= resolveSource()
-          seasonEpisodes = playableEpisodeItems(await (await sourcePromise).list(season.id))
-        }
+        sourcePromise ??= resolveSource()
+        seasonEpisodes = playableEpisodeItems(await (await sourcePromise).list(season.id))
         if (generation !== episodeSearchGeneration)
           return []
         seasonEpisodeCache.set(season.id, seasonEpisodes)
@@ -951,6 +917,7 @@ function markTitleLogoFailed(url: string) {
 
     <template v-else-if="detail">
       <MediaDetailHero
+        :source-id="detail.sourceId"
         :title="detail.name"
         :original-title="detail.originalTitle"
         :poster-url="detail.posterUrl"
@@ -1125,7 +1092,7 @@ function markTitleLogoFailed(url: string) {
                 @keydown.enter.self.prevent="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
               >
                 <div class="episode-artwork theme-immersive-dark relative block overflow-hidden text-left">
-                  <img v-if="episode.episodeStillUrl || episode.backdropUrl || episode.posterUrl" :src="episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async">
+                  <CachedImage v-if="episode.episodeStillUrl || episode.backdropUrl || episode.posterUrl" :cache-key="artworkURLCacheKey(episode.sourceId, episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl ?? '', 'thumbnail')" :src="episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async" />
                   <div v-else class="episode-artwork-fallback flex aspect-video w-full items-center justify-center p-5 text-center text-sm text-white/42">
                     {{ episodeTitle(episode) }}
                   </div>
@@ -1350,7 +1317,7 @@ function markTitleLogoFailed(url: string) {
           <ImmersiveMediaRail label="剧照与截图">
             <div class="stills-strip">
               <figure v-for="(still, index) in detail.stills" :key="still" class="still-card">
-                <img :src="still" :alt="`${detail.name} 剧照 ${index + 1}`" loading="lazy" decoding="async">
+                <CachedImage :cache-key="artworkURLCacheKey(detail.sourceId, still, 'thumbnail')" :src="still" :alt="`${detail.name} 剧照 ${index + 1}`" loading="lazy" decoding="async" />
                 <figcaption>{{ String(index + 1).padStart(2, '0') }}</figcaption>
               </figure>
             </div>
@@ -1371,7 +1338,7 @@ function markTitleLogoFailed(url: string) {
             <div class="people-strip">
               <article v-for="person in visiblePeople" :key="`${person.id || person.name}:${person.role || ''}:${person.character || ''}`" class="person-tile">
                 <div class="person-portrait">
-                  <img v-if="person.imageUrl" :src="person.imageUrl" :alt="`${person.name} 照片`" loading="lazy" decoding="async">
+                  <CachedImage v-if="person.imageUrl" :cache-key="artworkURLCacheKey(detail.sourceId, person.imageUrl, 'poster')" :src="person.imageUrl" :alt="`${person.name} 照片`" loading="lazy" decoding="async" />
                   <span v-else>{{ person.name.slice(0, 1) }}</span>
                   <div class="person-portrait-shade" />
                 </div>
@@ -1502,7 +1469,7 @@ function markTitleLogoFailed(url: string) {
   transform: translateY(-0.2rem);
 }
 
-.still-card img {
+.still-card :deep(img) {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -1510,7 +1477,7 @@ function markTitleLogoFailed(url: string) {
   transition: transform 700ms var(--ease-out);
 }
 
-.still-card:hover img {
+.still-card:hover :deep(img) {
   transform: scale(1.025);
 }
 
@@ -1556,7 +1523,7 @@ function markTitleLogoFailed(url: string) {
   transition: border-color var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
 
-.person-portrait img {
+.person-portrait :deep(img) {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -1575,7 +1542,7 @@ function markTitleLogoFailed(url: string) {
   transform: translateY(-0.18rem);
 }
 
-.person-tile:hover .person-portrait img {
+.person-tile:hover .person-portrait :deep(img) {
   transform: scale(1.035);
 }
 

@@ -8,6 +8,22 @@ export interface AndroidPickedLocalMedia {
   readonly modifiedMs?: number
 }
 
+export interface AndroidSelectedLocalMedia {
+  readonly uri: string
+  readonly name?: string
+  readonly size?: number
+  readonly modifiedMs?: number
+}
+
+export interface AndroidPickedLocalMediaSelection {
+  readonly cancelled: boolean
+  readonly items: readonly AndroidSelectedLocalMedia[]
+}
+
+export async function pickAndroidLocalVideos(): Promise<AndroidPickedLocalMediaSelection> {
+  return invoke<AndroidPickedLocalMediaSelection>('local_file_pick_videos')
+}
+
 export async function pickAndroidLocalVideo(): Promise<AndroidPickedLocalMedia> {
   return invoke<AndroidPickedLocalMedia>('local_file_pick_video')
 }

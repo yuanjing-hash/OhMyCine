@@ -596,7 +596,7 @@ fn remove_source_subtitle_cache(app: &AppHandle, source_id: &str) -> Result<(), 
     Ok(())
 }
 
-fn clear_raw_scan_cache(app: &AppHandle) -> Result<u64, String> {
+pub(crate) fn clear_raw_scan_cache(app: &AppHandle) -> Result<u64, String> {
     let path = storage::data_file(app, RAW_SCAN_DATABASE_FILE)?;
     if !path.exists() {
         return Ok(0);

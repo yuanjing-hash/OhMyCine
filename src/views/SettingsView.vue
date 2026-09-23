@@ -1,107 +1,36 @@
 <script setup lang="ts">
 import type { PlayerStorageInfo } from '@/services/appSettings'
 import type { OpenSubtitlesAuthMode, OpenSubtitlesCredentialValue } from '@/services/datasource/credentialStore'
-import type { DataSourceConfig, MediaItem, MediaLibrary } from '@/services/datasource/types'
+import type { DataSourceConfig, MediaLibrary } from '@/services/datasource/types'
 import type { ImageCacheStats } from '@/services/imageCache'
 import type { NavigationShortcutBindings, NavigationShortcutTarget } from '@/services/navigationShortcuts'
 import type { MobileEpisodeLayout, PlayerCacheMode, PlayerDemuxerCacheSize, PlayerHardwareDecoder, PlayerVideoOutput, PlayerVideoSync } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
-import type { ScrapeCategoryRule, ScrapeMediaType, ScrapeNamedOption, ScrapeRuleGroup, ScrapeValueCondition, TmdbGenreOption } from '@/services/scraper/classificationRules'
-import type { RawSourceScanKind } from '@/services/scraper/rawSourceScanSchedule'
-import type { TmdbAuthType } from '@/services/scraper/tmdb'
-import type { EditableDataSourceConfig, EditableDataSourceType, LoginDataSourceType, SourceTypeOption } from '@/services/settingsSourceOptions'
+import type { EditableDataSourceConfig, EditableDataSourceType, LoginDataSourceType } from '@/services/settingsSourceOptions'
 import type { SubtitleLanguage } from '@/services/subtitle'
 import type { UpdateChannel } from '@/services/updater'
-import { confirm as confirmDialog, open } from '@tauri-apps/plugin-dialog'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import tmdbLogoUrl from '@/assets/brands/tmdb-blue-short.svg'
 import DanmakuProviderSettings from '@/components/player/DanmakuProviderSettings.vue'
 import SecretInput from '@/components/SecretInput.vue'
-import { pickAndroidLocalDirectory } from '@/services/androidLocalMedia'
 import { flushAppSettings, getPlayerStorageInfo } from '@/services/appSettings'
-import { AlistDataSource, createAuthenticatedAlistSetupSource, loginAlistAndCreateConfig, normalizeAlistRootPath, readAlistRootPath } from '@/services/datasource/alist'
-import { CloudDrive2DataSource, createAuthenticatedCloudDrive2SetupSource, normalizeCloudDrive2RootPath, readCloudDrive2RootPath, saveCloudDrive2TokenAndCreateConfig } from '@/services/datasource/clouddrive2'
-import {
-  readAlistCredential,
-  readCloudDrive2Credential,
-  readEmbyCredential,
-  readOpenSubtitlesCredential,
-  readPan123Credential,
-  readQuarkCredential,
-  readRawCredentialBackup,
-  readWebDavCredential,
-  removeCredential,
-  saveRawCredentialBackup,
-} from '@/services/datasource/credentialStore'
+import { readEmbyCredential, readOpenSubtitlesCredential, readRawCredentialBackup, removeCredential, saveRawCredentialBackup } from '@/services/datasource/credentialStore'
 import { loginEmbyAndCreateConfig } from '@/services/datasource/emby'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
-import { createLocalFileDataSourceConfig, normalizeLocalRootPath, readLocalRootLabel, readLocalRootPath, validateLocalFileDataSourceConfig } from '@/services/datasource/local'
-import { createAuthenticatedPan123SetupSource, loginPan123AndCreateConfig, normalizePan123RootPath, PAN123_PROVIDER_URL, Pan123DataSource, readPan123RootPath } from '@/services/datasource/pan123'
-import { cancelQuarkLogin, createAuthenticatedQuarkSetupSource, normalizeQuarkRootPath, pollQuarkAccountLogin, pollQuarkQrLogin, QUARK_PROVIDER_URL, QuarkDataSource, readQuarkRootPath, saveQuarkCookieAndCreateConfig, startQuarkAccountLogin, startQuarkQrLogin } from '@/services/datasource/quark'
 import { loginServerAndCreateConfig, logoutServerBestEffort } from '@/services/datasource/server'
-import { createAuthenticatedWebDavSetupSource, loginWebDavAndCreateConfig, normalizeWebDavRootPath, readWebDavRootPath, WebDavDataSource } from '@/services/datasource/webdav'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
-import {
-  loadNavigationShortcutBindings,
-  resetNavigationShortcutBindings,
-  saveNavigationShortcutBindings,
-  shortcutDisplayLabel,
-  shortcutFromKeyboardEvent,
-  validateUniqueNavigationShortcuts,
-} from '@/services/navigationShortcuts'
+import { loadNavigationShortcutBindings, resetNavigationShortcutBindings, saveNavigationShortcutBindings, shortcutDisplayLabel, shortcutFromKeyboardEvent, validateUniqueNavigationShortcuts } from '@/services/navigationShortcuts'
 import { loadPlayerInteractionSettings, normalizeLongPressPlaybackSpeed, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
-import {
-  loadPlayerShortcutBindings,
-  resetPlayerShortcutBindings,
-  savePlayerShortcutBindings,
-  validateUniquePlayerShortcuts,
-} from '@/services/playerShortcuts'
-import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
-import {
-  createEmptyScrapeCategoryRule,
-  loadScrapeClassificationRules,
-  normalizeScrapeFallbackCategoryName,
-  resetScrapeClassificationRules,
-  saveScrapeClassificationRules,
-  SCRAPE_COUNTRY_OPTIONS,
-  SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME,
-  SCRAPE_LANGUAGE_OPTIONS,
-  TMDB_MOVIE_GENRES,
-  TMDB_TV_GENRES,
-} from '@/services/scraper/classificationRules'
-import { intervalMinutesToMs, intervalMsToMinutes, readRawSourceScanScheduleConfig, updateRawSourceScanScheduleExtra } from '@/services/scraper/rawSourceScanSchedule'
-import {
-  clearConfiguredTmdbCredential,
-  hasBuiltInTmdbCredential,
-  loadTmdbLocalSettings,
-  readConfiguredTmdbCredential,
-  readEffectiveTmdbCredentialFor,
-  readStoredTmdbCredential,
-  saveConfiguredTmdbCredential,
-  saveTmdbLocalSettings,
-  testTmdbApiRoute,
-  testTmdbImageRoute,
-} from '@/services/scraper/tmdb'
-import { defaultDisplayName, isEditableDataSourceConfig, isEditableDataSourceType, isRootSelectableRemoteSourceType, sourceTypeLabel, SOURCE_TYPE_OPTIONS as sourceTypeOptions, SUBTITLE_LANGUAGE_OPTIONS as subtitleLanguageOptions, TMDB_AUTH_TYPE_OPTIONS as tmdbAuthTypeOptions, TMDB_LANGUAGE_OPTIONS as tmdbLanguageOptions, TMDB_REGION_OPTIONS as tmdbRegionOptions } from '@/services/settingsSourceOptions'
-import {
-  clearOpenSubtitlesCredentials,
-  loadSubtitleSearchSettings,
-  OPENSUBTITLES_CREDENTIAL_REF,
-  readOpenSubtitlesCredentials,
-  saveOpenSubtitlesCredentials,
-  saveSubtitleSearchSettings,
-  testOpenSubtitlesLogin,
-} from '@/services/subtitle'
+import { loadPlayerShortcutBindings, resetPlayerShortcutBindings, savePlayerShortcutBindings, validateUniquePlayerShortcuts } from '@/services/playerShortcuts'
+import { defaultDisplayName, isEditableDataSourceConfig, isEditableDataSourceType, sourceTypeLabel, SOURCE_TYPE_OPTIONS as sourceTypeOptions, SUBTITLE_LANGUAGE_OPTIONS as subtitleLanguageOptions } from '@/services/settingsSourceOptions'
+import { clearOpenSubtitlesCredentials, loadSubtitleSearchSettings, OPENSUBTITLES_CREDENTIAL_REF, readOpenSubtitlesCredentials, saveOpenSubtitlesCredentials, saveSubtitleSearchSettings, testOpenSubtitlesLogin } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useUpdaterStore } from '@/stores/updater'
 
-type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'scraping' | 'playback' | 'shortcuts' | 'updates' | 'diagnostics'
-type SettingsEntryId = 'datasources' | 'scraping' | 'playback' | 'shortcuts' | 'appearance' | 'ai' | 'updates' | 'diagnostics'
+type SettingsMode = 'overview' | 'manage' | 'add' | 'edit' | 'playback' | 'shortcuts' | 'updates' | 'diagnostics'
+type SettingsEntryId = 'datasources' | 'playback' | 'shortcuts' | 'appearance' | 'updates' | 'diagnostics'
 type SettingsQueryState = Partial<Record<'section' | 'action' | 'id', string>>
-type ConditionValueState = 'none' | 'include' | 'exclude'
-type QuarkLoginMode = 'qr' | 'account' | 'cookie'
-type Pan123LoginMode = 'account' | 'token'
 
 interface DataSourceFormState {
   id: string | null
@@ -110,19 +39,6 @@ interface DataSourceFormState {
   url: string
   username: string
   password: string
-  apiToken: string
-  cookie: string
-  rootPath: string
-  rootLabel: string
-}
-
-interface TmdbFormState {
-  authType: TmdbAuthType
-  credential: string
-  language: string
-  region: string
-  apiBaseUrl: string
-  imageBaseUrl: string
 }
 
 interface SubtitleSettingsFormState {
@@ -170,48 +86,12 @@ const form = reactive<DataSourceFormState>({
   url: '',
   username: '',
   password: '',
-  apiToken: '',
-  cookie: '',
-  rootPath: '/',
-  rootLabel: '',
 })
 const mode = ref<SettingsMode>('overview')
 const isSaving = ref(false)
 const clearingCacheSourceId = ref<string | null>(null)
 const feedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
-const lastFetchedLibraries = ref<MediaLibrary[]>([])
-const alistBrowserSource = shallowRef<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | Pan123DataSource | QuarkDataSource | null>(null)
-const alistBrowserPath = ref('/')
-const alistBrowserDirectories = ref<MediaItem[]>([])
-const alistBrowserLoading = ref(false)
-const alistBrowserError = ref<string | null>(null)
-const quarkLoginMode = ref<QuarkLoginMode>('qr')
-const pan123LoginMode = ref<Pan123LoginMode>('account')
-const quarkQrSessionId = ref('')
-const quarkQrImageUrl = ref('')
-const quarkAccountSessionId = ref('')
-const quarkLoginFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
-const isStartingQuarkLogin = ref(false)
-const isPollingQuarkLogin = ref(false)
-let quarkLoginPollTimer: ReturnType<typeof setInterval> | null = null
-const scrapeRules = ref(loadScrapeClassificationRules())
-const scrapeRulesDirty = ref(false)
-const scrapeFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
-const tmdbSettings = loadTmdbLocalSettings()
-const tmdbForm = reactive<TmdbFormState>({
-  authType: tmdbSettings.authType,
-  credential: '',
-  language: tmdbSettings.language,
-  region: tmdbSettings.region,
-  apiBaseUrl: tmdbSettings.apiBaseUrl,
-  imageBaseUrl: tmdbSettings.imageBaseUrl,
-})
-const tmdbCredentialConfigured = ref(false)
-const tmdbStoredAuthType = ref<TmdbAuthType | null>(null)
-const tmdbBuiltInCredentialAvailable = hasBuiltInTmdbCredential()
-const isSavingTmdbSettings = ref(false)
-const isTestingTmdbApiRoute = ref(false)
-const isTestingTmdbImageRoute = ref(false)
+
 const subtitleSettings = loadSubtitleSearchSettings()
 const playerInteractionSettings = loadPlayerInteractionSettings()
 const subtitleForm = reactive<SubtitleSettingsFormState>({
@@ -252,8 +132,6 @@ const imageCacheForm = reactive(loadImageCacheSettings())
 const imageCacheStats = ref<ImageCacheStats | null>(null)
 const imageCacheFeedback = ref<{ type: 'success' | 'error', message: string } | null>(null)
 const isSavingImageCache = ref(false)
-const isNativeAndroid = isNativeAndroidRuntime()
-
 const configuredSources = computed(() => store.orderedConfigs)
 const isEditing = computed(() => mode.value === 'edit')
 const sourceCredentialConfigured = computed(() => {
@@ -264,69 +142,12 @@ const sourceCredentialConfigured = computed(() => {
 })
 const editedSource = computed(() => form.id ? store.configs.find(config => config.id === form.id) ?? null : null)
 const selectedProvider = computed(() => sourceTypeOptions.find(option => option.type === form.type) ?? sourceTypeOptions[0])
-const isAlistForm = computed(() => form.type === 'alist')
-const isCloudDrive2Form = computed(() => form.type === 'clouddrive2')
-const isWebDavForm = computed(() => form.type === 'webdav')
-const isPan123Form = computed(() => form.type === '123')
-const isQuarkForm = computed(() => form.type === 'quark')
-const isLocalForm = computed(() => form.type === 'local')
-const isRemoteRootBrowserForm = computed(() => isAlistForm.value || isCloudDrive2Form.value || isWebDavForm.value || isPan123Form.value || isQuarkForm.value)
-const isAccountPasswordForm = computed(() => !isLocalForm.value && !isCloudDrive2Form.value && !isQuarkForm.value && (!isPan123Form.value || pan123LoginMode.value === 'account'))
-const isApiTokenForm = computed(() => isCloudDrive2Form.value || (isPan123Form.value && pan123LoginMode.value === 'token'))
-const selectedRootPathLabel = computed(() => isLocalForm.value
-  ? localRootPathLabel(form.rootPath, form.rootLabel)
-  : normalizeRemoteRootPath(form.rootPath))
-const alistParentPath = computed(() => parentDirectoryPath(alistBrowserPath.value))
-const canBrowseAlistParent = computed(() => alistBrowserPath.value !== '/')
 const activeSourceCount = computed(() => configuredSources.value.filter(source => source.enabled !== false).length)
 const dataSourceEntryMeta = computed(() => {
   if (configuredSources.value.length === 0)
     return '尚未配置'
   return `${activeSourceCount.value}/${configuredSources.value.length} 个启用`
 })
-const scrapingEntryMeta = computed(() => {
-  if (scrapeRulesDirty.value)
-    return '规则未保存'
-  if (tmdbCredentialConfigured.value)
-    return 'TMDB 自定义凭据'
-  if (tmdbBuiltInCredentialAvailable)
-    return 'TMDB 内置通道'
-  return tmdbStoredAuthType.value ? '类型待确认' : 'TMDB 不可用'
-})
-const tmdbCredentialInputLabel = computed(() =>
-  tmdbForm.authType === 'readAccessToken' ? 'API 读访问令牌 / Read Access Token' : 'API Key',
-)
-const tmdbCredentialPlaceholder = computed(() =>
-  tmdbCredentialConfigured.value
-    ? `留空表示保留当前 ${tmdbCredentialInputLabel.value}`
-    : `可选：使用你自己的 ${tmdbCredentialInputLabel.value}`,
-)
-const tmdbCredentialAvailable = computed(() => tmdbCredentialConfigured.value || tmdbBuiltInCredentialAvailable)
-const tmdbApiRouteDraftChanged = computed(() => {
-  const active = loadTmdbLocalSettings()
-  return tmdbForm.apiBaseUrl.trim().replace(/\/+$/, '') !== active.apiBaseUrl
-})
-const tmdbImageRouteDraftChanged = computed(() => {
-  const active = loadTmdbLocalSettings()
-  return tmdbForm.imageBaseUrl.trim().replace(/\/+$/, '') !== active.imageBaseUrl
-})
-const tmdbCredentialStatusLabel = computed(() => {
-  if (tmdbCredentialConfigured.value)
-    return '使用自定义凭据'
-  if (tmdbBuiltInCredentialAvailable)
-    return '内置通道可用'
-  if (tmdbStoredAuthType.value)
-    return `已保存 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)}，当前类型未配置`
-  return '当前构建未提供凭据'
-})
-
-async function loadStoredTmdbCredentialValue(): Promise<string> {
-  const credential = await readStoredTmdbCredential()
-  if (!credential || credential.authType !== tmdbForm.authType)
-    throw new Error('当前类型没有已保存的 TMDB 凭据。')
-  return credential.value
-}
-
 async function loadOpenSubtitlesCredentialField(field: 'apiKey' | 'password'): Promise<string> {
   const credential = await readOpenSubtitlesCredential(OPENSUBTITLES_CREDENTIAL_REF)
   const value = field === 'apiKey' && credential?.authMode === 'apiKey'
@@ -337,10 +158,6 @@ async function loadOpenSubtitlesCredentialField(field: 'apiKey' | 'password'): P
   if (!value)
     throw new Error('当前登录方式没有已保存的 OpenSubtitles 凭据。')
   return value
-}
-
-function showTmdbRevealError(message: string) {
-  scrapeFeedback.value = { type: 'error', message }
 }
 
 function showSubtitleRevealError(message: string) {
@@ -427,37 +244,23 @@ const credentialProtectionWarning = computed(() => {
   return null
 })
 const pageDescription = computed(() => mode.value === 'overview'
-  ? '管理数据源、播放、字幕、刮削、更新和本地存储。'
-  : mode.value === 'scraping'
-    ? '设置原始文件媒体库的元数据匹配与分类规则。'
-    : mode.value === 'playback'
-      ? '设置字幕搜索语言和字幕提供器。'
-      : mode.value === 'shortcuts'
-        ? '配置播放器控制和页面导航快捷键。'
-        : mode.value === 'updates'
-          ? '选择更新渠道并检查新版本。'
-          : mode.value === 'diagnostics'
-            ? '查看当前运行模式和数据目录。'
-            : '添加、编辑和管理媒体数据源。')
-const movieRuleGroup = computed(() => getScrapeRuleGroup('movie'))
-const tvRuleGroup = computed(() => getScrapeRuleGroup('tv'))
-const scrapeRuleGroups = computed(() => [movieRuleGroup.value, tvRuleGroup.value])
+  ? '管理媒体服务器、播放、字幕、更新和本地存储。'
+  : mode.value === 'playback'
+    ? '设置字幕搜索语言和字幕提供器。'
+    : mode.value === 'shortcuts'
+      ? '配置播放器控制和页面导航快捷键。'
+      : mode.value === 'updates'
+        ? '选择更新渠道并检查新版本。'
+        : mode.value === 'diagnostics'
+          ? '查看当前运行模式和数据目录。'
+          : '添加、编辑和管理远程媒体库。')
 const settingsEntries = computed<SettingsEntry[]>(() => [
   {
     id: 'datasources',
     label: 'DS',
-    title: '管理数据源',
-    description: '添加和管理 Emby、OpenList/Alist、CloudDrive2、夸克网盘、123 云盘、WebDAV 与本地文件夹。',
+    title: '管理媒体库',
+    description: '添加和管理 OhMyCine Server、Emby 与 Jellyfin。',
     meta: dataSourceEntryMeta.value,
-    actionLabel: '打开',
-    disabled: false,
-  },
-  {
-    id: 'scraping',
-    label: 'Meta',
-    title: '刮削与分类',
-    description: '设置海报、简介等元数据匹配和媒体分类规则。',
-    meta: scrapingEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
   },
@@ -465,7 +268,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     id: 'playback',
     label: 'Play',
     title: '播放与字幕',
-    description: '配置 OpenSubtitles、射手网和迅雷字幕搜索。',
+    description: '配置播放引擎、OpenSubtitles、射手网和迅雷字幕搜索。',
     meta: playbackEntryMeta.value,
     actionLabel: '打开',
     disabled: false,
@@ -484,15 +287,6 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
     label: 'UI',
     title: '外观',
     description: '主题、玻璃强度、海报墙密度和动画偏好会随 Cinema OS 设计系统开放。',
-    meta: '规划中',
-    actionLabel: '待开放',
-    disabled: true,
-  },
-  {
-    id: 'ai',
-    label: 'AI',
-    title: 'AI 推荐',
-    description: '本地库索引、模型提供商和隐私边界设置将在推荐功能稳定后接入。',
     meta: '规划中',
     actionLabel: '待开放',
     disabled: true,
@@ -519,167 +313,81 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
 
 onMounted(() => {
   store.loadConfigs()
-  void refreshTmdbCredentialState()
   void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
   void updaterStore.initialize().then(syncUpdaterForm)
   syncModeFromRoute()
 })
 
-onBeforeUnmount(() => {
-  stopQuarkLoginPolling()
-})
-
-watch(() => route.query, () => {
-  syncModeFromRoute()
-})
-
+watch(() => route.query, syncModeFromRoute)
 watch(() => form.type, (type) => {
-  if (type !== 'quark')
-    resetQuarkLoginSession()
   if (!isEditing.value)
     form.displayName = defaultDisplayName(type)
-  if (type === 'local') {
-    form.url = ''
-    form.username = ''
-    form.password = ''
-    form.apiToken = ''
-    form.cookie = ''
-    form.rootPath = ''
-    form.rootLabel = ''
-  }
-  else if (type === 'emby' || type === 'jellyfin' || type === 'server') {
-    form.rootPath = '/'
-  }
-  else if (isRootSelectableRemoteSourceType(type) && !form.rootPath) {
-    form.rootPath = '/'
-  }
-  if (type === 'clouddrive2') {
-    form.username = ''
-    form.password = ''
-    form.cookie = ''
-  }
-  else if (type === 'quark') {
-    form.url = QUARK_PROVIDER_URL
-    form.username = ''
-    form.password = ''
-    form.apiToken = ''
-  }
-  else if (type === '123') {
-    form.url = PAN123_PROVIDER_URL
-    form.cookie = ''
-  }
-  else {
-    form.apiToken = ''
-    form.cookie = ''
-  }
-  resetAlistBrowser()
-  if (type !== '123')
-    pan123LoginMode.value = 'account'
-})
-
-watch(() => [form.url, form.username, form.password, form.apiToken, form.cookie] as const, () => {
-  if (isRootSelectableRemoteSourceType(form.type))
-    resetAlistBrowser()
-})
-
-watch(() => tmdbForm.authType, () => {
-  void refreshTmdbCredentialState()
 })
 
 function syncModeFromRoute() {
   const section = routeQueryValue('section')
   if (section === 'diagnostics') {
-    replaceSettingsQuery({ section: 'diagnostics' })
+    replaceSettingsQuery({ section })
     mode.value = 'diagnostics'
     feedback.value = null
     void refreshStorageInfo()
     return
   }
-
-  if (section === 'scraping') {
-    replaceSettingsQuery({ section: 'scraping' })
-    if (mode.value !== 'scraping') {
-      lastFetchedLibraries.value = []
-      resetAlistBrowser()
-    }
-    mode.value = 'scraping'
-    feedback.value = null
-    void refreshTmdbCredentialState()
-    return
-  }
-
   if (section === 'playback') {
-    replaceSettingsQuery({ section: 'playback' })
+    replaceSettingsQuery({ section })
     mode.value = 'playback'
     feedback.value = null
     subtitleFeedback.value = null
     void refreshOpenSubtitlesCredentialState()
     return
   }
-
   if (section === 'shortcuts') {
-    replaceSettingsQuery({ section: 'shortcuts' })
+    replaceSettingsQuery({ section })
     mode.value = 'shortcuts'
     feedback.value = null
     shortcutFeedback.value = null
     syncShortcutForms()
     return
   }
-
   if (section === 'updates') {
-    replaceSettingsQuery({ section: 'updates' })
+    replaceSettingsQuery({ section })
     mode.value = 'updates'
     feedback.value = null
     updateFeedback.value = null
     syncUpdaterForm()
     return
   }
-
   if (section !== 'datasources') {
     replaceSettingsQuery()
-    if (mode.value !== 'overview') {
-      lastFetchedLibraries.value = []
-      resetAlistBrowser()
-    }
     mode.value = 'overview'
     return
   }
 
   const action = routeQueryValue('action')
   if (action === 'add') {
-    replaceSettingsQuery({ section: 'datasources', action: 'add' })
+    replaceSettingsQuery({ section, action })
     if (mode.value !== 'add')
       resetForm()
     mode.value = 'add'
     return
   }
-
   if (action === 'edit') {
     const id = routeQueryValue('id')
     const source = id ? store.configs.find(config => config.id === id) : null
     if (source && isEditableDataSourceConfig(source)) {
-      replaceSettingsQuery({ section: 'datasources', action: 'edit', id: source.id })
+      replaceSettingsQuery({ section, action, id: source.id })
       if (mode.value !== 'edit' || form.id !== source.id)
         populateEditForm(source)
       return
     }
-    replaceSettingsQuery({ section: 'datasources' })
+    replaceSettingsQuery({ section })
     mode.value = 'manage'
-    if (id) {
-      feedback.value = {
-        type: 'error',
-        message: '未找到可编辑的数据源，请从列表中重新选择。',
-      }
-    }
+    if (id)
+      feedback.value = { type: 'error', message: '未找到可编辑的数据源，请从列表中重新选择。' }
     return
   }
-
-  replaceSettingsQuery({ section: 'datasources' })
-  if (mode.value !== 'manage') {
-    lastFetchedLibraries.value = []
-    resetAlistBrowser()
-  }
+  replaceSettingsQuery({ section })
   mode.value = 'manage'
 }
 
@@ -715,8 +423,6 @@ function openSettingsEntry(entry: SettingsEntry) {
     return
   if (entry.id === 'datasources')
     goDataSources()
-  else if (entry.id === 'scraping')
-    goScrapingSettings()
   else if (entry.id === 'playback')
     goPlaybackSettings()
   else if (entry.id === 'shortcuts')
@@ -771,27 +477,13 @@ async function saveImageCacheLimit() {
 function goOverview() {
   mode.value = 'overview'
   feedback.value = null
-  lastFetchedLibraries.value = []
-  resetAlistBrowser()
-  resetQuarkLoginSession()
   void router.replace({ name: 'settings' })
 }
 
 function goDataSources() {
   mode.value = 'manage'
   feedback.value = null
-  lastFetchedLibraries.value = []
-  resetAlistBrowser()
   void router.push({ name: 'settings', query: { section: 'datasources' } })
-}
-
-function goScrapingSettings() {
-  mode.value = 'scraping'
-  feedback.value = null
-  scrapeFeedback.value = null
-  lastFetchedLibraries.value = []
-  resetAlistBrowser()
-  void router.push({ name: 'settings', query: { section: 'scraping' } })
 }
 
 function goPlaybackSettings() {
@@ -1062,7 +754,7 @@ async function clearPlaybackCache() {
     const result = await store.clearAllMediaCaches()
     subtitleFeedback.value = {
       type: 'success',
-      message: `播放缓存已清除：移除 ${result.playbackPreferencesDeleted} 条单视频设置和 ${result.rawScanCacheEntriesDeleted} 条媒体扫描缓存。数据源、登录凭据、播放记录和全局设置均已保留。`,
+      message: `播放缓存已清除：移除 ${result.playbackPreferencesDeleted} 条单视频设置。数据源、登录凭据、播放记录和全局设置均已保留。`,
     }
   }
   catch (error) {
@@ -1096,8 +788,6 @@ function goManage(options: { preserveFeedback?: boolean } = {}) {
   mode.value = 'manage'
   if (!options.preserveFeedback)
     feedback.value = null
-  lastFetchedLibraries.value = []
-  resetAlistBrowser()
   void router.replace({ name: 'settings', query: { section: 'datasources' } })
 }
 
@@ -1114,25 +804,14 @@ function resetForm() {
   form.url = ''
   form.username = ''
   form.password = ''
-  form.apiToken = ''
-  form.cookie = ''
-  form.rootPath = '/'
-  form.rootLabel = ''
-  pan123LoginMode.value = 'account'
   feedback.value = null
-  lastFetchedLibraries.value = []
-  resetAlistBrowser()
 }
 
 function editSource(config: DataSourceConfig) {
   if (!isEditableDataSourceConfig(config)) {
-    feedback.value = {
-      type: 'error',
-      message: `${sourceTypeLabel(config.type)} 暂不支持在当前设置页编辑。`,
-    }
+    feedback.value = { type: 'error', message: '此数据源不再支持配置。' }
     return
   }
-
   populateEditForm(config)
   void router.replace({ name: 'settings', query: { section: 'datasources', action: 'edit', id: config.id } })
 }
@@ -1144,39 +823,10 @@ function populateEditForm(config: EditableDataSourceConfig) {
   form.url = config.url
   form.username = ''
   form.password = ''
-  form.apiToken = ''
-  form.cookie = ''
-  pan123LoginMode.value = 'account'
-  if (config.type === 'alist')
-    form.rootPath = readAlistRootPath(config)
-  else if (config.type === 'clouddrive2')
-    form.rootPath = readCloudDrive2RootPath(config)
-  else if (config.type === 'webdav')
-    form.rootPath = readWebDavRootPath(config)
-  else if (config.type === 'quark')
-    form.rootPath = readQuarkRootPath(config)
-  else if (config.type === '123')
-    form.rootPath = readPan123RootPath(config)
-  else if (config.type === 'local')
-    form.rootPath = readLocalRootPath(config)
-  else
-    form.rootPath = '/'
-  form.rootLabel = config.type === 'local' ? readLocalRootLabel(config) : ''
   feedback.value = {
     type: 'info',
-    message: config.type === 'local'
-      ? '可修改显示名称或重新选择本地根目录；本地文件源不会保存账号、密码或 token。'
-      : config.type === 'clouddrive2'
-        ? '可修改显示名称、根目录与启用状态；API Token 留空表示保留，修改服务地址时必须重新输入 Token。'
-        : config.type === 'quark'
-          ? '可修改显示名称与根目录；Cookie 留空表示保留当前登录，失效后重新粘贴即可。'
-          : config.type === '123'
-            ? '可修改显示名称与根目录；登录信息留空表示保留当前凭据，失效后可用账号或访问令牌重新登录。'
-            : `可修改显示名称、根目录与启用状态；如 ${sourceTypeLabel(config.type)} URL 或账号变化，请输入账号密码重新登录。`,
+    message: '显示名称可直接修改；服务器地址或账号变化时，请同时输入账号和密码以重新登录。',
   }
-  lastFetchedLibraries.value = []
-  resetAlistBrowser()
-  resetQuarkLoginSession()
   mode.value = 'edit'
 }
 
@@ -1198,10 +848,7 @@ async function clearSourceCache(source: DataSourceConfig) {
     feedback.value = { type: 'success', message: `已清除「${source.displayName ?? source.name}」的媒体库、列表与详情缓存，凭证和配置未受影响。` }
   }
   catch (error) {
-    feedback.value = {
-      type: 'error',
-      message: toSafeErrorMessage(error, '清除缓存失败，请稍后重试。'),
-    }
+    feedback.value = { type: 'error', message: toSafeErrorMessage(error, '清除缓存失败，请稍后重试。') }
   }
   finally {
     clearingCacheSourceId.value = null
@@ -1211,7 +858,6 @@ async function clearSourceCache(source: DataSourceConfig) {
 async function saveSource() {
   isSaving.value = true
   feedback.value = null
-  lastFetchedLibraries.value = []
   try {
     if (mode.value === 'edit' && form.id) {
       await saveEditedSource(form.id)
@@ -1219,31 +865,12 @@ async function saveSource() {
     }
 
     const id = `${form.type}-${Date.now()}`
-    if (form.type === 'local') {
-      const result = await createAndValidateLocalConfig({
-        id,
-        displayName: form.displayName,
-        rootPath: form.rootPath,
-        rootLabel: form.rootLabel,
-        order: store.configs.length,
-      })
-      await store.replaceConfig(result.config)
-      lastFetchedLibraries.value = result.libraries
-      resetForm()
-      feedback.value = { type: 'success', message: `本地文件夹已验证，已添加到左侧侧边栏。` }
-      goManage({ preserveFeedback: true })
-      return
-    }
-
     const result = await loginAndCreateConfig(form.type, {
       id,
       url: form.url,
       displayName: form.displayName,
       username: form.username,
       password: form.password,
-      apiToken: form.apiToken,
-      cookie: form.cookie,
-      rootPath: isRootSelectableRemoteSourceType(form.type) ? selectedRootPathLabel.value : undefined,
       order: store.configs.length,
     })
     try {
@@ -1258,21 +885,13 @@ async function saveSource() {
     const libraryCount = result.libraries.length
     const label = sourceTypeLabel(form.type)
     resetForm()
-    feedback.value = { type: 'success', message: `${label} 连接测试成功，已验证 ${libraryCount} 个入口。新数据源已添加到左侧侧边栏。` }
+    feedback.value = { type: 'success', message: `${label} 连接测试成功，已验证 ${libraryCount} 个入口。` }
     goManage({ preserveFeedback: true })
   }
   catch (error) {
     feedback.value = {
       type: 'error',
-      message: toSafeErrorMessage(error, form.type === 'local'
-        ? '添加本地文件夹失败，请确认目录存在且有读取权限。'
-        : form.type === 'clouddrive2'
-          ? '添加 CloudDrive2 失败，请检查 gRPC 服务地址、API Token 权限和服务状态。'
-          : form.type === 'quark'
-            ? '添加夸克网盘失败，请检查 Cookie 是否完整且仍然有效。'
-            : form.type === '123'
-              ? '添加 123 云盘失败，请检查账号密码或访问令牌是否有效。'
-              : `添加数据源失败，请检查 ${sourceTypeLabel(form.type)} URL、账号和密码。`),
+      message: toSafeErrorMessage(error, '添加数据源失败，请检查服务器 URL、账号和密码。'),
     }
   }
   finally {
@@ -1285,41 +904,16 @@ async function saveEditedSource(id: string) {
   if (!existing)
     throw new Error('数据源不存在。')
   if (!isEditableDataSourceType(existing.type))
-    throw new Error(`${sourceTypeLabel(existing.type)} 暂不支持在当前设置页编辑。`)
-
-  if (existing.type === 'local') {
-    const result = await createAndValidateLocalConfig({
-      id,
-      displayName: form.displayName,
-      rootPath: form.rootPath,
-      rootLabel: form.rootLabel,
-      order: existing.order,
-    })
-    await store.replaceConfig({ ...result.config, enabled: existing.enabled !== false })
-    lastFetchedLibraries.value = result.libraries
-    feedback.value = { type: 'success', message: '本地文件夹数据源已更新。' }
-    goManage({ preserveFeedback: true })
-    return
-  }
+    throw new Error('此数据源不再支持编辑。')
 
   const username = form.username.trim()
-  const nextUrl = existing.type === 'quark'
-    ? QUARK_PROVIDER_URL
-    : existing.type === '123'
-      ? PAN123_PROVIDER_URL
-      : form.url.trim()
+  const nextUrl = form.url.trim()
   const nextDisplayName = form.displayName.trim() || existing.displayName || existing.name
-  const nextRootPath = isRootSelectableRemoteSourceType(existing.type) ? selectedRootPathLabel.value : undefined
   const label = sourceTypeLabel(existing.type)
-  const shouldRelogin = shouldReloginSource(existing, nextUrl, username, form.password, form.apiToken, form.cookie)
-  if (shouldRelogin && existing.type === 'clouddrive2' && !form.apiToken.trim())
-    throw new Error('更新 CloudDrive2 服务地址或 Token 时必须填写 API Token。')
-  if (shouldRelogin && existing.type === 'quark' && !form.cookie.trim())
-    throw new Error('更新夸克网盘登录信息时必须填写 Cookie。')
-  if (shouldRelogin && existing.type === '123' && !form.apiToken.trim() && (!username || !form.password))
-    throw new Error('更新 123 云盘登录信息时，请填写账号密码或访问令牌。')
-  if (shouldRelogin && existing.type !== 'clouddrive2' && existing.type !== 'quark' && existing.type !== '123' && (!username || !form.password))
-    throw new Error(`更新 ${label} URL 或重新登录时必须同时填写账号和密码。`)
+  const shouldRelogin = normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(existing.url)
+    || Boolean(username || form.password)
+  if (shouldRelogin && (!username || !form.password))
+    throw new Error(`更新 ${label} 地址或重新登录时必须同时填写账号和密码。`)
 
   if (shouldRelogin) {
     const previousCredential = await readCredentialBackupForConfig(existing)
@@ -1333,9 +927,6 @@ async function saveEditedSource(id: string) {
         displayName: nextDisplayName,
         username,
         password: form.password,
-        apiToken: form.apiToken,
-        cookie: form.cookie,
-        rootPath: nextRootPath,
         order: existing.order,
         deviceId: existing.type === 'server' && typeof existing.extra?.deviceId === 'string' ? existing.extra.deviceId : undefined,
         retainTokenOnValidationFailure: sameServerOrigin,
@@ -1353,9 +944,6 @@ async function saveEditedSource(id: string) {
       const changedServerOrigin = result.config.type === 'server'
         && normalizeComparableUrl(result.config.url) !== normalizeComparableUrl(existing.url)
       if (result.config.type === 'server' && !changedServerOrigin) {
-        // Same-device login revoked the previous token. Keep the newly issued
-        // credential and rebuild the runtime source instead of restoring a
-        // credential that the Server has already invalidated.
         await store.reloadSource(id).catch(() => undefined)
       }
       else {
@@ -1366,45 +954,14 @@ async function saveEditedSource(id: string) {
       throw error
     }
     feedback.value = { type: 'success', message: `${label} 已重新连接，并验证 ${result.libraries.length} 个入口。` }
+    form.username = ''
     form.password = ''
-    form.apiToken = ''
-    form.cookie = ''
     goManage({ preserveFeedback: true })
     return
   }
 
-  const nextExtra = { ...(existing.extra ?? {}) }
-  if (isRootSelectableRemoteSourceType(existing.type)) {
-    const rootPathChanged = nextRootPath !== readRemoteRootPath(existing)
-    const libraries = rootPathChanged
-      ? await validateExistingRemoteRoot(existing, nextUrl, nextDisplayName, nextRootPath ?? '/')
-      : null
-    nextExtra.rootPath = nextRootPath ?? '/'
-    if (libraries) {
-      nextExtra.libraries = libraries.map(library => ({
-        id: library.id,
-        name: library.name,
-        type: library.type,
-      }))
-    }
-  }
-
-  await store.updateConfig(id, {
-    name: nextDisplayName,
-    displayName: nextDisplayName,
-    url: nextUrl,
-    extra: nextExtra,
-  })
-  form.password = ''
-  form.apiToken = ''
-  form.cookie = ''
-  feedback.value = { type: 'success', message: existing.type === 'clouddrive2'
-    ? '数据源已更新。若 API Token 已撤销或权限变化，请再次编辑并输入新的 Token。'
-    : existing.type === 'quark'
-      ? '夸克网盘数据源已更新。Cookie 失效后可再次编辑并重新粘贴。'
-      : existing.type === '123'
-        ? '123 云盘数据源已更新。登录失效后可再次编辑并重新登录。'
-        : '数据源已更新。若会话凭证已过期，请再次编辑并输入账号密码登录。' }
+  await store.updateConfig(id, { name: nextDisplayName, displayName: nextDisplayName })
+  feedback.value = { type: 'success', message: '数据源已更新。若凭据已过期，请编辑后输入账号密码重新登录。' }
   goManage({ preserveFeedback: true })
 }
 
@@ -1414,158 +971,19 @@ function loginAndCreateConfig(type: LoginDataSourceType, input: {
   displayName: string
   username: string
   password: string
-  apiToken: string
-  cookie: string
-  rootPath?: string
   order: number
   deviceId?: string
   retainTokenOnValidationFailure?: boolean
 }): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
   if (type === 'server')
     return loginServerAndCreateConfig(input)
-  if (type === 'alist')
-    return loginAlistAndCreateConfig(input)
-  if (type === 'clouddrive2')
-    return saveCloudDrive2TokenAndCreateConfig(input)
-  if (type === 'webdav')
-    return loginWebDavAndCreateConfig(input)
-  if (type === 'quark')
-    return saveQuarkCookieAndCreateConfig(input)
-  if (type === '123')
-    return loginPan123AndCreateConfig(input)
   return loginEmbyAndCreateConfig({ ...input, sourceType: type })
 }
 
-async function createAndValidateLocalConfig(input: {
-  id: string
-  displayName: string
-  rootPath: string
-  rootLabel?: string
-  order: number
-}): Promise<{ config: DataSourceConfig, libraries: MediaLibrary[] }> {
-  const config = createLocalFileDataSourceConfig(input)
-  const libraries = await validateLocalFileDataSourceConfig(config)
-  return {
-    config: {
-      ...config,
-      extra: {
-        ...(config.extra ?? {}),
-        libraries: libraries.map(library => ({
-          id: library.id,
-          name: library.name,
-          type: library.type,
-        })),
-      },
-    },
-    libraries,
-  }
-}
-
 function sourceStatusLine(source: DataSourceConfig): string {
-  const credentialState = source.type === 'local'
-    ? '无需登录'
-    : typeof source.extra?.credentialRef === 'string' ? '登录信息已保存' : '需要重新登录'
-  const rootState = isRootSelectableRemoteSourceType(source.type)
-    ? ` · 根目录：${readRemoteRootPath(source)}`
-    : source.type === 'local'
-      ? ` · 根目录：${localRootPathLabel(readLocalRootPath(source), readLocalRootLabel(source))}`
-      : ''
-  return `状态：${source.enabled === false ? '已停用' : '已启用'} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}${rootState}`
-}
-
-function isRawScanScheduleSource(source: DataSourceConfig): boolean {
-  return source.type === 'alist' || source.type === 'clouddrive2' || source.type === 'webdav' || source.type === '123' || source.type === 'quark' || source.type === 'local'
-}
-
-function readRemoteRootPath(config: DataSourceConfig): string {
-  if (config.type === 'clouddrive2')
-    return readCloudDrive2RootPath(config)
-  if (config.type === 'webdav')
-    return readWebDavRootPath(config)
-  if (config.type === 'quark')
-    return readQuarkRootPath(config)
-  if (config.type === '123')
-    return readPan123RootPath(config)
-  return readAlistRootPath(config)
-}
-
-function normalizeRemoteRootPath(path: string | undefined): string {
-  if (form.type === 'clouddrive2')
-    return normalizeCloudDrive2RootPath(path)
-  if (form.type === 'webdav')
-    return normalizeWebDavRootPath(path)
-  if (form.type === 'quark')
-    return normalizeQuarkRootPath(path)
-  if (form.type === '123')
-    return normalizePan123RootPath(path)
-  return normalizeAlistRootPath(path)
-}
-
-function rawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind): boolean {
-  return readRawSourceScanScheduleConfig(source)[scanKind].enabled
-}
-
-function rawScanScheduleIntervalMinutes(source: DataSourceConfig, scanKind: RawSourceScanKind): number {
-  return intervalMsToMinutes(readRawSourceScanScheduleConfig(source)[scanKind].intervalMs)
-}
-
-async function updateRawScanScheduleEnabled(source: DataSourceConfig, scanKind: RawSourceScanKind, enabled: boolean) {
-  await updateRawScanSchedule(
-    source,
-    scanKind,
-    { enabled },
-    `已保存「${sourceDisplayName(source)}」${rawScanKindLabel(scanKind)}：${enabled ? '已启用' : '已停用'}。`,
-  )
-}
-
-async function updateRawScanScheduleInterval(source: DataSourceConfig, scanKind: RawSourceScanKind, value: string) {
-  const minutes = Number(value)
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    feedback.value = {
-      type: 'error',
-      message: `${rawScanKindLabel(scanKind)}间隔必须是大于 0 的分钟数。`,
-    }
-    return
-  }
-  const intervalMs = intervalMinutesToMs(minutes)
-  await updateRawScanSchedule(
-    source,
-    scanKind,
-    { intervalMs },
-    `已保存「${sourceDisplayName(source)}」${rawScanKindLabel(scanKind)}间隔：${intervalMsToMinutes(intervalMs)} 分钟。`,
-  )
-}
-
-async function updateRawScanSchedule(
-  source: DataSourceConfig,
-  scanKind: RawSourceScanKind,
-  patch: Parameters<typeof updateRawSourceScanScheduleExtra>[2],
-  successMessage: string,
-) {
-  feedback.value = null
-  try {
-    await store.updateConfig(source.id, {
-      extra: updateRawSourceScanScheduleExtra(source.extra, scanKind, patch),
-    })
-    feedback.value = {
-      type: 'success',
-      message: successMessage,
-    }
-  }
-  catch (error) {
-    feedback.value = {
-      type: 'error',
-      message: toSafeErrorMessage(error, '扫描计划保存失败。'),
-    }
-  }
-}
-
-function sourceDisplayName(source: DataSourceConfig): string {
-  return source.displayName ?? source.name
-}
-
-function rawScanKindLabel(scanKind: RawSourceScanKind): string {
-  return scanKind === 'full' ? '全量扫描' : '增量扫描'
+  const status = source.enabled === false ? '已停用' : '已启用'
+  const credentialState = credentialRefFromConfig(source) ? '登录信息已保存' : '需要重新登录'
+  return `状态：${status} · 类型：${sourceTypeLabel(source.type)} · ${credentialState}`
 }
 
 function normalizeComparableUrl(value: string): string {
@@ -1592,54 +1010,19 @@ function credentialRefFromConfig(config: DataSourceConfig): string | null {
   return typeof config.extra?.credentialRef === 'string' ? config.extra.credentialRef : null
 }
 
-type EditableSourceSecretField = 'apiToken' | 'cookie' | 'password'
-
-function sourceCredentialLoader(field: EditableSourceSecretField): (() => Promise<string>) | undefined {
+function sourceCredentialLoader(): (() => Promise<string>) | undefined {
   const source = editedSource.value
-  if (!source || source.type === 'server' || source.type === 'local')
+  if (!source || (source.type !== 'emby' && source.type !== 'jellyfin'))
     return undefined
-  const supported = field === 'apiToken'
-    ? source.type === 'clouddrive2' || source.type === '123'
-    : field === 'cookie'
-      ? source.type === 'quark'
-      : source.type === 'emby' || source.type === 'jellyfin' || source.type === 'alist' || source.type === 'webdav' || source.type === '123'
-  return supported ? () => loadEditedSourceCredentialField(source, field) : undefined
-}
-
-async function loadEditedSourceCredentialField(source: DataSourceConfig, field: EditableSourceSecretField): Promise<string> {
-  const credentialRef = credentialRefFromConfig(source)
-  if (!credentialRef)
-    throw new Error('该数据源没有已保存的登录凭据。')
-
-  let value: string | undefined
-  if (source.type === 'emby' || source.type === 'jellyfin') {
+  return async () => {
+    const credentialRef = credentialRefFromConfig(source)
+    if (!credentialRef)
+      throw new Error('该数据源没有已保存的登录凭据。')
     const credential = await readEmbyCredential(credentialRef)
-    value = field === 'password' ? credential?.password : undefined
+    if (!credential?.password)
+      throw new Error('当前登录方式没有保存密码。')
+    return credential.password
   }
-  else if (source.type === 'alist') {
-    const credential = await readAlistCredential(credentialRef)
-    value = field === 'password' ? credential?.password : undefined
-  }
-  else if (source.type === 'clouddrive2') {
-    const credential = await readCloudDrive2Credential(credentialRef)
-    value = field === 'apiToken' ? credential?.apiToken : undefined
-  }
-  else if (source.type === 'webdav') {
-    const credential = await readWebDavCredential(credentialRef)
-    value = field === 'password' ? credential?.password : undefined
-  }
-  else if (source.type === 'quark') {
-    const credential = await readQuarkCredential(credentialRef)
-    value = field === 'cookie' ? credential?.cookie : undefined
-  }
-  else if (source.type === '123') {
-    const credential = await readPan123Credential(credentialRef)
-    value = field === 'apiToken' ? credential?.accessToken : field === 'password' ? credential?.password : undefined
-  }
-
-  if (!value)
-    throw new Error('当前登录方式没有保存该项凭据。')
-  return value
 }
 
 function showSourceRevealError(message: string) {
@@ -1649,666 +1032,12 @@ function showSourceRevealError(message: string) {
 function selectSourceType(type: EditableDataSourceType) {
   if (isEditing.value)
     return
-
   form.type = type
   form.displayName = defaultDisplayName(type)
-  form.url = type === 'quark'
-    ? QUARK_PROVIDER_URL
-    : type === '123'
-      ? PAN123_PROVIDER_URL
-      : ''
+  form.url = ''
   form.username = ''
   form.password = ''
-  form.apiToken = ''
-  form.cookie = ''
-  form.rootPath = '/'
-  resetAlistBrowser()
   feedback.value = null
-  lastFetchedLibraries.value = []
-}
-
-function selectSourceTypeOption(option: SourceTypeOption) {
-  if (option.available)
-    selectSourceType(option.type)
-}
-
-function selectPan123LoginMode(mode: Pan123LoginMode) {
-  if (pan123LoginMode.value === mode)
-    return
-  pan123LoginMode.value = mode
-  form.username = ''
-  form.password = ''
-  form.apiToken = ''
-  resetAlistBrowser()
-  feedback.value = null
-}
-
-async function chooseLocalRootPath() {
-  if (form.type !== 'local')
-    return
-
-  feedback.value = null
-  try {
-    if (isNativeAndroid) {
-      const selected = await pickAndroidLocalDirectory()
-      if (selected.cancelled)
-        return
-      if (!selected.uri)
-        throw new Error('Android 目录选择未返回可用授权。')
-
-      form.rootPath = normalizeLocalRootPath(selected.uri)
-      form.rootLabel = selected.name?.trim() || 'Android 媒体目录'
-      if (!isEditing.value && form.displayName === defaultDisplayName('local'))
-        form.displayName = form.rootLabel
-      feedback.value = {
-        type: 'info',
-        message: `已授权本地媒体目录：${form.rootLabel}`,
-      }
-      return
-    }
-
-    const selected = await open({
-      multiple: false,
-      directory: true,
-    })
-
-    if (typeof selected !== 'string')
-      return
-
-    form.rootPath = normalizeLocalRootPath(selected)
-    form.rootLabel = ''
-    if (!form.displayName.trim())
-      form.displayName = localRootDisplayName(form.rootPath)
-    feedback.value = {
-      type: 'info',
-      message: `已选择本地根目录：${form.rootPath}`,
-    }
-  }
-  catch (error) {
-    feedback.value = {
-      type: 'error',
-      message: toSafeErrorMessage(error, '选择本地文件夹失败。'),
-    }
-  }
-}
-
-async function loadAlistRootBrowser() {
-  await loadAlistDirectory('/')
-}
-
-async function loadAlistDirectory(path: string) {
-  if (!isRootSelectableRemoteSourceType(form.type))
-    return
-
-  alistBrowserLoading.value = true
-  alistBrowserError.value = null
-  try {
-    const source = await ensureAlistBrowserSource()
-    const nextPath = normalizeRemoteRootPath(path)
-    const items = await source.list(nextPath)
-    alistBrowserPath.value = nextPath
-    alistBrowserDirectories.value = items
-      .filter(item => item.type === 'folder')
-      .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'))
-  }
-  catch (error) {
-    alistBrowserDirectories.value = []
-    alistBrowserError.value = toSafeErrorMessage(error, `${sourceTypeLabel(form.type)} 目录加载失败。`)
-  }
-  finally {
-    alistBrowserLoading.value = false
-  }
-}
-
-async function ensureAlistBrowserSource(): Promise<AlistDataSource | CloudDrive2DataSource | WebDavDataSource | Pan123DataSource | QuarkDataSource> {
-  if (alistBrowserSource.value)
-    return alistBrowserSource.value
-
-  const sourceId = form.id ?? `${form.type}-setup-${Date.now()}`
-  const displayName = form.displayName.trim() || defaultDisplayName(form.type)
-  const existing = form.id ? store.configs.find(config => config.id === form.id) : null
-  const username = form.username.trim()
-  const shouldUseExistingCredential = existing?.type === form.type
-    && isRootSelectableRemoteSourceType(existing.type)
-    && !shouldReloginSource(existing, form.url, username, form.password, form.apiToken, form.cookie)
-
-  if (shouldUseExistingCredential) {
-    const source = existing.type === 'clouddrive2'
-      ? new CloudDrive2DataSource()
-      : existing.type === 'webdav'
-        ? new WebDavDataSource()
-        : existing.type === 'quark'
-          ? new QuarkDataSource()
-          : existing.type === '123'
-            ? new Pan123DataSource()
-            : new AlistDataSource()
-    await source.init({
-      ...existing,
-      name: displayName,
-      displayName,
-      url: form.url.trim(),
-      extra: {
-        ...(existing.extra ?? {}),
-        rootPath: '/',
-      },
-    })
-    await source.test()
-    alistBrowserSource.value = source
-    return source
-  }
-
-  const setupInput = {
-    id: sourceId,
-    url: form.url,
-    displayName,
-    username,
-    password: form.password,
-    apiToken: form.apiToken,
-    cookie: form.cookie,
-    order: existing?.order ?? store.configs.length,
-  }
-  const source = form.type === 'clouddrive2'
-    ? await createAuthenticatedCloudDrive2SetupSource(setupInput)
-    : form.type === 'webdav'
-      ? await createAuthenticatedWebDavSetupSource(setupInput)
-      : form.type === 'quark'
-        ? await createAuthenticatedQuarkSetupSource(setupInput)
-        : form.type === '123'
-          ? await createAuthenticatedPan123SetupSource(setupInput)
-          : await createAuthenticatedAlistSetupSource(setupInput)
-  alistBrowserSource.value = source
-  return source
-}
-
-function selectAlistRoot(path: string) {
-  form.rootPath = normalizeRemoteRootPath(path)
-  feedback.value = {
-    type: 'info',
-    message: `已选择 ${sourceTypeLabel(form.type)} 根目录：${form.rootPath}`,
-  }
-}
-
-function resetAlistBrowser() {
-  alistBrowserSource.value?.destroy()
-  alistBrowserSource.value = null
-  alistBrowserPath.value = '/'
-  alistBrowserDirectories.value = []
-  alistBrowserLoading.value = false
-  alistBrowserError.value = null
-}
-
-async function beginQuarkQrLogin() {
-  resetQuarkLoginSession({ preserveMode: true })
-  quarkLoginMode.value = 'qr'
-  isStartingQuarkLogin.value = true
-  quarkLoginFeedback.value = { type: 'info', message: '正在生成夸克登录二维码…' }
-  try {
-    const session = await startQuarkQrLogin()
-    quarkQrSessionId.value = session.sessionId
-    quarkQrImageUrl.value = session.qrImageUrl
-    quarkLoginFeedback.value = { type: 'info', message: '请使用夸克 App 扫码并确认登录。' }
-    startQuarkLoginPolling('qr')
-  }
-  catch (error) {
-    quarkLoginFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '夸克登录二维码生成失败。') }
-  }
-  finally {
-    isStartingQuarkLogin.value = false
-  }
-}
-
-function selectQuarkLoginMode(mode: QuarkLoginMode) {
-  if (quarkLoginMode.value === mode)
-    return
-  resetQuarkLoginSession({ preserveMode: true })
-  quarkLoginMode.value = mode
-}
-
-async function beginQuarkAccountLogin() {
-  resetQuarkLoginSession({ preserveMode: true })
-  quarkLoginMode.value = 'account'
-  isStartingQuarkLogin.value = true
-  quarkLoginFeedback.value = { type: 'info', message: '正在打开夸克官方账号登录页面…' }
-  try {
-    const session = await startQuarkAccountLogin()
-    quarkAccountSessionId.value = session.sessionId
-    quarkLoginFeedback.value = { type: 'info', message: '请在夸克官方窗口完成账号、密码及可能出现的安全验证。' }
-    startQuarkLoginPolling('account')
-  }
-  catch (error) {
-    quarkLoginFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '夸克账号登录页面打开失败。') }
-  }
-  finally {
-    isStartingQuarkLogin.value = false
-  }
-}
-
-function startQuarkLoginPolling(mode: Extract<QuarkLoginMode, 'qr' | 'account'>) {
-  stopQuarkLoginPolling()
-  quarkLoginPollTimer = setInterval(() => {
-    void pollActiveQuarkLogin(mode)
-  }, 2_000)
-  void pollActiveQuarkLogin(mode)
-}
-
-async function pollActiveQuarkLogin(mode: Extract<QuarkLoginMode, 'qr' | 'account'>) {
-  if (isPollingQuarkLogin.value)
-    return
-  const sessionId = mode === 'qr' ? quarkQrSessionId.value : quarkAccountSessionId.value
-  if (!sessionId)
-    return
-  isPollingQuarkLogin.value = true
-  try {
-    const result = mode === 'qr'
-      ? await pollQuarkQrLogin(sessionId)
-      : await pollQuarkAccountLogin(sessionId)
-    if (result.status === 'pending')
-      return
-    stopQuarkLoginPolling()
-    if (result.status === 'success' && result.cookie) {
-      form.cookie = result.cookie
-      quarkLoginFeedback.value = { type: 'success', message: '夸克网盘登录成功，可以继续选择根目录并保存数据源。' }
-      return
-    }
-    quarkLoginFeedback.value = {
-      type: 'error',
-      message: result.status === 'expired' ? '登录二维码已过期，请刷新后重试。' : '夸克账号登录窗口已关闭，登录未完成。',
-    }
-  }
-  catch (error) {
-    stopQuarkLoginPolling()
-    quarkLoginFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '夸克登录状态检查失败。') }
-  }
-  finally {
-    isPollingQuarkLogin.value = false
-  }
-}
-
-function stopQuarkLoginPolling() {
-  if (quarkLoginPollTimer != null) {
-    clearInterval(quarkLoginPollTimer)
-    quarkLoginPollTimer = null
-  }
-}
-
-function resetQuarkLoginSession(options: { preserveMode?: boolean } = {}) {
-  stopQuarkLoginPolling()
-  const sessions = [quarkQrSessionId.value, quarkAccountSessionId.value].filter(Boolean)
-  for (const sessionId of sessions)
-    void cancelQuarkLogin(sessionId).catch(() => undefined)
-  quarkQrSessionId.value = ''
-  quarkQrImageUrl.value = ''
-  quarkAccountSessionId.value = ''
-  quarkLoginFeedback.value = null
-  isStartingQuarkLogin.value = false
-  isPollingQuarkLogin.value = false
-  if (!options.preserveMode)
-    quarkLoginMode.value = 'qr'
-}
-
-function shouldReloginSource(config: DataSourceConfig, nextUrl: string, username: string, password: string, apiToken: string, cookie: string): boolean {
-  const credentialChanged = config.type === 'clouddrive2'
-    ? Boolean(apiToken.trim())
-    : config.type === 'quark'
-      ? Boolean(cookie.trim())
-      : config.type === '123'
-        ? Boolean(apiToken.trim() || username || password)
-        : Boolean(username || password)
-  return normalizeComparableUrl(nextUrl) !== normalizeComparableUrl(config.url) || credentialChanged
-}
-
-async function validateExistingRemoteRoot(config: DataSourceConfig, url: string, displayName: string, rootPath: string): Promise<MediaLibrary[]> {
-  if (!isRootSelectableRemoteSourceType(config.type))
-    return []
-
-  const source = config.type === 'clouddrive2'
-    ? new CloudDrive2DataSource()
-    : config.type === 'webdav'
-      ? new WebDavDataSource()
-      : config.type === 'quark'
-        ? new QuarkDataSource()
-        : config.type === '123'
-          ? new Pan123DataSource()
-          : new AlistDataSource()
-  try {
-    await source.init({
-      ...config,
-      name: displayName,
-      displayName,
-      url,
-      extra: {
-        ...(config.extra ?? {}),
-        rootPath,
-      },
-    })
-    await source.test()
-    return source.listLibraries()
-  }
-  finally {
-    source.destroy()
-  }
-}
-
-function parentDirectoryPath(path: string): string {
-  const normalized = normalizeRemoteRootPath(path)
-  if (normalized === '/')
-    return '/'
-  const index = normalized.lastIndexOf('/')
-  return index <= 0 ? '/' : normalized.slice(0, index)
-}
-
-function localRootPathLabel(path: string, label = ''): string {
-  if (!path.trim())
-    return '未选择'
-  if (path.trim().startsWith('content://'))
-    return label.trim() || 'Android 已授权媒体目录'
-  try {
-    return normalizeLocalRootPath(path)
-  }
-  catch {
-    return path.trim()
-  }
-}
-
-function localRootDisplayName(path: string): string {
-  return path.trim().replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '本地媒体库'
-}
-
-function getScrapeRuleGroup(mediaType: ScrapeMediaType): ScrapeRuleGroup {
-  let group = scrapeRules.value.groups.find(item => item.mediaType === mediaType)
-  if (!group) {
-    group = {
-      mediaType,
-      categories: [],
-      fallbackCategoryName: SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME,
-    }
-    scrapeRules.value.groups.push(group)
-  }
-  return group
-}
-
-function genreOptionsForMediaType(mediaType: ScrapeMediaType): TmdbGenreOption[] {
-  return mediaType === 'movie' ? TMDB_MOVIE_GENRES : TMDB_TV_GENRES
-}
-
-function countryConditionForCategory(category: ScrapeCategoryRule, mediaType: ScrapeMediaType): ScrapeValueCondition<string> {
-  if (mediaType === 'movie') {
-    category.conditions.productionCountries ??= { include: [], exclude: [] }
-    return category.conditions.productionCountries
-  }
-  category.conditions.originCountries ??= { include: [], exclude: [] }
-  return category.conditions.originCountries
-}
-
-function addScrapeCategory(mediaType: ScrapeMediaType) {
-  const group = getScrapeRuleGroup(mediaType)
-  group.categories.push(createEmptyScrapeCategoryRule(mediaType === 'movie' ? '新电影分类' : '新剧集分类'))
-  markScrapeRulesDirty()
-}
-
-function removeScrapeCategory(group: ScrapeRuleGroup, categoryId: string) {
-  group.categories = group.categories.filter(category => category.id !== categoryId)
-  markScrapeRulesDirty()
-}
-
-function moveScrapeCategory(group: ScrapeRuleGroup, index: number, direction: -1 | 1) {
-  const nextIndex = index + direction
-  if (nextIndex < 0 || nextIndex >= group.categories.length)
-    return
-  const next = [...group.categories]
-  const [category] = next.splice(index, 1)
-  if (!category)
-    return
-  next.splice(nextIndex, 0, category)
-  group.categories = next
-  markScrapeRulesDirty()
-}
-
-function conditionValueState<T extends string | number>(condition: ScrapeValueCondition<T>, value: T): ConditionValueState {
-  if (condition.include.includes(value))
-    return 'include'
-  if (condition.exclude.includes(value))
-    return 'exclude'
-  return 'none'
-}
-
-function cycleConditionValue<T extends string | number>(condition: ScrapeValueCondition<T>, value: T) {
-  const current = conditionValueState(condition, value)
-  condition.include = condition.include.filter(item => item !== value)
-  condition.exclude = condition.exclude.filter(item => item !== value)
-  if (current === 'none')
-    condition.include.push(value)
-  else if (current === 'include')
-    condition.exclude.push(value)
-  markScrapeRulesDirty()
-}
-
-function conditionChipClass<T extends string | number>(condition: ScrapeValueCondition<T>, value: T): string {
-  const state = conditionValueState(condition, value)
-  if (state === 'include')
-    return 'border-primary/45 bg-primary/18 text-primary'
-  if (state === 'exclude')
-    return 'border-red-400/35 bg-red-400/12 text-red-100'
-  return 'border-white/10 bg-white/5 text-white/48 hover:border-white/18 hover:bg-white/8 hover:text-white/72'
-}
-
-function conditionChipPrefix<T extends string | number>(condition: ScrapeValueCondition<T>, value: T): string {
-  const state = conditionValueState(condition, value)
-  if (state === 'include')
-    return '包含'
-  if (state === 'exclude')
-    return '排除'
-  return '不限'
-}
-
-function setReleaseYear(category: ScrapeCategoryRule, side: 'from' | 'to', rawValue: string) {
-  const trimmed = rawValue.trim()
-  const nextRange = category.conditions.releaseYear ? { ...category.conditions.releaseYear } : {}
-  if (!trimmed) {
-    delete nextRange[side]
-  }
-  else {
-    const year = Number(trimmed)
-    if (!Number.isInteger(year) || year < 1888 || year > 2200)
-      return
-    nextRange[side] = year
-  }
-  category.conditions.releaseYear = nextRange.from == null && nextRange.to == null ? null : nextRange
-  markScrapeRulesDirty()
-}
-
-function updateFallbackCategoryName(group: ScrapeRuleGroup, value: string) {
-  group.fallbackCategoryName = normalizeScrapeFallbackCategoryName(value)
-  markScrapeRulesDirty()
-}
-
-function markScrapeRulesDirty() {
-  scrapeRulesDirty.value = true
-  scrapeFeedback.value = null
-}
-
-async function saveScrapeRules() {
-  try {
-    saveScrapeClassificationRules(scrapeRules.value)
-    await flushAppSettings()
-    scrapeRules.value = loadScrapeClassificationRules()
-    scrapeRulesDirty.value = false
-    scrapeFeedback.value = { type: 'success', message: '刮削分类规则已保存。后续扫描会按新规则计算本地逻辑分类。' }
-  }
-  catch (error) {
-    scrapeFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '刮削分类规则保存失败。') }
-  }
-}
-
-async function resetScrapeRules() {
-  try {
-    scrapeRules.value = resetScrapeClassificationRules()
-    await flushAppSettings()
-    scrapeRulesDirty.value = false
-    scrapeFeedback.value = { type: 'success', message: '已恢复内置默认分类实例。它只是默认模板，仍可继续按你的库调整。' }
-  }
-  catch (error) {
-    scrapeFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '默认分类规则恢复失败。') }
-  }
-}
-
-async function saveTmdbSettings() {
-  isSavingTmdbSettings.value = true
-  scrapeFeedback.value = null
-  try {
-    const credential = tmdbForm.credential.trim()
-    const savedCredential = Boolean(credential)
-    let testedApiRoute: { apiBaseUrl: string } | null = null
-    let testedImageRoute: { imageBaseUrl: string } | null = null
-    if (tmdbApiRouteDraftChanged.value) {
-      const effectiveCredential = credential
-        ? { authType: tmdbForm.authType, value: credential } as const
-        : await readEffectiveTmdbCredentialFor(tmdbForm.authType)
-      if (!effectiveCredential)
-        throw new Error('当前没有可用于测试 API 地址的 TMDB 凭据，请先填写凭据或使用包含内置通道的正式版本。')
-      testedApiRoute = await testTmdbApiRoute({
-        apiBaseUrl: tmdbForm.apiBaseUrl,
-        credential: effectiveCredential,
-      })
-    }
-    if (tmdbImageRouteDraftChanged.value)
-      testedImageRoute = await testTmdbImageRoute({ imageBaseUrl: tmdbForm.imageBaseUrl })
-
-    saveTmdbLocalSettings({
-      authType: tmdbForm.authType,
-      language: tmdbForm.language,
-      region: tmdbForm.region,
-      ...(testedApiRoute ?? {}),
-      ...(testedImageRoute ?? {}),
-    })
-    if (credential) {
-      await saveConfiguredTmdbCredential(tmdbForm.authType, credential)
-      tmdbForm.credential = ''
-    }
-    await flushAppSettings()
-    if (testedApiRoute)
-      tmdbForm.apiBaseUrl = testedApiRoute.apiBaseUrl
-    if (testedImageRoute)
-      tmdbForm.imageBaseUrl = testedImageRoute.imageBaseUrl
-
-    await refreshTmdbCredentialState()
-    scrapeFeedback.value = {
-      type: tmdbCredentialAvailable.value ? 'success' : 'info',
-      message: tmdbCredentialConfigured.value
-        ? `TMDB 设置已保存。后续扫描会优先使用你的 ${tmdbCredentialInputLabel.value}。`
-        : tmdbBuiltInCredentialAvailable
-          ? 'TMDB 设置已保存。当前继续使用 OhMyCine 内置元数据通道；填写自定义凭据后会优先使用你的凭据。'
-          : savedCredential
-            ? `已保存 TMDB 设置，但当前 ${tmdbCredentialInputLabel.value} 不可用。扫描会保留本地可播放候选并使用兜底分类。`
-            : tmdbStoredAuthType.value
-              ? `已保存 TMDB 类型、语言和地区。当前 ${tmdbCredentialInputLabel.value} 未配置；已保存的 ${tmdbAuthTypeLabel(tmdbStoredAuthType.value)} 不会用于当前类型。扫描会保留本地可播放候选并使用兜底分类。`
-              : `已保存 TMDB 类型、语言和地区。未填写当前类型的 ${tmdbCredentialInputLabel.value} 时，扫描会保留本地可播放候选并使用兜底分类。`,
-    }
-  }
-  catch (error) {
-    scrapeFeedback.value = {
-      type: 'error',
-      message: toSafeErrorMessage(error, 'TMDB 设置保存失败。'),
-    }
-  }
-  finally {
-    isSavingTmdbSettings.value = false
-  }
-}
-
-async function testAndActivateTmdbApiRoute() {
-  isTestingTmdbApiRoute.value = true
-  scrapeFeedback.value = null
-  try {
-    const credential = await readConfiguredTmdbCredential()
-    if (!credential)
-      throw new Error('当前没有可用的 TMDB 凭据，请先保存凭据或使用包含内置通道的正式版本。')
-    const testedRoute = await testTmdbApiRoute({
-      apiBaseUrl: tmdbForm.apiBaseUrl,
-      credential,
-    })
-    saveTmdbLocalSettings(testedRoute)
-    await flushAppSettings()
-    tmdbForm.apiBaseUrl = testedRoute.apiBaseUrl
-    scrapeFeedback.value = {
-      type: 'success',
-      message: 'TMDB API 地址测试通过，已保存并立即启用；图片地址保持不变。',
-    }
-  }
-  catch (error) {
-    scrapeFeedback.value = {
-      type: 'error',
-      message: `${toSafeErrorMessage(error, 'TMDB API 地址测试失败。')} 已继续使用上一次测试通过的 API 地址。`,
-    }
-  }
-  finally {
-    isTestingTmdbApiRoute.value = false
-  }
-}
-
-async function testAndActivateTmdbImageRoute() {
-  isTestingTmdbImageRoute.value = true
-  scrapeFeedback.value = null
-  try {
-    const testedRoute = await testTmdbImageRoute({ imageBaseUrl: tmdbForm.imageBaseUrl })
-    saveTmdbLocalSettings(testedRoute)
-    await flushAppSettings()
-    tmdbForm.imageBaseUrl = testedRoute.imageBaseUrl
-    scrapeFeedback.value = {
-      type: 'success',
-      message: 'TMDB 图片地址测试通过，已保存并立即启用；API 地址保持不变。',
-    }
-  }
-  catch (error) {
-    scrapeFeedback.value = {
-      type: 'error',
-      message: `${toSafeErrorMessage(error, 'TMDB 图片地址测试失败。')} 已继续使用上一次测试通过的图片地址。`,
-    }
-  }
-  finally {
-    isTestingTmdbImageRoute.value = false
-  }
-}
-
-async function clearTmdbSettingsCredential() {
-  isSavingTmdbSettings.value = true
-  scrapeFeedback.value = null
-  try {
-    await clearConfiguredTmdbCredential()
-    tmdbForm.credential = ''
-    await refreshTmdbCredentialState()
-    scrapeFeedback.value = {
-      type: 'success',
-      message: tmdbBuiltInCredentialAvailable
-        ? '已清除自定义 TMDB 凭据，扫描已恢复使用 OhMyCine 内置元数据通道。'
-        : '已清除 TMDB 凭据。分类规则仍保留，扫描会回到本地兜底分类。',
-    }
-  }
-  catch (error) {
-    scrapeFeedback.value = {
-      type: 'error',
-      message: toSafeErrorMessage(error, '清除 TMDB 凭据失败。'),
-    }
-  }
-  finally {
-    isSavingTmdbSettings.value = false
-  }
-}
-
-async function refreshTmdbCredentialState() {
-  const credential = await readStoredTmdbCredential()
-  tmdbStoredAuthType.value = credential?.authType ?? null
-  tmdbCredentialConfigured.value = credential?.authType === tmdbForm.authType
-}
-
-function optionDisplayLabel(option: TmdbGenreOption | ScrapeNamedOption): string {
-  if ('id' in option)
-    return `${option.label} · ${option.name}`
-  return option.label
-}
-
-function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
-  return authType === 'readAccessToken' ? 'API 读访问令牌 / Read Access Token' : 'API Key'
 }
 </script>
 
@@ -3030,7 +1759,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 清除播放缓存
               </h3>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
-                清除海报与扫描缓存、已下载字幕缓存，以及每个视频单独保存的字幕、音轨、字幕偏移、倍速和画面设置。不会删除数据源、登录凭据、播放记录或全局软件设置。
+                清除海报图片缓存、已下载字幕缓存，以及每个视频单独保存的字幕、音轨、字幕偏移、倍速和画面设置。不会删除数据源、登录凭据、播放记录或全局软件设置。
               </p>
             </div>
             <button
@@ -3045,398 +1774,6 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
         </div>
       </section>
 
-      <section v-else-if="mode === 'scraping'" class="space-y-5">
-        <div class="glass-panel rounded-[1.75rem] p-6">
-          <div class="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p class="text-xs uppercase tracking-[0.24em] text-white/34">
-                Scraping Rules
-              </p>
-              <h2 class="mt-1 text-2xl font-bold text-white">
-                刮削与分类
-              </h2>
-              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                分类用于整理海报墙和筛选，不会改动媒体文件或远端目录。
-              </p>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                type="button"
-                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
-                @click="resetScrapeRules"
-              >
-                恢复默认实例
-              </button>
-              <button
-                type="button"
-                class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-45"
-                :disabled="!scrapeRulesDirty"
-                @click="saveScrapeRules"
-              >
-                保存规则
-              </button>
-            </div>
-          </div>
-
-          <div
-            v-if="scrapeFeedback"
-            class="mt-5 rounded-2xl border px-4 py-3 text-sm"
-            :class="{
-              'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': scrapeFeedback.type === 'success',
-              'border-red-400/20 bg-red-400/10 text-red-100': scrapeFeedback.type === 'error',
-              'border-white/12 bg-white/6 text-white/58': scrapeFeedback.type === 'info',
-            }"
-          >
-            {{ scrapeFeedback.message }}
-          </div>
-        </div>
-
-        <section class="glass-panel rounded-[1.75rem] p-6">
-          <div class="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p class="text-xs uppercase tracking-[0.24em] text-white/34">
-                TMDB
-              </p>
-              <h3 class="mt-1 text-xl font-bold text-white">
-                元数据匹配
-              </h3>
-              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/42">
-                OhMyCine 正式构建默认提供 TMDB 元数据通道；API 与图片代理可以分别测试、单独启用。
-              </p>
-            </div>
-            <span
-              class="rounded-full px-3 py-1 text-xs font-semibold"
-              :class="tmdbCredentialAvailable ? 'bg-emerald-400/14 text-emerald-100' : 'bg-amber-300/12 text-amber-100'"
-            >
-              {{ tmdbCredentialStatusLabel }}
-            </span>
-          </div>
-
-          <div class="mt-5 grid gap-4 lg:grid-cols-[1.1fr_1.1fr_0.8fr_0.8fr]">
-            <div class="rounded-2xl bg-black/16 p-4">
-              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
-                凭据类型
-              </p>
-              <div class="mt-3 grid gap-2">
-                <button
-                  v-for="option in tmdbAuthTypeOptions"
-                  :key="option.value"
-                  type="button"
-                  class="rounded-2xl border px-4 py-3 text-left transition-colors"
-                  :class="tmdbForm.authType === option.value ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
-                  @click="tmdbForm.authType = option.value"
-                >
-                  <span class="block text-sm font-semibold">{{ option.label }}</span>
-                  <span class="mt-1 block text-xs leading-5 text-white/40">{{ option.description }}</span>
-                </button>
-              </div>
-            </div>
-
-            <label class="rounded-2xl bg-black/16 p-4">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ tmdbCredentialInputLabel }}</span>
-              <SecretInput
-                v-model="tmdbForm.credential"
-                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                :configured="tmdbCredentialConfigured"
-                :load-secret="tmdbCredentialConfigured ? loadStoredTmdbCredentialValue : undefined"
-                :reset-key="`tmdb:${tmdbForm.authType}`"
-                autocomplete="off"
-                :placeholder="tmdbCredentialPlaceholder"
-                @reveal-error="showTmdbRevealError"
-              />
-              <p class="mt-2 text-xs leading-5 text-white/38">
-                自定义凭据保存在安全凭证边界中；点击眼睛可临时查看用户自行保存的值，内置通道不会回显。
-              </p>
-            </label>
-
-            <label class="rounded-2xl bg-black/16 p-4">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">语言</span>
-              <select
-                v-model="tmdbForm.language"
-                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
-              >
-                <option v-for="option in tmdbLanguageOptions" :key="option.value" :value="option.value">
-                  {{ option.label }}
-                </option>
-              </select>
-            </label>
-
-            <label class="rounded-2xl bg-black/16 p-4">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">地区</span>
-              <select
-                v-model="tmdbForm.region"
-                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-primary/60"
-              >
-                <option v-for="option in tmdbRegionOptions" :key="option.value" :value="option.value">
-                  {{ option.label }}
-                </option>
-              </select>
-            </label>
-          </div>
-
-          <div class="mt-4 grid gap-4 rounded-2xl border border-white/8 bg-black/16 p-4 lg:grid-cols-2">
-            <label>
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">API 地址</span>
-              <input
-                v-model="tmdbForm.apiBaseUrl"
-                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                type="url"
-                inputmode="url"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="https://api.tmdb.org/3"
-              >
-              <p class="mt-2 text-xs leading-5 text-white/38">
-                可填写自建 HTTPS 代理前缀，例如 https://proxy.example.com/tmdb/3。
-              </p>
-              <button
-                type="button"
-                class="mt-3 rounded-2xl border border-primary/35 bg-primary/12 px-4 py-2 text-sm font-semibold text-primary-100 transition-colors hover:bg-primary/20 disabled:cursor-wait disabled:opacity-55"
-                :disabled="isTestingTmdbApiRoute || isTestingTmdbImageRoute || isSavingTmdbSettings"
-                @click="testAndActivateTmdbApiRoute"
-              >
-                {{ isTestingTmdbApiRoute ? '测试中…' : '测试并启用 API 地址' }}
-              </button>
-            </label>
-
-            <label>
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">图片地址</span>
-              <input
-                v-model="tmdbForm.imageBaseUrl"
-                class="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                type="url"
-                inputmode="url"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="https://image.tmdb.org/t/p"
-              >
-              <p class="mt-2 text-xs leading-5 text-white/38">
-                图片代理需保留 TMDB 尺寸与文件路径的转发能力，例如 /w500/xxx.jpg。
-              </p>
-              <button
-                type="button"
-                class="mt-3 rounded-2xl border border-primary/35 bg-primary/12 px-4 py-2 text-sm font-semibold text-primary-100 transition-colors hover:bg-primary/20 disabled:cursor-wait disabled:opacity-55"
-                :disabled="isTestingTmdbApiRoute || isTestingTmdbImageRoute || isSavingTmdbSettings"
-                @click="testAndActivateTmdbImageRoute"
-              >
-                {{ isTestingTmdbImageRoute ? '测试中…' : '测试并启用图片地址' }}
-              </button>
-            </label>
-          </div>
-
-          <div class="mt-5 flex flex-wrap gap-3">
-            <button
-              type="button"
-              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
-              :disabled="isSavingTmdbSettings || isTestingTmdbApiRoute || isTestingTmdbImageRoute"
-              @click="saveTmdbSettings"
-            >
-              {{ isSavingTmdbSettings ? '保存中…' : '保存 TMDB 设置' }}
-            </button>
-            <button
-              type="button"
-              class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="isSavingTmdbSettings || isTestingTmdbApiRoute || isTestingTmdbImageRoute || !tmdbStoredAuthType"
-              @click="clearTmdbSettingsCredential"
-            >
-              清除自定义凭据
-            </button>
-          </div>
-
-          <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-white/8 pt-5">
-            <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" aria-label="访问 TMDB">
-              <img :src="tmdbLogoUrl" alt="TMDB" class="h-6 w-auto">
-            </a>
-            <p class="max-w-3xl text-xs leading-5 text-white/38">
-              This product uses the TMDB API but is not endorsed or certified by TMDB.
-            </p>
-          </div>
-        </section>
-
-        <section
-          v-for="group in scrapeRuleGroups"
-          :key="group.mediaType"
-          class="glass-panel rounded-[1.75rem] p-6"
-        >
-          <div class="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p class="text-xs uppercase tracking-[0.24em] text-white/34">
-                {{ group.mediaType === 'movie' ? 'Movie Categories' : 'TV Categories' }}
-              </p>
-              <h3 class="mt-1 text-xl font-bold text-white">
-                {{ group.mediaType === 'movie' ? '电影分类' : '剧集分类' }}
-              </h3>
-              <p class="mt-2 text-sm text-white/42">
-                {{ group.mediaType === 'movie' ? '只展示 TMDB 官方电影类型，不混入剧集类型。' : '只展示 TMDB 官方剧集类型，例如动画、纪录片、儿童、真人秀、脱口秀。' }}
-              </p>
-            </div>
-            <button
-              type="button"
-              class="inline-flex items-center gap-2 rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary"
-              @click="addScrapeCategory(group.mediaType)"
-            >
-              <span class="text-lg leading-none">+</span>
-              添加{{ group.mediaType === 'movie' ? '电影' : '剧集' }}分类
-            </button>
-          </div>
-
-          <div class="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <label class="block">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">兜底分类</span>
-              <input
-                :value="group.fallbackCategoryName"
-                class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                :placeholder="SCRAPE_DEFAULT_FALLBACK_CATEGORY_NAME"
-                @input="updateFallbackCategoryName(group, ($event.target as HTMLInputElement).value)"
-              >
-            </label>
-            <p class="mt-2 text-xs leading-5 text-white/38">
-              没有命中上方显式分类时会落入这里。兜底分类不能删除，但可以改名。
-            </p>
-          </div>
-
-          <div v-if="group.categories.length" class="mt-5 space-y-4">
-            <article
-              v-for="(category, index) in group.categories"
-              :key="category.id"
-              class="rounded-2xl border border-white/10 bg-white/5 p-4"
-            >
-              <div class="flex flex-wrap items-start justify-between gap-4">
-                <label class="min-w-56 flex-1">
-                  <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">分类名称</span>
-                  <input
-                    v-model="category.name"
-                    class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                    placeholder="例如 华语电影 / 综艺"
-                    @input="markScrapeRulesDirty"
-                  >
-                </label>
-
-                <div class="flex flex-wrap gap-2 pt-6">
-                  <button
-                    type="button"
-                    class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
-                    :disabled="index === 0"
-                    @click="moveScrapeCategory(group, index, -1)"
-                  >
-                    上移
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
-                    :disabled="index === group.categories.length - 1"
-                    @click="moveScrapeCategory(group, index, 1)"
-                  >
-                    下移
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-xl bg-red-500/14 px-3 py-2 text-xs text-red-100 transition-colors hover:bg-red-500/24"
-                    @click="removeScrapeCategory(group, category.id)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-
-              <div class="mt-5 grid gap-4 xl:grid-cols-2">
-                <div class="rounded-2xl bg-black/16 p-4">
-                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
-                    类型 / 题材
-                  </p>
-                  <div class="mt-3 flex flex-wrap gap-2">
-                    <button
-                      v-for="genre in genreOptionsForMediaType(group.mediaType)"
-                      :key="genre.id"
-                      type="button"
-                      class="rounded-xl border px-3 py-2 text-xs transition-colors"
-                      :class="conditionChipClass(category.conditions.genreIds, genre.id)"
-                      :title="`${conditionChipPrefix(category.conditions.genreIds, genre.id)} ${genre.name}`"
-                      @click="cycleConditionValue(category.conditions.genreIds, genre.id)"
-                    >
-                      {{ conditionChipPrefix(category.conditions.genreIds, genre.id) }} · {{ optionDisplayLabel(genre) }}
-                    </button>
-                  </div>
-                </div>
-
-                <div class="rounded-2xl bg-black/16 p-4">
-                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
-                    原始语种
-                  </p>
-                  <div class="mt-3 flex flex-wrap gap-2">
-                    <button
-                      v-for="language in SCRAPE_LANGUAGE_OPTIONS"
-                      :key="language.value"
-                      type="button"
-                      class="rounded-xl border px-3 py-2 text-xs transition-colors"
-                      :class="conditionChipClass(category.conditions.originalLanguages, language.value)"
-                      @click="cycleConditionValue(category.conditions.originalLanguages, language.value)"
-                    >
-                      {{ conditionChipPrefix(category.conditions.originalLanguages, language.value) }} · {{ optionDisplayLabel(language) }}
-                    </button>
-                  </div>
-                </div>
-
-                <div class="rounded-2xl bg-black/16 p-4">
-                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
-                    {{ group.mediaType === 'movie' ? '制作国家 / 地区' : '剧集来源国家 / 地区' }}
-                  </p>
-                  <div class="mt-3 flex flex-wrap gap-2">
-                    <button
-                      v-for="country in SCRAPE_COUNTRY_OPTIONS"
-                      :key="country.value"
-                      type="button"
-                      class="rounded-xl border px-3 py-2 text-xs transition-colors"
-                      :class="conditionChipClass(countryConditionForCategory(category, group.mediaType), country.value)"
-                      @click="cycleConditionValue(countryConditionForCategory(category, group.mediaType), country.value)"
-                    >
-                      {{ conditionChipPrefix(countryConditionForCategory(category, group.mediaType), country.value) }} · {{ optionDisplayLabel(country) }}
-                    </button>
-                  </div>
-                </div>
-
-                <div class="rounded-2xl bg-black/16 p-4">
-                  <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
-                    年份范围
-                  </p>
-                  <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                    <label>
-                      <span class="text-xs text-white/38">起始年份</span>
-                      <input
-                        :value="category.conditions.releaseYear?.from ?? ''"
-                        class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                        inputmode="numeric"
-                        placeholder="不限"
-                        @input="setReleaseYear(category, 'from', ($event.target as HTMLInputElement).value)"
-                      >
-                    </label>
-                    <label>
-                      <span class="text-xs text-white/38">结束年份</span>
-                      <input
-                        :value="category.conditions.releaseYear?.to ?? ''"
-                        class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                        inputmode="numeric"
-                        placeholder="不限"
-                        @input="setReleaseYear(category, 'to', ($event.target as HTMLInputElement).value)"
-                      >
-                    </label>
-                  </div>
-                </div>
-              </div>
-            </article>
-          </div>
-
-          <div v-else class="mt-5 rounded-2xl border border-dashed border-white/12 p-8 text-center">
-            <p class="text-sm font-semibold text-white">
-              还没有显式分类
-            </p>
-            <p class="mt-2 text-sm leading-6 text-white/42">
-              可以先依赖兜底分类，也可以点击右上角添加一个受控分类规则。
-            </p>
-          </div>
-        </section>
-      </section>
-
       <section v-else-if="mode === 'manage'" class="glass-panel rounded-[1.75rem] p-6">
         <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -3444,23 +1781,19 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               Data Sources
             </p>
             <h2 class="mt-1 text-2xl font-bold text-white">
-              管理数据源
+              管理媒体库
             </h2>
             <p class="mt-2 text-sm text-white/42">
-              已启用的数据源会显示在左侧侧边栏；停用后保留配置但不再初始化或浏览。
+              连接 OhMyCine Server、Emby 或 Jellyfin。停用后保留配置。
             </p>
           </div>
           <button class="rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
-            添加数据源
+            添加媒体库
           </button>
         </div>
 
         <div v-if="configuredSources.length" class="space-y-3">
-          <article
-            v-for="source in configuredSources"
-            :key="source.id"
-            class="rounded-2xl border border-white/10 bg-white/5 p-4"
-          >
+          <article v-for="source in configuredSources" :key="source.id" class="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div class="flex flex-wrap items-center justify-between gap-4">
               <div class="min-w-0">
                 <div class="flex items-center gap-3">
@@ -3478,7 +1811,6 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                   {{ sourceStatusLine(source) }}
                 </p>
               </div>
-
               <div class="flex flex-wrap gap-2">
                 <button class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/72 transition-colors hover:bg-white/14" @click="toggleSource(source)">
                   {{ source.enabled === false ? '启用' : '停用' }}
@@ -3489,7 +1821,6 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 <button
                   class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/72 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
                   :disabled="source.enabled === false"
-                  :title="source.enabled === false ? '请先启用该数据源再浏览' : '浏览媒体库'"
                   @click="source.enabled === false ? undefined : router.push(`/source/${source.id}`)"
                 >
                   浏览
@@ -3497,103 +1828,29 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
                 <button
                   class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/72 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
                   :disabled="clearingCacheSourceId === source.id"
-                  title="仅清除该数据源已加载的媒体库、列表与详情缓存，不删除凭证或配置"
                   @click="clearSourceCache(source)"
                 >
                   {{ clearingCacheSourceId === source.id ? '清除中…' : '清除缓存' }}
                 </button>
                 <button class="rounded-xl bg-red-500/14 px-3 py-2 text-xs text-red-100 transition-colors hover:bg-red-500/24" @click="removeSource(source.id)">
-                  删除
+                  移除
                 </button>
               </div>
             </div>
-
-            <div
-              v-if="isRawScanScheduleSource(source)"
-              class="mt-4 grid gap-3 border-t border-white/8 pt-4 lg:grid-cols-2"
-            >
-              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p class="text-sm font-semibold text-white">
-                      全量扫描
-                    </p>
-                    <p class="mt-1 text-xs leading-5 text-white/42">
-                      慢速校准整个媒体库，默认 6 小时一次。
-                    </p>
-                  </div>
-                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-white/62">
-                    <input
-                      class="h-4 w-4 accent-primary"
-                      type="checkbox"
-                      :checked="rawScanScheduleEnabled(source, 'full')"
-                      @change="updateRawScanScheduleEnabled(source, 'full', ($event.target as HTMLInputElement).checked)"
-                    >
-                    启用
-                  </label>
-                </div>
-                <label class="mt-3 block">
-                  <span class="text-xs text-white/38">间隔（分钟）</span>
-                  <input
-                    class="mt-2 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/60"
-                    type="number"
-                    min="1"
-                    step="1"
-                    :value="rawScanScheduleIntervalMinutes(source, 'full')"
-                    @change="updateRawScanScheduleInterval(source, 'full', ($event.target as HTMLInputElement).value)"
-                  >
-                </label>
-              </div>
-
-              <div class="rounded-2xl border border-white/8 bg-black/14 p-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p class="text-sm font-semibold text-white">
-                      增量扫描
-                    </p>
-                    <p class="mt-1 text-xs leading-5 text-white/42">
-                      本地源配合文件监听；远端源用短间隔快照对比。
-                    </p>
-                  </div>
-                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-white/62">
-                    <input
-                      class="h-4 w-4 accent-primary"
-                      type="checkbox"
-                      :checked="rawScanScheduleEnabled(source, 'incremental')"
-                      @change="updateRawScanScheduleEnabled(source, 'incremental', ($event.target as HTMLInputElement).checked)"
-                    >
-                    启用
-                  </label>
-                </div>
-                <label class="mt-3 block">
-                  <span class="text-xs text-white/38">间隔（分钟）</span>
-                  <input
-                    class="mt-2 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-primary/60"
-                    type="number"
-                    min="1"
-                    step="1"
-                    :value="rawScanScheduleIntervalMinutes(source, 'incremental')"
-                    @change="updateRawScanScheduleInterval(source, 'incremental', ($event.target as HTMLInputElement).value)"
-                  >
-                </label>
-              </div>
-            </div>
-
-            <div v-else class="mt-4 rounded-2xl border border-white/8 bg-black/12 px-4 py-3 text-xs leading-5 text-white/42">
-              {{ sourceTypeLabel(source.type) }} 的媒体库和元数据由服务端维护，进入媒体库时会直接刷新，不使用 Player 本地扫描计划。
-            </div>
+            <p class="mt-4 border-t border-white/8 pt-4 text-xs leading-5 text-white/42">
+              媒体库、元数据和图片由对应服务端提供。
+            </p>
           </article>
         </div>
-
         <div v-else class="rounded-2xl border border-dashed border-white/12 p-10 text-center">
           <p class="text-base font-semibold text-white">
-            还没有数据源
+            还没有媒体库
           </p>
           <p class="mt-2 text-sm leading-6 text-white/42">
-            添加 Emby、OpenList/Alist、CloudDrive2、夸克网盘、123 云盘或本地文件夹后，它会出现在左侧侧边栏，并可进入详细媒体库浏览页。
+            添加 OhMyCine Server、Emby 或 Jellyfin 后，即可浏览和播放。
           </p>
           <button class="mt-5 rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary" @click="goAdd">
-            添加数据源
+            添加媒体库
           </button>
         </div>
       </section>
@@ -3605,46 +1862,35 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               {{ isEditing ? 'Edit Source' : 'Add Source' }}
             </p>
             <h2 class="mt-1 text-2xl font-bold text-white">
-              {{ isEditing ? '编辑数据源' : '添加数据源' }}
+              {{ isEditing ? '编辑媒体库' : '添加媒体库' }}
             </h2>
             <p class="mt-2 text-sm leading-6 text-white/42">
-              选择数据源类型并填写连接信息，保存前会先测试连接。
+              填写服务器连接信息，保存前会先测试登录。
             </p>
           </div>
-          <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="() => goManage()">
+          <button class="rounded-2xl bg-white/8 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/14" @click="goManage()">
             返回管理
           </button>
         </div>
 
         <form class="space-y-5" @submit.prevent="saveSource">
           <div>
-            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">数据源类型</span>
-            <div class="mt-3 grid gap-3 md:grid-cols-2">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">媒体库类型</span>
+            <div class="mt-3 grid gap-3 md:grid-cols-3">
               <button
                 v-for="option in sourceTypeOptions"
                 :key="option.type"
                 type="button"
                 class="flex min-h-24 items-center gap-4 rounded-2xl border p-4 text-left transition-colors disabled:cursor-not-allowed"
-                :class="form.type === option.type ? 'border-primary/60 bg-primary/14 text-white shadow-lg shadow-primary/10' : option.available ? 'border-white/10 bg-white/5 text-white/70 hover:border-white/20 hover:bg-white/8' : 'border-white/8 bg-white/3 text-white/38 opacity-75'"
-                :disabled="isEditing || !option.available"
+                :class="form.type === option.type ? 'border-primary/60 bg-primary/14 text-white shadow-lg shadow-primary/10' : 'border-white/10 bg-white/5 text-white/70 hover:border-white/20 hover:bg-white/8'"
+                :disabled="isEditing"
                 :aria-pressed="form.type === option.type"
-                @click="selectSourceTypeOption(option)"
+                @click="selectSourceType(option.type)"
               >
-                <span
-                  class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold"
-                  :class="form.type === option.type ? 'bg-primary/22 text-primary' : 'bg-white/8 text-white/52'"
-                >
-                  {{ option.shortLabel }}
-                </span>
+                <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/22 text-sm font-bold text-primary">{{ option.shortLabel }}</span>
                 <span class="min-w-0">
                   <span class="block text-sm font-semibold">{{ option.label }}</span>
                   <span class="mt-1 block text-xs leading-5 text-white/42">{{ option.description }}</span>
-                </span>
-                <span v-if="form.type === option.type" class="ml-auto rounded-full bg-primary/20 px-3 py-1 text-xs font-semibold text-primary">
-                  已选择
-                </span>
-                <span v-else-if="!option.available" class="ml-auto rounded-full bg-white/8 px-3 py-1 text-xs font-semibold text-white/46">
-                  即将推出
                 </span>
               </button>
             </div>
@@ -3659,8 +1905,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               autocomplete="off"
             >
           </label>
-
-          <label v-if="!isLocalForm && !isQuarkForm && !isPan123Form" class="block">
+          <label class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">服务器 URL</span>
             <input
               v-model="form.url"
@@ -3669,32 +1914,7 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               autocomplete="off"
             >
           </label>
-
-          <div v-if="isPan123Form" class="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div>
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">登录方式</span>
-              <p class="mt-1 text-xs leading-5 text-white/42">
-                账号登录可在令牌过期后自动续期；访问令牌导入适合高级用户。
-              </p>
-            </div>
-            <div class="mt-4 grid grid-cols-2 gap-1 rounded-2xl bg-black/18 p-1">
-              <button
-                v-for="option in ([
-                  { value: 'account', label: '账号登录' },
-                  { value: 'token', label: '访问令牌' },
-                ] as const)"
-                :key="option.value"
-                type="button"
-                class="min-h-10 rounded-xl px-3 text-xs font-semibold transition-colors"
-                :class="pan123LoginMode === option.value ? 'bg-primary/22 text-primary' : 'text-white/48 hover:bg-white/8 hover:text-white/76'"
-                @click="selectPan123LoginMode(option.value)"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-          </div>
-
-          <label v-if="isAccountPasswordForm" class="block">
+          <label class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">账号 / 用户名</span>
             <input
               v-model="form.username"
@@ -3703,240 +1923,19 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
               autocomplete="username"
             >
           </label>
-
-          <label v-if="isApiTokenForm" class="block">
-            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ isCloudDrive2Form ? 'API Token' : '访问令牌' }}</span>
-            <SecretInput
-              v-model="form.apiToken"
-              class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-              :configured="sourceCredentialConfigured"
-              :load-secret="sourceCredentialLoader('apiToken')"
-              :reset-key="`${form.id ?? 'new'}:${form.type}:${pan123LoginMode}:apiToken`"
-              :placeholder="isEditing ? '留空则保留当前登录凭据' : isCloudDrive2Form ? '粘贴 CloudDrive2 中创建的只读 API Token' : '粘贴 123 云盘访问令牌'"
-              autocomplete="off"
-              @reveal-error="showSourceRevealError"
-            />
-            <span v-if="isCloudDrive2Form" class="mt-2 block text-xs leading-5 text-white/42">
-              请先在 CloudDrive2 中创建应用 API Token。
-            </span>
-            <span v-else class="mt-2 block text-xs leading-5 text-white/42">
-              访问令牌只保存在 Tauri SQLite 凭据边界中；令牌过期后需要重新导入。
-            </span>
-          </label>
-
-          <div v-if="isQuarkForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">登录方式</span>
-                <p class="mt-1 text-xs leading-5 text-white/42">
-                  登录完成后只保存夸克 Cookie，不保存账号或密码。
-                </p>
-              </div>
-              <span v-if="form.cookie" class="rounded-full bg-emerald-400/14 px-3 py-1.5 text-xs font-semibold text-emerald-100">
-                登录凭据已就绪
-              </span>
-            </div>
-
-            <div class="mt-4 grid grid-cols-3 gap-1 rounded-2xl bg-black/18 p-1">
-              <button
-                v-for="option in ([
-                  { value: 'qr', label: '扫码登录' },
-                  { value: 'account', label: '账号登录' },
-                  { value: 'cookie', label: '高级方式' },
-                ] as const)"
-                :key="option.value"
-                type="button"
-                class="min-h-10 rounded-xl px-3 text-xs font-semibold transition-colors"
-                :class="quarkLoginMode === option.value ? 'bg-primary/22 text-primary' : 'text-white/48 hover:bg-white/8 hover:text-white/76'"
-                @click="selectQuarkLoginMode(option.value)"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-
-            <div v-if="quarkLoginMode === 'qr'" class="mt-4 flex flex-col items-center py-2 text-center">
-              <div class="flex aspect-square w-52 items-center justify-center overflow-hidden rounded-2xl bg-white p-3">
-                <img v-if="quarkQrImageUrl" :src="quarkQrImageUrl" alt="夸克网盘登录二维码" class="h-full w-full object-contain">
-                <span v-else class="text-sm font-semibold text-black/38">等待生成二维码</span>
-              </div>
-              <button
-                type="button"
-                class="mt-4 rounded-2xl bg-primary/80 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
-                :disabled="isStartingQuarkLogin"
-                @click="beginQuarkQrLogin"
-              >
-                {{ isStartingQuarkLogin ? '生成中…' : quarkQrImageUrl ? '刷新二维码' : '生成登录二维码' }}
-              </button>
-            </div>
-
-            <div v-else-if="quarkLoginMode === 'account'" class="mt-4 py-3 text-center">
-              <p class="text-sm leading-6 text-white/58">
-                在夸克官方窗口输入账号和密码，并完成验证码或设备验证。
-              </p>
-              <button
-                type="button"
-                class="mt-4 rounded-2xl bg-primary/80 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
-                :disabled="isStartingQuarkLogin"
-                @click="beginQuarkAccountLogin"
-              >
-                {{ isStartingQuarkLogin ? '打开中…' : quarkAccountSessionId ? '重新打开账号登录' : '打开夸克账号登录' }}
-              </button>
-            </div>
-
-            <label v-else class="mt-4 block">
-              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">手动导入 Cookie</span>
-              <SecretInput
-                v-model="form.cookie"
-                class="mt-2 min-h-28 w-full resize-y rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-                multiline
-                :configured="sourceCredentialConfigured"
-                :load-secret="sourceCredentialLoader('cookie')"
-                :reset-key="`${form.id ?? 'new'}:${form.type}:cookie`"
-                :placeholder="isEditing ? '留空则保留当前 Cookie' : '粘贴已登录 pan.quark.cn 后的完整 Cookie'"
-                autocomplete="off"
-                spellcheck="false"
-                @reveal-error="showSourceRevealError"
-              />
-            </label>
-
-            <div
-              v-if="quarkLoginFeedback"
-              class="mt-4 rounded-2xl border px-4 py-3 text-sm"
-              :class="{
-                'border-emerald-400/20 bg-emerald-400/10 text-emerald-100': quarkLoginFeedback.type === 'success',
-                'border-red-400/20 bg-red-400/10 text-red-100': quarkLoginFeedback.type === 'error',
-                'border-white/12 bg-white/6 text-white/58': quarkLoginFeedback.type === 'info',
-              }"
-            >
-              {{ quarkLoginFeedback.message }}
-            </div>
-          </div>
-
-          <label v-if="isAccountPasswordForm" class="block">
+          <label class="block">
             <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">密码</span>
             <SecretInput
               v-model="form.password"
               class="mt-2 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-white/25 focus:border-primary/60"
-              :configured="sourceCredentialConfigured"
-              :load-secret="sourceCredentialLoader('password')"
-              :reset-key="`${form.id ?? 'new'}:${form.type}:${pan123LoginMode}:password`"
+              :configured="sourceCredentialConfigured && form.type !== 'server'"
+              :load-secret="sourceCredentialLoader()"
+              :reset-key="`${form.id ?? 'new'}:${form.type}:password`"
               :placeholder="isEditing ? '留空则不重新登录' : '输入登录密码'"
               autocomplete="current-password"
               @reveal-error="showSourceRevealError"
             />
           </label>
-
-          <div v-if="isLocalForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div class="min-w-0">
-                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">本地根目录</span>
-                <p class="mt-2 break-all text-sm text-white/70">
-                  当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
-                </p>
-              </div>
-              <button
-                type="button"
-                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
-                @click="chooseLocalRootPath"
-              >
-                选择文件夹
-              </button>
-            </div>
-            <p class="mt-3 text-xs leading-5 text-white/42">
-              只扫描所选文件夹，不会移动、删除或重命名媒体文件。
-            </p>
-          </div>
-
-          <div v-if="isRemoteRootBrowserForm" class="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">{{ sourceTypeLabel(form.type) }} 根目录</span>
-                <p class="mt-2 text-sm text-white/70">
-                  当前选择：<span class="font-semibold text-white">{{ selectedRootPathLabel }}</span>
-                </p>
-              </div>
-              <button
-                type="button"
-                class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-45"
-                :disabled="alistBrowserLoading"
-                @click="loadAlistRootBrowser"
-              >
-                {{ alistBrowserSource ? '刷新目录' : '连接并浏览目录' }}
-              </button>
-            </div>
-
-            <p class="mt-3 text-xs leading-5 text-white/42">
-              不选择时默认使用 `/`，也可以先连接并选择目录。
-            </p>
-
-            <div
-              v-if="alistBrowserError"
-              class="mt-4 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-100"
-            >
-              {{ alistBrowserError }}
-            </div>
-
-            <div v-if="alistBrowserSource" class="mt-4 rounded-2xl border border-white/8 bg-black/18 p-3">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="min-w-0">
-                  <p class="text-xs uppercase tracking-[0.18em] text-white/34">
-                    Browsing
-                  </p>
-                  <p class="mt-1 truncate text-sm font-semibold text-white">
-                    {{ alistBrowserPath }}
-                  </p>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    class="rounded-xl bg-white/8 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35"
-                    :disabled="!canBrowseAlistParent || alistBrowserLoading"
-                    @click="loadAlistDirectory(alistParentPath)"
-                  >
-                    上一级
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-xl bg-primary/18 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/26"
-                    @click="selectAlistRoot(alistBrowserPath)"
-                  >
-                    选择当前目录
-                  </button>
-                </div>
-              </div>
-
-              <div v-if="alistBrowserLoading" class="mt-4 rounded-xl bg-white/6 px-4 py-3 text-sm text-white/48">
-                正在加载目录…
-              </div>
-
-              <div v-else-if="alistBrowserDirectories.length" class="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
-                <div
-                  v-for="directory in alistBrowserDirectories"
-                  :key="directory.id"
-                  class="flex items-center justify-between gap-3 rounded-xl bg-white/6 px-3 py-2"
-                >
-                  <button
-                    type="button"
-                    class="min-w-0 flex-1 truncate text-left text-sm text-white/74 transition-colors hover:text-white"
-                    @click="loadAlistDirectory(directory.id)"
-                  >
-                    {{ directory.name }}
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-lg bg-white/8 px-3 py-1.5 text-xs text-white/62 transition-colors hover:bg-white/14 hover:text-white"
-                    @click="selectAlistRoot(directory.id)"
-                  >
-                    设为根目录
-                  </button>
-                </div>
-              </div>
-
-              <div v-else class="mt-4 rounded-xl bg-white/6 px-4 py-3 text-sm text-white/48">
-                当前目录没有可继续浏览的子目录，可直接选择当前目录作为根目录。
-              </div>
-            </div>
-          </div>
 
           <div
             v-if="feedback"
@@ -3949,31 +1948,12 @@ function tmdbAuthTypeLabel(authType: TmdbAuthType): string {
           >
             {{ feedback.message }}
           </div>
-
-          <div v-if="lastFetchedLibraries.length" class="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <p class="text-sm font-semibold text-white">
-              已获取媒体库
-            </p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <span v-for="library in lastFetchedLibraries" :key="library.id" class="rounded-full bg-white/8 px-3 py-1 text-xs text-white/60">
-                {{ library.name }}
-              </span>
-            </div>
-          </div>
-
           <div class="flex justify-end gap-3 border-t border-white/8 pt-5">
-            <button
-              type="button"
-              class="rounded-2xl bg-white/8 px-5 py-3 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
-              @click="() => goManage()"
-            >
+            <button type="button" class="rounded-2xl bg-white/8 px-5 py-3 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14" @click="goManage()">
               取消
             </button>
-            <button
-              class="rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-45"
-              :disabled="isSaving"
-            >
-              {{ isSaving ? (isLocalForm ? '验证中…' : '登录测试中…') : (isEditing ? '保存' : '添加') }}
+            <button class="rounded-2xl bg-primary/80 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSaving">
+              {{ isSaving ? '登录测试中…' : isEditing ? '保存' : '添加' }}
             </button>
           </div>
         </form>

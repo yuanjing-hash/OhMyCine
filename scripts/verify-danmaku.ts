@@ -189,7 +189,7 @@ const danmakuFileNameHelper = player.match(/function currentDanmakuFileName\(\):
 assert.ok(danmakuFileNameHelper)
 assert.doesNotMatch(danmakuFileNameHelper, /mediaPath\.value/)
 assert.match(danmakuFileNameHelper, /context\?\.locator\.kind === 'localPath'/)
-assert.match(danmakuFileNameHelper, /isVideoFileName\(fileName\)/)
+assert.match(danmakuFileNameHelper, /isLocalVideoFileName\(fileName\)/)
 const composable = read('src/composables/useDanmaku.ts')
 assert.match(composable, /searchDanmaku\(settings\.value, identity\.searchTitle, identity\.episode\)/)
 assert.match(composable, /selectExactStructuredDanmakuMatch\(searchResponse, identity\.searchTitle\)/)

@@ -1,22 +1,11 @@
 <script setup lang="ts">
 import type { EditableArtworkKind, EditableMediaMetadata, MediaDetail, SubtitleSearchResult, SubtitleTrack } from '@/services/datasource/types'
 import type { MediaItemActionTarget } from '@/services/mediaActions'
-import type { RawEditableContext } from '@/services/mediaEditing'
 import type { SubtitleLanguage } from '@/services/subtitle'
 import { computed, ref, watch } from 'vue'
+import CachedImage from '@/components/media/CachedImage.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { closeMediaEditor, publishFeedback, useMediaEditorRuntime } from '@/services/mediaActions'
-import {
-  clearSelectedLocalSubtitle,
-  describeMediaSubtitleProviders,
-  downloadAndSelectLocalSubtitle,
-  importAndSelectLocalSubtitle,
-  loadRawEditableContext,
-  saveRawArtwork,
-  saveRawMetadata,
-  searchMediaSubtitles,
-} from '@/services/mediaEditing'
-import { getRawScannedMediaDetail } from '@/services/scraper'
 import { loadSubtitleSearchSettings } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -26,7 +15,6 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 const detail = ref<MediaDetail | null>(null)
-const rawContext = ref<RawEditableContext | null>(null)
 const name = ref('')
 const originalTitle = ref('')
 const overview = ref('')
@@ -55,7 +43,6 @@ watch(request, request => void loadEditor(request?.target ?? null), { immediate:
 
 async function loadEditor(nextTarget: MediaItemActionTarget | null) {
   detail.value = null
-  rawContext.value = null
   error.value = null
   subtitleResults.value = []
   if (!nextTarget)
@@ -63,26 +50,19 @@ async function loadEditor(nextTarget: MediaItemActionTarget | null) {
   loading.value = true
   try {
     await store.syncManager()
-    const config = store.orderedConfigs.find(entry => entry.id === nextTarget.sourceId)
-    rawContext.value = await loadRawEditableContext(nextTarget, config)
-    detail.value = rawContext.value
-      ? getRawScannedMediaDetail(rawContext.value.cache, nextTarget.itemId)
-      ?? getRawScannedMediaDetail(rawContext.value.cache, rawContext.value.candidate.record.providerPath)
-      : await store.getSource(nextTarget.sourceId)?.getDetail(nextTarget.itemId) ?? null
+    detail.value = await store.getSource(nextTarget.sourceId)?.getDetail(nextTarget.itemId) ?? null
     const current = detail.value
-    const metadata = rawContext.value?.candidate.scrapeMetadata
-      ?? rawContext.value?.cache.scrapedItems?.find(item => item.recordId === rawContext.value?.candidate.record.id)?.metadata
-    name.value = current?.name ?? metadata?.title ?? nextTarget.display.name
-    originalTitle.value = current?.originalTitle ?? metadata?.originalTitle ?? ''
-    overview.value = current?.overview ?? metadata?.overview ?? ''
+    name.value = current?.name ?? nextTarget.display.name
+    originalTitle.value = current?.originalTitle ?? ''
+    overview.value = current?.overview ?? ''
     tagline.value = current?.tagline ?? ''
-    year.value = String(current?.year ?? metadata?.releaseYear ?? '')
-    rating.value = String(current?.rating ?? metadata?.rating ?? '')
-    genres.value = (current?.genres ?? metadata?.genres ?? []).join('、')
+    year.value = String(current?.year ?? '')
+    rating.value = String(current?.rating ?? '')
+    genres.value = (current?.genres ?? []).join('、')
     subtitleKeyword.value = current?.seriesName ?? current?.name ?? nextTarget.display.name
     artworkKind.value = 'Primary'
-    artworkUrl.value = current?.posterUrl ?? metadata?.posterUrl ?? ''
-    subtitleProviderSummary.value = providerNative.value ? '使用媒体服务原生字幕提供器；下载和删除会写回服务器。' : await describeMediaSubtitleProviders()
+    artworkUrl.value = current?.posterUrl ?? ''
+    subtitleProviderSummary.value = '使用媒体服务原生字幕提供器；下载和删除会写回服务器。'
   }
   catch (reason) {
     error.value = toSafeErrorMessage(reason, '无法读取媒体编辑信息。')
@@ -108,9 +88,7 @@ async function saveMetadata() {
       rating: optionalNumber(rating.value, false),
       genres: genres.value.split(/[、,，]/).map(value => value.trim()).filter(Boolean),
     }
-    if (rawContext.value)
-      await saveRawMetadata(rawContext.value, metadata)
-    else if (source.value?.updateMetadata)
+    if (source.value?.updateMetadata)
       await source.value.updateMetadata(currentTarget.itemId, metadata)
     else
       throw new Error('当前来源不支持元数据编辑。')
@@ -131,10 +109,7 @@ async function saveArtwork(remove = false) {
   saving.value = true
   error.value = null
   try {
-    if (rawContext.value) {
-      await saveRawArtwork(rawContext.value, mapArtworkKind(artworkKind.value), remove ? undefined : artworkUrl.value)
-    }
-    else if (remove && source.value?.deleteArtwork) {
+    if (remove && source.value?.deleteArtwork) {
       await source.value.deleteArtwork(currentTarget.itemId, artworkKind.value)
     }
     else if (!remove && source.value?.updateArtworkFromUrl) {
@@ -162,22 +137,19 @@ async function searchSubtitles() {
   error.value = null
   subtitleResults.value = []
   try {
-    if (providerNative.value && source.value?.searchSubtitles) {
-      subtitleResults.value = await source.value.searchSubtitles({
-        itemId: currentTarget.itemId,
-        language: subtitleLanguage.value,
-        title: subtitleKeyword.value,
-        year: currentDetail.year,
-        mediaType: currentDetail.type,
-        seasonNumber: currentDetail.seasonNumber,
-        episodeNumber: currentDetail.episodeNumber,
-        imdbId: currentDetail.imdbId,
-        tmdbId: currentDetail.tmdbId,
-      })
-    }
-    else {
-      subtitleResults.value = await searchMediaSubtitles(currentDetail, subtitleLanguage.value, subtitleKeyword.value)
-    }
+    if (!source.value?.searchSubtitles)
+      throw new Error('媒体服务未提供字幕搜索接口。')
+    subtitleResults.value = await source.value.searchSubtitles({
+      itemId: currentTarget.itemId,
+      language: subtitleLanguage.value,
+      title: subtitleKeyword.value,
+      year: currentDetail.year,
+      mediaType: currentDetail.type,
+      seasonNumber: currentDetail.seasonNumber,
+      episodeNumber: currentDetail.episodeNumber,
+      imdbId: currentDetail.imdbId,
+      tmdbId: currentDetail.tmdbId,
+    })
     if (!subtitleResults.value.length)
       error.value = '没有找到符合条件的字幕，可以更换语言或关键词重试。'
   }
@@ -196,12 +168,9 @@ async function downloadSubtitle(result: SubtitleSearchResult) {
   workingSubtitleId.value = result.id
   error.value = null
   try {
-    if (result.origin === 'emby' && source.value?.downloadSubtitle) {
-      await source.value.downloadSubtitle({ itemId: currentTarget.itemId, result })
-    }
-    else {
-      await downloadAndSelectLocalSubtitle(currentTarget, result)
-    }
+    if (!source.value?.downloadSubtitle)
+      throw new Error('媒体服务未提供字幕下载接口。')
+    await source.value.downloadSubtitle({ itemId: currentTarget.itemId, result })
     await loadEditor(currentTarget)
     publishFeedback({ id: Date.now(), kind: 'success', message: '字幕已下载并应用' })
   }
@@ -213,19 +182,6 @@ async function downloadSubtitle(result: SubtitleSearchResult) {
   }
 }
 
-async function importSubtitle() {
-  const currentTarget = target.value
-  if (!currentTarget)
-    return
-  try {
-    if (await importAndSelectLocalSubtitle(currentTarget))
-      publishFeedback({ id: Date.now(), kind: 'success', message: '字幕已导入 Player 缓存并应用' })
-  }
-  catch (reason) {
-    error.value = toSafeErrorMessage(reason, '字幕导入失败。')
-  }
-}
-
 async function deleteSubtitle(track: SubtitleTrack) {
   const currentTarget = target.value
   if (!currentTarget)
@@ -233,12 +189,11 @@ async function deleteSubtitle(track: SubtitleTrack) {
   workingSubtitleId.value = `track:${track.index}`
   error.value = null
   try {
-    if (providerNative.value && source.value?.deleteSubtitle)
-      await source.value.deleteSubtitle(currentTarget.itemId, track.index)
-    else
-      await clearSelectedLocalSubtitle(currentTarget)
+    if (!source.value?.deleteSubtitle)
+      throw new Error('媒体服务未提供字幕删除接口。')
+    await source.value.deleteSubtitle(currentTarget.itemId, track.index)
     await loadEditor(currentTarget)
-    publishFeedback({ id: Date.now(), kind: 'success', message: providerNative.value ? '服务器字幕已删除' : '已取消该媒体的本地默认字幕' })
+    publishFeedback({ id: Date.now(), kind: 'success', message: '服务器字幕已删除' })
   }
   catch (reason) {
     error.value = toSafeErrorMessage(reason, '字幕移除失败。')
@@ -268,10 +223,6 @@ function optionalNumber(value: string, integer: boolean): number | undefined {
     throw new Error(integer ? '年份必须是整数。' : '评分必须是数字。')
   return parsed
 }
-
-function mapArtworkKind(kind: EditableArtworkKind): 'poster' | 'backdrop' | 'logo' {
-  return kind === 'Primary' ? 'poster' : kind === 'Backdrop' ? 'backdrop' : 'logo'
-}
 </script>
 
 <template>
@@ -281,7 +232,7 @@ function mapArtworkKind(kind: EditableArtworkKind): 'poster' | 'backdrop' | 'log
         <header class="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div class="min-w-0">
             <p class="text-xs font-semibold uppercase tracking-[0.18em] text-white/36">
-              {{ providerNative ? 'Provider Native Editor' : 'Player Local Override' }}
+              媒体服务编辑器
             </p>
             <h2 class="mt-1 text-xl font-bold text-white">
               {{ title }}
@@ -296,9 +247,6 @@ function mapArtworkKind(kind: EditableArtworkKind): 'poster' | 'backdrop' | 'log
         </header>
 
         <div class="min-h-0 flex-1 overflow-y-auto p-6">
-          <p v-if="!providerNative" class="mb-4 rounded-2xl border border-primary/20 bg-primary/8 px-4 py-3 text-xs leading-5 text-white/58">
-            修改只保存在 Player 数据库和受控缓存，不会写入或改名源目录中的文件。
-          </p>
           <p v-if="error" class="mb-4 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-100">
             {{ error }}
           </p>
@@ -328,7 +276,7 @@ function mapArtworkKind(kind: EditableArtworkKind): 'poster' | 'backdrop' | 'log
           <div v-else-if="request.kind === 'editArtwork'" class="space-y-5">
             <div class="grid gap-4 md:grid-cols-[12rem_1fr]">
               <div class="aspect-[2/3] overflow-hidden rounded-2xl bg-white/6">
-                <img v-if="artworkUrl" :src="artworkUrl" alt="图片预览" class="h-full w-full object-cover"><div v-else class="flex h-full items-center justify-center text-sm text-white/32">
+                <CachedImage v-if="artworkUrl" :src="artworkUrl" :cache-key="`${source?.id ?? 'editor'}:${artworkUrl}`" alt="图片预览" class="h-full w-full object-cover" /><div v-else class="flex h-full items-center justify-center text-sm text-white/32">
                   暂无预览
                 </div>
               </div>
@@ -336,7 +284,7 @@ function mapArtworkKind(kind: EditableArtworkKind): 'poster' | 'backdrop' | 'log
                 <label class="block"><span class="editor-label">图片类型</span><select v-model="artworkKind" class="editor-input"><option value="Primary">海报</option><option value="Backdrop">背景图</option><option value="Logo">标题 Logo</option></select></label>
                 <label class="block"><span class="editor-label">HTTP(S) 图片地址</span><input v-model="artworkUrl" class="editor-input" type="url" placeholder="https://…"></label>
                 <p class="text-xs leading-5 text-white/40">
-                  {{ providerNative ? '由媒体服务下载并保存图片，实际可用性受账号权限和服务端版本限制。' : '地址经安全校验后写入本地元数据覆盖层；带令牌或签名参数的 URL 会被拒绝。' }}
+                  由媒体服务下载并保存图片，实际可用性受账号权限和服务端版本限制。
                 </p>
               </div>
             </div>
@@ -385,11 +333,7 @@ function mapArtworkKind(kind: EditableArtworkKind): 'poster' | 'backdrop' | 'log
               </button>
             </div>
             <div class="flex flex-wrap justify-between gap-3">
-              <button v-if="!providerNative" type="button" class="editor-secondary" @click="importSubtitle">
-                导入本地字幕
-              </button><button v-if="!providerNative" type="button" class="editor-secondary" @click="target && clearSelectedLocalSubtitle(target)">
-                取消本地默认字幕
-              </button><button type="button" class="editor-secondary ml-auto" @click="closeMediaEditor">
+              <button type="button" class="editor-secondary ml-auto" @click="closeMediaEditor">
                 完成
               </button>
             </div>

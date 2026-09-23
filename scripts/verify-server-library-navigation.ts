@@ -6,7 +6,6 @@ import { loadSourceBrowseContext, saveSourceBrowseContext, sourceBrowseContextId
 const sensitiveFolderId = 'D:\\Media\\动画电影'
 const browseContextId = saveSourceBrowseContext({
   sourceId: 'server-home',
-  viewMode: 'folders',
   selectedLibrary: {
     id: '115-library',
     sourceId: 'server-home',
@@ -17,7 +16,6 @@ const browseContextId = saveSourceBrowseContext({
     { id: '115-library', name: '115测试盘', type: 'movies' },
     { id: sensitiveFolderId, name: '动画电影', type: 'folder' },
   ],
-  selectedScannedCategoryId: null,
   searchKeyword: '',
   scrollTop: 720,
 })
@@ -58,11 +56,11 @@ await navigateLayoutBack(router as never)
 assert.deepEqual(calls, ['internal.back', 'router.back', 'router.push:/'])
 
 const sourceView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
-assert.match(sourceView, /registerLayoutBackHandler\(layoutContextOwner, handleInPageBack\)/)
+assert.match(sourceView, /registerLayoutBackHandler\(Symbol\('source-library'\), backInPage\)/)
 assert.match(sourceView, /navigationStack\.value\.length > 1[\s\S]*navigateToCrumb\(navigationStack\.value\.length - 2\)/)
 assert.match(sourceView, /selectedLibrary\.value[\s\S]*backToLibraries\(\)/)
-assert.match(sourceView, /await persistSourceBrowseContext\(\{ captureScroll: true \}\)[\s\S]*name: 'media-detail'/)
-assert.match(sourceView, /await restoreSourceBrowseContext\(\)/)
+assert.match(sourceView, /await persistContext\(true\)[\s\S]*name: 'media-detail'/)
+assert.match(sourceView, /await restoreContext\(\)/)
 assert.match(sourceView, /browseContextId/)
 const backButton = fs.readFileSync(new URL('../src/components/layout/BackButton.vue', import.meta.url), 'utf8')
 const windowChrome = fs.readFileSync(new URL('../src/components/layout/WindowChrome.vue', import.meta.url), 'utf8')

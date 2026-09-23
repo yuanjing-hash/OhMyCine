@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, useAttrs, watch } from 'vue'
 import { cacheImage, getCachedImage, isTauriImageCacheAvailable } from '@/services/imageCache'
+import { isProtectedServerArtworkURL } from '@/services/serverArtwork'
 
 defineOptions({ inheritAttrs: false })
 
@@ -13,29 +14,33 @@ const props = withDefaults(defineProps<{
   alt: '',
 })
 
+const emit = defineEmits<{ error: [url: string] }>()
+
 const attrs = useAttrs()
 const root = ref<HTMLElement | null>(null)
-const displaySource = ref(props.src)
-const ready = ref(Boolean(props.src))
+const displaySource = ref(isProtectedServerArtworkURL(props.src) ? '' : props.src)
+const ready = ref(Boolean(displaySource.value))
 let observer: IntersectionObserver | null = null
 let generation = 0
 let visible = false
 
 watch(() => [props.cacheKey, props.src], () => {
   generation += 1
-  displaySource.value = props.src
-  ready.value = Boolean(props.src)
+  displaySource.value = isProtectedServerArtworkURL(props.src) ? '' : props.src
+  ready.value = Boolean(displaySource.value)
   if (visible)
     void resolveImage(generation)
 })
 
 async function resolveImage(currentGeneration: number) {
+  const protectedArtwork = isProtectedServerArtworkURL(props.src)
   if (!isTauriImageCacheAvailable()) {
-    ready.value = Boolean(props.src)
+    displaySource.value = protectedArtwork ? '' : props.src
+    ready.value = Boolean(displaySource.value)
     return
   }
 
-  const cached = await getCachedImage(props.cacheKey)
+  const cached = protectedArtwork ? null : await getCachedImage(props.cacheKey)
   if (currentGeneration !== generation)
     return
   if (cached) {
@@ -54,16 +59,19 @@ async function resolveImage(currentGeneration: number) {
     return
   displaySource.value = resolved
   ready.value = Boolean(resolved)
+  if (!resolved)
+    emit('error', props.src)
 }
 
 function handleImageError() {
-  if (displaySource.value !== props.src && props.src) {
+  if (!isProtectedServerArtworkURL(props.src) && displaySource.value !== props.src && props.src) {
     displaySource.value = props.src
     ready.value = true
     return
   }
   displaySource.value = ''
   ready.value = false
+  emit('error', props.src)
 }
 
 onMounted(() => {

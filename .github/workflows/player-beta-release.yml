@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version tag, for example v0.0.6"
         required: true
-        default: "v0.0.6"
+        default: "v1.1.48"
       channel:
         description: "Release channel"
         required: true
@@ -88,291 +88,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate workflow dry-run
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Validate workflow guardrails
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 <<'PY'
-          import json
-          from pathlib import Path
-
-          workflow = Path('.github/workflows/player-beta-release.yml')
-          text = workflow.read_text()
-          manual_version_env = 'WORKFLOW_INPUT_VERSION: ' + '$' + '{{ inputs.version }}'
-          manual_channel_env = 'WORKFLOW_INPUT_CHANNEL: ' + '$' + '{{ inputs.channel }}'
-          forbidden_direct_version = 'raw_version="' + '$' + '{{ inputs.version }}"'
-          release_guard_run = 'run: bash .github/scripts/verify-player-release-source.sh "$RELEASE_CHANNEL" HEAD "$GITHUB_EVENT_NAME" "$GITHUB_REF"'
-
-          required = {
-              'release job is gated to manual dispatch or tag push': "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')" in text,
-              'release source helper is used by both release jobs': sum(line.strip() == release_guard_run for line in text.splitlines()) == 2,
-              'tag pushes force the beta channel': text.count('release_channel="beta"') >= 3,
-              'manual version reaches bash through env': manual_version_env in text,
-              'manual channel reaches bash through env': manual_channel_env in text,
-              'version resolver reads env instead of direct expression': 'raw_version="${WORKFLOW_INPUT_VERSION:-}"' in text,
-              'version sync accepts an already-current Cargo version': 'const cargoVersion = cargo.match' in text and 'Could not find Cargo.toml package version' in text,
-              'Windows libmpv setup is present': 'npm run setup:libmpv -- windows' in text,
-              'Windows GNU updater build uses rustup rustc': 'npm run tauri:build:windows -- --config src-tauri/tauri.updater.conf.json' in text,
-              'updater signing secret is required': 'TAURI_SIGNING_PRIVATE_KEY: $' + '{{ secrets.TAURI_SIGNING_PRIVATE_KEY }}' in text,
-              'TMDB application credential is injected into release builds': text.count('OHMYCINE_TMDB_READ_ACCESS_TOKEN: $' + '{{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}') >= 2,
-              'DanDanPlay credentials are injected into release builds': text.count('OHMYCINE_DANDANPLAY_APP_ID: $' + '{{ secrets.OHMYCINE_DANDANPLAY_APP_ID }}') >= 2 and text.count('OHMYCINE_DANDANPLAY_APP_SECRET: $' + '{{ secrets.OHMYCINE_DANDANPLAY_APP_SECRET }}') >= 2,
-              'signed updater manifest is published': 'latest.json' in text and 'setup_signature_asset' in text,
-              'release channel controls prerelease': 'RELEASE_CHANNEL' in text and 'release_flags' in text,
-              'standard zip asset is published': 'standard_asset="${ASSET_PREFIX}-standard.zip"' in text and 'steps.package.outputs.standard_asset' in text,
-              'portable package enables portable mode': 'portable_dir}/portable.flag' in text,
-              'publish step remains in release workflow': 'gh release create "$TAG_NAME"' in text,
-              'release notes generator is used': 'python3 .github/scripts/generate-player-beta-release-notes.py' in text,
-              'release notes are published from generated file': '--notes-file dist/player-beta/release-notes.md' in text,
-              'Android ARM64 release job is present': 'release-android-arm64:' in text and 'tauri:build:android:preview' in text,
-              'Android clean-runner build avoids pre-generated Gradle bridge': 'gradlew -p src-tauri/gen/android clean' not in Path('package.json').read_text(),
-              'Android APK is uploaded to the same release': 'gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber' in text,
-              'Android preview uses a stable signing keystore': 'ANDROID_PREVIEW_KEYSTORE_BASE64' in text and 'OHMYCINE_ANDROID_KEYSTORE' in text,
-              'Android updater install permission is declared': 'REQUEST_INSTALL_PACKAGES' in Path('src-tauri/gen/android/app/src/main/AndroidManifest.xml').read_text(),
-              'manual extra notes reach generator through env': 'EXTRA_RELEASE_NOTES: $' + '{{ github.event_name == ' + "'workflow_dispatch'" + ' && inputs.release_notes || ' + "''" + ' }}' in text,
-          }
-
-          tauri_configs = {
-              'base': Path('src-tauri/tauri.conf.json'),
-              'windows': Path('src-tauri/tauri.windows.conf.json'),
-              'updater': Path('src-tauri/tauri.updater.conf.json'),
-          }
-          configs = {name: json.loads(path.read_text()) for name, path in tauri_configs.items()}
-          resources = {
-              name: config.get('bundle', {}).get('resources')
-              for name, config in configs.items()
-          }
-          expected_resources = {
-              'windows': {
-                  'lib/libmpv-2.dll': 'libmpv-2.dll',
-                  'lib/libmpv-wrapper.dll': 'libmpv-wrapper.dll',
-                  'lib/LICENSE': 'lib/LICENSE',
-                  'resources/shaders/NOTICE.md': 'FSR-NOTICE.md',
-              },
-          }
-          required.update({
-              'shared Tauri config has no platform runtime resources': 'resources' not in configs['base'].get('bundle', {}),
-              'Windows Tauri resources are Windows-only': resources['windows'] == expected_resources['windows'],
-              'Updater release config creates signed artifacts': configs['updater'].get('bundle', {}).get('createUpdaterArtifacts') is True,
-              'Updater public key is committed in base config': bool(configs['base'].get('plugins', {}).get('updater', {}).get('pubkey')),
-          })
-
-          failed = [name for name, ok in required.items() if not ok]
-          if failed:
-              for name in failed:
-                  print(f'::error::{name}')
-              raise SystemExit(1)
-
-          if forbidden_direct_version in text:
-              print('::error::inputs.version must not be interpolated directly into a bash run block')
-              raise SystemExit(1)
-          PY
-
-      - name: Dry-run valid release version and channel parser
-        env:
-          WORKFLOW_EVENT_NAME: workflow_dispatch
-          WORKFLOW_INPUT_VERSION: v0.0.1
-          WORKFLOW_INPUT_CHANNEL: beta
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ "$WORKFLOW_EVENT_NAME" == "workflow_dispatch" ]]; then
-            raw_version="${WORKFLOW_INPUT_VERSION:-}"
-            release_channel="${WORKFLOW_INPUT_CHANNEL:-beta}"
-          else
-            raw_version="${GITHUB_REF_NAME}"
-            release_channel="beta"
-          fi
-
-          if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Version must look like v0.0.1 or 0.0.1."
-            exit 1
-          fi
-
-          app_version="${raw_version#v}"
-          tag_name="v${app_version}"
-          asset_prefix="OhMyCine-Player-${tag_name}-windows-x64"
-
-          test "$app_version" = "0.0.1"
-          test "$tag_name" = "v0.0.1"
-          test "$asset_prefix" = "OhMyCine-Player-v0.0.1-windows-x64"
-          test "$release_channel" = "beta"
-
-      - name: Dry-run release source guardrails
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          guard="${PWD}/.github/scripts/verify-player-release-source.sh"
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          bare_repo="${tmp_dir}/origin.git"
-          work_repo="${tmp_dir}/work"
-
-          git init -q --bare "$bare_repo"
-          git init -q "$work_repo"
-          (
-            cd "$work_repo"
-            git config user.name "OhMyCine Release Dry Run"
-            git config user.email "release-dry-run@ohmycine.invalid"
-            git remote add origin "$bare_repo"
-            git symbolic-ref HEAD refs/heads/main
-
-            empty_tree="$(git mktree </dev/null)"
-            stable_sha="$(printf '%s\n\n' 'chore(repo): 稳定版基线' | git commit-tree "$empty_tree")"
-            historical_develop_sha="$(printf '%s\n\n' 'feat(player): 历史开发提交' | git commit-tree "$empty_tree" -p "$stable_sha")"
-            beta_sha="$(printf '%s\n\n' 'fix(player): 最新开发提交' | git commit-tree "$empty_tree" -p "$historical_develop_sha")"
-            feature_sha="$(printf '%s\n\n' 'feat(player): 未合并功能提交' | git commit-tree "$empty_tree" -p "$beta_sha")"
-            release_sha="$(printf '%s\n\n' 'chore(player): 发布分支提交' | git commit-tree "$empty_tree" -p "$beta_sha")"
-            local_sha="$(printf '%s\n\n' 'fix(player): 本地未推送提交' | git commit-tree "$empty_tree" -p "$beta_sha")"
-
-            git update-ref refs/heads/main "$stable_sha"
-            git update-ref refs/heads/develop "$beta_sha"
-            git push -q origin main develop
-
-            bash "$guard" beta "$beta_sha" push refs/tags/v0.0.1
-            bash "$guard" beta "$beta_sha" workflow_dispatch refs/heads/develop
-            bash "$guard" stable "$stable_sha" workflow_dispatch refs/heads/main
-
-            expect_rejection() {
-              description="$1"
-              channel="$2"
-              candidate_sha="$3"
-              event_name="${4:-workflow_dispatch}"
-              event_ref="${5:-refs/heads/develop}"
-              if bash "$guard" "$channel" "$candidate_sha" "$event_name" "$event_ref"; then
-                echo "::error::${description} unexpectedly passed the release source guard."
-                exit 1
-              fi
-            }
-
-            expect_rejection "main commit used for beta" beta "$stable_sha"
-            expect_rejection "develop commit used for stable" stable "$beta_sha" workflow_dispatch refs/heads/main
-            expect_rejection "historical develop commit" beta "$historical_develop_sha"
-            expect_rejection "unmerged feature branch commit" beta "$feature_sha"
-            expect_rejection "release branch commit" beta "$release_sha"
-            expect_rejection "local unpushed commit" beta "$local_sha"
-            expect_rejection "manual beta from feature ref" beta "$beta_sha" workflow_dispatch refs/heads/feature/example
-            expect_rejection "manual stable from develop ref" stable "$stable_sha" workflow_dispatch refs/heads/develop
-            expect_rejection "stable tag push" stable "$stable_sha" push refs/tags/v1.0.0
-          )
-
-      - name: Dry-run release notes generator
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          script_path="${PWD}/.github/scripts/generate-player-beta-release-notes.py"
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          export GIT_AUTHOR_NAME="OhMyCine CI"
-          export GIT_AUTHOR_EMAIL="ci@ohmycine.local"
-          export GIT_COMMITTER_NAME="OhMyCine CI"
-          export GIT_COMMITTER_EMAIL="ci@ohmycine.local"
-
-          (
-            cd "$tmp_dir"
-            git init -q
-            git symbolic-ref HEAD refs/heads/main
-
-            empty_tree="$(git mktree </dev/null)"
-            commit_one="$(printf '%s\n\n' 'chore(repo): 初始化项目' | git commit-tree "$empty_tree")"
-            git update-ref refs/heads/main "$commit_one"
-            git tag v0.0.1 "$commit_one"
-
-            commit_two="$(printf '%s\n\n' 'feat(player): 添加海报墙入口' | git commit-tree "$empty_tree" -p "$commit_one")"
-            git update-ref refs/heads/main "$commit_two"
-            commit_three="$(printf '%s\n\n' 'fix(player): 修复便携包校验' | git commit-tree "$empty_tree" -p "$commit_two")"
-            git update-ref refs/heads/main "$commit_three"
-            commit_four="$(printf '%s\n\n' 'docs: 更新 beta 发版说明' | git commit-tree "$empty_tree" -p "$commit_three")"
-            git update-ref refs/heads/main "$commit_four"
-            commit_five="$(printf '%s\n\n' 'build: 调整临时构建脚本' | git commit-tree "$empty_tree" -p "$commit_four")"
-            git update-ref refs/heads/main "$commit_five"
-
-            TAG_NAME=v0.0.2 \
-              ASSET_PREFIX=OhMyCine-Player-v0.0.2-windows-x64 \
-              WORKFLOW_EVENT_NAME=workflow_dispatch \
-              EXTRA_RELEASE_NOTES='手动补充说明' \
-              OUTPUT_PATH=notes.md \
-              python3 "$script_path"
-
-            grep -Fq 'Range: `v0.0.1..v0.0.2`.' notes.md
-            grep -Fq '### feat' notes.md
-            grep -Fq -- '- feat(player): 添加海报墙入口 (' notes.md
-            grep -Fq '### fix' notes.md
-            grep -Fq '### docs' notes.md
-            grep -Fq '### other' notes.md
-            grep -Fq '## Extra Notes' notes.md
-            grep -Fq '手动补充说明' notes.md
-            grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64-standard.zip' notes.md
-            grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64-portable.zip' notes.md
-            grep -Fq 'OhMyCine-Player-v0.0.2-android-arm64.apk' notes.md
-            grep -Fq 'OhMyCine-Player-v0.0.2-android-arm64.sha256' notes.md
-            grep -Fq 'OhMyCine-Player-v0.0.2-windows-x64.sha256' notes.md
-            if grep -Eiq 'GITHUB_TOKEN|GH_TOKEN|GITHUB_ENV|SECRET|AUTHORIZATION|COOKIE|PASSKEY' notes.md; then
-              echo "::error::Release notes must not contain sensitive environment variable names."
-              exit 1
-            fi
-          )
-
-          (
-            cd "$tmp_dir"
-            rm -rf no-tags
-            mkdir no-tags
-            cd no-tags
-            git init -q
-            git symbolic-ref HEAD refs/heads/main
-
-            empty_tree="$(git mktree </dev/null)"
-            initial_commit="$(printf '%s\n\n' 'ci(player): 初始化 beta 校验' | git commit-tree "$empty_tree")"
-            git update-ref refs/heads/main "$initial_commit"
-
-            TAG_NAME=v0.0.1 \
-              WORKFLOW_EVENT_NAME=push \
-              EXTRA_RELEASE_NOTES='should not be included' \
-              OUTPUT_PATH=notes.md \
-              python3 "$script_path"
-
-            grep -Fq 'Range: `initial commit..v0.0.1`.' notes.md
-            grep -Fq '### ci' notes.md
-            if grep -Eiq 'GITHUB_TOKEN|GH_TOKEN|GITHUB_ENV|SECRET|AUTHORIZATION|COOKIE|PASSKEY' notes.md; then
-              echo "::error::Release notes must not contain sensitive environment variable names."
-              exit 1
-            fi
-            if grep -Fq '## Extra Notes' notes.md; then
-              echo "::error::Push/tag release notes must not include manual extra notes."
-              exit 1
-            fi
-          )
-
-      - name: Dry-run invalid beta version rejection
-        env:
-          WORKFLOW_EVENT_NAME: workflow_dispatch
-          WORKFLOW_INPUT_VERSION: beta/0.0.1
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          raw_version="${WORKFLOW_INPUT_VERSION:-}"
-          if [[ "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version unexpectedly passed validation."
-            exit 1
-          fi
-
   release-android-arm64:
     name: Build and publish Android ARM64 preview
-    needs:
-      - validate
-      - release-windows-gnu
+    needs: release-windows-gnu
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
@@ -499,7 +217,6 @@ jobs:
 
       - name: Build Android ARM64 APK
         env:
-          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
           OHMYCINE_DANDANPLAY_APP_ID: ${{ secrets.OHMYCINE_DANDANPLAY_APP_ID }}
           OHMYCINE_DANDANPLAY_APP_SECRET: ${{ secrets.OHMYCINE_DANDANPLAY_APP_SECRET }}
           OHMYCINE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_PREVIEW_KEYSTORE_PASSWORD }}
@@ -509,7 +226,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for value in OHMYCINE_TMDB_READ_ACCESS_TOKEN OHMYCINE_DANDANPLAY_APP_ID OHMYCINE_DANDANPLAY_APP_SECRET OHMYCINE_ANDROID_KEYSTORE_PASSWORD OHMYCINE_ANDROID_KEY_ALIAS OHMYCINE_ANDROID_KEY_PASSWORD; do
+          for value in OHMYCINE_DANDANPLAY_APP_ID OHMYCINE_DANDANPLAY_APP_SECRET OHMYCINE_ANDROID_KEYSTORE_PASSWORD OHMYCINE_ANDROID_KEY_ALIAS OHMYCINE_ANDROID_KEY_PASSWORD; do
             if [[ -z "${!value:-}" ]]; then
               echo "::error::${value} GitHub Secret is required for the Android release build."
               exit 1
@@ -546,7 +263,6 @@ jobs:
 
   release-windows-gnu:
     name: Build and publish Windows release
-    needs: validate
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
@@ -685,7 +401,6 @@ jobs:
 
       - name: Build Windows GNU installer
         env:
-          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
           OHMYCINE_DANDANPLAY_APP_ID: ${{ secrets.OHMYCINE_DANDANPLAY_APP_ID }}
           OHMYCINE_DANDANPLAY_APP_SECRET: ${{ secrets.OHMYCINE_DANDANPLAY_APP_SECRET }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -696,10 +411,6 @@ jobs:
           set -euo pipefail
           if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
             echo "::error::TAURI_SIGNING_PRIVATE_KEY GitHub Secret is required for signed updater artifacts."
-            exit 1
-          fi
-          if [[ -z "${OHMYCINE_TMDB_READ_ACCESS_TOKEN:-}" ]]; then
-            echo "::error::OHMYCINE_TMDB_READ_ACCESS_TOKEN GitHub Secret is required for the default TMDB metadata channel."
             exit 1
           fi
           if [[ -z "${OHMYCINE_DANDANPLAY_APP_ID:-}" || -z "${OHMYCINE_DANDANPLAY_APP_SECRET:-}" ]]; then

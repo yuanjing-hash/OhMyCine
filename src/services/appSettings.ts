@@ -98,6 +98,10 @@ export async function initializeAppSettings(): Promise<void> {
   initialized = true
 }
 
+export function listAppSettingKeys(): string[] {
+  return [...settings.keys()]
+}
+
 export function getAppSetting(key: string): string | null {
   const value = settings.get(key)
   if (value != null)

@@ -521,7 +521,7 @@ function isContainerItem(item: MediaItem): boolean {
           </div>
 
           <p class="mt-7 max-w-lg text-sm leading-6" style="color: var(--gp-text-dim)">
-            当前可添加 Emby、OpenList/Alist；Jellyfin、本地文件、CloudDrive2 等来源会继续接入。
+            当前可添加 OhMyCine Server、Emby 和 Jellyfin。也可以直接打开本地视频播放。
           </p>
         </div>
       </section>
@@ -549,7 +549,7 @@ function isContainerItem(item: MediaItem): boolean {
               添加你的第一个影视库
             </h1>
             <p class="mt-3 text-sm leading-6" style="color: var(--gp-text)">
-              绑定 Emby、Jellyfin、OpenList/Alist、CloudDrive2 或本地文件后，这里会聚合展示海报轮播、继续观看和最新影片。
+              连接 OhMyCine Server、Emby 或 Jellyfin 后，这里会聚合展示海报轮播、继续观看和最新影片。本地视频可直接打开播放。
             </p>
             <button
               class="mt-5 rounded-2xl px-5 py-3 text-sm font-semibold transition-colors"

@@ -4,7 +4,7 @@ import type { ServerDiscoveryWork } from '@/services/serverDiscovery'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ServerDataSource } from '@/services/datasource/server'
-import { artworkCacheKey } from '@/services/imageCache'
+import { artworkCacheKey, artworkURLCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { getPlaybackCompletionBatch, playbackCompletionKey, playbackCompletionKeyForMediaItem, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
@@ -522,9 +522,13 @@ onBeforeUnmount(() => {
                 <div class="poster-grid">
                   <button v-for="item in discoveryResults" :key="`${item.sourceId}:${item.work.provider}:${item.work.providerId}`" class="result-card text-left" type="button" @click="openDiscoveryItem(item)">
                     <div class="result-poster overflow-hidden">
-                      <img v-if="item.work.posterUrl" :src="item.work.posterUrl" :alt="item.work.title" class="h-full w-full object-cover"><div v-else class="flex h-full items-center justify-center px-3 text-center text-sm font-bold text-white/42">
-                        {{ item.work.title }}
-                      </div>
+                      <CachedImage :cache-key="artworkURLCacheKey(item.sourceId, item.work.posterUrl ?? '', 'poster')" :src="item.work.posterUrl" :alt="item.work.title" class="h-full w-full object-cover" loading="lazy" decoding="async">
+                        <template #fallback>
+                          <div class="flex h-full items-center justify-center px-3 text-center text-sm font-bold text-white/42">
+                            {{ item.work.title }}
+                          </div>
+                        </template>
+                      </CachedImage>
                     </div>
                     <h3 class="mt-2 truncate text-sm font-semibold text-white/88">
                       {{ item.work.title }}

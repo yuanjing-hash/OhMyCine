@@ -5,6 +5,8 @@ import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
 import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { computed, ref, watch } from 'vue'
+import CachedImage from '@/components/media/CachedImage.vue'
+import { artworkCacheKey, artworkURLCacheKey } from '@/services/imageCache'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { streamVariantDescription, streamVariantLabel, usableStreamVariants } from '@/services/streamVariants'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
@@ -17,6 +19,7 @@ type MobilePanel = 'more' | 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audi
 const props = defineProps<{
   title: string
   titleLogoUrl?: string
+  titleLogoCacheKey?: string
   isPlaying: boolean
   isBuffering: boolean
   currentTime: number
@@ -260,7 +263,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
         <button type="button" class="mobile-icon-button mobile-back-button" aria-label="返回" @click="emit('back')">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7M8 12h11" /></svg>
         </button>
-        <img v-if="titleLogoUrl" :src="titleLogoUrl" :alt="title" class="mobile-title-logo">
+        <CachedImage v-if="titleLogoUrl" :cache-key="titleLogoCacheKey ?? artworkURLCacheKey('playback', titleLogoUrl, 'logo')" :src="titleLogoUrl" :alt="title" class="mobile-title-logo" />
         <strong v-else class="mobile-title-text">{{ title }}</strong>
       </div>
 
@@ -463,7 +466,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
 
             <template v-else-if="activePanel === 'queue'">
               <button v-for="(item, index) in queueItems" :key="`${item.sourceId}:${item.id}:${index}`" type="button" class="mobile-queue-row" :class="{ 'is-selected': index === currentQueueIndex }" :disabled="isQueueSwitching && index !== currentQueueIndex" @click="chooseQueueItem(index)">
-                <img v-if="item.posterUrl || item.backdropUrl" :src="item.posterUrl || item.backdropUrl" alt="">
+                <span v-if="item.posterUrl || item.backdropUrl" class="mobile-queue-artwork">
+                  <CachedImage :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl || item.backdropUrl" alt="" />
+                </span>
                 <span><strong>{{ item.title || item.name }}</strong><small>{{ item.overview || queueItemLabel(item) }}</small></span>
               </button>
             </template>
@@ -549,7 +554,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
   flex: 1;
 }
 
-.mobile-title-logo {
+.mobile-title-group :deep(.mobile-title-logo) {
   width: auto;
   max-width: min(15rem, 36vw);
   height: 2rem;
@@ -916,7 +921,13 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
   text-align: left;
 }
 
-.mobile-queue-row img {
+.mobile-queue-artwork {
+  flex: 0 0 4.5rem;
+  width: 4.5rem;
+  aspect-ratio: 16 / 10;
+}
+
+.mobile-queue-row :deep(img) {
   width: 4.5rem;
   aspect-ratio: 16 / 10;
   border-radius: 6px;

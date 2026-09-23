@@ -5,7 +5,6 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   define: {
-    __OHMYCINE_BUILTIN_TMDB_READ_ACCESS_TOKEN__: JSON.stringify(process.env.OHMYCINE_TMDB_READ_ACCESS_TOKEN?.trim() ?? ''),
   },
   plugins: [
     vue(),

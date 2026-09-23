@@ -27,10 +27,6 @@ const locallyPlayed = ref(false)
 
 const isMediaItem = computed(() => hasMediaPath(props.item))
 const title = computed(() => props.item.name)
-const allowsPlayerCollage = computed(() => {
-  const sourceType = store.configs.find(config => config.id === props.item.sourceId)?.type
-  return sourceType != null && ['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'].includes(sourceType)
-})
 const subtitle = computed(() => {
   const item = props.item
   if (!hasMediaPath(item))
@@ -57,29 +53,6 @@ const posterUrl = computed(() => {
     return props.item.episodeStillUrl ?? props.item.backdropUrl ?? props.item.posterUrl
   return props.item.posterUrl
 })
-const libraryArtworkCandidates = computed(() => {
-  if (props.kind !== 'library' || hasMediaPath(props.item) || !allowsPlayerCollage.value)
-    return []
-  return [...new Set(props.item.artworkCandidates ?? [])].filter(Boolean).slice(0, 9)
-})
-const hasLibraryCollage = computed(() => libraryArtworkCandidates.value.length > 0)
-const filledStyle3ArtworkCandidates = computed(() => {
-  const candidates = libraryArtworkCandidates.value
-  if (candidates.length === 0)
-    return []
-  return Array.from({ length: 9 }, (_, index) => candidates[index % candidates.length])
-})
-const style3ArtworkColumns = computed(() => {
-  const candidates = filledStyle3ArtworkCandidates.value
-  const order = [2, 0, 4, 3, 1, 5, 8, 7, 6]
-  const arranged = order.filter(index => index < candidates.length).map(index => candidates[index])
-  candidates.forEach((candidate, index) => {
-    if (!order.includes(index))
-      arranged.push(candidate)
-  })
-  return [arranged.slice(0, 3), arranged.slice(3, 6), arranged.slice(6, 9)].filter(column => column.length > 0)
-})
-const usesStyle3Artwork = computed(() => props.kind === 'library' && props.item.artworkSource === 'generated' && hasLibraryCollage.value)
 const cardClass = computed(() => props.kind === 'library' ? 'library-card' : 'poster-card')
 const usesLandscapeArtwork = computed(() => props.kind === 'library' || (hasMediaPath(props.item) && props.item.cardLayout === 'landscape') || (hasMediaPath(props.item) && props.item.type === 'episode' && props.item.cardLayout !== 'poster'))
 const imageClass = computed(() => usesLandscapeArtwork.value ? 'aspect-[16/9]' : 'aspect-[2/3]')
@@ -206,48 +179,7 @@ function handleKeydown(event: KeyboardEvent) {
     @keydown="handleKeydown"
   >
     <div class="relative overflow-hidden bg-white/5" :class="imageClass">
-      <div
-        v-if="hasLibraryCollage"
-        class="library-artwork-style3"
-      >
-        <CachedImage
-          :cache-key="`${imageCacheKey}:style3-background`"
-          :src="libraryArtworkCandidates[0]"
-          :alt="`${title} 背景`"
-          loading="lazy"
-          decoding="async"
-          class="library-artwork-style3-background"
-        >
-          <template #fallback>
-            <div class="h-full w-full bg-white/5" />
-          </template>
-        </CachedImage>
-        <div class="library-artwork-style3-gradient" />
-        <div class="library-artwork-style3-columns">
-          <div
-            v-for="(column, columnIndex) in style3ArtworkColumns"
-            :key="`column:${columnIndex}`"
-            class="library-artwork-style3-column"
-          >
-            <CachedImage
-              v-for="(candidate, rowIndex) in column"
-              :key="`${candidate}:${columnIndex}:${rowIndex}`"
-              :cache-key="`${imageCacheKey}:candidate:${columnIndex}:${rowIndex}`"
-              :src="candidate"
-              :alt="`${title} 封面 ${columnIndex * 3 + rowIndex + 1}`"
-              loading="lazy"
-              decoding="async"
-              class="library-artwork-style3-poster"
-            >
-              <template #fallback>
-                <div class="h-full w-full bg-white/5" />
-              </template>
-            </CachedImage>
-          </div>
-        </div>
-      </div>
       <CachedImage
-        v-else
         :cache-key="imageCacheKey"
         :src="posterUrl"
         :alt="title"
@@ -268,10 +200,7 @@ function handleKeydown(event: KeyboardEvent) {
         </template>
       </CachedImage>
 
-      <div
-        v-if="!usesStyle3Artwork"
-        class="absolute inset-0 bg-gradient-to-t from-black/86 via-black/10 to-transparent opacity-80"
-      />
+      <div class="absolute inset-0 bg-gradient-to-t from-black/86 via-black/10 to-transparent opacity-80" />
 
       <span v-if="isPlayed" class="media-card-played" aria-label="已播放" title="已播放">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.4 3.4 7.6-8" /></svg>
@@ -296,7 +225,6 @@ function handleKeydown(event: KeyboardEvent) {
 
       <div
         class="theme-immersive-dark library-artwork-copy absolute inset-x-0 bottom-0 p-4"
-        :class="{ 'library-artwork-copy-style3': usesStyle3Artwork }"
       >
         <p class="line-clamp-2 text-sm font-semibold text-white drop-shadow">
           {{ title }}
@@ -319,99 +247,6 @@ function handleKeydown(event: KeyboardEvent) {
 .library-card {
   border-radius: 1.8rem;
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 62%, transparent), color-mix(in srgb, var(--color-surface-hover) 34%, transparent));
-}
-
-.library-artwork-style3 {
-  position: relative;
-  height: 100%;
-  width: 100%;
-  overflow: hidden;
-  background: #241d24;
-}
-
-.library-artwork-style3-background,
-.library-artwork-style3-background :deep(.cached-image-host),
-.library-artwork-style3-background :deep(img) {
-  position: absolute;
-  inset: -18%;
-  height: 100%;
-  width: 100%;
-  object-fit: cover;
-  filter: blur(34px) saturate(1.25);
-  opacity: 0.76;
-  transform: scale(1.35);
-}
-
-.library-artwork-style3-gradient {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, rgba(8, 7, 11, .92) 0%, rgba(15, 12, 17, .74) 31%, rgba(19, 15, 18, .18) 65%, rgba(255, 255, 255, .08) 100%);
-}
-
-.library-artwork-style3-columns {
-  position: absolute;
-  inset: 0;
-}
-
-.library-artwork-style3-column {
-  position: absolute;
-  left: 32.81%;
-  top: -33.52%;
-  width: 21.35%;
-  height: 173.52%;
-  transform: rotate(-15.8deg);
-  transform-origin: 50% 50%;
-}
-
-.library-artwork-style3-column:nth-child(2) {
-  left: 56.77%;
-}
-
-.library-artwork-style3-column:nth-child(3) {
-  left: 82.81%;
-  top: -47.87%;
-}
-
-.library-artwork-style3-poster,
-.library-artwork-style3-poster :deep(.cached-image-host),
-.library-artwork-style3-poster :deep(img) {
-  display: block;
-  width: 100%;
-  aspect-ratio: 410 / 610;
-  object-fit: cover;
-  border-radius: 8%;
-  box-shadow: .35rem .55rem 1.05rem rgba(0, 0, 0, .62);
-}
-
-.library-artwork-style3-poster {
-  position: absolute;
-  top: 0;
-  left: 0;
-}
-
-.library-artwork-style3-poster:nth-child(2) {
-  top: 33.72%;
-}
-
-.library-artwork-style3-poster:nth-child(3) {
-  top: 67.45%;
-}
-
-.library-artwork-copy-style3 {
-  top: 39.57%;
-  right: auto;
-  bottom: auto;
-  z-index: 2;
-  width: 44%;
-  transform: none;
-  padding-left: 3.82%;
-}
-
-.library-artwork-copy-style3 p:first-child {
-  font-size: clamp(.88rem, 1.35vw, 1.45rem);
-  line-height: 1.08;
-  letter-spacing: -.035em;
-  text-shadow: 0 .18rem .65rem rgba(0, 0, 0, .5);
 }
 
 .media-card-played { position: absolute; right: .55rem; bottom: .55rem; z-index: 2; display: flex; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; color: #fff; background: rgba(34,197,94,.88); box-shadow: 0 8px 18px rgba(0,0,0,.3); }

@@ -1,7 +1,7 @@
 export interface MediaItem {
   id: string
   sourceId: string
-  originType?: DataSourceType
+  originType?: DataSourceType | DeprecatedOfflineOriginType
   libraryId?: string
   name: string
   originalTitle?: string
@@ -105,7 +105,6 @@ export interface MediaLibrary {
   artworkRevision?: string
   artworkSource?: 'generated' | 'provider' | 'custom' | 'fallback'
   /** Player-owned libraries may compose these locally; Server libraries do not expose them. */
-  artworkCandidates?: string[]
   itemCount?: number
   providerIdentity?: string
 }
@@ -246,7 +245,9 @@ export interface AudioTrack {
   isDefault: boolean
 }
 
-export type DataSourceType = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'server' | '115' | '123' | 'quark' | 'local' | 'offline'
+export type DataSourceType = 'emby' | 'jellyfin' | 'server' | 'offline'
+/** Historical offline records may retain the original provider label. */
+export type DeprecatedOfflineOriginType = 'alist' | 'clouddrive2' | 'webdav' | '115' | '123' | 'quark' | 'local'
 
 export interface DataSourceConfig {
   id: string
@@ -414,8 +415,6 @@ export interface DataSource {
   createProviderCollection?: (name: string, kind: 'playlist' | 'collection') => Promise<string>
   addProviderCollectionMember?: (collectionId: string, itemId: string, kind: 'playlist' | 'collection') => Promise<void>
   refreshMetadata?: (itemId: string) => Promise<void>
-  deleteMedia?: (itemId: string) => Promise<void>
-  canDeleteMedia?: (itemId: string) => Promise<boolean>
   getPlaybackSyncDiagnostics?: () => ProviderPlaybackSyncDiagnostic[]
 
   clearCache?: () => void

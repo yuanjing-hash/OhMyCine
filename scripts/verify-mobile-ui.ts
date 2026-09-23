@@ -31,24 +31,27 @@ assert.match(mobileNavigation, /grid-template-columns: repeat\(5, minmax\(0, 1fr
 assert.match(mobileNavigation, /activeSheet = ref<MobileSheet \| null>/)
 assert.match(mobileNavigation, /mobile-sheet-layer/)
 assert.match(mobileNavigation, /env\(safe-area-inset-bottom\)/)
-assert.match(mobileNavigation, /pickAndroidLocalVideo/)
-assert.match(mobileNavigation, /savePlaybackMediaContext/)
-assert.match(mobileNavigation, /locator: \{\s+kind: 'localPath',\s+path: selected\.uri,/)
+assert.match(mobileNavigation, /pickAndroidLocalVideos\(\)/)
+assert.match(mobileNavigation, /pickAndroidLocalDirectory\(\)/)
+assert.match(mobileNavigation, /listLocalFolderVideos\(selected\.uri\)/)
+assert.match(mobileNavigation, /createLocalPlaylistContext\(files\)/)
+assert.match(mobileNavigation, /multiple: !directory/)
+assert.match(mobileNavigation, /createPlaybackRouteQuery\(\{ sourceId: 'local-file', itemId, contextId \}\)/)
 assert.doesNotMatch(mobileNavigation, /query: \{\s+path: selected\.uri/)
 assert.doesNotMatch(mobileNavigation, /mobile-nav-quick/)
 assert.match(mobileNavigation, /class="mobile-nav-item" :class="\{ 'is-active': activeSheet === 'quick' \}"/)
 
 const settingsView = await source('src/views/SettingsView.vue')
-assert.match(settingsView, /pickAndroidLocalDirectory/)
-assert.match(settingsView, /已授权本地媒体目录/)
-assert.match(settingsView, /form\.rootLabel = selected\.name/)
+assert.match(settingsView, /OhMyCine Server、Emby/)
+assert.match(settingsView, /sourceTypeOptions/)
+assert.doesNotMatch(settingsView, /pickAndroidLocalDirectory|form\.rootPath/)
 
 const sidebar = await source('src/components/layout/DataSourceSidebar.vue')
 assert.doesNotMatch(sidebar, /mobile-source-nav/)
 
 const floatingControls = await source('src/components/layout/FloatingControls.vue')
 assert.match(floatingControls, /@media \(max-width: 767px\), \(hover: none\) and \(pointer: coarse\)[\s\S]*?\.floating-controls \{\s+display: none;/)
-assert.match(floatingControls, /v-for="action in contextActions"/)
+assert.doesNotMatch(floatingControls, /contextActions|rescrape|scan-management/)
 
 const homeView = await source('src/views/HomeView.vue')
 assert.match(homeView, /recent-play-overlay/)
@@ -70,16 +73,14 @@ assert.match(mediaCard, /media-card-play/)
 assert.match(mediaCard, /\.media-card-play \{[\s\S]*?opacity: 1;/)
 
 const sourceLibrary = await source('src/views/SourceLibraryView.vue')
-assert.match(sourceLibrary, /setLayoutContextActions\(layoutContextOwner/)
-assert.doesNotMatch(sourceLibrary, /source-bottom-controls/)
-assert.match(sourceLibrary, /class="first-index-header/)
-assert.match(sourceLibrary, /class="first-index-actions/)
-assert.match(sourceLibrary, /class="first-index-stats/)
-assert.match(sourceLibrary, /\.first-index-header \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/)
-assert.match(sourceLibrary, /\.first-index-actions \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/)
-assert.match(sourceLibrary, /\.scan-management-stats,[\s\S]*?\.first-index-stats \{[\s\S]*?repeat\(2, minmax\(0, 1fr\)\)/)
-assert.match(mobileNavigation, /class="mobile-context-section"/)
-assert.match(mobileNavigation, /当前媒体库/)
+assert.match(sourceLibrary, /<HeroCarousel/)
+assert.match(sourceLibrary, /<MediaGrid/)
+assert.match(sourceLibrary, /@submit\.prevent="runSearch"/)
+assert.match(sourceLibrary, /<ServerLibraryUpdateNotice/)
+assert.match(sourceLibrary, /@play="handlePlay"/)
+assert.doesNotMatch(sourceLibrary, /scan-management-stats|source-bottom-controls/)
+assert.doesNotMatch(mobileNavigation, /class="mobile-context-section"/)
+assert.match(mobileNavigation, /打开视频文件夹/)
 
 const playerControls = await source('src/components/player/PlayerControls.vue')
 assert.match(playerControls, /grid-template-columns: auto minmax\(0, 1fr\) auto/)
@@ -228,6 +229,9 @@ assert.match(mainActivity, /localMediaPickerCallback == null/)
 
 const localMediaPlugin = await source('src-tauri/gen/android/app/src/main/java/com/ohmycine/player/localmedia/LocalMediaPlugin.kt')
 assert.match(localMediaPlugin, /host\.launchLocalMediaPicker\(intent\)/)
+assert.match(localMediaPlugin, /fun pickVideos\(invoke: Invoke\)/)
+assert.match(localMediaPlugin, /Intent\.EXTRA_ALLOW_MULTIPLE/)
+assert.match(localMediaPlugin, /Intent\.FLAG_GRANT_READ_URI_PERMISSION/)
 assert.doesNotMatch(localMediaPlugin, /startActivityForResult\(/)
 
 console.log(JSON.stringify({
@@ -235,7 +239,8 @@ console.log(JSON.stringify({
   libraryAndQuickSheets: true,
   hoverOnlyGlobalControlsRemoved: true,
   touchMediaActionsVisible: true,
-  sourceQuickControlsInSheet: true,
+  localQueueControlsInSheet: true,
+  localTemporaryPlaylistPicker: true,
   mobilePlayerControlLayout: true,
   touchProgressSeeking: true,
   touchPlaybackGestures: true,

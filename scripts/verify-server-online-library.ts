@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict'
 import { ServerDataSource } from '../src/services/datasource/server.ts'
+import { parseOnlineWork } from '../src/services/datasource/serverOnline.ts'
+import { isProtectedServerArtworkURL, resolveServerArtworkURL } from '../src/services/serverArtwork.ts'
+import { searchServerDiscovery } from '../src/services/serverDiscovery.ts'
 
 const token = `omc_player_${'b'.repeat(43)}`
+const origin = 'http://127.0.0.1:3000'
+assert.equal(resolveServerArtworkURL(origin, '/api/v1/player/artwork/opaque-1'), `${origin}/api/v1/player/artwork/opaque-1`)
+assert.equal(resolveServerArtworkURL(origin, 'https://attacker.example/poster.jpg'), undefined)
+assert.equal(resolveServerArtworkURL(origin, '/api/v1/player/artwork/opaque-1?token=secret'), undefined)
+assert.equal(resolveServerArtworkURL(origin, '/api/v1/player/online-assets/video'), undefined)
+assert.equal(isProtectedServerArtworkURL(`${origin}/api/v1/player/artwork/opaque-1`), true)
+assert.equal(isProtectedServerArtworkURL(`${origin}/api/v1/player/artwork/opaque-1?sig=secret`), false)
+assert.equal(parseOnlineWork({ ...onlineWork(), posterUrl: 'https://attacker.example/poster.jpg' }, origin)?.posterUrl, undefined)
 const calls: Array<{ path: string, method?: string, body?: unknown }> = []
 const source = new ServerDataSource({
   readCredential: async () => ({ accessToken: token }),
@@ -11,6 +22,11 @@ const source = new ServerDataSource({
       let data: unknown = {}
       if (request.path === '/api/v1/player/media-libraries')
         data = { list: [] }
+      else if (request.path.startsWith('/api/v1/player/discovery/media-search?'))
+        data = { items: [
+          { provider: 'tmdb', provider_id: '1', media_type: 'movie', title: '受保护海报', poster_url: '/api/v1/player/discovery/images/tmdb/opaque-1', backdrop_url: 'https://attacker.example/backdrop.jpg' },
+          { provider: 'douban', provider_id: '2', media_type: 'movie', title: '旧路径海报', poster_url: '/api/v1/discovery/images/douban/legacy-2' },
+        ] }
       else if (request.path === '/api/v1/player/home-contributions')
         data = { list: [{
           id: 'library-1:recommended', libraryId: 'library-1', pluginId: 'org.ohmycine.fixture', providerLabel: 'Fixture', routeKey: 'recommended', title: '在线视频推荐', layout: 'hero', refreshable: true,
@@ -58,6 +74,12 @@ await source.init({
   extra: { credentialRef: 'datasource:server-online:server-credential', deviceId: 'device-1' },
 })
 
+const discoveryCallsBefore = calls.length
+const discovered = await searchServerDiscovery(source, 'test')
+assert.equal(calls.length, discoveryCallsBefore + 1, 'Search must not eagerly download its images')
+assert.equal(discovered[0]?.posterUrl, `${origin}/api/v1/player/discovery/images/tmdb/opaque-1`)
+assert.equal(discovered[0]?.backdropUrl, undefined)
+assert.equal(discovered[1]?.posterUrl, `${origin}/api/v1/player/discovery/images/douban/legacy-2`)
 const libraries = await source.listLibraries()
 assert.deepEqual(libraries.map(item => [item.id, item.name, item.providerIdentity]), [
   ['online-library|library-1', '在线视频', 'plugin:org.ohmycine.fixture:library-1'],
@@ -66,7 +88,7 @@ assert.deepEqual(libraries.map(item => [item.id, item.name, item.providerIdentit
 assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/plugin-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(libraries[0].artworkRevision, 'fixed-plugin-v1')
 assert.equal(libraries[0].artworkSource, 'custom')
-assert.equal(libraries[0].artworkCandidates, undefined)
+assert.equal('artworkCandidates' in libraries[0], false)
 assert.equal(libraries[1].backdropUrl, undefined)
 const navigation = await source.list(libraries[0].id)
 assert.deepEqual(navigation.map(item => [item.type, item.name]), [['folder', '推荐'], ['folder', '番剧']])
@@ -82,6 +104,8 @@ assert.deepEqual(feed[0].siteActions, [
   { id: 'watch-later.remove', label: '移出稍后再看', state: true, requiresConfirmation: false, destructive: false },
 ])
 const detail = await source.getDetail(feed[0].id)
+assert.equal(detail.posterUrl, 'http://127.0.0.1:3000/api/v1/player/artwork/poster-1')
+assert.equal(detail.backdropUrl, 'http://127.0.0.1:3000/api/v1/player/artwork/backdrop-1')
 assert.equal(detail.children?.[0]?.name, '第一部分')
 assert.deepEqual(detail.mediaSources?.map(item => item.name), ['默认线路'])
 const stream = await source.getStreamRequest({ itemId: detail.children![0].id, variantId: '1080p' })
@@ -147,7 +171,7 @@ console.log(JSON.stringify({ onlineLibrary: true, nestedPluginNavigation: true, 
 function onlineWork() {
   return {
     id: 'video-1', title: '演示视频', kind: 'video', identity: { scheme: 'fixture', value: 'video-1' },
-    overview: '通用在线媒体 DTO', posterUrl: 'https://images.example.test/poster.jpg', backdropUrl: 'https://images.example.test/backdrop.jpg',
+    overview: '通用在线媒体 DTO', posterUrl: '/api/v1/player/artwork/poster-1', backdropUrl: '/api/v1/player/artwork/backdrop-1',
     segments: [{ id: 'part-1', title: '第一部分', index: 1, versions: [{
       id: 'source-1', label: '默认线路', sourceLabel: 'Fixture', variants: [
         { id: '720p', label: '720P', available: true, width: 1280, height: 720 },

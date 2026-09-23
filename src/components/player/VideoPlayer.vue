@@ -3,13 +3,16 @@ import type { MpvPlaybackDiagnostics, MpvRenderDiagnostics, MpvRenderStatus, Mpv
 import type { ProviderPlaybackSyncDiagnostic } from '@/services/datasource/types'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import CachedImage from '@/components/media/CachedImage.vue'
 import { redactSensitiveText } from '@/services/datasource/errors'
+import { artworkURLCacheKey } from '@/services/imageCache'
 
 const props = defineProps<{
   isPlaying: boolean
   hasMedia: boolean
   videoReady: boolean
   backdropUrl: string
+  backdropCacheKey?: string
   renderStatus: MpvRenderStatus
   renderError: string | null
   renderDiagnostics: MpvRenderDiagnostics | null
@@ -355,7 +358,9 @@ function isTauriRuntime(): boolean {
     />
     <Transition name="playback-backdrop">
       <div v-if="hasMedia && !videoReady" class="playback-backdrop absolute inset-0 overflow-hidden">
-        <img v-if="backdropUrl" :src="backdropUrl" alt="" class="absolute -inset-6 h-[calc(100%+3rem)] w-[calc(100%+3rem)] scale-105 object-cover" aria-hidden="true">
+        <div v-if="backdropUrl" class="absolute -inset-6 h-[calc(100%+3rem)] w-[calc(100%+3rem)]">
+          <CachedImage :cache-key="backdropCacheKey ?? artworkURLCacheKey('playback', backdropUrl, 'backdrop')" :src="backdropUrl" alt="" class="h-full w-full scale-105 object-cover" aria-hidden="true" />
+        </div>
         <div class="absolute inset-0 bg-black/48" />
       </div>
     </Transition>
@@ -524,7 +529,7 @@ function isTauriRuntime(): boolean {
   background: linear-gradient(135deg, #050509, #10131b 52%, #030305);
 }
 
-.playback-backdrop img {
+.playback-backdrop :deep(img) {
   filter: blur(28px) saturate(0.78);
 }
 

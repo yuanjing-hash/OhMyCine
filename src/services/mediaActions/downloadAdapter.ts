@@ -5,7 +5,7 @@ import { planMediaDownload, summarizeDownloadPlan } from '@/services/downloadPla
 import { enqueueDownload, enqueueDownloadGroup, pickAndroidDownloadDirectory } from '@/services/downloads'
 import { isNativeAndroidRuntime, isTauriRuntime } from '@/services/runtimePlatform'
 
-const SUPPORTED_TYPES = new Set(['local', 'alist', 'clouddrive2', 'webdav', '123', 'quark', 'emby', 'jellyfin', 'server'])
+const SUPPORTED_TYPES = new Set(['emby', 'jellyfin', 'server'])
 
 export function createDownloadMediaActionAdapter(
   resolveSource: (id: string) => DataSource | null,
@@ -83,8 +83,7 @@ async function execute(
       detailSnapshot: plan.files[0].detailSnapshot,
     })
   }
-  const operation = target.sourceType === 'local' ? '复制' : '下载'
-  return { message: plan.aggregate ? `已将 ${plan.files.length} 个文件加入${operation}队列` : `已加入${operation}队列` }
+  return { message: plan.aggregate ? `已将 ${plan.files.length} 个文件加入下载队列` : '已加入下载队列' }
 }
 
 function downloadConfirmation(plan: Awaited<ReturnType<typeof planMediaDownload>>): string {

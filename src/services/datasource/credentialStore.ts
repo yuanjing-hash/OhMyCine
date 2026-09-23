@@ -10,38 +10,8 @@ export interface EmbyCredentialValue {
   readonly password: string
 }
 
-export interface AlistCredentialValue {
-  readonly token: string
-  readonly username: string
-  readonly password: string
-}
-
-export interface CloudDrive2CredentialValue {
-  readonly apiToken: string
-}
-
-export interface WebDavCredentialValue {
-  readonly username: string
-  readonly password: string
-}
-
-export interface QuarkCredentialValue {
-  readonly cookie: string
-}
-
-export interface Pan123CredentialValue {
-  readonly accessToken: string
-  readonly username?: string
-  readonly password?: string
-}
-
 export interface ServerCredentialValue {
   readonly accessToken: string
-}
-
-export interface TmdbCredentialValue {
-  readonly authType: 'apiKey' | 'readAccessToken'
-  readonly value: string
 }
 
 export type OpenSubtitlesAuthMode = 'apiKey' | 'account'
@@ -53,7 +23,7 @@ export interface OpenSubtitlesCredentialValue {
   readonly password?: string
 }
 
-type CredentialProvider = 'emby' | 'jellyfin' | 'alist' | 'clouddrive2' | 'webdav' | 'quark' | '123' | 'server' | 'tmdb' | 'opensubtitles'
+type CredentialProvider = 'emby' | 'jellyfin' | 'server' | 'opensubtitles'
 
 interface StoredEmbyCredentialEnvelope {
   readonly version: 1
@@ -63,52 +33,10 @@ interface StoredEmbyCredentialEnvelope {
   readonly password: string
 }
 
-interface StoredAlistCredentialEnvelope {
-  readonly version: 1
-  readonly provider: 'alist'
-  readonly token: string
-  readonly username: string
-  readonly password: string
-}
-
-interface StoredCloudDrive2CredentialEnvelope {
-  readonly version: 2
-  readonly provider: 'clouddrive2'
-  readonly apiToken: string
-}
-
-interface StoredWebDavCredentialEnvelope {
-  readonly version: 1
-  readonly provider: 'webdav'
-  readonly username: string
-  readonly password: string
-}
-
-interface StoredQuarkCredentialEnvelope {
-  readonly version: 1
-  readonly provider: 'quark'
-  readonly cookie: string
-}
-
-interface StoredPan123CredentialEnvelope {
-  readonly version: 1
-  readonly provider: '123'
-  readonly accessToken: string
-  readonly username?: string
-  readonly password?: string
-}
-
 interface StoredServerCredentialEnvelope {
   readonly version: 1
   readonly provider: 'server'
   readonly accessToken: string
-}
-
-interface StoredTmdbCredentialEnvelope {
-  readonly version: 1
-  readonly provider: 'tmdb'
-  readonly authType: 'apiKey' | 'readAccessToken'
-  readonly value: string
 }
 
 interface StoredOpenSubtitlesCredentialEnvelope {
@@ -159,90 +87,6 @@ export async function readEmbyCredential(ref: string): Promise<EmbyCredentialVal
   return parseEmbyCredential(await readRawCredential(ref))
 }
 
-export async function saveAlistCredential(ref: string, value: AlistCredentialValue): Promise<void> {
-  if (!value.token || !value.username || !value.password)
-    throw new Error('Credential value is incomplete.')
-
-  await saveRawCredential(ref, JSON.stringify({
-    version: 1,
-    provider: 'alist',
-    token: value.token,
-    username: value.username,
-    password: value.password,
-  } satisfies StoredAlistCredentialEnvelope))
-}
-
-export async function readAlistCredential(ref: string): Promise<AlistCredentialValue | null> {
-  return parseAlistCredential(await readRawCredential(ref))
-}
-
-export async function saveCloudDrive2Credential(ref: string, value: CloudDrive2CredentialValue): Promise<void> {
-  if (!value.apiToken.trim())
-    throw new Error('Credential value is incomplete.')
-
-  await saveRawCredential(ref, JSON.stringify({
-    version: 2,
-    provider: 'clouddrive2',
-    apiToken: value.apiToken.trim(),
-  } satisfies StoredCloudDrive2CredentialEnvelope))
-}
-
-export async function readCloudDrive2Credential(ref: string): Promise<CloudDrive2CredentialValue | null> {
-  return parseCloudDrive2Credential(await readRawCredential(ref))
-}
-
-export async function saveWebDavCredential(ref: string, value: WebDavCredentialValue): Promise<void> {
-  if (!value.username || !value.password)
-    throw new Error('Credential value is incomplete.')
-
-  await saveRawCredential(ref, JSON.stringify({
-    version: 1,
-    provider: 'webdav',
-    username: value.username,
-    password: value.password,
-  } satisfies StoredWebDavCredentialEnvelope))
-}
-
-export async function readWebDavCredential(ref: string): Promise<WebDavCredentialValue | null> {
-  return parseWebDavCredential(await readRawCredential(ref))
-}
-
-export async function saveQuarkCredential(ref: string, value: QuarkCredentialValue): Promise<void> {
-  const cookie = value.cookie.trim()
-  if (!cookie)
-    throw new Error('Credential value is incomplete.')
-
-  await saveRawCredential(ref, JSON.stringify({
-    version: 1,
-    provider: 'quark',
-    cookie,
-  } satisfies StoredQuarkCredentialEnvelope))
-}
-
-export async function readQuarkCredential(ref: string): Promise<QuarkCredentialValue | null> {
-  return parseQuarkCredential(await readRawCredential(ref))
-}
-
-export async function savePan123Credential(ref: string, value: Pan123CredentialValue): Promise<void> {
-  const accessToken = value.accessToken.trim()
-  const username = value.username?.trim() || undefined
-  const password = value.password || undefined
-  if (!accessToken || Boolean(username) !== Boolean(password))
-    throw new Error('Credential value is incomplete.')
-
-  await saveRawCredential(ref, JSON.stringify({
-    version: 1,
-    provider: '123',
-    accessToken,
-    username,
-    password,
-  } satisfies StoredPan123CredentialEnvelope))
-}
-
-export async function readPan123Credential(ref: string): Promise<Pan123CredentialValue | null> {
-  return parsePan123Credential(await readRawCredential(ref))
-}
-
 export async function saveServerCredential(ref: string, value: ServerCredentialValue): Promise<void> {
   const accessToken = value.accessToken.trim()
   if (!accessToken.startsWith('omc_player_'))
@@ -256,22 +100,6 @@ export async function saveServerCredential(ref: string, value: ServerCredentialV
 
 export async function readServerCredential(ref: string): Promise<ServerCredentialValue | null> {
   return parseServerCredential(await readRawCredential(ref))
-}
-
-export async function saveTmdbCredential(ref: string, value: TmdbCredentialValue): Promise<void> {
-  if (!isTmdbAuthType(value.authType) || !value.value.trim())
-    throw new Error('Credential value is incomplete.')
-
-  await saveRawCredential(ref, JSON.stringify({
-    version: 1,
-    provider: 'tmdb',
-    authType: value.authType,
-    value: value.value.trim(),
-  } satisfies StoredTmdbCredentialEnvelope))
-}
-
-export async function readTmdbCredential(ref: string): Promise<TmdbCredentialValue | null> {
-  return parseTmdbCredential(await readRawCredential(ref))
 }
 
 export async function saveOpenSubtitlesCredential(ref: string, value: OpenSubtitlesCredentialValue): Promise<void> {
@@ -412,118 +240,6 @@ function parseOpenSubtitlesCredential(raw: string | null): OpenSubtitlesCredenti
   }
 }
 
-function parseAlistCredential(raw: string | null): AlistCredentialValue | null {
-  if (!raw)
-    return null
-
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!isObject(value))
-      return null
-    if (value.provider !== 'alist' || value.version !== 1)
-      return null
-    if (typeof value.token !== 'string' || typeof value.username !== 'string' || typeof value.password !== 'string')
-      return null
-    if (!value.token || !value.username || !value.password)
-      return null
-    return {
-      token: value.token,
-      username: value.username,
-      password: value.password,
-    }
-  }
-  catch {
-    return null
-  }
-}
-
-function parseCloudDrive2Credential(raw: string | null): CloudDrive2CredentialValue | null {
-  if (!raw)
-    return null
-
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!isObject(value))
-      return null
-    if (value.provider !== 'clouddrive2' || value.version !== 2)
-      return null
-    if (typeof value.apiToken !== 'string' || !value.apiToken.trim())
-      return null
-    return {
-      apiToken: value.apiToken.trim(),
-    }
-  }
-  catch {
-    return null
-  }
-}
-
-function parseWebDavCredential(raw: string | null): WebDavCredentialValue | null {
-  if (!raw)
-    return null
-
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!isObject(value))
-      return null
-    if (value.provider !== 'webdav' || value.version !== 1)
-      return null
-    if (typeof value.username !== 'string' || typeof value.password !== 'string')
-      return null
-    if (!value.username || !value.password)
-      return null
-    return {
-      username: value.username,
-      password: value.password,
-    }
-  }
-  catch {
-    return null
-  }
-}
-
-function parseQuarkCredential(raw: string | null): QuarkCredentialValue | null {
-  if (!raw)
-    return null
-
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!isObject(value) || value.provider !== 'quark' || value.version !== 1)
-      return null
-    if (typeof value.cookie !== 'string' || !value.cookie.trim())
-      return null
-    return { cookie: value.cookie.trim() }
-  }
-  catch {
-    return null
-  }
-}
-
-function parsePan123Credential(raw: string | null): Pan123CredentialValue | null {
-  if (!raw)
-    return null
-
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!isObject(value) || value.provider !== '123' || value.version !== 1)
-      return null
-    if (typeof value.accessToken !== 'string' || !value.accessToken.trim())
-      return null
-    const username = typeof value.username === 'string' ? value.username.trim() : ''
-    const password = typeof value.password === 'string' ? value.password : ''
-    if (Boolean(username) !== Boolean(password))
-      return null
-    return {
-      accessToken: value.accessToken.trim(),
-      username: username || undefined,
-      password: password || undefined,
-    }
-  }
-  catch {
-    return null
-  }
-}
-
 function parseServerCredential(raw: string | null): ServerCredentialValue | null {
   if (!raw)
     return null
@@ -538,34 +254,6 @@ function parseServerCredential(raw: string | null): ServerCredentialValue | null
   catch {
     return null
   }
-}
-
-function parseTmdbCredential(raw: string | null): TmdbCredentialValue | null {
-  if (!raw)
-    return null
-
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!isObject(value))
-      return null
-    if (value.provider !== 'tmdb' || value.version !== 1)
-      return null
-    if (!isTmdbAuthType(value.authType) || typeof value.value !== 'string')
-      return null
-    if (!value.value.trim())
-      return null
-    return {
-      authType: value.authType,
-      value: value.value.trim(),
-    }
-  }
-  catch {
-    return null
-  }
-}
-
-function isTmdbAuthType(value: unknown): value is TmdbCredentialValue['authType'] {
-  return value === 'apiKey' || value === 'readAccessToken'
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

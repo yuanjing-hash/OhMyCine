@@ -1,5 +1,5 @@
 import type { MediaDetail, SubtitleTrack } from './types'
-import { isVideoFileName, providerBasename, providerParentPath, stripFileExtension } from '@/services/scraper/pathUtils'
+import { isVideoFileName, providerBasename, providerParentPath, stripFileExtension } from '@/services/mediaPaths'
 
 const SUBTITLE_EXTENSIONS = new Set(['srt', 'ass', 'ssa', 'vtt', 'sub'])
 

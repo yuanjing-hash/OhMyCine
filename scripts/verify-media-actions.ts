@@ -18,16 +18,16 @@ const target = createMediaActionTarget({
   name: 'Test Movie',
   type: 'movie',
   path: '/provider/path/that-must-not-cross-the-menu-boundary.mkv',
-}, 'alist', 'OpenList')
+}, 'emby', 'Emby')
 
 assert.deepEqual(target, {
   kind: 'media',
   sourceId: 'source-1',
-  sourceType: 'alist',
+  sourceType: 'emby',
   itemId: 'movie-1',
   libraryId: 'library-1',
   mediaType: 'movie',
-  display: { name: 'Test Movie', sourceName: 'OpenList' },
+  display: { name: 'Test Movie', sourceName: 'Emby' },
 })
 assert.equal(JSON.stringify(target).includes('provider/path'), false, 'target must not retain provider paths')
 
@@ -135,7 +135,6 @@ const appSource = readFileSync(resolve(root, 'src/App.vue'), 'utf8')
 const historyRustSource = readFileSync(resolve(root, 'src-tauri/src/commands/history.rs'), 'utf8')
 const sourceViewSource = readFileSync(resolve(root, 'src/views/SourceLibraryView.vue'), 'utf8')
 const maintenanceSource = readFileSync(resolve(root, 'src/services/mediaActions/maintenanceAdapter.ts'), 'utf8')
-const androidLocalFileSource = readFileSync(resolve(root, 'src-tauri/src/commands/local_file_android.rs'), 'utf8')
 assert.match(menuSource, /ArrowDown/)
 assert.match(menuSource, /disabledReason/)
 assert.match(hostSource, /presentation/)
@@ -164,26 +163,18 @@ assert.match(readFileSync(resolve(root, 'src/components/media/GlobalSearchWorksp
 assert.match(historyRustSource, /completed = 0/)
 assert.match(historyRustSource, /completion_state_and_continue_removal_are_independent/)
 assert.doesNotMatch(sourceViewSource, /work-context-menu/)
-assert.match(sourceViewSource, /registerMaintenanceHandler/)
 assert.match(maintenanceSource, /refreshMetadata/)
-assert.match(maintenanceSource, /rescanLibrary/)
-assert.match(maintenanceSource, /isScanOwnedTarget/)
-assert.match(maintenanceSource, /cache\.candidates\.some/)
-assert.match(maintenanceSource, /getRawScannedMediaDetail/)
 assert.match(maintenanceSource, /editSubtitles/)
+assert.doesNotMatch(readFileSync(resolve(root, 'src/services/mediaActions/types.ts'), 'utf8'), /'identify'|'rescanLibrary'/)
+assert.doesNotMatch(readFileSync(resolve(root, 'src/components/media/MediaActionConfirmationDialog.vue'), 'utf8'), /deleteSourceFiles|sourceDelete/)
+assert.doesNotMatch(readFileSync(resolve(root, 'src/services/datasource/emby.ts'), 'utf8'), /deleteMedia\(|canDeleteMedia\(/)
 const editorHostSource = readFileSync(resolve(root, 'src/components/media/MediaEditorHost.vue'), 'utf8')
-const mediaEditingSource = readFileSync(resolve(root, 'src/services/mediaEditing.ts'), 'utf8')
 assert.match(appSource, /MediaEditorHost/)
-assert.match(editorHostSource, /Player 数据库和受控缓存/)
+assert.match(editorHostSource, /媒体服务编辑器/)
 assert.match(editorHostSource, /updateMetadata/)
 assert.match(editorHostSource, /updateArtworkFromUrl/)
-assert.match(editorHostSource, /downloadAndSelectLocalSubtitle/)
-assert.match(mediaEditingSource, /saveRawSourceScanCache/)
-assert.match(mediaEditingSource, /saveMediaPlaybackPreference/)
-assert.doesNotMatch(mediaEditingSource, /writeFile|rename|move/)
-assert.match(androidLocalFileSource, /pub async fn local_file_delete_owned/)
-assert.match(androidLocalFileSource, /\.run::<Value>\(\s*"delete"/)
-assert.match(androidLocalFileSource, /pub\(crate\) fn resolve_local_download_source/)
+assert.match(editorHostSource, /searchSubtitles/)
+assert.doesNotMatch(editorHostSource, /downloadAndSelectLocalSubtitle/)
 const favoritesSource = readFileSync(resolve(root, 'src/views/FavoritesView.vue'), 'utf8')
 const embySource = readFileSync(resolve(root, 'src/services/datasource/emby.ts'), 'utf8')
 const collectionAdapterSource = readFileSync(resolve(root, 'src/services/mediaActions/collectionAdapter.ts'), 'utf8')

@@ -10,7 +10,6 @@ import { createPlaybackQueueItem } from '../src/services/playbackContext.ts'
 import { playbackProgressIdentityForMediaItem } from '../src/services/playbackHistory.ts'
 import { chunkServerHistoryChanges, createServerHistoryUploadChanges, mapServerHistoryChangeToLocalEntry } from '../src/services/playbackHistorySync.ts'
 import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
-import { findVisibleHomeSection } from '../src/services/sourceLibraryScannedMedia.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
 const calls: Array<{ path: string, accessToken?: string, method?: string, body?: unknown }> = []
@@ -40,9 +39,9 @@ const bridge = {
             ? {
                 item: seriesItem(),
                 versions: [
-                  { id: 201, title: '改稻为桑', season: 1, episode: 1, overview: '第一集简介', still_path: '/episode-1.jpg', runtime_minutes: 47, rating: 8.2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
+                  { id: 201, title: '改稻为桑', season: 1, episode: 1, overview: '第一集简介', still_path: '/episode-1.jpg', episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-1', runtime_minutes: 47, rating: 8.2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
                   { id: 202, title: '示例剧 - S01E02', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:202' },
-                  { id: 246, title: '落幕', season: 1, episode: 46, overview: '第四十六集简介', still_path: '/episode-46.jpg', runtime_minutes: 49, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/246/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:246' },
+                  { id: 246, title: '落幕', season: 1, episode: 46, overview: '第四十六集简介', still_path: '/episode-46.jpg', episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-46', runtime_minutes: 49, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/246/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:246' },
                 ],
               }
             : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${legacyArtworkItem().id}`)
@@ -107,7 +106,7 @@ assert.deepEqual(libraries.map(item => [item.id, item.sourceId, item.name]), [
 assert.equal(libraries[0].backdropUrl, 'http://127.0.0.1:3000/api/v1/assets/library-covers/library-cloud.png')
 assert.equal(libraries[0].artworkRevision, 'fixed-cloud-v1')
 assert.equal(libraries[0].artworkSource, 'fallback')
-assert.equal(libraries[0].artworkCandidates, undefined)
+assert.equal('artworkCandidates' in libraries[0], false)
 assert.equal(libraries[0].itemCount, 101)
 assert.equal(libraries[1].backdropUrl, undefined)
 const partialLibrarySource = new ServerDataSource({
@@ -184,7 +183,7 @@ assert.deepEqual(detail.people?.map(person => [person.name, person.role, person.
   ['黑泽明', 'Director', undefined],
   ['三船敏郎', 'Actor', '菊千代'],
 ])
-assert.match(detail.people?.[1]?.imageUrl ?? '', /image\.tmdb\.org\/t\/p\/w500\/mifune\.jpg$/)
+assert.equal(detail.people?.[1]?.imageUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/mifune')
 assert.equal(detail.tmdbId, 346)
 assert.equal(detail.imdbId, 'tt0047478')
 assert.equal(detail.stills?.length, 2)
@@ -194,23 +193,23 @@ const seriesDetail = await source.getDetail(`work|9|${seriesItem().id}`)
 assert.deepEqual(seriesDetail.children?.map(item => [item.type, item.seasonNumber, item.episodeNumber]), [['episode', 1, 1], ['episode', 1, 2], ['episode', 1, 46]])
 assert.equal(seriesDetail.children?.[0]?.name, '改稻为桑')
 assert.equal(seriesDetail.children?.[0]?.overview, '第一集简介')
-assert.match(seriesDetail.children?.[0]?.posterUrl ?? '', /image\.tmdb\.org\/t\/p\/w500/)
-assert.match(seriesDetail.children?.[0]?.backdropUrl ?? '', /backdrop\.jpg$/)
-assert.match(seriesDetail.children?.[0]?.episodeStillUrl ?? '', /episode-1\.jpg$/)
+assert.equal(seriesDetail.children?.[0]?.posterUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/series-poster')
+assert.equal(seriesDetail.children?.[0]?.backdropUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/backdrop-346')
+assert.equal(seriesDetail.children?.[0]?.episodeStillUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/episode-1')
 assert.equal(seriesDetail.children?.[0]?.historyIdentity, `server:v1:episode:9:${seriesItem().id}:1:1`)
 assert.equal(seriesDetail.children?.[0]?.duration, 47 * 60)
 assert.equal(seriesDetail.children?.[1]?.overview, undefined)
-assert.match(seriesDetail.children?.[1]?.backdropUrl ?? '', /backdrop\.jpg$/)
+assert.equal(seriesDetail.children?.[1]?.backdropUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/backdrop-346')
 assert.equal(seriesDetail.children?.[1]?.episodeStillUrl, undefined)
 assert.equal(seriesDetail.children?.[2]?.name, '落幕')
-assert.match(seriesDetail.children?.[2]?.backdropUrl ?? '', /backdrop\.jpg$/)
-assert.match(seriesDetail.children?.[2]?.episodeStillUrl ?? '', /episode-46\.jpg$/)
+assert.equal(seriesDetail.children?.[2]?.backdropUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/backdrop-346')
+assert.equal(seriesDetail.children?.[2]?.episodeStillUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/episode-46')
 assert.equal(seriesDetail.mediaSources?.[0]?.isStrm, undefined)
 assert.equal(seriesDetail.mediaSources?.[0]?.deliveryKind, 'server_stream')
 assert.equal(describeMediaSource(seriesDetail.mediaSources![0]!), '2.0 KB · 来自 家庭 Server · 文件流')
 const legacyArtworkDetail = await source.getDetail(`work|9|${legacyArtworkItem().id}`)
 assert.equal(legacyArtworkDetail.stills?.length, 1)
-assert.match(legacyArtworkDetail.stills?.[0] ?? '', /\/backdrop\.jpg$/)
+assert.equal(legacyArtworkDetail.stills?.[0], 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/backdrop-346')
 assert.equal(legacyArtworkDetail.mediaSources?.[0]?.sourceLabel, '家庭 Server')
 assert.equal(legacyArtworkDetail.mediaSources?.[0]?.deliveryKind, undefined)
 assert.equal(legacyArtworkDetail.mediaSources?.[0]?.isStrm, undefined)
@@ -235,18 +234,18 @@ const mappedEpisodeHistory = mapServerHistoryItem('server-home', {
   season_number: 1,
   episode_number: 2,
   media_type: 'episode',
-  poster_url: 'https://image.example.test/series-poster.jpg',
-  backdrop_url: 'https://image.example.test/series-backdrop.jpg',
-  episode_still_url: 'https://image.example.test/episode-still.jpg',
+  poster_url: '/api/v1/player/discovery/images/tmdb/series-poster',
+  backdrop_url: '/api/v1/player/discovery/images/tmdb/series-backdrop',
+  episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-still',
   position: 600,
   duration: 2400,
   completed: false,
   updated_at: 1_788_220_800_000,
-})[0]!
+}, 'http://127.0.0.1:3000')[0]!
 assert.equal(mappedEpisodeHistory.name, '示例剧')
 assert.equal(mappedEpisodeHistory.displaySubtitle, 'S01E02 · 改稻为桑')
-assert.equal(mappedEpisodeHistory.posterUrl, 'https://image.example.test/series-poster.jpg')
-assert.equal(mappedEpisodeHistory.episodeStillUrl, 'https://image.example.test/episode-still.jpg')
+assert.equal(mappedEpisodeHistory.posterUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/series-poster')
+assert.equal(mappedEpisodeHistory.episodeStillUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/episode-still')
 assert.equal(mappedEpisodeHistory.cardLayout, 'poster')
 assert.deepEqual(playbackProgressIdentityForMediaItem(mappedEpisodeHistory), { sourceId: 'server-home', mediaIdentity: mappedEpisodeHistory.historyIdentity })
 assert.equal(createPlaybackQueueItem(mappedEpisodeHistory).historyIdentity, mappedEpisodeHistory.historyIdentity)
@@ -378,8 +377,6 @@ assert.equal(emptyHistorySections.length, 1)
 assert.equal(emptyHistorySections[0]?.type, 'continueWatching')
 assert.deepEqual(emptyHistorySections[0]?.items, [])
 assert.deepEqual(emptyHistorySections[0]?.viewAllRoute, { kind: 'history', sourceId: 'server-empty-history' })
-assert.equal(findVisibleHomeSection(emptyHistoryHomeSections, 'continueWatching')?.id, 'server-empty-history:continue')
-assert.equal(findVisibleHomeSection([{ ...emptyHistorySections[0]!, purpose: undefined, viewAllRoute: undefined }], 'continueWatching'), undefined)
 emptyHistoryOverviewSource.destroy()
 
 const changeCalls: string[] = []
@@ -528,7 +525,7 @@ const merged = mergeMediaItemsByIdentity([
 ])
 assert.equal(merged.length, 1)
 assert.equal(merged[0].sourceId, 'server-home')
-assert.equal(merged[0].posterUrl, 'https://image.example.test/poster.jpg')
+assert.equal(merged[0].posterUrl, 'http://127.0.0.1:3000/api/v1/player/discovery/images/tmdb/poster-346')
 assert.equal(merged[0].playbackTargets?.length, 2)
 const mergedDetail = await source.getDetail(items[0].id)
 assert.deepEqual(mergedDetail.mediaSources?.map(route => route.sourceId), ['server-home', 'emby-home'])
@@ -714,10 +711,11 @@ assert.throws(() => parsePlaybackHistorySyncResponse({
 }), /播放历史同步响应无效/)
 assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? change\.media_identity : presentation\?\.historyIdentity/)
 const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
-assert.match(sourceLibraryView, /supplementalHomeSections/)
+assert.match(sourceLibraryView, /const historySection = computed/)
 assert.match(sourceLibraryView, /section\.viewAllRoute/)
-assert.match(sourceLibraryView, /<section v-if="isFolderView && !selectedLibrary && continueSection && \(continueItems\.length \|\| continueSection\.purpose === 'history'\)">[\s\S]*?v-if="continueSection\.viewAllRoute"[\s\S]*?查看完整历史[\s\S]*?<MediaGrid[\s\S]*?:items="continueItems"/)
-assert.match(sourceLibraryView, /source\.value\?\.listPlaybackHistory/)
+assert.match(sourceLibraryView, /historySection\.viewAllRoute/)
+assert.match(sourceLibraryView, /查看完整历史/)
+assert.match(sourceLibraryView, /historySection\.items\.length/)
 assert.match(sourceLibraryView, /history-navigation/)
 const historyView = fs.readFileSync(new URL('../src/views/HistoryView.vue', import.meta.url), 'utf8')
 assert.match(historyView, /await syncPlaybackHistory\(store\)[\s\S]*?await loadPage\(1\)/)
@@ -759,8 +757,8 @@ function mediaItem(index = 0) {
     id: index === 0 ? 'bW92aWU6dG1kYjozNDY' : `movie-${index}`, library_id: 9, title: index === 0 ? '七武士' : `电影 ${index}`, kind: 'movie', release_year: 1954,
     original_title: '七人の侍', overview: '日本电影', tagline: '他们站了起来。', rating: 8.5, runtime_minutes: 207,
     genres: ['剧情', '动作'], directors: ['黑泽明'], writers: ['桥本忍'], cast: ['三船敏郎', '志村乔'],
-    people: [{ tmdb_id: 1, name: '黑泽明', role: 'Director' }, { tmdb_id: 2, name: '三船敏郎', role: 'Actor', character: '菊千代', profile_path: '/mifune.jpg' }], tmdb_id: 346, imdb_id: 'tt0047478',
-    poster_path: '', backdrop_path: '/backdrop.jpg', still_paths: ['/backdrop.jpg', '/still-2.jpg'], work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
+    people: [{ tmdb_id: 1, name: '黑泽明', role: 'Director' }, { tmdb_id: 2, name: '三船敏郎', role: 'Actor', character: '菊千代', profile_path: '/mifune.jpg', profile_url: '/api/v1/player/discovery/images/tmdb/mifune' }], tmdb_id: 346, imdb_id: 'tt0047478',
+    poster_path: '', backdrop_path: '/backdrop.jpg', still_paths: ['/backdrop.jpg', '/still-2.jpg'], poster_url: '/api/v1/player/discovery/images/tmdb/poster-346', backdrop_url: '/api/v1/player/discovery/images/tmdb/backdrop-346', still_urls: ['/api/v1/player/discovery/images/tmdb/backdrop-346', '/api/v1/player/discovery/images/tmdb/still-2'], work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
     file_count: 1, season_count: 0, episode_count: 0, modified_at: '2026-08-22T00:00:00Z', match_status: 'matched',
   }
 }
@@ -772,6 +770,7 @@ function seriesItem() {
     title: '示例剧',
     original_title: 'Example Series',
     poster_path: '/series-poster.jpg',
+    poster_url: '/api/v1/player/discovery/images/tmdb/series-poster',
     kind: 'series',
     work_identity: { scheme: 'tmdb', media_type: 'series', value: '100' },
     tmdb_id: 100,
@@ -787,6 +786,7 @@ function legacyArtworkItem() {
     ...mediaItem(),
     id: 'bW92aWU6dG1kYjozNDYtbGVnYWN5',
     still_paths: undefined,
+    still_urls: undefined,
   }
 }
 

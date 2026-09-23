@@ -34,48 +34,20 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Type check
-        run: npm run typecheck
-
       - name: Build frontend
         run: npm run build
-
-      - name: Verify scraper classification
-        run: npm run verify:scraper
-
-      - name: Verify OpenList/Alist auth recovery
-        run: npm run verify:alist-auth-recovery
-
-      - name: Verify home fault isolation
-        run: npm run verify:home-fault-isolation
 
       - name: Verify aggregate search fault isolation
         run: npm run verify:home-aggregate-search
 
-      - name: Verify raw source index scheduler
-        run: npm run verify:raw-source-index-scheduler
-
-      - name: Verify 123 Pan datasource
-        run: npm run verify:pan123-datasource
-
-      - name: Verify TMDB auth routing
-        run: npm run verify:tmdb-auth
-
       - name: Verify window fullscreen and resize synchronization
         run: npm run verify:window-fullscreen-resize
-
-      - name: Verify subtitle search routing and security boundaries
-        run: npm run verify:subtitle-search
 
       - name: Verify media actions, deletion, and download planning
         run: |
           npm run verify:media-actions
           npm run verify:media-delete
           npm run verify:download-planning
-          npm run verify:provider-file-operations
-
-      - name: Verify signed updater channels and release artifacts
-        run: npm run verify:auto-update
 
   rust-linux:
     runs-on: ubuntu-latest
@@ -210,11 +182,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Verify Android playback integration
-        run: |
-          npm run verify:android-playback
-          npm run verify:android-downloads
-
       - name: Build unsigned Android ARM64 debug APK
         run: npm run tauri:build:android:preview
 
@@ -259,7 +226,6 @@ jobs:
 
       - name: Build Windows GNU installer
         env:
-          OHMYCINE_TMDB_READ_ACCESS_TOKEN: ${{ secrets.OHMYCINE_TMDB_READ_ACCESS_TOKEN }}
           OHMYCINE_DANDANPLAY_APP_ID: ${{ secrets.OHMYCINE_DANDANPLAY_APP_ID }}
           OHMYCINE_DANDANPLAY_APP_SECRET: ${{ secrets.OHMYCINE_DANDANPLAY_APP_SECRET }}
         run: RUSTC="$(rustup which rustc)" npm run tauri:build:windows

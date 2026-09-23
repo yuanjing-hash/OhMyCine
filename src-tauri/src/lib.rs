@@ -8,9 +8,6 @@ mod storage;
 use tauri::Emitter;
 use tauri::{utils::config::Color, Manager};
 
-use commands::clouddrive2::{
-    clouddrive2_get_stream, clouddrive2_list, clouddrive2_search, CloudDrive2GrpcState,
-};
 use commands::credential::{credential_delete, credential_get, credential_set};
 use commands::danmaku::{danmaku_comments, danmaku_match, danmaku_search};
 use commands::deep_link::{player_take_pending_deep_links, DeepLinkState};
@@ -33,16 +30,14 @@ use commands::image_cache::{
     player_cache_image, player_get_cached_image, player_image_cache_stats, player_trim_image_cache,
 };
 use commands::local_file::{
-    local_file_delete_owned, local_file_list, local_file_metadata, local_file_pick_directory,
-    local_file_pick_video, local_file_stream_path, local_file_watch_start, local_file_watch_stop,
-    LocalFileWatcherState,
+    local_file_list, local_file_pick_directory, local_file_pick_video, local_file_pick_videos,
+    local_file_stream_path,
 };
 use commands::media_collections::{
     player_add_media_collection_member, player_create_media_collection,
     player_delete_media_collection, player_list_media_collections,
     player_remove_media_collection_member, player_set_local_favorite,
 };
-use commands::pan123::{pan123_get_stream, pan123_list, pan123_login, pan123_search};
 use commands::player::{
     mpv_add_subtitle, mpv_apply_engine_settings, mpv_display_brightness_state, mpv_get_property,
     mpv_init_render_surface, mpv_load, mpv_orientation_state, mpv_pause, mpv_playback_diagnostics,
@@ -55,12 +50,6 @@ use commands::preference::{
     player_get_media_playback_preference, player_get_playback_speed_preference,
     player_set_playback_speed_preference, player_upsert_media_playback_preference,
 };
-use commands::provider_file::provider_source_file_delete;
-use commands::quark::{
-    quark_auth_cancel, quark_auth_poll_account, quark_auth_poll_qr, quark_auth_start_account,
-    quark_auth_start_qr, quark_get_stream, quark_list, quark_search, QuarkAuthState,
-};
-use commands::raw_scan_cache::{raw_scan_cache_delete, raw_scan_cache_get, raw_scan_cache_set};
 use commands::server::{
     server_cancel_sse, server_request_blob, server_request_json, server_stream_sse,
     ServerStreamState,
@@ -73,7 +62,6 @@ use commands::subtitle::{
     subtitle_login_opensubtitles, subtitle_search_hash_provider, subtitle_search_opensubtitles,
     OpenSubtitlesSessionState, SubtitleDownloadState,
 };
-use commands::tmdb::{tmdb_request_json, tmdb_test_image};
 use commands::updater::{player_check_for_updates, player_install_update, PendingUpdate};
 use mpv::mobile_proxy::AndroidStreamProxyState;
 #[cfg(not(mobile))]
@@ -103,9 +91,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(CloudDrive2GrpcState::default())
-        .manage(QuarkAuthState::default())
-        .manage(LocalFileWatcherState::default())
         .manage(PendingUpdate::default())
         .manage(OpenSubtitlesSessionState::default())
         .manage(SubtitleDownloadState::default())
@@ -151,28 +136,12 @@ pub fn run() {
             player_download_remove,
             player_download_settings,
             player_download_update_settings,
-            clouddrive2_list,
-            clouddrive2_search,
-            clouddrive2_get_stream,
-            quark_list,
-            quark_search,
-            quark_get_stream,
-            quark_auth_start_qr,
-            quark_auth_poll_qr,
-            quark_auth_start_account,
-            quark_auth_poll_account,
-            quark_auth_cancel,
-            pan123_login,
-            pan123_list,
-            pan123_search,
-            pan123_get_stream,
             player_get_playback_speed_preference,
             player_set_playback_speed_preference,
             player_get_media_playback_preference,
             player_upsert_media_playback_preference,
             player_delete_media_playback_preferences_for_source,
             player_clear_media_cache,
-            provider_source_file_delete,
             player_upsert_playback_progress,
             player_get_playback_progress,
             player_get_playback_completion_batch,
@@ -192,9 +161,6 @@ pub fn run() {
             player_cache_image,
             player_image_cache_stats,
             player_trim_image_cache,
-            raw_scan_cache_get,
-            raw_scan_cache_set,
-            raw_scan_cache_delete,
             player_settings_get_all,
             player_settings_set,
             player_settings_delete,
@@ -209,18 +175,13 @@ pub fn run() {
             subtitle_search_hash_provider,
             subtitle_download_hash_provider,
             subtitle_import_local,
-            tmdb_request_json,
-            tmdb_test_image,
             player_check_for_updates,
             player_install_update,
             local_file_list,
-            local_file_metadata,
             local_file_pick_video,
+            local_file_pick_videos,
             local_file_pick_directory,
             local_file_stream_path,
-            local_file_delete_owned,
-            local_file_watch_start,
-            local_file_watch_stop,
             emby_post_playback_json,
             emby_request_json,
             mpv_apply_engine_settings,
@@ -282,6 +243,8 @@ pub fn run() {
         .setup(|app| {
             storage::initialize(app.handle()).map_err(std::io::Error::other)?;
             commands::downloads::recover_interrupted_downloads(app.handle())
+                .map_err(std::io::Error::other)?;
+            commands::preference::clear_raw_scan_cache(app.handle())
                 .map_err(std::io::Error::other)?;
             let webview_transparency_applied = app
                 .get_webview_window("main")

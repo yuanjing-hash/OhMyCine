@@ -24,9 +24,7 @@ const DEFINITIONS: readonly MediaActionDefinition[] = [
   action('editMetadata', '编辑元数据', undefined, 'manage', 400),
   action('editArtwork', '编辑图像', undefined, 'manage', 410),
   action('editSubtitles', '编辑字幕', undefined, 'manage', 420),
-  action('identify', '识别 / 刮削', undefined, 'manage', 430),
   action('refreshMetadata', '刷新元数据', undefined, 'manage', 440),
-  action('rescanLibrary', '重新扫描媒体库', undefined, 'manage', 450),
   action('deleteMedia', '删除', undefined, 'danger', 900),
 ]
 

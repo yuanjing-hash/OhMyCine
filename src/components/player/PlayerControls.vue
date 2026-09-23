@@ -6,6 +6,8 @@ import type { PlaybackQueueItem } from '@/services/playbackContext'
 import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import CachedImage from '@/components/media/CachedImage.vue'
+import { artworkCacheKey } from '@/services/imageCache'
 import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
 import { streamVariantDescription, streamVariantLabel, usableStreamVariants } from '@/services/streamVariants'
 import { transitionWindowFullscreen } from '@/services/windowFullscreen'
@@ -752,7 +754,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
             <div class="queue-list" role="list">
               <button v-for="(item, index) in queueItems" :key="`${item.sourceId}:${item.id}:${index}`" type="button" class="queue-option" :class="{ 'is-current': index === currentQueueIndex }" role="menuitem" :aria-current="index === currentQueueIndex ? 'true' : undefined" :disabled="isQueueSwitching && index !== currentQueueIndex" @click="chooseQueueItem(index)">
                 <span class="queue-thumb" aria-hidden="true">
-                  <img v-if="item.posterUrl || item.backdropUrl" :src="item.posterUrl || item.backdropUrl" alt="" loading="lazy">
+                  <CachedImage v-if="item.posterUrl || item.backdropUrl" :cache-key="artworkCacheKey(item.sourceId, item.id, 'poster')" :src="item.posterUrl || item.backdropUrl" alt="" loading="lazy" />
                   <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 4h13A2.5 2.5 0 0 1 21 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-11A2.5 2.5 0 0 1 5.5 4Zm1 3A1.5 1.5 0 1 0 8 8.5 1.5 1.5 0 0 0 6.5 7Zm-1 10.5h13a.5.5 0 0 0 .5-.5v-2.6l-3.15-3.15a1 1 0 0 0-1.42 0l-2.1 2.1-.78-.78a1 1 0 0 0-1.42 0L5 16.7v.3a.5.5 0 0 0 .5.5Z" /></svg>
                 </span>
                 <span class="queue-copy">
@@ -1022,7 +1024,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
   background: var(--surface-soft);
 }
 
-.queue-thumb img {
+.queue-thumb :deep(img) {
   width: 100%;
   height: 100%;
   object-fit: cover;

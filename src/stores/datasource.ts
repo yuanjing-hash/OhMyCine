@@ -1,6 +1,5 @@
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
-import type { RawFileSourceType } from '@/services/scraper/types'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSettings'
@@ -10,11 +9,10 @@ import { dataSourceManager } from '@/services/datasource/manager'
 import { OFFLINE_SOURCE_ID } from '@/services/datasource/offline'
 import { stripOfflineProjectionSections } from '@/services/datasource/offlineProjection'
 import { logoutServerBestEffort } from '@/services/datasource/server'
+import { queueLegacySourceCleanup, runLegacySourceCleanup } from '@/services/legacySourceMigration'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
 import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
-import { changedRawSourceCacheTarget } from '@/services/scraper/cacheInvalidation'
-import { clearRawSourceScanCache } from '@/services/scraper/localScanCache'
 import { dispatchServerLibraryRefresh } from '@/services/serverMediaChanges'
 
 const STORAGE_KEY = 'ohmycine-datasources'
@@ -59,6 +57,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const pendingServerUpdates = ref<Record<string, PendingServerMediaUpdate>>({})
   let homeLoadId = 0
   let displayCacheHydrated = false
+  let configsLoaded = false
   let serverHomeRefreshTimer: ReturnType<typeof setTimeout> | undefined
   const mediaChangeWatchers = new Map<string, { source: DataSource, stop: () => void }>()
 
@@ -73,11 +72,28 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const hasServerLibraryUpdates = computed(() => Object.keys(pendingServerUpdates.value).length > 0)
 
   function loadConfigs() {
+    if (configsLoaded)
+      return
+    configsLoaded = true
     hydrateDisplayCache()
     try {
       const raw = getAppSetting(STORAGE_KEY)
-      if (raw)
-        configs.value = sanitizeConfigs(JSON.parse(raw) as unknown)
+      if (raw) {
+        const persisted = sanitizeConfigs(JSON.parse(raw) as unknown)
+        const legacy = persisted.filter(config => !isRemoteSourceType(config.type))
+        configs.value = persisted.filter(config => isRemoteSourceType(config.type))
+        void (async () => {
+          await queueLegacySourceCleanup(legacy)
+          if (legacy.length > 0)
+            await saveConfigs()
+          await runLegacySourceCleanup()
+        })().catch((error) => {
+          lastError.value = error instanceof Error ? error.message : '旧媒体源清理失败，下次启动将重试'
+        })
+      }
+      else {
+        void runLegacySourceCleanup().catch(() => undefined)
+      }
       void syncManager()
     }
     catch {
@@ -260,7 +276,6 @@ export const useDataSourceStore = defineStore('datasource', () => {
       configs.value[idx] = next
       await saveConfigs()
       await syncManager()
-      await clearChangedRawSourceCache(previous, next)
       invalidateSourceRootSnapshot(id)
       invalidateHomeCache()
     }
@@ -310,13 +325,6 @@ export const useDataSourceStore = defineStore('datasource', () => {
       deleteMediaPlaybackPreferencesForSource(id),
       removeNavigationShortcutBinding(`source:${id}`),
     ]
-    if (config && isRawFileSourceType(config.type)) {
-      cleanupTasks.push(clearRawSourceScanCache(
-        id,
-        config.type,
-        config.type === 'local' ? '/' : readConfiguredRootPath(config),
-      ))
-    }
     if (credentialRef)
       cleanupTasks.push(removeCredential(credentialRef))
 
@@ -799,9 +807,6 @@ function sanitizeDisplayLibrary(value: unknown): MediaLibrary {
     backdropUrl: sanitizeDisplayUrl(library.backdropUrl),
     artworkRevision: sanitizeIdentityText(library.artworkRevision),
     artworkSource: ['generated', 'provider', 'custom', 'fallback'].includes(String(library.artworkSource)) ? library.artworkSource as MediaLibrary['artworkSource'] : undefined,
-    artworkCandidates: Array.isArray(library.artworkCandidates)
-      ? library.artworkCandidates.map(sanitizeDisplayUrl).filter((entry): entry is string => Boolean(entry)).slice(0, 9)
-      : undefined,
     itemCount: optionalNumber(library.itemCount),
     providerIdentity: sanitizeIdentityText(library.providerIdentity),
   }
@@ -857,20 +862,8 @@ function safeTimestamp(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
 }
 
-function isRawFileSourceType(type: DataSourceConfig['type']): type is RawFileSourceType {
-  return ['alist', 'clouddrive2', 'webdav', 'local', '115', '123', 'quark'].includes(type)
-}
-
-function readConfiguredRootPath(config: DataSourceConfig): string {
-  const rootPath = typeof config.extra?.rootPath === 'string' ? config.extra.rootPath.trim() : ''
-  return rootPath || '/'
-}
-
-async function clearChangedRawSourceCache(previous: DataSourceConfig, next: DataSourceConfig): Promise<void> {
-  const target = changedRawSourceCacheTarget(previous, next)
-  if (!target)
-    return
-  await clearRawSourceScanCache(target.sourceId, target.sourceType, target.rootPath)
+function isRemoteSourceType(type: string): boolean {
+  return type === 'server' || type === 'emby' || type === 'jellyfin'
 }
 
 function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[]): HomeSection {

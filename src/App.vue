@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import UpdateDialog from '@/components/layout/UpdateDialog.vue'
@@ -10,7 +10,6 @@ import { configureMediaActionController, createCollectionMediaActionAdapter, cre
 import { COLLECTIONS_CHANGED_EVENT } from '@/services/mediaCollections'
 import { PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 import { startPlaybackHistorySync } from '@/services/playbackHistorySync'
-import { createRawSourceAutoIndexTargets, createRawSourceLocalWatcherController, rawSourceIndexScheduler } from '@/services/scraper'
 import { initializeServerDeepLinks } from '@/services/serverDeepLink'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useDownloadStore } from '@/stores/downloads'
@@ -21,7 +20,7 @@ const updater = useUpdaterStore()
 const downloads = useDownloadStore()
 const router = useRouter()
 configureMediaActionController(new MediaActionController({
-  adapters: [createDeleteMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), resolveConfig: sourceId => store.orderedConfigs.find(config => config.id === sourceId) }), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId), requestMediaActionConfirmation), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
+  adapters: [createDeleteMediaActionAdapter(), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId), requestMediaActionConfirmation), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
   confirm: requestMediaActionConfirmation,
   invalidate: async (invalidation) => {
     store.getSource(invalidation.sourceId)?.clearCache?.()
@@ -36,23 +35,12 @@ configureMediaActionController(new MediaActionController({
   },
   onFeedback: publishFeedback,
 }))
-const localWatcherController = createRawSourceLocalWatcherController({
-  resolveSource: sourceId => store.getSource(sourceId),
-  markDirty: target => rawSourceIndexScheduler.markIncrementalDirty(target),
-})
 let disposeServerDeepLinks: (() => void) | undefined
 let disposePlaybackHistorySync: (() => void) | undefined
 
 onMounted(() => {
   store.loadConfigs()
   document.addEventListener('contextmenu', suppressNativeContextMenu)
-  rawSourceIndexScheduler.startAutoIndexing({
-    getTargets: async () => {
-      await store.syncManager().catch(() => undefined)
-      return createRawSourceAutoIndexTargets(store.orderedConfigs, sourceId => store.getSource(sourceId))
-    },
-  })
-  void store.syncManager().finally(() => localWatcherController.sync(store.orderedConfigs))
   void updater.initialize().then(() => updater.scheduleStartupCheck())
   void downloads.initialize()
   void initializeServerDeepLinks(router, store).then((dispose) => {
@@ -61,17 +49,9 @@ onMounted(() => {
   disposePlaybackHistorySync = startPlaybackHistorySync(store)
 })
 
-watch(
-  () => store.orderedConfigs,
-  configs => void localWatcherController.sync(configs),
-  { deep: true },
-)
-
 onBeforeUnmount(() => {
   document.removeEventListener('contextmenu', suppressNativeContextMenu)
-  rawSourceIndexScheduler.stopAutoIndexing()
   store.stopMediaChangeWatchers()
-  void localWatcherController.dispose()
   updater.cancelStartupCheck()
   downloads.dispose()
   disposeServerDeepLinks?.()

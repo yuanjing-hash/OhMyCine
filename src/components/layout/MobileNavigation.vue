@@ -3,42 +3,18 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
-import { pickAndroidLocalVideo } from '@/services/androidLocalMedia'
-import { useLayoutContextActions } from '@/services/layoutContextActions'
-import { savePlaybackMediaContext } from '@/services/playbackContext'
+import { pickAndroidLocalDirectory, pickAndroidLocalVideos } from '@/services/androidLocalMedia'
+import { createLocalPlaylistContext, listLocalFolderVideos, VIDEO_FILE_EXTENSIONS } from '@/services/localPlaylist'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { useDataSourceStore } from '@/stores/datasource'
-import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
 
 type MobileSheet = 'libraries' | 'quick'
-
-const VIDEO_EXTENSIONS = [
-  'mp4',
-  'mkv',
-  'avi',
-  'mov',
-  'webm',
-  'm4v',
-  'flv',
-  'wmv',
-  'ts',
-  'm2ts',
-  'rmvb',
-  'mpg',
-  'mpeg',
-  '3gp',
-  'ogv',
-  'divx',
-  'vob',
-  'iso',
-]
 
 const route = useRoute()
 const router = useRouter()
 const store = useDataSourceStore()
 const { theme, toggle: toggleTheme } = useTheme()
-const { actions: contextActions } = useLayoutContextActions()
 const activeSheet = ref<MobileSheet | null>(null)
 const isOpeningFile = ref(false)
 const openFileError = ref<string | null>(null)
@@ -53,14 +29,7 @@ const enabledSources = computed(() => store.orderedConfigs.filter(source => sour
 const sourceIcons: Record<string, string> = {
   emby: 'E',
   jellyfin: 'J',
-  alist: 'A',
-  clouddrive2: 'C',
-  webdav: 'W',
-  local: 'L',
   server: 'S',
-  115: '1',
-  123: '2',
-  quark: 'Q',
 }
 
 function sourceIcon(type: string): string {
@@ -116,67 +85,45 @@ async function navigateDataSources(action?: 'add') {
   })
 }
 
-function fileName(path: string): string {
-  return path.split(/[\\/]/).pop() || '本地视频'
-}
-
-async function openLocalVideo() {
+async function openLocalVideo(directory = false) {
   if (isOpeningFile.value)
     return
 
   isOpeningFile.value = true
   openFileError.value = null
   try {
+    let files: { path: string, name?: string }[]
     if (isNativeAndroid) {
-      const selected = await pickAndroidLocalVideo()
-      if (selected.cancelled)
+      if (directory) {
+        const selected = await pickAndroidLocalDirectory()
+        if (selected.cancelled)
+          return
+        if (!selected.uri)
+          throw new Error('Android 文件夹选择未返回可读目录。')
+        files = await listLocalFolderVideos(selected.uri)
+      }
+      else {
+        const selected = await pickAndroidLocalVideos()
+        if (selected.cancelled)
+          return
+        files = selected.items.map(item => ({ path: item.uri, name: item.name }))
+      }
+    }
+    else {
+      const selected = await open({
+        multiple: !directory,
+        directory,
+        title: directory ? '打开视频文件夹' : '打开本地视频',
+        filters: directory ? undefined : [{ name: '视频文件', extensions: [...VIDEO_FILE_EXTENSIONS] }],
+      })
+      if (!selected)
         return
-      if (!selected.uri)
-        throw new Error('Android 文件选择未返回可播放媒体。')
-      if (selected.name && !isSupportedVideoName(selected.name))
-        throw new Error('请选择受支持的视频文件。')
-
-      const title = selected.name?.trim() || '本地视频'
-      const itemId = `android-local-${Date.now()}`
-      const contextId = savePlaybackMediaContext({
-        sourceId: 'local-file',
-        itemId,
-        title,
-        locator: {
-          kind: 'localPath',
-          path: selected.uri,
-        },
-      })
-      closeSheet()
-      await router.push({
-        name: 'player',
-        query: createPlaybackRouteQuery({
-          contextId,
-          sourceId: 'local-file',
-          itemId,
-        }),
-      })
-      return
+      files = directory
+        ? await listLocalFolderVideos(selected as string)
+        : (Array.isArray(selected) ? selected : [selected]).map(path => ({ path }))
     }
 
-    const selected = await open({
-      multiple: false,
-      directory: false,
-      title: '打开本地视频',
-      filters: [{ name: '视频文件', extensions: VIDEO_EXTENSIONS }],
-    })
-    if (typeof selected !== 'string')
-      return
-
-    const title = fileName(selected)
-    const itemId = `local-file-${Date.now()}`
-    const contextId = savePlaybackMediaContext({
-      sourceId: 'local-file',
-      itemId,
-      title,
-      locator: { kind: 'localPath', path: selected },
-    })
-
+    const { contextId, itemId } = await createLocalPlaylistContext(files)
     closeSheet()
     await router.push({
       name: 'player',
@@ -191,21 +138,9 @@ async function openLocalVideo() {
   }
 }
 
-function isSupportedVideoName(name: string): boolean {
-  const extension = name.trim().split('.').at(-1)?.toLowerCase()
-  return Boolean(extension && VIDEO_EXTENSIONS.includes(extension))
-}
-
 function handleThemeToggle() {
   toggleTheme()
   closeSheet()
-}
-
-function runContextAction(action: (typeof contextActions.value)[number]) {
-  if (action.disabled)
-    return
-  closeSheet()
-  void action.execute()
 }
 
 function handleEscape(event: KeyboardEvent) {
@@ -273,40 +208,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
               </button>
             </header>
 
-            <section v-if="contextActions.length" class="mobile-context-section">
-              <p class="mobile-context-eyebrow">
-                当前媒体库
-              </p>
-              <div class="mobile-context-list">
-                <button
-                  v-for="action in contextActions"
-                  :key="action.id"
-                  type="button"
-                  class="mobile-context-action"
-                  :class="{ 'is-active': action.active }"
-                  :disabled="action.disabled"
-                  @click="runContextAction(action)"
-                >
-                  <span class="mobile-context-icon">
-                    <LayoutContextActionIcon :name="action.icon" />
-                  </span>
-                  <span class="mobile-context-copy">
-                    <strong>{{ action.label }}</strong>
-                    <small>{{ action.description }}</small>
-                  </span>
-                  <span v-if="action.active" class="mobile-context-state">已展开</span>
-                  <svg v-else class="mobile-row-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-                </button>
-              </div>
-            </section>
-
             <div class="mobile-quick-grid">
-              <button type="button" class="mobile-quick-action" :disabled="isOpeningFile" @click="openLocalVideo">
+              <button type="button" class="mobile-quick-action" :disabled="isOpeningFile" @click="openLocalVideo(false)">
                 <span class="mobile-quick-icon">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm5 4.5 6 3.5-6 3.5v-7Z" /></svg>
                 </span>
                 <strong>{{ isOpeningFile ? '正在打开' : '本地视频' }}</strong>
-                <small>选择设备上的媒体文件</small>
+                <small>多选设备上的视频文件</small>
+              </button>
+
+              <button type="button" class="mobile-quick-action" :disabled="isOpeningFile" @click="openLocalVideo(true)">
+                <span class="mobile-quick-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Zm7 4 5 3-5 3v-6Z" /></svg>
+                </span>
+                <strong>视频文件夹</strong>
+                <small>顺序播放文件夹中的视频</small>
               </button>
 
               <button type="button" class="mobile-quick-action" @click="navigateDataSources('add')">
@@ -322,7 +238,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
                 </span>
                 <strong>管理数据源</strong>
-                <small>编辑、扫描与排序</small>
+                <small>编辑与排序</small>
               </button>
 
               <button type="button" class="mobile-quick-action" @click="navigateHistory">
@@ -654,87 +570,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleEscape))
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.55rem;
-  }
-
-  .mobile-context-section {
-    margin-bottom: 0.8rem;
-    padding-bottom: 0.8rem;
-    border-bottom: 1px solid var(--color-divider);
-  }
-
-  .mobile-context-eyebrow {
-    margin: 0 0 0.5rem 0.1rem;
-    color: var(--color-text-tertiary);
-    font-size: 0.62rem;
-    font-weight: 800;
-  }
-
-  .mobile-context-list {
-    display: grid;
-    gap: 0.4rem;
-  }
-
-  .mobile-context-action {
-    display: grid;
-    width: 100%;
-    min-height: 3.65rem;
-    grid-template-columns: 2.3rem minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.7rem;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    padding: 0.5rem 0.65rem;
-    color: var(--color-text);
-    background: var(--surface-soft);
-    text-align: left;
-  }
-
-  .mobile-context-action.is-active {
-    border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
-    background: color-mix(in srgb, var(--color-primary) 12%, var(--surface-soft));
-  }
-
-  .mobile-context-action:disabled {
-    opacity: 0.45;
-  }
-
-  .mobile-context-icon {
-    display: flex;
-    width: 2.3rem;
-    height: 2.3rem;
-    align-items: center;
-    justify-content: center;
-    border-radius: 8px;
-    color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 14%, transparent);
-  }
-
-  .mobile-context-copy {
-    min-width: 0;
-  }
-
-  .mobile-context-copy strong,
-  .mobile-context-copy small {
-    display: block;
-  }
-
-  .mobile-context-copy strong {
-    font-size: 0.82rem;
-  }
-
-  .mobile-context-copy small {
-    margin-top: 0.16rem;
-    overflow: hidden;
-    color: var(--color-text-tertiary);
-    font-size: 0.65rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .mobile-context-state {
-    color: var(--color-primary);
-    font-size: 0.64rem;
-    font-weight: 700;
   }
 
   .mobile-quick-action {

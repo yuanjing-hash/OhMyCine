@@ -1,18 +1,12 @@
 import type { DataSource, DataSourceConfig, DataSourceType, HomeSection, MediaItem } from './types'
 import { withMediaTombstoneFiltering } from '@/services/mediaDelete'
-import { AlistDataSource } from './alist'
-import { CloudDrive2DataSource } from './clouddrive2'
 import { configureOhMyCineServerOrigins, EmbyDataSource } from './emby'
 import { toSafeErrorMessage } from './errors'
 import { collectHomeSectionsFromSources } from './homeAggregation'
 import { forgetPlaybackTargetsForSource, prunePlaybackTargets } from './identityMerge'
-import { LocalFileDataSource } from './local'
 import { OFFLINE_SOURCE_CONFIG, OfflineDataSource } from './offline'
-import { Pan123DataSource } from './pan123'
-import { QuarkDataSource } from './quark'
 import { searchAcrossDataSources } from './searchAggregation'
 import { ServerDataSource } from './server'
-import { WebDavDataSource } from './webdav'
 
 export class DataSourceManager {
   private readonly sources = new Map<string, DataSource>()
@@ -130,18 +124,6 @@ export function createDataSource(type: DataSourceType): DataSource {
       return new EmbyDataSource()
     case 'jellyfin':
       return new EmbyDataSource('jellyfin')
-    case 'alist':
-      return new AlistDataSource()
-    case 'clouddrive2':
-      return new CloudDrive2DataSource()
-    case 'webdav':
-      return new WebDavDataSource()
-    case 'quark':
-      return new QuarkDataSource()
-    case '123':
-      return new Pan123DataSource()
-    case 'local':
-      return new LocalFileDataSource()
     case 'server':
       return new ServerDataSource()
     case 'offline':

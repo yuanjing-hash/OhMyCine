@@ -18,7 +18,7 @@ for (const file of vueFiles(root)) {
   for (const tag of source.match(/<(?:input|textarea)\b[\s\S]*?>/g) ?? []) {
     const model = /v-model=["']([^"']+)["']/.exec(tag)?.[1] ?? ''
     const field = model.split('.').at(-1) ?? ''
-    const protectedField = /(?:password|cookie|passkey|api[_-]?key|apiToken|accessToken|authHeader|credential|recyclePassword|secret|tmdbToken|uuid|(?:^|[._-])token$)/i.test(field)
+    const protectedField = /password|cookie|passkey|api[_-]?key|apiToken|accessToken|authHeader|credential|recyclePassword|secret|tmdbToken|uuid|(?:^|[._-])token$/i.test(field)
       && !/^(?:clear|remove|delete|configured|credentialMode|credentialScope)/i.test(field)
     if (/type=["']password["']/.test(tag) || protectedField)
       violations.push(`${file}: ${tag.replace(/\s+/g, ' ')}`)
@@ -40,12 +40,11 @@ assert.match(component, /'secret-input--masked': !revealed/)
 const settings = readFileSync(join(root, 'views', 'SettingsView.vue'), 'utf8')
 assert.doesNotMatch(settings, /:configured="isEditing"/)
 assert.match(settings, /sourceCredentialConfigured/)
-assert.match(settings, /loadStoredTmdbCredentialValue/)
 assert.match(settings, /loadOpenSubtitlesCredentialField/)
-assert.match(settings, /loadEditedSourceCredentialField/)
-assert.match(settings, /source\.type === 'server' \|\| source\.type === 'local'/)
-assert.match(settings, /:load-secret="sourceCredentialLoader\('apiToken'\)"/)
-assert.match(settings, /:load-secret="sourceCredentialLoader\('cookie'\)"/)
-assert.match(settings, /:load-secret="sourceCredentialLoader\('password'\)"/)
+assert.match(settings, /sourceCredentialLoader\(\)/)
+assert.match(settings, /readEmbyCredential\(credentialRef\)/)
+assert.match(settings, /source\.type !== 'emby' && source\.type !== 'jellyfin'/)
+assert.match(settings, /:load-secret="sourceCredentialLoader\(\)"/)
+assert.doesNotMatch(settings, /loadStoredTmdbCredentialValue|form\.cookie|form\.rootPath/)
 
 console.log('Secret input policy verified')

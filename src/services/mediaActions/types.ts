@@ -16,10 +16,8 @@ export const MEDIA_ACTION_IDS = [
   'editArtwork',
   'editSubtitles',
   'deleteMedia',
-  'identify',
   'refreshMetadata',
   'openLibrary',
-  'rescanLibrary',
 ] as const
 
 export type MediaActionId = typeof MEDIA_ACTION_IDS[number]
@@ -69,18 +67,10 @@ export interface MediaActionConfirmation {
   readonly cancelLabel?: string
   readonly danger: Exclude<MediaActionDanger, 'none'>
   readonly requiredText?: string
-  readonly sourceDelete?: {
-    readonly label: string
-    readonly available: boolean
-    readonly disabledReason?: string
-    readonly itemCount: number
-    readonly pathSummaries: readonly string[]
-  }
 }
 
 export interface MediaActionConfirmationResult {
   readonly confirmed: boolean
-  readonly deleteSourceFiles: boolean
 }
 
 export interface MediaActionCapability {

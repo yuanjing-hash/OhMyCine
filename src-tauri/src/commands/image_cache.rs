@@ -1,5 +1,9 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
-use reqwest::{redirect::Policy, Url};
+use reqwest::{
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+    redirect::Policy,
+    Url,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -22,6 +26,8 @@ const MAX_CACHE_LIMIT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub struct CacheImageRequest {
     cache_key: String,
     url: String,
+    server_base_url: Option<String>,
+    server_access_token: Option<String>,
     #[serde(default = "default_cache_limit_bytes")]
     max_bytes: u64,
 }
@@ -68,7 +74,33 @@ pub async fn player_cache_image(
     validate_cache_key(&request.cache_key)?;
     let max_bytes = normalize_cache_limit(request.max_bytes);
     let url = parse_image_url(&request.url)?;
-    let source_hash = hash_text(url.as_str());
+    let protected_artwork = is_protected_server_artwork_url(&url);
+    let server_token = if protected_artwork {
+        let base_url = request
+            .server_base_url
+            .as_deref()
+            .ok_or("Server artwork credentials are required.")?;
+        let token = request
+            .server_access_token
+            .as_deref()
+            .ok_or("Server artwork credentials are required.")?;
+        validate_server_artwork_credentials(&url, base_url, token)?;
+        Some(token)
+    } else {
+        if request.server_base_url.is_some() || request.server_access_token.is_some() {
+            return Err("Server artwork credentials are not allowed for this URL.".to_string());
+        }
+        None
+    };
+    let source_hash = if let Some(token) = server_token {
+        hash_text(&format!(
+            "server-auth-v1:{}:{}",
+            url.as_str(),
+            hash_text(token)
+        ))
+    } else {
+        hash_text(url.as_str())
+    };
 
     if let Some((meta, data_url)) = read_cached_image_with_meta(&app, &request.cache_key)? {
         if meta.source_hash == source_hash {
@@ -76,19 +108,32 @@ pub async fn player_cache_image(
         }
     }
 
-    let client = image_client()?;
-    let mut response = client
-        .get(url)
-        .header(
-            reqwest::header::ACCEPT,
-            "image/avif,image/webp,image/png,image/jpeg,image/gif",
-        )
+    let client = if protected_artwork {
+        protected_image_client()?
+    } else {
+        image_client()?
+    };
+    let mut builder = client.get(url).header(
+        ACCEPT,
+        "image/avif,image/webp,image/png,image/jpeg,image/gif",
+    );
+    if let Some(token) = server_token {
+        builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let mut response = builder
         .send()
         .await
         .map_err(|_| "图片暂时无法缓存。".to_string())?;
     if !response.status().is_success() {
         return Err("图片暂时无法缓存。".to_string());
     }
+    let declared_mime = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
     if response.content_length().unwrap_or(0) > MAX_IMAGE_BYTES as u64 {
         return Err("图片文件过大，未写入缓存。".to_string());
     }
@@ -107,6 +152,9 @@ pub async fn player_cache_image(
 
     let mime_type =
         detect_image_mime(&bytes).ok_or_else(|| "下载内容不是受支持的图片。".to_string())?;
+    if protected_artwork && declared_mime.as_deref() != Some(mime_type) {
+        return Err("Server artwork format is invalid.".to_string());
+    }
     write_cached_image(
         &app,
         &request.cache_key,
@@ -154,6 +202,64 @@ fn image_client() -> Result<reqwest::Client, String> {
         }))
         .build()
         .map_err(|_| "无法初始化图片缓存。".to_string())
+}
+
+fn protected_image_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
+        .user_agent("OhMyCine-Player/0.1")
+        .redirect(Policy::none())
+        .build()
+        .map_err(|_| "无法初始化图片缓存。".to_string())
+}
+
+fn is_protected_server_artwork_url(url: &Url) -> bool {
+    if url.query().is_some() || url.fragment().is_some() {
+        return false;
+    }
+    let parts: Vec<_> = url.path().split('/').collect();
+    match parts.as_slice() {
+        ["", "api", "v1", "player", "artwork", token] => valid_artwork_token(token),
+        ["", "api", "v1", "player", "discovery", "images", provider, token] => {
+            matches!(*provider, "tmdb" | "douban") && valid_artwork_token(token)
+        }
+        _ => false,
+    }
+}
+
+fn valid_artwork_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 4096
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn validate_server_artwork_credentials(
+    url: &Url,
+    base_url: &str,
+    token: &str,
+) -> Result<(), String> {
+    let base = Url::parse(base_url).map_err(|_| "Server artwork origin is invalid.".to_string())?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || base.path() != "/"
+        || !same_origin(&base, url)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !is_protected_server_artwork_url(url)
+        || !token.starts_with("omc_player_")
+        || token.len() > 256
+        || token.chars().any(char::is_control)
+    {
+        return Err("Server artwork credentials are invalid.".to_string());
+    }
+    Ok(())
 }
 
 fn same_origin(left: &Url, right: &Url) -> bool {
@@ -352,8 +458,20 @@ pub(crate) fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         return Some("image/gif");
     }
-    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && matches!(&bytes[8..12], b"avif" | b"avis") {
-        return Some("image/avif");
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        if matches!(&bytes[8..12], b"avif" | b"avis") {
+            return Some("image/avif");
+        }
+        if bytes.len() >= 24 {
+            let box_size = u32::from_be_bytes(bytes[..4].try_into().ok()?) as usize;
+            if box_size >= 24 && box_size <= bytes.len() {
+                for brand in bytes[16..box_size].as_chunks::<4>().0 {
+                    if matches!(brand, b"avif" | b"avis") {
+                        return Some("image/avif");
+                    }
+                }
+            }
+        }
     }
     None
 }
@@ -361,9 +479,44 @@ pub(crate) fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_image_mime, hash_text, image_cache_stats, trim_image_cache, CachedImageMeta,
+        detect_image_mime, hash_text, image_cache_stats, is_protected_server_artwork_url,
+        trim_image_cache, validate_server_artwork_credentials, CachedImageMeta,
     };
+    use reqwest::Url;
     use std::{fs, time::UNIX_EPOCH};
+
+    #[test]
+    fn server_artwork_bearer_is_restricted_to_same_origin_image_routes() {
+        let token = format!("omc_player_{}", "a".repeat(43));
+        for path in [
+            "/api/v1/player/artwork/opaque_123",
+            "/api/v1/player/discovery/images/tmdb/opaque-123",
+        ] {
+            let url = Url::parse(&format!("https://server.example{path}")).expect("valid URL");
+            assert!(is_protected_server_artwork_url(&url));
+            assert!(
+                validate_server_artwork_credentials(&url, "https://server.example", &token).is_ok()
+            );
+            assert!(
+                validate_server_artwork_credentials(&url, "https://other.example", &token).is_err()
+            );
+            assert!(validate_server_artwork_credentials(
+                &url,
+                "https://server.example",
+                "wrong-token"
+            )
+            .is_err());
+        }
+        for path in [
+            "/api/v1/player/artwork/opaque?token=secret",
+            "/api/v1/player/online-assets/asset",
+            "/api/v1/player/artwork/opaque/other",
+            "/api/v1/player/artwork/%2fsecret",
+        ] {
+            let url = Url::parse(&format!("https://server.example{path}")).expect("valid URL");
+            assert!(!is_protected_server_artwork_url(&url));
+        }
+    }
 
     #[test]
     fn detects_supported_image_signatures() {
@@ -378,6 +531,10 @@ mod tests {
         assert_eq!(detect_image_mime(b"RIFF0000WEBPrest"), Some("image/webp"));
         assert_eq!(detect_image_mime(b"GIF89arest"), Some("image/gif"));
         assert_eq!(detect_image_mime(b"0000ftypavifrest"), Some("image/avif"));
+        assert_eq!(
+            detect_image_mime(b"\0\0\0\x18ftypmif1\0\0\0\0avifmiaf"),
+            Some("image/avif")
+        );
         assert_eq!(detect_image_mime(b"<html>"), None);
     }
 

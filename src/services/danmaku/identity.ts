@@ -1,4 +1,4 @@
-import { isVideoFileName } from '@/services/scraper/pathUtils'
+import { isVideoFileName } from '@/services/mediaPaths'
 import { inferDanmakuEpisode, safeMediaName } from './client'
 
 export interface DanmakuMediaIdentityInput {

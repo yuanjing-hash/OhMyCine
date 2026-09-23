@@ -1,20 +1,7 @@
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
-use tauri::{AppHandle, Emitter, State};
-
-use crate::commands::settings;
-
-const LOCAL_FILE_CHANGED_EVENT: &str = "local-file:changed";
-
-#[derive(Default)]
-pub struct LocalFileWatcherState {
-    watchers: Mutex<HashMap<String, RecommendedWatcher>>,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,15 +11,6 @@ pub struct LocalFileEntry {
     is_dir: bool,
     size: Option<u64>,
     modified_ms: Option<u128>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalFileWatchEvent {
-    source_id: String,
-    root_path: String,
-    changed_path: Option<String>,
-    kind: String,
 }
 
 #[tauri::command]
@@ -77,15 +55,6 @@ pub fn local_file_list(
 }
 
 #[tauri::command]
-pub fn local_file_metadata(root_path: String, path: String) -> Result<LocalFileEntry, String> {
-    let root = canonicalize_root(&root_path)?;
-    let target = resolve_target_path(&root, Some(&path))?;
-    ensure_within_root(&root, &target)?;
-    let metadata = fs::metadata(&target).map_err(|_| "本地文件条目不可用。".to_string())?;
-    Ok(entry_from_metadata(&root, &target, &metadata))
-}
-
-#[tauri::command]
 pub fn local_file_stream_path(root_path: String, path: String) -> Result<String, String> {
     let root = canonicalize_root(&root_path)?;
     let target = resolve_target_path(&root, Some(&path))?;
@@ -98,102 +67,12 @@ pub fn local_file_stream_path(root_path: String, path: String) -> Result<String,
 }
 
 #[tauri::command]
-pub fn local_file_delete_owned(
-    app: AppHandle,
-    source_id: String,
-    path: String,
-) -> Result<(), String> {
-    validate_source_id(&source_id)?;
-    let root_path = local_root_for_source(&app, &source_id)?;
-    delete_local_file(&root_path, &path)
-}
-
-fn delete_local_file(root_path: &str, path: &str) -> Result<(), String> {
-    let root = canonicalize_root(root_path)?;
-    let target = resolve_target_path(&root, Some(path))?;
-    ensure_within_root(&root, &target)?;
-    let metadata = fs::symlink_metadata(&target)
-        .map_err(|_| "The local media file is unavailable.".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(
-            "Only regular media files inside the configured root can be deleted.".to_string(),
-        );
-    }
-    fs::remove_file(&target).map_err(|_| "Failed to delete the local media file.".to_string())
-}
-
-fn local_root_for_source(app: &AppHandle, source_id: &str) -> Result<String, String> {
-    let raw = settings::read_player_setting(app, "ohmycine-datasources")?
-        .ok_or_else(|| "The local data source configuration is unavailable.".to_string())?;
-    let sources: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|_| "The local data source configuration is invalid.".to_string())?;
-    let source = sources
-        .as_array()
-        .and_then(|sources| {
-            sources.iter().find(|source| {
-                source.get("id").and_then(serde_json::Value::as_str) == Some(source_id)
-                    && source.get("type").and_then(serde_json::Value::as_str) == Some("local")
-            })
-        })
-        .ok_or_else(|| "The local data source no longer exists.".to_string())?;
-    source
-        .get("extra")
-        .and_then(|extra| extra.get("rootPath"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| "The local data source root is unavailable.".to_string())
-}
-
-#[tauri::command]
-pub fn local_file_watch_start(
-    app: AppHandle,
-    state: State<LocalFileWatcherState>,
-    source_id: String,
-    root_path: String,
-) -> Result<(), String> {
-    validate_source_id(&source_id)?;
-    let root = canonicalize_root(&root_path)?;
-    let event_source_id = source_id.clone();
-    let event_root = root.clone();
-    let app_handle = app.clone();
-    let mut watcher = RecommendedWatcher::new(
-        move |result| {
-            if let Ok(event) = result {
-                emit_local_file_watch_event(&app_handle, &event_source_id, &event_root, event);
-            }
-        },
-        Config::default(),
-    )
-    .map_err(|_| "本地文件监听初始化失败。".to_string())?;
-
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(|_| "本地文件监听启动失败。".to_string())?;
-
-    let mut watchers = state
-        .watchers
-        .lock()
-        .map_err(|_| "本地文件监听状态不可用。".to_string())?;
-    watchers.insert(source_id, watcher);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn local_file_watch_stop(
-    state: State<LocalFileWatcherState>,
-    source_id: String,
-) -> Result<(), String> {
-    validate_source_id(&source_id)?;
-    let mut watchers = state
-        .watchers
-        .lock()
-        .map_err(|_| "本地文件监听状态不可用。".to_string())?;
-    watchers.remove(&source_id);
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn local_file_pick_video() -> Result<(), String> {
+    Err("桌面端继续使用原生文件选择器。".to_string())
+}
+
+#[tauri::command]
+pub async fn local_file_pick_videos() -> Result<(), String> {
     Err("桌面端继续使用原生文件选择器。".to_string())
 }
 
@@ -211,55 +90,6 @@ fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
     let canonical = fs::canonicalize(root).map_err(|_| "本地文件根目录不可用。".to_string())?;
     ensure_directory(&canonical, "本地文件根目录必须是文件夹。")?;
     Ok(canonical)
-}
-
-pub(crate) fn resolve_local_download_source(
-    root_path: &str,
-    provider_path: &str,
-) -> Result<PathBuf, String> {
-    let root = canonicalize_root(root_path)?;
-    let target = resolve_target_path(&root, Some(provider_path))?;
-    ensure_within_root(&root, &target)?;
-    let metadata =
-        fs::metadata(&target).map_err(|_| "The local source file is unavailable.".to_string())?;
-    if !metadata.is_file() {
-        return Err("Only local files can be copied.".to_string());
-    }
-    Ok(target)
-}
-
-fn validate_source_id(source_id: &str) -> Result<(), String> {
-    let trimmed = source_id.trim();
-    if trimmed.is_empty()
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.as_bytes().contains(&0)
-    {
-        return Err("本地文件监听源无效。".to_string());
-    }
-    Ok(())
-}
-
-fn emit_local_file_watch_event(app: &AppHandle, source_id: &str, root: &Path, event: Event) {
-    let changed_path = event
-        .paths
-        .iter()
-        .find_map(|path| provider_path_from_event(root, path));
-    let payload = LocalFileWatchEvent {
-        source_id: source_id.to_string(),
-        root_path: "/".to_string(),
-        changed_path,
-        kind: format!("{:?}", event.kind),
-    };
-    let _ = app.emit(LOCAL_FILE_CHANGED_EVENT, payload);
-}
-
-fn provider_path_from_event(root: &Path, path: &Path) -> Option<String> {
-    if path == root || path.starts_with(root) {
-        Some(provider_path_from_canonical(root, path))
-    } else {
-        None
-    }
 }
 
 fn resolve_target_path(root: &Path, path: Option<&str>) -> Result<PathBuf, String> {
@@ -498,22 +328,6 @@ mod tests {
         );
 
         assert!(result.is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn deletes_only_a_regular_file_inside_the_configured_root() {
-        let root = temp_root("delete-owned");
-        fs::create_dir_all(root.join("season")).unwrap();
-        let owned = root.join("season/episode.mkv");
-        File::create(&owned).unwrap();
-
-        delete_local_file(root.to_string_lossy().as_ref(), "/season/episode.mkv")
-            .expect("delete owned file");
-        assert!(!owned.exists());
-        assert!(delete_local_file(root.to_string_lossy().as_ref(), "/season").is_err());
-        assert!(delete_local_file(root.to_string_lossy().as_ref(), "../outside.mkv").is_err());
-
         fs::remove_dir_all(root).unwrap();
     }
 

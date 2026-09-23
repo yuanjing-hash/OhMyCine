@@ -1,7 +1,5 @@
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
 
-export type SourceBrowseViewMode = 'media-library' | 'folders'
-
 export interface SourceBrowseNode {
   readonly id: string
   readonly name: string
@@ -11,10 +9,8 @@ export interface SourceBrowseNode {
 
 export interface SourceBrowseContext {
   readonly sourceId: string
-  readonly viewMode: SourceBrowseViewMode
   readonly selectedLibrary: MediaLibrary | null
   readonly navigationStack: readonly SourceBrowseNode[]
-  readonly selectedScannedCategoryId: string | null
   readonly searchKeyword: string
   readonly scrollTop: number
 }

@@ -1,4 +1,5 @@
 import type { HomeSection, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackSubtitleTrack, ProviderDanmakuComment, ProviderPlaybackHistoryPage, SiteActionDescriptor, SiteActionKey, StreamVariant } from './types'
+import { resolveServerArtworkURL } from '@/services/serverArtwork'
 
 export interface OnlineLibrarySummary {
   id: string
@@ -131,13 +132,13 @@ export function parseOnlineNavigationList(value: unknown, baseUrl = ''): OnlineN
   return data.slice(0, 100).map(item => parseNavigation(item, baseUrl)).filter((item): item is OnlineNavigationItem => item != null)
 }
 
-export function parseOnlineFeedSections(value: unknown): OnlineFeedSection[] {
+export function parseOnlineFeedSections(value: unknown, baseUrl: string): OnlineFeedSection[] {
   const data = record(value)
   const sections = Array.isArray(data.sections) ? data.sections : Array.isArray(value) ? value : []
-  return sections.slice(0, 50).map(parseFeedSection).filter((item): item is OnlineFeedSection => item != null)
+  return sections.slice(0, 50).map(item => parseFeedSection(item, baseUrl)).filter((item): item is OnlineFeedSection => item != null)
 }
 
-export function parseOnlineHomeContributions(value: unknown): OnlineHomeContribution[] {
+export function parseOnlineHomeContributions(value: unknown, baseUrl: string): OnlineHomeContribution[] {
   const data = record(value)
   const list = Array.isArray(data.list) ? data.list : []
   return list.slice(0, 100).flatMap((raw): OnlineHomeContribution[] => {
@@ -160,7 +161,7 @@ export function parseOnlineHomeContributions(value: unknown): OnlineHomeContribu
       title,
       layout,
       refreshable: item.refreshable === true,
-      sections: parseOnlineFeedSections(item.sections),
+      sections: parseOnlineFeedSections(item.sections, baseUrl),
       errorCode: optionalText(item.errorCode ?? item.error_code, 128),
     }]
   })
@@ -182,7 +183,7 @@ export function onlineContributionErrorToHomeSection(sourceId: string, item: Onl
   }
 }
 
-export function parseOnlineWork(value: unknown): OnlineMediaWork | null {
+export function parseOnlineWork(value: unknown, baseUrl: string): OnlineMediaWork | null {
   const item = record(value)
   const id = requiredText(item.id, 512)
   const title = requiredText(item.title, 512)
@@ -202,8 +203,8 @@ export function parseOnlineWork(value: unknown): OnlineMediaWork | null {
     identity: { scheme: identityScheme, value: identityValue },
     originalTitle: optionalText(item.originalTitle, 512),
     overview: optionalText(item.overview, 20_000),
-    posterUrl: safeArtworkURL(item.posterUrl),
-    backdropUrl: safeArtworkURL(item.backdropUrl),
+    posterUrl: resolveServerArtworkURL(baseUrl, item.posterUrl),
+    backdropUrl: resolveServerArtworkURL(baseUrl, item.backdropUrl),
     author: optionalText(item.author, 512),
     publishedAt: optionalText(item.publishedAt, 128),
     durationSeconds: boundedNumber(item.durationSeconds, 0, 365 * 24 * 60 * 60),
@@ -253,11 +254,11 @@ export function parseProviderDanmakuComments(value: unknown): ProviderDanmakuCom
   }).sort((left, right) => left.time - right.time)
 }
 
-export function parseOnlineHistoryPage(sourceId: string, value: unknown): ProviderPlaybackHistoryPage {
+export function parseOnlineHistoryPage(sourceId: string, value: unknown, baseUrl: string): ProviderPlaybackHistoryPage {
   const data = record(value)
   const list = Array.isArray(data.list) ? data.list : []
   const items = list.slice(0, 100).flatMap((raw): MediaItem[] => {
-    const item = parseOnlineHistoryRecord(raw)
+    const item = parseOnlineHistoryRecord(raw, baseUrl)
     if (!item)
       return []
     const root = onlineWorkToMediaItem(sourceId, item.libraryId, item.work)
@@ -280,7 +281,7 @@ export function parseOnlineHistoryPage(sourceId: string, value: unknown): Provid
 }
 
 export function onlineLibraryToMediaLibrary(sourceId: string, item: OnlineLibrarySummary, serverBaseUrl: string): MediaLibrary {
-  const artworkUrl = resolveLibraryArtworkURL(serverBaseUrl, item.artworkUrl)
+  const artworkUrl = resolveServerArtworkURL(serverBaseUrl, item.artworkUrl)
   return {
     id: createOnlineLibraryID(item.id),
     sourceId,
@@ -549,26 +550,10 @@ function parseOnlineLibrary(value: unknown): OnlineLibrarySummary | null {
   }
 }
 
-function resolveLibraryArtworkURL(baseUrl: string, value: unknown): string | undefined {
-  const candidate = optionalText(value, MAX_TEXT_LENGTH)
-  if (!candidate)
-    return undefined
-  try {
-    const server = new URL(baseUrl)
-    const resolved = new URL(candidate, `${server.origin}/`)
-    if (resolved.origin !== server.origin || resolved.username || resolved.password || !resolved.pathname.startsWith('/api/v1/assets/'))
-      return undefined
-    return resolved.toString()
-  }
-  catch {
-    return undefined
-  }
-}
-
-function parseOnlineHistoryRecord(value: unknown): OnlineHistoryRecord | null {
+function parseOnlineHistoryRecord(value: unknown, baseUrl: string): OnlineHistoryRecord | null {
   const item = record(value)
   const libraryId = requiredText(item.libraryId ?? item.library_id, 128)
-  const work = parseOnlineWork(item.work)
+  const work = parseOnlineWork(item.work, baseUrl)
   if (!libraryId || !work)
     return null
   return {
@@ -599,13 +584,13 @@ function parseNavigation(value: unknown, baseUrl: string): OnlineNavigationItem 
     nodeToken,
     routeKey,
     refreshable: item.refreshable === true,
-    artworkUrl: resolveLibraryArtworkURL(baseUrl, item.artworkUrl ?? item.artwork_url),
+    artworkUrl: resolveServerArtworkURL(baseUrl, item.artworkUrl ?? item.artwork_url),
     artworkRevision: optionalText(item.artworkRevision ?? item.artwork_revision, 128),
     artworkSource: oneOf(item.artworkSource ?? item.artwork_source, ['generated', 'provider', 'custom', 'fallback'] as const) ?? undefined,
   }
 }
 
-function parseFeedSection(value: unknown): OnlineFeedSection | null {
+function parseFeedSection(value: unknown, baseUrl: string): OnlineFeedSection | null {
   const item = record(value)
   const id = requiredText(item.id, 256)
   const title = requiredText(item.title, 512)
@@ -615,7 +600,7 @@ function parseFeedSection(value: unknown): OnlineFeedSection | null {
   const items = Array.isArray(item.items)
     ? item.items.slice(0, MAX_LIST_ITEMS).flatMap((raw) => {
         const entry = record(raw)
-        const work = parseOnlineWork(entry.work)
+        const work = parseOnlineWork(entry.work, baseUrl)
         return work ? [{ work, actions: parseSiteActions(entry.actions) }] : []
       })
     : []
@@ -750,19 +735,6 @@ function hasControlCharacter(value: string): boolean {
     const code = character.charCodeAt(0)
     return code < 32 && code !== 9 && code !== 10 && code !== 13
   })
-}
-
-function safeArtworkURL(value: unknown): string | undefined {
-  const text = optionalText(value, MAX_TEXT_LENGTH)
-  if (!text)
-    return undefined
-  try {
-    const url = new URL(text)
-    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.toString() : undefined
-  }
-  catch {
-    return undefined
-  }
 }
 
 function boundedNumber(value: unknown, minimum: number, maximum: number): number | undefined {

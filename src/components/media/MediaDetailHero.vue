@@ -1,6 +1,11 @@
 <script setup lang="ts">
-defineProps<{
+import type { ArtworkKind } from '@/services/imageCache'
+import CachedImage from '@/components/media/CachedImage.vue'
+import { artworkURLCacheKey } from '@/services/imageCache'
+
+const props = defineProps<{
   title: string
+  sourceId?: string
   originalTitle?: string
   posterUrl?: string
   backdropUrl?: string
@@ -10,18 +15,24 @@ defineProps<{
 }>()
 
 defineEmits<{ titleLogoError: [url: string] }>()
+
+function cacheKey(url: string, kind: ArtworkKind): string {
+  return artworkURLCacheKey(props.sourceId ?? 'detail', url, kind)
+}
 </script>
 
 <template>
   <section
     class="detail-hero theme-immersive-dark relative overflow-hidden bg-cover bg-center"
-    :style="backdropUrl ? { backgroundImage: `url(${backdropUrl})` } : undefined"
   >
+    <div v-if="backdropUrl" class="absolute inset-0">
+      <CachedImage :cache-key="cacheKey(backdropUrl, 'backdrop')" :src="backdropUrl" :alt="title" class="h-full w-full object-cover object-[center_28%]" loading="lazy" decoding="async" />
+    </div>
     <div class="detail-hero-horizontal-shade pointer-events-none absolute inset-0" />
     <div class="detail-hero-vertical-shade pointer-events-none absolute inset-0" />
     <div class="detail-hero-content relative flex items-end gap-8 px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pl-24 md:pt-24 lg:px-12 lg:pl-28">
       <div class="detail-hero-poster hidden flex-shrink-0 overflow-hidden rounded-[1.55rem] border border-white/12 bg-white/6 shadow-2xl md:block">
-        <img v-if="posterUrl" :src="posterUrl" :alt="title" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async">
+        <CachedImage v-if="posterUrl" :cache-key="cacheKey(posterUrl, 'poster')" :src="posterUrl" :alt="title" class="aspect-[2/3] w-full object-cover" loading="eager" decoding="async" />
         <div v-else class="flex aspect-[2/3] items-center justify-center p-6 text-center text-sm text-white/45">
           {{ title }}
         </div>
@@ -31,15 +42,16 @@ defineEmits<{ titleLogoError: [url: string] }>()
         <p v-if="!titleLogoUrl" class="text-xs uppercase tracking-[0.28em] text-white/42">
           {{ eyebrow || 'OhMyCine Detail' }}
         </p>
-        <img
+        <CachedImage
           v-if="titleLogoUrl"
+          :cache-key="cacheKey(titleLogoUrl, 'logo')"
           :src="titleLogoUrl"
           :alt="title"
           class="max-h-28 max-w-[min(30rem,78vw)] object-contain object-left drop-shadow-2xl"
           loading="eager"
           decoding="async"
           @error="$emit('titleLogoError', titleLogoUrl)"
-        >
+        />
         <h1 :class="titleLogoUrl ? 'sr-only' : 'mt-3 text-3xl font-bold leading-tight drop-shadow-2xl sm:text-4xl lg:text-6xl'">
           {{ title }}
         </h1>

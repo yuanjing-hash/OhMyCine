@@ -2,7 +2,8 @@ import type { ServerCredentialValue } from './credentialStore'
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderCollectionOption, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
-import { tmdbArtworkUrl } from '@/services/scraper/tmdb'
+import { registerServerArtworkSource, unregisterServerArtworkSource } from '@/services/imageCache'
+import { resolveServerArtworkURL } from '@/services/serverArtwork'
 import { getServerAcquisition, getServerDiscoveryDetail } from '@/services/serverDiscovery'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
@@ -90,7 +91,7 @@ interface ServerPersonRecord {
   name: string
   role?: string
   character?: string
-  profile_path?: string
+  profile_url?: string
 }
 
 interface ServerItemRecord {
@@ -112,9 +113,9 @@ interface ServerItemRecord {
   people?: ServerPersonRecord[]
   tmdb_id?: number
   imdb_id?: string
-  poster_path?: string
-  backdrop_path?: string
-  still_paths?: string[]
+  poster_url?: string
+  backdrop_url?: string
+  still_urls?: string[]
   work_identity: ServerIdentityRecord
   file_count: number
   season_count: number
@@ -135,10 +136,10 @@ interface ServerVersionRecord {
   season?: number
   episode?: number
   overview?: string
-  still_path?: string
-  poster_path?: string
-  backdrop_path?: string
-  episode_still_path?: string
+  still_url?: string
+  poster_url?: string
+  backdrop_url?: string
+  episode_still_url?: string
   air_date?: string
   runtime_minutes?: number
   rating?: number
@@ -177,8 +178,8 @@ interface ServerCollectionRecord {
   kind: 'collection' | 'playlist'
   source: 'tmdb' | 'manual'
   itemCount: number
-  posterPath?: string
-  backdropPath?: string
+  posterUrl?: string
+  backdropUrl?: string
 }
 
 interface ServerOverviewSectionRecord {
@@ -296,6 +297,8 @@ export class ServerDataSource implements DataSource {
     this.credential = this.credentialRef ? await this.readCredential(this.credentialRef) : null
     this.capabilities = new Set(readServerExtra(config).capabilities ?? [])
     this.connected = Boolean(this.baseUrl && this.credential)
+    if (this.credential)
+      registerServerArtworkSource(this.id, this.baseUrl, this.credential.accessToken)
   }
 
   async test(): Promise<boolean> {
@@ -397,19 +400,15 @@ export class ServerDataSource implements DataSource {
     return this.request('/api/v1/player/discovery/follows', 'POST', payload)
   }
 
-  async loadDiscoveryArtwork(reference: string): Promise<string | undefined> {
+  discoveryArtworkURL(reference: string): string | undefined {
     const route = reference.trim()
-    if (!/^\/api\/v1\/discovery\/images\/(?:tmdb|douban)\/[\w-]{1,4096}$/.test(route))
+    if (!/^\/api\/v1\/(?:player\/)?discovery\/images\/(?:tmdb|douban)\/[\w-]{1,4096}$/.test(route))
       return undefined
-    const credential = await this.ensureCredential()
-    const path = route.replace('/api/v1/discovery/images/', '/api/v1/player/discovery/images/')
-    const response = await invoke<{ mimeType: string, dataBase64: string }>('server_request_blob', { request: { baseUrl: this.baseUrl, method: 'GET', path, accessToken: credential.accessToken } })
-    if (!/^image\/(?:jpeg|png|webp|avif)$/.test(response.mimeType) || !response.dataBase64)
-      return undefined
-    return `data:${response.mimeType};base64,${response.dataBase64}`
+    return this.artwork(route.replace('/api/v1/discovery/images/', '/api/v1/player/discovery/images/'))
   }
 
   destroy(): void {
+    unregisterServerArtworkSource(this.id, this.credential?.accessToken)
     this.mediaChangeWatchGeneration += 1
     this.credential = null
     this.connected = false
@@ -478,7 +477,7 @@ export class ServerDataSource implements DataSource {
       return navigation.map(item => onlineNavigationToMediaItem(this.id, online.libraryId, item))
     }
     if (online?.kind === 'feed') {
-      const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/feeds/${encodeURIComponent(online.routeKey)}`))
+      const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(online.libraryId)}/feeds/${encodeURIComponent(online.routeKey)}`), this.baseUrl)
       return sections.flatMap(section => section.items.map(item => ({
         ...onlineWorkToMediaItem(this.id, online.libraryId, item.work),
         siteActions: item.actions,
@@ -517,8 +516,8 @@ export class ServerDataSource implements DataSource {
           libraryId: work.libraryId,
           name: season === 0 ? '特别篇' : `第 ${season} 季`,
           type: 'season' as const,
-          posterUrl: artwork(detail.item.poster_path, 'w500'),
-          backdropUrl: artwork(detail.item.backdrop_path, 'w1280'),
+          posterUrl: this.artwork(detail.item.poster_url),
+          backdropUrl: this.artwork(detail.item.backdrop_url),
           path: '',
           seasonNumber: season,
           seriesName: detail.item.title,
@@ -540,7 +539,7 @@ export class ServerDataSource implements DataSource {
       ? (await Promise.all(onlineLibraries.filter(item => item.available).slice(0, 8).flatMap(library =>
           library.homeContributions.slice(0, 4).map(async (routeKey) => {
             try {
-              const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/feeds/${encodeURIComponent(routeKey)}`))
+              const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/feeds/${encodeURIComponent(routeKey)}`), this.baseUrl)
               return onlineSectionsToHomeSections(this.id, library.id, sections.filter(section => section.homeEligible), routeKey, library.providerLabel)
             }
             catch {
@@ -548,7 +547,7 @@ export class ServerDataSource implements DataSource {
             }
           }),
         ))).flat()
-      : parseOnlineHomeContributions(contributionResponse).flatMap((contribution) => {
+      : parseOnlineHomeContributions(contributionResponse, this.baseUrl).flatMap((contribution) => {
           if (contribution.errorCode)
             return [onlineContributionErrorToHomeSection(this.id, contribution)]
           const eligible = contribution.sections.filter(section => section.homeEligible)
@@ -587,7 +586,7 @@ export class ServerDataSource implements DataSource {
       .map(parseItem)
       .filter((item): item is ServerItemRecord => item != null)
       .map(item => this.mapItem(item))
-    const mappedHistory = (section: ServerOverviewSectionRecord) => mapServerHistoryItems(this.id, section.list)
+    const mappedHistory = (section: ServerOverviewSectionRecord) => mapServerHistoryItems(this.id, section.list, this.baseUrl)
     const mappedCollections = (section: ServerOverviewSectionRecord) => section.list
       .map(parseCollectionRecord)
       .filter((item): item is ServerCollectionRecord => item != null)
@@ -656,7 +655,7 @@ export class ServerDataSource implements DataSource {
       ),
       this.onlineLibraries().catch(() => []),
     ])
-    const parsed = parseOnlineFeedSections(sections)
+    const parsed = parseOnlineFeedSections(sections, this.baseUrl)
     const providerLabel = libraries.find(item => item.id === libraryId)?.providerLabel
     return onlineSectionsToHomeSections(this.id, libraryId, parsed.filter(section => section.homeEligible), routeKey, providerLabel)
   }
@@ -673,7 +672,7 @@ export class ServerDataSource implements DataSource {
     const physicalItems = arrayRecords(physicalData.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => this.mapItem(item))
     const onlineItems = (await Promise.all(onlineLibraries.filter(item => item.available && item.capabilities.includes('site.search')).slice(0, 8).map(async (library) => {
       try {
-        const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/search?q=${encodeURIComponent(query)}`))
+        const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/search?q=${encodeURIComponent(query)}`), this.baseUrl)
         return sections.flatMap(section => section.items.map(item => onlineWorkToMediaItem(this.id, library.id, item.work)))
       }
       catch {
@@ -748,11 +747,9 @@ export class ServerDataSource implements DataSource {
         providerMediaSourceId: target.mediaSourceId,
         exactIdentity: target.exactIdentity,
       } satisfies MediaSourceOption))
-    const stillPaths = detail.item.still_paths?.length
-      ? detail.item.still_paths
-      : detail.item.backdrop_path
-        ? [detail.item.backdrop_path]
-        : []
+    const stillUrls = detail.item.still_urls?.length
+      ? detail.item.still_urls
+      : detail.item.backdrop_url ? [detail.item.backdrop_url] : []
     return {
       ...item,
       id,
@@ -767,11 +764,11 @@ export class ServerDataSource implements DataSource {
         name: person.name,
         role: person.role,
         character: person.character,
-        imageUrl: artwork(person.profile_path, 'w500'),
+        imageUrl: this.artwork(person.profile_url),
       })),
       imdbId: detail.item.imdb_id,
       tmdbId: detail.item.tmdb_id,
-      stills: stillPaths.map(path => artwork(path, 'w1280')).filter((value): value is string => Boolean(value)),
+      stills: stillUrls.map(url => this.artwork(url)).filter((value): value is string => Boolean(value)),
       mediaSources: [...ownSources, ...alternateSources],
       children: versions.map(version => this.mapVersion(detail.item, version, work)),
     }
@@ -890,11 +887,11 @@ export class ServerDataSource implements DataSource {
       if (request.cursor)
         parameters.set('cursor', request.cursor)
       parameters.set('page_size', String(Math.max(1, Math.min(100, request.limit ?? 24))))
-      return parseOnlineHistoryPage(this.id, await this.request(`/api/v1/player/online-history?${parameters.toString()}`))
+      return parseOnlineHistoryPage(this.id, await this.request(`/api/v1/player/online-history?${parameters.toString()}`), this.baseUrl)
     }
     const page = request.cursor && /^\d{1,6}$/.test(request.cursor) ? Math.max(1, Number.parseInt(request.cursor, 10)) : 1
     const pageSize = Math.max(1, Math.min(100, request.limit ?? 24))
-    return parseServerHistoryPage(this.id, await this.request(`/api/v1/player/history?page=${page}&page_size=${pageSize}&source_kind=server`), page)
+    return parseServerHistoryPage(this.id, await this.request(`/api/v1/player/history?page=${page}&page_size=${pageSize}&source_kind=server`), page, this.baseUrl)
   }
 
   async setFavorite(itemId: string, favorite: boolean): Promise<void> {
@@ -998,8 +995,8 @@ export class ServerDataSource implements DataSource {
       originType: 'server',
       name: collection.name,
       type: 'folder',
-      posterUrl: artwork(collection.posterPath, 'w500'),
-      backdropUrl: artwork(collection.backdropPath ?? collection.posterPath, 'w1280'),
+      posterUrl: this.artwork(collection.posterUrl),
+      backdropUrl: this.artwork(collection.backdropUrl ?? collection.posterUrl),
       displaySubtitle: `${collection.itemCount} 部影片`,
       path: '',
     }
@@ -1128,7 +1125,7 @@ export class ServerDataSource implements DataSource {
   }
 
   private async onlineWork(libraryID: string, workID: string) {
-    const work = parseOnlineWork(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(libraryID)}/items/${encodeURIComponent(workID)}`))
+    const work = parseOnlineWork(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(libraryID)}/items/${encodeURIComponent(workID)}`), this.baseUrl)
     if (!work)
       throw new Error('Server 返回的在线媒体详情无效。')
     return work
@@ -1144,8 +1141,8 @@ export class ServerDataSource implements DataSource {
       name: item.title,
       originalTitle: item.original_title,
       type: item.kind,
-      posterUrl: artwork(item.poster_path, 'w500'),
-      backdropUrl: artwork(item.backdrop_path, 'w1280'),
+      posterUrl: this.artwork(item.poster_url),
+      backdropUrl: this.artwork(item.backdrop_url),
       year: item.release_year,
       rating: item.rating,
       overview: item.overview,
@@ -1162,7 +1159,7 @@ export class ServerDataSource implements DataSource {
   private mapVersion(item: ServerItemRecord, version: ServerVersionRecord, work: WorkItemID): MediaItem {
     const id = version.item_token ?? createEntryItemID(work.libraryId, work.workId, version.id)
     const isEpisode = item.kind === 'series'
-    const episodeArtwork = isEpisode ? artwork(version.episode_still_path ?? version.still_path, 'w1280') : undefined
+    const episodeArtwork = isEpisode ? this.artwork(version.episode_still_url ?? version.still_url) : undefined
     const runtimeMinutes = isEpisode ? version.runtime_minutes : item.runtime_minutes
     return {
       id,
@@ -1172,8 +1169,8 @@ export class ServerDataSource implements DataSource {
       name: version.title,
       originalTitle: isEpisode ? undefined : item.original_title,
       type: isEpisode ? 'episode' : 'movie',
-      posterUrl: artwork(version.poster_path ?? item.poster_path, 'w500'),
-      backdropUrl: artwork(version.backdrop_path ?? item.backdrop_path, 'w1280'),
+      posterUrl: this.artwork(version.poster_url ?? item.poster_url),
+      backdropUrl: this.artwork(version.backdrop_url ?? item.backdrop_url),
       episodeStillUrl: episodeArtwork,
       year: item.release_year,
       rating: isEpisode ? version.rating : item.rating,
@@ -1251,6 +1248,10 @@ export class ServerDataSource implements DataSource {
     }
   }
 
+  private artwork(value: unknown): string | undefined {
+    return resolveServerArtworkURL(this.baseUrl, value)
+  }
+
   private async ensureCredential(): Promise<ServerCredentialValue> {
     if (this.credential)
       return this.credential
@@ -1258,6 +1259,7 @@ export class ServerDataSource implements DataSource {
       this.credential = await this.readCredential(this.credentialRef)
     if (!this.credential)
       throw new Error('OhMyCine Server 登录凭据不存在，请重新连接。')
+    registerServerArtworkSource(this.id, this.baseUrl, this.credential.accessToken)
     return this.credential
   }
 
@@ -1298,9 +1300,6 @@ export interface ServerPlaybackHistoryChange {
   backdrop_url?: string
   title_logo_url?: string
   episode_still_url?: string
-  poster_path?: string
-  backdrop_path?: string
-  episode_still_path?: string
   position: number
   duration?: number
   completed: boolean
@@ -1362,9 +1361,6 @@ function parsePlaybackHistoryChange(raw: unknown): ServerPlaybackHistoryChange {
     'backdrop_url',
     'title_logo_url',
     'episode_still_url',
-    'poster_path',
-    'backdrop_path',
-    'episode_still_path',
   ]
   if (optionalStrings.some(key => raw[key] !== undefined && typeof raw[key] !== 'string'))
     throw new Error('Server 播放历史同步响应无效。')
@@ -1598,8 +1594,8 @@ function parseCollectionRecord(value: unknown): ServerCollectionRecord | null {
     kind,
     source: value.source,
     itemCount: boundedNumber(value.item_count, 0, SERVER_MAX_ITEMS) ?? 0,
-    posterPath: optionalImagePath(value.poster_path),
-    backdropPath: optionalImagePath(value.backdrop_path),
+    posterUrl: optionalString(value.poster_url),
+    backdropUrl: optionalString(value.backdrop_url),
   }
 }
 
@@ -1790,9 +1786,9 @@ function parseItem(value: unknown): ServerItemRecord | null {
     people: personList(value.people, 100),
     tmdb_id: boundedNumber(value.tmdb_id, 1, Number.MAX_SAFE_INTEGER),
     imdb_id: optionalIMDbID(value.imdb_id),
-    poster_path: optionalImagePath(value.poster_path),
-    backdrop_path: optionalImagePath(value.backdrop_path),
-    still_paths: imagePathList(value.still_paths, 8),
+    poster_url: optionalString(value.poster_url),
+    backdrop_url: optionalString(value.backdrop_url),
+    still_urls: stringList(value.still_urls, 8),
     work_identity: {
       scheme: identity.scheme,
       media_type: identity.media_type,
@@ -1864,10 +1860,10 @@ function parseVersion(value: unknown): ServerVersionRecord | null {
     season: numberValue(value.season),
     episode: numberValue(value.episode),
     overview: optionalString(value.overview),
-    still_path: optionalImagePath(value.still_path),
-    poster_path: optionalImagePath(value.poster_path),
-    backdrop_path: optionalImagePath(value.backdrop_path),
-    episode_still_path: optionalImagePath(value.episode_still_path),
+    still_url: optionalString(value.still_url),
+    poster_url: optionalString(value.poster_url),
+    backdrop_url: optionalString(value.backdrop_url),
+    episode_still_url: optionalString(value.episode_still_url),
     air_date: optionalString(value.air_date),
     runtime_minutes: boundedNumber(value.runtime_minutes, 1, 24 * 60),
     rating: boundedNumber(value.rating, 0, 10),
@@ -1893,27 +1889,6 @@ function arrayRecords(value: unknown): unknown[] {
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
-function artwork(path: string | undefined, size: 'w500' | 'w1280'): string | undefined {
-  const safePath = optionalImagePath(path)
-  return safePath ? tmdbArtworkUrl(safePath, size) : undefined
-}
-
-function resolveServerArtworkURL(baseUrl: string, value: unknown): string | undefined {
-  const candidate = optionalString(value)
-  if (!candidate || candidate.length > 2048)
-    return undefined
-  try {
-    const server = new URL(baseUrl)
-    const resolved = new URL(candidate, `${server.origin}/`)
-    if (resolved.origin !== server.origin || resolved.username || resolved.password || !resolved.pathname.startsWith('/api/v1/assets/'))
-      return undefined
-    return resolved.toString()
-  }
-  catch {
-    return undefined
-  }
-}
-
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== 'string')
     return undefined
@@ -1970,7 +1945,7 @@ function personList(value: unknown, limit: number): ServerPersonRecord[] | undef
       name,
       role: optionalString(entry.role),
       character: optionalString(entry.character),
-      profile_path: optionalImagePath(entry.profile_path),
+      profile_url: optionalString(entry.profile_url),
     })
     if (result.length === limit)
       break
@@ -1983,17 +1958,6 @@ function optionalIMDbID(value: unknown): string | undefined {
   return candidate && /^tt\d{1,30}$/.test(candidate) ? candidate : undefined
 }
 
-function optionalImagePath(value: unknown): string | undefined {
-  const candidate = optionalString(value)
-  return candidate && candidate.startsWith('/') && candidate.length <= 512 && !/[?#\\\r\n]/.test(candidate) && !candidate.includes('..') ? candidate : undefined
-}
-
-function imagePathList(value: unknown, limit: number): string[] | undefined {
-  if (!Array.isArray(value))
-    return undefined
-  const result = [...new Set(value.map(optionalImagePath).filter((entry): entry is string => Boolean(entry)))].slice(0, limit)
-  return result.length ? result : undefined
-}
 function versionAvailable(version: { variants: readonly { id: string, available: boolean }[] }, requestedVariantId?: string): boolean {
   if (requestedVariantId)
     return version.variants.some(variant => variant.id === requestedVariantId && variant.available)
@@ -2046,18 +2010,18 @@ function parseNumericID(value: string | undefined): number | null {
   return parsed > 0 ? parsed : null
 }
 
-function parseServerHistoryPage(sourceId: string, value: unknown, page: number): ProviderPlaybackHistoryPage {
+function parseServerHistoryPage(sourceId: string, value: unknown, page: number, baseUrl: string): ProviderPlaybackHistoryPage {
   const data = recordData(value)
-  const items = mapServerHistoryItems(sourceId, arrayRecords(data.list).slice(0, 100))
+  const items = mapServerHistoryItems(sourceId, arrayRecords(data.list).slice(0, 100), baseUrl)
   const hasMore = data.has_more === true
   return { items, cursor: hasMore ? String(page + 1) : undefined, hasMore }
 }
 
-function mapServerHistoryItems(sourceId: string, values: readonly unknown[]): MediaItem[] {
+function mapServerHistoryItems(sourceId: string, values: readonly unknown[], baseUrl: string): MediaItem[] {
   const items: MediaItem[] = []
   const seenIdentities = new Set<string>()
   for (const value of values) {
-    for (const item of mapServerHistoryItem(sourceId, value)) {
+    for (const item of mapServerHistoryItem(sourceId, value, baseUrl)) {
       if (!item.historyIdentity || seenIdentities.has(item.historyIdentity))
         continue
       seenIdentities.add(item.historyIdentity)
@@ -2068,7 +2032,7 @@ function mapServerHistoryItems(sourceId: string, values: readonly unknown[]): Me
 }
 
 /** Shared Server history projection used by the history page and Server overview sections. */
-export function mapServerHistoryItem(sourceId: string, value: unknown): MediaItem[] {
+export function mapServerHistoryItem(sourceId: string, value: unknown, baseUrl: string): MediaItem[] {
   if (!isRecord(value))
     return []
   const title = optionalString(value.display_title) ?? optionalString(value.series_title) ?? optionalString(value.title)
@@ -2096,10 +2060,10 @@ export function mapServerHistoryItem(sourceId: string, value: unknown): MediaIte
     type,
     historyIdentity,
     displaySubtitle,
-    posterUrl: safeHistoryArtworkURL(value.poster_url) ?? artwork(optionalImagePath(value.poster_path), 'w500'),
-    backdropUrl: safeHistoryArtworkURL(value.backdrop_url) ?? artwork(optionalImagePath(value.backdrop_path), 'w1280'),
-    episodeStillUrl: safeHistoryArtworkURL(value.episode_still_url) ?? artwork(optionalImagePath(value.episode_still_path), 'w1280'),
-    titleLogoUrl: safeHistoryArtworkURL(value.title_logo_url),
+    posterUrl: resolveServerArtworkURL(baseUrl, value.poster_url),
+    backdropUrl: resolveServerArtworkURL(baseUrl, value.backdrop_url),
+    episodeStillUrl: resolveServerArtworkURL(baseUrl, value.episode_still_url),
+    titleLogoUrl: resolveServerArtworkURL(baseUrl, value.title_logo_url),
     duration,
     path: optionalString(value.stream_identity) ?? itemId,
     resumePosition: position,
@@ -2118,25 +2082,6 @@ function episodeDisplaySubtitle(season: number | undefined, episode: number | un
     return title
   const code = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
   return title ? `${code} · ${title}` : code
-}
-
-function safeHistoryArtworkURL(value: unknown): string | undefined {
-  const candidate = optionalString(value)
-  if (!candidate || candidate.length > 2048)
-    return undefined
-  try {
-    const parsed = new URL(candidate)
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
-      return undefined
-    for (const key of parsed.searchParams.keys()) {
-      if (['token', 'key', 'auth', 'signature', 'sig', 'expires'].some(fragment => key.toLowerCase().includes(fragment)))
-        return undefined
-    }
-    return parsed.toString()
-  }
-  catch {
-    return undefined
-  }
 }
 
 function readServerExtra(config: DataSourceConfig): ServerConfigExtra {

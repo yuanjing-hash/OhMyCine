@@ -121,17 +121,14 @@ export interface ServerResourceSearchInput { mediaType: 'movie' | 'tv', tmdbId?:
 
 export async function searchServerDiscovery(source: ServerDataSource, query: string, mediaType: 'all' | 'movie' | 'tv' = 'all'): Promise<ServerDiscoveryWork[]> {
   const data = record(await source.searchDiscoveryMedia(query, mediaType))
-  const works = array(data.items).map(parseWork).filter((item): item is ServerDiscoveryWork => item != null)
-  await hydrateArtwork(source, works, false)
-  return works
+  return array(data.items).map(item => parseWork(item, source)).filter((item): item is ServerDiscoveryWork => item != null)
 }
 
 export async function getServerDiscoveryDetail(source: ServerDataSource, provider: 'tmdb' | 'douban', mediaType: 'movie' | 'tv', providerId: string): Promise<ServerDiscoveryDetail> {
   const data = record(await source.getDiscoveryDetail(provider, mediaType, providerId))
-  const work = parseWork(data.work)
+  const work = parseWork(data.work, source)
   if (!work)
     throw new Error('Server 返回的影视详情无效。')
-  await hydrateArtwork(source, [work], true)
   return {
     work,
     tagline: text(data.tagline),
@@ -295,7 +292,7 @@ export async function getServerDownloadOptions(source: ServerDataSource) {
   return { downloaders, libraries, profiles }
 }
 
-function parseWork(value: unknown): ServerDiscoveryWork | null {
+function parseWork(value: unknown, source: ServerDataSource): ServerDiscoveryWork | null {
   const item = record(value)
   const provider = item.provider === 'tmdb' || item.provider === 'douban' ? item.provider : null
   const mediaType = item.media_type === 'movie' || item.media_type === 'tv' ? item.media_type : null
@@ -303,7 +300,7 @@ function parseWork(value: unknown): ServerDiscoveryWork | null {
   const title = text(item.title)
   if (!provider || !mediaType || !providerId || !title)
     return null
-  return { provider, providerId, mediaType, title, originalTitle: text(item.original_title), year: number(item.year), overview: text(item.overview), rating: number(item.rating), posterUrl: text(item.poster_url), backdropUrl: text(item.backdrop_url), tmdbId: number(item.tmdb_id) }
+  return { provider, providerId, mediaType, title, originalTitle: text(item.original_title), year: number(item.year), overview: text(item.overview), rating: number(item.rating), posterUrl: source.discoveryArtworkURL(text(item.poster_url) ?? ''), backdropUrl: source.discoveryArtworkURL(text(item.backdrop_url) ?? ''), tmdbId: number(item.tmdb_id) }
 }
 
 function parseGroup(value: unknown): ServerResourceGroup | null {
@@ -359,17 +356,6 @@ function parseProgress(value: Record<string, unknown>): ServerSearchProgress {
     siteStatus: text(value.site_status),
     errorCode: text(value.error_code),
   }
-}
-
-async function hydrateArtwork(source: ServerDataSource, works: ServerDiscoveryWork[], includeBackdrop: boolean) {
-  await Promise.all(works.map(async (work) => {
-    const [poster, backdrop] = await Promise.all([
-      work.posterUrl ? source.loadDiscoveryArtwork(work.posterUrl).catch(() => undefined) : undefined,
-      includeBackdrop && work.backdropUrl ? source.loadDiscoveryArtwork(work.backdropUrl).catch(() => undefined) : undefined,
-    ])
-    work.posterUrl = poster
-    work.backdropUrl = backdrop
-  }))
 }
 
 function record(value: unknown): Record<string, unknown> {

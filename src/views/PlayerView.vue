@@ -13,6 +13,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import CachedImage from '@/components/media/CachedImage.vue'
 import BufferingIndicator from '@/components/player/BufferingIndicator.vue'
 import DanmakuOverlay from '@/components/player/DanmakuOverlay.vue'
 import DanmakuSearchDialog from '@/components/player/DanmakuSearchDialog.vue'
@@ -26,6 +27,8 @@ import { searchDanmaku } from '@/services/danmaku/client'
 import { resolveDanmakuMediaIdentity } from '@/services/danmaku/identity'
 import { redactSensitiveText, toSafeErrorMessage } from '@/services/datasource/errors'
 import { resolveCompletedDownload } from '@/services/downloads'
+import { artworkCacheKey } from '@/services/imageCache'
+import { isLocalVideoFileName } from '@/services/localPlaylist'
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
 import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
@@ -36,7 +39,6 @@ import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShort
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
 import { matchPlaybackTrackPreference } from '@/services/playerTrackPreferences'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
-import { isVideoFileName } from '@/services/scraper/pathUtils'
 import { usableStreamVariants } from '@/services/streamVariants'
 import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -123,6 +125,7 @@ const playbackQueue = ref<PlaybackQueueState | null>(null)
 const playbackContextId = ref('')
 const queueSwitchError = ref<string | null>(null)
 const isQueueSwitching = ref(false)
+let autoAdvancedLocalQueueItem = ''
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
 const chromeManuallyHidden = ref(false)
@@ -297,6 +300,8 @@ const currentQueueItem = computed(() => {
   const queue = playbackQueue.value
   return queue ? queue.items[queue.currentIndex] : null
 })
+const currentArtworkSourceId = computed(() => activeSourceId.value || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID)
+const currentArtworkItemId = computed(() => activeItemId.value || currentQueueItem.value?.id || 'current')
 const currentTitleLogoUrl = computed(() => {
   const url = activeTitleLogoUrl.value || currentQueueItem.value?.titleLogoUrl || ''
   return url && !failedTitleLogoUrls.value.has(url) ? url : ''
@@ -838,6 +843,9 @@ async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStre
     if (localDownload)
       return { url: localDownload, mediaSourceId: currentMediaSourceId(), variantId }
   }
+
+  if (sourceId === LOCAL_FILE_SOURCE_ID && currentQueueItem.value?.id === itemId)
+    return { url: currentQueueItem.value.path }
 
   if (locator?.kind === 'localPath' && context?.sourceId === sourceId && context.itemId === itemId)
     return { url: locator.path }
@@ -1692,7 +1700,7 @@ function currentDanmakuFileName(): string {
     if (!candidate || /^[a-z][a-z0-9+.-]*:\/\//i.test(candidate) || candidate.includes('?') || candidate.includes('#'))
       continue
     const fileName = subtitleFileNameFromPath(candidate)
-    if (fileName && isVideoFileName(fileName))
+    if (fileName && isLocalVideoFileName(fileName))
       return fileName
   }
   return ''
@@ -2134,6 +2142,27 @@ watch(
   { immediate: true },
 )
 
+watch(playbackDiagnostics, (diagnostics) => {
+  if (diagnostics?.state !== 'ended' || diagnostics.lastEvent !== 'end-file') {
+    autoAdvancedLocalQueueItem = ''
+    return
+  }
+
+  const queue = playbackQueue.value
+  const item = currentQueueItem.value
+  if (playbackCleanupStarted || isQueueSwitching.value || activeSourceId.value !== LOCAL_FILE_SOURCE_ID
+    || !queue || !item || queue.currentIndex >= queue.items.length - 1 || mediaPath.value !== item.path) {
+    return
+  }
+
+  const key = `${playbackContextId.value}:${item.id}`
+  if (autoAdvancedLocalQueueItem === key)
+    return
+
+  autoAdvancedLocalQueueItem = key
+  void playQueueItemAt(queue.currentIndex + 1)
+})
+
 watch(isPlaying, (playing) => {
   if (playbackCleanupStarted)
     return
@@ -2237,11 +2266,17 @@ async function playQueueItemAt(index: number) {
   queueSwitchError.value = null
   revealChrome()
   try {
-    store.loadConfigs()
-    await store.syncManager()
-    const source = store.getSource(target.sourceId)
-    if (!source)
-      throw new Error('数据源不可用，请检查设置或重新登录。')
+    if (target.sourceId === LOCAL_FILE_SOURCE_ID) {
+      if (!target.path)
+        throw new Error('本地视频路径不可用。')
+    }
+    else {
+      store.loadConfigs()
+      await store.syncManager()
+      const source = store.getSource(target.sourceId)
+      if (!source)
+        throw new Error('数据源不可用，请检查设置或重新登录。')
+    }
 
     if (playbackCleanupStarted)
       return
@@ -2939,6 +2974,7 @@ watch(
       :has-media="hasMedia"
       :video-ready="videoReady"
       :backdrop-url="activeBackdropUrl || currentQueueItem?.backdropUrl || ''"
+      :backdrop-cache-key="artworkCacheKey(currentArtworkSourceId, currentArtworkItemId, 'backdrop')"
       :render-status="renderStatus"
       :render-error="renderError"
       :render-diagnostics="renderDiagnostics"
@@ -3036,15 +3072,17 @@ watch(
           <p class="text-xs uppercase tracking-[0.24em] text-white/38">
             Now Playing
           </p>
-          <img
-            v-if="currentTitleLogoUrl"
-            :src="currentTitleLogoUrl"
-            :alt="mediaTitle"
-            class="mt-2 max-h-14 max-w-[min(22rem,72vw)] object-contain object-left drop-shadow-lg"
-            loading="eager"
-            decoding="async"
-            @error="markTitleLogoFailed(currentTitleLogoUrl)"
-          >
+          <div v-if="currentTitleLogoUrl" class="mt-2 max-h-14 max-w-[min(22rem,72vw)]">
+            <CachedImage
+              :cache-key="artworkCacheKey(currentArtworkSourceId, currentArtworkItemId, 'logo')"
+              :src="currentTitleLogoUrl"
+              :alt="mediaTitle"
+              class="max-h-14 max-w-full object-contain object-left drop-shadow-lg"
+              loading="eager"
+              decoding="async"
+              @error="markTitleLogoFailed(currentTitleLogoUrl)"
+            />
+          </div>
           <h1 :class="currentTitleLogoUrl ? 'mt-2 truncate text-sm font-semibold text-white/72 drop-shadow-lg' : 'mt-2 truncate text-2xl font-bold text-white drop-shadow-lg'">
             {{ mediaTitle }}
           </h1>
@@ -3146,6 +3184,7 @@ watch(
         ref="playerControlsRef"
         :title="mediaTitle"
         :title-logo-url="currentTitleLogoUrl"
+        :title-logo-cache-key="artworkCacheKey(currentArtworkSourceId, currentArtworkItemId, 'logo')"
         :is-playing="isPlaying"
         :is-buffering="isBuffering"
         :current-time="currentTime"

@@ -467,7 +467,7 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <template v-else-if="detail">
-      <MediaDetailHero :title="detail.work.title" :original-title="detail.work.originalTitle" :poster-url="detail.work.posterUrl" :backdrop-url="detail.work.backdropUrl" :overview="detail.work.overview || '暂无简介。'" eyebrow="OhMyCine Server Discovery">
+      <MediaDetailHero :source-id="sourceId" :title="detail.work.title" :original-title="detail.work.originalTitle" :poster-url="detail.work.posterUrl" :backdrop-url="detail.work.backdropUrl" :overview="detail.work.overview || '暂无简介。'" eyebrow="OhMyCine Server Discovery">
         <template #meta>
           <span class="rounded-full bg-white/8 px-3 py-1">{{ mediaType === 'tv' ? '电视剧' : '电影' }}</span>
           <span v-if="detail.work.rating" class="rounded-full bg-yellow-400/16 px-3 py-1 text-yellow-100">★ {{ detail.work.rating.toFixed(1) }}</span>

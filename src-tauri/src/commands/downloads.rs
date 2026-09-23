@@ -1,6 +1,6 @@
 #[cfg(target_os = "android")]
 use crate::commands::download_android;
-use crate::commands::{credential, local_file, provider_file, settings};
+use crate::commands::{credential, provider_file, settings};
 use crate::storage;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use fs2::available_space;
@@ -17,7 +17,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,6 @@ const DOWNLOAD_SETTINGS_KEY: &str = "ohmycine-download-settings-v2";
 const PROGRESS_EVENT: &str = "player-download:progress";
 const REMOVED_EVENT: &str = "player-download:removed";
 const MAX_REDIRECTS: usize = 5;
-const COPY_BUFFER_BYTES: usize = 256 * 1024;
 const MAX_OFFLINE_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OFFLINE_SUBTITLE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OFFLINE_DANMAKU_BYTES: usize = 16 * 1024 * 1024;
@@ -355,13 +354,6 @@ struct PersistedDataSource {
     url: String,
     #[serde(default)]
     extra: HashMap<String, Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AlistCredentialEnvelope {
-    version: u8,
-    provider: String,
-    token: String,
 }
 
 struct ResolvedRemote {
@@ -1166,18 +1158,80 @@ pub fn player_download_retry(
 pub fn recover_interrupted_downloads(app: &AppHandle) -> Result<(), String> {
     initialize_offline_storage(app)?;
     let storage = DownloadStorage::open(app)?;
-    storage.recover_requested_controls(app)?;
-    storage.recover_interrupted()?;
-    #[cfg(not(target_os = "android"))]
-    storage.retry_cleanup()?;
+    purge_legacy_unfinished_downloads(app, &storage)?;
     #[cfg(target_os = "android")]
     {
+        // SAF deletion needs the Android plugin. Finish old partial-file cleanup before
+        // restoring or dispatching any surviving task from the native queue.
+        drop(storage);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = retry_android_cleanup(&app).await;
+            if let Err(error) = retry_android_cleanup(&app).await {
+                log::warn!("Android download cleanup will retry at next startup: {error}");
+                return;
+            }
+            let result = (|| {
+                let storage = DownloadStorage::open(&app)?;
+                storage.recover_requested_controls(&app)?;
+                storage.recover_interrupted()?;
+                schedule_queued(&app)
+            })();
+            if let Err(error) = result {
+                log::warn!("Android download queue recovery will retry at next startup: {error}");
+            }
         });
+        Ok(())
     }
-    schedule_queued(app)
+    #[cfg(not(target_os = "android"))]
+    {
+        storage.retry_cleanup()?;
+        storage.recover_requested_controls(app)?;
+        storage.recover_interrupted()?;
+        schedule_queued(app)
+    }
+}
+
+fn purge_legacy_unfinished_downloads(
+    app: &AppHandle,
+    storage: &DownloadStorage,
+) -> Result<(), String> {
+    for task in legacy_unfinished_download_tasks(storage)? {
+        cleanup_cancelled_task(app, storage, &task)?;
+    }
+    mark_legacy_completed_attachments_partial(storage)
+}
+
+fn legacy_unfinished_download_tasks(
+    storage: &DownloadStorage,
+) -> Result<Vec<DownloadTask>, String> {
+    let mut statement = storage
+        .conn
+        .prepare(&format!(
+            "SELECT {TASK_COLUMNS} FROM download_tasks
+             WHERE source_type NOT IN ('server','emby','jellyfin')
+               AND status <> 'completed'
+             ORDER BY created_at ASC"
+        ))
+        .map_err(|_| "Failed to inspect legacy download tasks.".to_string())?;
+    let tasks = statement
+        .query_map([], map_task)
+        .map_err(|_| "Failed to inspect legacy download tasks.".to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "Failed to inspect legacy download tasks.".to_string())?;
+    Ok(tasks)
+}
+
+fn mark_legacy_completed_attachments_partial(storage: &DownloadStorage) -> Result<(), String> {
+    storage
+        .conn
+        .execute(
+            "UPDATE download_tasks SET attachment_state='partial'
+             WHERE source_type NOT IN ('server','emby','jellyfin')
+               AND status='completed' AND attachment_state IN ('pending','syncing')",
+            [],
+        )
+        .map_err(|_| "Failed to preserve legacy offline attachments.".to_string())?;
+    Ok(())
 }
 
 fn schedule_queued(app: &AppHandle) -> Result<(), String> {
@@ -1374,8 +1428,7 @@ async fn execute_task(
 
     #[cfg(not(target_os = "android"))]
     match task.source_type.as_str() {
-        "local" => execute_local_copy(app, task, &partial_path, control).await?,
-        "alist" | "clouddrive2" | "webdav" | "123" | "quark" | "emby" | "jellyfin" | "server" => {
+        "emby" | "jellyfin" | "server" => {
             execute_remote_download(app, task, &partial_path, control).await?
         }
         _ => {
@@ -1427,54 +1480,7 @@ async fn execute_android_task(
     }
     let mut offset = document.existing_bytes;
     match task.source_type.as_str() {
-        "local" => {
-            let config = resolve_datasource(app, &task.source_id, "local")?;
-            let root = extra_string(&config, "rootPath")?;
-            let mut truncate = offset == 0;
-            let mut resume_pending = offset > 0;
-            loop {
-                ensure_android_transfer_running(app, task, control).await?;
-                let (chunk, total, entity_hash) = download_android::read_local_chunk(
-                    app,
-                    &root,
-                    &task.item_id,
-                    offset,
-                    COPY_BUFFER_BYTES,
-                )
-                .await?;
-                if resume_pending
-                    && (storage.entity_hash(&task.id)?.as_deref() != Some(&entity_hash)
-                        || task
-                            .total_bytes
-                            .is_some_and(|expected| Some(expected) != total))
-                {
-                    offset = 0;
-                    truncate = true;
-                    resume_pending = false;
-                    continue;
-                }
-                resume_pending = false;
-                if chunk.is_empty() {
-                    break;
-                }
-                acquire_global_budget_async(app, chunk.len() as u64, control).await?;
-                download_android::write_chunk(app, &document.partial_uri, &chunk, truncate).await?;
-                truncate = false;
-                offset = offset.saturating_add(chunk.len() as u64);
-                storage.set_entity_and_progress(&task.id, Some(&entity_hash), offset, total)?;
-                emit_task(app, &storage, &task.id);
-                download_android::notify(
-                    app,
-                    &task.id,
-                    &task.display_name,
-                    offset,
-                    total,
-                    "running",
-                )
-                .await;
-            }
-        }
-        "alist" | "clouddrive2" | "webdav" | "123" | "quark" | "emby" | "jellyfin" | "server" => {
+        "emby" | "jellyfin" | "server" => {
             let resolved = resolve_task_remote(app, task).await?;
             let stored_entity = storage.entity_hash(&task.id)?;
             let mut response = request_media(&resolved, offset).await?;
@@ -1552,107 +1558,6 @@ async fn ensure_android_transfer_running(
         .await?;
     }
     Err("Download stopped by user request.".to_string())
-}
-
-async fn execute_local_copy(
-    app: &AppHandle,
-    task: &DownloadTask,
-    partial_path: &Path,
-    control: &Arc<AtomicU8>,
-) -> Result<(), String> {
-    let config = resolve_datasource(app, &task.source_id, "local")?;
-    let root_path = extra_string(&config, "rootPath")?;
-    let source = local_file::resolve_local_download_source(&root_path, &task.item_id)?;
-    let source_meta =
-        fs::metadata(&source).map_err(|_| "The local source file is unavailable.".to_string())?;
-    let total = source_meta.len();
-    let fingerprint = local_entity_fingerprint(&source_meta);
-    let storage = DownloadStorage::open(app)?;
-    let stored_fingerprint = storage.entity_hash(&task.id)?;
-    let mut offset = partial_len(partial_path);
-    if offset > 0 && (offset > total || stored_fingerprint.as_deref() != Some(&fingerprint)) {
-        remove_partial(partial_path)?;
-        offset = 0;
-    }
-    ensure_space(
-        partial_path
-            .parent()
-            .ok_or_else(|| "Invalid destination path.".to_string())?,
-        total.saturating_sub(offset),
-    )?;
-    storage.set_entity_and_progress(&task.id, Some(&fingerprint), offset, Some(total))?;
-
-    let source_path = source.clone();
-    let partial = partial_path.to_path_buf();
-    let task_id = task.id.clone();
-    let app = app.clone();
-    if control.load(Ordering::Acquire) != CONTROL_RUNNING {
-        return Err("Download stopped by user request.".to_string());
-    }
-    let control = control.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        copy_file_streaming(
-            &app,
-            &task_id,
-            &source_path,
-            &partial,
-            offset,
-            total,
-            &control,
-        )
-    })
-    .await
-    .map_err(|_| "The local copy worker stopped unexpectedly.".to_string())??;
-    Ok(())
-}
-
-fn copy_file_streaming(
-    app: &AppHandle,
-    task_id: &str,
-    source_path: &Path,
-    partial_path: &Path,
-    offset: u64,
-    total: u64,
-    control: &AtomicU8,
-) -> Result<(), String> {
-    let mut source = fs::File::open(source_path)
-        .map_err(|_| "Failed to read the local source file.".to_string())?;
-    source
-        .seek(SeekFrom::Start(offset))
-        .map_err(|_| "Failed to resume the local copy.".to_string())?;
-    let mut target = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(partial_path)
-        .map_err(|_| "Failed to open the partial download file.".to_string())?;
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    let mut downloaded = offset;
-    let mut last_emit = Instant::now();
-    loop {
-        if control.load(Ordering::Acquire) != CONTROL_RUNNING {
-            return Err("Download stopped by user request.".to_string());
-        }
-        let read = source
-            .read(&mut buffer)
-            .map_err(|_| "Failed while reading the local source file.".to_string())?;
-        if read == 0 {
-            break;
-        }
-        acquire_global_budget_blocking(app, read as u64, control)?;
-        target
-            .write_all(&buffer[..read])
-            .map_err(|_| "Failed while writing the partial download file.".to_string())?;
-        downloaded = downloaded.saturating_add(read as u64);
-        if last_emit.elapsed() >= Duration::from_millis(250) {
-            persist_progress(app, task_id, downloaded, Some(total));
-            last_emit = Instant::now();
-        }
-    }
-    target
-        .sync_all()
-        .map_err(|_| "Failed to flush the copied file.".to_string())?;
-    persist_progress(app, task_id, downloaded, Some(total));
-    Ok(())
 }
 
 async fn execute_remote_download(
@@ -2234,26 +2139,6 @@ fn reserve_global_budget(app: &AppHandle, bytes: u64) -> (Option<u64>, Duration)
     (rate, wait)
 }
 
-fn acquire_global_budget_blocking(
-    app: &AppHandle,
-    bytes: u64,
-    control: &AtomicU8,
-) -> Result<(), String> {
-    let (reserved_rate, mut remaining) = reserve_global_budget(app, bytes);
-    while !remaining.is_zero() {
-        if control.load(Ordering::Acquire) != CONTROL_RUNNING {
-            return Err("Download stopped by user request.".to_string());
-        }
-        if global_rate_limit(app) != reserved_rate {
-            return Ok(());
-        }
-        let slice = remaining.min(Duration::from_millis(100));
-        std::thread::sleep(slice);
-        remaining = remaining.saturating_sub(slice);
-    }
-    Ok(())
-}
-
 async fn acquire_global_budget_async(
     app: &AppHandle,
     bytes: u64,
@@ -2278,9 +2163,6 @@ async fn resolve_task_remote(
     app: &AppHandle,
     task: &DownloadTask,
 ) -> Result<ResolvedRemote, String> {
-    if task.source_type == "alist" {
-        return resolve_alist(app, &task.source_id, &task.item_id).await;
-    }
     if task.source_type == "server" {
         return resolve_server_media(app, task).await;
     }
@@ -2338,74 +2220,6 @@ async fn resolve_server_media(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {}", envelope.access_token.trim()))
             .map_err(|_| "Stored OhMyCine Server credentials are invalid.".to_string())?,
-    );
-    Ok(ResolvedRemote { url, headers })
-}
-
-async fn resolve_alist(
-    app: &AppHandle,
-    source_id: &str,
-    item_id: &str,
-) -> Result<ResolvedRemote, String> {
-    let config = resolve_datasource(app, source_id, "alist")?;
-    let base = validate_http_url(&config.url)?;
-    if base.query().is_some() || base.fragment().is_some() {
-        return Err("The OpenList/Alist base address is invalid.".to_string());
-    }
-    let root = extra_string(&config, "rootPath")?;
-    validate_provider_item_path(item_id, &root)?;
-    let credential_ref = extra_string(&config, "credentialRef")?;
-    let raw = credential::read_credential_value(app, &credential_ref)
-        .await?
-        .ok_or_else(|| "OpenList/Alist credentials are missing.".to_string())?;
-    let envelope: AlistCredentialEnvelope = serde_json::from_str(&raw)
-        .map_err(|_| "Stored OpenList/Alist credentials are invalid.".to_string())?;
-    if envelope.version != 1 || envelope.provider != "alist" || envelope.token.trim().is_empty() {
-        return Err("Stored OpenList/Alist credentials are invalid.".to_string());
-    }
-
-    let client = controlled_client()?;
-    let endpoint = base
-        .join("api/fs/get")
-        .map_err(|_| "The OpenList/Alist base address is invalid.".to_string())?;
-    let response = client
-        .post(endpoint)
-        .header(AUTHORIZATION, &envelope.token)
-        .json(&serde_json::json!({ "path": item_id }))
-        .send()
-        .await
-        .map_err(|_| "OpenList/Alist could not resolve this media item.".to_string())?;
-    if !response.status().is_success() {
-        return Err("OpenList/Alist could not resolve this media item.".to_string());
-    }
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|_| "OpenList/Alist returned an invalid media response.".to_string())?;
-    if value.get("code").and_then(Value::as_i64).unwrap_or(-1) != 200 {
-        return Err("OpenList/Alist could not resolve this media item.".to_string());
-    }
-    let data = value
-        .get("data")
-        .ok_or_else(|| "OpenList/Alist returned an invalid media response.".to_string())?;
-    if data.get("is_dir").and_then(Value::as_bool).unwrap_or(false) {
-        return Err("OpenList/Alist folders cannot be downloaded as a file.".to_string());
-    }
-    let sign = data
-        .get("sign")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
-    let mut url = base
-        .join(&format!("d{}", encode_provider_path(item_id)))
-        .map_err(|_| "OpenList/Alist returned an invalid media response.".to_string())?;
-    if let Some(sign) = sign {
-        url.query_pairs_mut().append_pair("sign", sign);
-    }
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&envelope.token)
-            .map_err(|_| "Stored OpenList/Alist credentials are invalid.".to_string())?,
     );
     Ok(ResolvedRemote { url, headers })
 }
@@ -2695,6 +2509,7 @@ fn attachment_extension(
                 Some("image/jpeg") => Ok("jpg"),
                 Some("image/png") => Ok("png"),
                 Some("image/webp") => Ok("webp"),
+                Some("image/avif") => Ok("avif"),
                 Some("image/gif") => Ok("gif"),
                 _ => Err("Offline artwork is invalid.".to_string()),
             }
@@ -2809,18 +2624,7 @@ fn validate_media_content_type(response: &Response) -> Result<(), String> {
 fn validate_enqueue_request(request: &DownloadEnqueueRequest) -> Result<(), String> {
     validate_stable_id(&request.source_id, "Invalid data source identity.")?;
     validate_stable_id(&request.item_id, "Invalid media identity.")?;
-    if !matches!(
-        request.source_type.as_str(),
-        "local"
-            | "alist"
-            | "clouddrive2"
-            | "webdav"
-            | "123"
-            | "quark"
-            | "emby"
-            | "jellyfin"
-            | "server"
-    ) {
+    if !matches!(request.source_type.as_str(), "emby" | "jellyfin" | "server") {
         return Err(
             "This data source does not have a secure native download resolver.".to_string(),
         );
@@ -3007,59 +2811,6 @@ fn extra_string(config: &PersistedDataSource, key: &str) -> Result<String, Strin
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "The data source configuration is incomplete.".to_string())
-}
-
-fn validate_provider_item_path(item_id: &str, root: &str) -> Result<(), String> {
-    let item = normalized_provider_path(item_id)?;
-    let root = normalized_provider_path(root)?;
-    if root != "/" && item != root && !item.starts_with(&format!("{root}/")) {
-        return Err("The media item is outside the configured source root.".to_string());
-    }
-    Ok(())
-}
-
-fn normalized_provider_path(value: &str) -> Result<String, String> {
-    let normalized = value.trim().replace('\\', "/");
-    if !normalized.starts_with('/')
-        || normalized.contains('?')
-        || normalized.contains('#')
-        || normalized.as_bytes().contains(&0)
-    {
-        return Err("Invalid provider media identity.".to_string());
-    }
-    if normalized.split('/').any(|segment| {
-        segment == "."
-            || segment == ".."
-            || segment.eq_ignore_ascii_case("%2e")
-            || segment.to_ascii_lowercase().contains("%2e%2e")
-    }) {
-        return Err("Invalid provider media identity.".to_string());
-    }
-    Ok(if normalized.len() > 1 {
-        normalized.trim_end_matches('/').to_string()
-    } else {
-        normalized
-    })
-}
-
-fn encode_provider_path(path: &str) -> String {
-    path.split('/')
-        .map(percent_encode_segment)
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn percent_encode_segment(segment: &str) -> String {
-    segment
-        .as_bytes()
-        .iter()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (*byte as char).to_string()
-            }
-            value => format!("%{value:02X}"),
-        })
-        .collect()
 }
 
 fn validate_http_url(value: &str) -> Result<Url, String> {
@@ -3385,7 +3136,10 @@ fn cleanup_cancelled_task(
     storage: &DownloadStorage,
     task: &DownloadTask,
 ) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
     let relative_path = format!("{}.partial", task.destination_name);
+    #[cfg(target_os = "android")]
+    let relative_path = format!(".{}.ohmycine-part", task.destination_name);
     #[cfg(not(target_os = "android"))]
     let cleanup = try_remove_owned_partial(&task.destination_directory, &relative_path)
         .err()
@@ -5216,6 +4970,66 @@ mod tests {
     }
 
     #[test]
+    fn retired_source_cleanup_selects_only_unfinished_tasks_and_preserves_completed_media() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_download_schema(&conn).unwrap();
+        for (id, source_type, status, attachment_state, created_at) in [
+            ("old-running", "webdav", "running", "none", 1),
+            ("old-paused", "local", "paused", "none", 2),
+            ("old-completed", "quark", "completed", "pending", 3),
+            ("server-running", "server", "running", "none", 4),
+            ("emby-completed", "emby", "completed", "pending", 5),
+        ] {
+            conn.execute(
+                "INSERT INTO download_tasks
+                 (id,source_id,source_type,item_id,display_name,media_type,
+                  destination_directory,destination_name,status,created_at,updated_at,attachment_state)
+                 VALUES (?1,'source',?2,'item','Movie','movie','C:/Downloads','Movie.mkv',?3,?4,?4,?5)",
+                params![id, source_type, status, created_at, attachment_state],
+            )
+            .unwrap();
+        }
+        let storage = DownloadStorage { conn };
+        let selected = legacy_unfinished_download_tasks(&storage).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old-running", "old-paused"]
+        );
+        mark_legacy_completed_attachments_partial(&storage).unwrap();
+        mark_legacy_completed_attachments_partial(&storage).unwrap();
+        let states = storage
+            .conn
+            .prepare("SELECT id,status,attachment_state FROM download_tasks ORDER BY created_at")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            states[2],
+            ("old-completed".into(), "completed".into(), "partial".into())
+        );
+        assert_eq!(
+            states[4],
+            (
+                "emby-completed".into(),
+                "completed".into(),
+                "pending".into()
+            )
+        );
+        assert_eq!(states.len(), 5);
+    }
+
+    #[test]
     fn migration_is_idempotent_and_preserves_finished_and_paused_tasks() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -5573,12 +5387,6 @@ mod tests {
             validate_enqueue_request(&missing_online_identity).unwrap_err(),
             "This Server online source does not yet expose a safe offline download stream."
         );
-    }
-    #[test]
-    fn provider_paths_must_stay_in_configured_root() {
-        assert!(validate_provider_item_path("/Movies/A.mkv", "/Movies").is_ok());
-        assert!(validate_provider_item_path("/Other/A.mkv", "/Movies").is_err());
-        assert!(validate_provider_item_path("/Movies/../secret", "/Movies").is_err());
     }
     #[test]
     fn download_names_never_create_path_segments() {

@@ -173,7 +173,6 @@ interface EmbyItemRecord {
   readonly ProviderIds?: Record<string, string>
   readonly MediaStreams?: EmbyMediaStreamRecord[]
   readonly MediaSources?: EmbyMediaSourceRecord[]
-  readonly CanDelete?: boolean
   readonly UserData?: {
     readonly Played?: boolean
     readonly IsFavorite?: boolean
@@ -816,22 +815,6 @@ export class EmbyDataSource implements DataSource {
         active.push([itemId, override])
     }
     return active
-  }
-
-  async deleteMedia(itemId: string): Promise<void> {
-    const id = itemId.trim()
-    if (!id || id.includes('/') || id.includes('\\') || id.length > 256)
-      throw new Error('Emby 媒体标识无效。')
-    await this.request(`/Items/${encodeURIComponent(id)}`, {}, 'DELETE')
-    this.cache.clear()
-  }
-
-  async canDeleteMedia(itemId: string): Promise<boolean> {
-    const id = itemId.trim()
-    if (!id || id.includes('/') || id.includes('\\') || id.length > 256)
-      return false
-    const item = parseItemRecord(await this.request(`/Users/{UserId}/Items/${encodeURIComponent(id)}`))
-    return item.CanDelete === true
   }
 
   async listProviderCollections(kind: 'playlist' | 'collection'): Promise<Array<{ id: string, name: string, kind: 'playlist' | 'collection', itemCount?: number }>> {

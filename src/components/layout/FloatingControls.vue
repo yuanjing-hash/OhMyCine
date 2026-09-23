@@ -3,92 +3,53 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
-import { useLayoutContextActions } from '@/services/layoutContextActions'
-import { savePlaybackMediaContext } from '@/services/playbackContext'
+import { createLocalPlaylistContext, listLocalFolderVideos, VIDEO_FILE_EXTENSIONS } from '@/services/localPlaylist'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
-import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDownloadStore } from '@/stores/downloads'
-import LayoutContextActionIcon from './LayoutContextActionIcon.vue'
-
-const VIDEO_EXTENSIONS = [
-  'mp4',
-  'mkv',
-  'avi',
-  'mov',
-  'webm',
-  'm4v',
-  'flv',
-  'wmv',
-  'ts',
-  'm2ts',
-  'rmvb',
-  'mpg',
-  'mpeg',
-  '3gp',
-  'ogv',
-  'divx',
-  'vob',
-  'iso',
-]
 
 const router = useRouter()
 const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
-const { actions: contextActions } = useLayoutContextActions()
 const downloads = useDownloadStore()
-const acquisitions = useAcquisitionWorkspaceStore()
 const isTouchUi = window.matchMedia('(hover: none) and (pointer: coarse)').matches
 const isHovered = ref(isTouchUi)
 const isOpeningFile = ref(false)
+const openFileError = ref<string | null>(null)
 const isPlayerRoute = computed(() => route.name === 'player')
 
-function getFileName(path: string) {
-  return path.split(/[\\/]/).pop() || '本地视频'
-}
-
-async function openLocalVideo() {
+async function openLocalVideo(directory = false) {
   if (isOpeningFile.value)
     return
 
   isOpeningFile.value = true
+  openFileError.value = null
   try {
     const selected = await open({
-      multiple: false,
-      directory: false,
-      filters: [
-        {
-          name: 'Video files',
-          extensions: VIDEO_EXTENSIONS,
-        },
-      ],
+      multiple: !directory,
+      directory,
+      title: directory ? '打开视频文件夹' : '打开本地视频',
+      filters: directory ? undefined : [{ name: 'Video files', extensions: [...VIDEO_FILE_EXTENSIONS] }],
     })
 
-    if (typeof selected !== 'string')
+    if (!selected)
       return
 
-    const title = getFileName(selected)
-    const itemId = `local-file-${Date.now()}`
-    const contextId = savePlaybackMediaContext({
-      sourceId: 'local-file',
-      itemId,
-      title,
-      locator: { kind: 'localPath', path: selected },
-    })
+    const files = directory
+      ? await listLocalFolderVideos(selected as string)
+      : (Array.isArray(selected) ? selected : [selected]).map(path => ({ path }))
+    const { contextId, itemId } = await createLocalPlaylistContext(files)
 
     await router.push({
       name: 'player',
       query: createPlaybackRouteQuery({ sourceId: 'local-file', itemId, contextId }),
     })
   }
+  catch (error) {
+    openFileError.value = error instanceof Error ? error.message : '打开本地视频失败。'
+  }
   finally {
     isOpeningFile.value = false
   }
-}
-
-function runContextAction(action: (typeof contextActions.value)[number]) {
-  if (action.disabled)
-    return
-  void action.execute()
 }
 </script>
 
@@ -107,24 +68,6 @@ function runContextAction(action: (typeof contextActions.value)[number]) {
         @mouseenter="isHovered = true"
         @mouseleave="isHovered = false"
       >
-        <template v-if="contextActions.length">
-          <button
-            v-for="action in contextActions"
-            :key="action.id"
-            type="button"
-            class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 disabled:cursor-wait disabled:opacity-45"
-            :class="{ 'is-active': action.active }"
-            :disabled="action.disabled"
-            :title="action.label"
-            :aria-label="action.label"
-            @click="runContextAction(action)"
-          >
-            <LayoutContextActionIcon :name="action.icon" />
-          </button>
-
-          <div class="gp-divider my-1 h-px w-6" />
-        </template>
-
         <button
           class="gp-btn relative flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
           title="下载管理"
@@ -135,20 +78,6 @@ function runContextAction(action: (typeof contextActions.value)[number]) {
             <path d="M10 2v10m0 0 4-4m-4 4L6 8M3 16h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
           <b v-if="downloads.activeCount" class="download-count">{{ downloads.activeCount > 99 ? '99+' : downloads.activeCount }}</b>
-        </button>
-
-        <button
-          v-if="!isPlayerRoute"
-          class="gp-btn relative flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
-          :class="{ 'is-active': acquisitions.open }"
-          title="Player 入库任务"
-          aria-label="Player 入库任务"
-          @click="acquisitions.toggle()"
-        >
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M3.5 6.5 10 3l6.5 3.5L10 10 3.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-            <path d="M3.5 10 10 13.5l6.5-3.5M3.5 13.5 10 17l6.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
         </button>
 
         <div class="gp-divider my-1 h-px w-6" />
@@ -187,7 +116,7 @@ function runContextAction(action: (typeof contextActions.value)[number]) {
           :disabled="isOpeningFile"
           title="打开本地视频"
           aria-label="打开本地视频"
-          @click="openLocalVideo"
+          @click="openLocalVideo(false)"
         >
           <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
             <path d="M5 3l12 7-12 7V3z" fill="currentColor" />
@@ -195,6 +124,23 @@ function runContextAction(action: (typeof contextActions.value)[number]) {
         </button>
 
         <div class="gp-divider my-1 h-px w-6" />
+
+        <button
+          class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 disabled:cursor-wait disabled:opacity-60"
+          :disabled="isOpeningFile"
+          title="打开视频文件夹"
+          aria-label="打开视频文件夹"
+          @click="openLocalVideo(true)"
+        >
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M2.5 5.5A2 2 0 0 1 4.5 3.5h4l2 2h5A2 2 0 0 1 17.5 7.5v8a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-10Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+            <path d="m8 9 5 3-5 3V9Z" fill="currentColor" />
+          </svg>
+        </button>
+
+        <p v-if="openFileError" class="w-44 max-w-[40vw] rounded-lg bg-red-950/90 px-2 py-1 text-xs text-red-100" role="alert">
+          {{ openFileError }}
+        </p>
 
         <!-- Theme toggle -->
         <button

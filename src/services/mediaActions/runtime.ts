@@ -50,7 +50,7 @@ export function useMediaActionRuntime() {
 }
 
 export function requestMediaActionConfirmation(confirmation: MediaActionConfirmation): Promise<MediaActionConfirmationResult> {
-  pendingConfirmation.value?.resolve({ confirmed: false, deleteSourceFiles: false })
+  pendingConfirmation.value?.resolve({ confirmed: false })
   return new Promise<MediaActionConfirmationResult>((resolve) => {
     pendingConfirmation.value = { confirmation, resolve }
   })
