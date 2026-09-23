@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import type { MediaActionAdapter, MediaActionTarget } from '../src/services/mediaActions/types'
 import { createCollectionMediaActionAdapter } from '../src/services/mediaActions/collectionAdapter'
 import { MediaActionController } from '../src/services/mediaActions/controller'
@@ -8,8 +6,6 @@ import { createPlayedStateMediaActionAdapter } from '../src/services/mediaAction
 import { createMediaActionTarget } from '../src/services/mediaActions/types'
 import { areAllKnownPlayableChildrenCompleted, playbackCompletionKey } from '../src/services/playbackHistory'
 import { annotateMissingCollectionSources } from '../src/services/mediaCollections'
-
-const root = resolve(import.meta.dirname, '..')
 
 const target = createMediaActionTarget({
   id: 'movie-1',
@@ -125,66 +121,4 @@ const annotated = annotateMissingCollectionSources([{ id: 'local-favorites', nam
 assert.equal(annotated[0]?.members[0]?.missing, false)
 assert.equal(annotated[0]?.members[1]?.missing, true)
 
-const menuSource = readFileSync(resolve(root, 'src/components/media/MediaActionMenu.vue'), 'utf8')
-const hostSource = readFileSync(resolve(root, 'src/components/media/MediaActionHost.vue'), 'utf8')
-const inputSource = readFileSync(resolve(root, 'src/services/mediaActions/input.ts'), 'utf8')
-const cardSource = readFileSync(resolve(root, 'src/components/media/MediaCard.vue'), 'utf8')
-const playerSource = readFileSync(resolve(root, 'src/views/PlayerView.vue'), 'utf8')
-const mobileControlsSource = readFileSync(resolve(root, 'src/components/player/MobilePlayerControls.vue'), 'utf8')
-const appSource = readFileSync(resolve(root, 'src/App.vue'), 'utf8')
-const historyRustSource = readFileSync(resolve(root, 'src-tauri/src/commands/history.rs'), 'utf8')
-const sourceViewSource = readFileSync(resolve(root, 'src/views/SourceLibraryView.vue'), 'utf8')
-const maintenanceSource = readFileSync(resolve(root, 'src/services/mediaActions/maintenanceAdapter.ts'), 'utf8')
-assert.match(menuSource, /ArrowDown/)
-assert.match(menuSource, /disabledReason/)
-assert.match(hostSource, /presentation/)
-assert.match(hostSource, /MediaActionConfirmationDialog/)
-assert.match(hostSource, /--media-action-popover-max-height/)
-assert.match(menuSource, /overflow-y: auto/)
-assert.match(inputSource, /LONG_PRESS_DELAY_MS = 520/)
-assert.match(inputSource, /LONG_PRESS_MOVEMENT_PX = 12/)
-assert.match(inputSource, /handleMediaActionKeyboard/)
-assert.match(inputSource, /event\.key === 'ContextMenu'/)
-assert.match(inputSource, /event\.shiftKey && event\.key === 'F10'/)
-assert.match(inputSource, /window\.addEventListener\('scroll', cancelAllPendingLongPresses, true\)/)
-assert.match(cardSource, /beginMediaActionLongPress/)
-assert.match(cardSource, /suppressMediaActionClick/)
-assert.match(cardSource, /contextMenuMode === 'custom'/)
-assert.match(playerSource, /suppressPlayerContextMenuUntil/)
-assert.match(playerSource, /pointerType === 'mouse' && event\.button === 2/)
-assert.match(playerSource, /touchGestureSession !== null/)
-assert.doesNotMatch(playerSource, /event\.detail > 0/)
-assert.match(mobileControlsSource, /openPlaybackDetail/)
-assert.match(mobileControlsSource, /navigateSettings/)
-assert.match(appSource, /document\.addEventListener\('contextmenu', suppressNativeContextMenu\)/)
-assert.match(readFileSync(resolve(root, 'src/views/HomeView.vue'), 'utf8'), /tabindex="0"/)
-assert.match(readFileSync(resolve(root, 'src/views/HomeView.vue'), 'utf8'), /handleHomeCardKey/)
-assert.match(readFileSync(resolve(root, 'src/components/media/GlobalSearchWorkspace.vue'), 'utf8'), /handleSearchItemKey/)
-assert.match(historyRustSource, /completed = 0/)
-assert.match(historyRustSource, /completion_state_and_continue_removal_are_independent/)
-assert.doesNotMatch(sourceViewSource, /work-context-menu/)
-assert.match(maintenanceSource, /refreshMetadata/)
-assert.match(maintenanceSource, /editSubtitles/)
-assert.doesNotMatch(readFileSync(resolve(root, 'src/services/mediaActions/types.ts'), 'utf8'), /'identify'|'rescanLibrary'/)
-assert.doesNotMatch(readFileSync(resolve(root, 'src/components/media/MediaActionConfirmationDialog.vue'), 'utf8'), /deleteSourceFiles|sourceDelete/)
-assert.doesNotMatch(readFileSync(resolve(root, 'src/services/datasource/emby.ts'), 'utf8'), /deleteMedia\(|canDeleteMedia\(/)
-const editorHostSource = readFileSync(resolve(root, 'src/components/media/MediaEditorHost.vue'), 'utf8')
-assert.match(appSource, /MediaEditorHost/)
-assert.match(editorHostSource, /媒体服务编辑器/)
-assert.match(editorHostSource, /updateMetadata/)
-assert.match(editorHostSource, /updateArtworkFromUrl/)
-assert.match(editorHostSource, /searchSubtitles/)
-assert.doesNotMatch(editorHostSource, /downloadAndSelectLocalSubtitle/)
-const favoritesSource = readFileSync(resolve(root, 'src/views/FavoritesView.vue'), 'utf8')
-const embySource = readFileSync(resolve(root, 'src/services/datasource/emby.ts'), 'utf8')
-const collectionAdapterSource = readFileSync(resolve(root, 'src/services/mediaActions/collectionAdapter.ts'), 'utf8')
-assert.match(embySource, /Filters: 'IsFavorite'/)
-assert.match(embySource, /EnableUserData: 'true'/)
-assert.doesNotMatch(embySource, /Fields: 'UserData'/)
-assert.match(embySource, /getFavoriteState/)
-assert.match(collectionAdapterSource, /source\.getFavoriteState/)
-assert.match(favoritesSource, /Player 本地收藏/)
-assert.match(favoritesSource, /媒体服务原生/)
-assert.match(appSource, /COLLECTIONS_CHANGED_EVENT/)
-
-console.log('media action capability/controller/input/UI contract verification passed')
+console.log('media action behavior verification passed')

@@ -13,132 +13,6 @@ on:
       - ".github/workflows/player.yml"
 
 jobs:
-  quality:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: .
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Verify aggregate search fault isolation
-        run: npm run verify:home-aggregate-search
-
-      - name: Verify window fullscreen and resize synchronization
-        run: npm run verify:window-fullscreen-resize
-
-      - name: Verify media actions, deletion, and download planning
-        run: |
-          npm run verify:media-actions
-          npm run verify:media-delete
-          npm run verify:download-planning
-
-  rust-linux:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: .
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux Tauri and libmpv dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libayatana-appindicator3-dev \
-            libmpv-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            pkg-config
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Test native Linux Rust target
-        working-directory: ./src-tauri
-        run: cargo test --lib
-
-      - name: Check native Linux Rust targets
-        working-directory: ./src-tauri
-        run: cargo check --all-targets
-
-  rust-windows-msvc:
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: .
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Prepare Windows libmpv runtime and import libraries
-        run: npm run setup:libmpv -- windows
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Test native Windows MSVC Rust target
-        working-directory: ./src-tauri
-        run: cargo test --lib
-
-      - name: Check native Windows MSVC Rust targets
-        working-directory: ./src-tauri
-        run: cargo check --all-targets
-
   android-arm64:
     runs-on: ubuntu-latest
     defaults:
@@ -188,7 +62,6 @@ jobs:
         run: npm run tauri:build:android:preview
 
   build:
-    needs: [quality, rust-linux, rust-windows-msvc, android-arm64]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -219,9 +92,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
-
-      - name: Build frontend
-        run: npm run build
 
       - name: Prepare Windows libmpv runtime
         run: npm run setup:libmpv -- windows

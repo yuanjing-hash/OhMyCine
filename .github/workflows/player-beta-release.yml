@@ -89,12 +89,11 @@ concurrency:
 
 jobs:
   release-android-arm64:
-    name: Build and publish Android ARM64 preview
-    needs: release-windows-gnu
+    name: Build Android ARM64 preview
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -244,7 +243,7 @@ jobs:
           test -f "$source_apk"
           mkdir -p dist/android
           cp "$source_apk" "$ANDROID_APK"
-          sha256sum "$ANDROID_APK" > "$ANDROID_CHECKSUM"
+          (cd dist/android && sha256sum "$(basename "$ANDROID_APK")" > "$(basename "$ANDROID_CHECKSUM")")
 
       - name: Upload Android workflow artifact
         uses: actions/upload-artifact@v4
@@ -255,20 +254,14 @@ jobs:
             ${{ env.ANDROID_CHECKSUM }}
           retention-days: 30
 
-      - name: Upload Android assets to GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh release upload "$TAG_NAME" "$ANDROID_APK" "$ANDROID_CHECKSUM" --clobber
-
   release-windows-gnu:
     name: Build and publish Windows release
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag_name: ${{ steps.version.outputs.tag_name }}
 
     env:
       TARGET: x86_64-pc-windows-gnu
@@ -596,3 +589,33 @@ jobs:
               --target "$GITHUB_SHA" \
               "${release_flags[@]}"
           fi
+
+  release-android-publish:
+    name: Publish Android ARM64 preview
+    needs: [release-windows-gnu, release-android-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG_NAME: ${{ needs.release-windows-gnu.outputs.tag_name }}
+
+    steps:
+      - name: Download Android workflow artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OhMyCine-Player-${{ needs.release-windows-gnu.outputs.tag_name }}-android-arm64
+          path: dist/android
+
+      - name: Verify and publish Android assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="dist/android/OhMyCine-Player-${TAG_NAME}-android-arm64.apk"
+          checksum="dist/android/OhMyCine-Player-${TAG_NAME}-android-arm64.sha256"
+          test -f "$apk"
+          test -f "$checksum"
+          (cd dist/android && sha256sum -c "$(basename "$checksum")")
+          gh release upload "$TAG_NAME" "$apk" "$checksum" --clobber

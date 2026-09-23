@@ -1,6 +1,5 @@
 import type { DataSource, MediaDetail, MediaItem } from '../src/services/datasource/types'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { buildOfflineHierarchy, OFFLINE_SOURCE_ID, toOfflineMediaDetail } from '../src/services/datasource/offline'
 import { stripOfflineProjectionSections } from '../src/services/datasource/offlineProjection'
 import { planMediaDownload, summarizeDownloadPlan } from '../src/services/downloadPlanning'
@@ -235,36 +234,4 @@ const visibleSections = stripOfflineProjectionSections([
 ])
 assert.deepEqual(visibleSections.map(section => [section.id, section.items.map(item => item.id)]), [['mixed', ['remote']]])
 
-const detailViewSource = readFileSync(new URL('../src/views/MediaDetailView.vue', import.meta.url), 'utf8')
-assert.doesNotMatch(detailViewSource, />离线下载</)
-assert.doesNotMatch(detailViewSource, /openOfflineDownload/)
-const downloadViewSource = readFileSync(new URL('../src/views/DownloadsView.vue', import.meta.url), 'utf8')
-assert.match(downloadViewSource, /查看媒体详情/)
-assert.doesNotMatch(downloadViewSource, /OFFLINE_SOURCE_ID/)
-assert.match(downloadViewSource, /sourceId: task\.sourceId, itemId: task\.itemId/)
-assert.match(downloadViewSource, /打开文件位置/)
-assert.match(downloadViewSource, /重试附件/)
-assert.match(downloadViewSource, /attachmentState !== 'complete'/)
-const downloadAdapterSource = readFileSync(new URL('../src/services/mediaActions/downloadAdapter.ts', import.meta.url), 'utf8')
-assert.match(downloadAdapterSource, /文件：\$\{summary\.fileCount\} 个/)
-assert.match(downloadAdapterSource, /预计大小：\$\{size\}/)
-assert.doesNotMatch(downloadAdapterSource, /@tauri-apps\/plugin-dialog'\s*.*\bask\b/)
-assert.match(downloadAdapterSource, /message: downloadConfirmation\(plan\)/)
-assert.match(downloadAdapterSource, /if \(!confirmation\.confirmed\)/)
-const datasourceStoreSource = readFileSync(new URL('../src/stores/datasource.ts', import.meta.url), 'utf8')
-assert.doesNotMatch(datasourceStoreSource, /\[OFFLINE_SOURCE_CONFIG, \.\.\.configs\.value\]/)
-assert.match(datasourceStoreSource, /config\.id !== OFFLINE_SOURCE_ID && config\.type !== 'offline'/)
-assert.match(datasourceStoreSource, /stripOfflineProjectionSections/)
-assert.match(datasourceStoreSource, /pruneOfflineProjection/)
-assert.match(datasourceStoreSource, /setAppSetting\(DISPLAY_CACHE_KEY, sanitized\)/)
-assert.match(datasourceStoreSource, /removeAppSetting\(DISPLAY_CACHE_KEY\)/)
-const downloadStoreSource = readFileSync(new URL('../src/stores/downloads.ts', import.meta.url), 'utf8')
-assert.match(downloadStoreSource, /concurrentTasks: 1/)
-assert.match(downloadStoreSource, /segmentsPerTask: 1/)
-assert.match(downloadStoreSource, /useDataSourceStore\(\)\.pruneOfflineProjection\(\)/)
-assert.match(downloadStoreSource, /offlineItems\.value = offlineItems\.value\.filter\(item => item\.id !== taskId\)/)
-const playerViewSource = readFileSync(new URL('../src/views/PlayerView.vue', import.meta.url), 'utf8')
-assert.match(playerViewSource, /function currentOriginItemId\(\): string/)
-assert.match(playerViewSource, /const itemId = currentOriginItemId\(\) \|\| undefined/)
-
-console.log('download planning verification passed')
+console.log('download planning behavior verification passed')

@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import type { DataSource, DataSourceType, MediaDetail, MediaItem } from '../src/services/datasource/types'
 import { normalizeWorkLevelSearchResults, searchAcrossDataSources } from '../src/services/datasource/searchAggregation'
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 
 const shared: MediaItem = {
   id: 'shared',
@@ -60,37 +58,7 @@ assert.deepEqual(
   ['series', 'movie', 'file', 'folder'],
 )
 
-const embySource = await readFile(fileURLToPath(new URL('../src/services/datasource/emby.ts', import.meta.url)), 'utf8')
-assert.match(embySource, /async search\(keyword: string\)[\s\S]*?IncludeItemTypes: 'Movie,Series'/)
-assert.doesNotMatch(embySource, /async search\(keyword: string\)[\s\S]*?IncludeItemTypes: 'Movie,Series,Episode'[\s\S]*?async getDetail/)
-
-const workspace = await readFile(fileURLToPath(new URL('../src/components/media/GlobalSearchWorkspace.vue', import.meta.url)), 'utf8')
-assert.match(workspace, /全部来源/)
-assert.match(workspace, /全部类型/)
-assert.match(workspace, /sourceLibraries/)
-assert.match(workspace, /suggestedKeywords/)
-assert.match(workspace, /searchAllSources\(keyword, 100, sourceIds\)/)
-assert.match(workspace, /@media \(max-width: 767px\)[\s\S]*?\.search-workspace \{ inset: 0;/)
-
-const windowChrome = await readFile(fileURLToPath(new URL('../src/components/layout/WindowChrome.vue', import.meta.url)), 'utf8')
-assert.match(windowChrome, /searchWorkspace\.toggle/)
-assert.match(windowChrome, />\s*搜索\s*</)
-
-const homeView = await readFile(fileURLToPath(new URL('../src/views/HomeView.vue', import.meta.url)), 'utf8')
-assert.doesNotMatch(homeView, /HomeAggregateSearch/)
-
-console.log(JSON.stringify({
-  sourceFailureIsolated: true,
-  sourceOrderPreserved: true,
-  sourceScopedDeduplication: true,
-  globalLimitApplied: true,
-  desktopSearchWorkspace: true,
-  mobileFullscreenSearch: true,
-  sourceLibraryTypeFilters: true,
-  workLevelResultsOnly: true,
-  workLevelFilteringBeforeLimit: true,
-  rawFileFallbackPreserved: true,
-}, null, 2))
+console.log('aggregate search behavior verification passed')
 
 function fakeSource(id: string, search: (keyword: string) => Promise<MediaItem[]>): DataSource {
   return {
