@@ -4,19 +4,54 @@ import { isProtectedServerArtworkURL } from '@/services/serverArtwork'
 
 const cachedReads = new Map<string, Promise<string | null>>()
 const cacheWrites = new Map<string, Promise<string>>()
-interface ServerArtworkCredential { baseUrl: string, accessToken: string, generation: number }
+interface ServerArtworkCredential { sourceId: string, baseUrl: string, accessToken: string, generation: number }
 const serverArtworkSources = new Map<string, ServerArtworkCredential>()
+const protectedArtworkMemory = new Map<string, { sourceId: string, data: string }>()
+const MAX_PROTECTED_ARTWORK_MEMORY = 32 * 1024 * 1024
+let protectedArtworkMemorySize = 0
 let serverArtworkGeneration = 0
 
+function rememberProtectedArtwork(key: string, credential: ServerArtworkCredential, data: string): void {
+  if (serverArtworkSources.get(credential.sourceId)?.generation !== credential.generation || data.length > MAX_PROTECTED_ARTWORK_MEMORY)
+    return
+  const previous = protectedArtworkMemory.get(key)
+  if (previous)
+    protectedArtworkMemorySize -= previous.data.length
+  protectedArtworkMemory.delete(key)
+  protectedArtworkMemory.set(key, { sourceId: credential.sourceId, data })
+  protectedArtworkMemorySize += data.length
+  while (protectedArtworkMemorySize > MAX_PROTECTED_ARTWORK_MEMORY) {
+    const oldest = protectedArtworkMemory.keys().next().value
+    if (!oldest)
+      break
+    const entry = protectedArtworkMemory.get(oldest)
+    protectedArtworkMemory.delete(oldest)
+    protectedArtworkMemorySize -= entry?.data.length ?? 0
+  }
+}
+
+function forgetProtectedArtwork(sourceId: string): void {
+  for (const [key, entry] of protectedArtworkMemory) {
+    if (entry.sourceId !== sourceId)
+      continue
+    protectedArtworkMemory.delete(key)
+    protectedArtworkMemorySize -= entry.data.length
+  }
+}
+
 export function registerServerArtworkSource(sourceId: string, baseUrl: string, accessToken: string): void {
-  if (sourceId && baseUrl && accessToken)
-    serverArtworkSources.set(sourceId, { baseUrl, accessToken, generation: ++serverArtworkGeneration })
+  if (sourceId && baseUrl && accessToken) {
+    forgetProtectedArtwork(sourceId)
+    serverArtworkSources.set(sourceId, { sourceId, baseUrl, accessToken, generation: ++serverArtworkGeneration })
+  }
 }
 
 export function unregisterServerArtworkSource(sourceId: string, accessToken?: string): void {
   const registered = serverArtworkSources.get(sourceId)
-  if (registered && (!accessToken || registered.accessToken === accessToken))
+  if (registered && (!accessToken || registered.accessToken === accessToken)) {
     serverArtworkSources.delete(sourceId)
+    forgetProtectedArtwork(sourceId)
+  }
 }
 
 function serverArtworkCredential(cacheKey: string, url: string): ServerArtworkCredential | undefined {
@@ -94,17 +129,54 @@ export function isTauriImageCacheAvailable(): boolean {
   return root.__TAURI_INTERNALS__ != null || root.window?.__TAURI_INTERNALS__ != null
 }
 
-export async function getCachedImage(cacheKey: string): Promise<string | null> {
-  if (!isTauriImageCacheAvailable())
+export function peekCachedImage(cacheKey: string, url: string): string | null {
+  if (!isProtectedServerArtworkURL(url))
     return null
-  const existing = cachedReads.get(cacheKey)
+  const credential = serverArtworkCredential(cacheKey, url)
+  if (!credential)
+    return null
+  const key = [cacheKey, url, credential.generation].join(String.fromCharCode(10))
+  const cached = protectedArtworkMemory.get(key)
+  if (!cached)
+    return null
+  protectedArtworkMemory.delete(key)
+  protectedArtworkMemory.set(key, cached)
+  return cached.data
+}
+
+export async function getCachedImage(cacheKey: string, url: string): Promise<string | null> {
+  if (!isTauriImageCacheAvailable() || !/^https?:\/\//i.test(url))
+    return null
+  const protectedArtwork = isProtectedServerArtworkURL(url)
+  const credential = protectedArtwork ? serverArtworkCredential(cacheKey, url) : undefined
+  if (protectedArtwork && !credential)
+    return null
+  const requestKey = `${cacheKey}\n${url}\n${credential?.generation ?? ''}`
+  const inMemory = protectedArtworkMemory.get(requestKey)
+  if (inMemory) {
+    protectedArtworkMemory.delete(requestKey)
+    protectedArtworkMemory.set(requestKey, inMemory)
+    return inMemory.data
+  }
+  const existing = cachedReads.get(requestKey)
   if (existing)
     return existing
 
-  const request = invoke<string | null>('player_get_cached_image', { cacheKey })
+  const request = invoke<string | null>('player_get_cached_image', {
+    request: {
+      cacheKey,
+      url,
+      ...(credential ? { serverBaseUrl: credential.baseUrl, serverAccessToken: credential.accessToken } : {}),
+    },
+  })
+    .then((cached) => {
+      if (cached && credential)
+        rememberProtectedArtwork(requestKey, credential, cached)
+      return cached
+    })
     .catch(() => null)
-    .finally(() => cachedReads.delete(cacheKey))
-  cachedReads.set(cacheKey, request)
+    .finally(() => cachedReads.delete(requestKey))
+  cachedReads.set(requestKey, request)
   return request
 }
 
@@ -116,6 +188,9 @@ export async function cacheImage(cacheKey: string, url: string): Promise<string>
   if (protectedArtwork && !credential)
     return ''
   const requestKey = `${cacheKey}\n${url}\n${credential?.generation ?? ''}`
+  const inMemory = protectedArtworkMemory.get(requestKey)
+  if (inMemory)
+    return inMemory.data
   const existing = cacheWrites.get(requestKey)
   if (existing)
     return existing
@@ -128,6 +203,11 @@ export async function cacheImage(cacheKey: string, url: string): Promise<string>
       ...(credential ? { serverBaseUrl: credential.baseUrl, serverAccessToken: credential.accessToken } : {}),
     },
   })
+    .then((resolved) => {
+      if (resolved && credential)
+        rememberProtectedArtwork(requestKey, credential, resolved)
+      return resolved
+    })
     .catch(() => protectedArtwork ? '' : url)
     .finally(() => cacheWrites.delete(requestKey))
   cacheWrites.set(requestKey, request)

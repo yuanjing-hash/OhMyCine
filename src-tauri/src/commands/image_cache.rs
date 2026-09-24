@@ -32,6 +32,15 @@ pub struct CacheImageRequest {
     max_bytes: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedImageReadRequest {
+    cache_key: String,
+    url: String,
+    server_base_url: Option<String>,
+    server_access_token: Option<String>,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedImageMeta {
@@ -60,10 +69,17 @@ struct ImageCacheEntry {
 #[tauri::command]
 pub fn player_get_cached_image(
     app: AppHandle,
-    cache_key: String,
+    request: CachedImageReadRequest,
 ) -> Result<Option<String>, String> {
-    validate_cache_key(&cache_key)?;
-    read_cached_image(&app, &cache_key)
+    validate_cache_key(&request.cache_key)?;
+    let url = parse_image_url(&request.url)?;
+    let source_hash = validated_source_hash(
+        &url,
+        request.server_base_url.as_deref(),
+        request.server_access_token.as_deref(),
+    )?;
+    Ok(read_cached_image_with_meta(&app, &request.cache_key)?
+        .and_then(|(meta, data_url)| (meta.source_hash == source_hash).then_some(data_url)))
 }
 
 #[tauri::command]
@@ -75,32 +91,12 @@ pub async fn player_cache_image(
     let max_bytes = normalize_cache_limit(request.max_bytes);
     let url = parse_image_url(&request.url)?;
     let protected_artwork = is_protected_server_artwork_url(&url);
-    let server_token = if protected_artwork {
-        let base_url = request
-            .server_base_url
-            .as_deref()
-            .ok_or("Server artwork credentials are required.")?;
-        let token = request
-            .server_access_token
-            .as_deref()
-            .ok_or("Server artwork credentials are required.")?;
-        validate_server_artwork_credentials(&url, base_url, token)?;
-        Some(token)
-    } else {
-        if request.server_base_url.is_some() || request.server_access_token.is_some() {
-            return Err("Server artwork credentials are not allowed for this URL.".to_string());
-        }
-        None
-    };
-    let source_hash = if let Some(token) = server_token {
-        hash_text(&format!(
-            "server-auth-v1:{}:{}",
-            url.as_str(),
-            hash_text(token)
-        ))
-    } else {
-        hash_text(url.as_str())
-    };
+    let source_hash = validated_source_hash(
+        &url,
+        request.server_base_url.as_deref(),
+        request.server_access_token.as_deref(),
+    )?;
+    let server_token = request.server_access_token.as_deref();
 
     if let Some((meta, data_url)) = read_cached_image_with_meta(&app, &request.cache_key)? {
         if meta.source_hash == source_hash {
@@ -262,6 +258,28 @@ fn validate_server_artwork_credentials(
     Ok(())
 }
 
+fn validated_source_hash(
+    url: &Url,
+    server_base_url: Option<&str>,
+    server_access_token: Option<&str>,
+) -> Result<String, String> {
+    if is_protected_server_artwork_url(url) {
+        let base_url = server_base_url.ok_or("Server artwork credentials are required.")?;
+        let token = server_access_token.ok_or("Server artwork credentials are required.")?;
+        validate_server_artwork_credentials(url, base_url, token)?;
+        Ok(hash_text(&format!(
+            "server-auth-v1:{}:{}",
+            url.as_str(),
+            hash_text(token)
+        )))
+    } else {
+        if server_base_url.is_some() || server_access_token.is_some() {
+            return Err("Server artwork credentials are not allowed for this URL.".to_string());
+        }
+        Ok(hash_text(url.as_str()))
+    }
+}
+
 fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str() == right.host_str()
@@ -306,10 +324,6 @@ fn cache_paths(app: &AppHandle, cache_key: &str) -> Result<(PathBuf, PathBuf), S
         directory.join(format!("{file_name}.bin")),
         directory.join(format!("{file_name}.json")),
     ))
-}
-
-fn read_cached_image(app: &AppHandle, cache_key: &str) -> Result<Option<String>, String> {
-    Ok(read_cached_image_with_meta(app, cache_key)?.map(|(_, data_url)| data_url))
 }
 
 fn read_cached_image_with_meta(

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, useAttrs, watch } from 'vue'
-import { cacheImage, getCachedImage, isTauriImageCacheAvailable } from '@/services/imageCache'
+import { cacheImage, getCachedImage, isTauriImageCacheAvailable, peekCachedImage } from '@/services/imageCache'
 import { isProtectedServerArtworkURL } from '@/services/serverArtwork'
 
 defineOptions({ inheritAttrs: false })
@@ -18,7 +18,8 @@ const emit = defineEmits<{ error: [url: string] }>()
 
 const attrs = useAttrs()
 const root = ref<HTMLElement | null>(null)
-const displaySource = ref(isProtectedServerArtworkURL(props.src) ? '' : props.src)
+const initialDisplaySource = () => isProtectedServerArtworkURL(props.src) ? peekCachedImage(props.cacheKey, props.src) ?? '' : props.src
+const displaySource = ref(initialDisplaySource())
 const ready = ref(Boolean(displaySource.value))
 let observer: IntersectionObserver | null = null
 let generation = 0
@@ -26,7 +27,7 @@ let visible = false
 
 watch(() => [props.cacheKey, props.src], () => {
   generation += 1
-  displaySource.value = isProtectedServerArtworkURL(props.src) ? '' : props.src
+  displaySource.value = initialDisplaySource()
   ready.value = Boolean(displaySource.value)
   if (visible)
     void resolveImage(generation)
@@ -40,12 +41,14 @@ async function resolveImage(currentGeneration: number) {
     return
   }
 
-  const cached = protectedArtwork ? null : await getCachedImage(props.cacheKey)
+  const cached = await getCachedImage(props.cacheKey, props.src)
   if (currentGeneration !== generation)
     return
   if (cached) {
     displaySource.value = cached
     ready.value = true
+    if (protectedArtwork)
+      return
   }
   else if (!props.src) {
     displaySource.value = ''
