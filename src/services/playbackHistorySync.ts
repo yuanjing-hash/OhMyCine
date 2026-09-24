@@ -1,4 +1,4 @@
-import type { ServerPlaybackHistoryChange } from '@/services/datasource/server'
+import type { ServerPlaybackHistoryChange, ServerPlaybackHistorySyncResponse } from '@/services/datasource/server'
 import type { DataSourceConfig, DataSourceType } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { useDataSourceStore } from '@/stores/datasource'
@@ -18,6 +18,7 @@ interface HistorySourceDescriptor {
 const CURSOR_PREFIX = 'ohmycine:server-history-cursor:'
 const DIAGNOSTIC_PREFIX = 'ohmycine:server-history-sync-diagnostic:'
 const SYNC_INTERVAL_MS = 60_000
+const HISTORY_RECORD_REJECTION_CODES = new Set(['INVALID_REQUEST', 'NOT_FOUND', 'PERMISSION_DENIED', 'history_clock_ahead'])
 export interface HistorySyncFocus { sourceId: string, mediaIdentity: string, updatedAt: number }
 export interface HistorySyncOutcome { status: 'confirmed' | 'pending' | 'rejected', reason?: string }
 
@@ -97,8 +98,23 @@ export async function syncPlaybackHistory(store: DataSourceStore, focus?: Histor
       let rejected = 0
       const batches = chunkServerHistoryChanges(outgoing)
       let shouldPullMore = false
+      let rejectedUpload = false
       for (const changes of batches) {
-        const response = await target.source.syncPlaybackHistory({ cursor, changes })
+        let response: ServerPlaybackHistorySyncResponse
+        try {
+          response = await target.source.syncPlaybackHistory({ cursor, changes })
+        }
+        catch (error) {
+          if (!(error instanceof ServerRequestError) || !error.code || !HISTORY_RECORD_REJECTION_CODES.has(error.code))
+            throw error
+          rejectedUpload = true
+          rejected += changes.length
+          if (focusedChange && changes.some(change => change.sync_key === focusedChange.sync_key)) {
+            focusedRejected = true
+            focusRejection = error.code
+          }
+          continue
+        }
         received += response.changes.length
         rejected += response.rejected.length
         const focusError = response.rejected.find(item => item.sync_key === focusedChange?.sync_key)
@@ -117,6 +133,8 @@ export async function syncPlaybackHistory(store: DataSourceStore, focus?: Histor
         await setAppSetting(cursorKey, String(cursor))
         shouldPullMore = response.changes.length === 500
       }
+      if (rejectedUpload)
+        shouldPullMore = true
       for (let page = 0; shouldPullMore && page < 100; page++) {
         const response = await target.source.syncPlaybackHistory({ cursor, changes: [] })
         received += response.changes.length
@@ -141,7 +159,7 @@ export async function syncPlaybackHistory(store: DataSourceStore, focus?: Histor
       }
       if (focusedChange && !focusedRejected && focusedConfirmed)
         confirmedTargets++
-      await saveSyncDiagnostic(target.config.id, { ok: true, cursor, outgoing: outgoing.length, received, rejected })
+      await saveSyncDiagnostic(target.config.id, { ok: !rejectedUpload, cursor, outgoing: outgoing.length, received, rejected })
     }
     catch (error) {
       // Keep the tombstone for a later retry. A Server response is an explicit rejection.
@@ -222,6 +240,7 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: HistorySource
   const historyIdentity = config.type === 'server' && isServerHistoryIdentity(entry.mediaIdentity)
     ? entry.mediaIdentity
     : undefined
+  const itemToken = historyIdentity ? canonicalMovieWorkToken(historyIdentity) ?? entry.itemId : entry.itemId
   return {
     sync_key: await sha256(historyIdentity ? `${config.type}\0${historyIdentity}` : `${config.type}\0${stableSource}\0${entry.mediaIdentity}`),
     source_kind: config.type,
@@ -229,8 +248,8 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: HistorySource
     source_locator: locator || undefined,
     source_id: config.id,
     library_id: entry.libraryId ?? undefined,
-    item_id: entry.itemId ?? undefined,
-    item_token: entry.itemId ?? undefined,
+    item_id: itemToken ?? undefined,
+    item_token: itemToken ?? undefined,
     media_identity: entry.mediaIdentity,
     history_identity: historyIdentity,
     title: entry.title,
@@ -284,6 +303,11 @@ export function mapServerHistoryChangeToLocalEntry(change: ServerPlaybackHistory
 
 function isServerHistoryIdentity(value: string): boolean {
   return /^server:v1:(?:movie|episode):\S{1,1024}$/.test(value)
+}
+
+function canonicalMovieWorkToken(identity: string): string | undefined {
+  const match = /^server:v1:movie:([1-9]\d*):([\w-]{1,512})$/.exec(identity)
+  return match ? `work|${match[1]}|${match[2]}` : undefined
 }
 
 function safeOrigin(value: string): string | undefined {

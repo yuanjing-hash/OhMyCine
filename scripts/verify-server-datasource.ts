@@ -683,7 +683,7 @@ const historyConfigs = [
   { id: 'jellyfin-disabled', type: 'jellyfin' as const, name: '已停用 Jellyfin', order: 2, url: 'https://jellyfin.example.test', enabled: false },
 ]
 const historyUploads = await createServerHistoryUploadChanges([
-  { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 60, updatedAt: 10_000, completed: false, progressSource: 'local' },
+  { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'entry|9|bW92aWU|42', title: 'Server 电影', position: 60, updatedAt: 10_000, completed: false, progressSource: 'local' },
   { sourceId: 'emby-home', mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', posterUrl: 'https://image.example.test/emby.jpg', position: 120, updatedAt: 11_000, completed: false, progressSource: 'local' },
   { sourceId: 'jellyfin-disabled', mediaIdentity: 'jellyfin:item:84', itemId: '84', title: '已停用来源电影', position: 90, updatedAt: 11_500, completed: false, progressSource: 'local' },
   { sourceId: 'local-file', mediaIdentity: 'local:file:demo', itemId: 'demo', title: '本机文件', position: 30, updatedAt: 12_000, completed: false, progressSource: 'local' },
@@ -694,6 +694,7 @@ assert.deepEqual(historyUploads.map(item => [item.source_kind, item.source_name,
   ['jellyfin', '已停用 Jellyfin', undefined],
   ['local-file', '本机文件', undefined],
 ])
+assert.equal(historyUploads[0]?.item_token, 'work|9|bW92aWU', 'movie history must survive a changed entry ID')
 const tombstoneUploads = await createServerHistoryUploadChanges([
   { sourceId: 'emby-home', mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', position: 0, updatedAt: 13_000, completed: false, deleted: true, progressSource: 'local' },
   { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 0, updatedAt: 13_001, completed: false, deleted: true, progressSource: 'local' },
@@ -716,10 +717,11 @@ assert.deepEqual(chunkServerHistoryChanges(Array.from({ length: 501 }, () => his
 const parsedPartialHistorySync = parsePlaybackHistorySyncResponse({
   cursor: 7,
   changes: [{ ...historyUploads[1]!, completed: false, revision: 7 }],
-  rejected: [{ sync_key: historyUploads[0]!.sync_key, code: 'NOT_FOUND' }],
+  rejected: [{ sync_key: historyUploads[0]!.sync_key, code: 'NOT_FOUND' }, { sync_key: historyUploads[1]!.sync_key, code: 'history_clock_ahead' }],
 })
-assert.equal(parsedPartialHistorySync.rejected.length, 1)
+assert.equal(parsedPartialHistorySync.rejected.length, 2)
 assert.equal(parsedPartialHistorySync.rejected[0]?.code, 'NOT_FOUND')
+assert.equal(parsedPartialHistorySync.rejected[1]?.code, 'history_clock_ahead')
 assert.throws(() => parsePlaybackHistorySyncResponse({
   cursor: 8,
   changes: [{ ...historyUploads[1]!, completed: 'false' }],

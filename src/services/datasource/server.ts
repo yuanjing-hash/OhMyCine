@@ -1321,7 +1321,7 @@ export function parsePlaybackHistorySyncResponse(value: unknown): ServerPlayback
   if (!Array.isArray(rawRejected) || rawRejected.length > 500)
     throw new Error('Server 播放历史同步响应无效。')
   const rejected = rawRejected.map((raw): ServerPlaybackHistoryRejection => {
-    if (!isRecord(raw) || typeof raw.code !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/.test(raw.code)
+    if (!isRecord(raw) || typeof raw.code !== 'string' || !/^[a-z]\w{0,63}$/i.test(raw.code)
       || (raw.sync_key !== undefined && (typeof raw.sync_key !== 'string' || !/^[a-f0-9]{64}$/.test(raw.sync_key)))) {
       throw new Error('Server 播放历史同步响应无效。')
     }
