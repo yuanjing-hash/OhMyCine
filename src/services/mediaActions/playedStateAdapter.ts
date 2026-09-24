@@ -1,9 +1,11 @@
 import type { MediaActionAdapter, MediaActionCapability, MediaActionExecutionResult, MediaActionId, MediaActionTarget } from './types'
 import type { DataSource } from '@/services/datasource/types'
+import type { HistorySyncFocus, HistorySyncOutcome } from '@/services/playbackHistorySync'
 import { getPlaybackProgress, removeContinueWatching, savePlaybackProgress, setPlaybackCompleted } from '@/services/playbackHistory'
 
 export interface PlayedStateAdapterOptions {
   readonly resolveSource: (sourceId: string) => DataSource | null
+  readonly syncHistory?: (focus: HistorySyncFocus) => Promise<HistorySyncOutcome>
 }
 
 export function createPlayedStateMediaActionAdapter(options: PlayedStateAdapterOptions): MediaActionAdapter {
@@ -37,7 +39,7 @@ async function resolveCapabilities(options: PlayedStateAdapterOptions, target: M
   const capabilities: MediaActionCapability[] = [played
     ? { action: 'markUnplayed', availability: 'available' }
     : { action: 'markPlayed', availability: 'available' }]
-  if (target.context === 'continueWatching' && !played)
+  if (target.context === 'continueWatching' || target.context === 'history')
     capabilities.push({ action: 'removeFromContinueWatching', availability: 'available' })
   return capabilities
 }
@@ -59,13 +61,36 @@ async function executePlayedStateAction(options: PlayedStateAdapterOptions, targ
   if (!mutation)
     throw new Error('该播放状态操作当前不可用。')
 
+  if (mutation === 'removeContinueWatching') {
+    if (providerOwned) {
+      if (!provider?.setPlayedState)
+        throw new Error('当前媒体服务不支持清除观看进度。')
+      await provider.setPlayedState(target.itemId, mutation)
+    }
+    const deleted = await removeContinueWatching({
+      sourceId: target.sourceId,
+      mediaIdentity: target.historyIdentity ?? target.itemId,
+      itemId: target.itemId,
+      libraryId: target.libraryId,
+      title: target.display.name,
+      mediaType: target.mediaType,
+    })
+    let message = '已删除观看记录'
+    if (target.sourceType === 'server' || providerOwned) {
+      const outcome = await options.syncHistory?.({ sourceId: deleted.sourceId, mediaIdentity: deleted.mediaIdentity, updatedAt: deleted.updatedAt }).catch((): HistorySyncOutcome => ({ status: 'pending' }))
+      if (outcome?.status === 'rejected')
+        throw new Error(`Server 拒绝删除观看记录（${outcome.reason ?? '未知原因'}）；本机已移除，记录仍会重试同步。`)
+      message = outcome?.status === 'confirmed' ? '观看记录已在本机和 Server 删除' : '本机已移除，待同步'
+    }
+    return {
+      message,
+      invalidations: [{ sourceId: target.sourceId, itemIds: [target.itemId], scopes: ['home', 'source', 'detail', 'search', 'history'] }],
+    }
+  }
   if (providerOwned) {
     if (!provider?.setPlayedState)
       throw new Error('当前媒体服务不支持修改已播放状态。')
     await provider.setPlayedState(target.itemId, mutation)
-  }
-  else if (mutation === 'removeContinueWatching') {
-    await removeContinueWatching({ sourceId: target.sourceId, mediaIdentity: target.historyIdentity ?? target.itemId })
   }
   else if (mutation === 'played') {
     const updated = await setPlaybackCompleted({ sourceId: target.sourceId, mediaIdentity: target.historyIdentity ?? target.itemId }, true)

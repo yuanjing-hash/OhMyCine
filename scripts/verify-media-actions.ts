@@ -96,6 +96,16 @@ const embyTarget = { ...target, sourceType: 'emby' as const }
 assert.deepEqual((await playedAdapter.resolve(embyTarget)).map(capability => capability.action), ['markPlayed'])
 await playedAdapter.execute(embyTarget, 'markPlayed')
 assert.equal(providerMutation, 'played')
+let syncAfterProviderFailure = false
+const failingProgressClear = createPlayedStateMediaActionAdapter({
+  resolveSource: () => ({ setPlayedState: async () => { throw new Error('provider unavailable') } } as never),
+  syncHistory: async () => { syncAfterProviderFailure = true; return { status: 'confirmed' } },
+})
+await assert.rejects(
+  failingProgressClear.execute({ ...embyTarget, context: 'continueWatching' }, 'removeFromContinueWatching'),
+  /provider unavailable/,
+)
+assert.equal(syncAfterProviderFailure, false, 'a provider rejection must not produce a Player/Server deletion')
 
 let liveFavoriteState = true
 let favoriteMutation: boolean | undefined

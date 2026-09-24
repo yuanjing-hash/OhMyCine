@@ -8,7 +8,7 @@ import { describeMediaSource } from '../src/services/datasource/mediaSourceDispl
 import { loginServerAndCreateConfig, logoutServerBestEffort, mapServerHistoryItem, parsePlaybackHistorySyncResponse, ServerDataSource } from '../src/services/datasource/server.ts'
 import { createPlaybackQueueItem } from '../src/services/playbackContext.ts'
 import { playbackProgressIdentityForMediaItem } from '../src/services/playbackHistory.ts'
-import { chunkServerHistoryChanges, createServerHistoryUploadChanges, mapServerHistoryChangeToLocalEntry } from '../src/services/playbackHistorySync.ts'
+import { chunkServerHistoryChanges, createServerHistoryUploadChanges, mapServerHistoryChangeToLocalEntry, serverConfirmsHistoryDeletion } from '../src/services/playbackHistorySync.ts'
 import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
@@ -694,6 +694,21 @@ assert.deepEqual(historyUploads.map(item => [item.source_kind, item.source_name,
   ['jellyfin', '已停用 Jellyfin', undefined],
   ['local-file', '本机文件', undefined],
 ])
+const tombstoneUploads = await createServerHistoryUploadChanges([
+  { sourceId: 'emby-home', mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', position: 0, updatedAt: 13_000, completed: false, deleted: true, progressSource: 'local' },
+  { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 0, updatedAt: 13_001, completed: false, deleted: true, progressSource: 'local' },
+], historyConfigs, 'server-home')
+assert.equal(tombstoneUploads[0]?.deleted, true)
+assert.equal(tombstoneUploads[0]?.sync_key, historyUploads[1]?.sync_key, 'deletion must target the prior Emby record')
+assert.equal(tombstoneUploads[1]?.sync_key, historyUploads[0]?.sync_key, 'deletion must target the canonical Server record')
+const deletionFocus = { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', updatedAt: tombstoneUploads[1]!.updated_at }
+assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [tombstoneUploads[1]!]), true)
+assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [{ ...tombstoneUploads[1]!, deleted: false }]), false, 'newer playback must not confirm deletion')
+assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [{ ...tombstoneUploads[1]!, updated_at: deletionFocus.updatedAt - 1 }]), false, 'older tombstone must not confirm deletion')
+assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [tombstoneUploads[0]!]), false, 'another record must not confirm deletion')
+const restoredTombstone = mapServerHistoryChangeToLocalEntry(tombstoneUploads[0]!, historyConfigs, historyConfigs[0]!)
+assert.equal(restoredTombstone[0]?.deleted, true, 'incoming deletion must remain a durable local tombstone')
+assert.equal(restoredTombstone[0]?.mediaIdentity, 'emby:item:42')
 assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[1]!, historyConfigs, historyConfigs[0]!).length, 1)
 assert.equal(mapServerHistoryChangeToLocalEntry({ ...historyUploads[1]!, source_locator: 'https://missing.example.test' }, historyConfigs, historyConfigs[0]!).length, 0)
 assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[2]!, historyConfigs, historyConfigs[0]!).length, 0)

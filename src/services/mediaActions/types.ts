@@ -44,7 +44,7 @@ export interface MediaItemActionTarget {
   readonly mediaType: MediaItem['type']
   readonly played?: boolean
   readonly favorite?: boolean
-  readonly context?: 'continueWatching'
+  readonly context?: 'continueWatching' | 'history'
   readonly display: MediaActionTargetDisplay
 }
 

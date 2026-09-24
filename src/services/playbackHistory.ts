@@ -42,6 +42,7 @@ export interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   progress?: number | null
   updatedAt: number
   completed: boolean
+  deleted: boolean
   progressSource: PlaybackProgressSource
 }
 
@@ -105,6 +106,23 @@ export async function listPlaybackHistoryPage(page = 1, pageSize = 24): Promise<
   }
 }
 
+export async function listPlaybackHistorySyncPage(page = 1, pageSize = 100): Promise<PlaybackHistoryPage> {
+  const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
+  const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 100
+  return invoke<PlaybackHistoryPage>('player_list_playback_history_sync', { page: safePage, pageSize: safePageSize })
+}
+
+export async function listPlaybackHistoryTombstones(): Promise<PlaybackHistoryEntry[]> {
+  const result: PlaybackHistoryEntry[] = []
+  for (let page = 1; page <= 100_000; page++) {
+    const current = await invoke<PlaybackHistoryPage>('player_list_playback_history_tombstones', { page, pageSize: 100 })
+    result.push(...current.list)
+    if (!current.hasMore)
+      break
+  }
+  return result
+}
+
 export async function setPlaybackCompleted(identity: PlaybackProgressIdentity, completed: boolean): Promise<boolean> {
   if (!isValidIdentity(identity))
     return false
@@ -114,13 +132,15 @@ export async function setPlaybackCompleted(identity: PlaybackProgressIdentity, c
   return changed
 }
 
-export async function removeContinueWatching(identity: PlaybackProgressIdentity): Promise<boolean> {
-  if (!isValidIdentity(identity))
-    return false
-  const changed = await invoke<boolean>('player_remove_continue_watching', { identity })
-  if (changed)
-    notifyPlaybackHistoryChanged('continue-removed')
-  return changed
+export async function removeContinueWatching(input: Omit<PlaybackProgressUpsert, 'position'>): Promise<PlaybackHistoryEntry> {
+  const progress = sanitizeProgressInput({ ...input, position: 0, completed: false })
+  if (!progress)
+    throw new Error('观看记录身份无效，未执行删除。')
+  const deleted = await invoke<PlaybackHistoryEntry>('player_remove_continue_watching', { progress })
+  if (!deleted.deleted)
+    throw new Error('观看记录未被删除。')
+  notifyPlaybackHistoryChanged('history-deleted')
+  return deleted
 }
 
 export async function getPlaybackCompletionBatch(identities: readonly PlaybackProgressIdentity[]): Promise<PlaybackHistoryEntry[]> {

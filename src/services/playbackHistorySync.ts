@@ -5,8 +5,8 @@ import type { useDataSourceStore } from '@/stores/datasource'
 import { invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { redactSensitiveText } from '@/services/datasource/errors'
-import { mapServerHistoryItem, ServerDataSource } from '@/services/datasource/server'
-import { listPlaybackHistoryPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
+import { mapServerHistoryItem, ServerDataSource, ServerRequestError } from '@/services/datasource/server'
+import { listPlaybackHistorySyncPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 
 type DataSourceStore = ReturnType<typeof useDataSourceStore>
 interface HistorySourceDescriptor {
@@ -18,6 +18,8 @@ interface HistorySourceDescriptor {
 const CURSOR_PREFIX = 'ohmycine:server-history-cursor:'
 const DIAGNOSTIC_PREFIX = 'ohmycine:server-history-sync-diagnostic:'
 const SYNC_INTERVAL_MS = 60_000
+export interface HistorySyncFocus { sourceId: string, mediaIdentity: string, updatedAt: number }
+export interface HistorySyncOutcome { status: 'confirmed' | 'pending' | 'rejected', reason?: string }
 
 export function startPlaybackHistorySync(store: DataSourceStore): () => void {
   let timer: number | undefined
@@ -63,7 +65,7 @@ export function startPlaybackHistorySync(store: DataSourceStore): () => void {
   }
 }
 
-export async function syncPlaybackHistory(store: DataSourceStore): Promise<void> {
+export async function syncPlaybackHistory(store: DataSourceStore, focus?: HistorySyncFocus): Promise<HistorySyncOutcome> {
   store.loadConfigs()
   await store.syncManager().catch(() => undefined)
   const allConfigs = store.orderedConfigs
@@ -73,11 +75,21 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
     return config.type === 'server' && source instanceof ServerDataSource ? [{ config, source }] : []
   })
   if (!servers.length)
-    return
+    return { status: 'pending' }
   const history = await readLocalHistory()
   let merged = 0
+  let focusTargets = 0
+  let confirmedTargets = 0
+  let focusRejection: string | undefined
   for (const target of servers) {
     const outgoing = await createServerHistoryUploadChanges(history, allConfigs, target.config.id)
+    const focusedChange = focus && outgoing.find(change => change.deleted === true
+      && change.source_id === focus.sourceId && change.media_identity === focus.mediaIdentity
+      && change.updated_at === focus.updatedAt)
+    if (focusedChange)
+      focusTargets++
+    let focusedRejected = false
+    let focusedConfirmed = false
     const cursorKey = `${CURSOR_PREFIX}${target.config.id}`
     let cursor = safeCursor(getAppSetting(cursorKey))
     try {
@@ -89,6 +101,13 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
         const response = await target.source.syncPlaybackHistory({ cursor, changes })
         received += response.changes.length
         rejected += response.rejected.length
+        const focusError = response.rejected.find(item => item.sync_key === focusedChange?.sync_key)
+        if (focusError) {
+          focusedRejected = true
+          focusRejection = focusError.code
+        }
+        if (focus && focusedChange && serverConfirmsHistoryDeletion(focus, focusedChange, response.changes))
+          focusedConfirmed = true
         const incoming = response.changes.flatMap(change => mapServerHistoryChangeToLocalEntry(change, enabledConfigs, target.config))
         if (incoming.length)
           merged += await invoke<number>('player_merge_playback_history', { entries: incoming })
@@ -102,6 +121,13 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
         const response = await target.source.syncPlaybackHistory({ cursor, changes: [] })
         received += response.changes.length
         rejected += response.rejected.length
+        const focusError = response.rejected.find(item => item.sync_key === focusedChange?.sync_key)
+        if (focusError) {
+          focusedRejected = true
+          focusRejection = focusError.code
+        }
+        if (focus && focusedChange && serverConfirmsHistoryDeletion(focus, focusedChange, response.changes))
+          focusedConfirmed = true
         const incoming = response.changes.flatMap(change => mapServerHistoryChangeToLocalEntry(change, enabledConfigs, target.config))
         if (incoming.length)
           merged += await invoke<number>('player_merge_playback_history', { entries: incoming })
@@ -113,15 +139,27 @@ export async function syncPlaybackHistory(store: DataSourceStore): Promise<void>
         if (!shouldPullMore)
           break
       }
+      if (focusedChange && !focusedRejected && focusedConfirmed)
+        confirmedTargets++
       await saveSyncDiagnostic(target.config.id, { ok: true, cursor, outgoing: outgoing.length, received, rejected })
     }
     catch (error) {
-      // Local playback history remains authoritative while a Server is offline.
+      // Keep the tombstone for a later retry. A Server response is an explicit rejection.
+      if (focusedChange && error instanceof ServerRequestError)
+        focusRejection = error.code ?? error.message
       await saveSyncDiagnostic(target.config.id, { ok: false, cursor, outgoing: outgoing.length, message: redactSensitiveText(error).slice(0, 256) })
     }
   }
   if (merged > 0)
     window.dispatchEvent(new CustomEvent(PLAYED_STATE_CHANGED_EVENT, { detail: { source: 'server-history-sync' } }))
+  if (focusRejection)
+    return { status: 'rejected', reason: focusRejection }
+  return focusTargets > 0 && confirmedTargets === focusTargets ? { status: 'confirmed' } : { status: 'pending' }
+}
+
+export function serverConfirmsHistoryDeletion(focus: HistorySyncFocus, uploaded: ServerPlaybackHistoryChange, returned: readonly ServerPlaybackHistoryChange[]): boolean {
+  return returned.some(change => change.sync_key === uploaded.sync_key && change.deleted === true
+    && change.updated_at >= focus.updatedAt)
 }
 
 export async function createServerHistoryUploadChanges(history: readonly PlaybackHistoryEntry[], configs: readonly DataSourceConfig[], targetServerId: string): Promise<ServerPlaybackHistoryChange[]> {
@@ -155,7 +193,7 @@ export function chunkServerHistoryChanges(changes: readonly ServerPlaybackHistor
 async function readLocalHistory(): Promise<PlaybackHistoryEntry[]> {
   const result: PlaybackHistoryEntry[] = []
   for (let page = 1; page <= 100_000; page++) {
-    const current = await listPlaybackHistoryPage(page, 100)
+    const current = await listPlaybackHistorySyncPage(page, 100)
     result.push(...current.list)
     if (!current.hasMore)
       break
@@ -206,6 +244,7 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: HistorySource
     position: entry.position,
     duration: entry.duration ?? undefined,
     completed: entry.completed,
+    deleted: entry.deleted,
     updated_at: normalizeTimestamp(entry.updatedAt),
   }
 }

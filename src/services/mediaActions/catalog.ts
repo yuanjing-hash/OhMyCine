@@ -14,7 +14,7 @@ const DEFINITIONS: readonly MediaActionDefinition[] = [
   action('openLibrary', '进入媒体库', undefined, 'primary', 30),
   action('markPlayed', '标记为已播放', undefined, 'state', 100),
   action('markUnplayed', '标记为未播放', undefined, 'state', 110),
-  action('removeFromContinueWatching', '移出继续观看', undefined, 'state', 120),
+  action('removeFromContinueWatching', '删除观看记录', undefined, 'state', 120),
   action('favorite', '收藏', undefined, 'organize', 200),
   action('unfavorite', '取消收藏', undefined, 'organize', 210),
   action('addToPlaylist', '添加到播放列表', undefined, 'organize', 220),

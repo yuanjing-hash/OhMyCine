@@ -23,6 +23,7 @@ use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
     player_delete_playback_history_for_source, player_get_playback_completion_batch,
     player_get_playback_progress, player_list_continue_watching, player_list_playback_history,
+    player_list_playback_history_sync, player_list_playback_history_tombstones,
     player_merge_playback_history, player_remove_continue_watching, player_set_playback_completed,
     player_upsert_playback_progress,
 };
@@ -147,6 +148,8 @@ pub fn run() {
             player_get_playback_completion_batch,
             player_list_continue_watching,
             player_list_playback_history,
+            player_list_playback_history_sync,
+            player_list_playback_history_tombstones,
             player_set_playback_completed,
             player_remove_continue_watching,
             player_delete_playback_history_for_source,

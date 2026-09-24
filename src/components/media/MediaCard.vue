@@ -13,6 +13,7 @@ const props = defineProps<{
   kind?: 'poster' | 'library'
   disabled?: boolean
   contextMenuMode?: 'shared' | 'custom'
+  actionContext?: 'history'
 }>()
 
 const emit = defineEmits<{
@@ -102,7 +103,7 @@ function handleSelect() {
 
 function actionTarget() {
   const source = store.configs.find(config => config.id === props.item.sourceId)
-  return createMediaActionTarget(props.item, source?.type, source?.displayName ?? source?.name)
+  return createMediaActionTarget(props.item, source?.type, source?.displayName ?? source?.name, props.actionContext)
 }
 
 function handlePointerDown(event: PointerEvent) {

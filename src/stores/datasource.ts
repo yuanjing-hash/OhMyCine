@@ -12,7 +12,7 @@ import { logoutServerBestEffort } from '@/services/datasource/server'
 import { queueLegacySourceCleanup, runLegacySourceCleanup } from '@/services/legacySourceMigration'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
-import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, listPlaybackHistoryTombstones, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { dispatchServerLibraryRefresh } from '@/services/serverMediaChanges'
 
 const STORAGE_KEY = 'ohmycine-datasources'
@@ -381,12 +381,13 @@ export const useDataSourceStore = defineStore('datasource', () => {
       isLoading.value = true
     try {
       await syncManager().catch(() => undefined)
-      const [sections, localContinueEntries] = await Promise.all([
+      const [sections, localContinueEntries, tombstones] = await Promise.all([
         loadAggregatedHomeSections(orderedConfigs.value),
         listLocalContinueWatchingSafely(20),
+        listPlaybackHistoryTombstones().catch(() => [] as PlaybackHistoryEntry[]),
       ])
       const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
-      const continueSection = mergeContinueWatchingSections(sections, localContinueItems)
+      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones)
       const nonContinueSections = sections.filter(section => section.type !== 'continueWatching')
       const mergedSections = continueSection.items.length > 0
         ? [continueSection, ...nonContinueSections]
@@ -866,8 +867,15 @@ function isRemoteSourceType(type: string): boolean {
   return type === 'server' || type === 'emby' || type === 'jellyfin'
 }
 
-function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[]): HomeSection {
-  const providerItems = sections.filter(section => section.type === 'continueWatching').flatMap(section => section.items)
+function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[], tombstones: readonly PlaybackHistoryEntry[]): HomeSection {
+  const suppressed = new Set(tombstones.flatMap(entry => [
+    `${entry.sourceId}:${entry.mediaIdentity}`,
+    ...(entry.itemId ? [`${entry.sourceId}:${entry.itemId}`] : []),
+  ]))
+  const visible = (item: MediaItem) => !suppressed.has(`${item.sourceId}:${item.historyIdentity ?? item.id}`)
+    && !suppressed.has(`${item.sourceId}:${item.id}`)
+  const providerItems = sections.filter(section => section.type === 'continueWatching').flatMap(section => section.items).filter(visible)
+  localItems = localItems.filter(visible)
   const merged = new Map<string, MediaItem>()
 
   for (const item of providerItems)

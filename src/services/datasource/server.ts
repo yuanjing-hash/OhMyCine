@@ -211,7 +211,7 @@ interface ServerMediaChangePage {
   changeCount: number
 }
 
-class ServerRequestError extends Error {
+export class ServerRequestError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) {
     super(message)
     this.name = 'ServerRequestError'

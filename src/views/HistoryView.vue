@@ -81,7 +81,7 @@ async function playItem(item: MediaItem | MediaLibrary) {
         </p>
       </header>
 
-      <MediaGrid :items="items" :loading="loading" empty-title="还没有观看历史" empty-description="开始播放后会先保存在本机；连接 Server 后将自动同步到同一账号的其他设备。" @select="playItem" @play="playItem" />
+      <MediaGrid :items="items" :loading="loading" action-context="history" empty-title="还没有观看历史" empty-description="开始播放后会先保存在本机；连接 Server 后将自动同步到同一账号的其他设备。" @select="playItem" @play="playItem" />
 
       <nav v-if="totalPages > 1" class="mt-8 flex items-center justify-center gap-3" aria-label="观看历史分页">
         <button type="button" class="rounded-xl bg-white/8 px-5 py-2.5 text-sm text-white disabled:opacity-35" :disabled="loading || page <= 1" @click="loadPage(page - 1)">

@@ -9,7 +9,7 @@ import MediaEditorHost from '@/components/media/MediaEditorHost.vue'
 import { configureMediaActionController, createCollectionMediaActionAdapter, createDeleteMediaActionAdapter, createDownloadMediaActionAdapter, createMaintenanceMediaActionAdapter, createNavigationMediaActionAdapter, createPlayedStateMediaActionAdapter, MediaActionController, publishFeedback, requestMediaActionConfirmation } from '@/services/mediaActions'
 import { COLLECTIONS_CHANGED_EVENT } from '@/services/mediaCollections'
 import { PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
-import { startPlaybackHistorySync } from '@/services/playbackHistorySync'
+import { startPlaybackHistorySync, syncPlaybackHistory } from '@/services/playbackHistorySync'
 import { initializeServerDeepLinks } from '@/services/serverDeepLink'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useDownloadStore } from '@/stores/downloads'
@@ -20,7 +20,7 @@ const updater = useUpdaterStore()
 const downloads = useDownloadStore()
 const router = useRouter()
 configureMediaActionController(new MediaActionController({
-  adapters: [createDeleteMediaActionAdapter(), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId), requestMediaActionConfirmation), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
+  adapters: [createDeleteMediaActionAdapter(), createPlayedStateMediaActionAdapter({ resolveSource: sourceId => store.getSource(sourceId), syncHistory: focus => syncPlaybackHistory(store, focus) }), createCollectionMediaActionAdapter(sourceId => store.getSource(sourceId)), createDownloadMediaActionAdapter(sourceId => store.getSource(sourceId), requestMediaActionConfirmation), createMaintenanceMediaActionAdapter(router, sourceId => store.getSource(sourceId), sourceId => store.orderedConfigs.find(config => config.id === sourceId)), createNavigationMediaActionAdapter(router)],
   confirm: requestMediaActionConfirmation,
   invalidate: async (invalidation) => {
     store.getSource(invalidation.sourceId)?.clearCache?.()
