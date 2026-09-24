@@ -387,7 +387,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
         listPlaybackHistoryTombstones().catch(() => [] as PlaybackHistoryEntry[]),
       ])
       const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
-      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones)
+      const serverSourceIds = new Set(orderedConfigs.value.filter(config => config.type === 'server').map(config => config.id))
+      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones, serverSourceIds)
       const nonContinueSections = sections.filter(section => section.type !== 'continueWatching')
       const mergedSections = continueSection.items.length > 0
         ? [continueSection, ...nonContinueSections]
@@ -500,7 +501,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     try {
       const cache = sanitizePersistedDisplayCache(JSON.parse(raw) as unknown)
       homeSections.value = cache.homeSections
-      homeLoadedAt.value = cache.homeLoadedAt
+      // Display the saved snapshot immediately, then revalidate Server state after restart.
+      homeLoadedAt.value = 0
       sourceRootSnapshots.value = cache.sourceRootSnapshots
       rememberPlaybackTargetsForItems([
         ...cache.homeSections.flatMap(section => section.items),
@@ -867,22 +869,42 @@ function isRemoteSourceType(type: string): boolean {
   return type === 'server' || type === 'emby' || type === 'jellyfin'
 }
 
-function mergeContinueWatchingSections(sections: readonly HomeSection[], localItems: readonly MediaItem[], tombstones: readonly PlaybackHistoryEntry[]): HomeSection {
-  const suppressed = new Set(tombstones.flatMap(entry => [
-    `${entry.sourceId}:${entry.mediaIdentity}`,
-    ...(entry.itemId ? [`${entry.sourceId}:${entry.itemId}`] : []),
-  ]))
-  const visible = (item: MediaItem) => !suppressed.has(`${item.sourceId}:${item.historyIdentity ?? item.id}`)
-    && !suppressed.has(`${item.sourceId}:${item.id}`)
+function mergeContinueWatchingSections(
+  sections: readonly HomeSection[],
+  localItems: readonly MediaItem[],
+  tombstones: readonly PlaybackHistoryEntry[],
+  serverSourceIds: ReadonlySet<string>,
+): HomeSection {
+  const keyFor = (item: MediaItem) => continueWatchingKey(item, serverSourceIds)
+  const suppressed = new Map<string, number>()
+  const suppress = (key: string, updatedAt: number) => suppressed.set(key, Math.max(suppressed.get(key) ?? 0, updatedAt))
+  for (const entry of tombstones) {
+    suppress(`${entry.sourceId}:${entry.mediaIdentity}`, entry.updatedAt)
+    if (entry.itemId)
+      suppress(`${entry.sourceId}:${entry.itemId}`, entry.updatedAt)
+    const canonical = serverMovieHistoryIdentity(entry.sourceId, entry.itemId, entry.mediaType, serverSourceIds)
+    if (canonical)
+      suppress(`${entry.sourceId}:${canonical}`, entry.updatedAt)
+  }
+  const hiddenByTombstone = (item: MediaItem, key: string) => {
+    const deletedAt = suppressed.get(key)
+    if (deletedAt == null)
+      return false
+    const playedAt = Date.parse(item.modified ?? '')
+    return !Number.isFinite(playedAt) || playedAt <= deletedAt
+  }
+  const visible = (item: MediaItem) => !hiddenByTombstone(item, keyFor(item))
+    && !hiddenByTombstone(item, `${item.sourceId}:${item.historyIdentity ?? item.id}`)
+    && !hiddenByTombstone(item, `${item.sourceId}:${item.id}`)
   const providerItems = sections.filter(section => section.type === 'continueWatching').flatMap(section => section.items).filter(visible)
   localItems = localItems.filter(visible)
   const merged = new Map<string, MediaItem>()
 
   for (const item of providerItems)
-    merged.set(continueWatchingKey(item), item)
+    merged.set(keyFor(item), item)
 
   for (const item of localItems) {
-    const key = continueWatchingKey(item)
+    const key = keyFor(item)
     const providerItem = merged.get(key)
     merged.set(key, providerItem ? mergeContinueWatchingItem(item, providerItem) : item)
   }
@@ -891,7 +913,7 @@ function mergeContinueWatchingSections(sections: readonly HomeSection[], localIt
     id: 'continue-watching',
     title: '继续观看',
     type: 'continueWatching',
-    items: [...localItems.map(continueWatchingKey), ...providerItems.map(continueWatchingKey)]
+    items: [...localItems.map(keyFor), ...providerItems.map(keyFor)]
       .filter((key, index, keys) => keys.indexOf(key) === index)
       .map(key => merged.get(key))
       .filter((item): item is MediaItem => item != null),
@@ -899,7 +921,10 @@ function mergeContinueWatchingSections(sections: readonly HomeSection[], localIt
 }
 
 function mergeContinueWatchingItem(localItem: MediaItem, providerItem: MediaItem): MediaItem {
-  const providerResumePosition = usableResumePosition(providerItem)
+  const localUpdatedAt = Date.parse(localItem.modified ?? '')
+  const providerUpdatedAt = Date.parse(providerItem.modified ?? '')
+  const preferLocal = Number.isFinite(localUpdatedAt) && (!Number.isFinite(providerUpdatedAt) || localUpdatedAt > providerUpdatedAt)
+  const providerResumePosition = preferLocal ? undefined : usableResumePosition(providerItem)
   const providerProgress = providerResumePosition == null
     ? undefined
     : providerItem.progress ?? progressRatio(providerResumePosition, providerItem.duration)
@@ -959,8 +984,27 @@ async function listLocalContinueWatchingSafely(limit: number): Promise<PlaybackH
   }
 }
 
-function continueWatchingKey(item: MediaItem): string {
-  return `${item.sourceId}:${item.id}`
+function continueWatchingKey(item: MediaItem, serverSourceIds: ReadonlySet<string>): string {
+  const canonical = serverMovieHistoryIdentity(item.sourceId, item.id, item.type, serverSourceIds)
+  return `${item.sourceId}:${canonical ?? item.historyIdentity ?? item.id}`
+}
+
+function serverMovieHistoryIdentity(
+  sourceId: string,
+  itemId: string | null | undefined,
+  mediaType: MediaItem['type'] | null | undefined,
+  serverSourceIds: ReadonlySet<string>,
+): string | undefined {
+  if (!serverSourceIds.has(sourceId) || mediaType !== 'movie' || !itemId)
+    return undefined
+  const parts = itemId.split('|')
+  if ((parts[0] !== 'work' || parts.length !== 3) && (parts[0] !== 'entry' || parts.length !== 4))
+    return undefined
+  if (!/^[1-9]\d*$/.test(parts[1] ?? '') || !/^[\w-]{1,512}$/.test(parts[2] ?? ''))
+    return undefined
+  if (parts[0] === 'entry' && !/^[1-9]\d*$/.test(parts[3] ?? ''))
+    return undefined
+  return `server:v1:movie:${parts[1]}:${parts[2]}`
 }
 
 function sanitizeConfigs(value: unknown): DataSourceConfig[] {

@@ -243,6 +243,7 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     resumePosition: entry.position,
     progress: entry.progress ?? undefined,
     progressSource: entry.progressSource,
+    modified: new Date(entry.updatedAt).toISOString(),
   }
 }
 

@@ -148,8 +148,14 @@ function handleHomeCardClick(item: MediaItem, event: MouseEvent, action: 'play' 
     handleDetail(item)
 }
 
+function handlePlayedStateChanged(event: Event) {
+  void refreshHomePlayedStates()
+  if ((event as CustomEvent<{ source?: string }>).detail?.source === 'server-history-sync')
+    void store.loadHomeSections({ force: true, background: true })
+}
+
 onMounted(async () => {
-  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshHomePlayedStates)
+  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged)
   store.loadConfigs()
   contributionPreferences.value = loadHomeContributionPreferences()
   try {
@@ -258,7 +264,7 @@ async function performSiteAction(item: MediaItem, action: SiteActionDescriptor) 
   }
 }
 
-onBeforeUnmount(() => window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, refreshHomePlayedStates))
+onBeforeUnmount(() => window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged))
 
 watch(heroItems, () => {
   void refreshHeroSeriesPlaybackTargets()

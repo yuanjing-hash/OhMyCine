@@ -168,8 +168,10 @@ export async function syncPlaybackHistory(store: DataSourceStore, focus?: Histor
       await saveSyncDiagnostic(target.config.id, { ok: false, cursor, outgoing: outgoing.length, message: redactSensitiveText(error).slice(0, 256) })
     }
   }
-  if (merged > 0)
+  if (merged > 0) {
+    store.invalidateHomeCache()
     window.dispatchEvent(new CustomEvent(PLAYED_STATE_CHANGED_EVENT, { detail: { source: 'server-history-sync' } }))
+  }
   if (focusRejection)
     return { status: 'rejected', reason: focusRejection }
   return focusTargets > 0 && confirmedTargets === focusTargets ? { status: 'confirmed' } : { status: 'pending' }
@@ -242,7 +244,7 @@ async function toServerChange(entry: PlaybackHistoryEntry, config: HistorySource
     : undefined
   const itemToken = historyIdentity ? canonicalMovieWorkToken(historyIdentity) ?? entry.itemId : entry.itemId
   return {
-    sync_key: await sha256(historyIdentity ? `${config.type}\0${historyIdentity}` : `${config.type}\0${stableSource}\0${entry.mediaIdentity}`),
+    sync_key: await sha256(historyIdentity ?? `${config.type}\0${stableSource}\0${entry.mediaIdentity}`),
     source_kind: config.type,
     source_name: config.name,
     source_locator: locator || undefined,
